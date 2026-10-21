@@ -1,8 +1,9 @@
 // CI tab of the CI/CD page (SPEC-001 DLV-006/007, SPEC-002 ADR-21, SPEC-151): Yulius is the
 // projects' only CI. The jobs in force and where they come from, the runs of pull request heads and
-// of the integration and production branches with each job's log, Run again and Cancel, and
+// of the integration and production branches with each job's log, Cancel and Run again, and
 // repository hygiene (stale branches and worktrees). A run opens in place of the list at
-// `?run=<id>`, the link of the `yulius/ci` commit status (SPEC-238: a view, not a dialog).
+// `?run=<id>`, the link of the `yulius/ci` commit status (SPEC-238: a view, not a dialog); Run
+// again lives there, not on every card (SPEC-258).
 
 import { enc } from '../api.js';
 import { h, badge, itemCard, emptyState, setChildren, placeholder, toast, errorToast, confirmDialog, pollPaused, icon, bar, drawShape } from '../dom.js';
@@ -158,10 +159,8 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
       run.requested_by && run.requested_by !== 'yulius' ? ` · by ${run.requested_by}` : null,
       run.status && run.status !== 'published' && run.status !== 'pending' ? h('span', { class: 'muted' }, ` · GitHub status ${run.status}`) : null,
     ];
-    const controls = [];
-    const which = `${run.label} at ${shortSha(run.sha)}`;
-    if (write && ACTIVE.has(run.state)) controls.push(h('button', { type: 'button', class: 'btn btn-sm', 'aria-label': `Cancel: ${which}`, onClick: () => cancel(run) }, 'Cancel'));
-    if (write && !ACTIVE.has(run.state)) controls.push(h('button', { type: 'button', class: 'btn btn-sm', 'aria-label': `Run again: ${which}`, onClick: () => rerun(run) }, 'Run again'));
+    // SPEC-258: only Cancel, which is urgent; Run again is in the run's view.
+    const controls = write && ACTIVE.has(run.state) ? [cancelButton(run, () => reload({ quiet: true }))] : [];
     return itemCard({
       iconEl: h('span', { class: ['ci-state', `ci-${run.state}`] }, icon(st.icon, { size: 18, label: st.label })),
       title: [run.label, ' ', h('code', { class: 'muted' }, shortSha(run.sha))],
@@ -189,22 +188,30 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     }
   }
 
-  async function cancel(run) {
-    if (!(await confirmDialog({ title: `Cancel the run of ${run.label}?`, message: 'Its jobs are stopped. Run it again later from this page.', confirmLabel: 'Cancel run', danger: true }))) return;
+  function which(run) { return `${run.label} at ${shortSha(run.sha)}`; }
+
+  /** Cancel for an active run (its card and its view); `then` redraws what shows it. */
+  function cancelButton(run, then) {
+    return h('button', { type: 'button', class: 'btn btn-sm', 'aria-label': `Cancel: ${which(run)}`, onClick: () => cancel(run, then) }, 'Cancel');
+  }
+
+  async function cancel(run, then) {
+    if (!(await confirmDialog({ title: `Cancel the run of ${run.label}?`, message: 'Its jobs are stopped. Run it again later from its view.', confirmLabel: 'Cancel run', danger: true }))) return;
     try {
       await ctx.api.post(`${base}/ci/runs/${enc(run.id)}/cancel`);
       toast(`Run of ${run.label} cancelled.`, { kind: 'ok' });
-      reload({ quiet: true });
+      then();
     } catch (error) {
       errorToast(error, 'Couldn’t cancel the run');
     }
   }
 
+  /** Tests the run's commit again and opens the new run (SPEC-258 RRA-002). */
   async function rerun(run) {
     try {
-      await ctx.api.post(`${base}/ci/runs/${enc(run.id)}/rerun`);
+      const fresh = await ctx.api.post(`${base}/ci/runs/${enc(run.id)}/rerun`);
       toast(`${run.label} queued again.`, { kind: 'ok' });
-      reload({ quiet: true });
+      if (!destroyed) ctx.navigate(`${page}?run=${encodeURIComponent(fresh.id)}`);
     } catch (error) {
       errorToast(error, 'Couldn’t run it again');
     }
@@ -245,7 +252,7 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
           first = false;
         }
         render(run);
-        head.append(h('span', { class: 'spacer' }), pipeline);
+        head.append(h('span', { class: 'spacer' }), ...runControls(run), pipeline);
         // The summary (SPEC-238 CRV-003): how long, the stages running now and the jobs; drawn
         // before the stages load, so it keeps its height, and again with what runs now.
         const summarize = (now) => view.summarize({
@@ -278,6 +285,12 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
       const exit = job.exit_code === null || job.exit_code === undefined ? '' : `\n[exit code ${job.exit_code}]`;
       output.textContent = (job.output || (ACTIVE.has(job.state) ? 'Waiting for output…' : 'No output.')) + exit;
       if (atBottom || ACTIVE.has(job.state)) output.scrollTop = output.scrollHeight;
+    };
+    // SPEC-258 RRA-002/003: Cancel while it runs, Run again once it ended, for writers only.
+    const runControls = (run) => {
+      if (!write) return [];
+      if (ACTIVE.has(run.state)) return [cancelButton(run, () => { if (destroyed) return; clearTimeout(poll); load(); })];
+      return [h('button', { type: 'button', class: 'btn btn-sm', 'aria-label': `Run again: ${which(run)}`, onClick: () => rerun(run) }, icon('refresh', { size: 14 }), 'Run again')];
     };
     load();
     return view;
