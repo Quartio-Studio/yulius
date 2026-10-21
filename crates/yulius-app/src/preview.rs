@@ -361,11 +361,10 @@ impl App {
             .is_some_and(|config| config.parse_host(host).is_some())
     }
 
-    /// Ports that are never reachable through a preview: Yulius's own listeners and the
-    /// sandbox browsers' DevTools endpoints.
-    pub async fn preview_excluded_ports(&self) -> Vec<u16> {
+    /// Ports that are never reachable through a preview: Yulius's own listeners (sandbox
+    /// browsers have no DevTools port, ADR-0191).
+    pub fn preview_excluded_ports(&self) -> Vec<u16> {
         let mut ports = self.config.own_ports.clone();
-        ports.extend(self.deps.browser.devtools_ports().await);
         ports.sort_unstable();
         ports.dedup();
         ports
@@ -426,7 +425,7 @@ impl App {
         if record.port_count == 0 || !(first..=last).contains(&port) {
             return Err(PreviewRefusal::OutsideRange { first, last });
         }
-        let excluded = self.preview_excluded_ports().await;
+        let excluded = self.preview_excluded_ports();
         if excluded.contains(&port) {
             return Err(PreviewRefusal::Yulius);
         }
@@ -451,7 +450,6 @@ impl App {
         let (_, first, last, listening) = self.sandbox_listening_ports(sandbox).await?;
         let excluded: Vec<u16> = self
             .preview_excluded_ports()
-            .await
             .into_iter()
             .filter(|p| (first..=last).contains(p))
             .collect();

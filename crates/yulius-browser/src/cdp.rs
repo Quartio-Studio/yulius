@@ -1,4 +1,6 @@
-//! Chrome DevTools Protocol client over one WebSocket (flattened sessions).
+//! Chrome DevTools Protocol client over one connection (flattened sessions): a WebSocket, or
+//! the pipe pair of Chromium's `--remote-debugging-pipe` (JSON messages terminated by a NUL byte;
+//! ADR-0191).
 //!
 //! Bounds and ownership:
 //!
@@ -14,7 +16,8 @@
 //! - `Page.screencastFrame` events are acknowledged by the reader immediately (Chromium keeps
 //!   at most two unacknowledged frames in flight) and delivered to the per-session frame sink,
 //!   a bounded broadcast channel that drops the oldest frames for slow consumers. The socket
-//!   reader never blocks on a consumer.
+//!   reader never blocks on a consumer;
+//! - an incoming message longer than [`CdpConfig::max_message_bytes`] closes the connection.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,9 +25,12 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use base64::Engine as _;
-use futures::stream::{SplitSink, SplitStream};
-use futures::{SinkExt as _, StreamExt as _};
+use futures::stream::SplitStream;
+use futures::{Sink, SinkExt as _, Stream, StreamExt as _};
 use serde_json::{Value, json};
+use tokio::io::{
+    AsyncBufReadExt as _, AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _,
+};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -36,13 +42,17 @@ use tracing::{debug, warn};
 use crate::error::CdpError;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type WsError = tokio_tungstenite::tungstenite::Error;
+
+/// [`CdpClient::url`] of a pipe connection.
+pub const PIPE_URL: &str = "pipe:";
 
 /// Limits of one CDP connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CdpConfig {
     /// Per-call response timeout.
     pub call_timeout: Duration,
-    /// WebSocket handshake timeout.
+    /// WebSocket handshake timeout (not used by a pipe).
     pub connect_timeout: Duration,
     /// Maximum concurrent requests awaiting a response.
     pub max_pending: usize,
@@ -156,7 +166,7 @@ type Responder = oneshot::Sender<Result<Value, RpcError>>;
 struct Shared {
     url: String,
     config: CdpConfig,
-    outgoing: mpsc::Sender<Message>,
+    outgoing: mpsc::Sender<String>,
     pending: Mutex<HashMap<u64, Responder>>,
     next_id: AtomicU64,
     events: broadcast::Sender<CdpEvent>,
@@ -214,11 +224,45 @@ impl CdpClient {
             })?
             .map_err(|error| CdpError::Connect(error.to_string()))?;
         let (sink, stream) = socket.split();
+        let sink = sink.with(|text: String| async move { Ok::<_, WsError>(Message::text(text)) });
+        Ok(Self::start(
+            url.to_owned(),
+            config,
+            ws_incoming(stream),
+            Box::pin(sink),
+        ))
+    }
+
+    /// Speaks CDP over a pipe pair, as Chromium does with `--remote-debugging-pipe`: `from_browser`
+    /// is the browser's fd 4 (responses and events), `to_browser` its fd 3 (requests); each message
+    /// is JSON terminated by a NUL byte. End of file on `from_browser` closes the connection.
+    #[must_use]
+    pub fn over_pipe<R, W>(from_browser: R, to_browser: W, config: CdpConfig) -> Self
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
+        let sink = futures::sink::unfold(to_browser, |mut pipe, text: String| async move {
+            pipe.write_all(text.as_bytes()).await?;
+            pipe.write_all(&[0]).await?;
+            pipe.flush().await?;
+            Ok::<_, std::io::Error>(pipe)
+        });
+        let incoming = pipe_incoming(from_browser, config.max_message_bytes);
+        Self::start(PIPE_URL.to_owned(), config, incoming, Box::pin(sink))
+    }
+
+    fn start<I, K, E>(url: String, config: CdpConfig, incoming: I, sink: K) -> Self
+    where
+        I: Stream<Item = String> + Send + 'static,
+        K: Sink<String, Error = E> + Unpin + Send + 'static,
+        E: std::fmt::Display + Send + 'static,
+    {
         let (outgoing, outgoing_rx) = mpsc::channel(config.outgoing_queue.max(1));
         let (events, _) = broadcast::channel(config.event_buffer.max(1));
         let (closed, _) = watch::channel(false);
         let shared = Arc::new(Shared {
-            url: url.to_owned(),
+            url,
             config,
             outgoing,
             pending: Mutex::new(HashMap::new()),
@@ -228,15 +272,15 @@ impl CdpClient {
             closed,
             dropped_acks: AtomicU64::new(0),
         });
-        let reader = tokio::spawn(read_loop(Arc::clone(&shared), stream));
+        let reader = tokio::spawn(read_loop(Arc::clone(&shared), Box::pin(incoming)));
         let writer = tokio::spawn(write_loop(Arc::clone(&shared), sink, outgoing_rx));
-        Ok(Self {
+        Self {
             shared,
             _tasks: Arc::new(Tasks { reader, writer }),
-        })
+        }
     }
 
-    /// The URL this client connected to.
+    /// The URL this client connected to ([`PIPE_URL`] for a pipe).
     #[must_use]
     pub fn url(&self) -> &str {
         &self.shared.url
@@ -248,7 +292,22 @@ impl CdpClient {
     /// [`CdpError::Timeout`], [`CdpError::Closed`], [`CdpError::Busy`] or
     /// [`CdpError::Protocol`].
     pub async fn call(&self, method: &str, params: Value) -> Result<Value, CdpError> {
-        self.send_call(None, method, params).await
+        self.send_call(None, method, params, self.shared.config.call_timeout)
+            .await
+    }
+
+    /// [`CdpClient::call`] with its own response timeout instead of [`CdpConfig::call_timeout`]
+    /// (a browser's first answer at startup).
+    ///
+    /// # Errors
+    /// As [`CdpClient::call`].
+    pub async fn call_within(
+        &self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, CdpError> {
+        self.send_call(None, method, params, timeout).await
     }
 
     /// Calls a method on a flattened target session.
@@ -261,7 +320,13 @@ impl CdpClient {
         method: &str,
         params: Value,
     ) -> Result<Value, CdpError> {
-        self.send_call(Some(session_id), method, params).await
+        self.send_call(
+            Some(session_id),
+            method,
+            params,
+            self.shared.config.call_timeout,
+        )
+        .await
     }
 
     async fn send_call(
@@ -269,6 +334,7 @@ impl CdpClient {
         session_id: Option<&str>,
         method: &str,
         params: Value,
+        timeout: Duration,
     ) -> Result<Value, CdpError> {
         if self.is_closed() {
             return Err(CdpError::Closed);
@@ -290,11 +356,10 @@ impl CdpClient {
         if let Some(session_id) = session_id {
             message["sessionId"] = Value::String(session_id.to_owned());
         }
-        let timeout = self.shared.config.call_timeout;
         let exchange = async {
             self.shared
                 .outgoing
-                .send(Message::text(message.to_string()))
+                .send(message.to_string())
                 .await
                 .map_err(|_| CdpError::Closed)?;
             match rx.await {
@@ -448,11 +513,7 @@ impl Shared {
         if let Some(session_id) = &session_id {
             ack["sessionId"] = Value::String(session_id.clone());
         }
-        if self
-            .outgoing
-            .try_send(Message::text(ack.to_string()))
-            .is_err()
-        {
+        if self.outgoing.try_send(ack.to_string()).is_err() {
             self.dropped_acks.fetch_add(1, Ordering::Relaxed);
             warn!("screencast acknowledgement dropped: DevTools writer queue full");
         }
@@ -485,17 +546,66 @@ fn parse_metadata(metadata: Option<&Value>) -> FrameMetadata {
     }
 }
 
-async fn read_loop(shared: Arc<Shared>, mut stream: SplitStream<Socket>) {
-    while let Some(message) = stream.next().await {
-        match message {
-            Ok(Message::Text(text)) => shared.dispatch(text.as_str()),
-            Ok(Message::Close(_)) => break,
-            Ok(_) => {}
-            Err(error) => {
-                debug!(%error, "DevTools socket read failed");
-                break;
+/// Text messages of a WebSocket until it closes or fails.
+fn ws_incoming(stream: SplitStream<Socket>) -> impl Stream<Item = String> + Send {
+    futures::stream::unfold(stream, |mut stream| async move {
+        loop {
+            match stream.next().await? {
+                Ok(Message::Text(text)) => return Some((text.as_str().to_owned(), stream)),
+                Ok(Message::Close(_)) => return None,
+                Ok(_) => {}
+                Err(error) => {
+                    debug!(%error, "DevTools socket read failed");
+                    return None;
+                }
             }
         }
+    })
+}
+
+/// NUL-terminated messages of a pipe until end of file, a read error, a message over `max_bytes`
+/// or one that is not UTF-8.
+fn pipe_incoming<R>(pipe: R, max_bytes: usize) -> impl Stream<Item = String> + Send
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    let limit = u64::try_from(max_bytes)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let reader = tokio::io::BufReader::new(pipe);
+    futures::stream::unfold(reader, move |mut reader| async move {
+        let mut message = Vec::new();
+        match (&mut reader).take(limit).read_until(0, &mut message).await {
+            Ok(0) => return None,
+            Ok(_) => {}
+            Err(error) => {
+                debug!(%error, "DevTools pipe read failed");
+                return None;
+            }
+        }
+        if message.pop() != Some(0) {
+            warn!(
+                max_bytes,
+                "DevTools pipe message too long or cut off; closing"
+            );
+            return None;
+        }
+        match String::from_utf8(message) {
+            Ok(text) => Some((text, reader)),
+            Err(error) => {
+                warn!(%error, "DevTools pipe message is not UTF-8; closing");
+                None
+            }
+        }
+    })
+}
+
+async fn read_loop<I>(shared: Arc<Shared>, mut incoming: I)
+where
+    I: Stream<Item = String> + Unpin,
+{
+    while let Some(text) = incoming.next().await {
+        shared.dispatch(&text);
     }
     shared.close();
 }
@@ -505,18 +615,18 @@ pub(crate) async fn wait_closed(closed: &mut watch::Receiver<bool>) {
     let _ = closed.wait_for(|closed| *closed).await;
 }
 
-async fn write_loop(
-    shared: Arc<Shared>,
-    mut sink: SplitSink<Socket, Message>,
-    mut queue: mpsc::Receiver<Message>,
-) {
+async fn write_loop<K, E>(shared: Arc<Shared>, mut sink: K, mut queue: mpsc::Receiver<String>)
+where
+    K: Sink<String, Error = E> + Unpin,
+    E: std::fmt::Display,
+{
     let mut closed = shared.closed.subscribe();
     loop {
         tokio::select! {
             message = queue.recv() => {
                 let Some(message) = message else { break };
                 if let Err(error) = sink.send(message).await {
-                    debug!(%error, "DevTools socket write failed");
+                    debug!(%error, "DevTools write failed");
                     break;
                 }
             }

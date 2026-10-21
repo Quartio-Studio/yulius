@@ -7,6 +7,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use command_fds::{CommandFdExt as _, FdMapping};
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use tokio::io::AsyncReadExt;
@@ -59,6 +60,16 @@ pub(crate) struct Supervised {
     stderr: Arc<Mutex<Vec<u8>>>,
     _monitor: JoinHandle<()>,
     stderr_reader: Option<JoinHandle<()>>,
+    /// Turns `true` once stderr reached its end (every holder closed it) or failed.
+    stderr_closed: watch::Receiver<bool>,
+}
+
+/// Yulius's ends of a child's DevTools pipe (Chromium's `--remote-debugging-pipe`, ADR-0191).
+pub(crate) struct DevToolsPipe {
+    /// The child's fd 4: responses and events.
+    pub(crate) from_child: tokio::net::unix::pipe::Receiver,
+    /// The child's fd 3: requests.
+    pub(crate) to_child: tokio::net::unix::pipe::Sender,
 }
 
 /// The allowlisted subset of the current environment.
@@ -77,7 +88,35 @@ impl Supervised {
         args: &[OsString],
         env: &[(OsString, OsString)],
     ) -> std::io::Result<Self> {
-        Self::spawn_with(program, args, env, false).map(|(process, _)| process)
+        Self::spawn_with(program, args, env, false, Vec::new()).map(|(process, _)| process)
+    }
+
+    /// [`Self::spawn`] with a DevTools pipe: the child reads fd 3 and writes fd 4. Yulius's
+    /// ends are close-on-exec, so no other child inherits them, and the child's ends are closed
+    /// here once it is spawned, so the child's exit is the pipe's end of file.
+    pub(crate) fn spawn_with_devtools_pipe(
+        program: &Path,
+        args: &[OsString],
+        env: &[(OsString, OsString)],
+    ) -> std::io::Result<(Self, DevToolsPipe)> {
+        let (child_reads, to_child) = std::io::pipe()?;
+        let (from_child, child_writes) = std::io::pipe()?;
+        let pipe = DevToolsPipe {
+            from_child: tokio::net::unix::pipe::Receiver::from_owned_fd(from_child.into())?,
+            to_child: tokio::net::unix::pipe::Sender::from_owned_fd(to_child.into())?,
+        };
+        let fds = vec![
+            FdMapping {
+                parent_fd: child_reads.into(),
+                child_fd: 3,
+            },
+            FdMapping {
+                parent_fd: child_writes.into(),
+                child_fd: 4,
+            },
+        ];
+        let (process, _) = Self::spawn_with(program, args, env, false, fds)?;
+        Ok((process, pipe))
     }
 
     /// [`Self::spawn`] with stdout piped to the caller (an encoder's output stream). The caller
@@ -87,7 +126,7 @@ impl Supervised {
         args: &[OsString],
         env: &[(OsString, OsString)],
     ) -> std::io::Result<(Self, tokio::process::ChildStdout)> {
-        let (process, stdout) = Self::spawn_with(program, args, env, true)?;
+        let (process, stdout) = Self::spawn_with(program, args, env, true, Vec::new())?;
         let stdout = stdout.ok_or_else(|| std::io::Error::other("child stdout is not piped"))?;
         Ok((process, stdout))
     }
@@ -97,6 +136,7 @@ impl Supervised {
         args: &[OsString],
         env: &[(OsString, OsString)],
         pipe_stdout: bool,
+        fds: Vec<FdMapping>,
     ) -> std::io::Result<(Self, Option<tokio::process::ChildStdout>)> {
         let mut command = tokio::process::Command::new(program);
         command
@@ -112,12 +152,18 @@ impl Supervised {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .process_group(0);
+        if !fds.is_empty() {
+            command.fd_mappings(fds).map_err(std::io::Error::other)?;
+        }
         let mut child = command.spawn()?;
+        // The command owns the child's ends of any mapped pipe: close them in this process.
+        drop(command);
         let stdout = child.stdout.take();
         let pid = child
             .id()
             .ok_or_else(|| std::io::Error::other("spawned child has no pid"))?;
         let stderr = Arc::new(Mutex::new(Vec::new()));
+        let (stderr_done, stderr_closed) = watch::channel(child.stderr.is_none());
         let stderr_reader = child.stderr.take().map(|mut pipe| {
             let tail = Arc::clone(&stderr);
             tokio::spawn(async move {
@@ -133,6 +179,7 @@ impl Supervised {
                         }
                     }
                 }
+                stderr_done.send_replace(true);
             })
         });
         let (tx, exit) = watch::channel(None);
@@ -150,6 +197,7 @@ impl Supervised {
                 stderr,
                 _monitor: monitor,
                 stderr_reader,
+                stderr_closed,
             },
             stdout,
         ))
@@ -181,6 +229,14 @@ impl Supervised {
     pub(crate) async fn exited(&self) {
         let mut exit = self.exit.clone();
         let _ = exit.wait_for(Option::is_some).await;
+    }
+
+    /// [`Self::stderr_tail`] once stderr has ended, waiting at most `timeout` for it (a reader
+    /// behind the exit, or a descendant still holding stderr).
+    pub(crate) async fn stderr_tail_within(&self, timeout: Duration) -> String {
+        let mut closed = self.stderr_closed.clone();
+        let _ = tokio::time::timeout(timeout, closed.wait_for(|closed| *closed)).await;
+        self.stderr_tail()
     }
 
     /// Lossy UTF-8 of the last stderr bytes.

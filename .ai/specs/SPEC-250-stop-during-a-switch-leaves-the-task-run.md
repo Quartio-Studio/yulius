@@ -193,7 +193,8 @@ the stop's read and its compare-and-set is a few awaits wide.
   touch). The pause moves the task to `waiting_capacity` before it records the pause and sends the
   notice, and the test read the notices at once. It now waits for the notice (bounded, 20 s): 40 of
   40 passed. This task may not file issues, and a merge needs green CI without retries, so it is
-  fixed in its own commit rather than left to fail this pull request's checks.
+  fixed in its own commit rather than left to fail this pull request's checks. `dev` fixed it the
+  same way meanwhile; the merge keeps `dev`'s version.
 - **Pause points keyed by task**: `race::reached` takes the task id as its key path for the stop's
   points, so tests running in parallel do not take each other's hooks (ADR-0174's contract). No new
   ADR: this applies ADR-0174 and SPEC-065's stop contract; it decides nothing lasting.

@@ -170,6 +170,26 @@ flowchart LR
   SMJ -->|"one check per line"| UI
 ```
 
+## Sandbox browser DevTools
+
+Each sandbox's Chromium runs outside containment and speaks the DevTools protocol only over the
+pipe pair Yulius gives it at spawn (`--remote-debugging-pipe`, fds 3 and 4, NUL-terminated JSON;
+[ADR-0191](decisions/0191-the-sandbox-browser-speaks-devtools-over-a-pipe.md)). It opens no
+DevTools socket, and a contained run (isolated or the fallback bubblewrap, each with its own PID
+namespace) cannot see its process, so no such agent or other sandbox can drive it. A process
+running as Yulius's user on the host, including an agent run without containment (host mode), or
+root could open the browser's `/proc/<pid>/fd`. Agents reach the browser through Yulius's browser
+tools, viewers through the viewer WebSocket.
+
+```mermaid
+flowchart LR
+  A["Agent (any containment)"] -->|"browser_* MCP tools"| Y["Yulius (BrowserManager, CdpClient)"]
+  V["Viewer"] -->|"viewer WebSocket"| Y
+  Y -->|"fd 3: requests"| C["Sandbox Chromium"]
+  C -->|"fd 4: responses, events"| Y
+  O["Other local process"] -. "no DevTools port to connect to" .-x C
+```
+
 ## Disk
 
 A sandbox has a soft disk quota. The application prunes build caches of tasks that do not
@@ -490,7 +510,11 @@ helpers are `files::open_inside` (a resolved path opened with `O_NOFOLLOW`, the 
 checked to be inside the root), `files::open_dirs_below` (each folder from the sandbox directory
 with `O_DIRECTORY | O_NOFOLLOW`, made with `mkdirat` when missing) and `files::replace_in` (a
 random `O_EXCL | O_NOFOLLOW` temporary file renamed within the handle); the harness's skill copies
-do the same and remove trees with `unlinkat`. Races are tested at pause points
+do the same and remove trees with `unlinkat`, and the launch preparation of the Claude config dir
+(`claude_config::ensure_claude_config`) opens `<home>/.claude` from the folder above the home and
+reads paths the agent wrote in a worktree's git files lexically, never on the host filesystem
+([SPEC-253](../.ai/specs/SPEC-253-claude-config-dir-links-and-commondir-ca.md),
+[decision 0193](decisions/0193-the-claude-config-dir-is-walked-from-above-home-and-the-main-repository-is-read-from-the-git-layout.md)). Races are tested at pause points
 (`yulius_app::race`, only with the `test-support` feature).
 
 ```mermaid

@@ -12,6 +12,31 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   are now made again from the status read anew when they lose a race. A switch overtaken by a stop
   starts no new run. This also fixes the intermittent `task_done::a_switch_waits_for_a_background_agent_launched_in_the_turn`
   failure in Yulius CI.
+- The sandbox browser has no DevTools port any more (SPEC-252, ADR-0191, task #238, #626).
+  Chromium used to listen for the DevTools protocol on a loopback port without authentication, so
+  any local process, including a run of another sandbox under the fallback containment, could
+  drive a sandbox's browser and its logged-in sessions. It now speaks DevTools only over a pipe
+  that Yulius holds (`--remote-debugging-pipe`). Agents keep using Yulius's browser tools; the
+  unused raw CDP endpoint for a sandbox's MCP servers is gone. The Vidoc ignores that pointed at
+  #626 are removed.
+- The Claude config dir is prepared through handles (SPEC-253, ADR-0193, task #239, fixes #634).
+  Before a launch, Yulius opens `<home>/.claude` from the folder above the home without following
+  links. A home or config dir the agent replaced with a link now refuses the launch and names it,
+  where Yulius used to read and replace `.claude.json` and `settings.json` in the link's target.
+  `plugins/store` linked elsewhere is left alone. A linked worktree's main repository comes from
+  its `gitdir:` path alone, read lexically: the host no longer opens or resolves paths the agent
+  wrote there. The two Vidoc ignores that pointed at #634 are removed. Still by path: the
+  transcript step-back (#661).
+- "Work through open issues" no longer leaves out most of the core team's issues (SPEC-251,
+  ADR-0192, task #237, #594). GitHub reports `CONTRIBUTOR` for a repository admin outside the
+  organization, and an agent's issue filed with its person's token is not by a bot, so only 2 of
+  109 open issues were in scope here. A person with `write`, `maintain` or `admin` permission
+  (asked once per author) is now in scope, also for the issues agents file through the App on
+  their behalf, and so is an issue this project's Yulius App's bot opened with the
+  `Opened by task #<n> in Yulius.` footer; contributors and outsiders without write access stay
+  out, whatever App they file through. An issue showing exactly 100 comments is read in full.
+  Projects that added the automation earlier keep their copy of the prompt; this project's gets
+  the new one after the merge.
 - The Superagent's `secret_copy_to_env` no longer follows a sandbox repository swapped for a link
   (SPEC-254, task #240, #635): the copy walks from the canonical sandbox folder to `repo` (a task's
   worktree for a task) and on without links, and runs Git there, so a `repo` replaced by a link to
