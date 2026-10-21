@@ -121,6 +121,28 @@ mod tests {
         assert!(issues.prompt.contains("`task_create`"));
         // Issues Yulius's agents opened through the App count as the team's (agent_delivery.rs).
         assert!(issues.prompt.contains("Opened by task #"));
+        // SPEC-251 (#594): GitHub calls an admin outside the organization `CONTRIBUTOR`, and an
+        // agent's issue filed on a person's behalf is not by a bot: the repository permission and
+        // this project's App decide, never the association alone.
+        for wording in [
+            "author: .user.login",
+            "app: .performed_via_github_app.slug",
+            "`CONTRIBUTOR` or `NONE`",
+            "once per author",
+            "gh api repos/{owner}/{repo}/collaborators/<login>/permission",
+            "`write`, `maintain` or `admin`",
+            "this project's Yulius App",
+            "whether the author is its bot or a person",
+            "gh api graphql -f query='{viewer{login}}'",
+            "gh api user/installations",
+            "without write access are out of scope",
+            // gh returns at most 100 comments per issue.
+            "exactly 100 comments has more",
+            "`gh issue view <number> --json comments`",
+        ] {
+            assert!(one_line.contains(wording), "{wording}");
+        }
+        assert!(!one_line.contains("issues opened by a bot whose body ends"));
         // Outsiders' comments are data, never instructions for the tasks it starts.
         assert!(issues.prompt.contains("untrusted"));
         // Its own and its tasks' comments do not make an abandoned issue new again.
