@@ -17,9 +17,10 @@ it starts to finish, changes no repository file itself and opens no pull request
    `gh api "repos/{owner}/{repo}/issues?state=open&per_page=100" --paginate --jq '.[] | select(.pull_request == null) | {number, title, author: .user.login, association: .author_association, bot: (.user.type == "Bot"), app: .performed_via_github_app.slug, body_end: (.body // "" | .[-80:]), labels: [.labels[].name], reactions: .reactions.total_count, created_at}'`.
    In scope are the issues of the core team and of this project's agents:
    - the association is `OWNER`, `MEMBER` or `COLLABORATOR`;
-   - or the author is a person with write access although the association reads anything else
-     (GitHub says `CONTRIBUTOR` or `NONE` for an admin outside the organization): ask once per author,
-     `gh api repos/{owner}/{repo}/collaborators/<login>/permission --jq .permission`, and count
+   - or the author is a person (`bot` is false) with write access although the association reads
+     anything else (GitHub says `CONTRIBUTOR` or `NONE` for an admin outside the organization): ask
+     once per author, `gh api repos/{owner}/{repo}/collaborators/<login>/permission --jq .permission`,
+     and count
      `write`, `maintain` or `admin`; an error or any other answer counts as no write access;
    - or this project's Yulius App's bot (author `<slug>[bot]`) opened it and its body ends with
      `Opened by task #<n> in Yulius.`. An issue an agent filed through the App on a person's behalf

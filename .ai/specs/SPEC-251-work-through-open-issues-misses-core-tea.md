@@ -91,7 +91,7 @@ After the merge (outside the steps, which a merge needs done): this project's au
   it on the old prompt first (fails), then on the new one (passes).
 - Manual: run the new collect command and the permission check on this repository and count the
   issues in scope.
-- Gate: `scripts/dev check` and `scripts/dev lint`.
+- Gate: `scripts/dev ci` (the CI job `quality`).
 
 ## Decisions
 
@@ -102,8 +102,8 @@ After the merge (outside the steps, which a merge needs done): this project's au
 - The App rule needs this project's App's bot and the footer: the footer alone is plain text
   anyone can type, and any installed App's bot is not necessarily Yulius. The bot rule narrows
   from "a bot" to "this project's App's bot".
-- An issue filed through the App on a person's behalf counts by the person's permission, not by
-  the App (independent review, round 1): every person on any project of this instance holds a
+- An issue filed through the App on a person's behalf counts by the person's association or
+  permission, not by the App (independent review, round 1): every person on any project of this instance holds a
   user token of the same App, so `performed_via_github_app` proves no write access here. #594's
   first criterion asked for it "whether the author is the bot or a user"; its third criterion
   (no outsiders) wins, and every writer's App issue is in scope by permission anyway.
@@ -126,8 +126,9 @@ After the merge (outside the steps, which a merge needs done): this project's au
   prompt: `author: .user.login`), at c832ce7b (round 1: `an error or any other answer counts as no
   write access`) and at 76aaa690 (round 2: `although the association reads anything else`); passes
   after each fix (3 passed).
-- Gate: `scripts/dev ci` exit 0 at 0ff5c03a (2363 tests run, 2363 passed, 17 skipped); rerun at
-  the final head before delivery.
+- Gate: `scripts/dev ci` exit 0 at 0ff5c03a (2363 tests run, 2363 passed, 17 skipped) and at
+  9a1d10d9 after the dev merge (2365 run, 2365 passed, 17 skipped); rerun at the delivered head,
+  whose last commits change only the prompt wording, the test and this spec.
 - `scripts/dev security`: not run, exit 2: Vidoc HTTP 429, the instance key's quota is used up
   (needs a person; known since 2026-10-20).
 - Independent review: round 1 (dd33aa40) requested changes: a person's App-filed issue let a
@@ -135,7 +136,8 @@ After the merge (outside the steps, which a merge needs done): this project's au
   (fixed), amended records unmarked (fixed); pre-existing `MEMBER`/`COLLABORATOR` without write
   access recorded in ADR-0192 and on #594. Round 2 (0ff5c03a) approved, with minors fixed:
   the permission asked for any other association, a person's App issue counts by both person
-  rules, SPEC-194 TOP-002 marked amended, product summary rewrapped.
+  rules, SPEC-194 TOP-002 marked amended, product summary rewrapped. Round 3 (9a1d10d9) approved;
+  its nits fixed: the permission is asked for people only (`bot` is false), stale spec lines.
 - Not testable here: the `user/installations` branch of the App lookup (this sandbox's `gh` holds
   the installation token; the call answers 403 here, as expected).
 
