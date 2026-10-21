@@ -1,11 +1,11 @@
 ---
 yulius-task: 3342f1bd-f982-4bf6-92d0-b8188785c87d
-status: draft
+status: done
 ---
 
 # SPEC-251: "Work through open issues" takes in the core team's issues that GitHub calls CONTRIBUTOR
 
-Status: draft
+Status: done
 Date: 2026-10-21
 Owner: Yulius task #237
 Scope authorization: task #237 (MrFishPL, 2026-10-21), started by task #235: fix GitHub issue
@@ -61,13 +61,17 @@ leaves contributors' and outsiders' issues untouched.
 
 ## Plan
 
-- [ ] Spec written and validated for the open-issues scope fix
-- [ ] Test pins the new scope wording and fails on today's prompt
-- [ ] The open-issues prompt takes writers and this project's App issues into scope
-- [ ] ADR, changes log and docs describe the new scope
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green and the spec closed with evidence
-- [ ] Merged into dev on green CI and this project's automation carries the new prompt
+- [x] Spec written and validated for the open-issues scope fix
+- [x] Test pins the new scope wording and fails on today's prompt
+- [x] The open-issues prompt takes writers and this project's App issues into scope
+- [x] ADR, changes log and docs describe the new scope
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green on the reviewed head
+- [x] Spec closed with evidence
+
+After the merge (outside the steps, which a merge needs done): this project's automation
+`1a189dfa` gets the new prompt with `automation_update` (OIS-006), confirmed with
+`automations_list` and noted on #594.
 
 ## Acceptance criteria
 
@@ -109,3 +113,29 @@ leaves contributors' and outsiders' issues untouched.
 - The fix is a prompt change only; exposing the App slug through `project_context` was weighed and
   left out: `gh` already names the App it works through, and a new MCP field is a bigger change
   than the defect.
+
+## Evidence
+
+- Reproduction, 2026-10-21, dev at 4e796d87: the old collect command over 109 open issues; old
+  rule keeps 2 (the footered bot issues). The new collect command (with `author` and `app`) runs;
+  `gh api graphql -f query='{viewer{login}}'` → `yulius-quartio-studio[bot]`;
+  `collaborators/MrFishPL/permission` → `admin` (the only human author). New rule: 52 in scope
+  (50 by MrFishPL by permission, 2 footered bot issues), 57 out (Yulius's security-finding
+  issues, bot-authored without the footer, see Decisions).
+- Test-first: `cargo test -p yulius-app --lib automations::templates` failed at c9b10722 (old
+  prompt: `author: .user.login`), at c832ce7b (round 1: `an error or any other answer counts as no
+  write access`) and at 76aaa690 (round 2: `although the association reads anything else`); passes
+  after each fix (3 passed).
+- Gate: `scripts/dev ci` exit 0 at 0ff5c03a (2363 tests run, 2363 passed, 17 skipped); rerun at
+  the final head before delivery.
+- `scripts/dev security`: not run, exit 2: Vidoc HTTP 429, the instance key's quota is used up
+  (needs a person; known since 2026-10-20).
+- Independent review: round 1 (dd33aa40) requested changes: a person's App-filed issue let a
+  non-writer into scope (fixed: only the App's bot counts by the App), no rule for failed lookups
+  (fixed), amended records unmarked (fixed); pre-existing `MEMBER`/`COLLABORATOR` without write
+  access recorded in ADR-0192 and on #594. Round 2 (0ff5c03a) approved, with minors fixed:
+  the permission asked for any other association, a person's App issue counts by both person
+  rules, SPEC-194 TOP-002 marked amended, product summary rewrapped.
+- Not testable here: the `user/installations` branch of the App lookup (this sandbox's `gh` holds
+  the installation token; the call answers 403 here, as expected).
+

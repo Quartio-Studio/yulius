@@ -25,9 +25,9 @@ On this repository 2 of 109 open issues were in scope on 2026-10-21, while 50 we
   failed lookup (an unknown login, a refused call) or any other answer counts as no write access.
 - An issue this project's Yulius App's bot (`<slug>[bot]`) opened whose body ends with the footer
   is an agent's issue. An issue an agent filed through the App on a person's behalf
-  (`performed_via_github_app` `<slug>`) counts as that person's own issue, by the rules above: every person on
-  any project of the instance holds a user token of the same App, so it proves no write access
-  here, and the footer is plain text. The prompt finds the slug from the App `gh` works through:
+  (`performed_via_github_app` `<slug>`) counts as that person's own issue, by the rules above:
+  every person on any project of the instance holds a user token of the same App, so it proves no
+  write access here, and the footer is plain text. The prompt finds the slug from the App `gh` works through:
   the GraphQL `viewer` is its bot with the installation token; with a person's App user token,
   `user/installations` names the App. Without a slug no issue is in scope by this rule.
 - Everyone else (contributors and outsiders without write access) stays out, untouched.
