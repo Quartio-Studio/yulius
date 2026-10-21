@@ -127,6 +127,7 @@ mod tests {
         for wording in [
             "author: .user.login",
             "app: .performed_via_github_app.slug",
+            "the author is a person (`bot` is false) with write access",
             "although the association reads anything else",
             "once per author",
             "gh api repos/{owner}/{repo}/collaborators/<login>/permission",
