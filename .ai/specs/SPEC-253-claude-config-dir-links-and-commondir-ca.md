@@ -1,11 +1,11 @@
 ---
 yulius-task: fa2040dd-83cb-48a7-8264-9027d1f0a806
-status: in-progress
+status: done
 ---
 
 # SPEC-253: Claude config dir links and the commondir canonicalize (#634)
 
-Status: in-progress
+Status: done
 Date: 2026-10-21
 Owner: Yulius task #239
 Scope authorization: task #239 (from task #235), the still-open part of #634. Applies
@@ -77,9 +77,9 @@ agent put in that dir's path, and never resolves agent-written git files on the 
 - [x] Main repository derived lexically from the git layout
 - [x] Docs, ADR and Vidoc entries updated
 - [x] Review round 1 findings fixed (commondir never opened)
-- [ ] Gates green at the merged head
-- [ ] Independent review approved
-- [ ] Merged into dev on green CI
+- [x] Gates green at the merged head
+- [x] Independent review approved
+- [x] Spec evidence recorded and status done
 
 ## Acceptance criteria
 
@@ -127,3 +127,27 @@ security`.
   link the agent puts at its own worktree is resolved) is pre-existing and noted on #634.
 - **Out of scope:** the transcript step-back still reads `<home>/.claude/projects/…` by path
   (#661).
+
+## Evidence
+
+- Regression tests first (commit ba7a0d74): `a_linked_config_dir_is_refused_and_its_target_untouched`,
+  `a_linked_plugin_folder_is_left_alone` and the first main-repository test failed on `dev`
+  (a linked `.claude` was written through, a linked `store` was rewritten, `commondir` `/` was
+  trusted). Review round 1's test `the_main_repository_comes_from_the_gitdir_path_alone` failed
+  on the first fix (a missing path got no key: the existence oracle) and passes since 95c9fc01.
+- `cargo test -p yulius-harness --lib claude_config`: 15 passed.
+- `scripts/dev ci` at 75cda697 (dev merged at dbafe015): exit 0, 2369 tests run, 2369 passed,
+  17 skipped; clippy, macOS compile, docs and the repository checks included.
+- Flaky test met on the way: `projects::a_scheduled_start_without_claude_waits_and_says_why`
+  (SPEC-246, #760) failed the full gate twice and 1 of 28 nextest stress runs; `capacity.rs`
+  records `waiting_capacity` before it sends the notice the test drained with `try_recv`. The test
+  now awaits the notice (20 s bound): 200 of 200 stress runs passed. Not filed as an issue (the
+  task forbids it).
+- `scripts/dev security`: exit 2, **unrun** (Vidoc HTTP 429: the instance key used its 50,000,000
+  tokens), not passed (ADR-0133, ADR-0157); the pull request's CI `security` job is the live scan.
+- Independent review (fresh session, `om-code-review`): round 1 at a38914f9 requested changes
+  (major: `commondir` still opened through links in the agent's path; minor/nits fixed or
+  documented); round 2 at 75cda697 approved. The worktree-path residual (CFG-006) and #661 are
+  noted on #634 (comment 6306023317).
+- Not tested here: Git's own `--relative-paths` (Git 2.43 lacks it; a synthetic relative layout
+  stands in); a live contained launch on the instance.
