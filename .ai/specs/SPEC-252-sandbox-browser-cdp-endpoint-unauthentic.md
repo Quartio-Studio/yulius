@@ -118,6 +118,12 @@ browser has no DevTools listener at all.
   message of exactly `max_message_bytes`; nits: constant placement, `Lagged` in the projects
   test, `deny.toml` names `command-fds`. Not changed: the fake's accept loop ending on an accept
   error (test-only, it never fails on loopback).
+- Merged `origin/dev` at `696eb6aa`. It conflicted in `crates/yulius/tests/projects.rs`, where
+  dev had fixed the same flaky test the same way (waiting for the notice), so dev's version was
+  kept and this change no longer carries that test fix. Yulius CI on `2c216e1d` once failed only
+  `yulius-git::git_ops ci_checkouts_created_at_once_all_succeed` (`git worktree list` read a
+  concurrent checkout's half-written `commondir`). That is open issue #666, outside this change;
+  the evidence was added there.
 - Confirmation review of `9c38e5fa`: APPROVE. One minor finding, fixed: the wording now names runs
   without containment (host mode) beside Yulius's user, and the ADR index line no longer
   overclaims. Nits, fixed: the `NeverReady` case no longer reads `ClosesPipe`'s pid file; SPEC-002's

@@ -510,7 +510,11 @@ helpers are `files::open_inside` (a resolved path opened with `O_NOFOLLOW`, the 
 checked to be inside the root), `files::open_dirs_below` (each folder from the sandbox directory
 with `O_DIRECTORY | O_NOFOLLOW`, made with `mkdirat` when missing) and `files::replace_in` (a
 random `O_EXCL | O_NOFOLLOW` temporary file renamed within the handle); the harness's skill copies
-do the same and remove trees with `unlinkat`. Races are tested at pause points
+do the same and remove trees with `unlinkat`, and the launch preparation of the Claude config dir
+(`claude_config::ensure_claude_config`) opens `<home>/.claude` from the folder above the home and
+reads paths the agent wrote in a worktree's git files lexically, never on the host filesystem
+([SPEC-253](../.ai/specs/SPEC-253-claude-config-dir-links-and-commondir-ca.md),
+[decision 0193](decisions/0193-the-claude-config-dir-is-walked-from-above-home-and-the-main-repository-is-read-from-the-git-layout.md)). Races are tested at pause points
 (`yulius_app::race`, only with the `test-support` feature).
 
 ```mermaid

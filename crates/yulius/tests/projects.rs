@@ -1829,17 +1829,17 @@ async fn a_scheduled_start_without_claude_waits_and_says_why() -> TestResult {
         assert!(tokio::time::Instant::now() < deadline, "still {status:?}");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    // The pause publishes its notice after the status changes: wait for it.
-    let said = loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        match tokio::time::timeout(remaining, frames.recv()).await {
-            Ok(Ok(yulius_app::hub::HubFrame::Notice(text))) if text.contains("Claude") => {
-                break text;
+    // The pause is recorded before its notice is sent, so the notice is waited for, not drained.
+    let said = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            match frames.recv().await {
+                Ok(yulius_app::hub::HubFrame::Notice(text)) => return Ok(text),
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(err) => return Err(err),
             }
-            Ok(Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
-            other => return Err(format!("no account notice: {other:?}").into()),
         }
-    };
+    })
+    .await??;
     assert!(said.contains("no Claude account is connected"), "{said}");
     assert!(said.contains("/admin/accounts"), "{said}");
     Ok(())

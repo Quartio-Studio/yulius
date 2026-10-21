@@ -12,6 +12,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   drive a sandbox's browser and its logged-in sessions. It now speaks DevTools only over a pipe
   that Yulius holds (`--remote-debugging-pipe`). Agents keep using Yulius's browser tools; the
   unused raw CDP endpoint for a sandbox's MCP servers is gone.
+- The Claude config dir is prepared through handles (SPEC-253, ADR-0193, task #239, fixes #634).
+  Before a launch, Yulius opens `<home>/.claude` from the folder above the home without following
+  links. A home or config dir the agent replaced with a link now refuses the launch and names it,
+  where Yulius used to read and replace `.claude.json` and `settings.json` in the link's target.
+  `plugins/store` linked elsewhere is left alone. A linked worktree's main repository comes from
+  its `gitdir:` path alone, read lexically: the host no longer opens or resolves paths the agent
+  wrote there. The two Vidoc ignores that pointed at #634 are removed. Still by path: the
+  transcript step-back (#661).
 - "Work through open issues" no longer leaves out most of the core team's issues (SPEC-251,
   ADR-0192, task #237, #594). GitHub reports `CONTRIBUTOR` for a repository admin outside the
   organization, and an agent's issue filed with its person's token is not by a bot, so only 2 of
