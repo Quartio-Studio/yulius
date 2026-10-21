@@ -25,6 +25,7 @@ use yulius_domain::redact::is_env_file;
 use yulius_domain::vault::dotenv;
 use zeroize::Zeroizing;
 
+use super::create::Root;
 use super::requests::{reason, requester};
 use super::{AgentPayload, SecretUser, invalid};
 use crate::auth::AuthContext;
@@ -98,14 +99,19 @@ pub(super) const WORK: Naming<'static> = Naming {
     prefix: "",
 };
 
-/// Opens `folders` below `worktree` one component at a time without following links, and checks
-/// that the folder reached is inside the worktree and out of `.git`.
+/// Opens `folders` below `anchor` one component at a time without following links, and checks
+/// that the folder reached is inside the root (`anchor` and the first `naming.hidden` folders)
+/// and out of `.git`; its [`Folder::path_of`] is relative to that root.
 pub(super) fn open_folder(
-    worktree: &Path,
+    anchor: &Path,
     folders: &[String],
     naming: &Naming<'_>,
 ) -> AppResult<Folder> {
     let within = naming.within;
+    let root = folders
+        .iter()
+        .take(naming.hidden)
+        .fold(anchor.to_path_buf(), |path, part| path.join(part));
     let visible = folders.get(naming.hidden..).unwrap_or_default().join("/");
     let shown = format!("{}{visible}", naming.prefix);
     let refused = |err: Errno| match err {
@@ -124,12 +130,12 @@ pub(super) fn open_folder(
         }
         other => os_error(other),
     };
-    let mut fd = nix::fcntl::open(worktree, DIR_FLAGS, Mode::empty()).map_err(refused)?;
+    let mut fd = nix::fcntl::open(anchor, DIR_FLAGS, Mode::empty()).map_err(refused)?;
     for part in folders {
         fd = openat(&fd, part.as_str(), DIR_FLAGS, Mode::empty()).map_err(refused)?;
     }
     let real = real_path(&fd)?;
-    if !inside(worktree, &real) {
+    if !inside(&root, &real) {
         return Err(AppError::Forbidden(if visible.is_empty() {
             format!("{within} is outside where Yulius looks")
         } else {
@@ -137,7 +143,7 @@ pub(super) fn open_folder(
         }));
     }
     let relative = real
-        .strip_prefix(worktree)
+        .strip_prefix(&root)
         .map_err(|_| AppError::Forbidden(format!("outside {within}")))?
         .components()
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
@@ -459,8 +465,18 @@ impl App {
             .sandbox(user.sandbox())
             .await?
             .ok_or(AppError::NotFound)?;
-        let worktree = self.secret_user_folder(user, &sandbox).await?;
-        let folder = open_folder(&worktree, folders, &WORK)?;
+        // Anchored on a folder the agent cannot replace, and walked down without links: the
+        // Superagent can swap its repository for a link (#635). Git runs in the anchored folder.
+        let (anchor, mut below) = self
+            .secret_source_root(user, &sandbox, &Root::Work)
+            .await?;
+        let worktree = below.iter().fold(anchor.clone(), |path, part| path.join(part));
+        let naming = Naming {
+            hidden: below.len(),
+            ..WORK
+        };
+        below.extend(folders.iter().cloned());
+        let folder = open_folder(&anchor, &below, &naming)?;
         let target = folder.path_of(file_name);
         let existing = read_in(&folder, file_name)?;
         if !self.deps.git.is_disposable(&worktree, &target).await? {
@@ -730,6 +746,37 @@ mod tests {
         ));
         assert!(write_in(&folder, ".env", "K=v\n", 0o600, &Writing::InPlace).is_err());
         assert_eq!(std::fs::read_to_string(wt.join("deploy/target"))?, "x");
+        Ok(())
+    }
+
+    /// #635: walked from an anchor, the folder's paths are relative to the root below the hidden
+    /// folders; a folder reached outside that root (even inside the anchor) is refused, and so is
+    /// a hidden folder that is a link, as the root itself.
+    #[test]
+    fn hidden_folders_root_the_walk_below_the_anchor() -> TestResult {
+        let (_dir, wt, outside) = worktree()?;
+        let anchor = wt.parent().ok_or("parent")?.to_path_buf();
+        let naming = Naming {
+            hidden: 1,
+            ..WORK
+        };
+        let folder = open_folder(&anchor, &["wt".to_owned(), "deploy".to_owned()], &naming)?;
+        assert_eq!(folder.path_of(".env"), "deploy/.env");
+        let root = open_folder(&anchor, &["wt".to_owned()], &naming)?;
+        assert_eq!(root.path_of(".env"), ".env");
+        let up = open_folder(&anchor, &["wt".to_owned(), "..".to_owned()], &naming).err();
+        assert!(
+            matches!(&up, Some(AppError::Forbidden(m)) if m.contains("is outside")),
+            "{up:?}"
+        );
+
+        std::fs::rename(&wt, anchor.join("wt.old"))?;
+        std::os::unix::fs::symlink(&outside, &wt)?;
+        let refused = open_folder(&anchor, &["wt".to_owned()], &naming).err();
+        assert!(
+            matches!(&refused, Some(AppError::Forbidden(m)) if m.contains("the folder you work in is a link")),
+            "{refused:?}"
+        );
         Ok(())
     }
 }
