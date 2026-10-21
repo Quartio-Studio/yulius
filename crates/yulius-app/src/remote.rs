@@ -804,8 +804,9 @@ impl App {
                 None => record(&self.cd_overview(ctx, sid).await?),
             },
             "cd_deploy" => {
-                let env = yulius_domain::cd::env_name(str_arg(args, "environment")?)
-                    .ok_or_else(|| AppError::Invalid("environment is dev or another [cd.<name>]".into()))?;
+                let env = yulius_domain::cd::env_name(str_arg(args, "environment")?).ok_or_else(
+                    || AppError::Invalid("environment is dev or another [cd.<name>]".into()),
+                )?;
                 // A laptop's agent deploys dev-stage environments only (SPEC-257); without a
                 // typed confirmation a production-stage one is refused by the deploy anyway.
                 let production = env == "prod"
