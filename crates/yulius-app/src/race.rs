@@ -38,6 +38,9 @@ pub enum Point {
     /// A switch (SPEC-250): the old run ended and the status the switch goes on from was read; the
     /// launch has not taken the launch lock yet. The path is the task id.
     SwitchLaunching,
+    /// A switch (SPEC-250) knows it was overtaken; it has not said why yet. The path is the task
+    /// id.
+    SwitchOvertaken,
 }
 
 #[cfg(feature = "test-support")]

@@ -3168,6 +3168,10 @@ impl App {
         task_id: &TaskId,
         decision_id: &str,
     ) -> AppResult<()> {
+        crate::race::reached(
+            crate::race::Point::SwitchOvertaken,
+            Path::new(task_id.as_str()),
+        );
         self.deps
             .store
             .set_switch_outcome(decision_id, "cancelled")

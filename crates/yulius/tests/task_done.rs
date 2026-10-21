@@ -2211,7 +2211,9 @@ fn a_stop_before_a_switch_sets_its_intent_starts_no_new_run() -> TestResult {
 
 /// SPEC-250 STW-006 (review): a close reads the task running, a switch starts and asks the old
 /// run to end, then the close sets its intent. The switch gives up and the old run's end closes the
-/// task from `Switching`: it ends closed, not switching with no run.
+/// task from `Switching`: it ends closed, not switching with no run. The run's end is held until
+/// the switch answered, so the switch says why from what the close told it, not from a status the
+/// end has not changed yet.
 #[test]
 fn a_close_that_overtakes_a_switch_closes_the_task() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -2238,6 +2240,50 @@ fn a_close_that_overtakes_a_switch_closes_the_task() -> TestResult {
                         eprintln!("the switch did not ask the old run to end");
                     }
                     host.refuse_ends(false);
+                },
+            );
+        }
+        // The switch says why only once the old run's end took the close's intent (and is held
+        // before it closes the task).
+        let (end_decided, mut decided) = tokio::sync::watch::channel(false);
+        {
+            let key = id.clone();
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::SwitchOvertaken,
+                Path::new(key.as_str()),
+                move || {
+                    let reached = wait_in_hook(
+                        &handle,
+                        tokio::time::timeout(Duration::from_secs(30), decided.wait_for(|d| *d)),
+                    );
+                    if reached.is_err() {
+                        eprintln!("the old run's end was not reached");
+                    }
+                },
+            );
+        }
+        {
+            let (key, mut started) = (id.clone(), switch.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::EndDecided,
+                Path::new(key.as_str()),
+                move || {
+                    end_decided.send_replace(true);
+                    let answered = wait_in_hook(&handle, async {
+                        started.wait_for(Option::is_some).await?;
+                        let mut result = started.borrow().clone().ok_or("no switch")?;
+                        tokio::time::timeout(
+                            Duration::from_secs(30),
+                            result.wait_for(Option::is_some),
+                        )
+                        .await??;
+                        Ok::<(), BoxError>(())
+                    });
+                    if let Err(err) = answered {
+                        eprintln!("the switch did not answer: {err}");
+                    }
                 },
             );
         }
