@@ -1,7 +1,9 @@
 //! Test-only pause points between a check of a folder a contained agent can change and its use
 //! (SPEC-220, ADR-0174). A test registers a hook that swaps a folder for a link exactly there, so
-//! the race is reproduced deterministically: no sleeps, no rename loops. Without the
-//! `test-support` feature (production builds) the pause points do nothing.
+//! the race is reproduced deterministically: no sleeps, no rename loops. The points of a stop, a
+//! run's end, a switch and a close, between a read of the task and the change made from it, work
+//! the same way, keyed by the task id (SPEC-250). Without the `test-support` feature (production
+//! builds) the pause points do nothing.
 
 use std::path::Path;
 
@@ -21,6 +23,24 @@ pub enum Point {
     /// `project_change` (SPEC-247): the files are written in the scratch worktree, nothing is
     /// committed yet.
     ChangeWritten,
+    /// `stop_task_now` (SPEC-250): the task was read and the run's end intent set; its status is
+    /// not changed yet. The path is the task id.
+    StopDecided,
+    /// The end of a task's run (SPEC-250): the task was read and its next status chosen; it is
+    /// not changed yet. The path is the task id.
+    EndDecided,
+    /// A switch (SPEC-250): the task is `Switching`; the switch's end intent for the old run is
+    /// not set yet. The path is the task id.
+    SwitchDecided,
+    /// `close_task_now` (SPEC-250): the task was read `Running`; the close's end intent is not set
+    /// yet. The path is the task id.
+    CloseDecided,
+    /// A switch (SPEC-250): the old run ended and the status the switch goes on from was read; the
+    /// launch has not taken the launch lock yet. The path is the task id.
+    SwitchLaunching,
+    /// A switch (SPEC-250) knows it was overtaken; it has not said why yet. The path is the task
+    /// id.
+    SwitchOvertaken,
 }
 
 #[cfg(feature = "test-support")]
