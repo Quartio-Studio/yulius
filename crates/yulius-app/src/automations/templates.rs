@@ -127,14 +127,14 @@ mod tests {
         for wording in [
             "author: .user.login",
             "app: .performed_via_github_app.slug",
-            "`CONTRIBUTOR` or `NONE`",
+            "although the association reads anything else",
             "once per author",
             "gh api repos/{owner}/{repo}/collaborators/<login>/permission",
             "`write`, `maintain` or `admin`",
             "an error or any other answer counts as no write access",
             // The App's user token proves no write access: only its bot's issues count by the App.
             "this project's Yulius App's bot (author `<slug>[bot]`) opened it and its body ends with `Opened by task #<n> in Yulius.`",
-            "counts by that person's permission alone",
+            "counts as that person's own issue, by the two rules above",
             "gh api graphql -f query='{viewer{login}}'",
             "gh api user/installations",
             "no issue is in scope by this rule",
