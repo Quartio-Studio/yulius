@@ -69,8 +69,30 @@ enum EndIntent {
     Cancel,
     /// A finished task is closed (archived when Done): it ends as a clean exit, `closed`.
     Close,
-    /// Account/provider switch; the sender is told when the old run has exited.
-    Switch(oneshot::Sender<()>),
+    /// Account/provider switch; the sender is told when the old run has exited, or why the switch
+    /// was overtaken.
+    Switch(oneshot::Sender<SwitchEnd>),
+}
+
+/// How the wait of a switch for its old run ended (SPEC-250 STW-006).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SwitchEnd {
+    /// The old run exited: the switch goes on.
+    Ended,
+    /// A stop took over the old run's end.
+    Stopped,
+    /// A close took over the old run's end.
+    Closed,
+    /// The old run was lost.
+    Lost,
+}
+
+/// Puts `next` in a task's end intent slot. A switch whose intent it replaces is told `why` it was
+/// overtaken, so it says so whatever the run's end has recorded yet (SPEC-250 STW-006).
+fn replace_intent(slot: &mut Option<EndIntent>, next: Option<EndIntent>, why: SwitchEnd) {
+    if let Some(EndIntent::Switch(waiting)) = std::mem::replace(slot, next) {
+        let _ = waiting.send(why);
+    }
 }
 
 struct ActiveRun {
@@ -2235,7 +2257,7 @@ impl App {
             && let Ok(mut intent) = rt.intent.lock()
         {
             // No exit will consume it: the next run must not inherit it.
-            *intent = None;
+            replace_intent(&mut intent, None, SwitchEnd::Lost);
         }
         // A finished task lost nothing with its idle session: it is Closed (SPEC-229 RBT-001).
         self.settle_ended(task_id, now, |task| {
@@ -2355,7 +2377,7 @@ impl App {
         }
         match intent {
             Some(EndIntent::Switch(done)) => {
-                let _ = done.send(());
+                let _ = done.send(SwitchEnd::Ended);
                 return; // the switch controller launches the next run and drains the queue
             }
             Some(EndIntent::Close) => {
@@ -2566,7 +2588,7 @@ impl App {
         let closed = self.live_attempt_id(task_id).await;
         let runtime = self.runtime(task_id);
         if let Ok(mut intent) = runtime.intent.lock() {
-            *intent = Some(EndIntent::Close);
+            replace_intent(&mut intent, Some(EndIntent::Close), SwitchEnd::Closed);
         }
         self.arm_escalation(task_id, closed);
         self.end_person_pause(task_id).await;
@@ -2795,7 +2817,7 @@ impl App {
         };
         let runtime = self.runtime(task_id);
         if let Ok(mut intent) = runtime.intent.lock() {
-            *intent = Some(EndIntent::Cancel);
+            replace_intent(&mut intent, Some(EndIntent::Cancel), SwitchEnd::Stopped);
         }
         crate::race::reached(crate::race::Point::StopDecided, Path::new(task_id.as_str()));
         // Lost to a concurrent change: the task is read again. The intent stays: it is this
@@ -3020,20 +3042,24 @@ impl App {
             );
             // A stop or close that came since the status change owns the old run's end: its intent
             // is kept, and the switch gives up (SPEC-250 STW-006).
-            let installed = runtime.intent.lock().is_ok_and(|mut intent| {
-                let taken = matches!(*intent, Some(EndIntent::Cancel | EndIntent::Close));
-                if !taken {
-                    *intent = Some(EndIntent::Switch(tx));
-                }
-                !taken
-            });
-            if !installed || self.switch_goes_on(task_id).await.is_none() {
+            let taken = match runtime.intent.lock() {
+                Ok(mut intent) => match *intent {
+                    Some(EndIntent::Cancel) => Some(SwitchEnd::Stopped),
+                    Some(EndIntent::Close) => Some(SwitchEnd::Closed),
+                    _ => {
+                        *intent = Some(EndIntent::Switch(tx));
+                        None
+                    }
+                },
+                Err(_) => Some(SwitchEnd::Lost),
+            };
+            if taken.is_some() || self.switch_goes_on(task_id).await.is_none() {
                 if let Ok(mut intent) = runtime.intent.lock()
                     && matches!(*intent, Some(EndIntent::Switch(_)))
                 {
                     *intent = None;
                 }
-                return self.switch_overtaken(task_id, &decision_id).await;
+                return self.switch_overtaken(task_id, &decision_id, taken).await;
             }
             if let Some(run) = runtime.run.lock().await.as_mut() {
                 // An automatic switch happens at a boundary (or a held hook, or a limit): the
@@ -3055,10 +3081,15 @@ impl App {
                 u64::try_from(yulius_domain::task::SWITCH_TIMEOUT_MS / 2).unwrap_or(60_000),
             );
             match tokio::time::timeout(budget, rx).await {
-                Ok(Ok(())) => {}
-                // The switch's intent was replaced: a stop or close took over the old run's end
-                // (or its loss dropped it). No new run starts (SPEC-250 STW-006).
-                Ok(Err(_)) => return self.switch_overtaken(task_id, &decision_id).await,
+                Ok(Ok(SwitchEnd::Ended)) => {}
+                // The switch's intent was replaced: a stop or close took over the old run's end,
+                // or its loss dropped it. No new run starts (SPEC-250 STW-006).
+                Ok(Ok(why)) => {
+                    return self
+                        .switch_overtaken(task_id, &decision_id, Some(why))
+                        .await;
+                }
+                Ok(Err(_)) => return self.switch_overtaken(task_id, &decision_id, None).await,
                 Err(_) => {
                     let _ = self
                         .deps
@@ -3078,7 +3109,7 @@ impl App {
         // Only while the task is still switching, checked under the launch lock: one stopped or
         // closed meanwhile is not started again, nor queued (STW-006).
         let Some(from) = self.switch_goes_on(task_id).await else {
-            return self.switch_overtaken(task_id, &decision_id).await;
+            return self.switch_overtaken(task_id, &decision_id, None).await;
         };
         crate::race::reached(
             crate::race::Point::SwitchLaunching,
@@ -3088,12 +3119,13 @@ impl App {
             // Another start (the capacity loop's) ran the paused task first: it won, the switch
             // is made.
             Ok(false)
-                if !matches!(
-                    store.task(task_id).await,
-                    Ok(Some(t)) if t.status == TaskStatus::Running
-                ) =>
+                if from != TaskStatus::WaitingCapacity
+                    || !matches!(
+                        store.task(task_id).await,
+                        Ok(Some(t)) if t.status == TaskStatus::Running
+                    ) =>
             {
-                self.switch_overtaken(task_id, &decision_id).await
+                self.switch_overtaken(task_id, &decision_id, None).await
             }
             Ok(_) => {
                 // The switch found no subscription with capacity: the task paused instead.
@@ -3167,6 +3199,7 @@ impl App {
         self: &Arc<Self>,
         task_id: &TaskId,
         decision_id: &str,
+        told: Option<SwitchEnd>,
     ) -> AppResult<()> {
         crate::race::reached(
             crate::race::Point::SwitchOvertaken,
@@ -3205,10 +3238,14 @@ impl App {
                 _ => None,
             })
             .unwrap_or(None);
-        let why = match (status, intent) {
-            (Some(TaskStatus::Closed), _) | (_, Some(true)) => "the task was closed",
-            (Some(TaskStatus::Stopping | TaskStatus::Stopped(StopReason::Cancelled)), _)
-            | (_, Some(false)) => "the task was stopped",
+        // What overtook it says so; without word, the status and the intent tell.
+        let why = match (told, status, intent) {
+            (Some(SwitchEnd::Closed), _, _)
+            | (None, Some(TaskStatus::Closed), _)
+            | (None, _, Some(true)) => "the task was closed",
+            (Some(SwitchEnd::Stopped), _, _)
+            | (None, Some(TaskStatus::Stopping | TaskStatus::Stopped(StopReason::Cancelled)), _)
+            | (None, _, Some(false)) => "the task was stopped",
             _ => "the session ended",
         };
         self.runtime(task_id)
