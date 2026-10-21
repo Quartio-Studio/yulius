@@ -1,11 +1,11 @@
 ---
 yulius-task: 74141208-b642-43e4-a1d9-5cb21fd10398
-status: in-progress
+status: done
 ---
 
 # SPEC-257: CD environments beyond dev and production
 
-Status: in-progress
+Status: done
 Date: 2026-10-21
 Owner: task #243
 Scope authorization: task #243. The operator: "Current CI/CD is too strict. Dev/prod is default
@@ -84,7 +84,9 @@ production branch stay.
 - [x] Deploys of a named environment from verified sources
 - [x] CD page and cd_status show every environment
 - [x] Docs, skills, briefing and onboarding describe named environments
-- [ ] Independent review, gates and delivery
+- [x] Review findings fixed: cache, deployed run and figures per stage
+- [x] Independent review approved and the gate green
+- [x] Evidence recorded and merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -142,3 +144,42 @@ production branch stay.
   Refusals are audited (`cd.refused`) when the resolved stage is production.
 - **Remote MCP `cd_deploy`** refuses an environment the page shows as production-stage, and
   without a typed slug the deploy refuses any production-stage one anyway.
+
+## Evidence
+
+- `scripts/dev ci` at 17038ab6: exit 0. Format, lint, `scripts/dev macos`, deps, docs and
+  nextest: 2404 tests passed, 17 skipped. The first run, at 4b989384, failed one test,
+  `workflows::catalog::tests::the_shipped_catalog_is_valid`: the infra-bootstrap workflow went
+  past its 1,444-byte budget. The workflow text was reverted (17038ab6); the skill carries the
+  guidance.
+- New tests, each of which failed before its fix:
+  - domain (`cd.rs`, `spec_format/config.rs`): named stages, `resolve_stage`,
+    `environments_of`, the refusals (missing or contradicting `stage`, `promote` in a dev-stage
+    table, bad names, `[cd.production]`, a 17th table);
+  - store: name and stage round trip, rows from before the migration, the span's `detail.stage`,
+    the deployed run per stage;
+  - integration (`crates/yulius/tests/cd.rs`):
+    - `named_environments_deploy_by_their_stage`;
+    - `a_relabelled_environment_takes_the_integration_heads_stage`, which covers the review H1
+      cache isolation and fails with the cache keyed by name only;
+    - `a_named_production_run_is_cancelled_by_an_administrator`;
+  - stages: `delivery_figures_count_every_environment_of_a_stage`;
+  - e2e (`cd.e2e.ts`): `named environments show their stage and deploy by its rules`. All 18
+    CD e2e tests pass locally; the whole suite runs as Yulius CI's `e2e` job on the pull request
+    (a local full run was stopped after its first files passed, as a duplicate of that job).
+- Existing CD tests are unchanged in meaning (AC6). Two assertions were updated:
+  - a valid but undefined name (`staging`) is now 409 "add [cd.staging]", and `Staging` is 422;
+  - `cd_status`'s closing line now names the stages.
+- Independent review (fresh session, om-code-review):
+  - round 1, REQUEST CHANGES: H1 a cache shared across stages, M1 `[cd.production]`, L1 Dashboard
+    figures, L2 audit and refusal order, L3 tests;
+  - all fixed in 4b989384;
+  - round 2, APPROVE on 4b989384.
+- `scripts/dev security` (Vidoc vidoc-1, change scan at 4b989384, 22 files): no critical, high or
+  medium finding, and no low finding in the change.
+- Not tested:
+  - remote MCP `cd_deploy` for a named environment, because the remote harness has no cloned
+    repository. The deploy refuses any production-stage environment without a typed slug, which
+    the remote path never sends; that rule is covered by the domain tests;
+  - a real deployment to a real machine (Yulius's own CD has none).
+
