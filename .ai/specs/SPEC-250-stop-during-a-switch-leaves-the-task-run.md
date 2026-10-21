@@ -73,13 +73,23 @@ the stop's read and its compare-and-set is a few awaits wide.
 - STW-005: the end of a run (lost or exited, with or without an intent) whose status change loses
   to a concurrent one makes it again from the status read anew (bounded like a stop), so a stop
   landing meanwhile still ends `Stopped`.
-- STW-006: a switch whose intent is replaced while it waits for its old run to end (a stop or a
-  close took over that end, or the run's loss dropped it) starts no new run: its outcome is
-  recorded as `cancelled` and it returns `Conflict`. A stop that finds the task resting after a lost
-  round still ends a run that is live.
+- STW-006: a switch never takes over the end of a run that a stop or a close owns, and starts no
+  new run once overtaken:
+  - it sets its intent for the old run only when the slot holds no stop's or close's intent, and
+    only while the task is still `Switching`;
+  - an intent replaced while it waits (a stop, a close, or the run's loss dropping it) ends the
+    switch;
+  - it launches only while the task is still `Switching`, checked under the launch lock (a stopped
+    task is neither started again nor queued);
+  - an overtaken switch records its outcome as `cancelled`, tells the viewers why ("the task was
+    stopped", "the task was closed", "the session ended") and returns `Conflict`;
+  - the end of a run closed during a switch closes the task from `Switching`.
+- STW-007: a stop that finds the task resting after a lost round still ends a run that is live; a
+  stop that gives up after its rounds drops its intent, so no run ends later as if stopped.
 - STW-004: test-only pause points (ADR-0174) let a test change the world exactly between the
-  stop's read and its status change (`StopDecided`) and between a run end's read and its change
-  (`EndDecided`); production builds do nothing there.
+  stop's read and its status change (`StopDecided`), a run end's (`EndDecided`), a switch's status
+  change and its intent (`SwitchDecided`), and a close's read and its intent (`CloseDecided`);
+  production builds do nothing there.
 
 ## Plan
 
@@ -121,8 +131,19 @@ the stop's read and its compare-and-set is a few awaits wide.
 - `task_done::a_stop_while_a_runs_end_is_recorded_still_ends_the_task`: the end pause point stops
   the task; the task must end `Stopped(Cancelled)`.
 - `task_done::a_stop_while_a_switch_ends_its_old_run_starts_no_new_run`: the host refuses to end
-  the old run, so the switch waits; the stop pause point waits until the switch gave up (or started
-  a run); the task must end `Stopped(Cancelled)` with one run, the switch refused.
+  the old run, so the switch waits (the test waits until the switch's shutdown request was
+  dropped, so the switch's intent is set); the stop pause point waits until the switch gave up (or
+  started a run); the task must end `Stopped(Cancelled)` with one run, the switch refused.
+- `task_done::a_stop_before_a_switch_sets_its_intent_starts_no_new_run`: the switch pause point
+  stops the task; the switch must give up, the task end `Stopped(Cancelled)` with one run.
+- `task_done::a_close_that_overtakes_a_switch_closes_the_task`: the close pause point starts a
+  switch and waits until it asked the old run to end; the switch must give up ("closed") and the
+  task end `Closed` with one run.
+- `task_done::a_switch_whose_old_run_is_lost_starts_no_new_run`: the old run's host is killed
+  while the switch waits; the switch must give up ("the session ended") and the task rest
+  `Stopped(Lost)` with one run.
+- `task_done::a_stop_while_a_runs_loss_is_recorded_still_ends_the_task`: the run's host is killed
+  and the end pause point stops the task during `mark_lost`; the task must rest `Stopped(Lost)`.
 - The flaky test under probe delays at the stop's pause point and under CPU load, many runs.
 - `scripts/dev ci` (the gate) and `scripts/dev security`.
 
