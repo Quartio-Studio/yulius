@@ -2078,6 +2078,40 @@ fn a_run_that_ends_before_the_stops_change_still_ends_the_task() -> TestResult {
     Ok(())
 }
 
+/// SPEC-250 STW-005: a stop lands while the end of the task's run is recorded, between the end's
+/// read of the task and its status change (the agent exited at that moment). The end's change is
+/// made again from the stop's status: the task ends stopped, not stopping with no run.
+#[test]
+fn a_stop_while_a_runs_end_is_recorded_still_ends_the_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _host, id) = gated_goal_task(&data, &fake).await?;
+        let (stopped, mut stop_made) = tokio::sync::watch::channel(None);
+        {
+            let (app, key, id) = (app.clone(), id.clone(), id.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::EndDecided,
+                Path::new(key.as_str()),
+                move || {
+                    let result = wait_in_hook(&handle, app.stop_task_now(&id));
+                    stopped.send_replace(Some(result.map_err(|e| e.to_string())));
+                },
+            );
+        }
+        app.send_input(&id, b"/exit\r").await?;
+        tokio::time::timeout(Duration::from_secs(30), stop_made.wait_for(Option::is_some))
+            .await??;
+        let made = stop_made.borrow().clone();
+        assert_eq!(made, Some(Ok(())));
+        expect_stopped(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-079 BGW-005 (#264): Yulius's Stop hook runs before the goal evaluator. While the goal is
 /// open the turn waits for the verdict: the verdict "not met" sends the agent on, and the task
 /// never reads Your turn or Done in between; the verdict "met" makes it Done.

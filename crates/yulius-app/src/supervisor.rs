@@ -2354,6 +2354,10 @@ impl App {
                 if let Ok(Some(task)) = store.task(task_id).await {
                     let event = exit_event(&exit, session_end.as_deref());
                     if let Ok(next) = task.status.apply(event) {
+                        crate::race::reached(
+                            crate::race::Point::EndDecided,
+                            Path::new(task_id.as_str()),
+                        );
                         let _ = store
                             .transition_task(task_id, Some(task.status), next, None, now)
                             .await;

@@ -1,9 +1,9 @@
 //! Test-only pause points between a check of a folder a contained agent can change and its use
 //! (SPEC-220, ADR-0174). A test registers a hook that swaps a folder for a link exactly there, so
 //! the race is reproduced deterministically: no sleeps, no rename loops. A stop's point between its
-//! read of the task and its status change works the same way, keyed by the task id (SPEC-250).
-//! Without the
-//! `test-support` feature (production builds) the pause points do nothing.
+//! read of the task and its status change, and a run end's, work the same way, keyed by the task
+//! id (SPEC-250). Without the `test-support` feature (production builds) the pause points do
+//! nothing.
 
 use std::path::Path;
 
@@ -26,6 +26,9 @@ pub enum Point {
     /// `stop_task_now` (SPEC-250): the task was read and the run's end intent set; its status is
     /// not changed yet. The path is the task id.
     StopDecided,
+    /// The end of a task's run (SPEC-250): the task was read and its next status chosen; it is
+    /// not changed yet. The path is the task id.
+    EndDecided,
 }
 
 #[cfg(feature = "test-support")]
