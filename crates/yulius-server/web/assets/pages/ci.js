@@ -1,8 +1,9 @@
 // CI tab of the CI/CD page (SPEC-001 DLV-006/007, SPEC-002 ADR-21, SPEC-151): Yulius is the
 // projects' only CI. The jobs in force and where they come from, the runs of pull request heads and
-// of the integration and production branches with each job's log, Run again and Cancel, and
+// of the integration and production branches with each job's log, Cancel and Run again, and
 // repository hygiene (stale branches and worktrees). A run opens in place of the list at
-// `?run=<id>`, the link of the `yulius/ci` commit status (SPEC-238: a view, not a dialog).
+// `?run=<id>`, the link of the `yulius/ci` commit status (SPEC-238: a view, not a dialog); Run
+// again lives there, not on every card (SPEC-258).
 
 import { enc } from '../api.js';
 import { h, badge, itemCard, emptyState, setChildren, placeholder, toast, errorToast, confirmDialog, pollPaused, icon, bar, drawShape } from '../dom.js';
@@ -158,10 +159,8 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
       run.requested_by && run.requested_by !== 'yulius' ? ` · by ${run.requested_by}` : null,
       run.status && run.status !== 'published' && run.status !== 'pending' ? h('span', { class: 'muted' }, ` · GitHub status ${run.status}`) : null,
     ];
-    const controls = [];
-    const which = `${run.label} at ${shortSha(run.sha)}`;
-    if (write && ACTIVE.has(run.state)) controls.push(h('button', { type: 'button', class: 'btn btn-sm', 'aria-label': `Cancel: ${which}`, onClick: () => cancel(run) }, 'Cancel'));
-    if (write && !ACTIVE.has(run.state)) controls.push(h('button', { type: 'button', class: 'btn btn-sm', 'aria-label': `Run again: ${which}`, onClick: () => rerun(run) }, 'Run again'));
+    // SPEC-258: only Cancel, which is urgent; Run again is in the run's view.
+    const controls = write && ACTIVE.has(run.state) ? [cancelButton(run, () => reload({ quiet: true }))] : [];
     return itemCard({
       iconEl: h('span', { class: ['ci-state', `ci-${run.state}`] }, icon(st.icon, { size: 18, label: st.label })),
       title: [run.label, ' ', h('code', { class: 'muted' }, shortSha(run.sha))],
@@ -189,23 +188,34 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     }
   }
 
-  async function cancel(run) {
-    if (!(await confirmDialog({ title: `Cancel the run of ${run.label}?`, message: 'Its jobs are stopped. Run it again later from this page.', confirmLabel: 'Cancel run', danger: true }))) return;
+  function which(run) { return `${run.label} at ${shortSha(run.sha)}`; }
+
+  /** Cancel for an active run (its card and its view); `then` redraws what shows it. */
+  function cancelButton(run, then) {
+    return h('button', { type: 'button', class: 'btn btn-sm', 'aria-label': `Cancel: ${which(run)}`, onClick: () => cancel(run, then) }, 'Cancel');
+  }
+
+  async function cancel(run, then) {
+    if (!(await confirmDialog({ title: `Cancel the run of ${run.label}?`, message: 'Its jobs are stopped. Run it again later from its view.', confirmLabel: 'Cancel run', danger: true }))) return;
     try {
       await ctx.api.post(`${base}/ci/runs/${enc(run.id)}/cancel`);
       toast(`Run of ${run.label} cancelled.`, { kind: 'ok' });
-      reload({ quiet: true });
+      then();
     } catch (error) {
       errorToast(error, 'Couldn’t cancel the run');
     }
   }
 
-  async function rerun(run) {
+  /** Tests the run's commit again and opens the new run (SPEC-258 RRA-002); the button is off
+   * while the request is out, so a second click sends nothing. */
+  async function rerun(run, button) {
+    button.disabled = true;
     try {
-      await ctx.api.post(`${base}/ci/runs/${enc(run.id)}/rerun`);
+      const fresh = await ctx.api.post(`${base}/ci/runs/${enc(run.id)}/rerun`);
       toast(`${run.label} queued again.`, { kind: 'ok' });
-      reload({ quiet: true });
+      if (!destroyed) ctx.navigate(`${page}?run=${encodeURIComponent(fresh.id)}`);
     } catch (error) {
+      button.disabled = false;
       errorToast(error, 'Couldn’t run it again');
     }
   }
@@ -233,10 +243,13 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     let lastNow = null;
     host.append(view.el);
     let first = true;
+    // Each load supersedes the one before (a Cancel reloads at once): an older one draws nothing.
+    let generation = 0;
     const load = async () => {
+      const mine = ++generation;
       try {
         const run = await ctx.api.get(`${base}/ci/runs/${enc(id)}`);
-        if (destroyed) return;
+        if (destroyed || mine !== generation) return;
         if (first) {
           setChildren(view.body, stages, tabs, output);
           view.ready();
@@ -244,8 +257,8 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
           selected = failing >= 0 ? failing : 0;
           first = false;
         }
+        drawHead(run);
         render(run);
-        head.append(h('span', { class: 'spacer' }), pipeline);
         // The summary (SPEC-238 CRV-003): how long, the stages running now and the jobs; drawn
         // before the stages load, so it keeps its height, and again with what runs now.
         const summarize = (now) => view.summarize({
@@ -255,7 +268,7 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
         });
         summarize(lastNow);
         const timeline = await loadWaterfall(ctx, sandbox, `ci_run:${id}`, stages, { title: 'Stages of this run' });
-        if (destroyed) return;
+        if (destroyed || mine !== generation) return;
         lastNow = stageNow(timeline);
         summarize(lastNow);
         if (ACTIVE.has(run.state)) poll = setTimeout(load, POLL_ACTIVE_MS);
@@ -263,9 +276,29 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
         if (first && !destroyed) view.loading(placeholder(`Couldn’t load the run: ${error.message}`, 'error'));
       }
     };
+    // The head: what the run is, then its controls and In Pipeline. A job's tab leaves it alone,
+    // and a control is replaced only when the run's state calls for another one, so the keyboard
+    // stays on it across refreshes and goes to its successor (review round 1 of SPEC-258).
+    const spacer = h('span', { class: 'spacer' });
+    let lead = [];
+    let controls = [];
+    let controlsFor = null;
+    const drawHead = (run) => {
+      for (const node of lead) node.remove();
+      lead = [stateBadge(run.state), h('strong', null, run.label), h('code', { class: 'muted' }, shortSha(run.sha)),
+        run.reason ? h('span', { class: 'muted small' }, run.reason) : null].filter(Boolean);
+      if (!spacer.isConnected) head.append(spacer, pipeline);
+      spacer.before(...lead);
+      const wanted = !write ? 'none' : ACTIVE.has(run.state) ? 'cancel' : 'again';
+      if (wanted === controlsFor) return;
+      const focused = controls.some((node) => node.contains(document.activeElement));
+      for (const node of controls) node.remove();
+      controls = runControls(run);
+      controlsFor = wanted;
+      pipeline.before(...controls);
+      if (focused && controls.length) controls[0].focus();
+    };
     const render = (run) => {
-      setChildren(head, stateBadge(run.state), h('strong', null, run.label), h('code', { class: 'muted' }, shortSha(run.sha)),
-        run.reason ? h('span', { class: 'muted small' }, run.reason) : null);
       const jobs = run.jobs || [];
       setChildren(tabs, jobs.map((job, i) => {
         const tab = h('button', { type: 'button', class: ['ci-tab', i === selected && 'active'], role: 'tab', 'aria-selected': String(i === selected), onClick: () => { selected = i; render(run); } },
@@ -278,6 +311,13 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
       const exit = job.exit_code === null || job.exit_code === undefined ? '' : `\n[exit code ${job.exit_code}]`;
       output.textContent = (job.output || (ACTIVE.has(job.state) ? 'Waiting for output…' : 'No output.')) + exit;
       if (atBottom || ACTIVE.has(job.state)) output.scrollTop = output.scrollHeight;
+    };
+    // SPEC-258 RRA-002/003: Cancel while it runs, Run again once it ended, for writers only.
+    const runControls = (run) => {
+      if (!write) return [];
+      if (ACTIVE.has(run.state)) return [cancelButton(run, () => { if (destroyed) return; clearTimeout(poll); load(); })];
+      const again = h('button', { type: 'button', class: 'btn btn-sm', 'aria-label': `Run again: ${which(run)}`, onClick: () => rerun(run, again) }, icon('refresh', { size: 14 }), 'Run again');
+      return [again];
     };
     load();
     return view;
