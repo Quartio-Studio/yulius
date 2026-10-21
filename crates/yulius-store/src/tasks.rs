@@ -692,7 +692,7 @@ impl TaskStore for SqliteStore {
             let n = c
                 .execute(
                     "UPDATE tasks SET prompt = prompt || ?1, updated_at = ?2 \
-                     WHERE id = ?3 AND status = ?4 \
+                     WHERE id = ?3 AND status = ?4 AND instr(prompt, ?1) = 0 \
                      AND NOT EXISTS (SELECT 1 FROM attempts WHERE task_id = ?3) \
                      AND NOT EXISTS (SELECT 1 FROM provider_sessions WHERE task_id = ?3) \
                      AND length(CAST(prompt AS BLOB)) + length(CAST(?1 AS BLOB)) <= ?5",

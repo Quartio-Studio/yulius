@@ -2405,3 +2405,53 @@ async fn a_hand_over_is_added_once_and_only_where_it_can_be_read() -> TestResult
     assert!(!error, "{said}");
     Ok(())
 }
+
+/// SPEC-256 LOB-005, review round 2: a start or skip landing between Start onboarding's read and
+/// its start refuses the hand-over instead of dropping it unsaid.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hand_over_overtaken_by_another_start_is_refused() -> TestResult {
+    use yulius_app::ports::store::SandboxStore as _;
+    let w = World::new("org").await?;
+    let (_, _, agent) = person(&w, "alice").await?;
+    w.remote(
+        support::repos::OWNER,
+        "shop",
+        &[("README.md", "# Shop\n")],
+        &[],
+    )?;
+    w.github
+        .add_installation_repo(support::repos::OWNER, "shop", true);
+    w.grant("alice", "shop", "admin");
+    let (error, said, imported) = remote(
+        &w,
+        &agent,
+        "project_import",
+        json!({"repo": "Quartio-Studio/shop"}),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    let sid = yulius_domain::ids::SandboxId::parse(text(&imported["id"]))?;
+    {
+        let (store, key, sid) = (w.h.store.clone(), sid.as_str().to_owned(), sid.clone());
+        let handle = tokio::runtime::Handle::current();
+        yulius_app::race::on(
+            yulius_app::race::Point::OnboardingApproved,
+            std::path::Path::new(&key),
+            move || {
+                let moved = tokio::task::block_in_place(|| {
+                    handle.block_on(store.transition_onboarding(&sid, "pending", "preparing"))
+                });
+                assert!(matches!(moved, Ok(true)), "{moved:?}");
+            },
+        );
+    }
+    let (error, said, _) = remote(
+        &w,
+        &agent,
+        "onboarding_start",
+        json!({"project": "Quartio-Studio/shop", "notes": "Deploys run ./deploy.sh."}),
+    )
+    .await?;
+    assert!(error && said.contains("already started"), "{said}");
+    Ok(())
+}

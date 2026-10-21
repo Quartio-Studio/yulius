@@ -997,8 +997,15 @@ impl App {
     ) -> AppResult<bool> {
         let store = &self.deps.store;
         let record = store.sandbox(sandbox).await?.ok_or(AppError::NotFound)?;
-        if OnboardingState::parse(&record.onboarding_state) != Some(OnboardingState::Pending) {
-            return Ok(false);
+        match OnboardingState::parse(&record.onboarding_state) {
+            Some(OnboardingState::Pending) => {}
+            // Another start or a skip landed since the caller read `pending`: a hand-over is
+            // refused, never dropped unsaid (SPEC-256 review round 2).
+            Some(OnboardingState::Skipped) if notes.is_some() => {
+                return Err(AppError::Conflict(SKIPPED_MEANWHILE.into()));
+            }
+            _ if notes.is_some() => return Err(AppError::Conflict(ALREADY_STARTED.into())),
+            _ => return Ok(false),
         }
         // Onboarding is an agent's task: without a usable account it is refused before anything
         // is created or pushed, and the sandbox stays `pending` (SPEC-246 CLA-002, CLA-003).
@@ -1008,9 +1015,7 @@ impl App {
         self.prepare_default_branch(&record, actor).await?;
         let Some(task) = self.onboarding_task(sandbox).await? else {
             if notes.is_some() {
-                return Err(AppError::Conflict(
-                    "onboarding was skipped meanwhile; the hand-over was not added".into(),
-                ));
+                return Err(AppError::Conflict(SKIPPED_MEANWHILE.into()));
             }
             return Ok(false);
         };
@@ -1341,6 +1346,10 @@ impl App {
             }
         }
         let actor = self.login_of(&ctx.user.id).await;
+        crate::race::reached(
+            crate::race::Point::OnboardingApproved,
+            Path::new(id.as_str()),
+        );
         self.start_onboarding_with(&id, &actor, notes).await?;
         let record = self
             .deps
@@ -1358,6 +1367,9 @@ pub const MAX_HANDOVER_BYTES: usize = 24 * 1024;
 /// Why a hand-over is refused once onboarding started.
 const ALREADY_STARTED: &str = "onboarding already started, so its request is read: tell its task \
      with task_message instead";
+
+/// Why a hand-over is refused when an admin skipped onboarding meanwhile.
+const SKIPPED_MEANWHILE: &str = "onboarding was skipped meanwhile; the hand-over was not added";
 
 /// Why a hand-over is refused by an onboarding task that already tried to start.
 const TRIED_TO_START: &str = "the onboarding task already tried to start once, so its request no \
@@ -1396,6 +1408,22 @@ impl App {
             )
             .await?
         {
+            // Said as it is now: a concurrent call added the same hand-over, the request grew
+            // past its bound, or the task tried to run.
+            let now = self
+                .deps
+                .store
+                .task(&task.id)
+                .await?
+                .ok_or(AppError::NotFound)?;
+            if now.prompt.contains(&addition) {
+                return Ok(());
+            }
+            if now.prompt.len() + addition.len() > crate::lifecycle::MAX_PROMPT_BYTES {
+                return Err(AppError::Invalid(
+                    "the hand-over does not fit the onboarding task's request: shorten it".into(),
+                ));
+            }
             return Err(AppError::Conflict(TRIED_TO_START.into()));
         }
         self.publish_task(&task.id).await;

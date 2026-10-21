@@ -1025,6 +1025,13 @@ async fn a_resting_task_that_never_ran_takes_an_addition() -> R {
             .await?
     );
     assert_eq!(store.task(&t.id).await?.ok_or("task")?.prompt, "p+ł");
+    // An addition the prompt holds already (a concurrent call added it) is not added again.
+    assert!(
+        !store
+            .append_resting_prompt(&t.id, "+ł", 1024, Timestamp(23))
+            .await?
+    );
+    assert_eq!(store.task(&t.id).await?.ok_or("task")?.prompt, "p+ł");
     store.insert_attempt(&attempt("a1", &t.id, 1)?).await?;
     assert!(
         !store
