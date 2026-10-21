@@ -347,8 +347,9 @@ impl App {
     /// Superagent's person's folder, canonical) and the folders below it, to be opened one at a
     /// time without following links. The folder the caller works in is a task's worktree or the
     /// sandbox repository; the home is the sandbox home for a task, its person's home (shared by
-    /// their projects) for the Superagent.
-    async fn secret_source_root(
+    /// their projects) for the Superagent. `secret_copy_to_env` opens its target from the work
+    /// folder's anchor too (#635).
+    pub(super) async fn secret_source_root(
         &self,
         user: SecretUser<'_>,
         sandbox: &SandboxRecord,

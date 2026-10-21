@@ -12,6 +12,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   drive a sandbox's browser and its logged-in sessions. It now speaks DevTools only over a pipe
   that Yulius holds (`--remote-debugging-pipe`). Agents keep using Yulius's browser tools; the
   unused raw CDP endpoint for a sandbox's MCP servers is gone.
+- The Superagent's `secret_copy_to_env` no longer follows a sandbox repository swapped for a link
+  (SPEC-254, task #240, #635): the copy walks from the canonical sandbox folder to `repo` (a task's
+  worktree for a task) and on without links, and runs Git there, so a `repo` replaced by a link to
+  another folder is refused and an allowed secret's value is written nowhere. Task copies are
+  unchanged.
 
 ## 2026-10-20
 
