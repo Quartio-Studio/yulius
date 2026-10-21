@@ -100,8 +100,9 @@ example when it starts deploying for real), and record every change as a decisio
    Then delete `.github/workflows/` in the same pull request, so gates and merges rely only on
    Yulius CI results (`ci_status`). Merge gating needs no rulesets: Yulius enforces the gate at
    merge.
-3. **CD (deployment).** Yulius runs CD like CI, never GitHub: `yulius.toml` defines two
-   environments, and both are always explicit, even when one deploys nothing yet.
+3. **CD (deployment).** Yulius runs CD like CI, never GitHub: `yulius.toml` defines the
+   environments, `[cd.dev]` and `[cd.prod]` by default, both always explicit, even when one
+   deploys nothing yet.
 
    ```toml
    [cd.dev]                              # read from the integration branch head
@@ -114,7 +115,20 @@ example when it starts deploying for real), and record every change as a decisio
    promote = true                        # first promote the integration branch (a push to main)
    deploy = "scripts/cd/deploy.sh prod"
    verify = "scripts/cd/verify.sh prod"
+
+   [cd.platform]                         # one more target, deployed and verified on its own
+   stage = "prod"                        # its rules: "dev" (agents, integration branch) or "prod"
+   deploy = "scripts/cd/deploy.sh platform"
+   verify = "scripts/cd/verify.sh platform"
    ```
+
+   - **One environment per target.** A repository that ships more than one thing (a self-hosted
+     release and the hosted platform that serves it, a staging machine next to dev) gets one
+     `[cd.<name>]` table per target (lowercase letters, digits and `-`), each with
+     `stage = "dev"` or `stage = "prod"`. The stage carries the rules of dev or production: the
+     branch, who deploys it (production stage: only a person), where it runs and which secrets
+     it may get. Keep `[cd.dev]` and `[cd.prod]` for the main targets; one script deploying
+     everything at once hides which target failed.
 
    - **Find what exists first**: deploy or release scripts, a Dockerfile or compose file,
      platform files (`fly.toml`, `vercel.json`, `netlify.toml`, `Procfile`, `k8s/`, Helm,
@@ -179,7 +193,8 @@ example when it starts deploying for real), and record every change as a decisio
   reports on it.
 - With a Vidoc key on the instance, the `security` job runs `yulius security-scan --ci` and
   AGENTS.md asks for the scan before delivery; without one, the summary says it was skipped.
-- `[cd.dev]` and `[cd.prod]` are defined (empty with an `about` when nothing deploys yet), and
-  each one that deploys has a deploy and a verify script that passed on a real run.
+- `[cd.dev]` and `[cd.prod]` are defined (empty with an `about` when nothing deploys yet), with a
+  `[cd.<name>]` and its `stage` for each further target, and each one that deploys has a deploy
+  and a verify script that passed on a real run.
 - The docs describe the project as it is, and each choice has an ADR.
 - The critical and high-cost conventions are codified as primitives or checked by the gate.

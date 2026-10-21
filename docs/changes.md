@@ -11,6 +11,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   "In Pipeline" touched the band's edges; it is now a card like the CI/CD page's Now line (12 px
   inline padding, border, radius). Its loading shape has the loaded head's buttons (two for
   writers, one for readers) and no reason bar, so on a phone it wraps as the loaded head does.
+- CD takes more environments than dev and production (SPEC-257, ADR-0195, task #243). A
+  repository that ships more than one thing, like a self-hosted release and the hosted platform
+  that serves it, or a staging machine next to dev, defines one `[cd.<name>]` table per target
+  with `stage = "dev"` or `stage = "prod"`. The stage carries the rules `[cd.dev]` and `[cd.prod]`
+  had: the branch, who may deploy (production stage: only an administrator who types the slug,
+  never an agent), the containment and the secrets. `[cd.dev]` and `[cd.prod]` stay the defaults
+  and work as before. The CD page, `cd_status`, `cd_deploy` and the API list and deploy every
+  environment with its stage; runs keep it (migration 41). CI was already general
+  (`[[ci.jobs]]`).
 - The CI page's run list no longer shows "Run again" on every card (SPEC-258, task #244, #774).
   A run is tested again from its own view, which opens the new run; the view also has Cancel while
   the run is queued or running, and an active card keeps Cancel. Read access sees neither.

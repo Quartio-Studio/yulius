@@ -17,7 +17,8 @@ Project map for Yulius, configured in [yulius.toml](yulius.toml): [product](docs
 above; the rules in this file stay authoritative. Yulius CI is the only CI: it runs the gate
 (`[[ci.jobs]]` in `yulius.toml`) and publishes the `yulius/ci` commit status; there are no GitHub Actions.
 CD (deployment) is `[cd.dev]` (empty: no dev machine yet) and `[cd.prod]` (promotion of `dev` to
-`main`) in `yulius.toml`, run by Yulius from the protected branches
+`main`) in `yulius.toml`; another target would be a `[cd.<name>]` with its `stage`
+([ADR-0195](docs/decisions/0195-cd-environments-are-named-and-take-their-rules-from-a-stage.md)). Yulius runs them from the protected branches
 ([ADR-0109](docs/decisions/0109-cd-runs-verified-commits-out-of-the-agents-reach.md)); a merge
 deploys nothing and only a person deploys production
 ([ADR-0110](docs/decisions/0110-only-a-person-deploys-production.md)). Every stage of tasks, CI and CD

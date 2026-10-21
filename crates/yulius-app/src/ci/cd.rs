@@ -1,13 +1,15 @@
-//! CD (deployment): runs of a project's dev and production environments (SPEC-134, ADR-0109,
-//! ADR-0110).
+//! CD (deployment): runs of a project's environments (SPEC-134, SPEC-257, ADR-0109, ADR-0110,
+//! ADR-0195).
 //!
 //! A CD run deploys one environment from its protected branch: Yulius fetches, asks GitHub for
 //! the branch head, takes exactly that commit from the sandbox clone into a mirror only Yulius
 //! writes (every object checked, replacement refs ignored), reads `[cd.<env>]` from `yulius.toml`
 //! there, writes the commit's files into the run's private directory and runs the `deploy`
-//! command and then the `verify` command through the process host. Dev reads the integration
-//! branch; production reads the commit it deploys (the integration head decides whether it
-//! promotes first; after a promotion the new production head is read again).
+//! command and then the `verify` command through the process host. An environment's stage
+//! (`dev`, `prod`) carries its rules: a dev-stage one reads the integration branch; a
+//! production-stage one reads the commit it deploys (the integration head decides whether it
+//! promotes first; after a promotion the new production head is read again). "Dev" and
+//! "production" below mean the stages.
 //!
 //! Trust contract (review C1, H1, H2 of SPEC-134):
 //! - who may deploy is [`yulius_domain::cd::authorize`]: dev is a person's (write access) or an
@@ -33,7 +35,9 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 use yulius_contracts::api::cd::{CdDeploy, CdEnvironment, CdOverview, CdRun, CdSecret};
-use yulius_domain::cd::{self as dom, CdConfig, CdEnv, CdRefusal, CdState, CdTarget, Requester};
+use yulius_domain::cd::{
+    self as dom, CdConfig, CdRefusal, CdStage, CdState, CdTarget, Requester, env_label,
+};
 use yulius_domain::ci::RunState;
 use yulius_domain::delivery::DeliveryProfile;
 use yulius_domain::ids::{SandboxId, TaskId};
@@ -80,8 +84,10 @@ pub struct CdRunRecord {
     pub id: String,
     /// Sandbox.
     pub sandbox_id: SandboxId,
-    /// Environment.
-    pub environment: CdEnv,
+    /// Environment (`[cd.<name>]`).
+    pub environment: String,
+    /// Its stage when it ran.
+    pub stage: CdStage,
     /// Branch deployed.
     pub branch: String,
     /// Commit deployed.
@@ -146,6 +152,7 @@ impl CdActor<'_> {
 
 /// What a checked deploy runs.
 struct Prepared {
+    stage: CdStage,
     branch: String,
     sha: String,
     target: CdTarget,
@@ -157,6 +164,15 @@ struct Prepared {
 
 /// Longest confirmation wait recorded, in milliseconds.
 const MAX_CONFIRM_MS: u64 = 60 * 60 * 1000;
+
+/// The protected branches as the clone shows them (the page; never what a deploy runs).
+struct Shown {
+    integration: Option<String>,
+    integration_config: Result<CdConfig, String>,
+    production: Option<String>,
+    /// Read at the production head, without promotion (only the integration head decides one).
+    production_config: Result<CdConfig, String>,
+}
 
 /// An environment's configuration as the clone shows it (the page; never what a deploy runs).
 struct ShownSource {
@@ -238,14 +254,9 @@ impl App {
         parse_yulius_toml_cd(&text).map_err(|err| err.to_string())
     }
 
-    /// For the page: where `env` comes from in the clone as last fetched (CDC-003). A deploy
-    /// never uses this: it reads the verified mirror ([`App::cd_prepare`]).
-    async fn cd_shown_source(
-        &self,
-        sandbox: &SandboxRecord,
-        profile: &DeliveryProfile,
-        env: CdEnv,
-    ) -> ShownSource {
+    /// For the page: the protected branches' heads and tables in the clone as last fetched
+    /// (CDC-003). A deploy never uses this: it reads the verified mirror ([`App::cd_prepare`]).
+    async fn cd_shown(&self, sandbox: &SandboxRecord, profile: &DeliveryProfile) -> Shown {
         let repo = self.sandbox_repo(&sandbox.id);
         let head = |branch: String| {
             let repo = repo.clone();
@@ -266,39 +277,56 @@ impl App {
                 profile.integration_branch
             )),
         };
-        if env == CdEnv::Dev {
+        let production = head(profile.production_branch.clone()).await;
+        let production_config = match &production {
+            Some(sha) => self.cd_config_at(&repo, sha).await.map(no_promotion),
+            None => Ok(CdConfig::default()),
+        };
+        Shown {
+            integration,
+            integration_config,
+            production,
+            production_config,
+        }
+    }
+
+    /// Where the environment `name` of `stage` comes from in what [`App::cd_shown`] read.
+    fn cd_shown_source(
+        shown: &Shown,
+        profile: &DeliveryProfile,
+        name: &str,
+        stage: CdStage,
+    ) -> ShownSource {
+        if stage == CdStage::Dev {
             return ShownSource {
                 branch: profile.integration_branch.clone(),
-                head: integration,
-                config: integration_config,
+                head: shown.integration.clone(),
+                config: shown.integration_config.clone(),
                 promotes_from: None,
             };
         }
-        let production = head(profile.production_branch.clone()).await;
-        let promotes = integration_config
-            .as_ref()
-            .is_ok_and(|config| config.prod.as_ref().is_some_and(|prod| prod.promote));
-        let promotes_from = promotes.then(|| integration.clone()).flatten();
-        let config = if promotes {
-            integration_config
-        } else {
-            match &production {
-                Some(sha) => self.cd_config_at(&repo, sha).await.map(no_promotion),
-                None => Ok(CdConfig::default()),
-            }
-        };
+        let promotes = shown.integration_config.as_ref().is_ok_and(|config| {
+            config
+                .target_of(name, CdStage::Prod)
+                .is_some_and(|target| target.promote)
+        });
         ShownSource {
             branch: profile.production_branch.clone(),
-            head: production,
-            config,
-            promotes_from,
+            head: shown.production.clone(),
+            config: if promotes {
+                shown.integration_config.clone()
+            } else {
+                shown.production_config.clone()
+            },
+            promotes_from: promotes.then(|| shown.integration.clone()).flatten(),
         }
     }
 
     async fn cd_run_view(&self, run: &CdRunRecord, with_output: bool) -> CdRun {
         CdRun {
             run_id: run.id.clone(),
-            environment: run.environment.as_str().to_owned(),
+            environment: run.environment.clone(),
+            stage: run.stage.as_str().to_owned(),
             state: run.state.as_str().to_owned(),
             branch: run.branch.clone(),
             commit: run.sha.clone(),
@@ -327,20 +355,25 @@ impl App {
             .store
             .cd_runs(&sandbox.id, CD_RUN_LIST_LIMIT)
             .await?;
-        let mut environments = Vec::with_capacity(2);
-        for env in CdEnv::ALL {
-            let source = self.cd_shown_source(sandbox, &profile, env).await;
+        let shown = self.cd_shown(sandbox, &profile).await;
+        let listed = dom::environments_of(
+            shown.integration_config.as_ref().ok(),
+            shown.production_config.as_ref().ok(),
+        );
+        let mut environments = Vec::with_capacity(listed.len());
+        for (name, stage) in listed {
+            let source = Self::cd_shown_source(&shown, &profile, &name, stage);
             let (target, problem) = match &source.config {
-                Ok(config) => (config.target(env).cloned(), None),
+                Ok(config) => (config.target_of(&name, stage).cloned(), None),
                 Err(problem) => (None, Some(problem.clone())),
             };
             let state = match &source.config {
-                Ok(config) => config.state(env),
+                Ok(config) => config.state(&name, stage),
                 Err(_) => CdState::NotDefined,
             };
             let secrets = match &target {
                 Some(target) => self
-                    .cd_secret_states(&sandbox.id, env, &target.secrets)
+                    .cd_secret_states(&sandbox.id, stage, &target.secrets)
                     .await?
                     .into_iter()
                     .map(|(name, state)| CdSecret {
@@ -353,17 +386,21 @@ impl App {
             let deployed = self
                 .deps
                 .store
-                .last_passed_cd_run(&sandbox.id, env)
+                .last_passed_cd_run(&sandbox.id, &name, stage)
                 .await?
                 .map(|run| run.sha);
-            let last_run = match runs.iter().find(|run| run.environment == env) {
+            let last_run = match runs
+                .iter()
+                .find(|run| run.environment == name && run.stage == stage)
+            {
                 Some(run) => Some(self.cd_run_view(run, false).await),
                 None => None,
             };
-            let target = target.unwrap_or_default();
+            let target = target.unwrap_or_else(|| CdTarget::new(&name, stage));
             environments.push(CdEnvironment {
-                name: env.as_str().to_owned(),
-                label: env.label().to_owned(),
+                label: env_label(&name).to_owned(),
+                name,
+                stage: stage.as_str().to_owned(),
                 state: state.as_str().to_owned(),
                 branch: source.branch,
                 head: source.head,
@@ -417,8 +454,8 @@ impl App {
     ) -> AppResult<CdRun> {
         let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
         let (sandbox, level) = self.require(&ctx.user, &sid, Action::Work).await?;
-        let env = CdEnv::parse(environment)
-            .ok_or_else(|| AppError::Invalid("the environment is dev or prod".into()))?;
+        let env =
+            dom::env_name(environment).ok_or_else(|| AppError::Invalid(UNKNOWN_ENV.into()))?;
         let requester = Requester::Person {
             administrator: level.allows(Action::Administer),
             confirmation: req.confirm.as_deref(),
@@ -426,7 +463,7 @@ impl App {
         let run = self
             .cd_start(
                 &sandbox,
-                env,
+                &env,
                 requester,
                 &CdActor::Person(&ctx.user),
                 (req.expect.as_deref(), req.confirm_ms),
@@ -438,11 +475,11 @@ impl App {
     /// A deploy of `env` for a task's agent (`cd_deploy`) under its owner's write access.
     ///
     /// # Errors
-    /// As [`App::cd_deploy`]; production is always `Forbidden`.
+    /// As [`App::cd_deploy`]; a production-stage environment is always `Forbidden`.
     pub(crate) async fn cd_deploy_for_task(
         self: &Arc<Self>,
         ctx: &AgentContext,
-        env: CdEnv,
+        env: &str,
     ) -> AppResult<CdRunRecord> {
         let store = &self.deps.store;
         let owner = store
@@ -472,7 +509,7 @@ impl App {
     async fn cd_start(
         self: &Arc<Self>,
         sandbox: &SandboxRecord,
-        env: CdEnv,
+        env: &str,
         requester: Requester<'_>,
         actor: &CdActor<'_>,
         (expected, confirm_ms): (Option<&str>, Option<u64>),
@@ -480,9 +517,13 @@ impl App {
         let requested = self.now();
         // A playground has no deploy: its Git stays on the server (SPEC-099).
         crate::playground::refuse_in_playground(sandbox, "A deploy")?;
-        let target_name = format!("{}/{}", sandbox.slug, env.as_str());
+        let target_name = format!("{}/{env}", sandbox.slug);
         // Who before anything else: an agent never learns more of production than the refusal.
-        if let Err(refused) = dom::may_deploy(env, requester, &sandbox.slug) {
+        // A named environment's stage comes from the verified tables: checked again there.
+        let fixed = dom::fixed_stage(env);
+        if let Some(Err(refused)) =
+            fixed.map(|stage| dom::may_deploy(stage, requester, &sandbox.slug))
+        {
             self.dlv_audit(
                 &actor.label(),
                 "cd.refused",
@@ -492,13 +533,16 @@ impl App {
             .await;
             return Err(refusal(&refused));
         }
+        // What the checks resolve the stage to: a production-stage refusal is audited, as
+        // production's always was; a dev-stage failure is not a refused production deploy.
+        let mut resolved = fixed;
         let prepared = match self
-            .cd_prepare(sandbox, env, requester, actor, expected)
+            .cd_prepare(sandbox, env, requester, actor, expected, &mut resolved)
             .await
         {
             Ok(prepared) => prepared,
             Err(err) => {
-                if env == CdEnv::Prod {
+                if resolved == Some(CdStage::Prod) {
                     self.dlv_audit(
                         &actor.label(),
                         "cd.refused",
@@ -517,7 +561,8 @@ impl App {
         let run = CdRunRecord {
             id: self.deps.crypto.new_id(),
             sandbox_id: sandbox.id.clone(),
-            environment: env,
+            environment: env.to_owned(),
+            stage: prepared.stage,
             branch: prepared.branch.clone(),
             sha: prepared.sha.clone(),
             state: RunState::Running,
@@ -617,7 +662,7 @@ impl App {
                 parent_key: None,
                 kind: kind.to_owned(),
                 name: name.to_owned(),
-                environment: Some(run.environment.as_str().to_owned()),
+                environment: Some(run.environment.clone()),
                 job: None,
                 started_at: from,
                 ended_at: Some(to),
@@ -625,7 +670,7 @@ impl App {
                 detail: None,
             }
         };
-        if run.environment == CdEnv::Prod
+        if run.stage == CdStage::Prod
             && let Some(ms) = confirm_ms.filter(|ms| *ms <= MAX_CONFIRM_MS)
         {
             let ms = i64::try_from(ms).unwrap_or(0);
@@ -734,16 +779,20 @@ impl App {
             })
     }
 
-    /// Everything a deploy needs, from verified sources (CDC-003): the commit, its table, the
-    /// secrets, and for production with `promote` the promotion, after which the new production
-    /// head is read and authorized again (review M2).
+    /// Everything a deploy needs, from verified sources (CDC-003): the environment's stage, the
+    /// commit, its table, the secrets, and for production with `promote` the promotion, after
+    /// which the new production head is read and authorized again (review M2). `resolved` gets
+    /// the stage as soon as it is known. A named environment's stage is known only once the
+    /// verified heads are read, so an agent's request for a production-stage one is refused after
+    /// that reading, before any secret or promotion (review L2).
     async fn cd_prepare(
         &self,
         sandbox: &SandboxRecord,
-        env: CdEnv,
+        env: &str,
         requester: Requester<'_>,
         actor: &CdActor<'_>,
         expected: Option<&str>,
+        resolved: &mut Option<CdStage>,
     ) -> AppResult<Prepared> {
         // One deploy at a time reads and writes a sandbox's mirror (round 2, L-b).
         let mirror_lock = mirror_lock(&sandbox.id);
@@ -754,29 +803,44 @@ impl App {
         let integration = self
             .cd_verified_head(sandbox, &profile.integration_branch, &token)
             .await?;
+        let integration_config = self.cd_verified_config(sandbox, &integration).await;
+        // The stage of a name (SPEC-257 CDN-004): the integration head's first, else the
+        // production head's.
+        let mut stage = dom::resolve_stage(env, integration_config.as_ref().ok(), None);
+        if stage.is_none() {
+            let production = self
+                .cd_verified_head(sandbox, &profile.production_branch, &token)
+                .await?;
+            let config = self.cd_verified_config(sandbox, &production).await.ok();
+            stage = dom::resolve_stage(env, None, config.as_ref());
+        }
+        let Some(stage) = stage else {
+            return Err(refusal(&CdRefusal::not_defined(env)));
+        };
+        *resolved = Some(stage);
+        dom::may_deploy(stage, requester, &sandbox.slug).map_err(|r| refusal(&r))?;
         // Production without promotion does not depend on dev's table being valid (round 2, L-a).
-        let integration_config = match self.cd_verified_config(sandbox, &integration).await {
+        let integration_config = match integration_config {
             Ok(config) => config,
-            Err(_) if env == CdEnv::Prod => CdConfig::default(),
+            Err(_) if stage == CdStage::Prod => CdConfig::default(),
             Err(err) => return Err(err),
         };
-        let promotes = env == CdEnv::Prod
+        let promotes = stage == CdStage::Prod
             && integration_config
-                .prod
-                .as_ref()
+                .target_of(env, CdStage::Prod)
                 .is_some_and(|prod| prod.promote);
-        let (branch, sha, config) = match env {
-            CdEnv::Dev => (
+        let (branch, sha, config) = match stage {
+            CdStage::Dev => (
                 profile.integration_branch.clone(),
                 integration,
                 integration_config,
             ),
-            CdEnv::Prod if promotes => (
+            CdStage::Prod if promotes => (
                 profile.production_branch.clone(),
                 integration,
                 integration_config,
             ),
-            CdEnv::Prod => {
+            CdStage::Prod => {
                 let production = self
                     .cd_verified_head(sandbox, &profile.production_branch, &token)
                     .await?;
@@ -800,8 +864,8 @@ impl App {
                 sha.get(..7).unwrap_or(&sha)
             )));
         }
-        dom::authorize(&config, env, requester, &sandbox.slug).map_err(|r| refusal(&r))?;
-        let Some(target) = config.target(env).cloned() else {
+        dom::authorize(&config, env, stage, requester, &sandbox.slug).map_err(|r| refusal(&r))?;
+        let Some(target) = config.target_of(env, stage).cloned() else {
             return Err(AppError::Internal(
                 "an authorized environment has a table".into(),
             ));
@@ -820,13 +884,14 @@ impl App {
             CdActor::Agent(ctx) => Some(*ctx),
             CdActor::Person(..) => None,
         };
-        let why = format!("CD {} deploy", env.label());
+        let why = format!("CD {} deploy", env_label(env));
         // Secrets first: a refusal never comes after a promotion.
         let secrets = self
-            .cd_secret_values(sandbox, env, &target.secrets, asker, &why)
+            .cd_secret_values(sandbox, stage, &target.secrets, asker, &why)
             .await?;
-        if !(env == CdEnv::Prod && target.promote) {
+        if !(stage == CdStage::Prod && target.promote) {
             return Ok(Prepared {
+                stage,
                 branch,
                 sha,
                 target,
@@ -876,21 +941,25 @@ impl App {
         // What production holds now is what runs, with its own table.
         let deployed = self.cd_verified_config(sandbox, &production).await?;
         let mut checked = no_promotion(deployed);
-        if let Some(prod) = checked.prod.as_mut()
+        if let Some(prod) = checked
+            .environments
+            .iter_mut()
+            .find(|target| target.name == env && target.stage == CdStage::Prod)
             && prod.deploy.is_none()
             && prod.verify.is_none()
         {
             // Promotion alone was the deploy: the run records it.
             prod.promote = true;
         }
-        dom::authorize(&checked, env, requester, &sandbox.slug).map_err(|r| refusal(&r))?;
-        let Some(target) = checked.prod.clone() else {
-            return Err(refusal(&CdRefusal::NotDefined(env.label(), env.as_str())));
+        dom::authorize(&checked, env, stage, requester, &sandbox.slug).map_err(|r| refusal(&r))?;
+        let Some(target) = checked.target_of(env, stage).cloned() else {
+            return Err(refusal(&CdRefusal::not_defined(env)));
         };
         let secrets = self
-            .cd_secret_values(sandbox, env, &target.secrets, None, &why)
+            .cd_secret_values(sandbox, stage, &target.secrets, None, &why)
             .await?;
         Ok(Prepared {
+            stage,
             branch,
             sha: production,
             target,
@@ -972,7 +1041,7 @@ impl App {
             "[yulius] deploying {} at {} to {}\n",
             run.branch,
             run.sha,
-            run.environment.label()
+            env_label(&run.environment)
         ));
         let run_dir = self.cd_run_dir(&run.id);
         let (ended, usage) = match self
@@ -1042,7 +1111,7 @@ impl App {
         self.dlv_audit(
             &run.requested_by,
             "cd.finished",
-            &format!("{}/{}", sandbox.slug, run.environment.as_str()),
+            &format!("{}/{}", sandbox.slug, run.environment),
             &format!(
                 "run {}: {} (exit {:?}) at {}",
                 run.id,
@@ -1063,7 +1132,7 @@ impl App {
     pub(super) async fn cd_containment(
         &self,
         sandbox: &SandboxRecord,
-        env: CdEnv,
+        stage: CdStage,
         work: &Path,
         home: &Path,
         cache: &Path,
@@ -1077,14 +1146,14 @@ impl App {
             Err(err) => return Err(err.public_message()),
         };
         let readonly = self.config.contained_readonly.clone();
-        let containment = match (env, join) {
-            (CdEnv::Prod, Some(join)) => {
+        let containment = match (stage, join) {
+            (CdStage::Prod, Some(join)) => {
                 let resolver = work.join("resolv.conf");
                 std::fs::write(&resolver, SANDBOX_RESOLVER)
                     .map_err(|e| format!("writing the run's resolver failed: {e}"))?;
                 production_containment(work, home, cache, readonly, &resolver, join)
             }
-            (CdEnv::Prod, None) => Containment::Bubblewrap {
+            (CdStage::Prod, None) => Containment::Bubblewrap {
                 sandbox_root: work.to_path_buf(),
                 home: home.to_path_buf(),
                 writable: vec![cache.to_path_buf()],
@@ -1093,7 +1162,7 @@ impl App {
                 identity: None,
                 join: None,
             },
-            (CdEnv::Dev, join) => Containment::Bubblewrap {
+            (CdStage::Dev, join) => Containment::Bubblewrap {
                 sandbox_root: self.sandbox_dir(&sandbox.id),
                 home: home.to_path_buf(),
                 writable: vec![work.to_path_buf(), cache.to_path_buf()],
@@ -1124,7 +1193,7 @@ impl App {
         let cache = self
             .cd_private_dir(&sandbox.id)
             .join("cache")
-            .join(run.environment.as_str());
+            .join(cache_name(&run.environment, run.stage));
         let _ = std::fs::remove_dir_all(run_dir);
         for dir in [&home, &cache] {
             std::fs::create_dir_all(dir)
@@ -1143,7 +1212,7 @@ impl App {
             })?;
         std::fs::File::create(&log).map_err(|e| format!("creating the run log failed: {e}"))?;
         let (containment, _lease) = self
-            .cd_containment(sandbox, run.environment, &work, &home, &cache)
+            .cd_containment(sandbox, run.stage, &work, &home, &cache)
             .await?;
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
         let env = vec![
@@ -1154,10 +1223,8 @@ impl App {
             ("NO_COLOR".to_owned(), "1".to_owned()),
             ("GIT_TERMINAL_PROMPT".to_owned(), "0".to_owned()),
             ("YULIUS_CD".to_owned(), "1".to_owned()),
-            (
-                "YULIUS_CD_ENV".to_owned(),
-                run.environment.as_str().to_owned(),
-            ),
+            ("YULIUS_CD_ENV".to_owned(), run.environment.clone()),
+            ("YULIUS_CD_STAGE".to_owned(), run.stage.as_str().to_owned()),
             ("YULIUS_CD_RUN".to_owned(), run.id.clone()),
             ("YULIUS_CD_SHA".to_owned(), run.sha.clone()),
             ("YULIUS_CD_BRANCH".to_owned(), run.branch.clone()),
@@ -1186,11 +1253,8 @@ impl App {
         let token = self.deps.crypto.random_bytes();
         let group = format!("cd-{}", run.id);
         // Its deploy and verify, and the stages their output names (SPEC-137 STG-301).
-        let mut stages = crate::stages::OutputStages::cd_run(
-            sandbox.id.clone(),
-            &run.id,
-            run.environment.as_str(),
-        );
+        let mut stages =
+            crate::stages::OutputStages::cd_run(sandbox.id.clone(), &run.id, &run.environment);
         self.ci_watch(
             run_dir,
             (&run.id, &group),
@@ -1283,7 +1347,7 @@ impl App {
         let (sandbox, level, run) = self
             .cd_require_run(ctx, sandbox_id, run_id, Action::Work)
             .await?;
-        if run.environment == CdEnv::Prod && !level.allows(Action::Administer) {
+        if run.stage == CdStage::Prod && !level.allows(Action::Administer) {
             return Err(refusal(&CdRefusal::ProductionNeedsAdministrator));
         }
         if run.state != RunState::Running {
@@ -1308,7 +1372,7 @@ impl App {
         self.dlv_audit(
             &login,
             "cd.cancel",
-            &format!("{}/{}", sandbox.slug, run.environment.as_str()),
+            &format!("{}/{}", sandbox.slug, run.environment),
             &format!("run {}", run.id),
         )
         .await;
@@ -1405,16 +1469,31 @@ pub fn production_containment(
 /// A production table read from the production head: only the integration head decides a
 /// promotion (review L4).
 fn no_promotion(mut config: CdConfig) -> CdConfig {
-    if let Some(prod) = config.prod.as_mut() {
-        prod.promote = false;
+    for target in &mut config.environments {
+        target.promote = false;
     }
     config
 }
 
-fn running_refusal(env: CdEnv) -> AppError {
+/// The cache directory of the environment `name` of `stage` (review H1): a name relabelled to
+/// the other stage gets another cache, so what a dev-stage run leaves there never runs with
+/// production's trust. `dev` and `prod` keep theirs (a name has no `.`).
+fn cache_name(name: &str, stage: CdStage) -> String {
+    if dom::fixed_stage(name) == Some(stage) {
+        name.to_owned()
+    } else {
+        format!("{stage}.{name}")
+    }
+}
+
+/// What a request naming no environment is told.
+const UNKNOWN_ENV: &str = "the environment is a [cd.<name>] of yulius.toml: dev, prod or another \
+    name of lowercase letters, digits and '-'";
+
+fn running_refusal(env: &str) -> AppError {
     AppError::Conflict(format!(
         "a deploy to {} is running; wait for it to end (or cancel it)",
-        env.label()
+        env_label(env)
     ))
 }
 
@@ -1428,10 +1507,10 @@ fn environment_text(out: &mut String, env: &CdEnvironment) {
     out.push_str(&format!(
         "{} ({}): {state}",
         env.label,
-        if env.name == "dev" {
-            format!("[cd.dev] from {}", env.branch)
+        if env.stage == "dev" {
+            format!("[cd.{}] from {}", env.name, env.branch)
         } else {
-            format!("[cd.prod], deploys {}", env.branch)
+            format!("[cd.{}], deploys {}", env.name, env.branch)
         }
     ));
     if let Some(about) = &env.about {
@@ -1553,7 +1632,7 @@ impl App {
             }
         }
         text.push_str(&format!(
-            "You may deploy dev (cd_deploy); production is deployed by a person on {}/s/{}/ci?section=cd.",
+            "You may deploy the dev-stage environments (cd_deploy); production-stage ones are deployed by a person on {}/s/{}/ci?section=cd.",
             self.config.public_url, sandbox.slug
         ));
         Ok(serde_json::json!({"text": text, "cd": overview}))
@@ -1572,12 +1651,12 @@ impl App {
             .get("environment")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| AppError::Invalid("environment is required (dev)".into()))?;
-        let env =
-            CdEnv::parse(name).ok_or_else(|| AppError::Invalid("the environment is dev".into()))?;
-        let run = self.cd_deploy_for_task(ctx, env).await?;
+        let env = dom::env_name(name).ok_or_else(|| AppError::Invalid(UNKNOWN_ENV.into()))?;
+        let run = self.cd_deploy_for_task(ctx, &env).await?;
         let view = self.cd_run_view(&run, false).await;
         let text = format!(
-            "Deploying dev: run {} of {} at {}. Start `yulius wait` in the background: it returns when the run ends; then read it with cd_status {{run_id}}.",
+            "Deploying {}: run {} of {} at {}. Start `yulius wait` in the background: it returns when the run ends; then read it with cd_status {{run_id}}.",
+            env_label(&run.environment),
             run.id,
             run.branch,
             short_sha(&run.sha)
@@ -1597,6 +1676,7 @@ mod tests {
         let env = CdEnvironment {
             name: "prod".into(),
             label: "production".into(),
+            stage: "prod".into(),
             state: "ready".into(),
             branch: "main".into(),
             head: None,

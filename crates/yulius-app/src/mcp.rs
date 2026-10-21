@@ -282,20 +282,20 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "delivery_deploy".into(),
-            description: "Run the next integration environment of the delivery profile's [[delivery.environments]] (projects without CD tables): its deploy command runs and its verification decides. Only environments with a command and verify = \"command\" after the integration stage; a production environment or one a person must verify is refused. Follow the run with delivery_status. Projects with [cd.dev] deploy with cd_deploy.".into(),
+            description: "Run the next integration environment of the delivery profile's [[delivery.environments]] (projects without CD tables): its deploy command runs and its verification decides. Only environments with a command and verify = \"command\" after the integration stage; a production environment or one a person must verify is refused. Follow the run with delivery_status. Projects with CD tables ([cd.dev], [cd.<name>]) deploy with cd_deploy.".into(),
             input_schema: schema(json!({"environment": {"type": "string", "description": "Environment name from the delivery profile"}}), &["environment"]),
         },
         ToolDescriptor {
             name: "cd_status".into(),
-            description: "This project's CD (deployment, SPEC-134): dev and production as yulius.toml defines them on their protected branches ([cd.dev] from the integration branch, [cd.prod] from what production deploys), each one's state (not defined, empty or ready), its deploy and verify commands, the secrets it needs and whether a person allowed them, what is deployed, and the recent runs. With run_id, one run with the end of its output. Improve CD by changing yulius.toml and scripts/cd/ in a pull request; a task branch never changes what a deploy runs.".into(),
+            description: "This project's CD (deployment, SPEC-134, SPEC-257): every environment as yulius.toml defines it on its protected branch, [cd.dev] and [cd.prod] by default and any other [cd.<name>] with its stage (dev-stage ones from the integration branch, production-stage ones from what production deploys), each one's state (not defined, empty or ready), its deploy and verify commands, the secrets it needs and whether a person allowed them, what is deployed, and the recent runs. With run_id, one run with the end of its output. Improve CD by changing yulius.toml and scripts/cd/ in a pull request; a task branch never changes what a deploy runs.".into(),
             input_schema: schema(json!({
                 "run_id": {"type": "string", "description": "A run id from the list, to read its output"}
             }), &[]),
         },
         ToolDescriptor {
             name: "cd_deploy".into(),
-            description: "Deploy dev: Yulius runs [cd.dev]'s deploy then verify commands from the integration branch head, inside the sandbox, with the secrets it names (a person must allow each outside the proxy; one not allowed yet is asked for and nothing runs). Only when your task asks for a dev deploy (merges do not deploy). Production is never yours: only a person deploys it, on the CD page; ask one with needs_you. Start `yulius wait` in the background to wait for the run's end.".into(),
-            input_schema: schema(json!({"environment": {"type": "string", "enum": ["dev"], "description": "dev"}}), &["environment"]),
+            description: "Deploy a dev-stage environment (dev, or another [cd.<name>] with stage = \"dev\"): Yulius runs its deploy then verify commands from the integration branch head, inside the sandbox, with the secrets it names (a person must allow each outside the proxy; one not allowed yet is asked for and nothing runs). Only when your task asks for a dev deploy (merges do not deploy). Production and every production-stage environment are never yours: only a person deploys them, on the CD page; ask one with needs_you. Start `yulius wait` in the background to wait for the run's end.".into(),
+            input_schema: schema(json!({"environment": {"type": "string", "description": "A dev-stage environment's name: dev, or another one cd_status lists with stage dev"}}), &["environment"]),
         },
         ToolDescriptor {
             name: "needs_you".into(),

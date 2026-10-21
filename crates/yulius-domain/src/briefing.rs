@@ -224,8 +224,9 @@ impl Foundations {
         }
         if self.config && !self.cd_defined {
             out.push(
-                "CD (deployment): `[cd.dev]` and `[cd.prod]` in `yulius.toml`, each with its deploy \
-                 and verify scripts or empty with an `about` line"
+                "CD (deployment): `[cd.dev]` and `[cd.prod]` in `yulius.toml` (more targets as \
+                 `[cd.<name>]` with a `stage`), each with its deploy and verify scripts or empty \
+                 with an `about` line"
                     .to_owned(),
             );
         }
@@ -766,7 +767,7 @@ fn foundations(input: &BriefingInput<'_>) -> String {
          and integration tests, lint and format, one local gate that Yulius CI runs on our own \
          machines (`[commands] gate` or `[[ci.jobs]]` in `yulius.toml`; `ci_setup` lists the \
          GitHub Actions to translate before you delete them), CD (deployment) with `[cd.dev]` and \
-         `[cd.prod]` and their deploy and verify scripts, the docs and the GitHub labels. Never add GitHub Actions \
+         `[cd.prod]` (and a `[cd.<name>]` with its `stage` per further target) and their deploy and verify scripts, the docs and the GitHub labels. Never add GitHub Actions \
          or anything that needs a paid GitHub plan. Research and questions go ahead without \
          it.\n\n",
         gaps.join("; ")

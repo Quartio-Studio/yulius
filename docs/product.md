@@ -186,7 +186,9 @@ watching, steering and unblocking.
   CI run's jobs one row each with their wait for a job slot), and the Dashboard's Overview tab the
   overview.
 - **CD (deployment)**: the CI/CD page's second tab, with CI's discipline. Every project defines dev and
-  production in `yulius.toml` (`[cd.dev]`, `[cd.prod]`), each with deploy and verify scripts
+  production in `yulius.toml` (`[cd.dev]`, `[cd.prod]`), and one more `[cd.<name>]` per further
+  target (a staging machine, a hosted platform next to a self-hosted release) with the `stage`
+  whose rules it follows, each with deploy and verify scripts
   committed under `scripts/cd/`, or explicitly empty while it deploys nothing yet. Yulius runs the
   exact commits GitHub reports for the protected branches, dev inside the sandbox and production
   outside it, with the agent secrets a person allowed for each, and shows each run on the CD

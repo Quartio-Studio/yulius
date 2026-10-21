@@ -82,6 +82,54 @@ test('production says a secret agents use is never for production', async ({ app
   await expect(refused.getByText('Not started')).toBeVisible();
 });
 
+// Task #243 (SPEC-257): "dev/prod is default but we can [have a] different prod": a staging
+// machine next to dev and the hosted platform next to production, each its own card, deployed by
+// its stage's rules.
+test('named environments show their stage and deploy by its rules', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci?section=cd'));
+  await expect(screen.getByRole('region', 'Production environment')).toBeVisible();
+  await browser.evaluate(() => {
+    type Env = Record<string, unknown>;
+    const w = window as unknown as { __yuliusMock: { cd: Record<string, { environments: Env[] }> } };
+    const envs = w.__yuliusMock.cd.sb_studio.environments;
+    const base = { problem: null, promote: false, secrets: [], head: '4be81c0d2a9f1e2d' };
+    envs.splice(1, 0, { ...base, name: 'staging', label: 'staging', stage: 'dev', state: 'ready', branch: 'quartio', head: '9f3c2a1b7e4d5f6a', about: 'the staging VM', deploy: 'scripts/cd/deploy.sh staging', verify: null });
+    envs.push({ ...base, name: 'platform', label: 'platform', stage: 'prod', state: 'ready', branch: 'main', about: 'the hosted platform', deploy: 'scripts/cd/deploy.sh platform', verify: 'scripts/cd/verify.sh platform' });
+  });
+  // Leaving and coming back reads the environments again.
+  await screen.getByRole('radio', 'CI (tests)').click();
+  await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();
+  await screen.getByRole('radio', 'CD (deployment)').click();
+  const staging = screen.getByRole('region', 'Staging environment');
+  const platform = screen.getByRole('region', 'Platform environment');
+  await expect(staging.getByText('dev stage')).toBeVisible();
+  await expect(platform.getByText('production stage')).toBeVisible();
+  await expect(platform.getByText(/Platform, a production environment, is always deployed by a person/)).toBeVisible();
+  await expect(screen.getByRole('region', 'Dev environment').getByText('dev stage')).toBeHidden();
+  const names = await browser.evaluate(() => [...document.querySelectorAll('.cd-env h2')].map((e) => e.textContent));
+  expect(names).toEqual(['Dev', 'Staging', 'Production', 'Platform']);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Production's rules: the slug typed in the dialog the platform's button opens.
+  await platform.getByRole('button', 'Deploy platform…').click();
+  const confirm = screen.getByRole('dialog', 'Deploy platform?');
+  await expect(confirm.getByText('Run the deploy command at the new main head: scripts/cd/deploy.sh platform')).toBeVisible();
+  await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
+  await confirm.getByRole('button', 'Deploy platform').click();
+  const view = screen.getByRole('region', 'Deploy');
+  await expect(view.getByText('Platform', { exact: true })).toBeVisible();
+  const sent = await browser.evaluate(() => (window as unknown as { __yuliusMock: { lastCdDeploy?: { confirm?: string } } }).__yuliusMock.lastCdDeploy?.confirm ?? null);
+  expect(sent).toBe('studio');
+  await view.getByRole('link', 'All runs').click();
+
+  // Dev's rules: a plain confirmation.
+  await staging.getByRole('button', 'Deploy staging').click();
+  const dev = screen.getByRole('dialog', 'Deploy staging?');
+  await expect(dev.getByText(/^Runs \[cd\.staging\] from quartio at 9f3c2a1/)).toBeVisible();
+  await dev.getByRole('button', 'Deploy staging').click();
+  await expect(screen.getByRole('region', 'Deploy').getByText('Staging', { exact: true })).toBeVisible();
+});
+
 // Task #145 (SPEC-151): "make CI/CD one tab with a tab like in secrets team/agent". One sidebar
 // entry, one page; its sections are the Secrets page's tabs, kept in ?section=.
 test('CI and CD are two tabs of the CI/CD page, like the Secrets sections', async ({ app, browser, screen }) => {
