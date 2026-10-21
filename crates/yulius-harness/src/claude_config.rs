@@ -65,7 +65,7 @@ pub fn ensure_claude_config(
     bypass_permissions: bool,
 ) -> io::Result<()> {
     let config = open_config_dir(config_dir)?;
-    opened(&config);
+    opened();
     let mut root = match open_regular(&config, OsStr::new(CLAUDE_GLOBAL_CONFIG))? {
         Some(file) => {
             let mut text = String::new();
@@ -84,8 +84,10 @@ pub fn ensure_claude_config(
         }
         None => Map::new(),
     };
-    // The worktree is the host's path; Claude Code keys trust by the real path of its working
-    // directory, so the key is that. Nothing the agent wrote is resolved (SPEC-253 CFG-006).
+    // Claude Code keys trust by the real path of its working directory, so the worktree's key is
+    // its real path: the data directory may sit behind a host link (macOS `/var`). The worktree
+    // folder itself is the agent's to replace with a link, which this then resolves (SPEC-253
+    // CFG-006, a residual noted on #634); its git files are read lexically (CFG-005).
     let worktree = worktree
         .canonicalize()
         .unwrap_or_else(|_| worktree.to_path_buf());
@@ -193,12 +195,11 @@ thread_local! {
 }
 
 /// Test-only pause point: the config dir is open; nothing in it is read or written yet.
-fn opened(config: &OwnedFd) {
+fn opened() {
     #[cfg(test)]
     if let Some(hook) = OPENED.with(|hook| hook.borrow_mut().take()) {
         hook();
     }
-    let _ = config;
 }
 
 /// Replaces `name` in the folder `dir` whole, mode 0600: a new file created through the handle
@@ -254,32 +255,31 @@ fn default_output_style(config: &OwnedFd) {
     }
 }
 
-/// The main repository of a linked git worktree, read from its files as Git lays them out (no
-/// `git` process): `<worktree>/.git` is a file `gitdir: <admin dir>`, the admin dir is
-/// `<common>/worktrees/<name>`, and its `commondir` leads back to `<common>`, the common git
-/// directory. That directory's parent when it is a `.git`, else the directory itself (a bare
-/// repository). `None` for a main checkout, a plain directory or files that do not read like that.
+/// The main repository of a linked git worktree, read as Git lays it out (no `git` process):
+/// `<worktree>/.git` is a file `gitdir: <admin dir>`, and the admin dir is
+/// `<common>/worktrees/<name>`, `<common>` being the common git directory. That directory's parent
+/// when it is a `.git`, else the directory itself (a bare repository). `None` for a main checkout,
+/// a plain directory or a `.git` file that does not read like that.
 ///
-/// Both files are the agent's, so the paths they name are resolved lexically, never on the host
-/// filesystem: following them would let the agent learn which host paths exist and where host
+/// The `gitdir:` path is the agent's, so it is resolved lexically and nothing below it is opened
+/// (not even `commondir`): following it would tell the agent which host paths exist and where host
 /// links lead (#634, SPEC-253 CFG-005). Git writes the real path of the admin dir, or one relative
-/// to the worktree, so the result is the same for every layout Git makes.
+/// to the worktree, and `commondir` is always `../..` there, so the result is the same for every
+/// layout Git makes. A trust entry this yields for a path that is not a repository only lands in
+/// the agent's own config, which it can edit anyway (SPEC-106).
 fn main_repository(worktree: &Path) -> Option<PathBuf> {
-    // Regular files only (`read_small`): a link would make the host read a file outside the
+    // A regular file only (`read_small`): a link would make the host read a file outside the
     // worktree, a FIFO block the launch.
-    let small_file = |path: &Path| read_small(nix::fcntl::AT_FDCWD, path).ok().flatten();
-    let dot_git = small_file(&worktree.join(".git"))?;
+    let dot_git = read_small(nix::fcntl::AT_FDCWD, &worktree.join(".git"))
+        .ok()
+        .flatten()?;
     let admin = dot_git.lines().next()?.strip_prefix("gitdir:")?.trim();
     let admin = lexical(&worktree.join(admin))?;
     let worktrees = admin.parent()?;
-    if worktrees.file_name()? != "worktrees" {
+    if admin.file_name().is_none() || worktrees.file_name()? != "worktrees" {
         return None;
     }
     let common = worktrees.parent()?;
-    let commondir = small_file(&admin.join("commondir"))?;
-    if lexical(&admin.join(commondir.lines().next()?.trim()))? != common {
-        return None;
-    }
     if common.file_name().is_some_and(|name| name == ".git") {
         common.parent().map(Path::to_path_buf)
     } else {
@@ -810,20 +810,19 @@ mod tests {
         ensure_claude_config(&config, &worktree, false)?;
         assert!(trusted(&config, &worktree)?);
         assert!(!trusted(&config, &main)?);
-        // A `commondir` that is a link is not followed either.
+        // `commondir` is never opened (SPEC-253 CFG-005): a FIFO there holds nothing, and the main
+        // repository comes from the `gitdir:` path.
         std::fs::remove_file(worktree.join(".git"))?;
         std::fs::write(
             worktree.join(".git"),
             format!("gitdir: {}\n", admin.display()),
         )?;
-        let common = dir.path().join("common");
-        std::fs::write(&common, "../..\n")?;
         std::fs::remove_file(admin.join("commondir"))?;
-        symlink(&common, admin.join("commondir"))?;
+        nix::unistd::mkfifo(&admin.join("commondir"), nix::sys::stat::Mode::S_IRWXU)?;
         let config = dir.path().join(".claude-common");
         ensure_claude_config(&config, &worktree, false)?;
         assert!(trusted(&config, &worktree)?);
-        assert!(!trusted(&config, &main)?);
+        assert!(trusted(&config, &main)?);
         // A `.git` FIFO returns at once and trusts the worktree alone.
         std::fs::remove_file(worktree.join(".git"))?;
         nix::unistd::mkfifo(&worktree.join(".git"), nix::sys::stat::Mode::S_IRWXU)?;

@@ -10,9 +10,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Before a launch, Yulius opens `<home>/.claude` from the folder above the home without following
   links. A home or config dir the agent replaced with a link now refuses the launch and names it,
   where Yulius used to read and replace `.claude.json` and `settings.json` in the link's target.
-  `plugins/store` linked elsewhere is left alone. A linked worktree's main repository is read
-  lexically from Git's layout, so the host no longer resolves paths the agent wrote. The two Vidoc
-  ignores that pointed at #634 are removed.
+  `plugins/store` linked elsewhere is left alone. A linked worktree's main repository comes from
+  its `gitdir:` path alone, read lexically: the host no longer opens or resolves paths the agent
+  wrote there. The two Vidoc ignores that pointed at #634 are removed. Still by path: the
+  transcript step-back (#661).
 
 ## 2026-10-20
 

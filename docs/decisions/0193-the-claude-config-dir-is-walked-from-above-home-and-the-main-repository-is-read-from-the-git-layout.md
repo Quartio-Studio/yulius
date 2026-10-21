@@ -31,11 +31,12 @@ of SPEC-024, SPEC-106 and SPEC-210.
 - **Files through the handle.** Reads use `openat` with `O_NOFOLLOW | O_NONBLOCK` and only a
   regular file; replacements create a random `O_EXCL | O_NOFOLLOW` file (0600), sync it,
   `renameat` it within the handle and sync the folder.
-- **Main repository from the layout, lexically.** The admin dir is the `gitdir:` path (against the
-  worktree's real path) with `.` and `..` removed; it must be `<common>/worktrees/<name>`, and its
-  `commondir` must lead lexically back to `<common>`. Nothing the agent names is resolved on the
-  host. The worktree itself, the host's own path, keeps being resolved to its real path, which is
-  how Claude Code keys its trust.
+- **Main repository from the `gitdir:` path, lexically.** The admin dir is the `gitdir:` path of
+  `<worktree>/.git` (against the worktree's real path) with `.` and `..` removed; it must read
+  `<common>/worktrees/<name>`. Nothing below it is opened, `commondir` included (Git always writes
+  `../..`), so the trust keys never tell what exists there or where a link leads.
+- **The worktree keeps its real path.** Claude Code keys trust by the real path of its working
+  directory, and the data directory may sit behind a host link, so the worktree is still resolved.
 
 ## Alternatives
 
@@ -45,6 +46,8 @@ of SPEC-024, SPEC-106 and SPEC-210.
   made, silently; a refusal names it, as ADR-0174 does elsewhere.
 - **Walk `gitdir` with `O_NOFOLLOW` from `/`.** Refuses host links above the data directory (macOS
   `/var` → `/private/var`), which work today, and still touches paths the agent names.
+- **Check `commondir` too.** Opening it means opening a path the agent names, through any link on
+  the way: an existence oracle. The review of SPEC-253 found it in the first draft.
 - **Ask `git rev-parse --git-common-dir`.** A process per launch running in the agent's repository
   configuration, outside the containment.
 
@@ -52,6 +55,10 @@ of SPEC-024, SPEC-106 and SPEC-210.
 
 - An agent that links its home, its config dir or a folder on the way refuses its own next launch
   with `… on the way to the Claude config dir is a link or not a folder: Yulius follows no links`.
-- A linked worktree whose git files do not read like Git's own layout trusts the worktree alone;
-  Claude Code may then ask for the main repository's trust as it would without Yulius.
+- A linked worktree whose `gitdir:` does not read like Git's own layout trusts the worktree alone;
+  Claude Code may then ask for the main repository's trust as it would without Yulius. A `gitdir:`
+  naming a path that is no repository yields a trust entry for it, in the agent's own config only.
+- Residual, pre-existing: the worktree folder is the agent's, so a link it puts there is resolved
+  for the worktree's key and its `.git` read through it. Not covered: the transcript step-back
+  still reads `<home>/.claude/projects/…` by path (#661).
 - The two Vidoc ignores that pointed at #634 are gone; a new finding there is triaged afresh.

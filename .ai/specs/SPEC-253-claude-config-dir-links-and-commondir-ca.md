@@ -56,23 +56,26 @@ agent put in that dir's path, and never resolves agent-written git files on the 
 - CFG-004. `plugins` and `store` are opened through the config dir's handle without links and
   never created; a link (or anything else) there leaves the diff pane as it is and the launch goes
   on, its target untouched.
-- CFG-005. The main repository of a linked worktree is computed lexically, with no filesystem
-  access for the computed path: the admin dir is the `gitdir:` path (relative paths against the
-  worktree's key) with `.` and `..` removed; it must be `<common>/worktrees/<name>` and its
-  `commondir` file must lead (lexically) to that `<common>`, as `git worktree add` lays them out;
-  otherwise the worktree alone is trusted. The trusted repository is `<common>`'s parent when
-  `<common>` is named `.git`, else `<common>` (bare).
-- CFG-006. The worktree's own trust key stays its real path (Claude Code keys trust by the real
-  path of its working directory, which the host chose); no other path is canonicalized.
+- CFG-005. The main repository of a linked worktree comes from the `gitdir:` path of
+  `<worktree>/.git` alone, resolved lexically (relative paths against the worktree's key, `.` and
+  `..` removed); nothing below it is opened, `commondir` included (Git always writes `../..`
+  there). It must read `<common>/worktrees/<name>`, as `git worktree add` lays it out; otherwise
+  the worktree alone is trusted. The trusted repository is `<common>`'s parent when `<common>` is
+  named `.git`, else `<common>` (bare). The keys therefore never depend on what exists at that
+  path or where its links lead.
+- CFG-006. The worktree's own trust key stays its real path: Claude Code keys trust by the real
+  path of its working directory, and the data directory may sit behind a host link. No other
+  path is canonicalized. Residual (pre-existing, noted on #634): the worktree folder is the
+  agent's, so a link it puts there is resolved for that key.
 - CFG-007. The two `.config/vidoc.toml` ignores citing #634 are removed.
 
 ## Plan
 
 - [x] Spec SPEC-253 for the config dir walk and lexical commondir
-- [ ] Regression tests for linked config dirs and commondir resolution
-- [ ] Config dir walked and written through handles
-- [ ] Main repository derived lexically from the git layout
-- [ ] Docs, ADR and Vidoc entries updated
+- [x] Regression tests for linked config dirs and commondir resolution
+- [x] Config dir walked and written through handles
+- [x] Main repository derived lexically from the git layout
+- [x] Docs, ADR and Vidoc entries updated
 - [ ] Gates green and independent review approved
 - [ ] Merged into dev on green CI
 
@@ -85,9 +88,10 @@ agent put in that dir's path, and never resolves agent-written git files on the 
   succeeds and the outside store still reads `"open": true`.
 - A swap of the config dir for a link after it was opened (test pause point) does not redirect
   the writes: they land in the folder that was opened.
-- A `commondir` naming a path outside the git layout (`/`, a link, a path that does not exist)
-  trusts the worktree alone; a real `git worktree add` (absolute and `--relative-paths`) and a
-  bare repository's worktree still trust their main repository.
+- The trusted keys are exactly the worktree and the repository named by the `gitdir:` path: the
+  same for a path that does not exist, kept as written through a link, none for a path that is
+  not `<common>/worktrees/<name>`; a FIFO at `commondir` is never opened. A real `git worktree
+  add`, a relative `gitdir:` and a bare repository's worktree still trust their main repository.
 - Every existing `claude_config` test passes.
 
 ## Test plan
@@ -95,8 +99,10 @@ agent put in that dir's path, and never resolves agent-written git files on the 
 Unit tests in `crates/yulius-harness/src/claude_config.rs` (run by `scripts/dev test`):
 `a_linked_config_dir_is_refused_and_its_target_untouched`,
 `a_linked_plugin_folder_is_left_alone`, `writes_go_to_the_folder_that_was_opened` (pause point,
-`cfg(test)`, ADR-0174), `the_main_repository_comes_from_the_git_layout_alone`; the existing
-trust tests cover the git layouts. Then the full gate (`scripts/dev ci`) and `scripts/dev
+`cfg(test)`, ADR-0174), `the_main_repository_comes_from_the_gitdir_path_alone`; the existing
+trust tests cover the git layouts (`git worktree add`, relative `gitdir:`, bare), and
+`host_reads_never_follow_a_link_or_wait_on_a_fifo` a FIFO at `commondir`. Not tested: Git's
+`--relative-paths` itself (Git 2.43 here lacks it; the synthetic relative layout stands in). Then the full gate (`scripts/dev ci`) and `scripts/dev
 security`.
 
 ## Decisions
@@ -106,10 +112,16 @@ security`.
   explicit anchor would make each caller repeat the same derivation. Recorded in ADR-0193.
 - **Refuse rather than replace a linked config dir.** Replacing would remove an entry the agent
   made; a refusal names it and the agent (or a person) fixes it. Matches ADR-0174.
-- **Lexical main repository instead of a handle walk.** Git writes the real absolute admin path
-  (`git worktree add`) or a path relative to the worktree, and `commondir` is `../..`; lexical
-  resolution gives the same answer for every layout Git makes, without touching paths the agent
-  names. A walk with `O_NOFOLLOW` from `/` would refuse host links above the data directory (macOS
-  `/var`), which the current code accepts.
-- **Keep resolving the worktree path.** It is the host's own path; Claude Code resolves its working
-  directory through the same links, so the key must match that.
+- **Main repository from the `gitdir:` path alone, lexically, instead of a handle walk.** Git
+  writes the real absolute admin path (`git worktree add`) or a path relative to the worktree, and
+  `commondir` is `../..`; lexical resolution gives the same answer for every layout Git makes,
+  without touching paths the agent names. Reading `commondir` as a check (review round 1) still
+  opened it through links in the agent's path, an existence oracle; a trust entry for a path that
+  is no repository only lands in the agent's own config. A walk with `O_NOFOLLOW` from `/` would
+  refuse host links above the data directory (macOS `/var`), which the current code accepts.
+- **Keep resolving the worktree path.** Claude Code keys trust by the real path of its working
+  directory and `data_dir` is not canonicalized at startup, so the key must be resolved; resolving
+  only the host's prefix would need each caller to pass its sandbox directory. The residual (a
+  link the agent puts at its own worktree is resolved) is pre-existing and noted on #634.
+- **Out of scope:** the transcript step-back still reads `<home>/.claude/projects/…` by path
+  (#661).
