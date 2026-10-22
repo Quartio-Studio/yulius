@@ -932,6 +932,69 @@ async fn a_failed_fetch_never_deletes_what_moved_on_github() -> TestResult {
     Ok(())
 }
 
+/// SPEC-269 (review round 4): branches already in dev never use up the pull-request lookups an
+/// unmerged branch's verdict needs, however many there are.
+#[tokio::test]
+async fn merged_branches_leave_the_lookups_to_unmerged_ones() -> TestResult {
+    let f = fixture().await?;
+    let bound = yulius_app::ci::hygiene::MAX_PULL_LOOKUPS;
+    // Old release branches at dev's commit, older than anything else.
+    let refspecs: Vec<String> = (0..bound)
+        .map(|n| format!("origin/dev:refs/heads/release/{n}"))
+        .collect();
+    let mut push = vec!["push", "-q", "origin"];
+    push.extend(refspecs.iter().map(String::as_str));
+    git(&f.work, &["fetch", "-q", "origin"])?;
+    git(&f.work, &push)?;
+    // A newer branch whose pull request was closed: only a lookup can tell.
+    git(
+        &f.work,
+        &["checkout", "-q", "-B", "feat/closed", "origin/dev"],
+    )?;
+    std::fs::write(f.work.join("closed.txt"), "x\n")?;
+    git(&f.work, &["add", "-A"])?;
+    // Committed a day later than dev's commit, so the scan, oldest first, meets it last.
+    let committed = Command::new("git")
+        .args([
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@t.test",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(["commit", "-q", "-m", "closed"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_COMMITTER_DATE", "@4000000000 +0000")
+        .current_dir(&f.work)
+        .output()?;
+    assert!(committed.status.success(), "{committed:?}");
+    git(&f.work, &["push", "-q", "origin", "feat/closed"])?;
+    pull(&f, 2, "feat/closed", "dev", false, false)?;
+
+    let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    assert_eq!(scan.status, StatusCode::OK, "{}", scan.body);
+    let items = scan.body["items"].as_array().ok_or("items")?;
+    assert!(
+        items
+            .iter()
+            .any(|i| i["name"] == "feat/closed" && i["reason_code"] == "pull_closed"),
+        "{}",
+        scan.body
+    );
+    assert_eq!(
+        items
+            .iter()
+            .filter(|i| i["reason_code"] == "merged")
+            .count(),
+        bound,
+        "{}",
+        scan.body
+    );
+    Ok(())
+}
+
 /// Jobs run inside the sandbox's containment (Linux, bubblewrap): what lies outside the sandbox
 /// directory, such as the data directory's run records, is not there, `/tmp` is private, and
 /// `HOME` is the sandbox's CI home.

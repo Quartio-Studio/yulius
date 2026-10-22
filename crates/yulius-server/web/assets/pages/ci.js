@@ -404,9 +404,10 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
       scan.disabled = Boolean(busy) || !write;
       clean.disabled = Boolean(busy) || !write || safe.length === 0;
       const last = now.last_cleanup;
-      // A failure reads until a cleanup newer than it (the automatic round's) replaces it.
+      // A failure reads until another cleanup (the automatic round's) replaces the one known when
+      // it failed; the server's times are compared with the server's, never the browser's clock.
       const failed = hygieneProblems.get(base);
-      const problem = failed && !(last && Date.parse(last.at) > failed.at) ? failed.text : null;
+      const problem = failed && (last ? last.at : null) === failed.seen ? failed.text : null;
       let says = '';
       if (busy) {
         says = busy.kind === 'clean' ? `Removing ${plural(busy.count, 'item')}…` : 'Checking the repository…';
@@ -432,7 +433,10 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
         : [rows.length ? h('p', { class: 'muted small' }, 'Still listed:') : null, h('ul', { class: 'ci-hygiene', 'aria-label': 'Stale branches and worktrees' }, items.map((item) => h('li', null,
           badge(kindOf(item.kind), item.safe ? '' : 'warn'), h('code', null, item.name),
           item.safe
-            ? h('span', { class: 'muted' }, item.reason)
+            ? h('span', { class: 'muted' }, item.reason_code === 'merged'
+              // The automatic round leaves a branch no pull request had (a release branch).
+              ? `${item.reason}: no pull request had it, so ${BRAND.name} leaves it to you`
+              : item.reason)
             : [badge('Kept', 'warn'), h('span', { class: 'muted' }, `${item.reason}: unmerged work, which ${BRAND.name} never deletes by itself`)])))]);
       setChildren(notes, (now.notes || []).length ? h('p', { class: 'muted small' }, now.notes.join(' ')) : null);
     }
@@ -461,13 +465,15 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
   function hygieneAction(kind, count, request, failure) {
     if (hygieneRunning.has(base)) return Promise.resolve();
     hygieneProblems.delete(base);
+    // The cleanup known now: a newer one (another id: its time) replaces this action's failure.
+    const seen = hygieneCard && hygieneCard.report.last_cleanup ? hygieneCard.report.last_cleanup.at : null;
     const done = (async () => {
       try {
         const report = await request();
         hygieneAnswered.set(base, { report, at: performance.now() });
         return report;
       } catch (error) {
-        hygieneProblems.set(base, { text: `${failure}: ${error && error.message ? error.message : String(error)}`, at: Date.now() });
+        hygieneProblems.set(base, { text: `${failure}: ${error && error.message ? error.message : String(error)}`, seen });
         return null;
       } finally {
         hygieneRunning.delete(base);

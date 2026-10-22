@@ -266,7 +266,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "repo_cleanup".into(),
-            description: "Remove stale branches and worktrees reported by repo_hygiene: the given items, or every safe item when items is omitted. Unmerged branches without a pull request (reason idle) are removed only with force. Live tasks' worktrees, protected branches and branches with an open pull request are never removed; dirty worktrees are kept.".into(),
+            description: "Remove stale branches and worktrees reported by repo_hygiene: the given items, or every safe item when items is omitted. Unmerged branches without a pull request (reason idle) are removed only with force. Live or paused tasks' worktrees, protected branches and branches an open pull request uses (head or base) are never removed; dirty worktrees, worktrees with ignored files that are not caches and branches that moved on GitHub since the scan are kept. Yulius also removes the safe items by itself every 6 hours, except merged branches no pull request had.".into(),
             input_schema: schema(json!({
                 "items": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["remote_branch", "local_branch", "worktree"]}, "name": {"type": "string"}}, "required": ["kind", "name"]}},
                 "force": {"type": "boolean"}

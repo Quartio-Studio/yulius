@@ -61,3 +61,8 @@ saw nothing happen after it: the list asked for a decision that has one answer.
 - A closed pull request's branch is deleted too; reopening that pull request needs "Restore
   branch" on GitHub first.
 - The round costs one more scan per sandbox only when it removed something.
+- A long-lived branch promoted through a merged pull request (a staging branch merged into main
+  with a merge commit) reads `pull_merged` and goes in the round once no open pull request uses
+  it, as a branch merged through Yulius already does; GitHub keeps its commits. Protect it (the
+  integration, production or default branch) or keep a pull request open on it to keep it.
+- Merged branches get only the pull-request lookups unmerged ones leave of the bound of 50.

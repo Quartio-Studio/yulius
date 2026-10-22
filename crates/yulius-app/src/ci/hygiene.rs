@@ -272,8 +272,7 @@ impl App {
             .map(|b| format!("origin/{b}"))
             .collect();
         let now = self.now().0;
-        let mut lookups = 0usize;
-        let mut bound_hit = false;
+        let mut examined = Vec::with_capacity(branches.len());
         for branch in branches {
             if protected.contains(&branch.name) {
                 continue;
@@ -288,6 +287,25 @@ impl App {
                     break;
                 }
             }
+            examined.push((branch, merged));
+        }
+        // An unmerged branch's verdict needs its pull requests; a merged one is safe either way
+        // and only gets the lookups the unmerged ones leave (review round 4).
+        let unmerged = examined
+            .iter()
+            .filter(|(b, merged)| !merged && !open.contains(&b.name))
+            .count();
+        let mut merged_budget = MAX_PULL_LOOKUPS.saturating_sub(unmerged);
+        let mut lookups = 0usize;
+        let mut bound_hit = false;
+        for (branch, merged) in examined {
+            let lookup = if merged {
+                merged_budget
+                    .checked_sub(1)
+                    .map(|left| merged_budget = left)
+            } else {
+                (lookups < MAX_PULL_LOOKUPS).then(|| lookups += 1)
+            };
             let pulls = if open.contains(&branch.name) {
                 Some(vec![BranchPull {
                     number: 0,
@@ -295,8 +313,7 @@ impl App {
                     merged: false,
                     tip_on_pull: true,
                 }])
-            } else if lookups < MAX_PULL_LOOKUPS {
-                lookups += 1;
+            } else if lookup.is_some() {
                 self.deps
                     .github
                     .branch_pulls(token, &sandbox.repo_owner, &sandbox.repo_name, &branch.name)

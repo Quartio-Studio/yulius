@@ -728,7 +728,10 @@ Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force"
 - **Hygiene.** After a merge through Yulius the head branch is deleted (not the integration,
   production or default branch, nor one another open pull request uses). Every 6 hours (first 10
   minutes after start) Yulius removes each sandbox's safe items itself, as `yulius` (SPEC-269,
-  ADR-0199); `next_cleanup_at` says when. `last_cleanup` is the last cleanup since the server
+  ADR-0199), except `merged` branches (already in the integration branch, no pull request had
+  them: a release branch), which stay for a person; `next_cleanup_at` says when. A branch an open
+  pull request targets is in use, and a branch on GitHub is deleted only while its tip there is
+  the commit the scan judged. `last_cleanup` is the last cleanup since the server
   started that a person or agent asked for or that removed or kept something (in memory; the
   audit log `hygiene.cleanup` keeps the history). Cleanup never forces a
   worktree removal, never removes a live task's worktree, a protected branch or one with an open

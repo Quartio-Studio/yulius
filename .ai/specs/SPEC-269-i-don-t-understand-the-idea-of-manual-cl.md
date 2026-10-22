@@ -88,7 +88,8 @@ Read in the code on `dev` (21c26d8b):
 - [x] Review round 1 findings fixed test-first
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Review round 3 findings fixed test-first
-- [x] Review round 4 approves the exact head
+- [x] Review round 4 findings fixed test-first
+- [x] Review round 5 approves the exact head
 - [x] Every gate green on the branch merged with current dev
 
 ## Acceptance criteria
@@ -185,6 +186,14 @@ Read in the code on `dev` (21c26d8b):
   `pull_merged` then, and open pull requests' bases count as in use); the unlocked first scan of
   `GET …/hygiene` takes the lock now. A push between GitHub's tip read and the deletion is not
   caught (GitHub's API has no conditional ref deletion): noted in ADR-0199.
+- **Review round 4** (fresh session, head 91050c45, approve with minors; all own code, fixed):
+  merged branches used up the pull-request lookups ahead of unmerged ones (fixed test-first:
+  `merged_branches_leave_the_lookups_to_unmerged_ones`, unmerged branches first); the page
+  compared the browser's clock with the server's (fixed test-first: a failure reads until the
+  known `last_cleanup` changes); `merged` items read as safe without saying the round leaves them
+  (fixed test-first, with api.md and the `repo_cleanup` description); a staging branch promoted
+  through a merged pull request goes in the round (by design, now in ADR-0199's Consequences).
+  Round 5 verifies these.
 
 ## Evidence
 
@@ -234,4 +243,6 @@ Read in the code on `dev` (21c26d8b):
 - Independent review in fresh sessions:
   - Round 1: request changes at 876eca4e.
   - Round 2: request changes at 34ee351a.
-  - Both answered above. Round 3 reviews the head that delivers.
+  - Round 3: request changes at 78a195d1.
+  - Round 4: approve with minors at 91050c45.
+  - All answered above. Round 5 verifies round 4's fixes at the head that delivers.
