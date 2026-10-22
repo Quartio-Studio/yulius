@@ -22,9 +22,8 @@ task.
 - **Sized from the host.** A sandbox's default `pids.max` is a quarter of the smaller of
   `kernel.threads-max` and `kernel.pid_max`, at least 8192 (96 272 on a 47 GB host), and at most
   three quarters of `yulius.service`'s own `pids.max` (systemd's `DefaultTasksMax`, 15 % of the
-  table: 57 763 on that host, so 43 320), and all sandboxes together get the same three quarters
-  on `<unit>/sandboxes`, so the server keeps a quarter however many are busy.
-  `YULIUS_SANDBOX_PIDS` still sets a sandbox's.
+  table: 57 763 on that host, so 43 320), so one sandbox leaves the server and the others a
+  quarter. `YULIUS_SANDBOX_PIDS` still sets it.
 - **CI and the engine leave the sessions a reserve.** With the CPU split, the sandbox also passes
   `pids` to its leaves; `ci` and `engine` each get 3/8 of the sandbox's limit, so together they
   leave the `agents` leaf at least a quarter. A stopping server takes `pids` back with the CPU.
@@ -62,9 +61,9 @@ task.
   (`--pids-limit`, compose `pids_limit`) join the CPU flags as unsupported: no controller passes
   below the engine's group, which holds `dockerd` (SPEC-187 DKR-005), so they may make a
   container fail to start where they were discarded before.
-- Sandboxes together stop at three quarters of the service's limit, so the server keeps a
-  quarter; under systemd's default `TasksMax` one saturated sandbox can still take the whole of
-  the sandboxes' share from the others.
+- Two saturated sandboxes can still fill the service's limit between them and leave the server
+  none; a common limit for all sandboxes needs its counters on 6.13+ kernels and a reset when the
+  service's limit goes, so it is a follow-up of its own (task #260).
 - A server restart loses a run's starting counters; the server that takes the run over reads them
   again, so a limit hit before the restart is not attributed.
 - Rust repositories without `[resources.env]` build and test with their budget, not the machine.

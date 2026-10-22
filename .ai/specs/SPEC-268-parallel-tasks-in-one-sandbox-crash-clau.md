@@ -74,9 +74,9 @@ unexpectedly".
   the old 8192), and at most three quarters of the smallest `pids.max` of the delegated unit and
   its ancestors (systemd's `DefaultTasksMax` is 15 % of the host's table: 57 763 on the VM, so
   43 320), so a sandbox never starves the server and the other sandboxes before its own limit
-  (review round 1); `<unit>/sandboxes` gets the same three quarters, so all sandboxes together
-  leave the server a quarter (review round 2). `YULIUS_SANDBOX_PIDS` still sets a sandbox's,
-  uncapped by the first rule. Unreadable host values fall
+  (review round 1). `YULIUS_SANDBOX_PIDS` still sets it, uncapped. Two saturated sandboxes can
+  still fill the service between them; a common limit for all sandboxes is split off to task #260
+  (review round 3). Unreadable host values fall
   back to 8192.
 - PID-002: When the sandbox is split into leaves, the `ci` and `engine` leaves each get
   `pids.max` = 3/8 of the sandbox's (at least 1): CI jobs and the engine with its containers
@@ -145,8 +145,7 @@ unexpectedly".
 
 ## Test plan
 
-- `cgroup::tests` (fake cgroup trees): host-sized defaults within the service's limit; the
-  sandboxes' common limit; leaf limits written with the split, not without it; `-pids` on stop;
+- `cgroup::tests` (fake cgroup trees): host-sized defaults within the service's limit; leaf limits written with the split, not without it; `-pids` on stop;
   counters for both kernel models, without CI's and the engine's subtrees.
 - `supervision::a_session_that_ends_at_the_sandboxs_process_limit_says_so` with an isolation fake
   whose counters the test raises and a fake agent its own shell aborts (`/sh kill -ABRT $PPID`, SIGABRT as Bun): fails before PID-005.
@@ -207,8 +206,7 @@ Head before the review fixes: `415aa179`; commands run in this task's sandbox (L
     crashed at the sandbox's process limit says so in its banner and overview" and "the end
     banner names the limit once the task's details arrive after it" (holds the detail read; failed
     without `refreshBanner`: "observed: The agent stopped unexpectedly…"); 18/18 passed.
-  - `cgroup::tests::the_sandboxes_together_leave_the_server_a_quarter`; the counters test counts a
-    paused run's `agents/run-t1` (13, the round-1 code gave 6) and reads `pids.events.local`.
+  - The counters test counts a paused run's `agents/run-t1` (13, the round-1 code gave 6) and reads `pids.events.local`.
 - `scripts/dev ci` at `415aa179`: green, 2435 tests passed, 17 skipped (after a fixed spec link).
   At `35564424` (round-1 fixes): green, 2437 passed, 17 skipped; `scripts/dev security` exit 0.
 - `scripts/dev security` at `415aa179`: exit 0, no open critical/high, no medium in the change.
@@ -229,3 +227,9 @@ Head before the review fixes: `415aa179`; commands run in this task's sandbox (L
   6.13 counter model, the service shared by two sandboxes, stale text) and a nit (no test that an
   explicit `YULIUS_SANDBOX_PIDS` is not capped: two lines in `install()`, left as is); fixed
   test-first, the text corrected.
+- Review round 3 (fresh session): REQUEST CHANGES with 2 major findings, both in round 2's common
+  `<unit>/sandboxes` limit (on 6.13+ its hits are not in the sandbox's counters; a stale value
+  when the service's limit goes), plus 2 minor findings and 4 nits. After the third round the
+  change is split: the common limit is reverted here and goes, with the banner-focus minor and the
+  nits (dotted Cargo keys, run groups removed by a thaw, the explicit-limit test), to task #260.
+  The rest of round 3 verified the round-2 fixes F1–F4 and F6.

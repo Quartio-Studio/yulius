@@ -1359,8 +1359,8 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
 - Upgrading to host-sized task limits (SPEC-268, 2026-10-22): no migration. At its next start the
   server gives each sandbox a quarter of the host's task table, at most three quarters of
   `yulius.service`'s own `pids.max` (systemd's `DefaultTasksMax` is 15 % of the table unless the
-  unit sets `TasksMax=`; raise it there for bigger sandboxes), `sandboxes/` the same three quarters
-  for all of them, and `ci/` and `engine/` 3/8 of a sandbox's;
+  unit sets `TasksMax=`; raise it there for bigger sandboxes), and `ci/` and `engine/` 3/8 of a
+  sandbox's;
   the log line "per-sandbox limits on" shows the figure. An explicit `YULIUS_SANDBOX_PIDS` stays.
 - Upgrading to tasks acting as their creator on GitHub (GIT-003, #188, 2026-10-11): no migration
   and no configuration. The agents' Git switches to the creator's token at its next credential

@@ -582,9 +582,6 @@ pub async fn install(
             if args.pids.is_none() {
                 config.limits = config.limits.within_service(service);
             }
-            if let Err(error) = delegation.cap_sandboxes(service) {
-                tracing::warn!(%error, "sandboxes together have no task limit below the service's");
-            }
             tracing::info!(cgroup = %delegation.unit.display(), limits = ?config.limits, "per-sandbox limits on");
             config.delegation = Some(delegation);
         }
