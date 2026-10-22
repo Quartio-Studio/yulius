@@ -14,14 +14,20 @@
 //! the newest record. Every other line, unparsable ones included, is kept byte for byte.
 
 use std::collections::HashMap;
-use std::io;
+use std::ffi::OsStr;
+use std::io::{self, Read as _};
+use std::os::fd::OwnedFd;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
+use nix::errno::Errno;
+use nix::fcntl::OFlag;
+use nix::sys::stat::Mode;
 use serde_json::{Map, Value};
 
 use crate::claude::observe_line;
+use crate::claude_config::{open_dir_at, open_regular, replace_with_mode};
 use crate::json::{bool_of, parse_object, str_of};
-use crate::launch::PlannedFile;
 use crate::observe::Observed;
 
 /// The record fields that link a record to an earlier one.
@@ -156,41 +162,90 @@ pub fn step_back(text: &str) -> Option<String> {
 }
 
 /// Steps the transcript at `path` back over a usage limit ([`step_back`]), replacing it
-/// atomically with the same permissions. Returns whether it changed; a missing file is unchanged.
+/// atomically with the same permissions. Returns whether it changed; a missing transcript, or a
+/// missing folder on the way to it, is unchanged.
+///
+/// `path` is `<anchor>/<home>/<config>/projects/<slug>/<session>.jsonl`, as
+/// [`crate::paths::claude_transcript_path`] makes it from a config dir in a home: everything below
+/// the anchor (the folder above the home: a task's sandbox directory, a person's user folder) is
+/// the agent's, so it is reached only through handles. The anchor is opened by path, the folders
+/// below it one at a time without following links, the transcript without following a link or
+/// blocking, and used only when it is a regular file; the rewrite is a new file in the folder's
+/// handle renamed over it there (ADR-0174, SPEC-266).
 ///
 /// # Errors
-/// I/O failures, or a transcript that is not UTF-8.
+/// I/O failures; a link or a file on the way, or a transcript that is a link, not a regular file
+/// or not UTF-8.
 pub fn step_back_file(path: &Path) -> io::Result<bool> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(err) => return Err(err),
+    let Some(folder) = open_transcript_folder(path)? else {
+        return Ok(false);
     };
-    let text =
-        String::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let name = path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "transcript name not UTF-8"))?;
+    let Some(mut file) = open_regular(&folder, name)? else {
+        return Ok(false);
+    };
+    let mode = file.metadata()?.permissions().mode() & 0o7777;
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
     let Some(stepped) = step_back(&text) else {
         return Ok(false);
     };
-    #[cfg(unix)]
-    let mode = {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::metadata(path)?.permissions().mode() & 0o7777
-    };
-    #[cfg(not(unix))]
-    let mode = 0o600;
-    PlannedFile {
-        path: path.to_path_buf(),
-        contents: stepped.into_bytes(),
-        mode,
-    }
-    .write()?;
-    // The new file was created under the umask: give it exactly the old permissions.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
-    }
+    // The new file is created 0600: give it exactly the old permissions.
+    replace_with_mode(
+        &folder,
+        name,
+        stepped.as_bytes(),
+        Some(Mode::from_bits_truncate(mode)),
+    )?;
     Ok(true)
+}
+
+/// The folder of the transcript `path` (see [`step_back_file`]): the anchor opened by path, then
+/// home, config dir, `projects` and the slug with `O_DIRECTORY | O_NOFOLLOW`, nothing created.
+/// `None` when one is missing; a link or a file on the way fails, naming it (SPEC-266 STB-001).
+fn open_transcript_folder(path: &Path) -> io::Result<Option<OwnedFd>> {
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the transcript is not in <home>/<config>/projects/<slug>",
+        )
+    };
+    let mut names = Vec::new();
+    let mut at = path.parent().ok_or_else(invalid)?;
+    for _ in 0..4 {
+        names.push(at.file_name().ok_or_else(invalid)?);
+        at = at
+            .parent()
+            .filter(|anchor| !anchor.as_os_str().is_empty())
+            .ok_or_else(invalid)?;
+    }
+    let mut dir = match nix::fcntl::open(
+        at,
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(dir) => dir,
+        Err(Errno::ENOENT) => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    for name in names.into_iter().rev() {
+        dir = match open_dir_at(&dir, name, false) {
+            Ok(dir) => dir,
+            Err(Errno::ENOENT) => return Ok(None),
+            Err(Errno::ELOOP | Errno::ENOTDIR) => {
+                return Err(io::Error::other(format!(
+                    "{} on the way to the transcript is a link or not a folder: Yulius follows \
+                     no links",
+                    Path::new(name).display()
+                )));
+            }
+            Err(err) => return Err(err.into()),
+        };
+    }
+    Ok(Some(dir))
 }
 
 #[cfg(test)]
