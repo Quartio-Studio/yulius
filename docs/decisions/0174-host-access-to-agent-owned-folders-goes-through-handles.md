@@ -55,5 +55,6 @@ removal makes directories writable through `O_PATH` handles and `/proc/self/fd`,
   inside its root.
 - New code that writes into a sandbox must take a handle first; reviews and the Vidoc scan look
   for path-based writes there.
-- `files_list`, folder creation and deletion in the editor still resolve by path; they are tracked
-  in #660.
+- `files_list`, folder creation and deletion in the editor, and attachment and draft removal,
+  went through handles too in [SPEC-265](../../.ai/specs/SPEC-265-editor-delete-folder-create-and-listing.md)
+  (#660): walked from the sandbox directory, so they need no real-path check.

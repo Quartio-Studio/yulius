@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-22
 
+- The editor's delete, folder creation and listing, and the removal of task, shell and draft
+  attachments, go through folder handles (task #251, #660, SPEC-265, ADR-0174). A contained shell
+  that swapped a folder on the way for a link between the server's check and its action could make
+  a delete remove a host file or tree, a new folder land outside the sandbox, a listing show a host
+  folder, or attachment cleanup remove host files; each now opens its folder from the sandbox
+  directory without following links and fails with `403` (cleanup removes nothing). Pause-point
+  tests cover each race.
 - A CI job gets the agent secrets the integration branch grants only when it runs the granted
   entry's command too (task #250, #659, SPEC-264, ADR-0196). A pull request tested with its own
   `[[ci.jobs]]` that reused a granted job's name, say `deploy`, for its own command ran that command
