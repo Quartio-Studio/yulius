@@ -104,3 +104,27 @@ comments) is either fixed test-first or dismissed with its reason and a narrow `
   single database thread, and `UNIQUE (sandbox_id, number)` refuses a duplicate.
 - Status line and the hooks TOCTOU are fixed rather than dismissed: each fix is a few lines on
   existing helpers, cheaper than reasoning about every terminal and every caller.
+
+## Evidence
+
+- Regression tests, each seen failing before its fix:
+  `vault::tests::production_and_agent_use_exclude_each_other_from_stale_reads` (yulius-store:
+  the stale production allowance succeeded on a secret with `.env` copies allowed),
+  `vault::requests::tests::reasons_are_short_single_lines` (U+2028 kept),
+  `hooks::tests::status_line_text_carries_no_control_characters` (ESC, BEL, C1 CSI, DEL and a
+  newline kept), `hooks::tests::a_folder_swapped_for_a_link_after_resolving_is_not_followed` (the
+  host file was reported as a document). Pinning the dismissals (pass as they are):
+  `env_files::tests::git_folders_are_refused`, `requests::tests::stored_requests_hold_only_hosts_that_parse`.
+- The store rule broke three integration tests that made a production secret bound to a host
+  through `vault_set_cd_prod`; they prove the runtime never uses such a row, so they now write it
+  back whole (`support::legacy_production_secret`), as a row from before SPEC-134 M-B could be.
+- `scripts/dev ci` at b331fe3f: exit 0, 2409 tests run, 2409 passed, 17 skipped; clippy (Linux
+  and macOS), docs, repository contracts passed.
+- `scripts/dev security` (change scan) at b331fe3f: exit 0, 13 files changed, 10 sent; no finding.
+- `scripts/dev security --all` at 94179773 (all fixes in): exit 1 for 2 high, 19 medium and 34 low
+  findings elsewhere in the repository, none of them in `vault/env_files.rs`, `vault/requests.rs`,
+  `hooks.rs`, `yulius-store/src/tasks.rs` or `yulius-store/src/vault.rs` (all of which were sent):
+  none of the nine #639 findings is reported. Those others are outside #639 (CI files each once).
+- `[[ignore]]` entries added for the three dismissed wordings on record (task #200's scans, #714):
+  "TOCTOU on the Git disposable check before writing secret values", "open_folder does not exclude
+  .git despite documented invariant", "Non-atomic task number allocation".
