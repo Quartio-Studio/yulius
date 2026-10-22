@@ -253,7 +253,7 @@ fn size_of(path: &Path) -> Option<u64> {
 /// not a link: a sandbox's agents and shells can replace a directory of their sandbox with a link,
 /// which would steer a removal elsewhere (review of SPEC-215). `path` itself may be a link (it is
 /// removed as a link). A path that is not below `root` fails.
-fn no_link_between(root: &Path, path: &Path) -> bool {
+pub(crate) fn no_link_between(root: &Path, path: &Path) -> bool {
     let Ok(relative) = path.strip_prefix(root) else {
         return false;
     };

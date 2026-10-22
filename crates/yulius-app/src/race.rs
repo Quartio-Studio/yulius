@@ -57,6 +57,9 @@ pub enum Point {
     /// Start onboarding (SPEC-256) read the sandbox `pending`; the start has not read it again
     /// yet. The path is the sandbox id.
     OnboardingApproved,
+    /// The disk upkeep (SPEC-263) chose a cache to remove after its scan; it has not checked the
+    /// path again nor removed it yet. The path is the cache's.
+    CachePrune,
 }
 
 #[cfg(feature = "test-support")]

@@ -518,7 +518,13 @@ do the same and remove trees with `unlinkat`, and the launch preparation of the 
 (`claude_config::ensure_claude_config`) opens `<home>/.claude` from the folder above the home and
 reads paths the agent wrote in a worktree's git files lexically, never on the host filesystem
 ([SPEC-253](../.ai/specs/SPEC-253-claude-config-dir-links-and-commondir-ca.md),
-[decision 0193](decisions/0193-the-claude-config-dir-is-walked-from-above-home-and-the-main-repository-is-read-from-the-git-layout.md)). Races are tested at pause points
+[decision 0193](decisions/0193-the-claude-config-dir-is-walked-from-above-home-and-the-main-repository-is-read-from-the-git-layout.md)).
+The disk upkeep counts a worktree, a CI job checkout or a cache only when every folder from the
+sandbox directory down to it is a real directory (`leftovers::no_link_between`), checks a cache
+again right before removing it through `leftovers::remove_below`'s `O_NOFOLLOW` handles, and an
+ended worktree again before Git removes it
+([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)).
+Races are tested at pause points
 (`yulius_app::race`, only with the `test-support` feature).
 
 ```mermaid

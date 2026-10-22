@@ -7,7 +7,10 @@
 //!
 //! Safety: only directories the rules name (recognised tooling or `[disk] caches` of the
 //! worktree's `yulius.toml`), never through a link, never `.git`; a working task is never
-//! touched; a worktree is removed only when clean.
+//! touched; a worktree is removed only when clean. A sandbox can swap any folder below its
+//! directory for a link, so every worktree, checkout and cache is reached from the sandbox
+//! directory with no link on the way, checked at the scan and again right before its removal,
+//! which goes through `O_NOFOLLOW` handles (SPEC-263).
 
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -24,6 +27,7 @@ use yulius_domain::task::{Activity, StopReason, TaskStatus};
 
 use crate::context::App;
 use crate::error::AppResult;
+use crate::leftovers::no_link_between;
 use crate::model::{SandboxRecord, TaskRecord};
 use crate::ports::isolation::SandboxRef;
 
@@ -109,18 +113,32 @@ pub(crate) fn dir_size(path: &Path) -> u64 {
     bytes
 }
 
-/// `root/relative` when every component up to and including it is a real directory (no link
-/// anywhere on the way), else `None`.
-fn real_dir_below(root: &Path, relative: &str) -> Option<PathBuf> {
-    let mut path = root.to_path_buf();
-    for part in relative.split('/') {
-        path.push(part);
-        let meta = std::fs::symlink_metadata(&path).ok()?;
-        if !meta.is_dir() {
-            return None;
-        }
+/// Whether `path` is a real directory below `root` (a sandbox's directory) with no link on the
+/// way: every folder from `root` (exclusive) down to it, and it itself (SPEC-263 DUL-001).
+fn real_dir_from(root: &Path, path: &Path) -> bool {
+    no_link_between(root, path) && std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir())
+}
+
+/// Removes the cache `path` below the sandbox directory `root` after checking it again: a folder
+/// swapped for a link since the scan is refused, and one swapped after this check fails the
+/// removal's `O_NOFOLLOW` walk (SPEC-263 DUL-002). `remove_below` reaches entries through
+/// `/proc/self/fd`, so other systems (macOS development hosts, whose runs are not contained)
+/// refuse instead of removing by path.
+fn remove_cache(root: &Path, path: &Path) -> std::io::Result<()> {
+    crate::race::reached(crate::race::Point::CachePrune, path);
+    if !real_dir_from(root, path) {
+        return Err(std::io::Error::other(
+            "not a real directory, or a link on the way",
+        ));
     }
-    Some(path)
+    if cfg!(target_os = "linux") {
+        crate::leftovers::remove_below(root, path)
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "caches are removed through directory handles on Linux only",
+        ))
+    }
 }
 
 fn root_entries(worktree: &Path) -> Vec<String> {
@@ -263,18 +281,26 @@ impl App {
         parts.join(", ")
     }
 
-    /// The cache directories of one worktree or checkout, with their sizes: recognised or
-    /// declared paths that are real directories, ignored by Git and holding no tracked file (a
-    /// path a commit has files in is the project's work, not a cache, whatever `yulius.toml`
-    /// says).
-    async fn find_caches(&self, worktree: &Path) -> Vec<(String, PathBuf, u64)> {
-        let dir = worktree.to_path_buf();
+    /// The cache directories of one worktree or checkout of the sandbox directory `root`, with
+    /// their sizes: recognised or declared paths that are real directories reached from `root`
+    /// with no link on the way (none when the worktree is not one), ignored by Git and holding
+    /// no tracked file (a path a commit has files in is the project's work, not a cache, whatever
+    /// `yulius.toml` says). None off Linux, where no cache is removed ([`remove_cache`]), so
+    /// they are not measured every round for nothing.
+    async fn find_caches(&self, root: &Path, worktree: &Path) -> Vec<(String, PathBuf, u64)> {
+        if !cfg!(target_os = "linux") {
+            return Vec::new();
+        }
+        let (top, dir) = (root.to_path_buf(), worktree.to_path_buf());
         let present = tokio::task::spawn_blocking(move || {
+            if !real_dir_from(&top, &dir) {
+                return Vec::new();
+            }
             cache_paths(&root_entries(&dir), &declared_caches(&dir))
                 .into_iter()
                 .filter_map(|relative| {
-                    let path = real_dir_below(&dir, &relative)?;
-                    Some((relative, path))
+                    let path = dir.join(&relative);
+                    real_dir_from(&top, &path).then_some((relative, path))
                 })
                 .collect::<Vec<_>>()
         })
@@ -291,10 +317,16 @@ impl App {
             {
                 continue;
             }
-            let measured = path.clone();
-            let bytes = tokio::task::spawn_blocking(move || dir_size(&measured))
-                .await
-                .unwrap_or(0);
+            // Checked again right before it is measured: Git's answer took a while.
+            let (root, measured) = (root.to_path_buf(), path.clone());
+            let bytes = tokio::task::spawn_blocking(move || {
+                real_dir_from(&root, &measured).then(|| dir_size(&measured))
+            })
+            .await
+            .unwrap_or_default();
+            let Some(bytes) = bytes else {
+                continue;
+            };
             found.push((relative, path, bytes));
         }
         found
@@ -309,7 +341,8 @@ impl App {
         pressure: bool,
         cap: Option<u64>,
     ) -> AppResult<Scan> {
-        let root = self.sandbox_dir(&sandbox.id).join("worktrees");
+        let sandbox_dir = self.sandbox_dir(&sandbox.id);
+        let root = sandbox_dir.join("worktrees");
         let now = self.now().0;
         let mut scan = Scan::default();
         for archived in [false, true] {
@@ -321,7 +354,7 @@ impl App {
                     continue;
                 }
                 let worktree = root.join(task.id.as_str());
-                if !worktree.join(".git").exists() {
+                if !real_dir_from(&sandbox_dir, &worktree) || !worktree.join(".git").exists() {
                     continue;
                 }
                 if matches!(
@@ -330,7 +363,7 @@ impl App {
                 ) {
                     scan.ended.push((task.clone(), worktree.clone()));
                 }
-                for (relative, path, bytes) in self.find_caches(&worktree).await {
+                for (relative, path, bytes) in self.find_caches(&sandbox_dir, &worktree).await {
                     scan.found.push(Found {
                         label: format!("task #{}", task.number),
                         task: Some(task.clone()),
@@ -365,11 +398,12 @@ impl App {
         for (name, worktree, modified) in entries {
             if tasks.contains(&name)
                 || now - modified < ORPHAN_AFTER_MS
+                || !real_dir_from(&sandbox_dir, &worktree)
                 || !worktree.join(".git").exists()
             {
                 continue;
             }
-            for (relative, path, bytes) in self.find_caches(&worktree).await {
+            for (relative, path, bytes) in self.find_caches(&sandbox_dir, &worktree).await {
                 scan.found.push(Found {
                     label: format!("worktree {name}"),
                     task: None,
@@ -394,10 +428,10 @@ impl App {
                 .unwrap_or_default();
             for name in names {
                 let checkout = jobs.join(&name);
-                if !checkout.join(".git").exists() {
+                if !real_dir_from(&sandbox_dir, &checkout) || !checkout.join(".git").exists() {
                     continue;
                 }
-                for (relative, path, bytes) in self.find_caches(&checkout).await {
+                for (relative, path, bytes) in self.find_caches(&sandbox_dir, &checkout).await {
                     let owner = if cap.is_some_and(|cap| bytes > cap) {
                         Owner::Ended
                     } else {
@@ -437,15 +471,19 @@ impl App {
             if claimed && !self.ci_claim(&sandbox.id) {
                 continue;
             }
-            let path = item.path.clone();
-            let removed = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&path))
+            let (root, path) = (self.sandbox_dir(&sandbox.id), item.path.clone());
+            let removed = tokio::task::spawn_blocking(move || remove_cache(&root, &path))
                 .await
-                .is_ok_and(|result| result.is_ok());
+                .unwrap_or_else(|err| Err(std::io::Error::other(err)));
             if claimed {
                 self.ci_release(&sandbox.id);
             }
-            if !removed {
-                tracing::warn!(path = %item.path.display(), "a build cache could not be removed");
+            if let Err(err) = removed {
+                tracing::warn!(
+                    path = %item.path.display(),
+                    error = %err,
+                    "a build cache could not be removed"
+                );
                 continue;
             }
             report.freed = report.freed.saturating_add(item.bytes);
@@ -542,6 +580,11 @@ impl App {
         match self.deps.git.ignored_entries(worktree).await {
             Ok(Some(ignored)) if only_rebuildable(&ignored, &declared) => {}
             _ => return false,
+        }
+        // Checked again right before Git removes it: a link on the way would hand Git another
+        // sandbox's folder (SPEC-263 DUL-003). Git resolves the path itself once more.
+        if !real_dir_from(&self.sandbox_dir(&sandbox.id), worktree) {
+            return false;
         }
         let repo = self.sandbox_repo(&sandbox.id);
         let owned = self.sandbox_dir(&sandbox.id).join("worktrees");
