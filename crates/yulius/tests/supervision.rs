@@ -824,6 +824,108 @@ fn a_closed_task_continues_its_session_and_a_manual_switch_keeps_model_and_effor
     Ok(())
 }
 
+/// A sandbox whose limit counters the test sets (SPEC-268 PID-004).
+struct CountingIsolation(std::sync::Mutex<yulius_app::ports::isolation::LimitCounters>);
+
+impl CountingIsolation {
+    fn set(&self, task_limit_hits: u64, oom_kills: u64) {
+        if let Ok(mut counters) = self.0.lock() {
+            *counters = yulius_app::ports::isolation::LimitCounters {
+                task_limit_hits,
+                oom_kills,
+            };
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl yulius_app::ports::isolation::SandboxIsolation for CountingIsolation {
+    async fn prepare(
+        &self,
+        _: &yulius_app::ports::isolation::SandboxRef,
+    ) -> yulius_app::error::AppResult<Option<yulius_app::ports::isolation::SandboxJoin>> {
+        Ok(None)
+    }
+
+    fn release(&self, _: &SandboxId) {}
+
+    async fn limit_counters(
+        &self,
+        _: &SandboxId,
+    ) -> Option<yulius_app::ports::isolation::LimitCounters> {
+        self.0.lock().ok().map(|counters| *counters)
+    }
+}
+
+/// SPEC-268 AC-4 (PID-005): a session that aborts (as Claude Code's Bun does when it cannot
+/// start a thread) while the sandbox refused forks at its task limit records and sends that cause;
+/// an abort without a rise records none; a rise of OOM kills says memory.
+#[test]
+fn a_session_that_ends_at_the_sandboxs_process_limit_says_so() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build(&data, &fake)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let counting = Arc::new(CountingIsolation(std::sync::Mutex::default()));
+        counting.set(4, 1);
+        assert!(app.set_isolation(counting.clone()));
+        // (task limit hits during the run, OOM kills during the run, the recorded cause)
+        for (title, hits, kills, cause) in [
+            ("At the task limit", 5, 0, Some("pids")),
+            ("No limit", 0, 0, None),
+            ("Out of memory", 0, 2, Some("memory")),
+        ] {
+            let id = new_task(&app, &sandbox, &user, title).await?;
+            wait_for("the banner", Duration::from_secs(30), || {
+                screen_contains(&app, &id, "FAKE-AGENT READY")
+            })
+            .await?;
+            let mut viewer = app.runtime(&id).hub.subscribe();
+            let (before_hits, before_kills) = counting
+                .0
+                .lock()
+                .map(|c| (c.task_limit_hits, c.oom_kills))
+                .map_err(|_| "poisoned")?;
+            counting.set(before_hits + hits, before_kills + kills);
+            app.send_input(&id, b"/abort\r").await?;
+            wait_for("the abort", Duration::from_secs(15), || async {
+                task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+            })
+            .await?;
+            assert_eq!(
+                task(&app, &id).await?.status,
+                TaskStatus::Stopped(yulius_domain::task::StopReason::Crashed),
+                "{title}"
+            );
+            let attempts = app.deps.store.attempts(&id).await?;
+            let reason = attempts
+                .last()
+                .and_then(|a| a.exit_reason.clone())
+                .ok_or("no exit reason")?;
+            let recorded = reason.rsplit_once(" limit=").map(|(_, cause)| cause);
+            assert_eq!(recorded, cause, "{title}: {reason}");
+            let mut sent = None;
+            while let Ok(frame) = viewer.rx.try_recv() {
+                if let yulius_app::hub::HubFrame::Exit { cause, .. } = frame {
+                    sent = Some(cause);
+                }
+            }
+            assert_eq!(
+                sent.ok_or("no exit frame")?.as_deref(),
+                cause,
+                "{title}: the viewers are told"
+            );
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// A sandbox that refuses a start (here: over its disk quota).
 struct RefusingIsolation(std::sync::atomic::AtomicBool);
 

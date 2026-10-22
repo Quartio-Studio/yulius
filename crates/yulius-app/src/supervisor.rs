@@ -36,6 +36,7 @@ use crate::model::{
     ProviderSessionRecord, SandboxRecord, Secret, SwitchDecisionRecord, TaskMode, TaskRecord,
 };
 use crate::ports::harness::{HarnessLaunch, Observation, SessionMode, UsageSnapshot, WatchFrom};
+use crate::ports::isolation::LimitCounters;
 use crate::ports::session::{Containment, RunEvent, RunExit, RunInspection, RunWriter};
 use crate::ports::store::{AttemptUpdate, TaskFieldUpdate};
 use crate::usage_json;
@@ -173,6 +174,8 @@ pub struct TaskRuntime {
     pub(crate) last_stop_ms: AtomicI64,
     /// Background shells the agent left running, as last probed (-1 = not known).
     pub(crate) background_shells: AtomicI64,
+    /// The sandbox's limit counters when this server attached to the run (SPEC-268 PID-005).
+    limits_at_start: Mutex<Option<(AttemptId, LimitCounters)>>,
     /// Background shells of the idle agent that only run `yulius wait`, as last probed (-1 = not
     /// known): it waits for Yulius and goes on by itself (SPEC-085 STT-002).
     pub(crate) background_waits: AtomicI64,
@@ -295,6 +298,7 @@ impl TaskRuntime {
             push_problem: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
+            limits_at_start: Mutex::new(None),
             background_waits: AtomicI64::new(-1),
             shells_since_ms: AtomicI64::new(0),
             background_agents: AtomicU32::new(0),
@@ -704,6 +708,21 @@ pub fn branch_for(number: u32, title: &str) -> String {
 const KILLED_EXIT_CODES: [i32; 4] = [129, 130, 137, 143];
 /// SIGHUP, SIGINT, SIGKILL and SIGTERM.
 const KILL_SIGNALS: [i32; 4] = [1, 2, 9, 15];
+
+/// The limit a sandbox was at while a run lived, from its counters when the run started and
+/// when it ended (SPEC-268 PID-005): `pids` when forks were refused at a task limit (Claude Code
+/// aborts when it cannot start a thread or a process), else `memory` when the OOM killer ended a
+/// process.
+#[must_use]
+pub fn limit_cause(start: LimitCounters, end: LimitCounters) -> Option<&'static str> {
+    if end.task_limit_hits > start.task_limit_hits {
+        Some("pids")
+    } else if end.oom_kills > start.oom_kills {
+        Some("memory")
+    } else {
+        None
+    }
+}
 
 /// The task event of a run that ended without Yulius ending it (F 2026-10-10: the task follows
 /// its session). The person left the session — `/exit`, Ctrl+C twice, Ctrl+D or `/logout`, which
@@ -2067,6 +2086,11 @@ impl App {
             attempt_id: attempt.id.clone(),
             writer: attached.writer,
         });
+        // What the sandbox's limits counted so far: a rise by the run's end says it was at one.
+        let counters = self.limit_counters(&sandbox).await;
+        if let Ok(mut start) = runtime.limits_at_start.lock() {
+            *start = counters.map(|counters| (attempt.id.clone(), counters));
+        }
         // A stop or close that came while the run was launching found no run to ask: it asks now,
         // so the run ends as asked instead of at the escalation (SPEC-140 STP-001, #464). One that
         // comes later finds the run itself; the host takes a second request as the first.
@@ -2337,6 +2361,29 @@ impl App {
         } else {
             AttemptState::Exited
         };
+        // A run that ended by itself, not cleanly: was the sandbox at a limit meanwhile?
+        let start = runtime
+            .limits_at_start
+            .lock()
+            .ok()
+            .and_then(|mut start| start.take())
+            .filter(|(attempt, _)| attempt == attempt_id)
+            .map(|(_, counters)| counters);
+        let unexpected = intent.is_none()
+            && !matches!(
+                exit_event(&exit, session_end.as_deref()),
+                TaskEvent::Exited { normal: true }
+            );
+        let cause = match start {
+            Some(start) if unexpected => match store.task(task_id).await {
+                Ok(Some(task)) => self
+                    .limit_counters(&task.sandbox_id)
+                    .await
+                    .and_then(|end| limit_cause(start, end)),
+                _ => None,
+            },
+            _ => None,
+        };
         let now = self.now();
         let update = AttemptUpdate {
             ended_at: Some(now),
@@ -2347,7 +2394,13 @@ impl App {
                 (Some(EndIntent::Close), _) => "closed".into(),
                 (Some(EndIntent::Switch(_)), _) => "switched".into(),
                 (None, _) if exit.is_clean() => "exited".into(),
-                (None, _) => format!("exited code={:?} signal={:?}", exit.code, exit.signal),
+                (None, _) => match cause {
+                    Some(cause) => format!(
+                        "exited code={:?} signal={:?} limit={cause}",
+                        exit.code, exit.signal
+                    ),
+                    None => format!("exited code={:?} signal={:?}", exit.code, exit.signal),
+                },
             }),
             ..AttemptUpdate::default()
         };
@@ -2429,7 +2482,7 @@ impl App {
             .ok()
             .flatten()
             .map_or_else(|| "stopped_lost".into(), |t| t.status.as_str().to_owned());
-        runtime.hub.exit(&status, exit.code);
+        runtime.hub.exit_at(&status, exit.code, cause);
         self.publish_task(task_id).await;
         if let Ok(Some(task)) = self.deps.store.task(task_id).await
             && let Err(err) = self.refresh_onboarding(&task.sandbox_id).await
@@ -4134,6 +4187,22 @@ mod tests {
     }
 
     use super::branch_for;
+
+    /// SPEC-268 PID-005: refused forks win over OOM kills; counters that did not rise say nothing.
+    #[test]
+    fn a_rise_of_a_limit_counter_is_the_runs_cause() {
+        use crate::ports::isolation::LimitCounters;
+        let at = |task_limit_hits, oom_kills| LimitCounters {
+            task_limit_hits,
+            oom_kills,
+        };
+        assert_eq!(super::limit_cause(at(3, 1), at(3, 1)), None);
+        assert_eq!(super::limit_cause(at(3, 1), at(4, 1)), Some("pids"));
+        assert_eq!(super::limit_cause(at(3, 1), at(4, 2)), Some("pids"));
+        assert_eq!(super::limit_cause(at(3, 1), at(3, 2)), Some("memory"));
+        // A group made again (counts from 0) is no rise.
+        assert_eq!(super::limit_cause(at(3, 1), at(0, 0)), None);
+    }
 
     /// F 2026-10-10: every way a session ends maps to one task event. Leaving the session
     /// (`SessionEnd` `prompt_input_exit`/`logout`) is a normal close whatever the exit code; a
