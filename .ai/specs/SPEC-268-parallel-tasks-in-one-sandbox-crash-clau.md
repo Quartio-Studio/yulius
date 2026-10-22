@@ -10,7 +10,7 @@ Date: 2026-10-22
 Owner: Yulius task #254
 Scope authorization: task #254 (`/goal`): fix the crash, make a crash at the limit say so, size
 build tools to the budget, docs and changes, deliver to `dev`. Amends SPEC-002 ADR-22 §5 (sandbox
-limits), [SPEC-053](SPEC-053-ci-cpu-priority.md) CPU-201 (only the CPU went down to the leaves)
+limits), [SPEC-053](SPEC-053-ci-e2e-timeouts-under-agent-load-give-ci.md) CPU-201 (only the CPU went down to the leaves)
 and [SPEC-082](SPEC-082-test-timeouts-and-cpu-memory-budgets.md) RES-005 (Yulius set no tool's
 variable). Decision: [ADR-0198](../../docs/decisions/0198-sandbox-task-limits-are-sized-from-the-host-and-leave-sessions-a-reserve.md).
 
