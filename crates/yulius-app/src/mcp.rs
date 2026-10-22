@@ -299,7 +299,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "needs_you".into(),
-            description: "Ask a person to do something only a person can (add a credential to the vault on the Secrets page, allow a secret, deploy production, decide on a paid plan): the task shows \"Needs you: <action>\" and people are notified, until a person writes to the task or you call it again with resolved: true (for example once cd_status shows the secret). Say exactly what to do and where; go on with other work meanwhile. Not for questions you can decide yourself.".into(),
+            description: "Ask a person to do something only a person can (add a credential to the vault on the Secrets page, allow a secret, deploy production, decide on a paid plan): the task shows \"Needs you: <action>\" and people are notified, until a person writes to the task or you call it again with resolved: true (for example once cd_status shows the secret). Say exactly what to do and where; go on with other work meanwhile. Not for questions you can decide yourself, and not for reading another repository of this project's owner: reference_repo fetches it without a person.".into(),
             input_schema: schema(json!({
                 "action": {"type": "string", "description": "What the person should do, imperative, one line (at most 200 characters), e.g. 'Add DEV_SSH_KEY on the Secrets page'"},
                 "why": {"type": "string", "description": "Why it is needed (at most 500 characters)"},
@@ -311,6 +311,13 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
             name: "production_protect".into(),
             description: "Protect this project's production branch from agents (ADR-0114, ADR-0129): Yulius adds a GitHub branch ruleset on it (Restrict updates, Restrict deletions, Block force pushes; only the Repository admin role may bypass) acting as this task's owner, and only in the onboarding task and when GitHub says that person is a repository admin (and their account is enabled). It only adds protection and changes nothing when agents already cannot write the branch. Use it when your onboarding prompt says the production branch is not protected from agents; never change protection from your shell. When it is refused, ask a person with needs_you, quoting the setting it names.".into(),
             input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "reference_repo".into(),
+            description: "Read another GitHub repository of this project's owner (an earlier version to port from, a shared library, a product's source) that your own Git and gh cannot (they reach only this repository): Yulius fetches its default branch as this task's owner, when GitHub says that person can read it, and places a Git bundle of it among this task's attachments; clone it outside your worktree into <sandbox>/reference/<owner>/<name> as the answer says, and call it again for a fresh copy. Read-only: port what you need, never push from it. Use it before asking a person for access; only when it is refused (another owner, no read access) ask with needs_you.".into(),
+            input_schema: schema(json!({
+                "repo": {"type": "string", "description": "The repository as owner/name, e.g. Quartio-Studio/product"}
+            }), &["repo"]),
         },
         ToolDescriptor {
             name: "issue_create".into(),
@@ -609,6 +616,7 @@ impl App {
             "cd_deploy" => self.tool_cd_deploy(ctx, &args).await,
             "needs_you" => self.tool_needs_you(ctx, &args).await,
             "production_protect" => self.tool_production_protect(ctx).await,
+            "reference_repo" => self.tool_reference_repo(ctx, &args).await,
             "issue_create" => self.tool_issue_create(ctx, &args).await,
             "browser_tabs" => self.tool_browser_tabs(ctx, &args).await,
             "browser_open" => self.tool_browser_open(ctx, &args).await,

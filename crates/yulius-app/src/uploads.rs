@@ -654,7 +654,7 @@ impl App {
             return Err(AppError::Forbidden("this account is disabled".into()));
         }
         self.begin_attachment(
-            ctx,
+            Self::upload_actor(ctx),
             &record.sandbox_id,
             &Owner::Task(&record.id),
             name,
@@ -680,7 +680,13 @@ impl App {
         let runtime = self.own_shell_of(ctx, sandbox, shell, None).await?;
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         let id = runtime.info().id;
-        self.begin_attachment(ctx, &sandbox_id, &Owner::Shell(&id), name, declared)
+        self.begin_attachment(
+            Self::upload_actor(ctx),
+            &sandbox_id,
+            &Owner::Shell(&id),
+            name,
+            declared,
+        )
             .await
     }
 
@@ -709,7 +715,13 @@ impl App {
         }
         let user = ctx.user.id.as_str();
         self.prune_old_drafts(&sandbox_id, user);
-        self.begin_attachment(ctx, &sandbox_id, &Owner::Draft(user), name, declared)
+        self.begin_attachment(
+            Self::upload_actor(ctx),
+            &sandbox_id,
+            &Owner::Draft(user),
+            name,
+            declared,
+        )
             .await
     }
 
@@ -745,9 +757,50 @@ impl App {
         }
     }
 
+    /// Places the server's own file `source` among `task`'s attachments under a free name like
+    /// `name`, streamed through the attachment path's handles (a reference bundle, SPEC-267):
+    /// at most `limit` bytes, audited for `actor`.
+    ///
+    /// # Errors
+    /// `Invalid` above `limit`; otherwise as [`App::begin_task_attachment`] and
+    /// [`App::finish_upload`]; I/O errors reading `source`.
+    pub(crate) async fn attach_server_file(
+        &self,
+        (sandbox, task): (&SandboxId, &TaskId),
+        name: &str,
+        source: &Path,
+        limit: u64,
+        actor: String,
+    ) -> AppResult<UploadedFile> {
+        use tokio::io::AsyncReadExt as _;
+        let mut file = tokio::fs::File::open(source)
+            .await
+            .map_err(|e| upload_io_error(&e))?;
+        let size = file.metadata().await.map_err(|e| upload_io_error(&e))?.len();
+        if size > limit {
+            return Err(too_large(limit));
+        }
+        let mut upload = self
+            .begin_attachment(actor, sandbox, &Owner::Task(task), name, None)
+            .await?;
+        upload.limit = limit;
+        let mut chunk = vec![0u8; 256 * 1024];
+        loop {
+            let read = file
+                .read(&mut chunk)
+                .await
+                .map_err(|e| upload_io_error(&e))?;
+            if read == 0 {
+                break;
+            }
+            upload.write(chunk.get(..read).unwrap_or_default()).await?;
+        }
+        self.finish_upload(upload).await
+    }
+
     async fn begin_attachment(
         &self,
-        ctx: &AuthContext,
+        actor: String,
         sandbox: &SandboxId,
         owner: &Owner<'_>,
         name: &str,
@@ -778,7 +831,7 @@ impl App {
             dir,
             (name, shown_dir),
             Placement::FreeName,
-            (Self::upload_actor(ctx), owner.audit_target()),
+            (actor, owner.audit_target()),
         )
         .await
     }
