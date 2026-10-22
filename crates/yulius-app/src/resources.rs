@@ -12,8 +12,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use yulius_domain::resources::{Budget, Capacity, EnvTemplate, budget_env};
-use yulius_domain::spec_format::{MAX_CONFIG_BYTES, parse_yulius_toml_resources};
+use yulius_domain::resources::{Budget, Capacity, EnvTemplate, budget_env, default_templates};
+use yulius_domain::spec_format::{MAX_CONFIG_BYTES, parse_yulius_toml_resources_table};
 
 use crate::context::App;
 
@@ -46,22 +46,28 @@ pub(crate) struct Reservation {
     _memory: OwnedSemaphorePermit,
 }
 
-/// The `[resources.env]` of the `yulius.toml` in `dir` (a worktree, a checkout); none when the
-/// file is missing, not a regular file, too large or invalid there (the budget's own variables
+/// The `[resources.env]` of the `yulius.toml` in `dir` (a worktree, a checkout). Without the
+/// file or without the table there, the Rust defaults ([`default_templates`], SPEC-268 PID-007);
+/// none when the file is not a regular file, too large or invalid (the budget's own variables
 /// are set anyway).
 #[must_use]
 pub fn repository_templates(dir: &Path) -> Vec<EnvTemplate> {
     let path = dir.join("yulius.toml");
-    let Ok(meta) = std::fs::symlink_metadata(&path) else {
-        return Vec::new();
+    let meta = match std::fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return default_templates();
+        }
+        Err(_) => return Vec::new(),
     };
     if !meta.is_file() || meta.len() > MAX_CONFIG_BYTES as u64 {
         return Vec::new();
     }
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| parse_yulius_toml_resources(&text).ok())
-        .unwrap_or_default()
+    match std::fs::read_to_string(&path).map(|text| parse_yulius_toml_resources_table(&text)) {
+        Ok(Ok(Some(templates))) => templates,
+        Ok(Ok(None)) => default_templates(),
+        Ok(Err(_)) | Err(_) => Vec::new(),
+    }
 }
 
 impl App {
@@ -117,5 +123,45 @@ impl App {
             _cpus: cpus,
             _memory: memory,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(templates: &[EnvTemplate]) -> Vec<&str> {
+        templates.iter().map(|t| t.name.as_str()).collect()
+    }
+
+    /// SPEC-268 PID-007: no table (or no `yulius.toml`) gives the Rust defaults; a declared table,
+    /// even an empty one, replaces them; an invalid one sets none.
+    #[test]
+    fn a_repository_without_a_mapping_gets_the_rust_defaults()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let defaults = [
+            "CARGO_BUILD_JOBS",
+            "NEXTEST_TEST_THREADS",
+            "RUST_TEST_THREADS",
+        ];
+        assert_eq!(names(&repository_templates(dir.path())), defaults);
+        let toml = dir.path().join("yulius.toml");
+        std::fs::write(&toml, "[docs]\nproduct = \"docs/product.md\"\n")?;
+        assert_eq!(names(&repository_templates(dir.path())), defaults);
+        assert!(
+            repository_templates(dir.path())
+                .iter()
+                .all(|t| t.template == "{cpus}")
+        );
+        std::fs::write(&toml, "[resources.env]\n")?;
+        assert!(repository_templates(dir.path()).is_empty());
+        std::fs::write(&toml, "[resources.env]\nMAKEFLAGS = \"-j{cpus}\"\n")?;
+        assert_eq!(names(&repository_templates(dir.path())), ["MAKEFLAGS"]);
+        std::fs::write(&toml, "[resources.env]\nPATH = \"/x\"\n")?;
+        assert!(repository_templates(dir.path()).is_empty(), "invalid");
+        std::fs::write(&toml, "[resources.env\n")?;
+        assert!(repository_templates(dir.path()).is_empty(), "unparsable");
+        Ok(())
     }
 }

@@ -674,7 +674,9 @@ starts once its CPUs and memory are free: the CI jobs of all lanes never ask for
 sandbox has, and each is told its budget in `YULIUS_CPUS`, `YULIUS_MEMORY_MB` and the variables of
 `[resources.env]` in its checkout's `yulius.toml` (its output starts with
 `[yulius] budget: 4 CPUs, 8192 MiB …`). Agent sessions, terminals and the Cockpit get the agent
-budget the same way, from the `yulius.toml` where they start.
+budget the same way, from the `yulius.toml` where they start. Where there is no `[resources.env]`
+table (or no `yulius.toml`), `CARGO_BUILD_JOBS`, `NEXTEST_TEST_THREADS` and `RUST_TEST_THREADS`
+get `{cpus}`; a declared table, even an empty one, replaces them (SPEC-268).
 
 | Method and path | Access | Result |
 | --- | --- | --- |

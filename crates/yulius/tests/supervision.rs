@@ -490,7 +490,9 @@ async fn add_account(app: &App, id: &str) -> Result<AccountId, Box<dyn std::erro
 
 /// SPEC-082 RES-004, RES-005: an agent session is told its CPU and memory budget in
 /// `YULIUS_CPUS` and `YULIUS_MEMORY_MB`, and in the variables the repository's `[resources.env]`
-/// derives from it. Yulius no longer sets a Rust variable of its own for every repository.
+/// derives from it; a table that does not map `CARGO_BUILD_JOBS` leaves it unset. SPEC-268
+/// PID-007: a repository without a table gets it, so parallel tasks do not each build for the
+/// whole machine.
 #[test]
 fn an_agent_session_is_told_its_budget_in_the_repositorys_terms() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -531,6 +533,28 @@ fn an_agent_session_is_told_its_budget_in_the_repositorys_terms() -> TestResult 
             format!("ENV YULIUS_MEMORY_MB=set len={}", memory.len()),
             format!("ENV MAKEFLAGS=set len={}", cpus.len() + 2),
             "ENV CARGO_BUILD_JOBS=unset".to_owned(),
+        ] {
+            assert!(screen.contains(&line), "{line}: {screen}");
+        }
+        support::stop_tasks(&app, &[&id]).await?;
+        // The repository drops its `yulius.toml`: the next session gets the Rust defaults.
+        let seed = data.join("seed");
+        git(&seed, &["rm", "-q", "yulius.toml"])?;
+        git(&seed, &["commit", "-q", "-m", "no contract"])?;
+        git(&seed, &["push", "-q", "origin", "main"])?;
+        git(
+            &data.join("sandboxes").join(sandbox.as_str()).join("repo"),
+            &["pull", "-q", "--ff-only"],
+        )?;
+        let id = new_task(&app, &sandbox, &user, "Default budget").await?;
+        wait_for("the environment", Duration::from_secs(60), || {
+            screen_contains(&app, &id, "ENV CARGO_BUILD_JOBS=")
+        })
+        .await?;
+        let screen = app.runtime(&id).hub.screen_text();
+        for line in [
+            format!("ENV CARGO_BUILD_JOBS=set len={}", cpus.len()),
+            "ENV MAKEFLAGS=unset".to_owned(),
         ] {
             assert!(screen.contains(&line), "{line}: {screen}");
         }

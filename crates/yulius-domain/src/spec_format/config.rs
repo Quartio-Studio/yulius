@@ -40,7 +40,8 @@
 //!
 //! [resources.env]                       # the budget in this repository's tools' terms
 //! CARGO_BUILD_JOBS = "{cpus}"            # also {memory_mb}, {memory_gb}; with YULIUS_CPUS and
-//!                                        # YULIUS_MEMORY_MB in agent sessions and CI jobs
+//!                                        # YULIUS_MEMORY_MB in agent sessions and CI jobs;
+//!                                        # without the table: the Rust defaults (SPEC-268)
 //!
 //! [branch_policy]                      # the merge gate's rules (SPEC-069)
 //! preset = "standard"                    # or "none"; types = "feat fix …" replaces the types
@@ -1144,6 +1145,22 @@ pub fn parse_yulius_toml_resources(text: &str) -> Result<Vec<EnvTemplate>, Forma
     parse_document(text).and_then(|document| resources_env(&document))
 }
 
+/// As [`parse_yulius_toml_resources`], `None` when the file has no `[resources.env]` table at all
+/// (an empty table is `Some` of nothing), so a repository that says nothing can get defaults
+/// (SPEC-268 PID-007).
+///
+/// # Errors
+/// As [`parse_yulius_toml_resources`].
+pub fn parse_yulius_toml_resources_table(
+    text: &str,
+) -> Result<Option<Vec<EnvTemplate>>, FormatError> {
+    let document = parse_document(text)?;
+    if document.resources_env.is_none() {
+        return Ok(None);
+    }
+    resources_env(&document).map(Some)
+}
+
 fn quote(text: &str) -> String {
     let mut quoted = String::with_capacity(text.len() + 2);
     quoted.push('"');
@@ -1827,6 +1844,12 @@ mod tests {
         assert_eq!(names, ["CARGO_BUILD_JOBS", "MAKEFLAGS"]);
         assert_eq!(env[1].template, "-j{cpus}");
         assert!(parse_yulius_toml_resources("[docs]\n")?.is_empty());
+        // SPEC-268 PID-007: a table not there differs from an empty one.
+        assert_eq!(parse_yulius_toml_resources_table("[docs]\n")?, None);
+        assert_eq!(
+            parse_yulius_toml_resources_table("[resources.env]\n")?,
+            Some(Vec::new())
+        );
 
         let job = "[[ci.jobs]]\nname = \"x\"\ncommand = \"y\"\n";
         for (extra, key, max) in [
