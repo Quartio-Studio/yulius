@@ -50,6 +50,36 @@ pub const MAX_STATE_ENTRIES: u64 = 20_000;
 const MAX_STATE_DEPTH: usize = 64;
 /// The permission bits kept; setuid, setgid and sticky are dropped.
 const MODE_BITS: u32 = 0o777;
+/// The permission bits a state keeps, as a tar header writes them and as `nix` takes them:
+/// mapped bit by bit, since `mode_t` is `u16` on macOS and `u32` on Linux (ADR-0169).
+const PERMISSIONS: [(u32, Mode); 9] = [
+    (0o400, Mode::S_IRUSR),
+    (0o200, Mode::S_IWUSR),
+    (0o100, Mode::S_IXUSR),
+    (0o040, Mode::S_IRGRP),
+    (0o020, Mode::S_IWGRP),
+    (0o010, Mode::S_IXGRP),
+    (0o004, Mode::S_IROTH),
+    (0o002, Mode::S_IWOTH),
+    (0o001, Mode::S_IXOTH),
+];
+
+/// A header's mode as `nix` permission bits (setuid, setgid and sticky dropped).
+fn to_mode(bits: u32) -> Mode {
+    PERMISSIONS
+        .iter()
+        .filter(|(bit, _)| bits & bit != 0)
+        .fold(Mode::empty(), |mode, (_, flag)| mode | *flag)
+}
+
+/// A file's permission bits as a tar header writes them.
+fn from_mode(mode: Mode) -> u32 {
+    PERMISSIONS
+        .iter()
+        .filter(|(_, flag)| mode.contains(*flag))
+        .fold(0, |bits, (bit, _)| bits | bit)
+}
+
 /// Longest description.
 const MAX_DESCRIPTION_CHARS: usize = 500;
 
@@ -319,7 +349,7 @@ fn unpack(archive: &[u8], root: &OwnedFd) -> AppResult<Contents> {
                     })?;
                 let mut file = std::fs::File::from(fd);
                 io::copy(reader, &mut file).map_err(|err| io_error(&err))?;
-                fchmod(&file, Mode::from_bits_truncate(mode)).map_err(errno_error)?;
+                fchmod(&file, to_mode(mode)).map_err(errno_error)?;
             }
         }
         Ok(())
@@ -328,7 +358,7 @@ fn unpack(archive: &[u8], root: &OwnedFd) -> AppResult<Contents> {
     for (rel, mode) in folders {
         let parts: Vec<&OsStr> = rel.iter().collect();
         let dir = open_path(root, &parts, false).map_err(errno_error)?;
-        fchmod(&dir, Mode::from_bits_truncate(mode)).map_err(errno_error)?;
+        fchmod(&dir, to_mode(mode)).map_err(errno_error)?;
     }
     Ok(contents)
 }
@@ -442,7 +472,7 @@ impl Packer {
                 Err(Errno::ENOENT) => continue,
                 Err(err) => return Err(errno_error(err)),
             };
-            let mode = stat.st_mode & MODE_BITS;
+            let mode = from_mode(Mode::from_bits_truncate(stat.st_mode));
             let mtime = u64::try_from(stat.st_mtime).unwrap_or(0);
             match kind {
                 SFlag::S_IFDIR => {
