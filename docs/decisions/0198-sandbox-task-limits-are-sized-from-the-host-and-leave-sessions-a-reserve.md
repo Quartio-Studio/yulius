@@ -62,8 +62,9 @@ task.
   (`--pids-limit`, compose `pids_limit`) join the CPU flags as unsupported: no controller passes
   below the engine's group, which holds `dockerd` (SPEC-187 DKR-005), so they may make a
   container fail to start where they were discarded before.
-- Under systemd's default `TasksMax`, one saturated sandbox may take three quarters of the
-  service and two take all the sandboxes' share; the server's quarter stays theirs to none.
+- Sandboxes together stop at three quarters of the service's limit, so the server keeps a
+  quarter; under systemd's default `TasksMax` one saturated sandbox can still take the whole of
+  the sandboxes' share from the others.
 - A server restart loses a run's starting counters; the server that takes the run over reads them
   again, so a limit hit before the restart is not attributed.
 - Rust repositories without `[resources.env]` build and test with their budget, not the machine.
