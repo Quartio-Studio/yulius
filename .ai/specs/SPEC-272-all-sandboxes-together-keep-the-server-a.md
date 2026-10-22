@@ -1,11 +1,11 @@
 ---
 yulius-task: 47d3f1c2-e4c1-43f1-8c9c-9f20104fd91a
-status: in-progress
+status: done
 ---
 
 # SPEC-272: All sandboxes together keep the server a share of the service's tasks
 
-Status: in-progress
+Status: done
 Date: 2026-10-22
 Owner: Yulius task #260
 Scope authorization: task #260 (`/goal`), the follow-up split off task #254 after its third review
@@ -91,7 +91,10 @@ the limit was hit; and the small defects left by #254's review round 3 are fixed
 - [x] A removed run group no longer hides a rise in the counters
 - [x] Dotted keys in Cargo and nextest files keep their knob
 - [x] The end banner keeps keyboard focus when details arrive
-- [ ] Docs, gates, review and delivery
+- [x] Docs say what the common limit does
+- [x] Review findings are fixed and approved
+- [x] Gates, e2e and security pass at the final head
+- [x] The change is merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -141,3 +144,38 @@ the limit was hit; and the small defects left by #254's review round 3 are fixed
 - **`keepFocus` around the banner's redraw** rather than skipping redraws: the exit actions can
   change with the details too (an archived task, a retry), so the banner is redrawn and the focus
   restored, as the delivery strip does.
+
+## Evidence
+
+- **Tests that failed before their fix** (pinned toolchain, `cargo test`):
+  - `cgroup::tests::the_sandboxes_together_leave_the_server_a_quarter`: did not compile
+    (`sandboxes_tasks` and `limit_sandboxes` missing), then passed (AC-1). Review round 1: its
+    `assert!(delegation.limit_sandboxes(..)?)` failed to compile against the `()` return.
+  - `cgroup::tests::a_hit_at_the_common_limit_counts_for_the_sandbox`: `left: 0, right: 5` (only
+    `sandboxes/pids.events.local` records the hit), then passed (AC-3).
+  - `freeze::tests::an_empty_run_group_that_met_a_limit_is_kept`: failed at "6.8: forks refused to
+    its processes" with `removable` as `thaw_all` decided before, then passed (AC-4).
+  - `resources::tests::a_knob_set_through_a_dotted_key_keeps_its_value`: failed at
+    `RUST_TEST_THREADS.value = "1"`, then passed; review round 1's inline-table cases failed at
+    `build = { jobs = 2 }`, then passed (AC-5).
+  - `wiring::sandbox::tests::an_explicit_task_limit_is_not_capped_by_the_service` (AC-2; the
+    behaviour existed, the test is the round-3 F7 item).
+  - e2e `the end banner keeps keyboard focus when the task’s details are read again`: failed with
+    `expected null to be "Continue"`, then passed with `keepFocus` (AC-6).
+- **Gate** `scripts/dev ci` at `e9b32091`: exit 0; repository contracts passed; nextest 2451 passed,
+  17 skipped. After it, `2c00ff69` only adds a negative test case and re-wraps a doc comment:
+  `cargo fmt --check`, `resources::` tests (2 passed) and `clippy -p yulius-app --all-targets -D
+  warnings` clean; Yulius CI runs the full gate on the pull request head.
+- **e2e** `npx e2e run` at `2c00ff69`: 64 files passed, 1 skipped; 673 tests passed, 1 skipped.
+- **Security** `scripts/dev security` at `2c00ff69`: exit 0, 16 files changed, 6 sent; no open
+  critical, high or medium finding in the change; no low finding listed.
+- **Review** (fresh sessions, `om-code-review`): round 1 at `6dbb2ffd` APPROVE with 3 minors and 3
+  nits in own code (inline-table keys, PID-004 link, rollback wording; doc comment, warning without
+  a written limit, freeze test comment), all fixed in `e9b32091`; round 2 at `e9b32091` APPROVE with
+  3 nits (negative inline-table case, a long line, the spec's "values are not keys"), fixed in
+  `2c00ff69`. The reviewer checked the counter model against `kernel/cgroup/pids.c` v6.8 and v6.13.
+- **Issues filed** (pre-existing, outside this change): #823, a fork refused at the service's own
+  limit or above is not counted on 6.13+ (since SPEC-268); #825, `docker_front`'s socket test races
+  on the process umask under in-process `cargo test` (seen once here, not under nextest).
+- **Not tested:** a real 6.13+ kernel (the VM runs 6.8) and a real delegated `yulius.service`; the
+  common limit and the counters rest on fake cgroup trees and the kernel source.
