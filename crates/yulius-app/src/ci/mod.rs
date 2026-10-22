@@ -260,6 +260,13 @@ pub struct CiState {
     busy: Mutex<HashSet<String>>,
     gates: Mutex<HashMap<String, GateView>>,
     pub(crate) hygiene: Mutex<HashMap<String, yulius_contracts::api::ci::HygieneReport>>,
+    /// Each sandbox's last cleanup (SPEC-269 HSC-002), shown on every report.
+    pub(crate) hygiene_cleanups:
+        Mutex<HashMap<String, yulius_contracts::api::ci::HygieneLastCleanup>>,
+    /// When the automatic hygiene round runs next (ms), once it is scheduled.
+    pub(crate) hygiene_next: Mutex<Option<i64>>,
+    /// One hygiene cleanup per sandbox at a time (the round and a person's Clean up).
+    pub(crate) hygiene_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     wake: Notify,
     started: AtomicBool,
     last_prune: Mutex<i64>,

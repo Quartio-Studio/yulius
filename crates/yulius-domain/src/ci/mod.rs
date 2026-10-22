@@ -828,7 +828,8 @@ pub enum StaleReason {
     /// Its pull request was closed without merging (GitHub keeps the commits on the pull
     /// request).
     PullClosed(u64),
-    /// Its commits are already in the integration or production branch.
+    /// Its commits are already in the integration or production branch, and no pull request had
+    /// it as its head (or none was looked up): a person removes it, not the automatic round.
     Merged,
     /// A local branch no worktree uses whose commits are on GitHub.
     LocalCopy,
@@ -899,6 +900,9 @@ pub struct BranchPull {
     pub open: bool,
     /// Merged.
     pub merged: bool,
+    /// The branch's tip is the pull request's head: GitHub keeps every commit of the branch on
+    /// the pull request (SPEC-269 review round 1). Commits pushed after it closed are not.
+    pub tip_on_pull: bool,
 }
 
 /// What is known about a remote branch.
@@ -925,15 +929,19 @@ pub fn classify_remote_branch(facts: &RemoteBranchFacts, now_ms: i64) -> Option<
     if pulls.iter().any(|p| p.open) {
         return None;
     }
-    if facts.merged {
-        return Some(StaleReason::Merged);
-    }
-    if let Some(last) = pulls.first() {
+    // A closed or merged pull request keeps the branch's commits only while the branch has
+    // nothing after its head; later commits are unmerged work, judged as such below. It is the
+    // reason even for a branch already in the integration branch: `Merged` then means no pull
+    // request had it, which the automatic round leaves to a person (SPEC-269).
+    if let Some(last) = pulls.first().filter(|p| p.tip_on_pull) {
         return Some(if last.merged {
             StaleReason::PullMerged(last.number)
         } else {
             StaleReason::PullClosed(last.number)
         });
+    }
+    if facts.merged {
+        return Some(StaleReason::Merged);
     }
     // Not looked up (scan bound): unknown, keep.
     facts.pulls.as_ref()?;
@@ -1496,6 +1504,7 @@ mod tests {
                 number: 4,
                 open: true,
                 merged: false,
+                tip_on_pull: true,
             }]),
             ..base.clone()
         };
@@ -1514,11 +1523,13 @@ mod tests {
                     number: 9,
                     open: false,
                     merged: true,
+                    tip_on_pull: true,
                 },
                 BranchPull {
                     number: 2,
                     open: false,
                     merged: false,
+                    tip_on_pull: true,
                 },
             ]),
             ..base.clone()
@@ -1534,6 +1545,40 @@ mod tests {
         let reason = classify_remote_branch(&idle, now);
         assert_eq!(reason, Some(StaleReason::Idle(20)));
         assert!(!reason.is_some_and(|r| r.safe()));
+        // Commits pushed after the pull request closed are not on it: unmerged work.
+        let pushed_after = RemoteBranchFacts {
+            pulls: Some(vec![BranchPull {
+                number: 3,
+                open: false,
+                merged: false,
+                tip_on_pull: false,
+            }]),
+            ..base.clone()
+        };
+        assert_eq!(classify_remote_branch(&pushed_after, now), None);
+        // A merge-commit merge: in dev and its pull request merged.
+        let landed = RemoteBranchFacts {
+            merged: true,
+            pulls: Some(vec![BranchPull {
+                number: 6,
+                open: false,
+                merged: true,
+                tip_on_pull: true,
+            }]),
+            ..base.clone()
+        };
+        assert_eq!(
+            classify_remote_branch(&landed, now),
+            Some(StaleReason::PullMerged(6))
+        );
+        let pushed_long_ago = RemoteBranchFacts {
+            last_commit_ms: now - 20 * DAY_MS,
+            ..pushed_after
+        };
+        assert_eq!(
+            classify_remote_branch(&pushed_long_ago, now),
+            Some(StaleReason::Idle(20))
+        );
         let unknown = RemoteBranchFacts {
             pulls: None,
             last_commit_ms: now - 90 * DAY_MS,

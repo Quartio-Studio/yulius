@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-22
 
+- Yulius cleans up stale branches and worktrees itself (SPEC-269, task #255, ADR-0199). The
+  6-hourly hygiene round now removes what loses nothing (branches of merged or closed pull
+  requests, local copies already on GitHub, clean worktrees of finished tasks) instead of only
+  listing it; unmerged work stays for a person. The CI tab's card says this and when the next
+  round runs; Clean up turns the card busy at once ("Removing 3 items… 2 s so far") and then
+  shows what was removed and what was kept and why, on the card, also after a reload. Before,
+  only a short count toast followed a silent wait.
+
 - Laptop onboarding moves a project's operator state into its sandbox (SPEC-271, ADR-0200, task
   #257). A deploy tool's live state (Quartio-Studio/product's `~/.quartio-operator-20260901`: a
   SQLite inventory, rollout folders, configs) could not move: `--from-file` takes 64 KiB of one

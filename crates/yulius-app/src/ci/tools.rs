@@ -178,7 +178,7 @@ impl App {
             .and_then(Value::as_bool)
             .unwrap_or(false)
         {
-            self.hygiene_scan(&sandbox).await
+            self.hygiene_scan_locked(&sandbox).await
         } else {
             self.hygiene_report(&sandbox).await
         };

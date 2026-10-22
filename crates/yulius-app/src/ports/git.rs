@@ -120,10 +120,6 @@ pub trait GitPort: Send + Sync {
     async fn is_disposable(&self, _worktree: &Path, _relative: &str) -> AppResult<bool> {
         Ok(false)
     }
-    /// Whether the worktree holds files Git ignores. Adapters without Git answer yes.
-    async fn has_ignored_files(&self, _worktree: &Path) -> AppResult<bool> {
-        Ok(true)
-    }
     /// The worktree's ignored files (directories with a trailing `/`); `None` when the adapter
     /// cannot tell (then nothing is removed).
     async fn ignored_entries(&self, _worktree: &Path) -> AppResult<Option<Vec<String>>> {

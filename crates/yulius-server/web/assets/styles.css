@@ -2745,6 +2745,10 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .ci-job-command { min-width: 0; overflow-wrap: anywhere; color: var(--text-2); }
 .ci-hygiene li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
 .ci-hygiene code { overflow-wrap: anywhere; }
+.ci-hygiene-part { display: contents; }
+.ci-hygiene-status { margin: 0; color: var(--text-2); }
+.ci-hygiene-status:has(> span:not(:empty)) { margin-top: 6px; }
+.ci-hygiene-status.ci-hygiene-problem { color: var(--danger-fg); }
 .ci-state { display: inline-flex; color: var(--muted); }
 .ci-passed { color: var(--ok-fg); }
 .ci-failed, .ci-error { color: var(--danger-fg); }

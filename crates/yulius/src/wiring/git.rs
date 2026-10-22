@@ -354,11 +354,6 @@ impl GitPort for GitAdapter {
         blocking(move || git.is_ignored_and_untracked(&wt, &rel)).await
     }
 
-    async fn has_ignored_files(&self, worktree: &Path) -> AppResult<bool> {
-        let (git, wt) = (self.git(), worktree.to_path_buf());
-        blocking(move || git.has_ignored_files(&wt)).await
-    }
-
     async fn ignored_entries(&self, worktree: &Path) -> AppResult<Option<Vec<String>>> {
         let (git, wt) = (self.git(), worktree.to_path_buf());
         blocking(move || git.ignored_entries(&wt)).await.map(Some)

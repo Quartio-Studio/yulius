@@ -375,6 +375,13 @@ the request is kept in `playground_purges`, and its `origin` and sandbox directo
 only once no agent run, shell, browser, CI run or other process of its sandbox is left (tried at
 once and with every disk upkeep round); the quota counts only the `origin`s left on disk.
 
+**Repository hygiene** (SPEC-001 DLV-007, [SPEC-269](../.ai/specs/SPEC-269-i-don-t-understand-the-idea-of-manual-cl.md),
+[decision 0199](decisions/0199-yulius-removes-safe-stale-branches-and-worktrees-itself.md)).
+`yulius-app::ci::hygiene` classifies branches and worktrees with `yulius-domain::ci` and, every 6
+hours, removes each live sandbox's safe ones as `yulius` through the same cleanup a person's Clean
+up or an agent's `repo_cleanup` runs; unmerged work without a pull request stays for a person.
+The kept report (in memory) carries the last cleanup and the next round for the CI tab's card.
+
 **Leftovers** ([SPEC-215](../.ai/specs/SPEC-215-leftovers-are-found-and-cleaned-accurate.md),
 [decision 0170](decisions/0170-leftovers-are-deleted-by-kind-rules-checked-again-at-deletion.md)).
 Every path under the data directory has an owner record and a rule for when it is garbage (the

@@ -117,20 +117,6 @@ impl Git {
         }
     }
 
-    /// Whether the worktree holds files Git ignores (build output, local configuration).
-    pub fn has_ignored_files(&self, worktree: &Path) -> Result<bool, GitError> {
-        let output = self.run_ok(Invocation::new(self, "ls-files", Some(worktree)).args([
-            "--no-optional-locks",
-            "ls-files",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "--directory",
-            "-z",
-        ]))?;
-        Ok(!output.stdout.is_empty())
-    }
-
     /// The worktree's ignored files, directories summarised with a trailing `/` (as
     /// `git ls-files --others --ignored --exclude-standard --directory` lists them).
     pub fn ignored_entries(&self, worktree: &Path) -> Result<Vec<String>, GitError> {

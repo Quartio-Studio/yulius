@@ -906,9 +906,10 @@ involved.
 5. Rulesets that require Actions checks must switch to `yulius/ci`, or go. Yulius's own merge gate
    enforces the delivery profile either way.
 
-**Hygiene.** After a merge through Yulius the head branch is deleted. Every 6 hours each sandbox is
-scanned for stale branches and worktrees, shown on its CI page. People clean them up there, agents
-with `repo_cleanup`.
+**Hygiene.** After a merge through Yulius the head branch is deleted. Every 6 hours (first 10 minutes
+after start) Yulius removes each sandbox's safe stale branches and worktrees itself and lists the
+rest on its CI page, with what the last cleanup removed and kept (SPEC-269, ADR-0199). People clean
+up at once there, agents with `repo_cleanup`. Each removal is audited `hygiene.cleanup`.
 
 ### CD on this machine
 
