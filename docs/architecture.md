@@ -1080,8 +1080,8 @@ sandbox clone, so its copy only says whether to look. A pull request's own `yuli
 asked, and the grant binds the entry's command too: a pull request tested with its own jobs that
 reuses a granted name for another command runs it without any secret, and its output says why
 ([SPEC-264](../.ai/specs/SPEC-264-ci-grants-agent-secrets-only-to-the-trus.md), ADR-0196). A
-granted job gets the placeholders, the CA bundle and a proxy credential of its own, held in memory until its process ended. The proxy's `EgressClient` is then a
-CI caller, `ci:<run>`, that may use only the granted secrets toward their bound hosts; each use is
+granted job gets the placeholders, the CA bundle and a proxy credential of its own, held in memory
+until its process ended. The proxy's `EgressClient` is then a CI caller, `ci:<run>`, that may use only the granted secrets toward their bound hosts; each use is
 audited under that actor.
 
 ```mermaid
