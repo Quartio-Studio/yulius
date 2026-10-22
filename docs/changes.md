@@ -19,6 +19,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `NEXTEST_TEST_THREADS` and `RUST_TEST_THREADS` at their budget, unless they set that knob in
   `.cargo/config.toml` or `.config/nextest.toml`. Per-container `--pids-limit` joins the
   unsupported Docker flags.
+- The token form on Settings → Connect your local agent lines up (SPEC-270, task #256). The Scope
+  hint bottom-aligned the name field and a small Create token button to its last line, so the
+  labels and controls sat on different lines. Each field now spans label, control and hint rows
+  (CSS subgrid), the button takes the control row at the fields' height, the scope select has the
+  app's `.select` look, and the form stacks when it is narrower than 600px (a phone, or a window
+  up to about 900px beside the sidebar).
 - A task reads another repository of its project's GitHub owner without asking a person (SPEC-267,
   ADR-0197, task #253, fixes #803). A task that had to port from Quartio-Studio/product asked a
   person to give the GitHub App access, because an agent's token reaches only its own repository;
