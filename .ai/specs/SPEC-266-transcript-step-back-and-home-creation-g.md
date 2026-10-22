@@ -31,8 +31,10 @@ the server outside the sandbox nor hang it.
     `spawn_blocking`, through the `HarnessPort::step_back_transcript` port that gets the sandbox
     home), and the Superagent (cockpit) resume (`wiring/harness.rs` `plan_cockpit`, on
     `config_dir_host`).
-  - `Supervisor::start_run` makes the home with `std::fs::create_dir_all(&home)`, which follows a
-    dangling `home` link and creates the folders it names on the host.
+  - `Supervisor::start_run` makes the home with `std::fs::create_dir_all(&home)`. A dangling
+    `home` link creates nothing (`mkdir` gets `EEXIST`, then `is_dir` is false: an error), contrary
+    to the issue's text; a `home` linked to a host folder is accepted as the home (`is_dir`
+    follows it). The test's dangling case is a guard, the linked-folder case the regression.
 - Root cause: the code predates ADR-0174; #657 (SPEC-220) and #634 (SPEC-253) moved the other
   host accesses to agent folders onto handles and left these two as "still by path (#661)". The
   existing test wrote a plain transcript in a temp dir, so links and FIFOs were never exercised.

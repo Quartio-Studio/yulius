@@ -3996,7 +3996,10 @@ mod tests {
         let target = outside.path().join("made/by/the/link");
         std::os::unix::fs::symlink(&target, sandbox.path().join("home"))?;
         assert!(super::make_home(sandbox.path()).is_err());
-        assert!(!outside.path().join("made").exists(), "nothing made outside");
+        assert!(
+            !outside.path().join("made").exists(),
+            "nothing made outside"
+        );
         std::fs::remove_file(sandbox.path().join("home"))?;
         std::os::unix::fs::symlink(outside.path(), sandbox.path().join("home"))?;
         let err = super::make_home(sandbox.path())
@@ -4007,7 +4010,10 @@ mod tests {
         super::make_home(sandbox.path())?;
         std::fs::write(sandbox.path().join("home/kept"), "")?;
         super::make_home(sandbox.path())?;
-        assert!(sandbox.path().join("home/kept").exists(), "an existing home is kept");
+        assert!(
+            sandbox.path().join("home/kept").exists(),
+            "an existing home is kept"
+        );
         Ok(())
     }
 

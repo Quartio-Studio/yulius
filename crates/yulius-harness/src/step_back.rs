@@ -17,7 +17,6 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::{self, Read as _};
 use std::os::fd::OwnedFd;
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
 use nix::errno::Errno;
@@ -187,7 +186,8 @@ pub fn step_back_file(path: &Path) -> io::Result<bool> {
     let Some(mut file) = open_regular(&folder, name)? else {
         return Ok(false);
     };
-    let mode = file.metadata()?.permissions().mode() & 0o7777;
+    // `mode_t`, which is `u16` on macOS (ADR-0169).
+    let mode = nix::sys::stat::fstat(&file)?.st_mode & 0o7777;
     let mut text = String::new();
     file.read_to_string(&mut text)?;
     let Some(stepped) = step_back(&text) else {
@@ -587,7 +587,10 @@ mod tests {
         );
         let folder = path.parent().ok_or("a folder")?;
         std::fs::create_dir_all(folder)?;
-        assert!(!step_back_file(&path)?, "a missing transcript is left alone");
+        assert!(
+            !step_back_file(&path)?,
+            "a missing transcript is left alone"
+        );
         let plain = [prompt("u1", "root", "hello"), answer("a1", "u1")].concat();
         std::fs::write(&path, &plain)?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
@@ -615,7 +618,12 @@ mod tests {
     #[test]
     fn step_back_file_follows_no_linked_folder() -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::symlink;
-        for linked in ["home/.claude/projects/-wt", "home"] {
+        for linked in [
+            "home/.claude/projects/-wt",
+            "home/.claude/projects",
+            "home/.claude",
+            "home",
+        ] {
             let sandbox = tempfile::tempdir()?;
             let outside = tempfile::tempdir()?;
             let path = transcript_in(sandbox.path());
@@ -627,7 +635,9 @@ mod tests {
             let link = sandbox.path().join(linked);
             std::fs::create_dir_all(link.parent().ok_or("a folder")?)?;
             symlink(outside.path(), &link)?;
-            let err = step_back_file(&path).err().ok_or(format!("{linked}: refused"))?;
+            let err = step_back_file(&path)
+                .err()
+                .ok_or(format!("{linked}: refused"))?;
             assert!(err.to_string().contains("link"), "{linked}: {err}");
             assert_eq!(std::fs::read_to_string(&host_file)?, limited(), "{linked}");
             assert_eq!(
@@ -652,7 +662,10 @@ mod tests {
         symlink(&host_file, &path)?;
         let err = step_back_file(&path).err().ok_or("refused")?;
         assert!(err.to_string().contains("link"), "{err}");
-        assert!(path.symlink_metadata()?.file_type().is_symlink(), "the link stays");
+        assert!(
+            path.symlink_metadata()?.file_type().is_symlink(),
+            "the link stays"
+        );
         assert_eq!(std::fs::read_to_string(&host_file)?, limited());
         Ok(())
     }
@@ -664,7 +677,10 @@ mod tests {
         let sandbox = tempfile::tempdir()?;
         let path = transcript_in(sandbox.path());
         std::fs::create_dir_all(path.parent().ok_or("a folder")?)?;
-        nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR)?;
+        nix::unistd::mkfifo(
+            &path,
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )?;
         let (done, finished) = std::sync::mpsc::channel();
         let fifo = path.clone();
         // A bound on a blocked open, not a wait for work: the call returns in microseconds.

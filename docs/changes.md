@@ -11,7 +11,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   the folder above the home without following links, read only when it is a regular file, and
   replaced by a random new file renamed within its folder, with the old permissions. A link on the
   way or at the transcript now fails the step back (the resume goes on), where Yulius used to
-  read and replace the link's target; a FIFO there no longer hangs the run's start. A task's home
+  read the link's target and replace the file it led to (or the link itself); a FIFO there no
+  longer hangs the run's start. A task's home
   is made with `mkdirat` from its sandbox directory, so a `home` link fails the start.
 - The Vidoc findings tracked in #639 are triaged (SPEC-262, task #248, fixes #639, #688, #697,
   #714). Real ones are fixed test-first: the store refuses, in each compare-and-set, a production
