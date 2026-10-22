@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-22
 
+- Laptop onboarding moves a project's operator state into its sandbox (SPEC-271, ADR-0200, task
+  #257). A deploy tool's live state (Quartio-Studio/product's `~/.quartio-operator-20260901`: a
+  SQLite inventory, rollout folders, configs) could not move: `--from-file` takes 64 KiB of one
+  value. `yulius secrets import --state NAME=DIR` now sends a folder (or a `.tar.gz` of one, up to
+  64 MiB packed) as an agent state, sealed per version in the vault and audited as the person; a
+  task restores it into the sandbox home with `secret_state_restore` (through folder handles,
+  modes kept) and saves it back with `secret_state_save`; `yulius secrets state-get` downloads it.
+  Once restored the sandbox's copy is the only writer: a second send is refused (409) unless
+  `--replace-state`. Debug and test builds now optimize the vault's cipher, gzip and yulius-store,
+  so a 50 MiB state takes a tenth of a second to seal instead of ten.
 - The token form on Settings → Connect your local agent lines up (SPEC-270, task #256). The Scope
   hint bottom-aligned the name field and a small Create token button to its last line, so the
   labels and controls sat on different lines. Each field now spans label, control and hint rows

@@ -84,9 +84,31 @@ The server's instructions tell your agent what to do ([SPEC-256](../.ai/specs/SP
    copy them into git-ignored `.env` files with `secret_copy_to_env` from the start, as ssh and
    deploy scripts need; agents already bind the hosts they need themselves. A secret that exists
    is skipped, never overwritten. Your agent then describes each one (`secret_update`).
-3. **Hand over and start.** Your agent writes what it learned, without values: which secret is
-   which, the hosts and commands deploys use, what only ran on your laptop, what it could not
-   find. `yulius project onboard --notes handover.md` (`onboarding_start` with `notes`) adds it to
+3. **Move the operator state.** A deploy tool that keeps live state on your laptop (a folder with
+   an inventory database, pinned host keys, rollout folders and receipts, configs) sends each such
+   folder as an *agent state* of the project, without reading it
+   ([SPEC-271](../.ai/specs/SPEC-271-laptop-onboarding-move-a-project-s-opera.md),
+   [ADR-0200](decisions/0200-operator-state-is-a-sealed-agent-state-with-one-writer.md)):
+
+   ```sh
+   yulius secrets import --to agent --sandbox acme/shop --yes \
+     --state SHOP_OPERATOR=~/.shop-operator --state SHOP_TOOLS=~/.local/share/shop/tools
+   ```
+
+   The CLI packs each folder (or sends a `.tar.gz` of one) with its files' modes, up to 64 MiB
+   packed and 512 MiB unpacked, and shows names, file counts and sizes only; a link or special
+   file in the folder refuses it. Yulius keeps it encrypted in the vault, as agent secrets are, and
+   audits every step as you. The onboarding task restores it where the project's tools expect it,
+   in the sandbox home (`secret_state_restore`, for example `~/.shop-operator`), which later tasks
+   keep, and saves it back after each rollout (`secret_state_save`). From the restore on, the
+   sandbox's copy is the one written to: your laptop is no longer the writer, so stop running
+   rollouts from that folder. A second send of the same state is refused once it is restored, so
+   the two copies never fork; `--replace-state` overwrites the sandbox's copy on purpose.
+   `yulius secrets state-get SHOP_OPERATOR --out shop-operator.tar.gz` downloads the newest saved
+   copy.
+4. **Hand over and start.** Your agent writes what it learned, without values: which secret is
+   which, which state goes where in the sandbox home, the hosts and commands deploys use, what
+   only ran on your laptop, what it could not find. `yulius project onboard --notes handover.md` (`onboarding_start` with `notes`) adds it to
    the onboarding task's request and starts it.
 
 The onboarding task then adapts the format, writes the docs, moves CI into Yulius CI and CD into
@@ -170,4 +192,6 @@ no tool (no token, a revoked token, the network).
   and the token, without its arguments.
 - An operate token can add agent secrets that the project's agents may copy into `.env` files
   (`yulius secrets import --yes --env-files`); each create and allowance is audited as you.
+- An operate token can send agent states (`--state`) and download them (`state-get`); each send,
+  replace and download is audited as you, and each restore and save as the task.
 - A lost laptop: revoke its token on Settings. Disabling a person refuses all their tokens.
