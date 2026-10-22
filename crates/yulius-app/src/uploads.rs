@@ -724,6 +724,7 @@ impl App {
             return;
         }
         let folder = parts.iter().fold(dir, |path, part| path.join(part));
+        crate::race::reached(crate::race::Point::DraftsPrune, &folder);
         let Ok(entries) = std::fs::read_dir(&folder) else {
             return;
         };
@@ -850,6 +851,7 @@ impl App {
         let parts = owner.parts();
         if plain_dirs_exist(&dir, &parts) {
             let folder = parts.iter().fold(dir, |path, part| path.join(part));
+            crate::race::reached(crate::race::Point::AttachmentsRemove, &folder);
             if let Err(err) = std::fs::remove_dir_all(&folder) {
                 tracing::warn!(%sandbox, error = %err, "could not remove attachments");
             }

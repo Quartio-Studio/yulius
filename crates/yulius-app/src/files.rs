@@ -326,6 +326,7 @@ impl App {
     ) -> AppResult<DirListing> {
         let target = self.file_target(ctx, sandbox, root, path, false).await?;
         let dir = Self::existing(&target)?;
+        crate::race::reached(crate::race::Point::FilesList, &dir);
         let mut entries = Vec::new();
         let mut truncated = false;
         let reader = std::fs::read_dir(&dir).map_err(|e| io_error(&e))?;
@@ -621,6 +622,7 @@ impl App {
                 "the path leads outside the folder".into(),
             ));
         }
+        crate::race::reached(crate::race::Point::FileCreate, &parent);
         std::fs::create_dir(&target.path).map_err(|e| io_error(&e))?;
         let name = target
             .relative
@@ -667,6 +669,7 @@ impl App {
                 "the path leads outside the folder".into(),
             ));
         }
+        crate::race::reached(crate::race::Point::FileDelete, &parent);
         let result = if meta.is_dir() {
             std::fs::remove_dir_all(&target.path)
         } else {
