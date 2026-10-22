@@ -14,12 +14,15 @@ use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 use support::{HarnessOptions, harness_with, seed_github_user, seed_sandbox, seed_task};
 use yulius::wiring::git::GitAdapter;
+use yulius_app::delivery::DeliveryRecord;
 use yulius_app::error::AppResult;
 use yulius_app::model::SandboxRecord;
 use yulius_app::model::{AttemptRecord, LaunchKind};
 use yulius_app::ports::isolation::{DiskUsage, SandboxIsolation, SandboxJoin, SandboxRef};
 use yulius_app::ports::session::{AttachedRun, LaunchPlan, RunInspection, SessionHost, SpawnedRun};
-use yulius_app::ports::store::{CoordinationStore as _, TaskStore as _};
+use yulius_app::ports::store::{CoordinationStore as _, TaskFieldUpdate, TaskStore as _};
+use yulius_app::ports::store_ext::DeliveryStore as _;
+use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::harness::Harness as Agent;
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId};
 use yulius_domain::task::{Activity, AttemptState, StopReason, TaskStatus};
@@ -402,8 +405,9 @@ async fn a_closed_tasks_worktree_with_ignored_local_files_is_kept() -> BoxResult
 #[tokio::test]
 async fn hygiene_keeps_an_ended_worktree_that_still_holds_ignored_files() -> BoxResult<()> {
     let w = world().await?;
-    // `target` and `out` are ignored files still in place: the upkeep has not run.
+    // `target` and `out` are caches; `.env` is ignored and no cache (local configuration).
     let closed = w.task("t-hyg", TaskStatus::Closed, None).await?;
+    w.local_config(&closed)?;
     let result =
         w.h.app
             .hygiene_cleanup_as(
@@ -416,6 +420,74 @@ async fn hygiene_keeps_an_ended_worktree_that_still_holds_ignored_files() -> Box
     assert!(
         result.skipped.iter().any(|s| s.reason.contains("ignores")),
         "{result:?}"
+    );
+    Ok(())
+}
+
+impl World {
+    /// An `.env` in `worktree` that Git ignores (through the repository's `info/exclude`) and
+    /// that is no rebuildable cache.
+    fn local_config(&self, worktree: &Path) -> BoxResult<()> {
+        let exclude = self.repo.join(".git/info/exclude");
+        std::fs::create_dir_all(exclude.parent().ok_or("parent")?)?;
+        std::fs::write(&exclude, ".env\n")?;
+        std::fs::write(worktree.join(".env"), "TOKEN=local\n")?;
+        Ok(())
+    }
+
+    async fn archive(&self, id: &str) -> BoxResult<()> {
+        self.h
+            .store
+            .update_task(
+                &TaskId::parse(id)?,
+                &TaskFieldUpdate {
+                    archived_at: Some(Some(self.h.app.now())),
+                    ..TaskFieldUpdate::default()
+                },
+                self.h.app.now(),
+            )
+            .await?;
+        Ok(())
+    }
+}
+
+/// SPEC-269 (review round 1): the automatic round keeps a paused task's worktree (its process is
+/// alive and resumes in it), and an archived task's worktree that holds ignored files nobody can
+/// rebuild; an archived one holding only caches goes.
+#[tokio::test]
+async fn the_hygiene_round_keeps_paused_work_and_files_nobody_can_rebuild() -> BoxResult<()> {
+    let w = world().await?;
+    let paused = w
+        .task("t-paused", TaskStatus::WaitingCapacity, None)
+        .await?;
+    w.h.store
+        .transition_delivery(
+            &DeliveryStage::None,
+            &DeliveryRecord {
+                task_id: TaskId::parse("t-paused")?,
+                stage: DeliveryStage::MergedIntegration,
+                pr_number: Some(7),
+                updated_at: w.h.app.now(),
+            },
+        )
+        .await?;
+    let kept = w.task("t-local", TaskStatus::Closed, None).await?;
+    w.local_config(&kept)?;
+    w.archive("t-local").await?;
+    let caches = w.task("t-caches", TaskStatus::Closed, None).await?;
+    w.archive("t-caches").await?;
+
+    w.h.app.hygiene_round().await;
+    assert!(paused.exists(), "a paused task's worktree stays");
+    assert!(kept.exists(), "ignored files nobody can rebuild stay");
+    assert!(!caches.exists(), "only caches: removed");
+    let report = w.h.app.hygiene_report(&w.sandbox).await;
+    let last = report.last_cleanup.ok_or("last cleanup")?;
+    assert!(
+        last.skipped
+            .iter()
+            .any(|s| s.target.name == "worktrees/t-local" && s.reason.contains("ignores")),
+        "{last:?}"
     );
     Ok(())
 }

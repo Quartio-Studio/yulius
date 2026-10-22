@@ -733,6 +733,83 @@ async fn a_cleanup_is_kept_on_the_report() -> TestResult {
     Ok(())
 }
 
+/// SPEC-269 (review round 1): a branch with commits pushed after its pull request closed is
+/// unmerged work, and a local copy whose GitHub branch the same cleanup deleted is judged again
+/// (its commits are on GitHub no more) and kept.
+#[tokio::test]
+async fn a_cleanup_never_loses_commits_that_only_a_branch_held() -> TestResult {
+    let f = fixture().await?;
+    stale_branches(&f)?;
+    // feat/later had a pull request closed at its first commit, then got another one.
+    git(
+        &f.work,
+        &["checkout", "-q", "-B", "feat/later", "origin/dev"],
+    )?;
+    std::fs::write(f.work.join("later.txt"), "1\n")?;
+    git(&f.work, &["add", "-A"])?;
+    git(&f.work, &["commit", "-q", "-m", "first"])?;
+    let closed_at = git(&f.work, &["rev-parse", "HEAD"])?;
+    std::fs::write(f.work.join("later.txt"), "2\n")?;
+    git(&f.work, &["commit", "-q", "-am", "after closing"])?;
+    git(&f.work, &["push", "-q", "origin", "feat/later"])?;
+    if let Ok(mut pulls) = f.h.github.pulls.lock() {
+        pulls.push(GhPull {
+            number: 3,
+            html_url: "https://github.test/acme/app/pull/3".into(),
+            title: "Later".into(),
+            state: "closed".into(),
+            merged: false,
+            base: "dev".into(),
+            head: "feat/later".into(),
+            head_sha: closed_at.trim().to_owned(),
+            mergeable: None,
+            behind: false,
+            from_fork: false,
+        });
+    }
+    // The sandbox clone keeps a local copy of feat/closed, whose only other home is GitHub's
+    // branch that this cleanup deletes.
+    let clone = f.data.join("sandboxes/s1/repo");
+    git(&clone, &["fetch", "-q", "origin"])?;
+    git(
+        &clone,
+        &["branch", "-q", "feat/closed", "origin/feat/closed"],
+    )?;
+
+    let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    let items = scan.body["items"].as_array().ok_or("items")?.clone();
+    assert!(
+        items.iter().all(|i| i["name"] != "feat/later"),
+        "recent unmerged work: {items:?}"
+    );
+    assert!(
+        items
+            .iter()
+            .any(|i| i["kind"] == "local_branch" && i["name"] == "feat/closed"),
+        "{items:?}"
+    );
+    let cleaned = f.post("/api/sandboxes/s1/hygiene/cleanup", None).await?;
+    assert_eq!(cleaned.status, StatusCode::OK, "{}", cleaned.body);
+    let remaining = git(&f.origin, &["branch", "--format=%(refname:short)"])?;
+    assert!(remaining.contains("feat/later"), "{remaining}");
+    assert!(!remaining.contains("feat/closed"), "{remaining}");
+    let local = git(&clone, &["branch", "--format=%(refname:short)"])?;
+    assert!(
+        local.contains("feat/closed"),
+        "the local copy stays: {local}"
+    );
+    let skipped = cleaned.body["skipped"].as_array().ok_or("skipped")?;
+    assert!(
+        skipped.iter().any(|s| s["name"] == "feat/closed"
+            && s["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("no longer on GitHub"))),
+        "{}",
+        cleaned.body
+    );
+    Ok(())
+}
+
 /// Jobs run inside the sandbox's containment (Linux, bubblewrap): what lies outside the sandbox
 /// directory, such as the data directory's run records, is not there, `/tmp` is private, and
 /// `HOME` is the sandbox's CI home.

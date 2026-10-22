@@ -568,18 +568,25 @@ impl App {
         )
     }
 
+    /// Whether Git ignores nothing in `worktree` but rebuildable caches (`target`, `.tools`,
+    /// `node_modules`, declared ones): files Git ignores that are not (local configuration,
+    /// data) are not Git's to lose, so only then may Yulius remove the worktree by itself.
+    pub(crate) async fn worktree_only_caches(&self, worktree: &Path) -> bool {
+        let declared = declared_caches(worktree);
+        matches!(
+            self.deps.git.ignored_entries(worktree).await,
+            Ok(Some(ignored)) if only_rebuildable(&ignored, &declared)
+        )
+    }
+
     async fn remove_ended_worktree(
         &self,
         sandbox: &SandboxRecord,
         task: &TaskRecord,
         worktree: &Path,
     ) -> bool {
-        // Files Git ignores that are not rebuildable caches (local configuration, data) are not
-        // Git's to lose; caches (`target`, `.tools`, `node_modules`, declared ones) are.
-        let declared = declared_caches(worktree);
-        match self.deps.git.ignored_entries(worktree).await {
-            Ok(Some(ignored)) if only_rebuildable(&ignored, &declared) => {}
-            _ => return false,
+        if !self.worktree_only_caches(worktree).await {
+            return false;
         }
         // Checked again right before Git removes it: a link on the way would hand Git another
         // sandbox's folder (SPEC-263 DUL-003). Git resolves the path itself once more.

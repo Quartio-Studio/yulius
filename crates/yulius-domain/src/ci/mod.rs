@@ -899,6 +899,9 @@ pub struct BranchPull {
     pub open: bool,
     /// Merged.
     pub merged: bool,
+    /// The branch's tip is the pull request's head: GitHub keeps every commit of the branch on
+    /// the pull request (SPEC-269 review round 1). Commits pushed after it closed are not.
+    pub tip_on_pull: bool,
 }
 
 /// What is known about a remote branch.
@@ -928,7 +931,9 @@ pub fn classify_remote_branch(facts: &RemoteBranchFacts, now_ms: i64) -> Option<
     if facts.merged {
         return Some(StaleReason::Merged);
     }
-    if let Some(last) = pulls.first() {
+    // A closed or merged pull request keeps the branch's commits only while the branch has
+    // nothing after its head; later commits are unmerged work, judged as such below.
+    if let Some(last) = pulls.first().filter(|p| p.tip_on_pull) {
         return Some(if last.merged {
             StaleReason::PullMerged(last.number)
         } else {
@@ -1496,6 +1501,7 @@ mod tests {
                 number: 4,
                 open: true,
                 merged: false,
+                tip_on_pull: true,
             }]),
             ..base.clone()
         };
@@ -1514,11 +1520,13 @@ mod tests {
                     number: 9,
                     open: false,
                     merged: true,
+                    tip_on_pull: true,
                 },
                 BranchPull {
                     number: 2,
                     open: false,
                     merged: false,
+                    tip_on_pull: true,
                 },
             ]),
             ..base.clone()
@@ -1534,6 +1542,25 @@ mod tests {
         let reason = classify_remote_branch(&idle, now);
         assert_eq!(reason, Some(StaleReason::Idle(20)));
         assert!(!reason.is_some_and(|r| r.safe()));
+        // Commits pushed after the pull request closed are not on it: unmerged work.
+        let pushed_after = RemoteBranchFacts {
+            pulls: Some(vec![BranchPull {
+                number: 3,
+                open: false,
+                merged: false,
+                tip_on_pull: false,
+            }]),
+            ..base.clone()
+        };
+        assert_eq!(classify_remote_branch(&pushed_after, now), None);
+        let pushed_long_ago = RemoteBranchFacts {
+            last_commit_ms: now - 20 * DAY_MS,
+            ..pushed_after
+        };
+        assert_eq!(
+            classify_remote_branch(&pushed_long_ago, now),
+            Some(StaleReason::Idle(20))
+        );
         let unknown = RemoteBranchFacts {
             pulls: None,
             last_commit_ms: now - 90 * DAY_MS,
