@@ -2,6 +2,8 @@
 //! the real Git adapter and tasks in every state. Build caches of tasks that do not work are
 //! removed, the worktrees of closed and cancelled tasks go, idle tasks lose theirs only under
 //! pressure, working tasks never, and the agent is told what was freed.
+//! Linux only: elsewhere the upkeep finds no cache to prune (SPEC-263).
+#![cfg(target_os = "linux")]
 
 use crate::support;
 

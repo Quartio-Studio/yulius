@@ -518,7 +518,8 @@ The disk upkeep counts a worktree, a CI job checkout or a cache only when every 
 sandbox directory down to it is a real directory (`leftovers::no_link_between`), checks a cache
 again right before removing it through `leftovers::remove_below`'s `O_NOFOLLOW` handles, and an
 ended worktree again before Git removes it
-([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)). Races are tested at pause points
+([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)).
+Races are tested at pause points
 (`yulius_app::race`, only with the `test-support` feature).
 
 ```mermaid

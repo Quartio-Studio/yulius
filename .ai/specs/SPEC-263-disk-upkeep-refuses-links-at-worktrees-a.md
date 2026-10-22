@@ -161,6 +161,9 @@ each removal, so a sandbox can never steer it into another sandbox's files.
     Besides the `.git` low above, it reported one low outside the change: an mtime overflow at
     `disk.rs:392`, which CI files as an issue.
   - The DUL-003 test still fails with only the moved re-check removed.
+- Review round 3 (fresh session, at 5b22f22e) approved. Its one own-code low: off Linux the
+  `disk.rs` integration tests expected pruning that no longer happens there. That file is now
+  `#![cfg(target_os = "linux")]`. The leftovers tests were already Linux-only in practice (#681).
 - Not tested here: macOS behaviour at runtime (only compiled and linted for
   `aarch64-apple-darwin`).
 
