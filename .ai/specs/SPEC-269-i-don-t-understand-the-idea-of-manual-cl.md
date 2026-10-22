@@ -79,6 +79,7 @@ Read in the code on `dev` (21c26d8b):
 - [x] Yulius removes the safe leftovers by itself on its 6-hourly round
 - [x] The hygiene report carries the last cleanup and the next automatic one
 - [x] The card explains itself and shows a cleanup running and its result
+- [x] Review round 1 findings fixed test-first
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green on the branch merged with current dev
 
