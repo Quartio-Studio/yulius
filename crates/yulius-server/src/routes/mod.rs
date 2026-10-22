@@ -214,6 +214,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/analytics/summary", get(analytics::summary))
         .route("/api/analytics/tasks", get(analytics::tasks))
         .route("/api/status", get(status::status))
+        .route("/api/disk", get(status::disk))
         .route("/api/capacity", get(status::capacity))
         // Instance updates and the Jev key (SPEC-002 ADR-18).
         .route("/api/update", get(updates::view))

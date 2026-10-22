@@ -1315,3 +1315,41 @@ async fn a_critical_data_disk_prunes_idle_caches_and_is_audited() -> BoxResult<(
     assert_eq!(app.disk_view().await.level, "critical");
     Ok(())
 }
+
+/// SPEC-276 RDA-007: anyone signed in reads the data disk's level; a change of level reaches
+/// every page as `disk.updated`, the same level again sends nothing.
+#[tokio::test]
+async fn the_disk_level_is_served_and_its_changes_are_published() -> BoxResult<()> {
+    use axum::http::{Method, StatusCode};
+    let w = world().await?;
+    let bob = seed_github_user(&w.h, "u-bob", "bob").await?;
+    let r = support::call(&w.h.router, Method::GET, "/api/disk", None, &bob).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["level"], "ok", "unknown disk: {}", r.body);
+    let anonymous = support::Creds::default();
+    let r = support::call(&w.h.router, Method::GET, "/api/disk", None, &anonymous).await?;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+
+    let mut events = w.h.app.events.subscribe();
+    w.h.system.set_disk(1_000, 870);
+    w.h.app.check_disk().await;
+    w.h.app.check_disk().await;
+    let r = support::call(&w.h.router, Method::GET, "/api/disk", None, &bob).await?;
+    assert_eq!(
+        (
+            r.body["level"].as_str(),
+            r.body["used"].as_u64(),
+            r.body["total"].as_u64()
+        ),
+        (Some("low"), Some(870), Some(1_000))
+    );
+    let mut changes = Vec::new();
+    while let Ok(envelope) = events.try_recv() {
+        if let yulius_contracts::events::UiEvent::DiskChanged { level, .. } = envelope.event {
+            assert!(envelope.sandbox.is_none() && !envelope.admin_only);
+            changes.push(level);
+        }
+    }
+    assert_eq!(changes, ["low"], "published once");
+    Ok(())
+}

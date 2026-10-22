@@ -160,6 +160,12 @@ function seed(params) {
     docker: { mode: params.get('docker') || 'ok', smokeFails: params.get('smoke') === 'fail', smoke: null, hostCheck: undefined },
     // Leftovers on the disk (SPEC-215): `leftovers=none` scans to an empty list.
     leftovers: { none: params.get('leftovers') === 'none', items: null, scannedAt: null, job: null },
+    // `disk=low|critical` (SPEC-276 RDA-007): the server's data disk, 386 GiB, as the warning pill reads it.
+    disk: params.get('disk') === 'critical'
+      ? { level: 'critical', used: 370 * 1024 ** 3, total: 386 * 1024 ** 3 }
+      : params.get('disk') === 'low'
+        ? { level: 'low', used: 340 * 1024 ** 3, total: 386 * 1024 ** 3 }
+        : { level: 'ok', used: 141 * 1024 ** 3, total: 386 * 1024 ** 3 },
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
     vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config' },
@@ -3523,6 +3529,7 @@ route('GET', '/api/update', async ({ db }) => {
   response.text = async () => { const body = await text(); db.updateReadsTaken += 1; return body; };
   return response;
 });
+route('GET', '/api/disk', ({ db }) => clone(db.disk));
 route('POST', '/api/admin/update/check', ({ db }) => {
   if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
   db.update.checkedAt = new Date().toISOString();
@@ -5230,6 +5237,11 @@ export function createMockTransport(params) {
   db.releaseUpdate = () => { const resolve = db.updateHolds.pop(); if (resolve) resolve(); };
   // The server says the update view changed (`update.updated`), as after a check.
   db.announceUpdate = () => emit(db, { type: 'update.updated', phase: null });
+  // The data disk changes level (`disk.updated`, SPEC-276).
+  db.setDisk = (level, used) => {
+    db.disk = { level, used, total: db.disk.total };
+    emit(db, { type: 'disk.updated', level, used, total: db.disk.total });
+  };
   db.gitHolds = [];
   db.gitReads = () => db.gitHolds.length;
   db.gitRequests = 0; // Git overview reads the page asked for

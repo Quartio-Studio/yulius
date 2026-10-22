@@ -2644,6 +2644,8 @@ button.task-group-head:hover { color: var(--text); }
 .update-banner.update-warn { border-color: var(--warn-border); }
 .update-banner.update-warn > .icon { color: var(--warn); }
 .update-banner .icon { flex: none; }
+.update-banner.disk-critical { border-color: var(--danger-border); }
+.update-banner.disk-critical > .icon { color: var(--danger); }
 .update-text { display: block; min-width: 0; padding: 4px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; text-decoration: none; }
 a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .update-close, .update-action { flex: none; display: inline-flex; align-items: center; justify-content: center; height: var(--control-sm); padding: 0 6px; border: 0; border-radius: var(--radius-full); background: transparent; color: var(--muted); cursor: pointer; font: inherit; }
