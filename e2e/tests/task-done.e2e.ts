@@ -322,3 +322,26 @@ test('the end banner names the limit once the task’s details arrive after it',
   await browser.evaluate(() => (window as unknown as { __releaseDetail?: () => void }).__releaseDetail?.());
   await expect(banner).toContainText('the sandbox hit its process limit while it ran');
 });
+
+// SPEC-272 SHR-006 (SPEC-268 review round 3): every detail read (a resync, a steps event, a status
+// change) draws the end banner again; a keyboard user on its button keeps the focus there.
+test('the end banner keeps keyboard focus when the task’s details are read again', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/t/3'));
+  await expect(browser.locator('.taskview .term-banner')).toContainText('the sandbox hit its process limit while it ran');
+  const label = await browser.evaluate(() => {
+    const button = document.querySelector<HTMLButtonElement>('.taskview .term-banner button');
+    if (!button) return null;
+    button.focus();
+    button.dataset.drawn = 'before';
+    return button.textContent;
+  });
+  expect(label).toMatch(/Continue|Try again/);
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { resyncNow: () => void } }).__yuliusMock.resyncNow());
+  // The banner was drawn again: the button focused before is gone.
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .term-banner button[data-drawn]') === null)).toBe(true);
+  const focused = await browser.evaluate(() => {
+    const active = document.activeElement;
+    return active && active.closest('.taskview .term-banner') ? active.textContent : null;
+  });
+  expect(focused).toBe(label);
+});

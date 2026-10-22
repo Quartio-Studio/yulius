@@ -61,9 +61,10 @@ task.
   (`--pids-limit`, compose `pids_limit`) join the CPU flags as unsupported: no controller passes
   below the engine's group, which holds `dockerd` (SPEC-187 DKR-005), so they may make a
   container fail to start where they were discarded before.
-- Two saturated sandboxes can still fill the service's limit between them and leave the server
-  none; a common limit for all sandboxes needs its counters on 6.13+ kernels and a reset when the
-  service's limit goes, so it is a follow-up of its own (task #260).
+- Two saturated sandboxes could still fill the service's limit between them and leave the server
+  none; [ADR-0201](0201-all-sandboxes-share-a-task-limit-below-the-services.md) (task #260) gives
+  all sandboxes together a common limit, counted on 6.13+ kernels and reset without a service
+  limit.
 - A server restart loses a run's starting counters; the server that takes the run over reads them
   again, so a limit hit before the restart is not attributed.
 - Rust repositories without `[resources.env]` build and test with their budget, not the machine.
