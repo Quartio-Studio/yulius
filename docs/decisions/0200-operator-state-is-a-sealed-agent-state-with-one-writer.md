@@ -61,4 +61,12 @@ written to, or the two copies fork and a rollout runs against a stale inventory.
   key material and agent secret values as for any file.
 - The server holds at most two states in memory at once (64 MiB each, packed); more concurrent
   operations wait as `Capacity`.
+- Any task of the project may restore and save its states, as any task uses the project's agent
+  secrets; downloading one to a computer needs a person with write access and a session or an
+  operate token (a read-only token is refused).
+- The single-writer rule is a compare-and-set on the version and the restored copy as read, so an
+  import racing a restore, or two restores, never both win; a copy placed by the losing restore is
+  removed.
+- A restore interrupted by a server stop leaves a `.yulius-state-*` folder beside its target in
+  the home; nothing sweeps it yet.
 - A state is removed with its project; there is no delete of one state yet.

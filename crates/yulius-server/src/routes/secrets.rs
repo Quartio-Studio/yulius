@@ -417,6 +417,8 @@ async fn state_import(
     if declared.is_some_and(|len| len > MAX_STATE_BYTES) {
         return Err(too_large().into());
     }
+    // Who may send it, and a free slot, before a byte is read (review of SPEC-271, M2).
+    let begun = app.begin_state_import(&ctx, &sid, &name).await?;
     let mut archive = Vec::new();
     let mut stream = body.into_data_stream();
     loop {
@@ -436,15 +438,8 @@ async fn state_import(
         }
     }
     Ok(Json(
-        app.import_agent_state(
-            &ctx,
-            &sid,
-            &name,
-            q.description.as_deref(),
-            q.replace,
-            archive,
-        )
-        .await?,
+        app.import_agent_state(&ctx, begun, q.description.as_deref(), q.replace, archive)
+            .await?,
     ))
 }
 

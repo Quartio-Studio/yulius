@@ -98,7 +98,7 @@ The server's instructions tell your agent what to do ([SPEC-256](../.ai/specs/SP
    The CLI packs each folder (or sends a `.tar.gz` of one) with its files' modes, up to 64 MiB
    packed and 512 MiB unpacked, and shows names, file counts and sizes only; a link or special
    file in the folder refuses it. Yulius keeps it encrypted in the vault, as agent secrets are, and
-   audits every step as you. The onboarding task restores it where the project's tools expect it,
+   audits each send and download as you, each restore and save as the task. The onboarding task restores it where the project's tools expect it,
    in the sandbox home (`secret_state_restore`, for example `~/.shop-operator`), which later tasks
    keep, and saves it back after each rollout (`secret_state_save`). From the restore on, the
    sandbox's copy is the one written to: your laptop is no longer the writer, so stop running

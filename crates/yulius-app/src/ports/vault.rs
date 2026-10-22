@@ -403,19 +403,19 @@ pub trait AgentStateStore: Send + Sync {
         name: &str,
     ) -> AppResult<Option<(AgentStateRecord, Envelope)>>;
     /// Writes `record` with `archive`: inserted when `expect` is `None` (`false` when the name is
-    /// taken), else replacing the row `record.id` only while its version is `expect` (`false`
-    /// otherwise): another writer won.
+    /// taken), else replacing the row `record.id` only while its version and restored copy are
+    /// still those of `expect`, the record as read (`false` otherwise: another writer won).
     async fn agent_state_put(
         &self,
         record: &AgentStateRecord,
-        archive: &Envelope,
-        expect: Option<u32>,
+        archive: Envelope,
+        expect: Option<&AgentStateRecord>,
     ) -> AppResult<bool>;
-    /// Records where the state `id` was restored, only while its version is `version`.
+    /// Records where the state was restored, only while its version and restored copy are still
+    /// those of `expect`, the record as read.
     async fn agent_state_restored(
         &self,
-        id: &str,
-        version: u32,
+        expect: &AgentStateRecord,
         restore: &StateRestore,
     ) -> AppResult<bool>;
 }

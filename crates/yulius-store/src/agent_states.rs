@@ -93,10 +93,11 @@ impl AgentStateStore for SqliteStore {
     async fn agent_state_put(
         &self,
         record: &AgentStateRecord,
-        archive: &Envelope,
-        expect: Option<u32>,
+        archive: Envelope,
+        expect: Option<&AgentStateRecord>,
     ) -> AppResult<bool> {
-        let (r, archive) = (record.clone(), archive.clone());
+        let r = record.clone();
+        let expect = expect.map(Expected::of);
         self.call(move |c| {
             let restored = r.restored.as_ref();
             let (path, restored_version, by, at) = (
@@ -141,7 +142,8 @@ impl AgentStateStore for SqliteStore {
                          files = ?5, kek_id = ?6, wrapped_key = ?7, ciphertext = ?8, \
                          updated_by = ?9, updated_at = ?10, restored_path = ?11, \
                          restored_version = ?12, restored_by = ?13, restored_at = ?14 \
-                         WHERE id = ?1 AND version = ?15",
+                         WHERE id = ?1 AND version = ?15 AND restored_path IS ?16 \
+                         AND restored_version IS ?17",
                         params![
                             r.id,
                             r.description,
@@ -157,7 +159,9 @@ impl AgentStateStore for SqliteStore {
                             restored_version,
                             by,
                             at,
-                            i64::from(expect),
+                            expect.version,
+                            expect.path,
+                            expect.restored_version,
                         ],
                     )
                     .map_err(db)?,
@@ -169,29 +173,48 @@ impl AgentStateStore for SqliteStore {
 
     async fn agent_state_restored(
         &self,
-        id: &str,
-        version: u32,
+        expect: &AgentStateRecord,
         restore: &StateRestore,
     ) -> AppResult<bool> {
-        let (id, restore) = (id.to_owned(), restore.clone());
+        let (id, expect, restore) = (expect.id.clone(), Expected::of(expect), restore.clone());
         self.call(move |c| {
             let n = c
                 .execute(
                     "UPDATE agent_states SET restored_path = ?1, restored_version = ?2, \
-                     restored_by = ?3, restored_at = ?4 WHERE id = ?5 AND version = ?6",
+                     restored_by = ?3, restored_at = ?4 WHERE id = ?5 AND version = ?6 \
+                     AND restored_path IS ?7 AND restored_version IS ?8",
                     params![
                         restore.path,
                         i64::from(restore.version),
                         restore.by,
                         restore.at.0,
                         id,
-                        i64::from(version)
+                        expect.version,
+                        expect.path,
+                        expect.restored_version,
                     ],
                 )
                 .map_err(db)?;
             Ok(n == 1)
         })
         .await
+    }
+}
+
+/// What a compare-and-set compares: the version and the restored copy as read.
+struct Expected {
+    version: i64,
+    path: Option<String>,
+    restored_version: Option<i64>,
+}
+
+impl Expected {
+    fn of(record: &AgentStateRecord) -> Self {
+        Self {
+            version: i64::from(record.version),
+            path: record.restored.as_ref().map(|r| r.path.clone()),
+            restored_version: record.restored.as_ref().map(|r| i64::from(r.version)),
+        }
     }
 }
 
@@ -246,8 +269,8 @@ mod tests {
     async fn writes_and_restores_apply_only_to_the_version_read() -> TestResult {
         let store = store().await?;
         let sandbox = SandboxId::parse("s1")?;
-        assert!(store.agent_state_put(&record(1)?, &sealed(1), None).await?);
-        assert!(!store.agent_state_put(&record(1)?, &sealed(9), None).await?);
+        assert!(store.agent_state_put(&record(1)?, sealed(1), None).await?);
+        assert!(!store.agent_state_put(&record(1)?, sealed(9), None).await?);
 
         let restore = StateRestore {
             path: "~/.ops".into(),
@@ -255,18 +278,33 @@ mod tests {
             by: "task-1".into(),
             at: Timestamp(5),
         };
-        assert!(!store.agent_state_restored("st1", 2, &restore).await?);
-        assert!(store.agent_state_restored("st1", 1, &restore).await?);
+        let stale = record(2)?;
+        assert!(!store.agent_state_restored(&stale, &restore).await?);
+        let read = record(1)?;
+        assert!(store.agent_state_restored(&read, &restore).await?);
+        let restored = AgentStateRecord {
+            restored: Some(restore.clone()),
+            ..read.clone()
+        };
 
         let mut next = record(2)?;
         next.restored = Some(StateRestore {
             version: 2,
             ..restore.clone()
         });
-        assert!(!store.agent_state_put(&next, &sealed(2), Some(2)).await?);
-        assert!(store.agent_state_put(&next, &sealed(2), Some(1)).await?);
+        // Read before the restore: lost.
+        assert!(!store.agent_state_put(&next, sealed(2), Some(&read)).await?);
+        assert!(
+            store
+                .agent_state_put(&next, sealed(2), Some(&restored))
+                .await?
+        );
         // The one that read version 1 too lost.
-        assert!(!store.agent_state_put(&next, &sealed(3), Some(1)).await?);
+        assert!(
+            !store
+                .agent_state_put(&next, sealed(3), Some(&restored))
+                .await?
+        );
 
         let (found, archive) = store.agent_state(&sandbox, "OPS").await?.ok_or("missing")?;
         assert_eq!(found, next);
@@ -276,11 +314,42 @@ mod tests {
         Ok(())
     }
 
+    /// Review of SPEC-271, M1: a write or a restore applies only to the record as it was read,
+    /// restore included, so an import racing a restore, or two restores, never both win.
+    #[tokio::test]
+    async fn a_restore_between_read_and_write_fails_the_write() -> TestResult {
+        let store = store().await?;
+        let read = record(1)?;
+        assert!(store.agent_state_put(&read, sealed(1), None).await?);
+        let restore = |path: &str| StateRestore {
+            path: path.into(),
+            version: 1,
+            by: "task-1".into(),
+            at: Timestamp(5),
+        };
+        // Two tasks read it unrestored; the first restore wins, the second loses.
+        assert!(store.agent_state_restored(&read, &restore("~/.a")).await?);
+        assert!(!store.agent_state_restored(&read, &restore("~/.b")).await?);
+        // An import that read it unrestored cannot overwrite the restore.
+        assert!(
+            !store
+                .agent_state_put(&record(2)?, sealed(2), Some(&read))
+                .await?
+        );
+        let (now, _) = store
+            .agent_state(&SandboxId::parse("s1")?, "OPS")
+            .await?
+            .ok_or("missing")?;
+        assert_eq!(now.restored, Some(restore("~/.a")));
+        assert_eq!(now.version, 1);
+        Ok(())
+    }
+
     /// SPEC-271 OPS-001: a state goes with its sandbox.
     #[tokio::test]
     async fn removing_a_sandbox_removes_its_states() -> TestResult {
         let store = store().await?;
-        assert!(store.agent_state_put(&record(1)?, &sealed(1), None).await?);
+        assert!(store.agent_state_put(&record(1)?, sealed(1), None).await?);
         store
             .call(|c| {
                 c.execute("DELETE FROM sandboxes WHERE id = 's1'", [])

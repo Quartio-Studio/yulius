@@ -2511,6 +2511,10 @@ async fn a_laptops_operator_state_moves_into_the_sandbox_with_one_writer() -> Te
         big.extend_from_slice(&x.to_le_bytes());
     }
     std::fs::write(ops.join("rollouts/2026-10-01/bundle.bin"), &big)?;
+    std::fs::set_permissions(
+        ops.join("rollouts/2026-10-01"),
+        std::fs::Permissions::from_mode(0o755),
+    )?;
     let send = |replace: bool| {
         let mut args = vec![
             "secrets",
@@ -2570,14 +2574,21 @@ async fn a_laptops_operator_state_moves_into_the_sandbox_with_one_writer() -> Te
         std::fs::read(copy.join("rollouts/2026-10-01/bundle.bin"))?,
         big
     );
+    assert_eq!(
+        std::fs::metadata(copy.join("rollouts/2026-10-01"))?
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755
+    );
 
     // 3. The laptop sends again: refused, nothing changes.
     let (code, out, err) = yulius_cli(laptop, &send(false), "").await?;
     assert_eq!(code, Some(1), "{out}{err}");
     assert!(
-        out.contains("restored at ~/.quartio-operator-20260901")
-            && out.contains("refused QUARTIO_OPERATOR"),
-        "{out}"
+        out.contains("refused QUARTIO_OPERATOR")
+            && out.contains("was restored into the sandbox at ~/.quartio-operator-20260901"),
+        "the server's refusal: {out}"
     );
 
     // 4. A rollout writes the sandbox's copy; the task saves it; the laptop gets it back.
@@ -2639,6 +2650,18 @@ async fn a_laptops_operator_state_moves_into_the_sandbox_with_one_writer() -> Te
     )
     .await?;
     assert_eq!(code, Some(1), "{err}");
+
+    // A read-only token of the same person never downloads it (review of SPEC-271, M4).
+    let read = text(&make_token(&w, &browser, "reader", "read").await?["token"]).to_owned();
+    let refused = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/agent-states/QUARTIO_OPERATOR/archive",
+        None,
+        &bearer(&read),
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
 
     // 5. On purpose, the laptop's copy replaces the sandbox's.
     let (code, out, err) = yulius_cli(laptop, &send(true), "").await?;

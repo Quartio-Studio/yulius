@@ -354,24 +354,32 @@ async fn unusable_states_and_paths_are_refused() -> TestResult {
     linked.append_link(&mut header, "passwd", "/etc/passwd")?;
     let linked = linked.into_inner()?.finish()?;
 
-    for (name, body, query) in [
-        ("OPS", linked, ""),
-        ("OPS", b"not a gzip tar".to_vec(), ""),
-        ("ops-state", good.clone(), ""),
+    let long = format!("?description={}", "x".repeat(501));
+    for (name, body, query, said) in [
+        ("OPS", linked, "", "holds a link at passwd"),
         (
             "OPS",
-            good.clone(),
-            &format!("?description={}", "x".repeat(501)) as &str,
+            b"not a gzip tar".to_vec(),
+            "",
+            "not a readable gzip tar",
         ),
+        ("ops-state", good.clone(), "", "ops-state"),
+        ("OPS", good.clone(), long.as_str(), "at most 500 characters"),
     ] {
         let refused = put(&w, name, query, body, &w.writer).await?;
-        assert!(
-            refused.status.is_client_error(),
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
             "{name}{query}: {}",
             refused.body
         );
+        assert!(
+            refused.body.to_string().contains(said),
+            "{said}: {}",
+            refused.body
+        );
     }
-    // Declared over 64 MiB: refused before the body is read.
+    // Over 64 MiB: refused before the body is read when declared, and as it is read when not.
     let over = send(
         &w.h.router,
         Method::PUT,
@@ -381,7 +389,34 @@ async fn unusable_states_and_paths_are_refused() -> TestResult {
         &w.writer,
     )
     .await?;
-    assert!(over.status.is_client_error(), "{}", over.body);
+    assert_eq!(
+        over.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        over.body
+    );
+    let chunks: Vec<Result<Vec<u8>, std::io::Error>> =
+        (0..65).map(|_| Ok(vec![0_u8; 1 << 20])).collect();
+    let streamed = send(
+        &w.h.router,
+        Method::PUT,
+        "/api/sandboxes/s1/agent-states/OPS",
+        Body::from_stream(futures::stream::iter(chunks)),
+        None,
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(
+        streamed.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        streamed.body
+    );
+    assert!(
+        streamed.body.to_string().contains("64 MiB"),
+        "{}",
+        streamed.body
+    );
     assert!(
         w.h.store
             .agent_states(&SandboxId::parse("s1")?)
