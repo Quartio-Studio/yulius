@@ -14,6 +14,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   read the link's target and replace the file it led to (or the link itself); a FIFO there no
   longer hangs the run's start. A task's home
   is made with `mkdirat` from its sandbox directory, so a `home` link fails the start.
+- The editor's delete, folder creation and listing, and the removal of task, shell and draft
+  attachments, go through folder handles (task #251, #660, SPEC-265, ADR-0174). A contained shell
+  that swapped a folder on the way for a link between the server's check and its action could make
+  a delete remove a host file or tree, a new folder land outside the sandbox, a listing show a host
+  folder, or attachment cleanup remove host files; each now opens its folder from the sandbox
+  directory without following links and fails with `403` (cleanup removes nothing). Pause-point
+  tests cover each race.
 - The disk upkeep no longer follows links into another sandbox (SPEC-263, task #249, fixes #649).
   A sandbox that replaced its `worktrees`, a worktree entry, `ci` or `ci/jobs` with a link to
   another sandbox's folder got that sandbox's caches pruned as its own. Worktrees, CI checkouts

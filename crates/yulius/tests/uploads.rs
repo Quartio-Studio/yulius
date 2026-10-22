@@ -1077,3 +1077,84 @@ async fn an_editor_upload_never_replaces_a_file_through_a_swapped_folder() -> Te
     );
     Ok(())
 }
+
+/// Hooks `point` to swap the sandbox `s1`'s `attachments` folder for a link to `outside` (#660).
+fn attachments_swapped_at(data: &Path, outside: &Path, point: yulius_app::race::Point) {
+    let sandbox = data.join("sandboxes/s1");
+    let (folder, target) = (sandbox.join("attachments"), outside.to_path_buf());
+    yulius_app::race::on(point, &sandbox, move || {
+        std::fs::rename(&folder, folder.with_extension("aside"))
+            .and_then(|()| std::os::unix::fs::symlink(&target, &folder))
+            .ok();
+    });
+}
+
+/// Makes `file` look `days` old.
+fn age(file: &Path, days: u64) -> std::io::Result<()> {
+    std::fs::File::options()
+        .write(true)
+        .open(file)?
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(days * 24 * 3600))
+}
+
+#[tokio::test]
+async fn a_deleted_tasks_attachments_are_never_removed_through_a_swapped_folder() -> TestResult {
+    let h = harness_configured(|c| c.upload_max_bytes = LIMIT)?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    std::fs::create_dir_all(data.join("sandboxes/s1/repo"))?;
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let outside = data.join("host");
+    for base in [data.join("sandboxes/s1/attachments"), outside.clone()] {
+        std::fs::create_dir_all(base.join("tasks/t1"))?;
+        std::fs::write(base.join("tasks/t1/x.txt"), "precious")?;
+    }
+    attachments_swapped_at(&data, &outside, yulius_app::race::Point::AttachmentsRemove);
+    let deleted = call(&h.router, Method::DELETE, "/api/tasks/t1", None, &alice).await?;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{:?}", deleted.body);
+    assert!(
+        std::fs::symlink_metadata(data.join("sandboxes/s1/attachments"))?.is_symlink(),
+        "the folder was swapped at the pause point"
+    );
+    assert_eq!(
+        std::fs::read_to_string(outside.join("tasks/t1/x.txt"))?,
+        "precious",
+        "nothing outside was removed"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn old_drafts_are_never_pruned_through_a_swapped_folder() -> TestResult {
+    let h = harness_configured(|c| c.upload_max_bytes = LIMIT)?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    std::fs::create_dir_all(data.join("sandboxes/s1/repo"))?;
+    let outside = data.join("host");
+    for base in [data.join("sandboxes/s1/attachments"), outside.clone()] {
+        std::fs::create_dir_all(base.join("drafts/u-alice"))?;
+        std::fs::write(base.join("drafts/u-alice/old.png"), "precious")?;
+        age(&base.join("drafts/u-alice/old.png"), 8)?;
+    }
+    attachments_swapped_at(&data, &outside, yulius_app::race::Point::DraftsPrune);
+    let sent = upload(
+        &h,
+        Method::POST,
+        "/api/sandboxes/s1/attachments?name=new.png",
+        b"png",
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        names(&outside.join("drafts/u-alice"))?,
+        ["old.png"],
+        "{:?}",
+        sent.body
+    );
+    assert_eq!(sent.status, StatusCode::FORBIDDEN, "{:?}", sent.body);
+    Ok(())
+}

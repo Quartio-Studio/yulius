@@ -512,7 +512,12 @@ else through that handle
 helpers are `files::open_inside` (a resolved path opened with `O_NOFOLLOW`, the handle's real path
 checked to be inside the root), `files::open_dirs_below` (each folder from the sandbox directory
 with `O_DIRECTORY | O_NOFOLLOW`, made with `mkdirat` when missing) and `files::replace_in` (a
-random `O_EXCL | O_NOFOLLOW` temporary file renamed within the handle); the harness's skill copies
+random `O_EXCL | O_NOFOLLOW` temporary file renamed within the handle). The editor's listing,
+folder creation and deletion, and the removal of task, shell and draft attachments, walk the
+resolved folder from the sandbox directory with `open_dirs_below` (no real-path check, so no
+`/proc`) and list, `mkdirat`, or remove through `files::remove_tree` (bounded, handle by handle,
+a link unlinked, never followed)
+([SPEC-265](../.ai/specs/SPEC-265-editor-delete-folder-create-and-listing.md)); the harness's skill copies
 do the same and remove trees with `unlinkat`, and the launch preparation of the Claude config dir
 (`claude_config::ensure_claude_config`) opens `<home>/.claude` from the folder above the home and
 reads paths the agent wrote in a worktree's git files lexically, never on the host filesystem
