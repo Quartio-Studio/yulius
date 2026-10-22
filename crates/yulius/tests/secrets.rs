@@ -1954,9 +1954,9 @@ async fn a_ci_job_uses_only_its_granted_secrets_toward_their_hosts() -> TestResu
         let created = add_agent_secret(&w, &w.writer, "s1", body).await?;
         assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
         if created.body["name"] == "PROD_KEY" {
-            use yulius_app::ports::vault::VaultStore as _;
+            // Bound to a host, as a production secret could be before SPEC-134 M-B.
             let id = created.body["id"].as_str().ok_or("id")?;
-            assert!(w.h.store.vault_set_cd_prod(id, false, true).await?);
+            crate::support::legacy_production_secret(&w.h.store, id).await?;
         }
     }
     let s1 = yulius_domain::ids::SandboxId::parse("s1")?;
