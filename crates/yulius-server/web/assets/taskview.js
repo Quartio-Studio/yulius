@@ -7,7 +7,7 @@ import { openRuleEditor, ruleText } from './ruleeditor.js';
 import { openStartMenu, renderStartChip, startKind, waitingStartChip, SUPERTASK_HELP, WHEN_I_DECIDE_HELP } from './startchoice.js';
 import { createTerminalView } from './terminal.js';
 import { createWatchView } from './watchview.js';
-import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, pausedLine, pauseLine, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
+import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, limitCause, pausedLine, pauseLine, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
 import { heldPromptCard, splitCard, supertaskCard, checkRequest, intakeStatus } from './intake.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
@@ -79,6 +79,12 @@ function emptyTerminalMessage(task) {
 export function mountTaskView(ctx, sandbox, task) {
   let current = task;
   let detail = null;
+  // The limit the sandbox was at when the last run ended, as its record says (SPEC-268 PID-006).
+  const lastLimitCause = () => {
+    const runs = (detail && detail.attempts) || [];
+    const last = runs.reduce((latest, run) => (!latest || run.seq > latest.seq ? run : latest), null);
+    return last ? limitCause(last.exit_reason) : null;
+  };
   let stripOpen = Boolean(readJson(STRIP_KEY, false));
   const destroyers = [];
   // Only the task's owner changes it (SPEC-070): `owner()` names another owner, else null.
@@ -151,10 +157,11 @@ export function mountTaskView(ctx, sandbox, task) {
       // Without write access to the sandbox that is the reason; someone else's task is watched as
       // its transcript, never in a terminal (SPEC-179).
       readOnlyLabel: () => readOnlyText(ctx.store.sandboxById(sandbox.id) || sandbox),
-      exitMessage: (exit) => endedMessage(exit.status || current.status),
+      // The limit the sandbox was at: from the exit, else from the last run's record (a reload).
+      exitMessage: (exit) => endedMessage(exit.status || current.status, exit.cause || lastLimitCause()),
       emptyMessage: () => emptyTerminalMessage(current),
       exitActions: (exit) => {
-        const message = endedMessage(exit.status || current.status);
+        const message = endedMessage(exit.status || current.status, exit.cause || lastLimitCause());
         const actions = [];
         // Administrators go to the Subscriptions page, where a subscription signs in again; everyone
         // else sees the subscriptions' state in the Status panel (#147).
@@ -188,7 +195,7 @@ export function mountTaskView(ctx, sandbox, task) {
   const watchingTerminal = (view) => ({
     el: view.el, term: null, socket: { status: 'closed' }, canWrite: false, ready: true,
     start() { view.start(); }, focus() { view.focus(); }, sendKeys: () => false,
-    reconnect() {}, refit() {}, refreshEmpty() {}, destroy() { view.destroy(); },
+    reconnect() {}, refit() {}, refreshEmpty() {}, refreshBanner() {}, destroy() { view.destroy(); },
   });
   let watch = owner() ? makeWatch() : null;
   let terminal = watch ? watchingTerminal(watch) : makeTerminal();
@@ -696,6 +703,8 @@ export function mountTaskView(ctx, sandbox, task) {
         if (read === detailRead) current = { ...current, ...pickSummary(detail) };
         heldKey = '';
         renderStrip();
+        // The end banner may name the limit the last run met (SPEC-268), known only from here.
+        terminal.refreshBanner();
       }
     } catch (error) {
       if (alive && read === detailRead && error.status !== 404) errorToast(error, 'Couldn’t load task details');

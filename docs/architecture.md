@@ -60,12 +60,19 @@ the sandbox and the agents at least 20 %, and idle CPU goes to whoever wants it.
 5 nice levels below the agents themselves ([SPEC-053](../.ai/specs/SPEC-053-ci-e2e-timeouts-under-agent-load-give-ci.md),
 [decision 0039](decisions/0039-ci-jobs-get-the-cpu-first.md)).
 
+Tasks (processes and threads) are one budget too, sized from the host (a quarter of its task
+table, at least 8192, at most three quarters of the service's own limit). CI jobs and the engine with its containers each stop at 3/8 of it, so the
+agent sessions keep at least a quarter. A session that still ends while the sandbox was at its
+task or memory limit says so in the task
+([SPEC-268](../.ai/specs/SPEC-268-parallel-tasks-in-one-sandbox-crash-clau.md),
+[decision 0198](decisions/0198-sandbox-task-limits-are-sized-from-the-host-and-leave-sessions-a-reserve.md)).
+
 ```mermaid
 flowchart TD
   SBX["sandboxes/sandbox: cpu.max, memory.max, pids.max"] --> SYS["system/ weight 100: holder, slirp4netns"]
   SBX --> AGS["agents/ weight 100: agent runs, shells, browsers"]
-  SBX --> CIG["ci/ weight 400: CI jobs"]
-  SBX --> ENG["engine/ weight 100: dockerd, containers below it"]
+  SBX --> CIG["ci/ weight 400, pids.max 3/8: CI jobs"]
+  SBX --> ENG["engine/ weight 100, pids.max 3/8: dockerd, containers below it"]
 ```
 
 The e2e suite (`e2e/`, test-only) shares that CPU with the agents when an agent runs it, and the

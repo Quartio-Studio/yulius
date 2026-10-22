@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted. Specified in [SPEC-053](../../.ai/specs/SPEC-053-ci-e2e-timeouts-under-agent-load-give-ci.md).
+Accepted; amended by [0198](0198-sandbox-task-limits-are-sized-from-the-host-and-leave-sessions-a-reserve.md)
+(`pids` also goes down to `ci/` and `engine/`). Specified in [SPEC-053](../../.ai/specs/SPEC-053-ci-e2e-timeouts-under-agent-load-give-ci.md).
 It extends the per-sandbox limits of SPEC-002 ADR-22 §5 and keeps SPEC-050 CPU-101 (agent commands
 under `nice 5`).
 

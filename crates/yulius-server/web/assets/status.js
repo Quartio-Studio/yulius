@@ -40,12 +40,28 @@ const ENDED_MESSAGES = {
   failed_no_account: { tone: 'error', text: 'The task couldn’t start because no Claude account was usable. An instance administrator connects one, or signs one in again, in Subscriptions; then try again.', accounts: true, retry: true },
 };
 
+// A session that ended by itself while the sandbox was at a limit (SPEC-268 PID-006).
+const LIMIT_MESSAGES = {
+  pids: `The agent stopped: the sandbox hit its process limit while it ran (too many processes and threads in this project’s tasks at once). ${SAFE}`,
+  memory: `The agent stopped: the sandbox ran out of memory while it ran. ${SAFE}`,
+};
+
+/** The limit a run's recorded exit reason names (`… limit=pids`), or null (SPEC-268 PID-005). */
+export function limitCause(exitReason) {
+  const found = /(?:^| )limit=(pids|memory)$/.exec(String(exitReason || ''));
+  return found ? found[1] : null;
+}
+
 /**
  * What to tell the user when a task's session has ended (UX-02): a plain sentence with a `tone`
  * ('info' | 'warn' | 'error'), whether checking the subscriptions may help (`accounts`), and
- * whether the next step is to try again rather than continue (`retry`).
+ * whether the next step is to try again rather than continue (`retry`). `cause` is the limit the
+ * sandbox was at when a crashed or killed run ended (`pids`, `memory`).
  */
-export function endedMessage(status) {
+export function endedMessage(status, cause) {
+  if ((status === 'stopped_crashed' || status === 'stopped_killed') && LIMIT_MESSAGES[cause]) {
+    return { tone: 'warn', text: LIMIT_MESSAGES[cause] };
+  }
   return ENDED_MESSAGES[status] || { tone: 'info', text: `The agent's session ended. ${SAFE}` };
 }
 

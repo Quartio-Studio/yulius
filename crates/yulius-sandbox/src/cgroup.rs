@@ -6,7 +6,8 @@
 //! - enables the `cpu`, `memory` and `pids` controllers for `<unit>` and `<unit>/sandboxes`;
 //! - gives each sandbox `<unit>/sandboxes/<sandbox>` with its limits, split by CPU weight into
 //!   `system/` (the holder), `agents/` (runs) and `ci/` (CI jobs) when `cpu` is available
-//!   (SPEC-053).
+//!   (SPEC-053); `ci/` and `engine/` then also get 3/8 of its task limit each, so sessions keep
+//!   a quarter of it whatever CI jobs and containers do (SPEC-268).
 //!
 //! The holder, `slirp4netns` and every run of a sandbox join their leaf before they start
 //! anything ([`join`]). Without delegation (the parent of the server's cgroup is not ours),
@@ -50,9 +51,55 @@ pub struct Limits {
     pub pids_max: Option<u64>,
 }
 
+/// The task limit of a sandbox at least (the fixed default before SPEC-268).
+const MIN_PIDS: u64 = 8192;
+/// The share of the host's task table a sandbox may use by default (SPEC-268 PID-001).
+const HOST_TASKS_SHARE: u64 = 4;
+
+/// The host's task table: the smaller of `kernel.threads-max` and `kernel.pid_max`, from the text
+/// of those files; `None` when one cannot be read as a positive number.
+#[must_use]
+pub fn host_tasks(threads_max: &str, pid_max: &str) -> Option<u64> {
+    let read = |text: &str| text.trim().parse::<u64>().ok().filter(|n| *n > 0);
+    Some(read(threads_max)?.min(read(pid_max)?))
+}
+
+/// The task limit that binds the group `dir` (the server's delegated unit), below `fs_root`: the
+/// smallest `pids.max` of it and its ancestors there; `None` when none sets one (`max`).
+#[must_use]
+pub fn tasks_max_above(fs_root: &Path, dir: &Path) -> Option<u64> {
+    dir.ancestors()
+        .take_while(|group| group.starts_with(fs_root) && *group != fs_root)
+        .filter_map(|group| std::fs::read_to_string(group.join("pids.max")).ok())
+        .filter_map(|text| text.trim().parse::<u64>().ok())
+        .min()
+}
+
+/// Three quarters of `service`, at least 1: what sandboxes may use of the service's tasks.
+fn service_share(service: u64) -> u64 {
+    (service / 4 * 3).max(1)
+}
+
 impl Limits {
+    /// These limits with the task limit at most three quarters of `service` (the delegated unit's
+    /// own limit, [`tasks_max_above`]): systemd's `DefaultTasksMax` caps the whole service at
+    /// 15 % of the host's table, so a sandbox at a quarter of the host would starve the server
+    /// and the other sandboxes before its own limit (SPEC-268 PID-001, review round 1). For the
+    /// default only: an explicit `YULIUS_SANDBOX_PIDS` stands.
+    #[must_use]
+    pub fn within_service(self, service: Option<u64>) -> Self {
+        let pids_max = match (self.pids_max, service) {
+            (Some(pids), Some(service)) => Some(pids.min(service_share(service))),
+            (pids, _) => pids,
+        };
+        Self { pids_max, ..self }
+    }
+
     /// Defaults for a host: the memory but a reserve for the host and Yulius (an eighth, at
-    /// least 4 GiB; the sandbox gets at least 2 GiB), no CPU quota, 8192 tasks. Half the memory
+    /// least 4 GiB; the sandbox gets at least 2 GiB), no CPU quota, and a quarter of the host's
+    /// task table `host_tasks` ([`host_tasks`]), at least 8192 (SPEC-268 PID-001). The fixed
+    /// 8192 tasks (threads) were used up by five tasks building Rust and running tests with
+    /// containers, and Claude Code aborts when it cannot start a thread (F 2026-10-22). Half the memory
     /// was too little for one sandbox running all the agents: ten sessions and two CI lanes
     /// thrashed its page cache at 25 GiB while 20 GiB of the host stayed free, and CI jobs timed
     /// out (F 2026-10-13).
@@ -63,12 +110,12 @@ impl Limits {
     /// left stayed nearly idle. Yulius's own group and the host's services keep their share by
     /// weight whenever they need it.
     #[must_use]
-    pub fn defaults(total_memory: u64) -> Self {
+    pub fn defaults(total_memory: u64, host_tasks: Option<u64>) -> Self {
         let reserve = (total_memory / 8).max(4 << 30);
         Self {
             memory_max: Some(total_memory.saturating_sub(reserve).max(2 << 30)),
             cpus: None,
-            pids_max: Some(8192),
+            pids_max: Some(host_tasks.map_or(MIN_PIDS, |n| (n / HOST_TASKS_SHARE).max(MIN_PIDS))),
         }
     }
 
@@ -272,6 +319,42 @@ fn split_cpu(dir: &Path, groups: &SandboxGroups) -> io::Result<()> {
     Ok(())
 }
 
+/// How often a sandbox was at a limit, as its cgroups count it (SPEC-268 PID-004). The counts
+/// only grow while the group lives; a rise between two reads is what tells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LimitCounters {
+    /// Forks and thread creations refused to the sandbox's sessions at a task limit
+    /// ([`Delegation::limit_counters`]).
+    pub task_limit_hits: u64,
+    /// Processes the OOM killer ended in the sandbox (`memory.events` `oom_kill`).
+    pub oom_kills: u64,
+}
+
+/// The number after `key` in a cgroup's flat keyed file (`max 3\n`), 0 when absent.
+fn keyed(text: &str, key: &str) -> u64 {
+    text.lines()
+        .find_map(|line| line.strip_prefix(key)?.strip_prefix(' '))
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// Of every eight tasks of a sandbox, what CI jobs and the engine may each use (SPEC-268 PID-002):
+/// together three quarters, so the agents' leaf always keeps a quarter.
+const LEAF_TASKS_EIGHTHS: u64 = 3;
+
+/// Gives the leaves of the split sandbox group `dir` their task limits below the sandbox's
+/// `pids_max`: `ci` and `engine` each 3/8 of it, the agents and the holder none of their own
+/// (SPEC-268 PID-002). A fork is refused at the first ancestor at its limit, so CI jobs and the
+/// containers stop at their leaf while sessions keep the rest.
+fn cap_leaves(dir: &Path, groups: &SandboxGroups, pids_max: u64) -> io::Result<()> {
+    write(&dir.join("cgroup.subtree_control"), "+pids")?;
+    let cap = (pids_max / 8 * LEAF_TASKS_EIGHTHS + pids_max % 8 * LEAF_TASKS_EIGHTHS / 8).max(1);
+    for leaf in [&groups.ci, &groups.engine] {
+        write(&leaf.join("pids.max"), &cap.to_string())?;
+    }
+    Ok(())
+}
+
 impl Delegation {
     /// The paths of `sandbox`'s groups, as [`Delegation::sandbox_group`] makes them, without
     /// touching anything.
@@ -285,6 +368,60 @@ impl Delegation {
             SandboxGroups::leaves(&dir)
         } else {
             SandboxGroups::single(&dir)
+        }
+    }
+
+    /// `sandbox`'s limit counters (SPEC-268 PID-004, review rounds 1 and 2). Where the kernel has
+    /// `pids.events.local` (6.13+), refused forks are counted where the limit was hit: the
+    /// sandbox's own `pids.events.local` `max`, its limit hit by any of its processes. Else (6.8)
+    /// a refused fork counts in the forking task's own group: `pids.events` `max` of every group
+    /// of the sandbox (at most 4096) but CI's and the engine's subtrees, whose processes are
+    /// stopped at their own leaf limits while sessions keep forking; a paused run's `agents/run-*`
+    /// group counts. OOM kills are the sandbox's `memory.events` `oom_kill` (hierarchical). Zero
+    /// for a group that is not there.
+    #[must_use]
+    pub fn limit_counters(&self, sandbox: &str) -> LimitCounters {
+        let dir = self
+            .unit
+            .join(SANDBOXES)
+            .join(crate::manager::path_name(sandbox));
+        let read = |dir: &Path, file: &str, key: &str| {
+            std::fs::read_to_string(dir.join(file))
+                .ok()
+                .map(|text| keyed(&text, key))
+        };
+        let oom_kills = read(&dir, "memory.events", "oom_kill").unwrap_or(0);
+        if let Some(hits) = read(&dir, "pids.events.local", "max") {
+            return LimitCounters {
+                task_limit_hits: hits,
+                oom_kills,
+            };
+        }
+        let groups = self.sandbox_paths(sandbox);
+        let apart = [groups.ci.as_path(), groups.engine.as_path()];
+        let mut task_limit_hits = 0u64;
+        let mut stack = vec![dir.clone()];
+        let mut seen = 0;
+        while let Some(group) = stack.pop() {
+            seen += 1;
+            if seen > MAX_MOVED {
+                break;
+            }
+            let hits = read(&group, "pids.events", "max").unwrap_or(0);
+            task_limit_hits = task_limit_hits.saturating_add(hits);
+            if let Ok(entries) = std::fs::read_dir(&group) {
+                stack.extend(
+                    entries
+                        .flatten()
+                        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                        .map(|e| e.path())
+                        .filter(|path| group != dir || !apart.contains(&path.as_path())),
+                );
+            }
+        }
+        LimitCounters {
+            task_limit_hits,
+            oom_kills,
         }
     }
 
@@ -323,14 +460,21 @@ impl Delegation {
         if let Err(error) = split_cpu(&dir, &groups) {
             tracing::warn!(sandbox, %error, "CI jobs run without CPU priority for now");
         }
+        if let Some(pids_max) = limits.pids_max
+            && self.controllers.iter().any(|c| c == "pids")
+            && let Err(error) = cap_leaves(&dir, &groups, pids_max)
+        {
+            tracing::warn!(sandbox, %error, "CI jobs and containers run without their own task limit for now");
+        }
         drop(stopping);
         Ok(groups)
     }
 
-    /// Takes the CPU back from every sandbox's leaves (`-cpu`) when the server stops (SPEC-053
-    /// CPU-205). An older binary started after this one (a rollback) joins the sandbox group
-    /// itself, which the kernel refuses while the group passes a controller down. Processes stay
-    /// in their leaves; the next preparation splits again.
+    /// Takes the task limits and the CPU back from every sandbox's leaves (`-pids`, `-cpu`) when
+    /// the server stops (SPEC-053 CPU-205, SPEC-268 PID-003). An older binary started after this
+    /// one (a rollback) joins the sandbox group itself, which the kernel refuses while the group
+    /// passes a controller down. Processes stay in their leaves; the next preparation splits
+    /// again.
     pub fn unsplit_all(&self) {
         let mut stopping = self.stopping.lock().unwrap_or_else(PoisonError::into_inner);
         *stopping = true;
@@ -341,10 +485,17 @@ impl Delegation {
             let control = entry.path().join("cgroup.subtree_control");
             let split = std::fs::read_to_string(&control).is_ok_and(|text| {
                 text.split_whitespace()
-                    .any(|c| c.trim_start_matches('+') == "cpu")
+                    .any(|c| matches!(c.trim_start_matches('+'), "cpu" | "pids"))
             });
-            if split && let Err(error) = write(&control, "-cpu") {
-                tracing::warn!(group = %entry.path().display(), %error, "cannot undo the CPU split");
+            if !split {
+                continue;
+            }
+            // Separate writes: one controller a leaf still passes down (the engine's) must not
+            // keep the other.
+            for line in ["-pids", "-cpu"] {
+                if let Err(error) = write(&control, line) {
+                    tracing::warn!(group = %entry.path().display(), %error, "cannot undo the split ({line})");
+                }
             }
         }
     }
@@ -413,17 +564,21 @@ mod tests {
 
     #[test]
     fn defaults_leave_room_for_the_host() {
-        let limits = Limits::defaults(48 << 30);
+        let limits = Limits::defaults(48 << 30, None);
         assert_eq!(limits.memory_max, Some(42 << 30), "all but an eighth");
         assert_eq!(
-            Limits::defaults(16 << 30).memory_max,
+            Limits::defaults(16 << 30, None).memory_max,
             Some(12 << 30),
             "a 4 GiB reserve at least"
         );
         assert_eq!(limits.cpus, None, "shared by weight, not capped (SPEC-082)");
         assert_eq!(limits.files()[1], ("cpu.max", "max 100000".to_owned()));
-        assert_eq!(limits.pids_max, Some(8192));
-        let small = Limits::defaults(2 << 30);
+        assert_eq!(
+            limits.pids_max,
+            Some(8192),
+            "the host's task table is unknown"
+        );
+        let small = Limits::defaults(2 << 30, None);
         assert_eq!(small.memory_max, Some(2 << 30));
         assert_eq!(
             Limits::default().files(),
@@ -438,6 +593,55 @@ mod tests {
             ..limits
         };
         assert_eq!(capped.files()[1], ("cpu.max", "1000000 100000".to_owned()));
+    }
+
+    /// SPEC-268 PID-001: a quarter of the host's task table, never less than the old 8192.
+    #[test]
+    fn the_task_limit_is_sized_from_the_host() {
+        // The VM: 47 GB, threads-max 385 088, pid_max 4 194 304.
+        let host = host_tasks("385088\n", "4194304\n");
+        assert_eq!(host, Some(385_088));
+        assert_eq!(Limits::defaults(48 << 30, host).pids_max, Some(96_272));
+        assert_eq!(host_tasks("385088\n", "32768\n"), Some(32_768));
+        assert_eq!(
+            Limits::defaults(4 << 30, host_tasks("30000", "32768")).pids_max,
+            Some(8192),
+            "a small host keeps 8192"
+        );
+        assert_eq!(host_tasks("", "32768"), None);
+        assert_eq!(host_tasks("many", "32768"), None);
+        assert_eq!(host_tasks("0", "32768"), None);
+    }
+
+    /// SPEC-268 PID-001, review round 1: systemd's `DefaultTasksMax` (15 % of the host's table)
+    /// caps the whole service; a sandbox's default stays at three quarters of it, so the server
+    /// and the other sandboxes keep a quarter.
+    #[test]
+    fn the_task_limit_stays_below_the_services() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let unit = root.path().join("system.slice/yulius.service");
+        std::fs::create_dir_all(&unit)?;
+        std::fs::write(root.path().join("system.slice/pids.max"), "max\n")?;
+        assert_eq!(tasks_max_above(root.path(), &unit), None, "no limit");
+        std::fs::write(unit.join("pids.max"), "57763\n")?;
+        assert_eq!(tasks_max_above(root.path(), &unit), Some(57_763));
+        std::fs::write(root.path().join("system.slice/pids.max"), "40000\n")?;
+        assert_eq!(
+            tasks_max_above(root.path(), &unit),
+            Some(40_000),
+            "an ancestor's"
+        );
+        assert_eq!(tasks_max_above(root.path(), root.path()), None);
+        let vm = Limits::defaults(48 << 30, Some(385_088));
+        assert_eq!(vm.within_service(Some(57_763)).pids_max, Some(43_320));
+        assert_eq!(vm.within_service(Some(1_000_000)).pids_max, Some(96_272));
+        assert_eq!(vm.within_service(None), vm);
+        assert_eq!(
+            Limits::default().within_service(Some(100)),
+            Limits::default(),
+            "no limit stays none"
+        );
+        Ok(())
     }
 
     #[test]
@@ -584,6 +788,122 @@ mod tests {
         assert_eq!(delegation.sandbox_group("s1", &Limits::default())?, groups);
         // SPEC-196 review round 2: the same paths, read without preparing anything.
         assert_eq!(delegation.sandbox_paths("s1"), groups);
+        Ok(())
+    }
+
+    /// SPEC-268 PID-002, PID-003: CI jobs and the engine each get 3/8 of the sandbox's tasks, so
+    /// the agents' leaf keeps a quarter; a stopping server takes them back with the CPU.
+    #[test]
+    fn ci_and_the_engine_leave_the_agents_a_reserve_of_tasks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+        let limits = Limits {
+            pids_max: Some(64),
+            ..Limits::default()
+        };
+        let groups = delegation.sandbox_group("s1", &limits)?;
+        assert_eq!(std::fs::read_to_string(dir.join("pids.max"))?, "64");
+        // A fake file keeps the last write: `+cpu`, then `+pids`.
+        assert_eq!(
+            std::fs::read_to_string(dir.join("cgroup.subtree_control"))?,
+            "+pids"
+        );
+        assert_eq!(std::fs::read_to_string(groups.ci.join("pids.max"))?, "24");
+        assert_eq!(
+            std::fs::read_to_string(groups.engine.join("pids.max"))?,
+            "24"
+        );
+        assert!(
+            !groups.agents.join("pids.max").exists(),
+            "the agents keep the rest"
+        );
+        assert!(!groups.system.join("pids.max").exists());
+        assert_eq!(
+            std::fs::read_to_string(groups.ci.join("cpu.weight"))?,
+            "400"
+        );
+        delegation.unsplit_all();
+        // `-pids`, then `-cpu` (kept by the fake file).
+        assert_eq!(
+            std::fs::read_to_string(dir.join("cgroup.subtree_control"))?,
+            "-cpu"
+        );
+        // A tiny limit still leaves each leaf a task.
+        let (_root, delegation, _dir) = fake_sandbox("cpu memory pids\n")?;
+        let tiny = Limits {
+            pids_max: Some(2),
+            ..Limits::default()
+        };
+        let groups = delegation.sandbox_group("s1", &tiny)?;
+        assert_eq!(std::fs::read_to_string(groups.ci.join("pids.max"))?, "1");
+        Ok(())
+    }
+
+    /// SPEC-268 PID-004, review rounds 1 and 2. Kernel 6.8 counts a refused fork in the forking
+    /// task's own group: every group of the sandbox but CI's and the engine's counts, also a
+    /// paused run's `agents/run-*` group. Kernels with `pids.events.local` (6.13+) count where the
+    /// limit was hit: the sandbox's own limit counts. OOM kills are the sandbox's (hierarchical).
+    #[test]
+    fn the_limit_counters_count_what_sessions_meet() -> Result<(), Box<dyn std::error::Error>> {
+        let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+        assert_eq!(delegation.limit_counters("s1"), LimitCounters::default());
+        let groups = delegation.sandbox_group("s1", &Limits::default())?;
+        std::fs::write(dir.join("pids.events"), "max 2\n")?;
+        std::fs::write(groups.agents.join("pids.events"), "max 3\n")?;
+        std::fs::create_dir_all(groups.agents.join("run-t1"))?;
+        std::fs::write(groups.agents.join("run-t1/pids.events"), "max 7\n")?;
+        std::fs::write(groups.system.join("pids.events"), "max 1\n")?;
+        std::fs::write(groups.ci.join("pids.events"), "max 11\n")?;
+        std::fs::create_dir_all(groups.ci.join("job"))?;
+        std::fs::write(groups.ci.join("job/pids.events"), "max 17\n")?;
+        std::fs::create_dir_all(groups.engine.join("docker/c1"))?;
+        std::fs::write(groups.engine.join("pids.events"), "max 13\n")?;
+        std::fs::write(groups.engine.join("docker/c1/pids.events"), "max 5\n")?;
+        std::fs::write(
+            dir.join("memory.events"),
+            "low 0\nhigh 0\nmax 9\noom 1\noom_kill 1\noom_group_kill 0\n",
+        )?;
+        std::fs::write(groups.ci.join("memory.events"), "oom_kill 7\n")?;
+        assert_eq!(
+            delegation.limit_counters("s1"),
+            LimitCounters {
+                task_limit_hits: 13,
+                oom_kills: 1
+            }
+        );
+        // 6.13+: the sandbox's own limit, hit by any of its processes.
+        std::fs::write(dir.join("pids.events.local"), "max 4\n")?;
+        assert_eq!(delegation.limit_counters("s1").task_limit_hits, 4);
+        // Without the split everything but the engine runs in the sandbox's group.
+        let (_root, delegation, dir) = fake_sandbox("memory pids\n")?;
+        let groups = delegation.sandbox_group("s1", &Limits::default())?;
+        std::fs::write(dir.join("pids.events"), "max 4\n")?;
+        std::fs::write(groups.engine.join("pids.events"), "max 9\n")?;
+        assert_eq!(delegation.limit_counters("s1").task_limit_hits, 4);
+        assert_eq!(delegation.limit_counters("../s1"), LimitCounters::default());
+        Ok(())
+    }
+
+    /// Without the split the runs live in the sandbox's group, which cannot pass `pids` down.
+    #[test]
+    fn without_the_split_the_leaves_get_no_task_limit() -> Result<(), Box<dyn std::error::Error>> {
+        let (_root, delegation, dir) = fake_sandbox("memory pids\n")?;
+        let limits = Limits {
+            pids_max: Some(64),
+            ..Limits::default()
+        };
+        let groups = delegation.sandbox_group("s1", &limits)?;
+        assert_eq!(std::fs::read_to_string(dir.join("pids.max"))?, "64");
+        assert!(!groups.engine.join("pids.max").exists());
+        assert!(!dir.join("cgroup.subtree_control").exists());
+        // No `pids` controller: the CPU split alone.
+        let (_root, delegation, dir) = fake_sandbox("cpu memory\n")?;
+        let groups = delegation.sandbox_group("s1", &limits)?;
+        assert!(!groups.ci.join("pids.max").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("cgroup.subtree_control"))?,
+            "+cpu"
+        );
         Ok(())
     }
 
