@@ -118,8 +118,11 @@ fn hold() -> HookReply {
     }
 }
 
-/// 256-colour text for the status line (the colours the web mock shows, HRN-005).
+/// 256-colour text for the status line (the colours the web mock shows, HRN-005), without the
+/// control characters of `text` (C0, DEL, C1), so a name cannot print escapes of its own
+/// (SPEC-262 VTR-003).
 fn colour(code: u8, text: &str) -> String {
+    let text: String = text.chars().filter(|c| !c.is_control()).collect();
     format!("\x1b[38;5;{code}m{text}\x1b[39m")
 }
 
@@ -1164,8 +1167,8 @@ fn notification_needs_a_person(input: &HookInput) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        RepoDocs, foundations, notice_answered_by_work, notification_needs_a_person, read_repo_doc,
-        repo_doc_exists, repo_path,
+        RepoDocs, colour, foundations, notice_answered_by_work, notification_needs_a_person,
+        read_repo_doc, repo_doc_exists, repo_path,
     };
     use std::path::Path;
     use yulius_contracts::hooks::HookInput;
@@ -1331,6 +1334,17 @@ mod tests {
         assert_eq!(read_repo_doc(root, "real.md").as_deref(), Some("# real"));
         assert!(repo_doc_exists(root, "real.md"));
         Ok(())
+    }
+
+    /// SPEC-262 VTR-003 (#688): a repository or branch name with control characters (an
+    /// imported branch, say) cannot end the colour and print escapes of its own.
+    #[test]
+    fn status_line_text_carries_no_control_characters() {
+        assert_eq!(
+            colour(203, "feat/1\x1b]0;owned\x07-x\u{9b}2J\x7f\ny"),
+            "\x1b[38;5;203mfeat/1]0;owned-x2Jy\x1b[39m"
+        );
+        assert_eq!(colour(80, "studio"), "\x1b[38;5;80mstudio\x1b[39m");
     }
 
     #[test]
