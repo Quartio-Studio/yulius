@@ -218,7 +218,8 @@ pub trait VaultStore: Send + Sync {
     /// Replaces every mutable column of the secret `record.id` but its host request, only while
     /// its hosts and `auto_allow` still are those of `seen` (the row the change was read from:
     /// an automatic binding or a switch meanwhile is never undone unseen) and agents setting it
-    /// up would not meet a production-only allowance; `false` otherwise or when it is gone.
+    /// up would not meet a production-only allowance, nor new hosts a production secret
+    /// (SPEC-262 VTR-001); `false` otherwise or when it is gone.
     async fn vault_update(
         &self,
         record: &VaultSecretRecord,
@@ -261,7 +262,8 @@ pub trait VaultStore: Send + Sync {
     ) -> AppResult<bool>;
     /// Answers an agent secret's host request in one step: `hosts` replace its bindings and the
     /// request is cleared, only while the request still is `request` and the bindings still are
-    /// `bound` (what the person saw); `false` otherwise. Nothing else in the row changes.
+    /// `bound` (what the person saw) and new hosts would not bind a production secret (SPEC-262
+    /// VTR-001); `false` otherwise. Nothing else in the row changes.
     async fn vault_answer_request(
         &self,
         id: &str,
@@ -281,8 +283,8 @@ pub trait VaultStore: Send + Sync {
         (waiting, requested): (&[String], &[String]),
     ) -> AppResult<bool>;
     /// Sets whether agents may copy an agent secret into `.env` files, and who asks, only while
-    /// they still are `from` (compare and set); `false` otherwise. Nothing else in the row
-    /// changes.
+    /// they still are `from` (compare and set) and an allowance would not meet a production
+    /// secret (SPEC-262 VTR-001); `false` otherwise. Nothing else in the row changes.
     async fn vault_set_env_files(
         &self,
         id: &str,
@@ -290,8 +292,9 @@ pub trait VaultStore: Send + Sync {
         to: (EnvFiles, Option<&str>),
     ) -> AppResult<bool>;
     /// Sets whether production CD runs get the agent secret `id` (SPEC-134) when it still is
-    /// `from` (compare and set) and agents do not set it up themselves (`auto_allow`, SPEC-216
-    /// SSA-004); `false` otherwise.
+    /// `from` (compare and set) and, to allow it, agents can use it in no way: they do not set
+    /// it up themselves (`auto_allow`, SPEC-216 SSA-004), copy it into `.env` files or have hosts
+    /// it is bound to (SPEC-134 round 2 M-B, SPEC-262 VTR-001); `false` otherwise.
     async fn vault_set_cd_prod(&self, id: &str, from: bool, to: bool) -> AppResult<bool>;
     /// The secrets that applied to every sandbox when schema version 35 was reached and are not
     /// assigned to sandboxes yet (SPEC-216 SCO-004).

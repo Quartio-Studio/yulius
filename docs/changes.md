@@ -13,6 +13,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   folder, or attachment cleanup remove host files; each now opens its folder from the sandbox
   directory without following links and fails with `403` (cleanup removes nothing). Pause-point
   tests cover each race.
+- The Vidoc findings tracked in #639 are triaged (SPEC-262, task #248, fixes #639, #688, #697,
+  #714). Real ones are fixed test-first: the store refuses, in each compare-and-set, a production
+  allowance on a secret agents copy into `.env` files or have hosts for, and the reverse, so two
+  managers answering at once can no longer leave a secret both; audit reasons drop U+2028/U+2029
+  and every invisible format character; the status line drops control characters of repository
+  and branch names; document presence and the workflow count for the briefing read through a
+  checked handle, so a folder swapped for a link is not followed. The rest (the `.env` target's
+  Git-ignore check, unparseable stored host requests, the `.git` exclusion of dotenv targets,
+  task-number allocation) are dismissed with their reasons, those whose Vidoc wording is on record
+  as `[[ignore]]` entries.
 - A CI job gets the agent secrets the integration branch grants only when it runs the granted
   entry's command too (task #250, #659, SPEC-264, ADR-0196). A pull request tested with its own
   `[[ci.jobs]]` that reused a granted job's name, say `deploy`, for its own command ran that command

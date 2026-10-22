@@ -79,17 +79,36 @@ fn merge(
     })
 }
 
-/// Bidirectional and invisible format characters, which could make an audit line read
-/// differently from what it says.
+/// Characters that show nothing but could make an audit line read differently from what it
+/// says: every Unicode format character (category Cf: bidirectional controls, zero-width and
+/// interlinear marks, tags), and the combining joiner, variation selectors and fillers that
+/// render as nothing (SPEC-262 VTR-002).
 fn hidden_format(c: char) -> bool {
-    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
+    matches!(c,
+        '\u{ad}' | '\u{600}'..='\u{605}' | '\u{61c}' | '\u{6dd}' | '\u{70f}'
+        | '\u{890}'..='\u{891}' | '\u{8e2}' | '\u{180e}' | '\u{200b}'..='\u{200f}'
+        | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}'
+        | '\u{fff9}'..='\u{fffb}' | '\u{110bd}' | '\u{110cd}' | '\u{13430}'..='\u{1343f}'
+        | '\u{1bca0}'..='\u{1bca3}' | '\u{1d173}'..='\u{1d17a}' | '\u{e0001}'
+        | '\u{e0020}'..='\u{e007f}'
+        // Not Cf, but invisible all the same.
+        | '\u{34f}' | '\u{115f}' | '\u{1160}' | '\u{3164}' | '\u{ffa0}'
+        | '\u{fe00}'..='\u{fe0f}' | '\u{e0100}'..='\u{e01ef}')
 }
 
+/// The reason an agent gives, as audited: one line of at most [`MAX_REASON`] characters, controls
+/// and line or paragraph separators as spaces, [`hidden_format`] characters dropped.
 pub(super) fn reason(text: Option<&str>) -> String {
     text.unwrap_or_default()
         .chars()
         .filter(|c| !hidden_format(*c))
-        .map(|c| if c.is_control() { ' ' } else { c })
+        .map(|c| {
+            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+                ' '
+            } else {
+                c
+            }
+        })
         .take(MAX_REASON)
         .collect::<String>()
         .trim()
@@ -455,6 +474,17 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-262 (#639 finding 3): what waits is stored as parsed hosts, so `patterns` drops
+    /// none of a stored request; a host that would not parse is never bound (`parse_hosts`).
+    #[test]
+    fn stored_requests_hold_only_hosts_that_parse() -> Result<(), VaultError> {
+        let asked = parse_hosts(&hosts(&["API.vidoc.test", "*.eu.vidoc.test"]))?;
+        let merged = merge(&hosts(&["app.vidoc.test"]), &hosts(&["x.test"]), &asked)?;
+        assert_eq!(patterns(&merged.waiting).len(), merged.waiting.len());
+        assert!(parse_hosts(&hosts(&["app.vidoc.test", "not a host"])).is_err());
+        Ok(())
+    }
+
     #[test]
     fn bound_and_waiting_hosts_stay_within_the_limit() -> Result<(), VaultError> {
         let bound: Vec<String> = (0..MAX_HOSTS - 1).map(|i| format!("h{i}.test")).collect();
@@ -491,6 +521,19 @@ mod tests {
     fn reasons_are_short_single_lines() {
         assert_eq!(reason(Some("evil\u{202e}moc.test")), "evilmoc.test");
         assert_eq!(reason(Some(" upload\nvideos ")), "upload videos");
+        // SPEC-262 VTR-002 (#639): line separators break the line too, and invisible format
+        // characters beyond the bidi and zero-width ones are dropped.
+        assert_eq!(
+            reason(Some("upload\u{2028}videos\u{2029}now")),
+            "upload videos now"
+        );
+        assert_eq!(
+            reason(Some(
+                "a\u{ad}b\u{61c}c\u{180e}d\u{2064}e\u{fff9}f\u{e0041}g\u{34f}h\u{fe0f}i\u{3164}j\u{600}k"
+            )),
+            "abcdefghijk"
+        );
+        assert_eq!(reason(Some("x\u{85}y")), "x y", "C1 controls too");
         assert_eq!(reason(Some(&"x".repeat(400))).len(), MAX_REASON);
         assert_eq!(reason(None), "");
     }
