@@ -95,7 +95,9 @@ pub fn not_a_secret(name: &str, value: &str) -> Option<NotASecret> {
     if value.chars().count() < MIN_AGENT_VALUE_CHARS {
         short_plain(value).then_some(NotASecret::Short)
     } else {
-        ordinary_text(value).map(NotASecret::Ordinary)
+        ordinary_text(value)
+            .filter(|kind| !carries_in_plain_view(*kind, value))
+            .map(NotASecret::Ordinary)
     }
 }
 
@@ -108,6 +110,26 @@ pub fn carries_credential(value: &str) -> bool {
                 .next()
                 .is_some_and(|authority| authority.contains('@'))
         })
+}
+
+/// What ordinary text may still carry once shown to every agent (review round 5): a URL's
+/// fragment (a share link's decryption key, an `#access_token=`), or an address whose local part
+/// is a token (an inbound address that triggers a webhook). Such a value is not refused as a
+/// secret, but it is not moved into plain view either.
+fn carries_in_plain_view(kind: OrdinaryText, value: &str) -> bool {
+    match kind {
+        OrdinaryText::Url => value.contains('#'),
+        OrdinaryText::Email => value
+            .split_once('@')
+            .is_some_and(|(local, _)| token_like(local)),
+        _ => false,
+    }
+}
+
+/// A run of 12 or more letters and digits holding a digit (`a1b2c3d4e5f6…`, an id-like token).
+fn token_like(text: &str) -> bool {
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|run| run.len() >= 12 && run.bytes().any(|b| b.is_ascii_digit()))
 }
 
 /// `ovh-ca`, `EU`, `8080`: a short value in one case of letters, digits and `-`, `_`, `.` (a
@@ -206,6 +228,15 @@ mod tests {
             ),
             ("UPSTREAM", "-----BEGIN OPENSSH PRIVATE KEY----- abc"),
             ("UPSTREAM", "two\nlines-here"),
+            // Review round 5: a key in a URL's fragment, a token as an address's local part.
+            (
+                "SHARE_URL",
+                "https://files.example.com/f/abc#k3yInTheFragment",
+            ),
+            (
+                "INBOUND_ADDRESS",
+                "a1b2c3d4e5f6a7b8c9d0@inbound.example.com",
+            ),
         ] {
             assert_eq!(not_a_secret(name, value), None, "{name}={value}");
         }

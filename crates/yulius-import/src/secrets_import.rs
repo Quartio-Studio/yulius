@@ -532,7 +532,8 @@ const IN_REPO: &str = "redaction would mask it there";
 
 /// Where ordinary text belongs, and where a credential that only looks like it goes: never into
 /// the hand-over, which tasks read (review of SPEC-274).
-const BELONGS: &str = "it belongs in configuration or the hand-over; if it is a credential after \
+const BELONGS: &str = "it belongs in configuration, a project variable (`yulius vars set`) or \
+                       the hand-over; if it is a credential after \
                        all, a person adds it on the Secrets page";
 
 /// Imports `entries`: classifies each, shows the plan, asks for `yes` and creates the new ones.

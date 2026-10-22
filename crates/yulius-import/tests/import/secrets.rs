@@ -749,10 +749,10 @@ fn ordinary_text_values_are_refused_and_named() -> TestResult {
         }
         // Review of SPEC-274: a credential taken for ordinary text never goes to the hand-over.
         assert!(
-            said.contains("belongs in configuration or the hand-over")
-                && said.contains(
-                    "if it is a credential after all, a person adds it on the Secrets page"
-                ),
+            said.contains(
+                "belongs in configuration, a project variable (`yulius vars set`) or the hand-over"
+            ) && said
+                .contains("if it is a credential after all, a person adds it on the Secrets page"),
             "{said}"
         );
         // "production deploys" is the run's own text: the values are looked for in the plan.

@@ -98,12 +98,13 @@ The server's instructions tell your agent what to do ([SPEC-256](../.ai/specs/SP
    go to the project's **variables** instead, which every task of the project has in its
    environment, in plain ([SPEC-275](../.ai/specs/SPEC-275-project-variables-non-secret-values-regi.md),
    [ADR-0203](decisions/0203-project-variables-are-plain-per-project-values-in-task-runs.md)).
-   The import does it itself: instead of skipping ordinary text, it sends an entry shorter than 8
-   characters or ordinary text (SPEC-274's rule) as a variable with the secrets, shown as
-   `~ NAME  not a secret (a configuration word): a project variable` (`--no-vars` skips them as
-   before). A name that
-   says it is a credential (`…_KEY`, `…_TOKEN`, `…_PASSWORD`, …) always stays a secret. Others
-   your agent sets directly:
+   The import moves some of them itself: instead of skipping ordinary text, it sends a plain entry
+   shorter than 8 characters or ordinary text (SPEC-274's rule) as a variable with the secrets,
+   shown as `~ NAME  not a secret (a configuration word): a project variable` (`--no-vars` skips
+   them as before). A name that says it is a credential (`…_KEY`, `…_TOKEN`, `…_PASSWORD`, …)
+   never becomes a variable: its value is imported as a secret, or skipped when it is ordinary
+   text. Values the rule cannot tell from a secret, such as account and project ids, stay with
+   the secrets; your agent sets those, and any other, directly:
 
    ```sh
    yulius vars set OVH_ENDPOINT=ovh-ca --description "OVH region"
