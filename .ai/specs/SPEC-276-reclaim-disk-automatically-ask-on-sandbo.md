@@ -76,8 +76,9 @@ been read for at least 24 h.
   time of any file in it. An incremental directory holding a `*-working` session is never
   touched. Files outside units (binaries at the profile root, `doc`, `nextest`, `tmp`) are left.
 - **RDA-004** A unit unused for 48 h is deleted (relatime: unread for at least a day).
-- **RDA-005** After that, a build directory larger than its cap loses its least recently used
-  units until it is at three quarters of the cap, never a unit used within the last hour. The cap
+- **RDA-005** After that, a build directory whose units hold more than its cap loses its least
+  recently used units until they hold three quarters of the cap, never a unit used within the last
+  hour (files outside units do not count). The cap
   is 5 % of the data disk, at least 8 GB (19 GB on a 387 GB disk). Each sweep that deletes
   something is audited (`disk.sweep`: what, how much, why).
 
@@ -132,8 +133,8 @@ been read for at least 24 h.
 ## Plan
 
 - [x] Spec and ADR-0205
-- [ ] Build caches are swept by last use under Cargo's own lock
-- [ ] A build cache over its cap loses its least recently used units
+- [x] Build caches are swept by last use under Cargo's own lock
+- [x] A build cache over its cap loses its least recently used units
 - [ ] A low or critical disk sweeps harder, prunes idle caches and is audited
 - [ ] The UI warns while the server's disk is low
 - [ ] Archived tasks lose their caches at once; the last leftovers round is shown

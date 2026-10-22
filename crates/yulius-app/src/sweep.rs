@@ -604,6 +604,41 @@ mod tests {
     }
 
     #[test]
+    fn over_its_cap_a_build_directory_loses_its_least_recently_used_units() -> TestResult {
+        let f = fixture()?;
+        // Four units of about 4 KiB each, none two days old.
+        let hashes = [
+            ("0000000000000001", 5),
+            ("0000000000000002", 3),
+            ("0000000000000003", 2),
+            ("0000000000000004", 0),
+        ];
+        for (hash, hours) in hashes {
+            unit(&f.profile, "dep", hash, hours)?;
+        }
+        let one = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy());
+        assert_eq!(one.units, 0, "no cap reached: {one:?}");
+        let found = units(&f.root, &[f.profile.clone()]).ok_or("units")?;
+        let unit_bytes = found.first().map(|f| f.unit.bytes).ok_or("a unit")?;
+        // A cap of three units: down to three quarters of it, i.e. two units stay.
+        let policy = Policy {
+            cap: unit_bytes * 3,
+            ..ok_policy()
+        };
+        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &policy);
+        assert_eq!(outcome.units, 2, "{outcome:?}");
+        let left = |hash: &str| f.profile.join(format!("deps/libdep-{hash}.rlib")).exists();
+        assert!(!left("0000000000000001") && !left("0000000000000002"), "oldest first");
+        assert!(left("0000000000000003") && left("0000000000000004"));
+        // The current build (used within the hour) stays even far above its cap.
+        let tiny = Policy { cap: 1, ..ok_policy() };
+        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &tiny);
+        assert_eq!(outcome.units, 1, "{outcome:?}");
+        assert!(left("0000000000000004"));
+        Ok(())
+    }
+
+    #[test]
     fn only_cargo_checkouts_have_build_directories() -> TestResult {
         let f = fixture()?;
         file(&f.root.join("worktrees/t1/Cargo.toml"), 8, 0)?;
