@@ -34,6 +34,7 @@ indicatif = { workspace = true }
 console = { workspace = true }
 dialoguer = { workspace = true }
 zeroize = { workspace = true }
+aho-corasick = { workspace = true }
 
 [dev-dependencies]
 axum = { workspace = true }

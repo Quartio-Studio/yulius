@@ -231,6 +231,14 @@ pub fn discover_repo(path: &Path) -> Result<RepoInfo, RepoError> {
     })
 }
 
+/// The top-level directory of the checkout containing `path` and its GitHub repository, whatever
+/// its `HEAD` (SPEC-274: the import searches a checkout of the project, detached or not).
+pub(crate) fn checkout_of(path: &Path) -> Option<(PathBuf, GitHubRemote)> {
+    let root = checkout_root(path).ok()?;
+    let remote = find_github_remote(&root).ok()?;
+    Some((root, remote))
+}
+
 /// Locates the checkout containing `path` for `yulius onboard --playground` (SPEC-171): its
 /// remotes are neither needed nor read, so the descriptor has an empty owner and remote URL, and
 /// its name is `name` or else the checkout directory's name. `HEAD` must be on a branch, where

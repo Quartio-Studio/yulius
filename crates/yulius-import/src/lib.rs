@@ -24,6 +24,7 @@ mod jsonl;
 mod process;
 mod redact;
 mod remote;
+mod repo_values;
 mod run;
 mod secret;
 mod secrets_import;
