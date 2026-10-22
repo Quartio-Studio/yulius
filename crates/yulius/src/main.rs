@@ -358,6 +358,14 @@ enum SecretsAction {
         #[command(flatten)]
         opts: yulius::remote_cli::RemoteOpts,
     },
+    /// Delete one of the project's agent secrets by NAME through the remote MCP, for example one
+    /// imported by mistake (SPEC-274); audited, the value is never shown.
+    Delete {
+        /// The secret's NAME (`yulius secrets list`).
+        name: String,
+        #[command(flatten)]
+        opts: yulius::remote_cli::RemoteOpts,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -620,6 +628,9 @@ fn main() -> ExitCode {
         Command::Secrets {
             action: SecretsAction::List { opts },
         } => yulius::remote_cli::secrets_list(&opts),
+        Command::Secrets {
+            action: SecretsAction::Delete { name, opts },
+        } => yulius::remote_cli::secrets_delete(&name, &opts),
         Command::Remote { opts, action } => yulius::remote_cli::remote(action, &opts),
         Command::Project { opts, action } => yulius::remote_cli::project_cmd(action, &opts),
         Command::Task { opts, action } => yulius::remote_cli::task_cmd(action, &opts),

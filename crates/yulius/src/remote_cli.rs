@@ -1,7 +1,8 @@
-//! `yulius remote`, `yulius project`, `yulius task`, `yulius ci` and `yulius secrets list`
-//! (SPEC-247 RMT-030, RMT-031): a person drives a Yulius instance from their computer, or a
-//! script or an agent without MCP does, through the instance's remote MCP with a personal API
-//! token. Every command is one tool call; its text is printed, or its record with `--json`.
+//! `yulius remote`, `yulius project`, `yulius task`, `yulius ci`, `yulius secrets list` and
+//! `yulius secrets delete` (SPEC-247 RMT-030, RMT-031, SPEC-274): a person drives a Yulius
+//! instance from their computer, or a script or an agent without MCP does, through the
+//! instance's remote MCP with a personal API token. Every command is one tool call; its text is
+//! printed, or its record with `--json`.
 //!
 //! Exit codes: 0 done, 1 the tool refused or failed (its text says why), 2 the request did not
 //! reach a tool (no token, a refused token, the network, a bad argument).
@@ -624,4 +625,15 @@ pub fn ci_cmd(action: CiAction, opts: &RemoteOpts) -> ExitCode {
 #[must_use]
 pub fn secrets_list(opts: &RemoteOpts) -> ExitCode {
     run("secrets list", opts, "secrets_list", Value::Null, true)
+}
+
+/// `yulius secrets delete NAME` (SPEC-274 PLW-005): the project's agent secret NAME is deleted.
+pub fn secrets_delete(name: &str, opts: &RemoteOpts) -> ExitCode {
+    run(
+        "secrets delete",
+        opts,
+        "secret_delete",
+        json!({"secret": name}),
+        true,
+    )
 }

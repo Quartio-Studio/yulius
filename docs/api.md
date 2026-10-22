@@ -93,7 +93,7 @@ person's access for its action: view (`project_get`, `tasks_list`, `task_get`, `
 (`onboarding_start`, `task_create`, `task_message`, `task_stop`, `task_restart`, `task_pause`,
 `task_unpause`, `task_start_now`, `task_archive`, `task_delete`, `ci_rerun`, `ci_cancel`,
 `cd_deploy` (dev-stage environments only), `project_change`, `change_merge`), configure (`automation_*`,
-`secret_update`, `secret_hosts_answer`) or administer (`onboarding_skip`). A project the person
+`secret_update`, `secret_hosts_answer`, `secret_delete` (the project's own agent secret, SPEC-274)) or administer (`onboarding_skip`). A project the person
 cannot see answers like one that does not exist. `tools/call` with `_meta: {"yulius/structured":
 true}` adds the tool's record as `structuredContent`. `initialize` answers
 `_meta: {"yulius/person": login, "yulius/scope": scope}`. See [remote-control.md](remote-control.md).

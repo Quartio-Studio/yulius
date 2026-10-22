@@ -1077,6 +1077,102 @@ async fn secrets_are_managed_by_name_and_binding_only() -> TestResult {
     Ok(())
 }
 
+/// SPEC-274 PLW-004: the person's agent deletes a project's own agent secret by name with an
+/// operate token and the right the Secrets page needs; refused for a read token, a reader and a
+/// global secret; audited with the token and the name, never the value.
+#[tokio::test]
+async fn an_operate_token_deletes_a_projects_agent_secret() -> TestResult {
+    use yulius_app::ports::vault::VaultStore as _;
+    const VALUE: &str = "production";
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, browser, alice) = person(&w, "alice").await?;
+    let (_, _, bob) = person(&w, "bob").await?;
+    let (root, _) = w.user("root", true).await?;
+    let root_browser = w.browser(&root).await?;
+    w.grant("alice", "acme/shop", "admin");
+    w.grant("bob", "acme/shop", "pull");
+    w.grant("root", "acme/shop", "admin");
+    for (creds, body) in [
+        (
+            &browser,
+            json!({"name": "SHOP_ENVIRONMENT", "value": "production-like-1"}),
+        ),
+        (
+            &root_browser,
+            json!({"scope": "instance", "name": "GLOBAL_KEY", "value": "global-value-123"}),
+        ),
+        (
+            &browser,
+            json!({"scope": "personal", "name": "MY_KEY", "value": "personal-value-01234"}),
+        ),
+    ] {
+        let created = call(
+            &w.h.router,
+            Method::POST,
+            "/api/sandboxes/s1/agent-secrets",
+            Some(body),
+            creds,
+        )
+        .await?;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    }
+    let read = make_token(&w, &browser, "reader", "read").await?;
+    let read = bearer(text(&read["token"]));
+    let shop = |secret: &str| json!({"project": "acme/shop", "secret": secret});
+
+    let (error, said, _) = remote(&w, &read, "secret_delete", shop("SHOP_ENVIRONMENT")).await?;
+    assert!(error && said.contains("read-only"), "{said}");
+    let (error, said, _) = remote(&w, &bob, "secret_delete", shop("SHOP_ENVIRONMENT")).await?;
+    assert!(error && said.contains("write access"), "{said}");
+    let (error, said, _) = remote(&w, &alice, "secret_delete", shop("GLOBAL_KEY")).await?;
+    assert!(
+        error && said.contains("global") && said.contains("Secrets page"),
+        "{said}"
+    );
+    let (error, said, _) = remote(&w, &alice, "secret_delete", shop("MY_KEY")).await?;
+    assert!(
+        error && said.contains("personal") && said.contains("Secrets page"),
+        "{said}"
+    );
+    let (error, said, _) = remote(&w, &alice, "secret_delete", shop("NOPE")).await?;
+    assert!(error && said.contains("no agent secret NOPE"), "{said}");
+
+    let (error, said, deleted) =
+        remote(&w, &alice, "secret_delete", shop("SHOP_ENVIRONMENT")).await?;
+    assert!(!error, "{said}");
+    assert_eq!(deleted["deleted"], "SHOP_ENVIRONMENT", "{deleted}");
+    assert!(!deleted.to_string().contains(VALUE), "{deleted}");
+    let (_, said, _) = remote(&w, &alice, "secrets_list", json!({"project": "acme/shop"})).await?;
+    assert!(
+        !said.contains("SHOP_ENVIRONMENT") && said.contains("GLOBAL_KEY"),
+        "{said}"
+    );
+
+    let entries = audits(&w, "s1").await?;
+    let tool = entries
+        .iter()
+        .find(|(action, _, detail)| {
+            action == "remote.tool" && detail.contains("secret_delete") && detail.contains("true")
+        })
+        .ok_or("the delete is audited with its token")?;
+    assert_eq!(tool.1, "remote:alice");
+    let all = format!("{entries:?}");
+    assert!(!all.contains("production-like-1"), "{all}");
+    let vault =
+        w.h.store
+            .vault_audit(50)
+            .await?
+            .into_iter()
+            .find(|e| e.action == "vault.agent.delete")
+            .ok_or("vault.agent.delete")?;
+    assert!(
+        format!("{vault:?}").contains("SHOP_ENVIRONMENT"),
+        "{vault:?}"
+    );
+    Ok(())
+}
+
 /// Runs the `yulius` binary with `args` (configuration under `home`, `stdin` piped); returns its
 /// exit code, stdout and stderr.
 async fn yulius_cli(
@@ -1205,6 +1301,58 @@ async fn the_cli_drives_the_remote_mcp_with_a_stored_token() -> TestResult {
     assert!(err.contains("wrong or revoked"), "{err}");
     let (code, out, _) = yulius_cli(home, &["remote", "logout"], "").await?;
     assert_eq!(code, Some(0), "{out}");
+    Ok(())
+}
+
+/// SPEC-274 PLW-005: `yulius secrets delete NAME` deletes the project's agent secret through
+/// `secret_delete` with the stored operate token; an unknown name is the tool's refusal (exit 1).
+#[tokio::test]
+async fn the_cli_deletes_an_agent_secret_by_name() -> TestResult {
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, browser, alice) = person(&w, "alice").await?;
+    w.grant("alice", "acme/shop", "admin");
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "OPS_EMAIL", "value": "ops@example.com"})),
+        &browser,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let served = support::serve(w.h.router.clone()).await?;
+    let url = format!("http://{}", served.addr);
+    let home = tempfile::tempdir()?;
+    let home = home.path();
+    let token = alice.bearer.clone().ok_or("token")?;
+    let (code, out, err) = yulius_cli(
+        home,
+        &["remote", "login", &url, "--token-stdin"],
+        &format!("{token}\n"),
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+
+    let (code, out, err) = yulius_cli(
+        home,
+        &["secrets", "delete", "OPS_EMAIL", "-p", "acme/shop"],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(out.contains("OPS_EMAIL"), "{out}");
+    assert!(!out.contains("ops@example.com"), "{out}");
+    let (_, said, _) = remote(&w, &alice, "secrets_list", json!({"project": "acme/shop"})).await?;
+    assert!(!said.contains("OPS_EMAIL"), "{said}");
+    let (code, _, err) = yulius_cli(
+        home,
+        &["secrets", "delete", "OPS_EMAIL", "-p", "acme/shop"],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("no agent secret OPS_EMAIL"), "{err}");
     Ok(())
 }
 
