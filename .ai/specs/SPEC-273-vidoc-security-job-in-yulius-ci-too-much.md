@@ -1,11 +1,11 @@
 ---
 yulius-task: ae2a5492-10b9-4841-86aa-4598bdb91b6a
-status: in-progress
+status: done
 ---
 
 # SPEC-273: Less noise from the Vidoc security job
 
-Status: in-progress
+Status: done
 Date: 2026-10-22
 Owner: Yulius task #262
 Scope authorization: task #262 (person's request, evidence from project quartio-v2 tasks #7–#13).
@@ -102,14 +102,15 @@ Root causes (reproduced in code, see Evidence):
 
 - [x] Reproduce the defect and find its root cause
 - [x] Spec SPEC-273 and ADR for repeats, incomplete scans and job independence
-- [ ] Reworded repeats of an ignore pass: location match, Vidoc's accepted answer, nearest ignore shown
-- [ ] A chunk cut at max_tokens is split; Vidoc 5xx/timeouts end the scan incomplete, naming the files
-- [ ] CI shows an incomplete job as error 'incomplete: files' in the status; merge stays blocked
-- [ ] A failed security job no longer cancels the other jobs, nor they it
-- [ ] Findings outside the change are filed as issues only when the run's other jobs passed
-- [ ] Docs, briefing, changes entry and every gate green
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Merged into dev on green CI
+- [x] Reworded repeats of an ignore pass: location match, Vidoc's accepted answer, nearest ignore shown
+- [x] A chunk cut at max_tokens is split; Vidoc 5xx/timeouts end the scan incomplete, naming the files
+- [x] CI shows an incomplete job as error 'incomplete: files' in the status; merge stays blocked
+- [x] A failed security job no longer cancels the other jobs, nor they it
+- [x] Findings outside the change are filed as issues only when the run's other jobs passed
+- [x] Docs, briefing, changes entry and every gate green
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Merged into dev on green CI
+- [x] Spec evidence recorded and the reviewed head handed to delivery
 
 ## Acceptance criteria
 
@@ -153,3 +154,42 @@ See ADR-0202. In short:
   stays (it frees the CI lane, SPEC-145).
 - Filing moves to the run's end so it can see the other jobs; closing gone issues stays (it reads
   only the integration branch).
+
+## Evidence
+
+- Regression tests, each seen failing before its fix:
+  - scanner (`scripts/test_vidoc_scan.py`, classes `Repeats`, `Incomplete`, `Service`):
+    reworded repeats in an ignored function, near an ignored line and answered `accepted` (failed
+    with exit 1 on the title-only match); max_tokens split by files and by lines, always cut →
+    incomplete after 3 splits (15 requests), 503 → incomplete (exit 3, was 2), CI exit 75 with
+    `::yulius-incomplete`, skip code without `YULIUS_CI_INCOMPLETE_CODE`; a 429 "used its
+    50,000,000 tokens" → not run, a quota-worded rate limit → retried then incomplete.
+  - CI (`crates/yulius/tests/local_ci.rs`):
+    `a_job_that_exits_the_incomplete_code_ends_in_error_naming_what_it_missed` (was `failed`),
+    `the_security_job_and_the_others_never_cancel_each_other` (reproduced "stopped early: job
+    security failed"), `findings_are_filed_only_from_a_run_whose_other_jobs_passed` (an issue was
+    filed while quality failed); domain `an_incomplete_job_s_reason_is_its_last_mark` and the
+    running status naming a failed security job.
+  - The real finding stays: `test_a_new_weakness_still_fails_with_its_nearest_ignore` (a high
+    "Weak randomness in session id" in another function fails, printed with its nearest ignore and
+    similarity), and every change to accepted code is judged again (changed line, change elsewhere
+    in the function, a comment between change and sink, a file with no known definition, a finding
+    without a valid line, a new file).
+- `scripts/dev ci` at 33a9ecfe: exit 0; 2482 Rust tests passed (17 skipped), 143 Python tests OK,
+  lint, deps, docs and the macOS compile check included.
+- `cd scripts && python3 -m unittest test_vidoc_scan`: 87 tests OK.
+- `scripts/dev security`: **not run** (exit 2): Vidoc answered HTTP 429 "This API key has used its
+  50,000,000 tokens." (2026-10-22). Before the quota fix it ended incomplete (exit 3) on the same
+  answer, which is how the gap was found. Per the person's instruction ("if you face vidoc problem,
+  continue without vidoc atm") the work continued without a live scan; no `[[ignore]]` was added.
+- Independent review (fresh session, read-only), 4 rounds: round 1 two majors (a change elsewhere
+  in an accepted function was waived by place; a finding without a valid line was waived by an
+  `accepted` answer) and 5 minors, round 2 one major (comment prose read as a definition hid the
+  change), round 3 one minor (files with no known definition); each fixed test-first. Left by
+  decision: a glob `path` with a `line` matches that range in each file the glob covers (reviewed
+  config); the textual place heuristic (ADR-0202). Approved at 33a9ecfe.
+- Not tested here: rescanning quartio-v2's commits (#7 2e20d5e, #10 d1f65ba, #11 179ce81/d9ae76c,
+  the "Weak randomness" commit) against its `.config/vidoc.toml`. That repository is another
+  project's and Vidoc's key is out of quota; the fake-Vidoc tests above reproduce each case. The
+  running instance gets exit 75 and the job-independence and filing changes only after `main` is
+  promoted and it updates; until then the new scanner falls back to the skip code.
