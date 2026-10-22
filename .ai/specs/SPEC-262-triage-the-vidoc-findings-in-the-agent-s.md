@@ -63,7 +63,7 @@ comments) is either fixed test-first or dismissed with its reason and a narrow `
 - [x] Document presence and workflow count read through a checked handle (hooks TOCTOU)
 - [x] Dismissals pinned by tests and narrow [[ignore]] entries (findings 2, 3, .git, task numbers)
 - [x] Gates, security scan, docs and changes entry
-- [ ] Independent review answered and merged into dev on green
+- [x] Independent review answered and merged into dev on green
 
 ## Acceptance criteria
 
