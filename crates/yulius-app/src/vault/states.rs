@@ -1,0 +1,1272 @@
+//! Agent states (SPEC-271, ADR-0200): a project's folders of operator state (a deploy tool's
+//! inventory, rollout folders, configs) moved from a laptop. A person sends a folder as one gzip
+//! tar, sealed in the vault per name and version; a task restores it into the sandbox home and
+//! saves it back after each rollout. Once restored, the sandbox's copy is the only writer: a new
+//! import over it is refused unless the person asks to replace it.
+//!
+//! Yulius runs outside the agent's containment and with more rights than it, so the home is
+//! reached as `secret_copy_to_env` reaches its target: from the canonical sandbox folder, one
+//! folder at a time without following links (ADR-0174). No answer, message or audit detail holds
+//! a state's content; file names are not content.
+
+use std::ffi::OsStr;
+use std::io::{self, Read};
+use std::os::fd::OwnedFd;
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::{Component, Path, PathBuf};
+
+use flate2::Compression;
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use nix::errno::Errno;
+use nix::fcntl::{OFlag, openat, renameat};
+use nix::sys::stat::{Mode, SFlag, fchmod, mkdirat};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use yulius_contracts::api::secrets::AgentStateView;
+use yulius_domain::ids::SandboxId;
+use yulius_domain::permission::Action;
+use yulius_domain::vault::names::SecretName;
+
+use super::create::{Root, source};
+use super::invalid;
+use crate::auth::AuthContext;
+use crate::context::App;
+use crate::coordination::AgentContext;
+use crate::error::{AppError, AppResult};
+use crate::files::{errno_error, io_error, kind_at, names_in, open_dir_at, remove_tree};
+use crate::ports::Envelope;
+use crate::ports::vault::{AgentScope, AgentStateRecord, StateRestore};
+
+/// Largest packed state (the request body and the stored archive).
+pub const MAX_STATE_BYTES: u64 = 64 << 20;
+/// Most bytes a state's files may hold in all.
+pub const MAX_STATE_EXPANDED: u64 = 512 << 20;
+/// Most files and folders in a state.
+pub const MAX_STATE_ENTRIES: u64 = 20_000;
+/// Deepest nesting of a state's folders.
+const MAX_STATE_DEPTH: usize = 64;
+/// The permission bits kept; setuid, setgid and sticky are dropped.
+const MODE_BITS: u32 = 0o777;
+/// Longest description.
+const MAX_DESCRIPTION_CHARS: usize = 500;
+
+/// What a state holds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Contents {
+    /// Regular files.
+    pub(crate) files: u64,
+    /// Their bytes.
+    pub(crate) bytes: u64,
+}
+
+/// One entry of a state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    File,
+    Folder,
+}
+
+fn refused(why: impl std::fmt::Display) -> AppError {
+    AppError::Invalid(format!("the state {why}; nothing was stored"))
+}
+
+/// `raw` as a path inside the state's folder: plain names only (`.` skipped), no NUL.
+fn state_relative(raw: &[u8]) -> Option<PathBuf> {
+    if raw.is_empty() || raw.contains(&0) {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    for component in Path::new(OsStr::from_bytes(raw)).components() {
+        match component {
+            Component::Normal(part) => out.push(part),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    (!out.as_os_str().is_empty()).then_some(out)
+}
+
+/// Reads a packed state, checking every entry (only files and folders, paths inside the folder,
+/// the bounds), and hands each one to `visit` with its permission bits and, for a file, its
+/// content.
+fn walk_archive(
+    archive: &[u8],
+    mut visit: impl FnMut(&Path, Kind, u32, &mut dyn Read) -> AppResult<()>,
+) -> AppResult<Contents> {
+    let unreadable = |err: io::Error| refused(format_args!("is not a readable gzip tar ({err})"));
+    let mut tar = tar::Archive::new(GzDecoder::new(archive));
+    let (mut entries, mut contents) = (0_u64, Contents::default());
+    for entry in tar.entries().map_err(unreadable)? {
+        let mut entry = entry.map_err(unreadable)?;
+        let header = entry.header();
+        let kind = match header.entry_type() {
+            tar::EntryType::Regular | tar::EntryType::Continuous => Kind::File,
+            tar::EntryType::Directory => Kind::Folder,
+            // Extended headers carry names and times, never entries of their own.
+            tar::EntryType::XGlobalHeader | tar::EntryType::XHeader => continue,
+            tar::EntryType::Symlink | tar::EntryType::Link => {
+                let shown = String::from_utf8_lossy(&entry.path_bytes()).into_owned();
+                return Err(refused(format_args!(
+                    "holds a link at {shown}: only files and folders move"
+                )));
+            }
+            _ => {
+                let shown = String::from_utf8_lossy(&entry.path_bytes()).into_owned();
+                return Err(refused(format_args!(
+                    "holds {shown}, which is neither a file nor a folder"
+                )));
+            }
+        };
+        let mode = header.mode().map_err(unreadable)? & MODE_BITS;
+        let size = header.size().map_err(unreadable)?;
+        let raw = entry.path_bytes().into_owned();
+        let shown = String::from_utf8_lossy(&raw).into_owned();
+        let rel = state_relative(&raw)
+            .ok_or_else(|| refused(format_args!("names {shown:?}, outside its folder")))?;
+        entries += 1;
+        if entries > MAX_STATE_ENTRIES {
+            return Err(refused(format_args!(
+                "holds more than {MAX_STATE_ENTRIES} files and folders"
+            )));
+        }
+        if rel.components().count() > MAX_STATE_DEPTH {
+            return Err(refused(format_args!(
+                "nests folders more than {MAX_STATE_DEPTH} deep"
+            )));
+        }
+        if kind == Kind::File {
+            contents.files += 1;
+            contents.bytes = contents.bytes.saturating_add(size);
+            if contents.bytes > MAX_STATE_EXPANDED {
+                return Err(refused(format_args!(
+                    "holds more than {} MiB once unpacked",
+                    MAX_STATE_EXPANDED >> 20
+                )));
+            }
+        }
+        visit(&rel, kind, mode, &mut entry)?;
+    }
+    if entries == 0 {
+        return Err(refused("is empty"));
+    }
+    Ok(contents)
+}
+
+/// Checks a packed state without writing anything.
+pub(crate) fn check_archive(archive: &[u8]) -> AppResult<Contents> {
+    if u64::try_from(archive.len()).unwrap_or(u64::MAX) > MAX_STATE_BYTES {
+        return Err(too_large());
+    }
+    walk_archive(archive, |_, _, _, reader| {
+        io::copy(reader, &mut io::sink())
+            .map(|_| ())
+            .map_err(|err| refused(format_args!("is not a readable gzip tar ({err})")))
+    })
+}
+
+fn too_large() -> AppError {
+    refused(format_args!(
+        "is larger than {} MiB packed",
+        MAX_STATE_BYTES >> 20
+    ))
+}
+
+/// The folder `parts` below `root`, each opened with `O_NOFOLLOW` (created when missing and
+/// `create`).
+fn open_path(root: &OwnedFd, parts: &[&OsStr], create: bool) -> Result<OwnedFd, Errno> {
+    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC;
+    let mut dir = openat(root, ".", flags, Mode::empty())?;
+    for part in parts {
+        dir = open_dir_at(&dir, part, create)?;
+    }
+    Ok(dir)
+}
+
+/// Unpacks a checked state into the empty folder `root`, keeping permission bits. Folders get
+/// theirs last, deepest first, so a read-only folder was still written into.
+fn unpack(archive: &[u8], root: &OwnedFd) -> AppResult<Contents> {
+    let mut folders: Vec<(PathBuf, u32)> = Vec::new();
+    let contents = walk_archive(archive, |rel, kind, mode, reader| {
+        let parts: Vec<&OsStr> = rel.iter().collect();
+        let shown = rel.display();
+        let on_the_way = |err: Errno| match err {
+            Errno::ENOTDIR | Errno::ELOOP | Errno::EEXIST => {
+                refused(format_args!("holds {shown} inside a file"))
+            }
+            other => errno_error(other),
+        };
+        match kind {
+            Kind::Folder => {
+                open_path(root, &parts, true).map_err(on_the_way)?;
+                folders.push((rel.to_path_buf(), mode));
+            }
+            Kind::File => {
+                let Some((name, dirs)) = parts.split_last() else {
+                    return Err(refused("names an empty path"));
+                };
+                let dir = open_path(root, dirs, true).map_err(on_the_way)?;
+                let flags = OFlag::O_WRONLY
+                    | OFlag::O_CREAT
+                    | OFlag::O_EXCL
+                    | OFlag::O_NOFOLLOW
+                    | OFlag::O_CLOEXEC;
+                let fd = openat(&dir, *name, flags, Mode::from_bits_truncate(0o600)).map_err(
+                    |err| match err {
+                        Errno::EEXIST => refused(format_args!("holds {shown} twice")),
+                        other => errno_error(other),
+                    },
+                )?;
+                let mut file = std::fs::File::from(fd);
+                io::copy(reader, &mut file).map_err(|err| io_error(&err))?;
+                fchmod(&file, Mode::from_bits_truncate(mode)).map_err(errno_error)?;
+            }
+        }
+        Ok(())
+    })?;
+    folders.sort_by_key(|(rel, _)| std::cmp::Reverse(rel.components().count()));
+    for (rel, mode) in folders {
+        let parts: Vec<&OsStr> = rel.iter().collect();
+        let dir = open_path(root, &parts, false).map_err(errno_error)?;
+        fchmod(&dir, Mode::from_bits_truncate(mode)).map_err(errno_error)?;
+    }
+    Ok(contents)
+}
+
+/// A folder packed back into a state.
+pub(crate) struct Packed {
+    pub(crate) archive: Vec<u8>,
+    pub(crate) contents: Contents,
+    /// Links and special files left out, as paths inside the folder.
+    pub(crate) skipped: Vec<String>,
+}
+
+/// Packs the folder `root` within the state bounds: files and folders with their permission bits,
+/// read through handles without following links; links and special files are left out and named.
+pub(crate) fn pack(root: &OwnedFd) -> AppResult<Packed> {
+    let gz = GzEncoder::new(Vec::new(), Compression::fast());
+    let mut packer = Packer {
+        builder: tar::Builder::new(gz),
+        entries: 0,
+        contents: Contents::default(),
+        skipped: Vec::new(),
+    };
+    packer.add(root, Path::new(""), 0)?;
+    let Packer {
+        builder,
+        contents,
+        skipped,
+        entries,
+    } = packer;
+    if entries == 0 {
+        return Err(AppError::Invalid(
+            "the folder is empty: there is nothing to save".into(),
+        ));
+    }
+    let archive = builder
+        .into_inner()
+        .and_then(GzEncoder::finish)
+        .map_err(|err| io_error(&err))?;
+    if u64::try_from(archive.len()).unwrap_or(u64::MAX) > MAX_STATE_BYTES {
+        return Err(too_large());
+    }
+    Ok(Packed {
+        archive,
+        contents,
+        skipped,
+    })
+}
+
+struct Packer {
+    builder: tar::Builder<GzEncoder<Vec<u8>>>,
+    entries: u64,
+    contents: Contents,
+    skipped: Vec<String>,
+}
+
+impl Packer {
+    fn add(&mut self, dir: &OwnedFd, rel: &Path, depth: usize) -> AppResult<()> {
+        if depth >= MAX_STATE_DEPTH {
+            return Err(refused(format_args!(
+                "nests folders more than {MAX_STATE_DEPTH} deep"
+            )));
+        }
+        let limit = usize::try_from(MAX_STATE_ENTRIES).unwrap_or(usize::MAX) + 1;
+        let mut names = names_in(dir, limit).map_err(errno_error)?;
+        names.sort();
+        for name in names {
+            let path = rel.join(&name);
+            self.entries += 1;
+            if self.entries > MAX_STATE_ENTRIES {
+                return Err(refused(format_args!(
+                    "holds more than {MAX_STATE_ENTRIES} files and folders"
+                )));
+            }
+            let (kind, stat) = match kind_at(dir, &name) {
+                Ok(found) => found,
+                // Gone since the listing: nothing to keep.
+                Err(Errno::ENOENT) => continue,
+                Err(err) => return Err(errno_error(err)),
+            };
+            let mode = stat.st_mode & MODE_BITS;
+            let mtime = u64::try_from(stat.st_mtime).unwrap_or(0);
+            match kind {
+                SFlag::S_IFDIR => {
+                    let child = match open_dir_at(dir, &name, false) {
+                        Ok(child) => child,
+                        Err(Errno::ELOOP | Errno::ENOTDIR) => {
+                            self.skipped.push(path.display().to_string());
+                            continue;
+                        }
+                        Err(err) => return Err(errno_error(err)),
+                    };
+                    let mut header = tar::Header::new_gnu();
+                    header.set_entry_type(tar::EntryType::Directory);
+                    header.set_mode(mode);
+                    header.set_mtime(mtime);
+                    header.set_size(0);
+                    self.builder
+                        .append_data(&mut header, &path, io::empty())
+                        .map_err(|err| io_error(&err))?;
+                    self.add(&child, &path, depth + 1)?;
+                }
+                SFlag::S_IFREG => self.add_file(dir, &name, &path, mode, mtime)?,
+                _ => self.skipped.push(path.display().to_string()),
+            }
+        }
+        Ok(())
+    }
+
+    fn add_file(
+        &mut self,
+        dir: &OwnedFd,
+        name: &OsStr,
+        path: &Path,
+        mode: u32,
+        mtime: u64,
+    ) -> AppResult<()> {
+        let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+        let fd = match openat(dir, name, flags, Mode::empty()) {
+            Ok(fd) => fd,
+            Err(Errno::ELOOP) => {
+                self.skipped.push(path.display().to_string());
+                return Ok(());
+            }
+            Err(Errno::ENOENT) => return Ok(()),
+            Err(err) => return Err(errno_error(err)),
+        };
+        let file = std::fs::File::from(fd);
+        let meta = file.metadata().map_err(|err| io_error(&err))?;
+        if !meta.is_file() {
+            self.skipped.push(path.display().to_string());
+            return Ok(());
+        }
+        let size = meta.len();
+        self.contents.files += 1;
+        self.contents.bytes = self.contents.bytes.saturating_add(size);
+        if self.contents.bytes > MAX_STATE_EXPANDED {
+            return Err(refused(format_args!(
+                "holds more than {} MiB",
+                MAX_STATE_EXPANDED >> 20
+            )));
+        }
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_mode(mode);
+        header.set_mtime(mtime);
+        header.set_size(size);
+        // Exactly `size` bytes even when a writer changes the file meanwhile: a shorter read is
+        // padded, a longer one cut, so the archive stays readable.
+        let data = file.take(size).chain(io::repeat(0)).take(size);
+        self.builder
+            .append_data(&mut header, path, data)
+            .map_err(|err| io_error(&err))?;
+        if u64::try_from(self.builder.get_ref().get_ref().len()).unwrap_or(u64::MAX)
+            > MAX_STATE_BYTES
+        {
+            return Err(too_large());
+        }
+        Ok(())
+    }
+}
+
+/// Associated data of a state's archive: its row and version, so an archive never opens as
+/// another state's or an older version's.
+fn aad(id: &str, version: u32) -> Vec<u8> {
+    format!("{id}|state|{version}").into_bytes()
+}
+
+fn view(record: &AgentStateRecord) -> AgentStateView {
+    AgentStateView {
+        name: record.name.clone(),
+        description: record.description.clone(),
+        version: record.version,
+        bytes: record.bytes,
+        files: record.files,
+        updated_by: record.updated_by.clone(),
+        updated_at: record.updated_at.0,
+        restored_path: record.restored.as_ref().map(|r| r.path.clone()),
+        restored_version: record.restored.as_ref().map(|r| r.version),
+        restored_at: record.restored.as_ref().map(|r| r.at.0),
+    }
+}
+
+/// The answer to a second import over a restored copy (SPEC-271 OPS-003).
+fn writer_elsewhere(name: &str, restored: &StateRestore) -> AppError {
+    AppError::Conflict(format!(
+        "{name} was restored into the sandbox at {path} (version {version}), and that copy is the \
+         one written to now: sending this one would fork it. Get the sandbox's copy with \
+         `yulius secrets state-get {name}`, or pass --replace-state (replace=true) to overwrite \
+         it with this one on purpose",
+        path = restored.path,
+        version = restored.version,
+    ))
+}
+
+/// Arguments of `secret_state_restore`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RestoreArgs {
+    name: String,
+    path: String,
+}
+
+/// Arguments of `secret_state_save`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SaveArgs {
+    name: String,
+}
+
+/// What to do with the folder in the way of a restore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Placement {
+    /// Missing or an empty folder: the state goes there.
+    Fresh,
+    /// The stale copy of an earlier version: replaced once the new one is in place.
+    Replace,
+}
+
+/// How a restore of `record` to `path` goes, given whether the recorded copy and the target
+/// exist (SPEC-271 OPS-005).
+fn placement(
+    record: &AgentStateRecord,
+    path: &str,
+    recorded_exists: bool,
+    target_empty: Option<bool>,
+) -> AppResult<Placement> {
+    let name = &record.name;
+    if let Some(restored) = record.restored.as_ref().filter(|_| recorded_exists) {
+        if restored.path != path {
+            return Err(AppError::Conflict(format!(
+                "{name} is restored at {} already, and that copy is the one written to: use it \
+                 there (a state has one copy)",
+                restored.path
+            )));
+        }
+        if restored.version >= record.version {
+            return Err(AppError::Conflict(format!(
+                "{name} is restored at {path} already (version {}), and that copy is the one \
+                 written to: use it, and save it with secret_state_save after each change",
+                restored.version
+            )));
+        }
+        return Ok(Placement::Replace);
+    }
+    match target_empty {
+        None | Some(true) => Ok(Placement::Fresh),
+        Some(false) => Err(AppError::Conflict(format!(
+            "{path} exists and is not an empty folder: restore {name} into a new folder"
+        ))),
+    }
+}
+
+impl App {
+    /// The state `name` of `sandbox` with its archive, `NotFound` when absent.
+    async fn state_of(
+        &self,
+        sandbox: &SandboxId,
+        name: &str,
+    ) -> AppResult<(AgentStateRecord, Envelope)> {
+        self.deps
+            .store
+            .agent_state(sandbox, name)
+            .await?
+            .ok_or_else(|| {
+                AppError::Invalid(format!(
+                    "no agent state named {name} in this project (secrets_list names them)"
+                ))
+            })
+    }
+
+    /// `GET /api/sandboxes/{sid}/agent-states` (SPEC-271 OPS-007): the states, never content.
+    ///
+    /// # Errors
+    /// `NotFound` for a sandbox the caller cannot see.
+    pub async fn agent_states(
+        &self,
+        ctx: &AuthContext,
+        sandbox: &str,
+    ) -> AppResult<Vec<AgentStateView>> {
+        let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
+        self.require(&ctx.user, &sid, Action::View).await?;
+        let records = self.deps.store.agent_states(&sid).await?;
+        Ok(records.iter().map(view).collect())
+    }
+
+    /// `PUT /api/sandboxes/{sid}/agent-states/{name}` (SPEC-271 OPS-002, OPS-003): stores a
+    /// packed state sent by a person who manages the sandbox's agent secrets, after checking it.
+    /// Over a restored copy only with `replace`.
+    ///
+    /// # Errors
+    /// `Invalid` for a bad name or archive, `Forbidden` without the right, `Conflict` over a
+    /// restored copy without `replace` or when another writer won, `Capacity` when busy.
+    pub async fn import_agent_state(
+        &self,
+        ctx: &AuthContext,
+        sandbox: &str,
+        name: &str,
+        description: Option<&str>,
+        replace: bool,
+        archive: Vec<u8>,
+    ) -> AppResult<AgentStateView> {
+        let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
+        self.require(&ctx.user, &sid, Action::View).await?;
+        self.require_manage_agent(ctx, &AgentScope::Project(sid.clone()))
+            .await?;
+        let name = SecretName::parse(name.trim()).map_err(invalid)?;
+        let description = description.map(str::trim).unwrap_or_default();
+        if description.chars().count() > MAX_DESCRIPTION_CHARS {
+            return Err(AppError::Invalid(format!(
+                "a description has at most {MAX_DESCRIPTION_CHARS} characters"
+            )));
+        }
+        let _slot = self.state_slot()?;
+        let (archive, contents) = tokio::task::spawn_blocking(move || {
+            let contents = check_archive(&archive)?;
+            Ok::<_, AppError>((archive, contents))
+        })
+        .await
+        .map_err(AppError::internal)??;
+
+        let existing = self.deps.store.agent_state(&sid, name.as_str()).await?;
+        let now = self.now();
+        let actor = Self::vault_actor(ctx);
+        let (record, expect) = match existing {
+            Some((old, _)) => {
+                if let Some(restored) = old.restored.as_ref().filter(|_| !replace) {
+                    return Err(writer_elsewhere(name.as_str(), restored));
+                }
+                let record = AgentStateRecord {
+                    version: old.version + 1,
+                    description: if description.is_empty() {
+                        old.description.clone()
+                    } else {
+                        description.to_owned()
+                    },
+                    bytes: u64::try_from(archive.len()).unwrap_or(u64::MAX),
+                    files: contents.files,
+                    updated_by: actor.clone(),
+                    updated_at: now,
+                    ..old.clone()
+                };
+                (record, Some(old.version))
+            }
+            None => (
+                AgentStateRecord {
+                    id: self.deps.crypto.new_id(),
+                    sandbox_id: sid.clone(),
+                    name: name.as_str().to_owned(),
+                    description: description.to_owned(),
+                    version: 1,
+                    bytes: u64::try_from(archive.len()).unwrap_or(u64::MAX),
+                    files: contents.files,
+                    created_by: actor.clone(),
+                    created_at: now,
+                    updated_by: actor.clone(),
+                    updated_at: now,
+                    restored: None,
+                },
+                None,
+            ),
+        };
+        let sealed = self
+            .deps
+            .crypto
+            .envelope_seal(&aad(&record.id, record.version), &archive)?;
+        drop(archive);
+        if !self
+            .deps
+            .store
+            .agent_state_put(&record, &sealed, expect)
+            .await?
+        {
+            return Err(AppError::Conflict(format!(
+                "{} changed while it was sent; send it again",
+                name.as_str()
+            )));
+        }
+        let action = if record.restored.is_some() {
+            "vault.state.replace"
+        } else {
+            "vault.state.import"
+        };
+        self.vault_audit(
+            &actor,
+            action,
+            Some(sid.as_str()),
+            &format!(
+                "{} version {}: {} files, {} bytes packed",
+                record.name, record.version, record.files, record.bytes
+            ),
+        )
+        .await?;
+        Ok(view(&record))
+    }
+
+    /// `GET /api/sandboxes/{sid}/agent-states/{name}/archive` (SPEC-271 OPS-007): the newest
+    /// packed state, for a person who manages the sandbox's agent secrets; audited.
+    ///
+    /// # Errors
+    /// `NotFound`, `Forbidden`; a sealed archive that does not open.
+    pub async fn export_agent_state(
+        &self,
+        ctx: &AuthContext,
+        sandbox: &str,
+        name: &str,
+    ) -> AppResult<Vec<u8>> {
+        let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
+        self.require(&ctx.user, &sid, Action::View).await?;
+        self.require_manage_agent(ctx, &AgentScope::Project(sid.clone()))
+            .await?;
+        let (record, sealed) = self
+            .deps
+            .store
+            .agent_state(&sid, name.trim())
+            .await?
+            .ok_or(AppError::NotFound)?;
+        let archive = self
+            .deps
+            .crypto
+            .envelope_open(&aad(&record.id, record.version), &sealed)?;
+        self.vault_audit(
+            &Self::vault_actor(ctx),
+            "vault.state.export",
+            Some(sid.as_str()),
+            &format!("{} version {}", record.name, record.version),
+        )
+        .await?;
+        Ok(archive.to_vec())
+    }
+
+    /// One of the few state operations that may hold an archive in memory at once.
+    fn state_slot(&self) -> AppResult<tokio::sync::OwnedSemaphorePermit> {
+        std::sync::Arc::clone(&self.uploads.states)
+            .try_acquire_owned()
+            .map_err(|_| {
+                AppError::Capacity("too many agent states are moving at once; try again".into())
+            })
+    }
+
+    /// The sandbox home's folders of a `~/…` path, refused otherwise.
+    fn home_path(path: &str) -> AppResult<Vec<String>> {
+        let (root, parts) = source(path)?;
+        if root != Root::Home || parts.is_empty() {
+            return Err(AppError::Invalid(
+                "restore a state into a folder of your home, as ~/path (for example \
+                 ~/.quartio-operator): the home is kept across tasks, a worktree is not"
+                    .into(),
+            ));
+        }
+        Ok(parts)
+    }
+
+    /// The canonical sandbox folder, the anchor no agent can replace.
+    fn state_anchor(&self, sandbox: &SandboxId) -> AppResult<PathBuf> {
+        std::fs::canonicalize(self.sandbox_dir(sandbox))
+            .map_err(|_| AppError::Invalid("the sandbox folder does not exist on this machine".into()))
+    }
+
+    /// `secret_state_restore` (SPEC-271 OPS-005): writes a state into a folder of the sandbox
+    /// home without its content reaching the agent.
+    pub(crate) async fn tool_secret_state_restore(
+        &self,
+        ctx: &AgentContext,
+        args: &Value,
+    ) -> AppResult<Value> {
+        let args: RestoreArgs = serde_json::from_value(args.clone())
+            .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
+        let parts = Self::home_path(&args.path)?;
+        let path = format!("~/{}", parts.join("/"));
+        let sandbox = ctx.task.sandbox_id.clone();
+        let (record, sealed) = self.state_of(&sandbox, args.name.trim()).await?;
+        let _slot = self.state_slot()?;
+        let archive = self
+            .deps
+            .crypto
+            .envelope_open(&aad(&record.id, record.version), &sealed)?;
+        drop(sealed);
+        let anchor = self.state_anchor(&sandbox)?;
+        let recorded = record
+            .restored
+            .as_ref()
+            .map(|r| Self::home_path(&r.path))
+            .transpose()?;
+        let temporary = format!(".yulius-state-{}", self.deps.crypto.new_id());
+        let job = {
+            let record = record.clone();
+            let path = path.clone();
+            move || restore_blocking(&anchor, &parts, recorded.as_deref(), &record, &path, &archive, &temporary)
+        };
+        let contents = tokio::task::spawn_blocking(job)
+            .await
+            .map_err(AppError::internal)??;
+
+        let restore = StateRestore {
+            path: path.clone(),
+            version: record.version,
+            by: ctx.actor(),
+            at: self.now(),
+        };
+        if !self
+            .deps
+            .store
+            .agent_state_restored(&record.id, record.version, &restore)
+            .await?
+        {
+            return Err(AppError::Conflict(format!(
+                "a newer version of {} arrived while it was restored: call secret_state_restore \
+                 again with the same path",
+                record.name
+            )));
+        }
+        self.vault_audit(
+            &ctx.actor(),
+            "vault.state.restore",
+            Some(sandbox.as_str()),
+            &format!("{} version {} into {path}", record.name, record.version),
+        )
+        .await?;
+        Ok(json!({
+            "restored": record.name,
+            "path": path,
+            "version": record.version,
+            "files": contents.files,
+            "bytes": contents.bytes,
+            "next": format!(
+                "{path} now holds {name}, and this copy is the one written to: run the project's \
+                 tools against it there (it stays for later tasks), never print or copy its files \
+                 into the conversation, and call secret_state_save {{\"name\": \"{name}\"}} after \
+                 each change (a rollout) so the vault keeps a backup the person can download. \
+                 Keys stay agent secrets: put the ones its configs name into files with \
+                 secret_copy_to_env.",
+                name = record.name
+            ),
+        }))
+    }
+
+    /// `secret_state_save` (SPEC-271 OPS-006): stores the restored copy as the next version.
+    pub(crate) async fn tool_secret_state_save(
+        &self,
+        ctx: &AgentContext,
+        args: &Value,
+    ) -> AppResult<Value> {
+        let args: SaveArgs = serde_json::from_value(args.clone())
+            .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
+        let sandbox = ctx.task.sandbox_id.clone();
+        let (record, _) = self.state_of(&sandbox, args.name.trim()).await?;
+        let name = record.name.clone();
+        let Some(restored) = record.restored.clone() else {
+            return Err(AppError::Invalid(format!(
+                "{name} was never restored: restore it with secret_state_restore first"
+            )));
+        };
+        if restored.version < record.version {
+            return Err(AppError::Conflict(format!(
+                "the person sent a newer {name} (version {}) to replace the copy at {}: restore it \
+                 with secret_state_restore at that path first, which replaces the folder",
+                record.version, restored.path
+            )));
+        }
+        let parts = Self::home_path(&restored.path)?;
+        let anchor = self.state_anchor(&sandbox)?;
+        let _slot = self.state_slot()?;
+        let shown = restored.path.clone();
+        let packed = tokio::task::spawn_blocking(move || {
+            let mut below: Vec<&OsStr> = vec![OsStr::new("home")];
+            below.extend(parts.iter().map(OsStr::new));
+            let folder = crate::files::open_dirs_below(&anchor, &below, false).map_err(|err| {
+                match err {
+                    Errno::ENOENT => AppError::Invalid(format!(
+                        "{shown} is gone: restore the state again with secret_state_restore"
+                    )),
+                    Errno::ELOOP | Errno::ENOTDIR => AppError::Forbidden(format!(
+                        "a folder on the way to {shown} is a link or not a folder: Yulius \
+                         follows no links"
+                    )),
+                    other => errno_error(other),
+                }
+            })?;
+            pack(&folder)
+        })
+        .await
+        .map_err(AppError::internal)??;
+
+        let now = self.now();
+        let next = AgentStateRecord {
+            version: record.version + 1,
+            bytes: u64::try_from(packed.archive.len()).unwrap_or(u64::MAX),
+            files: packed.contents.files,
+            updated_by: ctx.actor(),
+            updated_at: now,
+            restored: Some(StateRestore {
+                version: record.version + 1,
+                by: ctx.actor(),
+                at: now,
+                ..restored
+            }),
+            ..record.clone()
+        };
+        let sealed = self
+            .deps
+            .crypto
+            .envelope_seal(&aad(&next.id, next.version), &packed.archive)?;
+        if !self
+            .deps
+            .store
+            .agent_state_put(&next, &sealed, Some(record.version))
+            .await?
+        {
+            return Err(AppError::Conflict(format!(
+                "{name} changed while it was saved (the person replaced it, or another task \
+                 saved it): read secrets_list and try again"
+            )));
+        }
+        self.vault_audit(
+            &ctx.actor(),
+            "vault.state.save",
+            Some(sandbox.as_str()),
+            &format!(
+                "{name} version {}: {} files, {} bytes packed",
+                next.version, next.files, next.bytes
+            ),
+        )
+        .await?;
+        let mut answer = json!({
+            "saved": name,
+            "version": next.version,
+            "files": next.files,
+            "bytes": next.bytes,
+        });
+        if !packed.skipped.is_empty() {
+            answer["skipped"] = json!(packed.skipped);
+            answer["note"] = Value::String(
+                "links and special files are not kept in a state; the files named in skipped \
+                 were left out"
+                    .into(),
+            );
+        }
+        Ok(answer)
+    }
+
+    /// States of a sandbox for `secrets_list` (SPEC-271 OPS-007).
+    pub(crate) async fn states_for_list(&self, sandbox: &SandboxId) -> AppResult<Vec<Value>> {
+        let records = self.deps.store.agent_states(sandbox).await?;
+        Ok(records
+            .iter()
+            .map(|r| {
+                let restored = r.restored.as_ref();
+                json!({
+                    "name": r.name,
+                    "description": r.description,
+                    "version": r.version,
+                    "files": r.files,
+                    "bytes": r.bytes,
+                    "restored_path": restored.map(|s| s.path.clone()),
+                    "restored_version": restored.map(|s| s.version),
+                })
+            })
+            .collect())
+    }
+}
+
+/// The restore's file work (SPEC-271 OPS-005), off the async executor: opens the target's
+/// parent from `anchor/home` without links (created when missing), decides with
+/// [`placement`], unpacks into the fresh sibling `temporary` and renames it into place; a replaced
+/// copy is removed after. Nothing is left of `temporary` when anything fails.
+fn restore_blocking(
+    anchor: &Path,
+    parts: &[String],
+    recorded: Option<&[String]>,
+    record: &AgentStateRecord,
+    path: &str,
+    archive: &[u8],
+    temporary: &str,
+) -> AppResult<Contents> {
+    let on_the_way = |err: Errno| match err {
+        Errno::ELOOP | Errno::ENOTDIR => AppError::Forbidden(format!(
+            "a folder on the way to {path} is a link or not a folder: Yulius follows no links"
+        )),
+        other => errno_error(other),
+    };
+    let home_and = |folders: &[String]| -> Vec<std::ffi::OsString> {
+        std::iter::once("home".into())
+            .chain(folders.iter().map(Into::into))
+            .collect()
+    };
+    let exists = |folders: &[String]| -> AppResult<bool> {
+        let Some((name, above)) = folders.split_last() else {
+            return Ok(false);
+        };
+        let above = home_and(above);
+        let above: Vec<&OsStr> = above.iter().map(std::ffi::OsString::as_os_str).collect();
+        match crate::files::open_dirs_below(anchor, &above, false) {
+            Ok(dir) => match kind_at(&dir, OsStr::new(name)) {
+                Ok(_) => Ok(true),
+                Err(Errno::ENOENT) => Ok(false),
+                Err(err) => Err(errno_error(err)),
+            },
+            Err(Errno::ENOENT) => Ok(false),
+            Err(err) => Err(on_the_way(err)),
+        }
+    };
+    let recorded_exists = match recorded {
+        Some(folders) => exists(folders)?,
+        None => false,
+    };
+    let (name, above) = parts
+        .split_last()
+        .ok_or_else(|| AppError::Invalid("name the folder to restore into".into()))?;
+    let above = home_and(above);
+    let above: Vec<&OsStr> = above.iter().map(std::ffi::OsString::as_os_str).collect();
+    let parent = crate::files::open_dirs_below(anchor, &above, true).map_err(on_the_way)?;
+    let target = OsStr::new(name.as_str());
+    let target_empty = match kind_at(&parent, target) {
+        Err(Errno::ENOENT) => None,
+        Ok((SFlag::S_IFDIR, _)) => {
+            let dir = open_dir_at(&parent, target, false).map_err(on_the_way)?;
+            Some(names_in(&dir, 1).map_err(errno_error)?.is_empty())
+        }
+        Ok(_) => Some(false),
+        Err(err) => return Err(errno_error(err)),
+    };
+    let how = placement(record, path, recorded_exists, target_empty)?;
+
+    mkdirat(&parent, temporary, Mode::from_bits_truncate(0o700)).map_err(errno_error)?;
+    let placed = (|| {
+        let fresh = open_dir_at(&parent, OsStr::new(temporary), false).map_err(errno_error)?;
+        let contents = unpack(archive, &fresh)?;
+        match how {
+            Placement::Fresh => {
+                // Over a missing name or an empty folder; anything else in the way meanwhile
+                // fails the rename.
+                renameat(&parent, temporary, &parent, target).map_err(|err| match err {
+                    Errno::ENOTEMPTY | Errno::EEXIST | Errno::ENOTDIR | Errno::EISDIR => {
+                        AppError::Conflict(format!(
+                            "{path} changed while the state was restored: restore it into a new \
+                             folder"
+                        ))
+                    }
+                    other => errno_error(other),
+                })?;
+            }
+            Placement::Replace => {
+                let old = format!("{temporary}-old");
+                renameat(&parent, target, &parent, old.as_str()).map_err(errno_error)?;
+                if let Err(err) = renameat(&parent, temporary, &parent, target) {
+                    // Put the old copy back rather than leave nothing at the path.
+                    let _ = renameat(&parent, old.as_str(), &parent, target);
+                    return Err(errno_error(err));
+                }
+                remove_tree(&parent, OsStr::new(&old))?;
+            }
+        }
+        Ok(contents)
+    })();
+    if placed.is_err() {
+        let _ = remove_tree(&parent, OsStr::new(temporary));
+    }
+    placed
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use super::*;
+    use yulius_domain::time::Timestamp;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// A gzip tar of `(path, kind, mode, content)` entries; kind `l` is a link to `content`.
+    fn archive(entries: &[(&str, char, u32, &str)]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut builder = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::fast()));
+        for (path, kind, mode, content) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(*mode);
+            match kind {
+                'd' => {
+                    header.set_entry_type(tar::EntryType::Directory);
+                    header.set_size(0);
+                    builder.append_data(&mut header, path, io::empty())?;
+                }
+                'l' => {
+                    header.set_entry_type(tar::EntryType::Symlink);
+                    header.set_size(0);
+                    builder.append_link(&mut header, path, content)?;
+                }
+                'c' => {
+                    header.set_entry_type(tar::EntryType::Char);
+                    header.set_size(0);
+                    builder.append_data(&mut header, path, io::empty())?;
+                }
+                _ => {
+                    header.set_entry_type(tar::EntryType::Regular);
+                    header.set_size(content.len() as u64);
+                    builder.append_data(&mut header, path, content.as_bytes())?;
+                }
+            }
+        }
+        Ok(builder.into_inner()?.finish()?)
+    }
+
+    /// A raw tar entry whose name the `tar` builder would refuse (`..`, absolute).
+    fn raw_archive(name: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut header = tar::Header::new_old();
+        header.as_old_mut().name[..name.len()].copy_from_slice(name.as_bytes());
+        header.set_mode(0o644);
+        header.set_size(1);
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_cksum();
+        let mut tar = header.as_bytes().to_vec();
+        tar.extend_from_slice(b"x");
+        tar.resize(512 * 2, 0);
+        tar.resize(512 * 4, 0);
+        let mut gz = GzEncoder::new(Vec::new(), Compression::fast());
+        gz.write_all(&tar)?;
+        Ok(gz.finish()?)
+    }
+
+    fn dir_fd(path: &Path) -> Result<OwnedFd, Box<dyn std::error::Error>> {
+        Ok(nix::fcntl::open(
+            path,
+            OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )?)
+    }
+
+    fn mode_of(path: &Path) -> Result<u32, Box<dyn std::error::Error>> {
+        Ok(std::fs::symlink_metadata(path)?.permissions().mode() & 0o7777)
+    }
+
+    fn record(version: u32, restored: Option<(&str, u32)>) -> AgentStateRecord {
+        AgentStateRecord {
+            id: "st".into(),
+            sandbox_id: SandboxId::parse("s1").unwrap_or_else(|_| unreachable!()),
+            name: "OPS".into(),
+            description: String::new(),
+            version,
+            bytes: 1,
+            files: 1,
+            created_by: "ann".into(),
+            created_at: Timestamp(1),
+            updated_by: "ann".into(),
+            updated_at: Timestamp(1),
+            restored: restored.map(|(path, version)| StateRestore {
+                path: path.into(),
+                version,
+                by: "task:1".into(),
+                at: Timestamp(2),
+            }),
+        }
+    }
+
+    /// SPEC-271 OPS-002 (AC5): only files and folders inside the state's folder are taken.
+    #[test]
+    fn archives_hold_only_files_and_folders_inside() -> TestResult {
+        let good = archive(&[
+            ("inventory.sqlite", 'f', 0o600, "db"),
+            ("rollouts", 'd', 0o755, ""),
+            ("rollouts/a/bundle.json", 'f', 0o644, "{}"),
+        ])?;
+        assert_eq!(
+            check_archive(&good)?,
+            Contents {
+                files: 2,
+                bytes: 4
+            }
+        );
+        let cases: [(Vec<u8>, &str); 6] = [
+            (archive(&[("link", 'l', 0o777, "/etc/passwd")])?, "holds a link at link"),
+            (archive(&[("dev", 'c', 0o600, "")])?, "neither a file nor a folder"),
+            (raw_archive("../escape")?, "outside its folder"),
+            (raw_archive("/etc/cron.d/x")?, "outside its folder"),
+            (b"not gzip".to_vec(), "is not a readable gzip tar"),
+            (archive(&[])?, "is empty"),
+        ];
+        for (bytes, why) in cases {
+            let err = check_archive(&bytes).err().ok_or(why)?;
+            assert!(
+                matches!(&err, AppError::Invalid(m) if m.contains(why)),
+                "{why}: {err:?}"
+            );
+        }
+        let big = vec![0_u8; usize::try_from(MAX_STATE_BYTES)? + 1];
+        assert!(check_archive(&big).is_err());
+        Ok(())
+    }
+
+    /// SPEC-271 OPS-005, OPS-006: a state unpacks with its permission bits (setuid and sticky
+    /// dropped) and packs back to the same files, leaving links out and naming them.
+    #[test]
+    fn unpacking_keeps_modes_and_packing_leaves_links_out() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path().join("state");
+        std::fs::create_dir(&root)?;
+        let bytes = archive(&[
+            ("config.json", 'f', 0o644, "{\"key_file\": \"/Users/x/.ssh/k\"}"),
+            ("bin", 'd', 0o1755, ""),
+            ("bin/rollout", 'f', 0o4755, "#!/bin/sh\n"),
+            ("locks/rollout.lock", 'f', 0o600, ""),
+        ])?;
+        let contents = unpack(&bytes, &dir_fd(&root)?)?;
+        assert_eq!(contents.files, 3);
+        assert_eq!(mode_of(&root.join("config.json"))?, 0o644);
+        assert_eq!(mode_of(&root.join("bin"))?, 0o755);
+        assert_eq!(mode_of(&root.join("bin/rollout"))?, 0o755);
+        assert_eq!(mode_of(&root.join("locks/rollout.lock"))?, 0o600);
+        assert_eq!(std::fs::read_to_string(root.join("bin/rollout"))?, "#!/bin/sh\n");
+        // The same path twice is refused, never overwritten.
+        let twice = archive(&[("a", 'f', 0o600, "1"), ("a", 'f', 0o600, "2")])?;
+        let other = dir.path().join("other");
+        std::fs::create_dir(&other)?;
+        assert!(unpack(&twice, &dir_fd(&other)?).is_err());
+
+        std::fs::write(root.join("bin/rollout"), "#!/bin/sh\necho changed\n")?;
+        std::os::unix::fs::symlink("/etc/passwd", root.join("passwd"))?;
+        let packed = pack(&dir_fd(&root)?)?;
+        assert_eq!(packed.skipped, vec!["passwd".to_owned()]);
+        assert_eq!(packed.contents.files, 3);
+        let again = dir.path().join("again");
+        std::fs::create_dir(&again)?;
+        unpack(&packed.archive, &dir_fd(&again)?)?;
+        assert_eq!(
+            std::fs::read_to_string(again.join("bin/rollout"))?,
+            "#!/bin/sh\necho changed\n"
+        );
+        assert_eq!(mode_of(&again.join("locks/rollout.lock"))?, 0o600);
+        assert!(!again.join("passwd").exists());
+        Ok(())
+    }
+
+    /// SPEC-271 OPS-005 (AC2, AC3): one copy is the writer; only a newer version replaces it.
+    #[test]
+    fn a_restored_copy_is_replaced_only_by_a_newer_version() {
+        let fresh = record(1, None);
+        assert_eq!(placement(&fresh, "~/.ops", false, None).ok(), Some(Placement::Fresh));
+        assert_eq!(
+            placement(&fresh, "~/.ops", false, Some(true)).ok(),
+            Some(Placement::Fresh)
+        );
+        assert!(placement(&fresh, "~/.ops", false, Some(false)).is_err());
+
+        let current = record(2, Some(("~/.ops", 2)));
+        assert!(matches!(
+            placement(&current, "~/.ops", true, Some(false)),
+            Err(AppError::Conflict(m)) if m.contains("use it")
+        ));
+        assert!(matches!(
+            placement(&current, "~/elsewhere", true, None),
+            Err(AppError::Conflict(m)) if m.contains("restored at ~/.ops already")
+        ));
+        // The recorded copy is gone: restored again, anywhere empty.
+        assert_eq!(
+            placement(&current, "~/elsewhere", false, None).ok(),
+            Some(Placement::Fresh)
+        );
+
+        let replaced = record(3, Some(("~/.ops", 2)));
+        assert_eq!(
+            placement(&replaced, "~/.ops", true, Some(false)).ok(),
+            Some(Placement::Replace)
+        );
+    }
+
+    /// SPEC-271 OPS-005 (AC6): the restore never follows a link the agent planted on the way or
+    /// in place of the target, and leaves no temporary folder behind.
+    #[test]
+    fn restores_follow_no_links() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let anchor = std::fs::canonicalize(dir.path())?;
+        let outside = anchor.join("outside");
+        std::fs::create_dir_all(anchor.join("home"))?;
+        std::fs::create_dir(&outside)?;
+        std::os::unix::fs::symlink(&outside, anchor.join("home/linked"))?;
+        let bytes = archive(&[("inventory.sqlite", 'f', 0o600, "db")])?;
+        let state = record(1, None);
+        let parts = |p: &[&str]| p.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+
+        let err = restore_blocking(
+            &anchor,
+            &parts(&["linked", "ops"]),
+            None,
+            &state,
+            "~/linked/ops",
+            &bytes,
+            ".t1",
+        )
+        .err()
+        .ok_or("followed a link on the way")?;
+        assert!(matches!(err, AppError::Forbidden(_)), "{err:?}");
+        let err = restore_blocking(
+            &anchor,
+            &parts(&["linked"]),
+            None,
+            &state,
+            "~/linked",
+            &bytes,
+            ".t2",
+        )
+        .err()
+        .ok_or("restored over a link")?;
+        assert!(matches!(err, AppError::Conflict(_)), "{err:?}");
+        assert_eq!(std::fs::read_dir(&outside)?.count(), 0);
+
+        let contents = restore_blocking(
+            &anchor,
+            &parts(&[".local", "share", "ops"]),
+            None,
+            &state,
+            "~/.local/share/ops",
+            &bytes,
+            ".t3",
+        )?;
+        assert_eq!(contents.files, 1);
+        assert_eq!(
+            std::fs::read_to_string(anchor.join("home/.local/share/ops/inventory.sqlite"))?,
+            "db"
+        );
+        // A newer version replaces the restored copy in place.
+        let newer = archive(&[("inventory.sqlite", 'f', 0o600, "db2")])?;
+        restore_blocking(
+            &anchor,
+            &parts(&[".local", "share", "ops"]),
+            Some(&parts(&[".local", "share", "ops"])),
+            &record(2, Some(("~/.local/share/ops", 1))),
+            "~/.local/share/ops",
+            &newer,
+            ".t4",
+        )?;
+        assert_eq!(
+            std::fs::read_to_string(anchor.join("home/.local/share/ops/inventory.sqlite"))?,
+            "db2"
+        );
+        let left: Vec<_> = std::fs::read_dir(anchor.join("home/.local/share"))?
+            .filter_map(Result::ok)
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(left, vec![std::ffi::OsString::from("ops")]);
+        Ok(())
+    }
+}

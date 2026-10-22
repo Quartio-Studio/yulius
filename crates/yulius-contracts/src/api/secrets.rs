@@ -343,3 +343,33 @@ pub struct VaultActivity {
     /// Name and context (never a value).
     pub detail: Option<String>,
 }
+
+/// An agent state of a sandbox (SPEC-271, ADR-0200): a folder of operator state sent from a
+/// laptop, sealed in the vault; never its content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentStateView {
+    /// Its name (an agent secret name).
+    pub name: String,
+    /// What it is.
+    #[serde(default)]
+    pub description: String,
+    /// 1 at import, +1 on each replace or save.
+    pub version: u32,
+    /// Packed size in bytes.
+    pub bytes: u64,
+    /// Files in it.
+    pub files: u64,
+    /// Who wrote its newest version.
+    pub updated_by: String,
+    /// When (epoch milliseconds).
+    pub updated_at: i64,
+    /// The sandbox's copy (`~/…` of the sandbox home) once a task restored it: the one written to.
+    #[serde(default)]
+    pub restored_path: Option<String>,
+    /// The version that copy holds; below `version` after a replace from the laptop.
+    #[serde(default)]
+    pub restored_version: Option<u32>,
+    /// When it was restored or saved last (epoch milliseconds).
+    #[serde(default)]
+    pub restored_at: Option<i64>,
+}

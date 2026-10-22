@@ -69,6 +69,8 @@ use crate::files::{
 pub const DEFAULT_UPLOAD_MAX_BYTES: u64 = 25 * 1024 * 1024;
 /// Uploads in progress at once on this instance.
 pub const MAX_CONCURRENT_UPLOADS: usize = 8;
+/// Agent states sent, restored, saved or downloaded at once (SPEC-271 OPS-008).
+pub const MAX_CONCURRENT_STATES: usize = 2;
 /// Longest pause in an upload's body before it fails.
 pub const UPLOAD_IDLE: Duration = Duration::from_secs(60);
 /// Attachments kept per task or shell.
@@ -93,6 +95,9 @@ pub struct UploadState {
     /// Reference fetches running at once (SPEC-267): each may write a repository's history to
     /// the data disk before its size is known.
     pub(crate) references: Arc<Semaphore>,
+    /// Agent states moving at once (SPEC-271 OPS-008): each holds a packed state of up to
+    /// 64 MiB in memory.
+    pub(crate) states: Arc<Semaphore>,
 }
 
 impl Default for UploadState {
@@ -102,6 +107,7 @@ impl Default for UploadState {
             references: Arc::new(Semaphore::new(
                 crate::reference_repo::MAX_CONCURRENT_FETCHES,
             )),
+            states: Arc::new(Semaphore::new(MAX_CONCURRENT_STATES)),
         }
     }
 }
