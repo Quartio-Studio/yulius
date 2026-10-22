@@ -8,8 +8,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Yulius reclaims disk by itself, and removing a sandbox asks about its files (SPEC-276, task #261,
   ADR-0205). Cargo build directories of worktrees and CI checkouts are swept hourly under Cargo's
-  own lock: whole units unused for 48 hours go, and a directory above 5 % of the disk loses its
-  least recently used ones. From 85 % disk use the sweep runs harder every round with a warning
+  own lock: whole units unused for 48 hours go (compiled artifacts only where nothing runs tests),
+  and a directory above 5 % of the disk loses its least recently used incremental state. From 85 % disk use the sweep runs harder every round with a warning
   pill on every page; from 95 % idle caches go too. Archived tasks lose their build output at
   once, and the Leftovers card and `yulius leftovers list` show the last automatic cleanup.
   Removing a sandbox now asks whether to delete its files permanently (as soon as nothing of it
