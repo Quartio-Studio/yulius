@@ -12,8 +12,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   and caches now count only with no link from the sandbox directory down, each cache is checked
   again right before it is measured and removed (through `O_NOFOLLOW` handles, so on Linux only;
   macOS development hosts no longer prune caches), and an ended worktree right before Git removes
-  it. Git's own worktree removal still resolves paths
-  itself (noted on #649).
+  it. Git's own worktree removal still resolves paths itself (noted on #649).
 - The documentation matches what was merged since 2026-10-17 (task #246, documentation only). The
   API reference lists the agent-secret scopes (`personal`, `enabled`, `shadowed_by`) and the
   switch route `PUT …/agent-secrets/{id}/enabled`, the leftovers and Sandbox Docker admin routes,

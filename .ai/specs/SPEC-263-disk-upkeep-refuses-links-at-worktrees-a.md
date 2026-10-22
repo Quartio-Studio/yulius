@@ -1,11 +1,11 @@
 ---
 yulius-task: 38d860e8-19b3-484b-a9d5-23517b101d83
-status: done
+status: in-progress
 ---
 
 # SPEC-263: Disk upkeep refuses links at worktrees/ and ci/jobs (#649)
 
-Status: done
+Status: in-progress
 Date: 2026-10-22
 Owner: Yulius task #249
 Scope authorization: task #249 (nightly "Work through open issues"). Fixes #649.
@@ -45,7 +45,8 @@ each removal, so a sandbox can never steer it into another sandbox's files.
 - DUL-002. Right before each cache removal the rule is checked again, and the removal goes through
   `remove_below` from the sandbox directory, so a folder swapped for a link after the check fails
   the removal instead of following it. A refused removal is skipped with a warning and not
-  counted or audited. Off Linux, where `remove_below` cannot work, the upkeep removes no cache.
+  counted or audited. Off Linux, where `remove_below` cannot work, the upkeep finds, measures and
+  removes no cache.
 - DUL-003. A closed or cancelled task's worktree is checked again by the same rule right before it
   is handed to Git for removal.
 - DUL-004. Caches reached without links are pruned as before (every existing `disk.rs` test
@@ -58,8 +59,8 @@ each removal, so a sandbox can never steer it into another sandbox's files.
 - [x] Scan and removal refuse links from the sandbox directory
 - [x] Review round 1: ended-worktree re-check test, macOS removal, split tests
 - [x] Docs, changes entry and gates green
-- [x] Independent review and fixes
-- [x] Merge into dev on green CI
+- [ ] Independent review and fixes
+- [ ] Merge into dev on green CI
 
 ## Acceptance criteria
 
@@ -140,6 +141,19 @@ each removal, so a sandbox can never steer it into another sandbox's files.
   - The CI tests assert `caches == 0`.
   - The changes entry no longer overclaims.
   The pre-existing Git canonicalize window is reported on #649 and recorded in Decisions.
+- Review round 2 (fresh session, at 0adf339f) approved, with findings fixed after it:
+  - The Git window note is now really on #649 (comment 6331430833). It also corrects the earlier
+    comment's overstatement: `git worktree remove` refuses a folder whose `.git` does not point
+    back, so the registered-victim tests guard defence in depth.
+  - The DUL-003 check moved to just before `remove_worktree`, after the `ignored_entries` Git
+    call.
+  - Off Linux no caches are found, so they are not measured or warned about every round.
+    `docs/operations.md` says caches are pruned on Linux only.
+  - Left as is: a cache folder swapped for a link after the last check has the link removed,
+    which `remove_below` reports as success, so the round counts and audits it. Only a sandbox
+    acting on its own folder can do that, and nothing outside it is touched.
+  - Pre-existing: `remove_below` reports success on macOS while removing nothing (#681). This is
+    noted on #649, because this task may not file issues.
 - Not tested here: macOS behaviour at runtime (only compiled and linted for
   `aarch64-apple-darwin`).
 

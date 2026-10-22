@@ -285,8 +285,12 @@ impl App {
     /// their sizes: recognised or declared paths that are real directories reached from `root`
     /// with no link on the way (none when the worktree is not one), ignored by Git and holding
     /// no tracked file (a path a commit has files in is the project's work, not a cache, whatever
-    /// `yulius.toml` says).
+    /// `yulius.toml` says). None off Linux, where no cache is removed ([`remove_cache`]), so
+    /// they are not measured every round for nothing.
     async fn find_caches(&self, root: &Path, worktree: &Path) -> Vec<(String, PathBuf, u64)> {
+        if !cfg!(target_os = "linux") {
+            return Vec::new();
+        }
         let (top, dir) = (root.to_path_buf(), worktree.to_path_buf());
         let present = tokio::task::spawn_blocking(move || {
             if !real_dir_from(&top, &dir) {
@@ -572,15 +576,15 @@ impl App {
     ) -> bool {
         // Files Git ignores that are not rebuildable caches (local configuration, data) are not
         // Git's to lose; caches (`target`, `.tools`, `node_modules`, declared ones) are.
-        // Checked again right before Git removes it: a link on the way would hand Git another
-        // sandbox's worktree, which this sandbox's repository may register (SPEC-263 DUL-003).
-        if !real_dir_from(&self.sandbox_dir(&sandbox.id), worktree) {
-            return false;
-        }
         let declared = declared_caches(worktree);
         match self.deps.git.ignored_entries(worktree).await {
             Ok(Some(ignored)) if only_rebuildable(&ignored, &declared) => {}
             _ => return false,
+        }
+        // Checked again right before Git removes it: a link on the way would hand Git another
+        // sandbox's folder (SPEC-263 DUL-003). Git resolves the path itself once more.
+        if !real_dir_from(&self.sandbox_dir(&sandbox.id), worktree) {
+            return false;
         }
         let repo = self.sandbox_repo(&sandbox.id);
         let owned = self.sandbox_dir(&sandbox.id).join("worktrees");
