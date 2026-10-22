@@ -1,11 +1,11 @@
 ---
 yulius-task: 136815f5-cee3-4578-a2dd-d76813ddc960
-status: in-progress
+status: done
 ---
 
 # SPEC-264: CI grants agent secrets only to the trusted job command (#659)
 
-Status: in-progress
+Status: done
 Date: 2026-10-22
 Owner: Yulius task #250
 Scope authorization: task #250, started by the nightly "Work through open issues" run: solve
@@ -62,7 +62,7 @@ job's name for another command runs that command without any secret.
 - [x] Regression tests: a PR's own job with a granted key and another command gets no secret, the trusted command keeps its grant
 - [x] Grant by key and command, with a job-log note when the command differs
 - [x] SPEC-142 CSE-002, architecture and changes docs say so
-- [ ] Independent review answered, gates green, merged into dev on green CI
+- [x] Independent review answered, gates green, merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -97,5 +97,34 @@ job's name for another command runs that command without any secret.
 - Known limit (new, fails safe; review round 1): a run is planned with the jobs in force when it
   is queued and checked against the integration head when each job starts. A run queued before
   the integration branch changed a granted job's command runs the old command without the secret
-  (the `security` scan then ends skipped, unrun), and its output says to run it again in that case. Granting
-  the old command instead would let a command the integration branch dropped keep its secret.
+  (the `security` scan then ends skipped, unrun), and its output says to run it again in that
+  case. Granting the old command instead would let a command the integration branch dropped keep
+  its secret.
+
+## Evidence
+
+- Root cause reproduced by test before the fix: commit 7ac50ce7 (test only),
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^local_ci::ci_jobs_get_the_secrets/)'`
+  failed at `local_ci.rs:1741`, the pull request's own `granted` command printing
+  `own key=yulius-secret-API_KEY other=none proxy=set ca=/tmp/.../egress-ca.pem`.
+- With the fix (037debf4): that test and all 34 `local_ci::` tests pass; the unit test
+  `ci::exec::tests::only_the_integration_branch_jobs_grant_secrets` passes (another command,
+  whitespace and case variants, unknown and grant-less keys, profile and pull-request gates).
+- `scripts/dev ci` at e11f72a4: exit 0, 2404 tests passed, 17 skipped, repository contracts
+  passed. (Also exit 0 at 4ce14782.)
+- `scripts/dev security` at 4ce14782: exit 1 on one finding, [high] `crates/yulius-app/src/ci/exec.rs`
+  "Path traversal in the CI checkout directory through an untrusted job key" in `checkout_name`
+  (pre-existing, #155). A false positive: every job key passes `valid_job_name`
+  (`[a-z0-9][a-z0-9_-]*`, at most 32 bytes) or is the constant `gate` or `security`. It is pinned
+  by `ci::tests::jobs_expand_matrices_and_reject_bad_definitions` (`../x`, `..`, `.x`, `a/b`,
+  `/tmp`, `a.b`, empty) and ignored narrowly in `.config/vidoc.toml` with the independent
+  reviewer's agreement (round 3).
+- `scripts/dev security` at e11f72a4: exit 0, no open critical or high finding and no open medium
+  one in the change; no low findings listed.
+- Independent review in a fresh session (om-code-review), 3 rounds: round 1 minors (queued-run
+  limit recorded in this spec and ADR-0196, the note says to re-run; stale doc comments) and nits
+  fixed; rounds 2 and 3 approve, with nits (note wording, line wraps) fixed in this commit.
+- Not tested: the queued-run race (a run queued before the integration branch changes a granted
+  command) has no test; it fails safe (no secret) and is documented.
+- Out of scope, pre-existing: `docs/api.md`'s `[[ci.jobs]]` reference omits `secrets` and still
+  says jobs get no secrets (stale since SPEC-142); reported on #659 instead of an issue.
