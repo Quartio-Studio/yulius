@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-22
 
+- Parallel tasks of one sandbox no longer use up its process budget and crash Claude Code (SPEC-268,
+  task #254, ADR-0198). Five quartio-v2 tasks building Rust and running tests with containers
+  shared the sandbox's 8192 tasks (threads count), and a session that could not start a thread
+  aborted ("Stopped (crashed)", exit 134). The default `pids.max` is now a quarter of the host's
+  task table (96 272 on the VM; `YULIUS_SANDBOX_PIDS` still sets it); CI jobs and the Docker engine
+  with its containers each stop at 3/8 of it, so the sessions keep a quarter. A session that still
+  ends while the sandbox refused forks or the OOM killer ran says "the sandbox hit its process
+  limit" or "ran out of memory" in its banner and overview (`limit=pids`/`limit=memory` in the
+  run's exit reason). Repositories without `[resources.env]` get `CARGO_BUILD_JOBS`,
+  `NEXTEST_TEST_THREADS` and `RUST_TEST_THREADS` at their budget.
 - The usage-limit step-back and the task home's creation go through handles (SPEC-266, task #252,
   fixes #661). The transcript `<home>/.claude/projects/<slug>/<session>.jsonl` is reached from
   the folder above the home without following links, read only when it is a regular file, and
