@@ -209,6 +209,12 @@ Head before the review fixes: `415aa179`; commands run in this task's sandbox (L
   - The counters test counts a paused run's `agents/run-t1` (13, the round-1 code gave 6) and reads `pids.events.local`.
 - `scripts/dev ci` at `415aa179`: green, 2435 tests passed, 17 skipped (after a fixed spec link).
   At `35564424` (round-1 fixes): green, 2437 passed, 17 skipped; `scripts/dev security` exit 0.
+  At `81c430df` (round-2 fixes): green, 2438 passed; security exit 0. At `fc3f1b9b` (the split,
+  `origin/dev` merged): green, 2446 passed, 17 skipped.
+- Full e2e suite at `81c430df` (the web assets are unchanged since): 667 passed, 1 skipped, 1
+  failed: `secrets.e2e.ts` "a failed copy shows no check…" (axe target-size on a Close button),
+  run while this task compiled beside it; the file then passed 3 of 3 alone. It is the known
+  flaky test #640 (about 1 run in 5), on a screen this change does not touch.
 - `scripts/dev security` at `415aa179`: exit 0, no open critical/high, no medium in the change.
   The first scan flagged the fake agent's existing `/sh` (high, code not written here), sent only
   because this branch had added `/abort`; that addition was dropped (the test aborts the agent
