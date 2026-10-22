@@ -195,7 +195,7 @@ export function mountTaskView(ctx, sandbox, task) {
   const watchingTerminal = (view) => ({
     el: view.el, term: null, socket: { status: 'closed' }, canWrite: false, ready: true,
     start() { view.start(); }, focus() { view.focus(); }, sendKeys: () => false,
-    reconnect() {}, refit() {}, refreshEmpty() {}, destroy() { view.destroy(); },
+    reconnect() {}, refit() {}, refreshEmpty() {}, refreshBanner() {}, destroy() { view.destroy(); },
   });
   let watch = owner() ? makeWatch() : null;
   let terminal = watch ? watchingTerminal(watch) : makeTerminal();
@@ -703,6 +703,8 @@ export function mountTaskView(ctx, sandbox, task) {
         if (read === detailRead) current = { ...current, ...pickSummary(detail) };
         heldKey = '';
         renderStrip();
+        // The end banner may name the limit the last run met (SPEC-268), known only from here.
+        terminal.refreshBanner();
       }
     } catch (error) {
       if (alive && read === detailRead && error.status !== 404) errorToast(error, 'Couldn’t load task details');

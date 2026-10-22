@@ -502,7 +502,7 @@ other instead of overlapping.
 | `YULIUS_SANDBOX_EGRESS` | `direct` | `none`: no egress, only the relayed endpoints (the internal listener, which also serves the secrets proxy, and `YULIUS_SANDBOX_FORWARD`). |
 | `YULIUS_SANDBOX_MEMORY_GB` | the RAM but an eighth (at least 4 GiB kept for the host) | `memory.max` per sandbox. One sandbox runs all its agents and CI jobs: size it to the sessions, not to half the host. |
 | `YULIUS_SANDBOX_CPUS` | none | `cpu.max` per sandbox. Without it the CPU is shared by weight: a quota of all CPUs but two throttled the sandbox in half of its busy periods while the two CPUs it left idled (SPEC-082). The sandbox's capacity for budgets is this limit, else the host's CPUs. |
-| `YULIUS_SANDBOX_PIDS` | a quarter of the host's `kernel.threads-max` or `kernel.pid_max`, whichever is smaller, at least 8192 | `pids.max` per sandbox: processes and threads of all its tasks, CI jobs and containers together. With the CPU split, CI jobs (`ci/`) and the Docker engine with its containers (`engine/`) each get 3/8 of it, so agent sessions keep at least a quarter (ADR-0198). |
+| `YULIUS_SANDBOX_PIDS` | a quarter of the host's `kernel.threads-max` or `kernel.pid_max`, whichever is smaller, at least 8192, at most three quarters of `yulius.service`'s own `pids.max` | `pids.max` per sandbox: processes and threads of all its tasks, CI jobs and containers together. With the CPU split, CI jobs (`ci/`) and the Docker engine with its containers (`engine/`) each get 3/8 of it, so agent sessions keep at least a quarter (ADR-0198). |
 | `YULIUS_SANDBOX_DISK_GB` | 100 | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. Caches are found and removed only with no link from the sandbox directory down, and on Linux only ([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)). |
 | `YULIUS_SANDBOX_FORWARD` | — | Extra host loopback ports reachable inside every sandbox at the same port (for example a loopback MCP server), comma-separated. |
 | `YULIUS_SANDBOX_IDLE_MINUTES` | 5 | A holder without runs is stopped after this long; the next run starts a fresh one on the newest base. A sandbox's Docker engine stops after this long without a client and without a running container. |
@@ -629,10 +629,11 @@ from a sandbox, and no daemon needs to run on the host.
   when the engine starts again.
 - **Limits.** Image files owned by ids above 65535 cannot be stored. Setuid binaries and file
   capabilities do not raise privileges inside containers (`no_new_privs`).
-  - Per-container resource flags (`docker run -m`, `--cpus`, compose `mem_limit` or `cpus`) are
-    not supported; leave them out. The engine lives in its own group, so cgroup v2 passes no
-    controller below it: memory flags are discarded, and CPU flags may make the container fail
-    to start. The sandbox's own limits still bound every container.
+  - Per-container resource flags (`docker run -m`, `--cpus`, `--pids-limit`, compose `mem_limit`,
+    `cpus` or `pids_limit`) are not supported; leave them out. The engine lives in its own group,
+    so cgroup v2 passes no controller below it: memory flags are discarded, and CPU and task flags
+    may make the container fail to start. The sandbox's own limits, and the engine's 3/8 of its
+    task limit (SPEC-268), still bound every container.
   - A bind mount resolves in the engine's view: the sandbox directory, the system layer and the
     engine's `/tmp`. A run's own `/tmp`, a Shell user's home and run directories are not there.
 - **When it fails.** `docker` prints "the sandbox's Docker engine is not available: …" with the
@@ -1351,10 +1352,15 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
   `cat /sys/fs/cgroup/system.slice/yulius.service/sandboxes/<sandbox>/ci/cpu.weight` (400).
   A holder that was already running keeps its `slirp4netns` in `agents/` until the holder stops
   when idle. **Rolling back to an older binary:** a server that stops gracefully undoes the split
-  (`-cpu`), so the older binary can join the sandbox groups again. After a crash or a forced stop,
-  undo it by hand before starting the older binary. Otherwise its holders and runs fail with
-  "Device or resource busy":
-  `for f in /sys/fs/cgroup/system.slice/yulius.service/sandboxes/*/cgroup.subtree_control; do echo -cpu > "$f"; done`.
+  (`-pids`, then `-cpu`), so the older binary can join the sandbox groups again. After a crash or a
+  forced stop, undo it by hand before starting the older binary. Otherwise its holders and runs
+  fail with "Device or resource busy":
+  `for f in /sys/fs/cgroup/system.slice/yulius.service/sandboxes/*/cgroup.subtree_control; do echo -pids > "$f"; echo -cpu > "$f"; done`.
+- Upgrading to host-sized task limits (SPEC-268, 2026-10-22): no migration. At its next start the
+  server gives each sandbox a quarter of the host's task table, at most three quarters of
+  `yulius.service`'s own `pids.max` (systemd's `DefaultTasksMax` is 15 % of the table unless the
+  unit sets `TasksMax=`; raise it there for bigger sandboxes), and `ci/` and `engine/` 3/8 of that;
+  the log line "per-sandbox limits on" shows the figure. An explicit `YULIUS_SANDBOX_PIDS` stays.
 - Upgrading to tasks acting as their creator on GitHub (GIT-003, #188, 2026-10-11): no migration
   and no configuration. The agents' Git switches to the creator's token at its next credential
   request; a run gets `gh` logged in as the creator when it is started or continued (`gh` itself

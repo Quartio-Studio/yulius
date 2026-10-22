@@ -2026,7 +2026,8 @@ impl App {
         // Parallel tasks share the sandbox: each plans for its budget (a third of the sandbox by
         // default), in YULIUS_CPUS and the repository's own variables (SPEC-082 RES-005). It
         // replaces the CARGO_BUILD_JOBS Yulius set for every repository (OOM kills of
-        // 2026-10-12): a Rust repository maps it in its yulius.toml.
+        // 2026-10-12): a repository maps it in its yulius.toml, and one without the table gets
+        // the Rust defaults (SPEC-268 PID-007).
         env.extend(self.agent_resource_env(worktree));
         env.extend(git_credential_env(&self.config.yulius_exe));
         env

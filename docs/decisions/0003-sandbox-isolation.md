@@ -3,7 +3,8 @@
 ## Status
 
 Accepted; amended by [0151](0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md)
-(each sandbox runs its own Docker engine). Recorded retroactively from SPEC-002 (ADR-03, ADR-12,
+(each sandbox runs its own Docker engine) and [0198](0198-sandbox-task-limits-are-sized-from-the-host-and-leave-sessions-a-reserve.md)
+(task limits sized from the host). Recorded retroactively from SPEC-002 (ADR-03, ADR-12,
 ADR-22); the full analysis is in
 [SPEC-002 section 2](../../.ai/specs/SPEC-002-yulius-architecture.md).
 

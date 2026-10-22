@@ -488,7 +488,8 @@ Server → client:
   the terminal and write the bytes; a full screen redraw).
 - Text frames: `{"type":"state","attempt_seq":n,"harness":"claude","cols":c,"rows":r,
   "can_write":bool,"controller":bool,"status":"running"}`, `{"type":"notice","text":"↻ switched
-  to …"}`, `{"type":"exit","status":"closed","code":0}`, `{"type":"error","code","message"}`.
+  to …"}`, `{"type":"exit","status":"closed","code":0}` (with `"cause":"pids"` or `"memory"` when the run
+  ended while its sandbox was at its task or memory limit, SPEC-268), `{"type":"error","code","message"}`.
 - Close code 4008: viewer lagged; reconnect with `last_seq`.
 
 Write access is confirmed when the terminal opens and then held as the viewer's grant

@@ -20,18 +20,22 @@ task.
 ## Decision
 
 - **Sized from the host.** A sandbox's default `pids.max` is a quarter of the smaller of
-  `kernel.threads-max` and `kernel.pid_max`, at least 8192 (96 272 on a 47 GB host).
-  `YULIUS_SANDBOX_PIDS` still sets it.
+  `kernel.threads-max` and `kernel.pid_max`, at least 8192 (96 272 on a 47 GB host), and at most
+  three quarters of `yulius.service`'s own `pids.max` (systemd's `DefaultTasksMax`, 15 % of the
+  table: 57 763 on that host, so 43 320), so the server and the other sandboxes keep a quarter of
+  it. `YULIUS_SANDBOX_PIDS` still sets it.
 - **CI and the engine leave the sessions a reserve.** With the CPU split, the sandbox also passes
   `pids` to its leaves; `ci` and `engine` each get 3/8 of the sandbox's limit, so together they
   leave the `agents` leaf at least a quarter. A stopping server takes `pids` back with the CPU.
-- **A crash at a limit says so.** The adapter reports the sandbox's `pids.events` `max` (summed
-  over its groups) and `memory.events` `oom_kill`. A run that ends crashed or killed while one of
-  them rose records `limit=pids` or `limit=memory` in its exit reason and in the exit its viewers
+- **A crash at a limit says so.** The adapter reports the forks refused to the sandbox's own
+  group, its holder and its agents (`pids.events.local` or `pids.events` `max`; CI jobs and
+  containers at their leaf limits do not count) and its `memory.events` `oom_kill`. A run that
+  ends crashed or killed while one of them rose records `limit=pids` or `limit=memory` in its exit reason and in the exit its viewers
   get, and the task view says the sandbox hit its process limit or ran out of memory.
 - **A default mapping where a repository has none.** Without a `[resources.env]` table, processes
-  get `CARGO_BUILD_JOBS`, `NEXTEST_TEST_THREADS` and `RUST_TEST_THREADS` = `{cpus}`; a declared
-  table, even an empty one, replaces it.
+  get `CARGO_BUILD_JOBS`, `NEXTEST_TEST_THREADS` and `RUST_TEST_THREADS` = `{cpus}`, but not one
+  whose knob the repository sets in its tools' own files (`jobs` in `.cargo/config.toml`,
+  `test-threads` in `.config/nextest.toml`); a declared table, even an empty one, replaces it.
 
 ## Alternatives
 
@@ -48,11 +52,16 @@ task.
 
 ## Consequences
 
-- The incident's load fits twelve times over; a leak in CI or in containers stops at its leaf
+- The incident's load fits five times over (43 320 on the VM's default unit; twelve times with
+  `TasksMax=` raised); a leak in CI or in containers stops at its leaf
   without taking the sessions' quarter. A session's own tools can still use up the agents' share
   and kill it; the task then says the limit was hit.
-- The engine's containers see `pids` among their available controllers, so Docker's
-  `--pids-limit` can work inside.
+- The engine's containers see `pids` among their available controllers. Per-container task flags
+  (`--pids-limit`, compose `pids_limit`) join the CPU flags as unsupported: no controller passes
+  below the engine's group, which holds `dockerd` (SPEC-187 DKR-005), so they may make a
+  container fail to start where they were discarded before.
+- Each sandbox may take a quarter of the host's table: four saturated sandboxes together still
+  stop at the service's own limit, which the server shares with them.
 - A server restart loses a run's starting counters; the server that takes the run over reads them
   again, so a limit hit before the restart is not attributed.
 - Rust repositories without `[resources.env]` build and test with their budget, not the machine.

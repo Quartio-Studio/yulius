@@ -1,11 +1,11 @@
 ---
 yulius-task: 994ed95c-dd7d-430c-9bfa-b029a50f02dc
-status: in-progress
+status: done
 ---
 
 # SPEC-268: Parallel tasks in one sandbox crash Claude Code via pids.max
 
-Status: in-progress
+Status: done
 Date: 2026-10-22
 Owner: Yulius task #254
 Scope authorization: task #254 (`/goal`): fix the crash, make a crash at the limit say so, size
@@ -71,7 +71,11 @@ unexpectedly".
 
 - PID-001: The default `pids.max` of a sandbox is sized from the host: a quarter of the smaller
   of `kernel.threads-max` and `kernel.pid_max`, at least 8192 (96 272 on the 47 GB VM, 12 times
-  the old 8192). `YULIUS_SANDBOX_PIDS` still sets it. Unreadable host values fall back to 8192.
+  the old 8192), and at most three quarters of the smallest `pids.max` of the delegated unit and
+  its ancestors (systemd's `DefaultTasksMax` is 15 % of the host's table: 57 763 on the VM, so
+  43 320), so a sandbox never starves the server and the other sandboxes before its own limit
+  (review round 1). `YULIUS_SANDBOX_PIDS` still sets it, uncapped. Unreadable host values fall
+  back to 8192.
 - PID-002: When the sandbox is split into leaves, the `ci` and `engine` leaves each get
   `pids.max` = 3/8 of the sandbox's (at least 1): CI jobs and the engine with its containers
   together never take more than three quarters of the budget, and the agents' leaf (sessions,
@@ -81,39 +85,48 @@ unexpectedly".
 - PID-003: A stopping server takes the task limits back from the leaves (`-pids`), as it takes the
   CPU back (CPU-205), so an older binary can join the sandbox group; the next preparation applies
   them again.
-- PID-004: The isolation adapter reports a sandbox's limit counters: the sum of `pids.events`
-  `max` over the sandbox's group and its descendants (bounded to 4096 groups), and
-  `memory.events` `oom_kill` of the sandbox's group. None without the delegation.
+- PID-004: The isolation adapter reports a sandbox's limit counters: the forks refused to the
+  processes of the sandbox's own group, its `system` and its `agents` leaf (`pids.events.local`
+  `max` where the kernel has it, else `pids.events` `max`, which kernel 6.8 counts where the
+  forking task lives), not those of CI jobs or containers stopped at their own leaf limits
+  (review round 1), and `memory.events` `oom_kill` of the sandbox's group. None without the
+  delegation.
 - PID-005: A run's counters are read when it starts (and when a restarted server takes it over).
   When it ends without Yulius ending it and not cleanly (`stopped_crashed`, `stopped_killed`), the
-  counters are read again: if the task counter rose, the attempt's `exit_reason` ends with
+  counters are read again (only that attempt's start counters, left in place until its end's
+  transition is won, review round 1): if the task counter rose, the attempt's `exit_reason` ends with
   `limit=pids`; else if the OOM counter rose, `limit=memory`. The exit sent to the task's viewers
   carries the same cause (`cause: "pids" | "memory"`).
 - PID-006: The task's end banner and the attempt's state in the task's overview say the cause:
-  "The sandbox hit its process limit while the agent ran (too many processes and threads in this
-  project's tasks at once)" and "The sandbox ran out of memory while the agent ran"; without a
-  cause they stay as they are.
+  "The agent stopped: the sandbox hit its process limit while it ran (too many processes and
+  threads in this project's tasks at once)" and "The agent stopped: the sandbox ran out of memory
+  while it ran" (overview: "the sandbox hit its process limit", "the sandbox ran out of memory"),
+  from the exit frame or, after a load, the last run's exit reason (the banner is drawn again once
+  the task's details arrive); without a cause they stay as they are.
 - PID-007: Agent sessions, terminals, the Cockpit and CI jobs started where `yulius.toml` has no
   `[resources.env]` table (or there is no `yulius.toml`) get the default mapping
-  `CARGO_BUILD_JOBS`, `NEXTEST_TEST_THREADS` and `RUST_TEST_THREADS` = `{cpus}`; a declared table,
+  `CARGO_BUILD_JOBS`, `NEXTEST_TEST_THREADS` and `RUST_TEST_THREADS` = `{cpus}`, except a
+  variable whose knob the repository sets itself (`jobs = …` in `.cargo/config.toml` or
+  `.cargo/config`, `test-threads = …` in `.config/nextest.toml`; the variable would override it,
+  review round 1); a declared table,
   even an empty one, replaces it entirely, and an invalid one still sets only `YULIUS_CPUS` and
   `YULIUS_MEMORY_MB` (amends RES-004/RES-005).
 
 ## Plan
 
 - [x] Spec and ADR state the cause and the design
-- [ ] Sandboxes get a task limit sized from the host
-- [ ] CI and the engine leave the agent sessions a reserve of the task limit
-- [ ] The isolation adapter reports a sandbox's limit counters
-- [ ] A session that ends at a limit records and sends why
-- [ ] The task view says the sandbox hit its process or memory limit
-- [ ] Repositories without `[resources.env]` get the Rust build and test defaults
-- [ ] Docs, gates, review and delivery
+- [x] Sandboxes get a task limit sized from the host
+- [x] CI and the engine leave the agent sessions a reserve of the task limit
+- [x] The isolation adapter reports a sandbox's limit counters
+- [x] A session that ends at a limit records and sends why
+- [x] The task view says the sandbox hit its process or memory limit
+- [x] Repositories without `[resources.env]` get the Rust build and test defaults
+- [x] Docs, gates, review and delivery
 
 ## Acceptance criteria
 
 - AC-1 (PID-001): with `threads-max` 385 088 and `pid_max` 4 194 304 the default is 96 272; with
-  unreadable values or a small host it is 8192.
+  unreadable values or a small host it is 8192; under a unit limited to 57 763 it is 43 320.
 - AC-2 (PID-002, PID-003): in a fake split sandbox with `pids.max` 64, `ci/pids.max` and
   `engine/pids.max` are 24 and `agents` has none; stopping writes `-pids`; without the split no
   leaf limit is written.
@@ -137,8 +150,8 @@ unexpectedly".
   PID-007; `resources` unit tests for the default mapping.
 - `isolation::isolation_limits` (opt-in, the VM's delegated unit) extended for AC-3; not runnable
   inside a sandbox, which has no cgroup mount.
-- The UI sentence: `status.js` unit-level through the e2e suite's task view where a mock run ends
-  with a cause.
+- The UI: `task-done.e2e.ts` checks `endedMessage`/`limitCause` in the page and the rendered task
+  view and overview of the mock's crashed task #3 (`limit=pids`).
 
 ## Decisions
 
@@ -163,3 +176,45 @@ unexpectedly".
   task. The three Rust variables change nothing for other languages; a repository that declares a
   table, even an empty one, keeps full control (ADR-0065's principle stands for every declared
   mapping).
+
+## Evidence
+
+Head before the review fixes: `415aa179`; commands run in this task's sandbox (Linux 6.8, 12 CPUs).
+
+- Cause: not confirmable from here (no `/sys/fs/cgroup`, no apport log, quartio-v2's task and
+  repository not reachable; see Context). The task's reproduction (Bun 1.4.3 aborts with 134 under a
+  held process limit) and the code paths (one `pids.max` of 8192 for all of a sandbox's threads;
+  134 classified as crashed) are the basis. Measured here: Claude Code runs 18 threads; the host's
+  `threads-max` 385 088, `pid_max` 4 194 304.
+- Tests that fail without the change, then pass:
+  - `cgroup::tests::the_task_limit_is_sized_from_the_host`,
+    `the_task_limit_stays_below_the_services`,
+    `ci_and_the_engine_leave_the_agents_a_reserve_of_tasks` (failed: `+cpu` ≠ `+pids`),
+    `without_the_split_the_leaves_get_no_task_limit`,
+    `the_limit_counters_count_what_sessions_meet` (failed: 74 ≠ 6 before review fix 4).
+  - `supervision::a_session_that_ends_at_the_sandboxs_process_limit_says_so` (failed:
+    `exited code=None signal=Some(6)` had no `limit=pids`); waits for the exit frame.
+  - `supervisor::tests::a_rise_of_a_limit_counter_is_the_runs_cause`,
+    `a_runs_start_counters_are_its_own`.
+  - `resources::tests::a_repository_without_a_mapping_gets_the_rust_defaults`;
+    `supervision::an_agent_session_is_told_its_budget_in_the_repositorys_terms` (failed with the
+    no-file default disabled: `ENV CARGO_BUILD_JOBS=set` missing).
+  - e2e `task-done.e2e.ts`: "a session that ended at a sandbox limit says which" and "a task that
+    crashed at the sandbox's process limit says so in its banner and overview" (17/17 passed). The
+    mock loads the details before the terminal's state frame, so the banner's redraw on late
+    details is not exercised by it.
+- `scripts/dev ci` at `415aa179`: green, 2435 tests passed, 17 skipped (after a fixed spec link).
+  Rerun after the review fixes: see below.
+- `scripts/dev security` at `415aa179`: exit 0, no open critical/high, no medium in the change.
+  The first scan flagged the fake agent's existing `/sh` (high, code not written here), sent only
+  because this branch had added `/abort`; that addition was dropped (the test aborts the agent
+  with `/sh kill -ABRT $PPID`), so the file is no longer in the change. 8 medium/low findings in
+  untouched code are filed by CI.
+- Not run: `isolation::isolation_limits` (opt-in, needs the VM's delegated unit; extended for
+  AC-3: a CI forker stops below `ci/pids.max` while the agents' shell forks); `docker run
+  --pids-limit` under a split sandbox (this sandbox's engine group shows no controllers:
+  `--cpus` is refused and `--pids-limit` discarded here), so per-container task flags are
+  documented as unsupported.
+- Review round 1 (fresh session): REQUEST CHANGES with 3 major and 6 minor findings, all own code;
+  each fixed test-first or documented (service limit, Docker pids flags, repository-set knobs,
+  CI/engine hits, per-attempt counters, test wait, banner redraw and view test, docs).

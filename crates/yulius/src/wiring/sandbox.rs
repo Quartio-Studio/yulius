@@ -66,7 +66,8 @@ pub struct IsolationArgs {
     #[arg(long = "sandbox-cpus", env = "YULIUS_SANDBOX_CPUS")]
     pub cpus: Option<u32>,
     /// Task (process and thread) limit per sandbox (default: a quarter of the host's
-    /// `kernel.threads-max` or `kernel.pid_max`, whichever is smaller, at least 8192).
+    /// `kernel.threads-max` or `kernel.pid_max`, whichever is smaller, at least 8192, at most
+    /// three quarters of the service's own `pids.max`).
     #[arg(long = "sandbox-pids", env = "YULIUS_SANDBOX_PIDS")]
     pub pids: Option<u64>,
     /// Soft disk quota per sandbox in GB (sandbox directory plus installed packages); 0: none.

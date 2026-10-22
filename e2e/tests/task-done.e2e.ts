@@ -296,3 +296,14 @@ test('a session that ended at a sandbox limit says which (unit, in the page)', a
     causes: ['pids', 'memory', null, null],
   });
 });
+
+// SPEC-268 review round 1: the rendered views. #3 "Image pipeline" crashed while its sandbox was
+// at its process limit (`limit=pids` in its run's exit reason): after a load, the task's banner
+// and its overview both say so.
+test('a task that crashed at the sandbox’s process limit says so in its banner and overview', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/3'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#3 Image pipeline');
+  await expect(browser.locator('.taskview .term-banner')).toContainText('the sandbox hit its process limit while it ran');
+  await app.open(mock('/s/studio/tasks/3'));
+  await expect(browser.locator('main')).toContainText('Ended · the sandbox hit its process limit');
+});

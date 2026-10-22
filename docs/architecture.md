@@ -61,7 +61,7 @@ the sandbox and the agents at least 20 %, and idle CPU goes to whoever wants it.
 [decision 0039](decisions/0039-ci-jobs-get-the-cpu-first.md)).
 
 Tasks (processes and threads) are one budget too, sized from the host (a quarter of its task
-table, at least 8192). CI jobs and the engine with its containers each stop at 3/8 of it, so the
+table, at least 8192, at most three quarters of the service's own limit). CI jobs and the engine with its containers each stop at 3/8 of it, so the
 agent sessions keep at least a quarter. A session that still ends while the sandbox was at its
 task or memory limit says so in the task
 ([SPEC-268](../.ai/specs/SPEC-268-parallel-tasks-in-one-sandbox-crash-clau.md),

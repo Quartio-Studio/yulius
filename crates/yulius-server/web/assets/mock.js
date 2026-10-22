@@ -576,7 +576,7 @@ function detail(db, task) {
     ...(isAdmin(db) && task.account_label && accountEmailOf(task.account_label) ? { account_email: accountEmailOf(task.account_label) } : {}),
     spec_path: task.stepsList.length && task.branch ? `docs/specs/2026-10-07-${task.branch.replace('feat/', '')}.md` : null,
     worktree: task.branch ? `/srv/yulius/sandboxes/${task.sandbox_id.slice(3)}/worktrees/${task.number}` : null,
-    attempts: ran ? [{ seq: 1, harness: task.harness, account_label: task.account_label || 'Claude #1', ...(isAdmin(db) && accountEmailOf(task.account_label || 'Claude #1') ? { account_email: accountEmailOf(task.account_label || 'Claude #1') } : {}), launch_kind: 'new', state: live ? 'live' : 'exited', started_at: task.created_at, ended_at: live ? null : task.updated_at, exit_code: live ? null : 0, exit_reason: live ? null : 'normal' }] : [],
+    attempts: ran ? [{ seq: 1, harness: task.harness, account_label: task.account_label || 'Claude #1', ...(isAdmin(db) && accountEmailOf(task.account_label || 'Claude #1') ? { account_email: accountEmailOf(task.account_label || 'Claude #1') } : {}), launch_kind: 'new', state: live ? 'live' : 'exited', started_at: task.created_at, ended_at: live ? null : task.updated_at, exit_code: live || task.status === 'stopped_crashed' ? null : 0, exit_reason: live ? null : task.status === 'stopped_crashed' ? 'exited code=None signal=Some(6) limit=pids' : 'normal' }] : [],
     steps_list: task.stepsList,
     // Unknown usage stays null (task #6 never reported tokens).
     metrics: task.number === 6
