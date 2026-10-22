@@ -164,6 +164,51 @@ impl GitPort for LocalGit {
         Ok(())
     }
 
+    async fn bundle_branch(
+        &self,
+        url: &str,
+        branch: &str,
+        work: &Path,
+        bundle: &Path,
+        token: &Secret,
+    ) -> AppResult<String> {
+        let remote = self.remote(url)?;
+        self.record(format!("bundle {url} token={}", token.expose()));
+        let parent = work.parent().ok_or(AppError::NotFound)?;
+        let full = format!("refs/heads/{branch}");
+        git(
+            parent,
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                &format!("--initial-branch={branch}"),
+                &work.to_string_lossy(),
+            ],
+        )
+        .map_err(upstream)?;
+        git(
+            work,
+            &[
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                &remote.to_string_lossy(),
+                &format!("+{full}:{full}"),
+            ],
+        )
+        .map_err(upstream)?;
+        git(
+            work,
+            &["bundle", "create", "--quiet", &bundle.to_string_lossy(), &full],
+        )
+        .map_err(upstream)?;
+        Ok(git(work, &["rev-parse", &full])
+            .map_err(upstream)?
+            .trim()
+            .to_owned())
+    }
+
     /// As the real adapter: `origin/HEAD`, else the branch the clone's `HEAD` names (an empty
     /// clone's local default, not GitHub's).
     async fn default_branch(&self, repo: &Path) -> AppResult<String> {

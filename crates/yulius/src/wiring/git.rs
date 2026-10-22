@@ -14,7 +14,7 @@ use yulius_app::ports::git::{
 };
 use yulius_contracts::api::git::{ChangedFile, DiffHunk, DiffLine, TaskCommit};
 use yulius_git::{
-    Author, FileDiff, FileStatus, Git, GitError, ImportRef, LineKind, WorktreeRemoval,
+    Author, BundleSpec, FileDiff, FileStatus, Git, GitError, ImportRef, LineKind, WorktreeRemoval,
 };
 
 /// Git adapter.
@@ -168,6 +168,27 @@ impl GitPort for GitAdapter {
     async fn fetch_branches_from(&self, repo: &Path, source: &Path) -> AppResult<()> {
         let (git, repo, source) = (self.git(), repo.to_path_buf(), source.to_path_buf());
         blocking(move || git.fetch_branches_from(&repo, &source)).await
+    }
+
+    async fn bundle_branch(
+        &self,
+        url: &str,
+        branch: &str,
+        work: &Path,
+        bundle: &Path,
+        token: &Secret,
+    ) -> AppResult<String> {
+        let (plain, git) = (self.git(), self.git_with_token(token));
+        let (url, branch) = (url.to_owned(), branch.to_owned());
+        let (work, bundle) = (work.to_path_buf(), bundle.to_path_buf());
+        blocking(move || {
+            let full = format!("refs/heads/{branch}");
+            plain.init(&work, &branch, true)?;
+            git.fetch_branch(&work, &url, &branch)?;
+            plain.create_bundle(&work, &bundle, &[BundleSpec::Include(full.clone())])?;
+            plain.rev_parse(&work, &full)
+        })
+        .await
     }
 
     async fn copy_refs(&self, repo: &Path, source: &Path) -> AppResult<()> {
