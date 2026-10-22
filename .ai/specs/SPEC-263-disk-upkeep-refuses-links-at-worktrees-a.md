@@ -1,11 +1,11 @@
 ---
 yulius-task: 38d860e8-19b3-484b-a9d5-23517b101d83
-status: in-progress
+status: done
 ---
 
 # SPEC-263: Disk upkeep refuses links at worktrees/ and ci/jobs (#649)
 
-Status: in-progress
+Status: done
 Date: 2026-10-22
 Owner: Yulius task #249
 Scope authorization: task #249 (nightly "Work through open issues"). Fixes #649.
@@ -56,10 +56,10 @@ each removal, so a sandbox can never steer it into another sandbox's files.
 - [x] Spec for link-refusing disk upkeep
 - [x] Regression tests for linked worktrees/ and ci/jobs (failing)
 - [x] Scan and removal refuse links from the sandbox directory
-- [ ] Review round 1: ended-worktree re-check test, macOS removal, split tests
-- [ ] Docs, changes entry and gates green
-- [ ] Independent review and fixes
-- [ ] Merge into dev on green CI
+- [x] Review round 1: ended-worktree re-check test, macOS removal, split tests
+- [x] Docs, changes entry and gates green
+- [x] Independent review and fixes
+- [x] Merge into dev on green CI
 
 ## Acceptance criteria
 
@@ -107,3 +107,39 @@ each removal, so a sandbox can never steer it into another sandbox's files.
   again, and `sandboxes/<sid>/repo` is never checked for links, so a sandbox that keeps swapping
   folders can still race the DUL-003 check. Closing it means removing worktrees through handles in
   `yulius-git`, which is a change of its own.
+
+## Evidence
+
+- Regression tests fail without the fix. On the old logic (`disk.rs` of 74f4185b, which only
+  adds the `CachePrune` pause point to `dev`'s code), `cargo nextest run -p yulius -E
+  'binary_id(yulius::main) & test(/^disk::/)'` gives 24 run, 17 passed, 7 failed: all seven new
+  tests fail at their victim-side assert. Four print "pruned another sandbox's cache" with
+  `caches: 1`, the swap test prints "the removal followed a link swapped in after the scan", and
+  the two ended-worktree tests print "was removed" with `worktrees: 1`. With the fix minus only
+  the DUL-003 re-check, `an_ended_worktree_swapped_for_a_link_after_the_scan_is_not_removed`
+  fails alone.
+- With the fix: `disk::` and `leftovers` integration tests 40 run, 40 passed. The 17 tests that
+  were there before pass unchanged (DUL-004).
+- `scripts/dev ci` at 095b8169: exit 0. That covers fmt, clippy `-D warnings` for Linux and
+  `aarch64-apple-darwin`, nextest 2411 run, 2411 passed, plus deny, shear and docs. The earlier
+  run at 95451995 also passed.
+- `scripts/dev security` at 095b8169: exit 0, no open finding in the change. History of the scan:
+  - At 95451995 Vidoc found a medium finding, a path-based removal off Linux after the re-check.
+    It is fixed by refusing instead (see Decisions).
+  - The same scan found a low finding: `worktree.join(".git").exists()` follows a linked `.git`.
+    It is left as is. The worktree itself must already be a real directory reached without
+    links, and a `.git` link only steers read-only Git queries. Caches and the worktree Git
+    removes are checked from the sandbox directory, so a linked `.git` reaches nothing outside
+    the sandbox. The finding is pre-existing and was not reported again at 095b8169.
+  - At 095b8169, one low finding outside the change (`leftovers.rs:1462`) is CI's to file.
+- Review round 1 (fresh session, at 303feb63) requested changes. All own-code findings are fixed:
+  - A test for the DUL-003 re-check was added.
+  - Off Linux the upkeep now refuses instead of reporting a removal that never happened.
+  - Each cache is checked again right before it is measured.
+  - The link tests are split so each link location fails on its own.
+  - The CI tests assert `caches == 0`.
+  - The changes entry no longer overclaims.
+  The pre-existing Git canonicalize window is reported on #649 and recorded in Decisions.
+- Not tested here: macOS behaviour at runtime (only compiled and linted for
+  `aarch64-apple-darwin`).
+
