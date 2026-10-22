@@ -329,7 +329,7 @@ async fn viewer_output(
         loop {
             match sub.rx.recv().await? {
                 HubFrame::Output { bytes, .. } => out.extend_from_slice(&bytes),
-                HubFrame::Exit { status, code } => {
+                HubFrame::Exit { status, code, .. } => {
                     return Ok::<_, Box<dyn std::error::Error>>((
                         String::from_utf8_lossy(&out).into_owned(),
                         status,

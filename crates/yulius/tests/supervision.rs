@@ -490,7 +490,9 @@ async fn add_account(app: &App, id: &str) -> Result<AccountId, Box<dyn std::erro
 
 /// SPEC-082 RES-004, RES-005: an agent session is told its CPU and memory budget in
 /// `YULIUS_CPUS` and `YULIUS_MEMORY_MB`, and in the variables the repository's `[resources.env]`
-/// derives from it. Yulius no longer sets a Rust variable of its own for every repository.
+/// derives from it; a table that does not map `CARGO_BUILD_JOBS` leaves it unset. SPEC-268
+/// PID-007: a repository without a table gets it, so parallel tasks do not each build for the
+/// whole machine.
 #[test]
 fn an_agent_session_is_told_its_budget_in_the_repositorys_terms() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -531,6 +533,28 @@ fn an_agent_session_is_told_its_budget_in_the_repositorys_terms() -> TestResult 
             format!("ENV YULIUS_MEMORY_MB=set len={}", memory.len()),
             format!("ENV MAKEFLAGS=set len={}", cpus.len() + 2),
             "ENV CARGO_BUILD_JOBS=unset".to_owned(),
+        ] {
+            assert!(screen.contains(&line), "{line}: {screen}");
+        }
+        support::stop_tasks(&app, &[&id]).await?;
+        // The repository drops its `yulius.toml`: the next session gets the Rust defaults.
+        let seed = data.join("seed");
+        git(&seed, &["rm", "-q", "yulius.toml"])?;
+        git(&seed, &["commit", "-q", "-m", "no contract"])?;
+        git(&seed, &["push", "-q", "origin", "main"])?;
+        git(
+            &data.join("sandboxes").join(sandbox.as_str()).join("repo"),
+            &["pull", "-q", "--ff-only"],
+        )?;
+        let id = new_task(&app, &sandbox, &user, "Default budget").await?;
+        wait_for("the environment", Duration::from_secs(60), || {
+            screen_contains(&app, &id, "ENV CARGO_BUILD_JOBS=")
+        })
+        .await?;
+        let screen = app.runtime(&id).hub.screen_text();
+        for line in [
+            format!("ENV CARGO_BUILD_JOBS=set len={}", cpus.len()),
+            "ENV MAKEFLAGS=unset".to_owned(),
         ] {
             assert!(screen.contains(&line), "{line}: {screen}");
         }
@@ -818,6 +842,109 @@ fn a_closed_task_continues_its_session_and_a_manual_switch_keeps_model_and_effor
             );
         }
         support::stop_tasks(&app, &[&id]).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A sandbox whose limit counters the test sets (SPEC-268 PID-004).
+struct CountingIsolation(std::sync::Mutex<yulius_app::ports::isolation::LimitCounters>);
+
+impl CountingIsolation {
+    fn set(&self, task_limit_hits: u64, oom_kills: u64) {
+        if let Ok(mut counters) = self.0.lock() {
+            *counters = yulius_app::ports::isolation::LimitCounters {
+                task_limit_hits,
+                oom_kills,
+            };
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl yulius_app::ports::isolation::SandboxIsolation for CountingIsolation {
+    async fn prepare(
+        &self,
+        _: &yulius_app::ports::isolation::SandboxRef,
+    ) -> yulius_app::error::AppResult<Option<yulius_app::ports::isolation::SandboxJoin>> {
+        Ok(None)
+    }
+
+    fn release(&self, _: &SandboxId) {}
+
+    async fn limit_counters(
+        &self,
+        _: &SandboxId,
+    ) -> Option<yulius_app::ports::isolation::LimitCounters> {
+        self.0.lock().ok().map(|counters| *counters)
+    }
+}
+
+/// SPEC-268 AC-4 (PID-005): a session that aborts (as Claude Code's Bun does when it cannot
+/// start a thread) while the sandbox refused forks at its task limit records and sends that cause;
+/// an abort without a rise records none; a rise of OOM kills says memory.
+#[test]
+fn a_session_that_ends_at_the_sandboxs_process_limit_says_so() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build(&data, &fake)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let counting = Arc::new(CountingIsolation(std::sync::Mutex::default()));
+        counting.set(4, 1);
+        assert!(app.set_isolation(counting.clone()));
+        // (task limit hits during the run, OOM kills during the run, the recorded cause)
+        for (title, hits, kills, cause) in [
+            ("At the task limit", 5, 0, Some("pids")),
+            ("No limit", 0, 0, None),
+            ("Out of memory", 0, 2, Some("memory")),
+        ] {
+            let id = new_task(&app, &sandbox, &user, title).await?;
+            wait_for("the banner", Duration::from_secs(30), || {
+                screen_contains(&app, &id, "FAKE-AGENT READY")
+            })
+            .await?;
+            let mut viewer = app.runtime(&id).hub.subscribe();
+            let (before_hits, before_kills) = counting
+                .0
+                .lock()
+                .map(|c| (c.task_limit_hits, c.oom_kills))
+                .map_err(|_| "poisoned")?;
+            counting.set(before_hits + hits, before_kills + kills);
+            // SIGABRT, as Bun aborts: the agent's shell signals the agent itself.
+            app.send_input(&id, b"/sh kill -ABRT $PPID\r").await?;
+            wait_for("the abort", Duration::from_secs(15), || async {
+                task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+            })
+            .await?;
+            assert_eq!(
+                task(&app, &id).await?.status,
+                TaskStatus::Stopped(yulius_domain::task::StopReason::Crashed),
+                "{title}"
+            );
+            let attempts = app.deps.store.attempts(&id).await?;
+            let reason = attempts
+                .last()
+                .and_then(|a| a.exit_reason.clone())
+                .ok_or("no exit reason")?;
+            let recorded = reason.rsplit_once(" limit=").map(|(_, cause)| cause);
+            assert_eq!(recorded, cause, "{title}: {reason}");
+            // The exit frame comes after the task's status (review round 1): wait for it.
+            let sent = tokio::time::timeout(Duration::from_secs(15), async {
+                loop {
+                    if let yulius_app::hub::HubFrame::Exit { cause, .. } = viewer.rx.recv().await? {
+                        return Ok::<_, tokio::sync::broadcast::error::RecvError>(cause);
+                    }
+                }
+            })
+            .await
+            .map_err(|_| "no exit frame")??;
+            assert_eq!(sent.as_deref(), cause, "{title}: the viewers are told");
+        }
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

@@ -822,6 +822,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     refreshEmpty() {
       renderEmpty();
     },
+    /** The caller's exit message may have changed (e.g. the task's details arrived, SPEC-268). */
+    refreshBanner() {
+      if (opened && !destroyed) render();
+    },
     refit() {
       applySize();
     },

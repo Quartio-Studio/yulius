@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted. Specified in
+Accepted; amended by [0198](0198-sandbox-task-limits-are-sized-from-the-host-and-leave-sessions-a-reserve.md)
+(a repository without `[resources.env]` gets Rust defaults). Specified in
 [SPEC-082](../../.ai/specs/SPEC-082-test-timeouts-and-cpu-memory-budgets.md). Builds on
 [ADR-0039](0039-ci-jobs-get-the-cpu-first.md) (CI's CPU weight) and drops the default CPU quota
 of the sandbox limits ([ADR-0003](0003-sandbox-isolation.md), SPEC-002 ADR-22 §5).

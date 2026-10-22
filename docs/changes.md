@@ -16,6 +16,19 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Once restored the sandbox's copy is the only writer: a second send is refused (409) unless
   `--replace-state`. Debug and test builds now optimize the vault's cipher, gzip and yulius-store,
   so a 50 MiB state takes a tenth of a second to seal instead of ten.
+- Parallel tasks of one sandbox no longer use up its process budget and crash Claude Code (SPEC-268,
+  task #254, ADR-0198). Five quartio-v2 tasks building Rust and running tests with containers
+  shared the sandbox's 8192 tasks (threads count), and a session that could not start a thread
+  aborted ("Stopped (crashed)", exit 134). The default `pids.max` is now a quarter of the host's
+  task table, at most three quarters of `yulius.service`'s own limit (43 320 on the VM's default
+  unit; `YULIUS_SANDBOX_PIDS` still sets it); CI jobs and the Docker engine
+  with its containers each stop at 3/8 of it, so the sessions keep a quarter. A session that still
+  ends while the sandbox refused forks or the OOM killer ran says "the sandbox hit its process
+  limit" or "ran out of memory" in its banner and overview (`limit=pids`/`limit=memory` in the
+  run's exit reason). Repositories without `[resources.env]` get `CARGO_BUILD_JOBS`,
+  `NEXTEST_TEST_THREADS` and `RUST_TEST_THREADS` at their budget, unless they set that knob in
+  `.cargo/config.toml` or `.config/nextest.toml`. Per-container `--pids-limit` joins the
+  unsupported Docker flags.
 - The token form on Settings → Connect your local agent lines up (SPEC-270, task #256). The Scope
   hint bottom-aligned the name field and a small Create token button to its last line, so the
   labels and controls sat on different lines. Each field now spans label, control and hint rows
