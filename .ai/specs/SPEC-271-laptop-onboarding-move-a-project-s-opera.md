@@ -55,7 +55,7 @@ Confirmed against `dev` at a85eb122.
   sandbox's agent secrets (`Action::Configure`). The archive is checked before it is stored:
   readable gzip tar; only regular files and folders; relative paths without `..`; at most 20 000
   entries and 512 MiB expanded. Audited `vault.state.import` (or `vault.state.replace`) as the
-  person (`remote:<login>` through a token), with name, files and bytes, never content.
+  person (their login, as agent secret imports are), with name, files and bytes, never content.
 - **OPS-003** One writer. A state never restored is replaced by a new import (the laptop is still
   its writer). Once restored, an import is refused with 409, naming where the sandbox's copy is
   and since when, unless `replace=true`; a replace bumps the version, so the sandbox's copy is
@@ -112,7 +112,7 @@ Confirmed against `dev` at a85eb122.
 
 - **AC1** With only an operate token stored, `yulius secrets import --to agent --sandbox S --yes
   --state OPS=~/ops` sends a folder of nested files with modes 0600/0755 and a 50 MiB file; the
-  output holds no content; the audit holds `vault.state.import` by `remote:<login>`.
+  output holds no content; the audit holds `vault.state.import` by the person's login.
 - **AC2** A task's `secret_state_restore {name: OPS, path: "~/.ops"}` creates `<sandbox>/home/.ops`
   with the same files, bytes and modes; a second call is refused (current copy exists); a call
   for another path is refused.
@@ -147,6 +147,11 @@ Confirmed against `dev` at a85eb122.
 - **Refuse over notify**: the laptop cannot be reached once the CLI exits, so the single-writer
   rule is the server's 409 over a restored copy; the CLI also says it after each send.
 - **Restores go to the home only** (`~/…`): worktrees end with their task; the home persists.
+- **Debug and test builds optimize the cipher chain, gzip and yulius-store** (`[profile.dev.package]`
+  in `Cargo.toml`): sealing 50 MiB took 10 s unoptimized (the AEAD's generic code is compiled
+  into yulius-store, so optimizing only the RustCrypto crates gave 5.6 s), 0.14 s optimized; the
+  store's rebuild grows from 3.4 s to 5.9 s. Alternatives: a smaller test state (would not show
+  the 50 MB the person needs), a slow 50 MiB test (minutes under CI load).
 - **One pull request**: send, restore, save and the rule only work together; the line budget is
   exceeded on purpose, as SPEC-256 did.
 
