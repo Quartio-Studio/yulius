@@ -156,7 +156,13 @@ async fn a_task_gets_a_bundle_of_another_repository_of_its_owner() -> TestResult
         std::fs::read_to_string(clone.join("README.md"))?,
         "# Lib v2\n"
     );
-    assert_eq!(attachments(&w).len(), 2, "{:?}", attachments(&w));
+    // A fresh copy replaces the earlier bundle of the same repository instead of piling up.
+    assert_eq!(
+        attachments(&w),
+        ["acme-lib.bundle"],
+        "{:?}",
+        attachments(&w)
+    );
     assert_eq!(tmp_entries(&w), 0);
     Ok(())
 }
@@ -200,6 +206,23 @@ async fn reading_beyond_the_owner_s_reach_is_refused() -> TestResult {
     .await?;
     refused(&unreadable, "cannot read")?;
 
+    // A repository GitHub moved to another owner is not that owner's any more (its redirect).
+    w.remote("other-org", "old", &[("a.txt", "a\n")], &[])?;
+    w.grant("alice", "other-org/old", "pull");
+    w.github
+        .transferred
+        .lock()
+        .map_err(|_| "lock")?
+        .insert("acme/old".into(), "other-org/old".into());
+    let moved = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/old"}),
+    )
+    .await?;
+    refused(&moved, "other-org")?;
+
     // AC4: a fetch that fails leaves no folder of the server's behind.
     w.grant("alice", "acme/ghost", "pull");
     let failed = support::mcp_tool(
@@ -237,7 +260,7 @@ async fn reading_beyond_the_owner_s_reach_is_refused() -> TestResult {
         !w.git
             .calls()
             .iter()
-            .any(|c| c.contains("secret") || c.contains("private")),
+            .any(|c| c.contains("secret") || c.contains("private") || c.contains("old")),
         "nothing fetched: {:?}",
         w.git.calls()
     );
@@ -278,5 +301,178 @@ async fn needs_you_sends_agents_to_reference_repo_first() -> TestResult {
         "{}",
         description("needs_you")
     );
+    Ok(())
+}
+
+/// REF-003: a playground has no GitHub owner, and an owner without a usable GitHub sign-in cannot
+/// be acted for; both are refused before anything is fetched.
+#[tokio::test]
+async fn a_playground_and_an_owner_without_github_are_refused() -> TestResult {
+    use yulius_app::ports::store::SandboxStore as _;
+    use yulius_domain::ids::{SandboxId, UserId};
+    let (w, _alice, _lib) = world().await?;
+    let mut playground =
+        w.h.store
+            .sandbox(&SandboxId::parse(SANDBOX)?)
+            .await?
+            .ok_or("sandbox")?;
+    playground.id = SandboxId::parse("sb-play")?;
+    playground.slug = "play".into();
+    playground.repo_owner = String::new();
+    playground.repo_name = "play".into();
+    playground.github_repo_id = None;
+    playground.port_base = w.h.store.next_port_base(44000, 20).await?;
+    w.h.store.insert_sandbox(&playground).await?;
+    support::seed_task(
+        &w.h,
+        "t-play",
+        "sb-play",
+        "u-alice",
+        TaskStatus::Running,
+        None,
+    )
+    .await?;
+    support::seed_live_attempt(&w.h, "t-play", "tok-play").await?;
+    let played = support::mcp_tool(
+        &w.h,
+        "tok-play",
+        "reference_repo",
+        json!({"repo": "acme/lib"}),
+    )
+    .await?;
+    assert_eq!(played["isError"], true, "{played}");
+    assert!(
+        support::tool_text(&played)
+            .to_string()
+            .contains("playground"),
+        "{played}"
+    );
+
+    // Carol has no GitHub token stored: Yulius cannot act as her.
+    let carol = yulius_app::model::UserRecord {
+        id: UserId::parse("u-carol")?,
+        github_login: Some("carol".into()),
+        github_id: Some(4242),
+        display_name: "CAROL".into(),
+        avatar_url: None,
+        is_superadmin: false,
+        is_instance_admin: false,
+        password_hash: None,
+        created_at: yulius_domain::time::Timestamp(1),
+        disabled_at: None,
+    };
+    w.h.store.insert_user(&carol).await?;
+    w.grant("carol", "acme/lib", "pull");
+    support::seed_task(
+        &w.h,
+        "t-carol",
+        SANDBOX,
+        "u-carol",
+        TaskStatus::Running,
+        None,
+    )
+    .await?;
+    support::seed_live_attempt(&w.h, "t-carol", "tok-carol").await?;
+    let unsigned = support::mcp_tool(
+        &w.h,
+        "tok-carol",
+        "reference_repo",
+        json!({"repo": "acme/lib"}),
+    )
+    .await?;
+    refused(&unsigned, "cannot act as this task's owner")?;
+    assert!(
+        w.git.calls().iter().all(|c| !c.contains("bundle")),
+        "{:?}",
+        w.git.calls()
+    );
+    Ok(())
+}
+
+/// REF-001: a fetch folder left by a restart in the middle of a fetch is swept by the next call;
+/// a recent one, maybe still in use, stays.
+#[tokio::test]
+async fn an_old_fetch_folder_is_swept() -> TestResult {
+    let (w, _alice, _lib) = world().await?;
+    let tmp = w.data_dir().join("tmp");
+    let (old, recent) = (tmp.join("reference-old"), tmp.join("reference-recent"));
+    std::fs::create_dir_all(old.join("repo.git"))?;
+    std::fs::write(old.join("repo.bundle"), b"partial")?;
+    std::fs::create_dir_all(&recent)?;
+    let aged = std::process::Command::new("touch")
+        .args(["-d", "3 hours ago"])
+        .arg(&old)
+        .status()?;
+    assert!(aged.success());
+    let done = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib"}),
+    )
+    .await?;
+    assert_ne!(done["isError"], true, "{done}");
+    assert!(!old.exists(), "the old fetch folder is swept");
+    assert!(recent.exists(), "a recent one may be a running fetch");
+    Ok(())
+}
+
+/// The real Git adapter: `bundle_branch` fetches one branch with its history into a new bare
+/// repository and writes a bundle that clones to it; a branch Git could take as an option or a
+/// refspec is refused before Git runs.
+#[tokio::test]
+async fn the_git_adapter_bundles_one_branch() -> TestResult {
+    use yulius_app::ports::git::GitPort as _;
+    let w = World::new("org").await?;
+    let lib = w.remote("acme", "lib", &[("README.md", "# Lib\n")], &["other"])?;
+    let adapter = yulius::wiring::git::GitAdapter::new("git")
+        .with_github_base(&w.scratch.path().join("remotes"));
+    let token = yulius_app::model::Secret("token-alice".into());
+    let out = w.scratch.path().join("out");
+    std::fs::create_dir_all(&out)?;
+    let (work, bundle) = (out.join("repo.git"), out.join("repo.bundle"));
+    let commit = adapter
+        .bundle_branch(
+            "https://github.com/acme/lib.git",
+            "main",
+            &work,
+            &bundle,
+            &token,
+        )
+        .await?;
+    assert_eq!(commit, git(&lib, &["rev-parse", "main"])?.trim());
+    let heads = git(&out, &["bundle", "list-heads", &bundle.to_string_lossy()])?;
+    assert_eq!(
+        heads.trim(),
+        format!("{commit} refs/heads/main"),
+        "only the branch"
+    );
+    let clone = out.join("clone");
+    git(
+        &out,
+        &[
+            "clone",
+            "--quiet",
+            "--branch",
+            "main",
+            &bundle.to_string_lossy(),
+            &clone.to_string_lossy(),
+        ],
+    )?;
+    assert_eq!(std::fs::read_to_string(clone.join("README.md"))?, "# Lib\n");
+    for bad in ["-x", "a:b", "main..x"] {
+        let fresh = out.join(format!("bad-{}", bad.len()));
+        let refused = adapter
+            .bundle_branch(
+                "https://github.com/acme/lib.git",
+                bad,
+                &fresh,
+                &out.join("b"),
+                &token,
+            )
+            .await;
+        assert!(refused.is_err(), "{bad}");
+        assert!(!fresh.exists(), "{bad}: nothing created");
+    }
     Ok(())
 }

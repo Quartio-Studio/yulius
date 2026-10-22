@@ -90,12 +90,18 @@ const DRAFT_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 /// Uploads in progress (the concurrency bound).
 pub struct UploadState {
     slots: Arc<Semaphore>,
+    /// Reference fetches running at once (SPEC-267): each may write a repository's history to
+    /// the data disk before its size is known.
+    pub(crate) references: Arc<Semaphore>,
 }
 
 impl Default for UploadState {
     fn default() -> Self {
         Self {
             slots: Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS)),
+            references: Arc::new(Semaphore::new(
+                crate::reference_repo::MAX_CONCURRENT_FETCHES,
+            )),
         }
     }
 }
@@ -524,7 +530,7 @@ impl App {
     }
 
     /// The sandbox directory as processes see it (absolute; containment binds it at this path).
-    fn sandbox_dir_absolute(&self, sandbox: &SandboxId) -> PathBuf {
+    pub(crate) fn sandbox_dir_absolute(&self, sandbox: &SandboxId) -> PathBuf {
         let dir = self.sandbox_dir(sandbox);
         std::path::absolute(&dir).unwrap_or(dir)
     }
@@ -757,9 +763,10 @@ impl App {
         }
     }
 
-    /// Places the server's own file `source` among `task`'s attachments under a free name like
-    /// `name`, streamed through the attachment path's handles (a reference bundle, SPEC-267):
-    /// at most `limit` bytes, audited for `actor`.
+    /// Places the server's own file `source` among `task`'s attachments as `name`, replacing an
+    /// earlier regular file of that name (never a link or a folder), streamed through the
+    /// attachment path's handles (a reference bundle, SPEC-267): at most `limit` bytes, audited
+    /// for `actor`.
     ///
     /// # Errors
     /// `Invalid` above `limit`; otherwise as [`App::begin_task_attachment`] and
@@ -788,6 +795,7 @@ impl App {
             .begin_attachment(actor, sandbox, &Owner::Task(task), name, None)
             .await?;
         upload.limit = limit;
+        upload.placement = Placement::Overwrite;
         let mut chunk = vec![0u8; 256 * 1024];
         loop {
             let read = file

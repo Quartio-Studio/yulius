@@ -519,6 +519,9 @@ pub struct RepoGitHub {
     pub selected_only: AtomicBool,
     /// GitHub fails every repository read with an installation token (an outage).
     pub fail_installation_reads: AtomicBool,
+    /// Repositories moved to another owner (`old owner/name` → `new owner/name`): GitHub
+    /// answers a person's read of the old name with the new repository, as its redirect does.
+    pub transferred: Mutex<HashMap<String, String>>,
 }
 
 impl RepoGitHub {
@@ -603,6 +606,15 @@ impl GitHubPort for RepoGitHub {
                     repo,
                 }),
             );
+        }
+        let moved = self
+            .transferred
+            .lock()
+            .map_err(AppError::internal)?
+            .get(&format!("{owner}/{name}"))
+            .cloned();
+        if let Some((owner, name)) = moved.as_deref().and_then(|m| m.split_once('/')) {
+            return self.base.repo_access(token, owner, name).await;
         }
         self.base.repo_access(token, owner, name).await
     }
@@ -823,6 +835,7 @@ impl World {
             refuse_creation: Mutex::new(None),
             selected_only: AtomicBool::new(false),
             fail_installation_reads: AtomicBool::new(false),
+            transferred: Mutex::new(HashMap::new()),
         });
         let clock = Arc::new(TestClock(AtomicI64::new(1_791_331_200_000)));
         let config = AppConfig::new(

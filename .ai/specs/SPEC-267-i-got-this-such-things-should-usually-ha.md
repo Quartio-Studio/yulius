@@ -47,17 +47,22 @@ cannot read the repository either.
   repository's default branch, with its history, as the task's owner (their GitHub user token),
   into a fresh folder of the server's own (`<data>/tmp`, never inside a sandbox), bundles it
   (`git bundle`, the branch only) and places the bundle among the task's attachments through the
-  attachment upload path (handles, a free name, never replacing a link). The fetch folder and the
-  server's bundle are removed afterwards, on failure too.
+  attachment upload path (handles; it replaces the task's earlier bundle of the same repository,
+  never a link or a folder). The fetch folder and the server's bundle are removed afterwards, on
+  failure too, and also when the agent's request goes away (the fetch runs detached to its end); a
+  fetch folder older than 2 hours (left by a restart mid-fetch) is swept by the next fetch. At most
+  2 fetches run at once on the instance (`Capacity` beyond).
 - **REF-002** It answers the bundle's absolute path, the branch, its commit, the size and the
   commands to clone it (or update an earlier copy) into `<sandbox>/reference/<owner>/<name>`,
-  outside every worktree; the agent runs Git on it itself, in its containment.
-- **REF-003** Refused (a `Conflict` naming why and that only then a person is asked with
-  `needs_you`, quoting what to grant): a repository of another owner than the sandbox's
-  repository's; the sandbox's own repository (the worktree already has it); a playground; an
-  owner who no longer exists, is disabled or has no usable GitHub sign-in; a repository GitHub says
-  the owner cannot read (or does not answer about); a bundle above 1 GiB. A malformed `repo` is
-  `Invalid`.
+  outside every worktree, and to remove the bundle afterwards; the agent runs Git on it itself, in
+  its containment.
+- **REF-003** Refused, with what a person must do and that only then a person is asked with
+  `needs_you`: a repository of another owner than the sandbox repository's, judged by the owner
+  GitHub answers with (a repository moved to another owner is that owner's); an owner who no
+  longer exists, is disabled or has no usable GitHub sign-in; a repository GitHub says the owner
+  cannot read (or does not answer about); a failed fetch; a bundle above 1 GiB. Refused with why
+  but no person to ask: the sandbox's own repository (the worktree has it) and a playground (no
+  GitHub owner). A malformed `repo` is `Invalid`.
 - **REF-004** Each fetch is audited (`task.reference_repo`, the repository, commit and person).
 - **REF-005** The onboarding prompt (both the preparation and the environment-only one) asks the
   agent to fetch, with `reference_repo`, the other repositories the project's code, docs or
@@ -80,21 +85,29 @@ cannot read the repository either.
 - **AC1** A task whose owner can read `OWNER/lib` calls `reference_repo {repo: "OWNER/lib"}`: the
   answer names a bundle under the task's attachments folder; `git clone --branch main <bundle>`
   gives the repository's files at the answered commit; GitHub was asked with the owner's token.
-- **AC2** Calling it again after the repository moved gives a new bundle with the new commit.
-- **AC3** Refused, with `needs_you` in the text and no bundle written: another owner's repository,
-  the sandbox's own repository, a repository the owner cannot read, a disabled owner. A malformed
-  `repo` is invalid.
-- **AC4** No folder is left in `<data>/tmp` after a success or a refusal after the fetch.
+- **AC2** Calling it again after the repository moved gives a new bundle with the new commit, in
+  place of the earlier one.
+- **AC3** Refused, with `needs_you` in the text and nothing fetched: another owner's repository,
+  a repository GitHub moved to another owner, a repository the owner cannot read, a disabled
+  owner, an owner without a GitHub sign-in. The sandbox's own repository and a playground are
+  refused saying why. A malformed `repo` is invalid.
+- **AC4** No folder is left in `<data>/tmp` after a success or a failed fetch; a fetch folder older
+  than 2 hours is swept by the next fetch, a recent one stays.
+- **AC6** The real Git adapter bundles exactly the default branch so that it clones to its commit,
+  and refuses a branch Git could read as an option or a refspec before Git runs.
 - **AC5** The onboarding task's prompt names `reference_repo`; `needs_you`'s description names it.
 
 ## Test plan
 
 - Integration (`crates/yulius/tests/reference_repo.rs`, the shared repos `World`: a local Git remote
-  per GitHub URL and a GitHub stub with per-person grants): AC1-AC4 through the MCP endpoint with a
-  live attempt's token; AC5 from the onboarding task's prompt and the served tool list.
+  per GitHub URL and a GitHub stub with per-person grants and moved repositories): AC1-AC4 through
+  the MCP endpoint with a live attempt's token; AC5 from the served tool list and
+  `onboarding::tests::prompts_fetch_referenced_repositories_without_a_person`; AC6 with
+  `GitAdapter::with_github_base` against a local bare remote.
 - Unit: the `repo` argument's parsing.
-- Not testable here: a real GitHub fetch with a real user token, and a real agent's containment
-  cloning from the bundle (the test clones it on the host).
+- Not testable here: a real GitHub fetch with a real user token, a real agent's containment
+  cloning from the bundle (the test clones it on the host), and a request dropped in the middle of
+  a fetch (the detached run is `App::run_detached`, ADR-0053's tested mechanism).
 
 ## Decisions
 
@@ -110,4 +123,9 @@ cannot read the repository either.
 - A bundle, not a checkout written by the server: Git runs on the host only in a fresh private
   folder, and the only write into the sandbox is one file through the attachment path's handles.
 - A fresh fetch per call, not a cached mirror: nothing to lock, invalidate or clean up after a
-  sandbox's removal; reference fetches are rare.
+  sandbox's removal; reference fetches are rare. Bounded by 2 fetches at once and a sweep of
+  folders a restart left (review round 1).
+- The owner GitHub answers with decides, not the name asked for (review round 1): GitHub's API
+  and Git follow a transferred repository's redirect.
+- One bundle per repository per task, replaced on each call (review round 1), so repeated calls do
+  not pile up gigabytes in the attachments folder.

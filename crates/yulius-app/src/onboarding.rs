@@ -100,9 +100,6 @@ sandbox's own user namespace), so file permissions never stop a read: a test tha
 verified; a check that still cannot run is a problem to report there, never a reason to skip it \
 silently.";
 
-/// The gate every onboarding lays in its own pull request (SPEC-116 OBG-001, F 2026-10-14: the
-/// studio onboarding filed its missing linter, dead-code check and per-project CI as issues, so
-/// the project started without the checks every later task relies on).
 /// Other repositories the project needs are settled during onboarding, through Yulius
 /// (SPEC-267 REF-005, ADR-0197).
 const REFERENCE_SETUP: &str = "Other repositories: when the code, docs, instructions or this \
@@ -112,6 +109,9 @@ which reads it as the person who owns this task, and name them in AGENTS.md (the
 what it is for) so later tasks fetch them the same way. Never ask a person for GitHub App access \
 to read a repository; only when `reference_repo` refuses, ask one with `needs_you`.";
 
+/// The gate every onboarding lays in its own pull request (SPEC-116 OBG-001, F 2026-10-14: the
+/// studio onboarding filed its missing linter, dead-code check and per-project CI as issues, so
+/// the project started without the checks every later task relies on).
 const GATE_SETUP: &str = "Lay the project's gate in this pull request, not as follow-ups, as skill \
 infra-bootstrap describes: a test command, a lint and format check with the stack's established \
 tools, and a dead-code and unused-dependency check (skill dead-code-cleanup names each language's \
@@ -1572,10 +1572,6 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-116 OBG-001…003 (task #101): onboarding installs the gate in its own pull request —
-    /// tests, lint and format, a dead-code check and a CI job per project, existing findings
-    /// baselined — instead of filing them as follow-ups (studio #57, #58), and keeps a workflow
-    /// Yulius CI cannot run with a decision record instead of asking a person.
     /// SPEC-267 REF-005: onboarding fetches the other repositories the project refers to through
     /// Yulius, and never asks a person for GitHub App access to read one.
     #[test]
@@ -1595,6 +1591,10 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-116 OBG-001…003 (task #101): onboarding installs the gate in its own pull request —
+    /// tests, lint and format, a dead-code check and a CI job per project, existing findings
+    /// baselined — instead of filing them as follow-ups (studio #57, #58), and keeps a workflow
+    /// Yulius CI cannot run with a decision record instead of asking a person.
     #[test]
     fn prompts_detect_existing_cd_and_define_it_explicitly() -> TestResult {
         let dir = tempfile::tempdir()?;
