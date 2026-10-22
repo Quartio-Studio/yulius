@@ -7,13 +7,19 @@
 //! restores a state, the sandbox's copy is the one written to: the server refuses a second send
 //! over it unless the person replaces it on purpose (`--replace-state`).
 
+use std::ffi::{OsStr, OsString};
 use std::io::{self, Read as _, Write as _};
+use std::os::fd::OwnedFd;
+use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
+use nix::errno::Errno;
+use nix::fcntl::{AtFlags, OFlag};
+use nix::sys::stat::{Mode, SFlag};
 use serde::Deserialize;
 use yulius_domain::vault::names::SecretName;
 
@@ -131,15 +137,18 @@ fn count_files(archive: &[u8]) -> Result<u64, String> {
 }
 
 /// Packs the folder `dir` (its content, not the folder itself) with each file's and folder's
-/// permission bits. A link or special file refuses it, so nothing is silently left behind.
+/// permission bits. A link or special file refuses it, so nothing is silently left behind. The
+/// folder is walked through handles: each entry is opened from its folder's handle without
+/// following a link, so one swapped for a link after the listing is refused, never read.
 ///
 /// # Errors
 /// Unreadable, holding a link or special file, more than 20 000 entries, over 64 MiB packed.
 pub fn pack_state_dir(dir: &Path) -> Result<(Vec<u8>, u64), String> {
     let shown = dir.display().to_string();
+    let root = open_folder(dir).map_err(|e| format!("cannot read {shown}: {e}"))?;
     let mut builder = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::default()));
     let mut counts = (0_u64, 0_u64);
-    add_folder(&mut builder, dir, Path::new(""), &shown, &mut counts)?;
+    add_folder(&mut builder, &root, Path::new(""), &shown, &mut counts)?;
     if counts.0 == 0 {
         return Err(format!("{shown} is empty: there is nothing to send"));
     }
@@ -153,23 +162,97 @@ pub fn pack_state_dir(dir: &Path) -> Result<(Vec<u8>, u64), String> {
     Ok((archive, counts.1))
 }
 
-/// Adds the entries of `dir` (at `rel` in the state); `counts` is (entries, files).
+/// The folder the person named (a link to it is theirs to follow).
+fn open_folder(dir: &Path) -> Result<OwnedFd, String> {
+    nix::fcntl::open(
+        dir,
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|e| e.desc().to_owned())
+}
+
+fn link_refused(err: Errno) -> String {
+    match err {
+        // `O_DIRECTORY | O_NOFOLLOW` on a link says ENOTDIR on Linux.
+        Errno::ELOOP | Errno::ENOTDIR => "a link".to_owned(),
+        other => other.desc().to_owned(),
+    }
+}
+
+/// The folder `name` in `dir`, never through a link.
+fn open_dir_at(dir: &OwnedFd, name: &OsStr) -> Result<OwnedFd, String> {
+    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    nix::fcntl::openat(dir, name, flags, Mode::empty()).map_err(link_refused)
+}
+
+/// The regular file `name` in `dir`, never through a link and without blocking on a FIFO.
+fn open_file_at(dir: &OwnedFd, name: &OsStr) -> Result<std::fs::File, String> {
+    let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+    let file = std::fs::File::from(
+        nix::fcntl::openat(dir, name, flags, Mode::empty()).map_err(link_refused)?,
+    );
+    let regular = file.metadata().map_err(|e| e.to_string())?.is_file();
+    if regular {
+        Ok(file)
+    } else {
+        Err("a special file".to_owned())
+    }
+}
+
+/// The names in the folder `dir`, sorted.
+fn names_in(dir: &OwnedFd) -> Result<Vec<OsString>, String> {
+    let listing = nix::dir::Dir::openat(
+        dir,
+        ".",
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|e| e.desc().to_owned())?;
+    let mut names = Vec::new();
+    for entry in listing {
+        let entry = entry.map_err(|e| e.desc().to_owned())?;
+        let name = entry.file_name().to_bytes();
+        if name != b"." && name != b".." {
+            names.push(OsStr::from_bytes(name).to_owned());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// A header for an entry with the permission bits and time of `meta`, read from the opened handle.
+fn header_of(meta: &std::fs::Metadata, kind: tar::EntryType, size: u64) -> tar::Header {
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(kind);
+    header.set_mode(meta.permissions().mode() & 0o777);
+    header.set_mtime(
+        meta.modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_secs()),
+    );
+    header.set_size(size);
+    header
+}
+
+/// Adds the entries of the folder `dir` (at `rel` in the state); `counts` is (entries, files).
 fn add_folder(
     builder: &mut tar::Builder<GzEncoder<Vec<u8>>>,
-    dir: &Path,
+    dir: &OwnedFd,
     rel: &Path,
     shown: &str,
     counts: &mut (u64, u64),
 ) -> Result<(), String> {
     let unreadable = |e: io::Error| format!("cannot read {shown}: {e}");
-    let mut names: Vec<_> = std::fs::read_dir(dir)
-        .map_err(unreadable)?
-        .map(|entry| entry.map(|e| e.file_name()))
-        .collect::<Result<_, _>>()
-        .map_err(unreadable)?;
-    names.sort();
-    for name in names {
-        let path = dir.join(&name);
+    let refused = |inside: &Path, what: &str| {
+        format!(
+            "{shown} holds {}, {what}: only files and folders move; replace it with what it \
+             points to, or move it out of the folder",
+            inside.display()
+        )
+    };
+    for name in names_in(dir).map_err(|e| format!("cannot read {shown}: {e}"))? {
         let inside: PathBuf = rel.join(&name);
         counts.0 += 1;
         if counts.0 > MAX_STATE_ENTRIES {
@@ -177,29 +260,24 @@ fn add_folder(
                 "{shown} holds more than {MAX_STATE_ENTRIES} files and folders"
             ));
         }
-        let meta = std::fs::symlink_metadata(&path).map_err(unreadable)?;
-        let mode = meta.permissions().mode() & 0o777;
-        let mtime = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0, |d| d.as_secs());
-        let kind = meta.file_type();
-        let mut header = tar::Header::new_gnu();
-        header.set_mode(mode);
-        header.set_mtime(mtime);
-        if kind.is_dir() {
-            header.set_entry_type(tar::EntryType::Directory);
-            header.set_size(0);
+        let stat = nix::sys::stat::fstatat(dir, name.as_os_str(), AtFlags::AT_SYMLINK_NOFOLLOW)
+            .map_err(|e| format!("cannot read {shown}: {}", e.desc()))?;
+        let kind = SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT;
+        if kind == SFlag::S_IFDIR {
+            let child = open_dir_at(dir, &name).map_err(|what| refused(&inside, &what))?;
+            let meta = std::fs::File::from(child.try_clone().map_err(unreadable)?)
+                .metadata()
+                .map_err(unreadable)?;
+            let mut header = header_of(&meta, tar::EntryType::Directory, 0);
             builder
                 .append_data(&mut header, &inside, io::empty())
                 .map_err(unreadable)?;
-            add_folder(builder, &path, &inside, shown, counts)?;
-        } else if kind.is_file() {
-            let file = std::fs::File::open(&path).map_err(unreadable)?;
-            let size = file.metadata().map_err(unreadable)?.len();
-            header.set_entry_type(tar::EntryType::Regular);
-            header.set_size(size);
+            add_folder(builder, &child, &inside, shown, counts)?;
+        } else if kind == SFlag::S_IFREG {
+            let file = open_file_at(dir, &name).map_err(|what| refused(&inside, &what))?;
+            let meta = file.metadata().map_err(unreadable)?;
+            let size = meta.len();
+            let mut header = header_of(&meta, tar::EntryType::Regular, size);
             // Exactly `size` bytes, even if a tool writes the file meanwhile.
             let data = file.take(size).chain(io::repeat(0)).take(size);
             builder
@@ -210,11 +288,7 @@ fn add_folder(
                 return Err(too_large(shown));
             }
         } else {
-            return Err(format!(
-                "{shown} holds {}, a link or special file: only files and folders move; replace \
-                 it with what it points to, or move it out of the folder",
-                inside.display()
-            ));
+            return Err(refused(&inside, "a link or special file"));
         }
     }
     Ok(())
@@ -424,6 +498,28 @@ mod tests {
         let again = state_entry("OPS", &packed)?;
         assert_eq!(again.archive, entry.archive);
         assert_eq!(again.files, 2);
+        Ok(())
+    }
+
+    /// Vidoc, SPEC-271: entries are opened through the folder's handle without following a
+    /// link, so a file swapped for a link after the listing is refused, never read.
+    #[test]
+    fn entries_are_opened_without_following_links() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("secret"), "key")?;
+        std::os::unix::fs::symlink(dir.path().join("secret"), dir.path().join("swapped"))?;
+        std::fs::create_dir(dir.path().join("sub"))?;
+        std::os::unix::fs::symlink(dir.path().join("sub"), dir.path().join("swapped_dir"))?;
+        let folder = open_folder(dir.path())?;
+        let err = open_file_at(&folder, std::ffi::OsStr::new("swapped"))
+            .err()
+            .ok_or("followed a link to a file")?;
+        assert!(err.contains("a link"), "{err}");
+        let err = open_dir_at(&folder, std::ffi::OsStr::new("swapped_dir"))
+            .err()
+            .ok_or("followed a link to a folder")?;
+        assert!(err.contains("a link"), "{err}");
+        assert!(open_file_at(&folder, std::ffi::OsStr::new("secret")).is_ok());
         Ok(())
     }
 

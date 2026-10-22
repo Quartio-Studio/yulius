@@ -877,11 +877,12 @@ impl App {
         self.require(&ctx.user, &sid, Action::View).await?;
         self.require_manage_agent(ctx, &AgentScope::Project(sid.clone()))
             .await?;
+        let name = SecretName::parse(name.trim()).map_err(invalid)?;
         let _slot = self.state_slot()?;
         let (record, sealed) = self
             .deps
             .store
-            .agent_state(&sid, name.trim())
+            .agent_state(&sid, name.as_str())
             .await?
             .ok_or(AppError::NotFound)?;
         let mut archive = self.open_state(&record, sealed).await?;

@@ -3353,6 +3353,7 @@ dependencies = [
  "flate2",
  "hex",
  "indicatif",
+ "nix 0.31.3",
  "reqwest",
  "rustls",
  "serde",
