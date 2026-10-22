@@ -15,7 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use yulius_contracts::api::ci::{
-    HygieneCleanup, HygieneCleanupResult, HygieneItem, HygieneReport, HygieneSkip, HygieneTarget,
+    HygieneCleanup, HygieneCleanupResult, HygieneItem, HygieneLastCleanup, HygieneReport,
+    HygieneSkip, HygieneTarget,
 };
 use yulius_domain::ci::{
     BranchPull, LocalBranchFacts, RemoteBranchFacts, StaleReason, WorktreeOwner,
@@ -73,6 +74,7 @@ fn pulls_facts(pulls: &[GhPull]) -> Vec<BranchPull> {
 impl App {
     pub(super) fn start_hygiene(self: &Arc<Self>) {
         let app = Arc::clone(self);
+        app.schedule_hygiene(HYGIENE_FIRST);
         tokio::spawn(async move {
             tokio::time::sleep(HYGIENE_FIRST).await;
             let mut every = tokio::time::interval(HYGIENE_EVERY);
@@ -87,6 +89,8 @@ impl App {
     /// are removed as Yulius, through the same checks as a person's Clean up. Unmerged work
     /// (`idle`) stays listed for a person.
     pub async fn hygiene_round(&self) {
+        // The interval ticks from the start of a round.
+        self.schedule_hygiene(HYGIENE_EVERY);
         let Ok(sandboxes) = self.deps.store.sandboxes().await else {
             return;
         };
@@ -96,6 +100,31 @@ impl App {
                 tracing::warn!(sandbox = %sandbox.slug, error = %err, "automatic hygiene cleanup failed");
             }
         }
+    }
+
+    fn schedule_hygiene(&self, after: Duration) {
+        let after_ms = i64::try_from(after.as_millis()).unwrap_or(i64::MAX);
+        if let Ok(mut next) = self.ci.hygiene_next.lock() {
+            *next = Some(self.now().0.saturating_add(after_ms));
+        }
+    }
+
+    /// A report with the sandbox's last cleanup and the next automatic one.
+    fn with_cleanups(&self, sandbox: &SandboxRecord, mut report: HygieneReport) -> HygieneReport {
+        report.last_cleanup = self
+            .ci
+            .hygiene_cleanups
+            .lock()
+            .ok()
+            .and_then(|cleanups| cleanups.get(sandbox.id.as_str()).cloned());
+        report.next_cleanup_at = self
+            .ci
+            .hygiene_next
+            .lock()
+            .ok()
+            .and_then(|next| *next)
+            .map(|ms| rfc3339(yulius_domain::time::Timestamp(ms)));
+        report
     }
 
     fn protected_branches(sandbox: &SandboxRecord) -> HashSet<String> {
@@ -162,7 +191,7 @@ impl App {
         if let Ok(mut reports) = self.ci.hygiene.lock() {
             reports.insert(sandbox.id.as_str().to_owned(), report.clone());
         }
-        report
+        self.with_cleanups(sandbox, report)
     }
 
     async fn hygiene_remote(
@@ -362,7 +391,7 @@ impl App {
             .ok()
             .and_then(|reports| reports.get(sandbox.id.as_str()).cloned());
         match kept {
-            Some(report) => report,
+            Some(report) => self.with_cleanups(sandbox, report),
             None => self.hygiene_scan(sandbox).await,
         }
     }
@@ -487,10 +516,26 @@ impl App {
         if remote_deleted {
             let _ = self.dlv_refresh_clone(sandbox).await;
         }
+        let automatic = actor == AUTO_ACTOR;
+        // An automatic round with nothing to do keeps the last cleanup on the report.
+        if !(automatic && removed.is_empty() && skipped.is_empty())
+            && let Ok(mut cleanups) = self.ci.hygiene_cleanups.lock()
+        {
+            cleanups.insert(
+                sandbox.id.as_str().to_owned(),
+                HygieneLastCleanup {
+                    at: rfc3339(self.now()),
+                    by: actor.to_owned(),
+                    automatic,
+                    removed: removed.clone(),
+                    skipped: skipped.clone(),
+                },
+            );
+        }
         // Nothing removed: nothing changed since the scan above (a round with nothing to do
         // costs one scan).
         let report = if removed.is_empty() {
-            report
+            self.with_cleanups(sandbox, report)
         } else {
             self.hygiene_scan(sandbox).await
         };

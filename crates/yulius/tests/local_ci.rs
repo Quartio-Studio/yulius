@@ -691,6 +691,43 @@ async fn the_hygiene_round_removes_safe_items_itself() -> TestResult {
     Ok(())
 }
 
+/// SPEC-269 HSC-002: the report says what the last cleanup did and who did it, across scans; an
+/// automatic round with nothing to do leaves it, and the round names when it runs next.
+#[tokio::test]
+async fn a_cleanup_is_kept_on_the_report() -> TestResult {
+    let f = fixture().await?;
+    stale_branches(&f)?;
+    let before = f.get("/api/sandboxes/s1/hygiene").await?;
+    assert!(before["last_cleanup"].is_null(), "{before}");
+    assert!(before["next_cleanup_at"].is_null(), "not scheduled here: {before}");
+
+    let cleaned = f.post("/api/sandboxes/s1/hygiene/cleanup", None).await?;
+    assert_eq!(cleaned.status, StatusCode::OK, "{}", cleaned.body);
+    let last = cleaned.body["report"]["last_cleanup"].clone();
+    assert_eq!(last["by"], "alice", "{last}");
+    assert_eq!(last["automatic"], false, "{last}");
+    let removed: Vec<&str> = last["removed"]
+        .as_array()
+        .ok_or("removed")?
+        .iter()
+        .filter_map(|i| i["name"].as_str())
+        .collect();
+    assert!(
+        removed.contains(&"feat/old") && removed.contains(&"feat/closed"),
+        "{last}"
+    );
+    assert!(last["at"].is_string(), "{last}");
+
+    let scanned = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    assert_eq!(scanned.body["last_cleanup"], last, "kept across scans");
+
+    f.h.app.hygiene_round().await;
+    let after = f.get("/api/sandboxes/s1/hygiene").await?;
+    assert_eq!(after["last_cleanup"], last, "a round with nothing to do keeps it");
+    assert!(after["next_cleanup_at"].is_string(), "{after}");
+    Ok(())
+}
+
 /// Jobs run inside the sandbox's containment (Linux, bubblewrap): what lies outside the sandbox
 /// directory, such as the data directory's run records, is not there, `/tmp` is private, and
 /// `HOME` is the sandbox's CI home.

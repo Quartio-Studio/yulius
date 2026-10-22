@@ -704,7 +704,10 @@ CiRun = {"id", "reference": "pr/12|branch/dev", "label": "PR #12|dev", "pr_numbe
          "status": "published|pending|not published: …"}
 HygieneReport = {"scanned_at": "…" | null, "items": [{"kind": "remote_branch|local_branch|worktree",
                  "name", "reason_code": "pull_merged|pull_closed|merged|local_copy|idle|task_deleted|task_archived|task_merged|missing",
-                 "reason", "safe": true}], "notes": ["…"]}
+                 "reason", "safe": true}], "notes": ["…"],
+                 "last_cleanup": {"at", "by": "yulius|<login>|task:<n>", "automatic": false,
+                                  "removed": [Target], "skipped": [Target + "reason"]} | null,
+                 "next_cleanup_at": "…" | null}
 Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force": false}
 ```
 
@@ -720,7 +723,11 @@ Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force"
 - **Merge gate.** Once a sandbox has CI, the latest run at the pull request head alone decides the
   delivery checks (`pending` / `success` / `failure`); GitHub's other checks are not read.
 - **Hygiene.** After a merge through Yulius the head branch is deleted (not the integration,
-  production or default branch, nor one another open pull request uses). Cleanup never forces a
+  production or default branch, nor one another open pull request uses). Every 6 hours (first 10
+  minutes after start) Yulius removes each sandbox's safe items itself, as `yulius` (SPEC-269,
+  ADR-0199); `next_cleanup_at` says when. `last_cleanup` is the last cleanup since the server
+  started that a person or agent asked for or that removed or kept something (in memory; the
+  audit log `hygiene.cleanup` keeps the history). Cleanup never forces a
   worktree removal, never removes a live task's worktree, a protected branch or one with an open
   pull request, and removes `idle` branches (unmerged, no pull request) only with `force`.
 

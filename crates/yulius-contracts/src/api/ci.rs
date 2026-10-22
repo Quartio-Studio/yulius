@@ -154,6 +154,28 @@ pub struct HygieneReport {
     /// Problems met while scanning (GitHub or Git unavailable, scan bounds reached).
     #[serde(default)]
     pub notes: Vec<String>,
+    /// The last cleanup since the server started that removed or kept something, or that a
+    /// person or agent asked for (SPEC-269 HSC-002).
+    #[serde(default)]
+    pub last_cleanup: Option<HygieneLastCleanup>,
+    /// When the automatic round removes the safe items next; null when it is not scheduled.
+    #[serde(default)]
+    pub next_cleanup_at: Option<String>,
+}
+
+/// What a cleanup did (SPEC-269 HSC-002).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HygieneLastCleanup {
+    /// When it ended.
+    pub at: String,
+    /// Who asked: `yulius` (the automatic round), a person's login or `task:<n>`.
+    pub by: String,
+    /// The automatic round.
+    pub automatic: bool,
+    /// Removed items.
+    pub removed: Vec<HygieneTarget>,
+    /// Items left in place, with the reason.
+    pub skipped: Vec<HygieneSkip>,
 }
 
 /// One item to clean up.
