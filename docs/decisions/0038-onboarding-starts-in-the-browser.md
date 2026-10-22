@@ -7,7 +7,9 @@ Replaces the "no approval step" of the `yulius onboard` path (SPEC-001 IMP-010, 
 adding a repository in the web UI is unchanged. Narrowed by [ADR-0076](0076-onboarding-is-mandatory-in-the-ui.md):
 the page offers no Skip for now; skipping is an admin's recovery path through the API. Amended by
 [ADR-0077](0077-onboarding-task-is-created-when-needed.md): a `pending` sandbox has no resting
-onboarding task; it is created when onboarding starts or a task waits for it.
+onboarding task; it is created when onboarding starts or a task waits for it. Amended by
+[ADR-0188](0188-remote-control-uses-scoped-personal-api-tokens.md): an `operate` token, made by a
+person for their own agent, may start onboarding too; a `yulius login` token still cannot.
 
 ## Context
 

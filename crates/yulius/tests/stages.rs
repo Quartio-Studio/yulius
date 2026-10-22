@@ -19,7 +19,7 @@ use yulius_app::delivery::DeliveryRecord;
 use yulius_app::model::{StepRecord, TaskMode, TaskOrigin, TaskRecord};
 use yulius_app::ports::store::{CoordinationStore as _, TaskStore as _};
 use yulius_app::ports::store_ext::{CdStore as _, CiStore as _, DeliveryStore as _};
-use yulius_domain::cd::CdEnv;
+use yulius_domain::cd::CdStage;
 use yulius_domain::ci::{CiRef, GateSource, RunState};
 use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::harness::Harness;
@@ -212,7 +212,8 @@ async fn lifecycle(f: &Fixture) -> TestResult {
             .insert_cd_run(&CdRunRecord {
                 id: id.into(),
                 sandbox_id: SandboxId::parse("s1")?,
-                environment: CdEnv::Dev,
+                environment: "dev".into(),
+                stage: CdStage::Dev,
                 branch: "dev".into(),
                 sha: "def5678".into(),
                 state: RunState::Running,

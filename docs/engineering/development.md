@@ -124,8 +124,9 @@ model (prompt injection) could hide a finding.
 **The key.** The scan reads `VIDOC_API_KEY` and sends it in `x-api-key` only.
 
 - In agent sessions and CI jobs that variable holds a placeholder that the egress proxy replaces
-  toward `model.vidocsecurity.com` only. It is this project's agent secret if it has one, else the
-  instance's Vidoc key, which a superadmin sets in Settings, Instance (keys come from
+  toward `model.vidocsecurity.com` only. It is an agent secret of that name that reaches the run (the
+  project's, a global one switched on for it or the person's own,
+  [scopes](../architecture.md#agent-secret-scopes)) if there is one, else the instance's Vidoc key, which a superadmin sets in Settings, Instance (keys come from
   <https://model.vidocsecurity.com/#key>).
 - Elsewhere, set the variable yourself.
 - `VIDOC_API_URL` overrides the address, plain `http://` for loopback tests only.
@@ -187,9 +188,10 @@ Yulius CI runs the change scan as the `security` job of `yulius.toml` on every p
 - **It runs the pull request's own scanner.** `--ci` scans only when `YULIUS_CI_REF` is `pr/<n>`.
   `dev` and `main` heads, merge trains, and pull requests with nothing to scan end skipped.
 - **It gets the key through the proxy.** The `secrets = "VIDOC_API_KEY"` line on the job is read
-  from `dev`'s `yulius.toml` only
+  from `dev`'s `yulius.toml` only, and grants only a job with that entry's name and command
   ([SPEC-142](../../.ai/specs/SPEC-142-fix-466-yulius-ci-jobs-opt-in-to-named-a.md),
-  [ADR-0116](../decisions/0116-ci-jobs-use-named-agent-secrets-through-the-proxy.md)). It gives the
+  [ADR-0116](../decisions/0116-ci-jobs-use-named-agent-secrets-through-the-proxy.md),
+  [ADR-0196](../decisions/0196-a-ci-grant-binds-the-job-name-and-its-command.md)). It gives the
   job the key's placeholder and the egress proxy with a credential of its own, never the value.
   Each use is in the secrets audit as `ci:<run>`.
 - **Findings fail it.** Exit 1 fails the job, and so the merge gate.

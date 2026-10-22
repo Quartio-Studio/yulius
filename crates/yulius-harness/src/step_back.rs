@@ -14,14 +14,19 @@
 //! the newest record. Every other line, unparsable ones included, is kept byte for byte.
 
 use std::collections::HashMap;
-use std::io;
+use std::ffi::OsStr;
+use std::io::{self, Read as _};
+use std::os::fd::OwnedFd;
 use std::path::Path;
 
+use nix::errno::Errno;
+use nix::fcntl::OFlag;
+use nix::sys::stat::Mode;
 use serde_json::{Map, Value};
 
 use crate::claude::observe_line;
+use crate::claude_config::{open_dir_at, open_regular, replace_with_mode};
 use crate::json::{bool_of, parse_object, str_of};
-use crate::launch::PlannedFile;
 use crate::observe::Observed;
 
 /// The record fields that link a record to an earlier one.
@@ -156,45 +161,97 @@ pub fn step_back(text: &str) -> Option<String> {
 }
 
 /// Steps the transcript at `path` back over a usage limit ([`step_back`]), replacing it
-/// atomically with the same permissions. Returns whether it changed; a missing file is unchanged.
+/// atomically with the same permissions. Returns whether it changed; a missing transcript, or a
+/// missing folder on the way to it, is unchanged.
+///
+/// `path` is `<anchor>/<home>/<config>/projects/<slug>/<session>.jsonl`, as
+/// [`crate::paths::claude_transcript_path`] makes it from a config dir in a home: everything below
+/// the anchor (the folder above the home: a task's sandbox directory, a person's user folder) is
+/// the agent's, so it is reached only through handles. The anchor is opened by path, the folders
+/// below it one at a time without following links, the transcript without following a link or
+/// blocking, and used only when it is a regular file; the rewrite is a new file in the folder's
+/// handle renamed over it there (ADR-0174, SPEC-266).
 ///
 /// # Errors
-/// I/O failures, or a transcript that is not UTF-8.
+/// I/O failures; a link or a file on the way, or a transcript that is a link, not a regular file
+/// or not UTF-8.
 pub fn step_back_file(path: &Path) -> io::Result<bool> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(err) => return Err(err),
+    let Some(folder) = open_transcript_folder(path)? else {
+        return Ok(false);
     };
-    let text =
-        String::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let name = path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "transcript name not UTF-8"))?;
+    let Some(mut file) = open_regular(&folder, name)? else {
+        return Ok(false);
+    };
+    // `mode_t`, which is `u16` on macOS (ADR-0169).
+    let mode = nix::sys::stat::fstat(&file)?.st_mode & 0o7777;
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
     let Some(stepped) = step_back(&text) else {
         return Ok(false);
     };
-    #[cfg(unix)]
-    let mode = {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::metadata(path)?.permissions().mode() & 0o7777
-    };
-    #[cfg(not(unix))]
-    let mode = 0o600;
-    PlannedFile {
-        path: path.to_path_buf(),
-        contents: stepped.into_bytes(),
-        mode,
-    }
-    .write()?;
-    // The new file was created under the umask: give it exactly the old permissions.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
-    }
+    // The new file is created 0600: give it exactly the old permissions.
+    replace_with_mode(
+        &folder,
+        name,
+        stepped.as_bytes(),
+        Some(Mode::from_bits_truncate(mode)),
+    )?;
     Ok(true)
+}
+
+/// The folder of the transcript `path` (see [`step_back_file`]): the anchor opened by path, then
+/// home, config dir, `projects` and the slug with `O_DIRECTORY | O_NOFOLLOW`, nothing created.
+/// `None` when one is missing; a link or a file on the way fails, naming it (SPEC-266 STB-001).
+fn open_transcript_folder(path: &Path) -> io::Result<Option<OwnedFd>> {
+    let invalid = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the transcript is not in <home>/<config>/projects/<slug>",
+        )
+    };
+    let mut names = Vec::new();
+    let mut at = path.parent().ok_or_else(invalid)?;
+    for _ in 0..4 {
+        names.push(at.file_name().ok_or_else(invalid)?);
+        at = at
+            .parent()
+            .filter(|anchor| !anchor.as_os_str().is_empty())
+            .ok_or_else(invalid)?;
+    }
+    let mut dir = match nix::fcntl::open(
+        at,
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(dir) => dir,
+        Err(Errno::ENOENT) => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+    for name in names.into_iter().rev() {
+        dir = match open_dir_at(&dir, name, false) {
+            Ok(dir) => dir,
+            Err(Errno::ENOENT) => return Ok(None),
+            Err(Errno::ELOOP | Errno::ENOTDIR) => {
+                return Err(io::Error::other(format!(
+                    "{} on the way to the transcript is a link or not a folder: Yulius follows \
+                     no links",
+                    Path::new(name).display()
+                )));
+            }
+            Err(err) => return Err(err.into()),
+        };
+    }
+    Ok(Some(dir))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use serde_json::{Value, json};
 
     use super::{step_back, step_back_file};
@@ -500,38 +557,137 @@ mod tests {
         Ok(())
     }
 
+    /// `<sandbox>/home/.claude/projects/<slug>/s1.jsonl`, the layout `step_back_file` expects.
+    fn transcript_in(sandbox: &Path) -> PathBuf {
+        sandbox.join("home/.claude/projects/-wt/s1.jsonl")
+    }
+
+    fn limited() -> String {
+        [
+            prompt("u1", "root", "hello"),
+            answer("a1", "u1"),
+            limit("e1", "a1"),
+        ]
+        .concat()
+    }
+
+    fn mode(path: &Path) -> std::io::Result<u32> {
+        use std::os::unix::fs::PermissionsExt as _;
+        Ok(std::fs::metadata(path)?.permissions().mode() & 0o7777)
+    }
+
     #[test]
     fn step_back_file_rewrites_only_when_needed() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("s1.jsonl");
+        use std::os::unix::fs::PermissionsExt as _;
+        let sandbox = tempfile::tempdir()?;
+        let path = transcript_in(sandbox.path());
+        assert!(
+            !step_back_file(&path)?,
+            "a missing transcript (and folder) is left alone"
+        );
+        let folder = path.parent().ok_or("a folder")?;
+        std::fs::create_dir_all(folder)?;
         assert!(
             !step_back_file(&path)?,
             "a missing transcript is left alone"
         );
         let plain = [prompt("u1", "root", "hello"), answer("a1", "u1")].concat();
         std::fs::write(&path, &plain)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
         assert!(!step_back_file(&path)?);
-        std::fs::write(&path, [plain.clone(), limit("e1", "a1")].concat())?;
+        std::fs::write(&path, limited())?;
         assert!(step_back_file(&path)?);
         assert_eq!(std::fs::read_to_string(&path)?, plain);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            assert_eq!(
-                std::fs::metadata(&path)?.permissions().mode() & 0o777,
-                0o600
-            );
-        }
+        assert_eq!(mode(&path)?, 0o600);
+        // A mode other than the temporary file's own is carried over too (SPEC-266 STB-005).
+        std::fs::write(&path, limited())?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640))?;
+        assert!(step_back_file(&path)?);
+        assert_eq!(std::fs::read_to_string(&path)?, plain);
+        assert_eq!(mode(&path)?, 0o640);
         assert_eq!(
-            std::fs::read_dir(dir.path())?.count(),
+            std::fs::read_dir(folder)?.count(),
             1,
             "no temporary file left"
         );
+        Ok(())
+    }
+
+    /// #661: a link the agent put on the way to the transcript (its project folder, its home)
+    /// fails the step back, naming it, and the link's target is neither read nor replaced.
+    #[test]
+    fn step_back_file_follows_no_linked_folder() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+        for linked in [
+            "home/.claude/projects/-wt",
+            "home/.claude/projects",
+            "home/.claude",
+            "home",
+        ] {
+            let sandbox = tempfile::tempdir()?;
+            let outside = tempfile::tempdir()?;
+            let path = transcript_in(sandbox.path());
+            // The host folder holds what the link would make the step back see.
+            let rest = path.strip_prefix(sandbox.path().join(linked))?;
+            let host_file = outside.path().join(rest);
+            std::fs::create_dir_all(host_file.parent().ok_or("a folder")?)?;
+            std::fs::write(&host_file, limited())?;
+            let link = sandbox.path().join(linked);
+            std::fs::create_dir_all(link.parent().ok_or("a folder")?)?;
+            symlink(outside.path(), &link)?;
+            let err = step_back_file(&path)
+                .err()
+                .ok_or(format!("{linked}: refused"))?;
+            assert!(err.to_string().contains("link"), "{linked}: {err}");
+            assert_eq!(std::fs::read_to_string(&host_file)?, limited(), "{linked}");
+            assert_eq!(
+                std::fs::read_dir(host_file.parent().ok_or("a folder")?)?.count(),
+                1,
+                "{linked}: nothing written next to the host file"
+            );
+        }
+        Ok(())
+    }
+
+    /// #661: a link at the transcript is never read nor renamed over; its target stays as it was.
+    #[test]
+    fn step_back_file_follows_no_linked_transcript() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+        let sandbox = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let host_file = outside.path().join("host.jsonl");
+        std::fs::write(&host_file, limited())?;
+        let path = transcript_in(sandbox.path());
+        std::fs::create_dir_all(path.parent().ok_or("a folder")?)?;
+        symlink(&host_file, &path)?;
+        let err = step_back_file(&path).err().ok_or("refused")?;
+        assert!(err.to_string().contains("link"), "{err}");
+        assert!(
+            path.symlink_metadata()?.file_type().is_symlink(),
+            "the link stays"
+        );
+        assert_eq!(std::fs::read_to_string(&host_file)?, limited());
+        Ok(())
+    }
+
+    /// #661: a FIFO at the transcript fails at once instead of holding the blocking task (and the
+    /// run start awaiting it) forever.
+    #[test]
+    fn step_back_file_returns_at_once_on_a_fifo() -> Result<(), Box<dyn std::error::Error>> {
+        let sandbox = tempfile::tempdir()?;
+        let path = transcript_in(sandbox.path());
+        std::fs::create_dir_all(path.parent().ok_or("a folder")?)?;
+        nix::unistd::mkfifo(
+            &path,
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )?;
+        let (done, finished) = std::sync::mpsc::channel();
+        let fifo = path.clone();
+        // A bound on a blocked open, not a wait for work: the call returns in microseconds.
+        std::thread::spawn(move || done.send(step_back_file(&fifo).map_err(|e| e.to_string())));
+        let result = finished.recv_timeout(std::time::Duration::from_secs(30))?;
+        let err = result.err().ok_or("refused")?;
+        assert!(err.contains("not a regular file"), "{err}");
         Ok(())
     }
 }

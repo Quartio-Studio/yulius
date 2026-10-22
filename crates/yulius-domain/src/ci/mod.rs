@@ -119,7 +119,8 @@ pub struct JobDef {
     /// The CPUs and memory each of its jobs declares (`cpus`, `memory_gb`; SPEC-082 RES-002).
     pub need: Need,
     /// Agent secrets its jobs may use through the egress proxy (`secrets`, SPEC-142). Only the
-    /// integration branch's list counts: Yulius reads it when a job starts, by job name.
+    /// integration branch's list counts: Yulius reads it when a job starts, for a job with that
+    /// entry's name and command (SPEC-264).
     pub secrets: Vec<String>,
 }
 
@@ -1198,10 +1199,16 @@ mod tests {
         assert_eq!(names, ["lint", "test (1/2)", "test (2/2)"]);
         assert_eq!(jobs[2].key, "test");
         assert_eq!(jobs[2].matrix.as_deref(), Some("2/2"));
-        assert!(matches!(
-            expand_jobs(&[def("Lint", "x", "")]),
-            Err(CiConfigError::InvalidJobName(_))
-        ));
+        // A job's name is its key, which names its checkout directory: no path in it.
+        for name in ["Lint", "../x", "..", ".x", "a/b", "/tmp", "a.b", ""] {
+            assert!(
+                matches!(
+                    expand_jobs(&[def(name, "x", "")]),
+                    Err(CiConfigError::InvalidJobName(_))
+                ),
+                "{name:?}"
+            );
+        }
         assert!(matches!(
             expand_jobs(&[def("a", "x", ""), def("a", "y", "")]),
             Err(CiConfigError::DuplicateJob(_))

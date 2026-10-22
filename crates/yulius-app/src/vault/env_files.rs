@@ -101,7 +101,8 @@ pub(super) const WORK: Naming<'static> = Naming {
 
 /// Opens `folders` below `anchor` one component at a time without following links, and checks
 /// that the folder reached is inside the root (`anchor` and the first `naming.hidden` folders)
-/// and out of `.git`; its [`Folder::path_of`] is relative to that root.
+/// and out of `.git` (both by [`inside`] on the opened folder's real path); its
+/// [`Folder::path_of`] is relative to that root.
 pub(super) fn open_folder(
     anchor: &Path,
     folders: &[String],
@@ -749,6 +750,37 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-262 (#714): a dotenv target never lands in `.git`: its path is refused when it names
+    /// `.git`, and a folder whose real path is in `.git` (here walked to directly) is refused too.
+    #[test]
+    fn git_folders_are_refused() -> TestResult {
+        let (_dir, wt, _outside) = worktree()?;
+        std::fs::create_dir_all(wt.join(".git/hooks"))?;
+        std::fs::create_dir_all(wt.join("deploy/.git"))?;
+        for path in [
+            ".git/.env",
+            ".git/hooks/.env",
+            "deploy/.git/.env",
+            "./.git/x/../.env",
+        ] {
+            assert!(relative_components(path).is_err(), "{path}");
+        }
+        for folders in [
+            vec![".git".to_owned()],
+            vec![".git".to_owned(), "hooks".to_owned()],
+            vec!["deploy".to_owned(), ".git".to_owned()],
+        ] {
+            assert!(
+                matches!(
+                    open_folder(&wt, &folders, &WORK),
+                    Err(AppError::Forbidden(_))
+                ),
+                "{folders:?}"
+            );
+        }
+        Ok(())
+    }
+
     /// #635: walked from an anchor, the folder's paths are relative to the root below the hidden
     /// folders; a folder reached outside that root (even inside the anchor) is refused, and so is
     /// a hidden folder that is a link, as the root itself.
@@ -815,10 +847,10 @@ turn that off in Edit first to keep it for production deploys only";
 /// `.env` is), production only those a person allowed for production deploys (`cd_prod`), which
 /// no agent can use otherwise, and those whose creator let agents set them up (`auto_allow`,
 /// SPEC-216 SSA-003).
-fn allowed_for(record: &VaultSecretRecord, env: yulius_domain::cd::CdEnv) -> bool {
+fn allowed_for(record: &VaultSecretRecord, env: yulius_domain::cd::CdStage) -> bool {
     match env {
-        yulius_domain::cd::CdEnv::Dev => record.env_files == EnvFiles::Allowed,
-        yulius_domain::cd::CdEnv::Prod => record.cd_prod || record.auto_allow,
+        yulius_domain::cd::CdStage::Dev => record.env_files == EnvFiles::Allowed,
+        yulius_domain::cd::CdStage::Prod => record.cd_prod || record.auto_allow,
     }
 }
 
@@ -833,7 +865,7 @@ impl App {
     pub(crate) async fn cd_secret_states(
         &self,
         sandbox: &yulius_domain::ids::SandboxId,
-        env: yulius_domain::cd::CdEnv,
+        env: yulius_domain::cd::CdStage,
         names: &[String],
     ) -> AppResult<Vec<(String, CdSecretState)>> {
         let all = self
@@ -844,11 +876,11 @@ impl App {
             .map(|name| {
                 let state = match all.iter().find(|r| &r.name == name) {
                     None => CdSecretState::Missing,
-                    Some(r) if r.cd_prod && env == yulius_domain::cd::CdEnv::Dev => {
+                    Some(r) if r.cd_prod && env == yulius_domain::cd::CdStage::Dev => {
                         CdSecretState::Production
                     }
                     Some(r) if allowed_for(r, env) => CdSecretState::Ready,
-                    Some(r) if env == yulius_domain::cd::CdEnv::Prod && agents_use(r) => {
+                    Some(r) if env == yulius_domain::cd::CdStage::Prod && agents_use(r) => {
                         CdSecretState::AgentsUse
                     }
                     Some(_) => CdSecretState::NotAllowed,
@@ -868,7 +900,7 @@ impl App {
     pub(crate) async fn cd_secret_values(
         &self,
         sandbox: &crate::model::SandboxRecord,
-        env: yulius_domain::cd::CdEnv,
+        env: yulius_domain::cd::CdStage,
         names: &[String],
         asker: Option<&AgentContext>,
         why: &str,
@@ -896,7 +928,7 @@ impl App {
             .iter()
             .filter_map(|name| all.iter().find(|r| &r.name == name))
             .collect();
-        if env == yulius_domain::cd::CdEnv::Dev
+        if env == yulius_domain::cd::CdStage::Dev
             && let Some(production) = records.iter().find(|r| r.cd_prod)
         {
             return Err(AppError::Conflict(format!(
@@ -912,7 +944,7 @@ impl App {
             .collect();
         if !waiting.is_empty() {
             let names: Vec<&str> = waiting.iter().map(|r| r.name.as_str()).collect();
-            if env == yulius_domain::cd::CdEnv::Prod {
+            if env == yulius_domain::cd::CdStage::Prod {
                 // Nobody can allow those (round 2, M-B): say what to do instead (SPEC-237 CAU-002),
                 // and name the others waiting for a person too, so one refusal says it all.
                 let (used, others): (Vec<&VaultSecretRecord>, Vec<&VaultSecretRecord>) =

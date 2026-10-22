@@ -1,8 +1,9 @@
-// CD tab of the CI/CD page (SPEC-134, SPEC-151, ADR-0109/0110): the project's dev and production environments as
-// yulius.toml defines them on their protected branches ([cd.dev] from the integration branch,
-// [cd.prod] from what production deploys), what each runs, the secrets it needs, what is
-// deployed, and the runs with their output. Dev deploys after a confirmation (people with write
-// access; agents use cd_deploy); production only by an administrator who types the project's slug.
+// CD tab of the CI/CD page (SPEC-134, SPEC-151, SPEC-257, ADR-0109/0110/0195): the project's environments as
+// yulius.toml defines them on their protected branches ([cd.dev] and the other dev-stage tables from
+// the integration branch, [cd.prod] and the other production-stage ones from what production
+// deploys), what each runs, the secrets it needs, what is deployed, and the runs with their output.
+// A dev-stage environment deploys after a confirmation (people with write access; agents use
+// cd_deploy); a production-stage one only by an administrator who types the project's slug.
 // A run opens in place of the environments and runs at `?section=cd&run=<id>` (SPEC-238: a view,
 // not a dialog). A confirmed deploy shows that view at once, saying what starts, while the server
 // checks and promotes (SPEC-189); the same view then shows the run.
@@ -45,11 +46,17 @@ const POLL_IDLE_MS = 30000;
 /** A deploy's state in words, tone and icon. */
 export const stateOf = (state) => STATE[state] || { label: state || 'Unknown', tone: '', icon: 'clock' };
 const shortSha = (sha) => String(sha || '').slice(0, 7);
-/** The integration branch: the dev environment's branch (SPEC-152). */
-const integrationOf = (overview) => ((overview && overview.environments) || []).find((e) => e.name === 'dev');
-const title = (env) => (env.name === 'dev' ? 'Dev' : 'Production');
+/** Whether an environment or a run is of the production stage (SPEC-257). */
+const isProd = (e) => (e.stage ? e.stage === 'prod' : (e.environment || e.name) === 'prod');
+/** The integration branch: the dev-stage environments' branch (SPEC-152). */
+const integrationOf = (overview) => ((overview && overview.environments) || []).find((e) => !isProd(e));
+/** An environment's name in a sentence: `production` for `prod`, else its name. */
+const word = (name) => (name === 'prod' ? 'production' : name);
+/** An environment's name as a title: Dev, Production, Platform. */
+const titleOf = (name) => word(name).charAt(0).toUpperCase() + word(name).slice(1);
+const title = (env) => titleOf(env.name);
 /** What a run's card's open button is called. */
-const openLabel = (run) => `Open the ${run.environment === 'dev' ? 'dev' : 'production'} deploy at ${shortSha(run.commit)}`;
+const openLabel = (run) => `Open the ${word(run.environment)} deploy at ${shortSha(run.commit)}`;
 // The deploy whose view was left last, per sandbox: the list it goes back to puts the keyboard on
 // its card (SPEC-238 review round 1).
 const leftRun = new Map();
@@ -59,6 +66,7 @@ const SETUP_PROMPT = `Set up this project's CD (deployment) in yulius.toml and s
 
 - Find out how the project is deployed today (deploy scripts, Dockerfile or compose, platform files, deploy jobs in GitHub workflows) and keep what works.
 - Define [cd.dev] and [cd.prod] explicitly. Either may be empty (no deploy yet) with an \`about\` line saying why.
+- Something else to deploy on its own (a staging machine, a hosted platform next to a self-hosted release)? Add a [cd.<name>] table for each, with stage = "dev" or "prod".
 - Write idempotent bash scripts for deploy and verify (a smoke test of what is deployed), committed under scripts/cd/, with machines and credentials only from agent secrets.
 - Ask me with needs_you for anything only a person can give (a machine's credentials on the Secrets page, allowing a secret).
 
@@ -166,14 +174,14 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
           return h('li', null, h('code', null, s.name), badge(ss.label, ss.tone), s.state === 'ready' ? null : h('a', { href: link }, 'Secrets'));
         })),
         env.secrets.some((s) => s.state === 'agents_use')
-          ? h('p', { class: 'small muted' }, 'Production never gets a secret agents use (copies into .env files or hosts the proxy sends it to), so nobody can allow it. Give production a separate secret: add it on the Secrets page and name it in [cd.prod] secrets of yulius.toml; or remove its .env copies and hosts first, then allow it for production deploys.')
+          ? h('p', { class: 'small muted' }, `Production never gets a secret agents use (copies into .env files or hosts the proxy sends it to), so nobody can allow it. Give production a separate secret: add it on the Secrets page and name it in [cd.${env.name}] secrets of yulius.toml; or remove its .env copies and hosts first, then allow it for production deploys.`)
           : null));
     }
     if (env.last_run) {
       const run = env.last_run;
       rows.push(h('p', { class: 'small muted' }, `Last run ${relLong(run.started_at)} by ${run.requested_by}: ${stateOf(run.state).label.toLowerCase()}`, run.reason ? ` · ${run.reason}` : ''));
     }
-    const prod = env.name === 'prod';
+    const prod = isProd(env);
     const allowed = prod ? overview.can_deploy_prod : overview.can_deploy_dev;
     const ready = env.state === 'ready';
     const running = (overview.runs || []).some((r) => r.environment === env.name && r.state === 'running');
@@ -181,19 +189,21 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       : !ready ? 'Nothing to deploy yet' : running ? 'A deploy is running' : null;
     // Dev's deploy is the card's main action only when it can run; production's colour is a warning.
     const deploy = h('button', { type: 'button', class: ['btn', prod ? 'btn-danger' : !why && 'btn-primary'], disabled: Boolean(why), title: why, onClick: () => (prod ? deployProd(env, overview) : deployDev(env)) },
-      icon('upload', { size: 16 }), prod ? 'Deploy production…' : 'Deploy dev');
+      icon('upload', { size: 16 }), prod ? `Deploy ${word(env.name)}…` : `Deploy ${word(env.name)}`);
+    // A named environment says which stage's rules it follows (ADR-0195).
+    const stage = env.name === 'dev' || env.name === 'prod' ? null : badge(prod ? 'production stage' : 'dev stage', '');
     return h('section', { class: 'card card-pad stack-sm cd-env', 'aria-label': `${title(env)} environment` },
       // The title and its badge wrap beside the button, which stays top right (SPEC-152).
-      h('div', { class: 'cd-env-head' }, h('div', { class: 'row-wrap cd-env-name' }, h('h2', { class: 'card-title' }, title(env)), badge(st.label, st.tone)), deploy),
+      h('div', { class: 'cd-env-head' }, h('div', { class: 'row-wrap cd-env-name' }, h('h2', { class: 'card-title' }, title(env)), stage, badge(st.label, st.tone)), deploy),
       rows,
-      prod ? h('p', { class: 'small muted' }, 'Production is always deployed by a person. Agents never promote or deploy it; they ask with “Needs you”.') : null);
+      prod ? h('p', { class: 'small muted' }, `${env.name === 'prod' ? 'Production' : `${title(env)}, a production environment,`} is always deployed by a person. Agents never promote or deploy it; they ask with “Needs you”.`) : null);
   }
 
   function runCard(run, overview) {
     const st = stateOf(run.state);
-    const label = run.environment === 'dev' ? 'Dev' : 'Production';
+    const label = titleOf(run.environment);
     const controls = [];
-    const may = run.environment === 'prod' ? overview.can_deploy_prod : overview.can_deploy_dev;
+    const may = isProd(run) ? overview.can_deploy_prod : overview.can_deploy_dev;
     if (may && run.state === 'running') controls.push(h('button', { type: 'button', class: 'btn btn-sm', 'aria-label': `Cancel the ${label.toLowerCase()} deploy at ${shortSha(run.commit)}`, onClick: () => cancel(run) }, 'Cancel'));
     return itemCard({
       iconEl: h('span', { class: ['ci-state', `ci-${run.state}`] }, icon(st.icon, { size: 18, label: st.label })),
@@ -209,9 +219,9 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
 
   async function deployDev(env) {
     const ok = await confirmDialog({
-      title: 'Deploy dev?',
-      message: `Runs [cd.dev] from ${env.branch}${env.head ? ` at ${shortSha(env.head)}` : ''}: ${[env.deploy && 'the deploy command', env.verify && 'then the verify command'].filter(Boolean).join(', ')}.`,
-      confirmLabel: 'Deploy dev',
+      title: `Deploy ${word(env.name)}?`,
+      message: `Runs [cd.${env.name}] from ${env.branch}${env.head ? ` at ${shortSha(env.head)}` : ''}: ${[env.deploy && 'the deploy command', env.verify && 'then the verify command'].filter(Boolean).join(', ')}.`,
+      confirmLabel: `Deploy ${word(env.name)}`,
     });
     if (ok) await start(env, null, null, env.head);
   }
@@ -224,10 +234,10 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     // How long the person kept the confirmation open is the run's confirmation wait (SPEC-137).
     const opened = performance.now();
     const ok = await confirmDialog({
-      title: 'Deploy production?',
+      title: `Deploy ${word(env.name)}?`,
       message: 'This changes what your users run. It happens now:',
       details: h('ol', { class: 'cd-steps' }, steps.map((s) => h('li', null, s))),
-      confirmLabel: 'Deploy production',
+      confirmLabel: `Deploy ${word(env.name)}`,
       danger: true,
       typeToConfirm: overview.slug,
     });
@@ -235,7 +245,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
   }
 
   async function start(env, overview, confirm, expect, confirmMs) {
-    const what = env.name === 'dev' ? 'dev' : 'production';
+    const what = word(env.name);
     // The server answers after its checks and the promotion, seconds to a minute (SPEC-189).
     const starting = startingDialog(env, overview);
     try {
@@ -244,7 +254,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       if (confirm) body.confirm = confirm;
       if (expect) body.expect = expect;
       if (Number.isFinite(confirmMs)) body.confirm_ms = Math.max(0, confirmMs);
-      const run = await ctx.api.post(`${base}/cd/${env.name}/deploy`, body);
+      const run = await ctx.api.post(`${base}/cd/${enc(env.name)}/deploy`, body);
       starting.stop();
       // Left meanwhile (the CI tab, another page): the deploy went out, but nothing of it opens there.
       if (destroyed) return;
@@ -265,7 +275,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
    * checks, and production's promotion, as the confirmation listed them) and the time it has taken.
    */
   function startingDialog(env, overview) {
-    const prod = env.name === 'prod';
+    const prod = isProd(env);
     const integration = integrationOf(overview);
     const me = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.login : null;
     const who = `${env.branch}${me ? ` · by ${me}` : ''}`;
@@ -357,7 +367,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
         if (destroyed || shown !== view) return;
         if (first) { view.ready(); first = false; }
         const st = stateOf(run.state);
-        setChildren(head, badge(st.label, st.tone), h('strong', null, run.environment === 'dev' ? 'Dev' : 'Production'), h('code', { class: 'muted' }, shortSha(run.commit)),
+        setChildren(head, badge(st.label, st.tone), h('strong', null, titleOf(run.environment)), h('code', { class: 'muted' }, shortSha(run.commit)),
           h('span', { class: 'muted small' }, `${run.branch} · by ${run.requested_by}${run.reason ? ` · ${run.reason}` : ''}`),
           h('span', { class: 'spacer' }),
           h('a', { class: 'btn btn-sm', href: href(pipelineHref(sandbox, `cd_run:${id}`)), dataset: { route: pipelineHref(sandbox, `cd_run:${id}`) } }, icon('clock', { size: 14 }), 'In Pipeline'));
@@ -390,7 +400,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       title: 'Set up CD with an agent',
       wide: true,
       body: h('div', { class: 'stack-sm' },
-        h('p', { class: 'muted' }, 'An agent writes the deploy and verify scripts, defines dev and production in yulius.toml and delivers them in a pull request. It asks you (“Needs you”) for anything only you can give, like a machine’s credentials on the Secrets page.'),
+        h('p', { class: 'muted' }, 'An agent writes the deploy and verify scripts, defines dev, production and any other environment in yulius.toml and delivers them in a pull request. It asks you (“Needs you”) for anything only you can give, like a machine’s credentials on the Secrets page.'),
         text),
       actions: [
         { label: 'Cancel' },

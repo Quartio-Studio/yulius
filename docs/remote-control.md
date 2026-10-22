@@ -43,6 +43,9 @@ yulius remote login https://yulius.example.com   # paste the token when it asks
 yulius remote status                             # who the token acts for, and its scope
 ```
 
+`--token-stdin` reads the token from stdin instead of asking; `yulius remote logout` forgets it
+(revoke it on Settings). `yulius project list` lists the projects the token can see.
+
 `yulius remote login` checks the token before it stores it, in
 `~/.config/yulius/remote-credentials.json` (readable only by you). This file is separate from
 the token of `yulius login`; `yulius onboard` and `yulius secrets import` use that one when you
@@ -87,7 +90,8 @@ The server's instructions tell your agent what to do ([SPEC-256](../.ai/specs/SP
    the onboarding task's request and starts it.
 
 The onboarding task then adapts the format, writes the docs, moves CI into Yulius CI and CD into
-`[cd.dev]`/`[cd.prod]` with the imported keys, and merges its pull request on green. It asks you
+`[cd.dev]`/`[cd.prod]` (and a `[cd.<name>]` with its `stage` per further target) with the
+imported keys, and merges its pull request on green. It asks you
 (`needs_you`) only for what neither the keys nor the hand-over hold. Production deploys stay
 yours. Follow it with "how is the onboarding doing?" (`tasks_list`, `task_get`).
 
@@ -112,7 +116,8 @@ skip it with `onboarding_skip`.
 Yulius CI is configured by `[[ci.jobs]]` in the repository's `yulius.toml`. To change it, or any
 other file, without a task:
 
-1. Read the file: "show me yulius.toml" (`project_file_read`; `yulius project cat yulius.toml`).
+1. Read the file: "show me yulius.toml" (`project_files`, `project_file_read`; `yulius project files`,
+   `yulius project cat yulius.toml`).
    What it reads has the project's agent secrets masked as `[secret:NAME]`, as every tool
    result does; do not write such a masked copy back.
 2. Change it: "add a job that runs `cargo test`" (`project_change`). Yulius commits your whole
@@ -149,7 +154,7 @@ and `secret_hosts_answer` (allow or dismiss the hosts a task asked for).
 | "What's #12's pull request and checks?" | `task_delivery` | `yulius task delivery 12` |
 | "Why did CI fail?" | `ci_runs`, `ci_run`, `ci_rerun` | `yulius ci runs`, `yulius ci run <id>`, `yulius ci rerun <id>` |
 | "Every night, update the docs" | `automation_create`, `automations_list`, … | `yulius remote call automation_create '{…}'` |
-| "Deploy dev" | `cd_status`, `cd_deploy` (dev only) | `yulius remote call cd_deploy '{"environment": "dev"}'` |
+| "Deploy dev" | `cd_status`, `cd_deploy` (dev-stage environments only) | `yulius remote call cd_deploy '{"environment": "dev"}'` |
 
 `yulius remote tools` lists every tool your token may call. `yulius remote call <tool> '<JSON>'`
 calls any of them. `--json` prints a tool's record instead of its text. The CLI exits 0 when the

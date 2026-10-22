@@ -28,14 +28,13 @@ flowchart LR
   SUP <-->|"Unix socket"| PH["yulius ptyhost (per run)"]
   subgraph SB["Sandbox (namespace holder)"]
     PH --> AG["claude TUI"]
-    CH["Chrome on Xvfb"]
     AG -->|"/run/yulius/docker"| DF["Docker front"]
     DF --> DE["Docker engine (on demand)"]
   end
   AG -->|"MCP + hooks"| INT
   APP <--> GH["GitHub App + REST"]
   AG <--> AN["Anthropic"]
-  APP --- CH
+  APP <-->|"DevTools pipe (fds 3/4)"| CH["Chrome on Xvfb"]
 ```
 
 ## Layers and crates
@@ -250,6 +249,10 @@ When a subscription's usage limit cuts a turn, the task goes on as if the limit 
 [decision 0027](decisions/0027-step-back-past-a-usage-limit.md)): on another subscription at
 once, or on its own after the reset. The supervisor has the harness adapter step the transcript
 back over the limit on a blocking thread, and indexes the session again only if the file changed.
+The transcript is the agent's: the step back reaches it from the folder above the home through
+handles that follow no link, reads it only when it is a regular file, and replaces it within its
+folder's handle ([SPEC-266](../.ai/specs/SPEC-266-transcript-step-back-and-home-creation-g.md),
+[decision 0174](decisions/0174-host-access-to-agent-owned-folders-goes-through-handles.md)).
 Claude Code then resumes the same session with `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1`, so it
 redoes the lost turn by itself. Nothing is typed. If Claude Code continues the turn by itself at
 the reset, its first agent work or turn end after the pause ends the pause, and Yulius leaves
@@ -386,7 +389,7 @@ flowchart LR
   UI["Settings → Instance → Leftovers"] -->|"/api/admin/leftovers*"| SC
   CLI["yulius leftovers (root, service user)"] -->|"/internal/leftovers* + key file"| SC
   SC --> ST[("store: sandboxes, removed sandboxes, tasks, attempts, CI runs")]
-  SC --> FS["data dir: sandboxes/, sysroots/, runtime/, cd/, runs/, transcripts/, system/"]
+  SC --> FS["data dir: sandboxes/, sysroots/, runtime/, cd/, displays/, runs/, transcripts/, exports/, system/"]
   SC --> L["items: kind, path, size, owner, reason, safe?"]
   L -->|"safe only (round) or chosen (person)"| G{"guard again: removed 10 min, nothing runs, no deploy, holder stopped, CI claimed"}
   G -->|"holds"| D["delete: O_NOFOLLOW down to it, then handle by handle; below sandboxes/ and system trees: isolation remove_owned_tree (mapped root)"]
@@ -465,9 +468,9 @@ sequenceDiagram
     participant A as Agent (Claude Code)
     participant W as yulius wait (background shell)
     participant Y as Yulius (internal API)
-    A->>Y: delivery_merge (head pushed and pull request opened if missing; policy checked; checks running: armed)
+    A->>Y: delivery_merge (head pushed and pull request opened if missing, policy checked, checks running: armed)
     A->>W: start, end the turn
-    W->>Y: POST /internal/agent/wait (long poll; a failed-push note goes once GitHub has the head)
+    W->>Y: POST /internal/agent/wait (long poll, a failed-push note goes once GitHub has the head)
     Y-->>W: checks ended / stage moved / armed merge decided (merged, refused, dropped)
     W-->>A: one line, then exits: Claude Code wakes the agent
 ```
@@ -509,12 +512,23 @@ else through that handle
 helpers are `files::open_inside` (a resolved path opened with `O_NOFOLLOW`, the handle's real path
 checked to be inside the root), `files::open_dirs_below` (each folder from the sandbox directory
 with `O_DIRECTORY | O_NOFOLLOW`, made with `mkdirat` when missing) and `files::replace_in` (a
-random `O_EXCL | O_NOFOLLOW` temporary file renamed within the handle); the harness's skill copies
+random `O_EXCL | O_NOFOLLOW` temporary file renamed within the handle). The editor's listing,
+folder creation and deletion, and the removal of task, shell and draft attachments, walk the
+resolved folder from the sandbox directory with `open_dirs_below` (no real-path check, so no
+`/proc`) and list, `mkdirat`, or remove through `files::remove_tree` (bounded, handle by handle,
+a link unlinked, never followed)
+([SPEC-265](../.ai/specs/SPEC-265-editor-delete-folder-create-and-listing.md)); the harness's skill copies
 do the same and remove trees with `unlinkat`, and the launch preparation of the Claude config dir
 (`claude_config::ensure_claude_config`) opens `<home>/.claude` from the folder above the home and
 reads paths the agent wrote in a worktree's git files lexically, never on the host filesystem
 ([SPEC-253](../.ai/specs/SPEC-253-claude-config-dir-links-and-commondir-ca.md),
-[decision 0193](decisions/0193-the-claude-config-dir-is-walked-from-above-home-and-the-main-repository-is-read-from-the-git-layout.md)). Races are tested at pause points
+[decision 0193](decisions/0193-the-claude-config-dir-is-walked-from-above-home-and-the-main-repository-is-read-from-the-git-layout.md)).
+The disk upkeep counts a worktree, a CI job checkout or a cache only when every folder from the
+sandbox directory down to it is a real directory (`leftovers::no_link_between`), checks a cache
+again right before removing it through `leftovers::remove_below`'s `O_NOFOLLOW` handles, and an
+ended worktree again before Git removes it
+([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)).
+Races are tested at pause points
 (`yulius_app::race`, only with the `test-support` feature).
 
 ```mermaid
@@ -798,7 +812,8 @@ Every user has one plain Claude Code session per sandbox, shown as the **Superag
 ([SPEC-021](../.ai/specs/SPEC-021-in-this-bar-we-need-to-add-cockpit-at-th.md),
 [decision 0020](decisions/0020-cockpit-as-a-plain-shell-session.md)); the code and the API still
 call it the Cockpit. It is a sandbox shell of kind `cockpit` that runs `claude` instead of the
-login shell: no hooks, settings or briefing, a pool subscription's token, and the newest
+login shell: no lifecycle hooks, status line or briefing (its only hook is the redaction hook,
+below), a pool subscription's token, and the newest
 conversation resumed whenever it starts again. On a contained server it runs in Claude Code's
 bypass-permissions mode, as task runs do (`--dangerously-skip-permissions`, `IS_SANDBOX=1`,
 [SPEC-208](../.ai/specs/SPEC-208-tasks-and-the-superagent-should-run-in-d.md),
@@ -827,15 +842,15 @@ and its viewers are told, and the move starts no second Cockpit on the same conv
 It manages the project through the Yulius MCP server
 ([SPEC-037](../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md),
 [decision 0029](decisions/0029-cockpit-manages-through-mcp.md)). Its bearer (`ck_…`) is derived
-from the shell's persisted host token, and it is served only the management tools: tasks,
-automations, workflows and sessions. Those tools act for a person (`ProjectCaller`): the Cockpit's
+from the shell's persisted host token, and it is served the management tools (tasks,
+automations, workflows, sessions), `task_message` and the vault tools (below). Those tools act for a person (`ProjectCaller`): the Cockpit's
 owner, or a task's owner when a task's agent calls them. `task_create` takes the same path as
 New task; `task_stop`, `task_archive`, `task_delete`, `automation_delete`, `automation_run_now`
 and `automation_template_enable` call the UI's own functions with that person and the caller as
 the audit actor, never on the caller's own task
 ([SPEC-066](../.ai/specs/SPEC-066-fix-275-293-cockpit-and-agents-manage-ta.md),
 [decision 0049](decisions/0049-management-tools-cover-the-task-and-automation-lifecycle.md)).
-`task_message`, the Superagent's only, passes on what its person says to a task
+`task_message`, the Superagent's and the remote MCP's (never a task agent's), passes on what its person says to a task
 (`App::tool_task_message`, `task_message.rs`): a task that never started gets it in its request
 through `App::queue_task_message` (SPEC-052); a running one gets it through `App::send_input` as
 one bracketed paste labelled with the person, then a separate Enter, refused before Claude Code's
@@ -920,9 +935,11 @@ handle only when asked
 
 `yulius secrets import` (`crates/yulius/src/cli.rs`, `yulius-import`'s `secrets_import` and
 `dotenv`) adds secrets from a computer through the same create calls as the Secrets page, with
-the CLI's bearer token: it reads a dotenv file, stdin or hidden prompts, lists the caller's
-existing team titles or a sandbox's agent names, classifies each secret, asks for `yes` at
-`/dev/tty` and posts the new ones once each (no retry). Values stay in `Secret` (redacted `Debug`,
+the `yulius login` token, else the `yulius remote login` one: it reads a dotenv file, stdin,
+hidden prompts or whole files (`--from-file NAME=PATH`), lists the caller's existing team titles
+or a sandbox's agent names, classifies each secret, asks for `yes` at `/dev/tty` (unless `--yes`
+runs with an `operate` token, [decision 0194](decisions/0194-an-operate-token-confirms-for-its-person-s-laptop-onboarding.md))
+and posts the new ones once each (no retry). Values stay in `Secret` (redacted `Debug`,
 wiped on drop) and never reach its output
 ([SPEC-205](../.ai/specs/SPEC-205-to-cli-add-and-option-to-import-secrets.md),
 [decision 0163](decisions/0163-the-cli-imports-secrets-after-a-typed-yes-and-shows-no-value.md)).
@@ -935,7 +952,7 @@ sequenceDiagram
     P->>C: --to agent .env (or stdin, or hidden prompts)
     C->>App: GET /api/sandboxes, GET agent-secrets (names only)
     C-->>P: names: new / exists (skipped) / skipped with reason
-    P->>C: yes (typed at /dev/tty)
+    P->>C: yes at /dev/tty (or --yes with an operate token)
     C->>App: POST agent-secrets per new name (hosts [], once, audited by name)
     C-->>P: imported / failed per name, summary
 ```
@@ -984,16 +1001,18 @@ turns it off when adding it or in Edit. Then the proposed hosts are bound at onc
 (`allowed_for`), with no person in between. Secrets added before keep it off. Without it the
 request waits on the secret (`requested_hosts`) until a person who manages it allows it, so an
 agent misled by injected content cannot send that secret to another server; and production gets
-it only through the production-only allowance (`cd_prod`), which excludes `auto_allow`.
+it only through the production-only allowance (`cd_prod`), which excludes `auto_allow`, `.env`
+copies and bound hosts: each compare-and-set of the store refuses the pair itself, so two people
+answering at once cannot end with both (SPEC-134 M-B, SPEC-262).
 
-Every team and agent secret belongs to one sandbox (`sandbox_id`, the default) or is team-wide
+Every team secret belongs to one sandbox (`sandbox_id`, the default) or is team-wide
 (`NULL`). A sandbox's team secret is read by the people who can view that sandbox
 (`/api/sandboxes/{sid}/team-secrets`, 404 elsewhere, its activity hidden) and changed by those
 who write to it; team-wide ones are everyone's (`/api/team-secrets`). Schema version 35 listed
 the team secrets (none had a sandbox) in `vault_scope_pending`; at the next start, before
 serving, `App::assign_vault_scopes` (`vault/scopes.rs`) re-seals each into a copy per sandbox and
 replaces it in one transaction (`vault_assign`), audited `vault.team.assign` by `yulius`. Agent
-secrets an administrator made team-wide stay team-wide.
+secrets have their own scopes (below).
 
 ## Agent secret scopes
 
@@ -1030,8 +1049,9 @@ flowchart LR
   C --> R["Yulius' redaction of the project (every candidate)"]
 ```
 
-Storing a host or `.env` request, or a host bound at once, publishes `secrets.updated` to the
-secret's sandbox (to every sandbox for an instance-wide secret), so an open Secrets page reads its
+Storing a host or `.env` request, a host bound at once, a secret an agent created, or a global or
+personal secret switched on or off for a project publishes `secrets.updated` to a project
+secret's sandbox (to everyone for a global or personal secret), so an open Secrets page reads its
 list again without a reload ([SPEC-209](../.ai/specs/SPEC-209-allow-didnt-show-instantly-but-i-needed.md)).
 
 ```mermaid
@@ -1074,15 +1094,17 @@ job starts, `App::ci_job_secrets` (`crates/yulius-app/src/ci/exec.rs`) looks up 
 the integration branch's `[[ci.jobs]]` entry of the same name in the integration head GitHub
 reports, taken into the CD mirror only Yulius writes (`App::ci_verified_gate`): CI jobs can write the
 sandbox clone, so its copy only says whether to look. A pull request's own `yulius.toml` is never
-asked. A granted job gets the placeholders, the CA bundle and a proxy
-credential of its own, held in memory until its process ended. The proxy's `EgressClient` is then a
-CI caller, `ci:<run>`, that may use only the granted secrets toward their bound hosts; each use is
-audited under that actor.
+asked, and the grant binds the entry's command too: a pull request tested with its own jobs that
+reuses a granted name for another command runs it without any secret, and its output says why
+([SPEC-264](../.ai/specs/SPEC-264-ci-grants-agent-secrets-only-to-the-trus.md), ADR-0196). A
+granted job gets the placeholders, the CA bundle and a proxy credential of its own, held in memory
+until its process ended. The proxy's `EgressClient` is then a CI caller, `ci:<run>`, that may use
+only the granted secrets toward their bound hosts; each use is audited under that actor.
 
 ```mermaid
 flowchart LR
   GH["GitHub: integration head"] -->|"exact commit, objects checked"| MIR["CD mirror (Yulius only)"]
-  MIR -->|"yulius.toml, e.g. security: secrets = VIDOC_API_KEY; grant by job name"| EXEC["CI job start (ci_job_secrets)"]
+  MIR -->|"yulius.toml, e.g. security: secrets = VIDOC_API_KEY; grant by job name and command"| EXEC["CI job start (ci_job_secrets)"]
   CLONE["sandbox clone (CI jobs can write it)"] -.->|"only whether to look"| EXEC
   PR["pull request's own yulius.toml"] -.->|"never read for grants"| EXEC
   EXEC -->|"placeholder, CA, proxy credential"| JOB["CI job (pull request code)"]
@@ -1101,7 +1123,8 @@ Vidoc is an optional instance service, like Jev
   or read from `YULIUS_VIDOC_API_KEY_FILE` while nothing is saved.
 - **Where it applies.** The vault adds it as the virtual agent secret `VIDOC_API_KEY`
   (`App::applied_agent_secrets`, `vault/mod.rs`), bound to `model.vidocsecurity.com` only, for every
-  sandbox without an agent secret of that name. That covers agent runs and the Superagent, and CI
+  run that gets no agent secret of that name (the project's, a global one switched on for it, or
+  for agent runs the person's own: [Agent secret scopes](#agent-secret-scopes)). That covers agent runs and the Superagent, and CI
   jobs whose integration-branch grant names it. The egress proxy injects, audits (`instance:vidoc`)
   and redacts it as it does any agent secret. MCP references, `.env` copies and browser filling
   never resolve it.
@@ -1144,7 +1167,12 @@ tab (`pages/cicd.js`, ADR-0125); "the CD page" below is its CD tab, `/s/<slug>/c
 A CI run or a deploy is a view of its tab at its own address (`?run=<id>`, `runview.js`), with a
 sticky live summary, and the Now summary above both tabs (`pages/cinow.js`) lists what runs and
 links to it ([decision 0180](decisions/0180-ci-and-cd-runs-are-views-of-the-ci-cd-page.md)).
-`yulius.toml` defines `[cd.dev]` and `[cd.prod]`; Yulius reads them only at the heads of the
+`yulius.toml` defines `[cd.dev]` and `[cd.prod]` and any other `[cd.<name>]` with its `stage`
+(`dev` or `prod`, [SPEC-257](../.ai/specs/SPEC-257-current-ci-cd-is-too-strict-dev-prod-is.md),
+[decision 0195](decisions/0195-cd-environments-are-named-and-take-their-rules-from-a-stage.md)):
+the stage carries every rule below, so "dev" and "production" mean the stages. A name's stage is
+resolved at the verified integration head first, else at the production head
+(`yulius_domain::cd::resolve_stage`). Yulius reads them only at the heads of the
 protected branches (`crates/yulius-app/src/ci/cd.rs`), so a task branch or a worktree never
 changes what a deploy runs. `yulius_domain::cd::authorize` decides who may deploy: dev a
 person with write access or an agent (`cd_deploy`), production only an administrator who typed the
@@ -1170,7 +1198,7 @@ sequenceDiagram
     participant S as Sandbox (process host)
     A->>App: deploy dev (cd_deploy / CD page)
     App->>App: authorize (production: administrator + typed slug)
-    App->>G: fetch; GitHub's dev head into the private mirror (objects checked), read [cd.dev]
+    App->>G: fetch: GitHub's dev head into the private mirror (objects checked), read [cd.dev]
     App->>V: values of the named secrets (allowed for this environment)
     V-->>App: values, or "nothing ran: a person allows …"
     App->>App: record the run (cd_runs) and audit cd.deploy
@@ -1182,8 +1210,8 @@ sequenceDiagram
 ```mermaid
 flowchart LR
   M["merge into dev"] -->|"deploys nothing"| DEV
-  DEV["dev: [cd.dev] at the dev head"] -.->|"cd_deploy, CD page, nightly automation"| RUN1["CD run"]
-  P["a person on the CD page, slug typed"] --> PROMO["promote dev into main"] --> PROD["prod: [cd.prod] at the main head"] --> RUN2["CD run"]
+  DEV["dev stage: [cd.dev], [cd.staging] … at the dev head"] -.->|"cd_deploy, CD page, nightly automation"| RUN1["CD run"]
+  P["a person on the CD page, slug typed"] --> PROMO["promote dev into main"] --> PROD["prod stage: [cd.prod], [cd.platform] … at the main head"] --> RUN2["CD run"]
   AG["agent"] -.->|"refused"| P
 ```
 
@@ -1680,10 +1708,10 @@ sequenceDiagram
     participant S as Server (App::note_presence)
     participant B as Bob's notepad
     A->>S: PUT notes/presence {revision, selection, hello, client, seq} (≤ 1 per 100 ms, every 15 s)
-    S-->>B: note.presence (team: everyone; sandbox: its viewers)
+    S-->>B: note.presence (team: everyone, sandbox: its viewers)
     B->>S: PUT notes/presence (answers a hello)
     S-->>A: note.presence
-    Note over A,B: offsets mapped through each side's unsaved typing; another revision hides
+    Note over A,B: offsets mapped through each side's unsaved typing, another revision hides
     A->>S: PUT notes/presence {selection: null, seq} (hidden, another tab, page gone)
     Note over B: an update with a lower seq from that tab, arriving later, is dropped
 ```
@@ -1729,7 +1757,7 @@ sequenceDiagram
             S-->>E: 204
         else changed (agent, shell, teammate's save)
             S-->>E: {content, sha256}
-            E-->>E: unedited: one edit of the changed part; edited: "Changed on disk"
+            E-->>E: unedited: one edit of the changed part, edited: "Changed on disk"
         end
     end
 ```
@@ -1750,7 +1778,7 @@ sequenceDiagram
     else someone saved meanwhile
         S-->>A: 409 conflict
         A->>S: GET notes
-        A-->>A: same text: adopt; else Keep mine / Use theirs
+        A-->>A: same text: adopt, else Keep mine / Use theirs
     end
 ```
 

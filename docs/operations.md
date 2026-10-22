@@ -1,7 +1,8 @@
 # Operating Yulius
 
 Yulius is one Rust binary, `yulius`, that serves the web UI and API, supervises agent sessions and
-provides the CLI (`yulius onboard` alias `yulius import`, `yulius login`, `yulius secrets import`). This guide covers a single Linux VM with a TLS
+provides the CLI (`yulius onboard` alias `yulius import`, `yulius login`, `yulius secrets import`,
+and `yulius remote|project|task|ci` for a laptop's agent, [remote-control.md](remote-control.md)). This guide covers a single Linux VM with a TLS
 reverse proxy in front. It satisfies SPEC-001 AC-OPS-1 as documentation only: **a deployment has not
 been performed or verified** as part of the implementation work.
 
@@ -329,7 +330,9 @@ not know the secret, so whatever headers they send count against `127.0.0.1`. Ne
 secret is visible to contained runs: `/var/lib/yulius` is never bound into them, and root-only
 files under `/etc` are unreadable to the service user and skipped when the sandbox base is built.
 Without containment (`YULIUS_CONTAINED=false`) agents run as the service user and could read
-Yulius's copy, like `master.key`. Keep Caddy's admin API unreachable from runs without
+Yulius's copy, like `master.key`. Task runs and the Superagent then also keep Claude Code's
+approvals (no `--dangerously-skip-permissions`), so a person answers each prompt
+([decision 0165](decisions/0165-the-superagent-bypasses-approvals-on-contained-servers.md)). Keep Caddy's admin API unreachable from runs without
 isolation: it can rewrite the proxy.
 
 ### Optional: live previews (wildcard DNS and TLS)
@@ -500,7 +503,7 @@ other instead of overlapping.
 | `YULIUS_SANDBOX_MEMORY_GB` | the RAM but an eighth (at least 4 GiB kept for the host) | `memory.max` per sandbox. One sandbox runs all its agents and CI jobs: size it to the sessions, not to half the host. |
 | `YULIUS_SANDBOX_CPUS` | none | `cpu.max` per sandbox. Without it the CPU is shared by weight: a quota of all CPUs but two throttled the sandbox in half of its busy periods while the two CPUs it left idled (SPEC-082). The sandbox's capacity for budgets is this limit, else the host's CPUs. |
 | `YULIUS_SANDBOX_PIDS` | 8192 | `pids.max` per sandbox. |
-| `YULIUS_SANDBOX_DISK_GB` | 100 | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. |
+| `YULIUS_SANDBOX_DISK_GB` | 100 | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. Caches are found and removed only with no link from the sandbox directory down, and on Linux only ([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)). |
 | `YULIUS_SANDBOX_FORWARD` | — | Extra host loopback ports reachable inside every sandbox at the same port (for example a loopback MCP server), comma-separated. |
 | `YULIUS_SANDBOX_IDLE_MINUTES` | 5 | A holder without runs is stopped after this long; the next run starts a fresh one on the newest base. A sandbox's Docker engine stops after this long without a client and without a running container. |
 | `YULIUS_SANDBOX_DOCKER` | `on` | `on`: every isolated sandbox gets its own Docker engine when its system has `dockerd` and the cgroup delegation is on; `off`: none (the briefing then says there is no engine, and `docker` answers why). |
@@ -710,9 +713,11 @@ The key is managed like the Jev key:
 
 Agents and CI jobs never get the key. They get `VIDOC_API_KEY=yulius-secret-VIDOC_API_KEY`, and the
 egress proxy replaces it toward `model.vidocsecurity.com` only. CI jobs get it only when their
-`yulius.toml` entry names it (`secrets = "VIDOC_API_KEY"`). A project's own agent secret named
-`VIDOC_API_KEY` wins over the instance key. Each use is in the secrets audit (`instance:vidoc`).
-Projects onboarded with a key get a `security` CI job, `yulius security-scan --ci`. The scan needs
+`yulius.toml` entry names it (`secrets = "VIDOC_API_KEY"`). An agent secret named `VIDOC_API_KEY`
+that reaches the run wins over the instance key
+([architecture](architecture.md#agent-secret-scopes)). Each use is in the secrets audit
+(`instance:vidoc`). The built-in `security` job (`yulius security-scan --ci`) is described above;
+onboarding adds no job, only the AGENTS.md rule. The scan needs
 `python3` 3.11 or later in the sandboxes. Agents and CI jobs start with an environment of their own,
 so `YULIUS_PYTHON`, which names another interpreter, is set in the job's command or in the session,
 not on the service.
@@ -749,6 +754,8 @@ YULIUS_VIDOC_API_KEY_FILE`) or `Vidoc is off: no instance key`.
    when to add subscriptions (SPEC-002 ADR-17). Claude's sign-in here (`claude setup-token`) may
    not read Claude's usage endpoint (it lacks the `user:profile` scope), so a subscription's usage
    shows once a task runs on it: the running sessions report it through Claude Code's status line.
+   Do this before importing: until a Claude account is usable, Yulius refuses every agent start a
+   person asks for, Start onboarding included (SPEC-246, ADR-0190).
 6. Import or create projects (sandboxes). Product and Studio are detected and get the `product` and
    `studio` delivery presets.
 
@@ -904,19 +911,23 @@ with `repo_cleanup`.
 
 ### CD on this machine
 
-CD (deployment, SPEC-134) needs no configuration on the server: projects define `[cd.dev]` and
-`[cd.prod]` in their `yulius.toml`. A run uses the CI job timeout (`--ci-job-timeout-min`, `YULIUS_CI_JOB_TIMEOUT_MIN`) and the
+CD (deployment, SPEC-134) needs no configuration on the server: projects define `[cd.dev]`, `[cd.prod]`
+and any other `[cd.<name>]` with its `stage` in their `yulius.toml` ([API](api.md#cd-deployment)). A run uses the CI job timeout (`--ci-job-timeout-min`, `YULIUS_CI_JOB_TIMEOUT_MIN`) and the
 containment: dev runs inside the sandbox (its tools, its network); production joins only the
 sandbox's network (no host loopback) on the host's read-only `/usr`, `/etc` and `/opt`, so its
 scripts install the tools they need into `$YULIUS_CD_CACHE`. Files: `<data>/cd/<id>/source.git` (the verified
-mirror), `<data>/cd/<id>/cache/<env>` (`$YULIUS_CD_CACHE`) and `<data>/runs/cd-<run>/work` (the
-commit's tree, `HOME` and log, removed after each run); none is visible to agents. Runs are kept
+mirror), `<data>/cd/<id>/environments.git` (the mirror delivery environment runs take their commits
+from, ADR-0175), `<data>/cd/<id>/cache/<name>` (`$YULIUS_CD_CACHE`; `cache/<stage>.<name>` for an
+environment other than `dev` and `prod`, so a name moved to the other stage gets a fresh cache),
+and `<data>/runs/cd-<run>/work` or `<data>/runs/env-<run>/work` (the commit's tree, `HOME` and log, removed
+after each run); none is visible to agents. Runs are kept
 14 days, 50 per environment, and each environment's last passed run always.
 
 - **Secrets.** A dev run gets the real value of each secret its table names once a person allowed
   it outside the proxy on the Secrets page (the same allowance as copying it into `.env`); a
-  production run only once someone who manages it chose "Allow for production deploys". That
-  choice is not offered for a secret agents use (bound hosts or `.env` copies): a production
+  production run gets a secret agents set up ("Let agents set it up", the default, ADR-0171) or
+  one that someone who manages it chose "Allow for production deploys" for, and never a personal
+  secret (ADR-0186). That choice is not offered for a secret agents use (bound hosts or `.env` copies): a production
   secret is exclusive, so production needs a separate secret with its own name (ADR-0109). Output is
   redacted, but scripts hold the values while they run, so allow only what a deploy needs.
 - **Egress off.** With `YULIUS_SANDBOX_EGRESS=none` sandboxes have no network, and production
@@ -954,8 +965,9 @@ transcript, 10 000 sessions and 8 GiB per sandbox), listed on the sandbox's Sess
 searched by agents (`sessions_search`, `session_read`). The uploader or an admin deletes one on
 its page; deletions are audited (`session.deleted`). The command only uploads: a new sandbox's
 onboarding task (adapting the repository to the Yulius standards) waits until someone clicks
-**Start onboarding** on the sandbox page in the browser, which the CLI cannot do (SPEC-051,
-ADR-0038). New tasks wait until onboarding is ready (or an admin skips it); `yulius onboard
+**Start onboarding** on the sandbox page, or the person's own agent runs `yulius project onboard`
+with an `operate` token ([remote-control.md](remote-control.md)); a `yulius login` token cannot
+start it (SPEC-051, ADR-0038, ADR-0188). New tasks wait until onboarding is ready (or an admin skips it); `yulius onboard
 --status` and the sandbox page say what is pending.
 
 A checkout that is not on GitHub (no remote, or another host) goes to a playground instead
@@ -976,8 +988,8 @@ Its system layer, holder state and CD files go with the leftovers of any removed
 
 ### Importing secrets (`yulius secrets import`)
 
-Keys held on a computer go into the vault from the CLI, signed in with `yulius login`
-(SPEC-205, ADR-0163):
+Keys held on a computer go into the vault from the CLI, signed in with `yulius login`, or with
+`yulius remote login` and a token from Settings → Connect your local agent (SPEC-205, ADR-0163):
 
 ```sh
 yulius secrets import --to agent .env      # agent secrets of this checkout's sandbox
@@ -997,10 +1009,13 @@ server, the target and every name as `new` (marked `with description (agents rea
 `with notes` when a comment goes along), `exists` (skipped: nothing is overwritten) or skipped
 with the reason (agent names are `[A-Z][A-Z0-9_]*`, values at least 8 characters on one line; a
 PEM or OpenSSH key is kept as a key file, but its first line alone is refused). It then sends
-nothing until `yes` is typed at the terminal; there is no flag to skip it, so it cannot run
-unattended. Team and agent secrets go to the sandbox (`--sandbox`, else the checkout's GitHub
-repository); `--instance` makes them team-wide, for every sandbox (agent secrets: instance
-administrators). Agent secrets start bound to no host and, as on the Secrets page, agents set them
+nothing until `yes` is typed at the terminal, except with `--yes` and the `operate` token that
+`yulius remote login` stored (refused with any other token; ADR-0194). `--from-file NAME=PATH`
+imports a whole file, such as a key, as one secret, and `--env-files` creates agent secrets
+already allowed into `.env` files ([remote-control.md](remote-control.md#secrets)). Team and agent
+secrets go to the sandbox (`--sandbox`, else the checkout's GitHub repository); `--instance` makes
+team secrets team-wide, and agent secrets global (instance administrators), switched on for that
+sandbox ([ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.md)). Agent secrets start bound to no host and, as on the Secrets page, agents set them
 up: they bind the hosts they need and production deploys get them, which the list says before
 `yes`; `--confirm-hosts` makes a person allow each host and production deploys instead (SPEC-216).
 
@@ -1058,7 +1073,7 @@ task that started working again keeps its files. Every deletion is audited as `l
 | Git's record of a worktree inside the sandbox directory whose directory is gone (`.git/worktrees/<name>`), not locked | always (that record only; a worktree an agent keeps in its own `/tmp` keeps its record) | yes |
 | A CI checkout of a job or lane no run used for 14 days | while no CI run of that sandbox runs | yes |
 | A draft attachment older than 7 days | always | yes |
-| `<data>/runs/<name>` that no attempt record, live run, active CI job or running deploy owns, untouched for a day (an ended task's last run, with its final terminal screen, stays) | always | yes |
+| `<data>/runs/<name>` that no attempt record, live run, active CI job, running deploy or running delivery environment run owns, untouched for a day (an ended task's last run, with its final terminal screen, stays) | always | yes |
 | Transcripts of a deleted task; a Docker smoke test's sandbox whose process is gone | always | yes |
 | An unused sandbox base (not current, no live holder mounts it) | always | yes |
 | A worktree no task owns; a directory under `sandboxes/`, `sysroots/`, `runtime/sandboxes/`, `cd/` or `displays/` that no sandbox record owns | listed | **only a person** |
@@ -1258,6 +1273,24 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
 
 ### Notes for specific upgrades
 
+- Upgrading to named CD environments (SPEC-257, ADR-0195, 2026-10-21): migration 0041 gives each
+  CD run its `stage`; runs of `dev` and `prod` keep theirs. `[cd.dev]` and `[cd.prod]` work as
+  before; nothing to configure.
+- Upgrading to remote control (SPEC-247, ADR-0188, 2026-10-20): migration 0040 makes every
+  existing API token a `cli` token: the REST API as before, never the remote MCP. A person's
+  laptop agent needs a new `operate` or `read` token from Settings → Connect your local agent
+  ([remote-control.md](remote-control.md)).
+- Upgrading to agent secret scopes (SPEC-245, ADR-0186, 2026-10-20): migration 0039 turns each
+  team-wide agent secret into a global one, switched on for every live sandbox, so no run loses
+  one. A project added later gets a global secret only when an administrator switches it on
+  (Secrets → Global). Project and team secrets are unchanged.
+- Upgrading to MCP server origins (SPEC-218, 2026-10-18): migration 0037 marks the servers the
+  audit log records as imported from a repository's `.mcp.json`; their Test never runs on the
+  host. A person who changes such a server's command takes it over.
+- Upgrading to agents setting secrets up (SPEC-216, ADR-0171, 2026-10-17): migration 0035 keeps
+  every existing agent secret on a person's confirmation (`auto_allow` off; new ones default to
+  on), and the first start copies each team-wide team secret into every sandbox (audited
+  `vault.team.assign`; [architecture](architecture.md#agent-secret-hosts)).
 - Upgrading to leftovers cleanup (SPEC-215, task #202, ADR-0170): no migration. The first start
   of the new version deletes the existing safe leftovers two minutes in, the removed product
   sandbox's included (its worktrees, CI checkouts and system layer, more than 100 GB). Nothing is

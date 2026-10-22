@@ -156,15 +156,29 @@ const NO_DISK_REASON: &str = "waiting for disk space: a job was refused over the
 const NO_DISK_REQUEUE: &str =
     "[yulius] queued again: the sandbox was over its disk quota when this run started\n";
 
-/// The agent secrets a job of definition `key` may use (SPEC-142 CSE-002): what the integration
-/// branch's entry of that name grants. Only the integration branch's `[[ci.jobs]]` grant; a
-/// profile gate grants nothing, and neither does a pull request's own configuration (it never
-/// reaches `gate`, which [`App::ci_gate`] reads from the integration branch).
-fn granted(gate: Option<&Gate>, key: &str) -> Vec<String> {
+/// The integration branch's `[[ci.jobs]]` entry named `key`, the only one that grants agent
+/// secrets (SPEC-142 CSE-002): a profile gate grants nothing, and neither does a pull request's
+/// own configuration (it never reaches `gate`, which [`App::ci_gate`] reads from the integration
+/// branch).
+fn trusted_job<'g>(gate: Option<&'g Gate>, key: &str) -> Option<&'g dom::Job> {
     gate.filter(|gate| gate.source == GateSource::ProjectConfig)
         .and_then(|gate| gate.jobs.iter().find(|job| job.key == key))
+}
+
+/// The agent secrets a job of definition `key` running `command` may use (SPEC-264 CSG-001):
+/// what the integration branch's entry of that name grants, when it runs that very command. A
+/// pull request's own job reusing a granted name for another command gets nothing (#659).
+fn granted(gate: Option<&Gate>, key: &str, command: &str) -> Vec<String> {
+    trusted_job(gate, key)
+        .filter(|job| job.command == command)
         .map(|job| job.secrets.clone())
         .unwrap_or_default()
+}
+
+/// Whether the integration branch grants secrets to a job named `key` but for another command
+/// than `command` (SPEC-264 CSG-002), so the job's output can say why it got none.
+fn granted_elsewhere(gate: Option<&Gate>, key: &str, command: &str) -> bool {
+    trusted_job(gate, key).is_some_and(|job| !job.secrets.is_empty() && job.command != command)
 }
 
 /// A CI job's proxy credential (SPEC-142 CSE-004): closed when dropped, so it ends on every
@@ -747,13 +761,24 @@ impl App {
         plan: &mut LaunchPlan,
         ring: &mut OutputRing,
     ) -> Option<CiProxy<'_>> {
-        // The sandbox clone (which CI jobs can write) only says whether to look; the grant itself
-        // is read from the verified integration head (review B1).
-        if granted(self.ci_gate(sandbox).await.gate.as_ref(), &job.key).is_empty() {
+        // The sandbox clone (which CI jobs can write) only says whether to look, by name alone so
+        // that another command is explained; the grant itself is read from the verified
+        // integration head (review B1).
+        if trusted_job(self.ci_gate(sandbox).await.gate.as_ref(), &job.key)
+            .is_none_or(|trusted| trusted.secrets.is_empty())
+        {
             return None;
         }
         let grant = match self.ci_verified_gate(sandbox).await {
-            Ok(gate) => granted(gate.as_ref(), &job.key),
+            Ok(gate) if granted_elsewhere(gate.as_ref(), &job.key, &job.command) => {
+                ring.push_str(
+                    "[yulius] agent secrets: none; this job's command is not the one the \
+                     integration branch grants them to (if that branch changed it after this run \
+                     was queued, run it again)\n",
+                );
+                return None;
+            }
+            Ok(gate) => granted(gate.as_ref(), &job.key, &job.command),
             Err(err) => {
                 ring.push_str(&format!(
                     "[yulius] agent secrets: none; the integration branch's grant could not be verified: {}\n",
@@ -1290,8 +1315,9 @@ mod tests {
         assert_eq!(ci_join(bare.clone()), bare);
     }
 
-    /// SPEC-142 CSE-002: only the integration branch's `[[ci.jobs]]` entry of the same name
-    /// grants secrets; the profile's gate and a pull request's own jobs grant nothing.
+    /// SPEC-142 CSE-002, SPEC-264 CSG-001/002: only the integration branch's `[[ci.jobs]]` entry
+    /// of the same name and command grants secrets; the profile's gate, a pull request's own
+    /// jobs and a same-named job running another command get nothing.
     #[test]
     fn only_the_integration_branch_jobs_grant_secrets() {
         let job = |key: &str, secrets: &[&str]| dom::Job {
@@ -1307,12 +1333,30 @@ mod tests {
             source,
         };
         let project = gate(GateSource::ProjectConfig);
-        assert_eq!(granted(Some(&project), "scan"), ["VIDOC_API_KEY"]);
-        assert!(granted(Some(&project), "lint").is_empty());
-        assert!(granted(Some(&project), "other").is_empty());
-        assert!(granted(Some(&gate(GateSource::Profile)), "scan").is_empty());
-        assert!(granted(Some(&gate(GateSource::PullRequest)), "scan").is_empty());
-        assert!(granted(None, "scan").is_empty());
+        assert_eq!(granted(Some(&project), "scan", "x"), ["VIDOC_API_KEY"]);
+        assert!(!granted_elsewhere(Some(&project), "scan", "x"));
+        for other in ["y", "x ", " x", "X", ""] {
+            assert!(
+                granted(Some(&project), "scan", other).is_empty(),
+                "{other:?}"
+            );
+            assert!(
+                granted_elsewhere(Some(&project), "scan", other),
+                "{other:?}"
+            );
+        }
+        assert!(granted(Some(&project), "lint", "x").is_empty());
+        assert!(
+            !granted_elsewhere(Some(&project), "lint", "y"),
+            "lint grants nothing"
+        );
+        assert!(granted(Some(&project), "other", "x").is_empty());
+        assert!(!granted_elsewhere(Some(&project), "other", "x"));
+        for source in [GateSource::Profile, GateSource::PullRequest] {
+            assert!(granted(Some(&gate(source)), "scan", "x").is_empty());
+            assert!(!granted_elsewhere(Some(&gate(source)), "scan", "y"));
+        }
+        assert!(granted(None, "scan", "x").is_empty());
     }
 
     /// SPEC-142 CSE-003: the run's files outside the sandbox (the CA bundle) are readable

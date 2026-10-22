@@ -881,3 +881,154 @@ async fn a_save_never_lands_in_a_folder_swapped_for_a_link_after_the_check() -> 
     assert_eq!(saved.status, StatusCode::FORBIDDEN, "{:?}", saved.body);
     Ok(())
 }
+
+/// A sandbox `s1` whose `repo/docs` holds `a.txt` and `sub/b.txt`, a host folder `host` holding
+/// the same names, and a hook swapping `repo/docs` for a link to `host` at `point` (#660).
+async fn docs_swapped_at(
+    point: yulius_app::race::Point,
+) -> Result<(support::Harness, support::Creds, std::path::PathBuf), Box<dyn std::error::Error>> {
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    let repo = data.join("sandboxes/s1/repo");
+    let outside = data.join("host");
+    for folder in [repo.join("docs"), outside.clone()] {
+        std::fs::create_dir_all(folder.join("sub"))?;
+        std::fs::write(folder.join("a.txt"), "precious\n")?;
+        std::fs::write(folder.join("sub/b.txt"), "precious\n")?;
+    }
+    let (folder, target) = (repo.join("docs"), outside.clone());
+    yulius_app::race::on(point, &repo, move || {
+        swap_for_link(&folder, &target).ok();
+    });
+    Ok((h, alice, outside))
+}
+
+/// The names below `dir`, sorted, as `a`, `sub`, `sub/b.txt`.
+fn tree(dir: &std::path::Path) -> std::io::Result<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if entry.file_type()?.is_dir() {
+            names.extend(
+                tree(&entry.path())?
+                    .into_iter()
+                    .map(|below| format!("{name}/{below}")),
+            );
+        }
+        names.push(name);
+    }
+    names.sort();
+    Ok(names)
+}
+
+#[tokio::test]
+async fn a_delete_never_removes_through_a_folder_swapped_for_a_link_after_the_check() -> TestResult
+{
+    for path in ["docs/a.txt", "docs/sub"] {
+        let (h, alice, outside) = docs_swapped_at(yulius_app::race::Point::FileDelete).await?;
+        let deleted = call(
+            &h.router,
+            Method::DELETE,
+            &format!("/api/sandboxes/s1/files?path={path}"),
+            None,
+            &alice,
+        )
+        .await?;
+        assert_eq!(
+            tree(&outside)?,
+            ["a.txt", "sub", "sub/b.txt"],
+            "{path}: {:?}",
+            deleted.body
+        );
+        assert_eq!(deleted.status, StatusCode::FORBIDDEN, "{:?}", deleted.body);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_folder_is_never_created_through_a_parent_swapped_for_a_link_after_the_check()
+-> TestResult {
+    let (h, alice, outside) = docs_swapped_at(yulius_app::race::Point::FileCreate).await?;
+    let created = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/files",
+        Some(json!({"path": "docs/new", "kind": "dir"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        tree(&outside)?,
+        ["a.txt", "sub", "sub/b.txt"],
+        "{:?}",
+        created.body
+    );
+    assert_eq!(created.status, StatusCode::FORBIDDEN, "{:?}", created.body);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_listing_refuses_a_folder_swapped_for_a_link_after_the_check() -> TestResult {
+    let (h, alice, outside) = docs_swapped_at(yulius_app::race::Point::FilesList).await?;
+    std::fs::write(outside.join("host-only.txt"), "x")?;
+    let listed = call(
+        &h.router,
+        Method::GET,
+        "/api/sandboxes/s1/files?path=docs",
+        None,
+        &alice,
+    )
+    .await?;
+    assert!(
+        !listed.body.to_string().contains("host-only"),
+        "a host folder was listed: {:?}",
+        listed.body
+    );
+    assert_eq!(listed.status, StatusCode::FORBIDDEN, "{:?}", listed.body);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_file_on_the_way_is_not_a_folder_to_create_in_or_delete_from() -> TestResult {
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let repo = h.app.config.data_dir.join("sandboxes/s1/repo");
+    std::fs::create_dir_all(repo.join("docs"))?;
+    std::fs::write(repo.join("docs/a.txt"), "x")?;
+    let created = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/files",
+        Some(json!({"path": "docs/a.txt/new", "kind": "dir"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        created.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        created.body
+    );
+    let deleted = call(
+        &h.router,
+        Method::DELETE,
+        "/api/sandboxes/s1/files?path=docs/a.txt/x",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        deleted.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        deleted.body
+    );
+    assert_eq!(std::fs::read_to_string(repo.join("docs/a.txt"))?, "x");
+    Ok(())
+}

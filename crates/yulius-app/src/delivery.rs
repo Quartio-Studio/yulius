@@ -3583,7 +3583,7 @@ impl App {
         let (sandbox, level) = self.require(&ctx.user, &sid, Action::Work).await?;
         crate::playground::refuse_in_playground(&sandbox, "Promotion")?;
         yulius_domain::cd::may_deploy(
-            yulius_domain::cd::CdEnv::Prod,
+            yulius_domain::cd::CdStage::Prod,
             yulius_domain::cd::Requester::Person {
                 administrator: level.allows(Action::Administer),
                 confirmation: confirm,

@@ -324,7 +324,8 @@ reason = "a granted job gets only the placeholder yulius-secret-VIDOC_API_KEY, w
 # CI exists to run a pull request's code: its tests and build scripts execute whatever the branch
 # says, so a job command from the branch's own `yulius.toml` (SPEC-142, F 2026-10-12) adds no
 # power. The job runs inside the sandbox's containment, with no agent secret unless the
-# integration branch grants it by name (ADR-0116), the way an agent of that sandbox already runs.
+# integration branch grants it by name and command (ADR-0116, ADR-0196), the way an agent of that
+# sandbox already runs.
 # Reported on task #205's change scan (SPEC-219), which edited `ci_watch` in this file; the job
 # launch predates it.
 [[ignore]]
@@ -387,3 +388,42 @@ reason = "uncontained is the development mode: agents and shells already run on 
 path = "crates/yulius-server/src/routes/accounts.rs"
 title = "Login terminal WebSocket may lack ownership verification"
 reason = "by design every instance administrator may watch any sign-in (SPEC-002 §7.2); require_instance_admin first; output is masked so no viewer sees the token (claude_login_masks_the_token_for_viewers_and_seals_it)"
+
+# A job's checkout directory is named after its key, but every key is a `[[ci.jobs]]` name that
+# `expand_jobs` accepts only as `[a-z0-9][a-z0-9_-]*` of at most 32 bytes (a pull request's own
+# configuration included), or a constant (`gate`, `security`): no `/`, `.` or empty key reaches
+# `checkout_name`. Tested by `ci::tests::jobs_expand_matrices_and_reject_bad_definitions`
+# (`../x`, `a/b`, `/tmp`, `..`). Reported (high) on task #250's change scan (SPEC-264), which
+# changed the secret grant in this file; `checkout_name` predates it (#155).
+[[ignore]]
+path = "crates/yulius-app/src/ci/exec.rs"
+title = "Path traversal in the CI checkout directory through an untrusted job key"
+reason = "job keys are [a-z0-9][a-z0-9_-]{0,31} (expand_jobs, valid_job_name) or constants; tested by ci::tests::jobs_expand_matrices_and_reject_bad_definitions"
+
+# #639 (SPEC-262): unconfirmed findings of task #200's change scans in code it did not touch,
+# triaged as false positives. Each holds the wording Vidoc used, so another finding about the same
+# code is still reported. The real ones of that triage were fixed instead.
+
+# The Git-ignore check keeps a person's `.env` values out of an accidental commit; it is no
+# boundary against the agent, which controls `.gitignore` and can un-ignore the file right after
+# any write as well as before it, so a re-check right before the write adds nothing (ADR-0105:
+# a person allowed the copy, and the agent never sees the values).
+[[ignore]]
+path = "crates/yulius-app/src/vault/env_files.rs"
+title = "TOCTOU on the Git disposable check before writing secret values"
+reason = "is_disposable guards an accidental commit, not the agent: it controls .gitignore and could un-ignore .env after any write, so a re-check adds nothing (SPEC-262, ADR-0105)"
+
+# Filed as #714. relative_components refuses a `.git` component of the target path, and
+# open_folder's `inside` refuses an opened folder whose real path has one, before any read or
+# write: env_files::tests::git_folders_are_refused.
+[[ignore]]
+path = "crates/yulius-app/src/vault/env_files.rs"
+title = "open_folder does not exclude .git despite documented invariant"
+reason = "relative_components refuses .git and inside() refuses a real path in .git; proven by env_files::tests::git_folders_are_refused (SPEC-262)"
+
+# MAX(number) + 1 and the INSERT run in one transaction on the store's single database thread,
+# and UNIQUE (sandbox_id, number) refuses a duplicate anyway.
+[[ignore]]
+path = "crates/yulius-store/src/tasks.rs"
+title = "Non-atomic task number allocation"
+reason = "one transaction on the single database thread, and UNIQUE (sandbox_id, number) refuses a duplicate (SPEC-262)"

@@ -4,8 +4,77 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-22
+
+- The usage-limit step-back and the task home's creation go through handles (SPEC-266, task #252,
+  fixes #661). The transcript `<home>/.claude/projects/<slug>/<session>.jsonl` is reached from
+  the folder above the home without following links, read only when it is a regular file, and
+  replaced by a random new file renamed within its folder, with the old permissions. A link on the
+  way or at the transcript now fails the step back (the resume goes on), where Yulius used to
+  read the link's target and replace the file it led to (or the link itself); a FIFO there no
+  longer hangs the run's start. A task's home
+  is made with `mkdirat` from its sandbox directory, so a `home` link fails the start.
+- The editor's delete, folder creation and listing, and the removal of task, shell and draft
+  attachments, go through folder handles (task #251, #660, SPEC-265, ADR-0174). A contained shell
+  that swapped a folder on the way for a link between the server's check and its action could make
+  a delete remove a host file or tree, a new folder land outside the sandbox, a listing show a host
+  folder, or attachment cleanup remove host files; each now opens its folder from the sandbox
+  directory without following links and fails with `403` (cleanup removes nothing). Pause-point
+  tests cover each race.
+- The disk upkeep no longer follows links into another sandbox (SPEC-263, task #249, fixes #649).
+  A sandbox that replaced its `worktrees`, a worktree entry, `ci` or `ci/jobs` with a link to
+  another sandbox's folder got that sandbox's caches pruned as its own. Worktrees, CI checkouts
+  and caches now count only with no link from the sandbox directory down, each cache is checked
+  again right before it is measured and removed (through `O_NOFOLLOW` handles, so on Linux only;
+  macOS development hosts no longer prune caches), and an ended worktree right before Git removes
+  it. Git's own worktree removal still resolves paths itself (noted on #649).
+- The Vidoc findings tracked in #639 are triaged (SPEC-262, task #248, fixes #639, #688, #697,
+  #714). Real ones are fixed test-first: the store refuses, in each compare-and-set, a production
+  allowance on a secret agents copy into `.env` files or have hosts for, and the reverse, so two
+  managers answering at once can no longer leave a secret both; audit reasons drop U+2028/U+2029
+  and every invisible format character; the status line drops control characters of repository
+  and branch names; document presence and the workflow count for the briefing read through a
+  checked handle, so a folder swapped for a link is not followed. The rest (the `.env` target's
+  Git-ignore check, unparseable stored host requests, the `.git` exclusion of dotenv targets,
+  task-number allocation) are dismissed with their reasons, those whose Vidoc wording is on record
+  as `[[ignore]]` entries.
+- A CI job gets the agent secrets the integration branch grants only when it runs the granted
+  entry's command too (task #250, #659, SPEC-264, ADR-0196). A pull request tested with its own
+  `[[ci.jobs]]` that reused a granted job's name, say `deploy`, for its own command ran that command
+  with the secret's placeholder and proxy; it now runs without any secret, and its output says
+  `this job's command is not the one the integration branch grants them to`. A pull request that
+  keeps the granted command keeps the grant.
+- The documentation matches what was merged since 2026-10-17 (task #246, documentation only). The
+  API reference lists the agent-secret scopes (`personal`, `enabled`, `shadowed_by`) and the
+  switch route `PUT …/agent-secrets/{id}/enabled`, the leftovers and Sandbox Docker admin routes,
+  the health and `yulius leftovers` internal routes, the composer's draft attachments, the
+  update's Docker re-check, the stop's 409s and how a lost run closes its task. Onboarding started
+  by an `operate` token, `yulius secrets import --yes`, `--from-file` and `--env-files`, the
+  remote CLI and dev-stage `cd_deploy` are described wherever the old rules were (operations,
+  product, architecture, remote control, ADR-0038 and ADR-0163 now link their amendments). The
+  architecture's top diagram puts the sandbox browser outside the holder, on its DevTools pipe;
+  the Superagent's tools, hook and `task_message` reach are corrected; the Vidoc key loses to any
+  agent secret of that name that reaches the run; named CD environments' files, the
+  production secrets rule and upgrade notes for migrations 0035, 0037, 0039, 0040 and 0041 are in
+  operations. Four architecture sequence diagrams that did not render (a `;` in a message ends a
+  Mermaid statement) render again; all 54 diagrams pass Mermaid 11's parser.
+
 ## 2026-10-21
 
+- A CI run's and a deploy's summary keeps its content off its edges (SPEC-259, task #245, fixes
+  #776). The sticky summary was a flat band with no inline padding, so its state, its facts and
+  "In Pipeline" touched the band's edges; it is now a card like the CI/CD page's Now line (12 px
+  inline padding, border, radius). Its loading shape has the loaded head's buttons (two for
+  writers, one for readers) and no reason bar, so on a phone it wraps as the loaded head does.
+- CD takes more environments than dev and production (SPEC-257, ADR-0195, task #243). A
+  repository that ships more than one thing, like a self-hosted release and the hosted platform
+  that serves it, or a staging machine next to dev, defines one `[cd.<name>]` table per target
+  with `stage = "dev"` or `stage = "prod"`. The stage carries the rules `[cd.dev]` and `[cd.prod]`
+  had: the branch, who may deploy (production stage: only an administrator who types the slug,
+  never an agent), the containment and the secrets. `[cd.dev]` and `[cd.prod]` stay the defaults
+  and work as before. The CD page, `cd_status`, `cd_deploy` and the API list and deploy every
+  environment with its stage; runs keep it (migration 41). CI was already general
+  (`[[ci.jobs]]`).
 - The CI page's run list no longer shows "Run again" on every card (SPEC-258, task #244, #774).
   A run is tested again from its own view, which opens the new run; the view also has Cancel while
   the run is queued or running, and an active card keeps Cancel. Read access sees neither.
@@ -135,7 +204,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   #226, fixes #719). Automation runs created their task in prompt mode, without a goal. So a run
   that opens no pull request, such as "Work through open issues", could never meet the Done rule
   (an achieved goal, or a tested pull request) and read "Your turn" until a person archived it.
-  Every run's task is now a goal task, like every other new task: it is Done once Claude Code
+  Every run's task is now a goal task, as the onboarding preparation already was: it is Done once Claude Code
   records its goal as achieved. The ready-made "Work through open issues" now says in its first
   paragraph, which its goal keeps, that the run ends with its summary without waiting for the tasks
   it starts. Tasks that are already finished in prompt mode (#217) stay as they are: archive them.

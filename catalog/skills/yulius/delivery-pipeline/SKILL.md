@@ -104,11 +104,12 @@ same branch, test first. Never rerun until green, never skip, never weaken a tes
 ## 7. Deploy (CD), separately
 
 A merge deploys nothing. CD (deployment) is its own mechanism, like CI: the project's `[cd.dev]`
-and `[cd.prod]` run their deploy and verify scripts from the protected branches (skill
-`infra-bootstrap`, step 3). Deploy dev when your task asks for it (in Yulius: `cd_deploy`, then
+and `[cd.prod]` (and any other `[cd.<name>]`, of the dev or the production stage) run their deploy
+and verify scripts from the protected branches (skill `infra-bootstrap`, step 3). Deploy dev (or
+another dev-stage environment) when your task asks for it (in Yulius: `cd_deploy`, then
 wait for the run and read it with `cd_status`), or let a nightly automation deploy and test it. A
 failed deploy or verification is fixed forward through this same pipeline. Production, with its
-promotion, is always a person's decision and action: never promote or deploy it; when your task
+promotion, and every production-stage environment are always a person's decision and action: never promote or deploy it; when your task
 needs it, ask a person (in Yulius: `needs_you`) and finish the rest.
 
 ## 8. Clean up

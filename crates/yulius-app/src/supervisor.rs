@@ -1145,7 +1145,7 @@ impl App {
         };
         let credential = self.open_credential(&account)?;
         let home = self.sandbox_home(&sandbox.id);
-        std::fs::create_dir_all(&home).map_err(AppError::internal)?;
+        make_home(&self.sandbox_dir(&sandbox.id))?;
         self.prepare_run_extras(&sandbox, &home).await;
 
         // Goal mode (TSK-010): the request is the session goal, set through `/goal`. A fresh
@@ -3968,8 +3968,54 @@ async fn request_shutdown(runtime: &TaskRuntime) {
     }
 }
 
+/// Makes the sandbox's home, `<sandbox_dir>/home`, when it is missing. The home is the agent's:
+/// it is made with `mkdirat` from the sandbox directory and opened without following a link, so a
+/// `home` link, dangling or to a host folder, fails the start and is never taken as the home
+/// (#661, ADR-0174).
+fn make_home(sandbox_dir: &Path) -> AppResult<()> {
+    std::fs::create_dir_all(sandbox_dir).map_err(AppError::internal)?;
+    crate::files::open_dirs_below(sandbox_dir, &[std::ffi::OsStr::new("home")], true)
+        .map(drop)
+        .map_err(|err| match err {
+            nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR => AppError::internal(
+                "the sandbox's home is a link or not a folder: Yulius follows no links",
+            ),
+            other => crate::files::errno_error(other),
+        })
+}
+
 #[cfg(test)]
 mod tests {
+    /// #661: a `home` link fails the start, dangling (nothing is made where it points) or to a
+    /// host folder (which is not taken as the home); a missing home is made, an existing one
+    /// kept (SPEC-266 STB-004).
+    #[test]
+    fn the_home_is_made_without_following_a_link() -> Result<(), Box<dyn std::error::Error>> {
+        let sandbox = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let target = outside.path().join("made/by/the/link");
+        std::os::unix::fs::symlink(&target, sandbox.path().join("home"))?;
+        assert!(super::make_home(sandbox.path()).is_err());
+        assert!(
+            !outside.path().join("made").exists(),
+            "nothing made outside"
+        );
+        std::fs::remove_file(sandbox.path().join("home"))?;
+        std::os::unix::fs::symlink(outside.path(), sandbox.path().join("home"))?;
+        let err = super::make_home(sandbox.path())
+            .err()
+            .ok_or("a home linked to a host folder is refused")?;
+        assert!(err.to_string().contains("link"), "{err}");
+        std::fs::remove_file(sandbox.path().join("home"))?;
+        super::make_home(sandbox.path())?;
+        std::fs::write(sandbox.path().join("home/kept"), "")?;
+        super::make_home(sandbox.path())?;
+        assert!(
+            sandbox.path().join("home/kept").exists(),
+            "an existing home is kept"
+        );
+        Ok(())
+    }
 
     /// SPEC-106 OTR-002: the dialogs of Claude Code 2.1.292 (measured) and of older releases.
     #[test]

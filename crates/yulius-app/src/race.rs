@@ -14,6 +14,19 @@ pub enum Point {
     FileRead,
     /// `file_write`: the parent folder was resolved and checked, nothing is written yet.
     FileWrite,
+    /// `files_list` (SPEC-265): the folder was resolved and checked, it is not opened yet.
+    FilesList,
+    /// `file_create` of a folder (SPEC-265): the parent was resolved and checked, nothing is
+    /// created yet.
+    FileCreate,
+    /// `file_delete` (SPEC-265): the parent was resolved and checked, nothing is removed yet.
+    FileDelete,
+    /// Removing a task's or a shell's attachments (SPEC-265): the sandbox directory was found,
+    /// nothing below it is opened yet. The path is the owner's attachments folder.
+    AttachmentsRemove,
+    /// Pruning old drafts (SPEC-265): the sandbox directory was found, the drafts folder is not
+    /// opened yet. The path is that folder.
+    DraftsPrune,
     /// An upload's folder was resolved and checked; its temporary file is not created yet.
     UploadFolder,
     /// `finish_upload`: the body is in the temporary file; the folder is not checked again yet.
@@ -44,6 +57,9 @@ pub enum Point {
     /// Start onboarding (SPEC-256) read the sandbox `pending`; the start has not read it again
     /// yet. The path is the sandbox id.
     OnboardingApproved,
+    /// The disk upkeep (SPEC-263) chose a cache to remove after its scan; it has not checked the
+    /// path again nor removed it yet. The path is the cache's.
+    CachePrune,
 }
 
 #[cfg(feature = "test-support")]

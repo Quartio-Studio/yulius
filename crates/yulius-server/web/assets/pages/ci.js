@@ -220,10 +220,16 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     }
   }
 
-  /** A run while it loads (SPEC-120, #449): its head line, the job tabs and the output box. */
+  /**
+   * A run while it loads (SPEC-120, #449): its head line, the job tabs and the output box. The head
+   * is a run's without a reason (state, name, commit) and has the loaded head's buttons (Run again
+   * or Cancel for writers, then In Pipeline), so on a phone it wraps as the loaded one does
+   * (SPEC-259).
+   */
   function runLoading() {
+    const buttons = (write ? [0, 1] : [0]).map(() => h('span', { class: 'skeleton-button skeleton-button-sm' }));
     return h('div', { class: 'stack' },
-      h('div', { class: 'run-summary' }, h('div', { class: 'row-wrap run-head' }, bar('sm'), bar('lg'), bar('sm'), bar('md'), h('span', { class: 'spacer' }), h('span', { class: 'skeleton-button skeleton-button-sm' })),
+      h('div', { class: 'run-summary' }, h('div', { class: 'row-wrap run-head' }, bar('sm'), bar('lg'), bar('sm'), h('span', { class: 'spacer' }), ...buttons),
         h('div', { class: 'run-facts muted small' }, bar('lg'))),
       h('div', { class: 'ci-tabs' }, [0, 1, 2].map(() => h('span', { class: 'ci-tab' }, bar('md')))),
       h('div', { class: 'code-view run-output' }, bar(60), bar(40), bar(52)));

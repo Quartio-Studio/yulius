@@ -81,7 +81,9 @@ Configuration (CDC):
   `secrets` (space-separated agent-secret names, at most 16) and `about` (one line for people,
   ≤ 300 characters); `[cd.prod]` also takes `promote = true|false` (default false). Unknown keys,
   `promote` under dev, multi-line or overlong commands and invalid secret names are errors with a
-  line number, like every other table.
+  line number, like every other table. [SPEC-257](SPEC-257-current-ci-cd-is-too-strict-dev-prod-is.md) extends this
+  to any `[cd.<name>]` with a `stage`: the two tables stay the defaults, and "dev" and
+  "production" in this spec are the stages.
 - CDC-002. Each environment is in one of three states: **not defined** (its table is missing),
   **empty** (the table is there, with nothing to run: no deploy, no verify, no promotion) or
   **ready**. Both may be empty; "not defined" is a gap the briefing and onboarding report.

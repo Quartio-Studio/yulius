@@ -97,6 +97,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0039_agent_secret_scopes.sql"),
     // Schema version 40 (SPEC-247).
     include_str!("migrations/0040_api_token_scopes.sql"),
+    // Schema version 41 (SPEC-257).
+    include_str!("migrations/0041_cd_run_stage.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;

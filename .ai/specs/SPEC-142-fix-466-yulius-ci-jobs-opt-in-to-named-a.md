@@ -59,7 +59,9 @@ that secret, and every use is audited as `ci:<run>`. With that, this repository'
   taken into the Yulius-only CD mirror (`App::ci_verified_gate`; the sandbox clone, which CI jobs
   can write, only says whether to look). A `secrets` list in a pull
   request's own `yulius.toml` grants nothing, whether or not its own jobs run. The person's profile
-  gate grants nothing.
+  gate grants nothing. Amended by [SPEC-264](SPEC-264-ci-grants-agent-secrets-only-to-the-trus.md)
+  CSG-001 (ADR-0196): the entry must also have the job's command, byte for byte, so a pull
+  request's own job reusing a granted name for another command gets nothing.
 - CSE-003: A job with a non-empty grant gets a placeholder `NAME=yulius-secret-NAME` for each
   granted agent secret that applies to the sandbox and is not a production-deploy (`cd_prod`)
   secret. When the egress proxy is wired it also gets `HTTP_PROXY`/`HTTPS_PROXY` (and lowercase)
