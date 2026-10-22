@@ -211,12 +211,13 @@ fn unpack(archive: &[u8], root: &OwnedFd) -> AppResult<Contents> {
                     | OFlag::O_EXCL
                     | OFlag::O_NOFOLLOW
                     | OFlag::O_CLOEXEC;
-                let fd = openat(&dir, *name, flags, Mode::from_bits_truncate(0o600)).map_err(
-                    |err| match err {
-                        Errno::EEXIST => refused(format_args!("holds {shown} twice")),
-                        other => errno_error(other),
-                    },
-                )?;
+                let fd =
+                    openat(&dir, *name, flags, Mode::from_bits_truncate(0o600)).map_err(|err| {
+                        match err {
+                            Errno::EEXIST => refused(format_args!("holds {shown} twice")),
+                            other => errno_error(other),
+                        }
+                    })?;
                 let mut file = std::fs::File::from(fd);
                 io::copy(reader, &mut file).map_err(|err| io_error(&err))?;
                 fchmod(&file, Mode::from_bits_truncate(mode)).map_err(errno_error)?;
@@ -683,8 +684,9 @@ impl App {
 
     /// The canonical sandbox folder, the anchor no agent can replace.
     fn state_anchor(&self, sandbox: &SandboxId) -> AppResult<PathBuf> {
-        std::fs::canonicalize(self.sandbox_dir(sandbox))
-            .map_err(|_| AppError::Invalid("the sandbox folder does not exist on this machine".into()))
+        std::fs::canonicalize(self.sandbox_dir(sandbox)).map_err(|_| {
+            AppError::Invalid("the sandbox folder does not exist on this machine".into())
+        })
     }
 
     /// `secret_state_restore` (SPEC-271 OPS-005): writes a state into a folder of the sandbox
@@ -716,7 +718,17 @@ impl App {
         let job = {
             let record = record.clone();
             let path = path.clone();
-            move || restore_blocking(&anchor, &parts, recorded.as_deref(), &record, &path, &archive, &temporary)
+            move || {
+                restore_blocking(
+                    &anchor,
+                    &parts,
+                    recorded.as_deref(),
+                    &record,
+                    &path,
+                    &archive,
+                    &temporary,
+                )
+            }
         };
         let contents = tokio::task::spawn_blocking(job)
             .await
@@ -795,8 +807,8 @@ impl App {
         let packed = tokio::task::spawn_blocking(move || {
             let mut below: Vec<&OsStr> = vec![OsStr::new("home")];
             below.extend(parts.iter().map(OsStr::new));
-            let folder = crate::files::open_dirs_below(&anchor, &below, false).map_err(|err| {
-                match err {
+            let folder =
+                crate::files::open_dirs_below(&anchor, &below, false).map_err(|err| match err {
                     Errno::ENOENT => AppError::Invalid(format!(
                         "{shown} is gone: restore the state again with secret_state_restore"
                     )),
@@ -805,8 +817,7 @@ impl App {
                          follows no links"
                     )),
                     other => errno_error(other),
-                }
-            })?;
+                })?;
             pack(&folder)
         })
         .await
@@ -1090,16 +1101,16 @@ mod tests {
             ("rollouts", 'd', 0o755, ""),
             ("rollouts/a/bundle.json", 'f', 0o644, "{}"),
         ])?;
-        assert_eq!(
-            check_archive(&good)?,
-            Contents {
-                files: 2,
-                bytes: 4
-            }
-        );
+        assert_eq!(check_archive(&good)?, Contents { files: 2, bytes: 4 });
         let cases: [(Vec<u8>, &str); 6] = [
-            (archive(&[("link", 'l', 0o777, "/etc/passwd")])?, "holds a link at link"),
-            (archive(&[("dev", 'c', 0o600, "")])?, "neither a file nor a folder"),
+            (
+                archive(&[("link", 'l', 0o777, "/etc/passwd")])?,
+                "holds a link at link",
+            ),
+            (
+                archive(&[("dev", 'c', 0o600, "")])?,
+                "neither a file nor a folder",
+            ),
             (raw_archive("../escape")?, "outside its folder"),
             (raw_archive("/etc/cron.d/x")?, "outside its folder"),
             (b"not gzip".to_vec(), "is not a readable gzip tar"),
@@ -1125,7 +1136,12 @@ mod tests {
         let root = dir.path().join("state");
         std::fs::create_dir(&root)?;
         let bytes = archive(&[
-            ("config.json", 'f', 0o644, "{\"key_file\": \"/Users/x/.ssh/k\"}"),
+            (
+                "config.json",
+                'f',
+                0o644,
+                "{\"key_file\": \"/Users/x/.ssh/k\"}",
+            ),
             ("bin", 'd', 0o1755, ""),
             ("bin/rollout", 'f', 0o4755, "#!/bin/sh\n"),
             ("locks/rollout.lock", 'f', 0o600, ""),
@@ -1136,7 +1152,10 @@ mod tests {
         assert_eq!(mode_of(&root.join("bin"))?, 0o755);
         assert_eq!(mode_of(&root.join("bin/rollout"))?, 0o755);
         assert_eq!(mode_of(&root.join("locks/rollout.lock"))?, 0o600);
-        assert_eq!(std::fs::read_to_string(root.join("bin/rollout"))?, "#!/bin/sh\n");
+        assert_eq!(
+            std::fs::read_to_string(root.join("bin/rollout"))?,
+            "#!/bin/sh\n"
+        );
         // The same path twice is refused, never overwritten.
         let twice = archive(&[("a", 'f', 0o600, "1"), ("a", 'f', 0o600, "2")])?;
         let other = dir.path().join("other");
@@ -1164,7 +1183,10 @@ mod tests {
     #[test]
     fn a_restored_copy_is_replaced_only_by_a_newer_version() {
         let fresh = record(1, None);
-        assert_eq!(placement(&fresh, "~/.ops", false, None).ok(), Some(Placement::Fresh));
+        assert_eq!(
+            placement(&fresh, "~/.ops", false, None).ok(),
+            Some(Placement::Fresh)
+        );
         assert_eq!(
             placement(&fresh, "~/.ops", false, Some(true)).ok(),
             Some(Placement::Fresh)
