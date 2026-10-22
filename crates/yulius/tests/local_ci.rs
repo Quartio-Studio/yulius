@@ -671,15 +671,14 @@ async fn the_hygiene_round_removes_safe_items_itself() -> TestResult {
         "{remaining}"
     );
     assert!(remaining.contains("feat/one") && remaining.contains("feat/wip"));
-    let audited: Vec<String> = f
-        .h
-        .store
-        .automation_audit(&f.sandbox.slug, 100)
-        .await?
-        .into_iter()
-        .filter(|e| e.action == "hygiene.cleanup")
-        .map(|e| format!("{} {}", e.actor, e.detail.unwrap_or_default()))
-        .collect();
+    let audited: Vec<String> =
+        f.h.store
+            .automation_audit(&f.sandbox.slug, 100)
+            .await?
+            .into_iter()
+            .filter(|e| e.action == "hygiene.cleanup")
+            .map(|e| format!("{} {}", e.actor, e.detail.unwrap_or_default()))
+            .collect();
     for branch in ["feat/old", "feat/closed"] {
         assert!(
             audited
@@ -699,7 +698,10 @@ async fn a_cleanup_is_kept_on_the_report() -> TestResult {
     stale_branches(&f)?;
     let before = f.get("/api/sandboxes/s1/hygiene").await?;
     assert!(before["last_cleanup"].is_null(), "{before}");
-    assert!(before["next_cleanup_at"].is_null(), "not scheduled here: {before}");
+    assert!(
+        before["next_cleanup_at"].is_null(),
+        "not scheduled here: {before}"
+    );
 
     let cleaned = f.post("/api/sandboxes/s1/hygiene/cleanup", None).await?;
     assert_eq!(cleaned.status, StatusCode::OK, "{}", cleaned.body);
@@ -723,7 +725,10 @@ async fn a_cleanup_is_kept_on_the_report() -> TestResult {
 
     f.h.app.hygiene_round().await;
     let after = f.get("/api/sandboxes/s1/hygiene").await?;
-    assert_eq!(after["last_cleanup"], last, "a round with nothing to do keeps it");
+    assert_eq!(
+        after["last_cleanup"], last,
+        "a round with nothing to do keeps it"
+    );
     assert!(after["next_cleanup_at"].is_string(), "{after}");
     Ok(())
 }
