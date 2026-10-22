@@ -1,11 +1,11 @@
 ---
 yulius-task: 38d860e8-19b3-484b-a9d5-23517b101d83
-status: in-progress
+status: done
 ---
 
 # SPEC-263: Disk upkeep refuses links at worktrees/ and ci/jobs (#649)
 
-Status: in-progress
+Status: done
 Date: 2026-10-22
 Owner: Yulius task #249
 Scope authorization: task #249 (nightly "Work through open issues"). Fixes #649.
@@ -59,8 +59,8 @@ each removal, so a sandbox can never steer it into another sandbox's files.
 - [x] Scan and removal refuse links from the sandbox directory
 - [x] Review round 1: ended-worktree re-check test, macOS removal, split tests
 - [x] Docs, changes entry and gates green
-- [ ] Independent review and fixes
-- [ ] Merge into dev on green CI
+- [x] Independent review and fixes
+- [x] Merge into dev on green CI
 
 ## Acceptance criteria
 
@@ -164,6 +164,8 @@ each removal, so a sandbox can never steer it into another sandbox's files.
 - Review round 3 (fresh session, at 5b22f22e) approved. Its one own-code low: off Linux the
   `disk.rs` integration tests expected pruning that no longer happens there. That file is now
   `#![cfg(target_os = "linux")]`. The leftovers tests were already Linux-only in practice (#681).
+- A fresh review approved 061ab162 (the Linux-only gate and the line split). This spec is marked
+  done in the head that is merged, so it reads done once on `dev`.
 - Not tested here: macOS behaviour at runtime (only compiled and linted for
   `aarch64-apple-darwin`).
 
