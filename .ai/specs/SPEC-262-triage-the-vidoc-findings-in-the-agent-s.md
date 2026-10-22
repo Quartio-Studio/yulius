@@ -1,11 +1,11 @@
 ---
 yulius-task: 027750d0-f1ed-4a0d-8b88-bfdcad37fb80
-status: in-progress
+status: done
 ---
 
 # SPEC-262: Triage of the Vidoc findings in the agent-secret code (#639)
 
-Status: in-progress
+Status: done
 Date: 2026-10-22
 Owner: Yulius task #248
 Scope authorization: task #248 (nightly "Work through open issues"). Fixes #639; the CI-filed
@@ -137,3 +137,11 @@ comments) is either fixed test-first or dismissed with its reason and a narrow `
   be produced in a test). Nits: `vault_auto_bind` also requires `cd_prod = 0` in its own statement;
   `legacy_production_secret` asserts a project secret (deleting another would drop its switches);
   `doc_present` documents that a file the server cannot open is absent; this Plan item ticked.
+- **Independent review, round 2 (approve at aec6b0f6).** Both minors fixed correctly. Nit 1
+  (own): the mapping test now also covers a legacy production row whose hosts are cleared or kept
+  (generic message, a reload answers it). Nit 2 (own): the mapping is unit-tested, not through the
+  endpoint; the store side is covered by the stale-read store test, accepted as is.
+- `scripts/dev ci` at aec6b0f6: exit 0, 2410 passed, 17 skipped. `scripts/dev security` at
+  aec6b0f6: exit 0; one low finding outside the change, `among_askers` comma-split in
+  `requests.rs`, already tracked as #758 and outside #639.
+- Status: done.

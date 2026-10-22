@@ -828,5 +828,18 @@ mod tests {
             update_refused(None, &binds, &seen),
             AppError::NotFound
         ));
+        // A production secret still bound to hosts (from before SPEC-134 M-B): clearing them, or
+        // an edit that keeps them, was refused for a change meanwhile, which a reload answers.
+        let mut legacy = production.clone();
+        legacy.hosts = vec!["api.example.com".into()];
+        let mut cleared = legacy.clone();
+        cleared.hosts = Vec::new();
+        for edit in [&cleared, &legacy] {
+            assert!(!production_secret(&update_refused(
+                Some(&legacy),
+                edit,
+                &legacy
+            )));
+        }
     }
 }
