@@ -307,3 +307,18 @@ test('a task that crashed at the sandbox’s process limit says so in its banner
   await app.open(mock('/s/studio/tasks/3'));
   await expect(browser.locator('main')).toContainText('Ended · the sandbox hit its process limit');
 });
+
+// SPEC-268 review round 2: the details can arrive after the end banner is drawn (the terminal's
+// state frame came first); the banner is drawn again with the limit they name.
+test('the end banner names the limit once the task’s details arrive after it', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  await browser.evaluate(() => {
+    const w = window as unknown as { __yuliusMock: { holdDetail?: Promise<void> | null }; __releaseDetail?: () => void };
+    w.__yuliusMock.holdDetail = new Promise<void>((resolve) => { w.__releaseDetail = resolve; });
+    location.hash = '#/s/studio/t/3';
+  });
+  const banner = browser.locator('.taskview .term-banner');
+  await expect(banner).toContainText('The agent stopped unexpectedly.');
+  await browser.evaluate(() => (window as unknown as { __releaseDetail?: () => void }).__releaseDetail?.());
+  await expect(banner).toContainText('the sandbox hit its process limit while it ran');
+});

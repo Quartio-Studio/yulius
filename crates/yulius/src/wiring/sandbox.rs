@@ -577,10 +577,13 @@ pub async fn install(
     };
     match delegation() {
         Ok(delegation) => {
+            let root = Path::new(yulius_sandbox::cgroup::CGROUP_ROOT);
+            let service = yulius_sandbox::cgroup::tasks_max_above(root, &delegation.unit);
             if args.pids.is_none() {
-                let root = Path::new(yulius_sandbox::cgroup::CGROUP_ROOT);
-                let service = yulius_sandbox::cgroup::tasks_max_above(root, &delegation.unit);
                 config.limits = config.limits.within_service(service);
+            }
+            if let Err(error) = delegation.cap_sandboxes(service) {
+                tracing::warn!(%error, "sandboxes together have no task limit below the service's");
             }
             tracing::info!(cgroup = %delegation.unit.display(), limits = ?config.limits, "per-sandbox limits on");
             config.delegation = Some(delegation);

@@ -74,7 +74,9 @@ unexpectedly".
   the old 8192), and at most three quarters of the smallest `pids.max` of the delegated unit and
   its ancestors (systemd's `DefaultTasksMax` is 15 % of the host's table: 57 763 on the VM, so
   43 320), so a sandbox never starves the server and the other sandboxes before its own limit
-  (review round 1). `YULIUS_SANDBOX_PIDS` still sets it, uncapped. Unreadable host values fall
+  (review round 1); `<unit>/sandboxes` gets the same three quarters, so all sandboxes together
+  leave the server a quarter (review round 2). `YULIUS_SANDBOX_PIDS` still sets a sandbox's,
+  uncapped by the first rule. Unreadable host values fall
   back to 8192.
 - PID-002: When the sandbox is split into leaves, the `ci` and `engine` leaves each get
   `pids.max` = 3/8 of the sandbox's (at least 1): CI jobs and the engine with its containers
@@ -85,12 +87,13 @@ unexpectedly".
 - PID-003: A stopping server takes the task limits back from the leaves (`-pids`), as it takes the
   CPU back (CPU-205), so an older binary can join the sandbox group; the next preparation applies
   them again.
-- PID-004: The isolation adapter reports a sandbox's limit counters: the forks refused to the
-  processes of the sandbox's own group, its `system` and its `agents` leaf (`pids.events.local`
-  `max` where the kernel has it, else `pids.events` `max`, which kernel 6.8 counts where the
-  forking task lives), not those of CI jobs or containers stopped at their own leaf limits
-  (review round 1), and `memory.events` `oom_kill` of the sandbox's group. None without the
-  delegation.
+- PID-004: The isolation adapter reports a sandbox's limit counters. Kernel 6.8 counts a refused
+  fork in the forking task's own group: `pids.events` `max` summed over the sandbox's groups
+  (bounded to 4096) but the `ci` and `engine` subtrees, whose processes stop at their own leaf
+  limits while sessions keep forking (review round 1); a paused run's `agents/run-*` group counts
+  (round 2). Where the kernel has `pids.events.local` (6.13+, which counts where a limit was
+  hit), the sandbox's own `pids.events.local` `max`. And `memory.events` `oom_kill` of the
+  sandbox's group. None without the delegation.
 - PID-005: A run's counters are read when it starts (and when a restarted server takes it over).
   When it ends without Yulius ending it and not cleanly (`stopped_crashed`, `stopped_killed`), the
   counters are read again (only that attempt's start counters, left in place until its end's
@@ -142,8 +145,9 @@ unexpectedly".
 
 ## Test plan
 
-- `cgroup::tests` (fake cgroup trees): host-sized defaults; leaf limits written with the split, not
-  without it; `-pids` on stop; counters summed over the subtree, bounded.
+- `cgroup::tests` (fake cgroup trees): host-sized defaults within the service's limit; the
+  sandboxes' common limit; leaf limits written with the split, not without it; `-pids` on stop;
+  counters for both kernel models, without CI's and the engine's subtrees.
 - `supervision::a_session_that_ends_at_the_sandboxs_process_limit_says_so` with an isolation fake
   whose counters the test raises and a fake agent its own shell aborts (`/sh kill -ABRT $PPID`, SIGABRT as Bun): fails before PID-005.
 - `supervision::an_agent_session_is_told_its_budget_in_the_repositorys_terms` extended for
@@ -199,12 +203,14 @@ Head before the review fixes: `415aa179`; commands run in this task's sandbox (L
   - `resources::tests::a_repository_without_a_mapping_gets_the_rust_defaults`;
     `supervision::an_agent_session_is_told_its_budget_in_the_repositorys_terms` (failed with the
     no-file default disabled: `ENV CARGO_BUILD_JOBS=set` missing).
-  - e2e `task-done.e2e.ts`: "a session that ended at a sandbox limit says which" and "a task that
-    crashed at the sandbox's process limit says so in its banner and overview" (17/17 passed). The
-    mock loads the details before the terminal's state frame, so the banner's redraw on late
-    details is not exercised by it.
+  - e2e `task-done.e2e.ts`: "a session that ended at a sandbox limit says which", "a task that
+    crashed at the sandbox's process limit says so in its banner and overview" and "the end
+    banner names the limit once the task's details arrive after it" (holds the detail read; failed
+    without `refreshBanner`: "observed: The agent stopped unexpectedly…"); 18/18 passed.
+  - `cgroup::tests::the_sandboxes_together_leave_the_server_a_quarter`; the counters test counts a
+    paused run's `agents/run-t1` (13, the round-1 code gave 6) and reads `pids.events.local`.
 - `scripts/dev ci` at `415aa179`: green, 2435 tests passed, 17 skipped (after a fixed spec link).
-  Rerun after the review fixes: see below.
+  At `35564424` (round-1 fixes): green, 2437 passed, 17 skipped; `scripts/dev security` exit 0.
 - `scripts/dev security` at `415aa179`: exit 0, no open critical/high, no medium in the change.
   The first scan flagged the fake agent's existing `/sh` (high, code not written here), sent only
   because this branch had added `/abort`; that addition was dropped (the test aborts the agent
@@ -218,3 +224,8 @@ Head before the review fixes: `415aa179`; commands run in this task's sandbox (L
 - Review round 1 (fresh session): REQUEST CHANGES with 3 major and 6 minor findings, all own code;
   each fixed test-first or documented (service limit, Docker pids flags, repository-set knobs,
   CI/engine hits, per-attempt counters, test wait, banner redraw and view test, docs).
+- Review round 2 (fresh session): REQUEST CHANGES with 3 major (paused runs' groups not counted,
+  `RUST_TEST_THREADS` over Cargo's `[env]`, no failing test for the banner redraw), 3 minor (the
+  6.13 counter model, the service shared by two sandboxes, stale text) and a nit (no test that an
+  explicit `YULIUS_SANDBOX_PIDS` is not capped: two lines in `install()`, left as is); fixed
+  test-first, the text corrected.

@@ -75,6 +75,11 @@ pub fn tasks_max_above(fs_root: &Path, dir: &Path) -> Option<u64> {
         .min()
 }
 
+/// Three quarters of `service`, at least 1: what sandboxes may use of the service's tasks.
+fn service_share(service: u64) -> u64 {
+    (service / 4 * 3).max(1)
+}
+
 impl Limits {
     /// These limits with the task limit at most three quarters of `service` (the delegated unit's
     /// own limit, [`tasks_max_above`]): systemd's `DefaultTasksMax` caps the whole service at
@@ -84,7 +89,7 @@ impl Limits {
     #[must_use]
     pub fn within_service(self, service: Option<u64>) -> Self {
         let pids_max = match (self.pids_max, service) {
-            (Some(pids), Some(service)) => Some(pids.min((service / 4 * 3).max(1))),
+            (Some(pids), Some(service)) => Some(pids.min(service_share(service))),
             (pids, _) => pids,
         };
         Self { pids_max, ..self }
@@ -351,6 +356,25 @@ fn cap_leaves(dir: &Path, groups: &SandboxGroups, pids_max: u64) -> io::Result<(
 }
 
 impl Delegation {
+    /// Limits all sandboxes together to three quarters of `service`, the delegated unit's own
+    /// task limit ([`tasks_max_above`]), so the server in `<unit>/server` keeps a quarter however
+    /// many sandboxes are busy (SPEC-268 PID-001, review round 2); nothing without one.
+    ///
+    /// # Errors
+    /// The limit cannot be written.
+    pub fn cap_sandboxes(&self, service: Option<u64>) -> io::Result<()> {
+        if !self.controllers.iter().any(|c| c == "pids") {
+            return Ok(());
+        }
+        match service {
+            Some(service) => write(
+                &self.unit.join(SANDBOXES).join("pids.max"),
+                &service_share(service).to_string(),
+            ),
+            None => Ok(()),
+        }
+    }
+
     /// The paths of `sandbox`'s groups, as [`Delegation::sandbox_group`] makes them, without
     /// touching anything.
     #[must_use]
@@ -635,6 +659,22 @@ mod tests {
             Limits::default().within_service(Some(100)),
             Limits::default(),
             "no limit stays none"
+        );
+        Ok(())
+    }
+
+    /// Review round 2: all sandboxes together keep the server a quarter of the service's tasks.
+    #[test]
+    fn the_sandboxes_together_leave_the_server_a_quarter() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (_root, delegation, _dir) = fake_sandbox("cpu memory pids\n")?;
+        let sandboxes = delegation.unit.join(SANDBOXES);
+        delegation.cap_sandboxes(None)?;
+        assert!(!sandboxes.join("pids.max").exists(), "no service limit");
+        delegation.cap_sandboxes(Some(57_763))?;
+        assert_eq!(
+            std::fs::read_to_string(sandboxes.join("pids.max"))?,
+            "43320"
         );
         Ok(())
     }

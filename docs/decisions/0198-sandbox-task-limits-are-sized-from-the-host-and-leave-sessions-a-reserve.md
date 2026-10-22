@@ -22,14 +22,16 @@ task.
 - **Sized from the host.** A sandbox's default `pids.max` is a quarter of the smaller of
   `kernel.threads-max` and `kernel.pid_max`, at least 8192 (96 272 on a 47 GB host), and at most
   three quarters of `yulius.service`'s own `pids.max` (systemd's `DefaultTasksMax`, 15 % of the
-  table: 57 763 on that host, so 43 320), so the server and the other sandboxes keep a quarter of
-  it. `YULIUS_SANDBOX_PIDS` still sets it.
+  table: 57 763 on that host, so 43 320), and all sandboxes together get the same three quarters
+  on `<unit>/sandboxes`, so the server keeps a quarter however many are busy.
+  `YULIUS_SANDBOX_PIDS` still sets a sandbox's.
 - **CI and the engine leave the sessions a reserve.** With the CPU split, the sandbox also passes
   `pids` to its leaves; `ci` and `engine` each get 3/8 of the sandbox's limit, so together they
   leave the `agents` leaf at least a quarter. A stopping server takes `pids` back with the CPU.
-- **A crash at a limit says so.** The adapter reports the forks refused to the sandbox's own
-  group, its holder and its agents (`pids.events.local` or `pids.events` `max`; CI jobs and
-  containers at their leaf limits do not count) and its `memory.events` `oom_kill`. A run that
+- **A crash at a limit says so.** The adapter reports the forks refused to the sandbox's sessions:
+  on kernel 6.8 `pids.events` `max` of its groups but CI's and the engine's (whose leaf limits
+  stop them, not the sessions), on kernels with `pids.events.local` the sandbox's own limit hits;
+  and its `memory.events` `oom_kill`. A run that
   ends crashed or killed while one of them rose records `limit=pids` or `limit=memory` in its exit reason and in the exit its viewers
   get, and the task view says the sandbox hit its process limit or ran out of memory.
 - **A default mapping where a repository has none.** Without a `[resources.env]` table, processes
@@ -60,8 +62,8 @@ task.
   (`--pids-limit`, compose `pids_limit`) join the CPU flags as unsupported: no controller passes
   below the engine's group, which holds `dockerd` (SPEC-187 DKR-005), so they may make a
   container fail to start where they were discarded before.
-- Each sandbox may take a quarter of the host's table: four saturated sandboxes together still
-  stop at the service's own limit, which the server shares with them.
+- Under systemd's default `TasksMax`, one saturated sandbox may take three quarters of the
+  service and two take all the sandboxes' share; the server's quarter stays theirs to none.
 - A server restart loses a run's starting counters; the server that takes the run over reads them
   again, so a limit hit before the restart is not attributed.
 - Rust repositories without `[resources.env]` build and test with their budget, not the machine.
