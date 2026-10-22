@@ -1299,9 +1299,9 @@ mod tests {
     /// One raw tar entry: a header of `kind` declaring `size`, then `data` padded to a block.
     fn raw_entry(kind: tar::EntryType, name: &str, size: u64, data: &[u8]) -> Vec<u8> {
         let mut header = tar::Header::new_ustar();
-        header
-            .as_ustar_mut()
-            .map(|h| h.name[..name.len()].copy_from_slice(name.as_bytes()));
+        if let Some(ustar) = header.as_ustar_mut() {
+            ustar.name[..name.len()].copy_from_slice(name.as_bytes());
+        }
         header.set_mode(0o644);
         header.set_size(size);
         header.set_entry_type(kind);
