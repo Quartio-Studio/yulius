@@ -1,11 +1,11 @@
 ---
 yulius-task: 9685b367-0bc4-4b5f-b5d1-88d73e747c14
-status: in-progress
+status: done
 ---
 
 # SPEC-265: Editor delete, folder create and listing go through folder handles (#660)
 
-Status: in-progress
+Status: done
 Date: 2026-10-22
 Owner: Yulius task #251
 Scope authorization: task #251, started by the nightly "Work through open issues" run: solve
@@ -67,7 +67,11 @@ sandbox is deleted, created or listed.
   regular files through the handle; pruning ended shells' folders lists `attachments/shells`
   through its handle. A link anywhere on the way removes nothing (logged, as before).
 - EDH-005: The tree removal is bounded: at most 256 folders deep and 1,000,000 entries per call,
-  listing at most 512 names at a time; past a bound it stops with an error and leaves the rest.
+  holding at most 512 names at a time; past a bound it stops with an error and leaves the rest. It
+  opens only entries `fstatat` reports as folders, reads each folder's listing once while removing
+  its entries (linear), then again from the start until it is empty.
+- EDH-008: A file where a folder of the path should be (`docs/a.txt/new`) is `422` ("that path is
+  not a directory"), not `403`.
 - EDH-006: Correctness needs no `/proc`: the walk uses only `openat`, `mkdirat`, `fstatat`,
   `unlinkat` and `fdopendir`, and builds on Linux and macOS (`scripts/dev macos`).
 - EDH-007: Test-only pause points `FilesList`, `FileCreate`, `FileDelete`, `AttachmentsRemove`
@@ -76,11 +80,11 @@ sandbox is deleted, created or listed.
 ## Plan
 
 - [x] Spec SPEC-265 written and validated
-- [ ] Pause points and failing race tests for delete, create, list and attachment removal
-- [ ] Editor delete, folder create and listing go through handles from the sandbox directory
-- [ ] Attachment, draft and shell-folder removal go through handles
-- [ ] Docs (ADR-0174 note, architecture, changes) updated and gates green
-- [ ] Independent review answered and PR merged into dev on green CI
+- [x] Pause points and failing race tests for delete, create, list and attachment removal
+- [x] Editor delete, folder create and listing go through handles from the sandbox directory
+- [x] Attachment, draft and shell-folder removal go through handles
+- [x] Docs (ADR-0174 note, architecture, changes) updated and gates green
+- [x] Independent review answered and PR merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -128,4 +132,38 @@ sandbox is deleted, created or listed.
 
 ## Evidence
 
-To be filled in when the work is done.
+- Red first (commit 1829b6ec, pause points in the old code): the five race tests failed for the
+  reported reasons: the delete removed the host's `a.txt`; the folder create made `host/new`; the
+  listing returned `host-only.txt`; draft pruning removed the host's `old.png`; task deletion
+  removed the host's `tasks/t1`.
+- Green (c7421c64, b775d5bf): `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+  test(/files::|uploads::/)'`: 25 passed; `-p yulius-app` files/uploads unit tests (with
+  `a_tree_removal_unlinks_links_and_never_follows_them`): 14 passed; `task_prompt`, shell and
+  attachment tests: 39 passed. The review-round test
+  `a_file_on_the_way_is_not_a_folder_to_create_in_or_delete_from` failed (403) before b775d5bf.
+- `scripts/dev ci` at 18eb723c: exit 0 (2410 tests passed, 17 skipped; clippy for
+  `aarch64-apple-darwin` included, so it builds for macOS); rerun after the review fixes, see the
+  pull request.
+- `scripts/dev security` (Vidoc vidoc-1) at 18eb723c: exit 0, no critical, high or medium finding
+  in the change. One low in the change, not fixed: `files_list` still classifies a link entry's
+  kind with `canonicalize(dir.join(name))` (as before this change). It only labels the entry
+  (`dir`/`file`/`symlink`); names, sizes and the set of entries come from the handle, a target
+  resolved through a swapped folder is outside the root and shows as `symlink`, and no action
+  follows from the label (the reviewer agreed it is harmless). One medium outside the change
+  (`uploads.rs:216` `check_components` accepts `.`/`..`; editor uploads also run
+  `relative_components`, which refuses them): pre-existing, Yulius CI files it.
+- Independent review (fresh session, om-code-review) of 18eb723c: APPROVE with low/nit findings,
+  all own code, answered in b775d5bf:
+  1. quadratic re-reading of large flat folders: fixed (one listing read on, then re-read until
+     empty);
+  2. every entry opened to learn its type (FIFO/permission concerns on macOS): fixed (`fstatat`
+     first, only folders opened);
+  3. task-attachment race test could pass without the swap: fixed (asserts the folder is a link
+     afterwards);
+  4. link kind by path: kept, as above;
+  5. a file on the way answered 403: fixed (422, test first);
+  6. a vanished entry between listing and `fstatat` can hide truncation: kept; the window is an
+     entry deleted mid-listing of a folder with more than 2000 entries, and the next listing is
+     right;
+  7. spec unfinished: done here.
+- Not tested here: a real macOS run (only compiled and linted for macOS).
