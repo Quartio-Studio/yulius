@@ -3360,7 +3360,6 @@ fn forwarded(decision: &yulius_app::ports::egress::EgressDecision, name: &str) -
 #[tokio::test]
 async fn the_superagent_runs_behind_the_egress_proxy_with_its_own_bearer() -> TestResult {
     use yulius_app::ports::egress::EgressPolicy as _;
-    use yulius_app::ports::vault::VaultStore as _;
     use yulius_domain::ids::UserId;
 
     let f = fixture().await?;

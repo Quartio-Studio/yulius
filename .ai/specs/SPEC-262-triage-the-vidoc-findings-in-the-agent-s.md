@@ -49,17 +49,19 @@ comments) is either fixed test-first or dismissed with its reason and a narrow `
   workflow files.
 - VTR-005 (dismissals). Finding 2 (`is_disposable` checked once), finding 3 (`patterns()` drops
   unparseable stored hosts), the `.git` exclusion of `open_folder` (#714) and task-number
-  allocation each get an `[[ignore]]` entry with its reason (Decisions); the `.git` refusal is
-  pinned by a test.
+  allocation are dismissed with their reasons (Decisions). Each whose Vidoc wording is on record
+  gets an `[[ignore]]` entry with that wording; finding 3's wording was not kept anywhere, and no
+  title is guessed for it (an over-broad one would hide a regression). The `.git` refusal and the
+  parsed request are pinned by tests.
 
 ## Plan
 
 - [x] Spec SPEC-262 with the triage of all nine findings
-- [ ] Production and agent use exclude each other in every store compare-and-set (finding 1)
-- [ ] Audit reasons drop line separators and every invisible format character (finding 4)
-- [ ] Status line strips control characters from repository and branch names
-- [ ] Document presence and workflow count read through a checked handle (hooks TOCTOU)
-- [ ] Dismissals pinned by tests and narrow [[ignore]] entries (findings 2, 3, .git, task numbers)
+- [x] Production and agent use exclude each other in every store compare-and-set (finding 1)
+- [x] Audit reasons drop line separators and every invisible format character (finding 4)
+- [x] Status line strips control characters from repository and branch names
+- [x] Document presence and workflow count read through a checked handle (hooks TOCTOU)
+- [x] Dismissals pinned by tests and narrow [[ignore]] entries (findings 2, 3, .git, task numbers)
 - [ ] Gates, security scan, docs and changes entry
 - [ ] Independent review answered and merged into dev on green
 
@@ -72,8 +74,8 @@ comments) is either fixed test-first or dismissed with its reason and a narrow `
 - A status-line test with ESC and C1 CSI in the branch fails on `dev` and passes.
 - A test that swaps a folder for a link to a host folder between the check and the open (driven
   through the helpers' handle open) shows neither helper reports outside content.
-- `.config/vidoc.toml` has one narrow entry per dismissed wording; the change scan reports none of
-  the fixed findings, or the scan is recorded as not run.
+- `.config/vidoc.toml` has one narrow entry per dismissed wording on record; the broad scan
+  (`scripts/dev security --all`) reports none of the nine findings, or it is recorded as not run.
 
 ## Test plan
 
