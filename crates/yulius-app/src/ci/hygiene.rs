@@ -298,22 +298,28 @@ impl App {
         let mut merged_budget = MAX_PULL_LOOKUPS.saturating_sub(unmerged);
         let mut lookups = 0usize;
         let mut bound_hit = false;
+        let mut merged_unread = 0usize;
         for (branch, merged) in examined {
-            let lookup = if merged {
+            // An open pull request's branch is in use: it takes no lookup (review round 5).
+            let in_use = open.contains(&branch.name);
+            let lookup = if in_use {
+                false
+            } else if merged {
                 merged_budget
                     .checked_sub(1)
                     .map(|left| merged_budget = left)
+                    .is_some()
             } else {
-                (lookups < MAX_PULL_LOOKUPS).then(|| lookups += 1)
+                (lookups < MAX_PULL_LOOKUPS).then(|| lookups += 1).is_some()
             };
-            let pulls = if open.contains(&branch.name) {
+            let pulls = if in_use {
                 Some(vec![BranchPull {
                     number: 0,
                     open: true,
                     merged: false,
                     tip_on_pull: true,
                 }])
-            } else if lookup.is_some() {
+            } else if lookup {
                 self.deps
                     .github
                     .branch_pulls(token, &sandbox.repo_owner, &sandbox.repo_name, &branch.name)
@@ -322,6 +328,7 @@ impl App {
                     .map(|pulls| pulls_facts(&pulls, &branch.sha))
             } else if merged {
                 // Past the bound, a branch already in dev is still `Merged` (safe for a person).
+                merged_unread += 1;
                 Some(Vec::new())
             } else {
                 bound_hit = true;
@@ -341,6 +348,16 @@ impl App {
         if bound_hit {
             report.notes.push(format!(
                 "Pull requests were looked up for {MAX_PULL_LOOKUPS} branches; the rest is checked by the next scan."
+            ));
+        }
+        if merged_unread > 0 {
+            let branches = if merged_unread == 1 {
+                "branch"
+            } else {
+                "branches"
+            };
+            report.notes.push(format!(
+                "Pull requests of {merged_unread} {branches} already in the integration branch were not looked up (the bound went to unmerged ones): they read merged and stay for you."
             ));
         }
     }

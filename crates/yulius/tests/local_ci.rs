@@ -995,6 +995,52 @@ async fn merged_branches_leave_the_lookups_to_unmerged_ones() -> TestResult {
     Ok(())
 }
 
+/// SPEC-269 (review round 5): an open pull request's branch takes no lookup, and branches already
+/// in dev whose pull requests the bound left unread are named in a note.
+#[tokio::test]
+async fn the_lookup_bound_counts_only_lookups_and_says_what_it_left() -> TestResult {
+    let f = fixture().await?;
+    let bound = yulius_app::ci::hygiene::MAX_PULL_LOOKUPS;
+    git(&f.work, &["fetch", "-q", "origin"])?;
+    // `bound` recent unmerged branches without a pull request (one commit), after feat/one,
+    // whose pull request is open, and one release branch at dev's commit.
+    git(&f.work, &["checkout", "-q", "-B", "wip", "origin/dev"])?;
+    std::fs::write(f.work.join("wip.txt"), "x\n")?;
+    git(&f.work, &["add", "-A"])?;
+    git(&f.work, &["commit", "-q", "-m", "wip"])?;
+    let refspecs: Vec<String> = (0..bound)
+        .map(|n| format!("wip:refs/heads/zz/{n:02}"))
+        .chain(std::iter::once(
+            "origin/dev:refs/heads/release/1".to_owned(),
+        ))
+        .collect();
+    let mut push = vec!["push", "-q", "origin"];
+    push.extend(refspecs.iter().map(String::as_str));
+    git(&f.work, &push)?;
+
+    let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    assert_eq!(scan.status, StatusCode::OK, "{}", scan.body);
+    let notes: Vec<&str> = scan.body["notes"]
+        .as_array()
+        .ok_or("notes")?
+        .iter()
+        .filter_map(|n| n.as_str())
+        .collect();
+    assert!(
+        !notes
+            .iter()
+            .any(|n| n.starts_with("Pull requests were looked up for")),
+        "every unmerged branch got its lookup: {notes:?}"
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.contains("1 branch already in the integration branch")),
+        "{notes:?}"
+    );
+    Ok(())
+}
+
 /// Jobs run inside the sandbox's containment (Linux, bubblewrap): what lies outside the sandbox
 /// directory, such as the data directory's run records, is not there, `/tmp` is private, and
 /// `HOME` is the sandbox's CI home.

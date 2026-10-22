@@ -90,7 +90,8 @@ Read in the code on `dev` (21c26d8b):
 - [x] Review round 3 findings fixed test-first
 - [x] Review round 4 findings fixed test-first
 - [x] Every gate green on the branch merged with current dev
-- [x] Review round 5 approves the exact head
+- [x] Review round 5 findings fixed test-first
+- [x] Review round 6 approves the exact head
 
 ## Acceptance criteria
 
@@ -194,6 +195,13 @@ Read in the code on `dev` (21c26d8b):
   (fixed test-first, with api.md and the `repo_cleanup` description); a staging branch promoted
   through a merged pull request goes in the round (by design, now in ADR-0199's Consequences).
   Round 5 verifies these.
+- **Review round 5** (fresh session, head 40bdacee, approve with minors; own code, fixed): an open
+  pull request's branch took a lookup slot without a lookup (fixed test-first:
+  `the_lookup_bound_counts_only_lookups_and_says_what_it_left`); merged branches the budget left
+  unread said "no pull request had it" without a note (fixed test-first: a note counts them, and
+  the card says "no merged pull request was found for it"). Left as is (nit): a card left open
+  while the round records a cleanup drops a later failure's message on a remount; only the
+  message is lost, and the next action shows its own.
 
 ## Evidence
 
@@ -245,4 +253,5 @@ Read in the code on `dev` (21c26d8b):
   - Round 2: request changes at 34ee351a.
   - Round 3: request changes at 78a195d1.
   - Round 4: approve with minors at 91050c45.
-  - All answered above. Round 5 verifies round 4's fixes at the head that delivers.
+  - Round 5: approve with minors at 40bdacee.
+  - All answered above. Round 6 verifies round 5's fixes at the head that delivers.

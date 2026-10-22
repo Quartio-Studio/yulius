@@ -365,7 +365,7 @@ test('a failure reads whatever the clocks say, and a branch no pull request had 
     db.failHygieneCleanup = 'GitHub is not available';
   });
   await card.getByRole('button', 'Check now').click();
-  await expect(browser.locator('.ci-hygiene li:has-text("release/1.x")')).toContainText('no pull request had it, so Yulius leaves it to you');
+  await expect(browser.locator('.ci-hygiene li:has-text("release/1.x")')).toContainText('no merged pull request was found for it, so Yulius leaves it to you');
   await card.getByRole('button', 'Clean up').click();
   await screen.getByRole('dialog', 'Remove 4 stale items?').getByRole('button', 'Clean up').click();
   await expect(card.getByRole('status')).toHaveText('Couldn’t clean up: GitHub is not available');
