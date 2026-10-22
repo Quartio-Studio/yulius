@@ -39,10 +39,10 @@ export function agentTokensBody(ctx) {
   const list = h('div', { class: 'agent-tokens', 'aria-live': 'polite' });
   const created = h('div', { class: 'agent-created' });
   const label = h('input', { type: 'text', class: 'input', maxlength: 80, placeholder: 'e.g. laptop Claude Code', autocomplete: 'off' });
-  const scope = h('select', { class: 'input' }, SCOPES.map((s) => h('option', { value: s.id }, s.name)));
+  const scope = h('select', { class: 'select' }, SCOPES.map((s) => h('option', { value: s.id }, s.name)));
   const scopeHint = h('span', { class: 'field-hint' }, SCOPES[0].hint);
   scope.addEventListener('change', () => { scopeHint.textContent = (SCOPES.find((s) => s.id === scope.value) || SCOPES[0]).hint; });
-  const createButton = h('button', { type: 'submit', class: 'btn btn-primary btn-sm' }, icon('plus', { size: 14 }), 'Create token');
+  const createButton = h('button', { type: 'submit', class: 'btn btn-primary' }, icon('plus', { size: 14 }), 'Create token');
 
   const render = (tokens) => {
     if (!tokens.length) {
@@ -109,7 +109,7 @@ export function agentTokensBody(ctx) {
   } },
   field('Token name', label),
   h('label', { class: 'field' }, h('span', { class: 'field-label' }, 'Scope'), scope, scopeHint),
-  h('div', null, createButton));
+  h('div', { class: 'agent-token-submit' }, createButton));
 
   load();
   return h('div', { class: 'agent-connect' },

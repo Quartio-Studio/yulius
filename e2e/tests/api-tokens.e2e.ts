@@ -55,3 +55,43 @@ test('a read-only token says what it may do', async ({ app, browser, screen }) =
   await screen.getByRole('button', 'Create token').click();
   await expect(browser.locator('.agent-token:has-text("dashboards")')).toContainText('Read only');
 });
+
+// SPEC-270 (task #256): the form read as two misaligned rows. The Scope hint pushed the name field
+// and a smaller Create token button down to its last line, and the select kept the native look.
+function tokenFormBoxes() {
+  const box = (el: Element | null) => {
+    const r = el!.getBoundingClientRect();
+    return { top: Math.round(r.top), bottom: Math.round(r.bottom), left: Math.round(r.left), right: Math.round(r.right), height: Math.round(r.height) };
+  };
+  const form = document.querySelector('.agent-token-form')!;
+  const fields = [...form.querySelectorAll(':scope > .field')];
+  return {
+    form: { ...box(form), scrollWidth: form.scrollWidth, clientWidth: form.clientWidth },
+    nameLabel: box(fields[0].querySelector('.field-label')),
+    name: box(fields[0].querySelector('input')),
+    scopeLabel: box(fields[1].querySelector('.field-label')),
+    scope: box(fields[1].querySelector('select')),
+    scopeIsSelect: fields[1].querySelector('select')!.classList.contains('select'),
+    hint: box(fields[1].querySelector('.field-hint')),
+    button: box(form.querySelector('button[type="submit"]')),
+  };
+}
+
+test('the token form reads as one row', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1440, height: 900 });
+  await app.open(mock('/settings'));
+  await expect(screen.getByLabel('Token name')).toBeVisible();
+  const b = await browser.evaluate(tokenFormBoxes);
+  // Labels on one line, controls and the button on the next, all the same height.
+  expect(b.scopeLabel.top).toBe(b.nameLabel.top);
+  expect([b.scope.top, b.button.top]).toEqual([b.name.top, b.name.top]);
+  expect([b.scope.height, b.button.height]).toEqual([b.name.height, b.name.height]);
+  // Name, scope and button side by side; the hint under the select, within its column.
+  expect(b.name.right).toBeLessThan(b.scope.left);
+  expect(b.scope.right).toBeLessThan(b.button.left);
+  expect(b.hint.top).toBeGreaterThanOrEqual(b.scope.bottom);
+  expect(b.hint.left).toBeGreaterThanOrEqual(b.scope.left);
+  expect(b.hint.right).toBeLessThanOrEqual(b.scope.right);
+  // The app's select, like every other list to choose from.
+  expect(b.scopeIsSelect).toBe(true);
+});
