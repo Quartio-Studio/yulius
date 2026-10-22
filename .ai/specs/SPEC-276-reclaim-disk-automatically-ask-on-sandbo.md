@@ -1,11 +1,11 @@
 ---
 yulius-task: b702149f-23d1-482e-bb86-91397a049b4d
-status: in-progress
+status: done
 ---
 
 # SPEC-276: Yulius reclaims disk by itself, and removing a sandbox asks about its files
 
-Status: in-progress
+Status: done
 Date: 2026-10-22
 Owner: task #261
 Scope authorization: task #261 (requested by MrFishPL): "Yulius must reclaim unnecessary disk
@@ -153,8 +153,9 @@ been read for at least 24 h.
 - [x] Removing a sandbox asks whether to delete or keep its files
 - [x] Kept files of removed sandboxes are listed with their size and can be deleted
 - [x] Architecture, operations, product, PRJ-009 and changes documented
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green on the reviewed head, spec evidence recorded
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green on the reviewed head, spec evidence recorded
+- [x] Full e2e suite green on the final head
 
 ## Acceptance criteria
 
@@ -240,3 +241,56 @@ Lasting ones in ADR-0205. Summary:
   removes the sandbox knows which matters, so both are one click and neither is preselected.
 - **One pull request.** Both halves came from one incident and share the disk round, the
   leftovers engine and the Leftovers card; the sweep, pressure and purge are separate commits.
+
+## Evidence
+
+Reviewed head `5cdc1423` (task branch `feat/261-reclaim-disk-automatically-ask-on-sandbo`, with
+`dev` ab8ab732 merged in).
+
+- **Measured here** (2026-10-22): a sibling worktree's `target/` held 22 GB: `debug/incremental`
+  15 GB in 208 crate directories (16 generations of `yulius`), `debug/deps` 4.5 GB, the macOS
+  cross build 2.7 GB. `/var/lib/yulius` inside a task is a tmpfs view of the sandbox, so the VM's
+  own disk and its removed sandboxes could not be measured from the task.
+- **Cargo's locks** (cargo 1.99, a probe crate whose `build.rs` sleeps 15 s, outside the
+  worktree): during the build `flock -n` found `.cargo-lock`, `.cargo-build-lock` and
+  `.cargo-artifact-lock` of `target/debug` held; after it, all three free.
+- **Fails before, passes after** (each checked by breaking the fix locally):
+  - `sweep::tests::a_held_cargo_lock_keeps_the_whole_build_directory` and
+    `a_cross_target_profile_s_lock_counts_too` fail with the lock check disabled;
+  - `sweep::tests::a_fifo_named_like_a_lock_counts_as_held_and_never_blocks` times out without
+    `O_NONBLOCK`;
+  - `disk::a_critical_data_disk_prunes_idle_caches_and_is_audited` fails without the host need;
+  - `disk::an_archived_task_loses_its_caches_without_the_grace` failed before the rule ("archived:
+    no grace");
+  - `disk::archiving_a_task_through_the_api_removes_its_build_output` fails without the spawn;
+  - `leftovers::a_purged_sandbox_loses_every_file_once_nothing_runs_and_a_kept_one_keeps_them`
+    fails with the 10-minute wait kept for a requested purge;
+  - `leftovers::the_leftovers_round_leaves_a_purged_sandbox_to_its_purge` fails without the filter;
+  - `shells::a_live_shell_keeps_a_resting_task_s_build_artifacts` failed before the Shell check
+    ("a Shell may be running its tests").
+- **Suites:** `yulius-domain` sweep tests (5), `yulius-app` sweep tests (12) and `disk::tests`,
+  the `disk::` (31), `leftovers::` (22), `playground::` and `shells::` integration tests pass.
+- **`scripts/dev ci` at `5cdc1423`:** exit 0. 2532 tests passed, 17 skipped; lint, format, docs,
+  deny, shear, repository contracts and the macOS cross-check passed. The run at `66ff1555`
+  failed at `cargo doc` (public docs linking the purge's private constants), fixed in `615fd9cc`.
+- **e2e:** `tests/disk-files.e2e.ts` (4: the pill at low and critical, for members, none at ok;
+  the remove dialog's choice gates Remove, Delete purges, Keep keeps), `tests/leftovers.e2e.ts`
+  (5, with the last automatic cleanup and the kept files' Delete files), `tests/playground.e2e.ts`
+  (9) and `tests/places.e2e.ts` (21) pass. The full suite at `5cdc1423` (`cd e2e && npx e2e run`):
+  65 files, 685 tests passed and 1 skipped, exit 0.
+- **Security:** `scripts/vidoc_scan.py --base origin/dev` exited 2, not run: "Vidoc is out of
+  quota for this key (HTTP 429: This API key has used its 50,000,000 tokens.)". As the person
+  asked before the task started ("if you face vidoc problem, continue without vidoc atm"), the
+  change goes on without it; it is not a pass. Yulius CI's `security` job reports the same state.
+- **Independent review:** three rounds in a fresh read-only session. Round 1 asked for changes
+  (four majors: a FIFO lock file could hang the upkeep; test binaries, doctests and nextest read
+  `deps/` after Cargo unlocks; the export's deletion was not said in ADR-0139, SPEC-171 or the
+  dialog; untested loop, watch and archive paths), all fixed test-first. Round 2 approved with two
+  minors: the Shell case was fixed, the probe-to-lock window and the archive-vs-loop upkeep are
+  accepted (Decisions). Round 3 approved `5cdc1423`. Filed for pre-existing code: #853 (a FIFO
+  swapped in for `yulius.toml` blocks the existing upkeep).
+- **Not testable here:** the real mapped removal of a purged sandbox's system layer (needs the
+  contained service user and `bwrap`; the opt-in isolation suite), and the behaviour on the VM's
+  real 387 GB disk. After promotion and update, check in Settings → Instance → Leftovers that the
+  last automatic cleanup runs and that kept sandboxes are listed; watch `disk.sweep` and
+  `disk.pressure` in the audit and `df -h /var/lib/yulius`.
