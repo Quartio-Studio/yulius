@@ -104,8 +104,8 @@ fn key_paths(line: &str) -> Vec<Vec<&str>> {
 
 /// Whether `dir` sets the knob of the default variable `name` in its tools' own files: `<key>`
 /// as a component of a key path there ([`key_paths`]: `<key> = …`, `build.<key> = …`,
-/// `<key>.value = …`, `[env.<key>]`, `build = { <key> = … }`, SPEC-272 SHR-005) in one of them (a regular file of at most
-/// [`MAX_CONFIG_BYTES`]).
+/// `<key>.value = …`, `[env.<key>]`, `build = { <key> = … }`, SPEC-272 SHR-005) in one of them
+/// (a regular file of at most [`MAX_CONFIG_BYTES`]).
 fn sets_own(dir: &Path, name: &str) -> bool {
     let Some((_, files, key)) = OWN_SETTINGS.iter().find(|(n, _, _)| *n == name) else {
         return false;
@@ -332,6 +332,11 @@ mod tests {
             (
                 &cargo,
                 "[env]\nFOO = \"RUST_TEST_THREADS\"\n",
+                "RUST_TEST_THREADS",
+            ),
+            (
+                &cargo,
+                "env = { FOO = \"RUST_TEST_THREADS\" }\n",
                 "RUST_TEST_THREADS",
             ),
             (&cargo, "# jobs = 2\n", "CARGO_BUILD_JOBS"),

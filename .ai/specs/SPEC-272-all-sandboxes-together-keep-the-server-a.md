@@ -78,8 +78,8 @@ the limit was hit; and the small defects left by #254's review round 3 are fixed
   bare or quoted (`RUST_TEST_THREADS.value = "1"`, `env.RUST_TEST_THREADS = "1"`,
   `[env.RUST_TEST_THREADS]`, `build.jobs = 2`, `profile.default.test-threads = 1`), or as a key of
   an inline table in a value (`build = { jobs = 2 }`, review). Plain values and comments are not
-  keys; a string in a multi-line array may be taken for one (a false positive only leaves the
-  default out).
+  keys; a string with `=` in an array or a comment after a value may be taken for one (a false
+  positive only leaves the default out, review round 2).
 - SHR-006: A detail read that redraws the end banner keeps keyboard focus on the same control of
   the banner (`keepFocus`).
 
