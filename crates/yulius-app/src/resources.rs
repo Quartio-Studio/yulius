@@ -48,7 +48,13 @@ pub(crate) struct Reservation {
 
 /// Where a repository sets a default variable's knob itself, and the key it sets there: the
 /// variable would override it (review round 1), so the default is left out.
-const OWN_SETTINGS: [(&str, &[&str], &str); 2] = [
+const OWN_SETTINGS: [(&str, &[&str], &str); 3] = [
+    // Cargo's `[env]` sets it only where it is not set already (review round 2).
+    (
+        "RUST_TEST_THREADS",
+        &[".cargo/config.toml", ".cargo/config"],
+        "RUST_TEST_THREADS",
+    ),
     (
         "CARGO_BUILD_JOBS",
         &[".cargo/config.toml", ".cargo/config"],
@@ -211,6 +217,12 @@ mod tests {
             names(&repository_templates(dir.path())),
             ["RUST_TEST_THREADS"]
         );
+        // Review round 2: Cargo's `[env]` does not replace a variable that is set.
+        std::fs::write(
+            dir.path().join(".cargo/config.toml"),
+            "[build]\njobs = 2\n\n[env]\nRUST_TEST_THREADS = \"1\"\n",
+        )?;
+        assert!(repository_templates(dir.path()).is_empty());
         std::fs::write(&toml, "[resources.env]\n")?;
         assert!(repository_templates(dir.path()).is_empty());
         std::fs::write(&toml, "[resources.env]\nMAKEFLAGS = \"-j{cpus}\"\n")?;
