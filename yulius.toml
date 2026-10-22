@@ -48,9 +48,10 @@ name = "e2e"
 command = "cd e2e && npm ci --ignore-scripts && npx e2e-web install chromium && E2E_TELEMETRY_DISABLED=1 npx e2e run --reporter list,junit"
 
 # The Vidoc security scan on vidoc-1 (SPEC-195, ADR-0157) of pull request heads: the files the pull
-# request changed against dev, read from its commits. Findings (exit 1) fail the job. A scan that
-# could not run (no key, a refused one, Vidoc unreachable or out of quota) and every other head end
-# skipped with $YULIUS_CI_SKIP_CODE (ADR-0133), never passed. The job runs the pull request's own
+# request changed against dev, read from its commits. Findings (exit 1) fail the job, without
+# cancelling the others. A scan that could not run (no key, a refused one, out of quota) and every
+# other head end skipped with $YULIUS_CI_SKIP_CODE (ADR-0133), never passed; one that Vidoc's
+# outage left incomplete exits $YULIUS_CI_INCOMPLETE_CODE and ends error (ADR-0202). The job runs the pull request's own
 # scanner; other projects run the instance's, `yulius security-scan --ci`. VIDOC_API_KEY is a
 # placeholder the egress proxy replaces for model.vidocsecurity.com: this project's agent secret,
 # else the instance's Vidoc key (ADR-0116).

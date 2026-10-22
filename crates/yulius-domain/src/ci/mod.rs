@@ -440,6 +440,34 @@ pub enum RunState {
 /// every job as `YULIUS_CI_SKIP_CODE`: `EX_CONFIG` from `sysexits.h`, Drone's "skip" code.
 pub const SKIP_EXIT_CODE: i32 = 78;
 
+/// The exit code with which a CI job says it could not check everything for a passing reason
+/// (an outage of the service it asks; SPEC-273 NOI-006, ADR-0202), given to every job as
+/// `YULIUS_CI_INCOMPLETE_CODE`: `EX_TEMPFAIL` from `sysexits.h`. The job ends
+/// [`RunState::Error`], which blocks the merge until a rerun passes, with
+/// [`incomplete_reason`].
+pub const INCOMPLETE_EXIT_CODE: i32 = 75;
+
+/// The prefix of the output line with which such a job names what it left unchecked.
+pub const INCOMPLETE_MARK: &str = "::yulius-incomplete ";
+
+/// The reason of a job that exited [`INCOMPLETE_EXIT_CODE`]: the text of the last
+/// [`INCOMPLETE_MARK`] line of its `output` (control characters dropped, at most 300
+/// characters), else a generic one. It says infrastructure, never a finding.
+#[must_use]
+pub fn incomplete_reason(output: &str) -> String {
+    let said = output
+        .lines()
+        .rev()
+        .find_map(|line| line.strip_prefix(INCOMPLETE_MARK))
+        .map(|text| {
+            let text: String = text.chars().filter(|c| !c.is_control()).take(300).collect();
+            text.trim().to_owned()
+        })
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| "the job could not check everything".to_owned());
+    format!("incomplete: {said}; infrastructure, not a finding: run it again")
+}
+
 impl RunState {
     /// Wire name.
     #[must_use]
@@ -745,18 +773,21 @@ pub fn commit_status(state: RunState, summary: RunSummary<'_>) -> CommitStatus {
         ),
         RunState::Running => (
             CommitState::Pending,
-            match summary.skipped {
-                0 => format!(
-                    "Running on Yulius: {} of {} passed",
-                    summary.passed,
-                    jobs_word(summary.jobs)
-                ),
-                n => format!(
-                    "Running on Yulius: {} of {} passed, {n} skipped",
-                    summary.passed,
-                    jobs_word(summary.jobs)
-                ),
-            },
+            // A failed job that stopped none of the others (the security job, SPEC-273) shows
+            // while they run.
+            format!(
+                "Running on Yulius: {} of {} passed{}{}",
+                summary.passed,
+                jobs_word(summary.jobs),
+                match summary.skipped {
+                    0 => String::new(),
+                    n => format!(", {n} skipped"),
+                },
+                summary
+                    .failed_job
+                    .map(|(job, _)| format!(", {job} failed"))
+                    .unwrap_or_default()
+            ),
         ),
         RunState::Passed | RunState::Skipped => (
             CommitState::Success,
@@ -1272,6 +1303,27 @@ mod tests {
         assert_eq!(aggregate(&[S::Skipped, S::Cancelled]), S::Cancelled);
     }
 
+    /// SPEC-273 NOI-006: the reason names what the job said it missed, bounded and on one line.
+    #[test]
+    fn an_incomplete_job_s_reason_is_its_last_mark() {
+        let output = "::yulius-incomplete old\nscanning\n::yulius-incomplete 1 file(s) not \
+                      scanned (a.rs): HTTP 503\r\nbye\n";
+        assert_eq!(
+            incomplete_reason(output),
+            "incomplete: 1 file(s) not scanned (a.rs): HTTP 503; infrastructure, not a finding: \
+             run it again"
+        );
+        assert_eq!(
+            incomplete_reason("nothing said\n::yulius-incomplete  \n"),
+            "incomplete: the job could not check everything; infrastructure, not a finding: run \
+             it again"
+        );
+        let long = format!("{INCOMPLETE_MARK}{}\u{1b}[31m", "x".repeat(500));
+        let reason = incomplete_reason(&long);
+        assert!(!reason.contains('\u{1b}'));
+        assert_eq!(reason.matches('x').count(), 300, "{reason}");
+    }
+
     /// SPEC-162: a copied verdict never turns a skipped job into a passed one.
     #[test]
     fn a_copied_verdict_keeps_skipped_jobs_skipped() {
@@ -1437,6 +1489,20 @@ mod tests {
         assert_eq!(
             running.description,
             "Running on Yulius: 1 of 3 jobs passed, 1 skipped"
+        );
+        // SPEC-273 (review round 1): a failed scan shows while the tests still run.
+        let running = commit_status(
+            RunState::Running,
+            RunSummary {
+                jobs: 3,
+                failed_job: Some(("security", Some(1))),
+                ..RunSummary::default()
+            },
+        );
+        assert_eq!(running.state, CommitState::Pending);
+        assert_eq!(
+            running.description,
+            "Running on Yulius: 0 of 3 jobs passed, security failed"
         );
         // SPEC-059 CI-301: a run waiting for disk stays pending and says why.
         let waiting = commit_status(

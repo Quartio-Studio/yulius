@@ -160,8 +160,9 @@ pub fn security_setup(vidoc: bool) -> &'static str {
          that cannot run ends skipped. Add the AGENTS.md rule that every change runs `yulius \
          security-scan` before delivery, fixes each failing finding test-first and decides on \
          each low finding in the change (fix it, or say why not in the spec's Evidence): exit 2 \
-         is not run, never passed, and a false positive goes into `.config/vidoc.toml` as an \
-         `[[ignore]]` with its reason once the reviewer agrees. Say in AGENTS.md that the scan \
+         is not run and exit 3 incomplete, never passed, and a false positive goes into \
+         `.config/vidoc.toml` as an `[[ignore]]` naming its function, with its reason, once the \
+         reviewer agrees. Say in AGENTS.md that the scan \
          sends the changed code to Vidoc. Do not scan the existing code here: `yulius \
          security-scan --all` is a broad audit for its own task."
     } else {

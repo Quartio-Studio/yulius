@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-22
 
+- The Vidoc security job makes less noise (SPEC-273, task #262, ADR-0202, #850). A reworded
+  repeat of an ignored finding on code the branch did not touch passes: an `[[ignore]]` may name
+  its `function` and `line`, Vidoc is told each file's accepted risks and can answer "accepted",
+  and every open finding shows its nearest ignore and how similar it is. An answer cut at
+  `max_tokens` splits its chunk instead of failing the scan; files Vidoc's outage left unscanned
+  make the scan incomplete (exit 3): in CI the job ends error "incomplete: …" naming them, which
+  blocks the merge until a rerun passes, instead of skipped or failed. The security job and the
+  tests no longer cancel each other, and issues for findings outside the change are filed only
+  from a run whose other jobs passed.
 - Yulius cleans up stale branches and worktrees itself (SPEC-269, task #255, ADR-0199). The
   6-hourly hygiene round now removes what loses nothing (branches of merged or closed pull
   requests, local copies already on GitHub, clean worktrees of finished tasks) instead of only

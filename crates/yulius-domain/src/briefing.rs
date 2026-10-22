@@ -862,7 +862,8 @@ fn security_scan(input: &BriefingInput<'_>) -> String {
     "## Security scan\n\nThis instance has a Vidoc key: `yulius security-scan` sends the files your \
      branch changed (`--all`: the whole repository) to Vidoc's vidoc-1. It exits 1 on critical \
      or high findings, or medium ones in your changed lines; decide on low ones there (fix, or \
-     say why not in Evidence); 2 is not run, never a pass. A project's CI runs it built in (`yulius \
+     say why not in Evidence); 2 is not run and 3 incomplete (rerun it), never a pass. A \
+     project's CI runs it built in (`yulius \
      security-scan --ci`) and files findings outside your change as issues.\n\n"
         .to_owned()
 }

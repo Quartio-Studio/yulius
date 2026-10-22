@@ -1224,6 +1224,202 @@ command = 'if [ "$YULIUS_CI_MATRIX" = 2 ]; then exit "$YULIUS_CI_SKIP_CODE"; fi'
     Ok(())
 }
 
+/// SPEC-273 NOI-006: a job that exits `$YULIUS_CI_INCOMPLETE_CODE` (a security scan Vidoc's
+/// outage cut short) ends error with the files it names, never failed: the status says
+/// incomplete, the merge is blocked, and the other job still ends passed.
+#[tokio::test]
+async fn a_job_that_exits_the_incomplete_code_ends_in_error_naming_what_it_missed() -> TestResult {
+    let f = fixture_with(false, |_| {
+        r#"[[ci.jobs]]
+name = "check"
+command = "true"
+
+[[ci.jobs]]
+name = "security"
+command = 'echo "::yulius-incomplete 2 file(s) not scanned (a.rs, b.rs): HTTP 503"; exit "${YULIUS_CI_INCOMPLETE_CODE:-1}"'
+"#
+        .to_owned()
+    })
+    .await?;
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let run = overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["reference"] == "pr/1")
+        .cloned()
+        .ok_or("pr/1 run")?;
+    assert_eq!(run["state"], "error", "{run}");
+    let detail = f
+        .get(&format!(
+            "/api/sandboxes/s1/ci/runs/{}",
+            run["id"].as_str().ok_or("id")?
+        ))
+        .await?;
+    let jobs = detail["jobs"].as_array().ok_or("jobs")?;
+    let job = |name: &str| jobs.iter().find(|j| j["name"] == name).ok_or("job");
+    assert_eq!(job("check")?["state"], "passed", "{detail}");
+    assert_eq!(job("security")?["state"], "error", "{detail}");
+    assert_eq!(job("security")?["exit_code"], 75, "{detail}");
+    assert_eq!(
+        job("security")?["reason"],
+        "incomplete: 2 file(s) not scanned (a.rs, b.rs): HTTP 503; infrastructure, not a \
+         finding: run it again",
+        "{detail}"
+    );
+    assert_eq!(
+        f.h.app.ci_gate_result(&f.sandbox, &pr_sha).await,
+        GateResult::Run(Some(RunState::Error))
+    );
+    let (state, description, _) = f.last_status(&pr_sha).ok_or("status")?;
+    assert_eq!(state, "error", "{description}");
+    assert!(
+        description.starts_with("Error: security: incomplete: 2 file(s) not scanned (a.rs, b.rs)"),
+        "{description}"
+    );
+    Ok(())
+}
+
+impl Fixture {
+    /// Dispatches until every named job of `sha`'s run is in its state; returns the jobs.
+    async fn until_jobs(&self, sha: &str, states: &[(&str, &str)]) -> BoxResult<Vec<Value>> {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            self.h.app.ci_dispatch().await;
+            let overview = self.get("/api/sandboxes/s1/ci").await?;
+            if let Some(run) = overview["runs"]
+                .as_array()
+                .ok_or("runs")?
+                .iter()
+                .find(|r| r["sha"] == sha)
+            {
+                let detail = self
+                    .get(&format!(
+                        "/api/sandboxes/s1/ci/runs/{}",
+                        run["id"].as_str().ok_or("id")?
+                    ))
+                    .await?;
+                let jobs = detail["jobs"].as_array().ok_or("jobs")?.clone();
+                let state_of = |name: &str| {
+                    jobs.iter()
+                        .find(|j| j["name"] == name)
+                        .map(|j| j["state"].clone())
+                };
+                if states
+                    .iter()
+                    .all(|(name, state)| state_of(name).is_some_and(|s| s == *state))
+                {
+                    return Ok(jobs);
+                }
+                if tokio::time::Instant::now() > deadline {
+                    return Err(format!("jobs never reached {states:?}: {detail}").into());
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+/// SPEC-273 NOI-007: a failed `security` job no longer stops the other jobs ("stopped early: job
+/// security failed" left a commit without a test result), and a failed test job no longer stops
+/// the scan; both run to the end and report. Fail-fast among the other jobs stays.
+#[tokio::test]
+async fn the_security_job_and_the_others_never_cancel_each_other() -> TestResult {
+    let f = fixture_with(false, |data| {
+        format!(
+            r#"[[ci.jobs]]
+name = "security"
+command = 'if [ -f fail-security ]; then exit 1; fi; while [ ! -f "{release}" ]; do sleep 0.05; done'
+
+[[ci.jobs]]
+name = "quality"
+command = 'if [ -f fail-quality ]; then exit 1; fi; while [ ! -f "{release}" ]; do sleep 0.05; done'
+
+[[ci.jobs]]
+name = "e2e"
+command = 'while [ ! -f "{release}" ]; do sleep 0.05; done'
+"#,
+            release = data.join("release").display()
+        )
+    })
+    .await?;
+    let release = f.data.join("release");
+    // The scan fails at once; quality and e2e are still running when it does.
+    let first = f.push_feature("fail-security", Some("x\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.until_jobs(
+        &first,
+        &[
+            ("security", "failed"),
+            ("quality", "running"),
+            ("e2e", "running"),
+        ],
+    )
+    .await?;
+    // GitHub hears of the failed scan at once, while the tests run (review round 1).
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while f.last_status(&first).map(|(_, d, _)| d)
+        != Some("Running on Yulius: 0 of 3 jobs passed, security failed".to_owned())
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{:?}",
+            f.h.github.statuses()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    std::fs::write(&release, "")?;
+    f.settle().await?;
+    f.until_jobs(
+        &first,
+        &[
+            ("security", "failed"),
+            ("quality", "passed"),
+            ("e2e", "passed"),
+        ],
+    )
+    .await?;
+    let (state, description, _) = f.last_status(&first).ok_or("status")?;
+    assert_eq!(state, "failure", "{description}");
+    assert!(
+        description.contains("security (exit code 1)"),
+        "{description}"
+    );
+
+    // Quality fails at once: e2e stops early as before, the scan runs to its end.
+    std::fs::remove_file(&release)?;
+    f.push_feature("fail-security", None)?;
+    let second = f.push_feature("fail-quality", Some("x\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let jobs = f
+        .until_jobs(
+            &second,
+            &[
+                ("quality", "failed"),
+                ("e2e", "cancelled"),
+                ("security", "running"),
+            ],
+        )
+        .await?;
+    let e2e = jobs.iter().find(|j| j["name"] == "e2e").ok_or("e2e")?;
+    assert_eq!(e2e["reason"], "stopped early: job quality failed", "{e2e}");
+    std::fs::write(&release, "")?;
+    f.settle().await?;
+    f.until_jobs(
+        &second,
+        &[
+            ("quality", "failed"),
+            ("e2e", "cancelled"),
+            ("security", "passed"),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
 /// While a run is going, its commit status counts the jobs that already ended (SPEC-198 RCS-001):
 /// GitHub said "0 of 3 jobs passed" for PR #600 long after its security scan had passed, and the
 /// Superagent took the scan for one still running (#604). The final status still lands last.
@@ -2562,6 +2758,50 @@ async fn the_security_jobs_findings_outside_the_change_are_filed_once() -> TestR
     let security = output_of(&outputs, "security")?;
     assert!(
         security.contains("2 finding(s) outside the change were filed before"),
+        "{security}"
+    );
+    Ok(())
+}
+
+/// SPEC-273 NOI-008: findings outside the change wait for the tests. A run whose other job failed
+/// files no issue and says why in the security job's output; once that job passes, the same
+/// findings are filed.
+#[tokio::test]
+async fn findings_are_filed_only_from_a_run_whose_other_jobs_passed() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"cat findings.txt\"\n\n\
+         [[ci.jobs]]\nname = \"quality\"\ncommand = \"if [ -f fail-quality ]; then exit 1; fi\"\n"
+            .to_owned()
+    })
+    .await?;
+    f.push_feature(
+        "findings.txt",
+        Some(&finding_line("medium", "README.md", "8464a81d5a585dd2")),
+    )?;
+    let failing = f.push_feature("fail-quality", Some("x\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let filed = |f: &Fixture| -> BoxResult<usize> {
+        Ok(f.h.github.issues.lock().map_err(|_| "issues")?.len())
+    };
+    assert_eq!(filed(&f)?, 0, "nothing filed while quality fails");
+    let outputs = job_outputs(&f, &failing).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains(
+            "[yulius] 1 finding(s) outside the change not filed or reopened as issues yet: job \
+             quality did not pass"
+        ),
+        "{security}"
+    );
+    let passing = f.push_feature("fail-quality", None)?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert_eq!(filed(&f)?, 1, "filed once the tests pass");
+    let outputs = job_outputs(&f, &passing).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("[yulius] filed issue #101 for the medium finding 8464a81d5a585dd2"),
         "{security}"
     );
     Ok(())
