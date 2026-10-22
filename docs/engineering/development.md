@@ -194,7 +194,7 @@ scan every line counts.
   (fingerprint) or file is gone from `dev`. `--report` gives each finding its `scope` and `fingerprint`.
 - 2: not run. The causes:
   - no key, or a key that is malformed or refused;
-  - out of quota;
+  - out of quota (402, or a 429 that says the key is used up);
   - no base (`origin/HEAD` is not set and there is no `--base`);
   - a malformed `.config/vidoc.toml`;
   - Python older than 3.11;

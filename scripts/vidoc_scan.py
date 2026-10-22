@@ -93,6 +93,8 @@ LINE_SLACK = 10
 DEFINITION = re.compile(r"\b(?:fn|def|func|function|class|struct|enum|trait|impl|interface|module)"
                         r"\s+([A-Za-z_$][\w$]*)")
 ACCEPTED_ID = re.compile(r"A[1-9][0-9]{0,3}")
+# A 429 that says the key is used up, not to slow down: only a person fixes it (not run).
+USED_UP = re.compile(r"\bquota\b|\bused its\b|\bcredits?\b|\bbilling\b", re.IGNORECASE)
 FINDING_MARK = "::yulius-finding"
 INCOMPLETE_MARK = "::yulius-incomplete"
 SYNONYMS = {"info": "low", "informational": "low", "note": "low", "moderate": "medium",
@@ -703,8 +705,9 @@ class Client:
                 if err.code in (401, 403):
                     raise Usage(f"Vidoc refused the key (HTTP {err.code}: {message}). "
                                 f"{HOW_TO_GET_A_KEY}") from None
-                if err.code == 402:
-                    raise Usage(f"Vidoc is out of quota for this key (HTTP 402: {message})") from None
+                if err.code == 402 or (err.code == 429 and USED_UP.search(message)):
+                    raise Usage(f"Vidoc is out of quota for this key (HTTP {err.code}: "
+                                f"{message})") from None
                 if err.code not in (408, 409, 429) and err.code < 500:
                     raise Failed(f"Vidoc refused the request (HTTP {err.code}: {message})") from None
                 last = f"HTTP {err.code}: {message}"

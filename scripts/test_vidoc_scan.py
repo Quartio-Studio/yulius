@@ -371,6 +371,19 @@ class Service(Scanning):
                 self.assertIn(words, output)
                 self.assertEqual(len(server.requests), 1, "never retried")
 
+    def test_a_429_that_says_the_key_is_used_up_is_no_quota_not_an_outage(self):
+        # Vidoc answered this on 2026-10-22: only a person can fix it, so the scan is not run
+        # (skipped in CI) rather than incomplete, which would block every pull request.
+        for message in ("This API key has used its 50,000,000 tokens.",
+                        "Monthly quota exceeded", "Insufficient credits"):
+            with self.subTest(message=message):
+                repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+                server = self.fake(lambda body, headers, m=message: (429, {"error": {"message": m}}, {}))
+                code, output = self.run_scan(repo, server)
+                self.assertEqual(code, 2, output)
+                self.assertIn("out of quota", output)
+                self.assertEqual(len(server.requests), 1, "never retried")
+
     def test_an_unreachable_service_leaves_the_scan_incomplete(self):
         repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
         server = self.fake()

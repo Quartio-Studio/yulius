@@ -71,7 +71,8 @@ Root causes (reproduced in code, see Evidence):
   or a network failure or timeout past the retries, `max_tokens` at the deepest split, an answer
   still unreadable after 3 tries, the deadline) leaves its files **unscanned** and the scan
   **incomplete**: exit 3, listing the files. Open failing findings still win (exit 1). Not run
-  (exit 2) stays for what only a person fixes: no key, a refused key, no quota, a malformed config,
+  (exit 2) stays for what only a person fixes: no key, a refused key, no quota (402, or a 429 whose
+  message says the key is used up), a malformed config,
   no base, an old Python, and for the byte budget.
 - NOI-006 (CI incomplete). With `--ci`, an incomplete scan exits `$YULIUS_CI_INCOMPLETE_CODE` (75,
   `EX_TEMPFAIL`, given to every job) after printing one `::yulius-incomplete <text>` line naming the
