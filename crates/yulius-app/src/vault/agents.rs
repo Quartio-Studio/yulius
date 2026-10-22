@@ -651,19 +651,8 @@ impl App {
             });
         }
         if !self.deps.store.vault_update(&record, &seen).await? {
-            // Gone; or its hosts or switch changed meanwhile (an agent bound a host, a person
-            // switched it), or it was allowed for production: nothing is undone unseen.
-            return Err(match self.deps.store.vault_get(id).await? {
-                Some(now) if now.cd_prod && record.auto_allow => {
-                    AppError::Conflict(super::PRODUCTION_SECRET.into())
-                }
-                Some(_) => AppError::Conflict(
-                    "the secret changed meanwhile (an agent bound a host, or someone changed it): \
-                     reload and save again"
-                        .into(),
-                ),
-                None => AppError::NotFound,
-            });
+            let now = self.deps.store.vault_get(id).await?;
+            return Err(update_refused(now.as_ref(), &record, &seen));
         }
         self.vault.bump();
         self.vault_audit(
@@ -772,5 +761,72 @@ impl App {
         )
         .await?;
         Ok(Revealed::Values(revealed))
+    }
+}
+
+/// Why the store refused `record`, an edit of `seen`, from the row as it is `now`: gone; or its
+/// hosts or switch changed meanwhile (an agent bound a host, a person switched it), or it was
+/// allowed for production, which agents never set up and which binds no new host (SPEC-262
+/// VTR-001): nothing is undone unseen.
+fn update_refused(
+    now: Option<&VaultSecretRecord>,
+    record: &VaultSecretRecord,
+    seen: &VaultSecretRecord,
+) -> AppError {
+    match now {
+        Some(now)
+            if now.cd_prod
+                && (record.auto_allow
+                    || (record.hosts != seen.hosts && !record.hosts.is_empty())) =>
+        {
+            AppError::Conflict(super::PRODUCTION_SECRET.into())
+        }
+        Some(_) => AppError::Conflict(
+            "the secret changed meanwhile (an agent bound a host, or someone changed it): \
+             reload and save again"
+                .into(),
+        ),
+        None => AppError::NotFound,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review of SPEC-262: an edit that binds hosts, refused because a person allowed the secret
+    /// for production meanwhile, says so, rather than asking for a reload that fails again.
+    #[test]
+    fn an_edit_refused_by_a_production_allowance_meanwhile_says_so() {
+        let mut seen = super::super::instance_vidoc_record();
+        seen.hosts = Vec::new();
+        let mut production = seen.clone();
+        production.cd_prod = true;
+        let production_secret = |err: &AppError| matches!(err, AppError::Conflict(m) if m == super::super::PRODUCTION_SECRET);
+        let mut binds = seen.clone();
+        binds.hosts = vec!["api.example.com".into()];
+        assert!(production_secret(&update_refused(
+            Some(&production),
+            &binds,
+            &seen
+        )));
+        let mut set_up = seen.clone();
+        set_up.auto_allow = true;
+        assert!(production_secret(&update_refused(
+            Some(&production),
+            &set_up,
+            &seen
+        )));
+        let mut described = seen.clone();
+        described.description = "edited".into();
+        assert!(!production_secret(&update_refused(
+            Some(&production),
+            &described,
+            &seen
+        )));
+        assert!(matches!(
+            update_refused(None, &binds, &seen),
+            AppError::NotFound
+        ));
     }
 }

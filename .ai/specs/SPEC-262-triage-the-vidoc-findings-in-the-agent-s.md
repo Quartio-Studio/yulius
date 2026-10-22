@@ -62,7 +62,7 @@ comments) is either fixed test-first or dismissed with its reason and a narrow `
 - [x] Status line strips control characters from repository and branch names
 - [x] Document presence and workflow count read through a checked handle (hooks TOCTOU)
 - [x] Dismissals pinned by tests and narrow [[ignore]] entries (findings 2, 3, .git, task numbers)
-- [ ] Gates, security scan, docs and changes entry
+- [x] Gates, security scan, docs and changes entry
 - [ ] Independent review answered and merged into dev on green
 
 ## Acceptance criteria
@@ -128,3 +128,12 @@ comments) is either fixed test-first or dismissed with its reason and a narrow `
 - `[[ignore]]` entries added for the three dismissed wordings on record (task #200's scans, #714):
   "TOCTOU on the Git disposable check before writing secret values", "open_folder does not exclude
   .git despite documented invariant", "Non-atomic task number allocation".
+- **Independent review, round 1 (approve at f1610ec9; minors and nits fixed).** Minor 1 (own): an
+  edit binding hosts, refused because a person allowed the secret for production meanwhile, asked
+  for a reload that would fail again; `agents::update_refused` now names the production rule, test
+  `vault::agents::tests::an_edit_refused_by_a_production_allowance_meanwhile_says_so` (failed
+  first). Minor 2 (own): the workflow listing dropped read errors before its bound, so a folder
+  whose reads keep failing could loop; the bound now comes first (a persistent read error cannot
+  be produced in a test). Nits: `vault_auto_bind` also requires `cd_prod = 0` in its own statement;
+  `legacy_production_secret` asserts a project secret (deleting another would drop its switches);
+  `doc_present` documents that a file the server cannot open is absent; this Plan item ticked.

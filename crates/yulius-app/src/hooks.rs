@@ -111,7 +111,8 @@ fn repo_doc_exists(root: &Path, relative: &str) -> bool {
 
 /// Whether the `resolved` path (see [`resolved_in_repo`]) still is a regular file under `root`:
 /// asked of the opened file, whose real path must still be under `root`, so a folder swapped for
-/// a link after resolving is not followed (SPEC-262 VTR-004).
+/// a link after resolving is not followed (SPEC-262 VTR-004). A file the server cannot open is
+/// absent, as [`read_repo_doc`] cannot read it either.
 fn doc_present(root: &Path, resolved: &Path) -> bool {
     crate::files::open_inside(root, resolved, nix::fcntl::OFlag::O_RDONLY)
         .ok()
@@ -1053,11 +1054,12 @@ fn workflow_count(root: &Path, dir: &Path) -> usize {
     else {
         return 0;
     };
+    // Bounded before errors are dropped: a folder whose reads keep failing ends the listing.
     listing
         .iter()
+        .take(MAX_WORKFLOW_ENTRIES + 2)
         .filter_map(Result::ok)
         .filter(|entry| !matches!(entry.file_name().to_bytes(), b"." | b".."))
-        .take(MAX_WORKFLOW_ENTRIES)
         .filter_map(|entry| entry.file_name().to_str().ok().map(str::to_owned))
         .filter(|name| name.ends_with(".yml") || name.ends_with(".yaml"))
         .count()

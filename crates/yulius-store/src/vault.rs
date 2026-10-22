@@ -455,8 +455,8 @@ impl VaultStore for SqliteStore {
                 .execute(
                     "UPDATE vault_secrets SET hosts = ?3, requested_hosts = ?5, \
                      requested_by = CASE WHEN ?5 = '[]' THEN NULL ELSE requested_by END \
-                     WHERE id = ?1 AND section = 'agent' AND auto_allow = 1 AND hosts = ?2 \
-                     AND requested_hosts = ?4",
+                     WHERE id = ?1 AND section = 'agent' AND auto_allow = 1 AND cd_prod = 0 \
+                     AND hosts = ?2 AND requested_hosts = ?4",
                     params![id, bound, hosts, waiting, requested],
                 )
                 .map_err(db)?;

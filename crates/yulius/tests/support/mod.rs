@@ -777,6 +777,8 @@ pub async fn legacy_production_secret(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use yulius_app::ports::vault::VaultStore as _;
     let mut record = store.vault_get(id).await?.ok_or("no such secret")?;
+    // A project secret: deleting a global or personal one would also drop its switches.
+    assert!(record.sandbox_id.is_some(), "a project secret");
     assert!(store.vault_delete(id).await?);
     record.cd_prod = true;
     store.vault_insert(&record).await?;
