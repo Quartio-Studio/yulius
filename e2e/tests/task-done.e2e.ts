@@ -266,3 +266,33 @@ test('a session a restart ended says so without claiming the agent was working (
     closed: ['Closed', 'closed'],
   });
 });
+
+// SPEC-268 (task #254, 2026-10-22): a session that ended while its sandbox was at its process or
+// memory limit says so instead of "The agent stopped unexpectedly"; the cause comes from the exit
+// frame, or after a reload from the run's recorded exit reason.
+test('a session that ended at a sandbox limit says which (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const read = await browser.evaluate(async () => {
+    const statusUrl = '/assets/status.js';
+    const { endedMessage, limitCause } = await import(statusUrl);
+    return {
+      pids: endedMessage('stopped_crashed', 'pids').text,
+      memory: endedMessage('stopped_killed', 'memory').text,
+      plain: endedMessage('stopped_crashed').text,
+      cancelled: endedMessage('stopped_cancelled', 'pids').text,
+      causes: [
+        limitCause('exited code=None signal=Some(6) limit=pids'),
+        limitCause('exited code=Some(137) signal=None limit=memory'),
+        limitCause('exited code=Some(3) signal=None'),
+        limitCause(null),
+      ],
+    };
+  });
+  expect(read).toEqual({
+    pids: 'The agent stopped: the sandbox hit its process limit while it ran (too many processes and threads in this project’s tasks at once). Its branch and changes are safe.',
+    memory: 'The agent stopped: the sandbox ran out of memory while it ran. Its branch and changes are safe.',
+    plain: 'The agent stopped unexpectedly. Its branch and changes are safe.',
+    cancelled: 'You stopped this task. Its branch and changes are safe.',
+    causes: ['pids', 'memory', null, null],
+  });
+});
