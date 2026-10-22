@@ -961,3 +961,50 @@ async fn a_worktrees_folder_swapped_for_a_link_after_the_scan_is_not_followed() 
     assert!(evil.join("worktrees.old/wt-206/target/blob").exists());
     Ok(())
 }
+
+/// #649 (SPEC-263 DUL-001, DUL-003): a closed task's worktree reached through a linked
+/// `worktrees` is never removed, even when the sandbox's own repository registers the other
+/// sandbox's folder as its worktree (it controls its `.git`).
+#[tokio::test]
+async fn an_ended_worktree_reached_through_a_link_is_never_removed() -> BoxResult<()> {
+    let w = world().await?;
+    let (attacker, evil) = w.attacker().await?;
+    let repo = evil.join("repo");
+    std::fs::create_dir_all(&repo)?;
+    git(&repo, &["init", "-q", "-b", "main"])?;
+    std::fs::write(repo.join("README.md"), "evil\n")?;
+    git(&repo, &["add", "-A"])?;
+    git(&repo, &["commit", "-q", "-m", "init"])?;
+    let victim = w.root.join("worktrees/t-evil");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat/t-evil",
+            victim.to_str().ok_or("path")?,
+        ],
+    )?;
+    std::fs::write(victim.join("README.md"), "victim's\n")?;
+    git(&victim, &["commit", "-q", "-am", "victim's work"])?;
+    std::os::unix::fs::symlink("../s1/worktrees", evil.join("worktrees"))?;
+    seed_task(
+        &w.h,
+        "t-evil",
+        "s2",
+        "u-alice",
+        TaskStatus::Closed,
+        Some(&evil.join("worktrees/t-evil")),
+    )
+    .await?;
+    w.later();
+    let report = w.h.app.disk_upkeep(&attacker, false).await?;
+    assert!(
+        victim.join("README.md").exists(),
+        "a worktree reached through a link was removed ({report:?})"
+    );
+    assert_eq!(report.worktrees, 0, "{report:?}");
+    Ok(())
+}
