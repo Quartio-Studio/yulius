@@ -349,14 +349,16 @@ class Service(Scanning):
         self.assertEqual(len(calls), 3)
         self.assertEqual(self.sleeps, [7, 7])
 
-    def test_an_outage_past_the_retries_is_not_run(self):
+    def test_an_outage_past_the_retries_leaves_the_scan_incomplete(self):
+        # SPEC-273 NOI-005: infrastructure, not a finding and not "not run".
         repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
         server = self.fake(lambda body, headers: (503, {"error": {"message": "down"}}, {}))
         code, output = self.run_scan(repo, server)
-        self.assertEqual(code, 2, output)
+        self.assertEqual(code, 3, output)
         self.assertEqual(len(server.requests), vidoc_scan.ATTEMPTS)
         self.assertEqual(self.sleeps, [2, 4, 8, 16])
         self.assertIn("cannot be reached", output)
+        self.assertIn("Security scan incomplete: 1 file(s) not scanned: b.py", output)
 
     def test_a_refused_key_or_no_quota_is_not_run(self):
         for status, words in ((401, "refused the key"), (403, "refused the key"),
@@ -369,13 +371,13 @@ class Service(Scanning):
                 self.assertIn(words, output)
                 self.assertEqual(len(server.requests), 1, "never retried")
 
-    def test_an_unreachable_service_is_not_run(self):
+    def test_an_unreachable_service_leaves_the_scan_incomplete(self):
         repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
         server = self.fake()
         url = server.url
         server.close()
         code, output = self.run_scan(repo, None, env={"VIDOC_API_URL": url})
-        self.assertEqual(code, 2, output)
+        self.assertEqual(code, 3, output)
         self.assertIn("cannot be reached", output)
 
     def test_the_deadline_bounds_a_stalled_request(self):
@@ -393,7 +395,7 @@ class Service(Scanning):
         started = time.monotonic()
         code, output = self.run_scan(repo, server, "--deadline-minutes", "0.02")
         self.assertLess(time.monotonic() - started, 15, "bounded by the deadline")
-        self.assertEqual(code, 2, output)
+        self.assertEqual(code, 3, output)
         self.assertIn("deadline", output)
         self.assertIn("not scanned: b.py", output)
 
@@ -418,11 +420,11 @@ class Service(Scanning):
         with self.assertRaises(Usage):
             client.post({"model": "vidoc-1"}, time.monotonic() + 60)
 
-    def test_an_unreadable_answer_is_retried_then_fails(self):
+    def test_an_unreadable_answer_is_retried_then_leaves_the_scan_incomplete(self):
         repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
         server = self.fake(lambda body, headers: (200, answer(text="Sure! Looks fine."), {}))
         code, output = self.run_scan(repo, server)
-        self.assertEqual(code, 1, output)
+        self.assertEqual(code, 3, output)
         self.assertEqual(len(server.requests), 3)
         self.assertIn("could not be read", output)
 
@@ -994,6 +996,98 @@ class Repeats(Scanning):
         [entry] = vidoc_scan.parse_config(
             accepted_risk('function = "f"\nline = 9\n'), "test").ignore
         self.assertEqual((entry.function, entry.line), ("f", 9))
+
+
+def cut_short(body):
+    """An answer that stopped at max_tokens: its JSON is cut off."""
+    message = answer(text='{"findings": [{"severity": "hi')
+    message["stop_reason"] = "max_tokens"
+    return message
+
+
+def requested(body):
+    return files_of(body["messages"][0]["content"])
+
+
+class Incomplete(Scanning):
+    """SPEC-273 NOI-004..006: an answer cut at max_tokens splits its chunk; what still cannot be
+    reviewed leaves the scan incomplete, naming the files, never failed or skipped."""
+
+    def test_a_chunk_cut_at_max_tokens_is_split_in_half_and_passes(self):
+        def behave(body, headers):
+            return (200, cut_short(body), {}) if len(requested(body)) > 1 else judge(body)
+
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN, "c.py": CLEAN})
+        server = self.fake(behave)
+        code, output = self.run_scan(repo, server)
+        self.assertEqual(code, 0, output)
+        self.assertEqual([requested(body) for _, _, body in server.requests],
+                         [["b.py", "c.py"], ["b.py"], ["c.py"]])
+
+    def test_a_single_file_is_split_by_lines_and_findings_keep_their_lines(self):
+        text = CLEAN * 20 + PLANTED
+
+        def behave(body, headers):
+            content = body["messages"][0]["content"]
+            numbered = [line for line in content.splitlines() if "| " in line]
+            return (200, cut_short(body), {}) if len(numbered) > 30 else judge(body)
+
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": text})
+        server = self.fake(behave)
+        code, output = self.run_scan(repo, server)
+        self.assertEqual(code, 1, output)
+        self.assertIn("[critical] b.py:45 OS command injection", output)
+        headers = [line for _, _, body in server.requests
+                   for line in body["messages"][0]["content"].splitlines()
+                   if line.startswith(vidoc_scan.FILE_MARK)]
+        self.assertEqual(headers, ["<<<FILE b.py lines 1-45 of 45",
+                                   "<<<FILE b.py lines 1-22 of 45",
+                                   "<<<FILE b.py lines 23-45 of 45"])
+
+    def test_always_cut_short_ends_incomplete_after_three_splits(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN * 20})
+        server = self.fake(lambda body, headers: (200, cut_short(body), {}))
+        code, output = self.run_scan(repo, server)
+        self.assertEqual(code, 3, output)
+        self.assertEqual(len(server.requests), 1 + 2 + 4 + 8)
+        self.assertIn("max_tokens", output)
+        self.assertIn("1 file(s) not scanned: b.py", output)
+        self.assertNotIn("Security scan failed", output)
+
+    def test_findings_of_the_other_chunks_still_fail_an_incomplete_scan(self):
+        def behave(body, headers):
+            if "b.py" in requested(body):
+                return 503, {"error": {"message": "no upstreams"}}, {}
+            return judge(body)
+
+        big = f"# {'y' * 200}\n" * 400
+        repo = Repo(self, {"z.py": CLEAN}, {"a.py": PLANTED + big, "b.py": big})
+        code, output = self.run_scan(repo, self.fake(behave), "--jobs", "1")
+        self.assertEqual(code, 1, output)
+        self.assertIn("[critical] a.py:5", output)
+        self.assertRegex(output, r"not scanned: .*b\.py")
+
+    def test_ci_mode_ends_with_the_incomplete_code_and_names_the_files(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+        outage = lambda body, headers: (503, {"error": {"message": "no upstreams"}}, {})
+        env = {"YULIUS_CI_REF": "pr/7", "YULIUS_CI_SKIP_CODE": "78",
+               "YULIUS_CI_INCOMPLETE_CODE": "75"}
+        code, output = self.run_scan(repo, self.fake(outage), "--ci", env=env)
+        self.assertEqual(code, 75, output)
+        [line] = [l for l in output.splitlines() if l.startswith("::yulius-incomplete ")]
+        self.assertIn("1 file(s) not scanned (b.py)", line)
+        self.assertIn("HTTP 503", line)
+        # An instance that does not know "incomplete" gets the skip it had before.
+        del env["YULIUS_CI_INCOMPLETE_CODE"]
+        code, output = self.run_scan(repo, self.fake(outage), "--ci", env=env)
+        self.assertEqual(code, 78, output)
+        self.assertIn("[yulius] security scan skipped", output)
+
+    def test_the_byte_budget_is_still_not_run(self):
+        files = {f"m{i}.py": f"# {'y' * 200}\n" * 200 for i in range(6)}
+        code, output = self.run_scan(Repo(self, files), self.fake(), "--all", "--max-bytes", "90000")
+        self.assertEqual(code, 2, output)
+        self.assertIn("budget", output)
 
 
 class SecurityJob(unittest.TestCase):

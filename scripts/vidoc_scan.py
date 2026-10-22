@@ -19,11 +19,18 @@ Files are sent in line-numbered chunks to `POST /v1/messages` of `VIDOC_API_URL`
 https://model.vidocsecurity.com) with the key `VIDOC_API_KEY` in `x-api-key`; in Yulius sessions
 and CI jobs the key is a placeholder that the egress proxy replaces. The code goes to Vidoc.
 
+An `[[ignore]]` matches a finding whose title holds its `title`, and, on code the branch did not
+touch, one at its place (`function`, `line` within 10 lines) or that Vidoc, told the ignores of
+each chunk's files, answers as that accepted risk (SPEC-273). An answer cut at max_tokens splits
+its chunk in half, at most 3 times.
+
 Exit codes: 0 passed (or disabled by `enabled = false`, which it says), 1 failed (an open critical
-or high finding, an open medium finding in the change, an unreadable answer, a refused request), 2 not run (no key, the key refused,
-Vidoc unreachable or out of quota, no base, a malformed config, an incomplete scan). With `--ci`
-it scans pull request heads only (`YULIUS_CI_REF=pr/<n>`) and turns "not run" into
-`$YULIUS_CI_SKIP_CODE` (ADR-0133).
+or high finding, an open medium finding in the change, a refused request), 2 not run (no key, the
+key refused, out of quota, no base, a malformed config, past the byte budget), 3 incomplete (files
+left unscanned by an outage, timeouts, unreadable or cut answers, the deadline: infrastructure,
+not a finding). With `--ci` it scans pull request heads only (`YULIUS_CI_REF=pr/<n>`), turns "not
+run" into `$YULIUS_CI_SKIP_CODE` (ADR-0133) and incomplete into `$YULIUS_CI_INCOMPLETE_CODE` after
+a `::yulius-incomplete` line (ADR-0202; the skip code where that is not set).
 
 This one file is the scanner: `scripts/dev security` runs it here, and the `yulius` binary embeds
 it as `yulius security-scan` for every project (ADR-0157). Standard library only.
@@ -66,6 +73,8 @@ ATTEMPTS = 5
 BACKOFF_S = (2, 4, 8, 16)
 MAX_RETRY_AFTER_S = 60
 READ_ATTEMPTS = 3
+# How many times a chunk whose answer stopped at max_tokens is halved (SPEC-273 NOI-004).
+MAX_SPLITS = 3
 HTTP_TIMEOUT_S = 300
 GIT_TIMEOUT_S = 120
 MAX_ANSWER_BYTES = 4 * 1024 * 1024
@@ -85,6 +94,7 @@ DEFINITION = re.compile(r"\b(?:fn|def|func|function|class|struct|enum|trait|impl
                         r"\s+([A-Za-z_$][\w$]*)")
 ACCEPTED_ID = re.compile(r"A[1-9][0-9]{0,3}")
 FINDING_MARK = "::yulius-finding"
+INCOMPLETE_MARK = "::yulius-incomplete"
 SYNONYMS = {"info": "low", "informational": "low", "note": "low", "moderate": "medium",
             "severe": "high"}
 BUILT_DIRS = {"vendor", "node_modules", "third_party", "dist", "build", "target", "__pycache__"}
@@ -138,12 +148,30 @@ class Failed(Exception):
     """The scan ran and failed: exit 1."""
 
 
-class Deadline(Usage):
+class Transient(Exception):
+    """A chunk could not be reviewed for a passing reason (an outage, a timeout, an answer that
+    cannot be read): its files are unscanned and the scan incomplete (SPEC-273 NOI-005)."""
+
+
+class Incomplete(Exception):
+    """The scan ran but left `files` unscanned for a passing `reason`: exit 3."""
+
+    def __init__(self, files, reason):
+        super().__init__(f"{len(files)} file(s) not scanned: {', '.join(files[:20])}"
+                         + (" …" if len(files) > 20 else "") + f" ({reason})")
+        self.files, self.reason = files, reason
+
+
+class Deadline(Transient):
     """The scan's deadline passed before a chunk was reviewed."""
 
 
 class Unreadable(Exception):
     """Vidoc's answer does not follow the contract."""
+
+
+class Truncated(Exception):
+    """Vidoc's answer stopped at max_tokens: the chunk is split (SPEC-273 NOI-004)."""
 
 
 @dataclass
@@ -175,6 +203,8 @@ class Part:
 class Chunk:
     parts: list
     text: str
+    # Each part's text (marker, numbered lines, end marker), in order: a split's halves.
+    pieces: list = field(default_factory=list)
 
 
 @dataclass
@@ -485,7 +515,7 @@ def make_chunks(files, limit):
     def flush():
         nonlocal parts, pieces, size
         if parts:
-            chunks.append(Chunk(parts, "".join(pieces)))
+            chunks.append(Chunk(parts, "".join(pieces), pieces))
         parts, pieces, size = [], [], 0
 
     for path, text in files:
@@ -519,6 +549,27 @@ def make_chunks(files, limit):
                 flush()
     flush()
     return chunks
+
+
+def split_chunk(chunk):
+    """`chunk` in two halves: its parts, or a single part's numbered lines; None for one line."""
+    if len(chunk.parts) > 1:
+        half = len(chunk.parts) // 2
+        return [Chunk(parts, "".join(pieces), pieces) for parts, pieces in (
+            (chunk.parts[:half], chunk.pieces[:half]), (chunk.parts[half:], chunk.pieces[half:]))]
+    [part], [piece] = chunk.parts, chunk.pieces
+    # A piece is its marker, its numbered lines and its end marker, each ending in a line feed.
+    body = piece.split("\n")[1:-2]
+    if len(body) < 2:
+        return None
+    halves, first = [], part.first
+    for rows in (body[:len(body) // 2], body[len(body) // 2:]):
+        new = Part(part.path, first, first + len(rows) - 1, part.total)
+        text = (f"{FILE_MARK} {new.path} lines {new.first}-{new.last} of {new.total}\n"
+                + "".join(f"{row}\n" for row in rows) + f"{END_MARK} {new.path}\n")
+        halves.append(Chunk([new], text, [text]))
+        first = new.last + 1
+    return halves
 
 
 def accepted_risks(chunk, config):
@@ -668,7 +719,7 @@ class Client:
                 if left <= 0:
                     continue
                 self.sleep(min(_delay(retry_after, attempt), left))
-        raise Usage(f"Vidoc cannot be reached at {self.url} after {ATTEMPTS} attempts ({last})")
+        raise Transient(f"Vidoc cannot be reached at {self.url} after {ATTEMPTS} attempts ({last})")
 
 
 def _delay(retry_after, attempt):
@@ -682,15 +733,40 @@ def _delay(retry_after, attempt):
 
 
 def review(client, chunk, label, deadline, config=None):
-    """One chunk's findings; an unreadable answer is asked again, then fails the scan."""
+    """One chunk's findings; an unreadable answer is asked again, then the chunk is unscanned. An
+    answer that stopped at max_tokens raises `Truncated`."""
     problem = ""
     for _ in range(READ_ATTEMPTS):
+        message = client.post(request_body(chunk, label, config), deadline)
+        if isinstance(message, dict) and message.get("stop_reason") == "max_tokens":
+            raise Truncated("Vidoc's answer stopped at max_tokens")
         try:
-            return parse_answer(client.post(request_body(chunk, label, config), deadline), chunk)
+            return parse_answer(message, chunk)
         except Unreadable as err:
             problem = str(err)
     paths = ", ".join(sorted({p.path for p in chunk.parts}))
-    raise Failed(f"Vidoc's answer for {paths} could not be read: {problem}")
+    raise Transient(f"Vidoc's answer for {paths} could not be read: {problem}")
+
+
+def review_split(client, chunk, label, deadline, config, depth=0):
+    """`(findings, unscanned paths, problem)` of `chunk`, split in half (at most `MAX_SPLITS`
+    times) while an answer stops at max_tokens, so a half that Vidoc can review counts."""
+    try:
+        return review(client, chunk, label, deadline, config), [], None
+    except Truncated as err:
+        halves = split_chunk(chunk) if depth < MAX_SPLITS else None
+        if not halves:
+            return [], [p.path for p in chunk.parts], f"{err}, even split {depth} time(s)"
+    findings, unscanned, problem = [], [], None
+    for half in halves:
+        try:
+            found, missed, why = review_split(client, half, label, deadline, config, depth + 1)
+        except Transient as err:
+            found, missed, why = [], [p.path for p in half.parts], str(err)
+        findings += found
+        unscanned += missed
+        problem = problem or why
+    return findings, unscanned, problem
 
 
 @dataclass
@@ -699,6 +775,8 @@ class Outcome:
     unscanned: list = field(default_factory=list)
     stopped: object = None
     failed: object = None
+    # Why chunks went unscanned for a passing reason: the scan is incomplete (SPEC-273).
+    incomplete: object = None
 
 
 def scan_chunks(client, chunks, jobs, deadline, label, out, config, judge):
@@ -714,10 +792,19 @@ def scan_chunks(client, chunks, jobs, deadline, label, out, config, judge):
         if stop.is_set() or time.monotonic() > deadline:
             with lock:
                 outcome.unscanned.extend(p.path for p in chunk.parts)
+                if not stop.is_set():
+                    outcome.incomplete = outcome.incomplete or "the deadline passed"
             return
         try:
-            findings = review(client, chunk, f"{label} Chunk {index + 1} of {len(chunks)}.",
-                              deadline, config)
+            findings, missed, problem = review_split(
+                client, chunk, f"{label} Chunk {index + 1} of {len(chunks)}.", deadline, config)
+        except Transient as err:
+            # An outage is not retried chunk after chunk: the rest is unscanned too.
+            stop.set()
+            with lock:
+                outcome.incomplete = outcome.incomplete or str(err)
+                outcome.unscanned.extend(p.path for p in chunk.parts)
+            return
         except Usage as err:
             stop.set()
             with lock:
@@ -733,6 +820,9 @@ def scan_chunks(client, chunks, jobs, deadline, label, out, config, judge):
         for finding in findings:
             judge(finding)
         with lock:
+            if missed:
+                outcome.unscanned.extend(missed)
+                outcome.incomplete = outcome.incomplete or problem
             for finding in findings:
                 if finding.fails():
                     print(f"  found [{finding.severity}] {finding.where()} {finding.title}",
@@ -925,9 +1015,11 @@ def run(args, env, root, sleep, out):
         return 1
     if outcome.stopped:
         raise Usage(outcome.stopped)
+    missed = sorted(set(outcome.unscanned))
+    if missed:
+        raise Incomplete(missed, outcome.incomplete or "Vidoc did not review them")
     if unscanned:
-        raise Usage("the scan is incomplete (budget or deadline reached; --max-bytes and "
-                    "--deadline-minutes raise them)")
+        raise Usage("the scan did not send every file (budget reached; --max-bytes raises it)")
     print(f"Vidoc: no open critical or high finding, and no open medium one in the change, in "
           f"the {mode} scan.", file=out)
     return 0
@@ -944,6 +1036,24 @@ def write_report(path, mode, findings, skipped, unscanned):
             "unscanned": unscanned}, indent=2) + "\n")
     except OSError as err:
         print(f"Vidoc: could not write the report {path}: {err}", file=sys.stderr)
+
+
+def incomplete_in_ci(err, env, skip_code):
+    """`$YULIUS_CI_INCOMPLETE_CODE` after one `::yulius-incomplete` line naming the unscanned files,
+    which Yulius CI shows as the job's error; an instance that sets no such code gets the skip
+    code, as before SPEC-273 (NOI-006)."""
+    try:
+        code = int(env.get("YULIUS_CI_INCOMPLETE_CODE") or 0)
+    except ValueError:
+        code = 0
+    if not code:
+        print("[yulius] security scan skipped: it is incomplete (reason above), and this Yulius "
+              "does not know incomplete jobs")
+        return skip_code
+    files = ", ".join(err.files[:5]) + (", …" if len(err.files) > 5 else "")
+    print(f"{INCOMPLETE_MARK} {len(err.files)} file(s) not scanned ({files}): "
+          f"{one_line(err.reason)[:200]}", flush=True)
+    return code
 
 
 def main(argv=None, env=None, root=None, sleep=time.sleep):
@@ -972,6 +1082,12 @@ def main(argv=None, env=None, root=None, sleep=time.sleep):
     except Failed as err:
         print(f"Security scan failed: {err}", file=sys.stderr)
         code = 1
+    except Incomplete as err:
+        print(f"Security scan incomplete: {err}. Infrastructure, not a finding: run it again.",
+              file=sys.stderr)
+        code = 3
+        if args.ci:
+            return incomplete_in_ci(err, env, skip_code)
     if code == NOTHING_CHECKED:
         if skip_code is not None:
             print("[yulius] security scan skipped: there was nothing to scan (reason above)")
