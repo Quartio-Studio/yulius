@@ -76,8 +76,10 @@ the limit was hit; and the small defects left by #254's review round 3 are fixed
 - SHR-005: A default variable is left out (SPEC-268 PID-007) when its key appears as a component
   of a dotted key path in the tool's file: before `=` on a key line, or in a `[table]` header,
   bare or quoted (`RUST_TEST_THREADS.value = "1"`, `env.RUST_TEST_THREADS = "1"`,
-  `[env.RUST_TEST_THREADS]`, `build.jobs = 2`, `profile.default.test-threads = 1`). Values and
-  comments are not keys.
+  `[env.RUST_TEST_THREADS]`, `build.jobs = 2`, `profile.default.test-threads = 1`), or as a key of
+  an inline table in a value (`build = { jobs = 2 }`, review). Plain values and comments are not
+  keys; a string in a multi-line array may be taken for one (a false positive only leaves the
+  default out).
 - SHR-006: A detail read that redraws the end banner keeps keyboard focus on the same control of
   the banner (`keepFocus`).
 

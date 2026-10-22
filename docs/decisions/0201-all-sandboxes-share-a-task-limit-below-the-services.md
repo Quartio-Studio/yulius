@@ -49,5 +49,7 @@ service's limit was removed: `<unit>/sandboxes` survives restarts (`KillMode=pro
   common share alone.
 - On 6.13+ kernels a hit at the common limit by one sandbox can make another sandbox's run that
   crashed meanwhile say "the sandbox hit its process limit".
-- An older binary (a rollback) leaves `sandboxes/pids.max` as it was; that only protects the
-  server and is harmless. `echo max > .../sandboxes/pids.max` clears it by hand.
+- An older binary (a rollback) leaves `sandboxes/pids.max` as it was. It still only protects the
+  server, but that binary does not count hits there on 6.13+ kernels and does not follow a later
+  `TasksMax=` change; `echo max > .../sandboxes/pids.max` clears it by hand (docs/operations.md).
+- On 6.13+ kernels a fork refused at the service's own limit or above it is not counted (#823).

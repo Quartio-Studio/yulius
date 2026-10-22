@@ -67,28 +67,44 @@ const OWN_SETTINGS: [(&str, &[&str], &str); 3] = [
     ),
 ];
 
-/// The dotted key path a TOML line names, its components unquoted: a table header's
-/// (`[env.RUST_TEST_THREADS]`, `[[x.y]]`) or a key's before `=` (`build.jobs = 2`,
-/// `RUST_TEST_THREADS.value = "1"`); `None` for a comment, a blank or a continuation line.
-fn key_path(line: &str) -> Option<Vec<&str>> {
-    let line = line.trim();
-    let path = if let Some(header) = line.strip_prefix('[') {
-        header.trim_start_matches('[').split(']').next()?
-    } else if line.starts_with('#') {
-        return None;
-    } else {
-        line.split_once('=')?.0
-    };
-    Some(
+/// The dotted key paths a TOML line names, their components unquoted: a table header's
+/// (`[env.RUST_TEST_THREADS]`, `[[x.y]]`), a key's before `=` (`build.jobs = 2`,
+/// `RUST_TEST_THREADS.value = "1"`) and the keys of an inline table in its value
+/// (`build = { jobs = 2 }`, review of SPEC-272). None for a comment or a blank line; a line inside
+/// a multi-line array may name a key that is a string there (a harmless false positive).
+fn key_paths(line: &str) -> Vec<Vec<&str>> {
+    fn split(path: &str) -> Vec<&str> {
         path.split('.')
             .map(|part| part.trim().trim_matches(|c| c == '"' || c == '\''))
-            .collect(),
-    )
+            .collect()
+    }
+    let line = line.trim();
+    if let Some(header) = line.strip_prefix('[') {
+        return header
+            .trim_start_matches('[')
+            .split(']')
+            .next()
+            .map(split)
+            .into_iter()
+            .collect();
+    }
+    if line.starts_with('#') {
+        return Vec::new();
+    }
+    let Some((key, value)) = line.split_once('=') else {
+        return Vec::new();
+    };
+    let inline = value
+        .split(['{', ','])
+        .skip(1)
+        .filter_map(|piece| piece.split_once('=').map(|(key, _)| key))
+        .filter(|key| !key.contains(['[', ']', '{', '}']));
+    std::iter::once(key).chain(inline).map(split).collect()
 }
 
 /// Whether `dir` sets the knob of the default variable `name` in its tools' own files: `<key>`
-/// as a component of a key path there ([`key_path`]: `<key> = …`, `build.<key> = …`,
-/// `<key>.value = …`, `[env.<key>]`, SPEC-272 SHR-005) in one of them (a regular file of at most
+/// as a component of a key path there ([`key_paths`]: `<key> = …`, `build.<key> = …`,
+/// `<key>.value = …`, `[env.<key>]`, `build = { <key> = … }`, SPEC-272 SHR-005) in one of them (a regular file of at most
 /// [`MAX_CONFIG_BYTES`]).
 fn sets_own(dir: &Path, name: &str) -> bool {
     let Some((_, files, key)) = OWN_SETTINGS.iter().find(|(n, _, _)| *n == name) else {
@@ -101,7 +117,7 @@ fn sets_own(dir: &Path, name: &str) -> bool {
         regular
             && std::fs::read_to_string(&path).is_ok_and(|text| {
                 text.lines()
-                    .filter_map(key_path)
+                    .flat_map(key_paths)
                     .any(|parts| parts.contains(key))
             })
     })
@@ -286,6 +302,13 @@ mod tests {
             (
                 &cargo,
                 "[env]\n\"RUST_TEST_THREADS\" = \"1\"\n",
+                "RUST_TEST_THREADS",
+            ),
+            // Review: keys of an inline table are keys too.
+            (&cargo, "build = { jobs = 2 }\n", "CARGO_BUILD_JOBS"),
+            (
+                &cargo,
+                "env = { FOO = \"x\", RUST_TEST_THREADS = \"1\" }\n",
                 "RUST_TEST_THREADS",
             ),
             (&cargo, "build.jobs = 2\n", "CARGO_BUILD_JOBS"),

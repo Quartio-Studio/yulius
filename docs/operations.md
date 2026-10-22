@@ -1369,8 +1369,11 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
   `cat /sys/fs/cgroup/system.slice/yulius.service/sandboxes/pids.max`. An explicit
   `YULIUS_SANDBOX_PIDS` above it is not capped, but the common limit binds each sandbox too: the
   server logs a warning naming both. **Rolling back to an older binary:** it leaves
-  `sandboxes/pids.max` as it is, which is harmless (it only keeps the server its share); to clear
-  it, `echo max > /sys/fs/cgroup/system.slice/yulius.service/sandboxes/pids.max`.
+  `sandboxes/pids.max` as it is. That only keeps the server its share, but the older binary does
+  not count a hit there on a 6.13+ kernel (a session that dies at it reads "The agent stopped
+  unexpectedly") and does not follow a later change of `TasksMax=`. On such a kernel, or before
+  changing `TasksMax=` under the older binary, clear it:
+  `echo max > /sys/fs/cgroup/system.slice/yulius.service/sandboxes/pids.max`.
 - Upgrading to tasks acting as their creator on GitHub (GIT-003, #188, 2026-10-11): no migration
   and no configuration. The agents' Git switches to the creator's token at its next credential
   request; a run gets `gh` logged in as the creator when it is started or continued (`gh` itself

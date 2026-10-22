@@ -369,16 +369,17 @@ impl Delegation {
     /// Writes the common task limit of all sandboxes, `<unit>/sandboxes/pids.max`, for a service
     /// limited to `service` tasks ([`sandboxes_tasks`]); `max` without a service limit, since the
     /// group and an earlier server's value survive restarts (`KillMode=process`, SPEC-272
-    /// SHR-001). Nothing without the `pids` controller.
+    /// SHR-001). Returns whether it was written: not without the `pids` controller.
     ///
     /// # Errors
     /// The limit cannot be written.
-    pub fn limit_sandboxes(&self, service: Option<u64>) -> io::Result<()> {
+    pub fn limit_sandboxes(&self, service: Option<u64>) -> io::Result<bool> {
         if !self.controllers.iter().any(|c| c == "pids") {
-            return Ok(());
+            return Ok(false);
         }
         let limit = sandboxes_tasks(service).map_or_else(|| "max".to_owned(), |n| n.to_string());
-        write(&self.unit.join(SANDBOXES).join("pids.max"), &limit)
+        write(&self.unit.join(SANDBOXES).join("pids.max"), &limit)?;
+        Ok(true)
     }
 
     /// The paths of `sandbox`'s groups, as [`Delegation::sandbox_group`] makes them, without
@@ -686,13 +687,14 @@ mod tests {
         assert_eq!(sandboxes_tasks(None), None);
         let (_root, delegation, _dir) = fake_sandbox("cpu memory pids\n")?;
         let common = delegation.unit.join(SANDBOXES).join("pids.max");
-        delegation.limit_sandboxes(Some(57_763))?;
+        assert!(delegation.limit_sandboxes(Some(57_763))?);
         assert_eq!(std::fs::read_to_string(&common)?, "43320");
-        delegation.limit_sandboxes(None)?;
+        assert!(delegation.limit_sandboxes(None)?);
         assert_eq!(std::fs::read_to_string(&common)?, "max", "reset, not stale");
         // Without the `pids` controller there is no such file to write.
         let (_root, delegation, _dir) = fake_sandbox("cpu memory\n")?;
-        delegation.limit_sandboxes(Some(57_763))?;
+        // Review: the server then warns about no common limit (`false`).
+        assert!(!delegation.limit_sandboxes(Some(57_763))?);
         assert!(!delegation.unit.join(SANDBOXES).join("pids.max").exists());
         Ok(())
     }

@@ -94,7 +94,9 @@ unexpectedly".
   limits while sessions keep forking (review round 1); a paused run's `agents/run-*` group counts
   (round 2). Where the kernel has `pids.events.local` (6.13+, which counts where a limit was
   hit), the sandbox's own `pids.events.local` `max`. And `memory.events` `oom_kill` of the
-  sandbox's group. None without the delegation.
+  sandbox's group. None without the delegation. Amended by
+  [SPEC-272](SPEC-272-all-sandboxes-together-keep-the-server-a.md) SHR-003: on 6.13+ the `.local`
+  files of the same groups as on 6.8, and of the common `<unit>/sandboxes`.
 - PID-005: A run's counters are read when it starts (and when a restarted server takes it over).
   When it ends without Yulius ending it and not cleanly (`stopped_crashed`, `stopped_killed`), the
   counters are read again (only that attempt's start counters, left in place until its end's

@@ -597,15 +597,21 @@ pub async fn install(
             let service = yulius_sandbox::cgroup::tasks_max_above(root, &delegation.unit);
             let (limits, binding) = task_limits(config.limits, args.pids.is_some(), service);
             config.limits = limits;
-            if let Err(error) = delegation.limit_sandboxes(service) {
-                tracing::warn!(%error, "sandboxes together have no task limit below the service's");
-            } else if let (Some(pids), Some(common)) = (args.pids, binding) {
-                tracing::warn!(
-                    sandbox_pids = pids,
-                    common,
-                    "YULIUS_SANDBOX_PIDS is above the task limit of all sandboxes together, \
-                     which binds each sandbox too"
-                );
+            match delegation.limit_sandboxes(service) {
+                Err(error) => {
+                    tracing::warn!(%error, "sandboxes together have no task limit below the service's");
+                }
+                Ok(true) => {
+                    if let (Some(pids), Some(common)) = (args.pids, binding) {
+                        tracing::warn!(
+                            sandbox_pids = pids,
+                            common,
+                            "YULIUS_SANDBOX_PIDS is above the task limit of all sandboxes together, \
+                             which binds each sandbox too"
+                        );
+                    }
+                }
+                Ok(false) => {}
             }
             tracing::info!(cgroup = %delegation.unit.display(), limits = ?config.limits, "per-sandbox limits on");
             config.delegation = Some(delegation);

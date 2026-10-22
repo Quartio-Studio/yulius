@@ -527,7 +527,9 @@ mod tests {
     }
 
     /// SPEC-272 SHR-004 (SPEC-268 review round 3): an empty run group whose processes met a task
-    /// limit stays, so a sandbox's limit counters never fall during another run.
+    /// limit stays, so a sandbox's limit counters never fall during another run. The decision is
+    /// tested, not `thaw_all`'s removal: a fake group keeps its files, so `remove_dir` always
+    /// fails on it.
     #[test]
     fn an_empty_run_group_that_met_a_limit_is_kept() -> Result<(), Box<dyn std::error::Error>> {
         let (_root, _tree, agents) = tree()?;
