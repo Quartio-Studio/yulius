@@ -60,6 +60,7 @@ Root causes (reproduced in code, see Evidence):
   without a valid line, or in a new file, matches by title only, so a change to accepted code is
   judged again (review rounds 1 and 2). A definition is a code line that starts (after
   indentation and modifiers) with one of those keywords, so comments and docstrings are none.
+  In a file with no such line (C, shell, SQL), any change in the file makes a finding touched.
 - NOI-002 (Vidoc is told). Each request lists, as data, the ignores whose `path` matches a file of
   its chunk, each with an id (`A<n>`), path, place, title and reason. Vidoc is asked to report a
   weakness that is one of them with `"accepted": "A<n>"` instead of as a new finding. An id that

@@ -492,9 +492,12 @@ def enclosing(lines, line):
 def place_changed(lines, line, ranges):
     """Whether the branch changed a line of the definition that holds `line` (by name: two of
     the same name count as one, which only fails closed), or a line of code within `LINE_SLACK`
-    of it; only lines above every definition (imports, a header) may move code unjudged
-    (SPEC-273 NOI-001, review rounds 1 and 2)."""
+    of it; only lines above every definition (imports, a header) may move code unjudged, and in
+    a file without any, every change counts (SPEC-273 NOI-001, review rounds 1 to 3)."""
     names = places(lines)
+    if ranges and not any(names):
+        # No definition is known in this language (C, shell, SQL): every change counts.
+        return True
     own = names[line - 1] if 1 <= line <= len(names) else None
     for first, last in ranges:
         for number in range(max(first, 1), min(last, len(names)) + 1):

@@ -979,6 +979,19 @@ class Repeats(Scanning):
                                     reworded(titles))
         self.assertEqual(code, 0, output)
 
+    def test_a_file_without_a_known_definition_matches_by_title_only_once_changed(self):
+        # Review round 3: in C, shell or SQL no place is known, so any change there counts.
+        base = ("int run(char *in) {\n    int n = 0;\n    char *cmd = in;\n"
+                + "    n++;\n" * 12 + "    system(cmd);  # flag:sql\n}\n")
+        changed = base.replace("char *cmd = in;", "char *cmd = getenv(\"X\");")
+        config = ('[[ignore]]\npath = "app.c"\ntitle = "shell"\nline = 16\n'
+                  'reason = "cmd is a constant"\n')
+        repo = Repo(self, {"app.c": base, ".config/vidoc.toml": config}, {"app.c": changed})
+        titles = {"sql": "OS command injection via cmd"}
+        for accepted in (None, {"sql": "A1"}):
+            code, output = self.run_scan(repo, self.fake(reworded(titles, accepted)))
+            self.assertEqual(code, 1, output)
+
     def test_an_accepted_answer_on_a_changed_line_is_judged_again(self):
         base = JUDGE.replace("  # flag:session", "")
         code, output, _ = self.scan(base, {"app.py": base.replace("ask_llm(", "ask_llm2(")},
