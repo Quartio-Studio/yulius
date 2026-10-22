@@ -818,3 +818,146 @@ async fn engine_images_and_build_cache_are_pruned_only_under_pressure() -> BoxRe
     assert_eq!(quota.prunes.load(Ordering::SeqCst), 2);
     Ok(())
 }
+
+impl World {
+    /// A worktree of the sandbox's repository no task owns, at `worktrees/<name>`, holding a
+    /// `target` of ~256 KiB.
+    fn orphan(&self, name: &str) -> BoxResult<PathBuf> {
+        let orphan = self.root.join("worktrees").join(name);
+        git(
+            &self.repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                &format!("fix/{name}"),
+                orphan.to_str().ok_or("path")?,
+            ],
+        )?;
+        std::fs::create_dir_all(orphan.join("target"))?;
+        std::fs::write(orphan.join("target/blob"), vec![7u8; BIG])?;
+        Ok(orphan)
+    }
+
+    /// Moves the clock a day past the real time, so orphan worktrees count as untouched.
+    fn a_day_later(&self) -> BoxResult<()> {
+        let real_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis();
+        self.h.clock.0.store(
+            i64::try_from(real_now)? + 25 * 60 * 60 * 1000,
+            Ordering::SeqCst,
+        );
+        Ok(())
+    }
+
+    /// A second sandbox `s2`, whose agents make the links (#649); its directory exists.
+    async fn attacker(&self) -> BoxResult<(SandboxRecord, PathBuf)> {
+        let sandbox = seed_sandbox(&self.h, "s2", "evil", "u-alice").await?;
+        let dir = self.h.app.config.data_dir.join("sandboxes/s2");
+        std::fs::create_dir_all(&dir)?;
+        Ok((sandbox, dir))
+    }
+}
+
+/// #649 (SPEC-263 DUL-001): a sandbox that replaces its `worktrees`, or one entry of it, with a
+/// link to another sandbox's never gets that sandbox's caches measured or removed as its own.
+#[tokio::test]
+async fn a_linked_worktrees_folder_or_entry_never_reaches_another_sandbox() -> BoxResult<()> {
+    let w = world().await?;
+    let victim = w.orphan("wt-206")?;
+    let (attacker, evil) = w.attacker().await?;
+    w.a_day_later()?;
+
+    std::os::unix::fs::symlink("../s1/worktrees", evil.join("worktrees"))?;
+    let report = w.h.app.disk_upkeep(&attacker, false).await?;
+    assert!(
+        victim.join("target/blob").exists(),
+        "a linked worktrees/ pruned another sandbox's cache ({report:?})"
+    );
+    assert_eq!(report.caches, 0, "{report:?}");
+
+    std::fs::remove_file(evil.join("worktrees"))?;
+    std::fs::create_dir_all(evil.join("worktrees"))?;
+    std::os::unix::fs::symlink(&victim, evil.join("worktrees/wt-9"))?;
+    let report = w.h.app.disk_upkeep(&attacker, false).await?;
+    assert!(
+        victim.join("target/blob").exists(),
+        "a linked worktree entry pruned another sandbox's cache ({report:?})"
+    );
+    assert_eq!(report.caches, 0, "{report:?}");
+
+    // Reached without a link, by its own sandbox, the same cache goes as before.
+    let report = w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(!victim.join("target").exists(), "{report:?}");
+    Ok(())
+}
+
+/// #649 (SPEC-263 DUL-001): a linked `ci/jobs`, or a linked `ci`, never gets another sandbox's
+/// CI checkout caches pruned, also under pressure.
+#[tokio::test]
+async fn a_linked_ci_jobs_or_ci_folder_never_reaches_another_sandbox() -> BoxResult<()> {
+    let w = world().await?;
+    let checkout = w.ci_checkout("quality")?;
+    let (attacker, evil) = w.attacker().await?;
+    let quota = Arc::new(Quota {
+        used: AtomicU64::new(95 * BIG as u64),
+        limit: 100 * BIG as u64,
+    });
+    assert!(w.h.app.set_isolation(quota));
+
+    std::fs::create_dir_all(evil.join("ci"))?;
+    std::os::unix::fs::symlink("../../s1/ci/jobs", evil.join("ci/jobs"))?;
+    let report = w.h.app.disk_upkeep(&attacker, true).await?;
+    assert!(
+        checkout.join("target/blob").exists(),
+        "a linked ci/jobs pruned another sandbox's cache ({report:?})"
+    );
+
+    std::fs::remove_file(evil.join("ci/jobs"))?;
+    std::fs::remove_dir(evil.join("ci"))?;
+    std::os::unix::fs::symlink("../s1/ci", evil.join("ci"))?;
+    let report = w.h.app.disk_upkeep(&attacker, true).await?;
+    assert!(
+        checkout.join("target/blob").exists(),
+        "a linked ci/ pruned another sandbox's cache ({report:?})"
+    );
+
+    let report = w.h.app.disk_upkeep(&w.sandbox, true).await?;
+    assert!(!checkout.join("target").exists(), "{report:?}");
+    Ok(())
+}
+
+/// #649 (SPEC-263 DUL-002): a `worktrees` swapped for a link after the scan, right before the
+/// removal, makes the removal fail instead of following the link.
+#[tokio::test]
+async fn a_worktrees_folder_swapped_for_a_link_after_the_scan_is_not_followed() -> BoxResult<()> {
+    let w = world().await?;
+    let victim = w.orphan("wt-206")?;
+    let (attacker, evil) = w.attacker().await?;
+    // The attacker's own orphan of the same name, a repository of its own.
+    let own = evil.join("worktrees/wt-206");
+    std::fs::create_dir_all(&own)?;
+    git(&own, &["init", "-q", "-b", "main"])?;
+    std::fs::write(own.join(".gitignore"), "target\n")?;
+    git(&own, &["add", "-A"])?;
+    git(&own, &["commit", "-q", "-m", "init"])?;
+    std::fs::create_dir_all(own.join("target"))?;
+    std::fs::write(own.join("target/blob"), vec![7u8; BIG])?;
+    w.a_day_later()?;
+
+    let (folder, aside) = (evil.join("worktrees"), evil.join("worktrees.old"));
+    yulius_app::race::on(yulius_app::race::Point::CachePrune, &evil, move || {
+        std::fs::rename(&folder, &aside).ok();
+        std::os::unix::fs::symlink("../s1/worktrees", &folder).ok();
+    });
+    let report = w.h.app.disk_upkeep(&attacker, false).await?;
+    assert!(
+        victim.join("target/blob").exists(),
+        "the removal followed a link swapped in after the scan ({report:?})"
+    );
+    assert_eq!(report.caches, 0, "{report:?}");
+    assert!(evil.join("worktrees.old/wt-206/target/blob").exists());
+    Ok(())
+}

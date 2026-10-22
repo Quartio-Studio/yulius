@@ -438,7 +438,10 @@ impl App {
                 continue;
             }
             let path = item.path.clone();
-            let removed = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&path))
+            let removed = tokio::task::spawn_blocking(move || {
+                crate::race::reached(crate::race::Point::CachePrune, &path);
+                std::fs::remove_dir_all(&path)
+            })
                 .await
                 .is_ok_and(|result| result.is_ok());
             if claimed {
