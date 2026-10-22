@@ -248,8 +248,12 @@ test('a cleanup shows at once that it runs, then what it removed and kept', asyn
   // Before the server answers: the card is busy and says what it is doing.
   await expect(card.getByRole('button', 'Cleaning up…')).toBeDisabled();
   await expect(card.getByRole('button', 'Check now')).toBeDisabled();
-  await expect(card.getByRole('status')).toContainText('Removing 3 items…');
-  await expect(card.getByRole('status')).toContainText('so far');
+  await expect(card.getByRole('status')).toHaveText('Removing 3 items…');
+  // The seconds so far count beside the live region, not in it (read once, not every second).
+  await expect(browser.locator('.ci-hygiene-status')).toContainText('so far');
+  await expect(card.getByRole('status')).not.toContainText('so far');
+  // The pressed button is disabled: the keyboard stays on the card.
+  await expect.poll(() => browser.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe('Repository hygiene');
   expect(await axeViolations(browser)).toEqual([]);
   await browser.evaluate(() => { (window as unknown as HeldCleanup).__releaseCleanup?.(); });
   // The answer: the result stays on the card, no toast repeats it.
@@ -262,7 +266,7 @@ test('a cleanup shows at once that it runs, then what it removed and kept', asyn
   // Unmerged work without a pull request stays listed.
   await expect(browser.locator('.ci-hygiene:not(.ci-hygiene-result) li')).toHaveCount(1);
   await expect(browser.locator('.ci-hygiene:not(.ci-hygiene-result) li')).toContainText('spike/websocket-pool');
-  await expect(screen.getByText('3 items removed.')).toBeHidden();
+  await expect(browser.locator('.toast:has-text("removed")')).toHaveCount(0);
   expect(await axeViolations(browser)).toEqual([]);
   // A reload shows the same result: it is the report's, not the page's.
   await app.open(mock('/s/studio/ci'));
@@ -280,6 +284,32 @@ test('a failed cleanup says why in the card and can be tried again', async ({ ap
   await expect(card.getByRole('button', 'Clean up')).toBeEnabled();
   await expect(card.getByRole('button', 'Check now')).toBeEnabled();
   await expect(card.getByText('worktrees/tsk_studio_9')).toBeVisible();
+  // Tried again once GitHub answers: it goes through.
+  await browser.evaluate(() => { (window as unknown as HeldCleanup).__yuliusMock.failHygieneCleanup = undefined; });
+  await card.getByRole('button', 'Clean up').click();
+  await screen.getByRole('dialog', 'Remove 3 stale items?').getByRole('button', 'Clean up').click();
+  await expect(card.getByRole('status')).toHaveText('Cleaned up just now by mkarp: 3 removed.');
+});
+
+test('a cleanup still running after the person left the tab shows as running when they come back', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci'));
+  const card = screen.getByRole('region', 'Repository hygiene');
+  await expect(card.getByText('spike/websocket-pool')).toBeVisible();
+  await browser.evaluate(() => {
+    const w = window as unknown as HeldCleanup;
+    w.__yuliusMock.holdHygieneCleanup = new Promise((resolve) => { w.__releaseCleanup = resolve; });
+  });
+  await card.getByRole('button', 'Clean up').click();
+  await screen.getByRole('dialog', 'Remove 3 stale items?').getByRole('button', 'Clean up').click();
+  await expect(card.getByRole('button', 'Cleaning up…')).toBeDisabled();
+  await screen.getByRole('radio', 'CD (deployment)').click();
+  await screen.getByRole('radio', 'CI (tests)').click();
+  const back = screen.getByRole('region', 'Repository hygiene');
+  await expect(back.getByRole('button', 'Cleaning up…')).toBeDisabled();
+  await expect(back.getByRole('status')).toHaveText('Removing 3 items…');
+  await browser.evaluate(() => { (window as unknown as HeldCleanup).__releaseCleanup?.(); });
+  await expect(back.getByRole('status')).toHaveText('Cleaned up just now by mkarp: 3 removed.');
+  await expect(back.getByRole('button', 'Check now')).toBeEnabled();
 });
 
 test('a sandbox without CI says how to add it and names leftover GitHub Actions', async ({ app, browser, screen }) => {

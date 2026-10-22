@@ -64,15 +64,21 @@ Read in the code on `dev` (21c26d8b):
   "Cleaned up <relative> by <who>: <n> removed, <m> kept", the removed items, and each kept item
   with its reason. A refusal or a network error is said in the card ("Couldn't clean up: …") and
   the buttons come back. No toast repeats what the card says.
+- HSC-007. Every check holds at the deletion (review round 1): a task's worktree is in use unless
+  its task rests (closed, stopped, failed), read again right before the removal; it goes only when
+  Git ignores nothing in it but rebuildable caches (SPEC-019's rule); a merged or closed pull
+  request's branch is safe only while its tip is the pull request's head; a local copy is judged
+  again against GitHub after the remote deletions and a fresh fetch (kept when the fetch fails);
+  one cleanup of a sandbox runs at a time.
 - HSC-006. Nothing else changes: what is stale, what is safe, `force`, the bounds, the REST and
   MCP requests and their answers (two optional fields added to the report).
 
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Yulius removes the safe leftovers by itself on its 6-hourly round
-- [ ] The hygiene report carries the last cleanup and the next automatic one
-- [ ] The card explains itself and shows a cleanup running and its result
+- [x] Yulius removes the safe leftovers by itself on its 6-hourly round
+- [x] The hygiene report carries the last cleanup and the next automatic one
+- [x] The card explains itself and shows a cleanup running and its result
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green on the branch merged with current dev
 
@@ -93,12 +99,21 @@ Read in the code on `dev` (21c26d8b):
 ## Test plan
 
 - Integration (`crates/yulius/tests/local_ci.rs`): `the_hygiene_round_removes_safe_items_itself`
-  (AC1, AC2's automatic part), `a_cleanup_is_kept_on_the_report` (AC2).
+  (AC1, AC2's automatic part), `a_cleanup_is_kept_on_the_report` (AC2),
+  `a_cleanup_never_loses_commits_that_only_a_branch_held` (HSC-007: commits pushed after a pull
+  request closed; a local copy whose GitHub branch the same cleanup deleted). `disk.rs`:
+  `the_hygiene_round_keeps_paused_work_and_files_nobody_can_rebuild` (HSC-007: a paused merged
+  task, an archived worktree with an ignored `.env`, an archived one with caches only) and
+  `hygiene_keeps_an_ended_worktree_that_still_holds_ignored_files` (now with an `.env`: caches
+  alone no longer keep an ended task's worktree). Domain: `remote_branches_are_stale_only_without_open_work`.
 - e2e (`e2e/tests/ci.e2e.ts`): "repository hygiene says Yulius cleans up itself and that
   unmerged work stays", "a cleanup shows at once that it runs, then what it removed and kept"
   (held answer) and "a failed cleanup says why in the card and can be tried again" (AC3), replacing
   the old count-toast test. The mock's cleanup can be held (`__yuliusMock.holdHygieneCleanup`) and
-  failed (`failHygieneCleanup`). `loading-shapes.e2e.ts` follows the card's new intro line.
+  failed (`failHygieneCleanup`). Review round 1 added: the seconds outside the live region, the
+  keyboard kept on the card, the toast check, the retry after a failure, and "a cleanup still
+  running after the person left the tab shows as running when they come back".
+  `loading-shapes.e2e.ts` follows the card's new intro line.
 - Gates: `scripts/dev ci`, `scripts/dev security`, the whole e2e suite.
 
 ## Decisions
@@ -115,6 +130,22 @@ Read in the code on `dev` (21c26d8b):
   log is the durable history, and a restart's first round writes a new one when it removes
   anything.
 - **Elapsed seconds, not a progress bar**: the server answers once, after every deletion.
+- **Review round 1** (fresh session, head 876eca4e, request changes; all own code): a paused
+  (`WaitingCapacity`) task's worktree could go (major, fixed test-first: in use unless resting,
+  read again before removal); archived, merged or deleted tasks' worktrees lost ignored files that
+  are no caches (major, fixed test-first: SPEC-019's rebuildable-cache rule for every task
+  worktree; an ended task's worktree holding only caches now goes, as the disk upkeep already
+  removes it); the scan-to-removal race (closed by the same re-read); a closed pull request's
+  branch with later commits and its local copy could both go (fixed test-first: tip on the pull
+  request, local copies judged again after a fetch); the live region read the seconds every second
+  and `aria-busy` sat on its ancestor, focus fell to the page (fixed: seconds beside it, no
+  `aria-busy`, focus on the card); the busy state was lost on a remount and an older read could
+  draw over the answer, and two cleanups could overlap (fixed: per-sandbox state in the page, one
+  cleanup per sandbox on the server); docs (operations.md, ADR-0199's context, the README order,
+  `superadmin` in api.md) and nits (an explicit automatic flag instead of the `yulius` actor,
+  "task #12", the confirmation's words) fixed. The concurrent-cleanup lock has no test that fails
+  without it (the race is not reproducible through the API without a pause point); it is a
+  per-sandbox `tokio::sync::Mutex` held for the whole cleanup.
 
 ## Evidence
 

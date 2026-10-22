@@ -705,7 +705,7 @@ CiRun = {"id", "reference": "pr/12|branch/dev", "label": "PR #12|dev", "pr_numbe
 HygieneReport = {"scanned_at": "…" | null, "items": [{"kind": "remote_branch|local_branch|worktree",
                  "name", "reason_code": "pull_merged|pull_closed|merged|local_copy|idle|task_deleted|task_archived|task_merged|missing",
                  "reason", "safe": true}], "notes": ["…"],
-                 "last_cleanup": {"at", "by": "yulius|<login>|task:<n>", "automatic": false,
+                 "last_cleanup": {"at", "by": "yulius|<login>|superadmin|task:<n>", "automatic": false,
                                   "removed": [Target], "skipped": [Target + "reason"]} | null,
                  "next_cleanup_at": "…" | null}
 Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force": false}
