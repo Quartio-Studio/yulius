@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-22
 
+- The Vidoc findings tracked in #639 are triaged (SPEC-262, task #248, fixes #639, #688, #697,
+  #714). Real ones are fixed test-first: the store refuses, in each compare-and-set, a production
+  allowance on a secret agents copy into `.env` files or have hosts for, and the reverse, so two
+  managers answering at once can no longer leave a secret both; audit reasons drop U+2028/U+2029
+  and every invisible format character; the status line drops control characters of repository
+  and branch names; document presence and the workflow count for the briefing read through a
+  checked handle, so a folder swapped for a link is not followed. The rest (the `.env` target's
+  Git-ignore check, unparseable stored host requests, the `.git` exclusion of dotenv targets,
+  task-number allocation) are dismissed with their reasons as `[[ignore]]` entries.
+
 - The documentation matches what was merged since 2026-10-17 (task #246, documentation only). The
   API reference lists the agent-secret scopes (`personal`, `enabled`, `shadowed_by`) and the
   switch route `PUT …/agent-secrets/{id}/enabled`, the leftovers and Sandbox Docker admin routes,

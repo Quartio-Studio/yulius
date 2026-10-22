@@ -986,7 +986,9 @@ turns it off when adding it or in Edit. Then the proposed hosts are bound at onc
 (`allowed_for`), with no person in between. Secrets added before keep it off. Without it the
 request waits on the secret (`requested_hosts`) until a person who manages it allows it, so an
 agent misled by injected content cannot send that secret to another server; and production gets
-it only through the production-only allowance (`cd_prod`), which excludes `auto_allow`.
+it only through the production-only allowance (`cd_prod`), which excludes `auto_allow`, `.env`
+copies and bound hosts: each compare-and-set of the store refuses the pair itself, so two people
+answering at once cannot end with both (SPEC-134 M-B, SPEC-262).
 
 Every team secret belongs to one sandbox (`sandbox_id`, the default) or is team-wide
 (`NULL`). A sandbox's team secret is read by the people who can view that sandbox
