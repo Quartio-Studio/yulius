@@ -67,8 +67,45 @@ const OWN_SETTINGS: [(&str, &[&str], &str); 3] = [
     ),
 ];
 
-/// Whether `dir` sets the knob of the default variable `name` in its tools' own files: a line
-/// `<key> = …` in one of them (a regular file of at most [`MAX_CONFIG_BYTES`]).
+/// The dotted key paths a TOML line names, their components unquoted: a table header's
+/// (`[env.RUST_TEST_THREADS]`, `[[x.y]]`), a key's before `=` (`build.jobs = 2`,
+/// `RUST_TEST_THREADS.value = "1"`) and the keys of an inline table in its value
+/// (`build = { jobs = 2 }`, review of SPEC-272). None for a comment or a blank line; a line inside
+/// a multi-line array may name a key that is a string there (a harmless false positive).
+fn key_paths(line: &str) -> Vec<Vec<&str>> {
+    fn split(path: &str) -> Vec<&str> {
+        path.split('.')
+            .map(|part| part.trim().trim_matches(|c| c == '"' || c == '\''))
+            .collect()
+    }
+    let line = line.trim();
+    if let Some(header) = line.strip_prefix('[') {
+        return header
+            .trim_start_matches('[')
+            .split(']')
+            .next()
+            .map(split)
+            .into_iter()
+            .collect();
+    }
+    if line.starts_with('#') {
+        return Vec::new();
+    }
+    let Some((key, value)) = line.split_once('=') else {
+        return Vec::new();
+    };
+    let inline = value
+        .split(['{', ','])
+        .skip(1)
+        .filter_map(|piece| piece.split_once('=').map(|(key, _)| key))
+        .filter(|key| !key.contains(['[', ']', '{', '}']));
+    std::iter::once(key).chain(inline).map(split).collect()
+}
+
+/// Whether `dir` sets the knob of the default variable `name` in its tools' own files: `<key>`
+/// as a component of a key path there ([`key_paths`]: `<key> = …`, `build.<key> = …`,
+/// `<key>.value = …`, `[env.<key>]`, `build = { <key> = … }`, SPEC-272 SHR-005) in one of them
+/// (a regular file of at most [`MAX_CONFIG_BYTES`]).
 fn sets_own(dir: &Path, name: &str) -> bool {
     let Some((_, files, key)) = OWN_SETTINGS.iter().find(|(n, _, _)| *n == name) else {
         return false;
@@ -79,11 +116,9 @@ fn sets_own(dir: &Path, name: &str) -> bool {
             .is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_CONFIG_BYTES as u64);
         regular
             && std::fs::read_to_string(&path).is_ok_and(|text| {
-                text.lines().any(|line| {
-                    line.trim_start()
-                        .strip_prefix(key)
-                        .is_some_and(|rest| rest.trim_start().starts_with('='))
-                })
+                text.lines()
+                    .flat_map(key_paths)
+                    .any(|parts| parts.contains(key))
             })
     })
 }
@@ -231,6 +266,91 @@ mod tests {
         assert!(repository_templates(dir.path()).is_empty(), "invalid");
         std::fs::write(&toml, "[resources.env\n")?;
         assert!(repository_templates(dir.path()).is_empty(), "unparsable");
+        Ok(())
+    }
+
+    /// SPEC-272 SHR-005 (SPEC-268 review round 3): a knob set through a dotted key or a table
+    /// header keeps its value; a value or a comment naming the key sets nothing.
+    #[test]
+    fn a_knob_set_through_a_dotted_key_keeps_its_value() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(dir.path().join(".cargo"))?;
+        std::fs::create_dir_all(dir.path().join(".config"))?;
+        let cargo = dir.path().join(".cargo/config.toml");
+        let nextest = dir.path().join(".config/nextest.toml");
+        for (file, text, name) in [
+            (
+                &cargo,
+                "[env]\nRUST_TEST_THREADS.value = \"1\"\n",
+                "RUST_TEST_THREADS",
+            ),
+            (
+                &cargo,
+                "[env]\nRUST_TEST_THREADS = { value = \"1\" }\n",
+                "RUST_TEST_THREADS",
+            ),
+            (
+                &cargo,
+                "env.RUST_TEST_THREADS = \"1\"\n",
+                "RUST_TEST_THREADS",
+            ),
+            (
+                &cargo,
+                "[env.RUST_TEST_THREADS]\nvalue = \"1\"\n",
+                "RUST_TEST_THREADS",
+            ),
+            (
+                &cargo,
+                "[env]\n\"RUST_TEST_THREADS\" = \"1\"\n",
+                "RUST_TEST_THREADS",
+            ),
+            // Review: keys of an inline table are keys too.
+            (&cargo, "build = { jobs = 2 }\n", "CARGO_BUILD_JOBS"),
+            (
+                &cargo,
+                "env = { FOO = \"x\", RUST_TEST_THREADS = \"1\" }\n",
+                "RUST_TEST_THREADS",
+            ),
+            (&cargo, "build.jobs = 2\n", "CARGO_BUILD_JOBS"),
+            (&cargo, "[build]\njobs.x = 2\n", "CARGO_BUILD_JOBS"),
+            (
+                &nextest,
+                "profile.default.test-threads = 1\n",
+                "NEXTEST_TEST_THREADS",
+            ),
+            (
+                &nextest,
+                "[profile.ci]\n'test-threads' = 1\n",
+                "NEXTEST_TEST_THREADS",
+            ),
+        ] {
+            std::fs::write(file, text)?;
+            assert!(sets_own(dir.path(), name), "{text}");
+            std::fs::remove_file(file)?;
+        }
+        for (file, text, name) in [
+            (
+                &cargo,
+                "[env]\nFOO = \"RUST_TEST_THREADS\"\n",
+                "RUST_TEST_THREADS",
+            ),
+            (
+                &cargo,
+                "env = { FOO = \"RUST_TEST_THREADS\" }\n",
+                "RUST_TEST_THREADS",
+            ),
+            (&cargo, "# jobs = 2\n", "CARGO_BUILD_JOBS"),
+            (&cargo, "[build]\njobsx = 2\n", "CARGO_BUILD_JOBS"),
+            (
+                &nextest,
+                "[profile.default]\nslow-timeout = \"test-threads\"\n",
+                "NEXTEST_TEST_THREADS",
+            ),
+        ] {
+            std::fs::write(file, text)?;
+            assert!(!sets_own(dir.path(), name), "{text}");
+            std::fs::remove_file(file)?;
+        }
         Ok(())
     }
 }

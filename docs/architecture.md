@@ -66,9 +66,16 @@ agent sessions keep at least a quarter. A session that still ends while the sand
 task or memory limit says so in the task
 ([SPEC-268](../.ai/specs/SPEC-268-parallel-tasks-in-one-sandbox-crash-clau.md),
 [decision 0198](decisions/0198-sandbox-task-limits-are-sized-from-the-host-and-leave-sessions-a-reserve.md)).
+All sandboxes together stop at three quarters of the service's limit (`sandboxes/pids.max`), so
+the server keeps a quarter however many are busy; a hit there counts as the sandbox's
+([SPEC-272](../.ai/specs/SPEC-272-all-sandboxes-together-keep-the-server-a.md),
+[decision 0201](decisions/0201-all-sandboxes-share-a-task-limit-below-the-services.md)).
 
 ```mermaid
 flowchart TD
+  UNIT["yulius.service: pids.max (TasksMax)"] --> SRV["server/: yulius serve"]
+  UNIT --> ALL["sandboxes/: pids.max 3/4 of the service's"]
+  ALL --> SBX
   SBX["sandboxes/sandbox: cpu.max, memory.max, pids.max"] --> SYS["system/ weight 100: holder, slirp4netns"]
   SBX --> AGS["agents/ weight 100: agent runs, shells, browsers"]
   SBX --> CIG["ci/ weight 400, pids.max 3/8: CI jobs"]
