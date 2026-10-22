@@ -341,7 +341,7 @@ pub struct LimitCounters {
 }
 
 /// The number after `key` in a cgroup's flat keyed file (`max 3\n`), 0 when absent.
-fn keyed(text: &str, key: &str) -> u64 {
+pub(crate) fn keyed(text: &str, key: &str) -> u64 {
     text.lines()
         .find_map(|line| line.strip_prefix(key)?.strip_prefix(' '))
         .and_then(|n| n.trim().parse().ok())

@@ -308,8 +308,21 @@ fn run_groups(unit: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// Whether `thaw_all` removes the run group `group`: not while it has processes, nor once forks
+/// were refused to them (`max` in `pids.events` or `pids.events.local`). The sandbox's limit
+/// counters add up its groups' counts, so removing such a group during another run would make
+/// them fall and hide a rise (SPEC-272 SHR-004); systemd removes it when the service stops.
+fn removable(group: &Path) -> bool {
+    let met_a_limit = ["pids.events", "pids.events.local"].iter().any(|file| {
+        std::fs::read_to_string(group.join(file))
+            .is_ok_and(|text| crate::cgroup::keyed(&text, "max") > 0)
+    });
+    members(group).is_empty() && !met_a_limit
+}
+
 /// Thaws every frozen run group under the unit's sandboxes but those named in `keep` (the runs
-/// a person paused, SPEC-191) and removes the empty ones; returns how many were thawed.
+/// a person paused, SPEC-191) and removes the empty ones but those whose processes met a task
+/// limit (SPEC-272 SHR-004); returns how many were thawed.
 pub fn thaw_all(unit: &Path, keep: &HashSet<String>) -> usize {
     let mut thawed = 0;
     for group in run_groups(unit) {
@@ -331,7 +344,7 @@ pub fn thaw_all(unit: &Path, keep: &HashSet<String>) -> usize {
             }
         }
         // The kernel refuses to remove a group that still has processes.
-        if members(&group).is_empty() {
+        if removable(&group) {
             let _ = std::fs::remove_dir(&group);
         }
     }
@@ -510,6 +523,28 @@ mod tests {
             0,
             "nothing left frozen"
         );
+        Ok(())
+    }
+
+    /// SPEC-272 SHR-004 (SPEC-268 review round 3): an empty run group whose processes met a task
+    /// limit stays, so a sandbox's limit counters never fall during another run.
+    #[test]
+    fn an_empty_run_group_that_met_a_limit_is_kept() -> Result<(), Box<dyn std::error::Error>> {
+        let (_root, _tree, agents) = tree()?;
+        let group = agents.join("run-a1");
+        std::fs::create_dir_all(&group)?;
+        std::fs::write(group.join("cgroup.procs"), "")?;
+        assert!(removable(&group), "empty, no counters");
+        std::fs::write(group.join("pids.events"), "max 0\n")?;
+        assert!(removable(&group), "no hit");
+        std::fs::write(group.join("pids.events"), "max 2\n")?;
+        assert!(!removable(&group), "6.8: forks refused to its processes");
+        std::fs::write(group.join("pids.events"), "max 0\n")?;
+        std::fs::write(group.join("pids.events.local"), "max 1\n")?;
+        assert!(!removable(&group), "pids_localevents");
+        std::fs::write(group.join("pids.events.local"), "max 0\n")?;
+        std::fs::write(group.join("cgroup.procs"), "100\n")?;
+        assert!(!removable(&group), "a process left");
         Ok(())
     }
 
