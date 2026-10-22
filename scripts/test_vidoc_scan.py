@@ -862,6 +862,140 @@ class Policy(Scanning):
         self.assertEqual(ci_findings(output), [])
 
 
+def reworded(titles, accepted=None):
+    """The fake model: a high finding on each line holding `# flag:<key>`, titled `titles[key]`
+    (Vidoc's wording of the day); with `accepted[key]`, answered as that accepted risk."""
+    def behave(body, headers=None):
+        content = body["messages"][0]["content"]
+        findings, path = [], None
+        for line in content.splitlines():
+            if line.startswith(vidoc_scan.FILE_MARK):
+                path = line.split(" ", 2)[1]
+            elif "# flag:" in line and "| " in line:
+                key = line.split("# flag:", 1)[1].split()[0]
+                item = {"severity": "high", "file": path, "line": int(line.split("|", 1)[0]),
+                        "title": titles[key], "detail": "Fix it."}
+                if accepted and key in accepted:
+                    item["accepted"] = accepted[key]
+                findings.append(item)
+        return 200, answer(findings), {}
+    return behave
+
+
+# ADR 0017 of quartio-v2: an accepted risk Vidoc kept raising in new words.
+JUDGE = ("import random\n\n\n"
+         "def confirm_write(request):\n"
+         "    verdict = ask_llm(request)  # flag:judge\n"
+         "    return verdict\n\n\n"
+         "def session_id():\n"
+         "    return random.random()  # flag:session\n")
+ACCEPTED = "write-confirmation decision made by an LLM judge"
+NEW_WORDING = {"judge": "LLM-based authorization of destructive writes",
+               "session": "Weak randomness in session id"}
+
+
+def accepted_risk(place=""):
+    return (f'[[ignore]]\npath = "app.py"\ntitle = "{ACCEPTED}"\n{place}'
+            'reason = "accepted risk, ADR 0017"\n')
+
+
+class Repeats(Scanning):
+    """SPEC-273 NOI-001..003: a reworded repeat of an ignored finding on untouched code passes;
+    a change to that code, or a new weakness, still fails."""
+
+    def scan(self, base, change, config, behave, *argv):
+        repo = Repo(self, {"app.py": base, ".config/vidoc.toml": config}, change)
+        server = self.fake(behave)
+        code, output = self.run_scan(repo, server, *argv)
+        return code, output, server
+
+    def test_a_reworded_repeat_in_the_ignored_function_passes(self):
+        base = JUDGE.replace("  # flag:session", "")
+        code, output, _ = self.scan(base, {"app.py": base + "y = 2\n"},
+                                    accepted_risk('function = "confirm_write"\n'),
+                                    reworded(NEW_WORDING))
+        self.assertEqual(code, 0, output)
+        self.assertIn("ignored [high] app.py:5 LLM-based authorization of destructive writes", output)
+        self.assertIn("accepted risk, ADR 0017", output)
+        self.assertIn("same function confirm_write", output)
+
+    def test_a_repeat_on_a_changed_line_is_judged_again(self):
+        base = JUDGE.replace("  # flag:session", "")
+        code, output, _ = self.scan(base, {"app.py": base.replace("ask_llm(", "ask_llm2(")},
+                                    accepted_risk('function = "confirm_write"\n'),
+                                    reworded(NEW_WORDING))
+        self.assertEqual(code, 1, output)
+        self.assertIn("[high] app.py:5 LLM-based authorization", output)
+
+    def test_an_ignored_line_tolerates_small_shifts(self):
+        base = JUDGE.replace("  # flag:session", "")
+        for shift, expected in ((4, 0), (10, 0), (12, 1)):
+            with self.subTest(shift=shift):
+                code, output, _ = self.scan(base, {"app.py": "# moved\n" * shift + base},
+                                            accepted_risk("line = 5\n"), reworded(NEW_WORDING))
+                self.assertEqual(code, expected, output)
+
+    def test_vidoc_is_told_the_accepted_risks_and_may_answer_with_one(self):
+        base = JUDGE.replace("  # flag:session", "")
+        code, output, server = self.scan(base, {"app.py": base + "y = 2\n"}, accepted_risk(),
+                                         reworded(NEW_WORDING, {"judge": "A1"}))
+        self.assertEqual(code, 0, output)
+        content = server.requests[0][2]["messages"][0]["content"]
+        self.assertIn(f"A1 app.py: {ACCEPTED}. Reason: accepted risk, ADR 0017", content)
+        self.assertIn("Vidoc: already accepted", output)
+
+    def test_an_accepted_answer_needs_an_ignore_of_that_file(self):
+        base = JUDGE.replace("  # flag:session", "")
+        other = accepted_risk().replace('path = "app.py"', 'path = "other.py"')
+        for config, given in ((accepted_risk(), "A7"), (other, "A1"), (accepted_risk(), "a1")):
+            with self.subTest(config=config, given=given):
+                code, output, server = self.scan(base, {"app.py": base + "y = 2\n"}, config,
+                                                 reworded(NEW_WORDING, {"judge": given}))
+                self.assertEqual(code, 1, output)
+                content = server.requests[0][2]["messages"][0]["content"]
+                if config is other:
+                    self.assertNotIn(ACCEPTED, content, "not listed for app.py")
+
+    def test_a_new_weakness_still_fails_with_its_nearest_ignore(self):
+        code, output, _ = self.scan(JUDGE, {"app.py": JUDGE + "y = 2\n"},
+                                    accepted_risk('function = "confirm_write"\n'),
+                                    reworded(NEW_WORDING))
+        self.assertEqual(code, 1, output)
+        self.assertIn("[high] app.py:10 Weak randomness in session id", output)
+        self.assertRegex(output, rf'nearest ignore: "{ACCEPTED}" \(\d+% similar\)')
+        self.assertIn("ignored [high] app.py:5", output)
+
+    def test_the_report_names_the_nearest_ignore(self):
+        repo = Repo(self, {"app.py": JUDGE,
+                           ".config/vidoc.toml": accepted_risk('function = "confirm_write"\n')},
+                    {"app.py": JUDGE + "y = 2\n"})
+        report = repo.root / ".git" / "report.json"
+        code, output = self.run_scan(repo, self.fake(reworded(NEW_WORDING)), "--report", str(report))
+        self.assertEqual(code, 1, output)
+        [open_one] = [f for f in json.loads(report.read_text())["findings"] if not f.get("ignored")]
+        self.assertEqual(open_one["nearest"]["title"], ACCEPTED)
+        self.assertFalse(open_one["nearest"]["same_function"])
+        self.assertLess(open_one["nearest"]["similarity"], 100)
+
+    def test_the_enclosing_function(self):
+        lines = vidoc_scan.split_lines(
+            "use x;\n\npub(crate) async fn load<T>(a: T) {\n    a\n}\n"
+            "impl Store {\n    fn get(&self) {\n        1\n    }\n}\n"
+            "export function render(el) {\n  el.innerHTML = x;\n}\n")
+        self.assertEqual([vidoc_scan.enclosing(lines, n) for n in (1, 4, 7, 8, 12)],
+                         [None, "load", "get", "get", "render"])
+
+    def test_place_keys_are_checked(self):
+        for place in ('function = ""\n', "function = 3\n", "line = 0\n", 'line = "5"\n',
+                      "line = true\n", 'symbol = "x"\n'):
+            with self.subTest(place=place):
+                with self.assertRaises(Usage):
+                    vidoc_scan.parse_config(accepted_risk(place), "test")
+        [entry] = vidoc_scan.parse_config(
+            accepted_risk('function = "f"\nline = 9\n'), "test").ignore
+        self.assertEqual((entry.function, entry.line), ("f", 9))
+
+
 class SecurityJob(unittest.TestCase):
     """SPEC-195 VIB-003: this repository's `security` job runs the in-tree scanner in CI mode with
     its grant."""
