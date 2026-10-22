@@ -89,8 +89,8 @@ Read in the code on `dev` (21c26d8b):
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Review round 3 findings fixed test-first
 - [x] Review round 4 findings fixed test-first
-- [x] Review round 5 approves the exact head
 - [x] Every gate green on the branch merged with current dev
+- [x] Review round 5 approves the exact head
 
 ## Acceptance criteria
 
