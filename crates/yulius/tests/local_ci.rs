@@ -1614,18 +1614,28 @@ async fn ci_jobs_get_the_secrets_the_integration_branch_grants_them() -> TestRes
              if [ -n \"$SSL_CERT_FILE\" ] && [ -r \"$SSL_CERT_FILE\" ]; then echo ca-readable; fi"
         )
     };
-    let granted = report("");
     let plain = report("");
+    // The integration branch's command of the granted job, which a pull request may keep.
+    let trusted = std::sync::OnceLock::new();
     let f = fixture_with(false, |data| {
+        let command = trusted.get_or_init(|| {
+            format!(
+                "{granted}; printf %s \"$HTTPS_PROXY\" > \"{dir}/proxy-$YULIUS_CI_RUN\"; \
+                 while [ ! -e \"{dir}/go\" ]; do sleep 0.05; done",
+                granted = report(""),
+                dir = data.display()
+            )
+        });
         format!(
-            "[[ci.jobs]]\nname = \"granted\"\nsecrets = \"API_KEY\"\ncommand = '{granted}; \
-             printf %s \"$HTTPS_PROXY\" > \"{dir}/proxy-$YULIUS_CI_RUN\"; \
-             while [ ! -e \"{dir}/go\" ]; do sleep 0.05; done'\n\n\
-             [[ci.jobs]]\nname = \"plain\"\ncommand = '{plain}'\n",
-            dir = data.display()
+            "[[ci.jobs]]\nname = \"granted\"\nsecrets = \"API_KEY\"\ncommand = '{command}'\n\n\
+             [[ci.jobs]]\nname = \"plain\"\ncommand = '{plain}'\n"
         )
     })
     .await?;
+    let trusted = trusted
+        .get()
+        .ok_or("the fixture wrote no configuration")?
+        .clone();
     for name in ["API_KEY", "OTHER_KEY"] {
         let created = f
             .post(
@@ -1713,8 +1723,9 @@ async fn ci_jobs_get_the_secrets_the_integration_branch_grants_them() -> TestRes
     );
     assert!(!plain_out.contains("ca-readable"), "{plain_out}");
 
-    // The pull request grants secrets in its own yulius.toml: its own jobs run, with the
-    // integration branch's grants only.
+    // The pull request grants secrets in its own yulius.toml and reuses the granted job's name
+    // for its own command (SPEC-264 CSG-001, CSG-002, #659): its own jobs run, and none gets a
+    // secret, since a grant binds the integration branch's name and command.
     let own = format!(
         "[[ci.jobs]]\nname = \"granted\"\nsecrets = \"API_KEY OTHER_KEY\"\ncommand = '{granted}'\n\n\
          [[ci.jobs]]\nname = \"plain\"\nsecrets = \"API_KEY\"\ncommand = '{plain}'\n\n\
@@ -1729,17 +1740,46 @@ async fn ci_jobs_get_the_secrets_the_integration_branch_grants_them() -> TestRes
     let outputs = job_outputs(&f, &own_sha).await?;
     let names: Vec<&str> = outputs.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(names, ["granted", "plain", "sneaky"], "its own jobs ran");
-    assert!(
-        output_of(&outputs, "granted")?
-            .contains("own key=yulius-secret-API_KEY other=none proxy=set"),
-        "{outputs:?}"
-    );
-    for name in ["plain", "sneaky"] {
+    for name in ["granted", "plain", "sneaky"] {
         assert!(
             output_of(&outputs, name)?.contains("own key=none other=none proxy= ca=none"),
             "{outputs:?}"
         );
     }
+    assert!(
+        output_of(&outputs, "granted")?.contains(
+            "[yulius] agent secrets: none; this job's command is not the one the integration \
+             branch grants them to"
+        ),
+        "{outputs:?}"
+    );
+
+    // A pull request that keeps the granted job's name and command and changes another job
+    // (SPEC-264 CSG-003): the trusted command keeps its grant, and only its grant.
+    let kept = format!(
+        "[[ci.jobs]]\nname = \"granted\"\nsecrets = \"API_KEY OTHER_KEY\"\ncommand = '{trusted}'\n\n\
+         [[ci.jobs]]\nname = \"plain\"\ncommand = '{plain}'\n",
+        plain = report("own "),
+    );
+    let kept_sha = f.push_feature("yulius.toml", Some(&kept))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &kept_sha).await?;
+    let names: Vec<&str> = outputs.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["granted", "plain"], "its own jobs ran");
+    let granted = output_of(&outputs, "granted")?;
+    assert!(
+        granted.contains("key=yulius-secret-API_KEY other=none proxy=set ca=/"),
+        "{granted}"
+    );
+    assert!(
+        granted.contains("[yulius] agent secrets: API_KEY"),
+        "{granted}"
+    );
+    assert!(
+        output_of(&outputs, "plain")?.contains("own key=none other=none proxy= ca=none"),
+        "{outputs:?}"
+    );
     Ok(())
 }
 

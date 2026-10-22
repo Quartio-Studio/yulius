@@ -15,7 +15,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   checked handle, so a folder swapped for a link is not followed. The rest (the `.env` target's
   Git-ignore check, unparseable stored host requests, the `.git` exclusion of dotenv targets,
   task-number allocation) are dismissed with their reasons as `[[ignore]]` entries.
-
+- A CI job gets the agent secrets the integration branch grants only when it runs the granted
+  entry's command too (task #250, #659, SPEC-264, ADR-0196). A pull request tested with its own
+  `[[ci.jobs]]` that reused a granted job's name, say `deploy`, for its own command ran that command
+  with the secret's placeholder and proxy; it now runs without any secret, and its output says
+  `this job's command is not the one the integration branch grants them to`. A pull request that
+  keeps the granted command keeps the grant.
 - The documentation matches what was merged since 2026-10-17 (task #246, documentation only). The
   API reference lists the agent-secret scopes (`personal`, `enabled`, `shadowed_by`) and the
   switch route `PUT …/agent-secrets/{id}/enabled`, the leftovers and Sandbox Docker admin routes,

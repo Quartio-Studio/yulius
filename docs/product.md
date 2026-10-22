@@ -154,7 +154,8 @@ watching, steering and unblocking.
   `yulius.toml`, with the branch policy (typed branches, conventional titles, `dev` → `main`
   promotions) that Yulius checks before every merge.
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions. A job uses an agent
-  secret only when the integration branch's `[[ci.jobs]]` entry names it (`secrets`), as a
+  secret only when the integration branch's `[[ci.jobs]]` entry names it (`secrets`) and the job
+  runs that entry's command (a pull request's own job with another command gets none), as a
   placeholder through the egress proxy toward the secret's bound hosts, audited as `ci:<run>`;
   every pull request runs Yulius's own `security` job, granted `VIDOC_API_KEY`, which scans the
   pull request's changes with Vidoc's vidoc-1. A job that checked nothing exits with
