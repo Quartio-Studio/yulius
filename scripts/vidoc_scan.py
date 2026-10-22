@@ -89,9 +89,13 @@ FAILING_IN_CHANGE = {"medium"}
 NEAR_LINES = 3
 # How far an ignore's `line` reaches: code above it may have moved a little (SPEC-273 NOI-001).
 LINE_SLACK = 10
-# A definition line: its name is the place of the lines below it.
-DEFINITION = re.compile(r"\b(?:fn|def|func|function|class|struct|enum|trait|impl|interface|module)"
-                        r"\s+([A-Za-z_$][\w$]*)")
+# A definition line: its name is the place of the lines below it. Anchored at the start of a code
+# line (indentation and modifiers allowed), so prose in comments and docstrings is none.
+DEFINITION = re.compile(
+    r"^\s*(?:(?:pub(?:\([^)]*\))?|export|default|async|static|public|private|protected|abstract"
+    r"|final|unsafe|const|override|inline|extern(?:\s+\"[^\"]*\")?)\s+)*"
+    r"(?:fn|def|func|function|class|struct|enum|trait|impl|interface|module)(?:<[^>]*>)?\s+"
+    r"(?:\([^)]*\)\s*)?([A-Za-z_$][\w$]*)")
 ACCEPTED_ID = re.compile(r"A[1-9][0-9]{0,3}")
 # A 429 that says the key is used up, not to slow down: only a person fixes it (not run).
 USED_UP = re.compile(r"\bused its\b|\bout of (?:quota|credits?)\b|\binsufficient (?:credits?|balance)\b"
@@ -486,13 +490,17 @@ def enclosing(lines, line):
 
 
 def place_changed(lines, line, ranges):
-    """Whether the branch changed a line of the definition that holds `line`, or, outside any,
-    a line within `LINE_SLACK` of it (SPEC-273 NOI-001, review round 1)."""
+    """Whether the branch changed a line of the definition that holds `line` (by name: two of
+    the same name count as one, which only fails closed), or a line of code within `LINE_SLACK`
+    of it; only lines above every definition (imports, a header) may move code unjudged
+    (SPEC-273 NOI-001, review rounds 1 and 2)."""
     names = places(lines)
     own = names[line - 1] if 1 <= line <= len(names) else None
     for first, last in ranges:
         for number in range(max(first, 1), min(last, len(names)) + 1):
-            if (names[number - 1] == own) if own else abs(number - line) <= LINE_SLACK:
+            name = names[number - 1]
+            if (own and name == own) or (
+                    abs(number - line) <= LINE_SLACK and (name is not None or own is None)):
                 return True
     return False
 

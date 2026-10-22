@@ -916,7 +916,9 @@ JUDGE = ("import random\n\n\n"
          "    verdict = ask_llm(request)  # flag:judge\n"
          "    return verdict\n\n\n"
          "def session_id():\n"
-         "    return random.random()  # flag:session\n")
+         "    return random.random()  # flag:session\n"
+         # Room, so a line appended below is more than 10 lines from every finding.
+         + FILLER)
 ACCEPTED = "write-confirmation decision made by an LLM judge"
 NEW_WORDING = {"judge": "LLM-based authorization of destructive writes",
                "session": "Weak randomness in session id"}
@@ -1059,6 +1061,33 @@ class Repeats(Scanning):
             "export function render(el) {\n  el.innerHTML = x;\n}\n")
         self.assertEqual([vidoc_scan.enclosing(lines, n) for n in (1, 4, 7, 8, 12)],
                          [None, "load", "get", "get", "render"])
+        # Review round 2: prose in comments and docstrings is no definition.
+        lines = vidoc_scan.split_lines(
+            'def run(cursor):\n    """This function runs the query."""\n'
+            "    # the class of the cursor decides the quoting\n    x = 1\n"
+            "impl<T> Store<T> for Db {\n    x\n}\n"
+            "func (r *Repo) Save(v int) {\n    x\n}\n")
+        self.assertEqual([vidoc_scan.enclosing(lines, n) for n in (2, 4, 6, 9)],
+                         ["run", "run", "Store", "Save"])
+
+    def test_a_comment_between_the_change_and_the_finding_hides_nothing(self):
+        base = ("def run_query(cursor, request):\n"
+                "    table = 'users'\n"
+                "    order = 'id'\n"
+                "    limit = 10\n"
+                "    # the class of the cursor decides the quoting\n"
+                "    columns = '*'\n"
+                "    cursor.execute(f'SELECT {columns} FROM {table}')  # flag:sql\n")
+        changed = base.replace("table = 'users'", "table = request.args['t']")
+        titles = {"sql": "SQL injection via table parameter"}
+        for place, accepted in (('line = 7\n', None), ("", {"sql": "A1"}),
+                                ('function = "run_query"\n', None)):
+            with self.subTest(place=place, accepted=accepted):
+                config = ('[[ignore]]\npath = "app.py"\ntitle = "SQL built by string formatting"\n'
+                          f'{place}reason = "table name is a constant"\n')
+                code, output, _ = self.scan(base, {"app.py": changed}, config,
+                                            reworded(titles, accepted))
+                self.assertEqual(code, 1, output)
 
     def test_place_keys_are_checked(self):
         for place in ('function = ""\n', "function = 3\n", "line = 0\n", 'line = "5"\n',

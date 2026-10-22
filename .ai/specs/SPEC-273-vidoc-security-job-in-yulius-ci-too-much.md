@@ -55,9 +55,11 @@ Root causes (reproduced in code, see Evidence):
   `function`, `class`, `struct`, `enum`, `trait`, `impl`, `interface`, `module`), or (b) its `line`
   is within 10 lines of the finding's line, or (c) Vidoc answered the finding as that ignore's
   accepted risk (NOI-002). (a)–(c) hold only on code the branch did not touch: a finding within 3
-  lines of a changed line, in a function the branch changed anywhere (outside any function: a
-  changed line within 10 lines), without a valid line, or in a new file, matches by title only, so
-  a change to accepted code is judged again (review round 1).
+  lines of a changed line, in a function the branch changed anywhere, within 10 lines of a changed
+  line of code (only lines above every definition, such as imports, may move code unjudged),
+  without a valid line, or in a new file, matches by title only, so a change to accepted code is
+  judged again (review rounds 1 and 2). A definition is a code line that starts (after
+  indentation and modifiers) with one of those keywords, so comments and docstrings are none.
 - NOI-002 (Vidoc is told). Each request lists, as data, the ignores whose `path` matches a file of
   its chunk, each with an id (`A<n>`), path, place, title and reason. Vidoc is asked to report a
   weakness that is one of them with `"accepted": "A<n>"` instead of as a new finding. An id that
