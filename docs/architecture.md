@@ -1382,6 +1382,34 @@ sequenceDiagram
     L->>App: GET agent-states/OPS/archive (state-get)
 ```
 
+## Project variables
+
+A project's non-secret values (regions, environment names, account and project ids, base URLs,
+contact addresses) are *project variables*
+([SPEC-275](../.ai/specs/SPEC-275-project-variables-non-secret-values-regi.md),
+[decision 0203](decisions/0203-project-variables-are-plain-per-project-values-in-task-runs.md)):
+plain rows of `project_variables` (schema 43), not secrets, so they are neither sealed, redacted nor
+proxied. `App::set_project_variables` (`variables.rs`) checks a batch (agent secret names, one-line
+values ≤ 4 KiB, ≤ 200 per project), refuses a name that is an agent secret of the project, writes
+it in one transaction and audits `variable.*` without values; the Secrets page's Variables tab,
+`/api/sandboxes/{sid}/variables` and the remote tools (`variables_list`, `variables_set`,
+`variable_delete`, behind `yulius vars`) all go through it. A task run's environment starts with
+them (`supervisor.rs`), so `base_env` and the agent secret placeholders win over a variable of the
+same name; `secrets_list` names them. `yulius_domain::vault::plain` tells a plain value from a
+secret (shorter than 8 characters and plain-shaped, or the ordinary text of SPEC-274's
+`ordinary_text`, never under a credential-like name), and `yulius secrets import --to agent` sends such entries of a
+`.env` as variables.
+
+```mermaid
+flowchart LR
+    E[".env on the laptop"] --> I["yulius secrets import (plain rule)"]
+    I -->|keys| S["agent secrets (sealed, placeholders, proxy)"]
+    I -->|plain values| V["project_variables"]
+    C["yulius vars / variables_set / Variables tab"] --> V
+    V --> R["task run environment (first)"]
+    S --> R
+```
+
 ## Terminal input
 
 A keystroke goes from xterm to the PTY and its echo comes back without waiting for the database or

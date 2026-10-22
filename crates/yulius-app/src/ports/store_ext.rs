@@ -686,6 +686,7 @@ pub trait ExtensionStores:
     + UpdateStore
     + crate::ports::vault::VaultStore
     + crate::ports::vault::AgentStateStore
+    + crate::ports::variables::ProjectVariableStore
     + CiStore
     + CdStore
     + NeedsYouStore
@@ -708,6 +709,7 @@ impl<T> ExtensionStores for T where
         + UpdateStore
         + crate::ports::vault::VaultStore
         + crate::ports::vault::AgentStateStore
+        + crate::ports::variables::ProjectVariableStore
         + CiStore
         + CdStore
         + NeedsYouStore

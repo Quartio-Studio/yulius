@@ -17,6 +17,7 @@ use axum::routing::{get, post, put};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use yulius_contracts::api::secrets::{AgentSecretInput, TeamSecretInput};
+use yulius_contracts::api::variables::ProjectVariablesSet;
 use yulius_contracts::import::{
     CHUNK_SHA256_HEADER, CreateImportRequest, CreateImportResponse, DevicePoll, DevicePollRequest,
     DeviceStart, DeviceStatus, FileProgress, FileRef, ImportManifest, ImportResult,
@@ -97,6 +98,10 @@ pub struct ServerState {
     pub fail_creates: Option<u16>,
     /// After this many creates every request answers 401.
     pub expire_after_creates: Option<usize>,
+    /// Project variables that exist (SPEC-275), by name; `None`: an older server without them.
+    pub variable_names: Option<Vec<String>>,
+    /// Variable sets received, with the sandbox of the path.
+    pub variables_set: Vec<(String, ProjectVariablesSet)>,
 }
 
 type Shared = Arc<Mutex<ServerState>>;
@@ -130,6 +135,10 @@ impl FakeServer {
             .route(
                 "/api/sandboxes/{sid}/agent-secrets",
                 get(agent_list).post(agent_create),
+            )
+            .route(
+                "/api/sandboxes/{sid}/variables",
+                get(variables_list).put(variables_set),
             )
             .with_state(state.clone());
         let (shutdown, signal) = tokio::sync::oneshot::channel::<()>();
@@ -640,6 +649,60 @@ async fn agent_list(
         .map(|(name, scope)| serde_json::json!({"id": "a", "name": name, "scope": scope}))
         .collect();
     Json(list).into_response()
+}
+
+async fn variables_list(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Path(_sid): Path<String>,
+) -> Response {
+    let Some(state) = lock(&state) else {
+        return poisoned();
+    };
+    if !vault_allowed(&state, &headers) {
+        return unauthorized();
+    }
+    let Some(names) = &state.variable_names else {
+        return error(StatusCode::NOT_FOUND, "not_found", "not found");
+    };
+    let variables: Vec<serde_json::Value> = names
+        .iter()
+        .map(|name| serde_json::json!({"name": name, "value": "v", "description": "", "updated_by": "a", "updated_at": "t"}))
+        .collect();
+    Json(serde_json::json!({"variables": variables, "can_manage": true})).into_response()
+}
+
+async fn variables_set(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Path(sid): Path<String>,
+    Json(input): Json<ProjectVariablesSet>,
+) -> Response {
+    let Some(mut state) = lock(&state) else {
+        return poisoned();
+    };
+    if !vault_allowed(&state, &headers) {
+        return unauthorized();
+    }
+    if input
+        .variables
+        .iter()
+        .any(|v| state.refuse_names.contains(&v.name))
+    {
+        return error(StatusCode::CONFLICT, "conflict", "the server refused it");
+    }
+    let held = state.variable_names.clone().unwrap_or_default();
+    let (existing, created): (Vec<String>, Vec<String>) = input
+        .variables
+        .iter()
+        .map(|v| v.name.clone())
+        .partition(|name| input.only_new && held.contains(name));
+    if let Some(names) = state.variable_names.as_mut() {
+        names.extend(created.iter().cloned());
+    }
+    state.variables_set.push((sid, input));
+    Json(serde_json::json!({"created": created, "changed": [], "unchanged": [], "existing": existing}))
+        .into_response()
 }
 
 /// Counts a create; `Some(response)` when it is refused.

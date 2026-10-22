@@ -1,8 +1,8 @@
-//! `yulius remote`, `yulius project`, `yulius task`, `yulius ci`, `yulius secrets list` and
-//! `yulius secrets delete` (SPEC-247 RMT-030, RMT-031, SPEC-274): a person drives a Yulius
-//! instance from their computer, or a script or an agent without MCP does, through the
-//! instance's remote MCP with a personal API token. Every command is one tool call; its text is
-//! printed, or its record with `--json`.
+//! `yulius remote`, `yulius project`, `yulius task`, `yulius ci`, `yulius secrets list`,
+//! `yulius secrets delete` (SPEC-247 RMT-030, RMT-031, SPEC-274) and `yulius vars` (SPEC-275): a
+//! person drives a Yulius instance from their computer, or a script or an agent without MCP does,
+//! through the instance's remote MCP with a personal API token. Every command is one tool call;
+//! its text is printed, or its record with `--json`.
 //!
 //! Exit codes: 0 done, 1 the tool refused or failed (its text says why), 2 the request did not
 //! reach a tool (no token, a refused token, the network, a bad argument).
@@ -11,7 +11,10 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::process::ExitCode;
 
 use serde_json::{Map, Value, json};
-use yulius_import::{RemoteClient, RemoteError, Secret, TokenStore, Url, discover_repo};
+use yulius_domain::vault::plain::{carries_credential, credential_name};
+use yulius_import::{
+    RemoteClient, RemoteError, Secret, TokenStore, Url, discover_repo, parse_dotenv,
+};
 
 /// Options every remote command takes.
 #[derive(Debug, Clone, Default, clap::Args)]
@@ -106,6 +109,35 @@ pub enum ProjectAction {
     Merge {
         /// Pull request number.
         number: u64,
+    },
+}
+
+/// `yulius vars …` (SPEC-275): the project's variables, its non-secret values in plain.
+#[derive(Debug, clap::Subcommand)]
+pub enum VarsAction {
+    /// The project's variables: `NAME=value` lines, each description above its line.
+    List,
+    /// Create or change variables, `NAME=value` (non-secret values only: keys, tokens and
+    /// passwords are agent secrets, `yulius secrets import`).
+    Set {
+        /// `NAME=value` (repeatable).
+        #[arg(required = true, value_name = "NAME=value")]
+        assignments: Vec<String>,
+        /// What they are (every variable of this command); without it a stored one stays.
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// Create or change variables from a dotenv file (`-`: stdin); a comment above an entry is
+    /// its description.
+    Import {
+        /// The dotenv file.
+        file: String,
+    },
+    /// Delete variables.
+    Delete {
+        /// Their names.
+        #[arg(required = true)]
+        names: Vec<String>,
     },
 }
 
@@ -636,4 +668,113 @@ pub fn secrets_delete(name: &str, opts: &RemoteOpts) -> ExitCode {
         json!({"secret": name}),
         true,
     )
+}
+
+/// The variables of `yulius vars set|import`, refused before sending when a name says it is a
+/// credential (SPEC-275 VAR-005).
+fn variables_arg(entries: Vec<(String, String, Option<String>)>) -> Result<Value, String> {
+    let credentials: Vec<&str> = entries
+        .iter()
+        .map(|(name, _, _)| name.as_str())
+        .filter(|name| credential_name(name))
+        .collect();
+    if !credentials.is_empty() {
+        return Err(format!(
+            "{} named like a credential: import keys, tokens and passwords with `yulius secrets \
+             import --to agent` (it sends the plain values of a .env to variables); nothing was \
+             sent",
+            credentials.join(", ")
+        ));
+    }
+    let carrying: Vec<&str> = entries
+        .iter()
+        .filter(|(_, value, _)| carries_credential(value))
+        .map(|(name, _, _)| name.as_str())
+        .collect();
+    if !carrying.is_empty() {
+        return Err(format!(
+            "{} hold a credential (a URL with a user name or password, or a key): import them \
+             with `yulius secrets import --to agent`; nothing was sent",
+            carrying.join(", ")
+        ));
+    }
+    Ok(Value::Array(
+        entries
+            .into_iter()
+            .map(|(name, value, description)| {
+                let mut variable = json!({"name": name, "value": value});
+                if let Some(description) = description {
+                    variable["description"] = Value::String(description);
+                }
+                variable
+            })
+            .collect(),
+    ))
+}
+
+/// `yulius vars …`.
+#[must_use]
+pub fn vars_cmd(action: VarsAction, opts: &RemoteOpts) -> ExitCode {
+    let command = "vars";
+    let entries = match action {
+        VarsAction::List => return run(command, opts, "variables_list", Value::Null, true),
+        VarsAction::Delete { names } => {
+            let mut code = ExitCode::SUCCESS;
+            for name in names {
+                let done = run(
+                    command,
+                    opts,
+                    "variable_delete",
+                    json!({"name": name}),
+                    true,
+                );
+                if done != ExitCode::SUCCESS {
+                    code = done;
+                }
+            }
+            return code;
+        }
+        VarsAction::Set {
+            assignments,
+            description,
+        } => assignments
+            .iter()
+            .map(|assignment| {
+                assignment
+                    .split_once('=')
+                    .filter(|(name, _)| !name.trim().is_empty())
+                    .map(|(name, value)| {
+                        (
+                            name.trim().to_owned(),
+                            value.to_owned(),
+                            description.clone(),
+                        )
+                    })
+                    .ok_or_else(|| "each argument is NAME=value; nothing was sent".to_owned())
+            })
+            .collect::<Result<Vec<_>, String>>(),
+        VarsAction::Import { file } => file_arg(&file).and_then(|text| {
+            parse_dotenv(&text)
+                .map(|entries| {
+                    entries
+                        .into_iter()
+                        .map(|e| {
+                            let description = (!e.comment.is_empty()).then(|| e.comment.clone());
+                            (e.name.clone(), e.value.expose().to_owned(), description)
+                        })
+                        .collect()
+                })
+                .map_err(|e| format!("{file}: {e}; nothing was sent"))
+        }),
+    };
+    match entries.and_then(variables_arg) {
+        Ok(variables) => run(
+            command,
+            opts,
+            "variables_set",
+            json!({"variables": variables}),
+            true,
+        ),
+        Err(err) => fail(command, err),
+    }
 }

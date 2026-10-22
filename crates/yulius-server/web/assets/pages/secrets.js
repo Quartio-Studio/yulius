@@ -2,7 +2,8 @@
 // agents use without seeing them, in three tabs by scope — Project (this project's), Global
 // (defined once by administrators, switched on per project) and Personal (yours alone, switched on
 // per project, only for tasks you start) — and Team secrets: a title, a value and notes shared by
-// people. Agents use their secrets through Yulius' proxy and browser filling and never see them. People read a value only after
+// people; and Variables (SPEC-275): a project's non-secret values, shown in plain and in every task
+// run's environment. Agents use their secrets through Yulius' proxy and browser filling and never see them. People read a value only after
 // entering their own two-factor code (set up once, mandatory; it unlocks the vault for 10
 // minutes), and every reveal is audited.
 
@@ -806,9 +807,89 @@ function mountAgents(ctx, sandbox, host, actions, scope = 'sandbox') {
   return () => offs.forEach((off) => off());
 }
 
+/** Project variables (SPEC-275 VAR-009): non-secret values in plain, in every task run's environment. */
+function mountVariables(ctx, sandbox, host, actions) {
+  if (!sandbox) {
+    setChildren(actions);
+    setChildren(host, emptyState({ iconName: 'gear', title: 'Open a sandbox', text: 'Variables belong to a project. Open one to see and add them.' }));
+    return () => {};
+  }
+  const list = h('div');
+  let manage = allows(sandbox.access, 'write');
+  const addTitle = 'Add variable';
+  setChildren(actions, createButton(addTitle, () => edit(null), { disabled: !manage, title: manage ? null : 'Requires write access' }));
+  setChildren(host,
+    h('p', { class: 'muted small' }, `Values of ${sandbox.name} that are not secrets — a region, an environment name, account and project ids, base URLs, a contact address. Every task of this project has each as the environment variable NAME. Anyone who sees the project reads them.`),
+    h('div', { class: 'banner banner-info' }, icon('info'), h('div', { class: 'banner-text small' },
+      'Keys, tokens and passwords are agent secrets (the Project tab), never variables: a variable is shown to every agent and in every transcript as it is.')),
+    list);
+
+  function render(data) {
+    manage = data.can_manage;
+    const variables = data.variables || [];
+    if (variables.length === 0) {
+      return emptyState({ iconName: 'gear', title: 'No variables yet', text: 'Add a value agents need that is not a secret, such as OVH_ENDPOINT = ovh-ca. From a laptop: yulius vars set NAME=value.', action: manage ? createButton(addTitle, () => edit(null)) : null });
+    }
+    return h('div', { class: 'item-list' }, variables.map((variable) => itemCard({
+      iconName: 'gear',
+      title: h('span', { class: 'mono' }, variable.name),
+      description: variable.description || h('span', { class: 'muted' }, 'No description'),
+      extra: h('div', { class: 'stack-tight' },
+        h('code', { class: 'mono', 'data-variable-value': variable.name }, variable.value === '' ? '(empty)' : variable.value),
+        h('span', { class: 'muted small' }, `changed ${relLong(variable.updated_at)} by ${variable.updated_by}`)),
+      controls: [
+        smallButton('Edit', `Edit ${variable.name}`, () => edit(variable), { disabled: !manage, title: manage ? `Edit ${variable.name}` : 'Requires write access' }),
+        iconButton('trash', `Delete ${variable.name}`, () => remove(variable), { class: 'btn-quiet-danger', disabled: !manage }),
+      ],
+    })));
+  }
+
+  const reload = loader(list, 'the variables', () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/variables`), render, { shape: 'items' });
+  const follow = () => reload({ quiet: true });
+  const offs = [
+    ctx.store.on('secrets', (event) => { if (!event.sandbox_id || event.sandbox_id === sandbox.id) follow(); }),
+    ctx.store.on('resync', follow),
+  ];
+
+  function edit(variable) {
+    const name = h('input', { class: 'input mono', 'aria-label': 'Name', value: variable ? variable.name : '', placeholder: 'OVH_ENDPOINT', autocomplete: 'off', autofocus: !variable, disabled: Boolean(variable) });
+    const value = h('input', { class: 'input mono', 'aria-label': 'Value', value: variable ? variable.value : '', placeholder: 'ovh-ca', autocomplete: 'off', autofocus: Boolean(variable) });
+    // One line, as the server keeps it.
+    const notes = h('input', { class: 'input', 'aria-label': 'Description', value: variable ? variable.description : '', placeholder: 'OVH region of the production deployment', autocomplete: 'off' });
+    openModal({ title: variable ? `Edit ${variable.name}` : addTitle, body: h('div', { class: 'stack' },
+      field('Name', name, 'Tasks read it as the environment variable NAME.'),
+      field('Value', value, 'Shown in plain. One line. Never a key, token or password.'),
+      field('Description', notes, 'What it is, for people and agents.'),
+    ), actions: [
+      { label: 'Cancel', value: false },
+      { label: variable ? 'Save' : 'Add', kind: 'primary', submit: true, run: async () => {
+        const values = { name: name.value.trim(), value: value.value, description: notes.value.trim() };
+        if (!NAME_RE.test(values.name)) return invalid(name, 'Capital letters, digits and _, starting with a letter.');
+        if (/[\u0000-\u001f\u007f]/.test(values.value)) return invalid(value, 'One line, without control characters.');
+        await ctx.api.put(`/api/sandboxes/${enc(sandbox.id)}/variables`, { variables: [values] });
+        toast(variable ? 'Saved. New task sessions get the new value.' : `${values.name} added. New task sessions get it.`, { kind: 'ok' });
+        reload();
+        return true;
+      } },
+    ] });
+  }
+
+  async function remove(variable) {
+    if (!(await confirmDialog({ title: `Delete ${variable.name}?`, message: 'New task sessions no longer get it.', confirmLabel: 'Delete', danger: true }))) return;
+    try {
+      await ctx.api.del(`/api/sandboxes/${enc(sandbox.id)}/variables/${enc(variable.name)}`);
+      toast('Deleted.', { kind: 'ok' });
+      reload();
+    } catch (error) { errorToast(error, 'Couldn’t delete'); }
+  }
+
+  return () => offs.forEach((off) => off());
+}
+
 /** The tabs of the Secrets page (SPEC-245 WUI-001): `section` in the address, `agents` being Project. */
 const SECTIONS = [
   { value: 'agents', label: 'Project', icon: 'folder', scope: 'sandbox' },
+  { value: 'variables', label: 'Variables', icon: 'gear', variables: true },
   { value: 'global', label: 'Global', icon: 'globe', scope: 'instance' },
   { value: 'personal', label: 'Personal', icon: 'user', scope: 'personal' },
   { value: 'team', label: 'Team secrets', icon: 'users' },
@@ -850,7 +931,8 @@ export function mountSecretsPage(ctx, sandbox, route) {
     unmount();
     unmount = () => {};
     const section = SECTIONS.find((o) => o.value === current);
-    if (section.scope) unmount = mountAgents(ctx, sandbox, host, frame.actions, section.scope);
+    if (section.variables) unmount = mountVariables(ctx, sandbox, host, frame.actions);
+    else if (section.scope) unmount = mountAgents(ctx, sandbox, host, frame.actions, section.scope);
     else mountTeam(ctx, sandbox, host, frame.actions);
   }
   show();

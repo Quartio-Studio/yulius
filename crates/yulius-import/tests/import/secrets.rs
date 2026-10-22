@@ -943,3 +943,197 @@ fn a_checkout_without_commits_is_searched() -> TestResult {
     assert_eq!(summary.invalid, vec!["BUCKET"], "{}", terminal.said);
     Ok(())
 }
+
+/// SPEC-275 VAR-007: with variables offered, the plain values of a company `.env` (too short, or
+/// SPEC-274's ordinary text: a configuration word, a URL or an e-mail address without
+/// credentials) are sent as project variables in one set, never as secrets; a credential's name
+/// keeps its value out of variables; a variable that exists is skipped, never overwritten; no
+/// value is said.
+#[test]
+fn plain_values_are_sent_as_project_variables() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    server.with(|s| s.variable_names = Some(vec!["AWS_REGION".into()]))?;
+    let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+    let target = prepare_target(&agent("Quartio-Studio/yulius", false), &client)?
+        .unattended()
+        .with_variables();
+    let mut terminal = Terminal {
+        no_terminal: true,
+        ..Terminal::default()
+    };
+    let file = "NEW_KEY=sk_live_new_value_1\nOVH_ENDPOINT=ovh-ca\n\
+                # Which Pipedream environment\nPIPEDREAM_PROJECT_ENVIRONMENT=production\n\
+                LANGFUSE_BASE_URL=https://cloud.langfuse.com\nCONTACT=ops@quartio.example\n\
+                API_TOKEN=production\nAWS_REGION=eu-west-1\n";
+    let summary = import_secrets(parse_dotenv(file)?, &target, &client, &mut terminal)?;
+
+    assert_eq!(summary.imported, vec!["NEW_KEY"]);
+    // A credential's name keeps it out of variables, and SPEC-274 refuses it as a secret.
+    assert_eq!(summary.invalid, vec!["API_TOKEN"]);
+    assert_eq!(
+        summary.variables,
+        vec![
+            "OVH_ENDPOINT",
+            "PIPEDREAM_PROJECT_ENVIRONMENT",
+            "LANGFUSE_BASE_URL",
+            "CONTACT"
+        ]
+    );
+    assert_eq!(summary.existing, vec!["AWS_REGION"]);
+    assert!(!summary.ok(), "{summary:?}");
+    let sets = server.with(|s| s.variables_set.clone())?;
+    assert_eq!(sets.len(), 1, "one set");
+    let (sid, set) = &sets[0];
+    assert_eq!(sid, "sb-1");
+    let sent: Vec<(&str, &str, Option<&str>)> = set
+        .variables
+        .iter()
+        .map(|v| (v.name.as_str(), v.value.as_str(), v.description.as_deref()))
+        .collect();
+    assert_eq!(
+        sent,
+        [
+            ("OVH_ENDPOINT", "ovh-ca", None),
+            (
+                "PIPEDREAM_PROJECT_ENVIRONMENT",
+                "production",
+                Some("Which Pipedream environment")
+            ),
+            ("LANGFUSE_BASE_URL", "https://cloud.langfuse.com", None),
+            ("CONTACT", "ops@quartio.example", None),
+        ]
+    );
+    let created = server.with(|s| s.agent_created.clone())?;
+    assert!(
+        created.iter().all(|(_, i)| i.name != "OVH_ENDPOINT"),
+        "{created:?}"
+    );
+    for line in [
+        "~ OVH_ENDPOINT                   not a secret (shorter than 8 characters): a project variable",
+        "~ PIPEDREAM_PROJECT_ENVIRONMENT  not a secret (a configuration word): a project variable",
+        "~ LANGFUSE_BASE_URL              not a secret (a URL without credentials): a project variable",
+        "~ CONTACT                        not a secret (an e-mail address): a project variable",
+        "= AWS_REGION                     a project variable already: skipped, never overwritten",
+        "1 new secret and 4 project variables will be sent",
+        "Imported 1, 4 as project variables, skipped 1 existing, 1 invalid",
+    ] {
+        assert!(terminal.said.contains(line), "{line}\n{}", terminal.said);
+    }
+    // "production" also occurs in the plan's own words ("production deploys").
+    for value in ["ovh-ca", "langfuse", "ops@", "eu-west-1"] {
+        assert!(
+            !terminal.said.contains(value),
+            "said {value}:\n{}",
+            terminal.said
+        );
+    }
+    terminal.assert_no_value();
+    Ok(())
+}
+
+/// SPEC-275 VAR-007: a server without project variables keeps the old classification and says
+/// so; the run still sends its secrets.
+#[test]
+fn an_older_server_without_variables_keeps_plain_values_out() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+    let target = prepare_target(&agent("Quartio-Studio/yulius", false), &client)?
+        .unattended()
+        .with_variables();
+    let mut terminal = Terminal::default();
+    let summary = import_secrets(
+        parse_dotenv("NEW_KEY=sk_live_new_value_1\nOVH_ENDPOINT=ovh-ca\n")?,
+        &target,
+        &client,
+        &mut terminal,
+    )?;
+    assert_eq!(summary.imported, vec!["NEW_KEY"]);
+    assert_eq!(summary.invalid, vec!["OVH_ENDPOINT"]);
+    assert!(summary.variables.is_empty());
+    assert!(
+        terminal.said.contains("has no project variables"),
+        "{}",
+        terminal.said
+    );
+    Ok(())
+}
+
+/// Review round 1 (SPEC-275 VAR-007): variables are only created, so one made after the plan is
+/// left as it is and counted as existing; a refused set is sent again one by one, so only the
+/// refused variable fails.
+#[test]
+fn variables_are_only_created_and_a_refused_one_fails_alone() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    server.with(|s| s.variable_names = Some(Vec::new()))?;
+    let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+    let target = prepare_target(&agent("Quartio-Studio/yulius", false), &client)?.with_variables();
+    // Made by someone else after the plan was shown, before the typed yes.
+    let mut terminal = Terminal::answering(&["yes"]);
+    server.with(|s| {
+        s.variable_names = Some(Vec::new());
+        s.refuse_names = vec!["TEAM_REGION".into()];
+    })?;
+    let file = "OVH_ENDPOINT=ovh-ca\nTEAM_REGION=eu\nAPP_ENV=production\n";
+    let entries = parse_dotenv(file)?;
+    // The plan reads no variable; one appears before the set is sent.
+    let plan_then_race = {
+        let server = &server;
+        move || server.with(|s| s.variable_names = Some(vec!["APP_ENV".into()]))
+    };
+    let summary = import_secrets(
+        entries,
+        &target,
+        &client,
+        &mut RacingTerminal {
+            inner: &mut terminal,
+            before_yes: Some(Box::new(plan_then_race)),
+        },
+    )?;
+    assert_eq!(summary.variables, vec!["OVH_ENDPOINT"]);
+    assert_eq!(summary.failed, vec!["TEAM_REGION"]);
+    assert_eq!(summary.existing, vec!["APP_ENV"]);
+    let sets = server.with(|s| s.variables_set.clone())?;
+    assert!(sets.iter().all(|(_, set)| set.only_new), "only created");
+    // The refused sets (the whole one, then TEAM_REGION's) are not recorded: two accepted, one by one.
+    assert_eq!(
+        sets.iter()
+            .map(|(_, set)| set.variables.len())
+            .collect::<Vec<_>>(),
+        [1, 1],
+        "{sets:?}"
+    );
+    assert!(
+        terminal
+            .said
+            .contains("APP_ENV  a project variable already: skipped, never overwritten"),
+        "{}",
+        terminal.said
+    );
+    Ok(())
+}
+
+/// A terminal that runs `before_yes` when it is asked for the typed yes.
+struct RacingTerminal<'a> {
+    inner: &'a mut Terminal,
+    before_yes: Option<Box<dyn FnOnce() -> TestResult<()> + 'a>>,
+}
+
+impl SecretsIo for RacingTerminal<'_> {
+    fn say(&mut self, line: &str) {
+        self.inner.say(line);
+    }
+
+    fn ask(&mut self, prompt: &str) -> io::Result<String> {
+        if let Some(race) = self.before_yes.take() {
+            race().map_err(|e| io::Error::other(e.to_string()))?;
+        }
+        self.inner.ask(prompt)
+    }
+
+    fn ask_hidden(&mut self, prompt: &str) -> io::Result<Secret> {
+        self.inner.ask_hidden(prompt)
+    }
+}

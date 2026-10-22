@@ -41,6 +41,7 @@ pub fn render(tool: &str, args: &Value, value: &Value) -> String {
         "record_number" => text(value, "next").map(str::to_owned),
         // CD (SPEC-134): the tool writes its own few lines.
         "cd_status" | "cd_deploy" => text(value, "text").map(str::to_owned),
+        "variables_list" => variables_list(value),
         _ => None,
     };
     finish(text.unwrap_or_else(|| outline(value)))
@@ -67,6 +68,24 @@ fn text<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
 fn push_line(out: &mut String, line: &str) {
     out.push_str(line);
     out.push('\n');
+}
+
+/// Project variables (SPEC-275) as `NAME=value` lines, each description on the line above.
+fn variables_list(value: &Value) -> Option<String> {
+    let variables = value.get("variables")?.as_array()?;
+    if variables.is_empty() {
+        return Some("The project has no variables.".into());
+    }
+    let mut out = String::new();
+    for variable in variables {
+        let name = text(variable, "name")?;
+        if let Some(description) = text(variable, "description") {
+            push_line(&mut out, &format!("# {description}"));
+        }
+        let value = variable.get("value").and_then(Value::as_str).unwrap_or("");
+        push_line(&mut out, &format!("{name}={value}"));
+    }
+    Some(out)
 }
 
 // ---------------------------------------------------------------- outline
