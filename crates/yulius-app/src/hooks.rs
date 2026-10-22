@@ -87,16 +87,36 @@ pub(crate) fn read_repo_doc(root: &Path, relative: &str) -> Option<String> {
     Some(text)
 }
 
+/// `root/relative` resolved: the canonical root and the path's canonical form under it, when the
+/// path itself is no link and `kind` holds for it (see [`read_repo_doc`]).
+fn resolved_in_repo(
+    root: &Path,
+    relative: &str,
+    kind: fn(&std::fs::Metadata) -> bool,
+) -> Option<(PathBuf, PathBuf)> {
+    let path = repo_path(root, relative)?;
+    if !std::fs::symlink_metadata(&path).is_ok_and(|meta| kind(&meta)) {
+        return None;
+    }
+    let root = std::fs::canonicalize(root).ok()?;
+    let resolved = std::fs::canonicalize(&path).ok()?;
+    resolved.starts_with(&root).then_some((root, resolved))
+}
+
 /// Whether `root/relative` is a regular file of the repository (see [`read_repo_doc`]).
 fn repo_doc_exists(root: &Path, relative: &str) -> bool {
-    let Some(path) = repo_path(root, relative) else {
-        return false;
-    };
-    std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file())
-        && std::fs::canonicalize(root)
-            .ok()
-            .zip(std::fs::canonicalize(&path).ok())
-            .is_some_and(|(root, path)| path.starts_with(root))
+    resolved_in_repo(root, relative, std::fs::Metadata::is_file)
+        .is_some_and(|(root, resolved)| doc_present(&root, &resolved))
+}
+
+/// Whether the `resolved` path (see [`resolved_in_repo`]) still is a regular file under `root`:
+/// asked of the opened file, whose real path must still be under `root`, so a folder swapped for
+/// a link after resolving is not followed (SPEC-262 VTR-004).
+fn doc_present(root: &Path, resolved: &Path) -> bool {
+    crate::files::open_inside(root, resolved, nix::fcntl::OFlag::O_RDONLY)
+        .ok()
+        .map(std::fs::File::from)
+        .is_some_and(|file| file.metadata().is_ok_and(|meta| meta.is_file()))
 }
 
 /// What a hook call answers.
@@ -1018,25 +1038,29 @@ const MAX_WORKFLOW_ENTRIES: usize = 200;
 
 /// GitHub Actions workflow files of the repository (a real directory inside it, not a link).
 fn actions_workflows(root: &Path) -> usize {
-    let Some(dir) = repo_path(root, ".github/workflows") else {
+    resolved_in_repo(root, ".github/workflows", std::fs::Metadata::is_dir)
+        .map_or(0, |(root, dir)| workflow_count(&root, &dir))
+}
+
+/// The workflow files in the `resolved` folder (see [`resolved_in_repo`]) under `root`, listed
+/// through the opened folder, whose real path must still be under `root` (SPEC-262 VTR-004).
+fn workflow_count(root: &Path, dir: &Path) -> usize {
+    use nix::fcntl::OFlag;
+    let Some(mut listing) =
+        crate::files::open_inside(root, dir, OFlag::O_RDONLY | OFlag::O_DIRECTORY)
+            .ok()
+            .and_then(|fd| nix::dir::Dir::from_fd(fd).ok())
+    else {
         return 0;
     };
-    let inside = std::fs::symlink_metadata(&dir).is_ok_and(|meta| meta.is_dir())
-        && std::fs::canonicalize(root)
-            .ok()
-            .zip(std::fs::canonicalize(&dir).ok())
-            .is_some_and(|(root, dir)| dir.starts_with(root));
-    if !inside {
-        return 0;
-    }
-    std::fs::read_dir(&dir).map_or(0, |entries| {
-        entries
-            .take(MAX_WORKFLOW_ENTRIES)
-            .filter_map(Result::ok)
-            .filter_map(|e| e.file_name().into_string().ok())
-            .filter(|name| name.ends_with(".yml") || name.ends_with(".yaml"))
-            .count()
-    })
+    listing
+        .iter()
+        .filter_map(Result::ok)
+        .filter(|entry| !matches!(entry.file_name().to_bytes(), b"." | b".."))
+        .take(MAX_WORKFLOW_ENTRIES)
+        .filter_map(|entry| entry.file_name().to_str().ok().map(str::to_owned))
+        .filter(|name| name.ends_with(".yml") || name.ends_with(".yaml"))
+        .count()
 }
 
 /// The project's foundations as the briefing reports them (DSC-014).
@@ -1167,8 +1191,9 @@ fn notification_needs_a_person(input: &HookInput) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        RepoDocs, colour, foundations, notice_answered_by_work, notification_needs_a_person,
-        read_repo_doc, repo_doc_exists, repo_path,
+        RepoDocs, colour, doc_present, foundations, notice_answered_by_work,
+        notification_needs_a_person, read_repo_doc, repo_doc_exists, repo_path, resolved_in_repo,
+        workflow_count,
     };
     use std::path::Path;
     use yulius_contracts::hooks::HookInput;
@@ -1345,6 +1370,43 @@ mod tests {
             "\x1b[38;5;203mfeat/1]0;owned-x2Jy\x1b[39m"
         );
         assert_eq!(colour(80, "studio"), "\x1b[38;5;80mstudio\x1b[39m");
+    }
+
+    /// SPEC-262 VTR-004 (#697): a folder on the way swapped for a link to a host folder after
+    /// the path was resolved is not followed: the host file is not reported as a document, nor
+    /// the host folder's workflow files counted.
+    #[test]
+    fn a_folder_swapped_for_a_link_after_resolving_is_not_followed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let host = tempfile::tempdir()?;
+        std::fs::create_dir_all(host.path().join("workflows"))?;
+        std::fs::write(host.path().join("architecture.md"), "host")?;
+        std::fs::write(host.path().join("workflows/deploy.yml"), "on: push\n")?;
+        let repo = tempfile::tempdir()?;
+        let root = repo.path();
+        std::fs::create_dir_all(root.join("docs"))?;
+        std::fs::write(root.join("docs/architecture.md"), "# arch")?;
+        std::fs::create_dir_all(root.join(".github/workflows"))?;
+        std::fs::write(root.join(".github/workflows/ci.yml"), "on: push\n")?;
+        let (canonical, doc) =
+            resolved_in_repo(root, "docs/architecture.md", std::fs::Metadata::is_file)
+                .ok_or("resolved")?;
+        let (_, workflows) = resolved_in_repo(root, ".github/workflows", std::fs::Metadata::is_dir)
+            .ok_or("resolved")?;
+        assert!(doc_present(&canonical, &doc));
+        assert_eq!(workflow_count(&canonical, &workflows), 1);
+
+        std::fs::rename(root.join("docs"), root.join("docs.moved"))?;
+        std::os::unix::fs::symlink(host.path(), root.join("docs"))?;
+        std::fs::rename(root.join(".github"), root.join(".github.moved"))?;
+        std::os::unix::fs::symlink(host.path(), root.join(".github"))?;
+        assert!(!doc_present(&canonical, &doc), "a host file is no document");
+        assert_eq!(
+            workflow_count(&canonical, &workflows),
+            0,
+            "a host folder is not counted"
+        );
+        Ok(())
     }
 
     #[test]
