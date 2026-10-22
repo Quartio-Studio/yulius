@@ -1,11 +1,11 @@
 ---
 yulius-task: 8c56bf7c-b8ff-4daa-98f5-a1d24d8d5e80
-status: in-progress
+status: done
 ---
 
 # SPEC-275: Project variables: a project's non-secret values, in plain, for its agents
 
-Status: in-progress
+Status: done
 Date: 2026-10-22
 Owner: task #259
 Scope authorization: task #259, the founder's request of 22 Oct 2026 while onboarding
@@ -104,16 +104,17 @@ Confirmed against `dev` at 9080cf3e.
 
 ## Plan
 
-- [ ] Spec and ADR-0203: project variables are plain per-project values injected into task runs
-- [ ] The store keeps project variables (migration 0043, store, ports)
-- [ ] People list, set and delete variables over the API, audited, agent-secret names refused
-- [ ] Every task run of the project gets its variables in its environment
-- [ ] The Variables tab beside Secrets (web UI, mock, end-to-end test)
-- [ ] Remote tools and yulius vars import, set, list and delete
-- [ ] yulius secrets import offers plain values as variables (the plain-value rule)
-- [ ] Agents and the laptop recipe know about variables (secrets_list, prompts, docs)
-- [ ] Review findings fixed test-first
-- [ ] Gates and security scan are green and the spec has its evidence
+- [x] Spec and ADR-0203: project variables are plain per-project values injected into task runs
+- [x] The store keeps project variables (migration 0043, store, ports)
+- [x] People list, set and delete variables over the API, audited, agent-secret names refused
+- [x] Every task run of the project gets its variables in its environment
+- [x] The Variables tab beside Secrets (web UI, mock, end-to-end test)
+- [x] Remote tools and yulius vars import, set, list and delete
+- [x] yulius secrets import offers plain values as variables (the plain-value rule)
+- [x] Agents and the laptop recipe know about variables (secrets_list, prompts, docs)
+- [x] Review findings fixed test-first
+- [x] Merged with task #258's ordinary-text rule and the Rust gate is green
+- [x] Gates and security scan are green and the spec has its evidence
 - [ ] The pull request is merged into dev on green
 
 ## Acceptance criteria
@@ -169,3 +170,51 @@ Confirmed against `dev` at 9080cf3e.
   offer) do.
 - **One pull request** over the line budget: storage, run injection, the laptop paths and the tab
   only make the feature together, as SPEC-271 did.
+
+## Evidence
+
+All at `b82f18fc` (one feature commit on `dev` at ab8ab732, after task #258's merge, and the
+round-5 fix), except where a step names its own commit.
+
+- `scripts/dev ci` passed (exit 0): repository contracts, `cargo check`, `fmt --check`, Clippy
+  `-D warnings` for Linux and macOS, nextest **2514 passed, 17 skipped**, doctests, `cargo deny`,
+  `cargo shear`, `cargo doc`. Earlier runs failed on three Clippy lints (a needless borrow in
+  `remote.rs`, `let_and_return` and `needless_question_mark` in the new tests); each was fixed.
+- End-to-end suite (`cd e2e && npx e2e run`): **682 passed, 1 skipped** (64 files). The Secrets
+  file alone, including the two Variables tests, passed 24/24 earlier.
+- `scripts/dev security`: **not run** (exit 2): Vidoc answered HTTP 429, "This API key has used
+  its 50,000,000 tokens", so 31 changed files were not scanned. It is unrun, not passed;
+  MrFishPL's instruction for this task is to continue without Vidoc. Yulius CI's `security` job
+  will try again on the pull request.
+- Behaviour tests (each written before its code and seen failing):
+  - Store: `variables::tests::variables_are_set_by_name_per_project_within_a_cap` (in-transaction
+    outcomes, `only_new`, cap rollback, cascade).
+  - REST (`crates/yulius/tests/variables.rs`): set/list/delete with write access, a reader's 403,
+    audit rows without values; bad names, values, descriptions, duplicates and 201 entries
+    refused with nothing written; a project or switched-on global secret's name refused (409).
+  - Run environment (`pool_supervision::a_task_run_gets_the_project_variables`): `OVH_ENDPOINT`
+    and `LANGFUSE_BASE_URL` reach the run; a secret of the same name wins with its placeholder;
+    Yulius's own `RUST_TEST_THREADS` wins over a variable.
+  - Remote surface through the real binary (`remote_mcp::variables_are_set_from_a_laptop_and_listed_in_plain`,
+    `remote_mcp::a_secrets_import_sends_plain_values_to_project_variables`): AC1, AC2, AC4;
+    `secrets_list` names variables; a read token lists but is not served `variables_set`;
+    credential names and credential-carrying values refused by `yulius vars`; `--no-vars`.
+  - Import (`yulius-import` `secrets::plain_values_are_sent_as_project_variables`,
+    `an_older_server_without_variables_keeps_plain_values_out`,
+    `variables_are_only_created_and_a_refused_one_fails_alone`): plan lines, one set, no value
+    said, a variable made after the plan never overwritten, a refused one failing alone.
+  - Rule (`yulius-domain` `vault::plain::tests`): the founder's `.env`, the reviewer's leak cases
+    (`DBPASS`, `DB_PASS2`, `BORG_PASSPHRASE`, a hook URL, a per-user host, a URL fragment, a
+    token-like address), and non-credential names (`KEYCLOAK_URL`, `AUTHOR_EMAIL`).
+  - UI (e2e `secrets.e2e.ts`): AC5 and a reader's disabled controls, no WCAG violations.
+- Independent review in a fresh session (om-code-review checklist), six rounds: round 1 asked
+  for changes (one medium: real secrets classed as plain; lows: races in the set batch and the
+  import, one bad entry failing all, false positives, mock parity, test gaps), all fixed
+  test-first; round 2 (a digit after a credential word), round 5 (after merging #258 and
+  delegating to its rule: a URL fragment, a token-like local part, wording) were fixed the same
+  way; round 6 approved `b82f18fc` with no findings.
+- Not tested: a real Claude Code session reading the variables (the fake agent reports the
+  environment instead); Vidoc (out of quota).
+- Push protection: the branch was squashed into one commit before its first push, so no pushed
+  commit holds the Stripe- or Slack-shaped fixtures an earlier version of `plain.rs`'s tests had.
+
