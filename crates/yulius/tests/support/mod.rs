@@ -768,6 +768,21 @@ pub fn harness_with_host(
     )
 }
 
+/// Makes the agent secret `id` a production secret while it keeps its hosts, as a row from
+/// before SPEC-134 round 2 M-B could be: the store refuses that pair to every change since
+/// (SPEC-262 VTR-001), so it is written back whole, to prove the runtime never uses such a secret.
+pub async fn legacy_production_secret(
+    store: &SqliteStore,
+    id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use yulius_app::ports::vault::VaultStore as _;
+    let mut record = store.vault_get(id).await?.ok_or("no such secret")?;
+    assert!(store.vault_delete(id).await?);
+    record.cd_prod = true;
+    store.vault_insert(&record).await?;
+    Ok(())
+}
+
 /// Creates the superadmin through the setup flow and returns its cookie credentials.
 pub async fn setup_superadmin_creds(h: &Harness) -> Result<Creds, Box<dyn std::error::Error>> {
     let token = h.app.prepare_setup().await?.ok_or("setup token")?;

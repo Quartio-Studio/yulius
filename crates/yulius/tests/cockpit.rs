@@ -3393,11 +3393,8 @@ async fn the_superagent_runs_behind_the_egress_proxy_with_its_own_bearer() -> Te
     )
     .await?;
     assert_eq!(prod.status, StatusCode::CREATED, "{:?}", prod.body);
-    assert!(
-        f.h.store
-            .vault_set_cd_prod(prod.body["id"].as_str().ok_or("id")?, false, true)
-            .await?
-    );
+    crate::support::legacy_production_secret(&f.h.store, prod.body["id"].as_str().ok_or("id")?)
+        .await?;
 
     let served = serve(f.h.router.clone()).await?;
     let id = cockpit_id(&f, &f.alice).await?;

@@ -2399,14 +2399,9 @@ async fn a_grant_forged_in_the_shared_clone_gives_nothing() -> TestResult {
         assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
         ids.insert(name, created.body["id"].as_str().ok_or("id")?.to_owned());
     }
-    {
-        use yulius_app::ports::vault::VaultStore as _;
-        assert!(
-            f.h.store
-                .vault_set_cd_prod(&ids["PROD_KEY"], false, true)
-                .await?
-        );
-    }
+    // Production secrets are bound to no host; one from before that rule still never reaches a
+    // CI job.
+    crate::support::legacy_production_secret(&f.h.store, &ids["PROD_KEY"]).await?;
     f.h.app.enable_egress(None);
 
     // A job of an earlier run replaced the integration branch's yulius.toml in the shared clone.
