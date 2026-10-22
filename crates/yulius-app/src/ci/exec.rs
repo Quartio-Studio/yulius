@@ -329,7 +329,9 @@ impl App {
                 let sandbox = Arc::new(sandbox);
                 // Fail fast: the run's jobs share a cancel signal that follows the run's own
                 // (superseded, stopped) and fires when one of them fails, so a failed `quality`
-                // no longer leaves `e2e` holding the sandbox's CI lane for half an hour.
+                // no longer leaves `e2e` holding the sandbox's CI lane for half an hour. The
+                // `security` job is out of it both ways (SPEC-273 NOI-007): its findings are no
+                // reason to lose the tests' result, nor a failed test the scan's.
                 let (siblings_tx, siblings) = watch::channel(cancel.borrow().clone());
                 let siblings_tx = Arc::new(siblings_tx);
                 {
@@ -354,7 +356,12 @@ impl App {
                     let app = Arc::clone(self);
                     let (sandbox, run, job) = (Arc::clone(&sandbox), run.clone(), job.clone());
                     let checkout = checkout_name(&job, &jobs, lane);
-                    let job_cancel = siblings.clone();
+                    let scan = job.key == dom::SECURITY_JOB;
+                    let job_cancel = if scan {
+                        cancel.clone()
+                    } else {
+                        siblings.clone()
+                    };
                     let stop_siblings = Arc::clone(&siblings_tx);
                     let publishing = Arc::clone(&publishing);
                     let run_cancel = cancel.clone();
@@ -371,7 +378,7 @@ impl App {
                         let ended = all.iter().find(|j| j.id == job.id).map(|j| j.state);
                         let others_run = all.iter().any(|j| j.state.is_active());
                         let failed = ended == Some(RunState::Failed);
-                        if (failed || no_disk) && stop_siblings.borrow().is_none() {
+                        if ((failed && !scan) || no_disk) && stop_siblings.borrow().is_none() {
                             let reason = if no_disk {
                                 "stopped early: the sandbox is over its disk quota".to_owned()
                             } else {

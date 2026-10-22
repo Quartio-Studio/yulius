@@ -1283,6 +1283,131 @@ command = 'echo "::yulius-incomplete 2 file(s) not scanned (a.rs, b.rs): HTTP 50
     Ok(())
 }
 
+impl Fixture {
+    /// Dispatches until every named job of `sha`'s run is in its state; returns the jobs.
+    async fn until_jobs(&self, sha: &str, states: &[(&str, &str)]) -> BoxResult<Vec<Value>> {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            self.h.app.ci_dispatch().await;
+            let overview = self.get("/api/sandboxes/s1/ci").await?;
+            if let Some(run) = overview["runs"]
+                .as_array()
+                .ok_or("runs")?
+                .iter()
+                .find(|r| r["sha"] == sha)
+            {
+                let detail = self
+                    .get(&format!(
+                        "/api/sandboxes/s1/ci/runs/{}",
+                        run["id"].as_str().ok_or("id")?
+                    ))
+                    .await?;
+                let jobs = detail["jobs"].as_array().ok_or("jobs")?.clone();
+                let state_of = |name: &str| {
+                    jobs.iter()
+                        .find(|j| j["name"] == name)
+                        .map(|j| j["state"].clone())
+                };
+                if states
+                    .iter()
+                    .all(|(name, state)| state_of(name).is_some_and(|s| s == *state))
+                {
+                    return Ok(jobs);
+                }
+                if tokio::time::Instant::now() > deadline {
+                    return Err(format!("jobs never reached {states:?}: {detail}").into());
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+/// SPEC-273 NOI-007: a failed `security` job no longer stops the other jobs ("stopped early: job
+/// security failed" left a commit without a test result), and a failed test job no longer stops
+/// the scan; both run to the end and report. Fail-fast among the other jobs stays.
+#[tokio::test]
+async fn the_security_job_and_the_others_never_cancel_each_other() -> TestResult {
+    let f = fixture_with(false, |data| {
+        format!(
+            r#"[[ci.jobs]]
+name = "security"
+command = 'if [ -f fail-security ]; then exit 1; fi; while [ ! -f "{release}" ]; do sleep 0.05; done'
+
+[[ci.jobs]]
+name = "quality"
+command = 'if [ -f fail-quality ]; then exit 1; fi; while [ ! -f "{release}" ]; do sleep 0.05; done'
+
+[[ci.jobs]]
+name = "e2e"
+command = 'while [ ! -f "{release}" ]; do sleep 0.05; done'
+"#,
+            release = data.join("release").display()
+        )
+    })
+    .await?;
+    let release = f.data.join("release");
+    // The scan fails at once; quality and e2e are still running when it does.
+    let first = f.push_feature("fail-security", Some("x\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.until_jobs(
+        &first,
+        &[
+            ("security", "failed"),
+            ("quality", "running"),
+            ("e2e", "running"),
+        ],
+    )
+    .await?;
+    std::fs::write(&release, "")?;
+    f.settle().await?;
+    f.until_jobs(
+        &first,
+        &[
+            ("security", "failed"),
+            ("quality", "passed"),
+            ("e2e", "passed"),
+        ],
+    )
+    .await?;
+    let (state, description, _) = f.last_status(&first).ok_or("status")?;
+    assert_eq!(state, "failure", "{description}");
+    assert!(
+        description.contains("security (exit code 1)"),
+        "{description}"
+    );
+
+    // Quality fails at once: e2e stops early as before, the scan runs to its end.
+    std::fs::remove_file(&release)?;
+    f.push_feature("fail-security", None)?;
+    let second = f.push_feature("fail-quality", Some("x\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let jobs = f
+        .until_jobs(
+            &second,
+            &[
+                ("quality", "failed"),
+                ("e2e", "cancelled"),
+                ("security", "running"),
+            ],
+        )
+        .await?;
+    let e2e = jobs.iter().find(|j| j["name"] == "e2e").ok_or("e2e")?;
+    assert_eq!(e2e["reason"], "stopped early: job quality failed", "{e2e}");
+    std::fs::write(&release, "")?;
+    f.settle().await?;
+    f.until_jobs(
+        &second,
+        &[
+            ("quality", "failed"),
+            ("e2e", "cancelled"),
+            ("security", "passed"),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
 /// While a run is going, its commit status counts the jobs that already ended (SPEC-198 RCS-001):
 /// GitHub said "0 of 3 jobs passed" for PR #600 long after its security scan had passed, and the
 /// Superagent took the scan for one still running (#604). The final status still lands last.
