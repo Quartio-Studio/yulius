@@ -11,7 +11,8 @@ use async_trait::async_trait;
 use clap::Args;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::isolation::{
-    DiskUsage, DockerStatus, SandboxIsolation, SandboxJoin, SandboxLimits, SandboxRef, SmokeCheck,
+    DiskUsage, DockerStatus, LimitCounters, SandboxIsolation, SandboxJoin, SandboxLimits,
+    SandboxRef, SmokeCheck,
 };
 use yulius_domain::ids::SandboxId;
 use yulius_sandbox::cgroup::Limits;
@@ -64,13 +65,11 @@ pub struct IsolationArgs {
     /// CPU limit per sandbox in CPUs (`cpu.max`; default: none, the CPU is shared by weight).
     #[arg(long = "sandbox-cpus", env = "YULIUS_SANDBOX_CPUS")]
     pub cpus: Option<u32>,
-    /// Task (process and thread) limit per sandbox.
-    #[arg(
-        long = "sandbox-pids",
-        env = "YULIUS_SANDBOX_PIDS",
-        default_value_t = 8192
-    )]
-    pub pids: u64,
+    /// Task (process and thread) limit per sandbox (default: a quarter of the host's
+    /// `kernel.threads-max` or `kernel.pid_max`, whichever is smaller, at least 8192, at most
+    /// three quarters of the service's own `pids.max`).
+    #[arg(long = "sandbox-pids", env = "YULIUS_SANDBOX_PIDS")]
+    pub pids: Option<u64>,
     /// Soft disk quota per sandbox in GB (sandbox directory plus installed packages); 0: none.
     #[arg(
         long = "sandbox-disk-gb",
@@ -106,7 +105,7 @@ impl Default for IsolationArgs {
             egress: Egress::Direct,
             memory_gb: None,
             cpus: None,
-            pids: 8192,
+            pids: None,
             disk_gb: 100,
             forward: Vec::new(),
             idle_minutes: 5,
@@ -190,11 +189,16 @@ pub fn resolve(
         .ok()
         .and_then(|t| yulius_sandbox::cgroup::mem_total(&t))
         .unwrap_or(8 << 30);
-    let defaults = Limits::defaults(total);
+    let sysctl = |name: &str| std::fs::read_to_string(format!("/proc/sys/kernel/{name}"));
+    let host_tasks = match (sysctl("threads-max"), sysctl("pid_max")) {
+        (Ok(threads), Ok(pids)) => yulius_sandbox::cgroup::host_tasks(&threads, &pids),
+        _ => None,
+    };
+    let defaults = Limits::defaults(total, host_tasks);
     let limits = Limits {
         memory_max: args.memory_gb.map(|g| g << 30).or(defaults.memory_max),
         cpus: args.cpus.or(defaults.cpus),
-        pids_max: Some(args.pids),
+        pids_max: args.pids.or(defaults.pids_max),
     };
     let loopback = |port| SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     let mut forwards = BTreeMap::from([(internal_port, loopback(internal_port))]);
@@ -349,6 +353,18 @@ impl SandboxIsolation for NamespaceIsolation {
 
     async fn processes(&self, sandbox: &SandboxId) -> usize {
         self.manager.processes(sandbox.as_str()).await
+    }
+
+    async fn limit_counters(&self, sandbox: &SandboxId) -> Option<LimitCounters> {
+        let delegation = self.manager.config().delegation.clone()?;
+        let sandbox = sandbox.as_str().to_owned();
+        let counters = tokio::task::spawn_blocking(move || delegation.limit_counters(&sandbox))
+            .await
+            .ok()?;
+        Some(LimitCounters {
+            task_limit_hits: counters.task_limit_hits,
+            oom_kills: counters.oom_kills,
+        })
     }
 
     fn release(&self, sandbox: &SandboxId) {
@@ -561,6 +577,11 @@ pub async fn install(
     };
     match delegation() {
         Ok(delegation) => {
+            let root = Path::new(yulius_sandbox::cgroup::CGROUP_ROOT);
+            let service = yulius_sandbox::cgroup::tasks_max_above(root, &delegation.unit);
+            if args.pids.is_none() {
+                config.limits = config.limits.within_service(service);
+            }
             tracing::info!(cgroup = %delegation.unit.display(), limits = ?config.limits, "per-sandbox limits on");
             config.delegation = Some(delegation);
         }

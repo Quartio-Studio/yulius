@@ -194,10 +194,10 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: ShellAttach, mut sock
                     }
                     Ok(HubFrame::Notice(text)) => send_json(&mut socket, &TerminalServerMsg::Notice { text }).await,
                     Ok(HubFrame::State) => send_state(&mut socket, &attach).await,
-                    Ok(HubFrame::Exit { status, code }) => {
+                    Ok(HubFrame::Exit { status, code, cause }) => {
                         // The shell is gone for good: report and close (clients do not reconnect
                         // after an exit frame).
-                        if send_json(&mut socket, &TerminalServerMsg::Exit { status, code }).await {
+                        if send_json(&mut socket, &TerminalServerMsg::Exit { status, code, cause }).await {
                             close(&mut socket, 1000, "shell ended").await;
                         }
                         false

@@ -8,7 +8,7 @@ import { h, icon, setChildren, placeholder, statusMark, prChip, loadError, bar }
 import { href } from '../router.js';
 import { relLong, dateTime, duration, compact, int, plural, accountRef } from '../format.js';
 import { taskTime } from '../tasktime.js';
-import { taskInfo, activityLine, isLive } from '../status.js';
+import { taskInfo, activityLine, isLive, limitCause } from '../status.js';
 import { openDeliveryDialog, stageLabel } from '../actions.js';
 import { initials } from '../layout.js';
 import { modelLabel } from '../models.js';
@@ -22,7 +22,8 @@ const ATTEMPT_STATE = { live: 'Running', exited: 'Ended', failed: 'Failed', lost
 // Why a session ended, in words (raw codes such as `spawn_failed` are not shown).
 const EXIT_REASON = { exited: 'exited normally', cancelled: 'stopped by a person', switched: 'moved to another subscription', spawn_failed: 'couldn’t start', lost: 'process lost', switch_timeout: 'move timed out' };
 const LAUNCH_KIND = { resume: 'resumed', continue: 'continued' };
-const exitReason = (reason) => EXIT_REASON[reason] || (String(reason).startsWith('exited') ? 'exited with an error' : null);
+const LIMIT_REASON = { pids: 'the sandbox hit its process limit', memory: 'the sandbox ran out of memory' };
+const exitReason = (reason) => EXIT_REASON[reason] || LIMIT_REASON[limitCause(reason)] || (String(reason).startsWith('exited') ? 'exited with an error' : null);
 
 /** A fact tile: label, value, an optional line under it. */
 function tile(label, value, sub, extra) {

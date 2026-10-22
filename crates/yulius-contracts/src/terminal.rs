@@ -103,6 +103,10 @@ pub enum TerminalServerMsg {
         status: String,
         /// Exit code when known.
         code: Option<i32>,
+        /// The limit the sandbox was at when the run ended: `pids` (its task limit) or `memory`
+        /// (an OOM kill); absent otherwise (SPEC-268 PID-005).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cause: Option<String>,
     },
     /// A protocol or permission error.
     Error {

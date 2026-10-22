@@ -195,6 +195,27 @@ impl Capacity {
     }
 }
 
+/// What a repository without a `[resources.env]` table gets (SPEC-268 PID-007): Cargo's build
+/// jobs, nextest's and libtest's test threads at the budget's CPUs. Other tools ignore them, so a
+/// repository in another language is not affected; one with a table, even empty, gets its own.
+pub const DEFAULT_ENV: [(&str, &str); 3] = [
+    ("CARGO_BUILD_JOBS", "{cpus}"),
+    ("NEXTEST_TEST_THREADS", "{cpus}"),
+    ("RUST_TEST_THREADS", "{cpus}"),
+];
+
+/// [`DEFAULT_ENV`] as templates.
+#[must_use]
+pub fn default_templates() -> Vec<EnvTemplate> {
+    DEFAULT_ENV
+        .iter()
+        .map(|(name, template)| EnvTemplate {
+            name: (*name).to_owned(),
+            template: (*template).to_owned(),
+        })
+        .collect()
+}
+
 /// One `[resources.env]` entry: a variable the repository's tools read and its template.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvTemplate {

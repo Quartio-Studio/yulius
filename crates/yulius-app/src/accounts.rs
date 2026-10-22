@@ -212,6 +212,7 @@ impl LoginTerminal {
         (phase != LoginPhase::Running).then(|| TerminalServerMsg::Exit {
             status: phase.as_str().to_owned(),
             code,
+            cause: None,
         })
     }
 
