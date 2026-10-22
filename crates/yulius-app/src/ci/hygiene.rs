@@ -72,6 +72,21 @@ fn pulls_facts(pulls: &[GhPull], tip: &str) -> Vec<BranchPull> {
         .collect()
 }
 
+/// The task worktree a cleanup item names: `worktrees/<one plain name>` under the sandbox
+/// directory, nothing else (an absolute path, `..`, `.` or a nested name never reaches Git).
+fn task_worktree_path(sandbox_dir: &Path, name: &str) -> Option<std::path::PathBuf> {
+    use std::path::Component;
+    let mut parts = Path::new(name).components();
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(Component::Normal(root)), Some(Component::Normal(leaf)), None)
+            if root == "worktrees" && name == format!("worktrees/{}", leaf.to_string_lossy()) =>
+        {
+            Some(sandbox_dir.join("worktrees").join(leaf))
+        }
+        _ => None,
+    }
+}
+
 /// The order a cleanup removes items in: remote branches first, so local copies are judged
 /// again against GitHub after them; then worktrees; then local branches.
 fn removal_order(kind: &str) -> u8 {
@@ -691,7 +706,9 @@ impl App {
         repo: &Path,
         name: &str,
     ) -> Result<(), String> {
-        let path = self.sandbox_dir(&sandbox.id).join(name);
+        let Some(path) = task_worktree_path(&self.sandbox_dir(&sandbox.id), name) else {
+            return Err("it is not a task worktree under worktrees/".into());
+        };
         let owned = self.sandbox_dir(&sandbox.id).join("worktrees");
         if !self.worktree_only_caches(&path).await {
             return Err(
@@ -843,5 +860,37 @@ impl App {
         let (sandbox, _) = self.ci_sandbox(ctx, sandbox_id, Action::Work).await?;
         let actor = Self::dlv_actor_login(&ctx.user);
         self.hygiene_cleanup_as(&sandbox, request, &actor).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::task_worktree_path;
+    use std::path::Path;
+
+    /// SPEC-269 (CI security scan): only `worktrees/<one name>` under the sandbox directory is a
+    /// task worktree the cleanup may remove; anything else never reaches Git.
+    #[test]
+    fn only_a_worktree_directly_under_worktrees_is_removable() {
+        let sandbox = Path::new("/data/sandboxes/s1");
+        assert_eq!(
+            task_worktree_path(sandbox, "worktrees/t-1"),
+            Some(sandbox.join("worktrees/t-1"))
+        );
+        for name in [
+            "/etc",
+            "/data/sandboxes/s1/worktrees/t-1",
+            "worktrees/../repo",
+            "worktrees/..",
+            "worktrees/a/b",
+            "worktrees/",
+            "worktrees",
+            "repo",
+            "ci/jobs/quality",
+            "",
+            "worktrees/.",
+        ] {
+            assert_eq!(task_worktree_path(sandbox, name), None, "{name:?}");
+        }
     }
 }

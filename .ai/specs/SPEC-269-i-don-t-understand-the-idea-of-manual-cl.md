@@ -246,6 +246,14 @@ Read in the code on `dev` (21c26d8b):
   1540 ms, 480 ms": stage bounds are stamped when the markers are read, so under the gate's load
   the boundary between two 1 s stages moved. Its floor is now "each ≥ 100 ms, together ≥ 1500 ms",
   which still rejects zero or fake durations.
+- Yulius CI at 8d0bffca: the `security` job failed on a high finding, "Path traversal in worktree
+  removal" (`remove_task_worktree` joined the item's name to the sandbox directory). The name is
+  only ever `worktrees/<task id>`: worktrees elsewhere are `missing` (pruned) or not listed. The
+  guard is now explicit, test-first: `task_worktree_path` accepts only `worktrees/<one plain
+  name>` (unit test `only_a_worktree_directly_under_worktrees_is_removable`), anything else is
+  kept with a reason. Its low finding on the task re-read: a task that is gone (`Ok(None)`) may
+  lose its worktree by design (`task_deleted`), a store error keeps it, and the re-read is the last
+  step before Git's removal. Findings outside the change were filed by Yulius CI (#848, #849).
 - Not testable here: a real 6-hourly round on the instance against GitHub. The round is driven in
   tests through `hygiene_round`, with real Git over local remotes and the GitHub fake.
 - Independent review in fresh sessions:
