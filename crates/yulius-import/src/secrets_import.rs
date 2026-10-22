@@ -175,6 +175,11 @@ impl VaultClient {
         self.api.base()
     }
 
+    /// The API client (agent states, SPEC-271).
+    pub(crate) fn api(&self) -> &ApiClient {
+        &self.api
+    }
+
     fn get<T: serde::de::DeserializeOwned>(&self, segments: &[&str]) -> Result<T, ApiError> {
         let url = self.api.endpoint(segments)?;
         self.api
@@ -275,6 +280,23 @@ impl PreparedTarget {
     pub fn env_files_allowed(mut self) -> Self {
         self.env_files = true;
         self
+    }
+
+    /// What the run is told it imports into.
+    pub(crate) fn heading(&self) -> &str {
+        &self.heading
+    }
+
+    /// The project's sandbox id, for agent secrets of one (agent states go only there).
+    pub(crate) fn project_sandbox(&self) -> Option<&str> {
+        (!self.team && !self.instance)
+            .then_some(self.sandbox.as_deref())
+            .flatten()
+    }
+
+    /// Whether it sends without the typed `yes`.
+    pub(crate) fn is_unattended(&self) -> bool {
+        self.unattended
     }
 }
 

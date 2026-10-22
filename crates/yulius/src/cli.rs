@@ -2,15 +2,16 @@
 //! `yulius secrets import` (SPEC-205).
 
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use console::style;
 use yulius_import::{
     DeviceLoginOptions, DotenvEntry, ImportError, ImportOptions, MAX_DOTENV_BYTES, RemoteClient,
     Secret, SecretsImportError, SecretsImportOptions, SecretsIo, SecretsTarget, SessionChoice,
-    TerminalIo, TokenStore, Url, VaultClient, device_login, import_secrets, parse_dotenv,
-    prepare_target, prompt_secrets, run_import, secret_file_entry, set_colors,
+    StateEntry, TerminalIo, TokenStore, Url, VaultClient, device_login, download_state,
+    human_bytes, import_secrets, import_states, parse_dotenv, prepare_target, prompt_secrets,
+    run_import, secret_file_entry, set_colors, state_entry,
 };
 
 fn install_tls() {
@@ -174,6 +175,10 @@ pub struct SecretsImportArgs {
     pub yes: bool,
     /// `NAME=PATH`: the whole file at PATH is the secret NAME (SPEC-256 LOB-003).
     pub from_files: Vec<String>,
+    /// `NAME=DIR`: a folder (or `.tar.gz`) of operator state as the agent state NAME (SPEC-271).
+    pub states: Vec<String>,
+    /// Overwrite a state a task already restored (SPEC-271 OPS-003).
+    pub replace_state: bool,
     /// Agent secrets start allowed into `.env` files (SPEC-256 LOB-004).
     pub env_files: bool,
     /// No colours.
@@ -222,6 +227,26 @@ fn file_entries(specs: &[String]) -> Result<Vec<DotenvEntry>, String> {
             secret_file_entry(name, &path).map_err(|e| format!("{e}; nothing was imported"))
         })
         .collect()
+}
+
+/// `--state NAME=DIR` entries, each folder packed here (SPEC-271 OPS-004).
+fn state_entries(specs: &[String]) -> Result<Vec<StateEntry>, String> {
+    let mut states: Vec<StateEntry> = Vec::new();
+    for spec in specs {
+        let (name, path) = spec
+            .split_once('=')
+            .filter(|(name, path)| !name.trim().is_empty() && !path.is_empty())
+            .ok_or_else(|| format!("--state takes NAME=DIR, not {spec:?}"))?;
+        if states.iter().any(|s| s.name == name.trim()) {
+            return Err(format!("{} is given twice; nothing was sent", name.trim()));
+        }
+        let path = match (path.strip_prefix("~/"), std::env::var_os("HOME")) {
+            (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+            _ => PathBuf::from(path),
+        };
+        states.push(state_entry(name, &path).map_err(|e| format!("{e}; nothing was sent"))?);
+    }
+    Ok(states)
 }
 
 /// The terminal of `yulius secrets import`: lines on stdout (and the terminal when stdout is
@@ -319,8 +344,19 @@ pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
                     .into(),
             );
         }
-        if args.yes && args.file.is_none() && args.from_files.is_empty() {
-            return Err("--yes takes the secrets from a file or --from-file, never typed".into());
+        if !args.states.is_empty() && (args.to != VaultChoice::Agent || args.instance) {
+            return Err(
+                "--state belongs to one project's agent secrets: --to agent, without --instance"
+                    .into(),
+            );
+        }
+        if args.replace_state && args.states.is_empty() {
+            return Err("--replace-state applies to --state".into());
+        }
+        if args.yes && args.file.is_none() && args.from_files.is_empty() && args.states.is_empty() {
+            return Err(
+                "--yes takes the secrets from a file, --from-file or --state, never typed".into(),
+            );
         }
         // With --yes the token comes first: nothing is read before the instance confirmed it is
         // an operate token. Otherwise a malformed file is refused before any sign-in is needed.
@@ -351,6 +387,7 @@ pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
             }
             parsed = Some(entries);
         }
+        let states = state_entries(&args.states)?;
         let (server, token) = match confirmed {
             Some(confirmed) => confirmed,
             None => {
@@ -400,23 +437,82 @@ pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
         let mut io = TtyIo;
         let entries = match parsed {
             Some(entries) => entries,
+            None if !states.is_empty() => Vec::new(),
             None => prompt_secrets(&mut io).map_err(|e| e.to_string())?,
         };
-        if entries.is_empty() {
+        if entries.is_empty() && states.is_empty() {
             io.say("No secrets given; nothing was imported.");
             return Ok(true);
         }
-        match import_secrets(entries, &target, &client, &mut io) {
-            Ok(summary) => Ok(summary.ok()),
-            Err(SecretsImportError::Cancelled) => Err("cancelled; nothing was imported".into()),
-            Err(err) => Err(format!("{err}; nothing was imported")),
+        let mut ok = true;
+        if !entries.is_empty() {
+            ok = match import_secrets(entries, &target, &client, &mut io) {
+                Ok(summary) => summary.ok(),
+                Err(SecretsImportError::Cancelled) => {
+                    return Err("cancelled; nothing was imported".into());
+                }
+                Err(err) => return Err(format!("{err}; nothing was imported")),
+            };
         }
+        if !states.is_empty() {
+            match import_states(states, &target, args.replace_state, &client, &mut io) {
+                Ok(summary) => ok &= summary.refused.is_empty(),
+                Err(SecretsImportError::Cancelled) => {
+                    return Err("cancelled; no state was sent".into());
+                }
+                Err(err) => return Err(format!("{err}; no state was sent")),
+            }
+        }
+        Ok(ok)
     })();
     match result {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(err) => {
             eprintln!("{} {err}", style("yulius secrets import:").red().bold());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `yulius secrets state-get NAME --out FILE [--sandbox …] [--server …]` (SPEC-271 OPS-007): the
+/// project's newest saved copy of an agent state, written to a new file.
+pub fn state_get(name: &str, out: &Path, sandbox: Option<&str>, server: Option<&str>) -> ExitCode {
+    install_tls();
+    let result = (|| -> Result<(), String> {
+        let store = TokenStore::default_location().map_err(|e| e.to_string())?;
+        let server = resolve_server(server, &store)?;
+        let token = store
+            .load_or_remote(&server)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| {
+                format!("not signed in to {server}; run `yulius remote login {server}`")
+            })?;
+        let client = VaultClient::new(server, token).map_err(|e| e.to_string())?;
+        let options = SecretsImportOptions {
+            target: SecretsTarget::Agent {
+                sandbox: sandbox.map(str::to_owned),
+                instance: false,
+                confirm_hosts: false,
+            },
+            checkout: std::env::current_dir().map_err(|e| e.to_string())?,
+            source_file: None,
+        };
+        let target = prepare_target(&options, &client).map_err(|e| e.to_string())?;
+        let bytes = download_state(&client, &target, name, out)?;
+        println!(
+            "Wrote {} ({}): the newest saved copy of {name}. The sandbox's copy stays the one \
+             written to. Unpack it into a new folder: mkdir state && tar -xzf {} -C state",
+            out.display(),
+            human_bytes(bytes),
+            out.display()
+        );
+        Ok(())
+    })();
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("{} {err}", style("yulius secrets state-get:").red().bold());
             ExitCode::FAILURE
         }
     }
