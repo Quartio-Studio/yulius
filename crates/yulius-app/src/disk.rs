@@ -556,7 +556,7 @@ impl App {
     /// "unknown" read as "none" under a running gate). Without `pressure` an idle task that moved
     /// within [`prune_after`] its activity is idle whatever it runs (its caches stay anyway), so
     /// it is not probed: each probe can take up to the probe timeout.
-    async fn cache_owner(&self, task: &TaskRecord, pressure: bool) -> Option<Owner> {
+    pub(crate) async fn cache_owner(&self, task: &TaskRecord, pressure: bool) -> Option<Owner> {
         let quiet_ms = self.now().0 - task.updated_at.0;
         let idle =
             task.status == TaskStatus::Running && task.activity.is_some_and(Activity::is_idle);

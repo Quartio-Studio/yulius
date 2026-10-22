@@ -1193,19 +1193,35 @@ fn cargo_unit(w: &World, profile: &Path, hash: &str, hours: i64) -> BoxResult<()
     Ok(())
 }
 
-/// SPEC-276 RDA-001..RDA-004: the sweep reaches the build directories of a working task's
-/// worktree and of a CI checkout, deletes units unused for two days, keeps recent ones and
-/// audits what it freed; a held lock keeps a build directory whole.
+/// SPEC-276 RDA-001..RDA-004: the sweep reaches the build directories of worktrees and CI
+/// checkouts and deletes units unused for two days, keeps recent ones and audits what it freed.
+/// Artifact units, which tests read after Cargo released its lock, go only where nothing runs
+/// tests: a resting task's worktree, a CI checkout under the CI claim. A working task keeps them
+/// (its incremental state still goes), a busy CI keeps its checkout whole, and a held lock keeps a
+/// build directory whole.
 #[tokio::test]
 async fn the_sweep_deletes_unused_build_units_of_worktrees_and_ci_checkouts() -> BoxResult<()> {
     use yulius_domain::sweep::Level;
     let w = world().await?;
-    let worktree = w
-        .task("t-work", TaskStatus::Running, Some(Activity::Working))
+    let resting = w
+        .task("t-rest", TaskStatus::Stopped(StopReason::Crashed), None)
         .await?;
-    let profile = worktree.join("target/debug");
+    let profile = resting.join("target/debug");
     cargo_unit(&w, &profile, "35f5dbd50d1a473d", 72)?;
     cargo_unit(&w, &profile, "9caa50b098b82860", 1)?;
+    let working = w
+        .task("t-work", TaskStatus::Running, Some(Activity::Working))
+        .await?;
+    let working_profile = working.join("target/debug");
+    cargo_unit(&w, &working_profile, "1111111111111111", 72)?;
+    let stale = working_profile.join("incremental/yulius-0u6e73f24ohkf");
+    std::fs::create_dir_all(stale.join("s-a-b"))?;
+    for dir in [stale.join("s-a-b"), stale.clone()] {
+        let ms = w.h.app.now().0 - 72 * 3_600_000;
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_millis(u64::try_from(ms)?);
+        std::fs::File::open(&dir)?
+            .set_times(std::fs::FileTimes::new().set_accessed(at).set_modified(at))?;
+    }
     let checkout = w.root.join("ci/jobs/quality");
     std::fs::create_dir_all(&checkout)?;
     std::fs::write(checkout.join("Cargo.toml"), "[package]\n")?;
@@ -1218,12 +1234,23 @@ async fn the_sweep_deletes_unused_build_units_of_worktrees_and_ci_checkouts() ->
     let lock = std::fs::File::open(busy.join("target/debug/.cargo-lock"))?;
     lock.lock()?;
 
+    // A CI run holds the checkouts: the CI target stays whole.
+    assert!(w.h.app.ci_claim(&w.sandbox.id));
     let report = w.h.app.sweep_build_caches(Level::Ok).await;
-    assert_eq!(
-        (report.swept, report.busy, report.units),
-        (2, 1, 2),
-        "{report:?}"
+    assert!(
+        ci_profile
+            .join("deps/libdep-0123456789abcdef.rlib")
+            .exists(),
+        "a CI run reads it"
     );
+    w.h.app.ci_release(&w.sandbox.id);
+    assert_eq!(
+        report.busy, 2,
+        "the CI checkout and the locked worktree: {report:?}"
+    );
+
+    let report = w.h.app.sweep_build_caches(Level::Ok).await;
+    assert_eq!((report.swept, report.busy), (3, 1), "{report:?}");
     assert!(!profile.join("deps/libdep-35f5dbd50d1a473d.rlib").exists());
     assert!(!profile.join(".fingerprint/dep-35f5dbd50d1a473d").exists());
     assert!(
@@ -1236,10 +1263,22 @@ async fn the_sweep_deletes_unused_build_units_of_worktrees_and_ci_checkouts() ->
             .exists()
     );
     assert!(
+        working_profile
+            .join("deps/libdep-1111111111111111.rlib")
+            .exists(),
+        "a working task's tests may read it"
+    );
+    assert!(!stale.exists(), "its unused incremental state goes");
+    assert!(
         busy.join("target/debug/deps/libdep-fedcba9876543210.rlib")
             .exists(),
         "a build holds it"
     );
+    assert!(
+        w.h.app.ci_claim(&w.sandbox.id),
+        "the sweep released its CI claim"
+    );
+    w.h.app.ci_release(&w.sandbox.id);
     let audited: Vec<String> =
         w.h.store
             .automation_audit("app", 100)
@@ -1248,7 +1287,7 @@ async fn the_sweep_deletes_unused_build_units_of_worktrees_and_ci_checkouts() ->
             .filter(|a| a.action == "disk.sweep")
             .filter_map(|a| a.detail)
             .collect();
-    assert_eq!(audited.len(), 2, "{audited:?}");
+    assert_eq!(audited.len(), 3, "{audited:?}");
     assert!(
         audited.iter().any(|d| d.starts_with("target of task #")),
         "{audited:?}"

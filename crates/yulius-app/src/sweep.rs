@@ -2,12 +2,16 @@
 //! live sandbox's worktrees and CI checkouts loses the units nobody used for a while and stays
 //! under its cap. Cargo never removes artifacts of old hashes, so without this every build adds.
 //!
-//! Safety: a sweep holds every profile's `.cargo-lock` (Cargo's own exclusive `flock`, taken by
-//! every build, check, test and doc run) and skips a build directory whose lock is held, so it
-//! never deletes under a running compile and none starts until it ends. It deletes whole units (a
-//! hash's fingerprint first, then its outputs), so Cargo rebuilds exactly what went. Every path is
-//! reached from the sandbox directory with no link on the way and removed through `O_NOFOLLOW`
-//! handles (SPEC-263).
+//! Safety: a sweep holds every profile's Cargo locks (`.cargo-lock`, `.cargo-build-lock`,
+//! `.cargo-artifact-lock`: exclusive `flock`s Cargo holds while it compiles) and skips a build
+//! directory whose lock is held, so it never deletes under a running compile and none starts until
+//! it ends. Cargo releases them before test binaries, doctests and nextest read `deps/`, so
+//! artifact units go only while nothing can run tests there: a CI checkout under the sandbox's CI
+//! claim, a task's worktree while the task neither works nor runs background work. Incremental
+//! units, which only rustc reads under the lock, go in any worktree, and only they are evicted for
+//! the cap. It deletes whole units (a hash's fingerprint first, then its outputs), so Cargo
+//! rebuilds exactly what went. Every path is reached from the sandbox directory with no link on the
+//! way and removed through `O_NOFOLLOW` handles (SPEC-263).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -93,31 +97,59 @@ fn profiles(root: &Path, target: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// Cargo's locks of `profiles`, each taken without waiting; `None` when one is held or cannot be
-/// opened safely (a link counts as held). A profile without a lock file has none to take.
+/// Whether `name` is one of Cargo's lock files in a profile directory.
+fn is_cargo_lock(name: &str) -> bool {
+    name == ".cargo-lock" || (name.starts_with(".cargo-") && name.ends_with("-lock"))
+}
+
+/// Cargo's locks of `profiles`, each taken without waiting; `None` when one is held or is not a
+/// plain file (a link, or a FIFO an agent made: opened without blocking and refused). A profile
+/// without lock files has none to take.
 fn lock_profiles(root: &Path, profiles: &[PathBuf]) -> Option<Vec<File>> {
+    use nix::fcntl::OFlag;
     let mut held = Vec::new();
     for profile in profiles {
-        let lock = profile.join(".cargo-lock");
-        if !no_link_between(root, &lock) {
-            return None;
-        }
-        let opened = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-            .open(&lock);
-        match opened {
-            Ok(file) => {
-                if file.try_lock().is_err() {
-                    return None;
-                }
-                held.push(file);
+        for (name, lock) in children(profile) {
+            if !is_cargo_lock(&name) {
+                continue;
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return None,
+            if !no_link_between(root, &lock) {
+                return None;
+            }
+            let flags = OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+            let opened = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(flags.bits())
+                .open(&lock);
+            match opened {
+                Ok(file) => {
+                    let plain = file.metadata().is_ok_and(|meta| meta.file_type().is_file());
+                    if !plain || file.try_lock().is_err() {
+                        return None;
+                    }
+                    held.push(file);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return None,
+            }
         }
     }
     Some(held)
+}
+
+/// Whether the file system of `path` records no access times (`noatime`): then only modification
+/// times tell use, and artifact units, which are read but not written, are not swept by age.
+fn without_access_times(path: &Path) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use nix::sys::statvfs::{FsFlags, statvfs};
+        statvfs(path).is_ok_and(|stat| stat.flags().contains(FsFlags::ST_NOATIME))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        false
+    }
 }
 
 fn millis(seconds: i64, nanos: i64) -> i64 {
@@ -151,12 +183,15 @@ fn measure(path: &Path, budget: &mut u64) -> Option<(u64, i64)> {
     Some((bytes, newest))
 }
 
-/// The units of `profiles`, keyed per profile; `None` past [`MAX_ENTRIES`].
-fn units(root: &Path, profiles: &[PathBuf]) -> Option<Vec<Found>> {
+/// The units of `profiles`, keyed per profile, and whether [`MAX_ENTRIES`] cut the reading short:
+/// then only the incremental units read whole are returned (an artifact unit's entries lie in three
+/// directories, so one read in part could look unused).
+fn units(root: &Path, profiles: &[PathBuf]) -> (Vec<Found>, bool) {
     let mut budget = MAX_ENTRIES;
     let mut found: HashMap<(usize, String), Found> = HashMap::new();
     let mut order: Vec<(usize, String)> = Vec::new();
-    for (index, profile) in profiles.iter().enumerate() {
+    let mut cut = false;
+    'profiles: for (index, profile) in profiles.iter().enumerate() {
         for (area, name) in Area::ALL {
             let dir = profile.join(name);
             if !real_dir(root, &dir) {
@@ -166,11 +201,15 @@ fn units(root: &Path, profiles: &[PathBuf]) -> Option<Vec<Found>> {
                 let Some(key) = unit_key(area, &entry) else {
                     continue;
                 };
-                let working = area == Area::Incremental
+                let incremental = area == Area::Incremental;
+                let working = incremental
                     && children(&path)
                         .iter()
                         .any(|(name, _)| is_working_session(name));
-                let (bytes, newest) = measure(&path, &mut budget)?;
+                let Some((bytes, newest)) = measure(&path, &mut budget) else {
+                    cut = true;
+                    break 'profiles;
+                };
                 let slot = found.entry((index, key.clone())).or_insert_with(|| {
                     order.push((index, key));
                     Found {
@@ -179,6 +218,7 @@ fn units(root: &Path, profiles: &[PathBuf]) -> Option<Vec<Found>> {
                             last_used_ms: i64::MIN,
                             bytes: 0,
                             working: false,
+                            incremental,
                         },
                     }
                 });
@@ -189,18 +229,25 @@ fn units(root: &Path, profiles: &[PathBuf]) -> Option<Vec<Found>> {
             }
         }
     }
-    Some(
-        order
-            .into_iter()
-            .filter_map(|key| found.remove(&key))
-            .collect(),
-    )
+    let units = order
+        .into_iter()
+        .filter_map(|key| found.remove(&key))
+        .filter(|found| !cut || found.unit.incremental)
+        .collect();
+    (units, cut)
 }
 
 /// Sweeps the build directory `target` below the sandbox directory `root` at `now_ms` with
-/// `policy` (RDA-002..RDA-005). Blocking. Linux only (removals go through `/proc/self/fd`).
+/// `policy` (RDA-002..RDA-005); artifact units only with `artifacts` (nothing can run tests in it).
+/// Blocking. Linux only (removals go through `/proc/self/fd`).
 #[must_use]
-pub fn sweep_target(root: &Path, target: &Path, now_ms: i64, policy: &Policy) -> SweepOutcome {
+pub fn sweep_target(
+    root: &Path,
+    target: &Path,
+    now_ms: i64,
+    policy: &Policy,
+    artifacts: bool,
+) -> SweepOutcome {
     let mut outcome = SweepOutcome::default();
     if !cfg!(target_os = "linux") || !real_dir(root, target) {
         return outcome;
@@ -211,14 +258,16 @@ pub fn sweep_target(root: &Path, target: &Path, now_ms: i64, policy: &Policy) ->
         outcome.busy = true;
         return outcome;
     };
-    let Some(found) = units(root, &profiles) else {
-        outcome
-            .failed
-            .push(format!("{}: too many entries to sweep", target.display()));
-        return outcome;
-    };
+    let (found, cut) = units(root, &profiles);
+    if cut {
+        outcome.failed.push(format!(
+            "{}: too many entries to read at once; only whole incremental units were swept",
+            target.display()
+        ));
+    }
+    let artifacts = artifacts && !cut && !without_access_times(target);
     let all: Vec<Unit> = found.iter().map(|f| f.unit.clone()).collect();
-    for index in plan(&all, now_ms, policy) {
+    for index in plan(&all, now_ms, policy, artifacts) {
         let unit = &found[index];
         let mut removed = true;
         for path in &unit.paths {
@@ -279,12 +328,24 @@ impl App {
                     .unwrap_or_default()
             };
             for (label, target) in found {
+                // A CI checkout is swept under the sandbox's CI claim, so no run reads its
+                // artifacts meanwhile; a running CI run keeps it whole.
+                let ci = label.starts_with("CI job ");
+                if ci && !self.ci_claim(&sandbox.id) {
+                    report.busy += 1;
+                    continue;
+                }
+                let artifacts = ci || self.worktree_rests(&label).await;
                 let now = self.now().0;
                 let (dir, path) = (root.clone(), target.clone());
-                let outcome =
-                    tokio::task::spawn_blocking(move || sweep_target(&dir, &path, now, &policy))
-                        .await
-                        .unwrap_or_default();
+                let outcome = tokio::task::spawn_blocking(move || {
+                    sweep_target(&dir, &path, now, &policy, artifacts)
+                })
+                .await
+                .unwrap_or_default();
+                if ci {
+                    self.ci_release(&sandbox.id);
+                }
                 for failure in &outcome.failed {
                     tracing::warn!(failure = %failure, "a build cache unit could not be swept");
                 }
@@ -314,6 +375,22 @@ impl App {
             }
         }
         report
+    }
+
+    /// Whether the worktree of `label` belongs to a task that neither works nor runs background
+    /// work (probed afresh), so nothing reads its build artifacts. A worktree no task owns may be
+    /// an agent's own, in use: it never counts as resting.
+    async fn worktree_rests(&self, label: &str) -> bool {
+        let Some(name) = label.strip_prefix("worktree ") else {
+            return false;
+        };
+        let Ok(id) = TaskId::parse(name) else {
+            return false;
+        };
+        match self.deps.store.task(&id).await {
+            Ok(Some(task)) => self.cache_owner(&task, true).await.is_some(),
+            _ => false,
+        }
     }
 
     /// "task #12" for a worktree a task owns, the label otherwise.
@@ -443,7 +520,7 @@ mod tests {
         unit(&f.profile, "adler2", OLD, 72)?;
         unit(&f.profile, "adler2", NEW, 1)?;
         file(&f.profile.join("yulius"), 32, 72)?;
-        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy());
+        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy(), true);
         assert!(!outcome.busy && outcome.failed.is_empty(), "{outcome:?}");
         assert_eq!(outcome.units, 1);
         assert!(outcome.freed > 0);
@@ -481,7 +558,7 @@ mod tests {
             .write(true)
             .open(&rlib)?
             .set_times(FileTimes::new().set_accessed(at(2)))?;
-        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy());
+        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy(), true);
         assert_eq!(outcome.units, 0, "{outcome:?}");
         assert!(rlib.exists());
         Ok(())
@@ -493,7 +570,7 @@ mod tests {
         unit(&f.profile, "adler2", OLD, 72)?;
         let cargo = File::open(f.profile.join(".cargo-lock"))?;
         cargo.lock()?;
-        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy());
+        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy(), true);
         assert!(outcome.busy);
         assert_eq!(outcome.units, 0);
         assert!(
@@ -502,7 +579,7 @@ mod tests {
                 .exists()
         );
         cargo.unlock()?;
-        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy());
+        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy(), true);
         assert_eq!(outcome.units, 1, "released: the next sweep deletes it");
         Ok(())
     }
@@ -516,7 +593,7 @@ mod tests {
         unit(&f.profile, "adler2", OLD, 72)?;
         let cargo = File::open(cross.join(".cargo-lock"))?;
         cargo.lock()?;
-        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy());
+        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy(), true);
         assert!(outcome.busy);
         assert!(
             f.profile
@@ -524,7 +601,7 @@ mod tests {
                 .exists()
         );
         drop(cargo);
-        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy());
+        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy(), true);
         assert_eq!(outcome.units, 2, "one per profile");
         assert!(!cross.join(format!("deps/libadler2-{OLD}.rlib")).exists());
         Ok(())
@@ -538,7 +615,7 @@ mod tests {
         let elsewhere = f.root.join("elsewhere");
         file(&elsewhere, 0, 0)?;
         std::os::unix::fs::symlink(&elsewhere, f.profile.join(".cargo-lock"))?;
-        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy());
+        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy(), true);
         assert!(outcome.busy);
         assert!(
             f.profile
@@ -571,7 +648,7 @@ mod tests {
         ] {
             age_dir(&dir, 72)?;
         }
-        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy());
+        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy(), true);
         assert_eq!(outcome.units, 1, "{outcome:?}");
         assert!(busy.exists(), "rustc compiles there");
         assert!(!idle.exists());
@@ -588,7 +665,7 @@ mod tests {
         std::os::unix::fs::symlink(&outside, &profile)?;
         std::fs::remove_dir(f.profile.join(".fingerprint"))?;
         std::os::unix::fs::symlink(outside.join(".fingerprint"), f.profile.join(".fingerprint"))?;
-        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy());
+        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy(), true);
         assert_eq!(outcome.units, 0, "{outcome:?}");
         assert!(outside.join(format!("deps/libadler2-{OLD}.rlib")).exists());
         // A build directory that is itself a link is not swept either.
@@ -596,51 +673,123 @@ mod tests {
         std::fs::create_dir_all(linked.parent().ok_or("parent")?)?;
         std::os::unix::fs::symlink(&outside, &linked)?;
         assert_eq!(
-            sweep_target(&f.root, &linked, NOW_MS, &ok_policy()),
+            sweep_target(&f.root, &linked, NOW_MS, &ok_policy(), true),
             SweepOutcome::default()
         );
         assert!(outside.join(format!(".fingerprint/adler2-{OLD}")).exists());
         Ok(())
     }
 
+    /// An incremental unit `name` of `profile`: one finished session, written `hours` ago.
+    fn incremental(profile: &Path, name: &str, hours: u64) -> TestResult {
+        let dir = profile.join(format!("incremental/{name}"));
+        let session = dir.join("s-hnghq0vh2y-16tnakq-1wmf7kj1angb1");
+        file(&session.join("dep-graph.bin"), 4096, hours)?;
+        age_dir(&session, hours)?;
+        age_dir(&dir, hours)
+    }
+
     #[test]
-    fn over_its_cap_a_build_directory_loses_its_least_recently_used_units() -> TestResult {
+    fn over_its_cap_a_build_directory_loses_its_least_recently_used_incremental_units() -> TestResult
+    {
         let f = fixture()?;
-        // Four units of about 4 KiB each, none two days old.
-        let hashes = [
-            ("0000000000000001", 5),
-            ("0000000000000002", 3),
-            ("0000000000000003", 2),
-            ("0000000000000004", 0),
-        ];
-        for (hash, hours) in hashes {
-            unit(&f.profile, "dep", hash, hours)?;
+        // Four incremental units of about 4 KiB each, none two days old.
+        for (name, hours) in [("a-1", 5), ("b-2", 3), ("c-3", 2), ("d-4", 0)] {
+            incremental(&f.profile, name, hours)?;
         }
-        let one = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy());
+        let one = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy(), true);
         assert_eq!(one.units, 0, "no cap reached: {one:?}");
-        let found = units(&f.root, std::slice::from_ref(&f.profile)).ok_or("units")?;
-        let unit_bytes = found.first().map(|f| f.unit.bytes).ok_or("a unit")?;
-        // A cap of three units: down to three quarters of it, i.e. two units stay.
+        let (found, _) = units(&f.root, std::slice::from_ref(&f.profile));
+        let total: u64 = found.iter().map(|f| f.unit.bytes).sum();
+        let incremental_bytes = found
+            .iter()
+            .find(|f| f.unit.incremental)
+            .map(|f| f.unit.bytes)
+            .ok_or("a unit")?;
+        // A cap below the total whose three quarters hold two and a half units: two go.
+        let goal = total - 2 * incremental_bytes + incremental_bytes / 2;
         let policy = Policy {
-            cap: unit_bytes * 3,
+            cap: (goal / 3 + 1) * 4,
             ..ok_policy()
         };
-        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &policy);
+        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &policy, true);
         assert_eq!(outcome.units, 2, "{outcome:?}");
-        let left = |hash: &str| f.profile.join(format!("deps/libdep-{hash}.rlib")).exists();
-        assert!(
-            !left("0000000000000001") && !left("0000000000000002"),
-            "oldest first"
-        );
-        assert!(left("0000000000000003") && left("0000000000000004"));
-        // The current build (used within the hour) stays even far above its cap.
+        let left = |name: &str| f.profile.join(format!("incremental/{name}")).exists();
+        assert!(!left("a-1") && !left("b-2"), "oldest first");
+        assert!(left("c-3") && left("d-4"));
+        // The current build (used within the hour) stays even far above its cap, and so do
+        // artifacts (their access time may lag a day).
+        unit(&f.profile, "dep", OLD, 10)?;
         let tiny = Policy {
             cap: 1,
             ..ok_policy()
         };
-        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &tiny);
+        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &tiny, true);
         assert_eq!(outcome.units, 1, "{outcome:?}");
-        assert!(left("0000000000000004"));
+        assert!(left("d-4"));
+        assert!(f.profile.join(format!("deps/libdep-{OLD}.rlib")).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn without_artifacts_only_incremental_units_go() -> TestResult {
+        let f = fixture()?;
+        unit(&f.profile, "adler2", OLD, 72)?;
+        incremental(&f.profile, "yulius_app-0u6e73f24ohkf", 72)?;
+        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy(), false);
+        assert_eq!(outcome.units, 1, "{outcome:?}");
+        assert!(
+            f.profile
+                .join(format!("deps/libadler2-{OLD}.rlib"))
+                .exists(),
+            "tests may still read it"
+        );
+        assert!(
+            !f.profile
+                .join("incremental/yulius_app-0u6e73f24ohkf")
+                .exists()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn any_held_cargo_lock_keeps_the_build_directory() -> TestResult {
+        let f = fixture()?;
+        unit(&f.profile, "adler2", OLD, 72)?;
+        file(&f.profile.join(".cargo-build-lock"), 0, 0)?;
+        let cargo = File::open(f.profile.join(".cargo-build-lock"))?;
+        cargo.lock()?;
+        let outcome = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy(), true);
+        assert!(outcome.busy);
+        assert!(
+            f.profile
+                .join(format!("deps/libadler2-{OLD}.rlib"))
+                .exists()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_fifo_named_like_a_lock_counts_as_held_and_never_blocks() -> TestResult {
+        let f = fixture()?;
+        unit(&f.profile, "adler2", OLD, 72)?;
+        std::fs::remove_file(f.profile.join(".cargo-lock"))?;
+        nix::unistd::mkfifo(
+            &f.profile.join(".cargo-lock"),
+            nix::sys::stat::Mode::S_IRWXU,
+        )?;
+        let (root, target) = (f.root.clone(), f.target.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(sweep_target(&root, &target, NOW_MS, &ok_policy(), true));
+        });
+        let outcome = rx.recv_timeout(Duration::from_secs(10))?;
+        assert!(outcome.busy, "{outcome:?}");
+        assert!(
+            f.profile
+                .join(format!("deps/libadler2-{OLD}.rlib"))
+                .exists()
+        );
         Ok(())
     }
 

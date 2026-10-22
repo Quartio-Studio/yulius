@@ -92,12 +92,14 @@ pub enum Area {
 }
 
 impl Area {
-    /// Every area, with its directory's name.
+    /// Every area, with its directory's name: incremental first (each of its units is one entry,
+    /// so a sweep cut short still has whole ones), then a unit's fingerprint before its outputs
+    /// (deleted in this order, a sweep cut short leaves Cargo nothing it thinks is fresh).
     pub const ALL: [(Self, &'static str); 4] = [
+        (Self::Incremental, "incremental"),
         (Self::Fingerprint, ".fingerprint"),
         (Self::Build, "build"),
         (Self::Deps, "deps"),
-        (Self::Incremental, "incremental"),
     ];
 }
 
@@ -137,6 +139,10 @@ pub struct Unit {
     pub bytes: u64,
     /// It holds a session rustc is compiling (never deleted).
     pub working: bool,
+    /// An `incremental/` directory: only rustc reads it, and only while Cargo holds the build
+    /// directory's lock. Artifact units are also read by test binaries, doctests and nextest
+    /// after Cargo released it.
+    pub incremental: bool,
 }
 
 /// What a sweep deletes.
@@ -183,24 +189,31 @@ pub fn policy(level: Level, disk_total: Option<u64>) -> Policy {
     }
 }
 
-/// Indices of the units to delete at `now_ms`: every unit unused for the policy's age, then, while
-/// the rest holds more than the cap, the least recently used ones not used within its recent
-/// floor until the rest holds three quarters of the cap. A working unit is never chosen.
+/// Indices of the units to delete at `now_ms`: every unit unused for the policy's age (an artifact
+/// unit only with `artifacts`: nothing runs tests in the build directory), then, while the rest
+/// holds more than the cap, the least recently used incremental units not used within its recent
+/// floor until the rest holds three quarters of the cap. A working unit is never chosen. Access
+/// times lag up to a day (`relatime`), so the cap never evicts artifact units by recency.
 #[must_use]
-pub fn plan(units: &[Unit], now_ms: i64, policy: &Policy) -> Vec<usize> {
+pub fn plan(units: &[Unit], now_ms: i64, policy: &Policy, artifacts: bool) -> Vec<usize> {
     let age = |unit: &Unit| now_ms.saturating_sub(unit.last_used_ms);
-    let mut chosen: Vec<usize> = (0..units.len())
-        .filter(|&i| !units[i].working && age(&units[i]) >= policy.unused_after_ms)
-        .collect();
-    let mut kept: u64 = (0..units.len())
-        .filter(|i| !chosen.contains(i))
-        .map(|i| units[i].bytes)
+    let mut chosen = vec![false; units.len()];
+    for (i, unit) in units.iter().enumerate() {
+        chosen[i] =
+            !unit.working && (unit.incremental || artifacts) && age(unit) >= policy.unused_after_ms;
+    }
+    let mut kept: u64 = units
+        .iter()
+        .zip(&chosen)
+        .filter(|(_, chosen)| !**chosen)
+        .map(|(unit, _)| unit.bytes)
         .fold(0, u64::saturating_add);
     if kept > policy.cap {
         let goal = policy.cap / 4 * 3;
         let mut oldest: Vec<usize> = (0..units.len())
             .filter(|&i| {
-                !chosen.contains(&i) && !units[i].working && age(&units[i]) >= policy.recent_ms
+                let unit = &units[i];
+                !chosen[i] && unit.incremental && !unit.working && age(unit) >= policy.recent_ms
             })
             .collect();
         oldest.sort_by_key(|&i| units[i].last_used_ms);
@@ -209,10 +222,13 @@ pub fn plan(units: &[Unit], now_ms: i64, policy: &Policy) -> Vec<usize> {
                 break;
             }
             kept = kept.saturating_sub(units[i].bytes);
-            chosen.push(i);
+            chosen[i] = true;
         }
     }
-    chosen
+    let mut picked: Vec<usize> = (0..units.len()).filter(|&i| chosen[i]).collect();
+    // Oldest first, so an interrupted sweep has freed the stalest.
+    picked.sort_by_key(|&i| units[i].last_used_ms);
+    picked
 }
 
 #[cfg(test)]
@@ -292,6 +308,14 @@ mod tests {
             last_used_ms: -hours_ago * HOUR_MS,
             bytes: gb * GB,
             working: false,
+            incremental: true,
+        }
+    }
+
+    fn artifact(hours_ago: i64, gb: u64) -> Unit {
+        Unit {
+            incremental: false,
+            ..unit(hours_ago, gb)
         }
     }
 
@@ -300,30 +324,49 @@ mod tests {
         let policy = policy(Level::Ok, Some(1000 * GB));
         let mut working = unit(100, 1);
         working.working = true;
-        let units = [unit(49, 1), unit(47, 1), working, unit(1, 1)];
-        assert_eq!(plan(&units, 0, &policy), vec![0]);
+        let units = [
+            unit(49, 1),
+            unit(47, 1),
+            working,
+            unit(1, 1),
+            artifact(50, 1),
+        ];
+        assert_eq!(plan(&units, 0, &policy, true), vec![4, 0]);
+        assert_eq!(
+            plan(&units, 0, &policy, false),
+            vec![0],
+            "artifacts stay while something may run tests"
+        );
     }
 
     #[test]
-    fn over_the_cap_the_least_recently_used_go_down_to_three_quarters_but_not_the_current_build() {
+    fn over_the_cap_the_least_recently_used_incremental_units_go_never_artifacts() {
         let policy = Policy {
             unused_after_ms: UNUSED_AFTER_MS,
             cap: 20 * GB,
             recent_ms: RECENT_MS,
         };
-        // 30 GB, nothing two days old: 5 h, 3 h and 2 h old units go (oldest first) until 15 GB.
-        let units = [unit(2, 5), unit(5, 5), unit(0, 10), unit(3, 5), unit(10, 5)];
-        assert_eq!(plan(&units, 0, &policy), vec![4, 1, 3]);
+        // 30 GB, nothing two days old: the 10 h artifact stays (its access time may lag a day);
+        // 5 h, 3 h and 2 h old incremental units go (oldest first) until 15 GB.
+        let units = [
+            unit(2, 5),
+            unit(5, 5),
+            unit(0, 5),
+            unit(3, 5),
+            artifact(10, 10),
+        ];
+        assert_eq!(plan(&units, 0, &policy, true), vec![1, 3, 0]);
         // Only the current build is over the cap: it stays.
         let fresh = [unit(0, 25)];
-        assert!(plan(&fresh, 0, &policy).is_empty());
+        assert!(plan(&fresh, 0, &policy, true).is_empty());
         // Under the cap nothing recent goes.
-        assert!(plan(&[unit(10, 5)], 0, &policy).is_empty());
-        // Critical: even the current build goes.
+        assert!(plan(&[unit(10, 5)], 0, &policy, true).is_empty());
+        // Critical: even the current build's incremental state goes.
         let critical = Policy {
             recent_ms: 0,
             ..policy
         };
-        assert_eq!(plan(&fresh, 0, &critical), vec![0]);
+        assert_eq!(plan(&fresh, 0, &critical, true), vec![0]);
+        assert!(plan(&[artifact(0, 25)], 0, &critical, true).is_empty());
     }
 }
