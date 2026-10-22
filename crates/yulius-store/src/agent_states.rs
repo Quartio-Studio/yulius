@@ -268,10 +268,7 @@ mod tests {
         // The one that read version 1 too lost.
         assert!(!store.agent_state_put(&next, &sealed(3), Some(1)).await?);
 
-        let (found, archive) = store
-            .agent_state(&sandbox, "OPS")
-            .await?
-            .ok_or("missing")?;
+        let (found, archive) = store.agent_state(&sandbox, "OPS").await?.ok_or("missing")?;
         assert_eq!(found, next);
         assert_eq!(archive, sealed(2));
         assert_eq!(store.agent_states(&sandbox).await?, vec![next]);
