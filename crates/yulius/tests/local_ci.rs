@@ -1224,6 +1224,65 @@ command = 'if [ "$YULIUS_CI_MATRIX" = 2 ]; then exit "$YULIUS_CI_SKIP_CODE"; fi'
     Ok(())
 }
 
+/// SPEC-273 NOI-006: a job that exits `$YULIUS_CI_INCOMPLETE_CODE` (a security scan Vidoc's
+/// outage cut short) ends error with the files it names, never failed: the status says
+/// incomplete, the merge is blocked, and the other job still ends passed.
+#[tokio::test]
+async fn a_job_that_exits_the_incomplete_code_ends_in_error_naming_what_it_missed() -> TestResult {
+    let f = fixture_with(false, |_| {
+        r#"[[ci.jobs]]
+name = "check"
+command = "true"
+
+[[ci.jobs]]
+name = "security"
+command = 'echo "::yulius-incomplete 2 file(s) not scanned (a.rs, b.rs): HTTP 503"; exit "${YULIUS_CI_INCOMPLETE_CODE:-1}"'
+"#
+        .to_owned()
+    })
+    .await?;
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let run = overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["reference"] == "pr/1")
+        .cloned()
+        .ok_or("pr/1 run")?;
+    assert_eq!(run["state"], "error", "{run}");
+    let detail = f
+        .get(&format!(
+            "/api/sandboxes/s1/ci/runs/{}",
+            run["id"].as_str().ok_or("id")?
+        ))
+        .await?;
+    let jobs = detail["jobs"].as_array().ok_or("jobs")?;
+    let job = |name: &str| jobs.iter().find(|j| j["name"] == name).ok_or("job");
+    assert_eq!(job("check")?["state"], "passed", "{detail}");
+    assert_eq!(job("security")?["state"], "error", "{detail}");
+    assert_eq!(job("security")?["exit_code"], 75, "{detail}");
+    assert_eq!(
+        job("security")?["reason"],
+        "incomplete: 2 file(s) not scanned (a.rs, b.rs): HTTP 503; infrastructure, not a \
+         finding: run it again",
+        "{detail}"
+    );
+    assert_eq!(
+        f.h.app.ci_gate_result(&f.sandbox, &pr_sha).await,
+        GateResult::Run(Some(RunState::Error))
+    );
+    let (state, description, _) = f.last_status(&pr_sha).ok_or("status")?;
+    assert_eq!(state, "error", "{description}");
+    assert!(
+        description.starts_with("Error: security: incomplete: 2 file(s) not scanned (a.rs, b.rs)"),
+        "{description}"
+    );
+    Ok(())
+}
+
 /// While a run is going, its commit status counts the jobs that already ended (SPEC-198 RCS-001):
 /// GitHub said "0 of 3 jobs passed" for PR #600 long after its security scan had passed, and the
 /// Superagent took the scan for one still running (#604). The final status still lands last.

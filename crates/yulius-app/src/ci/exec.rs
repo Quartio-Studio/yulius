@@ -638,6 +638,17 @@ impl App {
             {
                 (RunState::Skipped, exit.code, None)
             }
+            // It could not check everything for a passing reason (SPEC-273 NOI-006): an error,
+            // which blocks the merge until a rerun passes, not a failure.
+            Ok(Ended::Exit(exit))
+                if exit.code == Some(dom::INCOMPLETE_EXIT_CODE) && exit.signal.is_none() =>
+            {
+                (
+                    RunState::Error,
+                    exit.code,
+                    Some(dom::incomplete_reason(&ring.text())),
+                )
+            }
             Ok(Ended::Exit(exit)) => {
                 let code = exit.code.or_else(|| exit.signal.map(|signal| 128 + signal));
                 (RunState::Failed, code, None)
@@ -728,6 +739,10 @@ impl App {
             (
                 "YULIUS_CI_SKIP_CODE".to_owned(),
                 dom::SKIP_EXIT_CODE.to_string(),
+            ),
+            (
+                "YULIUS_CI_INCOMPLETE_CODE".to_owned(),
+                dom::INCOMPLETE_EXIT_CODE.to_string(),
             ),
             (
                 "YULIUS_CI_CACHE".to_owned(),
