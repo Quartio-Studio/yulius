@@ -955,13 +955,19 @@ mod tests {
         std::fs::write(groups.agents.join("run-t1/pids.events.local"), "max 2\n")?;
         std::fs::write(groups.ci.join("pids.events.local"), "max 11\n")?;
         std::fs::create_dir_all(groups.engine.join("docker/c1"))?;
-        std::fs::write(groups.engine.join("docker/c1/pids.events.local"), "max 13\n")?;
+        std::fs::write(
+            groups.engine.join("docker/c1/pids.events.local"),
+            "max 13\n",
+        )?;
         assert_eq!(delegation.limit_counters("s1").task_limit_hits, 10);
         // On 6.8 (no `.local` file) `sandboxes/` holds no task and is not read.
         let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
         let groups = delegation.sandbox_group("s1", &Limits::default())?;
         std::fs::write(groups.agents.join("pids.events"), "max 3\n")?;
-        std::fs::write(delegation.unit.join(SANDBOXES).join("pids.events"), "max 5\n")?;
+        std::fs::write(
+            delegation.unit.join(SANDBOXES).join("pids.events"),
+            "max 5\n",
+        )?;
         assert!(!dir.join("pids.events.local").exists());
         assert_eq!(delegation.limit_counters("s1").task_limit_hits, 3);
         Ok(())

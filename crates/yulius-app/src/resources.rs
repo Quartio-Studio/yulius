@@ -263,25 +263,61 @@ mod tests {
         let cargo = dir.path().join(".cargo/config.toml");
         let nextest = dir.path().join(".config/nextest.toml");
         for (file, text, name) in [
-            (&cargo, "[env]\nRUST_TEST_THREADS.value = \"1\"\n", "RUST_TEST_THREADS"),
-            (&cargo, "[env]\nRUST_TEST_THREADS = { value = \"1\" }\n", "RUST_TEST_THREADS"),
-            (&cargo, "env.RUST_TEST_THREADS = \"1\"\n", "RUST_TEST_THREADS"),
-            (&cargo, "[env.RUST_TEST_THREADS]\nvalue = \"1\"\n", "RUST_TEST_THREADS"),
-            (&cargo, "[env]\n\"RUST_TEST_THREADS\" = \"1\"\n", "RUST_TEST_THREADS"),
+            (
+                &cargo,
+                "[env]\nRUST_TEST_THREADS.value = \"1\"\n",
+                "RUST_TEST_THREADS",
+            ),
+            (
+                &cargo,
+                "[env]\nRUST_TEST_THREADS = { value = \"1\" }\n",
+                "RUST_TEST_THREADS",
+            ),
+            (
+                &cargo,
+                "env.RUST_TEST_THREADS = \"1\"\n",
+                "RUST_TEST_THREADS",
+            ),
+            (
+                &cargo,
+                "[env.RUST_TEST_THREADS]\nvalue = \"1\"\n",
+                "RUST_TEST_THREADS",
+            ),
+            (
+                &cargo,
+                "[env]\n\"RUST_TEST_THREADS\" = \"1\"\n",
+                "RUST_TEST_THREADS",
+            ),
             (&cargo, "build.jobs = 2\n", "CARGO_BUILD_JOBS"),
             (&cargo, "[build]\njobs.x = 2\n", "CARGO_BUILD_JOBS"),
-            (&nextest, "profile.default.test-threads = 1\n", "NEXTEST_TEST_THREADS"),
-            (&nextest, "[profile.ci]\n'test-threads' = 1\n", "NEXTEST_TEST_THREADS"),
+            (
+                &nextest,
+                "profile.default.test-threads = 1\n",
+                "NEXTEST_TEST_THREADS",
+            ),
+            (
+                &nextest,
+                "[profile.ci]\n'test-threads' = 1\n",
+                "NEXTEST_TEST_THREADS",
+            ),
         ] {
             std::fs::write(file, text)?;
             assert!(sets_own(dir.path(), name), "{text}");
             std::fs::remove_file(file)?;
         }
         for (file, text, name) in [
-            (&cargo, "[env]\nFOO = \"RUST_TEST_THREADS\"\n", "RUST_TEST_THREADS"),
+            (
+                &cargo,
+                "[env]\nFOO = \"RUST_TEST_THREADS\"\n",
+                "RUST_TEST_THREADS",
+            ),
             (&cargo, "# jobs = 2\n", "CARGO_BUILD_JOBS"),
             (&cargo, "[build]\njobsx = 2\n", "CARGO_BUILD_JOBS"),
-            (&nextest, "[profile.default]\nslow-timeout = \"test-threads\"\n", "NEXTEST_TEST_THREADS"),
+            (
+                &nextest,
+                "[profile.default]\nslow-timeout = \"test-threads\"\n",
+                "NEXTEST_TEST_THREADS",
+            ),
         ] {
             std::fs::write(file, text)?;
             assert!(!sets_own(dir.path(), name), "{text}");
