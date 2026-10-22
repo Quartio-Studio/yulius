@@ -829,7 +829,10 @@ async fn isolation_limits() -> TestResult {
                 .and_then(|n| n.trim().parse::<u32>().ok())
                 .ok_or_else(|| format!("the CI forker said: {held}"))?;
             assert!(held_n < 24, "CI held at most its leaf: {held}");
-            assert!(out.contains("agents-forked"), "the agents keep their reserve: {out}");
+            assert!(
+                out.contains("agents-forked"),
+                "the agents keep their reserve: {out}"
+            );
         }
         let out = run(
             &mut sh,

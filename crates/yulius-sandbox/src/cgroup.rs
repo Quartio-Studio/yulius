@@ -289,6 +289,25 @@ fn split_cpu(dir: &Path, groups: &SandboxGroups) -> io::Result<()> {
     Ok(())
 }
 
+/// How often a sandbox was at a limit, as its cgroups count it (SPEC-268 PID-004). The counts
+/// only grow while the group lives; a rise between two reads is what tells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LimitCounters {
+    /// Forks and thread creations refused at a task limit (`pids.events` `max`), over the
+    /// sandbox's group and every group below it.
+    pub task_limit_hits: u64,
+    /// Processes the OOM killer ended in the sandbox (`memory.events` `oom_kill`).
+    pub oom_kills: u64,
+}
+
+/// The number after `key` in a cgroup's flat keyed file (`max 3\n`), 0 when absent.
+fn keyed(text: &str, key: &str) -> u64 {
+    text.lines()
+        .find_map(|line| line.strip_prefix(key)?.strip_prefix(' '))
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or(0)
+}
+
 /// Of every eight tasks of a sandbox, what CI jobs and the engine may each use (SPEC-268 PID-002):
 /// together three quarters, so the agents' leaf always keeps a quarter.
 const LEAF_TASKS_EIGHTHS: u64 = 3;
@@ -320,6 +339,46 @@ impl Delegation {
         } else {
             SandboxGroups::single(&dir)
         }
+    }
+
+    /// `sandbox`'s limit counters (SPEC-268 PID-004): `pids.events` `max` summed over its group
+    /// and the groups below it (at most 4096; kernel 6.8 counts a refused fork where the forking
+    /// task lives, newer kernels also in every ancestor, so the sum only serves to see a rise),
+    /// and its own `memory.events` `oom_kill` (hierarchical). Zero for a group that is not there.
+    #[must_use]
+    pub fn limit_counters(&self, sandbox: &str) -> LimitCounters {
+        let dir = self
+            .unit
+            .join(SANDBOXES)
+            .join(crate::manager::path_name(sandbox));
+        let read = |dir: &Path, file: &str, key: &str| {
+            std::fs::read_to_string(dir.join(file)).map_or(0, |text| keyed(&text, key))
+        };
+        let mut counters = LimitCounters {
+            task_limit_hits: 0,
+            oom_kills: read(&dir, "memory.events", "oom_kill"),
+        };
+        let mut stack = vec![dir];
+        let mut seen = 0;
+        while let Some(group) = stack.pop() {
+            seen += 1;
+            if seen > MAX_MOVED {
+                break;
+            }
+            counters.task_limit_hits =
+                counters
+                    .task_limit_hits
+                    .saturating_add(read(&group, "pids.events", "max"));
+            if let Ok(entries) = std::fs::read_dir(&group) {
+                stack.extend(
+                    entries
+                        .flatten()
+                        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                        .map(|e| e.path()),
+                );
+            }
+        }
+        counters
     }
 
     /// Prepares `sandbox`'s groups ([`Delegation::sandbox_paths`]): creates them, writes the
@@ -470,7 +529,11 @@ mod tests {
         );
         assert_eq!(limits.cpus, None, "shared by weight, not capped (SPEC-082)");
         assert_eq!(limits.files()[1], ("cpu.max", "max 100000".to_owned()));
-        assert_eq!(limits.pids_max, Some(8192), "the host's task table is unknown");
+        assert_eq!(
+            limits.pids_max,
+            Some(8192),
+            "the host's task table is unknown"
+        );
         let small = Limits::defaults(2 << 30, None);
         assert_eq!(small.memory_max, Some(2 << 30));
         assert_eq!(
@@ -671,10 +734,19 @@ mod tests {
             "+pids"
         );
         assert_eq!(std::fs::read_to_string(groups.ci.join("pids.max"))?, "24");
-        assert_eq!(std::fs::read_to_string(groups.engine.join("pids.max"))?, "24");
-        assert!(!groups.agents.join("pids.max").exists(), "the agents keep the rest");
+        assert_eq!(
+            std::fs::read_to_string(groups.engine.join("pids.max"))?,
+            "24"
+        );
+        assert!(
+            !groups.agents.join("pids.max").exists(),
+            "the agents keep the rest"
+        );
         assert!(!groups.system.join("pids.max").exists());
-        assert_eq!(std::fs::read_to_string(groups.ci.join("cpu.weight"))?, "400");
+        assert_eq!(
+            std::fs::read_to_string(groups.ci.join("cpu.weight"))?,
+            "400"
+        );
         delegation.unsplit_all();
         // `-pids`, then `-cpu` (kept by the fake file).
         assert_eq!(
@@ -692,10 +764,36 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-268 PID-004: refused forks are summed over the sandbox's groups (kernel 6.8 counts
+    /// them where the forking task lives), OOM kills are the sandbox's own (hierarchical).
+    #[test]
+    fn the_limit_counters_sum_the_sandboxs_groups() -> Result<(), Box<dyn std::error::Error>> {
+        let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+        assert_eq!(delegation.limit_counters("s1"), LimitCounters::default());
+        let groups = delegation.sandbox_group("s1", &Limits::default())?;
+        std::fs::write(dir.join("pids.events"), "max 2\n")?;
+        std::fs::write(groups.agents.join("pids.events"), "max 3\n")?;
+        std::fs::create_dir_all(groups.engine.join("docker/c1"))?;
+        std::fs::write(groups.engine.join("docker/c1/pids.events"), "max 5\n")?;
+        std::fs::write(
+            dir.join("memory.events"),
+            "low 0\nhigh 0\nmax 9\noom 1\noom_kill 1\noom_group_kill 0\n",
+        )?;
+        std::fs::write(groups.ci.join("memory.events"), "oom_kill 7\n")?;
+        assert_eq!(
+            delegation.limit_counters("s1"),
+            LimitCounters {
+                task_limit_hits: 10,
+                oom_kills: 1
+            }
+        );
+        assert_eq!(delegation.limit_counters("../s1"), LimitCounters::default());
+        Ok(())
+    }
+
     /// Without the split the runs live in the sandbox's group, which cannot pass `pids` down.
     #[test]
-    fn without_the_split_the_leaves_get_no_task_limit() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn without_the_split_the_leaves_get_no_task_limit() -> Result<(), Box<dyn std::error::Error>> {
         let (_root, delegation, dir) = fake_sandbox("memory pids\n")?;
         let limits = Limits {
             pids_max: Some(64),

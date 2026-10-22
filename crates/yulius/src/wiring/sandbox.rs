@@ -11,7 +11,8 @@ use async_trait::async_trait;
 use clap::Args;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::isolation::{
-    DiskUsage, DockerStatus, SandboxIsolation, SandboxJoin, SandboxLimits, SandboxRef, SmokeCheck,
+    DiskUsage, DockerStatus, LimitCounters, SandboxIsolation, SandboxJoin, SandboxLimits,
+    SandboxRef, SmokeCheck,
 };
 use yulius_domain::ids::SandboxId;
 use yulius_sandbox::cgroup::Limits;
@@ -351,6 +352,18 @@ impl SandboxIsolation for NamespaceIsolation {
 
     async fn processes(&self, sandbox: &SandboxId) -> usize {
         self.manager.processes(sandbox.as_str()).await
+    }
+
+    async fn limit_counters(&self, sandbox: &SandboxId) -> Option<LimitCounters> {
+        let delegation = self.manager.config().delegation.clone()?;
+        let sandbox = sandbox.as_str().to_owned();
+        let counters = tokio::task::spawn_blocking(move || delegation.limit_counters(&sandbox))
+            .await
+            .ok()?;
+        Some(LimitCounters {
+            task_limit_hits: counters.task_limit_hits,
+            oom_kills: counters.oom_kills,
+        })
     }
 
     fn release(&self, sandbox: &SandboxId) {

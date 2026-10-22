@@ -72,6 +72,16 @@ pub struct SandboxLimits {
     pub memory_bytes: Option<u64>,
 }
 
+/// How often a sandbox was at its task or memory limit, as the adapter counts it (SPEC-268
+/// PID-004): counts that only grow, compared between a run's start and end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LimitCounters {
+    /// Forks and thread creations refused at a task limit (`pids.events` `max`).
+    pub task_limit_hits: u64,
+    /// Processes the OOM killer ended (`memory.events` `oom_kill`).
+    pub oom_kills: u64,
+}
+
 /// A sandbox's disk against its soft quota.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiskUsage {
@@ -150,6 +160,11 @@ pub trait SandboxIsolation: Send + Sync {
     /// SPEC-171).
     async fn processes(&self, _sandbox: &SandboxId) -> usize {
         0
+    }
+
+    /// `sandbox`'s limit counters (SPEC-268 PID-004); `None` where nothing enforces limits.
+    async fn limit_counters(&self, _sandbox: &SandboxId) -> Option<LimitCounters> {
+        None
     }
 
     /// Ends a lease of [`SandboxIsolation::prepare`] (may finish in the background).
