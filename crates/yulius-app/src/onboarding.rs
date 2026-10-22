@@ -103,6 +103,15 @@ silently.";
 /// The gate every onboarding lays in its own pull request (SPEC-116 OBG-001, F 2026-10-14: the
 /// studio onboarding filed its missing linter, dead-code check and per-project CI as issues, so
 /// the project started without the checks every later task relies on).
+/// Other repositories the project needs are settled during onboarding, through Yulius
+/// (SPEC-267 REF-005, ADR-0197).
+const REFERENCE_SETUP: &str = "Other repositories: when the code, docs, instructions or this \
+request refer to another GitHub repository the work needs to read (an earlier version to port \
+from, a shared library, a product's source), fetch each one now with the `reference_repo` tool, \
+which reads it as the person who owns this task, and name them in AGENTS.md (the repository and \
+what it is for) so later tasks fetch them the same way. Never ask a person for GitHub App access \
+to read a repository; only when `reference_repo` refuses, ask one with `needs_you`.";
+
 const GATE_SETUP: &str = "Lay the project's gate in this pull request, not as follow-ups, as skill \
 infra-bootstrap describes: a test command, a lint and format check with the stack's established \
 tools, and a dead-code and unused-dependency check (skill dead-code-cleanup names each language's \
@@ -351,7 +360,7 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
          1. Read the repository's own instructions first (AGENTS.md, CLAUDE.md, .agents/skills, \
          .claude/skills, CONTRIBUTING and README). They stay authoritative: follow them for \
          branches, commits, tests and reviews.\n\
-         2. {environment}\n\
+         2. {environment} {references}\n\
          3. Reverse-engineer the existing project into these documents: the product summary, an \
          architecture document and decision records derived from the code and its history, so \
          every later task knows the whole product before it builds anything.\n\
@@ -399,6 +408,7 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
         preset = profile.preset,
         problems = problems.join("\n"),
         environment = ENVIRONMENT_SETUP,
+        references = REFERENCE_SETUP,
         gate = GATE_SETUP,
         cd = CD_SETUP,
     )
@@ -418,7 +428,7 @@ pub fn environment_prompt(repo: &str, profile: &Profile) -> String {
          its gate.\n\n\
          1. Read the repository's own instructions first (AGENTS.md, CLAUDE.md, README, \
          CONTRIBUTING and the development docs). They stay authoritative.\n\
-         2. {ENVIRONMENT_SETUP}\n\
+         2. {ENVIRONMENT_SETUP} {REFERENCE_SETUP}\n\
          3. {GATE_SETUP}\n\
          4. {CD_SETUP}\n\
          5. Change only what the environment, the gate and CD need (yulius.toml [commands], \
@@ -1566,6 +1576,25 @@ mod tests {
     /// tests, lint and format, a dead-code check and a CI job per project, existing findings
     /// baselined — instead of filing them as follow-ups (studio #57, #58), and keeps a workflow
     /// Yulius CI cannot run with a decision record instead of asking a person.
+    /// SPEC-267 REF-005: onboarding fetches the other repositories the project refers to through
+    /// Yulius, and never asks a person for GitHub App access to read one.
+    #[test]
+    fn prompts_fetch_referenced_repositories_without_a_person() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let (report, _) = validate_checkout(dir.path());
+        let profile =
+            crate::projects::profile_view(&yulius_domain::delivery::DeliveryProfile::studio());
+        let preparation = onboarding_prompt("Quartio-Studio/studio", &profile, &report);
+        let environment = environment_prompt("Quartio-Studio/studio", &profile);
+        for prompt in [&preparation, &environment] {
+            for wording in ["`reference_repo`", "AGENTS.md", "GitHub App access"] {
+                assert!(prompt.contains(wording), "missing {wording:?}\n{prompt}");
+            }
+            assert!(prompt.len() < crate::lifecycle::MAX_PROMPT_BYTES);
+        }
+        Ok(())
+    }
+
     #[test]
     fn prompts_detect_existing_cd_and_define_it_explicitly() -> TestResult {
         let dir = tempfile::tempdir()?;
