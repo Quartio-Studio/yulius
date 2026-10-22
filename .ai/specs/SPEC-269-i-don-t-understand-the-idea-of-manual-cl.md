@@ -205,6 +205,11 @@ Read in the code on `dev` (21c26d8b):
   - The card names Yulius's own cleanup and its next round.
   - After Clean up the card says "Cleaned up just now by mkarp: 3 removed." with the three items
     and "Still listed:" for the kept unmerged branch.
+- Gate at f62c00fc: one failure outside this change.
+  `local_ci::a_run_s_jobs_record_their_stages_and_test_counts` (from #490) read "real durations:
+  1540 ms, 480 ms": stage bounds are stamped when the markers are read, so under the gate's load
+  the boundary between two 1 s stages moved. Its floor is now "each ≥ 100 ms, together ≥ 1500 ms",
+  which still rejects zero or fake durations.
 - Not testable here: a real 6-hourly round on the instance against GitHub. The round is driven in
   tests through `hygiene_round`, with real Git over local remotes and the GitHub fake.
 - Independent review in fresh sessions:

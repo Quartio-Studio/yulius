@@ -1658,8 +1658,11 @@ async fn a_run_s_jobs_record_their_stages_and_test_counts() -> TestResult {
         compile.duration_ms().ok_or("compile ended")?,
         unit.duration_ms().ok_or("unit ended")?,
     );
+    // Each stage sleeps 1 s. Its bounds are stamped when Yulius reads the markers, so under load
+    // the line between the two stages moves (1540 ms and 480 ms were seen); both are real and
+    // together cover the job's sleeps.
     assert!(
-        compiled >= 500 && tested >= 500,
+        compiled >= 100 && tested >= 100 && compiled + tested >= 1500,
         "real durations: {compiled} ms, {tested} ms"
     );
     assert!(unit.ended_at <= job.ended_at && compile.started_at >= job.started_at);
