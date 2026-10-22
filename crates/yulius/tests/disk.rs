@@ -861,15 +861,14 @@ impl World {
     }
 }
 
-/// #649 (SPEC-263 DUL-001): a sandbox that replaces its `worktrees`, or one entry of it, with a
-/// link to another sandbox's never gets that sandbox's caches measured or removed as its own.
+/// #649 (SPEC-263 DUL-001): a sandbox that replaces its `worktrees` with a link to another
+/// sandbox's never gets that sandbox's caches measured or removed as its own.
 #[tokio::test]
-async fn a_linked_worktrees_folder_or_entry_never_reaches_another_sandbox() -> BoxResult<()> {
+async fn a_linked_worktrees_folder_never_reaches_another_sandbox() -> BoxResult<()> {
     let w = world().await?;
     let victim = w.orphan("wt-206")?;
     let (attacker, evil) = w.attacker().await?;
     w.a_day_later()?;
-
     std::os::unix::fs::symlink("../s1/worktrees", evil.join("worktrees"))?;
     let report = w.h.app.disk_upkeep(&attacker, false).await?;
     assert!(
@@ -877,8 +876,19 @@ async fn a_linked_worktrees_folder_or_entry_never_reaches_another_sandbox() -> B
         "a linked worktrees/ pruned another sandbox's cache ({report:?})"
     );
     assert_eq!(report.caches, 0, "{report:?}");
+    // Reached without a link, by its own sandbox, the same cache goes as before.
+    let report = w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(!victim.join("target").exists(), "{report:?}");
+    Ok(())
+}
 
-    std::fs::remove_file(evil.join("worktrees"))?;
+/// #649 (SPEC-263 DUL-001): one entry of `worktrees` linked to another sandbox's worktree.
+#[tokio::test]
+async fn a_linked_worktree_entry_never_reaches_another_sandbox() -> BoxResult<()> {
+    let w = world().await?;
+    let victim = w.orphan("wt-206")?;
+    let (attacker, evil) = w.attacker().await?;
+    w.a_day_later()?;
     std::fs::create_dir_all(evil.join("worktrees"))?;
     std::os::unix::fs::symlink(&victim, evil.join("worktrees/wt-9"))?;
     let report = w.h.app.disk_upkeep(&attacker, false).await?;
@@ -887,26 +897,17 @@ async fn a_linked_worktrees_folder_or_entry_never_reaches_another_sandbox() -> B
         "a linked worktree entry pruned another sandbox's cache ({report:?})"
     );
     assert_eq!(report.caches, 0, "{report:?}");
-
-    // Reached without a link, by its own sandbox, the same cache goes as before.
-    let report = w.h.app.disk_upkeep(&w.sandbox, false).await?;
-    assert!(!victim.join("target").exists(), "{report:?}");
     Ok(())
 }
 
-/// #649 (SPEC-263 DUL-001): a linked `ci/jobs`, or a linked `ci`, never gets another sandbox's
-/// CI checkout caches pruned, also under pressure.
+/// #649 (SPEC-263 DUL-001): a linked `ci/jobs` never gets another sandbox's CI checkout caches
+/// pruned, also under pressure.
 #[tokio::test]
-async fn a_linked_ci_jobs_or_ci_folder_never_reaches_another_sandbox() -> BoxResult<()> {
+async fn a_linked_ci_jobs_folder_never_reaches_another_sandbox() -> BoxResult<()> {
     let w = world().await?;
     let checkout = w.ci_checkout("quality")?;
     let (attacker, evil) = w.attacker().await?;
-    let quota = Arc::new(Quota {
-        used: AtomicU64::new(95 * BIG as u64),
-        limit: 100 * BIG as u64,
-    });
-    assert!(w.h.app.set_isolation(quota));
-
+    w.pressed();
     std::fs::create_dir_all(evil.join("ci"))?;
     std::os::unix::fs::symlink("../../s1/ci/jobs", evil.join("ci/jobs"))?;
     let report = w.h.app.disk_upkeep(&attacker, true).await?;
@@ -914,18 +915,26 @@ async fn a_linked_ci_jobs_or_ci_folder_never_reaches_another_sandbox() -> BoxRes
         checkout.join("target/blob").exists(),
         "a linked ci/jobs pruned another sandbox's cache ({report:?})"
     );
+    assert_eq!(report.caches, 0, "{report:?}");
+    let report = w.h.app.disk_upkeep(&w.sandbox, true).await?;
+    assert!(!checkout.join("target").exists(), "{report:?}");
+    Ok(())
+}
 
-    std::fs::remove_file(evil.join("ci/jobs"))?;
-    std::fs::remove_dir(evil.join("ci"))?;
+/// #649 (SPEC-263 DUL-001): a linked `ci`, the same.
+#[tokio::test]
+async fn a_linked_ci_folder_never_reaches_another_sandbox() -> BoxResult<()> {
+    let w = world().await?;
+    let checkout = w.ci_checkout("quality")?;
+    let (attacker, evil) = w.attacker().await?;
+    w.pressed();
     std::os::unix::fs::symlink("../s1/ci", evil.join("ci"))?;
     let report = w.h.app.disk_upkeep(&attacker, true).await?;
     assert!(
         checkout.join("target/blob").exists(),
         "a linked ci/ pruned another sandbox's cache ({report:?})"
     );
-
-    let report = w.h.app.disk_upkeep(&w.sandbox, true).await?;
-    assert!(!checkout.join("target").exists(), "{report:?}");
+    assert_eq!(report.caches, 0, "{report:?}");
     Ok(())
 }
 
@@ -963,48 +972,108 @@ async fn a_worktrees_folder_swapped_for_a_link_after_the_scan_is_not_followed() 
     Ok(())
 }
 
-/// #649 (SPEC-263 DUL-001, DUL-003): a closed task's worktree reached through a linked
-/// `worktrees` is never removed, even when the sandbox's own repository registers the other
-/// sandbox's folder as its worktree (it controls its `.git`).
+impl World {
+    /// `s2`'s repository (a Rust project ignoring `target`), with a closed task `t-evil`, and a
+    /// worktree of it at `s1/worktrees/t-evil` holding committed work. The test makes that
+    /// registration itself: it stands for a sandbox's `.git` naming another sandbox's folder,
+    /// which only a link lets the upkeep reach.
+    async fn registered_victim(&self, evil: &Path) -> BoxResult<PathBuf> {
+        let repo = evil.join("repo");
+        std::fs::create_dir_all(&repo)?;
+        git(&repo, &["init", "-q", "-b", "main"])?;
+        std::fs::write(repo.join("Cargo.toml"), "[package]\n")?;
+        std::fs::write(repo.join(".gitignore"), "target\n")?;
+        git(&repo, &["add", "-A"])?;
+        git(&repo, &["commit", "-q", "-m", "init"])?;
+        let victim = self.root.join("worktrees/t-evil");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feat/victim",
+                victim.to_str().ok_or("path")?,
+            ],
+        )?;
+        std::fs::write(victim.join("README.md"), "victim's\n")?;
+        git(&victim, &["add", "-A"])?;
+        git(&victim, &["commit", "-q", "-m", "victim's work"])?;
+        seed_task(
+            &self.h,
+            "t-evil",
+            "s2",
+            "u-alice",
+            TaskStatus::Closed,
+            Some(&evil.join("worktrees/t-evil")),
+        )
+        .await?;
+        Ok(victim)
+    }
+
+    /// A quota at 95 %, so the upkeep must free space.
+    fn pressed(&self) {
+        let quota = Arc::new(Quota {
+            used: AtomicU64::new(95 * BIG as u64),
+            limit: 100 * BIG as u64,
+        });
+        assert!(self.h.app.set_isolation(quota));
+    }
+}
+
+/// #649 (SPEC-263 DUL-001): a closed task's worktree reached through a linked `worktrees` is
+/// never handed to Git for removal.
 #[tokio::test]
 async fn an_ended_worktree_reached_through_a_link_is_never_removed() -> BoxResult<()> {
     let w = world().await?;
     let (attacker, evil) = w.attacker().await?;
-    let repo = evil.join("repo");
-    std::fs::create_dir_all(&repo)?;
-    git(&repo, &["init", "-q", "-b", "main"])?;
-    std::fs::write(repo.join("README.md"), "evil\n")?;
-    git(&repo, &["add", "-A"])?;
-    git(&repo, &["commit", "-q", "-m", "init"])?;
-    let victim = w.root.join("worktrees/t-evil");
+    let victim = w.registered_victim(&evil).await?;
+    std::os::unix::fs::symlink("../s1/worktrees", evil.join("worktrees"))?;
+    w.later();
+    let report = w.h.app.disk_upkeep(&attacker, false).await?;
+    assert!(
+        victim.join("README.md").exists(),
+        "a worktree reached through a link was removed ({report:?})"
+    );
+    assert_eq!(report.worktrees, 0, "{report:?}");
+    Ok(())
+}
+
+/// #649 (SPEC-263 DUL-003): a `worktrees` swapped for a link after the scan found a real ended
+/// worktree is checked again before Git removes it.
+#[tokio::test]
+async fn an_ended_worktree_swapped_for_a_link_after_the_scan_is_not_removed() -> BoxResult<()> {
+    let w = world().await?;
+    let (attacker, evil) = w.attacker().await?;
+    let victim = w.registered_victim(&evil).await?;
+    // The task's own worktree is real at the scan and holds a cache, so the round pauses at
+    // its removal (`CachePrune`) before it reaches the ended worktrees.
+    let own = evil.join("worktrees/t-evil");
     git(
-        &repo,
+        &evil.join("repo"),
         &[
             "worktree",
             "add",
             "-q",
             "-b",
             "feat/t-evil",
-            victim.to_str().ok_or("path")?,
+            own.to_str().ok_or("path")?,
         ],
     )?;
-    std::fs::write(victim.join("README.md"), "victim's\n")?;
-    git(&victim, &["commit", "-q", "-am", "victim's work"])?;
-    std::os::unix::fs::symlink("../s1/worktrees", evil.join("worktrees"))?;
-    seed_task(
-        &w.h,
-        "t-evil",
-        "s2",
-        "u-alice",
-        TaskStatus::Closed,
-        Some(&evil.join("worktrees/t-evil")),
-    )
-    .await?;
+    std::fs::create_dir_all(own.join("target"))?;
+    std::fs::write(own.join("target/blob"), vec![7u8; BIG])?;
     w.later();
+    let (folder, aside) = (evil.join("worktrees"), evil.join("worktrees.old"));
+    yulius_app::race::on(yulius_app::race::Point::CachePrune, &evil, move || {
+        std::fs::rename(&folder, &aside).ok();
+        std::os::unix::fs::symlink("../s1/worktrees", &folder).ok();
+    });
     let report = w.h.app.disk_upkeep(&attacker, false).await?;
+    assert!(evil.join("worktrees.old/t-evil/target/blob").exists());
     assert!(
         victim.join("README.md").exists(),
-        "a worktree reached through a link was removed ({report:?})"
+        "a worktree swapped for a link after the scan was removed ({report:?})"
     );
     assert_eq!(report.worktrees, 0, "{report:?}");
     Ok(())

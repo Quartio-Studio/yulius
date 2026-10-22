@@ -27,7 +27,7 @@ use yulius_domain::task::{Activity, StopReason, TaskStatus};
 
 use crate::context::App;
 use crate::error::AppResult;
-use crate::leftovers::{no_link_between, remove_below};
+use crate::leftovers::no_link_between;
 use crate::model::{SandboxRecord, TaskRecord};
 use crate::ports::isolation::SandboxRef;
 
@@ -120,8 +120,10 @@ fn real_dir_from(root: &Path, path: &Path) -> bool {
 }
 
 /// Removes the cache `path` below the sandbox directory `root` after checking it again: a folder
-/// swapped for a link since the scan is refused, and one swapped after this check fails the
-/// removal's `O_NOFOLLOW` walk (SPEC-263 DUL-002).
+/// swapped for a link since the scan is refused, and on Linux one swapped after this check fails
+/// the removal's `O_NOFOLLOW` walk (SPEC-263 DUL-002). `remove_below` reaches entries through
+/// `/proc/self/fd`, so elsewhere (a macOS development host, where sandboxes are not contained)
+/// the checked path is removed as before.
 fn remove_cache(root: &Path, path: &Path) -> std::io::Result<()> {
     crate::race::reached(crate::race::Point::CachePrune, path);
     if !real_dir_from(root, path) {
@@ -129,7 +131,10 @@ fn remove_cache(root: &Path, path: &Path) -> std::io::Result<()> {
             "not a real directory, or a link on the way",
         ));
     }
-    remove_below(root, path)
+    #[cfg(target_os = "linux")]
+    return crate::leftovers::remove_below(root, path);
+    #[cfg(not(target_os = "linux"))]
+    return std::fs::remove_dir_all(path);
 }
 
 fn root_entries(worktree: &Path) -> Vec<String> {
@@ -278,16 +283,16 @@ impl App {
     /// no tracked file (a path a commit has files in is the project's work, not a cache, whatever
     /// `yulius.toml` says).
     async fn find_caches(&self, root: &Path, worktree: &Path) -> Vec<(String, PathBuf, u64)> {
-        let (root, dir) = (root.to_path_buf(), worktree.to_path_buf());
+        let (top, dir) = (root.to_path_buf(), worktree.to_path_buf());
         let present = tokio::task::spawn_blocking(move || {
-            if !real_dir_from(&root, &dir) {
+            if !real_dir_from(&top, &dir) {
                 return Vec::new();
             }
             cache_paths(&root_entries(&dir), &declared_caches(&dir))
                 .into_iter()
                 .filter_map(|relative| {
                     let path = dir.join(&relative);
-                    real_dir_from(&root, &path).then_some((relative, path))
+                    real_dir_from(&top, &path).then_some((relative, path))
                 })
                 .collect::<Vec<_>>()
         })
@@ -304,10 +309,16 @@ impl App {
             {
                 continue;
             }
-            let measured = path.clone();
-            let bytes = tokio::task::spawn_blocking(move || dir_size(&measured))
-                .await
-                .unwrap_or(0);
+            // Checked again right before it is measured: Git's answer took a while.
+            let (root, measured) = (root.to_path_buf(), path.clone());
+            let bytes = tokio::task::spawn_blocking(move || {
+                real_dir_from(&root, &measured).then(|| dir_size(&measured))
+            })
+            .await
+            .unwrap_or_default();
+            let Some(bytes) = bytes else {
+                continue;
+            };
             found.push((relative, path, bytes));
         }
         found

@@ -40,12 +40,12 @@ each removal, so a sandbox can never steer it into another sandbox's files.
 
 - DUL-001. A worktree, an orphan worktree and a CI job checkout count only when every folder from
   the sandbox directory (exclusive) down to it, and it itself, is a real directory, not a link;
-  a cache counts only when, in addition, every folder down to it and it itself is one. Nothing
-  else is measured, listed as ended or removed.
-- DUL-002. Right before each cache removal the rule is checked again, and the removal goes through
-  `remove_below` from the sandbox directory, so a folder swapped for a link after the check fails
-  the removal instead of following it. A refused removal is skipped with a warning and not
-  counted or audited.
+  a cache counts only when, in addition, every folder down to it and it itself is one, checked
+  again right before it is measured. Nothing else is listed as ended or removed.
+- DUL-002. Right before each cache removal the rule is checked again, and on Linux the removal goes
+  through `remove_below` from the sandbox directory, so a folder swapped for a link after the
+  check fails the removal instead of following it. A refused removal is skipped with a warning
+  and not counted or audited.
 - DUL-003. A closed or cancelled task's worktree is checked again by the same rule right before it
   is handed to Git for removal.
 - DUL-004. Caches reached without links are pruned as before (every existing `disk.rs` test
@@ -54,8 +54,9 @@ each removal, so a sandbox can never steer it into another sandbox's files.
 ## Plan
 
 - [x] Spec for link-refusing disk upkeep
-- [ ] Regression tests for linked worktrees/ and ci/jobs (failing)
-- [ ] Scan and removal refuse links from the sandbox directory
+- [x] Regression tests for linked worktrees/ and ci/jobs (failing)
+- [x] Scan and removal refuse links from the sandbox directory
+- [ ] Review round 1: ended-worktree re-check test, macOS removal, split tests
 - [ ] Docs, changes entry and gates green
 - [ ] Independent review and fixes
 - [ ] Merge into dev on green CI
@@ -66,7 +67,9 @@ each removal, so a sandbox can never steer it into another sandbox's files.
   - a linked `worktrees`, and a linked worktree entry, leave another sandbox's orphan cache alone;
   - a linked `ci/jobs`, and a linked `ci`, leave another sandbox's checkout cache alone;
   - a `worktrees` swapped for a link after the scan, right before the removal
-    (`race::Point::CachePrune`), leaves the other sandbox's cache alone.
+    (`race::Point::CachePrune`), leaves the other sandbox's cache alone;
+  - a closed task's worktree reached through a linked `worktrees`, at the scan or swapped in after
+    it, is not handed to Git (its repository registers the other sandbox's folder).
 - Every existing disk test passes unchanged (DUL-004).
 
 ## Test plan
@@ -89,5 +92,14 @@ each removal, so a sandbox can never steer it into another sandbox's files.
   that host access to agent-owned folders goes through handles.
 - Reuse `no_link_between` and `remove_below` from the leftovers module (made `pub(crate)` where
   needed) rather than a second implementation.
-- `remove_below` instead of `remove_dir_all`: it removes through `O_NOFOLLOW` handles, closing
-  the window between the re-check and the removal, and also removes a tree a tool made read-only.
+- `remove_below` instead of `remove_dir_all` on Linux: it removes through `O_NOFOLLOW` handles,
+  closing the window between the re-check and the removal, and also removes a tree a tool made
+  read-only. It reaches entries through `/proc/self/fd`, which macOS lacks (there it removes
+  nothing and reports success; pre-existing in the leftovers module since #681), so on other
+  systems the re-checked path is still removed with `remove_dir_all`. Sandboxes are contained only
+  on Linux, so the remaining window there does not cross a sandbox boundary.
+- Out of scope, reported on #649 (review round 1, pre-existing): `worktree_remove_if_safe`
+  resolves the owned root and the worktree with two `canonicalize` calls and Git resolves the path
+  again, and `sandboxes/<sid>/repo` is never checked for links, so a sandbox that keeps swapping
+  folders can still race the DUL-003 check. Closing it means removing worktrees through handles in
+  `yulius-git`, which is a change of its own.
