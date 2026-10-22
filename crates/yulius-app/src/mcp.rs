@@ -431,6 +431,21 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
             }), &["name", "file"]),
         },
         ToolDescriptor {
+            name: "secret_state_restore".into(),
+            description: "Restore an agent state (secrets_list names them: a folder of operator state a person sent from their computer, such as a deploy tool's inventory, rollout folders and configs) into a folder of the sandbox home, which later tasks keep: Yulius writes the files with their modes; you never receive their content. Once restored, that copy is the one written to: run the project's tools against it there, never print its files or copy them into the conversation, and save it with secret_state_save after each change. A state already restored and current is refused: use the folder secrets_list names (restored_path). The target must be missing or an empty folder (follows no links). Audited.".into(),
+            input_schema: schema(json!({
+                "name": {"type": "string", "description": "The state's NAME from secrets_list"},
+                "path": {"type": "string", "description": "A folder of your home as ~/path, e.g. ~/.quartio-operator (where the project's tools expect it)"}
+            }), &["name", "path"]),
+        },
+        ToolDescriptor {
+            name: "secret_state_save".into(),
+            description: "Save the restored copy of an agent state back into the vault as its next version (a backup, and what the person downloads with yulius secrets state-get): call it after each change, such as a rollout, once the tools that write it are done. Links and special files are left out and named. Refused when the person sent a newer copy to replace it (restore that first) or another task saved meanwhile. Audited.".into(),
+            input_schema: schema(json!({
+                "name": {"type": "string", "description": "The state's NAME from secrets_list"}
+            }), &["name"]),
+        },
+        ToolDescriptor {
             name: "browser_fill_secret".into(),
             description: "Type an agent secret into the project browser without seeing it: its value (password or key) or, when the secret stores them (Basic credentials, older secrets), its user name or current two-factor (TOTP) code, into the focused field or the element matching selector, in a tab whose page is on one of the secret's bound hosts. Use browser_snapshot first to find the field.".into(),
             input_schema: schema(json!({
@@ -644,6 +659,8 @@ impl App {
                 self.tool_secret_create_from_file(SecretUser::Task(ctx), &args)
                     .await
             }
+            "secret_state_restore" => self.tool_secret_state_restore(ctx, &args).await,
+            "secret_state_save" => self.tool_secret_state_save(ctx, &args).await,
             other => Err(AppError::Invalid(format!("unknown tool: {other}"))),
         })
     }
