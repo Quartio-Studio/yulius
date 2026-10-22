@@ -55,14 +55,14 @@ pub async fn move_to_github(
     ))
 }
 
-/// Removes a playground (when still live) and deletes its code for good once nothing of it runs
-/// (SPEC-171).
+/// Removes a sandbox (when still live) and deletes its files on this server for good once nothing
+/// of it runs (SPEC-171 for a playground's code, SPEC-276 RDA-011 for every sandbox).
 pub async fn purge(
     State(app): State<AppState>,
     Auth(ctx): Auth,
     Path(sid): Path<String>,
 ) -> ApiResult<Json<PurgeState>> {
-    Ok(Json(app.purge_playground(&ctx, &sid).await?))
+    Ok(Json(app.purge_sandbox(&ctx, &sid).await?))
 }
 
 pub async fn skip_onboarding(

@@ -202,6 +202,16 @@ struct Pass {
     ci_keys: std::collections::HashMap<SandboxId, Option<HashSet<String>>>,
 }
 
+/// Whether `name` is the export a removal of the sandbox `slug` wrote (`sandbox-<slug>-<ms>.json`):
+/// never another sandbox's whose slug only starts with it (`app` and `app-2`).
+fn is_export_of(name: &str, slug: &str) -> bool {
+    name.strip_prefix("sandbox-")
+        .and_then(|rest| rest.strip_prefix(slug))
+        .and_then(|rest| rest.strip_prefix('-'))
+        .and_then(|rest| rest.strip_suffix(".json"))
+        .is_some_and(|ms| !ms.is_empty() && ms.bytes().all(|b| b.is_ascii_digit()))
+}
+
 fn exists(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
@@ -652,9 +662,8 @@ impl App {
         for task in &tasks {
             extra.push(self.data_path(&["transcripts", task.id.as_str()]));
         }
-        let prefix = format!("sandbox-{}-", sandbox.slug);
         for (name, path) in entries(&self.data_path(&["exports"])) {
-            if name.starts_with(&prefix) && name.ends_with(".json") {
+            if is_export_of(&name, &sandbox.slug) {
                 extra.push(path);
             }
         }
@@ -690,7 +699,16 @@ impl App {
         let Some(removed) = record.removed_at else {
             return Ok(Some("the sandbox is live again".into()));
         };
-        if !removed_long_enough(removed.0, self.now().0) {
+        // Files asked to go permanently go as soon as nothing of the sandbox runs (SPEC-276
+        // RDA-011): no 10-minute wait.
+        if !removed_long_enough(removed.0, self.now().0)
+            && !self
+                .deps
+                .store
+                .pending_purges()
+                .await?
+                .contains(&sandbox.id)
+        {
             return Ok(Some("it was removed less than 10 minutes ago".into()));
         }
         let running = self.still_running(&sandbox.id).await?;
@@ -1306,6 +1324,35 @@ impl App {
         }
     }
 
+    /// Deletes every file of the removed `sandbox` (SPEC-276 RDA-011): "everything of the
+    /// removed sandbox", which holds its disposable parts too, through its guard and the mapped
+    /// removal, audited `leftovers.delete`. `Ok(None)` once nothing of it is left; `Ok(Some(why))`
+    /// while its rule keeps it (something of it runs, its holder lives).
+    ///
+    /// # Errors
+    /// Store failures, and a removal that failed (tried again on the next round).
+    pub(crate) async fn purge_removed_files(
+        &self,
+        sandbox: &SandboxRecord,
+    ) -> AppResult<Option<String>> {
+        let mut found = Vec::new();
+        self.scan_removed(sandbox, &mut found).await?;
+        let Some(item) = found.into_iter().find(|i| i.kind == Kind::RemovedSandbox) else {
+            return Ok(None);
+        };
+        let mut report = DeleteReport::default();
+        self.delete_leftover(&item, "yulius", &mut Pass::default(), &mut report)
+            .await;
+        if let Some(kept) = report.kept.first() {
+            let why = kept.split_once(": ").map_or(kept.as_str(), |(_, why)| why);
+            return Ok(Some(why.to_owned()));
+        }
+        if let Some(failed) = report.failed.first() {
+            return Err(AppError::Internal(format!("cannot delete {failed}")));
+        }
+        Ok(None)
+    }
+
     /// Deletes `items` one after the other, each after its guard, updating the job's progress.
     pub async fn delete_leftovers(&self, items: &[Leftover], actor: &str) -> DeleteReport {
         let mut report = DeleteReport::default();
@@ -1724,6 +1771,15 @@ mod tests {
     /// #675: a removal that fails names the entry that stayed, not only the item. Nobody, root
     /// included, can unlink an entry of `/proc`.
     #[cfg(target_os = "linux")]
+    #[test]
+    fn a_removal_s_export_is_told_from_another_sandbox_s() {
+        assert!(is_export_of("sandbox-app-1700000000000.json", "app"));
+        assert!(!is_export_of("sandbox-app-2-1700000000000.json", "app"));
+        assert!(is_export_of("sandbox-app-2-1700000000000.json", "app-2"));
+        assert!(!is_export_of("sandbox-app-.json", "app"));
+        assert!(!is_export_of("sandbox-app-17.json.bak", "app"));
+    }
+
     #[test]
     fn a_failed_removal_names_the_entry_that_stayed() {
         let item = Path::new("/proc/self/ns");

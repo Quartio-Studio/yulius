@@ -743,6 +743,65 @@ async fn the_round_runs_at_start_and_every_period() -> BoxResult<()> {
     Ok(())
 }
 
+/// SPEC-276 RDA-011, RDA-012: a removed sandbox whose files were asked to go loses every one of
+/// them (clone, home and sessions, worktrees, CI, browser, system layer, holder state, CD files,
+/// transcripts and export) as soon as nothing of it runs, without the 10-minute wait, and waits
+/// while its holder lives; a kept one keeps what PRJ-009 keeps; another sandbox's export whose slug
+/// only starts with the same name stays.
+#[tokio::test]
+async fn a_purged_sandbox_loses_every_file_once_nothing_runs_and_a_kept_one_keeps_them()
+-> BoxResult<()> {
+    use yulius_domain::ids::UserId;
+    let w = world().await?;
+    let gone = w.sandbox("gone").await?;
+    let kept = w.sandbox("kept").await?;
+    w.remove("gone").await?;
+    w.remove("kept").await?;
+    let other_export = w.at("exports/sandbox-gone-2-5.json");
+    write(&other_export, "{}")?;
+    w.holders.set_live("gone", true);
+    w.h.store
+        .request_purge(
+            &SandboxId::parse("gone")?,
+            &UserId::parse("u-alice")?,
+            w.h.app.now(),
+        )
+        .await?;
+    assert_eq!(w.h.app.run_purges().await, 0, "its holder lives");
+    assert!(gone.join("repo").exists() && w.at("sysroots/gone").exists());
+
+    w.holders.set_live("gone", false);
+    assert_eq!(w.h.app.run_purges().await, 1, "no 10-minute wait");
+    for path in [
+        "sandboxes/gone",
+        "sysroots/gone",
+        "runtime/sandboxes/gone",
+        "cd/gone",
+        "transcripts/t-gone",
+        "exports/sandbox-gone-1.json",
+    ] {
+        assert!(!w.at(path).exists(), "{path} is deleted");
+    }
+    assert!(other_export.exists(), "another sandbox's export stays");
+    assert_eq!(w.h.app.run_purges().await, 0, "done once");
+    let audited = w.audit("gone", "sandbox.purged").await?;
+    assert_eq!(audited.len(), 1, "{audited:?}");
+
+    // Kept: the round deletes its disposable parts once 10 minutes passed, never what PRJ-009 keeps.
+    w.later(REMOVED_KEEP_MS + 1_000);
+    w.h.app.run_leftovers_round().await.ok_or("the round ran")?;
+    assert!(!kept.join("ci").exists());
+    for path in [
+        "sandboxes/kept/repo",
+        "sandboxes/kept/home",
+        "transcripts/t-kept",
+        "exports/sandbox-kept-1.json",
+    ] {
+        assert!(w.at(path).exists(), "{path} is kept");
+    }
+    Ok(())
+}
+
 /// SPEC-276 RDA-009: the automatic round deletes the safe leftovers with nobody running the
 /// CLI, and the view says when it last ran and what it did.
 #[tokio::test]

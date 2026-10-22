@@ -1,15 +1,19 @@
-//! Purging a removed playground's code (SPEC-171 PGL-005..007, ADR-0139). A playground's code
-//! exists only on this server: its bare `origin` and its sandbox directory. The purge is a
-//! recorded request: it deletes both only once no process of the sandbox runs (no agent run or
-//! task still stopping, no shell, no browser, no CI run, nothing left in its namespaces), and it is
-//! tried at once and on every disk upkeep round until then. The sandbox row, its tasks, the
-//! removal's export and the audit trail stay; the quota, which counts the `origin`s on disk, no
+//! Deleting a removed sandbox's files for good (SPEC-171 PGL-005..007 for playgrounds, ADR-0139;
+//! SPEC-276 RDA-010/RDA-011 for every sandbox, ADR-0205). The purge is a recorded request: it
+//! deletes every file of the sandbox on this server (its clone, home and sessions, worktrees, CI
+//! directories, browser profile, system layer, runtime state, runs, transcripts, export and a
+//! playground's `origin`) through the leftovers' guards and mapped removal, only once nothing of the
+//! sandbox runs (no agent run or task still stopping, no shell, no browser, no CI run, no deploy,
+//! nothing left in its namespaces, its holder stopped). It is tried at once, every
+//! [`PURGE_RETRY`] for [`PURGE_WATCH`], and on every disk round until done. The sandbox row, its
+//! tasks and the audit trail stay; a GitHub repository is never touched; a playground's quota no
 //! longer counts it.
 
 use std::io;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use yulius_contracts::api::sandboxes::PurgeState;
 use yulius_domain::ids::SandboxId;
@@ -19,11 +23,13 @@ use yulius_domain::task::TaskStatus;
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::model::SandboxRecord;
-use crate::projects::blocking;
 
 /// Most directories made writable while deleting one tree (a tool's read-only cache).
 const MAX_DIRS_MADE_WRITABLE: usize = 1_000_000;
+/// A waiting purge is tried again this often after its request.
+pub const PURGE_RETRY: Duration = Duration::from_secs(15);
+/// ... for this long; the disk rounds take it from there.
+pub const PURGE_WATCH: Duration = Duration::from_secs(10 * 60);
 
 fn plural(count: usize, noun: &str) -> String {
     if count == 1 {
@@ -68,14 +74,15 @@ pub(crate) fn delete_tree(path: &Path) -> io::Result<()> {
 }
 
 impl App {
-    /// `POST /api/sandboxes/{sid}/purge` (PGL-005): an admin of a live playground removes it (as
-    /// `DELETE` does) and asks for its code to be deleted for good; the superadmin may ask it for
-    /// an already removed playground. Answers where the purge stands.
+    /// `POST /api/sandboxes/{sid}/purge` (PGL-005, RDA-011): an admin of a live sandbox removes it
+    /// (as `DELETE` does) and asks for its files to be deleted for good; the superadmin may ask it
+    /// for an already removed sandbox. Answers where the purge stands; one that waits is tried
+    /// again every [`PURGE_RETRY`] for [`PURGE_WATCH`], then on every disk round.
     ///
     /// # Errors
-    /// `NotFound` without access (a removed playground for anyone but the superadmin);
-    /// `Forbidden` without admin; `Conflict` for a GitHub sandbox.
-    pub async fn purge_playground(
+    /// `NotFound` without access (a removed sandbox for anyone but the superadmin); `Forbidden`
+    /// without admin.
+    pub async fn purge_sandbox(
         self: &Arc<Self>,
         ctx: &AuthContext,
         sid: &str,
@@ -88,17 +95,15 @@ impl App {
         } else if !ctx.user.is_superadmin {
             return Err(AppError::NotFound);
         }
-        if !record.is_playground() {
-            return Err(AppError::Conflict(
-                "only a playground's code can be purged: this sandbox's code is on GitHub, and \
-                 removing the sandbox keeps the repository"
-                    .into(),
-            ));
-        }
         if record.removed_at.is_none() {
             self.delete_sandbox(ctx, sid).await?;
         }
         if store.request_purge(&id, &ctx.user.id, self.now()).await? {
+            let what = if record.is_playground() {
+                "its code and every file of it on this server are"
+            } else {
+                "every file of it on this server is (its GitHub repository stays)"
+            };
             store
                 .audit(
                     self.now(),
@@ -106,13 +111,35 @@ impl App {
                     "sandbox.purge_requested",
                     Some(id.as_str()),
                     Some(&format!(
-                        "{}: its origin and sandbox directory are deleted once nothing of it runs",
+                        "{}: {what} deleted once nothing of it runs",
                         record.slug
                     )),
                 )
                 .await?;
         }
-        self.try_purge(&id).await
+        let state = self.try_purge(&id).await?;
+        if state.state != "purged" {
+            self.watch_purge(id);
+        }
+        Ok(state)
+    }
+
+    /// Tries the purge of `id` again every [`PURGE_RETRY`] until it is done or [`PURGE_WATCH`]
+    /// passed (its processes stop within about a minute of the removal); the disk rounds take it
+    /// from there.
+    fn watch_purge(self: &Arc<Self>, id: SandboxId) {
+        let app = Arc::clone(self);
+        tokio::spawn(async move {
+            let until = tokio::time::Instant::now() + PURGE_WATCH;
+            while tokio::time::Instant::now() < until {
+                tokio::time::sleep(PURGE_RETRY).await;
+                match app.try_purge(&id).await {
+                    Ok(state) if state.state == "purged" => return,
+                    Ok(_) => {}
+                    Err(err) => tracing::warn!(sandbox = %id, error = %err, "purge failed"),
+                }
+            }
+        });
     }
 
     /// One round over the pending purges (PGL-006); returns how many were done. Runs with the
@@ -175,23 +202,21 @@ impl App {
         Ok(waiting)
     }
 
-    /// Deletes the requested purge's `origin` and sandbox directory when nothing of the sandbox
-    /// runs; otherwise deletes nothing and says what still runs.
+    /// Deletes the requested purge's files when nothing of the sandbox runs; otherwise deletes
+    /// nothing and says what still runs.
     async fn try_purge(&self, id: &SandboxId) -> AppResult<PurgeState> {
         let store = &self.deps.store;
-        let Some(sandbox) = store
-            .sandbox(id)
-            .await?
-            .filter(|s| s.is_playground() && s.removed_at.is_some())
-        else {
+        let Some(sandbox) = store.sandbox(id).await?.filter(|s| s.removed_at.is_some()) else {
             return Err(AppError::Conflict(format!(
-                "{id} is not a removed playground; nothing is purged"
+                "{id} is not a removed sandbox; nothing is purged"
             )));
         };
         let purged = || PurgeState {
             state: "purged".into(),
             waiting_for: Vec::new(),
         };
+        // One purge of a sandbox at a time: a request, its watch and a round may meet.
+        let _one = self.purging.lock().await;
         // Done already (a request again, or a round that ran beside this one).
         if !store.pending_purges().await?.contains(id) {
             return Ok(purged());
@@ -203,22 +228,12 @@ impl App {
                 waiting_for: waiting,
             });
         }
-        // No CI run may start on its checkouts while they go.
-        if !self.ci_claim(id) {
+        if let Some(why) = self.purge_removed_files(&sandbox).await? {
             return Ok(PurgeState {
                 state: "waiting".into(),
-                waiting_for: vec!["a CI run".into()],
+                waiting_for: vec![why],
             });
         }
-        // Checked again under the claim: a purge beside this one may have finished meanwhile.
-        let pending = store.pending_purges().await;
-        if !pending.as_ref().is_ok_and(|p| p.contains(id)) {
-            self.ci_release(id);
-            return pending.map(|_| purged());
-        }
-        let deleted = self.delete_playground_code(&sandbox).await;
-        self.ci_release(id);
-        deleted?;
         if !store.finish_purge(id, self.now()).await? {
             return Ok(purged());
         }
@@ -229,28 +244,12 @@ impl App {
                 "sandbox.purged",
                 Some(id.as_str()),
                 Some(&format!(
-                    "{}: its origin and sandbox directory are deleted; tasks and audit kept",
+                    "{}: every file of it on this server is deleted; tasks and audit kept",
                     sandbox.slug
                 )),
             )
             .await?;
         Ok(purged())
-    }
-
-    /// Deletes the sandbox directory, then `origin`: a purge that fails half-way keeps the code
-    /// (and its place in the quota) and is tried again on the next round.
-    async fn delete_playground_code(&self, sandbox: &SandboxRecord) -> AppResult<()> {
-        let origin = self.playground_origin(&sandbox.id);
-        let dir = self.sandbox_dir(&sandbox.id);
-        blocking(move || {
-            for path in [&dir, &origin] {
-                delete_tree(path).map_err(|err| {
-                    AppError::internal(format!("cannot delete {}: {err}", path.display()))
-                })?;
-            }
-            Ok(())
-        })
-        .await
     }
 }
 
