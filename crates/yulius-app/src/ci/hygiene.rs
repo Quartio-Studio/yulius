@@ -154,6 +154,16 @@ impl App {
 
     /// Scans a sandbox for stale branches and worktrees and keeps the report.
     pub(crate) async fn hygiene_scan(&self, sandbox: &SandboxRecord) -> HygieneReport {
+        self.hygiene_scan_judged(sandbox).await.0
+    }
+
+    /// [`Self::hygiene_scan`] with the commit each listed GitHub branch was judged at: a cleanup
+    /// deletes a branch only while GitHub still has it there (SPEC-269 review rounds 2 and 3).
+    async fn hygiene_scan_judged(
+        &self,
+        sandbox: &SandboxRecord,
+    ) -> (HygieneReport, HashMap<String, String>) {
+        let mut judged = HashMap::new();
         let mut report = HygieneReport {
             scanned_at: Some(rfc3339(self.now())),
             ..HygieneReport::default()
@@ -163,7 +173,7 @@ impl App {
             report
                 .notes
                 .push("The sandbox repository is not cloned yet.".into());
-            return self.keep_report(sandbox, report);
+            return (self.keep_report(sandbox, report), judged);
         }
         // A playground's branches are all local: no GitHub to ask (SPEC-099).
         let token = match self.dlv_installation_token(sandbox).await {
@@ -193,12 +203,19 @@ impl App {
         let protected = Self::protected_branches(sandbox);
         let profile = delivery_profile(sandbox);
         if let Some(token) = &token {
-            self.hygiene_remote(sandbox, &repo, token, &protected, &profile, &mut report)
-                .await;
+            self.hygiene_remote(
+                sandbox,
+                &repo,
+                token,
+                (&protected, &profile),
+                &mut report,
+                &mut judged,
+            )
+            .await;
         }
         self.hygiene_local(sandbox, &repo, &protected, &mut report)
             .await;
-        self.keep_report(sandbox, report)
+        (self.keep_report(sandbox, report), judged)
     }
 
     fn keep_report(&self, sandbox: &SandboxRecord, report: HygieneReport) -> HygieneReport {
@@ -213,14 +230,16 @@ impl App {
         sandbox: &SandboxRecord,
         repo: &Path,
         token: &crate::model::Secret,
-        protected: &HashSet<String>,
-        profile: &yulius_domain::delivery::DeliveryProfile,
+        (protected, profile): (&HashSet<String>, &yulius_domain::delivery::DeliveryProfile),
         report: &mut HygieneReport,
+        judged: &mut HashMap<String, String>,
     ) {
         let (owner, name) = (&sandbox.repo_owner, &sandbox.repo_name);
         let open: HashSet<String> =
             match self.deps.github.list_pulls(token, owner, name, None).await {
-                Ok(pulls) => pulls.into_iter().map(|p| p.head).collect(),
+                // Heads and bases: a branch an open pull request targets (a stacked one) is in
+                // use too.
+                Ok(pulls) => pulls.into_iter().flat_map(|p| [p.head, p.base]).collect(),
                 Err(err) => {
                     report.notes.push(format!(
                         "Open pull requests can't be listed ({}): remote branches are not checked.",
@@ -276,8 +295,6 @@ impl App {
                     merged: false,
                     tip_on_pull: true,
                 }])
-            } else if merged {
-                Some(Vec::new())
             } else if lookups < MAX_PULL_LOOKUPS {
                 lookups += 1;
                 self.deps
@@ -286,6 +303,9 @@ impl App {
                     .await
                     .ok()
                     .map(|pulls| pulls_facts(&pulls, &branch.sha))
+            } else if merged {
+                // Past the bound, a branch already in dev is still `Merged` (safe for a person).
+                Some(Vec::new())
             } else {
                 bound_hit = true;
                 None
@@ -297,6 +317,7 @@ impl App {
                 last_commit_ms: branch.committed_ms,
             };
             if let Some(reason) = classify_remote_branch(&facts, now) {
+                judged.insert(branch.name.clone(), branch.sha.clone());
                 report.items.push(item(REMOTE, branch.name, &reason));
             }
         }
@@ -413,7 +434,7 @@ impl App {
             .and_then(|reports| reports.get(sandbox.id.as_str()).cloned());
         match kept {
             Some(report) => self.with_cleanups(sandbox, report),
-            None => self.hygiene_scan(sandbox).await,
+            None => self.hygiene_scan_locked(sandbox).await,
         }
     }
 
@@ -447,13 +468,16 @@ impl App {
         }
         let lock = self.hygiene_lock(sandbox);
         let _one = lock.lock().await;
-        let report = self.hygiene_scan(sandbox).await;
+        let (report, judged) = self.hygiene_scan_judged(sandbox).await;
         let mut skipped = Vec::new();
         let mut selected: Vec<HygieneItem> = if request.items.is_empty() {
             report
                 .items
                 .iter()
                 .filter(|i| i.safe || request.force)
+                // A branch already in dev that no pull request had (a release or staging
+                // branch) is a person's call: the round leaves it listed (review round 3).
+                .filter(|i| !(automatic && i.kind == REMOTE && i.reason_code == "merged"))
                 .cloned()
                 .collect()
         } else {
@@ -498,7 +522,8 @@ impl App {
             let outcome: Result<(), String> = match found.kind.as_str() {
                 REMOTE => match &token {
                     Some(token) => {
-                        self.delete_remote_branch(sandbox, &repo, token, &found.name)
+                        let at = judged.get(&found.name).map(String::as_str);
+                        self.delete_remote_branch(sandbox, token, &found.name, at)
                             .await
                     }
                     None => Err("GitHub is not available".into()),
@@ -589,23 +614,18 @@ impl App {
         })
     }
 
-    /// Deletes a branch on GitHub only while its tip there is the commit the scan judged (the
-    /// clone's `origin/<branch>`): a fetch that failed, or a push since, leaves new commits the
-    /// verdict never saw (SPEC-269 review round 2).
+    /// Deletes a branch on GitHub only while its tip there is `judged`, the commit the scan
+    /// judged: a fetch that failed, or a push since, leaves new commits the verdict never saw
+    /// (SPEC-269 review rounds 2 and 3). A push between this read and the deletion is not caught:
+    /// GitHub's API has no conditional ref deletion.
     async fn delete_remote_branch(
         &self,
         sandbox: &SandboxRecord,
-        repo: &Path,
         token: &crate::model::Secret,
         branch: &str,
+        judged: Option<&str>,
     ) -> Result<(), String> {
         let (owner, name) = (&sandbox.repo_owner, &sandbox.repo_name);
-        let judged = self
-            .deps
-            .git
-            .resolve_commit(repo, &format!("refs/remotes/origin/{branch}"))
-            .await
-            .map_err(|e| e.public_message())?;
         let now = self
             .deps
             .github

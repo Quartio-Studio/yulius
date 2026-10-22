@@ -404,11 +404,14 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
       scan.disabled = Boolean(busy) || !write;
       clean.disabled = Boolean(busy) || !write || safe.length === 0;
       const last = now.last_cleanup;
+      // A failure reads until a cleanup newer than it (the automatic round's) replaces it.
+      const failed = hygieneProblems.get(base);
+      const problem = failed && !(last && Date.parse(last.at) > failed.at) ? failed.text : null;
       let says = '';
       if (busy) {
         says = busy.kind === 'clean' ? `Removing ${plural(busy.count, 'item')}…` : 'Checking the repository…';
-      } else if (hygieneProblems.has(base)) {
-        says = hygieneProblems.get(base);
+      } else if (problem) {
+        says = problem;
       } else if (last) {
         const removed = (last.removed || []).length;
         const kept = (last.skipped || []).length;
@@ -417,7 +420,7 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
       }
       // Written only when it changes, so a screen reader hears each state once.
       if (status.textContent !== says) status.textContent = says;
-      line.classList.toggle('ci-hygiene-problem', !busy && hygieneProblems.has(base));
+      line.classList.toggle('ci-hygiene-problem', !busy && Boolean(problem));
       tick();
       const rows = busy || !last ? [] : [
         ...(last.removed || []).map((t) => h('li', null, badge('Removed', 'ok'), h('span', { class: 'muted small' }, kindOf(t.kind)), h('code', null, t.name))),
@@ -464,7 +467,7 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
         hygieneAnswered.set(base, { report, at: performance.now() });
         return report;
       } catch (error) {
-        hygieneProblems.set(base, `${failure}: ${error && error.message ? error.message : String(error)}`);
+        hygieneProblems.set(base, { text: `${failure}: ${error && error.message ? error.message : String(error)}`, at: Date.now() });
         return null;
       } finally {
         hygieneRunning.delete(base);

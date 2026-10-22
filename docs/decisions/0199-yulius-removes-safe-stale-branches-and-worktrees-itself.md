@@ -21,8 +21,10 @@ saw nothing happen after it: the list asked for a decision that has one answer.
 - The background round (10 minutes after start, then every 6 hours) runs the same cleanup a
   person's Clean up runs, for every live sandbox, as `yulius`: a fresh scan, the same checks, each
   removal audited `hygiene.cleanup`. Only safe items go; unmerged work without a pull request
-  (`idle`) stays listed for a person, never removed automatically. One cleanup of a sandbox runs at
-  a time.
+  (`idle`) stays listed for a person, never removed automatically, and so does a GitHub branch
+  already in the integration branch that no pull request had as its head (a release or staging
+  branch). A branch an open pull request targets is in use. One cleanup of a sandbox runs at a
+  time.
 - The checks hold at the deletion, for the round and a person alike:
   - a task's worktree is in use unless its task rests (closed, stopped or failed): a queued or
     paused task keeps it; the task is read again right before the removal;
@@ -31,7 +33,8 @@ saw nothing happen after it: the list asked for a decision that has one answer.
   - a branch of a merged or closed pull request is safe only while its tip is the pull request's
     head: commits pushed after it closed make it unmerged work;
   - a branch on GitHub is deleted only while its tip there is still the commit the scan judged:
-    a failed fetch or a push since keeps it until the next check;
+    a failed fetch or a push since keeps it until the next check (a push between that read and
+    the deletion is not caught: GitHub's API has no conditional ref deletion);
   - a local copy is judged again against GitHub after the cleanup's remote deletions and a fresh
     fetch; when the fetch fails, local copies stay.
 - The report says when the round runs next (`next_cleanup_at`) and what the last cleanup did

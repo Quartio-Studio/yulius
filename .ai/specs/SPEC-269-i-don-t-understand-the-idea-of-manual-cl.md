@@ -48,7 +48,9 @@ Read in the code on `dev` (21c26d8b):
 - HSC-001. The background hygiene round removes every safe item of each sandbox as `yulius`,
   through the same path as a person's Clean up (fresh scan, the same safety checks, each removal
   audited `hygiene.cleanup`). Unsafe items (`idle`: unmerged work with no pull request) are never
-  removed automatically; they stay listed.
+  removed automatically; they stay listed. Neither is a GitHub branch already in the integration
+  branch that no pull request had as its head (`merged`: a release or staging branch): it stays
+  listed for a person (review round 3).
 - HSC-002. The hygiene report carries `last_cleanup` (when, by whom: `Yulius` or the person's
   login or the agent, what was removed and what was kept with its reason) and `next_cleanup_at`
   (when the automatic round runs next; null when it is not scheduled). An automatic round that
@@ -71,8 +73,9 @@ Read in the code on `dev` (21c26d8b):
   its tip on GitHub is still the commit the scan judged (a failed fetch or a push since keeps it);
   a local copy is judged again against GitHub after the remote deletions and a fresh fetch (kept
   when the fetch fails); a task that cannot be read keeps its worktree; a snapshot import's
-  checkout (`worktrees/import-…`) is the import's; one cleanup or requested scan of a sandbox runs
-  at a time.
+  checkout (`worktrees/import-…`) is the import's; a branch an open pull request targets (a
+  stacked pull request's base) is never stale; one cleanup or requested scan of a sandbox runs at
+  a time.
 - HSC-006. Nothing else changes: what is stale, what is safe, `force`, the bounds, the REST and
   MCP requests and their answers (two optional fields added to the report).
 
@@ -84,7 +87,8 @@ Read in the code on `dev` (21c26d8b):
 - [x] The card explains itself and shows a cleanup running and its result
 - [x] Review round 1 findings fixed test-first
 - [x] Independent review in a fresh session, findings fixed test-first
-- [x] Review round 3 approves the exact head
+- [x] Review round 3 findings fixed test-first
+- [x] Review round 4 approves the exact head
 - [x] Every gate green on the branch merged with current dev
 
 ## Acceptance criteria
@@ -108,7 +112,10 @@ Read in the code on `dev` (21c26d8b):
   `a_cleanup_never_loses_commits_that_only_a_branch_held` (HSC-007: commits pushed after a pull
   request closed; a local copy whose GitHub branch the same cleanup deleted),
   `a_failed_fetch_never_deletes_what_moved_on_github` (HSC-007: a ref lock fails the fetch; the
-  branch that moved on GitHub and a local copy stay, an unmoved merged branch goes). `disk.rs`:
+  branch that moved on GitHub and a local copy stay, an unmoved merged branch goes). The round's
+  test also covers a merge-commit merge with its pull request (removed), a merged branch without
+  one (kept, listed) and a stacked pull request's base (not stale); the disk test an import's
+  checkout. `disk.rs`:
   `the_hygiene_round_keeps_paused_work_and_files_nobody_can_rebuild` (HSC-007: a paused merged
   task, an archived worktree with an ignored `.env`, an archived one with caches only) and
   `hygiene_keeps_an_ended_worktree_that_still_holds_ignored_files` (now with an `.env`: caches
@@ -121,7 +128,8 @@ Read in the code on `dev` (21c26d8b):
   keyboard kept on the card, the toast check, the retry after a failure, and "a cleanup still
   running after the person left the tab shows as running when they come back". Round 2 added "a
   cleanup that fails after the person left the tab says why when they come back" and "a cleanup
-  round that runs late reads as shortly, not in the past".
+  round that runs late reads as shortly, not in the past"; round 3 "a cleanup newer than a failed
+  one replaces its message".
   `loading-shapes.e2e.ts` follows the card's new intro line.
 - Gates: `scripts/dev ci`, `scripts/dev security`, the whole e2e suite.
 
@@ -166,6 +174,17 @@ Read in the code on `dev` (21c26d8b):
   it); a late round read "next 5 min ago" (fixed test-first: "shortly"); `has_ignored_files` had
   no caller left (removed). Not covered by a test that fails without it: the lock and the
   re-read's timing (no pause point in the cleanup), as in round 1.
+- **Review round 3** (fresh session, head 78a195d1, request changes): the import-checkout fix had
+  no test (major, own code: `disk.rs` now adds `worktrees/import-job1`, which fails without the
+  rule); the tip check read the clone at deletion time, which another fetch could have moved
+  (fixed: the scan hands each branch's judged commit to the deletion); a failure message hid a
+  newer cleanup (fixed test-first: a newer `last_cleanup` replaces it); pre-existing but now
+  unattended, a branch already in dev with no pull request (a release branch) and a stacked pull
+  request's base could go every 6 hours (fixed test-first: the round leaves `merged` without a
+  pull request to a person, the scan looks pull requests up for merged branches too and reports
+  `pull_merged` then, and open pull requests' bases count as in use); the unlocked first scan of
+  `GET …/hygiene` takes the lock now. A push between GitHub's tip read and the deletion is not
+  caught (GitHub's API has no conditional ref deletion): noted in ADR-0199.
 
 ## Evidence
 

@@ -658,19 +658,88 @@ async fn hygiene_lists_and_cleans_up_stale_branches() -> TestResult {
     Ok(())
 }
 
+/// A pull request of `head` into `base`, `state` closed (merged or not) or open.
+fn pull(
+    f: &Fixture,
+    number: u64,
+    head: &str,
+    base: &str,
+    open: bool,
+    merged: bool,
+) -> BoxResult<()> {
+    let head_sha = git(&f.origin, &["rev-parse", head])?;
+    if let Ok(mut pulls) = f.h.github.pulls.lock() {
+        pulls.push(GhPull {
+            number,
+            html_url: format!("https://github.test/acme/app/pull/{number}"),
+            title: head.into(),
+            state: if open { "open" } else { "closed" }.into(),
+            merged,
+            base: base.into(),
+            head: head.into(),
+            head_sha: head_sha.trim().to_owned(),
+            mergeable: None,
+            behind: false,
+            from_fork: false,
+        });
+    }
+    Ok(())
+}
+
 /// SPEC-269 HSC-001: the background round removes what loses nothing, as Yulius, and keeps
-/// unmerged work.
+/// unmerged work. A branch already in dev that never was a pull request's head (a release or
+/// staging branch) is left to a person, and a branch an open pull request targets is never stale
+/// (review round 3).
 #[tokio::test]
 async fn the_hygiene_round_removes_safe_items_itself() -> TestResult {
     let f = fixture().await?;
     stale_branches(&f)?;
+    // feat/landed was merged into dev with a merge commit through pull request #4; feat/base is
+    // in dev too and an open pull request is stacked on it.
+    for (branch, file) in [("feat/landed", "landed.txt"), ("feat/base", "base.txt")] {
+        git(&f.work, &["checkout", "-q", "-B", branch, "origin/dev"])?;
+        std::fs::write(f.work.join(file), "x\n")?;
+        git(&f.work, &["add", "-A"])?;
+        git(&f.work, &["commit", "-q", "-m", branch])?;
+        git(&f.work, &["push", "-q", "origin", branch])?;
+        git(&f.work, &["push", "-q", "origin", &format!("{branch}:dev")])?;
+        git(&f.work, &["fetch", "-q", "origin"])?;
+    }
+    pull(&f, 4, "feat/landed", "dev", false, true)?;
+    git(
+        &f.work,
+        &["checkout", "-q", "-B", "feat/stacked", "origin/feat/base"],
+    )?;
+    std::fs::write(f.work.join("stacked.txt"), "x\n")?;
+    git(&f.work, &["add", "-A"])?;
+    git(&f.work, &["commit", "-q", "-m", "stacked"])?;
+    git(&f.work, &["push", "-q", "origin", "feat/stacked"])?;
+    pull(&f, 5, "feat/stacked", "feat/base", true, false)?;
+
     f.h.app.hygiene_round().await;
     let remaining = git(&f.origin, &["branch", "--format=%(refname:short)"])?;
     assert!(
-        !remaining.contains("feat/old") && !remaining.contains("feat/closed"),
+        !remaining.contains("feat/landed") && !remaining.contains("feat/closed"),
         "{remaining}"
     );
     assert!(remaining.contains("feat/one") && remaining.contains("feat/wip"));
+    assert!(
+        remaining.contains("feat/old"),
+        "no pull request: a person's call: {remaining}"
+    );
+    assert!(
+        remaining.contains("feat/base"),
+        "an open pull request's base: {remaining}"
+    );
+    let report = f.get("/api/sandboxes/s1/hygiene").await?;
+    let items = report["items"].as_array().ok_or("items")?;
+    assert!(
+        items
+            .iter()
+            .any(|i| i["name"] == "feat/old" && i["reason_code"] == "merged"),
+        "still listed for a person: {report}"
+    );
+    assert!(items.iter().all(|i| i["name"] != "feat/base"), "{report}");
     let audited: Vec<String> =
         f.h.store
             .automation_audit(&f.sandbox.slug, 100)
@@ -679,7 +748,7 @@ async fn the_hygiene_round_removes_safe_items_itself() -> TestResult {
             .filter(|e| e.action == "hygiene.cleanup")
             .map(|e| format!("{} {}", e.actor, e.detail.unwrap_or_default()))
             .collect();
-    for branch in ["feat/old", "feat/closed"] {
+    for branch in ["feat/landed", "feat/closed"] {
         assert!(
             audited
                 .iter()

@@ -828,7 +828,8 @@ pub enum StaleReason {
     /// Its pull request was closed without merging (GitHub keeps the commits on the pull
     /// request).
     PullClosed(u64),
-    /// Its commits are already in the integration or production branch.
+    /// Its commits are already in the integration or production branch, and no pull request had
+    /// it as its head (or none was looked up): a person removes it, not the automatic round.
     Merged,
     /// A local branch no worktree uses whose commits are on GitHub.
     LocalCopy,
@@ -928,17 +929,19 @@ pub fn classify_remote_branch(facts: &RemoteBranchFacts, now_ms: i64) -> Option<
     if pulls.iter().any(|p| p.open) {
         return None;
     }
-    if facts.merged {
-        return Some(StaleReason::Merged);
-    }
     // A closed or merged pull request keeps the branch's commits only while the branch has
-    // nothing after its head; later commits are unmerged work, judged as such below.
+    // nothing after its head; later commits are unmerged work, judged as such below. It is the
+    // reason even for a branch already in the integration branch: `Merged` then means no pull
+    // request had it, which the automatic round leaves to a person (SPEC-269).
     if let Some(last) = pulls.first().filter(|p| p.tip_on_pull) {
         return Some(if last.merged {
             StaleReason::PullMerged(last.number)
         } else {
             StaleReason::PullClosed(last.number)
         });
+    }
+    if facts.merged {
+        return Some(StaleReason::Merged);
     }
     // Not looked up (scan bound): unknown, keep.
     facts.pulls.as_ref()?;
@@ -1553,6 +1556,21 @@ mod tests {
             ..base.clone()
         };
         assert_eq!(classify_remote_branch(&pushed_after, now), None);
+        // A merge-commit merge: in dev and its pull request merged.
+        let landed = RemoteBranchFacts {
+            merged: true,
+            pulls: Some(vec![BranchPull {
+                number: 6,
+                open: false,
+                merged: true,
+                tip_on_pull: true,
+            }]),
+            ..base.clone()
+        };
+        assert_eq!(
+            classify_remote_branch(&landed, now),
+            Some(StaleReason::PullMerged(6))
+        );
         let pushed_long_ago = RemoteBranchFacts {
             last_commit_ms: now - 20 * DAY_MS,
             ..pushed_after

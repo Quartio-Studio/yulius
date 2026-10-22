@@ -332,6 +332,26 @@ test('a cleanup that fails after the person left the tab says why when they come
   await expect(back.getByRole('button', 'Clean up')).toBeEnabled();
 });
 
+test('a cleanup newer than a failed one replaces its message', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci'));
+  const card = screen.getByRole('region', 'Repository hygiene');
+  await expect(card.getByText('spike/websocket-pool')).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as HeldCleanup).__yuliusMock.failHygieneCleanup = 'GitHub is not available'; });
+  await card.getByRole('button', 'Clean up').click();
+  await screen.getByRole('dialog', 'Remove 3 stale items?').getByRole('button', 'Clean up').click();
+  await expect(card.getByRole('status')).toHaveText('Couldn’t clean up: GitHub is not available');
+  // The automatic round then removes them.
+  await browser.evaluate(() => {
+    const db = (window as unknown as { __yuliusMock: { ci: Record<string, { hygiene: { items: unknown[]; last_cleanup: unknown } }> } }).__yuliusMock;
+    const hygiene = db.ci.sb_studio.hygiene;
+    hygiene.last_cleanup = { at: new Date(Date.now() + 1000).toISOString(), by: 'yulius', automatic: true, removed: [{ kind: 'worktree', name: 'worktrees/tsk_studio_9' }], skipped: [] };
+    hygiene.items = hygiene.items.filter((i) => (i as { name: string }).name !== 'worktrees/tsk_studio_9');
+  });
+  await screen.getByRole('radio', 'CD (deployment)').click();
+  await screen.getByRole('radio', 'CI (tests)').click();
+  await expect(screen.getByRole('region', 'Repository hygiene').getByRole('status')).toHaveText(/^Cleaned up .* by Yulius: 1 removed\.$/);
+});
+
 test('a cleanup round that runs late reads as shortly, not in the past', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/ci'));
   await browser.evaluate(() => {

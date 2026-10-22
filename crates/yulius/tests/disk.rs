@@ -477,11 +477,29 @@ async fn the_hygiene_round_keeps_paused_work_and_files_nobody_can_rebuild() -> B
     let caches = w.task("t-caches", TaskStatus::Closed, None).await?;
     w.archive("t-caches").await?;
 
+    // A snapshot import's checkout, clean right after Git added it, is the import's.
+    let import = w.root.join("worktrees/import-job1");
+    git(
+        &w.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            import.to_str().ok_or("path")?,
+        ],
+    )?;
+
     w.h.app.hygiene_round().await;
+    assert!(import.exists(), "an import's checkout stays");
     assert!(paused.exists(), "a paused task's worktree stays");
     assert!(kept.exists(), "ignored files nobody can rebuild stay");
     assert!(!caches.exists(), "only caches: removed");
     let report = w.h.app.hygiene_report(&w.sandbox).await;
+    assert!(
+        report.items.iter().all(|i| !i.name.contains("import-")),
+        "{report:?}"
+    );
     let last = report.last_cleanup.ok_or("last cleanup")?;
     assert!(
         last.skipped
