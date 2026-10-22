@@ -1,11 +1,11 @@
 ---
 yulius-task: fd0f272e-059c-4a3a-bc52-c2b3894db380
-status: in-progress
+status: done
 ---
 
 # SPEC-267: tasks read another repository of their owner without asking a person
 
-Status: in-progress
+Status: done
 Date: 2026-10-22
 Owner: Yulius task #253
 Scope authorization: task #253: two screenshots and "i got this, such things should usually happen
@@ -79,7 +79,7 @@ cannot read the repository either.
 - [x] Agents get a reference_repo tool that delivers a bundle fetched as the task owner
 - [x] Onboarding and needs_you send agents to reference_repo instead of a person
 - [x] Docs and gates are green and review round 1 findings are fixed test-first
-- [ ] Independent review approves the head and the change is merged into dev
+- [x] Independent review approves the head and the change is merged into dev
 
 ## Acceptance criteria
 
@@ -133,3 +133,32 @@ cannot read the repository either.
 - The fetch's slot and its audit live in the detached run (review round 2): an interrupted request
   frees neither the slot early nor loses the audit; a replacing bundle passes a full attachments
   folder, since it adds no file.
+
+## Evidence
+
+Run on 2026-10-22 in this task's worktree.
+
+- `scripts/dev ci` at `086429e6`: exit 0; nextest 2437 tests run, 2437 passed, 17 skipped; every
+  gate before it (repository checks, Python tests, `cargo check`, fmt, clippy, docs, macOS
+  targets) passed.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^reference_repo::/)'`: 7
+  passed. Before the tool existed the first three failed (no `reference_repo`); against the round-0
+  implementation `an_old_fetch_folder_is_swept`, the moved-repository case of
+  `reading_beyond_the_owner_s_reach_is_refused` (it fetched `acme/old`) and the one-bundle
+  assertion failed; `a_full_attachments_folder_still_takes_a_fresh_bundle` failed before round 2.
+  `the_git_adapter_bundles_one_branch` and `a_playground_and_an_owner_without_github_are_refused`
+  add coverage of code that already behaved.
+- `cargo test -p yulius-app --lib -- onboarding::`: 10 passed;
+  `prompts_fetch_referenced_repositories_without_a_person` failed before the prompt change.
+  `cargo test -p yulius-domain --lib briefing`: 24 passed (the tools sentence was shortened by a
+  few words to keep the briefing within its budget with the new tool name).
+- `scripts/dev security` (Vidoc vidoc-1) at `086429e6`: exit 0; no critical, high or medium finding
+  in the change. One low finding outside the change (`onboarding.rs:245`, a pre-existing helper this
+  branch did not touch), filed by Yulius CI as usual.
+- Independent review in a fresh session: round 1 at `d1c324fc` asked for changes (2 major: fetch
+  folder leaked on a dropped request, real Git path untested; minors: owner check by the asked name,
+  unbounded fetches, bundles piling up, spec wording, missing refusal tests; nits), all fixed in
+  `9c50215a`/`097608cc`; round 2 approved `097608cc` with two minors (slot and audit outside the
+  detached run) and a nit (full folder), fixed in `086429e6`.
+- Not testable here: a real GitHub fetch with a real user token, an agent cloning the bundle inside
+  its containment, and a request dropped mid-fetch (relies on `App::run_detached`).
