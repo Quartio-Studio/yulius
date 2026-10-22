@@ -242,10 +242,23 @@ mod tests {
     #[test]
     fn only_an_owner_and_a_name_are_a_repository() {
         assert_eq!(parse_repo("acme/lib"), Some(("acme", "lib")));
-        assert_eq!(parse_repo(" Quartio-Studio/product "), Some(("Quartio-Studio", "product")));
+        assert_eq!(
+            parse_repo(" Quartio-Studio/product "),
+            Some(("Quartio-Studio", "product"))
+        );
         for bad in [
-            "", "lib", "acme/", "/lib", "acme/lib/x", "../lib", "acme/..", "acme/.git",
-            "acme/lib.git", "-x/lib", "ac me/lib", "acme/li b",
+            "",
+            "lib",
+            "acme/",
+            "/lib",
+            "acme/lib/x",
+            "../lib",
+            "acme/..",
+            "acme/.git",
+            "acme/lib.git",
+            "-x/lib",
+            "ac me/lib",
+            "acme/li b",
         ] {
             assert_eq!(parse_repo(bad), None, "{bad}");
         }

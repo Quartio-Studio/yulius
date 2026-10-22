@@ -687,7 +687,7 @@ impl App {
             name,
             declared,
         )
-            .await
+        .await
     }
 
     /// Starts an attachment for the new-task composer of `sandbox` (write access to it): the
@@ -722,7 +722,7 @@ impl App {
             name,
             declared,
         )
-            .await
+        .await
     }
 
     /// Removes the files of a user's drafts folder that are older than [`DRAFT_MAX_AGE`].
@@ -776,7 +776,11 @@ impl App {
         let mut file = tokio::fs::File::open(source)
             .await
             .map_err(|e| upload_io_error(&e))?;
-        let size = file.metadata().await.map_err(|e| upload_io_error(&e))?.len();
+        let size = file
+            .metadata()
+            .await
+            .map_err(|e| upload_io_error(&e))?
+            .len();
         if size > limit {
             return Err(too_large(limit));
         }

@@ -200,7 +200,13 @@ impl GitPort for LocalGit {
         .map_err(upstream)?;
         git(
             work,
-            &["bundle", "create", "--quiet", &bundle.to_string_lossy(), &full],
+            &[
+                "bundle",
+                "create",
+                "--quiet",
+                &bundle.to_string_lossy(),
+                &full,
+            ],
         )
         .map_err(upstream)?;
         Ok(git(work, &["rev-parse", &full])

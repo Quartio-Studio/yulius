@@ -64,7 +64,10 @@ fn tmp_entries(w: &World) -> usize {
 fn clone_bundle(record: &Value, into: &Path) -> Result<PathBuf, BoxError> {
     let bundle = record["bundle"].as_str().ok_or("bundle path")?;
     let branch = record["branch"].as_str().ok_or("branch")?;
-    let dest = into.join(format!("clone-{}", record["commit"].as_str().unwrap_or("x")));
+    let dest = into.join(format!(
+        "clone-{}",
+        record["commit"].as_str().unwrap_or("x")
+    ));
     git(
         into,
         &[
@@ -85,8 +88,13 @@ fn clone_bundle(record: &Value, into: &Path) -> Result<PathBuf, BoxError> {
 #[tokio::test]
 async fn a_task_gets_a_bundle_of_another_repository_of_its_owner() -> TestResult {
     let (w, _alice, lib) = world().await?;
-    let first = support::mcp_tool(&w.h, "tok-ref", "reference_repo", json!({"repo": "acme/lib"}))
-        .await?;
+    let first = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib"}),
+    )
+    .await?;
     assert_ne!(first["isError"], true, "{first}");
     let record = support::tool_text(&first);
     let bundle = record["bundle"].as_str().ok_or("bundle")?;
@@ -129,9 +137,17 @@ async fn a_task_gets_a_bundle_of_another_repository_of_its_owner() -> TestResult
     let seed = w.scratch.path().join("seed/acme/lib");
     std::fs::write(seed.join("README.md"), "# Lib v2\n")?;
     git(&seed, &["commit", "--quiet", "-am", "v2"])?;
-    git(&seed, &["push", "--quiet", &lib.to_string_lossy(), "HEAD:main"])?;
-    let second = support::mcp_tool(&w.h, "tok-ref", "reference_repo", json!({"repo": "acme/lib"}))
-        .await?;
+    git(
+        &seed,
+        &["push", "--quiet", &lib.to_string_lossy(), "HEAD:main"],
+    )?;
+    let second = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib"}),
+    )
+    .await?;
     let record = support::tool_text(&second);
     let moved = git(&lib, &["rev-parse", "refs/heads/main"])?;
     assert_eq!(record["commit"], moved.trim(), "{record}");
@@ -161,8 +177,13 @@ async fn reading_beyond_the_owner_s_reach_is_refused() -> TestResult {
     .await?;
     refused(&other, "acme")?;
 
-    let own =
-        support::mcp_tool(&w.h, "tok-ref", "reference_repo", json!({"repo": "acme/shop"})).await?;
+    let own = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/shop"}),
+    )
+    .await?;
     assert_eq!(own["isError"], true, "{own}");
     assert!(
         support::tool_text(&own).to_string().contains("worktree"),
@@ -181,16 +202,26 @@ async fn reading_beyond_the_owner_s_reach_is_refused() -> TestResult {
 
     // AC4: a fetch that fails leaves no folder of the server's behind.
     w.grant("alice", "acme/ghost", "pull");
-    let failed =
-        support::mcp_tool(&w.h, "tok-ref", "reference_repo", json!({"repo": "acme/ghost"})).await?;
+    let failed = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/ghost"}),
+    )
+    .await?;
     refused(&failed, "Fetching acme/ghost")?;
     assert_eq!(tmp_entries(&w), 0);
 
     w.h.store
         .update_user_flags(&alice.id, Some(Some(w.h.app.now())), None)
         .await?;
-    let disabled =
-        support::mcp_tool(&w.h, "tok-ref", "reference_repo", json!({"repo": "acme/lib"})).await?;
+    let disabled = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib"}),
+    )
+    .await?;
     refused(&disabled, "disabled")?;
     w.h.store
         .update_user_flags(&alice.id, Some(None), None)
@@ -203,7 +234,10 @@ async fn reading_beyond_the_owner_s_reach_is_refused() -> TestResult {
     }
     assert!(attachments(&w).is_empty(), "{:?}", attachments(&w));
     assert!(
-        !w.git.calls().iter().any(|c| c.contains("secret") || c.contains("private")),
+        !w.git
+            .calls()
+            .iter()
+            .any(|c| c.contains("secret") || c.contains("private")),
         "nothing fetched: {:?}",
         w.git.calls()
     );
