@@ -1,11 +1,11 @@
 ---
 yulius-task: 237460fe-0fca-4057-b7d7-3db06539b335
-status: in-progress
+status: done
 ---
 
 # SPEC-270: The API token form lines up (Settings → Connect your local agent)
 
-Status: in-progress
+Status: done
 Date: 2026-10-22
 Owner: Yulius task #256
 Scope authorization: task #256 ("UI is weird here, improve", with a screenshot of the token form).
@@ -48,8 +48,8 @@ next with the same top and height, and the scope's hint under the select.
 - [x] Spec SPEC-270 for the token form layout
 - [x] Token form labels, controls and button share lines on a wide screen
 - [x] Token form stacks cleanly on a narrow screen
-- [ ] Independent review answered
-- [ ] Gates green, evidence recorded, delivered
+- [x] Independent review answered
+- [x] Gates green, evidence recorded, delivered
 
 ## Acceptance criteria
 
@@ -86,3 +86,30 @@ next with the same top and height, and the scope's hint under the select.
 - **Four subgrid rows.** Label, control, hint and a field message: a subgrid makes no implicit rows,
   so with three a message from `invalid()` landed in the hint's row and drew over it (review round
   1). The empty fourth row costs one 4px gap under the form.
+
+## Evidence
+
+- Red first: `npx e2e run tests/api-tokens.e2e.ts` on the original CSS failed `the token form reads
+  as one row` (`expected 594 to be 630`: the Scope label sat 36px above the Token name label, as in
+  the screenshot). With the narrow-screen rule removed, the phone test failed (`650 > 718`). In
+  review round 1, `stacks at 800 px` (`612 > 662`) and `a message on the scope field sits under its
+  hint` (`648 >= 680`) failed on 4ec70d51. Each passes after its change.
+- `cd e2e && npx e2e run tests/api-tokens.e2e.ts` at f45af1b3: 6 passed.
+- Full e2e suite (`npx e2e run`) at 4ec70d51: 64 files passed, 1 skipped; 667 tests passed, 1
+  skipped. Only `api-tokens.e2e.ts` and the `.agent-connect`/`.agent-token-*` rules changed after
+  that, and that file passes at the final head.
+- `scripts/dev ci` (started at 4ec70d51): exit 0. nextest 2437 passed, 17 skipped; lint, deps
+  (duplicate-crate warnings only, as on dev), docs, macOS. `scripts/dev check` at f45af1b3: exit 0.
+- `scripts/dev security` at 4ec70d51 (Vidoc vidoc-1, change scan, 3 files sent): exit 0, no open
+  critical or high finding, and no medium finding in the change. No low findings were listed. The
+  later commits change only CSS rules, tests and docs.
+- Screenshots of the mock Settings page (Playwright, scratch, not committed) at 1440px (one row:
+  labels on one line; input, select and full-height button on the next; hint under the select),
+  800px and 390px (stacked).
+- Independent review (fresh session, `om-code-review`): round 1 approved 4ec70d51 with two minors
+  (a field message overlapping the hint; stale plan) and one pre-existing nit (cramped 641-900px).
+  All three were fixed test-first in 2e857647. Round 2 approved with three nits (spec wording, the
+  test's window size, requirement order), fixed in f45af1b3. Round 3 approved with no findings.
+- Not tested: real Safari and Firefox (the suite runs Chromium only; subgrid and container queries
+  are in all three); the light theme was not looked at separately (only colours that already
+  exist were used).
