@@ -5,7 +5,7 @@
 // Delete all safe takes every item Yulius deletes by itself, each after a confirmation that names
 // the size. Deletions run in the background, and the card follows them until the list updates.
 
-import { h, icon, setChildren, errorToast, confirmDialog, badge, skeleton } from './dom.js';
+import { h, icon, setChildren, errorToast, confirmDialog, badge, skeleton, toast } from './dom.js';
 import { relLong, bytes, plural } from './format.js';
 import { BRAND } from './brand.js';
 
@@ -82,6 +82,27 @@ function jobLine(job) {
       notes.length ? h('ul', null, notes) : null));
 }
 
+/**
+ * Kept files of removed sandboxes (SPEC-276 RDA-012): each with its removal and the size of
+ * everything of it, and Delete files, which asks first and then deletes them once nothing of it runs.
+ */
+function keptSection(kept, remove) {
+  if (!kept || !kept.length) return null;
+  const rows = kept.map((sandbox) => h('li', { class: 'row leftovers-kept-row', dataset: { sandbox: sandbox.slug } },
+    h('span', { class: 'leftovers-kept-name' }, h('strong', null, sandbox.slug),
+      h('span', { class: 'muted small' }, sandbox.removed_at ? ` removed ${relLong(sandbox.removed_at)}` : ' removed')),
+    h('span', { class: 'spacer' }),
+    h('span', { class: 'num small' }, bytes(sandbox.bytes)),
+    sandbox.purge_requested
+      ? badge('deleting', 'warn')
+      : h('button', { type: 'button', class: 'btn btn-sm btn-danger', 'aria-label': `Delete the files of ${sandbox.slug}`, onClick: () => remove(sandbox) },
+        icon('trash', { size: 14 }), 'Delete files')));
+  return h('div', { class: 'stack-sm leftovers-kept' },
+    h('h3', { class: 'field-label' }, 'Kept files of removed sandboxes'),
+    h('p', { class: 'muted xs' }, 'These sandboxes were removed with their files kept: their clone, sessions and transcripts, worktrees and the rest stay on this server until deleted here.'),
+    h('ul', { class: 'leftovers-kept-list' }, rows));
+}
+
 /** The card. */
 export function leftoversCard(ctx) {
   const body = h('div', { class: 'settings-body leftovers-body' }, skeleton('Reading the leftovers…', 3, { block: true }));
@@ -147,6 +168,7 @@ export function leftoversCard(ctx) {
         lastAutoText(view.last_auto),
       ].filter(Boolean).join(' ')),
       jobLine(view.job),
+      keptSection(view.kept, removeKept),
       deleteButtons(),
       table(view.items));
     clearTimeout(timer);
@@ -195,6 +217,25 @@ export function leftoversCard(ctx) {
       danger: true,
     });
     if (ok) await start({ ids: chosen.map((i) => i.id) });
+  }
+
+  async function removeKept(sandbox) {
+    const ok = await confirmDialog({
+      title: `Delete every file of ${sandbox.slug} (${bytes(sandbox.bytes)})?`,
+      message: 'Its clone, sessions and transcripts, worktrees (with any uncommitted or unpushed work), CI directories, browser profile, system layer, runs and export are deleted from this server as soon as nothing of it runs. This cannot be undone. Task records and the audit trail stay.',
+      confirmLabel: `Delete ${bytes(sandbox.bytes)}`,
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const result = await ctx.api.post(`/api/sandboxes/${encodeURIComponent(sandbox.id)}/purge`, {});
+      toast(result.state === 'purged'
+        ? `The files of ${sandbox.slug} are deleted.`
+        : `The files of ${sandbox.slug} are deleted once ${(result.waiting_for || []).join(', ') || 'its processes'} ended.`, { kind: 'ok' });
+      await refresh();
+    } catch (error) {
+      errorToast(error, 'Couldn’t delete the files');
+    }
   }
 
   async function removeAllSafe(safe) {

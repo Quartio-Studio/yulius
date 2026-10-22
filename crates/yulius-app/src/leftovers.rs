@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use yulius_contracts::api::leftovers::{
-    DeleteLeftoversRequest, LeftoverJobView, LeftoverView, LeftoversView,
+    DeleteLeftoversRequest, KeptSandboxView, LeftoverJobView, LeftoverView, LeftoversView,
 };
 use yulius_domain::disk::human;
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId};
@@ -1571,6 +1571,7 @@ impl App {
         let disk = tokio::task::spawn_blocking(move || probe.snapshot(&dir))
             .await
             .unwrap_or_default();
+        let kept = self.kept_sandboxes().await;
         self.with_leftovers(|inner| {
             let deletable = inner.items.iter().filter(|i| i.kind.deletable());
             let total_bytes = deletable.clone().filter_map(|i| i.bytes).sum();
@@ -1589,8 +1590,42 @@ impl App {
                 job: inner.job.clone(),
                 next_auto_at: inner.next_auto_at.map(rfc3339),
                 last_auto: inner.last_auto.clone(),
+                kept,
             }
         })
+    }
+
+    /// The removed sandboxes whose files the last scan found (RDA-012): its "everything of the
+    /// removed sandbox" item holds them all.
+    async fn kept_sandboxes(&self) -> Vec<KeptSandboxView> {
+        let found: Vec<(SandboxId, Option<u64>)> = self.with_leftovers(|inner| {
+            inner
+                .items
+                .iter()
+                .filter(|i| i.kind == Kind::RemovedSandbox)
+                .filter_map(|i| Some((i.sandbox.clone()?, i.bytes)))
+                .collect()
+        });
+        let pending = self.deps.store.pending_purges().await.unwrap_or_default();
+        let mut kept = Vec::new();
+        for (id, bytes) in found {
+            let Ok(Some(record)) = self.deps.store.sandbox(&id).await else {
+                continue;
+            };
+            kept.push(KeptSandboxView {
+                id: id.to_string(),
+                slug: record.slug.clone(),
+                removed_at: record.removed_at.map(rfc3339),
+                bytes,
+                purge_requested: pending.contains(&id),
+            });
+        }
+        kept
+    }
+
+    /// Drops the purged sandbox `id`'s items from the last scan: its files are gone.
+    pub(crate) fn forget_leftovers_of(&self, id: &SandboxId) {
+        self.with_leftovers(|inner| inner.items.retain(|i| i.sandbox.as_ref() != Some(id)));
     }
 
     /// `GET /api/admin/leftovers` (superadmin; LFT-010).

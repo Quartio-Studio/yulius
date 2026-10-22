@@ -802,6 +802,63 @@ async fn a_purged_sandbox_loses_every_file_once_nothing_runs_and_a_kept_one_keep
     Ok(())
 }
 
+/// SPEC-276 RDA-012: a removed sandbox whose files were kept is listed with its removal and the
+/// size of everything of it; the superadmin's Delete files (the purge) deletes them and the list
+/// no longer shows it; a member cannot purge a removed sandbox.
+#[tokio::test]
+async fn kept_files_of_a_removed_sandbox_are_listed_and_deleted_on_request() -> BoxResult<()> {
+    let w = world().await?;
+    let admin = setup_superadmin_creds(&w.h).await?;
+    configure_github_app(&w.h).await?;
+    let member = admit_and_sign_in(&w.h, &admin, "bob", 12, true).await?;
+    let old = w.sandbox("old").await?;
+    w.remove("old").await?;
+    let r = call(
+        &w.h.router,
+        Method::POST,
+        "/api/admin/leftovers/scan",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let listed = settled(&w.h, &admin).await?;
+    let kept = listed["kept"].as_array().ok_or("kept")?;
+    assert_eq!(kept.len(), 1, "{listed}");
+    assert_eq!(
+        (kept[0]["id"].as_str(), kept[0]["slug"].as_str()),
+        (Some("old"), Some("old"))
+    );
+    assert!(kept[0]["bytes"].as_u64().unwrap_or(0) > 0, "{listed}");
+    assert!(kept[0]["removed_at"].is_string());
+    assert_eq!(kept[0]["purge_requested"], false);
+
+    let refused = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/old/purge",
+        None,
+        &member,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::NOT_FOUND, "{}", refused.body);
+    assert!(old.join("repo").exists());
+    let purged = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/old/purge",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(purged.status, StatusCode::OK, "{}", purged.body);
+    assert_eq!(purged.body["state"], "purged", "{}", purged.body);
+    assert!(!old.exists() && !w.at("sysroots/old").exists());
+    let after = view(&w.h, &admin).await?;
+    assert_eq!(after["kept"], json!([]), "{after}");
+    Ok(())
+}
+
 /// SPEC-276 RDA-009: the automatic round deletes the safe leftovers with nobody running the
 /// CLI, and the view says when it last ran and what it did.
 #[tokio::test]

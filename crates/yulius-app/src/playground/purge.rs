@@ -234,6 +234,7 @@ impl App {
                 waiting_for: vec![why],
             });
         }
+        self.forget_leftovers_of(id);
         if !store.finish_purge(id, self.now()).await? {
             return Ok(purged());
         }

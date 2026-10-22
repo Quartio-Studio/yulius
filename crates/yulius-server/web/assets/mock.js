@@ -1095,6 +1095,14 @@ route('DELETE', `/api/sandboxes/${ID}`, ({ db, p }) => {
 // Purging a sandbox (SPEC-171, SPEC-276): removes it and deletes its files once nothing of it
 // runs; the mock keeps the requests (`__yuliusMock.purges`), and `purgeWaitsFor` makes it wait.
 route('POST', `/api/sandboxes/${ID}/purge`, ({ db, p }) => {
+  // A removed sandbox with kept files: the superadmin deletes them (SPEC-276 RDA-012).
+  const kept = (db.leftovers.items || []).find((i) => i.kind === 'removed-sandbox' && `removed-${i.sandbox}` === p[0]);
+  if (kept) {
+    if (!db.me.user.is_superadmin) fail(404, 'not_found', 'No such sandbox');
+    db.leftovers.items = db.leftovers.items.filter((i) => i.sandbox !== kept.sandbox || !i.kind.startsWith('removed-'));
+    (db.purges = db.purges || []).push(kept.sandbox);
+    return { state: 'purged', waiting_for: [] };
+  }
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'admin');
   db.sandboxes = db.sandboxes.filter((s) => s.id !== sandbox.id);
@@ -3657,6 +3665,10 @@ function leftoversView(db) {
     safe_bytes: deletable.filter((i) => i.auto).reduce((n, i) => n + (i.bytes || 0), 0),
     disk_used: 312 * 1024 ** 3, disk_total: 386 * 1024 ** 3,
     job: clone(l.job), next_auto_at: isoIn(40 * MIN),
+    // Removed sandboxes whose files were kept (SPEC-276 RDA-012): one per removed-sandbox item.
+    kept: items.filter((i) => i.kind === 'removed-sandbox').map((i) => ({
+      id: `removed-${i.sandbox}`, slug: i.sandbox, removed_at: isoIn(-3 * 24 * 60 * MIN), bytes: i.bytes, purge_requested: false,
+    })),
     // The automatic round 20 minutes ago (SPEC-276 RDA-009).
     last_auto: { action: 'delete', running: false, actor: 'yulius', total: 2, done: 2, deleted: 2, freed: 3 * 1024 ** 3, kept: [], failed: [], started_at: isoIn(-20 * MIN), ended_at: isoIn(-20 * MIN) },
   };

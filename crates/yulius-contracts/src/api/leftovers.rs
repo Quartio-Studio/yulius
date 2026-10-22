@@ -79,6 +79,24 @@ pub struct LeftoversView {
     /// freed, kept and failed.
     #[serde(default)]
     pub last_auto: Option<LeftoverJobView>,
+    /// Removed sandboxes whose files were kept, as the last scan found them (SPEC-276 RDA-012).
+    #[serde(default)]
+    pub kept: Vec<KeptSandboxView>,
+}
+
+/// A removed sandbox whose files stay on the server (SPEC-276 RDA-012).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct KeptSandboxView {
+    /// Sandbox id (`POST /api/sandboxes/{id}/purge` deletes its files).
+    pub id: String,
+    /// Its slug.
+    pub slug: String,
+    /// When it was removed (RFC 3339).
+    pub removed_at: Option<String>,
+    /// Bytes of everything of it; `None` when unreadable.
+    pub bytes: Option<u64>,
+    /// Its files were asked to go and are deleted once nothing of it runs.
+    pub purge_requested: bool,
 }
 
 /// `POST /api/admin/leftovers/delete`: the items to delete, or every safe one.
