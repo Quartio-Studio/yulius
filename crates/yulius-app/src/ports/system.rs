@@ -30,4 +30,11 @@ pub struct SystemSnapshot {
 pub trait SystemProbe: Send + Sync {
     /// Current metrics; disk figures describe the volume that holds `data_dir`.
     fn snapshot(&self, data_dir: &Path) -> SystemSnapshot;
+
+    /// Total and used bytes of the volume that holds `data_dir` (SPEC-276), read every minute by
+    /// the disk upkeep: only the disk, so the CPU reading of the status panel is left alone.
+    fn disk(&self, data_dir: &Path) -> Option<(u64, u64)> {
+        let snapshot = self.snapshot(data_dir);
+        Some((snapshot.disk_total?, snapshot.disk_used?))
+    }
 }

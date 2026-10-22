@@ -23,6 +23,7 @@ use yulius_domain::disk::{
 };
 use yulius_domain::ids::TaskId;
 use yulius_domain::spec_format::parse_yulius_toml_caches;
+use yulius_domain::sweep::Level;
 use yulius_domain::task::{Activity, StopReason, TaskStatus};
 
 use crate::context::App;
@@ -33,6 +34,8 @@ use crate::ports::isolation::SandboxRef;
 
 /// How often the upkeep runs.
 pub const DISK_EVERY: Duration = Duration::from_secs(5 * 60);
+/// How often Cargo build directories are swept while the disk is not low (SPEC-276 RDA-001).
+pub const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
 /// First round after start.
 const DISK_FIRST: Duration = Duration::from_secs(2 * 60);
 /// A task that ended this recently keeps its caches (it is often continued at once) unless the
@@ -171,6 +174,7 @@ impl App {
         tokio::spawn(async move {
             tokio::time::sleep(DISK_FIRST).await;
             let mut every = tokio::time::interval(DISK_EVERY);
+            let mut swept: Option<tokio::time::Instant> = None;
             loop {
                 every.tick().await;
                 let Ok(sandboxes) = app.deps.store.sandboxes().await else {
@@ -180,6 +184,11 @@ impl App {
                     if let Err(err) = app.disk_upkeep(sandbox, false).await {
                         tracing::warn!(sandbox = %sandbox.id, error = %err, "disk upkeep failed");
                     }
+                }
+                // Cargo build directories lose what nobody used (SPEC-276 RDA-001).
+                if swept.is_none_or(|at| at.elapsed() >= SWEEP_EVERY) {
+                    swept = Some(tokio::time::Instant::now());
+                    app.sweep_build_caches(Level::Ok).await;
                 }
                 // Removed playgrounds whose code was asked to go, once nothing of them runs
                 // (SPEC-171).

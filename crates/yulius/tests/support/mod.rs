@@ -592,6 +592,8 @@ pub struct Harness {
     pub clock: Arc<TestClock>,
     pub store: SqliteStore,
     pub router: Router,
+    /// The machine metrics (the data disk is settable).
+    pub system: Arc<SettableSystem>,
     pub _dir: tempfile::TempDir,
 }
 
@@ -754,6 +756,36 @@ impl yulius_app::ports::system::SystemProbe for FixedSystem {
             disk_total: None,
             load: Some([0.5, 0.25, 0.125]),
             uptime_s: Some(60),
+        }
+    }
+}
+
+/// [`FixedSystem`] whose data disk a test sets (`(total, used)`; unknown by default).
+#[derive(Default)]
+pub struct SettableSystem {
+    pub disk: std::sync::Mutex<Option<(u64, u64)>>,
+}
+
+impl SettableSystem {
+    /// Sets the data disk's total and used bytes.
+    pub fn set_disk(&self, total: u64, used: u64) {
+        *self
+            .disk
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((total, used));
+    }
+}
+
+impl yulius_app::ports::system::SystemProbe for SettableSystem {
+    fn snapshot(&self, dir: &std::path::Path) -> yulius_app::ports::system::SystemSnapshot {
+        let disk = *self
+            .disk
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        yulius_app::ports::system::SystemSnapshot {
+            disk_total: disk.map(|d| d.0),
+            disk_used: disk.map(|d| d.1),
+            ..yulius_app::ports::system::SystemProbe::snapshot(&FixedSystem, dir)
         }
     }
 }
@@ -1377,6 +1409,7 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
     if let Some(configure) = options.configure {
         configure(&mut config);
     }
+    let system = Arc::new(SettableSystem::default());
     let deps = Deps {
         store: Arc::new(store.clone()),
         clock: clock.clone(),
@@ -1403,7 +1436,7 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
         usage: options
             .usage
             .unwrap_or_else(|| Arc::new(yulius_app::ports::usage::NoUsageProbe)),
-        system: Arc::new(FixedSystem),
+        system: system.clone(),
     };
     let app = App::new(config, deps);
     let router = yulius_server::public_router(app.clone())
@@ -1417,6 +1450,7 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
         clock,
         store,
         router,
+        system,
         _dir: dir,
     })
 }
