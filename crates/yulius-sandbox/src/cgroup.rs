@@ -50,9 +50,25 @@ pub struct Limits {
     pub pids_max: Option<u64>,
 }
 
+/// The task limit of a sandbox at least (the fixed default before SPEC-268).
+const MIN_PIDS: u64 = 8192;
+/// The share of the host's task table a sandbox may use by default (SPEC-268 PID-001).
+const HOST_TASKS_SHARE: u64 = 4;
+
+/// The host's task table: the smaller of `kernel.threads-max` and `kernel.pid_max`, from the text
+/// of those files; `None` when one cannot be read as a positive number.
+#[must_use]
+pub fn host_tasks(threads_max: &str, pid_max: &str) -> Option<u64> {
+    let read = |text: &str| text.trim().parse::<u64>().ok().filter(|n| *n > 0);
+    Some(read(threads_max)?.min(read(pid_max)?))
+}
+
 impl Limits {
     /// Defaults for a host: the memory but a reserve for the host and Yulius (an eighth, at
-    /// least 4 GiB; the sandbox gets at least 2 GiB), no CPU quota, 8192 tasks. Half the memory
+    /// least 4 GiB; the sandbox gets at least 2 GiB), no CPU quota, and a quarter of the host's
+    /// task table `host_tasks` ([`host_tasks`]), at least 8192 (SPEC-268 PID-001). The fixed
+    /// 8192 tasks (threads) were used up by five tasks building Rust and running tests with
+    /// containers, and Claude Code aborts when it cannot start a thread (F 2026-10-22). Half the memory
     /// was too little for one sandbox running all the agents: ten sessions and two CI lanes
     /// thrashed its page cache at 25 GiB while 20 GiB of the host stayed free, and CI jobs timed
     /// out (F 2026-10-13).
@@ -63,12 +79,12 @@ impl Limits {
     /// left stayed nearly idle. Yulius's own group and the host's services keep their share by
     /// weight whenever they need it.
     #[must_use]
-    pub fn defaults(total_memory: u64) -> Self {
+    pub fn defaults(total_memory: u64, host_tasks: Option<u64>) -> Self {
         let reserve = (total_memory / 8).max(4 << 30);
         Self {
             memory_max: Some(total_memory.saturating_sub(reserve).max(2 << 30)),
             cpus: None,
-            pids_max: Some(8192),
+            pids_max: Some(host_tasks.map_or(MIN_PIDS, |n| (n / HOST_TASKS_SHARE).max(MIN_PIDS))),
         }
     }
 
@@ -413,17 +429,17 @@ mod tests {
 
     #[test]
     fn defaults_leave_room_for_the_host() {
-        let limits = Limits::defaults(48 << 30);
+        let limits = Limits::defaults(48 << 30, None);
         assert_eq!(limits.memory_max, Some(42 << 30), "all but an eighth");
         assert_eq!(
-            Limits::defaults(16 << 30).memory_max,
+            Limits::defaults(16 << 30, None).memory_max,
             Some(12 << 30),
             "a 4 GiB reserve at least"
         );
         assert_eq!(limits.cpus, None, "shared by weight, not capped (SPEC-082)");
         assert_eq!(limits.files()[1], ("cpu.max", "max 100000".to_owned()));
-        assert_eq!(limits.pids_max, Some(8192));
-        let small = Limits::defaults(2 << 30);
+        assert_eq!(limits.pids_max, Some(8192), "the host's task table is unknown");
+        let small = Limits::defaults(2 << 30, None);
         assert_eq!(small.memory_max, Some(2 << 30));
         assert_eq!(
             Limits::default().files(),
@@ -438,6 +454,24 @@ mod tests {
             ..limits
         };
         assert_eq!(capped.files()[1], ("cpu.max", "1000000 100000".to_owned()));
+    }
+
+    /// SPEC-268 PID-001: a quarter of the host's task table, never less than the old 8192.
+    #[test]
+    fn the_task_limit_is_sized_from_the_host() {
+        // The VM: 47 GB, threads-max 385 088, pid_max 4 194 304.
+        let host = host_tasks("385088\n", "4194304\n");
+        assert_eq!(host, Some(385_088));
+        assert_eq!(Limits::defaults(48 << 30, host).pids_max, Some(96_272));
+        assert_eq!(host_tasks("385088\n", "32768\n"), Some(32_768));
+        assert_eq!(
+            Limits::defaults(4 << 30, host_tasks("30000", "32768")).pids_max,
+            Some(8192),
+            "a small host keeps 8192"
+        );
+        assert_eq!(host_tasks("", "32768"), None);
+        assert_eq!(host_tasks("many", "32768"), None);
+        assert_eq!(host_tasks("0", "32768"), None);
     }
 
     #[test]

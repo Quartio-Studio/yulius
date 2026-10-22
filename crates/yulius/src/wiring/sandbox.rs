@@ -64,13 +64,10 @@ pub struct IsolationArgs {
     /// CPU limit per sandbox in CPUs (`cpu.max`; default: none, the CPU is shared by weight).
     #[arg(long = "sandbox-cpus", env = "YULIUS_SANDBOX_CPUS")]
     pub cpus: Option<u32>,
-    /// Task (process and thread) limit per sandbox.
-    #[arg(
-        long = "sandbox-pids",
-        env = "YULIUS_SANDBOX_PIDS",
-        default_value_t = 8192
-    )]
-    pub pids: u64,
+    /// Task (process and thread) limit per sandbox (default: a quarter of the host's
+    /// `kernel.threads-max` or `kernel.pid_max`, whichever is smaller, at least 8192).
+    #[arg(long = "sandbox-pids", env = "YULIUS_SANDBOX_PIDS")]
+    pub pids: Option<u64>,
     /// Soft disk quota per sandbox in GB (sandbox directory plus installed packages); 0: none.
     #[arg(
         long = "sandbox-disk-gb",
@@ -106,7 +103,7 @@ impl Default for IsolationArgs {
             egress: Egress::Direct,
             memory_gb: None,
             cpus: None,
-            pids: 8192,
+            pids: None,
             disk_gb: 100,
             forward: Vec::new(),
             idle_minutes: 5,
@@ -190,11 +187,16 @@ pub fn resolve(
         .ok()
         .and_then(|t| yulius_sandbox::cgroup::mem_total(&t))
         .unwrap_or(8 << 30);
-    let defaults = Limits::defaults(total);
+    let sysctl = |name: &str| std::fs::read_to_string(format!("/proc/sys/kernel/{name}"));
+    let host_tasks = match (sysctl("threads-max"), sysctl("pid_max")) {
+        (Ok(threads), Ok(pids)) => yulius_sandbox::cgroup::host_tasks(&threads, &pids),
+        _ => None,
+    };
+    let defaults = Limits::defaults(total, host_tasks);
     let limits = Limits {
         memory_max: args.memory_gb.map(|g| g << 30).or(defaults.memory_max),
         cpus: args.cpus.or(defaults.cpus),
-        pids_max: Some(args.pids),
+        pids_max: args.pids.or(defaults.pids_max),
     };
     let loopback = |port| SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     let mut forwards = BTreeMap::from([(internal_port, loopback(internal_port))]);
