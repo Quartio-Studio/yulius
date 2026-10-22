@@ -119,7 +119,12 @@ fn count_files(archive: &[u8]) -> Result<u64, String> {
     let entries = tar
         .entries()
         .map_err(|e| format!("not a readable gzip tar ({e})"))?;
-    for entry in entries {
+    for (seen, entry) in entries.enumerate() {
+        if seen as u64 >= MAX_STATE_ENTRIES {
+            return Err(format!(
+                "holds more than {MAX_STATE_ENTRIES} files and folders, more than a state takes"
+            ));
+        }
         let entry = entry.map_err(|e| format!("not a readable gzip tar ({e})"))?;
         match entry.header().entry_type() {
             tar::EntryType::Regular | tar::EntryType::Continuous => files += 1,
@@ -549,6 +554,21 @@ mod tests {
         std::fs::write(&fake, "not gzip")?;
         assert!(state_entry("OPS", &fake).is_err());
         assert!(state_entry("OPS", &dir.path().join("missing")).is_err());
+        // Vidoc, SPEC-271: a supplied archive is read no further than the entry bound.
+        let mut many = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::fast()));
+        for i in 0..=MAX_STATE_ENTRIES {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Directory);
+            header.set_mode(0o755);
+            header.set_size(0);
+            many.append_data(&mut header, format!("d{i}"), io::empty())?;
+        }
+        let many_path = dir.path().join("many.tgz");
+        std::fs::write(&many_path, many.into_inner()?.finish()?)?;
+        let err = state_entry("OPS", &many_path)
+            .err()
+            .ok_or("endless archive")?;
+        assert!(err.contains("more than 20000"), "{err}");
         Ok(())
     }
 }

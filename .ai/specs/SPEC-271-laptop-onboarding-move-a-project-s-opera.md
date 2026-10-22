@@ -172,9 +172,16 @@ All on `feat/257-…` after merging `origin/dev` at 06cf70ea (a clean merge, no 
     path. `ApiClient::endpoint` already percent-encodes each segment, but the name is now
     checked as a `SecretName` first.
   - The one low finding is fixed too: the suggested `tar` command now quotes `--out`.
-  - At `ac8d4802` the scan passed (exit 0). Four medium or low findings are in code this
-    branch did not touch: `runtime.rs:859`, `secrets.rs:220`, `secrets.rs:251` and
-    `uploads.rs:387`. Yulius CI files each one as an issue.
+  - At `ac8d4802` the local scan passed (exit 0).
+  - Yulius CI's scan at `4142bceb` then failed on a new medium: the CLI packer checked for a
+    link and then opened the file by path, a race. The CLI now walks the folder through
+    handles: `openat` with `O_NOFOLLOW`, modes read from the opened handle. Tested with
+    `entries_are_opened_without_following_links`.
+  - Its low finding is fixed too: the export checks the state name.
+  - The local scan at `c7b7a248` passed. Its one low finding (inspecting a supplied archive
+    had no bound) is fixed: the CLI reads no more than 20 000 entries, which is tested.
+  - Medium and low findings in code this branch did not touch are filed as issues by Yulius CI
+    (#831–#835 and others).
 - Tests. Each new behavior was seen failing first, or checked by a mutation:
   - `remote_mcp::a_laptops_operator_state_moves_into_the_sandbox_with_one_writer` is the
     remote surface, through the real `yulius` binary with only an operate token:
