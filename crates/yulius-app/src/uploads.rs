@@ -664,7 +664,7 @@ impl App {
             &record.sandbox_id,
             &Owner::Task(&record.id),
             name,
-            declared,
+            (declared, false),
         )
         .await
     }
@@ -691,7 +691,7 @@ impl App {
             &sandbox_id,
             &Owner::Shell(&id),
             name,
-            declared,
+            (declared, false),
         )
         .await
     }
@@ -726,7 +726,7 @@ impl App {
             &sandbox_id,
             &Owner::Draft(user),
             name,
-            declared,
+            (declared, false),
         )
         .await
     }
@@ -792,7 +792,7 @@ impl App {
             return Err(too_large(limit));
         }
         let mut upload = self
-            .begin_attachment(actor, sandbox, &Owner::Task(task), name, None)
+            .begin_attachment(actor, sandbox, &Owner::Task(task), name, (None, true))
             .await?;
         upload.limit = limit;
         upload.placement = Placement::Overwrite;
@@ -810,13 +810,15 @@ impl App {
         self.finish_upload(upload).await
     }
 
+    /// `replaces`: the caller places the file over an existing one of that name (see
+    /// [`App::attach_server_file`]).
     async fn begin_attachment(
         &self,
         actor: String,
         sandbox: &SandboxId,
         owner: &Owner<'_>,
         name: &str,
-        declared: Option<u64>,
+        (declared, replaces): (Option<u64>, bool),
     ) -> AppResult<Upload> {
         self.check_declared(declared)?;
         let name = attachment_name(name);
@@ -824,8 +826,10 @@ impl App {
         let sandbox_dir = std::fs::canonicalize(self.sandbox_dir(sandbox))
             .map_err(|_| AppError::Conflict("the sandbox has no folder yet".into()))?;
         let dir = ensure_plain_dirs(&sandbox_dir, &owner.parts())?;
+        // A name that replaces a regular file adds none, so a full folder still takes it.
+        let replacing = replaces && kind_in(&dir.1, &name)? == Some(SFlag::S_IFREG);
         let count = count_entries(&dir.1, MAX_ATTACHMENTS_PER_FOLDER + 1)?;
-        if count >= MAX_ATTACHMENTS_PER_FOLDER {
+        if !replacing && count >= MAX_ATTACHMENTS_PER_FOLDER {
             return Err(AppError::Conflict(format!(
                 "at most {MAX_ATTACHMENTS_PER_FOLDER} attachments are kept per terminal or draft"
             )));

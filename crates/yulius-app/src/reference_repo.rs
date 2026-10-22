@@ -189,7 +189,7 @@ impl App {
                 format!("GitHub names no usable default branch of {repo}."),
             ));
         }
-        let _slot = Arc::clone(&self.uploads.references)
+        let slot = Arc::clone(&self.uploads.references)
             .try_acquire_owned()
             .map_err(|_| {
                 AppError::Capacity(
@@ -207,14 +207,24 @@ impl App {
             task: ctx.task.id.clone(),
             actor: ctx.actor(),
         };
-        // To its end even when the agent's request goes away: the fetch folder is always
-        // removed, and the bundle placed or not (ADR-0053's detached start).
+        // To its end even when the agent's request goes away (ADR-0053's detached start): the
+        // fetch keeps its slot, the folder is always removed, and a placed bundle is audited.
         let (branch, login) = (fetch.branch.clone(), fetch.login.clone());
         let app = Arc::clone(self);
-        let (commit, size, bundle) =
-            Self::run_detached(async move { app.fetch_reference(&fetch).await }).await?;
-        self.audit_reference(ctx, &format!("{repo}@{commit} ({branch}) as {login}"))
+        let (commit, size, bundle) = Self::run_detached(async move {
+            let _slot = slot;
+            let fetched = app.fetch_reference(&fetch).await?;
+            app.audit_reference(
+                &fetch,
+                &format!(
+                    "{}@{} ({}) as {}",
+                    fetch.repo, fetched.0, fetch.branch, fetch.login
+                ),
+            )
             .await;
+            Ok(fetched)
+        })
+        .await?;
         let clone_into = self
             .sandbox_dir_absolute(&sandbox.id)
             .join("reference")
@@ -315,20 +325,20 @@ impl App {
         Ok(dir)
     }
 
-    async fn audit_reference(&self, ctx: &AgentContext, detail: &str) {
+    async fn audit_reference(&self, fetch: &Fetch, detail: &str) {
         if let Err(err) = self
             .deps
             .store
             .audit(
                 self.now(),
-                &ctx.actor(),
+                &fetch.actor,
                 "task.reference_repo",
-                Some(ctx.task.id.as_str()),
+                Some(fetch.task.as_str()),
                 Some(detail),
             )
             .await
         {
-            tracing::warn!(error = %err, task = %ctx.task.id, "reference_repo audit failed");
+            tracing::warn!(error = %err, task = %fetch.task, "reference_repo audit failed");
         }
     }
 }

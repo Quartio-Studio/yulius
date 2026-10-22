@@ -130,3 +130,6 @@ cannot read the repository either.
   and Git follow a transferred repository's redirect.
 - One bundle per repository per task, replaced on each call (review round 1), so repeated calls do
   not pile up gigabytes in the attachments folder.
+- The fetch's slot and its audit live in the detached run (review round 2): an interrupted request
+  frees neither the slot early nor loses the audit; a replacing bundle passes a full attachments
+  folder, since it adds no file.

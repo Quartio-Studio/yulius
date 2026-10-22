@@ -476,3 +476,39 @@ async fn the_git_adapter_bundles_one_branch() -> TestResult {
     }
     Ok(())
 }
+
+/// A task whose attachments folder is full still refreshes its bundle: replacing it adds no
+/// file (review round 2).
+#[tokio::test]
+async fn a_full_attachments_folder_still_takes_a_fresh_bundle() -> TestResult {
+    let (w, _alice, _lib) = world().await?;
+    let dir = w
+        .data_dir()
+        .join("sandboxes")
+        .join(SANDBOX)
+        .join("attachments/tasks/t-ref");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("acme-lib.bundle"), b"older bundle")?;
+    for n in 1..yulius_app::uploads::MAX_ATTACHMENTS_PER_FOLDER {
+        std::fs::write(dir.join(format!("shot-{n}.png")), b"x")?;
+    }
+    let done = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib"}),
+    )
+    .await?;
+    assert_ne!(done["isError"], true, "{done}");
+    let record = support::tool_text(&done);
+    let clone = clone_bundle(&record, w.scratch.path())?;
+    assert_eq!(
+        std::fs::read_to_string(clone.join("README.md"))?,
+        "# Lib v1\n"
+    );
+    assert_eq!(
+        attachments(&w).len(),
+        yulius_app::uploads::MAX_ATTACHMENTS_PER_FOLDER
+    );
+    Ok(())
+}
