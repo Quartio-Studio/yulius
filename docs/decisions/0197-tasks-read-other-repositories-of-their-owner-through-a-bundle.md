@@ -52,6 +52,10 @@ you" to go away.
 
 - A task needs no person to read another repository of its organisation that its owner can read;
   the copy is visible to everyone who can open the sandbox, as files the person adds are.
-- Each call downloads the branch's whole history once (bundles are capped at 1 GiB); the bundle is
-  removed with the task's attachments.
+- Each call downloads the branch's whole history once (bundles are capped at 1 GiB, at most 2
+  fetches run at once); a task keeps one bundle per repository, replaced by each call and removed
+  with its attachments. The fetch runs to its end even when the agent's request goes away, and a
+  fetch folder a restart left is swept by the next fetch.
+- The owner GitHub answers with decides, so a repository moved to another organisation is that
+  organisation's.
 - A repository of another owner, or one the task's owner cannot read, still needs a person.
