@@ -35,7 +35,8 @@
 //! cpus = 4                               # its CPU and memory budget (SPEC-082); without them
 //! memory_gb = 8                          # the run's jobs share the sandbox equally
 //! secrets = "VIDOC_API_KEY"              # agent secrets it uses through the egress proxy
-//!                                        # (SPEC-142; the integration branch's list counts)
+//!                                        # (SPEC-142; the integration branch's list counts,
+//!                                        # for its name and command, SPEC-264)
 //!
 //! [resources.env]                       # the budget in this repository's tools' terms
 //! CARGO_BUILD_JOBS = "{cpus}"            # also {memory_mb}, {memory_gb}; with YULIUS_CPUS and
