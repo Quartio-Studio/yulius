@@ -185,8 +185,11 @@ All on `feat/257-…` after merging `origin/dev` at 06cf70ea (a clean merge, no 
     and the path unchecked. New values are already refused with control characters
     (`check_agent_value`), but values stored before that check, and user names, were not. The
     proxy now never sends a secret whose value or user name holds a control character
-    (`transportable`); it logs it so a person can replace it. Unit test
-    `values_with_control_characters_are_never_sent`.
+    (`transportable`); it logs it so a person can replace it. Tests:
+    `values_with_control_characters_are_never_sent` (unit) and
+    `secrets::the_egress_policy_never_sends_a_value_with_a_line_break`, where a value stored
+    with CR/LF goes through `egress_apply` and is neither forwarded nor counted as used.
+    Mutation check: with the filter disabled, that test fails (review m9).
   - The local rescan at `bc229d2e` failed on a high in `mcp.rs` (a file this branch touched for
     the two tools): "tool dispatch does not distinguish Superagent callers". It is a false
     positive. Every arm shared by both callers is in `COCKPIT_TOOLS`, and agent-only tools

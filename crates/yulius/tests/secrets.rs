@@ -3214,3 +3214,81 @@ async fn agents_are_not_served_secret_verify() -> TestResult {
     );
     Ok(())
 }
+
+/// Vidoc (CI scan of SPEC-271's change), review m9: a value stored before `check_agent_value`
+/// refused control characters never reaches a proxied request: not as an injected header, not
+/// through a placeholder in a header or the path, and it is not counted as used.
+#[tokio::test]
+async fn the_egress_policy_never_sends_a_value_with_a_line_break() -> TestResult {
+    use yulius_app::ports::vault::{VaultSecretRecord, VaultSection, VaultStore as _};
+    let w = world().await?;
+    let value = "crlf-value-12345\r\nX-Evil: 1";
+    let envelope = w.h.app.deps.crypto.envelope_seal(
+        b"old-crlf|agent",
+        json!({ "value": value }).to_string().as_bytes(),
+    )?;
+    let now = w.h.app.now();
+    w.h.app
+        .deps
+        .store
+        .vault_insert(&VaultSecretRecord {
+            id: "old-crlf".into(),
+            section: VaultSection::Agent,
+            sandbox_id: Some(yulius_domain::ids::SandboxId::parse("s1")?),
+            owner_id: None,
+            name: "CRLF_KEY".into(),
+            description: "Stored before the check".into(),
+            hosts: vec!["crlf.test".into()],
+            injection: "bearer".into(),
+            header_name: None,
+            fields: vec!["value".into()],
+            envelope,
+            created_by: "u-alice".into(),
+            created_at: now,
+            updated_by: "u-alice".into(),
+            updated_at: now,
+            value_updated_at: now,
+            last_used_at: None,
+            requested_hosts: Vec::new(),
+            requested_by: None,
+            env_files: yulius_app::ports::vault::EnvFiles::No,
+            env_requested_by: None,
+            cd_prod: false,
+            auto_allow: false,
+        })
+        .await?;
+    let app: Arc<dyn EgressPolicy> = w.h.app.clone();
+    let s1 = app.egress_client(TOKEN_S1).await.ok_or("s1 client")?;
+    let decision = app
+        .egress_apply(
+            &s1,
+            request(
+                "crlf.test",
+                "/v1?key=yulius-secret-CRLF_KEY",
+                &[("x-api-key", "yulius-secret-CRLF_KEY")],
+            ),
+        )
+        .await;
+    let EgressDecision::Forward {
+        path_and_query,
+        headers,
+        used,
+    } = decision
+    else {
+        return Err("refused".into());
+    };
+    assert!(!path_and_query.contains("crlf-value"), "{path_and_query}");
+    for (name, bytes) in &headers {
+        let text = String::from_utf8_lossy(bytes);
+        assert!(
+            !text.contains("crlf-value") && !text.contains('\r'),
+            "{name}: {text:?}"
+        );
+    }
+    assert!(
+        headers.iter().all(|(name, _)| name != "authorization"),
+        "{headers:?}"
+    );
+    assert!(used.is_empty(), "{used:?}");
+    Ok(())
+}
