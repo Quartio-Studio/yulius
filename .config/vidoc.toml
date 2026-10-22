@@ -387,3 +387,13 @@ reason = "uncontained is the development mode: agents and shells already run on 
 path = "crates/yulius-server/src/routes/accounts.rs"
 title = "Login terminal WebSocket may lack ownership verification"
 reason = "by design every instance administrator may watch any sign-in (SPEC-002 §7.2); require_instance_admin first; output is masked so no viewer sees the token (claude_login_masks_the_token_for_viewers_and_seals_it)"
+
+# The disk upkeep's cache removal (SPEC-263): on Linux it re-checks and removes through
+# `O_NOFOLLOW` handles (`leftovers::remove_below`); only other systems keep a path-based
+# `remove_dir_all` after the re-check, because `remove_below` needs `/proc/self/fd`. Those are
+# development hosts whose runs are not contained (docs/operations.md): an agent there already acts
+# with the service user's rights on every sandbox, so the window crosses no boundary.
+[[ignore]]
+path = "crates/yulius-app/src/disk.rs"
+title = "TOCTOU symlink swap between check and remove on non-Linux hosts"
+reason = "only non-Linux development hosts, whose runs are not contained (docs/operations.md); Linux removes through O_NOFOLLOW handles, proven by disk::a_worktrees_folder_swapped_for_a_link_after_the_scan_is_not_followed (SPEC-263)"
