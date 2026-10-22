@@ -15,11 +15,13 @@
 //!   of it is stored, and only where their selection is in a file is relayed to the sandbox's
 //!   other writers (SPEC-127).
 
+use std::ffi::{OsStr, OsString};
+use std::os::fd::OwnedFd;
 use std::path::{Component, Path, PathBuf};
 
 use nix::errno::Errno;
-use nix::fcntl::{OFlag, openat, renameat};
-use nix::sys::stat::Mode;
+use nix::fcntl::{AtFlags, OFlag, openat, renameat};
+use nix::sys::stat::{Mode, SFlag, fstatat, mkdirat};
 use nix::unistd::{UnlinkatFlags, unlinkat};
 
 use yulius_contracts::api::files::{
@@ -43,12 +45,43 @@ pub const MAX_ENTRIES: usize = 2000;
 pub const MAX_PRESENCE_PATH: usize = 4096;
 /// Bytes inspected for NUL when telling text from binary.
 const SNIFF_BYTES: usize = 8192;
+/// Most folders deep a tree removal goes (SPEC-265 EDH-005).
+const MAX_REMOVE_DEPTH: usize = 256;
+/// Most entries one tree removal removes.
+const MAX_REMOVED_ENTRIES: usize = 1_000_000;
+/// Names read from a folder at a time while a tree removal empties it.
+const REMOVE_BATCH: usize = 512;
 
 /// A resolved file request: the root folder and the path below it.
 pub(crate) struct Target {
+    /// The sandbox directory (canonical): the folder handles are opened from, which the agent
+    /// cannot replace (ADR-0174).
+    pub(crate) anchor: PathBuf,
     pub(crate) root: PathBuf,
     pub(crate) path: PathBuf,
     pub(crate) relative: String,
+}
+
+impl Target {
+    /// Opens the resolved `folder` (inside the root, out of `.git`) from the sandbox directory
+    /// one folder at a time without following links: a folder on the way swapped for a link
+    /// after `folder` was resolved is refused, and no `/proc` is needed to tell (#660).
+    fn open_folder(&self, folder: &Path) -> AppResult<OwnedFd> {
+        let outside = || AppError::Forbidden("the path leads outside the folder".into());
+        if !inside(&self.root, folder) {
+            return Err(outside());
+        }
+        // A file on the way is a mistake, not an escape: said as such (the walk refuses it too).
+        if !folder.is_dir() {
+            return Err(AppError::Invalid("that path is not a directory".into()));
+        }
+        let below = folder.strip_prefix(&self.anchor).map_err(|_| outside())?;
+        let names: Vec<&OsStr> = below.components().map(Component::as_os_str).collect();
+        open_dirs_below(&self.anchor, &names, false).map_err(|err| match err {
+            Errno::ELOOP | Errno::ENOTDIR => outside(),
+            other => errno_error(other),
+        })
+    }
 }
 
 /// Normalizes a relative path: normal components only, no `.git`.
@@ -177,6 +210,109 @@ pub(crate) fn open_dir_at(
     }
 }
 
+/// A listing of the folder `dir` through a fresh description of it, so it starts at the folder's
+/// beginning.
+fn listing(dir: &OwnedFd) -> Result<nix::dir::OwningIter, Errno> {
+    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC;
+    Ok(nix::dir::Dir::openat(dir, ".", flags, Mode::empty())?.into_iter())
+}
+
+/// Up to `limit` names in the folder `dir` (`.` and `..` left out), from its beginning.
+pub(crate) fn names_in(dir: &OwnedFd, limit: usize) -> Result<Vec<OsString>, Errno> {
+    next_names(&mut listing(dir)?, limit)
+}
+
+/// The next `limit` names of `listing` at most (`.` and `..` left out); it reads on from there.
+fn next_names(listing: &mut nix::dir::OwningIter, limit: usize) -> Result<Vec<OsString>, Errno> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut names = Vec::new();
+    while names.len() < limit {
+        let Some(entry) = listing.next() else {
+            break;
+        };
+        let entry = entry?;
+        let name = entry.file_name().to_bytes();
+        if name != b"." && name != b".." {
+            names.push(OsStr::from_bytes(name).to_owned());
+        }
+    }
+    Ok(names)
+}
+
+/// The type of `name` in the folder `dir`, a link not followed.
+pub(crate) fn kind_at(
+    dir: &OwnedFd,
+    name: &OsStr,
+) -> Result<(SFlag, nix::sys::stat::FileStat), Errno> {
+    let stat = fstatat(dir, name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
+    Ok((
+        SFlag::from_bits_truncate(stat.st_mode).intersection(SFlag::S_IFMT),
+        stat,
+    ))
+}
+
+/// Removes `name` from the folder `dir`: a folder with everything in it, handle by handle (each
+/// sub-folder opened with `O_NOFOLLOW`; only folders are opened), a file or a link with `unlinkat`;
+/// a link is removed, never followed (#660, ADR-0174). A missing `name` is not an error. Bounded by [`MAX_REMOVE_DEPTH`]
+/// and [`MAX_REMOVED_ENTRIES`]: past them it stops and leaves the rest.
+pub(crate) fn remove_tree(dir: &OwnedFd, name: &OsStr) -> AppResult<()> {
+    let mut budget = MAX_REMOVED_ENTRIES;
+    remove_entry(dir, name, 0, &mut budget)
+}
+
+fn remove_entry(dir: &OwnedFd, name: &OsStr, depth: usize, budget: &mut usize) -> AppResult<()> {
+    *budget = budget.checked_sub(1).ok_or_else(|| {
+        AppError::Conflict(format!(
+            "more than {MAX_REMOVED_ENTRIES} entries to delete; the rest is left"
+        ))
+    })?;
+    let removed = match kind_at(dir, name).map(|(kind, _)| kind) {
+        Ok(SFlag::S_IFDIR) => match open_dir_at(dir, name, false) {
+            Ok(folder) => {
+                if depth >= MAX_REMOVE_DEPTH {
+                    return Err(AppError::Conflict(format!(
+                        "folders nest more than {MAX_REMOVE_DEPTH} deep; the rest is left"
+                    )));
+                }
+                empty_folder(&folder, depth, budget)?;
+                unlinkat(dir, name, UnlinkatFlags::RemoveDir)
+            }
+            // Swapped for a link or a file since: that is removed, not followed.
+            Err(Errno::ELOOP | Errno::ENOTDIR) => unlinkat(dir, name, UnlinkatFlags::NoRemoveDir),
+            Err(err) => Err(err),
+        },
+        Ok(_) => unlinkat(dir, name, UnlinkatFlags::NoRemoveDir),
+        Err(err) => Err(err),
+    };
+    match removed {
+        Ok(()) | Err(Errno::ENOENT) => Ok(()),
+        Err(err) => Err(errno_error(err)),
+    }
+}
+
+/// Removes everything in `folder`: one listing is read on while its entries go (linear in the
+/// entries), then the folder is read again from its beginning until it is empty, so entries made
+/// meanwhile go too.
+fn empty_folder(folder: &OwnedFd, depth: usize, budget: &mut usize) -> AppResult<()> {
+    loop {
+        let mut stream = listing(folder).map_err(errno_error)?;
+        let mut any = false;
+        loop {
+            let names = next_names(&mut stream, REMOVE_BATCH).map_err(errno_error)?;
+            if names.is_empty() {
+                break;
+            }
+            any = true;
+            for child in &names {
+                remove_entry(folder, child, depth + 1, budget)?;
+            }
+        }
+        if !any {
+            return Ok(());
+        }
+    }
+}
+
 /// Writes `name` in the folder `dir` whole: `write` fills a new file created through the handle
 /// as `temporary` (`O_EXCL | O_NOFOLLOW`, so an entry planted there is never opened), which is
 /// synced and renamed over `name` within the same handle; it is removed when anything fails.
@@ -296,6 +432,7 @@ impl App {
         let relative = parts.join("/");
         let path = parts.iter().fold(root.clone(), |p, part| p.join(part));
         Ok(Target {
+            anchor: sandbox_dir,
             root,
             path,
             relative,
@@ -326,11 +463,14 @@ impl App {
     ) -> AppResult<DirListing> {
         let target = self.file_target(ctx, sandbox, root, path, false).await?;
         let dir = Self::existing(&target)?;
+        crate::race::reached(crate::race::Point::FilesList, &dir);
+        // Listed through the folder's handle, never by path again (#660).
+        let folder = target.open_folder(&dir)?;
         let mut entries = Vec::new();
         let mut truncated = false;
-        let reader = std::fs::read_dir(&dir).map_err(|e| io_error(&e))?;
-        for entry in reader.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
+        // One more than shown, and one for `.git`, tells whether the listing is cut.
+        for raw in names_in(&folder, MAX_ENTRIES + 2).map_err(errno_error)? {
+            let name = raw.to_string_lossy().into_owned();
             if name == ".git" {
                 continue;
             }
@@ -338,17 +478,17 @@ impl App {
                 truncated = true;
                 break;
             }
-            let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+            let Ok((kind, stat)) = kind_at(&folder, &raw) else {
                 continue;
             };
-            let kind = if meta.file_type().is_symlink() {
+            let kind = if kind == SFlag::S_IFLNK {
                 // Links into the folder behave like their target; others are shown as links.
-                match std::fs::canonicalize(entry.path()) {
+                match std::fs::canonicalize(dir.join(&raw)) {
                     Ok(resolved) if inside(&target.root, &resolved) && resolved.is_dir() => "dir",
                     Ok(resolved) if inside(&target.root, &resolved) => "file",
                     _ => "symlink",
                 }
-            } else if meta.is_dir() {
+            } else if kind == SFlag::S_IFDIR {
                 "dir"
             } else {
                 "file"
@@ -362,7 +502,11 @@ impl App {
                 name,
                 path: relative,
                 kind: kind.into(),
-                size: if kind == "file" { meta.len() } else { 0 },
+                size: if kind == "file" {
+                    u64::try_from(stat.st_size).unwrap_or(0)
+                } else {
+                    0
+                },
             });
         }
         entries.sort_by(|a, b| {
@@ -621,7 +765,18 @@ impl App {
                 "the path leads outside the folder".into(),
             ));
         }
-        std::fs::create_dir(&target.path).map_err(|e| io_error(&e))?;
+        crate::race::reached(crate::race::Point::FileCreate, &parent);
+        // Created through the parent's handle: a parent swapped for a link is refused (#660).
+        let folder = target.open_folder(&parent)?;
+        let name = target
+            .path
+            .file_name()
+            .ok_or_else(|| AppError::Invalid("invalid path".into()))?;
+        match mkdirat(&folder, name, Mode::from_bits_truncate(0o777)) {
+            Ok(()) => {}
+            Err(Errno::EEXIST) => return Err(AppError::Conflict("that path exists".into())),
+            Err(err) => return Err(errno_error(err)),
+        }
         let name = target
             .relative
             .rsplit('/')
@@ -653,7 +808,6 @@ impl App {
                 "the folder itself cannot be deleted".into(),
             ));
         }
-        let meta = std::fs::symlink_metadata(&target.path).map_err(|e| io_error(&e))?;
         // The entry itself must be inside the folder (its parent resolved), even for links.
         let parent = target
             .path
@@ -667,12 +821,18 @@ impl App {
                 "the path leads outside the folder".into(),
             ));
         }
-        let result = if meta.is_dir() {
-            std::fs::remove_dir_all(&target.path)
-        } else {
-            std::fs::remove_file(&target.path)
-        };
-        result.map_err(|e| io_error(&e))
+        crate::race::reached(crate::race::Point::FileDelete, &parent);
+        // Removed through the parent's handle: a parent swapped for a link is refused, and a
+        // link inside the tree is removed, never followed (#660).
+        let folder = target.open_folder(&parent)?;
+        let name = target
+            .path
+            .file_name()
+            .ok_or_else(|| AppError::Invalid("invalid path".into()))?
+            .to_owned();
+        kind_at(&folder, &name).map_err(errno_error)?;
+        // A large tree takes a while: off the runtime's threads.
+        crate::projects::blocking(move || remove_tree(&folder, &name)).await
     }
 }
 
@@ -759,5 +919,35 @@ mod tests {
         assert!(relative_components("a\0b").is_err());
         assert!(relative_components(".git/config").is_err());
         assert!(relative_components("sub/.git/hooks").is_err());
+    }
+
+    #[test]
+    fn a_tree_removal_unlinks_links_and_never_follows_them()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let base = dir.path();
+        let outside = base.join("outside");
+        std::fs::create_dir_all(outside.join("keep"))?;
+        std::fs::write(outside.join("keep/file.txt"), "precious")?;
+        let tree = base.join("folder/tree");
+        std::fs::create_dir_all(tree.join("a/b"))?;
+        std::fs::write(tree.join("a/b/c.txt"), "x")?;
+        std::fs::write(tree.join("top.txt"), "x")?;
+        std::os::unix::fs::symlink(&outside, tree.join("a/link"))?;
+        std::os::unix::fs::symlink(outside.join("keep/file.txt"), tree.join("file-link"))?;
+        let folder = open_dirs_below(base, &[OsStr::new("folder")], false)?;
+        remove_tree(&folder, OsStr::new("tree"))?;
+        assert!(!tree.exists() && base.join("folder").is_dir());
+        assert_eq!(
+            std::fs::read_to_string(outside.join("keep/file.txt"))?,
+            "precious"
+        );
+        // A missing entry is not an error; a link as the entry itself is removed, not followed.
+        remove_tree(&folder, OsStr::new("tree"))?;
+        std::os::unix::fs::symlink(&outside, base.join("folder/gone"))?;
+        remove_tree(&folder, OsStr::new("gone"))?;
+        assert!(std::fs::symlink_metadata(base.join("folder/gone")).is_err());
+        assert!(outside.join("keep/file.txt").is_file());
+        Ok(())
     }
 }
