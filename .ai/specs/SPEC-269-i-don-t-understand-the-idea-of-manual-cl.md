@@ -1,11 +1,11 @@
 ---
 yulius-task: e7691505-2d0c-4385-bb8f-c282747c398d
-status: in-progress
+status: done
 ---
 
 # SPEC-269: Yulius cleans up after itself, and the hygiene card says what it did
 
-Status: in progress
+Status: done
 Date: 2026-10-22
 Owner: Yulius task #255
 Scope authorization: task #255 ("I don't understand the idea of manual cleaning, + after cleaning
@@ -84,8 +84,8 @@ Read in the code on `dev` (21c26d8b):
 - [x] The card explains itself and shows a cleanup running and its result
 - [x] Review round 1 findings fixed test-first
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Review round 3 approves the exact head
-- [ ] Every gate green on the branch merged with current dev
+- [x] Review round 3 approves the exact head
+- [x] Every gate green on the branch merged with current dev
 
 ## Acceptance criteria
 
@@ -169,4 +169,45 @@ Read in the code on `dev` (21c26d8b):
 
 ## Evidence
 
-(filled when done)
+- Red first:
+  - The automatic round only listed items: `the_hygiene_round_removes_safe_items_itself` failed
+    with every branch still on origin.
+  - `a_cleanup_is_kept_on_the_report` failed (no `last_cleanup`).
+  - `npx e2e run tests/ci.e2e.ts` with the old `pages/ci.js`: 3 failed.
+  - Review round 1's tests: `the_hygiene_round_keeps_paused_work_and_files_nobody_can_rebuild`
+    failed on the paused task's worktree, and again with the cache check disabled.
+    `a_cleanup_never_loses_commits_that_only_a_branch_held` failed with `tip_on_pull` ignored
+    (feat/later listed as `pull_closed`), and again with the local re-check disabled (the local
+    copy deleted).
+  - Review round 2's tests: `a_failed_fetch_never_deletes_what_moved_on_github` failed
+    (feat/closed deleted on GitHub with its new commit). The two new e2e tests failed against the
+    previous page.
+  - The cd flake ("the Now summary…"): reproduced with a 22 s probe delay before the phone-width
+    check (fails without `ciRunMs`, passes with it).
+- Gates at 60e464a1 (dev merged):
+  - `scripts/dev ci`: exit 0 (nextest 2451 passed, 17 skipped).
+  - `npx e2e run`: 676 passed, 1 skipped (`agent.e2e.ts`, needs a real model), 1 failed:
+    `secrets.e2e.ts` "a failed copy shows no check…" (axe target-size on a Close button). That is
+    the open flaky issue #640, not this change: it ran while clippy loaded the machine, and passed
+    3 of 3 runs on its own. `ci`, `cd` and `loading-shapes` passed.
+  - The earlier full run at 876eca4e had 5 terminal and times poll timeouts under the reviewer's
+    builds; the same files passed 25 of 25 on an idle machine.
+- `scripts/dev security` at 60e464a1: exit 0, no open critical, high or medium finding in the
+  change. Three low findings in changed lines:
+  - The worktree path is built from the item name in `remove_task_worktree`. Not fixed: only names
+    the fresh scan produced reach it, which are Git's own paths relative to the sandbox, and the
+    Git adapter's removal refuses any path outside `worktrees/` (`owned`).
+  - The hygiene lock map's poisoning gave a fresh lock. Fixed: the poisoned map is used as is.
+  - The snapshot import's `exists()` check before `add_worktree`. Pre-existing; this change only
+    named its prefix. Filed as #824.
+  - Findings outside the change are filed by Yulius CI.
+- Seen in the mock UI (dark theme, 1280 px):
+  - The card names Yulius's own cleanup and its next round.
+  - After Clean up the card says "Cleaned up just now by mkarp: 3 removed." with the three items
+    and "Still listed:" for the kept unmerged branch.
+- Not testable here: a real 6-hourly round on the instance against GitHub. The round is driven in
+  tests through `hygiene_round`, with real Git over local remotes and the GitHub fake.
+- Independent review in fresh sessions:
+  - Round 1: request changes at 876eca4e.
+  - Round 2: request changes at 34ee351a.
+  - Both answered above. Round 3 reviews the head that delivers.

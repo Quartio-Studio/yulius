@@ -752,16 +752,15 @@ impl App {
     }
 
     fn hygiene_lock(&self, sandbox: &SandboxRecord) -> Arc<tokio::sync::Mutex<()>> {
+        // Nothing panics while the map is held; a poisoned map is still the one map, so every
+        // caller keeps sharing one lock per sandbox.
         self.ci
             .hygiene_locks
             .lock()
-            .map(|mut locks| {
-                locks
-                    .entry(sandbox.id.as_str().to_owned())
-                    .or_default()
-                    .clone()
-            })
-            .unwrap_or_default()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(sandbox.id.as_str().to_owned())
+            .or_default()
+            .clone()
     }
 
     /// `POST /api/sandboxes/{sid}/hygiene/scan`.
