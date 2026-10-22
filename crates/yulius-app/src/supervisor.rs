@@ -3968,9 +3968,20 @@ async fn request_shutdown(runtime: &TaskRuntime) {
     }
 }
 
-/// Makes the sandbox's home, `<sandbox_dir>/home`, when it is missing.
+/// Makes the sandbox's home, `<sandbox_dir>/home`, when it is missing. The home is the agent's:
+/// it is made with `mkdirat` from the sandbox directory and opened without following a link, so a
+/// `home` link, dangling or to a host folder, fails the start and is never taken as the home
+/// (#661, ADR-0174).
 fn make_home(sandbox_dir: &Path) -> AppResult<()> {
-    std::fs::create_dir_all(sandbox_dir.join("home")).map_err(AppError::internal)
+    std::fs::create_dir_all(sandbox_dir).map_err(AppError::internal)?;
+    crate::files::open_dirs_below(sandbox_dir, &[std::ffi::OsStr::new("home")], true)
+        .map(drop)
+        .map_err(|err| match err {
+            nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR => AppError::internal(
+                "the sandbox's home is a link or not a folder: Yulius follows no links",
+            ),
+            other => crate::files::errno_error(other),
+        })
 }
 
 #[cfg(test)]
