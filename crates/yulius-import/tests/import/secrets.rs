@@ -9,8 +9,8 @@ use yulius_import::{
     VaultClient, import_secrets, parse_dotenv, prepare_target, prompt_secrets, secret_file_entry,
 };
 
-use crate::support::TestResult;
 use crate::support::server::{FakeServer, TOKEN};
+use crate::support::{RepoFixture, TestResult};
 
 const PEM: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----";
 
@@ -24,6 +24,7 @@ const VALUES: &[&str] = &[
     "multi-line-value",
     "tiny-v1",
     "hidden-typed-value-9",
+    "acme-bucket-0042",
 ];
 
 /// A scripted terminal: answers in order, records what was said.
@@ -700,5 +701,245 @@ fn a_key_file_is_imported_by_path() -> TestResult {
         .err()
         .ok_or("missing")?;
     assert!(err.contains("gone"), "{err}");
+    Ok(())
+}
+
+/// SPEC-274 PLW-002: values that are ordinary text (a configuration word, a host, an e-mail
+/// address, a URL without credentials) are refused before anything is sent and named with why,
+/// with or without --yes; credentials go on.
+#[test]
+fn ordinary_text_values_are_refused_and_named() -> TestResult {
+    let file = "PIPEDREAM_PROJECT_ENVIRONMENT=production\nAPI_HOST=api.example.com\n\
+                OPS_EMAIL=ops@example.com\nAPI_URL=https://api.example.com/v1\n\
+                DATABASE_URL=postgres://app:s3cretPass@db.internal/app\nNEW_KEY=sk_live_new_value_1\n";
+    for unattended in [false, true] {
+        let server = FakeServer::start()?;
+        with_sandbox(&server)?;
+        let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+        let mut target = prepare_target(&agent("Quartio-Studio/yulius", false), &client)?;
+        if unattended {
+            target = target.unattended();
+        }
+        let mut terminal = Terminal::answering(&["yes"]);
+        let summary = import_secrets(parse_dotenv(file)?, &target, &client, &mut terminal)?;
+        assert_eq!(summary.imported, vec!["DATABASE_URL", "NEW_KEY"]);
+        assert_eq!(
+            summary.invalid,
+            vec![
+                "PIPEDREAM_PROJECT_ENVIRONMENT",
+                "API_HOST",
+                "OPS_EMAIL",
+                "API_URL"
+            ]
+        );
+        let sent: Vec<String> = server
+            .with(|s| s.agent_created.clone())?
+            .into_iter()
+            .map(|(_, input)| input.name)
+            .collect();
+        assert_eq!(sent, vec!["DATABASE_URL", "NEW_KEY"]);
+        let said = &terminal.said;
+        for line in [
+            "PIPEDREAM_PROJECT_ENVIRONMENT  skipped: a configuration word",
+            "API_HOST                       skipped: a host name or address",
+            "OPS_EMAIL                      skipped: an e-mail address",
+            "API_URL                        skipped: a URL without credentials",
+        ] {
+            assert!(said.contains(line), "{line:?} in:\n{said}");
+        }
+        // Review of SPEC-274: a credential taken for ordinary text never goes to the hand-over.
+        assert!(
+            said.contains("belongs in configuration or the hand-over")
+                && said.contains(
+                    "if it is a credential after all, a person adds it on the Secrets page"
+                ),
+            "{said}"
+        );
+        // "production deploys" is the run's own text: the values are looked for in the plan.
+        let plan: Vec<&str> = said.lines().filter(|l| l.starts_with("  ")).collect();
+        for value in [
+            "production",
+            "api.example.com",
+            "ops@example.com",
+            "s3cretPass",
+        ] {
+            assert!(
+                plan.iter().all(|l| !l.contains(value)),
+                "said {value:?}:\n{said}"
+            );
+        }
+        terminal.assert_no_value();
+    }
+    Ok(())
+}
+
+/// The fake server's sandbox of [`RepoFixture`]'s repository, and a checkout of it holding
+/// `acme-bucket-0042` in a tracked file.
+fn demo_checkout(server: &FakeServer) -> TestResult<(RepoFixture, SecretsImportOptions)> {
+    server.with(|s| {
+        s.sandboxes = vec![(
+            "sb-demo".into(),
+            "quartio-demo".into(),
+            "Quartio-Studio".into(),
+            "demo".into(),
+        )];
+    })?;
+    let fixture = RepoFixture::new()?;
+    fixture.commit_file("deploy/config.yml", "bucket: acme-bucket-0042\n", "config")?;
+    let options = SecretsImportOptions {
+        target: SecretsTarget::Agent {
+            sandbox: None,
+            instance: false,
+            confirm_hosts: false,
+        },
+        checkout: fixture.root()?,
+        source_file: None,
+    };
+    Ok((fixture, options))
+}
+
+const IN_REPO: &str = "BUCKET=acme-bucket-0042\nNEW_KEY=sk_live_new_value_1\n";
+
+fn sent_names(server: &FakeServer) -> TestResult<Vec<String>> {
+    Ok(server
+        .with(|s| s.agent_created.clone())?
+        .into_iter()
+        .map(|(_, input)| input.name)
+        .collect())
+}
+
+/// SPEC-274 PLW-003: with --yes a value found in a tracked file of the project's checkout is
+/// skipped and listed, naming where it was found, never the value.
+#[test]
+fn an_unattended_run_skips_values_found_in_the_repository() -> TestResult {
+    let server = FakeServer::start()?;
+    let (_fixture, options) = demo_checkout(&server)?;
+    let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+    let target = prepare_target(&options, &client)?.unattended();
+    let mut terminal = Terminal {
+        no_terminal: true,
+        ..Terminal::default()
+    };
+    let summary = import_secrets(parse_dotenv(IN_REPO)?, &target, &client, &mut terminal)?;
+    assert_eq!(summary.invalid, vec!["BUCKET"]);
+    assert_eq!(sent_names(&server)?, vec!["NEW_KEY"]);
+    assert!(
+        terminal.said.contains(
+            "BUCKET   skipped: occurs in 1 tracked file of the repository (deploy/config.yml)"
+        ),
+        "{}",
+        terminal.said
+    );
+    assert!(
+        terminal
+            .said
+            .contains("a person adds it on the Secrets page"),
+        "{}",
+        terminal.said
+    );
+    assert!(terminal.asked.is_empty(), "asked {:?}", terminal.asked);
+    terminal.assert_no_value();
+    Ok(())
+}
+
+/// SPEC-274 PLW-003: at the terminal such a value is asked about: yes imports it, anything else
+/// skips it.
+#[test]
+fn a_value_found_in_the_repository_is_asked_about() -> TestResult {
+    for (answer, imported, declined) in [
+        ("yes", vec!["BUCKET", "NEW_KEY"], Vec::<&str>::new()),
+        ("no", vec!["NEW_KEY"], vec!["BUCKET"]),
+    ] {
+        let server = FakeServer::start()?;
+        let (_fixture, options) = demo_checkout(&server)?;
+        let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+        let target = prepare_target(&options, &client)?;
+        let mut terminal = Terminal::answering(&[answer, "yes"]);
+        let summary = import_secrets(parse_dotenv(IN_REPO)?, &target, &client, &mut terminal)?;
+        assert_eq!(summary.imported, imported, "{answer}");
+        // A deliberate no is the person's choice, not a failure of the run.
+        assert_eq!(summary.declined, declined, "{answer}");
+        assert!(summary.invalid.is_empty() && summary.ok(), "{answer}");
+        assert!(
+            terminal.asked[0]
+                .contains("BUCKET occurs in 1 tracked file of the repository (deploy/config.yml)")
+                && terminal.asked[0].contains("Import it anyway?"),
+            "{:?}",
+            terminal.asked
+        );
+        terminal.assert_no_value();
+    }
+    Ok(())
+}
+
+/// SPEC-274 PLW-003: outside a checkout of the project nothing is looked for, and the run says so.
+#[test]
+fn outside_the_project_checkout_the_repository_is_not_searched() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    let mut terminal = Terminal::answering(&["yes"]);
+    let summary = run(
+        &server,
+        IN_REPO,
+        &agent("Quartio-Studio/yulius", false),
+        &mut terminal,
+    )??;
+    assert_eq!(summary.imported, vec!["BUCKET", "NEW_KEY"]);
+    assert!(
+        terminal.said.contains(
+            "not looked for in the repository: run it in a checkout of Quartio-Studio/yulius"
+        ),
+        "{}",
+        terminal.said
+    );
+    Ok(())
+}
+
+/// Review of SPEC-274: a checkout of the project on a detached HEAD is still searched.
+#[test]
+fn a_detached_checkout_of_the_project_is_searched() -> TestResult {
+    let server = FakeServer::start()?;
+    let (fixture, options) = demo_checkout(&server)?;
+    crate::support::git(&fixture.repo, &["checkout", "-q", "--detach"])?;
+    let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+    let target = prepare_target(&options, &client)?.unattended();
+    let mut terminal = Terminal {
+        no_terminal: true,
+        ..Terminal::default()
+    };
+    let summary = import_secrets(parse_dotenv(IN_REPO)?, &target, &client, &mut terminal)?;
+    assert_eq!(summary.invalid, vec!["BUCKET"], "{}", terminal.said);
+    Ok(())
+}
+
+/// Review of SPEC-274: a checkout of the project with no commit yet is still searched.
+#[test]
+fn a_checkout_without_commits_is_searched() -> TestResult {
+    let server = FakeServer::start()?;
+    let (_fixture, mut options) = demo_checkout(&server)?;
+    let fresh = tempfile::tempdir()?;
+    let repo = fresh.path();
+    crate::support::git(repo, &["init", "-q", "-b", "main"])?;
+    crate::support::git(
+        repo,
+        &["remote", "add", "origin", crate::support::GITHUB_URL],
+    )?;
+    std::fs::write(repo.join("config.yml"), "bucket: acme-bucket-0042\n")?;
+    crate::support::git(repo, &["add", "config.yml"])?;
+    options.checkout = repo.to_path_buf();
+    // Without a commit the sandbox is named, as `yulius secrets import --sandbox` does.
+    options.target = SecretsTarget::Agent {
+        sandbox: Some("Quartio-Studio/demo".into()),
+        instance: false,
+        confirm_hosts: false,
+    };
+    let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+    let target = prepare_target(&options, &client)?.unattended();
+    let mut terminal = Terminal {
+        no_terminal: true,
+        ..Terminal::default()
+    };
+    let summary = import_secrets(parse_dotenv(IN_REPO)?, &target, &client, &mut terminal)?;
+    assert_eq!(summary.invalid, vec!["BUCKET"], "{}", terminal.said);
     Ok(())
 }

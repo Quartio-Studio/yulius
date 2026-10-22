@@ -14,12 +14,13 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 use yulius_contracts::api::secrets::{AgentSecretInput, TeamSecretInput};
 use yulius_domain::vault::names::SecretName;
-use yulius_domain::vault::{MAX_FIELD_BYTES, check_agent_value, dotenv};
+use yulius_domain::vault::{MAX_FIELD_BYTES, check_agent_value, dotenv, ordinary_text};
 use zeroize::Zeroize;
 
 use crate::dotenv::{DotenvEntry, MAX_DOTENV_ENTRIES};
-use crate::git::discover_repo;
+use crate::git::{checkout_of, discover_repo};
 use crate::http::{ApiClient, ApiError, JSON_TIMEOUT, RetryPolicy};
+use crate::repo_values::find_in_checkout;
 use crate::secret::Secret;
 
 /// Longest team secret title (the server's limit).
@@ -84,6 +85,8 @@ pub struct SecretsSummary {
     pub existing: Vec<String>,
     /// Skipped: refused before sending.
     pub invalid: Vec<String>,
+    /// Skipped: the person answered no about a value the repository holds (SPEC-274 PLW-003).
+    pub declined: Vec<String>,
     /// Refused by the server.
     pub failed: Vec<String>,
     /// Not sent because the run stopped (expired sign-in, unreachable server).
@@ -262,6 +265,9 @@ pub struct PreparedTarget {
     source_file: Option<String>,
     unattended: bool,
     env_files: bool,
+    /// Agent secrets: the project (`owner/name`) and its checkout the run is in, if it is in one
+    /// (SPEC-274 PLW-003).
+    project: Option<(String, Option<std::path::PathBuf>)>,
 }
 
 impl PreparedTarget {
@@ -361,6 +367,7 @@ pub fn prepare_target(
             ..
         }
     );
+    let mut project = None;
     let (heading, team, sandbox, instance) = match &options.target {
         SecretsTarget::Team {
             instance: true,
@@ -398,6 +405,13 @@ pub fn prepare_target(
             sandbox, instance, ..
         } => {
             let found = resolve_sandbox(client, sandbox.as_deref(), &options.checkout)?;
+            let full_name = found.full_name();
+            let checkout = checkout_of(&options.checkout)
+                .filter(|(_, remote)| {
+                    format!("{}/{}", remote.owner, remote.name).eq_ignore_ascii_case(&full_name)
+                })
+                .map(|(root, _)| root);
+            project = Some((full_name, checkout));
             let reach = if *instance {
                 "global, switched on for this sandbox"
             } else {
@@ -444,15 +458,26 @@ pub fn prepare_target(
         source_file: options.source_file.clone(),
         unattended: false,
         env_files: false,
+        project,
     })
 }
 
 /// One secret's fate before anything is sent.
 enum Class {
     New(Secret),
+    /// New, but a tracked file of the project's checkout holds it: where (SPEC-274 PLW-003).
+    InRepo(Secret, String),
     Exists,
     Invalid(String),
 }
+
+/// Why a value found in the repository is not imported unattended.
+const IN_REPO: &str = "redaction would mask it there";
+
+/// Where ordinary text belongs, and where a credential that only looks like it goes: never into
+/// the hand-over, which tasks read (review of SPEC-274).
+const BELONGS: &str = "it belongs in configuration or the hand-over; if it is a credential after \
+                       all, a person adds it on the Secrets page";
 
 /// Imports `entries`: classifies each, shows the plan, asks for `yes` and creates the new ones.
 ///
@@ -477,9 +502,10 @@ pub fn import_secrets(
         source_file,
         unattended,
         env_files,
+        project,
     } = target;
     let instance = *instance;
-    let classes: Vec<(DotenvEntry, Class)> = entries
+    let mut classes: Vec<(DotenvEntry, Class)> = entries
         .into_iter()
         .map(|entry| {
             let class = if existing.contains(&entry.name) {
@@ -495,6 +521,9 @@ pub fn import_secrets(
 
     let mut summary = SecretsSummary::default();
     io.say(&format!("Import into {heading} on {}:", client.server()));
+    if let Some((name, checkout)) = project {
+        search_repository(&mut classes, name, checkout.as_deref(), *unattended, io);
+    }
     let width = classes
         .iter()
         .map(|(e, _)| e.name.chars().count())
@@ -506,15 +535,34 @@ pub fn import_secrets(
             Class::New(_) if entry.comment.is_empty() => ('+', "new".to_owned()),
             Class::New(_) if !team => ('+', "new, with description (agents read it)".to_owned()),
             Class::New(_) => ('+', "new, with notes".to_owned()),
+            Class::InRepo(_, found) => ('?', format!("{found}: asked below")),
             Class::Exists => ('=', "exists: skipped, never overwritten".to_owned()),
             Class::Invalid(why) => ('!', format!("skipped: {why}")),
         };
         io.say(&format!("  {mark} {:<width$}  {what}", entry.name));
         match class {
-            Class::New(_) => {}
+            Class::New(_) | Class::InRepo(..) => {}
             Class::Exists => summary.existing.push(entry.name.clone()),
             Class::Invalid(_) => summary.invalid.push(entry.name.clone()),
         }
+    }
+    for (entry, class) in &mut classes {
+        let Class::InRepo(value, found) = class else {
+            continue;
+        };
+        let answer = io
+            .ask(&format!(
+                "{} {found}: redaction would mask it there. Import it anyway? Type yes: ",
+                entry.name
+            ))
+            .map_err(|_| SecretsImportError::Cancelled)?;
+        *class = if answer.trim().eq_ignore_ascii_case("yes") {
+            Class::New(value.clone())
+        } else {
+            io.say(&format!("  skipped {}", entry.name));
+            summary.declined.push(entry.name.clone());
+            Class::Invalid(found.clone())
+        };
     }
     let new = classes
         .iter()
@@ -589,10 +637,11 @@ pub fn import_secrets(
         }
     }
     io.say(&format!(
-        "Imported {}, skipped {} existing and {} invalid, {} failed{}.",
+        "Imported {}, skipped {} existing, {} invalid and {} declined, {} failed{}.",
         summary.imported.len(),
         summary.existing.len(),
         summary.invalid.len(),
+        summary.declined.len(),
         summary.failed.len(),
         if summary.unsent.is_empty() {
             String::new()
@@ -606,6 +655,54 @@ pub fn import_secrets(
         ));
     }
     Ok(summary)
+}
+
+/// Looks for the new values in the tracked files of the project's checkout (SPEC-274 PLW-003):
+/// a value found there is skipped unattended, else asked about. Outside a checkout of `project`
+/// nothing is searched, and the run says so.
+fn search_repository(
+    classes: &mut [(DotenvEntry, Class)],
+    project: &str,
+    checkout: Option<&Path>,
+    unattended: bool,
+    io: &mut dyn SecretsIo,
+) {
+    let Some(root) = checkout else {
+        io.say(&format!(
+            "Values are not looked for in the repository: run it in a checkout of {project} to \
+             find those that would be masked there."
+        ));
+        return;
+    };
+    let values: Vec<&str> = classes
+        .iter()
+        .map(|(_, class)| match class {
+            Class::New(value) => value.expose(),
+            _ => "",
+        })
+        .collect();
+    let search = match find_in_checkout(root, &values) {
+        Ok(search) => search,
+        Err(err) => {
+            io.say(&format!(
+                "Values are not looked for in the repository: {err}"
+            ));
+            return;
+        }
+    };
+    if search.partial {
+        io.say("The repository was looked through only in part (256 MiB of its files).");
+    }
+    for ((_, class), found) in classes.iter_mut().zip(search.found) {
+        let (Class::New(value), Some(found)) = (&*class, found) else {
+            continue;
+        };
+        *class = if unattended {
+            Class::Invalid(format!("{}: {IN_REPO}; {BELONGS}", found.describe()))
+        } else {
+            Class::InRepo(value.clone(), found.describe())
+        };
+    }
 }
 
 /// The sandbox named by `wanted` (id, slug or `owner/name`), else by the checkout's remote.
@@ -680,9 +777,16 @@ fn agent_value(entry: &DotenvEntry) -> Class {
     } else {
         entry.value.clone()
     };
-    match check_agent_value(value.expose()) {
-        Ok(()) => Class::New(value),
-        Err(e) => Class::Invalid(e.to_string()),
+    if let Err(e) = check_agent_value(value.expose()) {
+        return Class::Invalid(e.to_string());
+    }
+    // Redaction would mask it wherever it appears (SPEC-274 PLW-002); the value is never said.
+    match ordinary_text(value.expose()) {
+        Some(kind) => Class::Invalid(format!(
+            "{}: redaction would mask it everywhere it appears; {BELONGS}",
+            kind.describe()
+        )),
+        None => Class::New(value),
     }
 }
 

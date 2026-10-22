@@ -84,6 +84,14 @@ The server's instructions tell your agent what to do ([SPEC-256](../.ai/specs/SP
    copy them into git-ignored `.env` files with `secret_copy_to_env` from the start, as ssh and
    deploy scripts need; agents already bind the hosts they need themselves. A secret that exists
    is skipped, never overwritten. Your agent then describes each one (`secret_update`).
+   A value that is ordinary text (a configuration word such as `production`, a host name, an
+   e-mail address, a URL without credentials) is skipped and named, and so is, with `--yes`, a
+   value that a tracked file of the project's checkout holds (run it there; at the terminal you
+   are asked): a secret's value is masked as `[secret:NAME]` wherever it appears, so such values
+   belong in configuration or the hand-over
+   ([SPEC-274](../.ai/specs/SPEC-274-agent-secrets-refuse-plain-words-that-ma.md),
+   [ADR-0204](decisions/0204-secrets-import-refuses-ordinary-text-and-an-operate-token-deletes.md)).
+   A secret imported by mistake is deleted with `yulius secrets delete NAME` (`secret_delete`).
 3. **Move the operator state.** A deploy tool that keeps live state on your laptop (a folder with
    an inventory database, pinned host keys, rollout folders and receipts, configs) sends each such
    folder as an *agent state* of the project, without reading it
@@ -161,7 +169,9 @@ Values never pass through an agent. Add them on the Secrets page, or from a dote
 files with `yulius secrets import --to agent --sandbox acme/shop .env` (section 3 for an agent doing
 it unattended). Your agent manages names and
 bindings: `secrets_list` (`yulius secrets list`), `secret_update` (bound hosts, description)
-and `secret_hosts_answer` (allow or dismiss the hosts a task asked for).
+and `secret_hosts_answer` (allow or dismiss the hosts a task asked for), and deletes one of the
+project's own secrets by name: `secret_delete` (`yulius secrets delete NAME`), audited with the
+token, never showing the value (SPEC-274).
 
 ## 5. Day-to-day
 

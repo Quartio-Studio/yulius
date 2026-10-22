@@ -990,7 +990,13 @@ the `yulius login` token, else the `yulius remote login` one: it reads a dotenv 
 hidden prompts or whole files (`--from-file NAME=PATH`), lists the caller's existing team titles
 or a sandbox's agent names, classifies each secret, asks for `yes` at `/dev/tty` (unless `--yes`
 runs with an `operate` token, [decision 0194](decisions/0194-an-operate-token-confirms-for-its-person-s-laptop-onboarding.md))
-and posts the new ones once each (no retry). Values stay in `Secret` (redacted `Debug`,
+and posts the new ones once each (no retry). Agent values that are ordinary text
+(`yulius_domain::vault::ordinary_text`: configuration words, hosts, e-mail addresses, URLs without
+credentials) are skipped, and values found in the tracked files of the project's checkout
+(`repo_values::find_in_checkout`, in memory) are asked about or, with `--yes`, skipped
+([SPEC-274](../.ai/specs/SPEC-274-agent-secrets-refuse-plain-words-that-ma.md),
+[decision 0204](decisions/0204-secrets-import-refuses-ordinary-text-and-an-operate-token-deletes.md));
+`yulius secrets delete NAME` calls the remote tool `secret_delete`. Values stay in `Secret` (redacted `Debug`,
 wiped on drop) and never reach its output
 ([SPEC-205](../.ai/specs/SPEC-205-to-cli-add-and-option-to-import-secrets.md),
 [decision 0163](decisions/0163-the-cli-imports-secrets-after-a-typed-yes-and-shows-no-value.md)).
@@ -1002,6 +1008,7 @@ sequenceDiagram
     participant App as Yulius (vault API)
     P->>C: --to agent .env (or stdin, or hidden prompts)
     C->>App: GET /api/sandboxes, GET agent-secrets (names only)
+    C->>C: ordinary text skipped; values in the project's tracked files asked about
     C-->>P: names: new / exists (skipped) / skipped with reason
     P->>C: yes at /dev/tty (or --yes with an operate token)
     C->>App: POST agent-secrets per new name (hosts [], once, audited by name)

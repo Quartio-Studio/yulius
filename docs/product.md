@@ -283,7 +283,11 @@ watching, steering and unblocking.
   for that sandbox (agent secrets):
   every name is listed first, nothing that exists is overwritten, nothing is sent before the
   person types `yes` (or, for their own agent, `--yes` with its operate token, SPEC-256), and no value is ever shown, passed as an argument or written down
-  (SPEC-205). Agents add one themselves from a file they can reach (a key they generated, a key in
+  (SPEC-205). Values that are ordinary text (configuration words such as `production`, host
+  names, e-mail addresses, URLs without credentials), which would mask that text everywhere as
+  `[secret:NAME]`, are skipped and named; values found in the project's tracked files are asked
+  about, or skipped with `--yes`; and the person's agent deletes a secret imported by mistake
+  with `yulius secrets delete NAME` (SPEC-274). Agents add one themselves from a file they can reach (a key they generated, a key in
   `~/.ssh`): Yulius reads the file, so no one sees the value. The new secret has no hosts and no
   `.env` allowance until a person allows them, an existing name is never replaced, and the
   Superagent asks before it does this on an uncontained server (SPEC-211).

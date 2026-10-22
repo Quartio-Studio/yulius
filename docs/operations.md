@@ -1024,14 +1024,27 @@ sandbox ([ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.
 up: they bind the hosts they need and production deploys get them, which the list says before
 `yes`; `--confirm-hosts` makes a person allow each host and production deploys instead (SPEC-216).
 
+Agent secrets are masked as `[secret:NAME]` wherever their value appears, so the import skips a
+value that is ordinary text, naming why: a configuration word (`production`, `staging`, `main`,
+`true`, …), a cloud region, time zone, locale or path, a host name or address, an e-mail
+address, or a URL without credentials (no user information, no key-named parameter, no
+token-like host label or path segment); if one is a credential after all, a person adds it on
+the Secrets page, never in the hand-over. Run in a checkout of the
+project, it also looks for each new value in the tracked files (up to 1 MiB each, 256 MiB in all;
+the value never leaves memory) and asks about one found there (a no is counted as declined, not as a failure; `--yes` skips
+and lists it); elsewhere
+it says the repository was not searched (SPEC-274, ADR-0204). A secret imported by mistake is
+deleted by name with `yulius secrets delete NAME` (the operate token of `yulius remote login`;
+`-p owner/name`, else the checkout's project).
+
 Put keys that span lines in a file. The hidden prompt reads one line: a pasted key arrives cut
 to its first line, which is refused, and the terminal usually discards the rest; if part of it
 still shows at the next `Name:` prompt, press Ctrl-C (nothing has been sent).
 
 Values never appear: no option takes one, the output holds names only, nothing is written to disk,
 and the server logs no request bodies; the vault audit records who added which name. The command
-reminds you that the source file still holds the values. Exit 0 when every secret was imported or
-already there, 1 otherwise (skipped as invalid, refused, cancelled, or not sent after an expired
+reminds you that the source file still holds the values. Exit 0 when every secret was imported,
+already there or declined at the question about the repository, 1 otherwise (skipped as invalid, refused, cancelled, or not sent after an expired
 sign-in, a 403 or an unreachable server; creates are never retried, and a second run skips the
 imported ones as existing).
 
