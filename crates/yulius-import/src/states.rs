@@ -15,6 +15,7 @@ use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use serde::Deserialize;
+use yulius_domain::vault::names::SecretName;
 
 use crate::http::{ApiError, CHUNK_TIMEOUT, JSON_TIMEOUT};
 use crate::secrets_import::{PreparedTarget, SecretsImportError, SecretsIo, VaultClient};
@@ -60,6 +61,7 @@ struct StateView {
 /// What makes it unsendable: missing, a link or special file in the folder, too large, not a
 /// gzip tar. Messages name paths, never content.
 pub fn state_entry(name: &str, path: &Path) -> Result<StateEntry, String> {
+    let name = state_name(name)?;
     let shown = path.display().to_string();
     let meta = std::fs::metadata(path).map_err(|e| format!("cannot read {shown}: {e}"))?;
     let (archive, files) = if meta.is_dir() {
@@ -82,11 +84,19 @@ pub fn state_entry(name: &str, path: &Path) -> Result<StateEntry, String> {
         (archive, files)
     };
     Ok(StateEntry {
-        name: name.trim().to_owned(),
+        name,
         source: shown,
         archive,
         files,
     })
+}
+
+/// `name` as an agent secret name (`A-Z`, `0-9`, `_`), the only names a state takes: nothing
+/// else ever reaches a request path.
+fn state_name(name: &str) -> Result<String, String> {
+    SecretName::parse(name.trim())
+        .map(|n| n.as_str().to_owned())
+        .map_err(|e| format!("{name:?} is not a state name: {e}"))
 }
 
 fn too_large(shown: &str) -> String {
@@ -338,6 +348,8 @@ pub fn download_state(
     out: &Path,
 ) -> Result<u64, String> {
     use std::os::unix::fs::OpenOptionsExt as _;
+    let name = state_name(name)?;
+    let name = name.as_str();
     let sandbox = target
         .project_sandbox()
         .ok_or("agent states belong to one project: pass --sandbox")?;
@@ -432,6 +444,11 @@ mod tests {
         std::fs::write(&other, "x")?;
         let err = state_entry("OPS", &other).err().ok_or("text sent")?;
         assert!(err.contains("neither a folder nor"), "{err}");
+        // Vidoc, SPEC-271: a name is an agent secret name before it goes anywhere near a URL.
+        for bad in ["../OTHER/archive", "ops?replace=true", "ops#x", "a/b", ""] {
+            let err = state_entry(bad, &state).err().ok_or(bad)?;
+            assert!(err.contains("is not a state name"), "{bad}: {err}");
+        }
         let fake = dir.path().join("fake.tgz");
         std::fs::write(&fake, "not gzip")?;
         assert!(state_entry("OPS", &fake).is_err());

@@ -505,7 +505,7 @@ pub fn state_get(name: &str, out: &Path, sandbox: Option<&str>, server: Option<&
              written to. Unpack it into a new folder: mkdir state && tar -xzf {} -C state",
             out.display(),
             human_bytes(bytes),
-            out.display()
+            shell_quoted(out)
         );
         Ok(())
     })();
@@ -515,5 +515,25 @@ pub fn state_get(name: &str, out: &Path, sandbox: Option<&str>, server: Option<&
             eprintln!("{} {err}", style("yulius secrets state-get:").red().bold());
             ExitCode::FAILURE
         }
+    }
+}
+
+/// `path` single-quoted for a POSIX shell, for a command the person may paste.
+fn shell_quoted(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', "'\\''"))
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    /// Vidoc, SPEC-271: the path in the suggested `tar` command is quoted for a POSIX shell.
+    #[test]
+    fn suggested_paths_are_shell_quoted() {
+        assert_eq!(shell_quoted(Path::new("ops.tar.gz")), "'ops.tar.gz'");
+        assert_eq!(
+            shell_quoted(Path::new("a b$(x)'c.tgz")),
+            "'a b$(x)'\\''c.tgz'"
+        );
     }
 }
