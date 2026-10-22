@@ -7,7 +7,8 @@
 //! directory whose lock is held, so it never deletes under a running compile and none starts until
 //! it ends. Cargo releases them before test binaries, doctests and nextest read `deps/`, so
 //! artifact units go only while nothing can run tests there: a CI checkout under the sandbox's CI
-//! claim, a task's worktree while the task neither works nor runs background work. Incremental
+//! claim, a task's worktree while the task neither works nor runs background work and no Shell of
+//! the sandbox lives. Incremental
 //! units, which only rustc reads under the lock, go in any worktree, and only they are evicted for
 //! the cap. It deletes whole units (a hash's fingerprint first, then its outputs), so Cargo
 //! rebuilds exactly what went. Every path is reached from the sandbox directory with no link on the
@@ -335,7 +336,9 @@ impl App {
                     report.busy += 1;
                     continue;
                 }
-                let artifacts = ci || self.worktree_rests(&label).await;
+                // A person's Shell may run tests in any worktree (review round 2).
+                let shells = !self.sandbox_shells(&sandbox.id).is_empty();
+                let artifacts = ci || (!shells && self.worktree_rests(&label).await);
                 let now = self.now().0;
                 let (dir, path) = (root.clone(), target.clone());
                 let outcome = tokio::task::spawn_blocking(move || {

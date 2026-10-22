@@ -116,7 +116,7 @@ impl App {
     /// `POST /api/sandboxes/{sid}/purge` (PGL-005, RDA-011): an admin of a live sandbox removes it
     /// (as `DELETE` does) and asks for its files to be deleted for good; the superadmin may ask it
     /// for an already removed sandbox. Answers where the purge stands; one that waits is tried
-    /// again every [`PURGE_RETRY`] for [`PURGE_WATCH`], then on every disk round.
+    /// again every 15 s for 10 minutes, then on every disk round.
     ///
     /// # Errors
     /// `NotFound` without access (a removed sandbox for anyone but the superadmin); `Forbidden`
@@ -173,7 +173,7 @@ impl App {
 
     /// Tries the purge of `id` again every `retry` until it is done or `watch` passed (its
     /// processes stop within about a minute of the removal); the disk rounds take it from there.
-    /// The request uses [`PURGE_RETRY`] and [`PURGE_WATCH`] (tests shorten them).
+    /// The request uses `PURGE_RETRY` and `PURGE_WATCH` (tests shorten them).
     pub fn watch_purge_with(self: &Arc<Self>, id: SandboxId, retry: Duration, watch: Duration) {
         let app = Arc::clone(self);
         tokio::spawn(async move {

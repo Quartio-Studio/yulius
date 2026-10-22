@@ -74,8 +74,9 @@ been read for at least 24 h.
   the sweep ends (it waits on the lock). A lock file that is a link or not a plain file (a FIFO) is
   opened without blocking and counts as held. Artifact units are swept only where nothing can run
   tests: a CI checkout while the sweep holds the sandbox's CI claim (a running CI run keeps it
-  whole), a task's worktree while the task neither works nor runs background work (probed). Other
-  worktrees (working tasks, worktrees no task owns) lose incremental units only.
+  whole), a task's worktree while the task neither works nor runs background work (probed) and no
+  Shell of the sandbox lives. Other worktrees (working tasks, worktrees no task owns, any worktree
+  while a person's Shell is open) lose incremental units only.
 - **RDA-003** The sweep deletes whole units, never parts of one: an artifact unit is every entry of
   `.fingerprint`, `build` and `deps` of one profile that carries the same 16-hex hash (its
   fingerprint goes with its outputs, so Cargo rebuilds it); an incremental unit is one
@@ -229,6 +230,12 @@ Lasting ones in ADR-0205. Summary:
   in-process `delete_tree`, so the system layer and files of the sandbox's mapped ids go too and
   nothing is followed through a link. The `playground_purges` table records requests for every
   sandbox (no migration; the name is historical).
+- **Two windows left open (review round 2).** Whether a task rests is probed before the sweep
+  takes Cargo's locks: a task that resumes in between and finishes a no-op compile before the
+  locks are taken could start its tests beside a sweep allowed to delete artifacts. The window is
+  the probe plus a directory listing, and only units unused for the policy's age go, so it is
+  accepted. An archive-triggered upkeep that finds the sandbox's upkeep already running returns at
+  once; the archived task's caches then go in the next round (5 minutes), not "at once".
 - **No default in the dialog.** Deleting is irreversible and keeping costs disk; the person who
   removes the sandbox knows which matters, so both are one click and neither is preselected.
 - **One pull request.** Both halves came from one incident and share the disk round, the
