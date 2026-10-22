@@ -83,7 +83,8 @@ Read in the code on `dev` (21c26d8b):
 - [x] The hygiene report carries the last cleanup and the next automatic one
 - [x] The card explains itself and shows a cleanup running and its result
 - [x] Review round 1 findings fixed test-first
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
+- [ ] Review round 3 approves the exact head
 - [ ] Every gate green on the branch merged with current dev
 
 ## Acceptance criteria
