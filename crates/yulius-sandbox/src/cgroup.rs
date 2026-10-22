@@ -396,14 +396,16 @@ impl Delegation {
         }
     }
 
-    /// `sandbox`'s limit counters (SPEC-268 PID-004, review rounds 1 and 2). Where the kernel has
-    /// `pids.events.local` (6.13+), refused forks are counted where the limit was hit: the
-    /// sandbox's own `pids.events.local` `max`, its limit hit by any of its processes. Else (6.8)
-    /// a refused fork counts in the forking task's own group: `pids.events` `max` of every group
-    /// of the sandbox (at most 4096) but CI's and the engine's subtrees, whose processes are
-    /// stopped at their own leaf limits while sessions keep forking; a paused run's `agents/run-*`
-    /// group counts. OOM kills are the sandbox's `memory.events` `oom_kill` (hierarchical). Zero
-    /// for a group that is not there.
+    /// `sandbox`'s limit counters (SPEC-268 PID-004, review rounds 1 and 2; SPEC-272 SHR-003).
+    /// Refused forks are `max` in `pids.events` of every group of the sandbox (at most 4096) but
+    /// CI's and the engine's subtrees, whose processes are stopped at their own leaf limits while
+    /// sessions keep forking; a paused run's `agents/run-*` group counts. Kernel 6.8 counts a
+    /// refused fork there, in the forking task's own group, wherever the limit was. Where the
+    /// sandbox has `pids.events.local` (6.13+) the same groups' `.local` files are read instead,
+    /// and `<unit>/sandboxes`'s: by default `max` there counts where a limit was hit (the
+    /// sandbox's own, or the common one of all sandboxes, which is shared), with
+    /// `pids_localevents` the forking group, as on 6.8. OOM kills are the sandbox's
+    /// `memory.events` `oom_kill` (hierarchical). Zero for a group that is not there.
     #[must_use]
     pub fn limit_counters(&self, sandbox: &str) -> LimitCounters {
         let dir = self
@@ -416,15 +418,19 @@ impl Delegation {
                 .map(|text| keyed(&text, key))
         };
         let oom_kills = read(&dir, "memory.events", "oom_kill").unwrap_or(0);
-        if let Some(hits) = read(&dir, "pids.events.local", "max") {
-            return LimitCounters {
-                task_limit_hits: hits,
-                oom_kills,
-            };
-        }
+        let local = dir.join("pids.events.local").exists();
+        let events = if local {
+            "pids.events.local"
+        } else {
+            "pids.events"
+        };
         let groups = self.sandbox_paths(sandbox);
         let apart = [groups.ci.as_path(), groups.engine.as_path()];
-        let mut task_limit_hits = 0u64;
+        let mut task_limit_hits = if local {
+            read(&self.unit.join(SANDBOXES), events, "max").unwrap_or(0)
+        } else {
+            0
+        };
         let mut stack = vec![dir.clone()];
         let mut seen = 0;
         while let Some(group) = stack.pop() {
@@ -432,7 +438,7 @@ impl Delegation {
             if seen > MAX_MOVED {
                 break;
             }
-            let hits = read(&group, "pids.events", "max").unwrap_or(0);
+            let hits = read(&group, events, "max").unwrap_or(0);
             task_limit_hits = task_limit_hits.saturating_add(hits);
             if let Ok(entries) = std::fs::read_dir(&group) {
                 stack.extend(
@@ -928,6 +934,36 @@ mod tests {
         std::fs::write(groups.engine.join("pids.events"), "max 9\n")?;
         assert_eq!(delegation.limit_counters("s1").task_limit_hits, 4);
         assert_eq!(delegation.limit_counters("../s1"), LimitCounters::default());
+        Ok(())
+    }
+
+    /// SPEC-272 SHR-003 (SPEC-268 review round 3): on kernels with `pids.events.local` a fork
+    /// refused at the common limit is counted in `sandboxes/` only, and must still count; with
+    /// `pids_localevents` the forking groups count, as on 6.8, but CI's and the engine's.
+    #[test]
+    fn a_hit_at_the_common_limit_counts_for_the_sandbox() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+        let groups = delegation.sandbox_group("s1", &Limits::default())?;
+        let common = delegation.unit.join(SANDBOXES);
+        std::fs::write(dir.join("pids.events.local"), "max 0\n")?;
+        std::fs::write(common.join("pids.events.local"), "max 5\n")?;
+        assert_eq!(delegation.limit_counters("s1").task_limit_hits, 5);
+        // `pids_localevents`: `max` counts the forks refused to each group's own tasks.
+        std::fs::write(groups.agents.join("pids.events.local"), "max 3\n")?;
+        std::fs::create_dir_all(groups.agents.join("run-t1"))?;
+        std::fs::write(groups.agents.join("run-t1/pids.events.local"), "max 2\n")?;
+        std::fs::write(groups.ci.join("pids.events.local"), "max 11\n")?;
+        std::fs::create_dir_all(groups.engine.join("docker/c1"))?;
+        std::fs::write(groups.engine.join("docker/c1/pids.events.local"), "max 13\n")?;
+        assert_eq!(delegation.limit_counters("s1").task_limit_hits, 10);
+        // On 6.8 (no `.local` file) `sandboxes/` holds no task and is not read.
+        let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+        let groups = delegation.sandbox_group("s1", &Limits::default())?;
+        std::fs::write(groups.agents.join("pids.events"), "max 3\n")?;
+        std::fs::write(delegation.unit.join(SANDBOXES).join("pids.events"), "max 5\n")?;
+        assert!(!dir.join("pids.events.local").exists());
+        assert_eq!(delegation.limit_counters("s1").task_limit_hits, 3);
         Ok(())
     }
 

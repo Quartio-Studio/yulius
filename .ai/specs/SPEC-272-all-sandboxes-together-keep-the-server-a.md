@@ -85,7 +85,7 @@ the limit was hit; and the small defects left by #254's review round 3 are fixed
 
 - [x] Spec and ADR state the sandboxes' common task limit
 - [x] All sandboxes together stop at three quarters of the service's tasks
-- [ ] A session that ends at the common limit says so
+- [x] A session that ends at the common limit says so
 - [ ] A removed run group no longer hides a rise in the counters
 - [ ] Dotted keys in Cargo and nextest files keep their knob
 - [ ] The end banner keeps keyboard focus when details arrive
