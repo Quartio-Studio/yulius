@@ -38,10 +38,10 @@ next with the same top and height, and the scope's hint under the select.
 - TKF-003. When the form is narrower than 600px (a phone, or a window up to about 900px beside
   the sidebar, where one row left the name input too narrow for its placeholder), it stacks: name,
   scope with its hint, then the button, nothing overflowing horizontally.
-- TKF-005. A field message (`.field-error`, added by `invalid()` in `dom.js`) takes its own row
-  under the hint instead of drawing over it.
 - TKF-004. Behaviour is unchanged: the hint follows the chosen scope, the name is still required,
   tokens are made, shown once, listed and revoked as before (the existing e2e tests).
+- TKF-005. A field message (`.field-error`, added by `invalid()` in `dom.js`) takes its own row
+  under the hint instead of drawing over it.
 
 ## Plan
 
@@ -55,7 +55,7 @@ next with the same top and height, and the scope's hint under the select.
 
 - The e2e test `the token form reads as one row` passes and fails on the previous CSS/markup.
 - The e2e tests `the token form stacks at 390 px`, `… at 800 px` and `a message on the scope field
-  sits under its hint` pass and fail on the first version of the fix (review round 1).
+  sits under its hint` pass; the last two fail on the first version of the fix (review round 1).
 - The existing `api-tokens.e2e.ts` tests still pass, with no axe violations.
 
 ## Test plan

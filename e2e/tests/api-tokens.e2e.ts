@@ -117,6 +117,7 @@ for (const width of [390, 800]) test(`the token form stacks at ${width} px`, asy
 // Review: a field message (`invalid()` in dom.js appends `.field-error` to the field) takes its own
 // row under the hint instead of drawing over it.
 test('a message on the scope field sits under its hint', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1440, height: 900 });
   await app.open(mock('/settings'));
   await expect(screen.getByLabel('Token name')).toBeVisible();
   const b = await browser.evaluate(() => {
