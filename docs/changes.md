@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-22
 
+- Yulius cleans up stale branches and worktrees itself (SPEC-269, task #255, ADR-0199). The
+  6-hourly hygiene round now removes what loses nothing (branches of merged or closed pull
+  requests, local copies already on GitHub, clean worktrees of finished tasks) instead of only
+  listing it; unmerged work stays for a person. The CI tab's card says this and when the next
+  round runs; Clean up turns the card busy at once ("Removing 3 items… 2 s so far") and then
+  shows what was removed and what was kept and why, on the card, also after a reload. Before,
+  only a short count toast followed a silent wait.
+
 - The usage-limit step-back and the task home's creation go through handles (SPEC-266, task #252,
   fixes #661). The transcript `<home>/.claude/projects/<slug>/<session>.jsonl` is reached from
   the folder above the home without following links, read only when it is a regular file, and

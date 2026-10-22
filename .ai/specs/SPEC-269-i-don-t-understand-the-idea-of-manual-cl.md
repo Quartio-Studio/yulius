@@ -85,17 +85,20 @@ Read in the code on `dev` (21c26d8b):
   has `last_cleanup` with their login, the removed and the kept items; an automatic round with
   nothing to do leaves it as it was; `next_cleanup_at` is set once the round is scheduled.
 - AC3 (HSC-003..005): in mock `studio`, the card names the automatic cleanup; with the answer held,
-  confirming Clean up shows "Cleaning up…" and "Removing 3 items…" at once; after the answer the
-  card says "3 removed, 1 kept" by mkarp, lists the three removed and the kept branch with its
-  reason, with no WCAG violation; a failing cleanup says "Couldn't clean up" in the card.
+  confirming Clean up shows "Cleaning up…" and "Removing 3 items…" with the seconds so far at
+  once; after the answer the card says "Cleaned up just now by mkarp: 3 removed." and lists the
+  three removed, the unmerged branch stays listed as "Kept", the result is there after a reload,
+  with no WCAG violation; a failing cleanup says "Couldn't clean up: …" in the card.
 
 ## Test plan
 
 - Integration (`crates/yulius/tests/local_ci.rs`): `the_hygiene_round_removes_safe_items_itself`
   (AC1, AC2's automatic part), `a_cleanup_is_kept_on_the_report` (AC2).
-- e2e (`e2e/tests/ci.e2e.ts`): the existing hygiene test rewritten for the card's result, plus
-  "a cleanup shows at once that it runs" (held answer) and "a failed cleanup says why in the card"
-  (AC3). The mock's cleanup can be held (`__yuliusMock.holdHygieneCleanup`) and failed.
+- e2e (`e2e/tests/ci.e2e.ts`): "repository hygiene says Yulius cleans up itself and that
+  unmerged work stays", "a cleanup shows at once that it runs, then what it removed and kept"
+  (held answer) and "a failed cleanup says why in the card and can be tried again" (AC3), replacing
+  the old count-toast test. The mock's cleanup can be held (`__yuliusMock.holdHygieneCleanup`) and
+  failed (`failHygieneCleanup`). `loading-shapes.e2e.ts` follows the card's new intro line.
 - Gates: `scripts/dev ci`, `scripts/dev security`, the whole e2e suite.
 
 ## Decisions
