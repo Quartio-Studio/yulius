@@ -101,7 +101,8 @@ pub(super) const WORK: Naming<'static> = Naming {
 
 /// Opens `folders` below `anchor` one component at a time without following links, and checks
 /// that the folder reached is inside the root (`anchor` and the first `naming.hidden` folders)
-/// and out of `.git`; its [`Folder::path_of`] is relative to that root.
+/// and out of `.git` (both by [`inside`] on the opened folder's real path); its
+/// [`Folder::path_of`] is relative to that root.
 pub(super) fn open_folder(
     anchor: &Path,
     folders: &[String],
@@ -746,6 +747,37 @@ mod tests {
         ));
         assert!(write_in(&folder, ".env", "K=v\n", 0o600, &Writing::InPlace).is_err());
         assert_eq!(std::fs::read_to_string(wt.join("deploy/target"))?, "x");
+        Ok(())
+    }
+
+    /// SPEC-262 (#714): a dotenv target never lands in `.git`: its path is refused when it names
+    /// `.git`, and a folder whose real path is in `.git` (here walked to directly) is refused too.
+    #[test]
+    fn git_folders_are_refused() -> TestResult {
+        let (_dir, wt, _outside) = worktree()?;
+        std::fs::create_dir_all(wt.join(".git/hooks"))?;
+        std::fs::create_dir_all(wt.join("deploy/.git"))?;
+        for path in [
+            ".git/.env",
+            ".git/hooks/.env",
+            "deploy/.git/.env",
+            "./.git/x/../.env",
+        ] {
+            assert!(relative_components(path).is_err(), "{path}");
+        }
+        for folders in [
+            vec![".git".to_owned()],
+            vec![".git".to_owned(), "hooks".to_owned()],
+            vec!["deploy".to_owned(), ".git".to_owned()],
+        ] {
+            assert!(
+                matches!(
+                    open_folder(&wt, &folders, &WORK),
+                    Err(AppError::Forbidden(_))
+                ),
+                "{folders:?}"
+            );
+        }
         Ok(())
     }
 

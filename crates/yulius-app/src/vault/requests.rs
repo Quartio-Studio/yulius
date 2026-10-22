@@ -474,6 +474,17 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-262 (#639 finding 3): what waits is stored as parsed hosts, so `patterns` drops
+    /// none of a stored request; a host that would not parse is never bound (`parse_hosts`).
+    #[test]
+    fn stored_requests_hold_only_hosts_that_parse() -> Result<(), VaultError> {
+        let asked = parse_hosts(&hosts(&["API.vidoc.test", "*.eu.vidoc.test"]))?;
+        let merged = merge(&hosts(&["app.vidoc.test"]), &hosts(&["x.test"]), &asked)?;
+        assert_eq!(patterns(&merged.waiting).len(), merged.waiting.len());
+        assert!(parse_hosts(&hosts(&["app.vidoc.test", "not a host"])).is_err());
+        Ok(())
+    }
+
     #[test]
     fn bound_and_waiting_hosts_stay_within_the_limit() -> Result<(), VaultError> {
         let bound: Vec<String> = (0..MAX_HOSTS - 1).map(|i| format!("h{i}.test")).collect();
