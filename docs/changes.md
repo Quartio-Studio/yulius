@@ -10,7 +10,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   hint bottom-aligned the name field and a small Create token button to its last line, so the
   labels and controls sat on different lines. Each field now spans label, control and hint rows
   (CSS subgrid), the button takes the control row at the fields' height, the scope select has the
-  app's `.select` look, and on a phone the form stacks.
+  app's `.select` look, and the form stacks when it is narrower than 600px (a phone, or a window
+  up to about 900px beside the sidebar).
 - A task reads another repository of its project's GitHub owner without asking a person (SPEC-267,
   ADR-0197, task #253, fixes #803). A task that had to port from Quartio-Studio/product asked a
   person to give the GitHub App access, because an agent's token reaches only its own repository;

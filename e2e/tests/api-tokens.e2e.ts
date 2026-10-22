@@ -96,8 +96,10 @@ test('the token form reads as one row', async ({ app, browser, screen }) => {
   expect(b.scopeIsSelect).toBe(true);
 });
 
-test('the token form stacks on a phone', async ({ app, browser, screen }) => {
-  await browser.setViewport({ width: 390, height: 844 });
+// Review: between 641 and 900 px the sidebar left the one-row form a name input too narrow for its
+// placeholder, so the form stacks by its own width, not the window's.
+for (const width of [390, 800]) test(`the token form stacks at ${width} px`, async ({ app, browser, screen }) => {
+  await browser.setViewport({ width, height: 844 });
   await app.open(mock('/settings'));
   await expect(screen.getByLabel('Token name')).toBeVisible();
   const b = await browser.evaluate(tokenFormBoxes);
@@ -109,5 +111,23 @@ test('the token form stacks on a phone', async ({ app, browser, screen }) => {
   expect([b.name.left, b.scope.left, b.button.left]).toEqual([b.form.left, b.form.left, b.form.left]);
   expect([b.name.right, b.scope.right]).toEqual([b.form.right, b.form.right]);
   expect(b.form.scrollWidth).toBeLessThanOrEqual(b.form.clientWidth);
-  expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+});
+
+// Review: a field message (`invalid()` in dom.js appends `.field-error` to the field) takes its own
+// row under the hint instead of drawing over it.
+test('a message on the scope field sits under its hint', async ({ app, browser, screen }) => {
+  await app.open(mock('/settings'));
+  await expect(screen.getByLabel('Token name')).toBeVisible();
+  const b = await browser.evaluate(() => {
+    const field = document.querySelectorAll('.agent-token-form > .field')[1];
+    const note = document.createElement('span');
+    note.className = 'field-error';
+    note.textContent = 'Choose a scope';
+    field.append(note);
+    const box = (el: Element) => { const r = el.getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom) }; };
+    return { hint: box(field.querySelector('.field-hint')!), error: box(note), name: box(document.querySelector('.agent-token-form input')!), select: box(field.querySelector('select')!) };
+  });
+  expect(b.error.top).toBeGreaterThanOrEqual(b.hint.bottom);
+  expect(b.select.top).toBe(b.name.top);
 });

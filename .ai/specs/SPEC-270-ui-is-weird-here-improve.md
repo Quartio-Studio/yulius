@@ -35,31 +35,36 @@ next with the same top and height, and the scope's hint under the select.
   scope select and the Create token button share a top and a height (`--control-md`); the hint
   sits under the select, within its column.
 - TKF-002. The scope select is a `.select`, like every other list to choose from.
-- TKF-003. On a narrow screen (640px and less) the form stacks: name, scope with its hint, then the
-  button, nothing overflowing horizontally.
+- TKF-003. When the form is narrower than 600px (a phone, or a window up to about 900px beside
+  the sidebar, where one row left the name input too narrow for its placeholder), it stacks: name,
+  scope with its hint, then the button, nothing overflowing horizontally.
+- TKF-005. A field message (`.field-error`, added by `invalid()` in `dom.js`) takes its own row
+  under the hint instead of drawing over it.
 - TKF-004. Behaviour is unchanged: the hint follows the chosen scope, the name is still required,
   tokens are made, shown once, listed and revoked as before (the existing e2e tests).
 
 ## Plan
 
 - [x] Spec SPEC-270 for the token form layout
-- [ ] Token form labels, controls and button share lines on a wide screen
-- [ ] Token form stacks cleanly on a narrow screen
+- [x] Token form labels, controls and button share lines on a wide screen
+- [x] Token form stacks cleanly on a narrow screen
 - [ ] Independent review answered
 - [ ] Gates green, evidence recorded, delivered
 
 ## Acceptance criteria
 
 - The e2e test `the token form reads as one row` passes and fails on the previous CSS/markup.
-- The e2e test `the token form stacks on a phone` passes.
+- The e2e tests `the token form stacks at 390 px`, `… at 800 px` and `a message on the scope field
+  sits under its hint` pass and fail on the first version of the fix (review round 1).
 - The existing `api-tokens.e2e.ts` tests still pass, with no axe violations.
 
 ## Test plan
 
 - `e2e/tests/api-tokens.e2e.ts`: measure the labels, the input, the select and the button with
   `getBoundingClientRect` on the mock Settings page at desktop width (tops and heights equal,
-  hint below the select and inside its column, the select has `.select`), and at a phone width
-  (items stacked in order, no horizontal overflow of the form).
+  hint below the select and inside its column, the select has `.select`), at 390 and 800px
+  (items stacked in order, no horizontal overflow of the form or page), and with a `.field-error`
+  appended to the Scope field (below the hint, the controls still on one line).
 - Full e2e suite and `scripts/dev ci` before delivery.
 
 ## Decisions
@@ -74,3 +79,10 @@ next with the same top and height, and the scope's hint under the select.
   choice is local to this form's CSS.
 - **Full-height button.** The Create token button drops `btn-sm` so it matches the fields'
   `--control-md`, like the full-size primary buttons of the superadmin and password-reset forms.
+- **Stack by the form's width, not the window's.** A container query on `.agent-connect` (600px)
+  replaces the 640px media query: with the sidebar, a 641-900px window left the one-row name input
+  under 120px, cutting its placeholder (review round 1). 600px keeps the name input at least about
+  200px beside the 240px select and the button.
+- **Four subgrid rows.** Label, control, hint and a field message: a subgrid makes no implicit rows,
+  so with three a message from `invalid()` landed in the hint's row and drew over it (review round
+  1). The empty fourth row costs one 4px gap under the form.
