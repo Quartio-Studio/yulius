@@ -435,7 +435,8 @@ test('a task’s changes, commits and overview load in their own layouts', async
 });
 
 test('the CI hygiene and GitHub connection cards load as their cards', async ({ app, browser, screen }) => {
-  // Hygiene, under the CI runs (read apart): its head line with the controls' room, then its list.
+  // Hygiene, under the CI runs (read apart): its head line with the controls' room, what it is for,
+  // then its list (SPEC-269).
   await app.open(mock('/s/studio/ci', '&hold=/api/sandboxes/sb_studio/hygiene'));
   let shape = '#main .skeleton[role="status"]:has(.ci-hygiene)';
   await expect(browser.locator(shape)).toHaveText('Loading the repository hygiene…');

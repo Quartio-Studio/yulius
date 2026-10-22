@@ -14,7 +14,7 @@ import { loader } from './common.js';
 import { BRAND } from '../brand.js';
 import { loadWaterfall } from '../stages.js';
 import { pipelineHref } from './pipeline.js';
-import { runView, stageNow, focusIfLost } from '../runview.js';
+import { runView, stageNow, soFar, focusIfLost } from '../runview.js';
 
 const STATE = {
   queued: { label: 'Queued', tone: '', icon: 'clock' },
@@ -330,50 +330,123 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
   }
 
   // ---- hygiene
+  // SPEC-269: Yulius removes the safe items itself every 6 hours; Clean up does it now. The card
+  // is drawn once per load and filled again by its actions, so its status line stays the same live
+  // region (read when it changes): what is running with the seconds so far, then the result.
+
+  let hygieneCard = null; // the card shown now: { fill(report), report }
+  let hygieneBusy = null; // { kind: 'scan' | 'clean', count, since }
+  let hygieneProblem = null; // what the last failed action said
+  let hygieneTick = null;
 
   const loadHygiene = loader(hygieneHost, 'the repository hygiene', () => ctx.api.get(`${base}/hygiene`), renderHygiene, { shape: hygieneLoading });
 
-  /** The hygiene card while it loads (SPEC-120, #449): its head line with the buttons' room, its list. */
+  /** The hygiene card while it loads (SPEC-120, #449): its head line with the buttons' room, what it is for, its list. */
   function hygieneLoading() {
     return h('div', { class: 'card card-pad stack-sm' },
       h('div', { class: 'row-wrap' }, h('div', { class: 'card-title' }, bar('xl')), h('span', { class: 'spacer' }), h('span', { class: 'small' }, bar('md')),
         h('span', { class: 'skeleton-button skeleton-button-sm' }), h('span', { class: 'skeleton-button skeleton-button-sm' })),
-      h('ul', { class: 'ci-hygiene' }, [40, 55, 30].map((width) => h('li', null, bar('lg'), bar(width)))),
-      h('p', { class: 'muted small' }, bar(60)));
+      h('div', null, h('p', { class: 'muted small' }, bar(80))),
+      h('ul', { class: 'ci-hygiene' }, [40, 55, 30].map((width) => h('li', null, bar('lg'), bar(width)))));
   }
+
+  const HYGIENE_KINDS = { remote_branch: 'Branch on GitHub', local_branch: 'Local branch', worktree: 'Worktree' };
+  const kindOf = (kind) => HYGIENE_KINDS[kind] || kind;
 
   function renderHygiene(report) {
-    const items = report.items || [];
-    const safe = items.filter((i) => i.safe);
-    const kinds = { remote_branch: 'Branch on GitHub', local_branch: 'Local branch', worktree: 'Worktree' };
-    const scanned = report.scanned_at ? h('span', { title: dateTime(report.scanned_at) }, `Checked ${relLong(report.scanned_at)}`) : 'Not checked yet';
-    const scan = h('button', { type: 'button', class: 'btn btn-sm', disabled: !write, title: write ? null : 'Requires write access', onClick: async () => {
-      scan.disabled = true;
-      try { setChildren(hygieneHost, renderHygiene(await ctx.api.post(`${base}/hygiene/scan`))); } catch (error) { errorToast(error, 'Couldn’t check the repository'); scan.disabled = !write; }
-    } }, 'Check now');
-    const clean = h('button', { type: 'button', class: 'btn btn-sm btn-primary', disabled: !write || safe.length === 0, title: write ? null : 'Requires write access', onClick: () => cleanup(safe) }, 'Clean up');
-    return h('section', { class: 'card card-pad stack-sm', 'aria-label': 'Repository hygiene' },
-      h('div', { class: 'row-wrap' }, h('h2', { class: 'card-title' }, 'Repository hygiene'), h('span', { class: 'spacer' }), h('span', { class: 'muted small' }, scanned), scan, clean),
-      items.length === 0
+    const scanned = h('span', { class: 'muted small' });
+    const scan = h('button', { type: 'button', class: 'btn btn-sm', title: write ? null : 'Requires write access', onClick: () => scanNow() });
+    const clean = h('button', { type: 'button', class: 'btn btn-sm btn-primary', title: write ? null : 'Requires write access', onClick: () => cleanup() });
+    const intro = h('p', { class: 'muted small' });
+    const status = h('div', { class: 'ci-hygiene-status', role: 'status' });
+    // Parts drawn into the card's stack: an empty one takes no room (display: contents).
+    const result = h('div', { class: 'ci-hygiene-part' });
+    const list = h('div', { class: 'ci-hygiene-part' });
+    const notes = h('div', { class: 'ci-hygiene-part' });
+    const card = h('section', { class: 'card card-pad stack-sm', 'aria-label': 'Repository hygiene' },
+      h('div', { class: 'row-wrap' }, h('h2', { class: 'card-title' }, 'Repository hygiene'), h('span', { class: 'spacer' }), scanned, scan, clean),
+      h('div', null, intro, status), result, list, notes);
+    const shown = { report, fill };
+
+    function fill(next) {
+      if (next) shown.report = next;
+      const now = shown.report;
+      const items = now.items || [];
+      const safe = items.filter((i) => i.safe);
+      setChildren(scanned, now.scanned_at ? h('span', { title: dateTime(now.scanned_at) }, `Checked ${relLong(now.scanned_at)}`) : 'Not checked yet');
+      const nextRound = now.next_cleanup_at ? ` (next ${relLong(now.next_cleanup_at)})` : '';
+      intro.textContent = `Branches and worktrees no task needs any more. ${BRAND.name} removes the safe ones by itself${nextRound}; Clean up removes them now.`;
+      const busy = hygieneBusy;
+      card.setAttribute('aria-busy', busy ? 'true' : 'false');
+      scan.textContent = busy && busy.kind === 'scan' ? 'Checking…' : 'Check now';
+      clean.textContent = busy && busy.kind === 'clean' ? 'Cleaning up…' : 'Clean up';
+      scan.disabled = Boolean(busy) || !write;
+      clean.disabled = Boolean(busy) || !write || safe.length === 0;
+      const last = now.last_cleanup;
+      if (busy) {
+        const doing = busy.kind === 'clean' ? `Removing ${plural(busy.count, 'item')}…` : 'Checking the repository…';
+        status.textContent = `${doing} ${soFar((performance.now() - busy.since) / 1000)}`;
+      } else if (hygieneProblem) {
+        status.textContent = hygieneProblem;
+      } else if (last) {
+        const by = last.automatic ? BRAND.name : last.by;
+        const removed = (last.removed || []).length;
+        const kept = (last.skipped || []).length;
+        const what = removed || kept ? `${removed} removed${kept ? `, ${kept} kept` : ''}` : 'nothing to remove';
+        status.textContent = `Cleaned up ${relLong(last.at)} by ${by}: ${what}.`;
+      } else {
+        status.textContent = '';
+      }
+      status.classList.toggle('ci-hygiene-problem', !busy && Boolean(hygieneProblem));
+      const rows = busy || !last ? [] : [
+        ...(last.removed || []).map((t) => h('li', null, badge('Removed', 'ok'), h('span', { class: 'muted small' }, kindOf(t.kind)), h('code', null, t.name))),
+        ...(last.skipped || []).map((t) => h('li', null, badge('Kept', 'warn'), h('span', { class: 'muted small' }, kindOf(t.kind)), h('code', null, t.name), h('span', { class: 'muted' }, t.reason))),
+      ];
+      setChildren(result, rows.length ? h('ul', { class: 'ci-hygiene ci-hygiene-result', 'aria-label': 'Last cleanup' }, rows) : null);
+      setChildren(list, items.length === 0
         ? h('p', { class: 'muted' }, 'No stale branches or worktrees.')
-        : h('ul', { class: 'ci-hygiene' }, items.map((item) => h('li', null,
-          badge(kinds[item.kind] || item.kind, item.safe ? '' : 'warn'), h('code', null, item.name), h('span', { class: 'muted' }, item.safe ? item.reason : `${item.reason} (kept: unmerged work)`)))),
-      (report.notes || []).length ? h('p', { class: 'muted small' }, report.notes.join(' ')) : null,
-      h('p', { class: 'muted small' }, 'Agents clean up with repo_cleanup; merged pull requests lose their branch right after the merge.'));
-  }
-
-  async function cleanup(safe) {
-    if (!(await confirmDialog({ title: `Remove ${plural(safe.length, 'stale item')}?`, message: 'Branches whose pull request was merged or closed, branches already merged, unused local branches and worktrees of finished tasks. GitHub keeps the commits of every pull request.', confirmLabel: 'Clean up' }))) return;
-    try {
-      const result = await ctx.api.post(`${base}/hygiene/cleanup`, { items: [], force: false });
-      const removed = (result.removed || []).length;
-      const skipped = (result.skipped || []).length;
-      toast(`${plural(removed, 'item')} removed.${skipped ? ` ${plural(skipped, 'item')} kept.` : ''}`, { kind: 'ok' });
-      setChildren(hygieneHost, renderHygiene(result.report));
-    } catch (error) {
-      errorToast(error, 'Couldn’t clean up');
+        : [rows.length ? h('p', { class: 'muted small' }, 'Still listed:') : null, h('ul', { class: 'ci-hygiene', 'aria-label': 'Stale branches and worktrees' }, items.map((item) => h('li', null,
+          badge(kindOf(item.kind), item.safe ? '' : 'warn'), h('code', null, item.name),
+          item.safe
+            ? h('span', { class: 'muted' }, item.reason)
+            : [badge('Kept', 'warn'), h('span', { class: 'muted' }, `${item.reason}: unmerged work, which ${BRAND.name} never deletes by itself`)])))]);
+      setChildren(notes, (now.notes || []).length ? h('p', { class: 'muted small' }, now.notes.join(' ')) : null);
     }
+
+    fill();
+    hygieneCard = shown;
+    return card;
   }
 
-  return () => { destroyed = true; clearTimeout(timer); };
+  /** Runs one hygiene action with the card busy, then shows its report or says why it failed. */
+  async function hygieneAction(kind, count, request, failure) {
+    hygieneBusy = { kind, count, since: performance.now() };
+    hygieneProblem = null;
+    if (hygieneCard) hygieneCard.fill();
+    clearInterval(hygieneTick);
+    hygieneTick = setInterval(() => { if (hygieneCard) hygieneCard.fill(); }, 1000);
+    let report = null;
+    try {
+      report = await request();
+    } catch (error) {
+      hygieneProblem = `${failure}: ${error && error.message ? error.message : String(error)}`;
+    } finally {
+      clearInterval(hygieneTick);
+      hygieneBusy = null;
+    }
+    if (destroyed || !hygieneCard) return;
+    hygieneCard.fill(report);
+  }
+
+  function scanNow() {
+    return hygieneAction('scan', 0, () => ctx.api.post(`${base}/hygiene/scan`), 'Couldn’t check the repository');
+  }
+
+  async function cleanup() {
+    const safe = ((hygieneCard && hygieneCard.report.items) || []).filter((i) => i.safe);
+    if (!(await confirmDialog({ title: `Remove ${plural(safe.length, 'stale item')}?`, message: `Branches whose pull request was merged or closed, branches already merged, unused local branches and worktrees of finished tasks. GitHub keeps the commits of every pull request. ${BRAND.name} would remove them at its next round; this removes them now.`, confirmLabel: 'Clean up' }))) return;
+    await hygieneAction('clean', safe.length, async () => (await ctx.api.post(`${base}/hygiene/cleanup`, { items: [], force: false })).report, 'Couldn’t clean up');
+  }
+
+  return () => { destroyed = true; clearTimeout(timer); clearInterval(hygieneTick); };
 }

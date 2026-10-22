@@ -1763,6 +1763,7 @@ function seedCi() {
       ],
       hygiene: {
         scanned_at: new Date(Date.now() - 2 * 3600000).toISOString(), notes: [],
+        last_cleanup: null, next_cleanup_at: new Date(Date.now() + 4 * 3600000).toISOString(),
         items: [
           { kind: 'remote_branch', name: 'feat/12-old-landing', reason_code: 'pull_merged', reason: 'pull request #12 was merged', safe: true },
           { kind: 'local_branch', name: 'feat/12-old-landing', reason_code: 'local_copy', reason: 'no worktree uses it and its commits are on GitHub', safe: true },
@@ -1789,9 +1790,9 @@ function ciOf(db, sid) {
   return db.ci[sid];
 }
 
-/** A running mock run finishes about 20 s after it was created. */
-function progressCi(run) {
-  if (run.state === 'running' && Date.now() - run.created > 20000) {
+/** A running mock run finishes about 20 s after it was created (`__yuliusMock.ciRunMs` changes it). */
+function progressCi(run, ms = 20000) {
+  if (run.state === 'running' && Date.now() - run.created > ms) {
     run.state = 'passed';
     run.status = 'published';
     run.ended_at = new Date().toISOString();
@@ -1812,7 +1813,7 @@ function ciOverview(db, sid) {
   const sandbox = sandboxOf(db, sid);
   const ci = ciOf(db, sid);
   return {
-    gate: clone(ci.gate), gate_problem: ci.gate_problem, runs: ci.runs.map((r) => ciSummary(progressCi(r))),
+    gate: clone(ci.gate), gate_problem: ci.gate_problem, runs: ci.runs.map((r) => ciSummary(progressCi(r, db.ciRunMs))),
     can_run: (RANK[sandbox.access] || 0) >= RANK.write, status_access: ci.status_access, actions_workflows: ci.actions_workflows.slice(),
   };
 }
@@ -1825,7 +1826,7 @@ route('POST', `/api/sandboxes/${ID}/ci/sync`, ({ db, p }) => {
 route('GET', `/api/sandboxes/${ID}/ci/runs/${ID}`, ({ db, p }) => {
   const run = ciOf(db, p[0]).runs.find((r) => r.id === p[1]);
   if (!run) fail(404, 'not_found', 'not found');
-  return { ...progressCi(run), created: undefined };
+  return { ...progressCi(run, db.ciRunMs), created: undefined };
 });
 route('POST', `/api/sandboxes/${ID}/ci/runs/${ID}/cancel`, ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
@@ -1973,8 +1974,12 @@ route('POST', `/api/sandboxes/${ID}/hygiene/scan`, ({ db, p }) => {
   hygiene.scanned_at = new Date().toISOString();
   return clone(hygiene);
 });
-route('POST', `/api/sandboxes/${ID}/hygiene/cleanup`, ({ db, p, body }) => {
+route('POST', `/api/sandboxes/${ID}/hygiene/cleanup`, async ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
+  // A test can hold the answer (`__yuliusMock.holdHygieneCleanup = promise`): the scans, GitHub's
+  // deletions and the refetch take a while (SPEC-269), and make it fail (`failHygieneCleanup`).
+  if (db.holdHygieneCleanup) { await db.holdHygieneCleanup; db.holdHygieneCleanup = null; }
+  if (db.failHygieneCleanup) fail(502, 'upstream', db.failHygieneCleanup);
   const hygiene = ciOf(db, p[0]).hygiene;
   const force = Boolean(body && body.force);
   const wanted = body && Array.isArray(body.items) && body.items.length ? body.items : null;
@@ -1988,6 +1993,7 @@ route('POST', `/api/sandboxes/${ID}/hygiene/cleanup`, ({ db, p, body }) => {
     return false;
   });
   hygiene.scanned_at = new Date().toISOString();
+  hygiene.last_cleanup = { at: hygiene.scanned_at, by: db.me.user.login, automatic: false, removed, skipped };
   return { removed, skipped, report: clone(hygiene) };
 });
 

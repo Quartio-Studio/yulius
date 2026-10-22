@@ -392,8 +392,13 @@ const nowSeconds = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => browse
 
 test('the Now summary says what runs on both tabs and opens it', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/ci?section=cd'));
-  // The deploy started below keeps running for the whole test.
-  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { cdRunMs: number } }).__yuliusMock.cdRunMs = 600000; });
+  // The deploy started below and the running CI run keep running for the whole test, however long
+  // it takes (the CI run used to end 20 s in, before the phone-width check).
+  await browser.evaluate(() => {
+    const m = (window as unknown as { __yuliusMock: { cdRunMs: number; ciRunMs: number } }).__yuliusMock;
+    m.cdRunMs = 600000;
+    m.ciRunMs = 600000;
+  });
   const now = screen.getByRole('region', 'Now');
   await expect(now.getByRole('link', 'Running CI quartio at 9f3c2a1')).toBeVisible();
   await expect(now).toContainText('3 jobs · 1 passed · 2 running');
