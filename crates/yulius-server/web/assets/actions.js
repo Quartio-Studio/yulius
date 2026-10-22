@@ -914,16 +914,18 @@ export function openMoveToGitHubDialog(ctx, sandbox) {
  */
 export async function confirmRemoveSandbox(ctx, sandbox) {
   const choice = (value, label, help) => {
-    const input = h('input', { type: 'radio', name: 'remove-files', value, id: `remove-files-${value}` });
+    const id = `remove-files-${value}`;
+    const input = h('input', { type: 'radio', name: 'remove-files', value, id, 'aria-describedby': `${id}-help` });
     return {
       input,
-      el: h('label', { class: 'check remove-choice', for: `remove-files-${value}` }, input,
-        h('span', null, h('span', null, label), h('span', { class: 'muted small' }, help))),
+      el: h('div', { class: 'remove-choice' },
+        h('label', { class: 'check', for: id }, input, h('span', null, label)),
+        h('p', { class: 'muted small', id: `${id}-help` }, help)),
     };
   };
   const files = sandbox.playground
-    ? 'its code (the repository and every branch), sessions and transcripts, worktrees, CI directories, browser profile, system layer and runs'
-    : 'its clone, sessions and transcripts, worktrees (with any uncommitted or unpushed work), CI directories, browser profile, system layer and runs';
+    ? 'its code (the repository and every branch), sessions and transcripts, attachments, worktrees, CI and deploy directories, browser profile, system layer, runs and the export of its tasks'
+    : 'its clone, sessions and transcripts, attachments, worktrees (with any uncommitted or unpushed work), CI and deploy directories, browser profile, system layer, runs and the export of its tasks';
   const purge = choice('delete', 'Delete its files permanently',
     `${files[0].toUpperCase()}${files.slice(1)} are deleted from this server as soon as its processes have stopped. This cannot be undone.`);
   const keep = choice('keep', 'Keep its files',

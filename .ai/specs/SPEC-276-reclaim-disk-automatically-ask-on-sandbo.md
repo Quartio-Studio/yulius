@@ -47,9 +47,12 @@ Incident of 2026-10-22 on the production instance: the root disk reached 96 % (1
   hourly) did run, but what filled the disk was not a leftover by SPEC-215's rules. Its result was
   visible nowhere, so nobody could tell that it ran.
 
-Cargo facts the sweep relies on (cargo 1.99): a build, check, test or doc run holds an exclusive
-`flock` on `<target>/<profile>/.cargo-lock` for its whole duration (also for a `--target` triple's
-`<target>/<triple>/<profile>/.cargo-lock`); a unit whose fingerprint (`.fingerprint/<name>-<hash>`)
+Cargo facts the sweep relies on (cargo 1.99, checked with a probe crate whose `build.rs` sleeps):
+while Cargo compiles it holds exclusive `flock`s on `<target>/<profile>/.cargo-lock`,
+`.cargo-build-lock` and `.cargo-artifact-lock` (also in a `--target` triple's
+`<target>/<triple>/<profile>/`), and releases them when it is done compiling: test binaries,
+`cargo test --doc`'s rustdoc runs and `cargo nextest` read `deps/` after that, without a lock
+(review round 1). Only rustc reads `incremental/`, and only under the lock. A unit whose fingerprint (`.fingerprint/<name>-<hash>`)
 is missing is rebuilt, and so is one whose output file is missing; rustc compiles incremental
 sessions in `incremental/<crate>-<hash>/s-…-working` and renames them when done. The data disk is
 mounted `relatime`: a read updates the access time when it is older than the modification time or
@@ -64,21 +67,28 @@ been read for at least 24 h.
   `ci/jobs/<job>/target` (a worktree or checkout with `Cargo.toml`, reached from the sandbox
   directory with no link on the way), is swept: hourly, and on every disk round while the disk is
   low (RDA-006).
-- **RDA-002** A sweep first takes, without waiting, an exclusive lock on every `.cargo-lock` of the
-  build directory's profiles (`<target>/<profile>` and `<target>/<triple>/<profile>`, the
-  directories holding `.fingerprint`). One that is held (a build, check, test or doc runs) skips
-  the whole directory this round. Holding them, no Cargo run can start in it until the sweep ends
-  (it waits on the lock). A lock file that is a link counts as held.
+- **RDA-002** A sweep first takes, without waiting, an exclusive lock on every Cargo lock file
+  (`.cargo-lock`, `.cargo-*-lock`) of the build directory's profiles (`<target>/<profile>` and
+  `<target>/<triple>/<profile>`, the directories holding `.fingerprint`). One that is held (Cargo
+  compiles) skips the whole directory this round. Holding them, no Cargo run can start in it until
+  the sweep ends (it waits on the lock). A lock file that is a link or not a plain file (a FIFO) is
+  opened without blocking and counts as held. Artifact units are swept only where nothing can run
+  tests: a CI checkout while the sweep holds the sandbox's CI claim (a running CI run keeps it
+  whole), a task's worktree while the task neither works nor runs background work (probed). Other
+  worktrees (working tasks, worktrees no task owns) lose incremental units only.
 - **RDA-003** The sweep deletes whole units, never parts of one: an artifact unit is every entry of
   `.fingerprint`, `build` and `deps` of one profile that carries the same 16-hex hash (its
   fingerprint goes with its outputs, so Cargo rebuilds it); an incremental unit is one
   `incremental/<crate>-<hash>` directory. A unit's last use is the newest access or modification
   time of any file in it. An incremental directory holding a `*-working` session is never
   touched. Files outside units (binaries at the profile root, `doc`, `nextest`, `tmp`) are left.
-- **RDA-004** A unit unused for 48 h is deleted (relatime: unread for at least a day).
+- **RDA-004** A unit unused for 48 h is deleted (relatime: unread for at least a day). On a
+  `noatime` file system artifact units are not swept by age.
 - **RDA-005** After that, a build directory whose units hold more than its cap loses its least
-  recently used units until they hold three quarters of the cap, never a unit used within the last
-  hour (files outside units do not count). The cap
+  recently used incremental units until they hold three quarters of the cap, never one used within
+  the last hour (files outside units count neither; artifact units are never evicted for the cap,
+  their access times can lag a day). A sweep cut short by its entry bound still takes the whole
+  incremental units it read. The cap
   is 5 % of the data disk, at least 8 GB (19 GB on a 387 GB disk). Each sweep that deletes
   something is audited (`disk.sweep`: what, how much, why).
 
@@ -150,7 +160,8 @@ been read for at least 24 h.
 - A build directory with a unit last used 3 days ago and one used an hour ago loses the first
   (its `.fingerprint`, `deps` and `build` entries together) and keeps the second.
 - While a test process holds `.cargo-lock` of a profile, nothing of that build directory is
-  deleted; once released, the next sweep deletes the old unit.
+  deleted; once released, the next sweep deletes the old unit. A working task's worktree and a CI
+  checkout whose CI run runs keep their artifact units.
 - An `incremental/<crate>-<hash>` directory with an `s-…-working` session stays whatever its age.
 - A build directory over its cap ends at or below three quarters of it, old units first, and a unit
   used within the hour stays (normal level).
@@ -160,8 +171,8 @@ been read for at least 24 h.
   10 minutes.
 - The leftovers view shows the last automatic round with what it deleted.
 - Removing a GitHub sandbox with "Delete permanently" deletes its sandbox directory, system layer,
-  runtime state, transcripts and export once nothing of it runs, without waiting 10 minutes; with a
-  shell still live it waits and says so. "Keep" deletes none of the kept files.
+  runtime state, transcripts and export once nothing of it runs, without waiting 10 minutes; with an
+  agent run still live it waits and says so, and the watch deletes them within seconds of its end. "Keep" deletes none of the kept files.
 - The remove dialog cannot be confirmed before a choice is made.
 - Settings → Instance lists a kept removed sandbox with its size; Delete files deletes them.
 
@@ -192,16 +203,21 @@ been read for at least 24 h.
 
 Lasting ones in ADR-0205. Summary:
 
-- **Cargo's own lock, not process scanning.** Every Cargo command that writes a build directory
-  holds `.cargo-lock`; a non-blocking `flock` tells exactly whether one runs, across the sandbox's
-  namespaces, and holding it keeps a new one from starting mid-sweep. Scanning `/proc` for working
-  directories needs permissions on the sandbox's processes and still races.
+- **Cargo's own lock, not process scanning, and artifacts only where nothing tests.** Every Cargo
+  command that compiles into a build directory holds its locks; a non-blocking `flock` tells
+  exactly whether one compiles, across the sandbox's namespaces, and holding it keeps a new one
+  from starting mid-sweep. Test binaries, doctests and nextest read `deps/` after Cargo released
+  them, so artifact units go only under the CI claim or for a resting task (review round 1).
+  Scanning `/proc` for working directories needs permissions on the sandbox's processes and still
+  races.
 - **Whole units by hash, like cargo-sweep.** Deleting single files could leave a fresh fingerprint
   without its output or a build script's `out/` without its run, which breaks the next build.
   Deleting a unit's fingerprint with its outputs makes Cargo rebuild exactly that unit.
 - **48 h, not 24 h.** With `relatime` an access time can lag a day; 48 h is the shortest age that
-  proves a day without a read. Under pressure correctness still holds (the lock), only rebuilds
-  cost more.
+  proves a day without a read. Under pressure correctness still holds (the lock, and artifacts
+  only where nothing tests), only rebuilds cost more. For the same reason the cap evicts
+  incremental units only: their sessions are rewritten at every compile, so their modification
+  times are exact.
 - **A cap per build directory of 5 % of the disk (≥ 8 GB).** A full Yulius gate needs about 22 GB
   of which 15 GB is incremental state; a 19 GB cap trims the stale incremental directories (16
   generations of `yulius` alone) without evicting the current build, which the 1-hour floor

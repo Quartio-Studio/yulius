@@ -1449,11 +1449,15 @@ impl App {
             self.with_leftovers(|inner| inner.last_auto = inner.job.clone());
             return None;
         }
+        // A sandbox whose files were asked to go is the purge's (SPEC-276 RDA-011): two deleters of
+        // one tree would report each other's removals as failures.
+        let purged = self.deps.store.pending_purges().await.unwrap_or_default();
         let safe: Vec<Leftover> = self.with_leftovers(|inner| {
             inner
                 .items
                 .iter()
                 .filter(|item| item.kind.auto())
+                .filter(|item| item.sandbox.as_ref().is_none_or(|id| !purged.contains(id)))
                 .cloned()
                 .collect()
         });
@@ -1595,32 +1599,36 @@ impl App {
         })
     }
 
-    /// The removed sandboxes whose files the last scan found (RDA-012): its "everything of the
-    /// removed sandbox" item holds them all.
+    /// The removed sandboxes whose files are still on the server (RDA-012): each with the size its
+    /// "everything of the removed sandbox" item had at the last scan (`None` before one).
     async fn kept_sandboxes(&self) -> Vec<KeptSandboxView> {
-        let found: Vec<(SandboxId, Option<u64>)> = self.with_leftovers(|inner| {
-            inner
-                .items
-                .iter()
-                .filter(|i| i.kind == Kind::RemovedSandbox)
-                .filter_map(|i| Some((i.sandbox.clone()?, i.bytes)))
-                .collect()
-        });
-        let pending = self.deps.store.pending_purges().await.unwrap_or_default();
-        let mut kept = Vec::new();
-        for (id, bytes) in found {
-            let Ok(Some(record)) = self.deps.store.sandbox(&id).await else {
-                continue;
-            };
-            kept.push(KeptSandboxView {
-                id: id.to_string(),
-                slug: record.slug.clone(),
-                removed_at: record.removed_at.map(rfc3339),
-                bytes,
-                purge_requested: pending.contains(&id),
+        let sizes: std::collections::HashMap<SandboxId, Option<u64>> =
+            self.with_leftovers(|inner| {
+                inner
+                    .items
+                    .iter()
+                    .filter(|i| i.kind == Kind::RemovedSandbox)
+                    .filter_map(|i| Some((i.sandbox.clone()?, i.bytes)))
+                    .collect()
             });
-        }
-        kept
+        let removed = self
+            .deps
+            .store
+            .removed_sandboxes()
+            .await
+            .unwrap_or_default();
+        let pending = self.deps.store.pending_purges().await.unwrap_or_default();
+        removed
+            .into_iter()
+            .filter(|s| sizes.contains_key(&s.id) || exists(&self.sandbox_dir(&s.id)))
+            .map(|s| KeptSandboxView {
+                id: s.id.to_string(),
+                slug: s.slug.clone(),
+                removed_at: s.removed_at.map(rfc3339),
+                bytes: sizes.get(&s.id).copied().flatten(),
+                purge_requested: pending.contains(&s.id),
+            })
+            .collect()
     }
 
     /// Drops the purged sandbox `id`'s items from the last scan: its files are gone.
@@ -1803,9 +1811,8 @@ mod tests {
         Ok(())
     }
 
-    /// #675: a removal that fails names the entry that stayed, not only the item. Nobody, root
-    /// included, can unlink an entry of `/proc`.
-    #[cfg(target_os = "linux")]
+    /// SPEC-276 RDA-011: a purge takes its own removal's export, never another sandbox's whose
+    /// slug only starts with the same name.
     #[test]
     fn a_removal_s_export_is_told_from_another_sandbox_s() {
         assert!(is_export_of("sandbox-app-1700000000000.json", "app"));
@@ -1815,6 +1822,9 @@ mod tests {
         assert!(!is_export_of("sandbox-app-17.json.bak", "app"));
     }
 
+    /// #675: a removal that fails names the entry that stayed, not only the item. Nobody, root
+    /// included, can unlink an entry of `/proc`.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_failed_removal_names_the_entry_that_stayed() {
         let item = Path::new("/proc/self/ns");

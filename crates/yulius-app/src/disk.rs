@@ -21,7 +21,7 @@ use yulius_domain::disk::{
     Candidate, Owner, bytes_to_free, cache_paths, human, job_cache_cap, only_rebuildable, owner_of,
     plan_prune, prune_after,
 };
-use yulius_domain::ids::TaskId;
+use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::spec_format::parse_yulius_toml_caches;
 use yulius_domain::sweep::Level;
 use yulius_domain::task::{Activity, StopReason, TaskStatus};
@@ -93,6 +93,12 @@ struct Scan {
     found: Vec<Found>,
     /// Worktrees of closed and cancelled tasks.
     ended: Vec<(TaskRecord, PathBuf)>,
+}
+
+/// Whether the upkeep runs a round now: the first one, one [`DISK_EVERY`] after the last
+/// (`since_last`), or at once when the data disk's level rose (SPEC-276 RDA-006).
+pub(crate) fn round_due(since_last: Option<Duration>, level: Level, before: Level) -> bool {
+    since_last.is_none_or(|since| since >= DISK_EVERY) || level > before
 }
 
 /// Allocated bytes under `path` (links not followed), bounded in entries.
@@ -170,6 +176,35 @@ fn declared_caches(worktree: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Marks a sandbox's upkeep running until dropped.
+struct UpkeepMark<'a> {
+    app: &'a App,
+    sandbox: SandboxId,
+}
+
+impl<'a> UpkeepMark<'a> {
+    fn take(app: &'a App, sandbox: &SandboxId) -> Option<Self> {
+        let mut running = app
+            .upkeeps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        running.insert(sandbox.clone()).then(|| Self {
+            app,
+            sandbox: sandbox.clone(),
+        })
+    }
+}
+
+impl Drop for UpkeepMark<'_> {
+    fn drop(&mut self) {
+        self.app
+            .upkeeps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.sandbox);
+    }
+}
+
 impl App {
     pub(super) fn start_disk_upkeep(self: &Arc<Self>) {
         let app = Arc::clone(self);
@@ -183,8 +218,7 @@ impl App {
             loop {
                 tick.tick().await;
                 let (level, before) = app.check_disk().await;
-                let due = rounds.is_none_or(|at| at.elapsed() >= DISK_EVERY) || level > before;
-                if !due {
+                if !round_due(rounds.map(|at| at.elapsed()), level, before) {
                     continue;
                 }
                 rounds = Some(tokio::time::Instant::now());
@@ -236,6 +270,11 @@ impl App {
         pressure: bool,
         host_need: u64,
     ) -> AppResult<DiskReport> {
+        // One upkeep of a sandbox at a time (the archive's round beside the loop's): a second
+        // would remove the same caches and report spurious failures.
+        let Some(_one) = UpkeepMark::take(self, &sandbox.id) else {
+            return Ok(DiskReport::default());
+        };
         let reference = self.sandbox_ref(sandbox);
         let isolation = self.isolation.get();
         let usage = match isolation {
@@ -641,5 +680,28 @@ impl App {
             }
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_round_runs_first_every_five_minutes_and_at_once_when_the_disk_fills() {
+        let minute = Duration::from_secs(60);
+        assert!(round_due(None, Level::Ok, Level::Ok), "the first one");
+        assert!(!round_due(Some(minute), Level::Ok, Level::Ok));
+        assert!(round_due(Some(DISK_EVERY), Level::Ok, Level::Ok));
+        assert!(
+            round_due(Some(minute), Level::Low, Level::Ok),
+            "the level rose"
+        );
+        assert!(round_due(Some(minute), Level::Critical, Level::Low));
+        assert!(
+            !round_due(Some(minute), Level::Low, Level::Low),
+            "low already: every 5 minutes"
+        );
+        assert!(!round_due(Some(minute), Level::Ok, Level::Low), "it fell");
     }
 }

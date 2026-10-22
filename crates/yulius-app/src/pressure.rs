@@ -29,6 +29,8 @@ pub struct DiskWatch {
 #[derive(Default)]
 struct Watched {
     level: Level,
+    /// The used percent last published (the pill shows it while the disk is low).
+    percent: Option<u64>,
     leftovers_at: Option<tokio::time::Instant>,
 }
 
@@ -41,6 +43,8 @@ pub struct DiskRound {
     pub sweep: Option<SweepReport>,
     /// The upkeep of every live sandbox, summed.
     pub upkeep: DiskReport,
+    /// The safe leftovers round was started (the disk is low).
+    pub leftovers: bool,
 }
 
 fn percent(used: u64, total: u64) -> u64 {
@@ -70,13 +74,21 @@ impl App {
         }
     }
 
-    /// Reads the data disk's level and returns it with the one read before. A change is
-    /// published; a rise is audited with what Yulius does about it.
+    /// Reads the data disk's level and returns it with the one read before. A change of level, and
+    /// while the disk is low of its used percent, is published; a rise is audited with what
+    /// Yulius does about it.
     pub async fn check_disk(&self) -> (Level, Level) {
         let disk = self.data_disk().await;
         let level = disk.map_or(Level::Ok, |(total, used)| Level::of(used, total));
-        let before = self.with_watch(|watched| std::mem::replace(&mut watched.level, level));
-        if level != before {
+        let shown = disk.map(|(total, used)| percent(used, total));
+        let (before, moved) = self.with_watch(|watched| {
+            let before = std::mem::replace(&mut watched.level, level);
+            // While low, every point the used share moves is shown too (the pill says it).
+            let moved = level != Level::Ok && watched.percent != shown;
+            watched.percent = shown;
+            (before, moved)
+        });
+        if level != before || moved {
             self.events.publish(
                 None,
                 false,
@@ -157,6 +169,7 @@ impl App {
                 }
                 due
             });
+        round.leftovers = leftovers_due;
         if leftovers_due {
             let app = Arc::clone(self);
             tokio::spawn(async move {

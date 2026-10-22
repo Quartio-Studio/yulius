@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted. Specified in [SPEC-171](../../.ai/specs/SPEC-171-fix-409-420-yulius-onboard-uploads-a-che.md)
+Accepted, amended by [0205](0205-build-caches-are-swept-under-cargo-s-lock-and-a-removed-sandbox-s-files-go-on-request.md)
+(SPEC-276): every sandbox can be purged, through the leftovers' guards, and the purge deletes the
+removal's export too. Specified in [SPEC-171](../../.ai/specs/SPEC-171-fix-409-420-yulius-onboard-uploads-a-che.md)
 (#420). Amends [0081](0081-a-playground-keeps-its-git-on-the-server.md) (a removed playground no
 longer counts toward the limit once purged).
 
@@ -29,7 +31,8 @@ shell, the sandbox browser or a CI run may still be running then.
    upkeep round (5 minutes). Then `origin` and the sandbox directory are deleted, the request is
    marked `purged_at` and audited (`sandbox.purged`).
 4. **The quota counts what is on disk**: a purged playground's `origin` is gone, so its maker's
-   limit no longer counts it. Task records, the removal export and the audit trail stay.
+   limit no longer counts it. Task records and the audit trail stay (the removal export stayed too
+   until ADR-0205).
 5. **The UI asks before it happens**: the removal dialog of a playground offers to delete its code
    for good and says it cannot be undone.
 

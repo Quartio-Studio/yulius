@@ -859,6 +859,74 @@ async fn kept_files_of_a_removed_sandbox_are_listed_and_deleted_on_request() -> 
     Ok(())
 }
 
+/// SPEC-276 RDA-011: a purge waiting for its holder is tried again by its watch, which deletes the
+/// files soon after the holder stopped, with no round and no person.
+#[tokio::test]
+async fn the_purge_watch_deletes_the_files_once_the_holder_stops() -> BoxResult<()> {
+    use yulius_domain::ids::UserId;
+    let w = world().await?;
+    let gone = w.sandbox("gone").await?;
+    w.remove("gone").await?;
+    w.holders.set_live("gone", true);
+    let id = SandboxId::parse("gone")?;
+    w.h.store
+        .request_purge(&id, &UserId::parse("u-alice")?, w.h.app.now())
+        .await?;
+    w.h.app
+        .watch_purge_with(id, Duration::from_millis(50), Duration::from_secs(30));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(gone.exists(), "kept while its holder lives");
+    w.holders.set_live("gone", false);
+    assert!(
+        gone_within(&gone, Duration::from_secs(10)).await,
+        "the watch deleted it"
+    );
+    assert!(
+        gone_within(&w.at("sysroots/gone"), Duration::from_secs(10)).await,
+        "its system layer too"
+    );
+    Ok(())
+}
+
+/// SPEC-276 RDA-011 (review round 1): the leftovers round leaves a sandbox whose purge was
+/// requested to the purge, so two deleters never work on one tree.
+#[tokio::test]
+async fn the_leftovers_round_leaves_a_purged_sandbox_to_its_purge() -> BoxResult<()> {
+    use yulius_domain::ids::UserId;
+    let w = world().await?;
+    let gone = w.sandbox("gone").await?;
+    w.remove("gone").await?;
+    w.later(REMOVED_KEEP_MS + 1_000);
+    w.h.store
+        .request_purge(
+            &SandboxId::parse("gone")?,
+            &UserId::parse("u-alice")?,
+            w.h.app.now(),
+        )
+        .await?;
+    let report = w.h.app.run_leftovers_round().await.ok_or("the round ran")?;
+    assert!(gone.join("ci").exists(), "the purge's: {report:?}");
+    assert_eq!(w.h.app.run_purges().await, 1);
+    assert!(!gone.exists());
+    Ok(())
+}
+
+/// SPEC-276 RDA-012 (review round 1): a sandbox removed with its files kept is listed at once,
+/// before any scan measured it.
+#[tokio::test]
+async fn a_kept_sandbox_is_listed_before_a_scan() -> BoxResult<()> {
+    let w = world().await?;
+    w.sandbox("old").await?;
+    w.remove("old").await?;
+    let view = w.h.app.leftovers_overview().await;
+    assert_eq!(view.kept.len(), 1, "{:?}", view.kept);
+    assert_eq!(
+        (view.kept[0].slug.as_str(), view.kept[0].bytes),
+        ("old", None)
+    );
+    Ok(())
+}
+
 /// SPEC-276 RDA-009: the automatic round deletes the safe leftovers with nobody running the
 /// CLI, and the view says when it last ran and what it did.
 #[tokio::test]

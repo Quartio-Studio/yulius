@@ -65,6 +65,7 @@ test('removing a sandbox waits for a choice about its files and deletes them whe
   const dialog = await removeDialog(browser, screen, 'studio');
   await expect(dialog).toContainText('Its files on this server');
   await expect(dialog).toContainText('with any uncommitted or unpushed work');
+  await expect(dialog).toContainText('runs and the export of its tasks are deleted from this server');
   await expect(dialog).toContainText('The GitHub repository, task records and the audit trail stay either way.');
   await dialog.getByRole('textbox', /^Type/).fill('studio');
   const remove = dialog.getByRole('button', 'Remove sandbox');

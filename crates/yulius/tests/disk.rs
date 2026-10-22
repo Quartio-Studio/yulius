@@ -76,6 +76,8 @@ impl SandboxIsolation for Quota {
 
 struct World {
     h: support::Harness,
+    /// The sandbox's owner, signed in.
+    alice: support::Creds,
     sandbox: SandboxRecord,
     repo: PathBuf,
     root: PathBuf,
@@ -94,7 +96,9 @@ async fn world_with(session_host: Option<Arc<dyn SessionHost>>) -> BoxResult<Wor
         session_host,
         ..HarnessOptions::default()
     })?;
-    seed_github_user(&h, "u-alice", "alice").await?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    h.github
+        .set_perm("alice", "acme/app", support::perms("write"));
     let sandbox = seed_sandbox(&h, "s1", "app", "u-alice").await?;
     let root = h.app.config.data_dir.join("sandboxes/s1");
     let repo = root.join("repo");
@@ -109,6 +113,7 @@ async fn world_with(session_host: Option<Arc<dyn SessionHost>>) -> BoxResult<Wor
     git(&repo, &["commit", "-q", "-m", "init"])?;
     Ok(World {
         h,
+        alice,
         sandbox,
         repo,
         root,
@@ -1355,8 +1360,9 @@ async fn a_critical_data_disk_prunes_idle_caches_and_is_audited() -> BoxResult<(
     Ok(())
 }
 
-/// SPEC-276 RDA-007: anyone signed in reads the data disk's level; a change of level reaches
-/// every page as `disk.updated`, the same level again sends nothing.
+/// SPEC-276 RDA-007: anyone signed in reads the data disk's level; a change of level, and while
+/// the disk is low of its used percent, reaches every page as `disk.updated`; the same reading
+/// again sends nothing.
 #[tokio::test]
 async fn the_disk_level_is_served_and_its_changes_are_published() -> BoxResult<()> {
     use axum::http::{Method, StatusCode};
@@ -1370,6 +1376,12 @@ async fn the_disk_level_is_served_and_its_changes_are_published() -> BoxResult<(
     assert_eq!(r.status, StatusCode::UNAUTHORIZED);
 
     let mut events = w.h.app.events.subscribe();
+    w.h.system.set_disk(1_000, 500);
+    w.h.app.check_disk().await;
+    w.h.system.set_disk(1_000, 600);
+    w.h.app.check_disk().await;
+    w.h.system.set_disk(1_000, 860);
+    w.h.app.check_disk().await;
     w.h.system.set_disk(1_000, 870);
     w.h.app.check_disk().await;
     w.h.app.check_disk().await;
@@ -1389,7 +1401,11 @@ async fn the_disk_level_is_served_and_its_changes_are_published() -> BoxResult<(
             changes.push(level);
         }
     }
-    assert_eq!(changes, ["low"], "published once");
+    assert_eq!(
+        changes,
+        ["low", "low"],
+        "at ok nothing; low at 86 %, again at 87 % (the pill shows the percent), once"
+    );
     Ok(())
 }
 
@@ -1411,6 +1427,56 @@ async fn an_archived_task_loses_its_caches_without_the_grace() -> BoxResult<()> 
     assert!(
         kept.join("target/blob").exists(),
         "not archived: the grace holds"
+    );
+    Ok(())
+}
+
+/// SPEC-276 RDA-008: archiving a task through the API starts a round at once: its build output
+/// goes without anyone running the upkeep (review round 1: the test above calls it by hand).
+#[tokio::test]
+async fn archiving_a_task_through_the_api_removes_its_build_output() -> BoxResult<()> {
+    use axum::http::{Method, StatusCode};
+    let w = world().await?;
+    let worktree = w
+        .task("t-arch", TaskStatus::Stopped(StopReason::Crashed), None)
+        .await?;
+    let r = support::call(
+        &w.h.router,
+        Method::POST,
+        "/api/tasks/t-arch/archive",
+        Some(serde_json::json!({})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while worktree.join("target").exists() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        !worktree.join("target").exists(),
+        "the archive's round removed it"
+    );
+    assert!(worktree.exists(), "its worktree stays");
+    Ok(())
+}
+
+/// SPEC-276 RDA-006: while the disk is low, the safe leftovers round starts with a disk round, at
+/// most once every 10 minutes; at ok it does not.
+#[tokio::test]
+async fn a_low_disk_starts_the_leftovers_round_at_most_every_ten_minutes() -> BoxResult<()> {
+    let w = world().await?;
+    let app = &w.h.app;
+    w.h.system.set_disk(1_000, 500);
+    assert!(
+        !app.disk_round(false).await.leftovers,
+        "ok: the hourly round is enough"
+    );
+    w.h.system.set_disk(1_000, 900);
+    assert!(app.disk_round(false).await.leftovers, "low: at once");
+    assert!(
+        !app.disk_round(false).await.leftovers,
+        "not again within 10 minutes"
     );
     Ok(())
 }

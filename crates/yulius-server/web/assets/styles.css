@@ -124,8 +124,8 @@ p { margin: 0; }
 /* What a destructive choice of a dialog does, said before it happens (SPEC-171). */
 .remove-files { margin: 0; padding: 0; border: 0; min-width: 0; }
 .remove-files > legend { padding: 0; margin-bottom: 6px; }
-.remove-choice { align-items: flex-start; }
-.remove-choice > span { display: flex; flex-direction: column; gap: 2px; }
+.remove-choice { display: flex; flex-direction: column; gap: 4px; }
+.remove-choice > p { margin: 0 0 0 24px; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 
 .switch { position: relative; display: inline-flex; width: 30px; height: 17px; flex: none; }

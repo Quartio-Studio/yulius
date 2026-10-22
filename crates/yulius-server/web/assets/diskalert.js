@@ -2,15 +2,16 @@
 // everyone, while GET /api/disk says `low` (from 85 % used) or `critical` (from 95 %). Read at
 // start, on the `disk.updated` event and when the event stream reconnects. Its title says what
 // Yulius does about it; the superadmin's pill links to Settings → Instance, where the Leftovers
-// card lists what can still go.
+// card lists what can still go. The server sends `disk.updated` on a change of level and, while the
+// disk is low, of its used percent.
 
 import { h, icon, setChildren } from './dom.js';
 import { bytes } from './format.js';
 import { BRAND } from './brand.js';
 import { INSTANCE_ROUTE } from './updates.js';
 
-/** The pill's text and title for a disk view, or null when the disk is fine. */
-export function diskAlertText(view) {
+/** The pill's text and title for a disk view (`admin`: the superadmin, who can delete kept files), or null when the disk is fine. */
+export function diskAlertText(view, admin = false) {
   if (!view || (view.level !== 'low' && view.level !== 'critical')) return null;
   const known = view.total > 0 && view.used !== null && view.used !== undefined;
   const pct = known ? Math.min(100, Math.round((view.used / view.total) * 100)) : null;
@@ -21,7 +22,8 @@ export function diskAlertText(view) {
   const doing = view.level === 'critical'
     ? `${BRAND.name} is deleting old build caches and the caches of idle tasks. Builds may fail until space is back.`
     : `${BRAND.name} is deleting build caches nobody used recently.`;
-  const title = `The server’s disk is ${pct === null ? 'nearly full' : `${pct}% used`}${free ? ` (${free} free)` : ''}. ${doing} Removed sandboxes whose files were kept can be deleted in Settings → Instance → Leftovers.`;
+  const where = admin ? ' Removed sandboxes whose files were kept can be deleted in Settings → Instance → Leftovers.' : '';
+  const title = `The server’s disk is ${pct === null ? 'nearly full' : `${pct}% used`}${free ? ` (${free} free)` : ''}. ${doing}${where}`;
   return { text, title, critical: view.level === 'critical' };
 }
 
@@ -33,12 +35,13 @@ export function createDiskAlert(ctx) {
   let shown = 0;
 
   function render(view) {
-    const alert = diskAlertText(view);
+    const admin = ctx.isSuperadmin();
+    const alert = diskAlertText(view, admin);
     if (!alert) { el.hidden = true; setChildren(el); return; }
     el.className = `update-banner update-warn disk-alert${alert.critical ? ' disk-critical' : ''}`;
-    const label = ctx.isSuperadmin()
+    const label = admin
       ? h('a', { class: 'update-text', href: INSTANCE_ROUTE, dataset: { route: INSTANCE_ROUTE }, title: alert.title }, alert.text)
-      : h('span', { class: 'update-text', title: alert.title, tabindex: '0' }, alert.text);
+      : h('span', { class: 'update-text', title: alert.title }, alert.text);
     setChildren(el, icon('warn', { size: 14 }), label, h('span', { class: 'sr-only' }, alert.title));
     el.hidden = false;
   }

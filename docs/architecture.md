@@ -414,11 +414,12 @@ The disk upkeep (`yulius-app::disk`) reads the data disk every minute through
 `SystemProbe::disk`; `yulius-domain::sweep` turns it into a level (low from 85 %, critical from
 95 %) and a policy. `yulius-app::pressure` runs a round every 5 minutes, and at once when the level
 rises: `yulius-app::sweep` sweeps every Cargo `target` of the live sandboxes' worktrees and CI
-checkouts (hourly, every round while low) holding each profile's `.cargo-lock` with a non-blocking
-`flock` (a held one skips the directory), deleting whole units (a hash's `.fingerprint`, `deps`
-and `build` entries; an `incremental/<crate>-<hash>` directory without a `*-working` session)
-unused for 48 h (6 h low, 1 h critical) and then the least recently used above a cap of 5 % of the
-disk; at critical the upkeep also prunes idle caches until the disk is back at 85 %. A change of
+checkouts (hourly, every round while low) holding each profile's Cargo locks with a non-blocking
+`flock` (a held one, or one that is not a plain file, skips the directory), deleting whole units
+(an `incremental/<crate>-<hash>` directory without a `*-working` session anywhere; a hash's
+`.fingerprint`, `deps` and `build` entries only under the CI claim or for a resting task, since
+tests read `deps/` after Cargo unlocks) unused for 48 h (6 h low, 1 h critical) and then the least
+recently used incremental units above a cap of 5 % of the disk; at critical the upkeep also prunes idle caches until the disk is back at 85 %. A change of
 level is published (`disk.updated`, `GET /api/disk`, a pill on every page) and a rise audited
 (`disk.pressure`).
 
@@ -427,7 +428,7 @@ flowchart LR
   P["disk upkeep: every minute"] -->|"SystemProbe::disk"| LV{"level: ok / low ≥ 85 % / critical ≥ 95 %"}
   LV -->|"change"| EV["disk.updated → pill on every page"]
   LV -->|"round: 5 min, or the level rose"| SW["sweep Cargo targets (hourly; every round when low)"]
-  SW -->|"flock every .cargo-lock; held → skip"| U["whole units unused 48 h / 6 h / 1 h, then LRU above the cap"]
+  SW -->|"flock every Cargo lock; held → skip"| U["whole units unused 48 h / 6 h / 1 h (artifacts: CI claim or resting task), then LRU incremental above the cap"]
   LV -->|"critical"| IDLE["prune idle tasks' and CI checkouts' caches to 85 %"]
   LV -->|"low, ≤ every 10 min"| LR["safe leftovers round"]
   RM["remove sandbox: Delete permanently"] -->|"playground_purges"| PG["purge: guard, then everything of it"]

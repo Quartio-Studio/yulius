@@ -26,6 +26,8 @@ use crate::error::{AppError, AppResult};
 
 /// Most directories made writable while deleting one tree (a tool's read-only cache).
 const MAX_DIRS_MADE_WRITABLE: usize = 1_000_000;
+/// The purge request answers within this; a longer deletion goes on in the background.
+pub const PURGE_ANSWER: Duration = Duration::from_secs(20);
 /// A waiting purge is tried again this often after its request.
 pub const PURGE_RETRY: Duration = Duration::from_secs(15);
 /// ... for this long; the disk rounds take it from there.
@@ -73,6 +75,43 @@ pub(crate) fn delete_tree(path: &Path) -> io::Result<()> {
     }
 }
 
+/// What a purge answers while another one of the same sandbox deletes its files.
+fn deleting() -> PurgeState {
+    PurgeState {
+        state: "waiting".into(),
+        waiting_for: vec!["its files being deleted".into()],
+    }
+}
+
+/// Marks a sandbox's purge running until dropped.
+struct PurgeMark<'a> {
+    app: &'a App,
+    sandbox: SandboxId,
+}
+
+impl<'a> PurgeMark<'a> {
+    fn take(app: &'a App, sandbox: &SandboxId) -> Option<Self> {
+        let mut running = app
+            .purging
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        running.insert(sandbox.clone()).then(|| Self {
+            app,
+            sandbox: sandbox.clone(),
+        })
+    }
+}
+
+impl Drop for PurgeMark<'_> {
+    fn drop(&mut self) {
+        self.app
+            .purging
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.sandbox);
+    }
+}
+
 impl App {
     /// `POST /api/sandboxes/{sid}/purge` (PGL-005, RDA-011): an admin of a live sandbox removes it
     /// (as `DELETE` does) and asks for its files to be deleted for good; the superadmin may ask it
@@ -117,22 +156,30 @@ impl App {
                 )
                 .await?;
         }
-        let state = self.try_purge(&id).await?;
+        // Deleting tens of gigabytes takes a while: the request answers after [`PURGE_ANSWER`]
+        // at most while the deletion goes on (it also outlives a client that went away).
+        let app = Arc::clone(self);
+        let purge = id.clone();
+        let running = tokio::spawn(async move { app.try_purge(&purge).await });
+        let state = match tokio::time::timeout(PURGE_ANSWER, running).await {
+            Ok(joined) => joined.map_err(AppError::internal)??,
+            Err(_) => deleting(),
+        };
         if state.state != "purged" {
-            self.watch_purge(id);
+            self.watch_purge_with(id, PURGE_RETRY, PURGE_WATCH);
         }
         Ok(state)
     }
 
-    /// Tries the purge of `id` again every [`PURGE_RETRY`] until it is done or [`PURGE_WATCH`]
-    /// passed (its processes stop within about a minute of the removal); the disk rounds take it
-    /// from there.
-    fn watch_purge(self: &Arc<Self>, id: SandboxId) {
+    /// Tries the purge of `id` again every `retry` until it is done or `watch` passed (its
+    /// processes stop within about a minute of the removal); the disk rounds take it from there.
+    /// The request uses [`PURGE_RETRY`] and [`PURGE_WATCH`] (tests shorten them).
+    pub fn watch_purge_with(self: &Arc<Self>, id: SandboxId, retry: Duration, watch: Duration) {
         let app = Arc::clone(self);
         tokio::spawn(async move {
-            let until = tokio::time::Instant::now() + PURGE_WATCH;
+            let until = tokio::time::Instant::now() + watch;
             while tokio::time::Instant::now() < until {
-                tokio::time::sleep(PURGE_RETRY).await;
+                tokio::time::sleep(retry).await;
                 match app.try_purge(&id).await {
                     Ok(state) if state.state == "purged" => return,
                     Ok(_) => {}
@@ -216,7 +263,9 @@ impl App {
             waiting_for: Vec::new(),
         };
         // One purge of a sandbox at a time: a request, its watch and a round may meet.
-        let _one = self.purging.lock().await;
+        let Some(_one) = PurgeMark::take(self, id) else {
+            return Ok(deleting());
+        };
         // Done already (a request again, or a round that ran beside this one).
         if !store.pending_purges().await?.contains(id) {
             return Ok(purged());

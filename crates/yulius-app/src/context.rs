@@ -249,8 +249,10 @@ pub struct App {
     pub(crate) leftovers: crate::leftovers::LeftoverState,
     /// The data disk's last level (SPEC-276).
     pub(crate) disk_watch: crate::pressure::DiskWatch,
-    /// Held while a purge of a removed sandbox's files runs (SPEC-276 RDA-011).
-    pub(crate) purging: tokio::sync::Mutex<()>,
+    /// Sandboxes whose files a purge deletes right now (SPEC-276 RDA-011).
+    pub(crate) purging: Mutex<std::collections::HashSet<yulius_domain::ids::SandboxId>>,
+    /// Sandboxes whose disk upkeep runs right now.
+    pub(crate) upkeeps: Mutex<std::collections::HashSet<yulius_domain::ids::SandboxId>>,
 }
 
 impl App {
@@ -296,7 +298,8 @@ impl App {
             docker_smoke: crate::sandbox_docker::SmokeState::default(),
             leftovers: crate::leftovers::LeftoverState::default(),
             disk_watch: crate::pressure::DiskWatch::default(),
-            purging: tokio::sync::Mutex::new(()),
+            purging: Mutex::default(),
+            upkeeps: Mutex::default(),
         })
     }
 

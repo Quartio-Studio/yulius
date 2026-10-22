@@ -4,7 +4,8 @@
 
 Accepted. Specified in [SPEC-276](../../.ai/specs/SPEC-276-reclaim-disk-automatically-ask-on-sandbo.md);
 task #261. Extends [0170](0170-leftovers-are-deleted-by-kind-rules-checked-again-at-deletion.md) (leftovers) and
-SPEC-008's disk upkeep; generalises SPEC-171's playground purge; amends SPEC-001 PRJ-009.
+SPEC-008's disk upkeep; amends [0139](0139-a-removed-playground-s-code-is-purged-once-nothing-of-it-runs.md)
+(the purge takes every sandbox and deletes the removal's export too); amends SPEC-001 PRJ-009.
 
 ## Context
 
@@ -17,13 +18,16 @@ and the files of removed sandboxes (35 GB), which PRJ-009 kept until a person ra
 ## Decision
 
 - **Sweep.** Every Cargo build directory of a live sandbox's worktrees and CI checkouts is swept
-  hourly, and on every disk round while the disk is low. A sweep takes every profile's
-  `.cargo-lock` with a non-blocking exclusive `flock`; one held skips the directory. Under the
-  locks it deletes whole units: an artifact unit is a profile's `.fingerprint`, `deps` and `build`
-  entries of one 16-hex hash, an incremental unit one `incremental/<crate>-<hash>` directory
-  (never one holding a `*-working` session). A unit unused (access and modification time) for
-  48 h goes; then a directory above its cap (5 % of the data disk, at least 8 GB) loses its least
-  recently used units, never one used within the hour, down to three quarters of the cap.
+  hourly, and on every disk round while the disk is low. A sweep takes every profile's Cargo locks
+  (`.cargo-lock`, `.cargo-*-lock`, opened without blocking, plain files only) with a non-blocking
+  exclusive `flock`; one held (Cargo compiles) skips the directory. Under the locks it deletes
+  whole units: an artifact unit is a profile's `.fingerprint`, `deps` and `build` entries of one
+  16-hex hash, an incremental unit one `incremental/<crate>-<hash>` directory (never one holding a
+  `*-working` session). Cargo releases its locks before tests read `deps/`, so artifact units go
+  only where nothing runs tests: a CI checkout under the sandbox's CI claim, a resting task's
+  worktree. A unit unused (access and modification time) for 48 h goes; then a directory above its
+  cap (5 % of the data disk, at least 8 GB) loses its least recently used incremental units, never
+  one used within the hour, down to three quarters of the cap.
 - **Pressure.** The data disk is read every minute: from 85 % used it is low (6 h, half the cap,
   every round, the safe leftovers round at once at most every 10 minutes), from 95 % critical
   (1 h, a quarter of the cap, no recent floor, and idle tasks' and CI checkouts' caches pruned
