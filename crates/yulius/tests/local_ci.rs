@@ -2751,6 +2751,50 @@ async fn the_security_jobs_findings_outside_the_change_are_filed_once() -> TestR
     Ok(())
 }
 
+/// SPEC-273 NOI-008: findings outside the change wait for the tests. A run whose other job failed
+/// files no issue and says why in the security job's output; once that job passes, the same
+/// findings are filed.
+#[tokio::test]
+async fn findings_are_filed_only_from_a_run_whose_other_jobs_passed() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"cat findings.txt\"\n\n\
+         [[ci.jobs]]\nname = \"quality\"\ncommand = \"if [ -f fail-quality ]; then exit 1; fi\"\n"
+            .to_owned()
+    })
+    .await?;
+    f.push_feature(
+        "findings.txt",
+        Some(&finding_line("medium", "README.md", "8464a81d5a585dd2")),
+    )?;
+    let failing = f.push_feature("fail-quality", Some("x\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let filed = |f: &Fixture| -> BoxResult<usize> {
+        Ok(f.h.github.issues.lock().map_err(|_| "issues")?.len())
+    };
+    assert_eq!(filed(&f)?, 0, "nothing filed while quality fails");
+    let outputs = job_outputs(&f, &failing).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains(
+            "[yulius] 1 finding(s) outside the change not filed as issues yet: job quality did \
+             not pass"
+        ),
+        "{security}"
+    );
+    let passing = f.push_feature("fail-quality", None)?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert_eq!(filed(&f)?, 1, "filed once the tests pass");
+    let outputs = job_outputs(&f, &passing).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("[yulius] filed issue #101 for the medium finding 8464a81d5a585dd2"),
+        "{security}"
+    );
+    Ok(())
+}
+
 /// SPEC-195 VSC-001 (review round 1): inside the containment too, a job finds `yulius` (bound
 /// read-only) and runs the embedded scan.
 #[tokio::test]

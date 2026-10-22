@@ -1,18 +1,19 @@
 //! Vidoc findings outside a change follow the code as GitHub issues (SPEC-217 VSI-001..004,
 //! ADR-0172). The security scan prints each medium or low finding in code a pull request did not
-//! touch as one `::yulius-finding <json>` line. When the `security` job of a pull request head
-//! ends, Yulius files each fingerprint the sandbox has not filed before and reopens the issue of
-//! one filed before that was closed, but only while its code is on the integration branch (a
-//! stale branch reports code already gone). When a `security` job of a pull request or of the
-//! integration branch ends, Yulius closes the issues whose code is gone from the integration
+//! touch as one `::yulius-finding <json>` line. When a run with the `security` job of a pull
+//! request head ends and every other job passed (SPEC-273 NOI-008), Yulius files each
+//! fingerprint the sandbox has not filed before and reopens the issue of one filed before that
+//! was closed, but only while its code is on the integration branch (a stale branch reports code
+//! already gone). When a run with a `security` job of a pull request or of the integration
+//! branch ends, Yulius closes the issues whose code is gone from the integration
 //! branch: no line of the file has the fingerprint any more (or the file is gone). A few per job,
 //! said in the job's output. The lines are scanner output (and, in a repository that runs its own
 //! scanner, the pull request's): they are validated, bounded and quoted as data in the issue.
 
 use serde::Deserialize;
-use yulius_domain::ci::CiRef;
+use yulius_domain::ci::{CiRef, RunState};
 
-use super::CiRunRecord;
+use super::{CiJobUpdate, CiRunRecord};
 use crate::context::App;
 use crate::model::SandboxRecord;
 use crate::ports::github::NewIssue;
@@ -224,14 +225,62 @@ struct Budget {
 }
 
 impl App {
-    /// Follows the findings of a `security` job that ended (SPEC-217 VSI-001, VSI-004): files and
-    /// reopens what a pull request head reports while its code is on the integration branch, and
-    /// closes what is gone from there. Returns the lines to add to the job's output.
-    pub(super) async fn ci_follow_findings(
+    /// Follows the findings of the run's `security` jobs once every job ended (SPEC-273
+    /// NOI-008): filed only when every other job passed or was skipped; the notes are added to
+    /// the security job's output.
+    pub(super) async fn ci_follow_run_findings(&self, run: &CiRunRecord) {
+        let store = &self.deps.store;
+        let Ok(Some(sandbox)) = store.sandbox(&run.sandbox_id).await else {
+            return;
+        };
+        let jobs = store.ci_jobs(&run.id, true).await.unwrap_or_default();
+        let blocker = jobs
+            .iter()
+            .find(|j| {
+                j.key != SECURITY_JOB && !matches!(j.state, RunState::Passed | RunState::Skipped)
+            })
+            .map(|j| j.name.as_str());
+        for job in jobs.iter().filter(|j| {
+            j.key == SECURITY_JOB
+                && matches!(
+                    j.state,
+                    RunState::Passed | RunState::Failed | RunState::Skipped
+                )
+        }) {
+            let notes = self
+                .ci_follow_findings(&sandbox, run, &job.output, blocker)
+                .await;
+            if notes.is_empty() {
+                continue;
+            }
+            let mut output = job.output.clone();
+            for note in notes {
+                output.push_str(&note);
+                output.push('\n');
+            }
+            let update = CiJobUpdate {
+                output: Some(output),
+                ..CiJobUpdate::default()
+            };
+            if let Err(err) = store
+                .transition_ci_job(&job.id, &[job.state], job.state, &update)
+                .await
+            {
+                tracing::warn!(job = %job.id, error = %err, "recording a security job's notes failed");
+            }
+        }
+    }
+
+    /// Follows the findings of a `security` job (SPEC-217 VSI-001, VSI-004): files and reopens
+    /// what a pull request head reports while its code is on the integration branch, unless the
+    /// job `blocker` of its run did not pass, and closes what is gone from there. Returns the
+    /// lines to add to the job's output.
+    async fn ci_follow_findings(
         &self,
         sandbox: &SandboxRecord,
         run: &CiRunRecord,
         output: &str,
+        blocker: Option<&str>,
     ) -> Vec<String> {
         let branch = self.profile_of(sandbox).integration_branch;
         let pull = match &run.reference {
@@ -304,7 +353,15 @@ impl App {
                 dev.branch
             ));
         }
-        if let Some(pull) = pull {
+        if let (Some(_), Some(job)) = (pull, blocker)
+            && !present.is_empty()
+        {
+            notes.push(format!(
+                "[yulius] {} finding(s) outside the change not filed as issues yet: job {job} did \
+                 not pass; a run whose other jobs pass files them",
+                present.len()
+            ));
+        } else if let Some(pull) = pull {
             let context = (run, pull, &token);
             notes.extend(
                 self.ci_file_findings(sandbox, context, &present, &mut budget)

@@ -479,6 +479,11 @@ impl App {
                 }
             }
         }
+        // The findings outside the change follow the code as issues (SPEC-217 VSI-001, VSI-004),
+        // once the other jobs ended (SPEC-273 NOI-008).
+        if cancel.borrow().is_none() {
+            self.ci_follow_run_findings(run).await;
+        }
         let reason = match state {
             RunState::Cancelled => cancel
                 .borrow()
@@ -685,17 +690,6 @@ impl App {
         };
         if let Some(reason) = &reason {
             ring.push_str(&format!("\n[yulius] {reason}\n"));
-        }
-        // The findings outside the change follow the code as issues (SPEC-217 VSI-001, VSI-004).
-        if job.key == super::findings::SECURITY_JOB
-            && matches!(
-                state,
-                RunState::Passed | RunState::Failed | RunState::Skipped
-            )
-        {
-            for note in self.ci_follow_findings(sandbox, run, &ring.text()).await {
-                ring.push_str(&format!("{note}\n"));
-            }
         }
         let end = CiJobUpdate {
             reason,
