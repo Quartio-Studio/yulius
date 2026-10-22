@@ -180,6 +180,13 @@ All on `feat/257-…` after merging `origin/dev` at 06cf70ea (a clean merge, no 
   - Its low finding is fixed too: the export checks the state name.
   - The local scan at `c7b7a248` passed. Its one low finding (inspecting a supplied archive
     had no bound) is fixed: the CLI reads no more than 20 000 entries, which is tested.
+  - Yulius CI's scan at `4d7b6438` failed on a high in `vault/runtime.rs` (a file this branch
+    touched for `secrets_list`): `egress_apply` puts stored values into proxied request headers
+    and the path unchecked. New values are already refused with control characters
+    (`check_agent_value`), but values stored before that check, and user names, were not. The
+    proxy now never sends a secret whose value or user name holds a control character
+    (`transportable`); it logs it so a person can replace it. Unit test
+    `values_with_control_characters_are_never_sent`.
   - Medium and low findings in code this branch did not touch are filed as issues by Yulius CI
     (#831–#835 and others).
 - Tests. Each new behavior was seen failing first, or checked by a mutation:

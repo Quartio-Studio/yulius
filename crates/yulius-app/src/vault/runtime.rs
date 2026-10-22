@@ -927,6 +927,17 @@ impl EgressPolicy for App {
                 };
             }
         };
+        // A value with a control character (stored before `check_agent_value` refused them) could
+        // add headers or split the request line: it is never sent.
+        let (bound, unfit): (Vec<_>, Vec<_>) = bound
+            .into_iter()
+            .partition(|(_, payload)| transportable(payload));
+        for (record, _) in &unfit {
+            tracing::warn!(
+                secret = %record.name,
+                "an agent secret holding a control character was not sent; a person replaces its value"
+            );
+        }
         let resolve = |name: &str| -> Option<String> {
             bound
                 .iter()
@@ -1031,9 +1042,38 @@ impl EgressPolicy for App {
     }
 }
 
+/// Whether a secret's value and user name can go into a proxied request: no line breaks or other
+/// control characters, which could add headers or split the request line.
+fn transportable(payload: &AgentPayload) -> bool {
+    let clean = |text: &str| !text.chars().any(char::is_control);
+    clean(&payload.value) && payload.username.as_deref().is_none_or(clean)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Vidoc (CI scan of SPEC-271's change): a stored value or user name with a line break or
+    /// another control character (one stored before `check_agent_value` refused them) never goes
+    /// into a proxied request, where it could add headers or split the request line.
+    #[test]
+    fn values_with_control_characters_are_never_sent() {
+        let payload = |username: Option<&str>, value: &str| AgentPayload {
+            username: username.map(str::to_owned),
+            value: value.to_owned(),
+            totp: None,
+        };
+        assert!(transportable(&payload(None, "sk_live_abcdefgh")));
+        assert!(transportable(&payload(Some("deploy"), "sk_live_abcdefgh")));
+        for (username, value) in [
+            (None, "sk_live\r\nX-Evil: 1"),
+            (None, "line\nbreak"),
+            (None, "nul\0byte"),
+            (Some("user\r\nX: y"), "sk_live_abcdefgh"),
+        ] {
+            assert!(!transportable(&payload(username, value)), "{value:?}");
+        }
+    }
 
     #[test]
     fn page_hosts_and_authorities() {
