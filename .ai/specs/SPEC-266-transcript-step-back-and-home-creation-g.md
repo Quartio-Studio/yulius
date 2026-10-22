@@ -1,11 +1,11 @@
 ---
 yulius-task: 5942b8c4-4413-4a95-96a4-2e5ab6888fac
-status: in-progress
+status: done
 ---
 
 # SPEC-266: Transcript step-back and home creation go through handles (#661)
 
-Status: in-progress
+Status: done
 Date: 2026-10-22
 Owner: Yulius task #252
 Scope authorization: task #252 (nightly "Work through open issues"), fixes #661. Applies
@@ -62,10 +62,10 @@ the server outside the sandbox nor hang it.
 ## Plan
 
 - [x] Spec written and checked
-- [ ] Step-back reaches the transcript through handles (regression tests first)
-- [ ] The task home is made with mkdirat from the sandbox directory (regression test first)
-- [ ] Docs record the step-back and the home on handles
-- [ ] Independent review answered and gates green
+- [x] Step-back reaches the transcript through handles (regression tests first)
+- [x] The task home is made with mkdirat from the sandbox directory (regression test first)
+- [x] Docs record the step-back and the home on handles
+- [x] Independent review answered and gates green
 
 ## Acceptance criteria
 
@@ -99,3 +99,28 @@ the server outside the sandbox nor hang it.
   still made with `create_dir_all` (it is the host's, above the mount).
 - No new ADR: this applies ADR-0174 and ADR-0193 to two more places; ADR-0193's "not covered"
   line is updated.
+
+## Evidence
+
+- Regression tests first (commits `d00c0ae6`, `8781981f`), failing on the old code:
+  `step_back_file_follows_no_linked_folder` and `step_back_file_follows_no_linked_transcript`
+  (the old code followed the link and returned `Ok(true)`), `step_back_file_returns_at_once_on_a_fifo`
+  (hit its 30 s bound, the old read blocked on the FIFO), `the_home_is_made_without_following_a_link`
+  (a `home` linked to a host folder was accepted). Its dangling-link case already passed on `dev`
+  (see Context); it stays as a guard.
+- `cargo test -p yulius-harness --lib`: 78 passed. `cargo test -p yulius-app --lib
+  the_home_is_made`: passed.
+- `scripts/dev ci` at `14ff4e35`: exit 0 (fmt, clippy, macOS clippy, tests: 2414 nextest tests,
+  doctests, deps). The first run at `29092e3d` failed on `cargo fmt --check`. `scripts/dev macos`
+  then reproduced the reviewer's blocker (`mode_t` is `u16` on macOS), fixed in `14ff4e35`.
+- `scripts/dev security` at `14ff4e35`: exit 0. Nothing in the change; two low findings in
+  untouched `supervisor.rs` lines (483 `write_private_file`, 960 `profile_of`), filed by CI.
+- Independent review, round 1 at `29092e3d`: request changes. Answered:
+  - blocker (own code), macOS compile: fixed test-first (the macOS gate stage failed, then passed);
+  - minor (own code), the dangling-home root cause was wrong in Context: corrected;
+  - nit (own code), `.claude` and `projects` links were not covered: added to the test;
+  - nit (own code), the changes entry overstated the linked-transcript case: reworded;
+  - minor (pre-existing, outside #661's links and FIFOs), the transcript read has no size cap, as
+    on `dev`: reported in a comment on #661 (this task creates no issues).
+- Not tested here: a live resume after a real usage limit (the step-back's callers are unchanged
+  and only the function body moved to handles).
