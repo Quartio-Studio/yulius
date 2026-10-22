@@ -1,11 +1,11 @@
 ---
 yulius-task: a7231648-2f66-4803-bcab-6f62896501ad
-status: in-progress
+status: done
 ---
 
 # SPEC-271: Laptop onboarding moves a project's operator state into its sandbox
 
-Status: in-progress
+Status: done
 Date: 2026-10-22
 Owner: task #257
 Scope authorization: task #257. Found while onboarding Quartio-Studio/product from a laptop
@@ -99,14 +99,16 @@ Confirmed against `dev` at a85eb122.
 
 ## Plan
 
-- [ ] Spec and ADR-0200: operator state is a sealed, versioned agent state with one writer
-- [ ] The vault stores, lists and checks agent states (migration 0042, store, archive checks)
-- [ ] People send and download states over the API with the single-writer rule
-- [ ] The CLI sends folders with --state and gets them back with state-get
-- [ ] Tasks restore a state into the sandbox home through folder handles
-- [ ] Tasks save the restored copy back as a new version
-- [ ] Agents and the laptop recipe know about states (secrets_list, instructions, onboarding prompt, docs)
-- [ ] Independent review, gates and delivery
+- [x] Spec and ADR-0200: operator state is a sealed, versioned agent state with one writer
+- [x] The vault stores, lists and checks agent states (migration 0042, store, archive checks)
+- [x] People send and download states over the API with the single-writer rule
+- [x] The CLI sends folders with --state and gets them back with state-get
+- [x] Tasks restore a state into the sandbox home through folder handles
+- [x] Tasks save the restored copy back as a new version
+- [x] Agents and the laptop recipe know about states (secrets_list, instructions, onboarding prompt, docs)
+- [x] Review findings fixed test-first: archive bounds, single-writer races, memory, read tokens
+- [x] Gates and security scan are green and the spec has its evidence
+- [x] The pull request is merged into dev on green
 
 ## Acceptance criteria
 
@@ -157,4 +159,90 @@ Confirmed against `dev` at a85eb122.
 
 ## Evidence
 
-(Filled at delivery.)
+All on `feat/257-…` after merging `origin/dev` at 06cf70ea (a clean merge, no conflicts).
+
+- `scripts/dev ci` passed (exit 0) at `f670fcf9`: 2461 tests passed, 17 skipped. It covers the
+  repository checks, script tests, `cargo check`, `fmt --check`, Clippy `-D warnings` for Linux
+  and `aarch64-apple-darwin`, nextest, doctests, `cargo deny`, `cargo shear` and `cargo doc`.
+  Earlier runs failed twice and were fixed: once on a Clippy lint in a test helper, once on
+  macOS, where `mode_t` is `u16` (modes are now mapped bit by bit, `PERMISSIONS`). After the
+  Vidoc fix, `scripts/dev ci` passed again at `ac8d4802` (exit 0): 2462 tests passed, 17 skipped.
+- `scripts/dev security` (Vidoc vidoc-1, change scan, 34 files):
+  - At `f670fcf9` it failed on one medium: the CLI put an unchecked state name into a request
+    path. `ApiClient::endpoint` already percent-encodes each segment, but the name is now
+    checked as a `SecretName` first.
+  - The one low finding is fixed too: the suggested `tar` command now quotes `--out`.
+  - At `ac8d4802` the scan passed (exit 0). Four medium or low findings are in code this
+    branch did not touch: `runtime.rs:859`, `secrets.rs:220`, `secrets.rs:251` and
+    `uploads.rs:387`. Yulius CI files each one as an issue.
+- Tests. Each new behavior was seen failing first, or checked by a mutation:
+  - `remote_mcp::a_laptops_operator_state_moves_into_the_sandbox_with_one_writer` is the
+    remote surface, through the real `yulius` binary with only an operate token:
+    - `--state QUARTIO_OPERATOR=~/.quartio-operator-20260901` sends a folder with a 50 MiB
+      file, nested folders and modes. No terminal is used and no content is printed.
+    - A task restores it with `secret_state_restore`, keeping modes 0600 and 0755.
+    - A second send is refused with the server's 409 text.
+    - A task's `secret_state_save` comes back through `state-get` (mode 0600, never over an
+      existing file).
+    - A read-only token gets 403 on the download.
+    - `--replace-state` overwrites on purpose.
+    - Refusals tested: `--to team`, `--replace-state` alone, and a name given twice.
+    - Audit actions by the person: `vault.state.import`, `export` and `replace`.
+  - `agent_states::a_state_is_restored_once_saved_back_and_never_forked`:
+    - The 50 MiB state goes over REST and MCP.
+    - A reader is refused.
+    - A send before any restore replaces the stored copy.
+    - A restore, then a second restore or a restore to another path, is refused (409).
+    - A save skips a planted link and names it.
+    - The stored row is sealed, not gzip in the clear.
+    - The download is `no-store`.
+    - After a replace, save is refused until a restore replaces the folder, with no
+      leftovers in the home.
+    - `secrets_list` names the state.
+    - Audit actors: `alice` and `task:1`.
+    - Mutation check: with the 409 rule disabled, the test fails (200 instead of 409).
+  - `agent_states::unusable_states_and_paths_are_refused` checks exact 422s and messages for:
+    - a link, a non-gzip body, a bad name and a description over 500 characters;
+    - over 64 MiB, both declared and streamed;
+    - restore paths outside `~/`, and a link in the home (nothing written outside);
+    - save before any restore, and an unknown state.
+  - `agent_states::a_third_state_at_once_is_refused`: 429 with both slots held.
+  - Unit tests:
+    - `vault::states`: archive checks; the bounds by what is read (pax sizes, data under a
+      folder, long names, accumulated slack, 20 001 entries, `./`); modes kept and
+      setuid/sticky dropped; packing that leaves links out; placement rules; restores that
+      follow no links; a save capped at 64 MiB.
+    - Store compare-and-set on the version and the restored copy, and cascade with the
+      sandbox.
+    - CLI packing, refusals and state names; shell quoting.
+    - The remote instructions and onboarding prompt name `--state` and `secret_state_restore`.
+- Independent review in a fresh session, three rounds plus confirmations, all findings in this
+  change's own code:
+  - Round 1 found 1 blocker (archive bounds bypassable through pax sizes and extension
+    headers) and 4 majors:
+    - writer-rule races: the compare-and-set now covers the restored copy;
+    - unbounded memory: access and slot are checked before the body, export and restore take
+      slots, records are read without blobs;
+    - the save packer: now capped while writing;
+    - read tokens could download: now refused.
+    All fixed test-first, with 7 minors.
+  - Round 2: the per-header allowance accumulated across entries. It is now set, never added
+    to, and every entry counts. Also added: an overall 5-minute upload deadline and a 429
+    test.
+  - Round 3: APPROVE at `f1176ccd`. It was confirmed again at `2c50e341` (Clippy fix),
+    `f670fcf9` (macOS modes) and `ac8d4802` (Vidoc fixes).
+  - Accepted nits:
+    - n3: a restore losing its compare-and-set can remove, in a narrow race, a copy another
+      restore just placed at the same path. Nothing unsaved is lost; the next restore puts it
+      back.
+    - n5: an upload cut by the 5-minute deadline while waiting for a chunk says "stalled".
+- Not tested:
+  - The real Quartio-Studio/product folders on a Mac. They are private and on the person's
+    laptop; the remote test uses the same names, layout and a 50 MiB file.
+  - A real Claude Code client following the remote instructions end to end. The steps are
+    covered command by command.
+  - Server memory under two concurrent 64 MiB states. It is bounded by design (2 slots) and
+    the 429 path is tested; it was not measured.
+  - Redaction of state content an agent prints on purpose. State files are not secret values.
+    The tools never return content and agents are told never to print it. Keys stay agent
+    secrets and are redacted as before (ADR-0200 consequences).
