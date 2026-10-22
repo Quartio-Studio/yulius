@@ -181,6 +181,8 @@ pub struct SecretsImportArgs {
     pub replace_state: bool,
     /// Agent secrets start allowed into `.env` files (SPEC-256 LOB-004).
     pub env_files: bool,
+    /// Values that are not secrets stay out of the project's variables (SPEC-275 VAR-007).
+    pub no_vars: bool,
     /// No colours.
     pub no_color: bool,
 }
@@ -350,6 +352,12 @@ pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
                     .into(),
             );
         }
+        if args.no_vars && (args.to != VaultChoice::Agent || args.instance) {
+            return Err(
+                "--no-vars applies to one project's agent secrets: --to agent, without --instance"
+                    .into(),
+            );
+        }
         if args.replace_state && args.states.is_empty() {
             return Err("--replace-state applies to --state".into());
         }
@@ -433,6 +441,9 @@ pub fn secrets_import(args: SecretsImportArgs) -> ExitCode {
         }
         if args.env_files {
             target = target.env_files_allowed();
+        }
+        if !args.no_vars {
+            target = target.with_variables();
         }
         let mut io = TtyIo;
         let entries = match parsed {

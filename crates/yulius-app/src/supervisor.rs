@@ -1318,6 +1318,11 @@ impl App {
         launch
             .secret_env
             .push(("YULIUS_TASK_TOKEN".into(), task_token.clone()));
+        // Project variables first (SPEC-275 VAR-004): Yulius's own environment and the agent
+        // secret placeholders after them win over a variable of the same name.
+        launch
+            .env
+            .extend(self.variables_env(&task.sandbox_id).await?);
         launch.env.extend(self.base_env(&sandbox, &home, &worktree));
         // Agent secrets: placeholders, the Bash redaction wrapper and the egress proxy
         // (SPEC-002 ADR-20). A vault that cannot be read fails the start, never a run without

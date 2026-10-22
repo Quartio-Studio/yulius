@@ -29,6 +29,7 @@ mod spans;
 mod tasks;
 mod updates;
 mod users;
+mod variables;
 mod vault;
 mod workflows;
 
@@ -102,6 +103,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0041_cd_run_stage.sql"),
     // Schema version 42 (SPEC-271).
     include_str!("migrations/0042_agent_states.sql"),
+    // Schema version 43 (SPEC-275).
+    include_str!("migrations/0043_project_variables.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;

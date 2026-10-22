@@ -56,6 +56,10 @@ watching, steering and unblocking.
   sandbox home and saved back after each rollout. Once restored, the sandbox's copy is the only
   writer: a second send is refused unless the person replaces it on purpose, and
   `yulius secrets state-get` brings the newest copy back.
+- **Project variables** (SPEC-275): a project's non-secret values (regions, environment names,
+  ids, base URLs, contact addresses) are shown in plain on the Secrets page's Variables tab and
+  are in every task's environment. The laptop agent sets them with `yulius vars`, and the secrets
+  import sends a `.env`'s plain values there instead of making them secrets.
 - **Playgrounds**: a team tries Yulius on its own code before it connects GitHub. On a fresh
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server

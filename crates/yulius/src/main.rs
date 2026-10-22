@@ -196,6 +196,16 @@ enum Command {
         #[command(subcommand)]
         action: yulius::remote_cli::RemoteAction,
     },
+    /// The project's variables (SPEC-275): its non-secret values (regions, environment names,
+    /// ids, base URLs), in plain, in every task run's environment.
+    #[command(visible_alias = "var")]
+    Vars {
+        #[command(flatten)]
+        opts: yulius::remote_cli::RemoteOpts,
+        /// What to do.
+        #[command(subcommand)]
+        action: yulius::remote_cli::VarsAction,
+    },
     /// A project of the instance `yulius remote login` stored: import, onboard, read and change
     /// its files.
     Project {
@@ -326,6 +336,11 @@ enum SecretsAction {
         /// the start (ssh keys, deploy scripts), instead of you allowing it when a task asks.
         #[arg(long)]
         env_files: bool,
+        /// Agent secrets of one project: keep values that are not secrets (too short, a plain
+        /// word, a URL or e-mail address without credentials) out of the project's variables,
+        /// where they go by default (SPEC-275); they are then checked as secrets.
+        #[arg(long)]
+        no_vars: bool,
         /// Send without asking: only with the operate token `yulius remote login` stored, made for
         /// your agent on Settings → Connect your local agent.
         #[arg(long)]
@@ -598,11 +613,13 @@ fn main() -> ExitCode {
                     states,
                     replace_state,
                     env_files,
+                    no_vars,
                     yes,
                     server,
                     no_color,
                 },
         } => yulius::cli::secrets_import(yulius::cli::SecretsImportArgs {
+            no_vars,
             states,
             replace_state,
             to,
@@ -632,6 +649,7 @@ fn main() -> ExitCode {
             action: SecretsAction::Delete { name, opts },
         } => yulius::remote_cli::secrets_delete(&name, &opts),
         Command::Remote { opts, action } => yulius::remote_cli::remote(action, &opts),
+        Command::Vars { opts, action } => yulius::remote_cli::vars_cmd(action, &opts),
         Command::Project { opts, action } => yulius::remote_cli::project_cmd(action, &opts),
         Command::Task { opts, action } => yulius::remote_cli::task_cmd(action, &opts),
         Command::Ci { opts, action } => yulius::remote_cli::ci_cmd(action, &opts),

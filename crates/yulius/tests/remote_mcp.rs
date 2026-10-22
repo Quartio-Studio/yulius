@@ -2866,3 +2866,316 @@ async fn a_laptops_operator_state_moves_into_the_sandbox_with_one_writer() -> Te
     }
     Ok(())
 }
+
+/// SPEC-275 AC1, AC2 (VAR-002, VAR-003, VAR-005): with only an operate token stored, the CLI sets
+/// variables by argument and from a dotenv file, lists them in plain and deletes them; a name that
+/// is an agent secret or says it is a credential is refused and nothing of it is written; a read
+/// token lists but cannot set; every change is audited without its value.
+#[tokio::test]
+async fn variables_are_set_from_a_laptop_and_listed_in_plain() -> TestResult {
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (alice, _) = w.user("alice", false).await?;
+    w.grant("alice", "acme/shop", "admin");
+    let browser = w.browser(&alice).await?;
+    let listener = support::serve(w.h.router.clone()).await?;
+    let url = format!("http://{}", listener.addr);
+    let home = tempfile::tempdir()?;
+    let home = home.path();
+    let operate = text(&make_token(&w, &browser, "laptop", "operate").await?["token"]).to_owned();
+    let (code, out, err) = yulius_cli(
+        home,
+        &["remote", "login", &url, "--token-stdin"],
+        &format!("{operate}\n"),
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    let vars = |args: &[&str]| -> Vec<String> {
+        ["vars", "-p", "acme/shop"]
+            .iter()
+            .chain(args)
+            .map(|a| (*a).to_owned())
+            .collect()
+    };
+    let cli = |args: Vec<String>| {
+        let home = home.to_path_buf();
+        async move {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            yulius_cli(&home, &args, "").await
+        }
+    };
+
+    let (code, out, err) = cli(vars(&[
+        "set",
+        "OVH_ENDPOINT=ovh-ca",
+        "--description",
+        "OVH region",
+    ]))
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    std::fs::write(
+        home.join("vars.env"),
+        "# Pipedream environment\nPIPEDREAM_PROJECT_ENVIRONMENT=production\n\
+         LANGFUSE_BASE_URL=https://cloud.langfuse.com\nOLD_FLAG=1\n",
+    )?;
+    let (code, out, err) = cli(vars(&["import", "vars.env"])).await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(out.contains("LANGFUSE_BASE_URL"), "{out}");
+    let (code, out, err) = cli(vars(&["delete", "OLD_FLAG"])).await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+
+    let (code, out, err) = cli(vars(&["list"])).await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert_eq!(
+        out.trim(),
+        "LANGFUSE_BASE_URL=https://cloud.langfuse.com\n# OVH region\nOVH_ENDPOINT=ovh-ca\n\
+         # Pipedream environment\nPIPEDREAM_PROJECT_ENVIRONMENT=production"
+    );
+
+    // Refused before sending: a credential's name; by the server: an agent secret's name.
+    std::fs::write(home.join("mixed.env"), "REGION=eu\nSHOP_API_KEY=abc\n")?;
+    let (code, out, err) = cli(vars(&["import", "mixed.env"])).await?;
+    assert_eq!(code, Some(2), "{out}{err}");
+    assert!(
+        err.contains("SHOP_API_KEY") && err.contains("yulius secrets import"),
+        "{err}"
+    );
+    // Review round 1: a value that carries a credential is refused whatever its name, and a
+    // malformed argument is not echoed.
+    let (code, out, err) = cli(vars(&["set", "DATABASE_URL=postgres://u:p4ss@db/app"])).await?;
+    assert_eq!(code, Some(2), "{out}{err}");
+    assert!(
+        err.contains("DATABASE_URL") && !err.contains("p4ss"),
+        "{err}"
+    );
+    let (code, out, err) = cli(vars(&["set", "no-equals-sign-secretish"])).await?;
+    assert_eq!(code, Some(2), "{out}{err}");
+    assert!(!err.contains("secretish"), "{err}");
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "SHOP_ACCOUNT", "value": "shop-account-0123456"})),
+        &browser,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let (code, out, err) = cli(vars(&["set", "REGION=eu", "SHOP_ACCOUNT=acme"])).await?;
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(err.contains("SHOP_ACCOUNT is an agent secret"), "{err}");
+    let listed = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/variables",
+        None,
+        &browser,
+    )
+    .await?;
+    let listed = listed.body["variables"].to_string();
+    assert!(
+        !listed.contains("REGION"),
+        "nothing of it was set: {listed}"
+    );
+
+    // A read token lists, never sets.
+    let read = text(&make_token(&w, &browser, "reader", "read").await?["token"]).to_owned();
+    let reader = bearer(&read);
+    let (failed, shown, _) = remote(
+        &w,
+        &reader,
+        "variables_list",
+        json!({"project": "acme/shop"}),
+    )
+    .await?;
+    assert!(!failed && shown.contains("OVH_ENDPOINT=ovh-ca"), "{shown}");
+    // VAR-008: secrets_list names the variables beside the secrets, values in plain.
+    let (failed, _, listed) =
+        remote(&w, &reader, "secrets_list", json!({"project": "acme/shop"})).await?;
+    assert!(!failed);
+    assert_eq!(listed["variables"][1]["name"], "OVH_ENDPOINT", "{listed}");
+    assert_eq!(listed["variables"][1]["value"], "ovh-ca", "{listed}");
+    assert_eq!(
+        listed["variables"][1]["description"], "OVH region",
+        "{listed}"
+    );
+    let names = served(&w, &reader).await?;
+    assert!(names.iter().all(|n| n != "variables_set"), "{names:?}");
+    let (failed, said, _) = remote(
+        &w,
+        &reader,
+        "variables_set",
+        json!({"project": "acme/shop", "variables": [{"name": "X_Y", "value": "z"}]}),
+    )
+    .await?;
+    assert!(failed && said.contains("read-only"), "{said}");
+
+    let audit = audits(&w, "s1").await?;
+    let changes: Vec<(&str, &str, &str)> = audit
+        .iter()
+        .filter(|(action, _, _)| action.starts_with("variable."))
+        .map(|(a, actor, d)| (a.as_str(), actor.as_str(), d.as_str()))
+        .collect();
+    assert_eq!(
+        changes,
+        [
+            ("variable.delete", "alice", "OLD_FLAG"),
+            ("variable.create", "alice", "OLD_FLAG"),
+            ("variable.create", "alice", "LANGFUSE_BASE_URL"),
+            ("variable.create", "alice", "PIPEDREAM_PROJECT_ENVIRONMENT"),
+            ("variable.create", "alice", "OVH_ENDPOINT"),
+        ]
+    );
+    assert!(
+        audit.iter().any(|(a, actor, d)| a == "remote.tool"
+            && actor == "remote:alice"
+            && d.contains("variables_set")),
+        "{audit:?}"
+    );
+    let all = format!("{audit:?}");
+    assert!(
+        !all.contains("ovh-ca") && !all.contains("production"),
+        "{all}"
+    );
+    Ok(())
+}
+
+/// SPEC-275 AC4 (VAR-006, VAR-007): `yulius secrets import --yes` of a company `.env` sends its
+/// keys as agent secrets and its plain values (a short region, a plain word, a base URL, an
+/// e-mail address) as project variables; a credential's name keeps its value a secret; with
+/// `--no-vars` nothing goes to variables.
+#[tokio::test]
+async fn a_secrets_import_sends_plain_values_to_project_variables() -> TestResult {
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (alice, _) = w.user("alice", false).await?;
+    w.grant("alice", "acme/shop", "admin");
+    let browser = w.browser(&alice).await?;
+    let listener = support::serve(w.h.router.clone()).await?;
+    let url = format!("http://{}", listener.addr);
+    let home = tempfile::tempdir()?;
+    let home = home.path();
+    let operate = text(&make_token(&w, &browser, "laptop", "operate").await?["token"]).to_owned();
+    let (code, out, err) = yulius_cli(
+        home,
+        &["remote", "login", &url, "--token-stdin"],
+        &format!("{operate}\n"),
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    std::fs::write(
+        home.join("company.env"),
+        "OVH_ENDPOINT=ovh-ca\n# Pipedream's environment\nPIPEDREAM_PROJECT_ENVIRONMENT=production\n\
+         LANGFUSE_BASE_URL=https://cloud.langfuse.com\nCONTACT_EMAIL=ops@quartio.example\n\
+         API_TOKEN=production\nOPENAI_API_KEY=synthetic-openai-key-0123456789abcdef\n",
+    )?;
+    let import = [
+        "secrets",
+        "import",
+        "--to",
+        "agent",
+        "--sandbox",
+        "acme/shop",
+        "--yes",
+        "company.env",
+    ];
+    let (code, out, err) = yulius_cli(home, &import, "").await?;
+    // API_TOKEN=production: a credential's name keeps it out of variables, and SPEC-274 refuses
+    // it as a secret (ordinary text), so the run is not ok.
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(out.contains("Imported 1, 4 as project variables"), "{out}");
+    assert!(
+        out.contains("API_TOKEN") && out.contains("a configuration word"),
+        "{out}"
+    );
+    for value in ["ovh-ca", "cloud.langfuse", "ops@", "synthetic-openai"] {
+        assert!(!out.contains(value), "said {value}: {out}");
+    }
+
+    let secrets: Vec<String> = agent_secrets(&w, "s1", &browser)
+        .await?
+        .iter()
+        .map(|s| text(&s["name"]).to_owned())
+        .collect();
+    assert_eq!(secrets, ["OPENAI_API_KEY"]);
+    let listed = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/variables",
+        None,
+        &browser,
+    )
+    .await?;
+    let variables: Vec<(String, String, String)> = listed.body["variables"]
+        .as_array()
+        .ok_or("variables")?
+        .iter()
+        .map(|v| {
+            (
+                text(&v["name"]).to_owned(),
+                text(&v["value"]).to_owned(),
+                text(&v["description"]).to_owned(),
+            )
+        })
+        .collect();
+    let var = |n: &str, v: &str, d: &str| (n.to_owned(), v.to_owned(), d.to_owned());
+    assert_eq!(
+        variables,
+        [
+            var("CONTACT_EMAIL", "ops@quartio.example", ""),
+            var("LANGFUSE_BASE_URL", "https://cloud.langfuse.com", ""),
+            var("OVH_ENDPOINT", "ovh-ca", ""),
+            var(
+                "PIPEDREAM_PROJECT_ENVIRONMENT",
+                "production",
+                "Pipedream's environment"
+            ),
+        ]
+    );
+
+    // Run again: everything exists and nothing is sent (API_TOKEN is still refused).
+    let (code, out, err) = yulius_cli(home, &import, "").await?;
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(out.contains("Nothing new to import"), "{out}");
+
+    // --no-vars: a new plain value is checked as a secret again (too short: skipped).
+    std::fs::write(home.join("more.env"), "SECOND_REGION=ovh-us\n")?;
+    let (code, out, err) = yulius_cli(
+        home,
+        &[
+            "secrets",
+            "import",
+            "--to",
+            "agent",
+            "--sandbox",
+            "acme/shop",
+            "--yes",
+            "--no-vars",
+            "more.env",
+        ],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(
+        out.contains("SECOND_REGION") && out.contains("at least 8"),
+        "{out}"
+    );
+    // --no-vars belongs to one project's agent secrets.
+    let (code, out, err) = yulius_cli(
+        home,
+        &[
+            "secrets",
+            "import",
+            "--to",
+            "agent",
+            "--instance",
+            "--no-vars",
+            "more.env",
+        ],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(err.contains("--no-vars applies"), "{err}");
+    Ok(())
+}
