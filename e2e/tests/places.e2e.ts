@@ -285,6 +285,7 @@ test('a removed sandbox’s tool views go with it', async ({ app, browser, scree
   await tabMenu(browser, 'studio');
   await screen.getByRole('menuitem', /^Remove from/).click();
   const dialog = screen.getByRole('dialog', /^Remove studio/);
+  await dialog.getByRole('radio', /^Keep its files/).click();
   await dialog.getByRole('textbox').fill('studio');
   await dialog.getByRole('button', 'Remove sandbox').click();
   await expect(tab(screen, 'studio')).toBeHidden();

@@ -907,40 +907,53 @@ export function openMoveToGitHubDialog(ctx, sandbox) {
 }
 
 /**
- * Remove a sandbox from Yulius; the GitHub repository is untouched (PRJ-009). A playground's code
- * lives only on this server: the dialog offers to delete it for good, and says so before (SPEC-171).
+ * Remove a sandbox from Yulius; the GitHub repository is untouched (PRJ-009). The dialog asks, with
+ * no default, what happens to its files on this server (SPEC-276 RDA-010): deleted permanently once
+ * its processes have stopped, or kept until someone deletes them in Settings → Instance. A
+ * playground's code lives only here, so deleting its files deletes its code (SPEC-171).
  */
 export async function confirmRemoveSandbox(ctx, sandbox) {
-  const purge = sandbox.playground ? h('input', { type: 'checkbox', id: 'purge-code' }) : null;
-  const warning = h('p', { class: 'purge-warning', role: 'alert', hidden: true },
-    'Its repository, every branch and all its files are deleted from this server for good once its processes have ended. This cannot be undone. Task records and the audit trail stay.');
-  if (purge) purge.addEventListener('change', () => { warning.hidden = !purge.checked; });
+  const choice = (value, label, help) => {
+    const input = h('input', { type: 'radio', name: 'remove-files', value, id: `remove-files-${value}` });
+    return {
+      input,
+      el: h('label', { class: 'check remove-choice', for: `remove-files-${value}` }, input,
+        h('span', null, h('span', null, label), h('span', { class: 'muted small' }, help))),
+    };
+  };
+  const files = sandbox.playground
+    ? 'its code (the repository and every branch), sessions and transcripts, worktrees, CI directories, browser profile, system layer and runs'
+    : 'its clone, sessions and transcripts, worktrees (with any uncommitted or unpushed work), CI directories, browser profile, system layer and runs';
+  const purge = choice('delete', 'Delete its files permanently',
+    `${files[0].toUpperCase()}${files.slice(1)} are deleted from this server as soon as its processes have stopped. This cannot be undone.`);
+  const keep = choice('keep', 'Keep its files',
+    `They stay on this server and keep using its disk until an administrator deletes them in Settings → Instance.`);
+  const details = h('fieldset', { class: 'stack-sm remove-files' },
+    h('legend', { class: 'field-label' }, 'Its files on this server'), purge.el, keep.el);
   const ok = await confirmDialog({
     title: `Remove ${sandbox.name} from ${BRAND.name}?`,
     message: sandbox.playground
-      ? `Live and queued tasks are stopped and the playground disappears from ${BRAND.name} for everyone. Its code stays on this server and still counts toward your playgrounds unless you delete it.`
-      : `Live and queued tasks are stopped. The GitHub repository, the server’s clone and the task records are kept; the sandbox disappears from ${BRAND.name} for everyone.`,
-    details: purge
-      ? h('div', { class: 'stack' },
-        h('label', { class: 'check', for: 'purge-code' }, purge, h('span', null, 'Also delete its code from this server for good')),
-        warning)
-      : null,
+      ? `Live and queued tasks are stopped and the playground disappears from ${BRAND.name} for everyone. Task records and the audit trail stay either way.`
+      : `Live and queued tasks are stopped and the sandbox disappears from ${BRAND.name} for everyone. The GitHub repository, task records and the audit trail stay either way.`,
+    details,
+    ready: () => purge.input.checked || keep.input.checked,
     typeToConfirm: sandbox.name,
     confirmLabel: sandbox.playground ? 'Remove playground' : 'Remove sandbox',
     danger: true,
   });
   if (!ok) return;
+  const noun = sandbox.playground ? 'Playground' : 'Sandbox';
   try {
-    if (purge && purge.checked) {
+    if (purge.input.checked) {
       const result = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/purge`, {});
       ctx.store.removeSandbox(sandbox.id);
       toast(result.state === 'purged'
-        ? `Playground ${sandbox.name} removed and its code deleted.`
-        : `Playground ${sandbox.name} removed. Its code is deleted once ${(result.waiting_for || []).join(', ') || 'its processes'} ended.`, { kind: 'ok' });
+        ? `${noun} ${sandbox.name} removed and its files deleted.`
+        : `${noun} ${sandbox.name} removed. Its files are deleted once ${(result.waiting_for || []).join(', ') || 'its processes'} ended.`, { kind: 'ok' });
     } else {
       await ctx.api.del(`/api/sandboxes/${enc(sandbox.id)}`);
       ctx.store.removeSandbox(sandbox.id);
-      toast(`${sandbox.playground ? 'Playground' : 'Sandbox'} ${sandbox.name} removed.`, { kind: 'ok' });
+      toast(`${noun} ${sandbox.name} removed. Its files are kept on this server.`, { kind: 'ok' });
     }
     const current = ctx.currentSandbox();
     if (!current || current.id === sandbox.id) ctx.navigate('/');

@@ -122,7 +122,10 @@ p { margin: 0; }
 .check { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; line-height: var(--lh); }
 .check input { margin: 2px 0 0; accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
 /* What a destructive choice of a dialog does, said before it happens (SPEC-171). */
-.purge-warning { color: var(--danger-fg); margin: 0; }
+.remove-files { margin: 0; padding: 0; border: 0; min-width: 0; }
+.remove-files > legend { padding: 0; margin-bottom: 6px; }
+.remove-choice { align-items: flex-start; }
+.remove-choice > span { display: flex; flex-direction: column; gap: 2px; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 
 .switch { position: relative; display: inline-flex; width: 30px; height: 17px; flex: none; }

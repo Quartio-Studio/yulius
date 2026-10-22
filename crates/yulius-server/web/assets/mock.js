@@ -1087,15 +1087,16 @@ route('DELETE', `/api/sandboxes/${ID}`, ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'admin');
   db.sandboxes = db.sandboxes.filter((s) => s.id !== sandbox.id);
+  // Removed with its files kept (`__yuliusMock.kept`, SPEC-276).
+  (db.kept = db.kept || []).push(sandbox.slug);
   resync(db);
   return json(204);
 });
-// Purging a playground (SPEC-171): removes it and deletes its code once nothing of it runs; the
-// mock keeps the requests (`__yuliusMock.purges`), and `purgeWaitsFor` makes it wait.
+// Purging a sandbox (SPEC-171, SPEC-276): removes it and deletes its files once nothing of it
+// runs; the mock keeps the requests (`__yuliusMock.purges`), and `purgeWaitsFor` makes it wait.
 route('POST', `/api/sandboxes/${ID}/purge`, ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'admin');
-  if (!sandbox.playground) fail(409, 'conflict', "only a playground's code can be purged");
   db.sandboxes = db.sandboxes.filter((s) => s.id !== sandbox.id);
   (db.purges = db.purges || []).push(sandbox.slug);
   resync(db);

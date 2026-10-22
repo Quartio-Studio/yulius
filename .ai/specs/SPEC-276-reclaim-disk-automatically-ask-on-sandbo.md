@@ -139,7 +139,7 @@ been read for at least 24 h.
 - [x] The UI warns while the server's disk is low
 - [x] Archived tasks lose their caches at once; the last leftovers round is shown
 - [x] Every sandbox's files can be purged once nothing of it runs
-- [ ] Removing a sandbox asks whether to delete or keep its files
+- [x] Removing a sandbox asks whether to delete or keep its files
 - [ ] Kept files of removed sandboxes are listed with their size and can be deleted
 - [ ] Architecture, operations, product, PRJ-009 and changes documented
 - [ ] Independent review in a fresh session, findings fixed test-first
