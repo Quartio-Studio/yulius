@@ -1,17 +1,22 @@
 //! Secrets vault routes (SPEC-001 VLT, SPEC-002 ADR-20): team secrets, re-authentication, agent
 //! secrets, the activity trail, and the internal redaction endpoints of agent runs.
 
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
+use futures::StreamExt as _;
 use serde::Deserialize;
+use yulius_app::error::AppError;
 use yulius_app::model::Secret;
+use yulius_app::uploads::UPLOAD_IDLE;
 use yulius_app::vault::Revealed;
+use yulius_app::vault::states::MAX_STATE_BYTES;
 use yulius_contracts::api::secrets::{
-    AgentSecretInput, AgentSecretPatch, AgentSecretSwitch, AgentSecretView, CdProdAnswer,
-    EnvFilesAnswer, HostRequestAnswer, ReauthPassword, ReauthStatus, RevealRequest,
+    AgentSecretInput, AgentSecretPatch, AgentSecretSwitch, AgentSecretView, AgentStateView,
+    CdProdAnswer, EnvFilesAnswer, HostRequestAnswer, ReauthPassword, ReauthStatus, RevealRequest,
     TeamSecretInput, TeamSecretPatch, TeamSecretView, UnlockRequest, VaultActivity,
 };
 use yulius_contracts::scrub::{FingerprintSet, RedactionReport};
@@ -49,6 +54,16 @@ pub fn public() -> Router<AppState> {
         .route(
             "/api/agent-secrets/{id}",
             patch(agent_update).delete(agent_delete),
+        )
+        // Agent states (SPEC-271): a raw gzip tar body, bounded while it is read.
+        .route("/api/sandboxes/{sid}/agent-states", get(state_list))
+        .route(
+            "/api/sandboxes/{sid}/agent-states/{name}",
+            put(state_import),
+        )
+        .route(
+            "/api/sandboxes/{sid}/agent-states/{name}/archive",
+            get(state_export),
         )
         .route("/api/agent-secrets/{id}/reveal", post(agent_reveal))
         .route("/api/agent-secrets/{id}/request", post(agent_answer))
@@ -361,4 +376,99 @@ async fn report(
         Ok(()) => StatusCode::NO_CONTENT,
         Err(err) => crate::error::status_for(&err),
     }
+}
+
+/// Longest a state's body may take to arrive (the CLI's own request timeout).
+const STATE_UPLOAD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
+
+#[derive(Deserialize)]
+struct StateQuery {
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    replace: bool,
+}
+
+async fn state_list(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+) -> ApiResult<Json<Vec<AgentStateView>>> {
+    Ok(Json(app.agent_states(&ctx, &sid).await?))
+}
+
+/// `PUT /api/sandboxes/{sid}/agent-states/{name}?description&replace` (SPEC-271 OPS-002): the
+/// body is the packed state, at most [`MAX_STATE_BYTES`], each chunk within [`UPLOAD_IDLE`].
+async fn state_import(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path((sid, name)): Path<(String, String)>,
+    Query(q): Query<StateQuery>,
+    headers: HeaderMap,
+    body: Body,
+) -> ApiResult<Json<AgentStateView>> {
+    let too_large = || {
+        AppError::Invalid(format!(
+            "the state is larger than {} MiB packed; nothing was stored",
+            MAX_STATE_BYTES >> 20
+        ))
+    };
+    let declared = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    if declared.is_some_and(|len| len > MAX_STATE_BYTES) {
+        return Err(too_large().into());
+    }
+    // Who may send it, and a free slot, before a byte is read (review of SPEC-271, M2).
+    let begun = app.begin_state_import(&ctx, &sid, &name).await?;
+    let mut archive = Vec::new();
+    let mut stream = body.into_data_stream();
+    // The slot is held while the body arrives: the whole of it within a deadline, so a slow
+    // sender cannot keep it (review of SPEC-271, m8).
+    let deadline = tokio::time::Instant::now() + STATE_UPLOAD_DEADLINE;
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(AppError::Invalid(
+                "the state took longer than 5 minutes to arrive; try again".into(),
+            )
+            .into());
+        }
+        match tokio::time::timeout_at(
+            deadline.min(tokio::time::Instant::now() + UPLOAD_IDLE),
+            stream.next(),
+        )
+        .await
+        {
+            Err(_) => return Err(AppError::Invalid("the upload stalled; try again".into()).into()),
+            Ok(None) => break,
+            Ok(Some(Err(_))) => {
+                return Err(AppError::Invalid("the upload was interrupted".into()).into());
+            }
+            Ok(Some(Ok(chunk))) => {
+                if u64::try_from(archive.len() + chunk.len()).unwrap_or(u64::MAX) > MAX_STATE_BYTES
+                {
+                    return Err(too_large().into());
+                }
+                archive.extend_from_slice(&chunk);
+            }
+        }
+    }
+    Ok(Json(
+        app.import_agent_state(&ctx, begun, q.description.as_deref(), q.replace, archive)
+            .await?,
+    ))
+}
+
+/// `GET /api/sandboxes/{sid}/agent-states/{name}/archive` (SPEC-271 OPS-007): the newest packed
+/// state, never cached.
+async fn state_export(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path((sid, name)): Path<(String, String)>,
+) -> ApiResult<Response> {
+    let archive = app.export_agent_state(&ctx, &sid, &name).await?;
+    Ok(no_store(
+        ([(header::CONTENT_TYPE, "application/gzip")], archive).into_response(),
+    ))
 }

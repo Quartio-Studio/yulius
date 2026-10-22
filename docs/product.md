@@ -50,6 +50,12 @@ watching, steering and unblocking.
   already usable by agents in `.env` files (values never pass through the agent), and starts
   onboarding with its hand-over (which key is which, where deploys run). The onboarding task uses
   those keys before asking anyone.
+- **Operator state moves with the project** (SPEC-271): a deploy tool's live state on the laptop
+  (an inventory database, rollout folders, configs) is sent as an encrypted agent state
+  (`yulius secrets import --state NAME=DIR`, up to 64 MiB packed), restored by a task into the
+  sandbox home and saved back after each rollout. Once restored, the sandbox's copy is the only
+  writer: a second send is refused unless the person replaces it on purpose, and
+  `yulius secrets state-get` brings the newest copy back.
 - **Playgrounds**: a team tries Yulius on its own code before it connects GitHub. On a fresh
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server

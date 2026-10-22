@@ -227,6 +227,15 @@ impl ApiClient {
         &self,
         build: &dyn Fn(&Client) -> RequestBuilder,
     ) -> Result<T, ApiError> {
+        decode_json(self.execute_raw(build)?)
+    }
+
+    /// Sends the request built by `build`, retrying transient failures; the successful response
+    /// is the caller's to read.
+    pub(crate) fn execute_raw(
+        &self,
+        build: &dyn Fn(&Client) -> RequestBuilder,
+    ) -> Result<Response, ApiError> {
         let attempts = self.retry.attempts();
         let mut waited = Duration::ZERO;
         let mut retry_after = None;
@@ -254,7 +263,7 @@ impl ApiClient {
             };
             let status = response.status();
             if status.is_success() {
-                return decode_json(response);
+                return Ok(response);
             }
             retry_after = parse_retry_after(&response);
             let message = error_message(response, status);

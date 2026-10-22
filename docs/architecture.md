@@ -1323,6 +1323,44 @@ sequenceDiagram
     App-->>A: copied (no value in the result)
 ```
 
+## Agent states
+
+A project's operator state (a deploy tool's inventory database, rollout folders, configs) moves
+from a laptop as an *agent state*
+([SPEC-271](../.ai/specs/SPEC-271-laptop-onboarding-move-a-project-s-opera.md),
+[decision 0200](decisions/0200-operator-state-is-a-sealed-agent-state-with-one-writer.md)).
+`yulius secrets import --state NAME=DIR` (`yulius-import`'s `states`) packs the folder into a
+gzip tar with each entry's permission bits, refusing links and special files, and sends it with
+`PUT /api/sandboxes/{sid}/agent-states/{name}` under ADR-0194's rules (typed `yes`, or `--yes`
+with the operate token). The server (`vault/states.rs`) checks it (files and folders only,
+relative paths, ≤ 64 MiB packed, ≤ 512 MiB and 20 000 entries unpacked), seals it as one envelope
+bound to the row and version (`agent_states`, schema 42) and audits `vault.state.*` without
+content; at most two states move at once (`UploadState::states`). A task's
+`secret_state_restore` opens the target's parent from the canonical sandbox folder's `home`
+without links (creating missing folders), unpacks into a fresh sibling folder and renames it into
+place; `secret_state_save` packs the folder back through handles as the next version with a
+compare-and-set on the version. Once restored, `restored_path` is the only writer: an import over
+it is refused unless `replace=true`, which makes that copy stale until a restore replaces it.
+
+```mermaid
+sequenceDiagram
+    participant L as Laptop agent (yulius CLI)
+    participant App as Yulius (vault/states.rs)
+    participant DB as agent_states (sealed archive)
+    participant T as Task agent
+    participant H as Sandbox home
+    L->>App: PUT agent-states/OPS (packed folder, operate token)
+    App->>DB: check, seal (row id + version), version 1, audit vault.state.import
+    T->>App: secret_state_restore(OPS, ~/.ops)
+    App->>H: unpack into .yulius-state-x through handles, rename to ~/.ops
+    App->>DB: restored_path ~/.ops (the writer)
+    L->>App: PUT agent-states/OPS again
+    App-->>L: 409: restored at ~/.ops (only with replace=true)
+    T->>App: secret_state_save(OPS) after a rollout
+    App->>DB: version 2 (compare-and-set), audit vault.state.save
+    L->>App: GET agent-states/OPS/archive (state-get)
+```
+
 ## Terminal input
 
 A keystroke goes from xterm to the PTY and its echo comes back without waiting for the database or

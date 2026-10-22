@@ -313,6 +313,15 @@ enum SecretsAction {
         /// repeatable): the file is read here and never shown.
         #[arg(long = "from-file", value_name = "NAME=PATH")]
         from_files: Vec<String>,
+        /// A folder of operator state (a deploy tool's inventory, rollouts, configs), or a .tar.gz
+        /// of one, as the agent state NAME of the project, `NAME=DIR` (repeatable, SPEC-271): a
+        /// task restores it into the sandbox home, and that copy is the one written to after.
+        #[arg(long = "state", value_name = "NAME=DIR")]
+        states: Vec<String>,
+        /// Overwrite a state a task already restored (its sandbox copy is then stale until
+        /// restored again); without it such a send is refused, so the two copies never fork.
+        #[arg(long)]
+        replace_state: bool,
         /// Agent secrets: agents may copy them into the project's git-ignored `.env` files from
         /// the start (ssh keys, deploy scripts), instead of you allowing it when a task asks.
         #[arg(long)]
@@ -327,6 +336,21 @@ enum SecretsAction {
         /// No colours (also NO_COLOR=1).
         #[arg(long)]
         no_color: bool,
+    },
+    /// Download the newest saved copy of an agent state (SPEC-271) as a .tar.gz, to a new file;
+    /// the sandbox's copy stays the one written to.
+    StateGet {
+        /// The state's NAME.
+        name: String,
+        /// The file to write (refused when it exists).
+        #[arg(long)]
+        out: PathBuf,
+        /// The project: owner/name, slug or id (default: this checkout's GitHub repository).
+        #[arg(long)]
+        sandbox: Option<String>,
+        /// Yulius URL (default: the only server you signed in to).
+        #[arg(long, env = "YULIUS_SERVER")]
+        server: Option<String>,
     },
     /// The project's agent secrets through the remote MCP: names, descriptions and bound hosts,
     /// never values (SPEC-247).
@@ -563,12 +587,16 @@ fn main() -> ExitCode {
                     instance,
                     confirm_hosts,
                     from_files,
+                    states,
+                    replace_state,
                     env_files,
                     yes,
                     server,
                     no_color,
                 },
         } => yulius::cli::secrets_import(yulius::cli::SecretsImportArgs {
+            states,
+            replace_state,
             to,
             file,
             sandbox,
@@ -580,6 +608,15 @@ fn main() -> ExitCode {
             env_files,
             no_color,
         }),
+        Command::Secrets {
+            action:
+                SecretsAction::StateGet {
+                    name,
+                    out,
+                    sandbox,
+                    server,
+                },
+        } => yulius::cli::state_get(&name, &out, sandbox.as_deref(), server.as_deref()),
         Command::Secrets {
             action: SecretsAction::List { opts },
         } => yulius::remote_cli::secrets_list(&opts),

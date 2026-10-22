@@ -120,6 +120,55 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
+# The vault's cipher and gzip run over whole agent states (up to 64 MiB, SPEC-271). Unoptimized,
+# sealing one takes ten seconds in debug and test builds; optimized, a tenth of a second. The
+# cipher's generic code is compiled into yulius-store, so that crate is optimized as well (its
+# rebuild takes about 6 s instead of 3.5 s).
+[profile.dev.package.yulius-store]
+opt-level = 3
+
+[profile.dev.package.aead]
+opt-level = 3
+
+[profile.dev.package.chacha20]
+opt-level = 3
+
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+
+[profile.dev.package.cipher]
+opt-level = 3
+
+[profile.dev.package.poly1305]
+opt-level = 3
+
+[profile.dev.package.universal-hash]
+opt-level = 3
+
+[profile.dev.package.inout]
+opt-level = 3
+
+[profile.dev.package.hybrid-array]
+opt-level = 3
+
+[profile.dev.package.crypto-common]
+opt-level = 3
+
+[profile.dev.package.block-buffer]
+opt-level = 3
+
+[profile.dev.package.cpufeatures]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.dev.package.crc32fast]
+opt-level = 3
+
+[profile.dev.package.adler2]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

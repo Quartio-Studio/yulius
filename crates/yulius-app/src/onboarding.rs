@@ -140,8 +140,11 @@ Yulius reads them from the protected branches and only a person deploys \
 production. Before asking anyone for a credential or a machine, read secrets_list and any \
 hand-over in your request: the person's own agent may have imported the keys (described) and said \
 where and how deploys run; a key used outside the proxy (ssh, a deploy script) reaches the ignored \
-.env through secret_copy_to_env. Only a credential or machine nobody gave: ask with needs_you and \
-go on.";
+.env through secret_copy_to_env. Operator state the person sent (the states in secrets_list: a \
+deploy tool's inventory, rollout folders) goes where the hand-over says with secret_state_restore \
+(a ~/ folder of the sandbox home, kept for later tasks), and is saved after each change with \
+secret_state_save; configs naming keys by a laptop path point to files secret_copy_to_env writes. \
+Only a credential or machine nobody gave: ask with needs_you and go on.";
 
 /// The security scan at onboarding (SPEC-195 VIB-002, SPEC-217 VDP-002), skill infra-bootstrap:
 /// with an instance Vidoc key, the rule to scan before delivery (Yulius CI runs the built-in
@@ -1539,6 +1542,8 @@ mod tests {
             prompt.contains("read secrets_list and any hand-over"),
             "{prompt}"
         );
+        // SPEC-271 OPS-009: operator state the person sent is restored, not asked for again.
+        assert!(prompt.contains("secret_state_restore"), "{prompt}");
         assert!(prompt.contains("nobody needs to approve"));
         assert!(!prompt.contains("Ask the user"), "onboarding is autonomous");
         assert!(prompt.contains("delete .github/workflows/"));
