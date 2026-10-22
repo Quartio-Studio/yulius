@@ -115,7 +115,7 @@ Confirmed against `dev` at 9080cf3e.
 - [x] Review findings fixed test-first
 - [x] Merged with task #258's ordinary-text rule and the Rust gate is green
 - [x] Gates and security scan are green and the spec has its evidence
-- [ ] The pull request is merged into dev on green
+- [x] The pull request is merged into dev on green
 
 ## Acceptance criteria
 
