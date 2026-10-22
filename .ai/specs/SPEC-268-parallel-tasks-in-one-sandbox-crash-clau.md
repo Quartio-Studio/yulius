@@ -132,7 +132,7 @@ unexpectedly".
 - `cgroup::tests` (fake cgroup trees): host-sized defaults; leaf limits written with the split, not
   without it; `-pids` on stop; counters summed over the subtree, bounded.
 - `supervision::a_session_that_ends_at_the_sandboxs_process_limit_says_so` with an isolation fake
-  whose counters the test raises and the fake agent's new `/abort`: fails before PID-005.
+  whose counters the test raises and a fake agent its own shell aborts (`/sh kill -ABRT $PPID`, SIGABRT as Bun): fails before PID-005.
 - `supervision::an_agent_session_is_told_its_budget_in_the_repositorys_terms` extended for
   PID-007; `resources` unit tests for the default mapping.
 - `isolation::isolation_limits` (opt-in, the VM's delegated unit) extended for AC-3; not runnable

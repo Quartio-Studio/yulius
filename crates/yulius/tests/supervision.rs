@@ -915,7 +915,8 @@ fn a_session_that_ends_at_the_sandboxs_process_limit_says_so() -> TestResult {
                 .map(|c| (c.task_limit_hits, c.oom_kills))
                 .map_err(|_| "poisoned")?;
             counting.set(before_hits + hits, before_kills + kills);
-            app.send_input(&id, b"/abort\r").await?;
+            // SIGABRT, as Bun aborts: the agent's shell signals the agent itself.
+            app.send_input(&id, b"/sh kill -ABRT $PPID\r").await?;
             wait_for("the abort", Duration::from_secs(15), || async {
                 task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
             })

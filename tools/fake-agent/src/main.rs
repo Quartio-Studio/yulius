@@ -22,8 +22,7 @@
 //!
 //! Modes:
 //! - `echo` (default): prints `FAKE-AGENT READY session=<id>`, then answers each input line with
-//!   `ECHO: <line>`. `/exit` exits 0, `/crash` exits 3, `/abort` aborts (SIGABRT, as Bun does
-//!   when it cannot start a thread or a process), `/later <ms> <text>` prints `<text>` after
+//!   `ECHO: <line>`. `/exit` exits 0, `/crash` exits 3, `/later <ms> <text>` prints `<text>` after
 //!   a delay (≤ 60 s), `/size` prints `SIZE <rows> <cols>` of its terminal (via `stty size`),
 //!   `/read <path>` prints `READ <file name> OK <n>` or `READ <file name> ERR <kind>` (containment
 //!   probe; never the contents), `/sh <command>` runs `/bin/sh -c <command>` on the terminal and
@@ -1535,10 +1534,6 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
             "/crash" => {
                 say("CRASHING")?;
                 return Ok(3);
-            }
-            "/abort" => {
-                say("ABORTING")?;
-                std::process::abort();
             }
             "/size" => say(&format!("SIZE {}", terminal_size()))?,
             _ if line.starts_with("/flood ") => {
