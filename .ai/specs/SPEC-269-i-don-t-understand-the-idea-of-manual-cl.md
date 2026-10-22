@@ -92,6 +92,7 @@ Read in the code on `dev` (21c26d8b):
 - [x] Every gate green on the branch merged with current dev
 - [x] Review round 5 findings fixed test-first
 - [x] Review round 6 approves the exact head
+- [x] The CI security finding is fixed test-first and reviewed
 
 ## Acceptance criteria
 
@@ -258,6 +259,11 @@ Read in the code on `dev` (21c26d8b):
   which the branch only touched to share the import prefix. `imports.rs` is now as on `dev` (the
   prefix lives in `hygiene.rs`, naming `imports.rs`'s `import-<job>`), so its findings are outside
   the change and Yulius CI files them. The snapshot path race is #824.
+- `scripts/dev security` at 3d7a9c4a: exit 2, **unrun**. Vidoc answered HTTP 429 ("This API key
+  has used its 50,000,000 tokens"). The person said to go on without Vidoc for now (2026-10-22).
+  The worktree-path fix is therefore not re-scanned. Its unit test and the hygiene suites cover
+  it, and Yulius CI's `security` job ends skipped until the quota is restored.
+- Gate at 3d7a9c4a: `scripts/dev ci` exit 0 (nextest 2459 passed, 17 skipped).
 - Not testable here: a real 6-hourly round on the instance against GitHub. The round is driven in
   tests through `hygiene_round`, with real Git over local remotes and the GitHub fake.
 - Independent review in fresh sessions:
