@@ -7,7 +7,9 @@
 //! - gives each sandbox `<unit>/sandboxes/<sandbox>` with its limits, split by CPU weight into
 //!   `system/` (the holder), `agents/` (runs) and `ci/` (CI jobs) when `cpu` is available
 //!   (SPEC-053); `ci/` and `engine/` then also get 3/8 of its task limit each, so sessions keep
-//!   a quarter of it whatever CI jobs and containers do (SPEC-268).
+//!   a quarter of it whatever CI jobs and containers do (SPEC-268);
+//! - limits `<unit>/sandboxes` to three quarters of the service's own task limit, so the server
+//!   keeps a quarter however many sandboxes are busy (SPEC-272).
 //!
 //! The holder, `slirp4netns` and every run of a sandbox join their leaf before they start
 //! anything ([`join`]). Without delegation (the parent of the server's cgroup is not ours),
@@ -78,6 +80,14 @@ pub fn tasks_max_above(fs_root: &Path, dir: &Path) -> Option<u64> {
 /// Three quarters of `service`, at least 1: what sandboxes may use of the service's tasks.
 fn service_share(service: u64) -> u64 {
     (service / 4 * 3).max(1)
+}
+
+/// The common task limit of all sandboxes together under a service limited to `service` tasks
+/// ([`tasks_max_above`]): three quarters of it, so the server keeps a quarter however many
+/// sandboxes are busy (SPEC-272 SHR-001); `None` (`max`) when the service has no limit.
+#[must_use]
+pub fn sandboxes_tasks(service: Option<u64>) -> Option<u64> {
+    service.map(service_share)
 }
 
 impl Limits {
@@ -356,6 +366,21 @@ fn cap_leaves(dir: &Path, groups: &SandboxGroups, pids_max: u64) -> io::Result<(
 }
 
 impl Delegation {
+    /// Writes the common task limit of all sandboxes, `<unit>/sandboxes/pids.max`, for a service
+    /// limited to `service` tasks ([`sandboxes_tasks`]); `max` without a service limit, since the
+    /// group and an earlier server's value survive restarts (`KillMode=process`, SPEC-272
+    /// SHR-001). Nothing without the `pids` controller.
+    ///
+    /// # Errors
+    /// The limit cannot be written.
+    pub fn limit_sandboxes(&self, service: Option<u64>) -> io::Result<()> {
+        if !self.controllers.iter().any(|c| c == "pids") {
+            return Ok(());
+        }
+        let limit = sandboxes_tasks(service).map_or_else(|| "max".to_owned(), |n| n.to_string());
+        write(&self.unit.join(SANDBOXES).join("pids.max"), &limit)
+    }
+
     /// The paths of `sandbox`'s groups, as [`Delegation::sandbox_group`] makes them, without
     /// touching anything.
     #[must_use]
@@ -641,6 +666,28 @@ mod tests {
             Limits::default(),
             "no limit stays none"
         );
+        Ok(())
+    }
+
+    /// SPEC-272 SHR-001: all sandboxes together keep the server a quarter of the service's tasks;
+    /// without a service limit the common one is `max` again, not what an earlier server wrote
+    /// (`<unit>/sandboxes` survives restarts with `KillMode=process`).
+    #[test]
+    fn the_sandboxes_together_leave_the_server_a_quarter() -> Result<(), Box<dyn std::error::Error>>
+    {
+        assert_eq!(sandboxes_tasks(Some(57_763)), Some(43_320));
+        assert_eq!(sandboxes_tasks(Some(1)), Some(1));
+        assert_eq!(sandboxes_tasks(None), None);
+        let (_root, delegation, _dir) = fake_sandbox("cpu memory pids\n")?;
+        let common = delegation.unit.join(SANDBOXES).join("pids.max");
+        delegation.limit_sandboxes(Some(57_763))?;
+        assert_eq!(std::fs::read_to_string(&common)?, "43320");
+        delegation.limit_sandboxes(None)?;
+        assert_eq!(std::fs::read_to_string(&common)?, "max", "reset, not stale");
+        // Without the `pids` controller there is no such file to write.
+        let (_root, delegation, _dir) = fake_sandbox("cpu memory\n")?;
+        delegation.limit_sandboxes(Some(57_763))?;
+        assert!(!delegation.unit.join(SANDBOXES).join("pids.max").exists());
         Ok(())
     }
 
