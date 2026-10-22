@@ -63,6 +63,7 @@ pub mod queued_messages;
 pub mod race;
 pub mod record_numbers;
 pub mod recovery;
+pub mod reference_repo;
 pub mod remote;
 pub mod remote_files;
 pub mod resources;

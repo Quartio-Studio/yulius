@@ -14,6 +14,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   shows what was removed and what was kept and why, on the card, also after a reload. Before,
   only a short count toast followed a silent wait.
 
+- A task reads another repository of its project's GitHub owner without asking a person (SPEC-267,
+  ADR-0197, task #253, fixes #803). A task that had to port from Quartio-Studio/product asked a
+  person to give the GitHub App access, because an agent's token reaches only its own repository;
+  the person's Superagent then showed nothing was needed. The new `reference_repo` tool fetches the
+  repository's default branch as the task's owner (after GitHub says they can read it) into a
+  private folder, bundles it and attaches the bundle to the task, which clones it into
+  `<sandbox>/reference/<owner>/<name>`. Another owner, no read access, a disabled owner and a
+  playground are refused, and only then does the agent ask with `needs_you`. Onboarding prompts
+  now fetch the repositories a project refers to and name them in AGENTS.md.
 - The usage-limit step-back and the task home's creation go through handles (SPEC-266, task #252,
   fixes #661). The transcript `<home>/.claude/projects/<slug>/<session>.jsonl` is reached from
   the folder above the home without following links, read only when it is a regular file, and

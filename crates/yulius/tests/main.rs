@@ -58,6 +58,7 @@ mod production_branch;
 mod projects;
 mod queued_messages;
 mod recovery;
+mod reference_repo;
 mod remote_mcp;
 mod run_metrics;
 mod sandbox_docker;
