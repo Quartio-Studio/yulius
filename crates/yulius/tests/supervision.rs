@@ -933,17 +933,17 @@ fn a_session_that_ends_at_the_sandboxs_process_limit_says_so() -> TestResult {
                 .ok_or("no exit reason")?;
             let recorded = reason.rsplit_once(" limit=").map(|(_, cause)| cause);
             assert_eq!(recorded, cause, "{title}: {reason}");
-            let mut sent = None;
-            while let Ok(frame) = viewer.rx.try_recv() {
-                if let yulius_app::hub::HubFrame::Exit { cause, .. } = frame {
-                    sent = Some(cause);
+            // The exit frame comes after the task's status (review round 1): wait for it.
+            let sent = tokio::time::timeout(Duration::from_secs(15), async {
+                loop {
+                    if let yulius_app::hub::HubFrame::Exit { cause, .. } = viewer.rx.recv().await? {
+                        return Ok::<_, tokio::sync::broadcast::error::RecvError>(cause);
+                    }
                 }
-            }
-            assert_eq!(
-                sent.ok_or("no exit frame")?.as_deref(),
-                cause,
-                "{title}: the viewers are told"
-            );
+            })
+            .await
+            .map_err(|_| "no exit frame")??;
+            assert_eq!(sent.as_deref(), cause, "{title}: the viewers are told");
         }
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

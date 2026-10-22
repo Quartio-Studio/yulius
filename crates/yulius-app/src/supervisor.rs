@@ -268,6 +268,33 @@ impl TaskRuntime {
         self.run.lock().await.is_some()
     }
 
+    /// Records `attempt`'s start counters (none where nothing counts), replacing an older run's.
+    fn set_start_counters(&self, attempt: &AttemptId, counters: Option<LimitCounters>) {
+        if let Ok(mut start) = self.limits_at_start.lock() {
+            *start = counters.map(|counters| (attempt.clone(), counters));
+        }
+    }
+
+    /// `attempt`'s start counters, left in place: an observer that loses the end's transition
+    /// must not take them from the one that wins.
+    fn start_counters(&self, attempt: &AttemptId) -> Option<LimitCounters> {
+        self.limits_at_start
+            .lock()
+            .ok()?
+            .as_ref()
+            .filter(|(of, _)| of == attempt)
+            .map(|(_, counters)| *counters)
+    }
+
+    /// Forgets `attempt`'s start counters once its end is recorded; another run's stay.
+    fn clear_start_counters(&self, attempt: &AttemptId) {
+        if let Ok(mut start) = self.limits_at_start.lock()
+            && start.as_ref().is_some_and(|(of, _)| of == attempt)
+        {
+            *start = None;
+        }
+    }
+
     fn new() -> Self {
         Self {
             hub: Hub::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
@@ -2088,9 +2115,7 @@ impl App {
         });
         // What the sandbox's limits counted so far: a rise by the run's end says it was at one.
         let counters = self.limit_counters(&sandbox).await;
-        if let Ok(mut start) = runtime.limits_at_start.lock() {
-            *start = counters.map(|counters| (attempt.id.clone(), counters));
-        }
+        runtime.set_start_counters(&attempt.id, counters);
         // A stop or close that came while the run was launching found no run to ask: it asks now,
         // so the run ends as asked instead of at the escalation (SPEC-140 STP-001, #464). One that
         // comes later finds the run itself; the host takes a second request as the first.
@@ -2362,13 +2387,7 @@ impl App {
             AttemptState::Exited
         };
         // A run that ended by itself, not cleanly: was the sandbox at a limit meanwhile?
-        let start = runtime
-            .limits_at_start
-            .lock()
-            .ok()
-            .and_then(|mut start| start.take())
-            .filter(|(attempt, _)| attempt == attempt_id)
-            .map(|(_, counters)| counters);
+        let start = runtime.start_counters(attempt_id);
         let unexpected = intent.is_none()
             && !matches!(
                 exit_event(&exit, session_end.as_deref()),
@@ -2411,6 +2430,7 @@ impl App {
         if !first {
             return; // another observer already recorded the outcome
         }
+        runtime.clear_start_counters(attempt_id);
         // The snapshot is the run's once its watcher read the run's transcript to its end;
         // otherwise it is empty or partial, and the transcript is counted (SPEC-143 RDM-001).
         let read = runtime
@@ -4187,6 +4207,28 @@ mod tests {
     }
 
     use super::branch_for;
+
+    /// SPEC-268 PID-005, review round 1: an attempt reads only its own start counters, and a late
+    /// end of an older attempt (or an observer that lost the transition) leaves the newer one's.
+    #[test]
+    fn a_runs_start_counters_are_its_own() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::ports::isolation::LimitCounters;
+        let runtime = super::TaskRuntime::new();
+        let old = yulius_domain::ids::AttemptId::parse("a-old")?;
+        let new = yulius_domain::ids::AttemptId::parse("a-new")?;
+        let at = LimitCounters {
+            task_limit_hits: 2,
+            oom_kills: 0,
+        };
+        runtime.set_start_counters(&new, Some(at));
+        assert_eq!(runtime.start_counters(&old), None);
+        runtime.clear_start_counters(&old);
+        assert_eq!(runtime.start_counters(&new), Some(at), "read twice");
+        assert_eq!(runtime.start_counters(&new), Some(at));
+        runtime.clear_start_counters(&new);
+        assert_eq!(runtime.start_counters(&new), None);
+        Ok(())
+    }
 
     /// SPEC-268 PID-005: refused forks win over OOM kills; counters that did not rise say nothing.
     #[test]
