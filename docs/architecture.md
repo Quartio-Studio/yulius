@@ -369,11 +369,15 @@ playground the job's files go under an id reserved when the job is created; the 
 when the upload completes, as from a folder (the bundle's refs copied into `origin` with the
 hardened Git, the uncommitted work one commit on the checked-out branch). Into the person's
 existing playground of that name the upload lands as an import does, under `import/<login>/`.
-A removed playground's code goes on request
-([decision 0139](decisions/0139-a-removed-playground-s-code-is-purged-once-nothing-of-it-runs.md)):
-the request is kept in `playground_purges`, and its `origin` and sandbox directory are deleted
-only once no agent run, shell, browser, CI run or other process of its sandbox is left (tried at
-once and with every disk upkeep round); the quota counts only the `origin`s left on disk.
+A removed sandbox's files go on request
+([decision 0139](decisions/0139-a-removed-playground-s-code-is-purged-once-nothing-of-it-runs.md) for a
+playground's code, [decision 0205](decisions/0205-build-caches-are-swept-under-cargo-s-lock-and-a-removed-sandbox-s-files-go-on-request.md)
+for every sandbox): the remove dialog asks whether to delete them or keep them, the request is
+kept in `playground_purges` (every sandbox, the name is historical), and `playground::purge`
+deletes the leftovers engine's "everything of the removed sandbox" item through its guard (no
+10-minute wait for a requested purge) only once no agent run, shell, browser, CI run, deploy or
+other process of its sandbox is left and its holder stopped (tried at once, every 15 s for 10
+minutes, then with every disk round); a playground's quota counts only the `origin`s left on disk.
 
 **Repository hygiene** (SPEC-001 DLV-007, [SPEC-269](../.ai/specs/SPEC-269-i-don-t-understand-the-idea-of-manual-cl.md),
 [decision 0199](decisions/0199-yulius-removes-safe-stale-branches-and-worktrees-itself.md)).
@@ -403,6 +407,31 @@ removal opens each directory from the data directory down with `O_NOFOLLOW` and 
 the opened directory, so a link a sandbox swaps in after the check fails the removal. A tree that stays is made writable directory by directory through `O_PATH` handles, its owner's unreadable directories included ([decision 0179](decisions/0179-a-tree-is-made-writable-through-o-path-handles.md)), and removed again. The automatic round runs at every start and hourly. People reach the
 same engine through `/api/admin/leftovers*` (Settings → Instance) and `yulius leftovers` (the
 loopback `/internal/leftovers*` with the key in `<data>/leftovers-cli.key`).
+
+**Build caches and disk pressure** ([SPEC-276](../.ai/specs/SPEC-276-reclaim-disk-automatically-ask-on-sandbo.md),
+[decision 0205](decisions/0205-build-caches-are-swept-under-cargo-s-lock-and-a-removed-sandbox-s-files-go-on-request.md)).
+The disk upkeep (`yulius-app::disk`) reads the data disk every minute through
+`SystemProbe::disk`; `yulius-domain::sweep` turns it into a level (low from 85 %, critical from
+95 %) and a policy. `yulius-app::pressure` runs a round every 5 minutes, and at once when the level
+rises: `yulius-app::sweep` sweeps every Cargo `target` of the live sandboxes' worktrees and CI
+checkouts (hourly, every round while low) holding each profile's `.cargo-lock` with a non-blocking
+`flock` (a held one skips the directory), deleting whole units (a hash's `.fingerprint`, `deps`
+and `build` entries; an `incremental/<crate>-<hash>` directory without a `*-working` session)
+unused for 48 h (6 h low, 1 h critical) and then the least recently used above a cap of 5 % of the
+disk; at critical the upkeep also prunes idle caches until the disk is back at 85 %. A change of
+level is published (`disk.updated`, `GET /api/disk`, a pill on every page) and a rise audited
+(`disk.pressure`).
+
+```mermaid
+flowchart LR
+  P["disk upkeep: every minute"] -->|"SystemProbe::disk"| LV{"level: ok / low ≥ 85 % / critical ≥ 95 %"}
+  LV -->|"change"| EV["disk.updated → pill on every page"]
+  LV -->|"round: 5 min, or the level rose"| SW["sweep Cargo targets (hourly; every round when low)"]
+  SW -->|"flock every .cargo-lock; held → skip"| U["whole units unused 48 h / 6 h / 1 h, then LRU above the cap"]
+  LV -->|"critical"| IDLE["prune idle tasks' and CI checkouts' caches to 85 %"]
+  LV -->|"low, ≤ every 10 min"| LR["safe leftovers round"]
+  RM["remove sandbox: Delete permanently"] -->|"playground_purges"| PG["purge: guard, then everything of it"]
+```
 
 ```mermaid
 flowchart LR

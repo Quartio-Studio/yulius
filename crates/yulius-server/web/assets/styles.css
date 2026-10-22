@@ -2702,7 +2702,7 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .leftovers-actions { flex-wrap: wrap; }
 .leftovers-kept h3 { margin: 0; }
 .leftovers-kept-list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.leftovers-kept-row { flex-wrap: wrap; gap: 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.leftovers-kept-row { flex-wrap: wrap; gap: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); }
 .leftovers-kept-name { min-width: 0; overflow-wrap: anywhere; }
 .leftovers-result ul { margin: 4px 0 0; padding-left: 16px; overflow-wrap: anywhere; }
 .leftovers-table .leftovers-check { width: 32px; }
