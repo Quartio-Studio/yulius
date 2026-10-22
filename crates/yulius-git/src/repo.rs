@@ -90,6 +90,27 @@ impl Git {
         Ok(())
     }
 
+    /// Fetches `branch` of the remote `url` into `repo`'s `refs/heads/<branch>`, forced, without
+    /// tags or submodules (a reference copy's fetch, SPEC-267).
+    pub fn fetch_branch(&self, repo: &Path, url: &str, branch: &str) -> Result<(), GitError> {
+        validate_remote_url(url)?;
+        validate_branch_name(branch)?;
+        self.run_ok(
+            Invocation::new(self, "fetch", Some(repo))
+                .args([
+                    "fetch",
+                    "--quiet",
+                    "--no-recurse-submodules",
+                    "--no-tags",
+                    "--",
+                    url,
+                ])
+                .arg(format!("+refs/heads/{branch}:refs/heads/{branch}"))
+                .timeout(self.network_timeout),
+        )?;
+        Ok(())
+    }
+
     /// Copies every branch and tag of the repository at the absolute `source` into `repo` under
     /// the same names (a playground's new `origin` from an uploaded `.git`, SPEC-099). Only refs
     /// and the objects they reach travel; `source`'s configuration and hooks are never read for

@@ -367,6 +367,20 @@ pub trait GitPort: Send + Sync {
         let _ = (repo, source);
         unsupported("fetching a playground's origin")
     }
+    /// Fetches `branch` of `url` with `token` into a new bare repository at `work` (which must
+    /// not exist) and writes a bundle of that branch at `bundle`; returns the branch's commit
+    /// (a reference copy for a task, SPEC-267).
+    async fn bundle_branch(
+        &self,
+        url: &str,
+        branch: &str,
+        work: &Path,
+        bundle: &Path,
+        token: &Secret,
+    ) -> AppResult<String> {
+        let _ = (url, branch, work, bundle, token);
+        unsupported("fetching another repository")
+    }
     /// Copies every branch and tag of the repository at `source` into the bare repository
     /// `repo` (SPEC-099: an uploaded folder's history).
     async fn copy_refs(&self, repo: &Path, source: &Path) -> AppResult<()> {
