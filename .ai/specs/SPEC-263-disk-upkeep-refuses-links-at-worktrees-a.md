@@ -131,7 +131,8 @@ each removal, so a sandbox can never steer it into another sandbox's files.
     It is left as is. The worktree itself must already be a real directory reached without
     links, and a `.git` link only steers read-only Git queries. Caches and the worktree Git
     removes are checked from the sandbox directory, so a linked `.git` reaches nothing outside
-    the sandbox. The finding is pre-existing and was not reported again at 095b8169.
+    the sandbox. The finding is pre-existing; the scan at 095b8169 did not report it, the one at
+    121b3e06 did again.
   - At 095b8169, one low finding outside the change (`leftovers.rs:1462`) is CI's to file.
 - Review round 1 (fresh session, at 303feb63) requested changes. All own-code findings are fixed:
   - A test for the DUL-003 re-check was added.
@@ -154,6 +155,12 @@ each removal, so a sandbox can never steer it into another sandbox's files.
     acting on its own folder can do that, and nothing outside it is touched.
   - Pre-existing: `remove_below` reports success on macOS while removing nothing (#681). This is
     noted on #649, because this task may not file issues.
+- After round 2's fixes and a merge of `origin/dev` (121b3e06):
+  - `scripts/dev ci` exit 0, with 2411 tests run and 2411 passed.
+  - `scripts/dev security` exit 0, with no open critical, high or in-change medium finding.
+    Besides the `.git` low above, it reported one low outside the change: an mtime overflow at
+    `disk.rs:392`, which CI files as an issue.
+  - The DUL-003 test still fails with only the moved re-check removed.
 - Not tested here: macOS behaviour at runtime (only compiled and linted for
   `aarch64-apple-darwin`).
 
