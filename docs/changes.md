@@ -14,7 +14,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   and branch names; document presence and the workflow count for the briefing read through a
   checked handle, so a folder swapped for a link is not followed. The rest (the `.env` target's
   Git-ignore check, unparseable stored host requests, the `.git` exclusion of dotenv targets,
-  task-number allocation) are dismissed with their reasons as `[[ignore]]` entries.
+  task-number allocation) are dismissed with their reasons, those whose Vidoc wording is on record
+  as `[[ignore]]` entries.
 - A CI job gets the agent secrets the integration branch grants only when it runs the granted
   entry's command too (task #250, #659, SPEC-264, ADR-0196). A pull request tested with its own
   `[[ci.jobs]]` that reused a granted job's name, say `deploy`, for its own command ran that command
