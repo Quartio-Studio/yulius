@@ -3220,7 +3220,7 @@ async fn agents_are_not_served_secret_verify() -> TestResult {
 /// through a placeholder in a header or the path, and it is not counted as used.
 #[tokio::test]
 async fn the_egress_policy_never_sends_a_value_with_a_line_break() -> TestResult {
-    use yulius_app::ports::vault::{VaultSecretRecord, VaultSection, VaultStore as _};
+    use yulius_app::ports::vault::{VaultSecretRecord, VaultSection};
     let w = world().await?;
     let value = "crlf-value-12345\r\nX-Evil: 1";
     let envelope = w.h.app.deps.crypto.envelope_seal(
