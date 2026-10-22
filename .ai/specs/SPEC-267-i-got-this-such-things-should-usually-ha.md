@@ -75,10 +75,11 @@ cannot read the repository either.
 
 ## Plan
 
-- [ ] Spec and ADR-0197 record that tasks read other repositories of their owner through Yulius
-- [ ] Agents get a reference_repo tool that delivers a bundle fetched as the task owner
-- [ ] Onboarding and needs_you send agents to reference_repo instead of a person
-- [ ] Docs, independent review and gates are done and the change is delivered
+- [x] Spec and ADR-0197 record that tasks read other repositories of their owner through Yulius
+- [x] Agents get a reference_repo tool that delivers a bundle fetched as the task owner
+- [x] Onboarding and needs_you send agents to reference_repo instead of a person
+- [x] Docs and gates are green and review round 1 findings are fixed test-first
+- [ ] Independent review approves the head and the change is merged into dev
 
 ## Acceptance criteria
 
