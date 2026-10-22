@@ -187,6 +187,16 @@ All on `feat/257-…` after merging `origin/dev` at 06cf70ea (a clean merge, no 
     proxy now never sends a secret whose value or user name holds a control character
     (`transportable`); it logs it so a person can replace it. Unit test
     `values_with_control_characters_are_never_sent`.
+  - The local rescan at `bc229d2e` failed on a high in `mcp.rs` (a file this branch touched for
+    the two tools): "tool dispatch does not distinguish Superagent callers". It is a false
+    positive. Every arm shared by both callers is in `COCKPIT_TOOLS`, and agent-only tools
+    refuse a Superagent caller. The boundary is now one explicit guard at the top of
+    `mcp_call`, so the finding cannot recur under new wording; issue #831 filed the same
+    finding. The `cockpit` test now asserts that the state tools, `delivery_merge` and
+    `scope_claim` are refused to a Superagent.
+  - The scan's low finding about whitespace-only duplicate `--state` names is not real.
+    Names are trimmed before the duplicate check, a blank name is refused by the `NAME=DIR`
+    parse, and `state_entry` checks the name as a secret name.
   - Medium and low findings in code this branch did not touch are filed as issues by Yulius CI
     (#831–#835 and others).
 - Tests. Each new behavior was seen failing first, or checked by a mutation:

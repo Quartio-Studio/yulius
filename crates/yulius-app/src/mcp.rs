@@ -536,7 +536,11 @@ impl App {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let project = caller.project();
+        // A Superagent calls only the tools it is served, whatever the arms below allow.
         let outcome: AppResult<Value> = match name {
+            _ if matches!(caller, McpCaller::Cockpit(_)) && !COCKPIT_TOOLS.contains(&name) => {
+                Err(AppError::Invalid(format!("unknown tool: {name}")))
+            }
             "tasks_list" => self.tool_tasks_list(&project, &args).await,
             "task_get" => self.tool_task_get(&project, &args).await,
             "task_create" => self.tool_task_create(&project, &args).await,
