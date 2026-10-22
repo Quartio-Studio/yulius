@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-22
 
+- The token form on Settings → Connect your local agent lines up (SPEC-270, task #256). The Scope
+  hint bottom-aligned the name field and a small Create token button to its last line, so the
+  labels and controls sat on different lines. Each field now spans label, control and hint rows
+  (CSS subgrid), the button takes the control row at the fields' height, the scope select has the
+  app's `.select` look, and on a phone the form stacks.
 - A task reads another repository of its project's GitHub owner without asking a person (SPEC-267,
   ADR-0197, task #253, fixes #803). A task that had to port from Quartio-Studio/product asked a
   person to give the GitHub App access, because an agent's token reaches only its own repository;

@@ -95,3 +95,19 @@ test('the token form reads as one row', async ({ app, browser, screen }) => {
   // The app's select, like every other list to choose from.
   expect(b.scopeIsSelect).toBe(true);
 });
+
+test('the token form stacks on a phone', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open(mock('/settings'));
+  await expect(screen.getByLabel('Token name')).toBeVisible();
+  const b = await browser.evaluate(tokenFormBoxes);
+  // Name, then scope with its hint, then the button, one under the other, inside the form.
+  expect(b.scopeLabel.top).toBeGreaterThan(b.name.bottom);
+  expect(b.hint.top).toBeGreaterThanOrEqual(b.scope.bottom);
+  expect(b.button.top).toBeGreaterThan(b.hint.bottom);
+  expect(b.button.height).toBe(b.name.height);
+  expect([b.name.left, b.scope.left, b.button.left]).toEqual([b.form.left, b.form.left, b.form.left]);
+  expect([b.name.right, b.scope.right]).toEqual([b.form.right, b.form.right]);
+  expect(b.form.scrollWidth).toBeLessThanOrEqual(b.form.clientWidth);
+  expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
