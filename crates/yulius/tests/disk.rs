@@ -941,6 +941,7 @@ async fn a_worktrees_folder_swapped_for_a_link_after_the_scan_is_not_followed() 
     std::fs::create_dir_all(&own)?;
     git(&own, &["init", "-q", "-b", "main"])?;
     std::fs::write(own.join(".gitignore"), "target\n")?;
+    std::fs::write(own.join("Cargo.toml"), "[package]\n")?;
     git(&own, &["add", "-A"])?;
     git(&own, &["commit", "-q", "-m", "init"])?;
     std::fs::create_dir_all(own.join("target"))?;
