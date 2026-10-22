@@ -25,7 +25,7 @@ use yulius_app::ports::github::GhPull;
 use yulius_app::ports::isolation::{
     DiskUsage, SandboxIsolation, SandboxJoin, SandboxLimits, SandboxRef,
 };
-use yulius_app::ports::store_ext::CiStore as _;
+use yulius_app::ports::store_ext::{AutomationStore as _, CiStore as _};
 use yulius_domain::ci::{GateResult, RunState};
 use yulius_domain::ids::SandboxId;
 
@@ -584,11 +584,9 @@ async fn without_the_status_permission_runs_still_gate() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn hygiene_lists_and_cleans_up_stale_branches() -> TestResult {
-    let f = fixture().await?;
-    // feat/old is merged into dev; feat/closed had a pull request closed without merging;
-    // feat/one has an open pull request; feat/wip is recent work without a pull request.
+/// feat/old is merged into dev; feat/closed had a pull request closed without merging;
+/// feat/one has an open pull request; feat/wip is recent work without a pull request.
+fn stale_branches(f: &Fixture) -> BoxResult<()> {
     for (branch, file) in [
         ("feat/old", "old.txt"),
         ("feat/closed", "closed.txt"),
@@ -616,6 +614,13 @@ async fn hygiene_lists_and_cleans_up_stale_branches() -> TestResult {
             from_fork: false,
         });
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn hygiene_lists_and_cleans_up_stale_branches() -> TestResult {
+    let f = fixture().await?;
+    stale_branches(&f)?;
     let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
     assert_eq!(scan.status, StatusCode::OK, "{}", scan.body);
     let items = scan.body["items"].as_array().ok_or("items")?.clone();
@@ -650,6 +655,39 @@ async fn hygiene_lists_and_cleans_up_stale_branches() -> TestResult {
         "{}",
         cleaned.body["report"]
     );
+    Ok(())
+}
+
+/// SPEC-269 HSC-001: the background round removes what loses nothing, as Yulius, and keeps
+/// unmerged work.
+#[tokio::test]
+async fn the_hygiene_round_removes_safe_items_itself() -> TestResult {
+    let f = fixture().await?;
+    stale_branches(&f)?;
+    f.h.app.hygiene_round().await;
+    let remaining = git(&f.origin, &["branch", "--format=%(refname:short)"])?;
+    assert!(
+        !remaining.contains("feat/old") && !remaining.contains("feat/closed"),
+        "{remaining}"
+    );
+    assert!(remaining.contains("feat/one") && remaining.contains("feat/wip"));
+    let audited: Vec<String> = f
+        .h
+        .store
+        .automation_audit(&f.sandbox.slug, 100)
+        .await?
+        .into_iter()
+        .filter(|e| e.action == "hygiene.cleanup")
+        .map(|e| format!("{} {}", e.actor, e.detail.unwrap_or_default()))
+        .collect();
+    for branch in ["feat/old", "feat/closed"] {
+        assert!(
+            audited
+                .iter()
+                .any(|a| a.starts_with("yulius remote_branch ") && a.contains(branch)),
+            "{audited:?}"
+        );
+    }
     Ok(())
 }
 

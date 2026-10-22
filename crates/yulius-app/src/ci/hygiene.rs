@@ -1,6 +1,6 @@
 //! Repository hygiene (SPEC-001 DLV-007): after Yulius merges a pull request its branch is
-//! deleted; a periodic, bounded scan lists stale branches and worktrees per sandbox; people and
-//! agents clean them up through Yulius.
+//! deleted; a periodic, bounded round removes each sandbox's safe stale branches and worktrees
+//! itself (SPEC-269, ADR-0199) and lists the rest; people and agents clean up on request too.
 //!
 //! Safety: protected branches (integration, production, default) and branches with an open
 //! pull request are never stale; a live task's worktree never is; worktrees are removed only
@@ -46,6 +46,8 @@ pub const MAX_CLEANUP_ITEMS: usize = 100;
 const REMOTE: &str = "remote_branch";
 const LOCAL: &str = "local_branch";
 const WORKTREE: &str = "worktree";
+/// Who the background round acts as in the audit log and the report.
+const AUTO_ACTOR: &str = "yulius";
 
 fn item(kind: &str, name: String, reason: &StaleReason) -> HygieneItem {
     HygieneItem {
@@ -76,14 +78,24 @@ impl App {
             let mut every = tokio::time::interval(HYGIENE_EVERY);
             loop {
                 every.tick().await;
-                let Ok(sandboxes) = app.deps.store.sandboxes().await else {
-                    continue;
-                };
-                for sandbox in sandboxes.iter().filter(|s| s.removed_at.is_none()) {
-                    let _ = app.hygiene_scan(sandbox).await;
-                }
+                app.hygiene_round().await;
             }
         });
+    }
+
+    /// One background round (SPEC-269 HSC-001): each live sandbox is scanned and its safe items
+    /// are removed as Yulius, through the same checks as a person's Clean up. Unmerged work
+    /// (`idle`) stays listed for a person.
+    pub async fn hygiene_round(&self) {
+        let Ok(sandboxes) = self.deps.store.sandboxes().await else {
+            return;
+        };
+        for sandbox in sandboxes.iter().filter(|s| s.removed_at.is_none()) {
+            let request = HygieneCleanup::default();
+            if let Err(err) = self.hygiene_cleanup_as(sandbox, &request, AUTO_ACTOR).await {
+                tracing::warn!(sandbox = %sandbox.slug, error = %err, "automatic hygiene cleanup failed");
+            }
+        }
     }
 
     fn protected_branches(sandbox: &SandboxRecord) -> HashSet<String> {
@@ -475,7 +487,13 @@ impl App {
         if remote_deleted {
             let _ = self.dlv_refresh_clone(sandbox).await;
         }
-        let report = self.hygiene_scan(sandbox).await;
+        // Nothing removed: nothing changed since the scan above (a round with nothing to do
+        // costs one scan).
+        let report = if removed.is_empty() {
+            report
+        } else {
+            self.hygiene_scan(sandbox).await
+        };
         Ok(HygieneCleanupResult {
             removed,
             skipped,
