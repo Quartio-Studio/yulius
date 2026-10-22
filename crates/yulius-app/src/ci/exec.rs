@@ -385,7 +385,8 @@ impl App {
                                 format!("stopped early: job {} failed", job.name)
                             };
                             let _ = stop_siblings.send(Some(reason));
-                        } else if matches!(ended, Some(RunState::Passed | RunState::Skipped))
+                        } else if (matches!(ended, Some(RunState::Passed | RunState::Skipped))
+                            || (failed && scan))
                             && others_run
                             && stop_siblings.borrow().is_none()
                             && run_cancel.borrow().is_none()

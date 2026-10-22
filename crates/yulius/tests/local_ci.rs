@@ -1359,6 +1359,18 @@ command = 'while [ ! -f "{release}" ]; do sleep 0.05; done'
         ],
     )
     .await?;
+    // GitHub hears of the failed scan at once, while the tests run (review round 1).
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while f.last_status(&first).map(|(_, d, _)| d)
+        != Some("Running on Yulius: 0 of 3 jobs passed, security failed".to_owned())
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{:?}",
+            f.h.github.statuses()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     std::fs::write(&release, "")?;
     f.settle().await?;
     f.until_jobs(
@@ -2777,8 +2789,8 @@ async fn findings_are_filed_only_from_a_run_whose_other_jobs_passed() -> TestRes
     let security = output_of(&outputs, "security")?;
     assert!(
         security.contains(
-            "[yulius] 1 finding(s) outside the change not filed as issues yet: job quality did \
-             not pass"
+            "[yulius] 1 finding(s) outside the change not filed or reopened as issues yet: job \
+             quality did not pass"
         ),
         "{security}"
     );

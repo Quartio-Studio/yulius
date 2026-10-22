@@ -55,8 +55,9 @@ Root causes (reproduced in code, see Evidence):
   `function`, `class`, `struct`, `enum`, `trait`, `impl`, `interface`, `module`), or (b) its `line`
   is within 10 lines of the finding's line, or (c) Vidoc answered the finding as that ignore's
   accepted risk (NOI-002). (a)–(c) hold only on code the branch did not touch: a finding within 3
-  lines of a changed line, or in a new file, matches by title only, so a change to accepted code is
-  judged again.
+  lines of a changed line, in a function the branch changed anywhere (outside any function: a
+  changed line within 10 lines), without a valid line, or in a new file, matches by title only, so
+  a change to accepted code is judged again (review round 1).
 - NOI-002 (Vidoc is told). Each request lists, as data, the ignores whose `path` matches a file of
   its chunk, each with an id (`A<n>`), path, place, title and reason. Vidoc is asked to report a
   weakness that is one of them with `"accepted": "A<n>"` instead of as a new finding. An id that
@@ -80,9 +81,13 @@ Root causes (reproduced in code, see Evidence):
   job that exits 75 ends **error** with the reason `incomplete: <text>` (or a generic one), so the
   commit status reads `Error: incomplete: …`, the merge stays blocked until a rerun passes, and it
   is never a failed finding. It does not stop the other jobs.
+- NOI-005a (quota). A 429 whose message says the key is used up ("used its", "out of quota",
+  "insufficient credits", "billing") is no quota, not run; any other 429 is a passing limit.
 - NOI-007 (no cancel across the scan). A failed `security` job does not cancel the run's other jobs,
   and another job's failure does not cancel the `security` job; both run to the end and report.
   Fail-fast between the other jobs and the run's own cancel (superseded, stopped) are unchanged.
+  While the others run, the commit status says the security job failed
+  (`Running on Yulius: 0 of 3 jobs passed, security failed`).
 - NOI-008 (issues after the tests). Findings outside the change are filed or reopened as issues when
   the run ends, and only when every other job of the run passed or was skipped; otherwise the
   security job's output says how many wait for a run whose other jobs pass. Closing issues whose

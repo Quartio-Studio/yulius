@@ -357,8 +357,8 @@ impl App {
             && !present.is_empty()
         {
             notes.push(format!(
-                "[yulius] {} finding(s) outside the change not filed as issues yet: job {job} did \
-                 not pass; a run whose other jobs pass files them",
+                "[yulius] {} finding(s) outside the change not filed or reopened as issues yet: job \
+                 {job} did not pass; a run whose other jobs pass follows them",
                 present.len()
             ));
         } else if let Some(pull) = pull {

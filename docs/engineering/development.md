@@ -153,7 +153,8 @@ reason = "the argument is a fixed constant, reviewed in #123"
 
 A matching finding is printed as ignored, with its reason, and does not fail the scan. Vidoc words
 the same finding differently from scan to scan, so an entry matches it in three more ways, on code
-the branch did not touch (more than 3 lines from a changed line, not a new file): a finding in the
+the branch did not touch (more than 3 lines from a changed line, in a function the branch did not
+change, with a valid line, not in a new file): a finding in the
 same `function` (the nearest `fn`, `def`, `function`, `class`, `impl`… line above it), within 10
 lines of its `line`, or one Vidoc answered as that entry (`accepted`). On changed lines only the
 title matches, so a change to accepted code is judged again. Name the `function` (or the `line`)

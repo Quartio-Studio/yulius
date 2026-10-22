@@ -773,18 +773,21 @@ pub fn commit_status(state: RunState, summary: RunSummary<'_>) -> CommitStatus {
         ),
         RunState::Running => (
             CommitState::Pending,
-            match summary.skipped {
-                0 => format!(
-                    "Running on Yulius: {} of {} passed",
-                    summary.passed,
-                    jobs_word(summary.jobs)
-                ),
-                n => format!(
-                    "Running on Yulius: {} of {} passed, {n} skipped",
-                    summary.passed,
-                    jobs_word(summary.jobs)
-                ),
-            },
+            // A failed job that stopped none of the others (the security job, SPEC-273) shows
+            // while they run.
+            format!(
+                "Running on Yulius: {} of {} passed{}{}",
+                summary.passed,
+                jobs_word(summary.jobs),
+                match summary.skipped {
+                    0 => String::new(),
+                    n => format!(", {n} skipped"),
+                },
+                summary
+                    .failed_job
+                    .map(|(job, _)| format!(", {job} failed"))
+                    .unwrap_or_default()
+            ),
         ),
         RunState::Passed | RunState::Skipped => (
             CommitState::Success,
@@ -1486,6 +1489,20 @@ mod tests {
         assert_eq!(
             running.description,
             "Running on Yulius: 1 of 3 jobs passed, 1 skipped"
+        );
+        // SPEC-273 (review round 1): a failed scan shows while the tests still run.
+        let running = commit_status(
+            RunState::Running,
+            RunSummary {
+                jobs: 3,
+                failed_job: Some(("security", Some(1))),
+                ..RunSummary::default()
+            },
+        );
+        assert_eq!(running.state, CommitState::Pending);
+        assert_eq!(
+            running.description,
+            "Running on Yulius: 0 of 3 jobs passed, security failed"
         );
         // SPEC-059 CI-301: a run waiting for disk stays pending and says why.
         let waiting = commit_status(
