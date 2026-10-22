@@ -1625,9 +1625,17 @@ span.composer-attachment-open { cursor: default; }
 .settings-identity + .settings-row, .settings-body > .settings-row:first-child { border-top: 0; }
 .settings-row-icon { display: inline-flex; color: var(--muted); }
 /* Connect your local agent (SPEC-247): API tokens and the commands that use them. */
-.agent-connect { display: grid; gap: 12px; padding: 12px 20px 16px; min-width: 0; }
-.agent-token-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 240px) auto; gap: 12px; align-items: end; }
-@media (max-width: 640px) { .agent-token-form { grid-template-columns: minmax(0, 1fr); } }
+.agent-connect { display: grid; gap: 12px; padding: 12px 20px 16px; min-width: 0; container-type: inline-size; }
+/* Rows of labels, controls, hints and field messages (`invalid()`): each field spans them (subgrid)
+   and the button takes the control row, so a long scope hint moves nothing beside it (SPEC-270). */
+.agent-token-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 240px) auto; grid-template-rows: repeat(4, auto); gap: 4px 12px; }
+.agent-token-form > .field { display: grid; grid-row: span 4; grid-template-rows: subgrid; }
+.agent-token-submit { grid-area: 2 / 3; display: flex; }
+/* Stacked once the name would be too narrow for its placeholder beside the scope and the button. */
+@container (max-width: 600px) {
+  .agent-token-form { display: flex; flex-direction: column; gap: 12px; }
+  .agent-token-form > .field { display: flex; }
+}
 .agent-created-box { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); }
 .agent-command .secret-value { overflow-x: auto; white-space: nowrap; }
 .agent-token-list { list-style: none; margin: 0; padding: 0; display: grid; }
