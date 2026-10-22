@@ -5,6 +5,7 @@
 //! the async executor never blocks on SQLite and concurrent writers never race.
 
 mod accounts;
+mod agent_states;
 mod analytics;
 mod audit;
 mod automations;
@@ -99,6 +100,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0040_api_token_scopes.sql"),
     // Schema version 41 (SPEC-257).
     include_str!("migrations/0041_cd_run_stage.sql"),
+    // Schema version 42 (SPEC-271).
+    include_str!("migrations/0042_agent_states.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;

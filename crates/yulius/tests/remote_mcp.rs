@@ -2455,3 +2455,266 @@ async fn a_hand_over_overtaken_by_another_start_is_refused() -> TestResult {
     assert!(error && said.contains("already started"), "{said}");
     Ok(())
 }
+
+/// SPEC-271 (AC1..AC4): with only the operate token made for their agent, a person's laptop agent
+/// sends the project's operator state (a folder with a 50 MiB file, nested folders and modes) with
+/// `yulius secrets import --state`, showing no content; a task restores it into the sandbox home;
+/// the laptop's second send is then refused, so the two copies never fork; the task's saved copy
+/// comes back with `yulius secrets state-get`, and `--replace-state` overwrites it on purpose.
+#[tokio::test]
+async fn a_laptops_operator_state_moves_into_the_sandbox_with_one_writer() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+    use yulius_app::ports::vault::VaultStore as _;
+    use yulius_domain::task::TaskStatus;
+
+    const TASK_TOKEN: &str = "state-move-task-token-s1-0123456789";
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (alice, _) = w.user("alice", false).await?;
+    w.grant("alice", "acme/shop", "admin");
+    let browser = w.browser(&alice).await?;
+    let token =
+        text(&make_token(&w, &browser, "laptop agent", "operate").await?["token"]).to_owned();
+    let served = support::serve(w.h.router.clone()).await?;
+    let url = format!("http://{}", served.addr);
+    let laptop = tempfile::tempdir()?;
+    let laptop = laptop.path();
+    let (code, out, err) = yulius_cli(
+        laptop,
+        &["remote", "login", &url, "--token-stdin"],
+        &format!("{token}\n"),
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+
+    // The Deployer's state on the laptop.
+    let ops = laptop.join(".quartio-operator-20260901");
+    std::fs::create_dir_all(ops.join("rollouts/2026-10-01"))?;
+    std::fs::write(
+        ops.join("inventory.sqlite"),
+        b"SQLite format 3\0pinned-host-key-v1",
+    )?;
+    std::fs::set_permissions(
+        ops.join("inventory.sqlite"),
+        std::fs::Permissions::from_mode(0o600),
+    )?;
+    std::fs::write(
+        ops.join("rollouts/2026-10-01/operator.json"),
+        b"{\"step\": 1}",
+    )?;
+    let mut big = Vec::with_capacity(50 << 20);
+    let mut x: u64 = 0x2545_f491_4f6c_dd1d;
+    while big.len() < 50 << 20 {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        big.extend_from_slice(&x.to_le_bytes());
+    }
+    std::fs::write(ops.join("rollouts/2026-10-01/bundle.bin"), &big)?;
+    std::fs::set_permissions(
+        ops.join("rollouts/2026-10-01"),
+        std::fs::Permissions::from_mode(0o755),
+    )?;
+    let send = |replace: bool| {
+        let mut args = vec![
+            "secrets",
+            "import",
+            "--to",
+            "agent",
+            "--sandbox",
+            "acme/shop",
+            "--yes",
+            "--no-color",
+            // As a shell passes it unexpanded: the CLI reads `~/` as the home.
+            "--state",
+            "QUARTIO_OPERATOR=~/.quartio-operator-20260901",
+        ];
+        if replace {
+            args.push("--replace-state");
+        }
+        args
+    };
+
+    // 1. Sent with no terminal, names and sizes only.
+    let (code, out, err) = yulius_cli(laptop, &send(false), "").await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(
+        out.contains("QUARTIO_OPERATOR") && out.contains("3 files") && out.contains("version 1"),
+        "{out}"
+    );
+    assert!(out.contains("stop using the folder"), "{out}");
+    assert!(
+        !out.contains("pinned-host-key") && !err.contains("pinned-host-key"),
+        "{out}{err}"
+    );
+
+    // 2. A task of the project restores it into the sandbox home.
+    support::seed_task(&w.h, "t1", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&w.h, "t1", TASK_TOKEN).await?;
+    let home = w.h.app.config.data_dir.join("sandboxes/s1/home");
+    std::fs::create_dir_all(&home)?;
+    let restore = support::mcp_tool(
+        &w.h,
+        TASK_TOKEN,
+        "secret_state_restore",
+        json!({"name": "QUARTIO_OPERATOR", "path": "~/.quartio-operator-20260901"}),
+    )
+    .await?;
+    let restored = support::tool_text(&restore);
+    assert_eq!(restored["files"], 3, "{restored}");
+    let copy = home.join(".quartio-operator-20260901");
+    assert_eq!(
+        std::fs::metadata(copy.join("inventory.sqlite"))?
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    assert_eq!(
+        std::fs::read(copy.join("rollouts/2026-10-01/bundle.bin"))?,
+        big
+    );
+    assert_eq!(
+        std::fs::metadata(copy.join("rollouts/2026-10-01"))?
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755
+    );
+
+    // 3. The laptop sends again: refused, nothing changes.
+    let (code, out, err) = yulius_cli(laptop, &send(false), "").await?;
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(
+        out.contains("refused QUARTIO_OPERATOR")
+            && out.contains("was restored into the sandbox at ~/.quartio-operator-20260901"),
+        "the server's refusal: {out}"
+    );
+
+    // 4. A rollout writes the sandbox's copy; the task saves it; the laptop gets it back.
+    std::fs::write(
+        copy.join("inventory.sqlite"),
+        b"SQLite format 3\0pinned-host-key-v2",
+    )?;
+    let saved = support::tool_text(
+        &support::mcp_tool(
+            &w.h,
+            TASK_TOKEN,
+            "secret_state_save",
+            json!({"name": "QUARTIO_OPERATOR"}),
+        )
+        .await?,
+    );
+    assert_eq!(saved["version"], 2, "{saved}");
+    let (code, out, err) = yulius_cli(
+        laptop,
+        &[
+            "secrets",
+            "state-get",
+            "QUARTIO_OPERATOR",
+            "--sandbox",
+            "acme/shop",
+            "--out",
+            "ops-back.tar.gz",
+        ],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(out.contains("stays the one written to"), "{out}");
+    let back = laptop.join("ops-back.tar.gz");
+    assert_eq!(std::fs::metadata(&back)?.permissions().mode() & 0o077, 0);
+    std::fs::create_dir(laptop.join("back"))?;
+    let unpacked = std::process::Command::new("tar")
+        .args(["-xzf", "ops-back.tar.gz", "-C", "back"])
+        .current_dir(laptop)
+        .status()?;
+    assert!(unpacked.success());
+    assert_eq!(
+        std::fs::read(laptop.join("back/inventory.sqlite"))?,
+        b"SQLite format 3\0pinned-host-key-v2"
+    );
+    // Never over an existing file.
+    let (code, _, err) = yulius_cli(
+        laptop,
+        &[
+            "secrets",
+            "state-get",
+            "QUARTIO_OPERATOR",
+            "--sandbox",
+            "acme/shop",
+            "--out",
+            "ops-back.tar.gz",
+        ],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(1), "{err}");
+
+    // A read-only token of the same person never downloads it (review of SPEC-271, M4).
+    let read = text(&make_token(&w, &browser, "reader", "read").await?["token"]).to_owned();
+    let refused = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/agent-states/QUARTIO_OPERATOR/archive",
+        None,
+        &bearer(&read),
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+
+    // 5. On purpose, the laptop's copy replaces the sandbox's.
+    let (code, out, err) = yulius_cli(laptop, &send(true), "").await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(out.contains("version 3"), "{out}");
+
+    // Refused before anything is read or sent.
+    for (args, said) in [
+        (
+            vec![
+                "--to",
+                "team",
+                "--state",
+                "OPS=~/.quartio-operator-20260901",
+            ],
+            "--state belongs to one project",
+        ),
+        (
+            vec!["--to", "agent", "--replace-state", "x.env"],
+            "--replace-state applies to --state",
+        ),
+        (
+            vec![
+                "--to",
+                "agent",
+                "--yes",
+                "--state",
+                "OPS=~/.quartio-operator-20260901",
+                "--state",
+                "OPS=~/.quartio-operator-20260901",
+            ],
+            "OPS is given twice",
+        ),
+    ] {
+        let mut all = vec!["secrets", "import", "--sandbox", "acme/shop"];
+        all.extend(args);
+        let (code, out, err) = yulius_cli(laptop, &all, "").await?;
+        assert_eq!(code, Some(1), "{out}{err}");
+        assert!(err.contains(said), "{said}: {err}");
+    }
+
+    let audit = w.h.store.vault_audit(50).await?;
+    let by_alice = |action: &str| {
+        audit
+            .iter()
+            .any(|e| e.action == action && e.actor == "alice")
+    };
+    for action in [
+        "vault.state.import",
+        "vault.state.export",
+        "vault.state.replace",
+    ] {
+        assert!(by_alice(action), "{action} in {audit:?}");
+    }
+    Ok(())
+}

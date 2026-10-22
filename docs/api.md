@@ -1496,6 +1496,9 @@ after an unlock.
 | POST | `/api/agent-secrets/{id}/request` | `{allow: bool, hosts: [..]}` → `AgentSecret`: answers the hosts an agent asked for with `secret_request_hosts` (SPEC-121): `true` binds them, `false` dismisses them; the request is cleared either way, in one step with the bindings. `hosts` are the requested hosts the person saw, in any order: 409 unless they are exactly what waits (a host asked for meanwhile is never allowed unseen), and 409 when nothing waits or the bindings changed meanwhile; 422 when allowing would bind more than 16 hosts (the request stays). People who manage it (403 for readers, 404 without access). Audited (`vault.agent.allow` / `vault.agent.dismiss`) |
 | POST | `/api/agent-secrets/{id}/env` | `{allow: bool, env_files, env_requested_by?}` → `AgentSecret`: whether agents (every task of each project it reaches: its own, or those a global secret is switched on for) may copy the value into git-ignored `.env` files with `secret_copy_to_env` (SPEC-129). `true` answers an agent's request (`env_files` `asked` → `allowed`); `false` dismisses it or revokes an allowance (→ `no`; copies already written stay). `env_files` and `env_requested_by` are what the person saw: 409 unless they still hold, and when there is nothing to answer; 422 for an unknown `env_files`; 409 when allowing a personal or a production secret. People who manage it (403 for readers, 404 without access). Audited (`vault.agent.env_allow` / `vault.agent.env_dismiss` / `vault.agent.env_revoke`) |
 | POST | `/api/agent-secrets/{id}/reveal` | `{purpose?, fields?: ["value","notes"]}` → `{value, notes}` (`notes` = the description, led by a stored user name and, for older secrets, `Two-factor seed: …`) for people who manage it, after an unlock (403 `reauth_required` otherwise; 403 for readers, 404 without access). Audited (`vault.agent.reveal` / `vault.agent.copy`) |
+| GET | `/api/sandboxes/{sid}/agent-states` | (read) → `[AgentState]`: `{name, description, version, bytes, files, updated_by, updated_at, restored_path?, restored_version?, restored_at?}`, never content (SPEC-271): the project's folders of operator state; `restored_path` (`~/…` of the sandbox home) is the copy written to, stale while `restored_version` < `version` |
+| PUT | `/api/sandboxes/{sid}/agent-states/{name}?description&replace` | raw `application/gzip` tar body, ≤ 64 MiB (larger `Content-Length` refused before reading) → `AgentState`: stores a packed folder as the agent state `name` (an agent secret name), sealed per version. Only files and folders with relative paths, ≤ 20 000 entries and 512 MiB unpacked (422 otherwise). Write access; the slot and the access are checked before the body is read, 429 while two states are moving. A state never restored is replaced (version + 1); once restored, 409 naming the sandbox's copy unless `replace=true`. Audited `vault.state.import` / `vault.state.replace` with name, files and bytes ([ADR-0200](decisions/0200-operator-state-is-a-sealed-agent-state-with-one-writer.md)) |
+| GET | `/api/sandboxes/{sid}/agent-states/{name}/archive` | → the newest packed state (`application/gzip`, `Cache-Control: no-store`), for people with write access, never through a read-only token (403 for both; 429 while two states are moving). Audited `vault.state.export` |
 
 ## UI event stream
 
@@ -1604,6 +1607,18 @@ task; other hooks answer as usual.
   `VIDOC_API_KEY`, is audited `vault.agent.create` with the agent as actor, publishes
   `secrets.updated` for the sandbox (SPEC-209), deletes the file only
   with `delete_file`, and never returns the value.
+- MCP `secret_state_restore {name, path}` (SPEC-271, tasks only) → `{restored, path, version, files,
+  bytes, next}`: writes the agent state into `path`, a `~/…` folder of the sandbox home (missing
+  or empty; reached from the canonical sandbox folder one folder at a time without links, created
+  when missing), unpacked into a fresh sibling folder renamed into place, with each file's
+  permission bits (setuid, setgid, sticky dropped). Refused (409) while the recorded copy exists
+  and is current, or for another path; a newer version (a replace from the laptop) replaces the
+  recorded folder; a recorded copy that is gone is restored again. Audited `vault.state.restore`
+  as the task. Never returns content.
+- MCP `secret_state_save {name}` (SPEC-271, tasks only) → `{saved, version, files, bytes,
+  skipped?, note?}`: packs the restored folder (links and special files left out and named) as the
+  next version, compare-and-set on the version (409 when the person replaced it and it was not
+  restored since, or another save won). Audited `vault.state.save`.
 - MCP `secret_verify {secret, sha256}` (SPEC-178, the Superagent only; `sha256` may be
   `sha256sum`'s line) →
   `{secret, match: exact|trailing_newline|escaped_newlines|different, lines?, meaning}` (`lines`

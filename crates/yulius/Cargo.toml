@@ -68,3 +68,5 @@ tempfile = { workspace = true }
 rusqlite = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1.5"
+tar = { workspace = true }
+flate2 = { workspace = true }

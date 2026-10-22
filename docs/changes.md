@@ -14,6 +14,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   shows what was removed and what was kept and why, on the card, also after a reload. Before,
   only a short count toast followed a silent wait.
 
+- Laptop onboarding moves a project's operator state into its sandbox (SPEC-271, ADR-0200, task
+  #257). A deploy tool's live state (Quartio-Studio/product's `~/.quartio-operator-20260901`: a
+  SQLite inventory, rollout folders, configs) could not move: `--from-file` takes 64 KiB of one
+  value. `yulius secrets import --state NAME=DIR` now sends a folder (or a `.tar.gz` of one, up to
+  64 MiB packed) as an agent state, sealed per version in the vault and audited as the person; a
+  task restores it into the sandbox home with `secret_state_restore` (through folder handles,
+  modes kept) and saves it back with `secret_state_save`; `yulius secrets state-get` downloads it.
+  Once restored the sandbox's copy is the only writer: a second send is refused (409) unless
+  `--replace-state`. Debug and test builds now optimize the vault's cipher, gzip and yulius-store,
+  so a 50 MiB state takes a tenth of a second to seal instead of ten.
 - All sandboxes together now keep the server a quarter of `yulius.service`'s tasks (SPEC-272,
   task #260, ADR-0201): `<unit>/sandboxes/pids.max` is three quarters of the service's limit
   (43 320 on the VM), written at every start and reset to `max` without one, so two busy sandboxes

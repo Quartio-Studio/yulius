@@ -2790,6 +2790,21 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
     .await?;
     assert!(is_error, "{refused}");
     assert!(refused.to_string().contains("unknown tool"), "{refused}");
+    // Only the tools it is served are called for it, task tools included (SPEC-271's agent
+    // states among them).
+    for tool in [
+        "secret_state_restore",
+        "secret_state_save",
+        "delivery_merge",
+        "scope_claim",
+    ] {
+        let (refused, is_error) = cockpit_tool(&f, &token, tool, json!({"name": "OPS"})).await?;
+        assert!(is_error, "{tool}: {refused}");
+        assert!(
+            refused.to_string().contains("unknown tool"),
+            "{tool}: {refused}"
+        );
+    }
     f.h.app.end_all_shells().await;
     Ok(())
 }
