@@ -787,6 +787,50 @@ async fn isolation_limits() -> TestResult {
             .ok_or_else(|| format!("forks were not limited: {out}"))?;
         assert!(refused_after < 64, "at most pids.max tasks: {out}");
         eprintln!("pids.max 64: {}", out.trim());
+        // SPEC-268 PID-002: CI jobs stop at their leaf (3/8 of 64) while the agents' shell still
+        // forks; without the leaf limit the CI forker took the whole sandbox.
+        if ["cpu", "pids"]
+            .iter()
+            .all(|c| delegation.controllers.iter().any(|d| d == c))
+        {
+            assert_eq!(
+                std::fs::read_to_string(group.join("ci/pids.max"))?.trim(),
+                "24"
+            );
+            assert_eq!(
+                std::fs::read_to_string(group.join("engine/pids.max"))?.trim(),
+                "24"
+            );
+            let holder = "import os, sys\nsys.stdin.readline()\nr, w = os.pipe()\nn = 0\ntry:\n    while n < 500:\n        if os.fork() == 0:\n            os.close(w); os.read(r, 1); os._exit(0)\n        n += 1\nexcept OSError as e:\n    pass\nprint('ci-held', n, flush=True)\nsys.stdin.read()\nos.close(w)\nfor _ in range(n):\n    os.wait()\n";
+            let mut ci = std::process::Command::new("python3")
+                .args(["-c", holder])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .spawn()?;
+            std::fs::write(group.join("ci/cgroup.procs"), ci.id().to_string())?;
+            let mut stdin = ci.stdin.take().ok_or("stdin")?;
+            std::io::Write::write_all(&mut stdin, b"go\n")?;
+            let mut held = String::new();
+            std::io::BufRead::read_line(
+                &mut std::io::BufReader::new(ci.stdout.take().ok_or("stdout")?),
+                &mut held,
+            )?;
+            let out = run(
+                &mut sh,
+                "python3 -c 'import os\nfor _ in range(5):\n    if os.fork() == 0: os._exit(0)\n    os.wait()\nprint(\"agents-forked\")'",
+                WAIT,
+            )
+            .await;
+            drop(stdin);
+            let _ = ci.wait();
+            let out = out?;
+            let held_n = held
+                .strip_prefix("ci-held ")
+                .and_then(|n| n.trim().parse::<u32>().ok())
+                .ok_or_else(|| format!("the CI forker said: {held}"))?;
+            assert!(held_n < 24, "CI held at most its leaf: {held}");
+            assert!(out.contains("agents-forked"), "the agents keep their reserve: {out}");
+        }
         let out = run(
             &mut sh,
             "python3 -c 'b = bytearray(512 << 20); print(\"allocated\")'; echo mem-exit=$?",

@@ -6,7 +6,8 @@
 //! - enables the `cpu`, `memory` and `pids` controllers for `<unit>` and `<unit>/sandboxes`;
 //! - gives each sandbox `<unit>/sandboxes/<sandbox>` with its limits, split by CPU weight into
 //!   `system/` (the holder), `agents/` (runs) and `ci/` (CI jobs) when `cpu` is available
-//!   (SPEC-053).
+//!   (SPEC-053); `ci/` and `engine/` then also get 3/8 of its task limit each, so sessions keep
+//!   a quarter of it whatever CI jobs and containers do (SPEC-268).
 //!
 //! The holder, `slirp4netns` and every run of a sandbox join their leaf before they start
 //! anything ([`join`]). Without delegation (the parent of the server's cgroup is not ours),
@@ -288,6 +289,23 @@ fn split_cpu(dir: &Path, groups: &SandboxGroups) -> io::Result<()> {
     Ok(())
 }
 
+/// Of every eight tasks of a sandbox, what CI jobs and the engine may each use (SPEC-268 PID-002):
+/// together three quarters, so the agents' leaf always keeps a quarter.
+const LEAF_TASKS_EIGHTHS: u64 = 3;
+
+/// Gives the leaves of the split sandbox group `dir` their task limits below the sandbox's
+/// `pids_max`: `ci` and `engine` each 3/8 of it, the agents and the holder none of their own
+/// (SPEC-268 PID-002). A fork is refused at the first ancestor at its limit, so CI jobs and the
+/// containers stop at their leaf while sessions keep the rest.
+fn cap_leaves(dir: &Path, groups: &SandboxGroups, pids_max: u64) -> io::Result<()> {
+    write(&dir.join("cgroup.subtree_control"), "+pids")?;
+    let cap = (pids_max / 8 * LEAF_TASKS_EIGHTHS + pids_max % 8 * LEAF_TASKS_EIGHTHS / 8).max(1);
+    for leaf in [&groups.ci, &groups.engine] {
+        write(&leaf.join("pids.max"), &cap.to_string())?;
+    }
+    Ok(())
+}
+
 impl Delegation {
     /// The paths of `sandbox`'s groups, as [`Delegation::sandbox_group`] makes them, without
     /// touching anything.
@@ -339,14 +357,21 @@ impl Delegation {
         if let Err(error) = split_cpu(&dir, &groups) {
             tracing::warn!(sandbox, %error, "CI jobs run without CPU priority for now");
         }
+        if let Some(pids_max) = limits.pids_max
+            && self.controllers.iter().any(|c| c == "pids")
+            && let Err(error) = cap_leaves(&dir, &groups, pids_max)
+        {
+            tracing::warn!(sandbox, %error, "CI jobs and containers run without their own task limit for now");
+        }
         drop(stopping);
         Ok(groups)
     }
 
-    /// Takes the CPU back from every sandbox's leaves (`-cpu`) when the server stops (SPEC-053
-    /// CPU-205). An older binary started after this one (a rollback) joins the sandbox group
-    /// itself, which the kernel refuses while the group passes a controller down. Processes stay
-    /// in their leaves; the next preparation splits again.
+    /// Takes the task limits and the CPU back from every sandbox's leaves (`-pids`, `-cpu`) when
+    /// the server stops (SPEC-053 CPU-205, SPEC-268 PID-003). An older binary started after this
+    /// one (a rollback) joins the sandbox group itself, which the kernel refuses while the group
+    /// passes a controller down. Processes stay in their leaves; the next preparation splits
+    /// again.
     pub fn unsplit_all(&self) {
         let mut stopping = self.stopping.lock().unwrap_or_else(PoisonError::into_inner);
         *stopping = true;
@@ -357,10 +382,17 @@ impl Delegation {
             let control = entry.path().join("cgroup.subtree_control");
             let split = std::fs::read_to_string(&control).is_ok_and(|text| {
                 text.split_whitespace()
-                    .any(|c| c.trim_start_matches('+') == "cpu")
+                    .any(|c| matches!(c.trim_start_matches('+'), "cpu" | "pids"))
             });
-            if split && let Err(error) = write(&control, "-cpu") {
-                tracing::warn!(group = %entry.path().display(), %error, "cannot undo the CPU split");
+            if !split {
+                continue;
+            }
+            // Separate writes: one controller a leaf still passes down (the engine's) must not
+            // keep the other.
+            for line in ["-pids", "-cpu"] {
+                if let Err(error) = write(&control, line) {
+                    tracing::warn!(group = %entry.path().display(), %error, "cannot undo the split ({line})");
+                }
             }
         }
     }
@@ -618,6 +650,69 @@ mod tests {
         assert_eq!(delegation.sandbox_group("s1", &Limits::default())?, groups);
         // SPEC-196 review round 2: the same paths, read without preparing anything.
         assert_eq!(delegation.sandbox_paths("s1"), groups);
+        Ok(())
+    }
+
+    /// SPEC-268 PID-002, PID-003: CI jobs and the engine each get 3/8 of the sandbox's tasks, so
+    /// the agents' leaf keeps a quarter; a stopping server takes them back with the CPU.
+    #[test]
+    fn ci_and_the_engine_leave_the_agents_a_reserve_of_tasks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+        let limits = Limits {
+            pids_max: Some(64),
+            ..Limits::default()
+        };
+        let groups = delegation.sandbox_group("s1", &limits)?;
+        assert_eq!(std::fs::read_to_string(dir.join("pids.max"))?, "64");
+        // A fake file keeps the last write: `+cpu`, then `+pids`.
+        assert_eq!(
+            std::fs::read_to_string(dir.join("cgroup.subtree_control"))?,
+            "+pids"
+        );
+        assert_eq!(std::fs::read_to_string(groups.ci.join("pids.max"))?, "24");
+        assert_eq!(std::fs::read_to_string(groups.engine.join("pids.max"))?, "24");
+        assert!(!groups.agents.join("pids.max").exists(), "the agents keep the rest");
+        assert!(!groups.system.join("pids.max").exists());
+        assert_eq!(std::fs::read_to_string(groups.ci.join("cpu.weight"))?, "400");
+        delegation.unsplit_all();
+        // `-pids`, then `-cpu` (kept by the fake file).
+        assert_eq!(
+            std::fs::read_to_string(dir.join("cgroup.subtree_control"))?,
+            "-cpu"
+        );
+        // A tiny limit still leaves each leaf a task.
+        let (_root, delegation, _dir) = fake_sandbox("cpu memory pids\n")?;
+        let tiny = Limits {
+            pids_max: Some(2),
+            ..Limits::default()
+        };
+        let groups = delegation.sandbox_group("s1", &tiny)?;
+        assert_eq!(std::fs::read_to_string(groups.ci.join("pids.max"))?, "1");
+        Ok(())
+    }
+
+    /// Without the split the runs live in the sandbox's group, which cannot pass `pids` down.
+    #[test]
+    fn without_the_split_the_leaves_get_no_task_limit() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (_root, delegation, dir) = fake_sandbox("memory pids\n")?;
+        let limits = Limits {
+            pids_max: Some(64),
+            ..Limits::default()
+        };
+        let groups = delegation.sandbox_group("s1", &limits)?;
+        assert_eq!(std::fs::read_to_string(dir.join("pids.max"))?, "64");
+        assert!(!groups.engine.join("pids.max").exists());
+        assert!(!dir.join("cgroup.subtree_control").exists());
+        // No `pids` controller: the CPU split alone.
+        let (_root, delegation, dir) = fake_sandbox("cpu memory\n")?;
+        let groups = delegation.sandbox_group("s1", &limits)?;
+        assert!(!groups.ci.join("pids.max").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("cgroup.subtree_control"))?,
+            "+cpu"
+        );
         Ok(())
     }
 
