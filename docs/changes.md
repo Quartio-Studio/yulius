@@ -14,6 +14,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   shows what was removed and what was kept and why, on the card, also after a reload. Before,
   only a short count toast followed a silent wait.
 
+- All sandboxes together now keep the server a quarter of `yulius.service`'s tasks (SPEC-272,
+  task #260, ADR-0201): `<unit>/sandboxes/pids.max` is three quarters of the service's limit
+  (43 320 on the VM), written at every start and reset to `max` without one, so two busy sandboxes
+  can no longer leave the server unable to fork. A session that aborts at that common limit still
+  says "the sandbox hit its process limit" on kernels with `pids.events.local` (6.13+), and an
+  explicit `YULIUS_SANDBOX_PIDS` above it is logged. Also from #254's review: the end banner keeps
+  keyboard focus on Continue / Try again when the task's details are read again, a knob set through
+  a dotted key (`RUST_TEST_THREADS.value`, `build.jobs`) keeps its value, and a paused run's group
+  that met a limit is no longer removed while its counts matter.
 - Parallel tasks of one sandbox no longer use up its process budget and crash Claude Code (SPEC-268,
   task #254, ADR-0198). Five quartio-v2 tasks building Rust and running tests with containers
   shared the sandbox's 8192 tasks (threads count), and a session that could not start a thread
