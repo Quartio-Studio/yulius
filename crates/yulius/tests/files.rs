@@ -991,3 +991,44 @@ async fn a_listing_refuses_a_folder_swapped_for_a_link_after_the_check() -> Test
     assert_eq!(listed.status, StatusCode::FORBIDDEN, "{:?}", listed.body);
     Ok(())
 }
+
+#[tokio::test]
+async fn a_file_on_the_way_is_not_a_folder_to_create_in_or_delete_from() -> TestResult {
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let repo = h.app.config.data_dir.join("sandboxes/s1/repo");
+    std::fs::create_dir_all(repo.join("docs"))?;
+    std::fs::write(repo.join("docs/a.txt"), "x")?;
+    let created = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/files",
+        Some(json!({"path": "docs/a.txt/new", "kind": "dir"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        created.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        created.body
+    );
+    let deleted = call(
+        &h.router,
+        Method::DELETE,
+        "/api/sandboxes/s1/files?path=docs/a.txt/x",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        deleted.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        deleted.body
+    );
+    assert_eq!(std::fs::read_to_string(repo.join("docs/a.txt"))?, "x");
+    Ok(())
+}

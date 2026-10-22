@@ -71,6 +71,10 @@ impl Target {
         if !inside(&self.root, folder) {
             return Err(outside());
         }
+        // A file on the way is a mistake, not an escape: said as such (the walk refuses it too).
+        if !folder.is_dir() {
+            return Err(AppError::Invalid("that path is not a directory".into()));
+        }
         let below = folder.strip_prefix(&self.anchor).map_err(|_| outside())?;
         let names: Vec<&OsStr> = below.components().map(Component::as_os_str).collect();
         open_dirs_below(&self.anchor, &names, false).map_err(|err| match err {
@@ -206,17 +210,26 @@ pub(crate) fn open_dir_at(
     }
 }
 
-/// Up to `limit` names in the folder `dir` (`.` and `..` left out), read through a fresh
-/// description of it, so every call starts at the folder's beginning.
-pub(crate) fn names_in(dir: &OwnedFd, limit: usize) -> Result<Vec<OsString>, Errno> {
-    use std::os::unix::ffi::OsStrExt as _;
+/// A listing of the folder `dir` through a fresh description of it, so it starts at the folder's
+/// beginning.
+fn listing(dir: &OwnedFd) -> Result<nix::dir::OwningIter, Errno> {
     let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC;
-    let mut listing = nix::dir::Dir::openat(dir, ".", flags, Mode::empty())?;
+    Ok(nix::dir::Dir::openat(dir, ".", flags, Mode::empty())?.into_iter())
+}
+
+/// Up to `limit` names in the folder `dir` (`.` and `..` left out), from its beginning.
+pub(crate) fn names_in(dir: &OwnedFd, limit: usize) -> Result<Vec<OsString>, Errno> {
+    next_names(&mut listing(dir)?, limit)
+}
+
+/// The next `limit` names of `listing` at most (`.` and `..` left out); it reads on from there.
+fn next_names(listing: &mut nix::dir::OwningIter, limit: usize) -> Result<Vec<OsString>, Errno> {
+    use std::os::unix::ffi::OsStrExt as _;
     let mut names = Vec::new();
-    for entry in listing.iter() {
-        if names.len() >= limit {
+    while names.len() < limit {
+        let Some(entry) = listing.next() else {
             break;
-        }
+        };
         let entry = entry?;
         let name = entry.file_name().to_bytes();
         if name != b"." && name != b".." {
@@ -239,8 +252,8 @@ pub(crate) fn kind_at(
 }
 
 /// Removes `name` from the folder `dir`: a folder with everything in it, handle by handle (each
-/// sub-folder opened with `O_NOFOLLOW`), a file or a link with `unlinkat`; a link is removed, never
-/// followed (#660, ADR-0174). A missing `name` is not an error. Bounded by [`MAX_REMOVE_DEPTH`]
+/// sub-folder opened with `O_NOFOLLOW`; only folders are opened), a file or a link with `unlinkat`;
+/// a link is removed, never followed (#660, ADR-0174). A missing `name` is not an error. Bounded by [`MAX_REMOVE_DEPTH`]
 /// and [`MAX_REMOVED_ENTRIES`]: past them it stops and leaves the rest.
 pub(crate) fn remove_tree(dir: &OwnedFd, name: &OsStr) -> AppResult<()> {
     let mut budget = MAX_REMOVED_ENTRIES;
@@ -253,30 +266,50 @@ fn remove_entry(dir: &OwnedFd, name: &OsStr, depth: usize, budget: &mut usize) -
             "more than {MAX_REMOVED_ENTRIES} entries to delete; the rest is left"
         ))
     })?;
-    let removed = match open_dir_at(dir, name, false) {
-        Ok(folder) => {
-            if depth >= MAX_REMOVE_DEPTH {
-                return Err(AppError::Conflict(format!(
-                    "folders nest more than {MAX_REMOVE_DEPTH} deep; the rest is left"
-                )));
-            }
-            loop {
-                let names = names_in(&folder, REMOVE_BATCH).map_err(errno_error)?;
-                if names.is_empty() {
-                    break;
+    let removed = match kind_at(dir, name).map(|(kind, _)| kind) {
+        Ok(SFlag::S_IFDIR) => match open_dir_at(dir, name, false) {
+            Ok(folder) => {
+                if depth >= MAX_REMOVE_DEPTH {
+                    return Err(AppError::Conflict(format!(
+                        "folders nest more than {MAX_REMOVE_DEPTH} deep; the rest is left"
+                    )));
                 }
-                for child in &names {
-                    remove_entry(&folder, child, depth + 1, budget)?;
-                }
+                empty_folder(&folder, depth, budget)?;
+                unlinkat(dir, name, UnlinkatFlags::RemoveDir)
             }
-            unlinkat(dir, name, UnlinkatFlags::RemoveDir)
-        }
-        Err(Errno::ELOOP | Errno::ENOTDIR) => unlinkat(dir, name, UnlinkatFlags::NoRemoveDir),
+            // Swapped for a link or a file since: that is removed, not followed.
+            Err(Errno::ELOOP | Errno::ENOTDIR) => unlinkat(dir, name, UnlinkatFlags::NoRemoveDir),
+            Err(err) => Err(err),
+        },
+        Ok(_) => unlinkat(dir, name, UnlinkatFlags::NoRemoveDir),
         Err(err) => Err(err),
     };
     match removed {
         Ok(()) | Err(Errno::ENOENT) => Ok(()),
         Err(err) => Err(errno_error(err)),
+    }
+}
+
+/// Removes everything in `folder`: one listing is read on while its entries go (linear in the
+/// entries), then the folder is read again from its beginning until it is empty, so entries made
+/// meanwhile go too.
+fn empty_folder(folder: &OwnedFd, depth: usize, budget: &mut usize) -> AppResult<()> {
+    loop {
+        let mut stream = listing(folder).map_err(errno_error)?;
+        let mut any = false;
+        loop {
+            let names = next_names(&mut stream, REMOVE_BATCH).map_err(errno_error)?;
+            if names.is_empty() {
+                break;
+            }
+            any = true;
+            for child in &names {
+                remove_entry(folder, child, depth + 1, budget)?;
+            }
+        }
+        if !any {
+            return Ok(());
+        }
     }
 }
 
@@ -430,9 +463,6 @@ impl App {
     ) -> AppResult<DirListing> {
         let target = self.file_target(ctx, sandbox, root, path, false).await?;
         let dir = Self::existing(&target)?;
-        if !dir.is_dir() {
-            return Err(AppError::Invalid("that path is not a directory".into()));
-        }
         crate::race::reached(crate::race::Point::FilesList, &dir);
         // Listed through the folder's handle, never by path again (#660).
         let folder = target.open_folder(&dir)?;

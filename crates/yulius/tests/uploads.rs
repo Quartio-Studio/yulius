@@ -1114,6 +1114,10 @@ async fn a_deleted_tasks_attachments_are_never_removed_through_a_swapped_folder(
     attachments_swapped_at(&data, &outside, yulius_app::race::Point::AttachmentsRemove);
     let deleted = call(&h.router, Method::DELETE, "/api/tasks/t1", None, &alice).await?;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{:?}", deleted.body);
+    assert!(
+        std::fs::symlink_metadata(data.join("sandboxes/s1/attachments"))?.is_symlink(),
+        "the folder was swapped at the pause point"
+    );
     assert_eq!(
         std::fs::read_to_string(outside.join("tasks/t1/x.txt"))?,
         "precious",
