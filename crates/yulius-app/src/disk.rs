@@ -34,6 +34,8 @@ use crate::ports::isolation::SandboxRef;
 
 /// How often the upkeep runs.
 pub const DISK_EVERY: Duration = Duration::from_secs(5 * 60);
+/// How often the upkeep reads the data disk's level (SPEC-276 RDA-006).
+pub const DISK_TICK: Duration = Duration::from_secs(60);
 /// How often Cargo build directories are swept while the disk is not low (SPEC-276 RDA-001).
 pub const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
 /// First round after start.
@@ -173,26 +175,26 @@ impl App {
         let app = Arc::clone(self);
         tokio::spawn(async move {
             tokio::time::sleep(DISK_FIRST).await;
-            let mut every = tokio::time::interval(DISK_EVERY);
+            // The disk's level is read every minute; a round runs every DISK_EVERY, and at once
+            // when the level rises (SPEC-276 RDA-006).
+            let mut tick = tokio::time::interval(DISK_TICK);
+            let mut rounds: Option<tokio::time::Instant> = None;
             let mut swept: Option<tokio::time::Instant> = None;
             loop {
-                every.tick().await;
-                let Ok(sandboxes) = app.deps.store.sandboxes().await else {
+                tick.tick().await;
+                let (level, before) = app.check_disk().await;
+                let due = rounds.is_none_or(|at| at.elapsed() >= DISK_EVERY) || level > before;
+                if !due {
                     continue;
-                };
-                for sandbox in &sandboxes {
-                    if let Err(err) = app.disk_upkeep(sandbox, false).await {
-                        tracing::warn!(sandbox = %sandbox.id, error = %err, "disk upkeep failed");
-                    }
                 }
-                // Cargo build directories lose what nobody used (SPEC-276 RDA-001).
-                if swept.is_none_or(|at| at.elapsed() >= SWEEP_EVERY) {
+                rounds = Some(tokio::time::Instant::now());
+                // Cargo build directories lose what nobody used (RDA-001): hourly, and every
+                // round while the disk is low.
+                let sweep_due = swept.is_none_or(|at| at.elapsed() >= SWEEP_EVERY);
+                if sweep_due || level >= Level::Low {
                     swept = Some(tokio::time::Instant::now());
-                    app.sweep_build_caches(Level::Ok).await;
                 }
-                // Removed playgrounds whose code was asked to go, once nothing of them runs
-                // (SPEC-171).
-                app.run_purges().await;
+                app.disk_round(sweep_due).await;
             }
         });
     }
@@ -219,13 +221,30 @@ impl App {
         sandbox: &SandboxRecord,
         pressure: bool,
     ) -> AppResult<DiskReport> {
+        self.disk_upkeep_needing(sandbox, pressure, 0).await
+    }
+
+    /// [`App::disk_upkeep`] that also frees `host_need` bytes for a critical data disk (SPEC-276
+    /// RDA-006), as quota pressure does: the engine's unused images, then the largest caches of
+    /// idle tasks and CI checkouts.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn disk_upkeep_needing(
+        &self,
+        sandbox: &SandboxRecord,
+        pressure: bool,
+        host_need: u64,
+    ) -> AppResult<DiskReport> {
         let reference = self.sandbox_ref(sandbox);
         let isolation = self.isolation.get();
         let usage = match isolation {
             Some(isolation) => isolation.disk(&reference).await,
             None => None,
         };
-        let need = usage.map_or(0, |usage| bytes_to_free(usage.used, usage.limit));
+        let need = usage
+            .map_or(0, |usage| bytes_to_free(usage.used, usage.limit))
+            .max(host_need);
         // The engine's unused images and build cache go first: rebuilt or pulled again, never
         // a task's (SPEC-187 DKR-006).
         let engine_freed = match isolation {

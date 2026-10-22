@@ -618,7 +618,7 @@ mod tests {
         }
         let one = sweep_target(&f.root, &f.target, NOW_MS, &ok_policy());
         assert_eq!(one.units, 0, "no cap reached: {one:?}");
-        let found = units(&f.root, &[f.profile.clone()]).ok_or("units")?;
+        let found = units(&f.root, std::slice::from_ref(&f.profile)).ok_or("units")?;
         let unit_bytes = found.first().map(|f| f.unit.bytes).ok_or("a unit")?;
         // A cap of three units: down to three quarters of it, i.e. two units stay.
         let policy = Policy {
@@ -628,10 +628,16 @@ mod tests {
         let outcome = sweep_target(&f.root, &f.target, NOW_MS, &policy);
         assert_eq!(outcome.units, 2, "{outcome:?}");
         let left = |hash: &str| f.profile.join(format!("deps/libdep-{hash}.rlib")).exists();
-        assert!(!left("0000000000000001") && !left("0000000000000002"), "oldest first");
+        assert!(
+            !left("0000000000000001") && !left("0000000000000002"),
+            "oldest first"
+        );
         assert!(left("0000000000000003") && left("0000000000000004"));
         // The current build (used within the hour) stays even far above its cap.
-        let tiny = Policy { cap: 1, ..ok_policy() };
+        let tiny = Policy {
+            cap: 1,
+            ..ok_policy()
+        };
         let outcome = sweep_target(&f.root, &f.target, NOW_MS, &tiny);
         assert_eq!(outcome.units, 1, "{outcome:?}");
         assert!(left("0000000000000004"));

@@ -1261,3 +1261,57 @@ async fn the_sweep_deletes_unused_build_units_of_worktrees_and_ci_checkouts() ->
     );
     Ok(())
 }
+
+/// SPEC-276 RDA-006: a waiting task keeps its caches while the data disk is fine or merely low;
+/// once the disk is critical, a round prunes them (back towards 85 %), sweeps, and the rise is
+/// audited once.
+#[tokio::test]
+async fn a_critical_data_disk_prunes_idle_caches_and_is_audited() -> BoxResult<()> {
+    use yulius_domain::sweep::Level;
+    let w = world().await?;
+    let idle = w
+        .task("t-wait", TaskStatus::Running, Some(Activity::Waiting))
+        .await?;
+    let app = &w.h.app;
+    w.h.system.set_disk(1_000_000, 500_000);
+    let round = app.disk_round(false).await;
+    assert_eq!(round.level, Level::Ok);
+    assert!(round.sweep.is_none(), "not due, not low");
+    w.h.system.set_disk(1_000_000, 900_000);
+    let round = app.disk_round(false).await;
+    assert_eq!(round.level, Level::Low);
+    assert!(round.sweep.is_some(), "a low disk sweeps every round");
+    assert!(idle.join("target/blob").exists(), "low: idle caches stay");
+
+    w.h.system.set_disk(1_000_000, 960_000);
+    let round = app.disk_round(false).await;
+    assert_eq!(round.level, Level::Critical);
+    assert!(
+        !idle.join("target/blob").exists(),
+        "critical: idle caches go"
+    );
+    assert!(idle.exists(), "the worktree stays");
+    assert!(round.upkeep.freed > 0, "{round:?}");
+    app.disk_round(false).await;
+    let audited: Vec<String> =
+        w.h.store
+            .automation_audit("instance", 100)
+            .await?
+            .into_iter()
+            .filter(|a| a.action == "disk.pressure")
+            .filter_map(|a| a.detail)
+            .collect();
+    assert_eq!(
+        audited.len(),
+        2,
+        "low, then critical, once each: {audited:?}"
+    );
+    assert!(
+        audited
+            .iter()
+            .any(|d| d.starts_with("the data disk is critical (96 % used")),
+        "{audited:?}"
+    );
+    assert_eq!(app.disk_view().await.level, "critical");
+    Ok(())
+}
