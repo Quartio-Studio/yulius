@@ -76,6 +76,7 @@ unexpectedly".
   43 320), so a sandbox never starves the server and the other sandboxes before its own limit
   (review round 1). `YULIUS_SANDBOX_PIDS` still sets it, uncapped. Two saturated sandboxes can
   still fill the service between them; a common limit for all sandboxes is split off to task #260
+  ([SPEC-272](SPEC-272-all-sandboxes-together-keep-the-server-a.md))
   (review round 3). Unreadable host values fall
   back to 8192.
 - PID-002: When the sandbox is split into leaves, the `ci` and `engine` leaves each get
