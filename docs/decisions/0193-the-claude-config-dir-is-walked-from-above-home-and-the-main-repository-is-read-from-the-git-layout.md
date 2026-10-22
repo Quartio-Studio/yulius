@@ -59,6 +59,6 @@ of SPEC-024, SPEC-106 and SPEC-210.
   Claude Code may then ask for the main repository's trust as it would without Yulius. A `gitdir:`
   naming a path that is no repository yields a trust entry for it, in the agent's own config only.
 - Residual, pre-existing: the worktree folder is the agent's, so a link it puts there is resolved
-  for the worktree's key and its `.git` read through it. Not covered: the transcript step-back
-  still reads `<home>/.claude/projects/…` by path (#661).
+  for the worktree's key and its `.git` read through it. The transcript step-back walks
+  `<home>/.claude/projects/…` from the same anchor since SPEC-266 (#661).
 - The two Vidoc ignores that pointed at #634 are gone; a new finding there is triaged afresh.

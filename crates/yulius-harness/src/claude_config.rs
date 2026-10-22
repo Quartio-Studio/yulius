@@ -172,7 +172,7 @@ fn open_config_dir(config_dir: &Path) -> io::Result<OwnedFd> {
 
 /// Opens the folder `name` in `dir` without following a link, making it 0700 first when it is
 /// missing and `create`.
-fn open_dir_at(dir: &OwnedFd, name: &OsStr, create: bool) -> Result<OwnedFd, Errno> {
+pub(crate) fn open_dir_at(dir: &OwnedFd, name: &OsStr, create: bool) -> Result<OwnedFd, Errno> {
     match openat(dir, name, DIR_FLAGS, Mode::empty()) {
         Err(Errno::ENOENT) if create => {
             match mkdirat(dir, name, Mode::S_IRWXU) {
@@ -207,6 +207,17 @@ fn opened() {
 /// renamed over `name` within the same handle, then the folder synced. A link at `name` is
 /// replaced, never followed. The new file is removed when anything fails.
 fn replace(dir: &OwnedFd, name: &str, contents: &[u8]) -> io::Result<()> {
+    replace_with_mode(dir, name, contents, None)
+}
+
+/// [`replace`], the new file given the permission bits `mode` with `fchmod` before the rename
+/// when one is given (the transcript step-back keeps the old file's, SPEC-266 STB-003).
+pub(crate) fn replace_with_mode(
+    dir: &OwnedFd,
+    name: &str,
+    contents: &[u8],
+    mode: Option<Mode>,
+) -> io::Result<()> {
     let temporary = format!("{name}.tmp-{}", uuid::Uuid::new_v4().simple());
     let fd = openat(
         dir,
@@ -215,8 +226,9 @@ fn replace(dir: &OwnedFd, name: &str, contents: &[u8]) -> io::Result<()> {
         Mode::S_IRUSR | Mode::S_IWUSR,
     )?;
     let mut file = std::fs::File::from(fd);
-    let result = file
-        .write_all(contents)
+    let result = mode
+        .map_or(Ok(()), |mode| Ok(nix::sys::stat::fchmod(&file, mode)?))
+        .and_then(|()| file.write_all(contents))
         .and_then(|()| file.sync_all())
         .and_then(|()| Ok(renameat(dir, temporary.as_str(), dir, name)?))
         .and_then(|()| Ok(nix::unistd::fsync(dir)?));
@@ -404,7 +416,7 @@ fn read_small<P: ?Sized + nix::NixPath + AsRef<OsStr>>(
 /// its config dir and worktree, which the host reads before a launch (#634): the file is opened
 /// without following a link (ELOOP) and without blocking, so a link cannot make the host copy
 /// another file into the sandbox or trust another directory, and a FIFO cannot hold the launch.
-fn open_regular<P: ?Sized + nix::NixPath + AsRef<OsStr>>(
+pub(crate) fn open_regular<P: ?Sized + nix::NixPath + AsRef<OsStr>>(
     dir: impl AsFd,
     name: &P,
 ) -> io::Result<Option<std::fs::File>> {

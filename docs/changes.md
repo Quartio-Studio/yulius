@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-22
 
+- The usage-limit step-back and the task home's creation go through handles (SPEC-266, task #252,
+  fixes #661). The transcript `<home>/.claude/projects/<slug>/<session>.jsonl` is reached from
+  the folder above the home without following links, read only when it is a regular file, and
+  replaced by a random new file renamed within its folder, with the old permissions. A link on the
+  way or at the transcript now fails the step back (the resume goes on), where Yulius used to
+  read the link's target and replace the file it led to (or the link itself); a FIFO there no
+  longer hangs the run's start. A task's home
+  is made with `mkdirat` from its sandbox directory, so a `home` link fails the start.
 - The editor's delete, folder creation and listing, and the removal of task, shell and draft
   attachments, go through folder handles (task #251, #660, SPEC-265, ADR-0174). A contained shell
   that swapped a folder on the way for a link between the server's check and its action could make

@@ -249,6 +249,10 @@ When a subscription's usage limit cuts a turn, the task goes on as if the limit 
 [decision 0027](decisions/0027-step-back-past-a-usage-limit.md)): on another subscription at
 once, or on its own after the reset. The supervisor has the harness adapter step the transcript
 back over the limit on a blocking thread, and indexes the session again only if the file changed.
+The transcript is the agent's: the step back reaches it from the folder above the home through
+handles that follow no link, reads it only when it is a regular file, and replaces it within its
+folder's handle ([SPEC-266](../.ai/specs/SPEC-266-transcript-step-back-and-home-creation-g.md),
+[decision 0174](decisions/0174-host-access-to-agent-owned-folders-goes-through-handles.md)).
 Claude Code then resumes the same session with `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1`, so it
 redoes the lost turn by itself. Nothing is typed. If Claude Code continues the turn by itself at
 the reset, its first agent work or turn end after the pause ends the pause, and Yulius leaves
