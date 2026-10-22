@@ -36,7 +36,7 @@ job's name for another command runs that command without any secret.
   asserted the defect as intended (the pull request's `granted` job ran `report("own ")` and was
   expected to get `key=yulius-secret-API_KEY ... proxy=set`); the unit test of `granted` used one
   command for every job.
-- Matrix values: `dom::jobs` expands a definition into one job per value, each with the
+- Matrix values: `dom::expand_jobs` expands a definition into one job per value, each with the
   definition's command, so a matrix job matches its definition's command.
 - Commands on both sides come from the same parser (`validate_gate`), so equal configured text is
   equal command text.
@@ -48,7 +48,8 @@ job's name for another command runs that command without any secret.
   (amends SPEC-142 CSE-002). Each matrix value of such an entry shares its command and its grant.
 - CSG-002: A job whose name matches a granted entry but whose command differs gets no
   placeholder, no proxy and no CA bundle, and its output says why: `[yulius] agent secrets: none;
-  this job's command is not the one the integration branch grants them to`.
+  this job's command is not the one the integration branch grants them to (a run queued before
+  that branch changed it gets them when run again)`.
 - CSG-003: A pull request's own job keeping the trusted name and command still gets the grant;
   other job settings (resources, matrix values, its own `secrets` list) neither grant nor withhold.
 - CSG-004: The scanning jobs keep their grant: `keep_security_jobs` puts the trusted job, with the
@@ -58,9 +59,9 @@ job's name for another command runs that command without any secret.
 
 - [x] Reproduce the defect and find its root cause
 - [x] Spec SPEC-264 and the ADR on granting by key and command
-- [ ] Regression tests: a PR's own job with a granted key and another command gets no secret, the trusted command keeps its grant
-- [ ] Grant by key and command, with a job-log note when the command differs
-- [ ] SPEC-142 CSE-002, architecture and changes docs say so
+- [x] Regression tests: a PR's own job with a granted key and another command gets no secret, the trusted command keeps its grant
+- [x] Grant by key and command, with a job-log note when the command differs
+- [x] SPEC-142 CSE-002, architecture and changes docs say so
 - [ ] Independent review answered, gates green, merged into dev on green CI
 
 ## Acceptance criteria
@@ -93,3 +94,8 @@ job's name for another command runs that command without any secret.
 - Known limit (unchanged, ADR-0116): the trusted command runs the pull request's checkout, so a
   command calling a script runs the pull request's version of the script. The grant still bounds
   the secret to its bound hosts through the proxy, as for every pull request head since SPEC-142.
+- Known limit (new, fails safe; review round 1): a run is planned with the jobs in force when it
+  is queued and checked against the integration head when each job starts. A run queued before
+  the integration branch changed a granted job's command runs the old command without the secret
+  (the `security` scan then ends skipped, unrun), and its output says to run it again. Granting
+  the old command instead would let a command the integration branch dropped keep its secret.

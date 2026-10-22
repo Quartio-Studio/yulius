@@ -39,5 +39,7 @@ request's scanning job with the trusted one (`keep_security_jobs`).
 
 - A pull request that changes a granted job's command is tested without the secret; the job's
   output says why, and the grant follows the new command once it is merged.
+- A run queued before the integration branch changed a granted command gets no secret for it
+  (its output says to run it again): the grant follows the integration head when the job starts.
 - The trusted command still runs the pull request's checkout (unchanged from ADR-0116): a granted
   command calling a script runs the pull request's script, bounded by the secret's hosts.

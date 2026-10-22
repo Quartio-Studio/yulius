@@ -773,7 +773,8 @@ impl App {
             Ok(gate) if granted_elsewhere(gate.as_ref(), &job.key, &job.command) => {
                 ring.push_str(
                     "[yulius] agent secrets: none; this job's command is not the one the \
-                     integration branch grants them to\n",
+                     integration branch grants them to (a run queued before that branch changed \
+                     it gets them when run again)\n",
                 );
                 return None;
             }

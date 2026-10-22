@@ -119,7 +119,8 @@ pub struct JobDef {
     /// The CPUs and memory each of its jobs declares (`cpus`, `memory_gb`; SPEC-082 RES-002).
     pub need: Need,
     /// Agent secrets its jobs may use through the egress proxy (`secrets`, SPEC-142). Only the
-    /// integration branch's list counts: Yulius reads it when a job starts, by job name.
+    /// integration branch's list counts: Yulius reads it when a job starts, for a job with that
+    /// entry's name and command (SPEC-264).
     pub secrets: Vec<String>,
 }
 
