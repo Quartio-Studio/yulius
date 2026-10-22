@@ -49,10 +49,6 @@ use crate::projects::{blocking, clone_url, identity};
 use crate::session_docs::StoreOutcome;
 use crate::supervisor::branch_for;
 
-/// The name of a snapshot import's checkout under `worktrees/` starts with this; hygiene leaves
-/// it to the import (SPEC-269).
-pub(crate) const IMPORT_WORKTREE_PREFIX: &str = "import-";
-
 /// Earlier jobs of a sandbox examined for content reuse, job reuse and applied state.
 pub const JOB_LIST_LIMIT: u32 = 200;
 /// An `applying` job untouched for this long is considered abandoned and may be re-applied.
@@ -1148,7 +1144,7 @@ impl App {
             return Err(AppError::Invalid(format!("invalid branch name {branch}")));
         }
         let worktrees = self.sandbox_dir(&sandbox.id).join("worktrees");
-        let mut path = worktrees.join(format!("{IMPORT_WORKTREE_PREFIX}{}", job.id));
+        let mut path = worktrees.join(format!("import-{}", job.id));
         let mut attempt = 1;
         while path.exists() {
             attempt += 1;
@@ -1157,7 +1153,7 @@ impl App {
                     "snapshot worktree paths exhausted".into(),
                 ));
             }
-            path = worktrees.join(format!("{IMPORT_WORKTREE_PREFIX}{}-{attempt}", job.id));
+            path = worktrees.join(format!("import-{}-{attempt}", job.id));
         }
         let parent = worktrees.clone();
         blocking(move || fs::create_dir_all(&parent).map_err(AppError::internal)).await?;

@@ -254,6 +254,10 @@ Read in the code on `dev` (21c26d8b):
   kept with a reason. Its low finding on the task re-read: a task that is gone (`Ok(None)`) may
   lose its worktree by design (`task_deleted`), a store error keeps it, and the re-read is the last
   step before Git's removal. Findings outside the change were filed by Yulius CI (#848, #849).
+- The local scan then rated a pre-existing `stage_job_files` path a high finding in `imports.rs`,
+  which the branch only touched to share the import prefix. `imports.rs` is now as on `dev` (the
+  prefix lives in `hygiene.rs`, naming `imports.rs`'s `import-<job>`), so its findings are outside
+  the change and Yulius CI files them. The snapshot path race is #824.
 - Not testable here: a real 6-hourly round on the instance against GitHub. The round is driven in
   tests through `hygiene_round`, with real Git over local remotes and the GitHub fake.
 - Independent review in fresh sessions:

@@ -47,6 +47,9 @@ pub const MAX_CLEANUP_ITEMS: usize = 100;
 const REMOTE: &str = "remote_branch";
 const LOCAL: &str = "local_branch";
 const WORKTREE: &str = "worktree";
+/// The start of a snapshot import's checkout name under `worktrees/` (`import-<job>[-<n>]`, as
+/// `imports.rs` names it): hygiene leaves it to the import (SPEC-269).
+const IMPORT_WORKTREE_PREFIX: &str = "import-";
 /// Who the background round acts as in the audit log.
 const AUTO_ACTOR: &str = "yulius";
 
@@ -440,9 +443,7 @@ impl App {
                         .unwrap_or_default();
                     match tasks.get(&id) {
                         // A snapshot import's checkout is the import's, not a task's.
-                        None if id.starts_with(crate::imports::IMPORT_WORKTREE_PREFIX) => {
-                            WorktreeOwner::Other
-                        }
+                        None if id.starts_with(IMPORT_WORKTREE_PREFIX) => WorktreeOwner::Other,
                         None => WorktreeOwner::Deleted,
                         Some(task) => WorktreeOwner::Task {
                             number: task.number,
