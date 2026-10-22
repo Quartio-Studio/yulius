@@ -44,7 +44,7 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 | `scripts/dev test` | nextest workspace tests with zero retries; doctests for eligible library targets |
 | `scripts/dev deps` | cargo-deny advisories/licenses/bans/sources and cargo-shear (unused crate and workspace dependencies) |
 | `scripts/dev ci` | doctor, check, lint, macos, test, deps, then rustdoc with warnings denied |
-| `scripts/dev security` | Vidoc's vidoc-1 scan of the files the branch's commits changed since `dev` (`--all`: the whole repository); fails on open medium findings in the changed lines and on open critical or high findings, exit 2 when it could not run. Needs a key and the network; not part of `ci`, but Yulius CI runs it as the `security` job on pull request heads |
+| `scripts/dev security` | Vidoc's vidoc-1 scan of the files the branch's commits changed since `dev` (`--all`: the whole repository); fails on open medium findings in the changed lines and on open critical or high findings, exit 2 when it could not run, exit 3 when incomplete. Needs a key and the network; not part of `ci`, but Yulius CI runs it as the `security` job on pull request heads |
 
 Use `scripts/dev check`, `scripts/dev lint` or `scripts/dev test` during iteration.
 The `yulius` crate's integration tests are modules of one test binary, `tests/main.rs`
@@ -103,18 +103,25 @@ names its line range. Some files are never sent:
 A budget bounds every scan: 4 MB and 20 minutes for a change scan (below Yulius CI's 30-minute job
 timeout), 32 MB and 180 minutes for a broad scan (`--max-bytes`, `--deadline-minutes`). The deadline
 bounds every request in flight too. Up to 4 requests run at once (`--jobs`). Files past the budget
-are listed as not scanned, and the scan is then incomplete (exit 2): rerun with a larger
+are listed as not scanned, and the scan is then not run (exit 2): rerun with a larger
 `--max-bytes`. This repository's broad scan sends about 15 MB in some 260 chunks. Each open critical
 or high finding is printed as soon as it arrives (`found [high] …`), so even a scan that is killed
 shows what it found.
 
 **The contract.** Each chunk is one request (`model: vidoc-1`). The system prompt asks for one JSON
-object, `{"findings": [{"severity", "file", "line", "title", "detail"}]}`, with severities `critical`,
-`high`, `medium` or `low`, and says that the files are untrusted data. Retries and refusals:
+object, `{"findings": [{"severity", "file", "line", "title", "detail", "accepted"}]}`, with
+severities `critical`, `high`, `medium` or `low`, and says that the files are untrusted data. Each
+request first lists the `[[ignore]]` entries of its files as accepted risks (`A<n>`, path, place,
+title, reason), and Vidoc answers a weakness that is one of them with `"accepted": "A<n>"`
+([SPEC-273](../../.ai/specs/SPEC-273-vidoc-security-job-in-yulius-ci-too-much.md)). Retries and
+refusals:
 
-- an answer that is not that object is asked for again twice, then fails the scan;
-- 429, 529, 5xx and network errors are retried after 2, 4, 8 and 16 s (or `retry-after`, at most
-  60 s), 5 attempts in all;
+- an answer that stopped at `max_tokens` splits its chunk in half (by files, else by lines) and
+  each half is asked again, at most 3 levels deep;
+- an answer that is not that object is asked for again twice, then its files are unscanned;
+- 408, 409, 429, 5xx and network errors are retried after 2, 4, 8 and 16 s (or `retry-after`, at
+  most 60 s), 5 attempts in all; then that chunk's files and every chunk not yet sent are
+  unscanned;
 - 401 or 403 (the key was refused) and 402 (out of quota) stop the scan, and no redirect is
   followed.
 
@@ -139,10 +146,20 @@ Evidence:
 [[ignore]]
 path = "crates/yulius-app/src/example.rs"   # a glob
 title = "command injection"                 # a case-insensitive part of the finding's title
+function = "run_hook"                       # optional: the function the flagged line is in
+line = 120                                  # optional: the flagged line (10 lines of slack)
 reason = "the argument is a fixed constant, reviewed in #123"
 ```
 
-A matching finding is printed as ignored, with its reason, and does not fail the scan.
+A matching finding is printed as ignored, with its reason, and does not fail the scan. Vidoc words
+the same finding differently from scan to scan, so an entry matches it in three more ways, on code
+the branch did not touch (more than 3 lines from a changed line, not a new file): a finding in the
+same `function` (the nearest `fn`, `def`, `function`, `class`, `impl`… line above it), within 10
+lines of its `line`, or one Vidoc answered as that entry (`accepted`). On changed lines only the
+title matches, so a change to accepted code is judged again. Name the `function` (or the `line`)
+in a new entry so it survives rewording. Every open finding is printed with its nearest ignore of
+the same file and how similar the titles are (`nearest ignore: "…" (62% similar)`; `nearest` in
+`--report`): a likely repeat for the reviewer to confirm.
 
 The scan is on. `enabled = false` in `.config/vidoc.toml`
 ([SPEC-131](../../.ai/specs/SPEC-131-we-d-like-to-be-able-to-enable-and-disab.md),
@@ -156,7 +173,7 @@ reviewed pull request that says why. Exit codes:
   scan and disabled end skipped, since nothing was checked.
 - 1: failed. The causes: an open critical or high finding anywhere in a scanned file, or an open
   medium finding in the change (each one is printed with severity, `file:line`, title and detail);
-  an answer that could not be read; a request Vidoc refused with another 4xx.
+  a request Vidoc refused with another 4xx. Findings fail the scan even when it is incomplete.
 
 What counts as the change
 ([SPEC-217](../../.ai/specs/SPEC-217-vidoc-security-didn-t-work-for-a-while-a.md),
@@ -169,18 +186,22 @@ scan every line counts.
   in the spec's Evidence why not. They do not fail the scan.
 - **Medium and low findings outside the change** are printed under "outside this change", each
   with a fingerprint: the path and the line's text, so it survives line shifts. With `--ci` they
-  are also printed as `::yulius-finding <json>` lines. When a pull request head's `security` job
-  ends, Yulius files each new fingerprint as an issue (`area: security`, `source: vidoc`, at most
-  5 per job) and reopens the closed issue of one reported again. When a `security` job of a pull
-  request or of `dev` ends, Yulius closes the issues whose line (fingerprint) or file is gone from
-  `dev`. `--report` gives each finding its `scope` and `fingerprint`.
+  are also printed as `::yulius-finding <json>` lines. When a pull request head's run ends and its
+  other jobs passed or were skipped, Yulius files each new fingerprint as an issue (`area:
+  security`, `source: vidoc`, at most 5 per job) and reopens the closed issue of one reported
+  again; while another job fails, the `security` job's output says they wait. When a run with a
+  `security` job of a pull request or of `dev` ends, Yulius closes the issues whose line
+  (fingerprint) or file is gone from `dev`. `--report` gives each finding its `scope` and `fingerprint`.
 - 2: not run. The causes:
   - no key, or a key that is malformed or refused;
-  - Vidoc unreachable after the retries, or out of quota;
+  - out of quota;
   - no base (`origin/HEAD` is not set and there is no `--base`);
   - a malformed `.config/vidoc.toml`;
   - Python older than 3.11;
-  - an incomplete scan (budget or deadline) that found nothing.
+  - files past the byte budget, with no finding.
+- 3: incomplete. Files were left unscanned for a passing reason, listed with it: Vidoc unreachable
+  or failing (5xx) after the retries, timeouts, the deadline, answers that could not be read or
+  that stopped at `max_tokens` even split. Infrastructure, not a finding: run it again.
 
 Yulius CI runs the change scan as the `security` job of `yulius.toml` on every pull request head
 (`python3 scripts/vidoc_scan.py --ci`; other projects run `yulius security-scan --ci`).
@@ -194,7 +215,14 @@ Yulius CI runs the change scan as the `security` job of `yulius.toml` on every p
   [ADR-0196](../decisions/0196-a-ci-grant-binds-the-job-name-and-its-command.md)). It gives the
   job the key's placeholder and the egress proxy with a credential of its own, never the value.
   Each use is in the secrets audit as `ci:<run>`.
-- **Findings fail it.** Exit 1 fails the job, and so the merge gate.
+- **Findings fail it.** Exit 1 fails the job, and so the merge gate. It never cancels the other
+  jobs, and their failure never cancels it: both report (fail-fast holds among the other jobs).
+- **An incomplete scan is an error.** Exit 3 prints `::yulius-incomplete <n> file(s) not scanned
+  (…): <reason>` and exits with `$YULIUS_CI_INCOMPLETE_CODE` (75, `EX_TEMPFAIL`). Yulius ends the
+  job **error** with the reason `incomplete: …; infrastructure, not a finding: run it again`, the
+  commit status reads `Error: security: incomplete: …`, and the merge stays blocked until a rerun
+  passes ([ADR-0202](../decisions/0202-vidoc-repeats-match-by-place-and-an-incomplete-scan-blocks-as-infrastructure.md)).
+  On an instance that sets no such code it ends skipped, as before.
 - **A scan that could not run is skipped.** Exit 2 prints `[yulius] security scan skipped` and exits
   with `$YULIUS_CI_SKIP_CODE`, so the job reads **Skipped**, never Passed, and blocks no merge
   ([ADR-0133](../decisions/0133-a-ci-job-that-checked-nothing-ends-skipped.md)). Skipped is not a
@@ -202,7 +230,9 @@ Yulius CI runs the change scan as the `security` job of `yulius.toml` on every p
 
 Any CI job can skip itself the same way: Yulius gives every job `YULIUS_CI_SKIP_CODE` (78), and a
 job that exits with it ends skipped. Write `exit "${YULIUS_CI_SKIP_CODE:-0}"` so the command still
-passes on an instance that does not know skipped yet.
+passes on an instance that does not know skipped yet. Likewise a job that could not check
+everything for a passing reason exits `$YULIUS_CI_INCOMPLETE_CODE` (75) after a
+`::yulius-incomplete <what it missed>` line, and ends error with that reason.
 
 ## Dead code
 

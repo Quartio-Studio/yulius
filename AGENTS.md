@@ -87,18 +87,23 @@ Fix a failing finding test-first. Low findings in your change are listed "for yo
 each one, or say in the spec's Evidence why not. Medium and low findings in code the branch did not
 touch do not fail it: Yulius CI files each one as a GitHub issue once, reopens it while it is
 reported, and closes it once its line is gone from `dev`. A false positive becomes an `[[ignore]]`
-entry in `.config/vidoc.toml`, with its reason, only once the independent reviewer agrees; list it
-in the spec's Evidence. Exit 2 (not run: no key, a refused key, no quota, Vidoc unreachable) is
-unrun, never passed. The key is
+entry in `.config/vidoc.toml`, with its reason and the `function` it is in, only once the
+independent reviewer agrees; list it in the spec's Evidence. On code the branch did not touch, an
+entry also matches a reworded repeat in that function, near its `line`, or one Vidoc answers as
+that accepted risk; each open finding names its nearest ignore
+([ADR-0202](docs/decisions/0202-vidoc-repeats-match-by-place-and-an-incomplete-scan-blocks-as-infrastructure.md)).
+Exit 2 (not run: no key, a refused key, no quota) is unrun and exit 3 (incomplete: Vidoc
+unreachable or failing, files listed) is incomplete, never passed. The key is
 `VIDOC_API_KEY`, a placeholder that the egress proxy replaces: an agent secret of that name that
 reaches the run ([scopes](docs/architecture.md#agent-secret-scopes)), else the instance's Vidoc
 key (Settings, Instance). The code goes to Vidoc. `scripts/dev security
 --all` is the broad scan of the whole repository, for an audit task (`--report FILE` writes JSON).
 Yulius CI runs the change scan as the `security` job on pull request heads
 ([ADR-0116](docs/decisions/0116-ci-jobs-use-named-agent-secrets-through-the-proxy.md)):
-findings fail the check, and a scan that could not run ends **skipped**
-([ADR-0133](docs/decisions/0133-a-ci-job-that-checked-nothing-ends-skipped.md)), which is unrun,
-not passed. `enabled` in `.config/vidoc.toml` turns the scan on (as committed) or off
+findings fail the check without cancelling the other jobs, a scan that could not run ends
+**skipped** ([ADR-0133](docs/decisions/0133-a-ci-job-that-checked-nothing-ends-skipped.md)), which
+is unrun, not passed, and an incomplete one ends **error** ("incomplete: …"), which blocks the merge
+until a rerun passes. `enabled` in `.config/vidoc.toml` turns the scan on (as committed) or off
 ([ADR-0107](docs/decisions/0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md)); a disabled
 scan exits 0 saying so and is reported as disabled, not passed. Other projects run the same scanner
 as `yulius security-scan`.

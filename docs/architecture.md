@@ -1154,11 +1154,18 @@ Vidoc is an optional instance service, like Jev
   It reads the JSON findings back. It fails on open critical or high ones, and on open medium ones
   in the lines the branch changed (`git diff -U0`, 3 lines of slack; SPEC-217, ADR-0172). It prints
   low ones in the change for the agent to decide, and fingerprints the rest as outside the change.
+- **Repeats and gaps.** Each request lists the `[[ignore]]` entries of its files as accepted risks.
+  Outside the changed lines an entry also matches a finding in its `function`, near its `line`, or
+  one Vidoc answers as `accepted`; open findings name their nearest ignore. An answer cut at
+  `max_tokens` halves its chunk (3 levels); a chunk still unreviewed (5xx, timeouts, unreadable,
+  the deadline) leaves the scan incomplete, exit 3, and in CI `$YULIUS_CI_INCOMPLETE_CODE` with a
+  `::yulius-incomplete` line (SPEC-273, ADR-0202).
 - **The default pipeline.** `App::ci_gate` and `ci_verified_gate` add the built-in `security` job
   (`yulius-domain` `ci::with_security_job`: `yulius security-scan --ci`, granted `VIDOC_API_KEY`)
   when the sandbox's applied agent secrets have that key and its CI does not scan already.
-- **Issues.** When a `security` job ends, `ci/findings.rs` reads its `::yulius-finding` lines. On a
-  pull request head, it files each new fingerprint (table `security_findings`, migration 0036) and
+- **Issues.** When a run with a `security` job ends (`ci_follow_run_findings`), `ci/findings.rs`
+  reads that job's `::yulius-finding` lines. On a pull request head whose other jobs passed or were
+  skipped (SPEC-273), it files each new fingerprint (table `security_findings`, migration 0036) and
   reopens the issue of one reported again. On a pull request or on the integration branch, it
   closes the issues whose fingerprint no line of the file on `origin/<integration>` has any more
   (`GitHubPort::create_issue`, `set_issue_state`).
@@ -1173,8 +1180,8 @@ flowchart LR
   AG["Agent: yulius security-scan, scripts/dev security"] -->|"x-api-key: yulius-secret-VIDOC_API_KEY"| PX
   CI["CI job security (built in when the key applies), granted VIDOC_API_KEY: --ci"] -->|"the same placeholder"| PX
   PX -->|"the key toward model.vidocsecurity.com only"| V["Vidoc /v1/messages, vidoc-1"]
-  V -->|"JSON findings: exit 0, 1, or 2 when not run"| AG
-  CI -->|"::yulius-finding lines: outside the change"| ISS["ci/findings.rs: file, reopen, close"]
+  V -->|"JSON findings: exit 0, 1, 2 when not run, 3 when incomplete"| AG
+  CI -->|"::yulius-finding lines: outside the change, at the run's end"| ISS["ci/findings.rs: file (other jobs passed), reopen, close"]
   ISS -->|"issues, once per fingerprint"| GH["GitHub issues"]
   APP -->|"key set: briefing and onboarding add the scan rule"| BOOT["infra bootstrap"]
 ```
@@ -1700,8 +1707,11 @@ that failed early in a long job stays diagnosable
 
 A job's exit decides its state in `App::ci_job` (`crates/yulius-app/src/ci/exec.rs`):
 0 is passed, the skip code `yulius_domain::ci::SKIP_EXIT_CODE` (78, given to every job as
-`YULIUS_CI_SKIP_CODE`) is skipped, any other exit or a signal is failed; a timeout, the output
-limit, a lost host or a refused start is error. `yulius_domain::ci::aggregate` makes the run's
+`YULIUS_CI_SKIP_CODE`) is skipped, the incomplete code `INCOMPLETE_EXIT_CODE` (75,
+`YULIUS_CI_INCOMPLETE_CODE`) is error with the reason `incomplete: <its ::yulius-incomplete
+line>` (ADR-0202), any other exit or a signal is failed; a timeout, the output limit, a lost host
+or a refused start is error. A failed job cancels the run's other jobs (fail-fast), except that the
+`security` job neither cancels nor is cancelled by them (SPEC-273). `yulius_domain::ci::aggregate` makes the run's
 state, where skipped counts like passed, so a run is never skipped and the merge gate stays one
 rule; the commit status counts the skipped jobs
 ([SPEC-162](../.ai/specs/SPEC-162-all-security-checks-kept-getting-yulius.md),
@@ -1715,6 +1725,7 @@ the run ends, after every job's task. A published status resets the run's retry 
 flowchart LR
   EXIT["job's process ends"] -->|"exit 0"| P["passed"]
   EXIT -->|"exit $YULIUS_CI_SKIP_CODE (78)"| S["skipped: checked nothing"]
+  EXIT -->|"exit $YULIUS_CI_INCOMPLETE_CODE (75)"| E
   EXIT -->|"other exit or a signal"| F["failed"]
   EXIT -->|"timeout, output limit, lost host"| E["error"]
   P --> RUN["run: passed when every job passed or was skipped"]
