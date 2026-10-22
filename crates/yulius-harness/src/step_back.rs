@@ -195,6 +195,8 @@ pub fn step_back_file(path: &Path) -> io::Result<bool> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use serde_json::{Value, json};
 
     use super::{step_back, step_back_file};
@@ -500,38 +502,121 @@ mod tests {
         Ok(())
     }
 
+    /// `<sandbox>/home/.claude/projects/<slug>/s1.jsonl`, the layout `step_back_file` expects.
+    fn transcript_in(sandbox: &Path) -> PathBuf {
+        sandbox.join("home/.claude/projects/-wt/s1.jsonl")
+    }
+
+    fn limited() -> String {
+        [
+            prompt("u1", "root", "hello"),
+            answer("a1", "u1"),
+            limit("e1", "a1"),
+        ]
+        .concat()
+    }
+
+    fn mode(path: &Path) -> std::io::Result<u32> {
+        use std::os::unix::fs::PermissionsExt as _;
+        Ok(std::fs::metadata(path)?.permissions().mode() & 0o7777)
+    }
+
     #[test]
     fn step_back_file_rewrites_only_when_needed() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("s1.jsonl");
+        use std::os::unix::fs::PermissionsExt as _;
+        let sandbox = tempfile::tempdir()?;
+        let path = transcript_in(sandbox.path());
         assert!(
             !step_back_file(&path)?,
-            "a missing transcript is left alone"
+            "a missing transcript (and folder) is left alone"
         );
+        let folder = path.parent().ok_or("a folder")?;
+        std::fs::create_dir_all(folder)?;
+        assert!(!step_back_file(&path)?, "a missing transcript is left alone");
         let plain = [prompt("u1", "root", "hello"), answer("a1", "u1")].concat();
         std::fs::write(&path, &plain)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
         assert!(!step_back_file(&path)?);
-        std::fs::write(&path, [plain.clone(), limit("e1", "a1")].concat())?;
+        std::fs::write(&path, limited())?;
         assert!(step_back_file(&path)?);
         assert_eq!(std::fs::read_to_string(&path)?, plain);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            assert_eq!(
-                std::fs::metadata(&path)?.permissions().mode() & 0o777,
-                0o600
-            );
-        }
+        assert_eq!(mode(&path)?, 0o600);
+        // A mode other than the temporary file's own is carried over too (SPEC-266 STB-005).
+        std::fs::write(&path, limited())?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640))?;
+        assert!(step_back_file(&path)?);
+        assert_eq!(std::fs::read_to_string(&path)?, plain);
+        assert_eq!(mode(&path)?, 0o640);
         assert_eq!(
-            std::fs::read_dir(dir.path())?.count(),
+            std::fs::read_dir(folder)?.count(),
             1,
             "no temporary file left"
         );
+        Ok(())
+    }
+
+    /// #661: a link the agent put on the way to the transcript (its project folder, its home)
+    /// fails the step back, naming it, and the link's target is neither read nor replaced.
+    #[test]
+    fn step_back_file_follows_no_linked_folder() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+        for linked in ["home/.claude/projects/-wt", "home"] {
+            let sandbox = tempfile::tempdir()?;
+            let outside = tempfile::tempdir()?;
+            let path = transcript_in(sandbox.path());
+            // The host folder holds what the link would make the step back see.
+            let rest = path.strip_prefix(sandbox.path().join(linked))?;
+            let host_file = outside.path().join(rest);
+            std::fs::create_dir_all(host_file.parent().ok_or("a folder")?)?;
+            std::fs::write(&host_file, limited())?;
+            let link = sandbox.path().join(linked);
+            std::fs::create_dir_all(link.parent().ok_or("a folder")?)?;
+            symlink(outside.path(), &link)?;
+            let err = step_back_file(&path).err().ok_or(format!("{linked}: refused"))?;
+            assert!(err.to_string().contains("link"), "{linked}: {err}");
+            assert_eq!(std::fs::read_to_string(&host_file)?, limited(), "{linked}");
+            assert_eq!(
+                std::fs::read_dir(host_file.parent().ok_or("a folder")?)?.count(),
+                1,
+                "{linked}: nothing written next to the host file"
+            );
+        }
+        Ok(())
+    }
+
+    /// #661: a link at the transcript is never read nor renamed over; its target stays as it was.
+    #[test]
+    fn step_back_file_follows_no_linked_transcript() -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+        let sandbox = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let host_file = outside.path().join("host.jsonl");
+        std::fs::write(&host_file, limited())?;
+        let path = transcript_in(sandbox.path());
+        std::fs::create_dir_all(path.parent().ok_or("a folder")?)?;
+        symlink(&host_file, &path)?;
+        let err = step_back_file(&path).err().ok_or("refused")?;
+        assert!(err.to_string().contains("link"), "{err}");
+        assert!(path.symlink_metadata()?.file_type().is_symlink(), "the link stays");
+        assert_eq!(std::fs::read_to_string(&host_file)?, limited());
+        Ok(())
+    }
+
+    /// #661: a FIFO at the transcript fails at once instead of holding the blocking task (and the
+    /// run start awaiting it) forever.
+    #[test]
+    fn step_back_file_returns_at_once_on_a_fifo() -> Result<(), Box<dyn std::error::Error>> {
+        let sandbox = tempfile::tempdir()?;
+        let path = transcript_in(sandbox.path());
+        std::fs::create_dir_all(path.parent().ok_or("a folder")?)?;
+        nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR)?;
+        let (done, finished) = std::sync::mpsc::channel();
+        let fifo = path.clone();
+        // A bound on a blocked open, not a wait for work: the call returns in microseconds.
+        std::thread::spawn(move || done.send(step_back_file(&fifo).map_err(|e| e.to_string())));
+        let result = finished.recv_timeout(std::time::Duration::from_secs(30))?;
+        let err = result.err().ok_or("refused")?;
+        assert!(err.contains("not a regular file"), "{err}");
         Ok(())
     }
 }
