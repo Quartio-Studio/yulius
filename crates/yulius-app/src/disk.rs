@@ -120,10 +120,10 @@ fn real_dir_from(root: &Path, path: &Path) -> bool {
 }
 
 /// Removes the cache `path` below the sandbox directory `root` after checking it again: a folder
-/// swapped for a link since the scan is refused, and on Linux one swapped after this check fails
-/// the removal's `O_NOFOLLOW` walk (SPEC-263 DUL-002). `remove_below` reaches entries through
-/// `/proc/self/fd`, so elsewhere (a macOS development host, where sandboxes are not contained)
-/// the checked path is removed as before.
+/// swapped for a link since the scan is refused, and one swapped after this check fails the
+/// removal's `O_NOFOLLOW` walk (SPEC-263 DUL-002). `remove_below` reaches entries through
+/// `/proc/self/fd`, so other systems (macOS development hosts, whose runs are not contained)
+/// refuse instead of removing by path.
 fn remove_cache(root: &Path, path: &Path) -> std::io::Result<()> {
     crate::race::reached(crate::race::Point::CachePrune, path);
     if !real_dir_from(root, path) {
@@ -131,10 +131,14 @@ fn remove_cache(root: &Path, path: &Path) -> std::io::Result<()> {
             "not a real directory, or a link on the way",
         ));
     }
-    #[cfg(target_os = "linux")]
-    return crate::leftovers::remove_below(root, path);
-    #[cfg(not(target_os = "linux"))]
-    return std::fs::remove_dir_all(path);
+    if cfg!(target_os = "linux") {
+        crate::leftovers::remove_below(root, path)
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "caches are removed through directory handles on Linux only",
+        ))
+    }
 }
 
 fn root_entries(worktree: &Path) -> Vec<String> {

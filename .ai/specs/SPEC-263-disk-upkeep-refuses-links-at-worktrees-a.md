@@ -42,10 +42,10 @@ each removal, so a sandbox can never steer it into another sandbox's files.
   the sandbox directory (exclusive) down to it, and it itself, is a real directory, not a link;
   a cache counts only when, in addition, every folder down to it and it itself is one, checked
   again right before it is measured. Nothing else is listed as ended or removed.
-- DUL-002. Right before each cache removal the rule is checked again, and on Linux the removal goes
-  through `remove_below` from the sandbox directory, so a folder swapped for a link after the
-  check fails the removal instead of following it. A refused removal is skipped with a warning
-  and not counted or audited.
+- DUL-002. Right before each cache removal the rule is checked again, and the removal goes through
+  `remove_below` from the sandbox directory, so a folder swapped for a link after the check fails
+  the removal instead of following it. A refused removal is skipped with a warning and not
+  counted or audited. Off Linux, where `remove_below` cannot work, the upkeep removes no cache.
 - DUL-003. A closed or cancelled task's worktree is checked again by the same rule right before it
   is handed to Git for removal.
 - DUL-004. Caches reached without links are pruned as before (every existing `disk.rs` test
@@ -95,9 +95,13 @@ each removal, so a sandbox can never steer it into another sandbox's files.
 - `remove_below` instead of `remove_dir_all` on Linux: it removes through `O_NOFOLLOW` handles,
   closing the window between the re-check and the removal, and also removes a tree a tool made
   read-only. It reaches entries through `/proc/self/fd`, which macOS lacks (there it removes
-  nothing and reports success; pre-existing in the leftovers module since #681), so on other
-  systems the re-checked path is still removed with `remove_dir_all`. Sandboxes are contained only
-  on Linux, so the remaining window there does not cross a sandbox boundary.
+  nothing and reports success; pre-existing in the leftovers module since #681). Off Linux the
+  upkeep therefore refuses each cache removal with a warning instead of counting a removal that
+  did not happen (review round 1) or removing by path after the check (Vidoc: a link swapped in
+  between is followed). Only macOS development hosts, whose runs are not contained
+  (docs/operations.md), lose the pruning of caches; the leftovers module already removes nothing
+  there. A Vidoc `[[ignore]]` was tried first and dropped: Vidoc words the finding differently on
+  each scan.
 - Out of scope, reported on #649 (review round 1, pre-existing): `worktree_remove_if_safe`
   resolves the owned root and the worktree with two `canonicalize` calls and Git resolves the path
   again, and `sandboxes/<sid>/repo` is never checked for links, so a sandbox that keeps swapping

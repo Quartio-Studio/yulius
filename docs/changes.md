@@ -10,8 +10,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   A sandbox that replaced its `worktrees`, a worktree entry, `ci` or `ci/jobs` with a link to
   another sandbox's folder got that sandbox's caches pruned as its own. Worktrees, CI checkouts
   and caches now count only with no link from the sandbox directory down, each cache is checked
-  again right before it is measured and removed (on Linux through `O_NOFOLLOW` handles), and an
-  ended worktree right before Git removes it. Git's own worktree removal still resolves paths
+  again right before it is measured and removed (through `O_NOFOLLOW` handles, so on Linux only;
+  macOS development hosts no longer prune caches), and an ended worktree right before Git removes
+  it. Git's own worktree removal still resolves paths
   itself (noted on #649).
 - The documentation matches what was merged since 2026-10-17 (task #246, documentation only). The
   API reference lists the agent-secret scopes (`personal`, `enabled`, `shadowed_by`) and the
