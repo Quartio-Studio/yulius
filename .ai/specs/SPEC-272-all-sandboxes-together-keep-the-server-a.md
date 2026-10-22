@@ -88,7 +88,7 @@ the limit was hit; and the small defects left by #254's review round 3 are fixed
 - [x] A session that ends at the common limit says so
 - [x] A removed run group no longer hides a rise in the counters
 - [x] Dotted keys in Cargo and nextest files keep their knob
-- [ ] The end banner keeps keyboard focus when details arrive
+- [x] The end banner keeps keyboard focus when details arrive
 - [ ] Docs, gates, review and delivery
 
 ## Acceptance criteria
