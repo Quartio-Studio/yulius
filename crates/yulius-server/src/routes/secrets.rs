@@ -378,6 +378,9 @@ async fn report(
     }
 }
 
+/// Longest a state's body may take to arrive (the CLI's own request timeout).
+const STATE_UPLOAD_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
+
 #[derive(Deserialize)]
 struct StateQuery {
     #[serde(default)]
@@ -421,8 +424,22 @@ async fn state_import(
     let begun = app.begin_state_import(&ctx, &sid, &name).await?;
     let mut archive = Vec::new();
     let mut stream = body.into_data_stream();
+    // The slot is held while the body arrives: the whole of it within a deadline, so a slow
+    // sender cannot keep it (review of SPEC-271, m8).
+    let deadline = tokio::time::Instant::now() + STATE_UPLOAD_DEADLINE;
     loop {
-        match tokio::time::timeout(UPLOAD_IDLE, stream.next()).await {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(AppError::Invalid(
+                "the state took longer than 5 minutes to arrive; try again".into(),
+            )
+            .into());
+        }
+        match tokio::time::timeout_at(
+            deadline.min(tokio::time::Instant::now() + UPLOAD_IDLE),
+            stream.next(),
+        )
+        .await
+        {
             Err(_) => return Err(AppError::Invalid("the upload stalled; try again".into()).into()),
             Ok(None) => break,
             Ok(Some(Err(_))) => {

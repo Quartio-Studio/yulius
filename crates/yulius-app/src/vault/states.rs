@@ -101,12 +101,28 @@ const HEADER_ALLOWANCE: u64 = 64 << 10;
 struct Budget {
     read: Cell<u64>,
     limit: Cell<u64>,
+    data_end: Cell<u64>,
     hit: Cell<bool>,
 }
 
 impl Budget {
-    fn allow(&self, more: u64) {
-        self.limit.set(self.limit.get().saturating_add(more));
+    /// Before a header: up to [`HEADER_ALLOWANCE`] past the end of the last entry's data and its
+    /// padding. Set, never added to, so a header's unused allowance is gone with it (review of
+    /// SPEC-271, round 2).
+    fn header(&self) {
+        self.limit.set(
+            self.data_end
+                .get()
+                .saturating_add(511)
+                .saturating_add(HEADER_ALLOWANCE),
+        );
+    }
+
+    /// After a header: its entry's `size` bytes of data, and nothing more until the next header.
+    fn data(&self, size: u64) {
+        let end = self.read.get().saturating_add(size);
+        self.data_end.set(end);
+        self.limit.set(end);
     }
 }
 
@@ -166,13 +182,21 @@ fn walk_archive(
         inner: GzDecoder::new(archive),
         budget: Rc::clone(&budget),
     });
-    let (mut entries, mut unpacked, mut contents) = (0_u64, 0_u64, Contents::default());
+    let (mut entries, mut real, mut unpacked) = (0_u64, 0_u64, 0_u64);
+    let mut contents = Contents::default();
     let mut all = tar.entries().map_err(unreadable)?;
     loop {
         // The next header, after whatever of the last entry's data was not read.
-        budget.allow(HEADER_ALLOWANCE);
+        budget.header();
         let Some(entry) = all.next() else { break };
         let mut entry = entry.map_err(unreadable)?;
+        // Every entry counts, also those skipped below (global headers, `./`).
+        entries += 1;
+        if entries > MAX_STATE_ENTRIES {
+            return Err(refused(format_args!(
+                "holds more than {MAX_STATE_ENTRIES} files and folders"
+            )));
+        }
         // The size the reader will use: a pax record's, when there is one.
         let size = entry.size();
         unpacked = unpacked.saturating_add(size);
@@ -182,7 +206,7 @@ fn walk_archive(
                 MAX_STATE_EXPANDED >> 20
             )));
         }
-        budget.allow(size);
+        budget.data(size);
         let header = entry.header();
         let kind = match header.entry_type() {
             tar::EntryType::Regular | tar::EntryType::Continuous => Kind::File,
@@ -210,12 +234,7 @@ fn walk_archive(
         let shown = String::from_utf8_lossy(&raw).into_owned();
         let rel = state_relative(&raw)
             .ok_or_else(|| refused(format_args!("names {shown:?}, outside its folder")))?;
-        entries += 1;
-        if entries > MAX_STATE_ENTRIES {
-            return Err(refused(format_args!(
-                "holds more than {MAX_STATE_ENTRIES} files and folders"
-            )));
-        }
+        real += 1;
         if rel.components().count() > MAX_STATE_DEPTH {
             return Err(refused(format_args!(
                 "nests folders more than {MAX_STATE_DEPTH} deep"
@@ -227,7 +246,7 @@ fn walk_archive(
         }
         visit(&rel, kind, mode, &mut entry)?;
     }
-    if entries == 0 {
+    if real == 0 {
         return Err(refused("is empty"));
     }
     Ok(contents)
@@ -368,6 +387,12 @@ impl io::Write for Capped64 {
                 io::ErrorKind::FileTooLarge,
                 "the packed state is over its bound",
             ));
+        }
+        let bound = usize::try_from(MAX_STATE_BYTES).unwrap_or(usize::MAX);
+        if self.0.capacity() < self.0.len() + buf.len() {
+            // Doubling, but never past the bound (review of SPEC-271, n4).
+            let want = (self.0.capacity() * 2).clamp(self.0.len() + buf.len(), bound);
+            self.0.reserve_exact(want - self.0.len());
         }
         self.0.extend_from_slice(buf);
         Ok(buf.len())
@@ -839,6 +864,18 @@ impl App {
         .await?;
         // Moved out, not copied: the response body is the only copy left.
         Ok(std::mem::take(&mut *archive))
+    }
+
+    /// Holds every state slot until the permits are dropped (tests of SPEC-271 OPS-008).
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn occupy_state_slots(&self) -> Vec<tokio::sync::OwnedSemaphorePermit> {
+        std::iter::from_fn(|| {
+            std::sync::Arc::clone(&self.uploads.states)
+                .try_acquire_owned()
+                .ok()
+        })
+        .collect()
     }
 
     /// One of the few state operations that may hold an archive in memory at once.
@@ -1319,6 +1356,34 @@ mod tests {
             .err()
             .ok_or("long name passed")?;
         assert!(format!("{err:?}").contains("header larger than"), "{err:?}");
+
+        // Review round 2: unused header allowance never adds up. 100 empty global headers, then
+        // a 1 MiB long name: refused as a header, not read whole on the slack.
+        let mut tar = Vec::new();
+        for _ in 0..100 {
+            tar.extend(raw_entry(tar::EntryType::XGlobalHeader, "g", 0, &[]));
+        }
+        let name = vec![b'a'; 1 << 20];
+        tar.extend(raw_entry(
+            tar::EntryType::GNULongName,
+            "././@LongLink",
+            name.len() as u64,
+            &name,
+        ));
+        let err = check_archive(&gzip(&tar)?)
+            .err()
+            .ok_or("long name on slack passed")?;
+        assert!(format!("{err:?}").contains("header larger than"), "{err:?}");
+
+        // Every entry counts toward the bound, global headers and `./` too.
+        let mut tar = Vec::new();
+        for _ in 0..=MAX_STATE_ENTRIES {
+            tar.extend(raw_entry(tar::EntryType::Directory, "./", 0, &[]));
+        }
+        let err = check_archive(&gzip(&tar)?)
+            .err()
+            .ok_or("endless entries passed")?;
+        assert!(format!("{err:?}").contains("more than 20000"), "{err:?}");
 
         // Review m2: `tar -C dir -czf x.tgz .` names the folder itself `./`.
         let mut tar = raw_entry(tar::EntryType::Directory, "./", 0, &[]);

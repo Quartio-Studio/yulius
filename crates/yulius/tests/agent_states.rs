@@ -463,3 +463,27 @@ async fn unusable_states_and_paths_are_refused() -> TestResult {
     );
     Ok(())
 }
+
+/// SPEC-271 OPS-008 (review m5): while two states move, a third is refused with 429 before its
+/// body is read, and a task's restore waits for none of them: it is refused too.
+#[tokio::test]
+async fn a_third_state_at_once_is_refused() -> TestResult {
+    let w = world().await?;
+    let good = archive(&[("a", 0o600, b"1")])?;
+    let sent = put(&w, "OPS", "", good.clone(), &w.writer).await?;
+    assert_eq!(sent.status, StatusCode::OK, "{}", sent.body);
+    let held = w.h.app.occupy_state_slots();
+    let busy = put(&w, "OTHER", "", good.clone(), &w.writer).await?;
+    assert_eq!(busy.status, StatusCode::TOO_MANY_REQUESTS, "{}", busy.body);
+    let (error, said) = tool(
+        &w,
+        "secret_state_restore",
+        json!({"name": "OPS", "path": "~/.ops"}),
+    )
+    .await?;
+    assert!(error && said.to_string().contains("at once"), "{said}");
+    drop(held);
+    let sent = put(&w, "OTHER", "", good, &w.writer).await?;
+    assert_eq!(sent.status, StatusCode::OK, "{}", sent.body);
+    Ok(())
+}
