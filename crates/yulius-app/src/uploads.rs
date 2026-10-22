@@ -61,8 +61,8 @@ use crate::auth::{AuthContext, hex_token};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::files::{
-    errno_error, inside, io_error, open_dir_at, open_dirs_below, open_inside, real_path,
-    relative_components,
+    errno_error, inside, io_error, kind_at, names_in, open_dir_at, open_dirs_below, open_inside,
+    real_path, relative_components, remove_tree,
 };
 
 /// Default largest upload (25 MiB; `YULIUS_UPLOAD_MAX_MB`).
@@ -720,23 +720,27 @@ impl App {
         };
         let owner = Owner::Draft(user);
         let parts = owner.parts();
-        if !plain_dirs_exist(&dir, &parts) {
-            return;
-        }
-        let folder = parts.iter().fold(dir, |path, part| path.join(part));
-        crate::race::reached(crate::race::Point::DraftsPrune, &folder);
-        let Ok(entries) = std::fs::read_dir(&folder) else {
+        crate::race::reached(
+            crate::race::Point::DraftsPrune,
+            &parts.iter().fold(dir.clone(), |path, part| path.join(part)),
+        );
+        // Listed and pruned through the folder's handle, reached without following links (#660).
+        let names = parts.map(OsStr::new);
+        let Ok(folder) = open_dirs_below(&dir, &names, false) else {
             return;
         };
-        for entry in entries.flatten().take(MAX_PRUNED_ENTRIES) {
-            let old = entry
-                .metadata()
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.elapsed().ok())
-                .is_some_and(|age| age > DRAFT_MAX_AGE);
-            if old && entry.file_type().is_ok_and(|t| t.is_file()) {
-                let _ = std::fs::remove_file(entry.path());
+        let Ok(entries) = names_in(&folder, MAX_PRUNED_ENTRIES) else {
+            return;
+        };
+        for name in entries {
+            let Ok((kind, stat)) = kind_at(&folder, &name) else {
+                continue;
+            };
+            let modified = std::time::UNIX_EPOCH
+                + Duration::from_secs(u64::try_from(stat.st_mtime).unwrap_or(0));
+            let old = modified.elapsed().is_ok_and(|age| age > DRAFT_MAX_AGE);
+            if old && kind == SFlag::S_IFREG {
+                let _ = unlinkat(&folder, name.as_os_str(), UnlinkatFlags::NoRemoveDir);
             }
         }
     }
@@ -848,13 +852,27 @@ impl App {
         let Ok(dir) = std::fs::canonicalize(self.sandbox_dir(sandbox)) else {
             return;
         };
-        let parts = owner.parts();
-        if plain_dirs_exist(&dir, &parts) {
-            let folder = parts.iter().fold(dir, |path, part| path.join(part));
-            crate::race::reached(crate::race::Point::AttachmentsRemove, &folder);
-            if let Err(err) = std::fs::remove_dir_all(&folder) {
-                tracing::warn!(%sandbox, error = %err, "could not remove attachments");
+        let [attachments, kind, name] = owner.parts();
+        crate::race::reached(
+            crate::race::Point::AttachmentsRemove,
+            &dir.join(attachments).join(kind).join(name),
+        );
+        // The owner's folder is removed through its parent's handle, reached without following
+        // links; a link on the way removes nothing (#660).
+        let parent = match open_dirs_below(
+            &dir,
+            &[OsStr::new(attachments), OsStr::new(kind)],
+            false,
+        ) {
+            Ok(parent) => parent,
+            Err(Errno::ENOENT) => return,
+            Err(err) => {
+                tracing::warn!(%sandbox, error = %err, "attachments folder is not a plain folder");
+                return;
             }
+        };
+        if let Err(err) = remove_tree(&parent, OsStr::new(name)) {
+            tracing::warn!(%sandbox, error = %err, "could not remove attachments");
         }
     }
 
@@ -881,19 +899,26 @@ impl App {
                 continue;
             };
             let base = sandbox.path();
-            if !plain_dirs_exist(&base, &[ATTACHMENTS_DIR, "shells"]) {
+            // Listed through the folder's handle, reached without following links (#660).
+            let Ok(folder) = open_dirs_below(
+                &base,
+                &[OsStr::new(ATTACHMENTS_DIR), OsStr::new("shells")],
+                false,
+            ) else {
                 continue;
-            }
+            };
             let live: Vec<String> = self
                 .sandbox_shells(&id)
                 .iter()
                 .map(|shell| shell.info().id)
                 .collect();
-            let Ok(shells) = std::fs::read_dir(base.join(ATTACHMENTS_DIR).join("shells")) else {
+            let Ok(shells) = names_in(&folder, MAX_PRUNED_ENTRIES) else {
                 continue;
             };
-            for shell in shells.flatten().take(MAX_PRUNED_ENTRIES) {
-                let name = shell.file_name().to_string_lossy().into_owned();
+            for shell in shells {
+                let Some(name) = shell.to_str().map(str::to_owned) else {
+                    continue;
+                };
                 if !live.contains(&name) {
                     self.remove_shell_attachments(&id, &name);
                     removed += 1;
