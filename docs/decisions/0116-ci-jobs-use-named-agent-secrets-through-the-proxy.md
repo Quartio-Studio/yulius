@@ -6,7 +6,7 @@ Accepted. Specified in [SPEC-142](../../.ai/specs/SPEC-142-fix-466-yulius-ci-job
 task #140, issue #466. Amends [ADR-0104](0104-agents-scan-their-branch-with-vidoc-before-delivery.md):
 Yulius CI runs the Vidoc scan on pull request heads. Amended by
 [ADR-0133](0133-a-ci-job-that-checked-nothing-ends-skipped.md): the `security` job is granted its key
-and ends skipped when the scan cannot run. Its Vidoc CLI parts (`vidoc ci`, `tools/vidoc`, `api.vidoc.dev`) are superseded by [ADR-0157](0157-vidoc-is-an-optional-instance-key-and-the-scan-runs-on-vidoc-1.md): the scan runs on vidoc-1 through `model.vidocsecurity.com`. Amended by [0186](0186-agent-secrets-are-project-global-or-personal.md): a granted name resolves among the project's secrets and the global ones switched on for it, never a personal one.
+and ends skipped when the scan cannot run. Its Vidoc CLI parts (`vidoc ci`, `tools/vidoc`, `api.vidoc.dev`) are superseded by [ADR-0157](0157-vidoc-is-an-optional-instance-key-and-the-scan-runs-on-vidoc-1.md): the scan runs on vidoc-1 through `model.vidocsecurity.com`. Amended by [0186](0186-agent-secrets-are-project-global-or-personal.md): a granted name resolves among the project's secrets and the global ones switched on for it, never a personal one. Amended by [0196](0196-a-ci-grant-binds-the-job-name-and-its-command.md): the grant binds the entry's name and its command, so a pull request's job reusing a granted name with another command gets nothing.
 
 ## Context
 
