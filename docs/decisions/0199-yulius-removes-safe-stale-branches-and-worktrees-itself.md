@@ -30,6 +30,8 @@ saw nothing happen after it: the list asked for a decision that has one answer.
     upkeep's rule, SPEC-019): an `.env` or a local database keeps it;
   - a branch of a merged or closed pull request is safe only while its tip is the pull request's
     head: commits pushed after it closed make it unmerged work;
+  - a branch on GitHub is deleted only while its tip there is still the commit the scan judged:
+    a failed fetch or a push since keeps it until the next check;
   - a local copy is judged again against GitHub after the cleanup's remote deletions and a fresh
     fetch; when the fetch fails, local copies stay.
 - The report says when the round runs next (`next_cleanup_at`) and what the last cleanup did

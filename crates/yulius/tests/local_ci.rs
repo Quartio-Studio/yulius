@@ -810,6 +810,59 @@ async fn a_cleanup_never_loses_commits_that_only_a_branch_held() -> TestResult {
     Ok(())
 }
 
+/// SPEC-269 (review round 2): when the clone cannot be fetched, a branch is judged by the commit
+/// Yulius last saw: one that moved on GitHub since (new commits, no pull request) is kept, and
+/// local copies are kept as they cannot be confirmed on GitHub.
+#[tokio::test]
+async fn a_failed_fetch_never_deletes_what_moved_on_github() -> TestResult {
+    let f = fixture().await?;
+    stale_branches(&f)?;
+    let clone = f.data.join("sandboxes/s1/repo");
+    let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    assert_eq!(scan.status, StatusCode::OK, "{}", scan.body);
+    git(&clone, &["branch", "-q", "feat/old", "origin/feat/old"])?;
+    // feat/closed gets a commit on GitHub after its pull request closed.
+    git(&f.work, &["checkout", "-q", "feat/closed"])?;
+    std::fs::write(f.work.join("closed.txt"), "more\n")?;
+    git(&f.work, &["commit", "-q", "-am", "after closing"])?;
+    git(&f.work, &["push", "-q", "origin", "feat/closed"])?;
+    // A ref lock left by another fetch: every fetch of the clone fails now.
+    let lock = clone.join(".git/refs/remotes/origin/feat/closed.lock");
+    std::fs::write(&lock, "")?;
+
+    let cleaned = f.post("/api/sandboxes/s1/hygiene/cleanup", None).await?;
+    std::fs::remove_file(&lock)?;
+    assert_eq!(cleaned.status, StatusCode::OK, "{}", cleaned.body);
+    let remaining = git(&f.origin, &["branch", "--format=%(refname:short)"])?;
+    assert!(remaining.contains("feat/closed"), "{remaining}");
+    assert!(
+        !remaining.contains("feat/old"),
+        "unmoved and merged: {remaining}"
+    );
+    let skipped = cleaned.body["skipped"].as_array().ok_or("skipped")?;
+    let reason = |kind: &str, name: &str| {
+        skipped
+            .iter()
+            .find(|s| s["kind"] == kind && s["name"] == name)
+            .and_then(|s| s["reason"].as_str())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    assert!(
+        reason("remote_branch", "feat/closed").contains("moved on GitHub"),
+        "{}",
+        cleaned.body
+    );
+    assert!(
+        reason("local_branch", "feat/old").contains("could not be fetched"),
+        "{}",
+        cleaned.body
+    );
+    let local = git(&clone, &["branch", "--format=%(refname:short)"])?;
+    assert!(local.contains("feat/old"), "{local}");
+    Ok(())
+}
+
 /// Jobs run inside the sandbox's containment (Linux, bubblewrap): what lies outside the sandbox
 /// directory, such as the data directory's run records, is not there, `/tmp` is private, and
 /// `HOME` is the sandbox's CI home.

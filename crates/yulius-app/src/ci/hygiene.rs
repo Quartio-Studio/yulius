@@ -369,6 +369,10 @@ impl App {
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
                     match tasks.get(&id) {
+                        // A snapshot import's checkout is the import's, not a task's.
+                        None if id.starts_with(crate::imports::IMPORT_WORKTREE_PREFIX) => {
+                            WorktreeOwner::Other
+                        }
                         None => WorktreeOwner::Deleted,
                         Some(task) => WorktreeOwner::Task {
                             number: task.number,
@@ -441,14 +445,7 @@ impl App {
                 "clean up at most {MAX_CLEANUP_ITEMS} items at once"
             )));
         }
-        let lock = self
-            .ci
-            .hygiene_locks
-            .lock()
-            .map_err(AppError::internal)?
-            .entry(sandbox.id.as_str().to_owned())
-            .or_default()
-            .clone();
+        let lock = self.hygiene_lock(sandbox);
         let _one = lock.lock().await;
         let report = self.hygiene_scan(sandbox).await;
         let mut skipped = Vec::new();
@@ -500,13 +497,10 @@ impl App {
             }
             let outcome: Result<(), String> = match found.kind.as_str() {
                 REMOTE => match &token {
-                    Some(token) => self
-                        .deps
-                        .github
-                        .delete_branch(token, &sandbox.repo_owner, &sandbox.repo_name, &found.name)
-                        .await
-                        .map(|_| ())
-                        .map_err(|e| e.public_message()),
+                    Some(token) => {
+                        self.delete_remote_branch(sandbox, &repo, token, &found.name)
+                            .await
+                    }
                     None => Err("GitHub is not available".into()),
                 },
                 LOCAL => {
@@ -595,9 +589,48 @@ impl App {
         })
     }
 
-    /// Removes a task's worktree (`worktrees/<task id>`), checking right before it that its task
-    /// is still resting (or gone) and that Git ignores nothing in it but rebuildable caches
-    /// (SPEC-019, SPEC-269): local configuration or data is not Git's to lose.
+    /// Deletes a branch on GitHub only while its tip there is the commit the scan judged (the
+    /// clone's `origin/<branch>`): a fetch that failed, or a push since, leaves new commits the
+    /// verdict never saw (SPEC-269 review round 2).
+    async fn delete_remote_branch(
+        &self,
+        sandbox: &SandboxRecord,
+        repo: &Path,
+        token: &crate::model::Secret,
+        branch: &str,
+    ) -> Result<(), String> {
+        let (owner, name) = (&sandbox.repo_owner, &sandbox.repo_name);
+        let judged = self
+            .deps
+            .git
+            .resolve_commit(repo, &format!("refs/remotes/origin/{branch}"))
+            .await
+            .map_err(|e| e.public_message())?;
+        let now = self
+            .deps
+            .github
+            .branch_sha(token, owner, name, branch)
+            .await
+            .map_err(|e| e.public_message())?;
+        match (judged, now) {
+            (_, None) => Err("it is already gone from GitHub".into()),
+            (Some(judged), Some(now)) if judged == now => self
+                .deps
+                .github
+                .delete_branch(token, owner, name, branch)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.public_message()),
+            _ => Err(
+                "it moved on GitHub since Yulius last fetched it; its new commits are judged at the next check"
+                    .into(),
+            ),
+        }
+    }
+
+    /// Removes a task's worktree (`worktrees/<task id>`), checking right before it that Git
+    /// ignores nothing in it but rebuildable caches (SPEC-019, SPEC-269: local configuration or
+    /// data is not Git's to lose) and that its task is still resting or gone.
     async fn remove_task_worktree(
         &self,
         sandbox: &SandboxRecord,
@@ -606,20 +639,25 @@ impl App {
     ) -> Result<(), String> {
         let path = self.sandbox_dir(&sandbox.id).join(name);
         let owned = self.sandbox_dir(&sandbox.id).join("worktrees");
-        let task_id = path
-            .file_name()
-            .and_then(|n| TaskId::parse(&n.to_string_lossy()).ok());
-        if let Some(task_id) = task_id
-            && let Ok(Some(task)) = self.deps.store.task(&task_id).await
-            && !task.status.is_resting()
-        {
-            return Err("its task is running or waiting again".into());
-        }
         if !self.worktree_only_caches(&path).await {
             return Err(
                 "it still holds files Git ignores that are not rebuildable caches (local configuration or data)"
                     .into(),
             );
+        }
+        // Read last, right before Git removes it; a task that cannot be read keeps it.
+        let task_id = path
+            .file_name()
+            .and_then(|n| TaskId::parse(&n.to_string_lossy()).ok());
+        if let Some(task_id) = task_id {
+            match self.deps.store.task(&task_id).await {
+                Ok(None) => {}
+                Ok(Some(task)) if task.status.is_resting() => {}
+                Ok(Some(_)) => return Err("its task is running or waiting again".into()),
+                Err(err) => {
+                    return Err(format!("its task can't be read: {}", err.public_message()));
+                }
+            }
         }
         match self.deps.git.remove_worktree(repo, &path, &owned).await {
             Ok(true) => Ok(()),
@@ -705,6 +743,27 @@ impl App {
         Ok(self.hygiene_report(&sandbox).await)
     }
 
+    /// A scan on request, after any cleanup of the sandbox running now: a scan that ended after
+    /// it would keep listing what it removed.
+    pub(crate) async fn hygiene_scan_locked(&self, sandbox: &SandboxRecord) -> HygieneReport {
+        let lock = self.hygiene_lock(sandbox);
+        let _one = lock.lock().await;
+        self.hygiene_scan(sandbox).await
+    }
+
+    fn hygiene_lock(&self, sandbox: &SandboxRecord) -> Arc<tokio::sync::Mutex<()>> {
+        self.ci
+            .hygiene_locks
+            .lock()
+            .map(|mut locks| {
+                locks
+                    .entry(sandbox.id.as_str().to_owned())
+                    .or_default()
+                    .clone()
+            })
+            .unwrap_or_default()
+    }
+
     /// `POST /api/sandboxes/{sid}/hygiene/scan`.
     ///
     /// # Errors
@@ -715,7 +774,7 @@ impl App {
         sandbox_id: &str,
     ) -> AppResult<HygieneReport> {
         let (sandbox, _) = self.ci_sandbox(ctx, sandbox_id, Action::Work).await?;
-        Ok(self.hygiene_scan(&sandbox).await)
+        Ok(self.hygiene_scan_locked(&sandbox).await)
     }
 
     /// `POST /api/sandboxes/{sid}/hygiene/cleanup`.

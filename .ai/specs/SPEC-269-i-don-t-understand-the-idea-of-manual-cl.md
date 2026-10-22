@@ -67,9 +67,12 @@ Read in the code on `dev` (21c26d8b):
 - HSC-007. Every check holds at the deletion (review round 1): a task's worktree is in use unless
   its task rests (closed, stopped, failed), read again right before the removal; it goes only when
   Git ignores nothing in it but rebuildable caches (SPEC-019's rule); a merged or closed pull
-  request's branch is safe only while its tip is the pull request's head; a local copy is judged
-  again against GitHub after the remote deletions and a fresh fetch (kept when the fetch fails);
-  one cleanup of a sandbox runs at a time.
+  request's branch is safe only while its tip is the pull request's head, and is deleted only while
+  its tip on GitHub is still the commit the scan judged (a failed fetch or a push since keeps it);
+  a local copy is judged again against GitHub after the remote deletions and a fresh fetch (kept
+  when the fetch fails); a task that cannot be read keeps its worktree; a snapshot import's
+  checkout (`worktrees/import-…`) is the import's; one cleanup or requested scan of a sandbox runs
+  at a time.
 - HSC-006. Nothing else changes: what is stale, what is safe, `force`, the bounds, the REST and
   MCP requests and their answers (two optional fields added to the report).
 
@@ -102,7 +105,9 @@ Read in the code on `dev` (21c26d8b):
 - Integration (`crates/yulius/tests/local_ci.rs`): `the_hygiene_round_removes_safe_items_itself`
   (AC1, AC2's automatic part), `a_cleanup_is_kept_on_the_report` (AC2),
   `a_cleanup_never_loses_commits_that_only_a_branch_held` (HSC-007: commits pushed after a pull
-  request closed; a local copy whose GitHub branch the same cleanup deleted). `disk.rs`:
+  request closed; a local copy whose GitHub branch the same cleanup deleted),
+  `a_failed_fetch_never_deletes_what_moved_on_github` (HSC-007: a ref lock fails the fetch; the
+  branch that moved on GitHub and a local copy stay, an unmoved merged branch goes). `disk.rs`:
   `the_hygiene_round_keeps_paused_work_and_files_nobody_can_rebuild` (HSC-007: a paused merged
   task, an archived worktree with an ignored `.env`, an archived one with caches only) and
   `hygiene_keeps_an_ended_worktree_that_still_holds_ignored_files` (now with an `.env`: caches
@@ -113,7 +118,9 @@ Read in the code on `dev` (21c26d8b):
   the old count-toast test. The mock's cleanup can be held (`__yuliusMock.holdHygieneCleanup`) and
   failed (`failHygieneCleanup`). Review round 1 added: the seconds outside the live region, the
   keyboard kept on the card, the toast check, the retry after a failure, and "a cleanup still
-  running after the person left the tab shows as running when they come back".
+  running after the person left the tab shows as running when they come back". Round 2 added "a
+  cleanup that fails after the person left the tab says why when they come back" and "a cleanup
+  round that runs late reads as shortly, not in the past".
   `loading-shapes.e2e.ts` follows the card's new intro line.
 - Gates: `scripts/dev ci`, `scripts/dev security`, the whole e2e suite.
 
@@ -147,6 +154,17 @@ Read in the code on `dev` (21c26d8b):
   "task #12", the confirmation's words) fixed. The concurrent-cleanup lock has no test that fails
   without it (the race is not reproducible through the API without a pause point); it is a
   per-sandbox `tokio::sync::Mutex` held for the whole cleanup.
+- **Review round 2** (fresh session, head 34ee351a, request changes; all own code): with the
+  scan's fetch failed, the round judged GitHub branches by stale refs and could delete commits
+  pushed since (major, fixed test-first: each deletion first compares GitHub's tip with the
+  clone's `origin/<branch>` and keeps a branch that moved); a store error let a worktree go and
+  the task was read before the ignored-files walk (fixed: read last, an error keeps it); snapshot
+  imports' checkouts counted as deleted tasks' (fixed: `IMPORT_WORKTREE_PREFIX` names them the
+  import's); a failed action's message was lost on a remount (fixed test-first: kept per sandbox
+  in the page); Check now and `repo_hygiene refresh` scanned outside the lock (fixed: they take
+  it); a late round read "next 5 min ago" (fixed test-first: "shortly"); `has_ignored_files` had
+  no caller left (removed). Not covered by a test that fails without it: the lock and the
+  re-read's timing (no pause point in the cleanup), as in round 1.
 
 ## Evidence
 

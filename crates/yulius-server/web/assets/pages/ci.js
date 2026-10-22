@@ -58,11 +58,13 @@ export function jobsLine(jobs) {
 // card (SPEC-238 review round 1).
 const leftRun = new Map();
 
-// Per sandbox (its API base), across remounts of the tab (SPEC-269 review round 1): the hygiene
-// action running now ({ kind, count, since, done }) and the last report an action answered with
-// ({ report, at }), which a read started before that answer must not draw over.
+// Per sandbox (its API base), across remounts of the tab (SPEC-269 review rounds 1 and 2): the
+// hygiene action running now ({ kind, count, since, done }), the last report an action answered
+// with ({ report, at }), which a read started before that answer must not draw over, and what the
+// last failed action said.
 const hygieneRunning = new Map();
 const hygieneAnswered = new Map();
+const hygieneProblems = new Map();
 
 /** What the CI/CD page's sub-heading says on the CI tab. */
 export const CI_SUB = `tests run on this ${BRAND.name} machine`;
@@ -342,7 +344,6 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
   // sit beside it, outside the live region.
 
   let hygieneCard = null; // the card shown now: { fill(report), tick(), report }
-  let hygieneProblem = null; // what this tab's last failed action said
 
   const loadHygiene = loader(hygieneHost, 'the repository hygiene', async () => {
     const asked = performance.now();
@@ -393,7 +394,9 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
       const items = now.items || [];
       const safe = items.filter((i) => i.safe);
       setChildren(scanned, now.scanned_at ? h('span', { title: dateTime(now.scanned_at) }, `Checked ${relLong(now.scanned_at)}`) : 'Not checked yet');
-      const nextRound = now.next_cleanup_at ? ` (next ${relLong(now.next_cleanup_at)})` : '';
+      // A round that runs late reads "shortly", never "next 5 min ago".
+      const nextAt = Date.parse(now.next_cleanup_at || '');
+      const nextRound = Number.isNaN(nextAt) ? '' : ` (next ${nextAt > Date.now() ? relLong(now.next_cleanup_at) : 'shortly'})`;
       intro.textContent = `Branches and worktrees no task needs any more. ${BRAND.name} removes the safe ones by itself${nextRound}; Clean up removes them now.`;
       const busy = hygieneRunning.get(base);
       scan.textContent = busy && busy.kind === 'scan' ? 'Checking…' : 'Check now';
@@ -404,8 +407,8 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
       let says = '';
       if (busy) {
         says = busy.kind === 'clean' ? `Removing ${plural(busy.count, 'item')}…` : 'Checking the repository…';
-      } else if (hygieneProblem) {
-        says = hygieneProblem;
+      } else if (hygieneProblems.has(base)) {
+        says = hygieneProblems.get(base);
       } else if (last) {
         const removed = (last.removed || []).length;
         const kept = (last.skipped || []).length;
@@ -414,7 +417,7 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
       }
       // Written only when it changes, so a screen reader hears each state once.
       if (status.textContent !== says) status.textContent = says;
-      line.classList.toggle('ci-hygiene-problem', !busy && Boolean(hygieneProblem));
+      line.classList.toggle('ci-hygiene-problem', !busy && hygieneProblems.has(base));
       tick();
       const rows = busy || !last ? [] : [
         ...(last.removed || []).map((t) => h('li', null, badge('Removed', 'ok'), h('span', { class: 'muted small' }, kindOf(t.kind)), h('code', null, t.name))),
@@ -454,14 +457,14 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
   /** Runs one hygiene action with the card busy, then shows its report or says why it failed. */
   function hygieneAction(kind, count, request, failure) {
     if (hygieneRunning.has(base)) return Promise.resolve();
-    hygieneProblem = null;
+    hygieneProblems.delete(base);
     const done = (async () => {
       try {
         const report = await request();
         hygieneAnswered.set(base, { report, at: performance.now() });
         return report;
       } catch (error) {
-        hygieneProblem = `${failure}: ${error && error.message ? error.message : String(error)}`;
+        hygieneProblems.set(base, `${failure}: ${error && error.message ? error.message : String(error)}`);
         return null;
       } finally {
         hygieneRunning.delete(base);

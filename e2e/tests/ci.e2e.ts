@@ -312,6 +312,37 @@ test('a cleanup still running after the person left the tab shows as running whe
   await expect(back.getByRole('button', 'Check now')).toBeEnabled();
 });
 
+test('a cleanup that fails after the person left the tab says why when they come back', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci'));
+  const card = screen.getByRole('region', 'Repository hygiene');
+  await expect(card.getByText('spike/websocket-pool')).toBeVisible();
+  await browser.evaluate(() => {
+    const w = window as unknown as HeldCleanup;
+    w.__yuliusMock.holdHygieneCleanup = new Promise((resolve) => { w.__releaseCleanup = resolve; });
+    w.__yuliusMock.failHygieneCleanup = 'GitHub is not available';
+  });
+  await card.getByRole('button', 'Clean up').click();
+  await screen.getByRole('dialog', 'Remove 3 stale items?').getByRole('button', 'Clean up').click();
+  await expect(card.getByRole('button', 'Cleaning up…')).toBeDisabled();
+  await screen.getByRole('radio', 'CD (deployment)').click();
+  await screen.getByRole('radio', 'CI (tests)').click();
+  await browser.evaluate(() => { (window as unknown as HeldCleanup).__releaseCleanup?.(); });
+  const back = screen.getByRole('region', 'Repository hygiene');
+  await expect(back.getByRole('status')).toHaveText('Couldn’t clean up: GitHub is not available');
+  await expect(back.getByRole('button', 'Clean up')).toBeEnabled();
+});
+
+test('a cleanup round that runs late reads as shortly, not in the past', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci'));
+  await browser.evaluate(() => {
+    const db = (window as unknown as { __yuliusMock: { ci: Record<string, { hygiene: { next_cleanup_at: string } }> } }).__yuliusMock;
+    db.ci.sb_studio.hygiene.next_cleanup_at = new Date(Date.now() - 5 * 60000).toISOString();
+  });
+  const card = screen.getByRole('region', 'Repository hygiene');
+  await card.getByRole('button', 'Check now').click();
+  await expect(card.getByText(/removes the safe ones by itself \(next shortly\)/)).toBeVisible();
+});
+
 test('a sandbox without CI says how to add it and names leftover GitHub Actions', async ({ app, browser, screen }) => {
   await app.open(mock('/s/product/ci'));
   await expect(screen.getByRole('heading', 'No CI configured')).toBeVisible();
