@@ -378,7 +378,12 @@ impl App {
                 let Some(owner) = self.cache_owner(&task, pressure).await else {
                     continue;
                 };
-                if owner == Owner::Ended && !pressure && now - task.updated_at.0 < ENDED_GRACE_MS {
+                // An archived task was put away: no grace (SPEC-276 RDA-008).
+                if owner == Owner::Ended
+                    && !pressure
+                    && task.archived_at.is_none()
+                    && now - task.updated_at.0 < ENDED_GRACE_MS
+                {
                     continue;
                 }
                 let worktree = root.join(task.id.as_str());

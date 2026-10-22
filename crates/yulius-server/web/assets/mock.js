@@ -3656,6 +3656,8 @@ function leftoversView(db) {
     safe_bytes: deletable.filter((i) => i.auto).reduce((n, i) => n + (i.bytes || 0), 0),
     disk_used: 312 * 1024 ** 3, disk_total: 386 * 1024 ** 3,
     job: clone(l.job), next_auto_at: isoIn(40 * MIN),
+    // The automatic round 20 minutes ago (SPEC-276 RDA-009).
+    last_auto: { action: 'delete', running: false, actor: 'yulius', total: 2, done: 2, deleted: 2, freed: 3 * 1024 ** 3, kept: [], failed: [], started_at: isoIn(-20 * MIN), ended_at: isoIn(-20 * MIN) },
   };
 }
 

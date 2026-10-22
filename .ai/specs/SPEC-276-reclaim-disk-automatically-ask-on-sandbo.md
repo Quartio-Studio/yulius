@@ -137,7 +137,7 @@ been read for at least 24 h.
 - [x] A build cache over its cap loses its least recently used units
 - [x] A low or critical disk sweeps harder, prunes idle caches and is audited
 - [x] The UI warns while the server's disk is low
-- [ ] Archived tasks lose their caches at once; the last leftovers round is shown
+- [x] Archived tasks lose their caches at once; the last leftovers round is shown
 - [ ] Every sandbox's files can be purged once nothing of it runs
 - [ ] Removing a sandbox asks whether to delete or keep its files
 - [ ] Kept files of removed sandboxes are listed with their size and can be deleted

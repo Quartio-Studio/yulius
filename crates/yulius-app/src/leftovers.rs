@@ -128,6 +128,8 @@ struct Inner {
     scanned_at: Option<Timestamp>,
     job: Option<LeftoverJobView>,
     next_auto_at: Option<Timestamp>,
+    /// The last automatic round, as it ended (SPEC-276 RDA-009).
+    last_auto: Option<LeftoverJobView>,
 }
 
 /// What a deletion did.
@@ -1397,6 +1399,7 @@ impl App {
         if let Err(err) = self.scan_into_state().await {
             tracing::warn!(error = %err, "the leftovers scan failed");
             self.end_leftover_job(Some(err.to_string()));
+            self.with_leftovers(|inner| inner.last_auto = inner.job.clone());
             return None;
         }
         let safe: Vec<Leftover> = self.with_leftovers(|inner| {
@@ -1415,6 +1418,7 @@ impl App {
         });
         let report = self.delete_leftovers(&safe, "yulius").await;
         self.end_leftover_job(None);
+        self.with_leftovers(|inner| inner.last_auto = inner.job.clone());
         if report.deleted > 0 || !report.failed.is_empty() {
             tracing::info!(
                 deleted = report.deleted,
@@ -1537,6 +1541,7 @@ impl App {
                 data_dir: data_dir.to_string_lossy().into_owned(),
                 job: inner.job.clone(),
                 next_auto_at: inner.next_auto_at.map(rfc3339),
+                last_auto: inner.last_auto.clone(),
             }
         })
     }

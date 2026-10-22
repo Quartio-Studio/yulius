@@ -743,6 +743,33 @@ async fn the_round_runs_at_start_and_every_period() -> BoxResult<()> {
     Ok(())
 }
 
+/// SPEC-276 RDA-009: the automatic round deletes the safe leftovers with nobody running the
+/// CLI, and the view says when it last ran and what it did.
+#[tokio::test]
+async fn the_view_shows_what_the_last_automatic_round_did() -> BoxResult<()> {
+    let w = world().await?;
+    let old = w.sandbox("old").await?;
+    w.remove("old").await?;
+    w.later(REMOVED_KEEP_MS + 1_000);
+    assert!(
+        w.h.app.leftovers_overview().await.last_auto.is_none(),
+        "no round yet"
+    );
+    let report = w.h.app.run_leftovers_round().await.ok_or("the round ran")?;
+    assert!(report.deleted > 0, "{report:?}");
+    assert!(!old.join("ci").exists());
+    let last =
+        w.h.app
+            .leftovers_overview()
+            .await
+            .last_auto
+            .ok_or("the last round is shown")?;
+    assert_eq!((last.actor.as_str(), last.running), ("yulius", false));
+    assert_eq!((last.deleted, last.freed), (report.deleted, report.freed));
+    assert!(last.ended_at.is_some());
+    Ok(())
+}
+
 /// LFT-012: `yulius leftovers` lists and deletes through the loopback listener with the key the
 /// server wrote; a refused confirmation deletes nothing; a wrong key or no server is reported
 /// with exit 2.
@@ -779,6 +806,10 @@ async fn the_cli_lists_and_deletes_with_the_server_s_key() -> BoxResult<()> {
         "{text}"
     );
     assert!(text.contains("Reclaimable:"), "{text}");
+    assert!(
+        text.contains("No automatic cleanup since the server started."),
+        "{text}"
+    );
 
     let delete = |yes| Action::Delete {
         all_safe: true,

@@ -75,6 +75,10 @@ pub struct LeftoversView {
     pub job: Option<LeftoverJobView>,
     /// When the next automatic round runs (RFC 3339).
     pub next_auto_at: Option<String>,
+    /// The last automatic round since the start, as it ended (SPEC-276 RDA-009): what it deleted,
+    /// freed, kept and failed.
+    #[serde(default)]
+    pub last_auto: Option<LeftoverJobView>,
 }
 
 /// `POST /api/admin/leftovers/delete`: the items to delete, or every safe one.

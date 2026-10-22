@@ -27,6 +27,7 @@ test('a scan lists the leftovers with the disk and what is safe to delete', asyn
   expect(text).toMatch(/Everything else of a removed sandbox/);
   expect(text).toMatch(/Host Docker data/);
   expect(text).toMatch(/reclaimable/);
+  expect(text).toMatch(/Last automatic cleanup 20 min ago: 2 items deleted, 3\.0 GiB freed\./);
   expect(await browser.locator('.leftovers-table tr[data-kind="host-docker"] input:disabled').count()).toBe(1);
   expect(await axeViolations(browser)).toEqual([]);
 });

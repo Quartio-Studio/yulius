@@ -1353,3 +1353,25 @@ async fn the_disk_level_is_served_and_its_changes_are_published() -> BoxResult<(
     assert_eq!(changes, ["low"], "published once");
     Ok(())
 }
+
+/// SPEC-276 RDA-008: an archived task's build output goes in the next round, without the
+/// 10-minute grace an ended task gets (it may be continued at once; an archived one is put away).
+#[tokio::test]
+async fn an_archived_task_loses_its_caches_without_the_grace() -> BoxResult<()> {
+    let w = world().await?;
+    let stopped = w
+        .task("t-arch", TaskStatus::Stopped(StopReason::Crashed), None)
+        .await?;
+    let kept = w
+        .task("t-stop", TaskStatus::Stopped(StopReason::Crashed), None)
+        .await?;
+    w.archive("t-arch").await?;
+    w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(!stopped.join("target").exists(), "archived: no grace");
+    assert!(stopped.exists(), "its worktree stays");
+    assert!(
+        kept.join("target/blob").exists(),
+        "not archived: the grace holds"
+    );
+    Ok(())
+}

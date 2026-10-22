@@ -55,6 +55,14 @@ function diskLine(view) {
   return h('div', { class: 'leftovers-disk small' }, parts);
 }
 
+/** What the last automatic round did (SPEC-276 RDA-009), or null before the first one. */
+export function lastAutoText(last) {
+  if (!last || !last.ended_at) return null;
+  const failed = (last.failed || []).length;
+  const what = last.deleted ? `${plural(last.deleted, 'item')} deleted, ${bytes(last.freed)} freed` : 'nothing to delete';
+  return `Last automatic cleanup ${relLong(last.ended_at)}: ${what}${failed ? `, ${failed} failed` : ''}.`;
+}
+
 /** The running or last scan or deletion. */
 function jobLine(job) {
   if (!job) return null;
@@ -136,6 +144,7 @@ export function leftoversCard(ctx) {
       h('p', { class: 'muted xs' }, [
         view.scanned_at ? `Scanned ${relLong(view.scanned_at)}.` : null,
         view.next_auto_at ? `${BRAND.name} deletes the safe ones by itself, next ${relLong(view.next_auto_at)}.` : `${BRAND.name} deletes the safe ones by itself after every start and every hour.`,
+        lastAutoText(view.last_auto),
       ].filter(Boolean).join(' ')),
       jobLine(view.job),
       deleteButtons(),
