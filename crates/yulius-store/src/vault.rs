@@ -222,7 +222,7 @@ impl VaultStore for SqliteStore {
                      header_name = ?6, fields = ?7, kek_id = ?8, wrapped_key = ?9, ciphertext = ?10, \
                      updated_by = ?11, updated_at = ?12, value_updated_at = ?13, auto_allow = ?14 \
                      WHERE id = ?1 AND NOT (?14 = 1 AND cd_prod = 1) AND hosts = ?15 \
-                     AND auto_allow = ?16",
+                     AND auto_allow = ?16 AND NOT (cd_prod = 1 AND ?4 != '[]' AND ?4 != ?15)",
                     params![
                         r.id,
                         r.name,
@@ -427,7 +427,8 @@ impl VaultStore for SqliteStore {
                 .execute(
                     "UPDATE vault_secrets SET hosts = ?4, requested_hosts = '[]', requested_by = NULL, \
                      updated_by = ?5, updated_at = ?6 \
-                     WHERE id = ?1 AND section = 'agent' AND requested_hosts = ?2 AND hosts = ?3",
+                     WHERE id = ?1 AND section = 'agent' AND requested_hosts = ?2 AND hosts = ?3 \
+                     AND NOT (cd_prod = 1 AND ?4 != ?3)",
                     params![id, request, bound, hosts, by, at.0],
                 )
                 .map_err(db)?;
@@ -482,7 +483,7 @@ impl VaultStore for SqliteStore {
                 .execute(
                     "UPDATE vault_secrets SET env_files = ?4, env_requested_by = ?5 \
                      WHERE id = ?1 AND section = 'agent' AND env_files = ?2 \
-                     AND env_requested_by IS ?3",
+                     AND env_requested_by IS ?3 AND NOT (?4 = 'allowed' AND cd_prod = 1)",
                     params![id, from_state, from_by, to_state, to_by],
                 )
                 .map_err(db)?;
@@ -497,7 +498,8 @@ impl VaultStore for SqliteStore {
             let changed = c
                 .execute(
                     "UPDATE vault_secrets SET cd_prod = ?3 \
-                     WHERE id = ?1 AND section = 'agent' AND cd_prod = ?2 AND NOT (?3 = 1 AND auto_allow = 1)",
+                     WHERE id = ?1 AND section = 'agent' AND cd_prod = ?2 \
+                     AND NOT (?3 = 1 AND (auto_allow = 1 OR env_files = 'allowed' OR hosts != '[]'))",
                     params![id, i64::from(from), i64::from(to)],
                 )
                 .map_err(db)?;
@@ -1426,6 +1428,103 @@ mod tests {
         let mut turned = seen.clone();
         turned.auto_allow = true;
         assert!(!store.vault_update(&turned, &seen).await?);
+        Ok(())
+    }
+
+    /// SPEC-134 round 2 M-B, SPEC-262 VTR-001 (#639): production use and agent use exclude each
+    /// other in the store, so two managers answering from records read before the other's answer
+    /// never leave a secret both production-only and agent-usable.
+    #[tokio::test]
+    async fn production_and_agent_use_exclude_each_other_from_stale_reads()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = store_with_sandboxes().await?;
+        let none: [String; 0] = [];
+        let one = ["api.example.com".to_owned()];
+        let asked = (EnvFiles::Asked, Some("#1"));
+        let mut fresh = record("e", VaultSection::Agent, Some("s1"), "ENV");
+        fresh.hosts = Vec::new();
+        fresh.env_files = EnvFiles::Asked;
+        fresh.env_requested_by = Some("#1".into());
+
+        // `.env` copies allowed first: a production allowance read before it is refused.
+        store.vault_insert(&fresh).await?;
+        assert!(
+            store
+                .vault_set_env_files("e", asked, (EnvFiles::Allowed, None))
+                .await?
+        );
+        assert!(
+            !store.vault_set_cd_prod("e", false, true).await?,
+            "a secret agents copy into .env files is no production secret"
+        );
+
+        // Production first: allowing `.env` copies read before it is refused.
+        let mut second = fresh.clone();
+        second.id = "f".into();
+        second.name = "ENV2".into();
+        store.vault_insert(&second).await?;
+        assert!(store.vault_set_cd_prod("f", false, true).await?);
+        assert!(
+            !store
+                .vault_set_env_files("f", asked, (EnvFiles::Allowed, None))
+                .await?,
+            "a production secret is never copied into .env files"
+        );
+        assert!(
+            store
+                .vault_set_env_files("f", asked, (EnvFiles::No, None))
+                .await?,
+            "dismissing the request still works"
+        );
+
+        // Hosts bound first: a production allowance read before it is refused.
+        let mut third = fresh.clone();
+        third.id = "h".into();
+        third.name = "HOSTS".into();
+        third.env_files = EnvFiles::No;
+        third.env_requested_by = None;
+        third.requested_hosts = one.to_vec();
+        store.vault_insert(&third).await?;
+        assert!(
+            store
+                .vault_answer_request("h", &one, &none, &one, "u1", Timestamp(9))
+                .await?
+        );
+        assert!(
+            !store.vault_set_cd_prod("h", false, true).await?,
+            "a secret bound to hosts is no production secret"
+        );
+
+        // Production first: binding hosts read before it is refused, by an answer or an edit;
+        // dismissing the request and an edit that binds nothing still work.
+        let mut fourth = third.clone();
+        fourth.id = "p".into();
+        fourth.name = "PROD".into();
+        store.vault_insert(&fourth).await?;
+        let seen = store.vault_get("p").await?.ok_or("row")?;
+        assert!(store.vault_set_cd_prod("p", false, true).await?);
+        assert!(
+            !store
+                .vault_answer_request("p", &one, &none, &one, "u1", Timestamp(9))
+                .await?,
+            "a production secret is never bound to hosts"
+        );
+        let mut bound = seen.clone();
+        bound.hosts = one.to_vec();
+        assert!(
+            !store.vault_update(&bound, &seen).await?,
+            "an edit read before the production allowance binds no host"
+        );
+        let mut described = seen.clone();
+        described.description = "edited".into();
+        assert!(store.vault_update(&described, &seen).await?);
+        assert!(
+            store
+                .vault_answer_request("p", &one, &none, &none, "u1", Timestamp(9))
+                .await?
+        );
+        let got = store.vault_get("p").await?.ok_or("row")?;
+        assert!(got.cd_prod && got.hosts.is_empty() && got.env_files == EnvFiles::No);
         Ok(())
     }
 
