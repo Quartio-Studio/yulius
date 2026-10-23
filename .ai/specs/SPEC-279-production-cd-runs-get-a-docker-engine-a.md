@@ -80,8 +80,8 @@ Confirmed against `dev` at 2d9923df.
 - **PDE-006** Disk upkeep: its system layer and engine storage count toward the sandbox's quota
   (consumer `production`); a production run is refused while the sandbox is over the quota
   without that consumer (after the upkeep tried to free space), so production's own files never
-  block the deploy that lets them be pruned; after each production run a sandbox over its quota
-  gets the upkeep at once, which prunes the still-running production engine (build cache, unused
+  block the deploy that lets them be pruned; after each production run (its end recorded) a sandbox
+  under disk pressure gets the upkeep at once, which prunes the still-running production engine (build cache, unused
   images) through its control socket with the sandbox's engine.
 - **PDE-007** Leftovers: `sysroots/<sid>.prod` and `runtime/sandboxes/<sid>.prod` belong to the
   sandbox `<sid>` (never `Unowned` while it lives) and go with a removed sandbox's files once its
@@ -194,7 +194,11 @@ Run in this task's sandbox on 2026-10-23, branch `feat/265-production-cd-runs-ge
   medium (production storage pruned only while its engine runs, and could block deploys over the
   quota) and lows (stale production run files never listed; untested lost-run cleanup; the
   process host's guard gone; production bridge forwards); all fixed test-first in 5efb174c
-  (`production_containment` now keeps only a production holder's Docker directory). Not changed:
+  (`production_containment` now keeps only a production holder's Docker directory). Round 2
+  APPROVED c1bf66a9 with two lows, also fixed: the upkeep after a production run starts at the
+  upkeep's pressure point (`bytes_to_free > 0`), not only over the quota, and runs once the run's
+  end is recorded (a deploy never shows "running" during it); the Docker directory check also
+  requires its last component to be `docker`. Not changed:
   the default `prepare_production` of the port returns `Ok(None)` like `prepare` (the only real
   adapter overrides it); `retire` writes the production holder's marker even when it never ran
   (an empty runtime directory removed with the sandbox's); the `remove_owned_tree` fallback of

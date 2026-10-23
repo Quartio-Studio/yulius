@@ -3980,6 +3980,10 @@ impl App {
             &format!("run {run_id}: {} (exit {exit_code:?})", state.as_str()),
         )
         .await;
+        // Once its end is recorded (SPEC-279 PDE-006, review round 2).
+        if env.after == Stage::Production {
+            self.after_production_run(&sandbox).await;
+        }
     }
 
     async fn dlv_environment_steps(

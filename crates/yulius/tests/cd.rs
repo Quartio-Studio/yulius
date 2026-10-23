@@ -2213,7 +2213,7 @@ async fn a_state_left_alone_broken_or_waited_for_keeps_its_version() -> TestResu
 #[derive(Default)]
 struct Holders {
     calls: std::sync::Mutex<Vec<&'static str>>,
-    /// The sandbox is over its disk quota.
+    /// The sandbox is under disk pressure.
     over: bool,
 }
 
@@ -2279,9 +2279,10 @@ impl yulius_app::ports::isolation::SandboxIsolation for Holders {
         &self,
         _: &yulius_app::ports::isolation::SandboxRef,
     ) -> Option<yulius_app::ports::isolation::DiskUsage> {
+        // Under the quota but past the upkeep's pressure point (review round 2).
         self.over
             .then_some(yulius_app::ports::isolation::DiskUsage {
-                used: 2_000_000_000,
+                used: 990_000_000,
                 limit: 1_000_000_000,
             })
     }
@@ -2423,9 +2424,9 @@ async fn production_runs_join_the_production_holder_with_its_docker_engine() -> 
     Ok(())
 }
 
-/// SPEC-279 PDE-006 (review finding 1): after a production run, a sandbox over its quota has its
-/// engines pruned while the production engine still runs, so production's images and build cache
-/// never stay out of the upkeep's reach.
+/// SPEC-279 PDE-006 (review finding 1, round 2): after a production run, a sandbox under disk
+/// pressure has its engines pruned while the production engine still runs, so production's
+/// images and build cache never stay out of the upkeep's reach.
 #[tokio::test]
 async fn a_production_run_over_the_quota_prunes_the_engines_after_it() -> TestResult {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));

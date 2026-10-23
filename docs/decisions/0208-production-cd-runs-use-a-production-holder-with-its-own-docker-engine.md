@@ -40,7 +40,7 @@ not run from Yulius CD.
   retired with its sandbox, and its trees go with the removed sandbox's once it stopped. Its layer
   and storage count toward the sandbox's quota (consumer `production`); the upkeep prunes a
   running production engine with the sandbox's, and runs right after each production run when
-  the sandbox is over its quota. Production's own files never refuse a production deploy (only
+  the sandbox is under disk pressure. Production's own files never refuse a production deploy (only
   the rest of the sandbox's usage does), so they can always be pruned.
 
 ## Alternatives

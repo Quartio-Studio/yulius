@@ -957,7 +957,7 @@ after each run; a production run's are in `<data>/cd/<id>/runs/cd-<run>/work` or
   run's own files can be mounted (`docker run -v "$PWD":…`); nothing of the sandbox can. The
   `docker` CLI and its buildx plugin are the host's. Its storage counts toward the sandbox's
   disk quota (but never refuses a production deploy by itself) and is pruned after a production
-  run that leaves the sandbox over it; the holder stops when idle and goes with the sandbox. Without
+  run that leaves the sandbox under disk pressure (90 % of its quota); the holder stops when idle and goes with the sandbox. Without
   a `dockerd` in the base, `docker` answers why (run `sudo yulius host setup`), and
   `yulius doctor --docker-smoke` proves it on the host.
 - **SSH and other hosts.** Runs use their holder's network (dev the sandbox's, production its

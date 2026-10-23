@@ -259,19 +259,19 @@ impl App {
         }
     }
 
-    /// After a production-stage run of `sandbox`, while its production engine still runs: a
-    /// fresh measurement, and over the quota the upkeep, which prunes that engine's unused
-    /// images and build cache with the sandbox's (SPEC-279 PDE-006, review finding 1); an
-    /// idle engine is never started for that.
-    pub(super) async fn after_production_run(&self, sandbox: &SandboxRecord) {
+    /// After a production-stage run of `sandbox` (its end recorded), while its production
+    /// engine still runs: a fresh measurement, and under disk pressure the upkeep, which prunes
+    /// that engine's unused images and build cache with the sandbox's (SPEC-279 PDE-006, review
+    /// finding 1, round 2); an idle engine is never started for that.
+    pub(crate) async fn after_production_run(&self, sandbox: &SandboxRecord) {
         let Some(isolation) = self.isolation.get() else {
             return;
         };
-        let over = isolation
+        let pressure = isolation
             .measure_disk(&self.sandbox_ref(sandbox))
             .await
-            .is_some_and(|usage| usage.used > usage.limit);
-        if over && let Err(err) = self.disk_upkeep(sandbox, true).await {
+            .is_some_and(|usage| yulius_domain::disk::bytes_to_free(usage.used, usage.limit) > 0);
+        if pressure && let Err(err) = self.disk_upkeep(sandbox, true).await {
             tracing::warn!(sandbox = %sandbox.id, error = %err, "the upkeep after a production run failed");
         }
     }
@@ -1156,9 +1156,6 @@ impl App {
         drop(held);
         // The run's files (the tree, its HOME, its log) go with it.
         self.remove_run_dirs(&run_dir, &files).await;
-        if run.stage == CdStage::Prod {
-            self.after_production_run(&sandbox).await;
-        }
         let (state, exit_code, reason) = match ended {
             Ok(Ended::Exit(exit)) if exit.spawn_failed => (
                 RunState::Error,
@@ -1243,6 +1240,10 @@ impl App {
             ),
         )
         .await;
+        // Once its end is recorded (SPEC-279 PDE-006, review round 2).
+        if run.stage == CdStage::Prod {
+            self.after_production_run(&sandbox).await;
+        }
     }
 
     /// The run's containment (review C1, H-A). Dev joins the sandbox: agents build and use
@@ -1788,11 +1789,13 @@ pub fn production_containment(
     // Only a production holder's engine, never the sandbox's (review finding 4): its Docker
     // directory is `<state of <sid>.prod>/docker`.
     let production_engine = join.docker_dir.as_deref().is_some_and(|dir| {
-        dir.parent()
-            .and_then(Path::file_name)
-            .and_then(|name| name.to_str())
-            .and_then(yulius_contracts::sandbox::production_sandbox)
-            .is_some()
+        dir.file_name().is_some_and(|name| name == "docker")
+            && dir
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .and_then(yulius_contracts::sandbox::production_sandbox)
+                .is_some()
     });
     if !production_engine {
         join.docker_dir = None;
