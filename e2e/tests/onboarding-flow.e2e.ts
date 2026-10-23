@@ -8,7 +8,7 @@ failOnPageErrors();
 // new window/tab (it currently opens in the same tab, replacing Yulius, and users can't go back)",
 // and after each step it must be clear what comes next.
 
-type Opened = { url: string; target: string; openerCut: boolean; text: string; closed: boolean };
+type Opened = { url: string; target: string; openerCut: boolean; text: string; closed: boolean; form: { method: string; action: string; manifest: string } | null };
 type Stubbed = Window & { __opened: { url: string; target: string; tab: { opener: unknown; closed: boolean; document: Document } }[] };
 type Mocked = Window & { __yuliusMock: { finishGithubApp(): void } };
 
@@ -26,6 +26,7 @@ const stubWindowOpen = (browser: Browser, blocked = false) => browser.evaluate((
 
 const opened = (browser: Browser): Promise<Opened[]> => browser.evaluate(() => (window as unknown as Stubbed).__opened.map((o) => ({
   url: o.url, target: o.target, openerCut: o.tab.opener === null, text: o.tab.document.body.textContent ?? '', closed: o.tab.closed,
+  form: ((form) => (form ? { method: form.method, action: form.action, manifest: (form.querySelector('input[name="manifest"]') as HTMLInputElement | null)?.value ?? '' } : null))(o.tab.document.querySelector('form')),
 })));
 
 /** The App now exists (created in the other tab) and the person comes back to this one. */
@@ -51,10 +52,17 @@ test('Create GitHub App opens GitHub in a new tab and this tab waits, then says 
   // GitHub's pages get no handle on this tab, and the manifest went to the new tab.
   expect(tabs[0].openerCut).toBe(true);
   expect(tabs[0].text).toContain('https://github.com/organizations/Quartio-Studio/settings/apps/new');
+  // The form GitHub's manifest flow takes (the mock builds it and only skips the submit).
+  expect(tabs[0].form?.method).toBe('post');
+  expect(tabs[0].form?.action).toBe('https://github.com/organizations/Quartio-Studio/settings/apps/new?state=mock');
+  expect(JSON.parse(tabs[0].form?.manifest ?? 'null')).toMatchObject({ name: 'Yulius (mock)' });
+  // Keyboard users land on the new card, not on the page's body.
+  await expect.poll(() => browser.evaluate(() => document.activeElement?.textContent ?? null)).toBe('Finish on GitHub in the new tab');
   expect(await axeViolations(browser)).toEqual([]);
 
   await finishOnGithub(browser);
   await expect(screen.getByText('Connected', { exact: true })).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => document.activeElement?.textContent ?? null)).toBe('Next steps');
   await expect(screen.getByText('GitHub connected', { exact: false })).toBeVisible();
   const next = screen.getByRole('region', 'Next steps');
   await expect(next.getByRole('link', { name: 'Install on repositories' })).toHaveAttribute('target', '_blank');
@@ -81,14 +89,60 @@ test('a blocked new tab says to allow pop-ups and posts nothing', async ({ app, 
   await expect(screen.getByRole('button', 'Create GitHub App on GitHub')).toBeEnabled();
 });
 
-test('the waiting card starts again', async ({ app, browser, screen }) => {
+test('a failed manifest request closes the new tab and says so', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/github', '&github=0&failpost=/api/admin/github/manifest'));
+  await expect(screen.getByText(/You confirm the app on GitHub/)).toBeVisible();
+  await stubWindowOpen(browser);
+  await owner(browser).fill('Quartio-Studio');
+  await screen.getByRole('button', 'Create GitHub App on GitHub').click();
+  await expect(screen.getByText(/Couldn’t prepare the GitHub App manifest/)).toBeVisible();
+  expect((await opened(browser))[0].closed).toBe(true);
+  await expect(screen.getByRole('heading', { name: 'Finish on GitHub in the new tab' })).toHaveCount(0);
+  await expect(screen.getByRole('button', 'Create GitHub App on GitHub')).toBeEnabled();
+});
+
+test('a GitHub tab closed before the manifest is ready posts nothing and says so', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/github', '&github=0&holdpost=/api/admin/github/manifest'));
+  await expect(screen.getByText(/You confirm the app on GitHub/)).toBeVisible();
+  await stubWindowOpen(browser);
+  await owner(browser).fill('Quartio-Studio');
+  await screen.getByRole('button', 'Create GitHub App on GitHub').click();
+  await browser.evaluate(() => {
+    (window as unknown as Stubbed).__opened[0].tab.closed = true;
+    (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock.release();
+  });
+  await expect(screen.getByText(/The GitHub tab was closed/)).toBeVisible();
+  expect((await opened(browser))[0].form).toBe(null);
+  await expect(screen.getByRole('heading', { name: 'Finish on GitHub in the new tab' })).toHaveCount(0);
+});
+
+/** How many times the page read the connection; `comeBack` first makes the tab "come back into view". */
+const githubReads = (browser: Browser, comeBack = false) => browser.evaluate((back: boolean) => {
+  if (back) document.dispatchEvent(new Event('visibilitychange'));
+  return (window as unknown as { __yuliusMock: { githubReads?: number } }).__yuliusMock.githubReads ?? 0;
+}, comeBack);
+
+test('the waiting card starts again, and stops reading the connection then and when the page is left', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/github', '&github=0'));
   await expect(screen.getByText(/You confirm the app on GitHub/)).toBeVisible();
   await stubWindowOpen(browser);
   await owner(browser).fill('Quartio-Studio');
   await screen.getByRole('button', 'Create GitHub App on GitHub').click();
+  // While it waits, coming back reads the connection.
+  const before = await githubReads(browser);
+  await expect.poll(() => githubReads(browser, true)).toBeGreaterThan(before);
   await screen.getByRole('button', 'Start again').click();
   await expect(screen.getByRole('button', 'Create GitHub App on GitHub')).toBeVisible();
+  const afterRestart = await githubReads(browser);
+  expect(await githubReads(browser, true)).toBe(afterRestart);
+
+  // Waiting again, then leaving the page: no more reads.
+  await screen.getByRole('button', 'Create GitHub App on GitHub').click();
+  await expect(screen.getByRole('heading', { name: 'Finish on GitHub in the new tab' })).toBeVisible();
+  await browser.evaluate(() => { location.hash = '#/'; });
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  const afterLeaving = await githubReads(browser);
+  expect(await githubReads(browser, true)).toBe(afterLeaving);
 });
 
 test('the connected card says what comes next, Connect Claude first without a subscription', async ({ app, screen }) => {

@@ -810,7 +810,8 @@ route('POST', '/api/admin/recovery-code', ({ db, body }) => {
   return { recovery_code: '482913' };
 });
 // The instance's GitHub App (ACC-006).
-route('GET', '/api/admin/github', ({ db }) => (db.me.instance.github_configured
+// Tests count the reads (`__yuliusMock.githubReads`) to see the waiting page stop reading (SPEC-283).
+route('GET', '/api/admin/github', ({ db }) => (db.githubReads = (db.githubReads || 0) + 1) && (db.me.instance.github_configured
   ? { configured: true, app_slug: 'yulius-quartio-studio', owner_login: db.me.instance.owner_login, install_url: 'https://github.com/apps/yulius-quartio-studio/installations/new', installed: true }
   : { configured: false, app_slug: null, owner_login: null, install_url: null, installed: false }));
 route('POST', '/api/admin/github/manifest', ({ db, body }) => {
