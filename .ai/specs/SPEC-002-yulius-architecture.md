@@ -2195,6 +2195,11 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
   the superadmin's shells); merging and releasing act as a person and are refused for the
   superadmin with `403` and a message, never `401`, which the UI treats as a signed-out session.
   A task the superadmin owns has no owner token, so it acts as the App (GIT-003).
+- Open UI event streams (`WS /api/events`) read the person again at each re-check
+  (`viewer_recheck_ms`, `App::signed_in_user`): sandbox visibility (#66) and the admin-only filter
+  (`is_superadmin || is_instance_admin`) use the current record, so a role removed or granted by the
+  superadmin takes effect within one interval without closing the stream (SPEC-286, #722); an ended
+  sign-in still closes it with 4003.
 - Internal listener binds 127.0.0.1 only; accepts task tokens only; tokens are per attempt, random
   256-bit, stored hashed, revoked when the attempt ends.
 - Secrets (provider credentials, GitHub App key, MCP env/headers) are encrypted at rest with the

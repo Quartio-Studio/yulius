@@ -49,9 +49,9 @@ interval of granting it, they start, without a reconnect.
 ## Plan
 
 - [x] Spec written and validated
-- [ ] Regression tests for losing and gaining the flag fail on dev
-- [ ] The re-check reloads the person and the stream filters with it
-- [ ] docs/api.md, SPEC-002 §8 and changes.md describe the rule
+- [x] Regression tests for losing and gaining the flag fail on dev
+- [x] The re-check reloads the person and the stream filters with it
+- [x] docs/api.md, SPEC-002 §8 and changes.md describe the rule
 - [ ] Independent review answered
 - [ ] Gates green and pull request delivered
 
