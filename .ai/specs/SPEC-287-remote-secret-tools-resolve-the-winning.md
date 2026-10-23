@@ -1,11 +1,11 @@
 ---
 yulius-task: 609d3144-d973-40d9-9865-368e586b573b
-status: in-progress
+status: done
 ---
 
 # SPEC-287: Remote secret tools resolve the winning secret by name
 
-Status: in-progress
+Status: done
 Date: 2026-10-24
 Owner: task #273
 Scope authorization: task #273 (requested by MrFishPL): solve issue #787 in one pull request into
@@ -53,9 +53,9 @@ project and this person, project > the person's personal > a global switched on 
 - [x] Spec SPEC-287 written and validated
 - [x] Regression tests for name resolution fail on dev
 - [x] Remote secret tools resolve the winning secret
-- [ ] Docs and changes entry true, gates green
-- [ ] Independent review answered
-- [ ] Merged into dev on green CI
+- [x] Docs and changes entry true, gates green
+- [x] Independent review answered
+- [x] Merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -84,3 +84,22 @@ project and this person, project > the person's personal > a global switched on 
   through these tools (it was before, as the Secrets page lists it). This matches `secrets_list`,
   which does not show it either; the person manages it on the Secrets page. Reversible.
 - No ADR: the change applies ADR-0186's precedence to two tools that bypassed it.
+
+## Evidence
+
+- Regression test first (commit 128cba1f, on dev's code): `cargo nextest run -p yulius -E
+  'binary_id(yulius::main) & test(/^remote_mcp::remote_secret_tools/)'` failed at
+  `remote_mcp.rs:1185`: "global secrets are managed by instance administrators" (alice's
+  `secret_update` of `NPM_TOKEN` hit the older global secret).
+- After the fix (0ae2b4e5): `remote_mcp::`, `secrets_scopes::` and `cli::` tests, 49 passed.
+- `scripts/dev ci` at 7a16509b: exit 0 (fmt, clippy, check, macOS, nextest, doctests, deps).
+- Review round 1 (fresh session, om-code-review, read-only): APPROVE at 7a16509b; one minor and
+  three nits, all own code. Minor: no test for a switched-off personal secret, added (79798258;
+  `ALICE_OFF` has no other secret of its name, so dev's lookup, which lists the caller's personal
+  secrets switched on or not, would have found it). Nit: docs wording, fixed. Nit: use
+  `caller_holder`, not taken: it lives in the private `vault::runtime` module, and
+  `Holder::Person(&project.user)` is what it returns for a remote caller (no task). Nit: plan item,
+  ticked here. No other lookup by name has this pattern (reviewer checked every
+  `agent_secrets` / `vault_agent_*` caller; `secret_delete` picks the project's own by scope).
+- `remote_mcp::` after round 1: 33 passed. Yulius CI runs the gate and the Vidoc change scan on the
+  pull request head.
