@@ -2056,6 +2056,8 @@ async fn deploys_restore_write_and_save_an_agent_state_with_one_writer() -> Test
     assert!(held.contains("held by dev run"), "{held}");
     // AC4: production waits for it; the task changes its copy without saving.
     let third = web.deploy("prod", Some("app"), bob).await?;
+    // Its log is created just before it asks for the state, with no await between (#864).
+    exists(&data.join(format!("cd/s1/runs/cd-{third}/work/log"))).await?;
     let copy = home.join(".ops/inventory.db");
     let mut unsaved = std::fs::read_to_string(&copy)?;
     unsaved.push_str("task-unsaved\n");
