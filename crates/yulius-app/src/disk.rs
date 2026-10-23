@@ -717,8 +717,8 @@ mod tests {
         rx.recv_timeout(bound).ok()
     }
 
-    /// FIF-001 (#853): a regular `yulius.toml` declares its caches; a FIFO, a link to a valid
-    /// file and a file over the limit declare none, and none is waited on.
+    /// FIF-001 (#853): a regular `yulius.toml` declares its caches; a link to a valid file, a file
+    /// over the limit, a directory and a FIFO declare none, and none is waited on.
     #[test]
     fn only_a_small_regular_yulius_toml_declares_caches() -> TestResult {
         let tmp = tempfile::tempdir()?;
@@ -740,6 +740,9 @@ mod tests {
         assert_eq!(declared_within(&wt, bound), Some(vec![]), "one byte over");
 
         std::fs::remove_file(&toml)?;
+        std::fs::create_dir(&toml)?;
+        assert_eq!(declared_within(&wt, bound), Some(vec![]), "a directory");
+        std::fs::remove_dir(&toml)?;
         nix::unistd::mkfifo(&toml, nix::sys::stat::Mode::S_IRWXU)?;
         assert_eq!(declared_within(&wt, bound), Some(vec![]), "a FIFO");
         Ok(())

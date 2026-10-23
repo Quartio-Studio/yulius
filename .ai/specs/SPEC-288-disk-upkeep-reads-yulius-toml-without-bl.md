@@ -46,23 +46,24 @@ than a small regular file counts as absent.
 ## Requirements
 
 - FIF-001: a worktree's `yulius.toml` is opened once with `O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC`;
-  its handle must be a regular file of at most `MAX_TOML_BYTES` (64 KiB), and at most that many
-  bytes are read from it. A FIFO, a link, a directory, an oversized file or anything unreadable
+  its handle must be a regular file of at most `MAX_TOML_BYTES` (64 KiB), and at most one byte
+  more is read from it (a file grown past the limit after the check is refused). A FIFO, a link, a directory, an oversized file or anything unreadable
   declares no cache.
 - FIF-002: a worktree record's `gitdir` is read the same way, bounded by `MAX_GITDIR_BYTES`
   (4 KiB, a path and its newline); anything else means the record names no gone worktree (it is
   kept, as an unreadable record was before).
 - FIF-003: `worktree_only_caches` reads the declared caches on a blocking thread, not on a
-  tokio worker.
+  tokio worker. With FIF-001 the read cannot block, so no test can tell the two apart; this is
+  checked by reading the code (defence in depth for file I/O on async workers).
 - FIF-004: a disk round over a worktree whose `yulius.toml` is a FIFO ends, prunes its
   recognised caches (`target`) and keeps what only that file declared.
 
 ## Plan
 
 - [x] Spec SPEC-288 written and validated
-- [ ] Failing regression tests for a FIFO, a link and an oversized yulius.toml and gitdir
-- [ ] yulius.toml and gitdir read through one non-blocking no-follow handle
-- [ ] Declared caches of an ended worktree read off the async workers
+- [x] Failing regression tests for a FIFO, a link and an oversized yulius.toml and gitdir
+- [x] yulius.toml and gitdir read through one non-blocking no-follow handle
+- [x] Declared caches of an ended worktree read off the async workers
 - [ ] Independent review answered and gates green
 - [ ] Merged into dev on green CI and #853 closed with a summary
 
@@ -73,19 +74,25 @@ than a small regular file counts as absent.
 - A link or an oversized `yulius.toml` still declares nothing; a regular one still does (FIF-001).
 - A FIFO, a link or an oversized `gitdir` names no gone worktree; a regular one still does
   (FIF-002).
-- The ended-worktree path (`worktree_only_caches`) ends within the bound with a FIFO (FIF-003).
+- The ended-worktree path (`worktree_only_caches`) ends within the bound with a FIFO in place
+  (FIF-003, FIF-004).
 
 ## Test plan
 
-- Unit (`disk.rs`): `declared_caches` on a regular file, a FIFO, a link to a valid file and a
-  file one byte over the limit. The FIFO case runs on its own thread with a watchdog that, after
-  the bound, opens the FIFO's write end to release a blocked reader, so a regression fails
-  instead of hanging the suite.
+- Unit (`disk.rs`): `declared_caches` on a regular file, a link to a valid file, a file one byte
+  over the limit, a directory and a FIFO, each on its own thread answering within a bound
+  (`recv_timeout`; a blocked thread is left behind and the test fails).
+- Unit (`disk.rs`), the race of #853: a thread swaps `yulius.toml` between a regular file and a
+  FIFO (`rename`) while another reads it 20 000 times; the reads must end within 60 s. A FIFO
+  already in place was refused before the fix too; only the swap after the type check blocked,
+  so this is the test that fails without the fix.
 - Unit (`leftovers.rs`): `gone_worktree` with `gitdir` as a regular file naming a gone worktree
-  (found), a FIFO, a link to such a file and an oversized file (none), with the same watchdog.
+  (found), a link to such a file, an oversized file and a FIFO (none), each within a bound.
 - Integration (`crates/yulius/tests/disk.rs`): a crashed task (the `find_caches` path) and a
   closed task (the `worktree_only_caches` path) whose `yulius.toml` is a FIFO; `disk_upkeep`
-  ends under the watchdog, `target` goes and the declared `out` stays.
+  ends within 60 s, `target` goes and the declared `out` stays. On the timeout the test opens the
+  FIFOs' write ends to release a blocked reader, so a regression fails instead of hanging the
+  runtime's shutdown. It guards FIF-004 end to end; it is not the race's regression test.
 
 ## Decisions
 
@@ -94,6 +101,10 @@ than a small regular file counts as absent.
   It reads at most `max + 1` bytes through `take`, so a file growing after the `fstat` is still
   refused. No new ADR: this applies ADR-0174's rule (the handle, not the path, is checked and
   read) to two more reads.
-- The FIFO watchdog releases a blocked reader by opening the write end rather than relying on a
-  `tokio::time::timeout`: a reader blocked on a tokio worker (FIF-003's path before the fix) or
-  in `spawn_blocking` (the runtime waits for it on drop) would hang the test either way.
+- The unit tests bound each read with a thread and `recv_timeout` (a blocked thread is left
+  behind; the process still ends). The integration test runs the round as a spawned task on a
+  multi-threaded runtime under `tokio::time::timeout` and, on the timeout, opens the FIFOs' write
+  ends: a reader blocked in `spawn_blocking` would otherwise hold the runtime's shutdown.
+- Links higher up the path (a worktree directory itself swapped for a link) are outside this
+  change: `O_NOFOLLOW` covers the last component only, as before; the removal still checks the
+  worktree with `real_dir_from`, and a link there can at most change the list of cache names read.

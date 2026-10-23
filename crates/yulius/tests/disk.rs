@@ -404,7 +404,19 @@ async fn a_fifo_named_yulius_toml_declares_nothing_and_never_stops_the_round() -
     w.later();
     let (app, sandbox) = (w.h.app.clone(), w.sandbox.clone());
     let round = tokio::spawn(async move { app.disk_upkeep(&sandbox, false).await });
-    let report = tokio::time::timeout(std::time::Duration::from_secs(60), round).await???;
+    let Ok(done) = tokio::time::timeout(std::time::Duration::from_secs(60), round).await else {
+        // A reader blocked on a FIFO would hold the runtime's shutdown: opening the write end
+        // releases it, so the test fails instead of hanging.
+        use std::os::unix::fs::OpenOptionsExt as _;
+        for worktree in [&crashed, &closed] {
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(nix::fcntl::OFlag::O_NONBLOCK.bits())
+                .open(worktree.join("yulius.toml"));
+        }
+        return Err("the round waited on a FIFO".into());
+    };
+    let report = done??;
     for worktree in [&crashed, &closed] {
         assert!(!worktree.join("target").exists(), "{report:?}");
         assert!(
