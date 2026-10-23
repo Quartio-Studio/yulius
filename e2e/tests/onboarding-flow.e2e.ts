@@ -186,3 +186,32 @@ test('members see no getting-started steps', async ({ app, browser, screen }) =>
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Try Yulius on your own code');
   await expect(browser.locator('section[aria-label="Getting started"]')).toHaveCount(0);
 });
+
+test('the setup recovery card keeps its frame and the owner toggle its width, also at phone width', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&setup=1&signedout=1&recovery=1'));
+  await createSuperadmin(browser, screen);
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Your recovery code');
+  // Screenshot 1: the code sat flush against a borderless box (the modal's style leaked here).
+  const frame = () => browser.evaluate(() => {
+    const style = getComputedStyle(document.querySelector('.recovery-card')!);
+    return { padding: parseFloat(style.paddingLeft), border: parseFloat(style.borderTopWidth) };
+  });
+  expect((await frame()).padding).toBeGreaterThanOrEqual(16);
+  expect((await frame()).border).toBeGreaterThan(0);
+  await browser.setViewport({ width: 390, height: 844 });
+  expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await browser.setViewport({ width: 1440, height: 900 });
+
+  // Screenshot 4: the Organization / Personal account toggle stretched across the whole card.
+  await app.open(mock('/admin/github', '&github=0'));
+  await expect(screen.getByText(/You confirm the app on GitHub/)).toBeVisible();
+  const widths = () => browser.evaluate(() => ({
+    toggle: document.querySelector('#main .card .seg')!.getBoundingClientRect().width,
+    card: document.querySelector('#main .card')!.getBoundingClientRect().width,
+  }));
+  const { toggle, card } = await widths();
+  expect(toggle).toBeLessThan(card / 2);
+  await browser.setViewport({ width: 390, height: 844 });
+  expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await browser.setViewport({ width: 1440, height: 900 });
+});

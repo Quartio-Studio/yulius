@@ -618,7 +618,8 @@ function manifestForm(ctx, onOpened) {
     h('div', { class: 'row' }, badge('Not connected', 'warn')),
     h('p', { class: 'text-2' }, `${BRAND.name} creates a GitHub App for this instance using GitHub’s manifest flow. You confirm the app on GitHub, then install it on the repositories ${BRAND.name} may manage. GitHub opens in a new tab; this one waits and then shows what comes next.`),
     field('Owner (organization or user)', owner),
-    h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Owner kind' }, kindInputs.map((k) => h('label', null, k.input, k.label))),
+    // Its own width, not the card's (SPEC-283 ONB-007).
+    h('div', { class: 'seg seg-fit', role: 'radiogroup', 'aria-label': 'Owner kind' }, kindInputs.map((k) => h('label', null, k.input, k.label))),
     h('div', null, submit));
 }
 
