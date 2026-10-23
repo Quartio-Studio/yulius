@@ -483,32 +483,48 @@ export function mountGithubPage(ctx) {
     document.removeEventListener('visibilitychange', waiting.onShown);
     waiting = null;
   };
-  // `manual`: Check now, after the limit ended the automatic reads.
+  // `manual`: Check now, after the limit ended the automatic reads. Past the limit, the read that
+  // notices it is the last one: the card then offers Check now instead.
   const check = async (manual = false) => {
     if (!manual && (!waiting || pollPaused())) return;
-    // Past the limit, stop reading by itself and say so: the card offers Check now instead.
-    if (waiting && Date.now() - waiting.since > GITHUB_WAIT_MS) { stopWaiting(); setChildren(host, githubWaiting(restart, check, { expired: true })); return; }
-    let config;
-    try { config = await ctx.api.get('/api/admin/github'); } catch (error) { if (manual) errorToast(error, 'Couldn’t read the GitHub connection'); return; /* else the next read tries again */ }
-    if (!waiting && !manual) return;
-    if (!config || !config.configured) {
-      if (manual) toast('No GitHub App yet: finish creating it on GitHub, or start again.', { kind: 'info' });
+    const expired = Boolean(waiting) && Date.now() - waiting.since > GITHUB_WAIT_MS;
+    if (expired) stopWaiting();
+    let config = null;
+    try {
+      config = await ctx.api.get('/api/admin/github');
+    } catch (error) {
+      if (manual) errorToast(error, 'Couldn’t read the GitHub connection');
+    }
+    if (!manual && !expired && !waiting) return; // stopped (Start again, page left) meanwhile
+    if (config && config.configured) {
+      stopWaiting();
+      const me = ctx.store.state.me;
+      if (me && me.instance) {
+        me.instance.github_configured = true;
+        ctx.store.emit('me', me);
+      }
+      toast(`GitHub connected: ${BRAND.name} can now work on your repositories.`, { kind: 'ok' });
+      show(config);
       return;
     }
-    stopWaiting();
-    const me = ctx.store.state.me;
-    if (me && me.instance) {
-      me.instance.github_configured = true;
-      ctx.store.emit('me', me);
+    if (expired) {
+      setChildren(host, githubWaiting(restart, checkNow, { expired: true }));
+      focusHeading(host);
+    } else if (manual && config) {
+      toast('No GitHub App yet: finish creating it on GitHub, or start again.', { kind: 'info' });
     }
-    toast(`GitHub connected: ${BRAND.name} can now work on your repositories.`, { kind: 'ok' });
-    show(config);
+  };
+  // One read at a time from Check now: its button waits for the answer.
+  const checkNow = async (button) => {
+    button.disabled = true;
+    button.classList.add('busy');
+    try { await check(true); } finally { button.disabled = false; button.classList.remove('busy'); }
   };
   const startWaiting = () => {
     stopWaiting();
     waiting = { since: Date.now(), onShown: () => { if (!document.hidden) check(); }, timer: setInterval(check, GITHUB_POLL_MS) };
     document.addEventListener('visibilitychange', waiting.onShown);
-    setChildren(host, githubWaiting(restart, check));
+    setChildren(host, githubWaiting(restart, checkNow));
     focusHeading(host);
   };
   const restart = () => { stopWaiting(); setChildren(host, manifestForm(ctx, startWaiting)); };
@@ -541,7 +557,7 @@ function githubWaiting(onRestart, onCheck, { expired = false } = {}) {
       h('li', null, 'Install it: pick the repositories this instance may manage.'),
       h('li', null, expired ? 'Come back to this tab and press Check now.' : 'Come back to this tab: it updates by itself once the app exists.')),
     h('div', { class: 'row-wrap' },
-      expired ? h('button', { type: 'button', class: 'btn btn-primary', onClick: () => onCheck(true) }, 'Check now') : null,
+      expired ? h('button', { type: 'button', class: 'btn btn-primary', onClick: (event) => onCheck(event.currentTarget) }, 'Check now') : null,
       h('button', { type: 'button', class: 'btn', onClick: onRestart }, 'Start again'),
       h('span', { class: 'muted small' }, 'Closed the tab, or chose the wrong owner?')));
 }

@@ -111,10 +111,10 @@ what comes next.
 
 ## Evidence
 
-- `e2e/tests/onboarding-flow.e2e.ts` (11 tests): each written before its change and seen failing
+- `e2e/tests/onboarding-flow.e2e.ts` (13 tests): each written before its change and seen failing
   for the right reason (no `window.open` call; no waiting heading; no Next steps region; no step
   labels; no Getting started list; recovery card padding 0; manifest form absent; closed tab not
-  detected), then passing (11 passed). Mutation check: removing the page's `destroy` cleanup makes
+  detected), then passing. Mutation check: removing the page's `destroy` cleanup makes
   "stops reading the connection … when the page is left" fail (3 reads, expected 2).
 - `update.e2e.ts` setup tests updated for the new last step; `password-setup.e2e.ts`,
   `home.e2e.ts`, `claude-connect.e2e.ts`, `loading-shapes.e2e.ts` pass unchanged.
@@ -130,5 +130,8 @@ what comes next.
   limit, focus moved to each new card (asserted), empty action row, polling stop tested, heading
   class, docs. Kept: step 1 says "of 5" while the 4-step path exists only in the mock (the server
   always issues a recovery code).
-- Not tested automatically: the real post to GitHub (needs a GitHub account and a public URL)
-  and the 15-minute expiry of the waiting reads (no clock control in the runner).
+- Review round 2 at 72eeca8a: approve, with lows on Check now. Fixed test-first (two tests with a
+  stubbed page clock, both failing before): past the limit the page reads once more (an App that
+  exists shows connected at once), then shows Check now with focus; Check now is off while it
+  reads. `onboarding-flow.e2e.ts`: 13 passed.
+- Not tested automatically: the real post to GitHub (needs a GitHub account and a public URL).
