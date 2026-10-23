@@ -81,7 +81,8 @@ customer VM from CD, with a tool that records failed upgrades and rollout locks 
   agent wrote runs with production's secrets", as data: a deploy tool must never run code from it.
 - A run that waited for the hold can last up to twice the job timeout (the wait has its own bound).
 - After a timeout or a cancel the folder is saved once the process host ended the run; contained
-  runs have their own PID namespace, so nothing of the run writes after that.
+  runs have their own PID namespace, so none of the run's own processes writes after that (a
+  container a dev run started on the sandbox's engine is outside it).
 - A task restoring the state three times while a run saves it makes that save fail (the run is an
   `error`, its writes are lost); the save retries the compare-and-set twice.
 - Production deploys that need Docker wait for task #265.

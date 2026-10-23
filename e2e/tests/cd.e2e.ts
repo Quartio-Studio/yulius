@@ -118,8 +118,8 @@ test('named environments show their stage and deploy by its rules', async ({ app
   await confirm.getByRole('button', 'Deploy platform').click();
   const view = screen.getByRole('region', 'Deploy');
   await expect(view.getByText('Platform', { exact: true })).toBeVisible();
-  const sent = await browser.evaluate(() => (window as unknown as { __yuliusMock: { lastCdDeploy?: { confirm?: string } } }).__yuliusMock.lastCdDeploy?.confirm ?? null);
-  expect(sent).toBe('studio');
+  // The view opens before the request is answered (SPEC-189): wait until the mock got it.
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { lastCdDeploy?: { confirm?: string } } }).__yuliusMock.lastCdDeploy?.confirm ?? null)).toBe('studio');
   await view.getByRole('link', 'All runs').click();
 
   // Dev's rules: a plain confirmation.
