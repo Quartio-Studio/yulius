@@ -131,6 +131,18 @@ impl fmt::Display for Provider {
     }
 }
 
+/// `true` for provider session ids Yulius accepts in paths and argv: 1–128 ASCII letters,
+/// digits, `-` or `_`, not starting with `-`.
+#[must_use]
+pub fn valid_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && !id.starts_with('-')
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,3 +189,4 @@ mod tests {
         assert!(Harness::parse("opencode").is_err());
     }
 }
+

@@ -621,7 +621,7 @@ async fn lineage(app: &App, id: &TaskId) -> Result<Vec<String>, BoxError> {
         .collect())
 }
 
-/// SPEC-281 (#862, task #266): a `claude` the agent runs in its worktree writes its transcript
+/// AC-TSK-4, SPEC-281 (#862, task #266): a `claude` the agent runs in its worktree writes its transcript
 /// next to the TUI's, but only the TUI's own hooks change the task's session. The nested session
 /// is never adopted (watchers kept reading it, and a Continue would have resumed it); `/clear` in
 /// the TUI (`SessionStart` with the new id) is, and becomes the session watchers read.

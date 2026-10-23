@@ -247,8 +247,8 @@ impl App {
     /// `SessionEnd` (F 2026-10-10: the task follows its session): Claude Code says why the
     /// session ends before its process exits. Leaving it (`/exit`, Ctrl+C twice, `/logout`)
     /// makes the coming exit a normal close whatever its code; `/clear` keeps the process with
-    /// a new conversation, so an achieved goal no longer counts (the new session is adopted into
-    /// the lineage by the supervisor's drift check).
+    /// a new conversation, so an achieved goal no longer counts (its `SessionStart` names the new
+    /// session, which the supervisor adopts into the lineage).
     fn session_ending(&self, ctx: &AgentContext, reason: Option<&str>) {
         let runtime = self.runtime(&ctx.task.id);
         let reason = reason
@@ -358,10 +358,13 @@ impl App {
         ctx: &AgentContext,
         input: &HookInput,
     ) -> AppResult<HookOutput> {
-        if ctx.attempt.provider_session_id.is_none()
-            && let Some(session) = input.session_id.as_deref()
-            && !session.is_empty()
-            && session.len() <= 128
+        // The TUI's session, named by the TUI itself: at its start, and again after `/clear` or
+        // `/resume` (`source: clear`, `resume`). Only this run's Claude Code runs this hook, so a
+        // `claude` the agent starts in the worktree never becomes the task's session; the
+        // supervisor follows the attempt into the lineage (SPEC-281 SSN-001).
+        if let Some(session) = input.session_id.as_deref()
+            && yulius_domain::harness::valid_session_id(session)
+            && ctx.attempt.provider_session_id.as_deref() != Some(session)
         {
             self.deps
                 .store
