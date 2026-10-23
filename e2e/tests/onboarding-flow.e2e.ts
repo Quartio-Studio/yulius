@@ -180,6 +180,53 @@ test('after 15 minutes the waiting card reads once more, then offers Check now',
   await expect(screen.getByText('Connected', { exact: true })).toBeVisible();
 });
 
+type Holding = Window & { __yuliusMock: { holdGithub?: Promise<void> | null }; __releaseGithub?: () => void };
+/** Holds the page's next reads of the connection until `releaseGithub`. */
+const holdGithub = (browser: Browser) => browser.evaluate(() => {
+  const w = window as unknown as Holding;
+  w.__yuliusMock.holdGithub = new Promise<void>((resolve) => { w.__releaseGithub = resolve; });
+});
+const releaseGithub = (browser: Browser) => browser.evaluate(() => {
+  const w = window as unknown as Holding;
+  w.__yuliusMock.holdGithub = null;
+  w.__releaseGithub?.();
+});
+
+test('Start again during the last read keeps the form, and Check now is off while it reads', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/github', '&github=0'));
+  await expect(screen.getByText(/You confirm the app on GitHub/)).toBeVisible();
+  await stubWindowOpen(browser);
+  await owner(browser).fill('Quartio-Studio');
+  await screen.getByRole('button', 'Create GitHub App on GitHub').click();
+  await expect(screen.getByRole('heading', { name: 'Finish on GitHub in the new tab' })).toBeVisible();
+  await jumpClock(browser, 16);
+  await holdGithub(browser);
+  const reads = await githubReads(browser);
+  await expect.poll(() => githubReads(browser, true)).toBeGreaterThan(reads);
+  // The last read is on its way; the person starts again meanwhile.
+  await screen.getByRole('button', 'Start again').click();
+  await expect(screen.getByRole('button', 'Create GitHub App on GitHub')).toBeVisible();
+  await releaseGithub(browser);
+  // The read's answer leaves the form alone (it would put the Check now card back).
+  const asked = await githubReads(browser);
+  await expect.poll(() => githubReads(browser)).toBe(asked);
+  await expect(screen.getByRole('button', 'Check now')).toHaveCount(0);
+  await expect(screen.getByRole('button', 'Create GitHub App on GitHub')).toBeVisible();
+
+  // Check now, past the limit: off while its read is on its way.
+  await owner(browser).fill('Quartio-Studio');
+  await screen.getByRole('button', 'Create GitHub App on GitHub').click();
+  await expect(screen.getByRole('heading', { name: 'Finish on GitHub in the new tab' })).toBeVisible();
+  await jumpClock(browser, 32);
+  await browser.evaluate(() => { document.dispatchEvent(new Event('visibilitychange')); });
+  await expect(screen.getByRole('button', 'Check now')).toBeVisible();
+  await holdGithub(browser);
+  await screen.getByRole('button', 'Check now').click();
+  await expect(screen.getByRole('button', 'Check now')).toBeDisabled();
+  await releaseGithub(browser);
+  await expect(screen.getByRole('button', 'Check now')).toBeEnabled();
+});
+
 test('coming back after 15 minutes to an App that exists shows it connected at once', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/github', '&github=0'));
   await expect(screen.getByText(/You confirm the app on GitHub/)).toBeVisible();

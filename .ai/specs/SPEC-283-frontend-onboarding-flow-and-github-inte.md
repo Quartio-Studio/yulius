@@ -111,7 +111,7 @@ what comes next.
 
 ## Evidence
 
-- `e2e/tests/onboarding-flow.e2e.ts` (13 tests): each written before its change and seen failing
+- `e2e/tests/onboarding-flow.e2e.ts` (14 tests): each written before its change and seen failing
   for the right reason (no `window.open` call; no waiting heading; no Next steps region; no step
   labels; no Getting started list; recovery card padding 0; manifest form absent; closed tab not
   detected), then passing. Mutation check: removing the page's `destroy` cleanup makes
@@ -133,5 +133,10 @@ what comes next.
 - Review round 2 at 72eeca8a: approve, with lows on Check now. Fixed test-first (two tests with a
   stubbed page clock, both failing before): past the limit the page reads once more (an App that
   exists shows connected at once), then shows Check now with focus; Check now is off while it
-  reads. `onboarding-flow.e2e.ts`: 13 passed.
+  reads.
+- Review round 3 at d8e0aaf2: approve, with a low (Start again during the last read was undone by
+  its answer) and a nit (Check now's off state untested). Fixed test-first: a read made before
+  Start again or before the page went away changes nothing (the test failed before: the Check now
+  card came back over the form); Check now is asserted off while its read is held (the mock's
+  `holdGithub`). `onboarding-flow.e2e.ts`: 14 passed, twice.
 - Not tested automatically: the real post to GitHub (needs a GitHub account and a public URL).

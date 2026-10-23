@@ -477,6 +477,8 @@ export function mountGithubPage(ctx) {
   // While the App is created in the other tab (SPEC-283 ONB-002), this one reads the connection
   // when it comes back into view and every few seconds, for a bounded time.
   let waiting = null;
+  // Bumped by Start again and when the page goes away: a read on its way then changes nothing.
+  let epoch = 0;
   const stopWaiting = () => {
     if (!waiting) return;
     clearInterval(waiting.timer);
@@ -489,13 +491,15 @@ export function mountGithubPage(ctx) {
     if (!manual && (!waiting || pollPaused())) return;
     const expired = Boolean(waiting) && Date.now() - waiting.since > GITHUB_WAIT_MS;
     if (expired) stopWaiting();
+    const mine = epoch;
     let config = null;
     try {
       config = await ctx.api.get('/api/admin/github');
     } catch (error) {
       if (manual) errorToast(error, 'Couldn’t read the GitHub connection');
     }
-    if (!manual && !expired && !waiting) return; // stopped (Start again, page left) meanwhile
+    if (mine !== epoch) return; // Start again, or the page left, meanwhile
+    if (!manual && !expired && !waiting) return; // a newer read already settled it
     if (config && config.configured) {
       stopWaiting();
       const me = ctx.store.state.me;
@@ -527,11 +531,11 @@ export function mountGithubPage(ctx) {
     setChildren(host, githubWaiting(restart, checkNow));
     focusHeading(host);
   };
-  const restart = () => { stopWaiting(); setChildren(host, manifestForm(ctx, startWaiting)); };
+  const restart = () => { epoch += 1; stopWaiting(); setChildren(host, manifestForm(ctx, startWaiting)); };
   // The card that replaced the focused button takes the keyboard (its heading).
   const show = (config) => { setChildren(host, githubConnected(ctx, config)); focusHeading(host); };
   loader(host, 'the GitHub connection', () => ctx.api.get('/api/admin/github'), (config) => (config && config.configured ? githubConnected(ctx, config) : manifestForm(ctx, startWaiting)), { shape: githubLoading });
-  return { el: frame.el, key: 'admin:github', destroy: stopWaiting };
+  return { el: frame.el, key: 'admin:github', destroy: () => { epoch += 1; stopWaiting(); } };
 }
 
 /** How often, and for how long, the page reads the connection while GitHub is open elsewhere. */
