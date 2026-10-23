@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-23
 
+- First-run onboarding says what each step does and what comes next (SPEC-283, task #269,
+  ADR-0211). Create GitHub App on GitHub opens GitHub in a new tab (opener cut) instead of
+  replacing Yulius; the Yulius tab waits, notices the App, and lists the next steps (install on
+  repositories, import or create a sandbox, admit users). The setup wizard is numbered, explains
+  the setup token, recovery code and keys, and ends with "Add your first Claude subscription"
+  (skippable). Home's empty view lists the getting-started steps with their state. The recovery
+  card of setup and of a password reset keeps its frame (only the administration dialog drops it),
+  and the GitHub owner toggle keeps its width.
 - A `claude` an agent runs in its worktree no longer takes over its task's session (SPEC-281,
   task #267, ADR-0209, #862). Its transcript lands beside the TUI's, and the drift check adopted
   the newest one: watchers saw the nested session ("Not logged in") while the owner's terminal

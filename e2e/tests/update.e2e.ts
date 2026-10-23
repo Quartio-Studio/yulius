@@ -187,6 +187,9 @@ test('setup asks for the Jev key, then the Vidoc key, both optional', async ({ a
   await expect(screen.getByText(/The code being scanned is sent to Vidoc/)).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
   await screen.getByRole('button', 'Skip for now').click();
+  // SPEC-283: the first Claude subscription is the last step, skippable too.
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Add your first Claude subscription');
+  await screen.getByRole('button', 'Skip for now').click();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
   await app.open(mock('/admin/instance'));
   await expect(screen.getByText(/No key: security scans are off/)).toBeVisible();
@@ -207,6 +210,8 @@ test('the Vidoc setup step saves and tests a key', async ({ app, browser, screen
   await screen.getByRole('button', 'Save and test').click();
   await expect(screen.getByText(/vidoc-1 is available/)).toBeVisible();
   await screen.getByRole('button', 'Continue').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Add your first Claude subscription');
+  await screen.getByRole('button', 'Skip for now').click();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
 });
 

@@ -62,9 +62,9 @@ function testLine(result) {
 
 /**
  * An optional step of the setup wizard: save (and test) a key, or skip. `onDone()` continues
- * either way; `step` labels it (for example 'Optional · last step').
+ * either way; `step` labels it (for example 'Step 3 of 5 · Optional') and `next` says what follows.
  */
-export function keySetupCard(ctx, service, { onDone, header = null, step = 'Optional' }) {
+export function keySetupCard(ctx, service, { onDone, header = null, step = 'Optional', next: after = null }) {
   const s = SERVICES[service];
   const input = keyInput(service, `setup-${service}`);
   const result = h('div');
@@ -80,7 +80,8 @@ export function keySetupCard(ctx, service, { onDone, header = null, step = 'Opti
     field(`${s.name} API key`, input, null),
     h('p', { class: 'muted xs', id: `setup-${service}-hint` }, 'Stored encrypted on this server and never shown again. You can add, replace or remove it later in Settings → Instance.'),
     result,
-    h('div', { class: 'row' }, save, next, skip));
+    h('div', { class: 'row' }, save, next, skip),
+    after ? h('p', { class: 'auth-next muted small' }, after) : null);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     if (!input.value.trim()) return;

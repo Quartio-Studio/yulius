@@ -2,7 +2,10 @@
 // subscription pool with the login terminal, and the GitHub App connection (manifest flow).
 
 import { enc } from '../api.js';
-import { h, icon, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState, skeleton, bar } from '../dom.js';
+import { h, icon, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState, skeleton, bar, pollPaused } from '../dom.js';
+import { href } from '../router.js';
+import { openSandboxDialog } from '../actions.js';
+import { claudeConnected, CONNECT_PATH } from '../claude.js';
 import { compact } from '../format.js';
 import { usd } from '../charts.js';
 import { createTerminalView } from '../terminal.js';
@@ -471,17 +474,120 @@ export function mountGithubPage(ctx) {
     frame.body.prepend(h('div', { class: 'banner banner-danger', role: 'alert' }, badge('Setup failed', 'danger'),
       h('span', { class: 'banner-text' }, 'Creating the GitHub App did not finish. Start again below; the server log has the details.')));
   }
-  loader(host, 'the GitHub connection', () => ctx.api.get('/api/admin/github'), (config) => {
-    if (config && config.configured) {
-      return h('div', { class: 'card card-pad stack' },
-        h('div', { class: 'row' }, badge('Connected', 'ok'), h('strong', null, config.owner_login || '?')),
-        h('dl', { class: 'kv' }, h('dt', null, 'GitHub App'), h('dd', null, config.app_slug || '—'), h('dt', null, 'Owner'), h('dd', null, config.owner_login || '—')),
-        config.install_url ? h('div', null, h('a', { class: 'btn btn-primary', href: config.install_url, target: '_blank', rel: 'noopener noreferrer' }, 'Install / configure repositories')) : null,
-        h('p', { class: 'muted small' }, 'Repository permissions on GitHub decide who sees and controls each sandbox. Next: admit users and add subscriptions.'));
+  // While the App is created in the other tab (SPEC-283 ONB-002), this one reads the connection
+  // when it comes back into view and every few seconds, for a bounded time.
+  let waiting = null;
+  // Bumped by Start again and when the page goes away: a read on its way then changes nothing.
+  let epoch = 0;
+  const stopWaiting = () => {
+    if (!waiting) return;
+    clearInterval(waiting.timer);
+    document.removeEventListener('visibilitychange', waiting.onShown);
+    waiting = null;
+  };
+  // `manual`: Check now, after the limit ended the automatic reads. Past the limit, the read that
+  // notices it is the last one: the card then offers Check now instead.
+  const check = async (manual = false) => {
+    if (!manual && (!waiting || pollPaused())) return;
+    const expired = Boolean(waiting) && Date.now() - waiting.since > GITHUB_WAIT_MS;
+    if (expired) stopWaiting();
+    const mine = epoch;
+    let config = null;
+    try {
+      config = await ctx.api.get('/api/admin/github');
+    } catch (error) {
+      if (manual) errorToast(error, 'Couldn’t read the GitHub connection');
     }
-    return manifestForm(ctx);
-  }, { shape: githubLoading });
-  return { el: frame.el, key: 'admin:github' };
+    if (mine !== epoch) return; // Start again, or the page left, meanwhile
+    if (!manual && !expired && !waiting) return; // a newer read already settled it
+    if (config && config.configured) {
+      stopWaiting();
+      const me = ctx.store.state.me;
+      if (me && me.instance) {
+        me.instance.github_configured = true;
+        ctx.store.emit('me', me);
+      }
+      toast(`GitHub connected: ${BRAND.name} can now work on your repositories.`, { kind: 'ok' });
+      show(config);
+      return;
+    }
+    if (expired) {
+      setChildren(host, githubWaiting(restart, checkNow, { expired: true }));
+      focusHeading(host);
+    } else if (manual && config) {
+      toast('No GitHub App yet: finish creating it on GitHub, or start again.', { kind: 'info' });
+    }
+  };
+  // One read at a time from Check now: its button waits for the answer.
+  const checkNow = async (button) => {
+    button.disabled = true;
+    button.classList.add('busy');
+    try { await check(true); } finally { button.disabled = false; button.classList.remove('busy'); }
+  };
+  const startWaiting = () => {
+    stopWaiting();
+    waiting = { since: Date.now(), onShown: () => { if (!document.hidden) check(); }, timer: setInterval(check, GITHUB_POLL_MS) };
+    document.addEventListener('visibilitychange', waiting.onShown);
+    setChildren(host, githubWaiting(restart, checkNow));
+    focusHeading(host);
+  };
+  const restart = () => { epoch += 1; stopWaiting(); setChildren(host, manifestForm(ctx, startWaiting)); };
+  // The card that replaced the focused button takes the keyboard (its heading).
+  const show = (config) => { setChildren(host, githubConnected(ctx, config)); focusHeading(host); };
+  loader(host, 'the GitHub connection', () => ctx.api.get('/api/admin/github'), (config) => (config && config.configured ? githubConnected(ctx, config) : manifestForm(ctx, startWaiting)), { shape: githubLoading });
+  return { el: frame.el, key: 'admin:github', destroy: () => { epoch += 1; stopWaiting(); } };
+}
+
+/** How often, and for how long, the page reads the connection while GitHub is open elsewhere. */
+const GITHUB_POLL_MS = 5000;
+const GITHUB_WAIT_MS = 15 * 60 * 1000;
+
+/** Moves focus to the first heading in `host` (a card that replaced the focused control). */
+function focusHeading(host) {
+  const heading = host.querySelector('h2');
+  if (heading) heading.focus();
+}
+
+/**
+ * The App is being created in the other tab: what to do there, and that this page follows. Once
+ * the time limit ended the automatic reads (`expired`), Check now reads the connection instead.
+ */
+function githubWaiting(onRestart, onCheck, { expired = false } = {}) {
+  return h('div', { class: 'card card-pad stack' },
+    h('div', { class: 'row' }, badge('Waiting for GitHub', 'warn')),
+    h('h2', { class: 'card-title', tabindex: '-1' }, 'Finish on GitHub in the new tab'),
+    h('ol', { class: 'steps-list text-2' },
+      h('li', null, 'Confirm the app: GitHub shows its name and permissions; press Create GitHub App.'),
+      h('li', null, 'Install it: pick the repositories this instance may manage.'),
+      h('li', null, expired ? 'Come back to this tab and press Check now.' : 'Come back to this tab: it updates by itself once the app exists.')),
+    h('div', { class: 'row-wrap' },
+      expired ? h('button', { type: 'button', class: 'btn btn-primary', onClick: (event) => onCheck(event.currentTarget) }, 'Check now') : null,
+      h('button', { type: 'button', class: 'btn', onClick: onRestart }, 'Start again'),
+      h('span', { class: 'muted small' }, 'Closed the tab, or chose the wrong owner?')));
+}
+
+/** The connected App, and what comes next (SPEC-283 ONB-003). */
+function githubConnected(ctx, config) {
+  const ready = claudeConnected(ctx.store.state.me);
+  const step = (title, text, ...actions) => h('li', { class: 'next-step' },
+    h('div', { class: 'stack-sm' }, h('strong', null, title), h('span', { class: 'text-2' }, text)),
+    actions.some(Boolean) ? h('div', { class: 'row-wrap' }, actions) : null);
+  return h('div', { class: 'card card-pad stack' },
+    h('div', { class: 'row' }, badge('Connected', 'ok'), h('strong', null, config.owner_login || '?')),
+    h('dl', { class: 'kv' }, h('dt', null, 'GitHub App'), h('dd', null, config.app_slug || '—'), h('dt', null, 'Owner'), h('dd', null, config.owner_login || '—')),
+    h('section', { class: 'stack-sm', 'aria-labelledby': 'github-next-title' },
+      h('h2', { class: 'card-title', id: 'github-next-title', tabindex: '-1' }, 'Next steps'),
+      h('ol', { class: 'next-steps' },
+        step('Install the app on your repositories', 'Only the repositories you pick can become sandboxes. Repository permissions on GitHub decide who sees and controls each one.',
+          config.install_url ? h('a', { class: 'btn btn-sm', href: config.install_url, target: '_blank', rel: 'noopener noreferrer' }, icon('github', { size: 14 }), 'Install on repositories') : null),
+        ready
+          ? step('Create your first sandbox', 'A sandbox is one repository with its own tasks, browser and editor. Import one you have, or start a new one from a template.',
+            h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => openSandboxDialog(ctx, 'import') }, 'Import repository'),
+            h('button', { type: 'button', class: 'btn btn-sm', onClick: () => openSandboxDialog(ctx, 'create') }, 'Create from template'))
+          : step('Connect Claude, then create your first sandbox', 'Agents run on a Claude subscription: connect one before a sandbox can start its first task.',
+            h('a', { class: 'btn btn-sm btn-primary', href: href(CONNECT_PATH), dataset: { route: CONNECT_PATH } }, 'Connect Claude')),
+        step('Admit your team', 'People sign in with GitHub once you admit their login.',
+          h('a', { class: 'btn btn-sm', href: href('/admin/users'), dataset: { route: '/admin/users' } }, 'Admit users')))));
 }
 
 /**
@@ -496,24 +602,57 @@ function githubLoading() {
     h('p', { class: 'muted small' }, bar(70)));
 }
 
-function manifestForm(ctx) {
+/**
+ * Posts the manifest form to GitHub in `tab` (GitHub App manifest flow). The mock builds the same
+ * form and says where it would post, without posting, so tests see the tab without reaching GitHub.
+ */
+function postManifest(tab, result, mock) {
+  const doc = tab.document;
+  const form = doc.createElement('form');
+  form.method = 'post';
+  form.action = result.post_url;
+  const input = doc.createElement('input');
+  input.type = 'hidden';
+  input.name = 'manifest';
+  input.value = typeof result.manifest === 'string' ? result.manifest : JSON.stringify(result.manifest);
+  form.append(input);
+  if (mock) {
+    doc.body.append(doc.createTextNode(`Mock: would POST the manifest to ${result.post_url}`), form);
+    return;
+  }
+  doc.body.append(form);
+  form.submit();
+}
+
+function manifestForm(ctx, onOpened) {
   const owner = h('input', { class: 'input', placeholder: 'Quartio-Studio', autocomplete: 'off' });
   const kindInputs = [['org', 'Organization'], ['user', 'Personal account']].map(([value, label]) => ({ input: h('input', { type: 'radio', name: 'owner-kind', value, checked: value === 'org' }), label }));
   const submit = h('button', { type: 'button', class: 'btn btn-primary' }, 'Create GitHub App on GitHub');
   submit.addEventListener('click', async () => {
     const ownerLogin = owner.value.trim();
     if (!/^[A-Za-z0-9-]{1,39}$/.test(ownerLogin)) { invalid(owner, 'Enter the GitHub organization or user name.'); return; }
+    // GitHub opens in a new tab, opened now, inside the click, so pop-up blockers allow it
+    // (SPEC-283 ONB-001, ADR-0211): this tab stays on Yulius and follows the creation.
+    const tab = window.open('', '_blank');
+    if (!tab) {
+      toast('Your browser blocked the new tab for GitHub. Allow pop-ups for this site, then press Create GitHub App on GitHub again.', { kind: 'danger', timeout: 10000 });
+      return;
+    }
+    // GitHub's pages get no handle on this tab.
+    tab.opener = null;
     submit.disabled = true;
     submit.classList.add('busy');
     try {
       const result = await ctx.api.post('/api/admin/github/manifest', { owner_login: ownerLogin, owner_kind: kindInputs.find((k) => k.input.checked).input.value });
-      if (ctx.mock) { toast(`Mock: would POST the manifest to ${result.post_url}`, { kind: 'info', timeout: 8000 }); return; }
-      // The browser posts the manifest form to GitHub (GitHub App manifest flow).
-      const form = h('form', { method: 'post', action: result.post_url, hidden: true },
-        h('input', { type: 'hidden', name: 'manifest', value: typeof result.manifest === 'string' ? result.manifest : JSON.stringify(result.manifest) }));
-      document.body.append(form);
-      form.submit();
+      // Closed while the manifest was prepared: nothing to post into, nothing to wait for.
+      if (tab.closed) {
+        toast('The GitHub tab was closed. Press Create GitHub App on GitHub again.', { kind: 'info', timeout: 8000 });
+        return;
+      }
+      postManifest(tab, result, ctx.mock);
+      onOpened();
     } catch (error) {
+      tab.close();
       errorToast(error, 'Couldn’t prepare the GitHub App manifest');
     } finally {
       submit.disabled = false;
@@ -522,9 +661,10 @@ function manifestForm(ctx) {
   });
   return h('div', { class: 'card card-pad stack' },
     h('div', { class: 'row' }, badge('Not connected', 'warn')),
-    h('p', { class: 'text-2' }, `${BRAND.name} creates a GitHub App for this instance using GitHub’s manifest flow. You confirm the app on GitHub, then install it on the repositories ${BRAND.name} may manage.`),
+    h('p', { class: 'text-2' }, `${BRAND.name} creates a GitHub App for this instance using GitHub’s manifest flow. You confirm the app on GitHub, then install it on the repositories ${BRAND.name} may manage. GitHub opens in a new tab; this one waits and then shows what comes next.`),
     field('Owner (organization or user)', owner),
-    h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Owner kind' }, kindInputs.map((k) => h('label', null, k.input, k.label))),
+    // Its own width, not the card's (SPEC-283 ONB-007).
+    h('div', { class: 'seg seg-fit', role: 'radiogroup', 'aria-label': 'Owner kind' }, kindInputs.map((k) => h('label', null, k.input, k.label))),
     h('div', null, submit));
 }
 

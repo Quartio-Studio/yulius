@@ -10,7 +10,7 @@
 //
 // URL options (with ?mock=1): setup=1 (setup required), signedout=1 (start signed out),
 // role=member|admin|superadmin (default superadmin), contained=0 (not isolated), github=0,
-// update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
+// recovery=1 (setup issues a recovery code), update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
 // jev=config (a Jev key file is configured), vidoc=config (a Vidoc key file), fail=<path> (GETs of that path answer 500),
 // failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs of that path wait for
 // `__yuliusMock.release()`, as hold= does for GETs; `heldWaiting` counts those waiting), as=<login> (signed in as another member, a
@@ -126,6 +126,8 @@ function seed(params) {
   const linked = params.get('github_linked') !== '0';
   const db = {
     setupRequired: params.get('setup') === '1',
+    // `recovery=1`: setup issues a recovery code, as the server does (SPEC-283).
+    setupRecoveryCode: params.get('recovery') === '1' ? '246810' : null,
     signedIn: params.get('signedout') !== '1',
     me: {
       user: {
@@ -764,7 +766,7 @@ route('POST', '/api/setup', ({ db, body }) => {
   db.signedIn = true;
   db.me.user = { id: 'usr_root', login: 'superadmin', display_name: 'Superadmin', avatar_url: null, is_superadmin: true, is_instance_admin: true, github_linked: false };
   db.me.instance.github_configured = false;
-  return json(201, db.me);
+  return json(201, db.setupRecoveryCode ? { ...db.me, recovery_code: db.setupRecoveryCode } : db.me);
 });
 route('POST', '/api/auth/password', ({ db, body }) => {
   if (body.password !== 'correct horse battery') fail(401, 'unauthenticated', 'Wrong password. (Mock password: correct horse battery)');
@@ -808,9 +810,13 @@ route('POST', '/api/admin/recovery-code', ({ db, body }) => {
   return { recovery_code: '482913' };
 });
 // The instance's GitHub App (ACC-006).
-route('GET', '/api/admin/github', ({ db }) => (db.me.instance.github_configured
-  ? { configured: true, app_slug: 'yulius-quartio-studio', owner_login: db.me.instance.owner_login, install_url: 'https://github.com/apps/yulius-quartio-studio/installations/new', installed: true }
-  : { configured: false, app_slug: null, owner_login: null, install_url: null, installed: false }));
+// A test can hold the reads (`__yuliusMock.holdGithub = promise`) to act while one is on its way (SPEC-283).
+route('GET', '/api/admin/github', async ({ db }) => {
+  if (db.holdGithub) await db.holdGithub;
+  return db.me.instance.github_configured
+    ? { configured: true, app_slug: 'yulius-quartio-studio', owner_login: db.me.instance.owner_login, install_url: 'https://github.com/apps/yulius-quartio-studio/installations/new', installed: true }
+    : { configured: false, app_slug: null, owner_login: null, install_url: null, installed: false };
+});
 route('POST', '/api/admin/github/manifest', ({ db, body }) => {
   if (db.me.instance.github_configured) fail(409, 'conflict', 'a GitHub App is already configured');
   const owner = (body && body.owner_login) || 'Quartio-Studio';
@@ -5237,6 +5243,8 @@ export function createMockTransport(params) {
   const db = seed(params);
   window.__yuliusMock = db; // debugging aid in the browser console (mock mode only)
   // Tests change a task as the server would announce it (`touchTask('sb_studio', 12, {…})`).
+  // The GitHub App was created in the other tab (SPEC-283): the connection now reads configured.
+  db.finishGithubApp = () => { db.me.instance.github_configured = true; };
   db.finishOnboarding = (slug) => finishOnboarding(db, db.sandboxes.find((s) => s.slug === slug));
   // Someone else presses Start onboarding (another person or tab): the approval, without its hold.
   db.startOnboarding = (slug) => {

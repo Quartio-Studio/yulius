@@ -16,6 +16,12 @@ watching, steering and unblocking.
 
 ## What it does
 
+- **First run** (SPEC-283, ADR-0211): a numbered setup wizard (superadmin with the setup token,
+  recovery code, the optional Jev and Vidoc keys, then the first Claude subscription, skippable)
+  says on each card what the step does and what comes next; Home's empty view lists the
+  getting-started steps (Connect Claude, first sandbox, GitHub, optional) with their state.
+  Creating the GitHub App opens GitHub in a new tab while the Yulius tab waits and then lists the
+  next steps (install on repositories, import or create a sandbox, admit users).
 - **Projects and sandboxes**: import a GitHub repository, start a playground without GitHub, or
   onboard a repository from a local machine's Claude sessions with `yulius onboard`; each gets a
   contained sandbox with its own system layer, Docker engine (SPEC-187: `docker build`, `run` and
