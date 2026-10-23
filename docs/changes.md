@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-23
 
+- The README is a step-by-step onboarding guide for people who just found Yulius (task #268): who
+  it is for, the path from discovery to a first task as a diagram, a checklist of what to have,
+  recommended VPS providers and sizes, seven steps marked person or server, and plain explanations
+  of VMs, the setup token, the recovery code, Jev and Vidoc with their keys. The developer start
+  moved to its own section. Documentation only.
 - Production deploys get a Docker engine of their own (SPEC-279, task #265, ADR-0208). Each
   sandbox has a production holder (`<sid>.prod`: its own namespaces, network, cgroup, system layer
   over the base and engine storage in `sysroots/<sid>.prod`), started for production-stage runs
