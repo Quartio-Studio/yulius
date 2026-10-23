@@ -4515,10 +4515,10 @@ class TermSession {
     else this.sendStates();
   }
 
-  /** A wheel turn (SGR button 64 up, 65 down) scrolls the transcript by three lines. */
+  /** A wheel report (SGR button 64 up, 65 down) scrolls the transcript by a line, as Claude Code does (SPEC-280). */
   wheel(button) {
     const most = Math.max(0, this.lines.length - this.regionBottom());
-    const next = Math.min(most, Math.max(0, this.scroll + (button === 64 ? 3 : button === 65 ? -3 : 0)));
+    const next = Math.min(most, Math.max(0, this.scroll + (button === 64 ? 1 : button === 65 ? -1 : 0)));
     if (next === this.scroll) return;
     this.scroll = next;
     this.broadcast(this.snapshot());
