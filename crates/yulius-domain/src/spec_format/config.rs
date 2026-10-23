@@ -400,13 +400,18 @@ fn parse_value(text: &str) -> Result<(Value, &str), ConfigProblem> {
 }
 
 /// The rest of a one-line array of strings after its `[`: quoted strings separated by commas, a
-/// trailing comma allowed.
+/// trailing comma allowed. Only a quoted string is read as an item, so nothing nests: the file
+/// comes from branches agents write, and a recursion on `[` would let one line of brackets
+/// overflow the server's stack (review of SPEC-278, B1).
 fn parse_string_array(text: &str) -> Result<(Value, &str), ConfigProblem> {
     let mut items = Vec::new();
     let mut rest = text.trim_start();
     loop {
         if let Some(after) = rest.strip_prefix(']') {
             return Ok((Value::Array(items), after));
+        }
+        if !rest.starts_with(['"', '\'']) {
+            return Err(ConfigProblem::UnsupportedValue);
         }
         let (Value::Str(item), after) = parse_value(rest)? else {
             return Err(ConfigProblem::UnsupportedValue);
@@ -1411,12 +1416,23 @@ mod tests {
                 format!("[cd.dev]\nstates = [{}]\n", many.join(", ")),
                 "'states'",
             ),
+            // Arrays hold strings only: nothing nests (review of SPEC-278, B1).
+            ("[cd.dev]\nstates = [[\"OPS\"]]\n".to_owned(), "unsupported value"),
             // Arrays of names are for states only.
             (
                 "[cd.dev]\nsecrets = [\"OPS\"]\n".to_owned(),
                 "'secrets' must be a quoted string",
             ),
         ];
+        // A deeply nested line within the size bound is refused, never recursed into: the file
+        // comes from branches and worktrees agents write (review of SPEC-278, B1).
+        let deep = format!("[commands]\ntest = {}\n", "[".repeat(65_000));
+        assert!(deep.len() < MAX_CONFIG_BYTES);
+        let shown = parse_yulius_toml(&deep).err().map(|e| e.to_string());
+        assert!(
+            shown.as_deref().is_some_and(|e| e.contains("unsupported value")),
+            "{shown:?}"
+        );
         for (text, message) in cases {
             let shown = parse_yulius_toml_cd(&text)
                 .err()
