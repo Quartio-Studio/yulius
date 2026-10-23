@@ -587,7 +587,8 @@ test('a wheel turn reports one row per row of its distance (#863)', async ({ app
   // Each report is xterm's, at the pointer's cell (WHL-003).
   const cell = await browser.evaluate(({ x, y }) => {
     const box = document.querySelector('.taskview .xterm-screen')!.getBoundingClientRect();
-    const [session] = [...(window as unknown as { __yuliusMock: { sessions: Map<string, { cols: number }> } }).__yuliusMock.sessions.values()];
+    type WithSessions = { __yuliusMock: { sessions: Map<string, { cols: number }> } };
+    const session = (window as unknown as WithSessions).__yuliusMock.sessions.get('tsk_studio_12')!;
     const rowCount = document.querySelectorAll('.taskview .xterm-rows > div').length;
     return `${Math.floor((x - box.left) / (box.width / session.cols)) + 1};${Math.floor((y - box.top) / (box.height / rowCount)) + 1}M`;
   }, point!);

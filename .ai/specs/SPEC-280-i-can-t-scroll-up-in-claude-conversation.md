@@ -1,11 +1,11 @@
 ---
 yulius-task: 8501149c-5fee-4b63-b82a-a4f501db7a60
-status: in-progress
+status: done
 ---
 
 # SPEC-280: A wheel turn scrolls Claude Code as far as it scrolls a page
 
-Status: in-progress
+Status: done
 Date: 2026-10-23
 Owner: task #266
 Scope authorization: task #266: "I can't scroll up in Claude conversation for some reason, fix".
@@ -15,7 +15,8 @@ Fixes #863. Changes MSE-006 of [SPEC-098](SPEC-098-this-is-weird-af-delete-it-de
 ## Goal
 
 In a task's terminal and in the Superagent, the mouse wheel and the trackpad scroll Claude Code's
-conversation as far as the same gesture scrolls a web page, as in a native terminal.
+conversation as far as the same gesture scrolls a web page: one row per row of distance, as
+Alacritty, kitty and iTerm2 scroll it.
 
 ## Context
 
@@ -70,7 +71,7 @@ Confirmed against `dev` at acb1adba.
 - [x] Fix the cause until the regression test and every gate pass
 - [x] ADR, SPEC-098 and changes record wheel rows
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Merged into dev on green CI
+- [x] Merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -85,8 +86,8 @@ Confirmed against `dev` at acb1adba.
 - `e2e/tests/terminal.e2e.ts` "a wheel turn reports one row per row of its distance (#863)": the
   events of the acceptance criteria dispatched over the task terminal of the mock; it counts the
   `ESC [ < 64 ;` and `ESC [ < 65 ;` reports sent, checks they share the pointer's cell, that two
-  pages send one screen of rows and that a Shift or Alt wheel stays xterm's. It fails on `dev` (xterm sends one report per
-  event and damps the small ones).
+  pages send one screen of rows and that a Shift or Alt wheel stays xterm's. It fails on `dev`
+  (xterm sends one report per event and damps the small ones).
 - The existing wheel, click, read-only and disconnected tests keep passing.
 
 ## Decisions
@@ -118,7 +119,7 @@ Confirmed against `dev` at acb1adba.
   terminal file at the final head (round-2 test assertions): 16 of 16 passed.
 - **Security.** `yulius security-scan`: exit 2, not run. Vidoc answered HTTP 429: the instance key
   has used its 50,000,000 tokens. This is unrun, not passed; Yulius CI's `security` job repeats it.
-- **Review.** Round 1 approved with minors (doc wording on other terminals and vim, missing cell,
+- **Review.** Round 3 approved (nits fixed: the mock session by id, spec wording). Round 1 approved with minors (doc wording on other terminals and vim, missing cell,
   page-cap and modifier assertions, presence counted per row event, the mock's 3-line step,
   ADR-0079 back-reference): all fixed in a1be0553. Round 2 asked for exact modifier counts (xterm
   reports Alt+wheel as SGR 72 once and Shift+wheel not at all), a settle before the older test's
