@@ -475,9 +475,39 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   const programHasMouse = () => term.modes.mouseTrackingMode !== 'none';
   /** The key that takes the mouse back from the program: Option on macOS, Shift elsewhere (xterm). */
   const pageKey = (event) => (IS_MAC ? event.altKey : event.shiftKey);
+  // A plain wheel turn reaches the program as one report per row it covers, as a native terminal
+  // sends (SPEC-280, ADR-0210): xterm sends one per event and damps small (trackpad) deltas, and
+  // Claude Code moves one row per report, so a notch moved one row of a long conversation (#863).
+  // The turn becomes line-mode wheel events of one row each, which xterm reports in the program's
+  // encoding at the pointer's cell; the fraction of a row left carries on in the same direction.
+  const rowEvents = new WeakSet();
+  let wheelRows = 0;
   host.addEventListener('wheel', (event) => {
-    if (programHasMouse() && (event.ctrlKey || !event.deltaY)) event.stopPropagation();
-  }, { capture: true, passive: true });
+    if (rowEvents.has(event) || !programHasMouse()) return;
+    if (event.ctrlKey || !event.deltaY) {
+      event.stopPropagation();
+      return;
+    }
+    if (event.shiftKey || event.altKey || event.metaKey) return; // xterm's, as before
+    const screen = host.querySelector('.xterm-screen');
+    const rowHeight = screen ? screen.getBoundingClientRect().height / term.rows : 0;
+    if (!(rowHeight > 0)) return;
+    event.stopPropagation();
+    event.preventDefault();
+    const rows = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY
+      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? event.deltaY * term.rows
+        : event.deltaY / rowHeight;
+    if (Math.sign(rows) !== Math.sign(wheelRows)) wheelRows = 0;
+    wheelRows += rows;
+    const whole = Math.trunc(wheelRows);
+    wheelRows -= whole;
+    const { clientX, clientY, screenX, screenY } = event;
+    for (let i = Math.min(Math.abs(whole), term.rows); i > 0; i--) {
+      const row = new WheelEvent('wheel', { bubbles: true, cancelable: true, composed: true, clientX, clientY, screenX, screenY, deltaMode: WheelEvent.DOM_DELTA_LINE, deltaY: Math.sign(whole) });
+      rowEvents.add(row);
+      event.target.dispatchEvent(row);
+    }
+  }, { capture: true, passive: false });
   // Another viewer's grid is centred in this box, and xterm would report a press in the margin
   // beside it at the grid's edge: that press only takes the size (SPEC-098 MSE-005). A press with
   // the selection key still starts a selection there.
