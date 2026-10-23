@@ -437,9 +437,11 @@ pub trait TaskStore: Send + Sync {
     ) -> AppResult<bool>;
     /// Records the provider session id of an attempt.
     async fn set_attempt_session(&self, id: &AttemptId, session_id: &str) -> AppResult<()>;
-    /// Upserts a lineage entry (by sandbox, harness, session id).
+    /// Upserts a lineage entry (by sandbox, harness, session id); a session already in another
+    /// task's lineage is left as it is (SPEC-281).
     async fn upsert_provider_session(&self, record: &ProviderSessionRecord) -> AppResult<()>;
-    /// Lineage of a task, oldest first.
+    /// Lineage of a task in the order its sessions were adopted (`last_seen`): the session
+    /// adopted last, which watchers read and a resume continues, is last (SPEC-281 SSN-003).
     async fn provider_sessions(&self, task: &TaskId) -> AppResult<Vec<ProviderSessionRecord>>;
     /// Whether a provider session is already known in a sandbox.
     async fn provider_session_exists(

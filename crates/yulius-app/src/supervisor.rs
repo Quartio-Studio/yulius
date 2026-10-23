@@ -2038,7 +2038,7 @@ impl App {
         env
     }
 
-    async fn record_lineage(
+    pub(crate) async fn record_lineage(
         &self,
         task: &TaskRecord,
         harness: Harness,
@@ -3709,7 +3709,6 @@ impl App {
         let Some(worktree) = task.worktree_path.clone().map(PathBuf::from) else {
             return;
         };
-        let started = attempt.started_at;
         let mut session_id = attempt.provider_session_id.clone();
         let mut watch = None;
         let mut last_drift_check = Timestamp(0);
@@ -3746,17 +3745,17 @@ impl App {
                 .watch_polls
                 .fetch_add(1, Ordering::SeqCst);
             let now = self.now();
-            // Claude session-id drift (/clear, /resume inside the TUI): adopt into the lineage.
+            // Claude session-id drift (/clear, /resume inside the TUI): the TUI's SessionStart
+            // hook names its new session on the attempt; adopt it into the lineage. Never the
+            // newest transcript of the worktree: a `claude` the agent runs there writes one too
+            // (SPEC-281 SSN-002).
             if attempt.harness == Harness::ClaudeCode && now.millis_since(last_drift_check) > 5_000
             {
                 last_drift_check = now;
-                if let Ok(Some((id, _))) = self.deps.harness.newest_claude_session(
-                    &self.sandbox_home(&sandbox.id),
-                    &worktree,
-                    started,
-                ) && session_id.as_deref() != Some(id.as_str())
+                if let Ok(Some(named)) = self.deps.store.attempt(&attempt.id).await
+                    && let Some(id) = named.provider_session_id
+                    && session_id.as_deref() != Some(id.as_str())
                 {
-                    let _ = self.deps.store.set_attempt_session(&attempt.id, &id).await;
                     let _ = self
                         .record_lineage(&task, Harness::ClaudeCode, &id, "native")
                         .await;

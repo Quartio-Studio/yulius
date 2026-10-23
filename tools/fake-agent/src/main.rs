@@ -27,7 +27,10 @@
 //!   `/read <path>` prints `READ <file name> OK <n>` or `READ <file name> ERR <kind>` (containment
 //!   probe; never the contents), `/sh <command>` runs `/bin/sh -c <command>` on the terminal and
 //!   prints `SH EXIT <code>` (like an agent's Bash tool),
-//!   `/flood <n>` floods like `--mode flood` on demand.
+//!   `/flood <n>` floods like `--mode flood` on demand. `/clear <id>` starts session `<id>` in the
+//!   same process as Claude Code's `/clear` does: `SessionEnd` (`reason: clear`) for the old
+//!   session, a transcript `<id>.jsonl` next to the old one, `SessionStart` (`source: clear`)
+//!   with the new id, then `CLEARED session=<id>`.
 //! - `flood --bytes N`: writes N bytes to stdout and N bytes to stderr, prints `FLOOD DONE`, then
 //!   behaves like `echo`.
 //! - `ignore-term`: like `echo` but ignores SIGTERM, SIGINT and SIGHUP (also `--ignore-term`).
@@ -1475,7 +1478,7 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
         )?))),
         None => None,
     };
-    let hooks = options.hooks.as_ref().map(|exe| Hooks {
+    let mut hooks = options.hooks.as_ref().map(|exe| Hooks {
         exe: exe.clone(),
         session_id: session_id.to_owned(),
     });
@@ -1536,6 +1539,23 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                 return Ok(3);
             }
             "/size" => say(&format!("SIZE {}", terminal_size()))?,
+            _ if line.starts_with("/clear ") => {
+                let id = line["/clear ".len()..].trim().to_owned();
+                if let Some(hooks) = &hooks {
+                    hooks.session_end("clear");
+                }
+                if let Some(transcript) = &transcript
+                    && let Ok(mut t) = transcript.lock()
+                {
+                    let path = t.path.with_file_name(format!("{id}.jsonl"));
+                    *t = Transcript::open(path, &id)?;
+                }
+                if let Some(hooks) = &mut hooks {
+                    hooks.session_id.clone_from(&id);
+                    hooks.session_start_from("clear");
+                }
+                say(&format!("CLEARED session={id}"))?;
+            }
             _ if line.starts_with("/flood ") => {
                 let bytes = line
                     .get("/flood ".len()..)

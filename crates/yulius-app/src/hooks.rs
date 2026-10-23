@@ -247,8 +247,8 @@ impl App {
     /// `SessionEnd` (F 2026-10-10: the task follows its session): Claude Code says why the
     /// session ends before its process exits. Leaving it (`/exit`, Ctrl+C twice, `/logout`)
     /// makes the coming exit a normal close whatever its code; `/clear` keeps the process with
-    /// a new conversation, so an achieved goal no longer counts (the new session is adopted into
-    /// the lineage by the supervisor's drift check).
+    /// a new conversation, so an achieved goal no longer counts (its `SessionStart` names the new
+    /// session, which the supervisor adopts into the lineage).
     fn session_ending(&self, ctx: &AgentContext, reason: Option<&str>) {
         let runtime = self.runtime(&ctx.task.id);
         let reason = reason
@@ -358,14 +358,21 @@ impl App {
         ctx: &AgentContext,
         input: &HookInput,
     ) -> AppResult<HookOutput> {
-        if ctx.attempt.provider_session_id.is_none()
-            && let Some(session) = input.session_id.as_deref()
-            && !session.is_empty()
-            && session.len() <= 128
+        // The TUI's session, named by the TUI itself: at its start, and again after `/clear` or
+        // `/resume` (`source: clear`, `resume`). Only this run's Claude Code runs this hook, so a
+        // `claude` the agent starts in the worktree never becomes the task's session. It goes
+        // into the lineage at once (a restart before the supervisor's next drift check must not
+        // lose it); the supervisor follows the attempt (SPEC-281 SSN-001).
+        if let Some(session) = input.session_id.as_deref()
+            && yulius_domain::harness::valid_session_id(session)
+            && ctx.attempt.provider_session_id.as_deref() != Some(session)
+            && !self.another_tasks_session(ctx, session).await?
         {
             self.deps
                 .store
                 .set_attempt_session(&ctx.attempt.id, session)
+                .await?;
+            self.record_lineage(&ctx.task, ctx.attempt.harness, session, "native")
                 .await?;
         }
         if let Err(err) = self.sync_steps_from_spec(&ctx.task).await {
@@ -382,6 +389,21 @@ impl App {
             events::SESSION_START,
             briefing,
         ))
+    }
+
+    /// Whether `session` is in the lineage of another task of the sandbox: the sandbox's tasks
+    /// share one Claude directory, so an agent can name a session it did not run (HRN-004).
+    async fn another_tasks_session(&self, ctx: &AgentContext, session: &str) -> AppResult<bool> {
+        let store = &self.deps.store;
+        let harness = ctx.attempt.harness.as_str();
+        if !store
+            .provider_session_exists(&ctx.task.sandbox_id, harness, session)
+            .await?
+        {
+            return Ok(false);
+        }
+        let own = store.provider_sessions(&ctx.task.id).await?;
+        Ok(!own.iter().any(|entry| entry.session_id == session))
     }
 
     /// The session briefing for a task (SPEC-002 §7.6, COM-004, DSC-009).

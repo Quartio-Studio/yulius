@@ -1584,8 +1584,11 @@ drawn for the size its writer's browser sets and is unreadable at another
 ([SPEC-179](../.ai/specs/SPEC-179-ui-problem-when-someone-else-has-a-contr.md),
 [decision 0145](decisions/0145-someone-else-s-task-is-watched-as-its-live-transcript.md)).
 `watchview.js` prints the session with the Sessions view's renderer in the terminal's colours and
-reads on from where it stopped; `App::task_transcript` reads the latest lineage entry's file
-(`transcripts::read_tail`, then `read_page` from `end`) and answers an unchanged size from a `stat`.
+reads on from where it stopped; `App::task_transcript` reads the file of the lineage entry adopted
+last (`transcripts::read_tail`, then `read_page` from `end`) and answers an unchanged size from a
+`stat`. Only the run's own `SessionStart` hook changes a task's session (`/clear`, `/resume`); a
+`claude` the agent runs in its worktree writes a transcript beside the TUI's but is never adopted
+([decision 0209](decisions/0209-only-the-tui-s-own-hooks-change-the-task-s-session.md)).
 While the reader has not scrolled up, a `ResizeObserver` keeps the view at the bottom through every
 change of height ([decision 0149](decisions/0149-the-watched-transcript-follows-the-bottom-as-a-state.md)).
 While the agent works, a `✻ Working… (1m 23s)` line moves as Claude Code's spinner, in CSS, and

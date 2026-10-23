@@ -944,7 +944,8 @@ impl TaskStore for SqliteStore {
             c.execute(
                 "INSERT INTO provider_sessions (id, sandbox_id, task_id, harness, session_id, transcript_ref, origin, first_seen, last_seen) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) ON CONFLICT(sandbox_id, harness, session_id) DO UPDATE SET \
-                 last_seen = excluded.last_seen, transcript_ref = COALESCE(excluded.transcript_ref, transcript_ref)",
+                 last_seen = excluded.last_seen, transcript_ref = COALESCE(excluded.transcript_ref, transcript_ref) \
+                 WHERE provider_sessions.task_id = excluded.task_id",
                 params![
                     r.id,
                     r.sandbox_id.as_str(),
@@ -969,7 +970,7 @@ impl TaskStore for SqliteStore {
             let mut stmt = c
                 .prepare(
                     "SELECT id, sandbox_id, task_id, harness, session_id, transcript_ref, origin, first_seen, last_seen \
-                     FROM provider_sessions WHERE task_id = ?1 ORDER BY first_seen",
+                     FROM provider_sessions WHERE task_id = ?1 ORDER BY last_seen, first_seen, rowid",
                 )
                 .map_err(db)?;
             let rows = stmt
