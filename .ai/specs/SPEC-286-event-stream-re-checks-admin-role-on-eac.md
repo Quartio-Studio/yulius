@@ -32,9 +32,14 @@ interval of granting it, they start, without a reconnect.
   `event_streams_follow_revoked_access_and_close_for_disabled_users`) covers revoked sandbox
   access and disabling, never a role change; no test published an admin-only event after a
   role change.
-- What else the cause touches: only the event stream filters on the admin flag of a long-lived
-  socket. The terminal, shell and browser sockets re-check sandbox access through
-  `access_level`, which reads `is_superadmin` (the superadmin cannot be changed through the API).
+- What else the cause touches: the terminal, shell and browser sockets re-check sandbox access
+  through `access_level`, which reads `is_superadmin` (the superadmin cannot be changed through the
+  API), never `is_instance_admin`. One other long-lived socket is admin-gated: the provider
+  sign-in terminal (`WS /api/admin/accounts/login/{id}/terminal`, `routes/accounts.rs`) checks
+  `require_instance_admin` once at connect and has no re-check at all, so a demoted, disabled or
+  signed-out administrator keeps it for the login's lifetime. That is pre-existing and outside this
+  change (one concern per pull request); it is reported on #722, since this task creates no
+  issues.
 
 ## Requirements
 

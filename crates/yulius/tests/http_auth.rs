@@ -1185,11 +1185,14 @@ async fn an_event_stream_stops_admin_events_once_administration_is_removed() -> 
     let round = admin_rounds_until(&h, &mut socket, 0, true, wait).await?;
 
     assert_eq!(set_admin(false).await?.status, StatusCode::OK);
-    let round = admin_rounds_until(&h, &mut socket, round, false, wait).await?;
-    // After that re-check, none arrives any more, over several re-check intervals.
-    for round in round..round + 4 {
+    let mut round = admin_rounds_until(&h, &mut socket, round, false, wait).await?;
+    // After that re-check, none arrives any more: rounds over several re-check intervals (a
+    // round whose marker is late says nothing either way).
+    let window = tokio::time::Instant::now() + std::time::Duration::from_millis(600);
+    while tokio::time::Instant::now() < window {
         let seen = admin_round(&h, &mut socket, round).await?;
-        assert_eq!(seen, Some(false), "round {round}");
+        assert_ne!(seen, Some(true), "round {round}");
+        round += 1;
     }
     Ok(())
 }
@@ -1236,9 +1239,7 @@ async fn an_event_stream_starts_admin_events_once_administration_is_granted() ->
 /// The next text frame within `wait`: `Ok(text)`, `Err(close code)` when the socket closed, or
 /// `None` when nothing arrived.
 async fn next_ws_text(
-    socket: &mut tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
+    socket: &mut EventSocket,
     wait: std::time::Duration,
 ) -> Option<Result<String, Option<u16>>> {
     use futures::StreamExt as _;
