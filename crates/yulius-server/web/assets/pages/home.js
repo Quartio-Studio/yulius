@@ -118,7 +118,7 @@ export function mountHomePage(ctx) {
     ];
     const next = steps.findIndex(([, , done, optional]) => !done && !optional);
     return h('section', { class: 'getting-started', 'aria-label': 'Getting started' },
-      h('h2', { class: 'home-github-title' }, 'Getting started'),
+      h('h2', { class: 'gs-heading' }, 'Getting started'),
       h('ol', { class: 'gs-list' }, steps.map(([title, text, done, optional], index) => {
         const state = done ? 'Done' : index === next ? 'Next' : optional ? 'Optional' : 'To do';
         return h('li', { class: ['gs-step', `gs-${state.toLowerCase().replace(' ', '-')}`], 'aria-current': index === next ? 'step' : null },

@@ -11,8 +11,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   replacing Yulius; the Yulius tab waits, notices the App, and lists the next steps (install on
   repositories, import or create a sandbox, admit users). The setup wizard is numbered, explains
   the setup token, recovery code and keys, and ends with "Add your first Claude subscription"
-  (skippable). Home's empty view lists the getting-started steps with their state. The setup
-  recovery card keeps its frame and the GitHub owner toggle its width.
+  (skippable). Home's empty view lists the getting-started steps with their state. The recovery
+  card of setup and of a password reset keeps its frame (only the administration dialog drops it),
+  and the GitHub owner toggle keeps its width.
 - The README is a step-by-step onboarding guide for people who just found Yulius (task #268): who
   it is for, the path from discovery to a first task as a diagram, a checklist of what to have,
   recommended VPS providers and sizes, seven steps marked person or server, and plain explanations

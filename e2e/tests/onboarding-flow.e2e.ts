@@ -116,11 +116,15 @@ test('a GitHub tab closed before the manifest is ready posts nothing and says so
   await expect(screen.getByRole('heading', { name: 'Finish on GitHub in the new tab' })).toHaveCount(0);
 });
 
-/** How many times the page read the connection; `comeBack` first makes the tab "come back into view". */
-const githubReads = (browser: Browser, comeBack = false) => browser.evaluate((back: boolean) => {
-  if (back) document.dispatchEvent(new Event('visibilitychange'));
-  return (window as unknown as { __yuliusMock: { githubReads?: number } }).__yuliusMock.githubReads ?? 0;
-}, comeBack);
+/**
+ * How many times the page asked for the connection (the mock counts a GET as it is asked).
+ * `comeBack` first makes the tab "come back into view", in its own evaluation, so a read it starts
+ * is counted by the time the count is taken.
+ */
+async function githubReads(browser: Browser, comeBack = false): Promise<number> {
+  if (comeBack) await browser.evaluate(() => { document.dispatchEvent(new Event('visibilitychange')); });
+  return browser.evaluate(() => (window as unknown as { __yuliusMock: { asked?: Record<string, number> } }).__yuliusMock.asked?.['/api/admin/github'] ?? 0);
+}
 
 test('the waiting card starts again, and stops reading the connection then and when the page is left', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/github', '&github=0'));

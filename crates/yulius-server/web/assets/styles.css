@@ -2905,6 +2905,7 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .next-step a.btn { text-decoration: none; }
 /* Home's getting-started steps (SPEC-283). */
 .getting-started { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; padding-bottom: 12px; }
+.gs-heading { margin: 0; font-size: var(--fs); font-weight: 600; }
 .gs-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
 .gs-step { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: start; gap: 12px; }
 .gs-mark { width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border-strong); color: var(--text-2); font-size: var(--fs-xs); line-height: 1; }
