@@ -15,7 +15,7 @@ use yulius_domain::cd::CdStage;
 use yulius_domain::delivery::Stage;
 use yulius_domain::ids::SandboxId;
 
-use super::exec::{Ended, Sink};
+use super::exec::{Ended, RunLog, Sink};
 use crate::context::App;
 use crate::delivery::runner::{CommandEnd, OutputRing};
 use crate::error::AppResult;
@@ -173,7 +173,7 @@ impl App {
                 Sink::EnvironmentRun(run_id),
                 &plan,
                 &token,
-                &log,
+                RunLog::At(&log),
                 (ring, None, None),
                 &mut cancel,
             )
