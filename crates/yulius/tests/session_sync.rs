@@ -676,7 +676,7 @@ fn only_the_tuis_own_hooks_change_the_tasks_session() -> TestResult {
             Some(original.as_str()),
             "a session no hook of the run named is not the attempt's"
         );
-        assert_eq!(lineage(&app, &id).await?, [original.clone()]);
+        assert_eq!(lineage(&app, &id).await?, [original.as_str()]);
         assert_eq!(
             watched_session(&app, &ctx, &id).await.as_deref(),
             Some(original.as_str())
