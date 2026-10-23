@@ -102,7 +102,7 @@ Confirmed against `dev` at 470f1029.
 - [x] Docker and SSH in CD runs are documented and production's engine is a chained task
 - [x] A served instance deploys dev and production with a state and refuses a concurrent save
 - [x] Review findings fixed test-first
-- [x] Gates and security scan are green and the spec has its evidence
+- [x] Gates are green and the spec has its evidence (the Vidoc scan is unrun, left to the CI security job)
 - [x] The pull request is merged into dev on green
 
 ## Acceptance criteria
