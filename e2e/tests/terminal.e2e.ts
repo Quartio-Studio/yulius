@@ -554,6 +554,36 @@ test('the wheel scrolls the program; pinch-zoom and horizontal swipes stay with 
   expect((await sent()).length, 'no report for a pinch or a swipe').toBe(before);
 });
 
+test('a wheel turn reports one row per row of its distance (#863)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
+  await holdStill(browser);
+  const sent = await recordInput(browser);
+  const point = await spot(browser, 'Searched for 2 patterns');
+  expect(point, 'the group is on the screen').not.toBeNull();
+  // Claude Code moves one row per wheel report, so a turn must send a report per row it covers:
+  // xterm alone sends one per event and damps small (trackpad) ones (SPEC-280 WHL-001, WHL-002).
+  const prevented = await browser.evaluate(({ x, y }) => {
+    const target = document.elementFromPoint(x, y)!;
+    const screen = document.querySelector('.taskview .xterm-screen')!;
+    const row = screen.getBoundingClientRect().height / document.querySelectorAll('.taskview .xterm-rows > div').length;
+    const wheel = (deltaY: number, deltaMode = 0) => {
+      const event = new WheelEvent('wheel', { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, deltaMode, deltaY });
+      target.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    const turns = [wheel(-5.5 * row)];
+    for (let i = 0; i < 10; i++) turns.push(wheel(-0.2 * row));
+    turns.push(wheel(-3, 1), wheel(2.5 * row));
+    return turns.every(Boolean);
+  }, point!);
+  expect(prevented, 'the page does not scroll as well').toBe(true);
+  const count = (all: string[], button: number) => all.join('').split(`\x1b[<${button};`).length - 1;
+  // 5.5 rows: 5 up; ten of 0.2 with the half row carried: 2; three lines: 3; then 2.5 rows down: 2.
+  await expect.poll(async () => count(await sent(), 64), { message: 'wheel-up reports' }).toBe(10);
+  await expect.poll(async () => count(await sent(), 65), { message: 'wheel-down reports' }).toBe(2);
+});
+
 test('mouse use while disconnected says nothing; typed input still warns', async ({ app, browser }) => {
   await app.open(mock('/s/studio/t/12'));
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
