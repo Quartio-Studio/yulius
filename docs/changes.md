@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-23
 
+- The wheel and the trackpad scroll Claude Code's conversation as far as they scroll a page
+  (SPEC-280, task #266, #863, ADR-0210). A task's terminal and the Superagent sent one wheel report
+  per wheel event, small trackpad deltas damped, and Claude Code moves one row per report, so a
+  notch moved one row and scrolling up a long conversation looked stuck. A plain wheel turn now
+  sends one report per row of its distance (pixels over the row height, lines, pages), carrying a
+  fraction on in the same direction; modified wheels, pinch-zoom and read-only viewers are as
+  before.
 - Production deploys get a Docker engine of their own (SPEC-279, task #265, ADR-0208). Each
   sandbox has a production holder (`<sid>.prod`: its own namespaces, network, cgroup, system layer
   over the base and engine storage in `sysroots/<sid>.prod`), started for production-stage runs
