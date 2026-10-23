@@ -22,8 +22,9 @@ and because the lineage was listed by `first_seen` the next resume would have co
 
 - The run's `SessionStart` hook names the task's session: when its `session_id` is a valid id
   (`yulius_domain::harness::valid_session_id`, now shared with the harness paths) other than the
-  attempt's, it becomes the attempt's at once. The hooks are configured only in the run's
-  `--settings` file, so only the TUI Yulius launched reports them.
+  attempt's, it becomes the attempt's and enters the lineage at once. The hooks are configured
+  only in the run's `--settings` file, so only the TUI Yulius launched reports them. An id already
+  in another task's lineage is refused, and the store's upsert never moves another task's entry.
 - The supervisor's drift check reads the attempt's session from the store instead of the project
   directory, and adopts a change as before: into the lineage, a new transcript watch, and the
   session counts as taken in hand by a person.
@@ -49,9 +50,8 @@ and because the lineage was listed by `first_seen` the next resume would have co
   watchers' view or resume.
 - A session change is adopted only through hooks: a TUI whose hooks cannot reach the server (it is
   down) keeps the old session until a later `SessionStart`. Hooks are part of every Claude run.
-- The hook also records the new session in the lineage at once, so a restart before the next
-  drift check keeps it, and refuses a session already in another task's lineage (the sandbox's
-  tasks share one Claude directory); the store's upsert never moves another task's entry.
+- A restart between the hook and the next drift check keeps the new session; an agent naming
+  another task's session (the sandbox's tasks share one Claude directory) changes nothing.
 - Assumed, not verified: Claude Code's agent-team teammates do not run the lead's `--settings`
   hooks. If one did, its `SessionStart` would name its own session; teams are not enabled in
   Yulius runs.
