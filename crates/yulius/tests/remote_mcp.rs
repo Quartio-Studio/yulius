@@ -1134,6 +1134,11 @@ async fn remote_secret_tools_act_on_the_secret_that_wins() -> TestResult {
             &root_browser,
             json!({"scope": "instance", "name": "OFF_KEY", "value": "global-off-0123456789"}),
         ),
+        (
+            "alice off",
+            &alice_browser,
+            json!({"scope": "personal", "name": "ALICE_OFF", "value": "alice-off-0123456789"}),
+        ),
     ] {
         // Each a second after the one before: the oldest of a name is listed first.
         w.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
@@ -1153,18 +1158,17 @@ async fn remote_secret_tools_act_on_the_secret_that_wins() -> TestResult {
         );
         ids.insert(key, text(&created.body["id"]).to_owned());
     }
-    let off = call(
-        &w.h.router,
-        Method::PUT,
-        &format!(
-            "/api/sandboxes/s1/agent-secrets/{}/enabled",
-            ids["global off"]
-        ),
-        Some(json!({"enabled": false})),
-        &root_browser,
-    )
-    .await?;
-    assert!(off.status.is_success(), "{}", off.body);
+    for (key, creds) in [("global off", &root_browser), ("alice off", &alice_browser)] {
+        let off = call(
+            &w.h.router,
+            Method::PUT,
+            &format!("/api/sandboxes/s1/agent-secrets/{}/enabled", ids[key]),
+            Some(json!({"enabled": false})),
+            creds,
+        )
+        .await?;
+        assert!(off.status.is_success(), "{key}: {}", off.body);
+    }
     let hosts_of = |key: &'static str| {
         let id = ids[key].clone();
         let store = &w.h.store;
@@ -1271,34 +1275,36 @@ async fn remote_secret_tools_act_on_the_secret_that_wins() -> TestResult {
     assert_eq!(hosts_of("bob only").await?, none);
 
     // A global secret switched off for the project is not reached by name, even by an
-    // administrator.
-    assert!(
-        w.h.store
-            .vault_set_request(
-                &ids["global off"],
-                &[],
-                &["off.example".to_owned()],
-                Some("a task")
-            )
-            .await?
-    );
-    for tool in ["secret_update", "secret_hosts_answer"] {
-        let (error, said, _) = remote(
-            &w,
-            &root_agent,
-            tool,
-            shop(json!({"secret": "OFF_KEY", "hosts": ["off.example"], "expect_hosts": [], "allow": true})),
-        )
-        .await?;
+    // administrator, nor is the caller's own personal one switched off there.
+    for (key, name, creds) in [
+        ("global off", "OFF_KEY", &root_agent),
+        ("alice off", "ALICE_OFF", &alice),
+    ] {
         assert!(
-            error && said.contains("no agent secret OFF_KEY"),
-            "{tool}: {said}"
+            w.h.store
+                .vault_set_request(&ids[key], &[], &["off.example".to_owned()], Some("a task"))
+                .await?,
+            "{key}"
+        );
+        for tool in ["secret_update", "secret_hosts_answer"] {
+            let (error, said, _) = remote(
+                &w,
+                creds,
+                tool,
+                shop(json!({"secret": name, "hosts": ["off.example"], "expect_hosts": [], "allow": true})),
+            )
+            .await?;
+            assert!(
+                error && said.contains(&format!("no agent secret {name}")),
+                "{key} {tool}: {said}"
+            );
+        }
+        assert_eq!(
+            hosts_of(key).await?,
+            (Vec::new(), vec!["off.example".to_owned()]),
+            "{key}"
         );
     }
-    assert_eq!(
-        hosts_of("global off").await?,
-        (Vec::new(), vec!["off.example".to_owned()])
-    );
     Ok(())
 }
 

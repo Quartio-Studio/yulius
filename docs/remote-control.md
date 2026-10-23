@@ -203,8 +203,8 @@ files with `yulius secrets import --to agent --sandbox acme/shop .env` (section 
 it unattended). Your agent manages names and
 bindings: `secrets_list` (`yulius secrets list`), `secret_update` (bound hosts, description)
 and `secret_hosts_answer` (allow or dismiss the hosts a task asked for), each acting on the
-secret of that name `secrets_list` shows (the project's, else your personal one, else a global one
-switched on for the project; SPEC-287), and deletes one of the
+secret of that name `secrets_list` shows (the project's, else your personal one, else a global one,
+each switched on for the project; not the instance's Vidoc key; SPEC-287), and deletes one of the
 project's own secrets by name: `secret_delete` (`yulius secrets delete NAME`), audited with the
 token, never showing the value (SPEC-274). Non-secret values are project variables (section 3):
 the Secrets page's Variables tab, or `yulius vars`.
