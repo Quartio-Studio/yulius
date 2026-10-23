@@ -661,7 +661,10 @@ fn only_the_tuis_own_hooks_change_the_tasks_session() -> TestResult {
             "message": {"role": "assistant", "content": [{"type": "text",
                 "text": "Not logged in · Please run /login"}]}, "version": "2.1.292",
         });
-        std::fs::write(project.join(format!("{nested}.jsonl")), format!("{record}\n"))?;
+        std::fs::write(
+            project.join(format!("{nested}.jsonl")),
+            format!("{record}\n"),
+        )?;
         // More than one drift period (5 s) of watcher rounds (1 s each) after the file.
         let rounds = app.runtime(&id).transcript_rounds();
         wait_for("seven watcher rounds", Duration::from_secs(20), || async {
@@ -681,7 +684,13 @@ fn only_the_tuis_own_hooks_change_the_tasks_session() -> TestResult {
 
         // `/clear` in the TUI: its SessionStart names the new session, which is adopted.
         let cleared = "7b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e";
-        keys(&app, &ctx, &attach, format!("/clear {cleared}\r").as_bytes()).await?;
+        keys(
+            &app,
+            &ctx,
+            &attach,
+            format!("/clear {cleared}\r").as_bytes(),
+        )
+        .await?;
         wait_for("the clear", Duration::from_secs(15), || {
             screen_contains(&app, &id, "CLEARED session=")
         })
@@ -698,11 +707,17 @@ fn only_the_tuis_own_hooks_change_the_tasks_session() -> TestResult {
                     .is_ok_and(|l| l == [original.clone(), cleared.to_owned()])
         })
         .await?;
-        wait_for("the watched session after the clear", Duration::from_secs(10), || async {
-            watched_session(&app, &ctx, &id).await.as_deref() == Some(cleared)
-        })
+        wait_for(
+            "the watched session after the clear",
+            Duration::from_secs(10),
+            || async { watched_session(&app, &ctx, &id).await.as_deref() == Some(cleared) },
+        )
         .await?;
-        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1, "same attempt, no respawn");
+        assert_eq!(
+            app.deps.store.attempts(&id).await?.len(),
+            1,
+            "same attempt, no respawn"
+        );
         app.stop_task_now(&id).await?;
         wait_for("the stop", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())

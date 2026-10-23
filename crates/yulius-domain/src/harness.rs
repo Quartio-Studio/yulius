@@ -189,4 +189,3 @@ mod tests {
         assert!(Harness::parse("opencode").is_err());
     }
 }
-

@@ -1649,12 +1649,21 @@ async fn the_lineage_lists_the_session_adopted_last_last() -> R {
     let order = |list: Vec<yulius_app::model::ProviderSessionRecord>| {
         list.into_iter().map(|s| s.session_id).collect::<Vec<_>>()
     };
-    assert_eq!(order(store.provider_sessions(&t.id).await?), ["tui", "nested"]);
+    assert_eq!(
+        order(store.provider_sessions(&t.id).await?),
+        ["tui", "nested"]
+    );
     store.upsert_provider_session(&adopt("tui", 30)).await?;
     let lineage = store.provider_sessions(&t.id).await?;
     assert_eq!(
-        lineage.iter().map(|s| (s.first_seen, s.last_seen)).collect::<Vec<_>>(),
-        [(Timestamp(20), Timestamp(20)), (Timestamp(10), Timestamp(30))],
+        lineage
+            .iter()
+            .map(|s| (s.first_seen, s.last_seen))
+            .collect::<Vec<_>>(),
+        [
+            (Timestamp(20), Timestamp(20)),
+            (Timestamp(10), Timestamp(30))
+        ],
         "re-adopting keeps when it was first seen"
     );
     assert_eq!(order(lineage), ["nested", "tui"]);
