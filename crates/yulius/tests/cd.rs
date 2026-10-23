@@ -1664,7 +1664,16 @@ fn states_cd() -> String {
      states = [\"OPERATOR\"]\n\n\
      [cd.prod]\n\
      deploy = \"MARKS={marks} sh scripts/cd/state.sh\"\n\
+     states = [\"OPERATOR\"]\n\
+     variables = [\"OVH_ENDPOINT\"]\n\n\
+     [cd.second]\n\
+     stage = \"dev\"\n\
+     deploy = \"MARKS={marks} sh scripts/cd/state.sh\"\n\
      states = [\"OPERATOR\"]\n\n\
+     [cd.third]\n\
+     stage = \"dev\"\n\
+     deploy = \"true\"\n\
+     variables = [\"NOT_SET\"]\n\n\
      [cd.staging]\n\
      stage = \"dev\"\n\
      deploy = \"true\"\n\
@@ -1885,6 +1894,22 @@ async fn deploys_restore_write_and_save_an_agent_state_with_one_writer() -> Test
         "{said}"
     );
 
+    // A project variable the table names but the project lacks: nothing runs.
+    let (status, refused) = web
+        .json(
+            M::POST,
+            "/api/sandboxes/s1/cd/third/deploy",
+            Some(json!({})),
+            alice,
+        )
+        .await?;
+    assert_eq!(status, 409, "{refused}");
+    let said = refused.to_string();
+    assert!(
+        said.contains("NOT_SET") && said.contains("nothing ran"),
+        "{said}"
+    );
+
     // AC1: dev restores version 1 outside HOME, writes, and saves version 2.
     let (_, overview) = web
         .json(M::GET, "/api/sandboxes/s1/cd", None, alice)
@@ -2031,7 +2056,7 @@ async fn deploys_restore_write_and_save_an_agent_state_with_one_writer() -> Test
         format!("waiting for the agent state OPERATOR: dev run {second} holds it"),
         format!("inventory: v1|dev {first}|dev {second}|"),
         "region ovh-ca python unset".to_owned(),
-        "production runs do not get the variables PYTHONPATH".to_owned(),
+        "production runs get only the variables [cd.prod] names; left out: PYTHONPATH".to_owned(),
         "agent state OPERATOR saved as version 4".to_owned(),
     ] {
         assert!(output.contains(&line), "{line}: {output}");

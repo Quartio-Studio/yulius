@@ -661,7 +661,7 @@ impl App {
                 sandbox,
                 started,
                 prepared.secrets,
-                prepared.target.states,
+                (prepared.target.states, prepared.target.variables),
                 rx,
             )
             .await;
@@ -911,7 +911,7 @@ impl App {
             CdActor::Person(..) => None,
         };
         let why = format!("CD {} deploy", env_label(env));
-        self.cd_states_present(sandbox, &target).await?;
+        self.cd_names_present(sandbox, &target).await?;
         // Secrets first: a refusal never comes after a promotion.
         let secrets = self
             .cd_secret_values(sandbox, stage, &target.secrets, asker, &why)
@@ -982,7 +982,7 @@ impl App {
         let Some(target) = checked.target_of(env, stage).cloned() else {
             return Err(refusal(&CdRefusal::not_defined(env)));
         };
-        self.cd_states_present(sandbox, &target).await?;
+        self.cd_names_present(sandbox, &target).await?;
         let secrets = self
             .cd_secret_values(sandbox, stage, &target.secrets, None, &why)
             .await?;
@@ -1059,7 +1059,7 @@ impl App {
         sandbox: SandboxRecord,
         run: CdRunRecord,
         secrets: Vec<(String, String)>,
-        states: Vec<String>,
+        (states, named): (Vec<String>, Vec<String>),
         mut cancel: watch::Receiver<Option<String>>,
     ) {
         let mut ring = OutputRing::new(OUTPUT_BYTES);
@@ -1078,7 +1078,7 @@ impl App {
             .cd_process(
                 &sandbox,
                 &run,
-                (secrets, &states, &mut held),
+                (secrets, &states, &named, &mut held),
                 &run_dir,
                 &mut ring,
                 &mut cancel,
@@ -1230,7 +1230,7 @@ impl App {
         &self,
         sandbox: &SandboxRecord,
         run: &CdRunRecord,
-        (secrets, states, held): (Vec<(String, String)>, &[String], &mut CdHeld),
+        (secrets, states, named, held): (Vec<(String, String)>, &[String], &[String], &mut CdHeld),
         run_dir: &Path,
         ring: &mut OutputRing,
         cancel: &mut watch::Receiver<Option<String>>,
@@ -1293,8 +1293,10 @@ impl App {
             held.restored.push(restored);
         }
         // The project's variables first: Yulius's own and the secrets win (SPEC-278 CDS-007).
+        // Production gets only those its verified table names: a person with write access sets
+        // them, an administrator deploys production (review of SPEC-278, M3).
         let mut env = Vec::new();
-        let mut withheld = Vec::new();
+        let mut left_out = Vec::new();
         let variables = self.variables_env(&sandbox.id).await.map_err(|err| {
             format!(
                 "reading the project's variables failed: {}",
@@ -1302,17 +1304,17 @@ impl App {
             )
         })?;
         for (name, value) in variables {
-            if run.stage == CdStage::Prod && dom::withheld_in_production(&name) {
-                withheld.push(name);
+            if run.stage == CdStage::Prod && !named.contains(&name) {
+                left_out.push(name);
             } else {
                 env.push((name, value));
             }
         }
-        if !withheld.is_empty() {
+        if !left_out.is_empty() {
             ring.push_str(&format!(
-                "[yulius] production runs do not get the variables {}: they make a tool load code \
-                 or reach another daemon\n",
-                withheld.join(", ")
+                "[yulius] production runs get only the variables [cd.{}] names; left out: {}\n",
+                run.environment,
+                left_out.join(", ")
             ));
         }
         let (containment, _lease) = self
@@ -1548,9 +1550,24 @@ async fn cancelled(cancel: &mut watch::Receiver<Option<String>>) -> String {
 }
 
 impl App {
-    /// Refuses a deploy naming an agent state the project's vault does not hold (SPEC-278
-    /// CDS-002), before anything ran.
-    async fn cd_states_present(&self, sandbox: &SandboxRecord, target: &CdTarget) -> AppResult<()> {
+    /// Refuses a deploy naming a project variable the project lacks or an agent state its vault
+    /// does not hold (SPEC-278 CDS-002), before anything ran.
+    async fn cd_names_present(&self, sandbox: &SandboxRecord, target: &CdTarget) -> AppResult<()> {
+        if !target.variables.is_empty() {
+            let set = self.variables_env(&sandbox.id).await?;
+            if let Some(name) = target
+                .variables
+                .iter()
+                .find(|name| !set.iter().any(|(set, _)| set == *name))
+            {
+                return Err(AppError::Conflict(format!(
+                    "nothing ran: [cd.{}] names the project variable {name}, which this project \
+                     does not have; a person sets it on the Secrets page's Variables tab or with \
+                     `yulius vars set {name}=…`",
+                    target.name
+                )));
+            }
+        }
         if target.states.is_empty() {
             return Ok(());
         }

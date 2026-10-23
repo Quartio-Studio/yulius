@@ -51,6 +51,7 @@
 //! verify = "scripts/cd/verify.sh dev"    # a smoke test, after a successful deploy
 //! secrets = "DEV_SSH_KEY DEV_HOST"       # agent secrets a person allowed outside the proxy
 //! states = ["OPERATOR"]                  # agent states restored before, saved after (SPEC-278)
+//! variables = ["REGION"]                 # project variables production gets (dev gets them all)
 //!
 //! [cd.prod]
 //! about = "the instances update themselves from main"
@@ -70,7 +71,7 @@
 use crate::branch_policy::BranchPolicy;
 use crate::cd::{
     CdConfig, CdStage, CdTarget, MAX_ABOUT_CHARS, MAX_CD_ENVIRONMENTS, MAX_CD_SECRETS,
-    MAX_CD_STATES, fixed_stage, valid_env_name, valid_secret_name,
+    MAX_CD_STATES, MAX_CD_VARIABLES, fixed_stage, valid_env_name, valid_secret_name,
 };
 use crate::delivery::{
     DeliveryProfile, Environment, MergeMethod, Preset, ProfileError, PromoteMethod, Stage, Verify,
@@ -278,11 +279,13 @@ const BRANCH_POLICY_KEYS: &str = "preset, types";
 const POLICY_TYPES: &str = "1-20 space-separated types of 1-20 lowercase letters including feat (Yulius's task branches), like \"feat fix docs\"";
 const ENVIRONMENT_KEYS: &str = "name, after, command, verify";
 const CI_JOB_KEYS: &str = "name, command, matrix, cpus, memory_gb, secrets";
-const CD_DEV_KEYS: &str = "stage, deploy, verify, secrets, states, about";
-const CD_PROD_KEYS: &str = "stage, deploy, verify, secrets, states, about, promote";
+const CD_DEV_KEYS: &str = "stage, deploy, verify, secrets, states, variables, about";
+const CD_PROD_KEYS: &str = "stage, deploy, verify, secrets, states, variables, about, promote";
 const CD_SECRETS: &str = "at most 16 space-separated agent-secret names like DEV_SSH_KEY";
 const CD_STATES: &str =
     "at most 8 agent-state names like [\"QUARTIO_OPERATOR\"] (an array, or space-separated)";
+const CD_VARIABLES: &str =
+    "at most 32 project-variable names like [\"OVH_ENDPOINT\"] (an array, or space-separated)";
 const CD_ABOUT: &str = "one line of at most 300 characters";
 
 fn err(line: usize, problem: ConfigProblem) -> FormatError {
@@ -995,24 +998,9 @@ fn cd_target(env: &str, table: &Table) -> Result<CdTarget, FormatError> {
                     }
                 }
             }
-            "states" => {
-                let names: Vec<String> = match &entry.value {
-                    Value::Array(items) => items.iter().map(|s| s.trim().to_owned()).collect(),
-                    Value::Str(text) => text.split_whitespace().map(str::to_owned).collect(),
-                    _ => return Err(invalid(entry, "", CD_STATES)),
-                };
-                if names.len() > MAX_CD_STATES {
-                    return Err(invalid(entry, &names.join(" "), CD_STATES));
-                }
-                target.states = Vec::new();
-                for state in names {
-                    if !valid_secret_name(&state) {
-                        return Err(invalid(entry, &state, CD_STATES));
-                    }
-                    if !target.states.contains(&state) {
-                        target.states.push(state);
-                    }
-                }
+            "states" => target.states = names_of(entry, MAX_CD_STATES, CD_STATES)?,
+            "variables" => {
+                target.variables = names_of(entry, MAX_CD_VARIABLES, CD_VARIABLES)?;
             }
             "about" => {
                 let text = string_value(entry)?.trim();
@@ -1026,6 +1014,39 @@ fn cd_target(env: &str, table: &Table) -> Result<CdTarget, FormatError> {
         }
     }
     Ok(target)
+}
+
+/// The names an entry lists, as an array or a space-separated string: at most `max`, each an
+/// agent secret's (or variable's) name, duplicates dropped.
+fn names_of(entry: &Entry, max: usize, allowed: &'static str) -> Result<Vec<String>, FormatError> {
+    let invalid = |value: &str| {
+        err(
+            entry.line,
+            ConfigProblem::InvalidValue {
+                key: entry.key.clone(),
+                value: clip(value),
+                allowed,
+            },
+        )
+    };
+    let names: Vec<String> = match &entry.value {
+        Value::Array(items) => items.iter().map(|s| s.trim().to_owned()).collect(),
+        Value::Str(text) => text.split_whitespace().map(str::to_owned).collect(),
+        _ => return Err(invalid("")),
+    };
+    if names.len() > max {
+        return Err(invalid(&names.join(" ")));
+    }
+    let mut out: Vec<String> = Vec::new();
+    for name in names {
+        if !valid_secret_name(&name) {
+            return Err(invalid(&name));
+        }
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    Ok(out)
 }
 
 fn cd_of(document: &Document) -> Result<CdConfig, FormatError> {
@@ -1396,6 +1417,26 @@ mod tests {
             ["QUARTIO_OPERATOR", "OTHER_STATE"]
         );
         assert!(cd.target("platform").ok_or("platform")?.states.is_empty());
+        // Production names the project variables it gets (review of SPEC-278, M3).
+        let cd = parse_yulius_toml_cd(
+            "[cd.prod]\nvariables = [\"QUARTIO_CD_PROD_DEPLOYMENTS\", \"OVH_ENDPOINT\"]\n\
+             [cd.dev]\nvariables = \"OVH_ENDPOINT\"\n",
+        )?;
+        assert_eq!(
+            cd.target("prod").ok_or("prod")?.variables,
+            ["QUARTIO_CD_PROD_DEPLOYMENTS", "OVH_ENDPOINT"]
+        );
+        assert_eq!(cd.target("dev").ok_or("dev")?.variables, ["OVH_ENDPOINT"]);
+        for bad in [
+            "[cd.prod]\nvariables = [\"path\"]\n",
+            "[cd.prod]\nvariables = 3\n",
+        ] {
+            let shown = parse_yulius_toml_cd(bad).err().map(|e| e.to_string());
+            assert!(
+                shown.as_deref().is_some_and(|e| e.contains("'variables'")),
+                "{bad}: {shown:?}"
+            );
+        }
         let many: Vec<String> = (0..9).map(|n| format!("\"STATE_{n}\"")).collect();
         let cases = [
             ("[cd.dev]\nstates = [\"ops\"]\n".to_owned(), "'states'"),
@@ -1417,7 +1458,10 @@ mod tests {
                 "'states'",
             ),
             // Arrays hold strings only: nothing nests (review of SPEC-278, B1).
-            ("[cd.dev]\nstates = [[\"OPS\"]]\n".to_owned(), "unsupported value"),
+            (
+                "[cd.dev]\nstates = [[\"OPS\"]]\n".to_owned(),
+                "unsupported value",
+            ),
             // Arrays of names are for states only.
             (
                 "[cd.dev]\nsecrets = [\"OPS\"]\n".to_owned(),
@@ -1430,7 +1474,9 @@ mod tests {
         assert!(deep.len() < MAX_CONFIG_BYTES);
         let shown = parse_yulius_toml(&deep).err().map(|e| e.to_string());
         assert!(
-            shown.as_deref().is_some_and(|e| e.contains("unsupported value")),
+            shown
+                .as_deref()
+                .is_some_and(|e| e.contains("unsupported value")),
             "{shown:?}"
         );
         for (text, message) in cases {
