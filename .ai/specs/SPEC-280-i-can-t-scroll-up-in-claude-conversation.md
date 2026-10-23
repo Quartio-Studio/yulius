@@ -43,8 +43,8 @@ Confirmed against `dev` at acb1adba.
   reports reach the program (`terminal.e2e.ts` "the wheel scrolls the program"), and the server
   forwards them unchanged (`terminal_input`, not typing).
 - **Why the tests missed it.** The e2e test checks only that *a* wheel report is sent
-  (`some(startsWith('\x1b[<64;'))`), not how many. The mock agent scrolls its transcript by a fixed
-  step per report, so it never showed the distance.
+  (`some(startsWith('\x1b[<64;'))`), not how many. The mock agent scrolled its transcript by three
+  lines per report, so UI work on it never showed the distance; it now scrolls one, as Claude Code.
 - **Same cause elsewhere.** Every full-screen program with mouse reporting (vim with `mouse=a`,
   `less --mouse`, htop) in a Superagent or Cockpit shell terminal scrolled one step per wheel
   event too. They share `terminal-core.js` and are fixed with it.
@@ -67,8 +67,8 @@ Confirmed against `dev` at acb1adba.
 
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
-- [ ] ADR, SPEC-098 and changes record wheel rows
+- [x] Fix the cause until the regression test and every gate pass
+- [x] ADR, SPEC-098 and changes record wheel rows
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Merged into dev on green CI
 
@@ -84,7 +84,8 @@ Confirmed against `dev` at acb1adba.
 
 - `e2e/tests/terminal.e2e.ts` "a wheel turn reports one row per row of its distance (#863)": the
   events of the acceptance criteria dispatched over the task terminal of the mock; it counts the
-  `ESC [ < 64 ;` and `ESC [ < 65 ;` reports sent. It fails on `dev` (xterm sends one report per
+  `ESC [ < 64 ;` and `ESC [ < 65 ;` reports sent, checks they share the pointer's cell, that two
+  pages send one screen of rows and that a Shift or Alt wheel stays xterm's. It fails on `dev` (xterm sends one report per
   event and damps the small ones).
 - The existing wheel, click, read-only and disconnected tests keep passing.
 
@@ -93,7 +94,8 @@ Confirmed against `dev` at acb1adba.
 - **Report rows, not events, in the web terminal (ADR-0210).** The capture-phase wheel listener
   in `terminal-core.js` turns a plain wheel turn into rows and dispatches one line-mode wheel event
   per row to xterm, which reports each in the program's encoding at the pointer's cell. This is
-  what native terminals send, and Claude Code's default of one row per report is then right.
+  what Alacritty, kitty and iTerm2 send, and Claude Code's default of one row per report is then
+  right. Programs with a larger step per report (vim: 3) scroll that much more, as in kitty.
   Alternatives:
   - Set `CLAUDE_CODE_SCROLL_SPEED=3` for agent sessions: only Claude Code benefits, and a trackpad
     stays damped (0.3×, then 3× as coarse).

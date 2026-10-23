@@ -713,7 +713,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   el.addEventListener('pointerdown', used, true);
   el.addEventListener('keydown', used, true);
   el.addEventListener('focusin', used);
-  el.addEventListener('wheel', used, { capture: true, passive: true });
+  // A turn counts once, not again for each row it sends (ADR-0210).
+  el.addEventListener('wheel', (event) => { if (!rowEvents.has(event)) used(); }, { capture: true, passive: true });
   el.addEventListener('pointermove', onPointerMove, { passive: true });
   window.addEventListener('focus', onWindowFocus);
   window.addEventListener('blur', updatePresence);

@@ -582,6 +582,22 @@ test('a wheel turn reports one row per row of its distance (#863)', async ({ app
   // 5.5 rows: 5 up; ten of 0.2 with the half row carried: 2; three lines: 3; then 2.5 rows down: 2.
   await expect.poll(async () => count(await sent(), 64), { message: 'wheel-up reports' }).toBe(10);
   await expect.poll(async () => count(await sent(), 65), { message: 'wheel-down reports' }).toBe(2);
+  // Each report is xterm's, at the pointer's cell (WHL-003).
+  const cells = new Set((await sent()).join('').match(/\x1b\[<6[45];\d+;\d+M/g)!.map((report) => report.slice(6)));
+  expect(cells.size, 'every report at the same cell').toBe(1);
+  // Two pages send one screen of rows (WHL-002); a Shift or Alt wheel stays xterm's: at most one
+  // report, as before (WHL-004).
+  const before = (await sent()).length;
+  const screenRows = await browser.evaluate(({ x, y }) => {
+    const target = document.elementFromPoint(x, y)!;
+    for (const init of [{ deltaY: -2, deltaMode: 2 }, { deltaY: -400, shiftKey: true }, { deltaY: -400, altKey: true }]) {
+      target.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, ...init }));
+    }
+    return document.querySelectorAll('.taskview .xterm-rows > div').length;
+  }, point!);
+  await expect.poll(async () => count((await sent()).slice(before), 64), { message: 'a screen of rows, then at most one' }).toBeGreaterThanOrEqual(screenRows);
+  await settle();
+  expect(count((await sent()).slice(before), 64)).toBeLessThanOrEqual(screenRows + 1);
 });
 
 test('mouse use while disconnected says nothing; typed input still warns', async ({ app, browser }) => {

@@ -21,8 +21,9 @@ While the program has the mouse, the terminal's capture-phase wheel listener tur
 turn (no modifier, a vertical delta) into rows: pixels over the row height on the page, lines as
 lines, a page as the terminal's rows. A fraction carries to the next turn in the same direction,
 and one turn sends at most a screen of rows. It cancels the turn and dispatches one line-mode wheel
-event per row to xterm, which reports each in the program's encoding at the pointer's cell. Native
-terminals send the same: one report per row scrolled.
+event per row to xterm, which reports each in the program's encoding at the pointer's cell, as
+Alacritty, kitty and iTerm2 report a scroll (xterm, VTE and Windows Terminal send one per notch,
+which is why Claude Code moves 3 rows per report in VS Code).
 
 ## Alternatives
 
@@ -35,10 +36,12 @@ terminals send the same: one report per row scrolled.
 
 ## Consequences
 
-- The wheel and the trackpad scroll Claude Code, vim, `less` and other mouse-reporting programs as
-  far as they scroll a page. A fast swipe sends a burst of small input frames (at most a screen's
+- The wheel and the trackpad scroll Claude Code as far as they scroll a page. Other mouse-reporting
+  programs multiply the rows by their own step per report: vim (`mousescroll` 3) now moves three
+  times the distance, as in kitty; this is accepted. A fast swipe sends a burst of small input frames (at most a screen's
   rows per event).
 - Modified wheels, Ctrl+wheel (pinch-zoom), horizontal swipes, read-only viewers and programs
   without mouse reporting keep xterm's or the browser's handling.
-- If Claude Code starts recognising this terminal as xterm.js, it would multiply the rows by 3;
-  the e2e test pins the reports, and the speed is then set back with `CLAUDE_CODE_SCROLL_SPEED=1`.
+- If Claude Code starts recognising this terminal as xterm.js, it would multiply the rows by 3. The
+  e2e test pins the reports Yulius sends, not what Claude Code does with them; the speed would then
+  be set back with `CLAUDE_CODE_SCROLL_SPEED=1`.
