@@ -940,10 +940,13 @@ after each run); none is visible to agents. Runs are kept
   verify, failed ones included. A failed save makes the run an `error`. Each restore and save is
   audited `vault.state.restore`/`vault.state.save` as `cd:<environment>`. While a run holds a state,
   a task's `secret_state_save` and a person's send are refused; a restart during a run loses what
-  it wrote to its states.
-- **Variables.** Runs get the project's variables in their environment (Yulius's own and the
-  secrets win); production runs leave out names that make a tool load code or reach another daemon
-  (`PYTHON*`, `DOCKER_*`, `SSH_*`, `JAVA_TOOL_OPTIONS`, …, `CD_WITHHELD_VARIABLES`) and say so.
+  it wrote to its states. The wait for the hold has its own bound (the job timeout), so a run that
+  waited can last up to twice that. Production restores the newest version whoever wrote it (a
+  dev run or a task included): a deploy tool treats its state as data and never runs code from it.
+- **Variables.** Dev runs get all the project's variables in their environment (Yulius's own and
+  the secrets win); production runs get only those their table names (`variables = ["NAME"]`),
+  since a person with write access sets them and an administrator deploys production. A named
+  variable the project lacks refuses the deploy.
 - **Docker.** Dev runs use the sandbox's engine, as tasks do (`docker buildx`, `docker load`).
   Production runs have no engine yet (task #265 adds one agents cannot reach).
 - **SSH and other hosts.** Runs use the sandbox's network: every Internet host over TCP, port 22

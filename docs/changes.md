@@ -13,7 +13,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `cd:<environment>`. One writer at a time: another deploy naming it waits, a task's save and a
   laptop send are refused meanwhile, and a task's copy made stale by a CD save is restored before
   it is written (`secrets_list` says `stale` and `held_by`). CD runs get the project's variables
-  (production without code-loading ones such as `PYTHONPATH` or `DOCKER_HOST`). `yulius.toml`
+  (production only those its table names, `variables = [...]`). `yulius.toml`
   accepts one-line arrays of strings. Dev runs use the sandbox's Docker and every run reaches SSH
   hosts; production runs get a Docker engine of their own in task #265.
 - Demo mode is no longer part of a real instance (SPEC-277, task #263, ADR-0206). The server binary

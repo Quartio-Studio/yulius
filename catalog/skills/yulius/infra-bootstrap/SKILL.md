@@ -162,7 +162,8 @@ example when it starts deploying for real), and record every change as a decisio
      deploy and the verify, failed ones included, Yulius saves what changed as a new version.
      A second run naming it waits; a task's save of it is refused meanwhile, and a task restores
      it again (`secret_state_restore`) before changing it. Runs also get the project's variables
-     (production without code-loading ones such as `PYTHONPATH` or `DOCKER_HOST`).
+     (production only those its table names in `variables = ["NAME"]`). The state is data:
+     never run code from it, since dev runs and tasks write it too.
    - **Docker and SSH.** Dev runs have the sandbox's Docker (`docker buildx`, `docker load`);
      production runs have none yet. Runs reach any host over SSH (port 22): pin the hosts' keys in
      the state or the repository (`StrictHostKeyChecking=yes` with its own known-hosts file), since

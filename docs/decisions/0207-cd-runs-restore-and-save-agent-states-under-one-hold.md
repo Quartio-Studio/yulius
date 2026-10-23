@@ -25,7 +25,7 @@ customer VM from CD, with a tool that records failed upgrades and rollout locks 
   ran.
 - **Restore before, from the vault, into the run**: before the deploy command the run takes the
   hold of all its states at once (waiting, with the output naming the holder, while another run
-  holds one; bounded by the run's timeout, ended by a cancel), then unpacks the vault's newest
+  holds one; bounded by the job timeout, ended by a cancel), then unpacks the vault's newest
   version of each into `<run>/work/states/<NAME>` and exports `YULIUS_STATE_<NAME>` with that
   absolute path. Both stages read the vault, never a task's copy; the folder is never the task's
   restore path and never inside `HOME`, so an agent-chosen path cannot shadow the run's dotfiles.
@@ -44,10 +44,9 @@ customer VM from CD, with a tool that records failed upgrades and rollout locks 
   the actor `cd:<environment>` and the run in the detail; the state's `updated_by` is
   `cd:<environment>`.
 - **Variables**: CD runs get the project's variables first in their environment (Yulius's own
-  variables and the secrets win). Production-stage runs withhold names that make an interpreter,
-  Docker or SSH load code or reach another daemon (`CD_WITHHELD_VARIABLES`: `PYTHONPATH`,
-  `PERL5OPT`, `RUBYOPT`, `JAVA_TOOL_OPTIONS`, `DOCKER_HOST`, `SSH_AUTH_SOCK`, …) and name them in
-  the output.
+  variables and the secrets win): a dev-stage run all of them, a production-stage run only those
+  its verified table names (`variables = ["NAME"]`, at most 32); a named one the project lacks
+  refuses the deploy. The others are listed as left out in the output.
 - **Docker and SSH**: dev runs keep the sandbox's engine. Production runs have no engine yet; one
   agents cannot reach is task #265. CD runs reach any Internet host over TCP (the sandbox's
   network, host loopback off), port 22 included; Yulius keeps no host list, and a project names
@@ -64,7 +63,10 @@ customer VM from CD, with a tool that records failed upgrades and rollout locks 
 - **Restore into the task's restore path inside `HOME`**: an agent chooses that path; inside a
   production run `~/.ssh` would become the agent's.
 - **Every variable in production**: a person with write access could give an administrator's
-  deploy `PYTHONPATH` or `DOCKER_HOST`.
+  deploy `PYTHONPATH`, `SHELLOPTS`/`PS4` or `OPENSSL_CONF` and run code with production's secrets.
+- **A deny list of code-loading names in production** (the first version): every tool has its own
+  hooks (`OPENSSL_CONF`, `CLASSPATH`, `AWS_CONFIG_FILE`, `TF_CLI_CONFIG_FILE`, …), so a list is
+  never complete (review of SPEC-278, M3). The table is reviewed on a protected branch.
 - **Filter SSH hosts per project**: needs a per-run network namespace and filter; not asked for,
   and the tool pins host keys.
 
@@ -74,4 +76,12 @@ customer VM from CD, with a tool that records failed upgrades and rollout locks 
 - A task that changed its copy without saving loses those changes when it restores after a CD
   save; the instructions say to save after each change.
 - A restart during a run loses what that run wrote to its states (the run ends as `error`).
+- Production restores the newest version whoever wrote it: a dev run (running the integration
+  branch's code) or a task's save included. The vault's state is the one exception to "nothing an
+  agent wrote runs with production's secrets", as data: a deploy tool must never run code from it.
+- A run that waited for the hold can last up to twice the job timeout (the wait has its own bound).
+- After a timeout or a cancel the folder is saved once the process host ended the run; contained
+  runs have their own PID namespace, so nothing of the run writes after that.
+- A task restoring the state three times while a run saves it makes that save fail (the run is an
+  `error`, its writes are lost); the save retries the compare-and-set twice.
 - Production deploys that need Docker wait for task #265.

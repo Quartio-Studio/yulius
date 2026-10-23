@@ -50,13 +50,13 @@ Confirmed against `dev` at 470f1029.
 
 - **CDS-001** `[cd.<name>]` takes `states`, the agent states its run uses: an array of names
   (`states = ["QUARTIO_OPERATOR"]`) or a space-separated string, each an agent secret name, at
-  most 8, duplicates dropped. The parser reads one-line arrays of strings. The CD page, the API
+  most 8, duplicates dropped. The parser reads one-line arrays of quoted strings (nothing nests). The CD page, the API
   (`CdEnvironment.states`) and `cd_status` name them.
 - **CDS-002** A deploy is refused before anything runs (409, "nothing ran") when a named state
   is not in the project's vault.
 - **CDS-003** Before the deploy command, a run takes the hold of each named state (all at once,
   in one step, so two runs never deadlock), waits while another run holds one (the output says
-  which run; bounded by the run's timeout and ended by a cancel), then restores the vault's
+  which run; bounded by the job timeout and ended by a cancel), then restores the vault's
   newest version of each into `work/states/<NAME>` of its own directory (never a task's copy, in
   both stages; never inside `HOME`, so a state cannot shadow the run's dotfiles), and exports
   `YULIUS_STATE_<NAME>` with that absolute path. Audited `vault.state.restore` with the run.
@@ -74,11 +74,10 @@ Confirmed against `dev` at 470f1029.
   a running CD run. A laptop import over a state whose newest version a CD run wrote is refused
   like one over a restored copy, unless `replace`.
 - **CDS-007** CD runs get the project's variables in their environment, first (Yulius's own
-  variables and the secrets win). Production-stage runs withhold variables named after hooks that
-  make a tool load code or talk to another daemon (`PYTHONPATH`, `PERL5OPT`, `RUBYOPT`,
-  `JAVA_TOOL_OPTIONS`, `DOCKER_HOST`, `SSH_AUTH_SOCK`, … `CD_WITHHELD_VARIABLES`), naming them
-  in the output: a person with write access sets variables, and only an administrator deploys
-  production.
+  variables and the secrets win): a dev-stage run all of them; a production-stage run only those
+  its verified table names (`variables = ["NAME"]`, at most 32), since a person with write access
+  sets variables and only an administrator deploys production. A named variable the project lacks
+  refuses the deploy (409, nothing ran); the others are listed as left out in the output.
 - **CDS-008** Docker: dev runs keep the sandbox's engine (`DOCKER_HOST`, buildx and `docker
   load` as tasks have them). Production runs get no engine in this change: a production engine
   agents cannot reach needs its own holder and storage, built by the chained task (see
@@ -99,7 +98,7 @@ Confirmed against `dev` at 470f1029.
 - [ ] A CD run restores its states before the deploy and exports their paths
 - [ ] A CD run saves its states after deploy and verify, failed ones included, audited
 - [ ] Tasks and the laptop see stale and held states (secrets_list, save and import refusals)
-- [ ] CD runs get the project's variables, production without code-loading hooks
+- [ ] CD runs get the project's variables, production only those its table names
 - [ ] Docker and SSH in CD runs are documented and production's engine is a chained task
 - [ ] A served instance deploys dev and production with a state and refuses a concurrent save
 - [ ] Review findings fixed test-first
@@ -121,16 +120,20 @@ Confirmed against `dev` at 470f1029.
 - **AC5** After a CD save, the task's restored copy is reported stale by `secrets_list`, its save
   is refused, and `secret_state_restore` replaces it with the newest version.
 - **AC6** A deploy naming a state that does not exist is refused, nothing ran.
-- **AC7** A CD run has the project's variables; a production run withholds `PYTHONPATH`.
+- **AC7** A dev run has the project's variables; a production run has only those its table names
+  (`OVH_ENDPOINT`, not `PYTHONPATH`); a table naming a variable the project lacks runs nothing.
+- **AC8** A deploy that leaves its state alone keeps the version; one that replaces the folder
+  with a link ends as `error` naming the state, the link not followed and the version kept; a
+  deploy cancelled while it waits for the hold ends cancelled while the holder keeps it.
 
 ## Test plan
 
 - Unit (`yulius-domain`): `states` parsing (array, string, bounds, bad names, unknown arrays
-  elsewhere still refused), the withheld variable names.
+  elsewhere still refused, deep nesting refused), `variables` parsing.
 - Unit (`yulius-app`): the hold (all-or-nothing, waiting woken on release, try refusals),
   the unchanged-folder digest.
 - Integration (`crates/yulius/tests/cd.rs`, the real Git adapter and detached ptyhost, the
-  router served on a loopback port for the deploys and the state upload): AC1–AC7.
+  router served on a loopback port for the deploys and the state upload): AC1–AC8.
 - Gates: `scripts/dev ci`, `scripts/dev security`.
 
 ## Decisions
@@ -148,10 +151,13 @@ Confirmed against `dev` at 470f1029.
   by an agent; inside a production run's `HOME` it could shadow `~/.ssh` and its `config`.
 - **Unchanged folders are not saved**: a verify-only or early-failing run would otherwise make
   every task copy stale for nothing.
-- **Variables in production minus code-loading hooks**: variables are set by people with write
-  access while production is an administrator's; names that make an interpreter or Docker/SSH
-  client load code or reach another daemon are withheld there (a reviewable list, extended when
-  needed). Dev runs are agent-reachable anyway and get them all.
+- **Production names its variables** (review of SPEC-278, M3): a first version gave production
+  every variable but a deny list of code-loading names; every tool has its own hooks
+  (`SHELLOPTS`/`PS4`, `OPENSSL_CONF`, `CLASSPATH`, `AWS_CONFIG_FILE`), so the list could never be
+  complete. The reviewed table now names them. Dev runs are agent-reachable anyway and get all.
+- **The vault's state is data production restores whoever wrote it** (a dev run, a task): the one
+  exception to "nothing an agent wrote runs with production's secrets"; deploy tools must not run
+  code from it (ADR-0207 consequences).
 - **Production's Docker engine is a chained task**: an engine agents cannot reach needs its own
   holder (its own user and network namespace, the base's `dockerd`, not the sandbox's), storage
   outside the sandbox and the host-level smoke test; it is a separate concern of several hundred

@@ -1419,8 +1419,8 @@ sequenceDiagram
 [decision 0207](decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)) are
 writers too. A `[cd.<name>]` names its states (`states = ["OPS"]`; a missing one refuses the
 deploy). The run (`ci/cd.rs`, `cd_process`) takes the in-memory hold of all of them at once
-(`vault/holds.rs`, `StateHolds`; it waits while another run holds one, within the run's timeout
-and its cancel), restores the vault's newest version of each into `<run>/work/states/<NAME>`
+(`vault/holds.rs`, `StateHolds`; it waits while another run holds one, bounded by the job timeout
+and ended by its cancel), restores the vault's newest version of each into `<run>/work/states/<NAME>`
 (`cd_restore_state`, never the task's copy or a path inside `HOME`) and exports
 `YULIUS_STATE_<NAME>`. After the deploy and the verify, whatever their outcome, `cd_save_state`
 packs each folder through handles and stores a changed one (`archive_digest`: paths, modes and
@@ -1428,8 +1428,8 @@ bytes) as the next version with a compare-and-set on the version restored, as `c
 a failed save ends the run as `error`. A task's `secret_state_save` and a person's import take the
 same hold without waiting (409 while a run holds it); a copy restored before a CD save is stale
 (`secrets_list`: `stale`, `held_by`) and is restored again before it is written; an import over a
-state a CD run wrote last needs `replace`. CD runs also get the project's variables, production
-ones without `CD_WITHHELD_VARIABLES` (code-loading and daemon names).
+state a CD run wrote last needs `replace`. CD runs also get the project's variables: dev ones all
+of them, production ones only those the verified table names (`variables = [...]`).
 
 ```mermaid
 sequenceDiagram
