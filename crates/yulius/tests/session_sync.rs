@@ -713,6 +713,27 @@ fn only_the_tuis_own_hooks_change_the_tasks_session() -> TestResult {
             || async { watched_session(&app, &ctx, &id).await.as_deref() == Some(cleared) },
         )
         .await?;
+        // `/resume` back to the first session in the TUI: adopted again, it is last in the
+        // lineage and watchers read it (SSN-003).
+        keys(
+            &app,
+            &ctx,
+            &attach,
+            format!("/clear {original}\r").as_bytes(),
+        )
+        .await?;
+        wait_for(
+            "the session adopted again",
+            Duration::from_secs(20),
+            || async {
+                attempt_session(&app, &id).await.as_deref() == Some(original.as_str())
+                    && lineage(&app, &id)
+                        .await
+                        .is_ok_and(|l| l == [cleared.to_owned(), original.clone()])
+                    && watched_session(&app, &ctx, &id).await.as_deref() == Some(original.as_str())
+            },
+        )
+        .await?;
         assert_eq!(
             app.deps.store.attempts(&id).await?.len(),
             1,

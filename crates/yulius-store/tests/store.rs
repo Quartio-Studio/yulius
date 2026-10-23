@@ -1669,3 +1669,48 @@ async fn the_lineage_lists_the_session_adopted_last_last() -> R {
     assert_eq!(order(lineage), ["nested", "tui"]);
     Ok(())
 }
+
+/// SPEC-281, HRN-004: a session is one task's. Upserting another task's session id changes
+/// neither that task's lineage (its order is what its watchers and resumes follow) nor adds it to
+/// the upserting task's.
+#[tokio::test]
+async fn a_session_of_another_task_is_not_reordered_or_taken() -> R {
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let a = store.insert_task(&task("ta", &sid, &uid)?).await?;
+    let b = store.insert_task(&task("tb", &sid, &uid)?).await?;
+    let entry = |t: &TaskId, session: &str, at: i64| yulius_app::model::ProviderSessionRecord {
+        id: format!("ps-{}-{session}-{at}", t.as_str()),
+        sandbox_id: sid.clone(),
+        task_id: t.clone(),
+        harness: Harness::ClaudeCode,
+        session_id: session.into(),
+        transcript_ref: None,
+        origin: "native".into(),
+        first_seen: Timestamp(at),
+        last_seen: Timestamp(at),
+    };
+    store
+        .upsert_provider_session(&entry(&b.id, "b-1", 10))
+        .await?;
+    store
+        .upsert_provider_session(&entry(&b.id, "b-2", 20))
+        .await?;
+    store
+        .upsert_provider_session(&entry(&a.id, "b-1", 30))
+        .await?;
+    let order = |list: Vec<yulius_app::model::ProviderSessionRecord>| {
+        list.into_iter()
+            .map(|s| (s.session_id, s.last_seen))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        order(store.provider_sessions(&b.id).await?),
+        [
+            ("b-1".to_owned(), Timestamp(10)),
+            ("b-2".to_owned(), Timestamp(20))
+        ]
+    );
+    assert!(store.provider_sessions(&a.id).await?.is_empty());
+    Ok(())
+}
