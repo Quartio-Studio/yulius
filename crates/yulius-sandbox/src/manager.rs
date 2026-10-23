@@ -404,9 +404,24 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// Whether `path` lies below `sandboxes/` of `data`, which a sandbox's runs can rearrange (any
-/// folder may become a link): removed only by the walk from the data directory (ADR-0176).
+/// folder may become a link), or is a production run's files (SPEC-279 PDE-004): removed only by
+/// the walk from the data directory (ADR-0176).
 fn reachable_by_runs(data: &Path, path: &Path) -> bool {
-    path.starts_with(data.join("sandboxes"))
+    path.starts_with(data.join("sandboxes")) || production_run_files(data, path)
+}
+
+/// Whether `path` is (or lies below) one production run's files, `cd/<sandbox>/runs/<run>`.
+fn production_run_files(data: &Path, path: &Path) -> bool {
+    let Ok(rest) = path.strip_prefix(data.join("cd")) else {
+        return false;
+    };
+    let parts: Vec<_> = rest.components().collect();
+    parts.len() >= 3
+        && parts
+            .iter()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+        && parts[1].as_os_str() == "runs"
+        && parts[0].as_os_str().to_str().is_some_and(valid_name)
 }
 
 /// Whether `name` is a holder name as the server makes them: a sandbox id (ASCII letters,
@@ -1121,7 +1136,7 @@ impl Manager {
     }
 
     /// Removes `path`, under `sysroots/`, `runtime/sandboxes/`, `system/` or `sandboxes/` of the
-    /// data directory, as root of a mapped namespace where the service user cannot (its files belong
+    /// data directory, or a production run's files (`cd/<sandbox>/runs/<run>`, SPEC-279), as root of a mapped namespace where the service user cannot (its files belong
     /// to a sandbox's mapped ids; SPEC-215). Below `sandboxes/`, which a sandbox's runs can
     /// rearrange, the removal walks down from the data directory without following a link
     /// (ADR-0176).
@@ -1130,7 +1145,7 @@ impl Manager {
     /// `path` lies elsewhere, or the removal failed.
     pub async fn remove_owned_tree(&self, path: &Path) -> Result<(), String> {
         let data = &self.config.data_dir;
-        let allowed = [
+        let allowed = ([
             data.join("sysroots"),
             data.join("runtime").join("sandboxes"),
             data.join("system"),
@@ -1138,6 +1153,7 @@ impl Manager {
         ]
         .iter()
         .any(|root| path.starts_with(root) && path != root.as_path())
+            || production_run_files(data, path))
             && !path
                 .components()
                 .any(|c| matches!(c, std::path::Component::ParentDir));
@@ -3037,6 +3053,13 @@ while True:
             d.join("sysroots"),
             d.join("sysroots/../sandboxes/s1"),
             PathBuf::from("/tmp"),
+            // Of the CD directory only production runs' files (SPEC-279 PDE-004).
+            d.join("cd"),
+            d.join("cd/s1"),
+            d.join("cd/s1/source.git"),
+            d.join("cd/s1/cache/prod"),
+            d.join("cd/s1/runs"),
+            d.join("cd/s1/runs/../source.git"),
         ] {
             assert!(
                 manager.remove_owned_tree(&refused).await.is_err(),
@@ -3071,6 +3094,8 @@ while True:
             "sandboxes/s1/ci",
             "sandboxes/s1/ci/jobs/old",
             "sandboxes/docker-smoke-1",
+            // A production run and its engine's containers write there (SPEC-279 PDE-004).
+            "cd/s1/runs/cd-r",
         ] {
             assert!(reachable_by_runs(d, &d.join(walked)), "{walked}");
         }

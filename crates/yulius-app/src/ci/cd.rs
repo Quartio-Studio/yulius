@@ -239,6 +239,44 @@ impl App {
             .join(format!("cd-{run_id}"))
     }
 
+    /// Where run `name` of `sandbox` at `stage` keeps its files (its tree, `HOME`, states and
+    /// log): a dev run in its run directory `run_dir`, a production run in
+    /// `<data>/cd/<sandbox>/runs/<name>`, which its production engine binds (SPEC-279 PDE-004).
+    pub(super) fn run_files_dir(
+        &self,
+        sandbox: &SandboxId,
+        stage: CdStage,
+        run_dir: &Path,
+        name: &str,
+    ) -> PathBuf {
+        match stage {
+            CdStage::Dev => run_dir.to_path_buf(),
+            CdStage::Prod => yulius_contracts::sandbox::production_runs_dir(
+                &self.config.data_dir,
+                sandbox.as_str(),
+            )
+            .join(name),
+        }
+    }
+
+    /// Removes a run's directory and, when elsewhere, its files; files a container of the
+    /// production engine wrote as a mapped id go as mapped root, links not followed (SPEC-279
+    /// PDE-004).
+    pub(super) async fn remove_run_dirs(&self, run_dir: &Path, files: &Path) {
+        let _ = std::fs::remove_dir_all(run_dir);
+        if files == run_dir || std::fs::symlink_metadata(files).is_err() {
+            return;
+        }
+        if std::fs::remove_dir_all(files).is_ok() {
+            return;
+        }
+        if let Some(isolation) = self.isolation.get()
+            && let Err(error) = isolation.remove_owned_tree(files).await
+        {
+            tracing::warn!(path = %files.display(), %error, "cannot remove a production run's files");
+        }
+    }
+
     /// `[cd.dev]` and `[cd.prod]` of `yulius.toml` at `rev`: none without the file, `Err` with
     /// the problem when it is invalid.
     pub(crate) async fn cd_config_at(&self, repo: &Path, rev: &str) -> Result<CdConfig, String> {
@@ -1073,6 +1111,7 @@ impl App {
             env_label(&run.environment)
         ));
         let run_dir = self.cd_run_dir(&run.id);
+        let files = self.run_files_dir(&sandbox.id, run.stage, &run_dir, &format!("cd-{}", run.id));
         let mut held = CdHeld::default();
         let (ended, usage) = match self
             .cd_process(
@@ -1084,7 +1123,7 @@ impl App {
                     variables: &named,
                     held: &mut held,
                 },
-                &run_dir,
+                (&run_dir, &files),
                 &mut ring,
                 &mut cancel,
             )
@@ -1095,11 +1134,11 @@ impl App {
         };
         // Saved after the deploy and the verify, whatever their outcome; then released.
         let unsaved = self
-            .cd_save_states(&sandbox, &run, &run_dir, &held.restored, &mut ring)
+            .cd_save_states(&sandbox, &run, &files, &held.restored, &mut ring)
             .await;
         drop(held);
         // The run's files (the tree, its HOME, its log) go with it.
-        let _ = std::fs::remove_dir_all(&run_dir);
+        self.remove_run_dirs(&run_dir, &files).await;
         let (state, exit_code, reason) = match ended {
             Ok(Ended::Exit(exit)) if exit.spawn_failed => (
                 RunState::Error,
@@ -1257,17 +1296,18 @@ impl App {
             variables: named,
             held,
         }: RunInputs<'_>,
-        run_dir: &Path,
+        (run_dir, files): (&Path, &Path),
         ring: &mut OutputRing,
         cancel: &mut watch::Receiver<Option<String>>,
     ) -> Result<(Ended, super::exec::Used), String> {
-        let work = run_dir.join("work");
+        let work = files.join("work");
         let (src, home, log) = (work.join("src"), work.join("home"), work.join("log"));
         let cache = self
             .cd_private_dir(&sandbox.id)
             .join("cache")
             .join(cache_name(&run.environment, run.stage));
         let _ = std::fs::remove_dir_all(run_dir);
+        let _ = std::fs::remove_dir_all(files);
         for dir in [&home, &cache] {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("preparing the run's directories failed: {e}"))?;
@@ -1302,7 +1342,7 @@ impl App {
         };
         for name in states {
             let restored = self
-                .cd_restore_state(&sandbox.id, name, run_dir, &writer)
+                .cd_restore_state(&sandbox.id, name, files, &writer)
                 .await
                 .map_err(|err| {
                     format!(
@@ -1447,8 +1487,14 @@ impl App {
         let run_dir = self.cd_run_dir(&run.id);
         if run_dir.exists() {
             let _ = self.deps.session_host.terminate(&run_dir);
-            let _ = std::fs::remove_dir_all(&run_dir);
         }
+        let files = self.run_files_dir(
+            &run.sandbox_id,
+            run.stage,
+            &run_dir,
+            &format!("cd-{}", run.id),
+        );
+        self.remove_run_dirs(&run_dir, &files).await;
         let full = self.deps.store.cd_run(&run.id, true).await?.unwrap_or(run);
         self.deps
             .store

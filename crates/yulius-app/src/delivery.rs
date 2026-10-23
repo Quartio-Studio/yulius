@@ -4069,7 +4069,7 @@ impl App {
         {
             return Ok(run);
         }
-        self.environment_end_lost(&run.id);
+        self.environment_end_lost(&run.sandbox_id, &run.id).await;
         let output = format!(
             "{}\n[yulius] no runner is attached to this run any more (server restart?); its outcome is unknown\n",
             run.output
@@ -4144,7 +4144,7 @@ impl App {
     pub async fn reconcile_environment_runs(&self) -> AppResult<u32> {
         let mut closed = 0;
         for run in self.deps.store.running_environment_runs().await? {
-            self.environment_end_lost(&run.id);
+            self.environment_end_lost(&run.sandbox_id, &run.id).await;
             let output = format!(
                 "{}\n[yulius] interrupted by a server restart; the command may have been killed or may have finished unobserved\n",
                 run.output

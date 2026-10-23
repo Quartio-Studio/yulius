@@ -5257,7 +5257,8 @@ async fn a_contained_environment_run_starts_in_the_sandbox_containment() -> Test
 }
 
 /// SPEC-219 ENV-003: a production environment's run, which only a person starts, runs as a CD
-/// production run: rooted at its own directory, not the sandbox, with a fresh `HOME` there.
+/// production run: rooted at its own directory, not the sandbox, with a fresh `HOME` there. Its
+/// files are a production run's, in `<data>/cd/<sandbox>/runs` (SPEC-279 PDE-004).
 #[tokio::test]
 async fn a_production_environment_run_starts_in_production_containment() -> TestResult {
     let host = Arc::new(RecordingHost::default());
@@ -5295,7 +5296,14 @@ async fn a_production_environment_run_starts_in_production_containment() -> Test
         .ok()
         .and_then(|slot| slot.clone())
         .ok_or("no run was started")?;
-    let work = run_dir.join("work");
+    let name = run_dir.file_name().ok_or("run directory")?;
+    let work =
+        f.h.app
+            .config
+            .data_dir
+            .join("cd/s1/runs")
+            .join(name)
+            .join("work");
     let Containment::Bubblewrap {
         sandbox_root, home, ..
     } = &plan.containment

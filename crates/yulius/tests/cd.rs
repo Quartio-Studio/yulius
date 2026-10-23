@@ -136,18 +136,27 @@ struct Fixture {
 
 /// `yulius.toml` with CD tables `cd` (the marks directory replaces `{marks}`).
 async fn fixture(cd: &str) -> BoxResult<Fixture> {
+    fixture_with(cd, None).await
+}
+
+/// [`fixture`]; with `host`, runs are contained (`config.contained`) and go to that process host.
+async fn fixture_with(
+    cd: &str,
+    host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
+) -> BoxResult<Fixture> {
+    let contained = host.is_some();
     // A short base: run sockets live at <data>/runs/cd-<uuid>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("ycd").tempdir_in("/tmp")?;
     let root = dir.path().canonicalize()?;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let _ = Command::new(&exe).arg("version").output();
     let h = harness_with(HarnessOptions {
-        session_host: Some(Arc::new(PtySessionHost::new(exe))),
+        session_host: Some(host.unwrap_or_else(|| Arc::new(PtySessionHost::new(exe)))),
         git: Some(Arc::new(GitAdapter::new("git"))),
         dir: Some(dir),
-        configure: Some(Box::new(|config| {
+        configure: Some(Box::new(move |config| {
             config.ci.job_timeout = Duration::from_secs(20);
-            config.contained = false;
+            config.contained = contained;
         })),
         ..HarnessOptions::default()
     })?;
@@ -2188,5 +2197,196 @@ async fn a_state_left_alone_broken_or_waited_for_keeps_its_version() -> TestResu
     let output = run["output"].as_str().unwrap_or_default();
     assert_eq!(run["state"], "passed", "{output}");
     assert_eq!(web.operator(alice).await?["version"], 2);
+    Ok(())
+}
+
+/// The holders of a recording isolation adapter: the sandbox's and its production holder's
+/// joins, with the calls made.
+#[derive(Default)]
+struct Holders {
+    calls: std::sync::Mutex<Vec<&'static str>>,
+}
+
+impl Holders {
+    fn calls(&self) -> Vec<&'static str> {
+        self.calls.lock().map(|c| c.clone()).unwrap_or_default()
+    }
+
+    fn join(net_ns: u64, name: &str) -> yulius_app::ports::isolation::SandboxJoin {
+        yulius_app::ports::isolation::SandboxJoin {
+            holder_pid: 4242,
+            user_ns: net_ns + 1,
+            net_ns,
+            mnt_ns: net_ns + 2,
+            cgroup: Some(format!("/cg/{name}/agents").into()),
+            ci_cgroup: Some(format!("/cg/{name}/ci").into()),
+            system_root: format!("/fake/runtime/sandboxes/{name}/root").into(),
+            hostname: name.replace('.', "-"),
+            exec_shim: None,
+            extra_readonly: vec!["/opt/agent-cli".into()],
+            private_dirs: Vec::new(),
+            system_passwd: None,
+            system_group: None,
+            host_system: None,
+            docker_dir: Some(format!("/fake/runtime/sandboxes/{name}/docker").into()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl yulius_app::ports::isolation::SandboxIsolation for Holders {
+    async fn prepare(
+        &self,
+        _: &yulius_app::ports::isolation::SandboxRef,
+    ) -> yulius_app::error::AppResult<Option<yulius_app::ports::isolation::SandboxJoin>> {
+        self.calls
+            .lock()
+            .map_err(|_| yulius_app::error::AppError::internal("poisoned"))?
+            .push("prepare");
+        Ok(Some(Self::join(2, "s1")))
+    }
+    fn release(&self, _: &SandboxId) {
+        if let Ok(mut calls) = self.calls.lock() {
+            calls.push("release");
+        }
+    }
+    async fn prepare_production(
+        &self,
+        _: &yulius_app::ports::isolation::SandboxRef,
+    ) -> yulius_app::error::AppResult<Option<yulius_app::ports::isolation::SandboxJoin>> {
+        self.calls
+            .lock()
+            .map_err(|_| yulius_app::error::AppError::internal("poisoned"))?
+            .push("prepare_production");
+        Ok(Some(Self::join(20, "s1.prod")))
+    }
+    fn release_production(&self, _: &SandboxId) {
+        if let Ok(mut calls) = self.calls.lock() {
+            calls.push("release_production");
+        }
+    }
+}
+
+/// A process host that records each run's containment and runs it uncontained (the joins are
+/// fakes), with the real ptyhost.
+struct Recording {
+    inner: PtySessionHost,
+    seen: std::sync::Mutex<Vec<yulius_app::ports::session::Containment>>,
+}
+
+#[async_trait::async_trait]
+impl yulius_app::ports::session::SessionHost for Recording {
+    async fn spawn(
+        &self,
+        run_dir: &Path,
+        attempt_id: &str,
+        task_id: &str,
+        plan: &yulius_app::ports::session::LaunchPlan,
+        token: &[u8; 32],
+        size: (u16, u16),
+    ) -> yulius_app::error::AppResult<yulius_app::ports::session::SpawnedRun> {
+        if let Ok(mut seen) = self.seen.lock() {
+            seen.push(plan.containment.clone());
+        }
+        let mut plan = plan.clone();
+        plan.containment = yulius_app::ports::session::Containment::None;
+        self.inner
+            .spawn(run_dir, attempt_id, task_id, &plan, token, size)
+            .await
+    }
+    async fn attach(
+        &self,
+        run_dir: &Path,
+        token: &[u8; 32],
+    ) -> yulius_app::error::AppResult<yulius_app::ports::session::AttachedRun> {
+        self.inner.attach(run_dir, token).await
+    }
+    fn inspect(&self, run_dir: &Path) -> yulius_app::ports::session::RunInspection {
+        self.inner.inspect(run_dir)
+    }
+    fn terminate(&self, run_dir: &Path) -> yulius_app::error::AppResult<()> {
+        self.inner.terminate(run_dir)
+    }
+}
+
+/// SPEC-279 PDE-003, PDE-004 (AC2, AC3): a production deploy prepares the sandbox's production
+/// holder, never the sandbox's, joins it on the host's system with that holder's Docker
+/// directory, keeps its files in `<data>/cd/<sandbox>/runs` and removes them, and releases the
+/// production holder; a dev deploy keeps the sandbox's holder and `<data>/runs`.
+#[tokio::test]
+async fn production_runs_join_the_production_holder_with_its_docker_engine() -> TestResult {
+    use yulius_app::ports::session::Containment;
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let recording = Arc::new(Recording {
+        inner: PtySessionHost::new(exe),
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+    let f = fixture_with(&full_cd(), Some(recording.clone())).await?;
+    let holders = Arc::new(Holders::default());
+    assert!(f.h.app.set_isolation(holders.clone()));
+    let data = f.h.app.config.data_dir.clone();
+    let started = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let id = started.body["run_id"].as_str().ok_or("id")?.to_owned();
+    let run = f.ended(&id).await?;
+    let output = run["output"].as_str().unwrap_or_default();
+    assert_eq!(run["state"], "passed", "{output}");
+    assert_eq!(
+        holders.calls(),
+        ["prepare_production", "release_production"],
+        "only the production holder"
+    );
+    let seen = recording.seen.lock().map(|s| s.clone()).unwrap_or_default();
+    let Some(Containment::Bubblewrap {
+        sandbox_root,
+        writable,
+        join: Some(join),
+        ..
+    }) = seen.first()
+    else {
+        return Err(format!("a joined containment: {seen:?}").into());
+    };
+    let files = data.join("cd/s1/runs").join(format!("cd-{id}"));
+    assert_eq!(sandbox_root, &files.join("work"));
+    assert_eq!(writable, &[data.join("cd/s1/cache/prod")]);
+    assert_eq!(join.net_ns, 20, "the production holder's network");
+    assert_eq!(
+        join.docker_dir.as_deref(),
+        Some(Path::new("/fake/runtime/sandboxes/s1.prod/docker")),
+        "the production holder's engine"
+    );
+    assert!(join.host_system.is_some(), "the host's read-only system");
+    assert!(join.extra_readonly.is_empty());
+    assert_eq!(join.cgroup.as_deref(), Some(Path::new("/cg/s1.prod/ci")));
+    assert!(!files.exists(), "the run's files are removed");
+    assert!(!data.join("runs").join(format!("cd-{id}")).exists());
+
+    // A dev deploy keeps the sandbox's holder, its engine and `<data>/runs`.
+    f.allow_secret().await?;
+    let dev = f.deploy(&f.alice, "dev", None).await?;
+    assert_eq!(dev.status, StatusCode::OK, "{}", dev.body);
+    let dev_id = dev.body["run_id"].as_str().ok_or("id")?.to_owned();
+    let run = f.ended(&dev_id).await?;
+    assert_eq!(run["state"], "passed", "{}", run["output"]);
+    assert_eq!(
+        holders.calls()[2..],
+        ["prepare", "release"],
+        "the sandbox's holder for dev"
+    );
+    let seen = recording.seen.lock().map(|s| s.clone()).unwrap_or_default();
+    let Some(Containment::Bubblewrap {
+        writable,
+        join: Some(join),
+        ..
+    }) = seen.get(1)
+    else {
+        return Err(format!("a joined containment: {seen:?}").into());
+    };
+    assert_eq!(join.net_ns, 2);
+    assert!(join.host_system.is_none());
+    assert!(
+        writable.contains(&data.join("runs").join(format!("cd-{dev_id}")).join("work")),
+        "{writable:?}"
+    );
     Ok(())
 }
