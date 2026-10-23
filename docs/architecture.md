@@ -1246,7 +1246,10 @@ project's slug. The commit is the one GitHub reports, taken into a mirror only Y
 own directory (`export_tree`) and runs through the process host like a CI job (`ci_watch`): dev in
 the sandbox's containment, production in the sandbox's network only on the host's read-only system (the launch spec's `host_system` join mode), each with the
 secrets allowed for that environment; nothing agents can write is bound in. Output is redacted
-before it is stored in `cd_runs`. A run has no lane and no retry: a deploy is not assumed repeatable, so one left by a
+before it is stored in `cd_runs`. A run also gets the project's variables and the agent states its
+table names (restored before, saved after; [Agent states](#agent-states)); dev runs use the
+sandbox's Docker engine, production runs have none yet (task #265), and both reach any Internet
+host over TCP (SSH included) through the sandbox's network. A run has no lane and no retry: a deploy is not assumed repeatable, so one left by a
 restart is recorded as an error. `needs_you` (table column `tasks.needs_you`) puts a task in Needs
 you until a person writes to it. `POST …/cd/{env}/deploy` answers only once the run is recorded,
 after the checks and production's promotion (seconds to a minute), so the CD page opens the Deploy
@@ -1410,6 +1413,43 @@ sequenceDiagram
     T->>App: secret_state_save(OPS) after a rollout
     App->>DB: version 2 (compare-and-set), audit vault.state.save
     L->>App: GET agent-states/OPS/archive (state-get)
+```
+
+**CD runs** ([SPEC-278](../.ai/specs/SPEC-278-cd-runs-use-agent-states-restore-before.md),
+[decision 0207](decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)) are
+writers too. A `[cd.<name>]` names its states (`states = ["OPS"]`; a missing one refuses the
+deploy). The run (`ci/cd.rs`, `cd_process`) takes the in-memory hold of all of them at once
+(`vault/holds.rs`, `StateHolds`; it waits while another run holds one, bounded by the job timeout
+and ended by its cancel), restores the vault's newest version of each into `<run>/work/states/<NAME>`
+(`cd_restore_state`, never the task's copy or a path inside `HOME`) and exports
+`YULIUS_STATE_<NAME>`. After the deploy and the verify, whatever their outcome, `cd_save_state`
+packs each folder through handles and stores a changed one (`archive_digest`: paths, modes and
+bytes) as the next version with a compare-and-set on the version restored, as `cd:<environment>`;
+a failed save ends the run as `error`. A task's `secret_state_save` and a person's import take the
+same hold without waiting (409 while a run holds it); a copy restored before a CD save is stale
+(`secrets_list`: `stale`, `held_by`) and is restored again before it is written; an import over a
+state a CD run wrote last needs `replace`. CD runs also get the project's variables: dev ones all
+of them, production ones only those the verified table names (`variables = [...]`).
+
+```mermaid
+sequenceDiagram
+    participant R as CD run (dev or production)
+    participant Hd as StateHolds
+    participant App as Yulius (vault/states.rs)
+    participant DB as agent_states
+    participant T as Task agent
+    R->>Hd: hold OPS (wait while another run holds it)
+    R->>App: cd_restore_state(OPS)
+    App->>DB: newest version N (sealed), audit vault.state.restore as cd:env
+    App->>R: <run>/work/states/OPS, YULIUS_STATE_OPS
+    T->>App: secret_state_save(OPS)
+    App-->>T: 409 held by <env> run <id>
+    R->>R: deploy, verify (may fail)
+    R->>App: cd_save_state(OPS) if changed
+    App->>DB: version N+1 (compare-and-set on N), audit vault.state.save
+    R->>Hd: release
+    T->>App: secret_state_save(OPS)
+    App-->>T: 409 stale: restore first (secret_state_restore replaces the copy)
 ```
 
 ## Project variables

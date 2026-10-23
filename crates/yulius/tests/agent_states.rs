@@ -235,13 +235,14 @@ async fn a_state_is_restored_once_saved_back_and_never_forked() -> TestResult {
             .agent_state(&SandboxId::parse("s1")?, "OPS")
             .await?
             .ok_or("stored")?;
-    // Sealed: no gzip stream (1f 8b) where the archive would begin.
-    assert!(
-        !state.1.ciphertext[..64]
-            .windows(2)
-            .any(|w| w == [0x1f, 0x8b]),
-        "stored in the clear"
-    );
+    // Sealed: what is stored is no readable archive, wherever it would begin. (Looking for the
+    // two gzip magic bytes in the first 64 failed about once in 1 000 runs on random ciphertext.)
+    for start in 0..64 {
+        assert!(
+            unpacked(&state.1.ciphertext[start..]).is_err(),
+            "stored in the clear at {start}"
+        );
+    }
     let download = support::repos::call_raw(
         &w.h.router,
         Method::GET,
@@ -267,7 +268,11 @@ async fn a_state_is_restored_once_saved_back_and_never_forked() -> TestResult {
     assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.body);
     assert_eq!(replaced.body["version"], 4);
     let (error, said) = tool(&w, "secret_state_save", json!({"name": "OPS"})).await?;
-    assert!(error && said.to_string().contains("newer"), "{said}");
+    let said = said.to_string();
+    assert!(
+        error && said.contains("is stale: alice sent version 4"),
+        "{said}"
+    );
     let (error, restored) = tool(
         &w,
         "secret_state_restore",

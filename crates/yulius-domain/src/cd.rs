@@ -17,6 +17,10 @@ use std::fmt;
 
 /// Most secrets one environment names.
 pub const MAX_CD_SECRETS: usize = 16;
+/// Most agent states one environment names (SPEC-278).
+pub const MAX_CD_STATES: usize = 8;
+/// Most project variables one environment names (SPEC-278).
+pub const MAX_CD_VARIABLES: usize = 32;
 /// Longest `about` line, in characters.
 pub const MAX_ABOUT_CHARS: usize = 300;
 /// Most environments one `yulius.toml` defines.
@@ -124,6 +128,10 @@ pub struct CdTarget {
     pub verify: Option<String>,
     /// Agent secrets the commands get as environment variables.
     pub secrets: Vec<String>,
+    /// Agent states the run restores before its deploy and saves after it (SPEC-278).
+    pub states: Vec<String>,
+    /// Project variables a production-stage run gets (a dev-stage run gets them all; SPEC-278).
+    pub variables: Vec<String>,
     /// One line for people (what this environment is, or why it is empty).
     pub about: Option<String>,
     /// Production stage only: promote the integration branch before deploying.
@@ -140,6 +148,8 @@ impl CdTarget {
             deploy: None,
             verify: None,
             secrets: Vec::new(),
+            states: Vec::new(),
+            variables: Vec::new(),
             about: None,
             promote: false,
         }
@@ -289,6 +299,12 @@ pub fn environments_of(
 #[must_use]
 pub fn valid_secret_name(name: &str) -> bool {
     crate::vault::SecretName::parse(name).is_ok_and(|parsed| parsed.as_str() == name)
+}
+
+/// The environment variable a run reads a restored state's folder from (SPEC-278 CDS-003).
+#[must_use]
+pub fn state_variable(name: &str) -> String {
+    format!("YULIUS_STATE_{name}")
 }
 
 /// Who asks for a deploy.
@@ -622,6 +638,11 @@ mod tests {
             authorize(&cd, "prod", CdStage::Prod, Requester::Agent, "app"),
             Err(CdRefusal::ProductionIsAPersons)
         );
+    }
+
+    #[test]
+    fn a_state_has_its_variable() {
+        assert_eq!(state_variable("OPS"), "YULIUS_STATE_OPS");
     }
 
     #[test]

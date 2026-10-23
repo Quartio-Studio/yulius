@@ -932,6 +932,27 @@ after each run); none is visible to agents. Runs are kept
   secret (ADR-0186). That choice is not offered for a secret agents use (bound hosts or `.env` copies): a production
   secret is exclusive, so production needs a separate secret with its own name (ADR-0109). Output is
   redacted, but scripts hold the values while they run, so allow only what a deploy needs.
+- **Agent states** ([ADR-0207](decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)).
+  A table's `states = ["NAME"]` makes the run hold those agent states (a second run naming one waits,
+  its output says for which run), restore the vault's newest version of each into
+  `<data>/runs/cd-<run>/work/states/<NAME>` (`$YULIUS_STATE_<NAME>`, never a task's copy, never
+  inside `HOME`) and save each changed folder back as a new version after the deploy and the
+  verify, failed ones included. A failed save makes the run an `error`. Each restore and save is
+  audited `vault.state.restore`/`vault.state.save` as `cd:<environment>`. While a run holds a state,
+  a task's `secret_state_save` and a person's send are refused; a restart during a run loses what
+  it wrote to its states. The wait for the hold has its own bound (the job timeout), so a run that
+  waited can last up to twice that. Production restores the newest version whoever wrote it (a
+  dev run or a task included): a deploy tool treats its state as data and never runs code from it.
+- **Variables.** Dev runs get all the project's variables in their environment (Yulius's own and
+  the secrets win); production runs get only those their table names (`variables = ["NAME"]`),
+  since a person with write access sets them and an administrator deploys production. A named
+  variable the project lacks refuses the deploy.
+- **Docker.** Dev runs use the sandbox's engine, as tasks do (`docker buildx`, `docker load`).
+  Production runs have no engine yet (task #265 adds one agents cannot reach).
+- **SSH and other hosts.** Runs use the sandbox's network: every Internet host over TCP, port 22
+  included, but not the host's loopback. Yulius keeps no host list; a project names its hosts and
+  pins their keys in its own state or repository (`StrictHostKeyChecking=yes` with its own
+  `UserKnownHostsFile`), since each run's `HOME` is fresh.
 - **Egress off.** With `YULIUS_SANDBOX_EGRESS=none` sandboxes have no network, and production
   deploys (which use the sandbox's network) have none either.
 - **Production.** Only an administrator deploys it, on the CD page, typing the project's slug. With

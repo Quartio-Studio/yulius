@@ -110,6 +110,7 @@ example when it starts deploying for real), and record every change as a decisio
    deploy = "scripts/cd/deploy.sh dev"
    verify = "scripts/cd/verify.sh dev"   # a smoke test of what is deployed
    secrets = "DEV_SSH_KEY DEV_HOST"      # agent secrets; a person allows each outside the proxy
+   states = ["DEV_OPERATOR"]             # agent states: restored before, saved after each run
 
    [cd.prod]                             # read from what production deploys
    promote = true                        # first promote the integration branch (a push to main)
@@ -154,6 +155,19 @@ example when it starts deploying for real), and record every change as a decisio
      runs outside it on a clean system, so production scripts install what they need (a CLI, a
      package) into `$YULIUS_CD_CACHE` themselves. You improve CD only through a pull request, and
      nothing you merge reaches production until a person deploys it.
+   - **State a deploy tool keeps** (an inventory, rollout receipts, locks, pinned host keys) is an
+     agent state, never a file in the repository or on the laptop: name it in `states`. Before
+     the deploy the run restores the vault's newest version into a folder of its own and exports
+     its absolute path as `$YULIUS_STATE_<NAME>` (scripts refuse to run without it); after the
+     deploy and the verify, failed ones included, Yulius saves what changed as a new version.
+     A second run naming it waits; a task's save of it is refused meanwhile, and a task restores
+     it again (`secret_state_restore`) before changing it. Runs also get the project's variables
+     (production only those its table names in `variables = ["NAME"]`). The state is data:
+     never run code from it, since dev runs and tasks write it too.
+   - **Docker and SSH.** Dev runs have the sandbox's Docker (`docker buildx`, `docker load`);
+     production runs have none yet. Runs reach any host over SSH (port 22): pin the hosts' keys in
+     the state or the repository (`StrictHostKeyChecking=yes` with its own known-hosts file), since
+     each run's `HOME` is fresh.
    - **Who deploys.** A merge deploys nothing. Dev: a person on the CD page, or an agent with
      `cd_deploy` when its task asks (then `yulius wait`), or a nightly automation that deploys and
      tests it. Production: only a person with administrator access, typing the project's slug;
