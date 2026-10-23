@@ -5237,6 +5237,8 @@ export function createMockTransport(params) {
   const db = seed(params);
   window.__yuliusMock = db; // debugging aid in the browser console (mock mode only)
   // Tests change a task as the server would announce it (`touchTask('sb_studio', 12, {…})`).
+  // The GitHub App was created in the other tab (SPEC-283): the connection now reads configured.
+  db.finishGithubApp = () => { db.me.instance.github_configured = true; };
   db.finishOnboarding = (slug) => finishOnboarding(db, db.sandboxes.find((s) => s.slug === slug));
   // Someone else presses Start onboarding (another person or tab): the approval, without its hold.
   db.startOnboarding = (slug) => {

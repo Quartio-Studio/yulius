@@ -2893,3 +2893,10 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
   .st-axis > :first-child, .st-axis > :last-child { display: none; }
   .st-axis-ticks { grid-column: 1 / -1; }
 }
+
+/* Onboarding says what comes next (SPEC-283): the GitHub page's waiting and next steps. */
+.steps-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.next-steps { margin: 0; padding: 0; list-style: none; counter-reset: next-step; display: flex; flex-direction: column; gap: 12px; }
+.next-step { counter-increment: next-step; display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 8px 10px; }
+.next-step::before { content: counter(next-step); grid-row: span 2; width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border-strong); color: var(--text-2); font-size: var(--fs-xs); line-height: 1; }
+.next-step > .row-wrap { grid-column: 2; }
