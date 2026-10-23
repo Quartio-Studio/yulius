@@ -4,6 +4,13 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-24
+
+- Concurrent CI checkouts of one run no longer fail on each other's worktree registration
+  (SPEC-289, task #275, #666). `git worktree list` now takes the same process-wide lock as
+  worktree add, move, remove and prune; before, a checkout's list could read another checkout's
+  half-written `.git/worktrees/<name>/` and die ("failed to read …/locked" or "…/commondir").
+
 ## 2026-10-23
 
 - First-run onboarding says what each step does and what comes next (SPEC-283, task #269,
