@@ -59,7 +59,9 @@ watching, steering and unblocking.
   (`yulius secrets import --state NAME=DIR`, up to 64 MiB packed), restored by a task into the
   sandbox home and saved back after each rollout. Once restored, the sandbox's copy is the only
   writer: a second send is refused unless the person replaces it on purpose, and
-  `yulius secrets state-get` brings the newest copy back.
+  `yulius secrets state-get` brings the newest copy back. CD deploys use it too (SPEC-278): a
+  `[cd.<name>]` names its states, each run restores the vault's newest version and saves it back
+  after the deploy, one writer at a time.
 - **Project variables** (SPEC-275): a project's non-secret values (regions, environment names,
   ids, base URLs, contact addresses) are shown in plain on the Secrets page's Variables tab and
   are in every task's environment. The laptop agent sets them with `yulius vars`, and the secrets

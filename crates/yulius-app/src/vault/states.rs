@@ -1807,6 +1807,33 @@ mod tests {
 
     /// SPEC-271 OPS-005, OPS-006: a state unpacks with its permission bits (setuid and sticky
     /// dropped) and packs back to the same files, leaving links out and naming them.
+    /// SPEC-278 CDS-004: a folder a CD run left as it was restored has the archive's digest,
+    /// whoever packed it; a changed byte or mode does not.
+    #[test]
+    fn an_unchanged_folder_has_the_restored_archives_digest() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path().join("state");
+        std::fs::create_dir(&root)?;
+        // As a laptop packs it: no folder entries, a `./` prefix, a setuid bit.
+        let laptop = archive(&[
+            ("./inventory.db", 'f', 0o600, "v1\n"),
+            ("./bin/rollout", 'f', 0o4755, "#!/bin/sh\n"),
+        ])?;
+        unpack(&laptop, &dir_fd(&root)?)?;
+        let restored = archive_digest(&laptop)?;
+        assert_eq!(archive_digest(&pack(&dir_fd(&root)?)?.archive)?, restored);
+        std::fs::write(root.join("inventory.db"), "v2\n")?;
+        assert_ne!(archive_digest(&pack(&dir_fd(&root)?)?.archive)?, restored);
+        std::fs::write(root.join("inventory.db"), "v1\n")?;
+        assert_eq!(archive_digest(&pack(&dir_fd(&root)?)?.archive)?, restored);
+        std::fs::set_permissions(
+            root.join("inventory.db"),
+            std::fs::Permissions::from_mode(0o644),
+        )?;
+        assert_ne!(archive_digest(&pack(&dir_fd(&root)?)?.archive)?, restored);
+        Ok(())
+    }
+
     #[test]
     fn unpacking_keeps_modes_and_packing_leaves_links_out() -> TestResult {
         let dir = tempfile::tempdir()?;

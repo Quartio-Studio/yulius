@@ -791,6 +791,7 @@ CdEnvironment = {"name": "dev|prod|<name>", "label": "dev|production|<name>", "s
                  "branch", "head", "problem": "yulius.toml line 3: …"|null, "about", "deploy", "verify",
                  "promote", "promotes_from": "<integration head>"|null,
                  "secrets": [{"name", "state": "ready|not_allowed|missing|production|agents_use"}],
+                 "states": [{"name", "version": <newest>|null (missing), "held_by": "<env> run <id>"|null}],
                  "deployed": "<sha of the last passed run>"|null, "last_run": CdRun|null}
 CdRun = {"run_id", "environment": "<name>", "stage": "dev|prod", "state": "running|passed|failed|error|cancelled",
          "branch", "commit", "requested_by": "<login>|task #<n>", "deploy", "verify",
