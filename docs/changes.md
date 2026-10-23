@@ -16,7 +16,6 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   (production without code-loading ones such as `PYTHONPATH` or `DOCKER_HOST`). `yulius.toml`
   accepts one-line arrays of strings. Dev runs use the sandbox's Docker and every run reaches SSH
   hosts; production runs get a Docker engine of their own in task #265.
-
 - Demo mode is no longer part of a real instance (SPEC-277, task #263, ADR-0206). The server binary
   leaves out `assets/mock.js`, the e2e suite's fake backend with its sandboxes of Quartio's
   repositories, so `GET /assets/mock.js` is 404, and a page link with `?mock=1` is redirected to
