@@ -49,10 +49,10 @@ Confirmed against `dev` at 2025e0f0 with Git 2.43.0.
 
 ## Plan
 
-- [ ] Spec SPEC-289 with root cause and regression test plan
-- [ ] Deterministic regression test that fails on dev
-- [ ] worktree list runs under the worktree-registration lock
-- [ ] Docs: SPEC-050 CI-109, changes.md
+- [x] Spec SPEC-289 with root cause and regression test plan
+- [x] Deterministic regression test that fails on dev
+- [x] worktree list runs under the worktree-registration lock
+- [x] Docs: SPEC-050 CI-109, changes.md
 - [ ] Independent review answered and gate green
 - [ ] Merged into dev on green CI, #666 closed with summary
 
@@ -92,4 +92,10 @@ Confirmed against `dev` at 2025e0f0 with Git 2.43.0.
   own CI checkouts were seen failing. Other Git commands that enumerate worktrees (`branch -D`,
   `checkout` of a branch) were never seen failing this way and stay unlocked; locking every Git
   command of a repository would serialize all of Yulius's Git work for a race not observed there.
+- **The lock stays process-wide, not per repository.** As for add and prune since SPEC-021, a
+  `worktree list` now waits behind another repository's `worktree add` too, so reusing an existing
+  checkout can queue behind a long add elsewhere, bounded by that add's command timeout (120 s by
+  default); the wait itself is outside the waiting command's own timeout, as it already was for
+  add and prune. The commands under the lock last milliseconds in practice; a per-repository lock
+  can replace it if that queueing is ever measured.
 - No ADR: this applies the existing SPEC-021 lock decision to one more command.
