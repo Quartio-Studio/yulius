@@ -585,3 +585,131 @@ fn the_session_reports_its_usage_through_the_status_line() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// The session its watchers read: `GET /api/tasks/{tid}/transcript` (SPEC-179).
+async fn watched_session(app: &App, ctx: &AuthContext, id: &TaskId) -> Option<String> {
+    let read = yulius_app::session_docs::TranscriptRead {
+        from: None,
+        limit: 20,
+        seen: None,
+        session: None,
+    };
+    app.task_transcript(ctx, id.as_str(), read)
+        .await
+        .ok()
+        .and_then(|view| view.session_id)
+}
+
+async fn attempt_session(app: &App, id: &TaskId) -> Option<String> {
+    app.deps
+        .store
+        .live_attempt(id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|a| a.provider_session_id)
+}
+
+async fn lineage(app: &App, id: &TaskId) -> Result<Vec<String>, BoxError> {
+    Ok(app
+        .deps
+        .store
+        .provider_sessions(id)
+        .await?
+        .into_iter()
+        .map(|s| s.session_id)
+        .collect())
+}
+
+/// SPEC-281 (#862, task #266): a `claude` the agent runs in its worktree writes its transcript
+/// next to the TUI's, but only the TUI's own hooks change the task's session. The nested session
+/// is never adopted (watchers kept reading it, and a Continue would have resumed it); `/clear` in
+/// the TUI (`SessionStart` with the new id) is, and becomes the session watchers read.
+#[test]
+fn only_the_tuis_own_hooks_change_the_tasks_session() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = start(&data, &fake, agent()).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let (id, ctx, attach) = ready(&app, &sandbox, &user, "Nested claude").await?;
+        keys(&app, &ctx, &attach, b"first turn\r").await?;
+        wait_for("the echo", Duration::from_secs(15), || {
+            screen_contains(&app, &id, "ECHO: first turn")
+        })
+        .await?;
+        let original = attempt_session(&app, &id).await.ok_or("session id")?;
+        let worktree = PathBuf::from(task(&app, &id).await?.worktree_path.ok_or("worktree")?);
+        let home = data.join("sandboxes").join(sandbox.as_str()).join("home");
+        let transcript = app
+            .deps
+            .harness
+            .claude_transcript(&home, &worktree, &original);
+        let project = transcript.parent().ok_or("project dir")?.to_path_buf();
+        wait_for("the watched session", Duration::from_secs(10), || async {
+            watched_session(&app, &ctx, &id).await.as_deref() == Some(original.as_str())
+        })
+        .await?;
+
+        // The agent runs `claude` in its worktree: same HOME, same cwd, a newer transcript file,
+        // and no hook of this run (it does not load the run's settings).
+        let nested = "6a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+        let record = serde_json::json!({
+            "type": "assistant", "sessionId": nested, "cwd": worktree.to_string_lossy(),
+            "uuid": "nested-1", "parentUuid": null, "timestamp": "2026-10-23T17:06:56.960Z",
+            "message": {"role": "assistant", "content": [{"type": "text",
+                "text": "Not logged in · Please run /login"}]}, "version": "2.1.292",
+        });
+        std::fs::write(project.join(format!("{nested}.jsonl")), format!("{record}\n"))?;
+        // More than one drift period (5 s) of watcher rounds (1 s each) after the file.
+        let rounds = app.runtime(&id).transcript_rounds();
+        wait_for("seven watcher rounds", Duration::from_secs(20), || async {
+            app.runtime(&id).transcript_rounds() >= rounds + 7
+        })
+        .await?;
+        assert_eq!(
+            attempt_session(&app, &id).await.as_deref(),
+            Some(original.as_str()),
+            "a session no hook of the run named is not the attempt's"
+        );
+        assert_eq!(lineage(&app, &id).await?, [original.clone()]);
+        assert_eq!(
+            watched_session(&app, &ctx, &id).await.as_deref(),
+            Some(original.as_str())
+        );
+
+        // `/clear` in the TUI: its SessionStart names the new session, which is adopted.
+        let cleared = "7b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e";
+        keys(&app, &ctx, &attach, format!("/clear {cleared}\r").as_bytes()).await?;
+        wait_for("the clear", Duration::from_secs(15), || {
+            screen_contains(&app, &id, "CLEARED session=")
+        })
+        .await?;
+        keys(&app, &ctx, &attach, b"after clear\r").await?;
+        wait_for("the echo after the clear", Duration::from_secs(15), || {
+            screen_contains(&app, &id, "ECHO: after clear")
+        })
+        .await?;
+        wait_for("the adopted session", Duration::from_secs(20), || async {
+            attempt_session(&app, &id).await.as_deref() == Some(cleared)
+                && lineage(&app, &id)
+                    .await
+                    .is_ok_and(|l| l == [original.clone(), cleared.to_owned()])
+        })
+        .await?;
+        wait_for("the watched session after the clear", Duration::from_secs(10), || async {
+            watched_session(&app, &ctx, &id).await.as_deref() == Some(cleared)
+        })
+        .await?;
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1, "same attempt, no respawn");
+        app.stop_task_now(&id).await?;
+        wait_for("the stop", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        Ok::<_, BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

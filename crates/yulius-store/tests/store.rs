@@ -1624,3 +1624,39 @@ async fn an_account_email_lasts_until_the_next_sign_in() -> R {
     assert_eq!(signed_in.label, "personal");
     Ok(())
 }
+
+/// SPEC-281 SSN-003: the lineage is listed in the order sessions were adopted. An earlier session
+/// adopted again (`/resume` back to it, or the TUI's own session after a nested one) comes last:
+/// it is the one watchers read and a Continue resumes.
+#[tokio::test]
+async fn the_lineage_lists_the_session_adopted_last_last() -> R {
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let t = store.insert_task(&task("t1", &sid, &uid)?).await?;
+    let adopt = |session: &str, at: i64| yulius_app::model::ProviderSessionRecord {
+        id: format!("ps-{session}-{at}"),
+        sandbox_id: sid.clone(),
+        task_id: t.id.clone(),
+        harness: Harness::ClaudeCode,
+        session_id: session.into(),
+        transcript_ref: None,
+        origin: "native".into(),
+        first_seen: Timestamp(at),
+        last_seen: Timestamp(at),
+    };
+    store.upsert_provider_session(&adopt("tui", 10)).await?;
+    store.upsert_provider_session(&adopt("nested", 20)).await?;
+    let order = |list: Vec<yulius_app::model::ProviderSessionRecord>| {
+        list.into_iter().map(|s| s.session_id).collect::<Vec<_>>()
+    };
+    assert_eq!(order(store.provider_sessions(&t.id).await?), ["tui", "nested"]);
+    store.upsert_provider_session(&adopt("tui", 30)).await?;
+    let lineage = store.provider_sessions(&t.id).await?;
+    assert_eq!(
+        lineage.iter().map(|s| (s.first_seen, s.last_seen)).collect::<Vec<_>>(),
+        [(Timestamp(20), Timestamp(20)), (Timestamp(10), Timestamp(30))],
+        "re-adopting keeps when it was first seen"
+    );
+    assert_eq!(order(lineage), ["nested", "tui"]);
+    Ok(())
+}
