@@ -615,9 +615,9 @@ fn cd_writer(record: &AgentStateRecord) -> Option<&str> {
 /// The answer to a write while another writer holds the state (SPEC-278 CDS-005).
 fn held_by_run(held: &super::holds::HeldElsewhere) -> AppError {
     AppError::Conflict(format!(
-        "{} is held by {}, which restored it and saves it when it ends: wait for it, then \
-         restore it with secret_state_restore (that replaces your copy with the version it saved) \
-         before you change it",
+        "{} is held by {}, which writes it now: wait for it to end, then restore it with \
+         secret_state_restore (that replaces your copy with the newest version) before you \
+         change it",
         held.name, held.holder
     ))
 }
@@ -1305,16 +1305,25 @@ impl CdWriter<'_> {
     }
 }
 
+/// Longest wait of a CD run for a state slot: each other move holds one for at most an upload's
+/// deadline or a seal of 64 MiB.
+const CD_SLOT_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// The folders below a run's directory that hold its states.
 const CD_STATES_DIR: [&str; 2] = ["work", "states"];
 
 impl App {
-    /// A slot for a CD run's state, waited for: a deploy does not fail because a laptop sends a
-    /// state meanwhile.
+    /// A slot for a CD run's state, waited for (a deploy does not fail because a laptop sends a
+    /// state meanwhile), within [`CD_SLOT_WAIT`] (review of SPEC-278, m7).
     async fn state_slot_waited(&self) -> AppResult<tokio::sync::OwnedSemaphorePermit> {
-        std::sync::Arc::clone(&self.uploads.states)
-            .acquire_owned()
+        let slot = std::sync::Arc::clone(&self.uploads.states).acquire_owned();
+        tokio::time::timeout(CD_SLOT_WAIT, slot)
             .await
+            .map_err(|_| {
+                AppError::Capacity(
+                    "other agent states kept moving for 10 minutes; nothing was moved".into(),
+                )
+            })?
             .map_err(AppError::internal)
     }
 
@@ -1456,20 +1465,31 @@ impl App {
             }
             sealed = Some(envelope);
         };
-        self.vault_audit(
-            &writer.actor(),
-            "vault.state.save",
-            Some(sandbox.as_str()),
-            &format!(
-                "{} version {} ({}): {} files, {} bytes packed",
-                next.name,
-                next.version,
-                writer.run_text(),
-                next.files,
-                next.bytes
-            ),
-        )
-        .await?;
+        // Stored: a failed audit write is logged, never reported as a lost save (review of
+        // SPEC-278, m6).
+        if let Err(err) = self
+            .vault_audit(
+                &writer.actor(),
+                "vault.state.save",
+                Some(sandbox.as_str()),
+                &format!(
+                    "{} version {} ({}): {} files, {} bytes packed",
+                    next.name,
+                    next.version,
+                    writer.run_text(),
+                    next.files,
+                    next.bytes
+                ),
+            )
+            .await
+        {
+            tracing::error!(
+                state = next.name,
+                version = next.version,
+                error = %err.public_message(),
+                "a CD run's agent state save was stored but not audited"
+            );
+        }
         Ok(Some((next.version, skipped)))
     }
 }
@@ -1805,8 +1825,6 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-271 OPS-005, OPS-006: a state unpacks with its permission bits (setuid and sticky
-    /// dropped) and packs back to the same files, leaving links out and naming them.
     /// SPEC-278 CDS-004: a folder a CD run left as it was restored has the archive's digest,
     /// whoever packed it; a changed byte or mode does not.
     #[test]
@@ -1834,6 +1852,8 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-271 OPS-005, OPS-006: a state unpacks with its permission bits (setuid and sticky
+    /// dropped) and packs back to the same files, leaving links out and naming them.
     #[test]
     fn unpacking_keeps_modes_and_packing_leaves_links_out() -> TestResult {
         let dir = tempfile::tempdir()?;

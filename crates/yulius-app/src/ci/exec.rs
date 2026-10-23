@@ -1151,7 +1151,7 @@ fn first_reason(jobs: &[CiJobRecord], state: RunState) -> Option<String> {
 }
 
 /// Resolves once the run is cancelled, with the reason.
-async fn wait_cancel(cancel: &mut watch::Receiver<Option<String>>) -> String {
+pub(super) async fn wait_cancel(cancel: &mut watch::Receiver<Option<String>>) -> String {
     loop {
         if let Some(reason) = cancel.borrow().clone() {
             return reason;

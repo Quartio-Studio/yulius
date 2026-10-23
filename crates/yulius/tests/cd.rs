@@ -1644,11 +1644,14 @@ async fn a_relabelled_environment_takes_the_integration_heads_stage() -> TestRes
 /// The deploy of SPEC-278's tests: it reads the restored state where `YULIUS_STATE_OPERATOR`
 /// says (absolute, outside `HOME`), prints its inventory and the variables it got, appends a line
 /// and adds a receipt, waits while `$MARKS/hold` exists (after saying so with `$MARKS/holding`)
-/// and fails when the commit has a `fail` file.
+/// and fails when the commit has a `fail` file; with `noop` it leaves the state alone, with `break`
+/// it replaces the folder with a link to `/`.
 const STATE_SCRIPT: &str = r#"#!/bin/sh
 d="$YULIUS_STATE_OPERATOR"
 case "$d" in /*) ;; *) echo "no state path"; exit 7;; esac
 case "$d" in "$HOME"*) echo "the state is inside HOME"; exit 6;; esac
+if [ -f noop ]; then echo "left the state alone"; exit 0; fi
+if [ -f break ]; then rm -rf "$d" && ln -s / "$d" && echo "replaced the state with a link"; exit 0; fi
 echo "state at $d"
 echo "inventory: $(tr '\n' '|' < "$d/inventory.db")"
 echo "$YULIUS_CD_ENV $YULIUS_CD_RUN" >> "$d/inventory.db"
@@ -2086,5 +2089,104 @@ async fn deploys_restore_write_and_save_an_agent_state_with_one_writer() -> Test
         std::fs::read_to_string(&copy)?,
         format!("v1\ndev {first}\ndev {second}\nprod {third}\n")
     );
+    Ok(())
+}
+
+/// SPEC-278 failure paths (review of SPEC-278, M2): a deploy that leaves its state alone keeps
+/// the version; one that replaces its folder with a link ends as an error naming the state, the
+/// link is not followed and the version stays; a deploy cancelled while it waits for the hold
+/// ends cancelled and the holder keeps it.
+#[tokio::test]
+async fn a_state_left_alone_broken_or_waited_for_keeps_its_version() -> TestResult {
+    use reqwest::Method as M;
+    let f = fixture(&states_cd()).await?;
+    f.push(
+        "dev",
+        &[
+            ("scripts/cd/state.sh", Some(STATE_SCRIPT)),
+            ("noop", Some("x\n")),
+        ],
+    )?;
+    let served = support::serve(f.h.router.clone()).await?;
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let web = Web {
+        client: reqwest::Client::new(),
+        base: format!("http://{}", served.addr),
+        origin: f.h.app.config.public_url.clone(),
+    };
+    let alice = &f.alice;
+    let laptop = state_archive(&[("inventory.db", 0o600, b"v1\n")])?;
+    let (status, _) = web
+        .send(
+            M::PUT,
+            "/api/sandboxes/s1/agent-states/OPERATOR",
+            Some((laptop, "application/gzip")),
+            alice,
+        )
+        .await?;
+    assert_eq!(status, 200);
+
+    // Left alone: nothing is stored, the version stays.
+    let run = web.deploy("dev", None, alice).await?;
+    let run = web.ended(&run, alice).await?;
+    let output = run["output"].as_str().unwrap_or_default();
+    assert_eq!(run["state"], "passed", "{output}");
+    assert!(
+        output.contains("agent state OPERATOR unchanged: version 1 kept"),
+        "{output}"
+    );
+    let stored = web.operator(alice).await?;
+    assert_eq!(stored["version"], 1, "{stored}");
+    assert_ne!(stored["updated_by"], "cd:dev", "{stored}");
+
+    // Replaced with a link: the save follows no link, the run is an error naming the state.
+    f.push("dev", &[("noop", None), ("break", Some("x\n"))])?;
+    let run = web.deploy("dev", None, alice).await?;
+    let run = web.ended(&run, alice).await?;
+    let output = run["output"].as_str().unwrap_or_default();
+    assert_eq!(run["state"], "error", "{output}");
+    let reason = run["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("the deploy passed") && reason.contains("OPERATOR"),
+        "{reason}"
+    );
+    assert!(
+        output.contains("replaced its folder of OPERATOR with a link or a file"),
+        "{output}"
+    );
+    assert_eq!(web.operator(alice).await?["version"], 1);
+
+    // Cancelled while it waits for the hold: the holder keeps it and saves it.
+    f.push("dev", &[("break", None)])?;
+    std::fs::write(f.marks.join("hold"), "")?;
+    let holder = web.deploy("dev", None, alice).await?;
+    exists(&f.marks.join("holding")).await?;
+    let waiting = web.deploy("second", None, alice).await?;
+    let (status, cancelled) = web
+        .json(
+            M::POST,
+            &format!("/api/sandboxes/s1/cd/runs/{waiting}/cancel"),
+            Some(json!({})),
+            alice,
+        )
+        .await?;
+    assert_eq!(status, 200, "{cancelled}");
+    let run = web.ended(&waiting, alice).await?;
+    let output = run["output"].as_str().unwrap_or_default();
+    assert_eq!(run["state"], "cancelled", "{output}");
+    assert!(!output.contains("state at"), "it never ran: {output}");
+    let (_, overview) = web
+        .json(M::GET, "/api/sandboxes/s1/cd", None, alice)
+        .await?;
+    assert_eq!(
+        overview["environments"][0]["states"][0]["held_by"],
+        format!("dev run {holder}"),
+        "{overview}"
+    );
+    std::fs::remove_file(f.marks.join("hold"))?;
+    let run = web.ended(&holder, alice).await?;
+    let output = run["output"].as_str().unwrap_or_default();
+    assert_eq!(run["state"], "passed", "{output}");
+    assert_eq!(web.operator(alice).await?["version"], 2);
     Ok(())
 }

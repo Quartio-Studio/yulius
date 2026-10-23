@@ -1133,9 +1133,20 @@ impl App {
         if let Some(reason) = &reason {
             ring.push_str(&format!("\n[yulius] {reason}\n"));
         }
-        // A state the run could not save is lost work: the run is an error, whatever it did.
+        // A state the run could not save is lost work: the run is an error, whatever it did,
+        // and says what it did (review of SPEC-278, m6).
         let (state, reason) = match unsaved {
-            Some(unsaved) => (RunState::Error, Some(unsaved)),
+            Some(unsaved) if state == RunState::Passed => (
+                RunState::Error,
+                Some(format!("the deploy passed, but {unsaved}")),
+            ),
+            Some(unsaved) => (
+                RunState::Error,
+                Some(format!(
+                    "{}; and {unsaved}",
+                    reason.unwrap_or_else(|| format!("the run {}", state.as_str()))
+                )),
+            ),
             None => (state, reason),
         };
         let output = self
@@ -1537,18 +1548,6 @@ struct CdHeld {
     restored: Vec<CdRestored>,
 }
 
-/// Until the run's cancel says why (a closed channel never does).
-async fn cancelled(cancel: &mut watch::Receiver<Option<String>>) -> String {
-    loop {
-        if let Some(reason) = cancel.borrow_and_update().clone() {
-            return reason;
-        }
-        if cancel.changed().await.is_err() {
-            std::future::pending::<()>().await;
-        }
-    }
-}
-
 impl App {
     /// Refuses a deploy naming a project variable the project lacks or an agent state its vault
     /// does not hold (SPEC-278 CDS-002), before anything ran.
@@ -1607,7 +1606,7 @@ impl App {
             held = tokio::time::timeout(self.config.ci.job_timeout, wait) => {
                 held.map_err(|_| Ended::TimedOut)
             }
-            reason = cancelled(cancel) => Err(Ended::Cancelled(reason)),
+            reason = super::exec::wait_cancel(cancel) => Err(Ended::Cancelled(reason)),
         }
     }
 
@@ -1660,12 +1659,8 @@ impl App {
                 }
             }
         }
-        (!unsaved.is_empty()).then(|| {
-            format!(
-                "the agent state could not be saved after the run: {}",
-                unsaved.join("; ")
-            )
-        })
+        (!unsaved.is_empty())
+            .then(|| format!("the agent state could not be saved: {}", unsaved.join("; ")))
     }
 }
 
