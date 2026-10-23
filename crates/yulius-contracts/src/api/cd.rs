@@ -15,6 +15,20 @@ pub struct CdSecret {
     pub state: String,
 }
 
+/// One agent state an environment's runs restore and save (SPEC-278).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CdAgentState {
+    /// Agent-state name.
+    pub name: String,
+    /// The vault's newest version; `None`: no agent state of the project has this name (a deploy
+    /// is refused).
+    #[serde(default)]
+    pub version: Option<u32>,
+    /// The running deploy that holds it, as `<environment> run <id>`.
+    #[serde(default)]
+    pub held_by: Option<String>,
+}
+
 /// One environment as its protected branch defines it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CdEnvironment {
@@ -50,6 +64,9 @@ pub struct CdEnvironment {
     pub promotes_from: Option<String>,
     /// Secrets the commands get.
     pub secrets: Vec<CdSecret>,
+    /// Agent states its runs restore before the deploy and save after it.
+    #[serde(default)]
+    pub states: Vec<CdAgentState>,
     /// The commit of the last passed run.
     #[serde(default)]
     pub deployed: Option<String>,

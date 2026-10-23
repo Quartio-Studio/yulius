@@ -34,7 +34,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::sync::watch;
-use yulius_contracts::api::cd::{CdDeploy, CdEnvironment, CdOverview, CdRun, CdSecret};
+use yulius_contracts::api::cd::{
+    CdAgentState, CdDeploy, CdEnvironment, CdOverview, CdRun, CdSecret,
+};
 use yulius_domain::cd::{
     self as dom, CdConfig, CdRefusal, CdStage, CdState, CdTarget, Requester, env_label,
 };
@@ -356,6 +358,7 @@ impl App {
             .cd_runs(&sandbox.id, CD_RUN_LIST_LIMIT)
             .await?;
         let shown = self.cd_shown(sandbox, &profile).await;
+        let stored_states = self.deps.store.agent_states(&sandbox.id).await?;
         let listed = dom::environments_of(
             shown.integration_config.as_ref().ok(),
             shown.production_config.as_ref().ok(),
@@ -383,6 +386,18 @@ impl App {
                     .collect(),
                 None => Vec::new(),
             };
+            let states = target
+                .iter()
+                .flat_map(|target| target.states.iter())
+                .map(|state| CdAgentState {
+                    name: state.clone(),
+                    version: stored_states
+                        .iter()
+                        .find(|stored| &stored.name == state)
+                        .map(|stored| stored.version),
+                    held_by: self.vault.holds.holder(sandbox.id.as_str(), state),
+                })
+                .collect();
             let deployed = self
                 .deps
                 .store
@@ -411,6 +426,7 @@ impl App {
                 promote: target.promote,
                 promotes_from: source.promotes_from,
                 secrets,
+                states,
                 deployed,
                 last_run,
             });
@@ -1542,6 +1558,27 @@ fn environment_text(out: &mut String, env: &CdEnvironment) {
             .collect();
         out.push_str(&format!("  secrets: {}\n", secrets.join(", ")));
     }
+    if !env.states.is_empty() {
+        let states: Vec<String> = env
+            .states
+            .iter()
+            .map(|s| match (s.version, &s.held_by) {
+                (None, _) => format!(
+                    "{} missing (send it with yulius secrets import --state)",
+                    s.name
+                ),
+                (Some(v), Some(by)) => format!("{} version {v}, held by {by}", s.name),
+                (Some(v), None) => format!("{} version {v}", s.name),
+            })
+            .collect();
+        out.push_str(&format!(
+            "  states (restored into the run, saved back after it): {}\n",
+            states.join(", ")
+        ));
+    }
+    if env.stage == "prod" && (env.deploy.is_some() || env.verify.is_some()) {
+        out.push_str("  no Docker engine in production runs yet (task #265)\n");
+    }
     match (&env.deployed, &env.head) {
         (Some(deployed), Some(head)) if deployed == head => {
             out.push_str(&format!(
@@ -1696,6 +1733,7 @@ mod tests {
                     state: "not_allowed".into(),
                 },
             ],
+            states: Vec::new(),
             deployed: None,
             last_run: None,
         };

@@ -50,6 +50,7 @@
 //! deploy = "scripts/cd/deploy.sh dev"    # run by Yulius from the integration branch head
 //! verify = "scripts/cd/verify.sh dev"    # a smoke test, after a successful deploy
 //! secrets = "DEV_SSH_KEY DEV_HOST"       # agent secrets a person allowed outside the proxy
+//! states = ["OPERATOR"]                  # agent states restored before, saved after (SPEC-278)
 //!
 //! [cd.prod]
 //! about = "the instances update themselves from main"
@@ -68,8 +69,8 @@
 
 use crate::branch_policy::BranchPolicy;
 use crate::cd::{
-    CdConfig, CdStage, CdTarget, MAX_ABOUT_CHARS, MAX_CD_ENVIRONMENTS, MAX_CD_SECRETS, fixed_stage,
-    valid_env_name, valid_secret_name,
+    CdConfig, CdStage, CdTarget, MAX_ABOUT_CHARS, MAX_CD_ENVIRONMENTS, MAX_CD_SECRETS,
+    MAX_CD_STATES, fixed_stage, valid_env_name, valid_secret_name,
 };
 use crate::delivery::{
     DeliveryProfile, Environment, MergeMethod, Preset, ProfileError, PromoteMethod, Stage, Verify,
@@ -135,7 +136,7 @@ pub enum ConfigProblem {
     },
     /// A value outside the subset.
     #[error(
-        "unsupported value; use a \"quoted string\", a whole number, true/false or [] (signed or fractional numbers, multi-line strings, arrays and inline tables are not supported)"
+        "unsupported value; use a \"quoted string\", a whole number, true/false or [\"quoted\", \"strings\"] on one line (signed or fractional numbers, multi-line strings and arrays, and inline tables are not supported)"
     )]
     UnsupportedValue,
     /// A string without its closing quote.
@@ -225,7 +226,8 @@ enum Value {
     Str(String),
     Bool(bool),
     Int(u64),
-    EmptyArray,
+    /// A one-line array of strings (`[]` included).
+    Array(Vec<String>),
 }
 
 #[derive(Debug)]
@@ -276,9 +278,11 @@ const BRANCH_POLICY_KEYS: &str = "preset, types";
 const POLICY_TYPES: &str = "1-20 space-separated types of 1-20 lowercase letters including feat (Yulius's task branches), like \"feat fix docs\"";
 const ENVIRONMENT_KEYS: &str = "name, after, command, verify";
 const CI_JOB_KEYS: &str = "name, command, matrix, cpus, memory_gb, secrets";
-const CD_DEV_KEYS: &str = "stage, deploy, verify, secrets, about";
-const CD_PROD_KEYS: &str = "stage, deploy, verify, secrets, about, promote";
+const CD_DEV_KEYS: &str = "stage, deploy, verify, secrets, states, about";
+const CD_PROD_KEYS: &str = "stage, deploy, verify, secrets, states, about, promote";
 const CD_SECRETS: &str = "at most 16 space-separated agent-secret names like DEV_SSH_KEY";
+const CD_STATES: &str =
+    "at most 8 agent-state names like [\"QUARTIO_OPERATOR\"] (an array, or space-separated)";
 const CD_ABOUT: &str = "one line of at most 300 characters";
 
 fn err(line: usize, problem: ConfigProblem) -> FormatError {
@@ -370,11 +374,7 @@ fn parse_value(text: &str) -> Result<(Value, &str), ConfigProblem> {
         return Ok((Value::Str(value.to_owned()), &rest[end + 1..]));
     }
     if let Some(rest) = text.strip_prefix('[') {
-        let rest = rest.trim_start();
-        return match rest.strip_prefix(']') {
-            Some(rest) => Ok((Value::EmptyArray, rest)),
-            None => Err(ConfigProblem::UnsupportedValue),
-        };
+        return parse_string_array(rest);
     }
     let digits = text
         .find(|c: char| !c.is_ascii_digit())
@@ -397,6 +397,28 @@ fn parse_value(text: &str) -> Result<(Value, &str), ConfigProblem> {
         }
     }
     Err(ConfigProblem::UnsupportedValue)
+}
+
+/// The rest of a one-line array of strings after its `[`: quoted strings separated by commas, a
+/// trailing comma allowed.
+fn parse_string_array(text: &str) -> Result<(Value, &str), ConfigProblem> {
+    let mut items = Vec::new();
+    let mut rest = text.trim_start();
+    loop {
+        if let Some(after) = rest.strip_prefix(']') {
+            return Ok((Value::Array(items), after));
+        }
+        let (Value::Str(item), after) = parse_value(rest)? else {
+            return Err(ConfigProblem::UnsupportedValue);
+        };
+        items.push(item);
+        let after = after.trim_start();
+        rest = match after.strip_prefix(',') {
+            Some(next) => next.trim_start(),
+            None if after.starts_with(']') => after,
+            None => return Err(ConfigProblem::UnsupportedValue),
+        };
+    }
 }
 
 fn parse_entry(text: &str, line: usize) -> Result<Entry, FormatError> {
@@ -813,7 +835,7 @@ fn delivery(document: &Document) -> Result<DeliveryProfile, FormatError> {
             "auto_promote" => profile.auto_promote = bool_value(entry)?,
             "require_checks" => profile.require_checks = bool_value(entry)?,
             "environments" => {
-                if entry.value != Value::EmptyArray {
+                if !matches!(&entry.value, Value::Array(items) if items.is_empty()) {
                     return Err(err(
                         entry.line,
                         ConfigProblem::InvalidValue {
@@ -822,7 +844,7 @@ fn delivery(document: &Document) -> Result<DeliveryProfile, FormatError> {
                                 Value::Str(text) => clip(text),
                                 Value::Bool(value) => value.to_string(),
                                 Value::Int(value) => value.to_string(),
-                                Value::EmptyArray => String::new(),
+                                Value::Array(items) => clip(&items.join(" ")),
                             },
                             allowed: "[] (define entries with [[delivery.environments]])",
                         },
@@ -965,6 +987,25 @@ fn cd_target(env: &str, table: &Table) -> Result<CdTarget, FormatError> {
                 for secret in names {
                     if !target.secrets.contains(&secret) {
                         target.secrets.push(secret);
+                    }
+                }
+            }
+            "states" => {
+                let names: Vec<String> = match &entry.value {
+                    Value::Array(items) => items.iter().map(|s| s.trim().to_owned()).collect(),
+                    Value::Str(text) => text.split_whitespace().map(str::to_owned).collect(),
+                    _ => return Err(invalid(entry, "", CD_STATES)),
+                };
+                if names.len() > MAX_CD_STATES {
+                    return Err(invalid(entry, &names.join(" "), CD_STATES));
+                }
+                target.states = Vec::new();
+                for state in names {
+                    if !valid_secret_name(&state) {
+                        return Err(invalid(entry, &state, CD_STATES));
+                    }
+                    if !target.states.contains(&state) {
+                        target.states.push(state);
                     }
                 }
             }
@@ -1334,6 +1375,58 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-278 CDS-001: a table names the agent states its run uses, as an array of names or a
+    /// space-separated string, at most 8, duplicates dropped.
+    #[test]
+    fn cd_tables_name_their_states() -> TestResult {
+        let cd = parse_yulius_toml_cd(
+            "[cd.dev]\nstates = [\"QUARTIO_OPERATOR\", 'OTHER_STATE' , \"QUARTIO_OPERATOR\",]\n\
+             [cd.prod]\nstates = \"QUARTIO_OPERATOR  OTHER_STATE\"\n\
+             [cd.platform]\nstage = \"prod\"\nstates = []\n",
+        )?;
+        let dev = cd.target("dev").ok_or("dev")?;
+        assert_eq!(dev.states, ["QUARTIO_OPERATOR", "OTHER_STATE"]);
+        assert_eq!(
+            cd.target("prod").ok_or("prod")?.states,
+            ["QUARTIO_OPERATOR", "OTHER_STATE"]
+        );
+        assert!(cd.target("platform").ok_or("platform")?.states.is_empty());
+        let many: Vec<String> = (0..9).map(|n| format!("\"STATE_{n}\"")).collect();
+        let cases = [
+            ("[cd.dev]\nstates = [\"ops\"]\n".to_owned(), "'states'"),
+            (
+                "[cd.dev]\nstates = [\"OPS\", 1]\n".to_owned(),
+                "unsupported value",
+            ),
+            (
+                "[cd.dev]\nstates = [\"OPS\"\n".to_owned(),
+                "unsupported value",
+            ),
+            (
+                "[cd.dev]\nstates = [\"OPS\" \"B\"]\n".to_owned(),
+                "unsupported value",
+            ),
+            ("[cd.dev]\nstates = true\n".to_owned(), "'states'"),
+            (
+                format!("[cd.dev]\nstates = [{}]\n", many.join(", ")),
+                "'states'",
+            ),
+            // Arrays of names are for states only.
+            (
+                "[cd.dev]\nsecrets = [\"OPS\"]\n".to_owned(),
+                "'secrets' must be a quoted string",
+            ),
+        ];
+        for (text, message) in cases {
+            let shown = parse_yulius_toml_cd(&text)
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default();
+            assert!(shown.contains(message), "{text}: {shown}");
+        }
+        Ok(())
+    }
+
     /// SPEC-134 CDK-004: Yulius defines its own CD: dev explicitly empty, production a promotion.
     #[test]
     fn the_repositorys_own_cd_is_defined() -> TestResult {
@@ -1670,7 +1763,7 @@ mod tests {
         assert_eq!(
             message.as_deref(),
             Some(
-                "yulius.toml line 2: unsupported value; use a \"quoted string\", a whole number, true/false or [] (signed or fractional numbers, multi-line strings, arrays and inline tables are not supported)"
+                "yulius.toml line 2: unsupported value; use a \"quoted string\", a whole number, true/false or [\"quoted\", \"strings\"] on one line (signed or fractional numbers, multi-line strings and arrays, and inline tables are not supported)"
             )
         );
         assert_eq!(
