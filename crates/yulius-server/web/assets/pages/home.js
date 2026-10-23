@@ -105,6 +105,30 @@ export function mountHomePage(ctx) {
   };
 
   /**
+   * Where a fresh instance stands (SPEC-283 ONB-006), for those who set it up: each step with what
+   * it does and its state, the first not done marked Next. Its actions follow below.
+   */
+  function gettingStarted(needsGithub, user, needsClaude) {
+    const steps = [
+      ['Connect Claude', 'Agents run on your Claude subscription: every task and onboarding uses one.', !needsClaude, false],
+      ['Create your first sandbox', 'A sandbox is one project with its own tasks, browser and editor. A playground from a folder needs no GitHub.', false, false],
+      ['Connect GitHub', user.is_superadmin
+        ? 'Import or create your organisation’s repositories. Optional: playgrounds work without it.'
+        : 'A superadmin connects it to bring in your organisation’s repositories. Optional: playgrounds work without it.', !needsGithub, true],
+    ];
+    const next = steps.findIndex(([, , done, optional]) => !done && !optional);
+    return h('section', { class: 'getting-started', 'aria-label': 'Getting started' },
+      h('h2', { class: 'home-github-title' }, 'Getting started'),
+      h('ol', { class: 'gs-list' }, steps.map(([title, text, done, optional], index) => {
+        const state = done ? 'Done' : index === next ? 'Next' : optional ? 'Optional' : 'To do';
+        return h('li', { class: ['gs-step', `gs-${state.toLowerCase().replace(' ', '-')}`], 'aria-current': index === next ? 'step' : null },
+          h('span', { class: 'gs-mark', 'aria-hidden': 'true' }, done ? icon('check', { size: 12 }) : String(index + 1)),
+          h('div', { class: 'gs-body' }, h('strong', { class: 'gs-title' }, title), h('span', { class: 'gs-text' }, text)),
+          h('span', { class: 'gs-state' }, state));
+      })));
+  }
+
+  /**
    * No sandbox yet (UX2-17, SPEC-099): try Yulius on your own code at once, in a playground from a
    * dropped folder or a template; the organisation's GitHub comes second and can wait.
    */
@@ -131,6 +155,7 @@ export function mountHomePage(ctx) {
     }
     return h('div', { class: 'composer' }, h('div', { class: 'composer-card' },
       h('h1', { class: 'composer-title' }, `Try ${BRAND.name} on your own code`),
+      user.is_superadmin || user.is_instance_admin ? gettingStarted(needsGithub, user, needsClaude) : null,
       // The first step on a fresh instance: tasks need a Claude account (SPEC-246 CLA-007), GitHub
       // can wait.
       needsClaude ? [

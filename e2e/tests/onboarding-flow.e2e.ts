@@ -157,3 +157,32 @@ test('skipping the first subscription ends setup on Home', async ({ app, browser
   await screen.getByRole('button', 'Skip for now').click();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
 });
+
+/** Home's getting-started steps as [title, state]. */
+const gettingStarted = (browser: Browser) => browser.evaluate(() => [...document.querySelectorAll('section[aria-label="Getting started"] li')]
+  .map((li) => [li.querySelector('.gs-title')?.textContent ?? '', li.querySelector('.gs-state')?.textContent ?? '']));
+
+test('Home lists the getting-started steps with their state, the first not done marked Next', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&sandboxes=0&claude=0&github=0'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Try Yulius on your own code');
+  await expect.poll(() => gettingStarted(browser)).toEqual([
+    ['Connect Claude', 'Next'], ['Create your first sandbox', 'To do'], ['Connect GitHub', 'Optional'],
+  ]);
+  await expect(browser.locator('section[aria-label="Getting started"] li:first-child .gs-text')).toHaveText(/Agents run on your Claude subscription/);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await app.open(mock('/', '&sandboxes=0'));
+  await expect.poll(() => gettingStarted(browser)).toEqual([
+    ['Connect Claude', 'Done'], ['Create your first sandbox', 'Next'], ['Connect GitHub', 'Done'],
+  ]);
+  // The next step's actions are right below: a playground, or a repository.
+  await expect(screen.getByRole('button', 'Import repository')).toBeVisible();
+  await expect(screen.getByRole('button', 'Create from template')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('members see no getting-started steps', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&sandboxes=0&role=member'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Try Yulius on your own code');
+  await expect(browser.locator('section[aria-label="Getting started"]')).toHaveCount(0);
+});

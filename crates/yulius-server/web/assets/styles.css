@@ -2900,3 +2900,15 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .next-step { counter-increment: next-step; display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 8px 10px; }
 .next-step::before { content: counter(next-step); grid-row: span 2; width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border-strong); color: var(--text-2); font-size: var(--fs-xs); line-height: 1; }
 .next-step > .row-wrap { grid-column: 2; }
+/* Home's getting-started steps (SPEC-283). */
+.getting-started { display: flex; flex-direction: column; gap: 8px; }
+.gs-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.gs-step { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: start; gap: 10px; }
+.gs-mark { width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border-strong); color: var(--text-2); font-size: var(--fs-xs); line-height: 1; }
+.gs-done .gs-mark { background: var(--accent-soft); color: var(--text); }
+.gs-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.gs-text { color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.gs-done .gs-title { color: var(--text-2); }
+.gs-state { font-size: var(--fs-xs); line-height: var(--lh-xs); color: var(--muted); white-space: nowrap; }
+.gs-next .gs-state { color: var(--text); font-weight: 600; }
+.gs-next .gs-mark { border-color: var(--text-2); color: var(--text); }
