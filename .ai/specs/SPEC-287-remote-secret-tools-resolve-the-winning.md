@@ -51,8 +51,8 @@ project and this person, project > the person's personal > a global switched on 
 ## Plan
 
 - [x] Spec SPEC-287 written and validated
-- [ ] Regression tests for name resolution fail on dev
-- [ ] Remote secret tools resolve the winning secret
+- [x] Regression tests for name resolution fail on dev
+- [x] Remote secret tools resolve the winning secret
 - [ ] Docs and changes entry true, gates green
 - [ ] Independent review answered
 - [ ] Merged into dev on green CI

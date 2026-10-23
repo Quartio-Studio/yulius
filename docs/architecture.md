@@ -1121,7 +1121,9 @@ and the global and personal ones, of every owner, switched on there); `vault/rea
 them for a `Holder`: one per name, project > personal > global, then the instance Vidoc key, and
 never another person's. A task's holder is its owner unless an automation started it
 (`Holder::of_task`); the Superagent's is its person; CI jobs, CD runs and MCP references hold
-nobody, and a task an automation's task creates is an automation task too.
+nobody, and a task an automation's task creates is an automation task too. The remote MCP's
+`secrets_list`, `secret_update` and `secret_hosts_answer` name a secret by what wins for the
+project and the person (SPEC-287), never a shadowed or switched-off one.
 The Superagent's egress caller carries its person; an agent run's carries none: the proxy reads
 its task's current holder on every request, so a hand-over or a deleted task applies also to
 connections opened before it, a hand-over (also one during a launch) rewrites the run's

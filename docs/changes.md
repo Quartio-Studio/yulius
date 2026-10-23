@@ -4,6 +4,15 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-24
+
+- The remote MCP's `secret_update` and `secret_hosts_answer` act on the secret `secrets_list`
+  shows for the name (SPEC-287, task #273, #787): the project's, else the person's own personal
+  one, else a global one switched on for the project. They took the oldest secret of the name
+  among every global one, so a project writer got 403 for a project secret an older global one
+  shared the name of, and an administrator could rebind the shadowed global secret. A secret
+  switched off for the project, or another person's, is "no agent secret NAME".
+
 ## 2026-10-23
 
 - First-run onboarding says what each step does and what comes next (SPEC-283, task #269,
