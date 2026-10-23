@@ -263,9 +263,10 @@ python3 -m http.server --bind 127.0.0.1 8765
 # open http://127.0.0.1:8765/?mock=1   (stop the server with Ctrl-C afterwards)
 ```
 
-Only a static server of this directory runs the mock: `yulius serve` does not embed `assets/mock.js`
-and redirects `?mock=1` away (ADR-0206). `?mock=1` replaces the HTTP client and every WebSocket with `assets/mock.js` and switches
-routing to `#/…` paths so a plain static server can reload deep links. The protocol code
+Only a static server of this directory runs the mock: `yulius serve` does not embed
+`assets/mock.js` and redirects `?mock=1` away (ADR-0206). `?mock=1` replaces the HTTP client and
+every WebSocket with `assets/mock.js` and switches routing to `#/…` paths so a plain static server
+can reload deep links. The protocol code
 (request building, error parsing, binary frames, reconnect) is the same code used against
 the real server. Options (combine with `&`): `setup=1` (setup required; token
 `YUL-SETUP-1234`), `signedout=1` (password `correct horse battery`), `role=member|admin`,

@@ -57,6 +57,8 @@ fn form_decode(text: &str) -> String {
     while let Some(&byte) = bytes.get(i) {
         let hex = bytes
             .get(i + 1..i + 3)
+            // Two hex digits exactly: `from_str_radix` would also take a sign (`%+1`).
+            .filter(|pair| pair.iter().all(u8::is_ascii_hexdigit))
             .and_then(|pair| std::str::from_utf8(pair).ok())
             .and_then(|pair| u8::from_str_radix(pair, 16).ok());
         match (byte, hex) {
@@ -129,5 +131,30 @@ pub async fn serve(uri: Uri, headers: HeaderMap) -> Response {
     match find("index.html") {
         Some(asset) => respond(&headers, asset, "no-cache"),
         None => Html(PLACEHOLDER).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::form_decode;
+
+    #[test]
+    fn form_decode_reads_a_query_component_as_url_search_params_does() {
+        for (text, decoded) in [
+            ("mock", "mock"),
+            ("%6Dock", "mock"),
+            ("%6dock", "mock"),
+            ("a+b", "a b"),
+            ("%2B", "+"),
+            ("%%31", "%1"),
+            ("%", "%"),
+            ("%4", "%4"),
+            ("%zz", "%zz"),
+            ("%+1", "% 1"),
+            ("%C3", "\u{FFFD}"),
+            ("%C3%A9", "é"),
+        ] {
+            assert_eq!(form_decode(text), decoded, "{text}");
+        }
     }
 }

@@ -89,5 +89,9 @@ what the e2e suite and local UI work run on, served from the source tree.
 - Independent review (fresh session, read-only, `om-code-review`): approve; its minor findings
   (encoded or repeated `mock` switches skipped the redirect; no test of the backslash guard; empty
   pairs kept) are fixed test-first in this change.
+- Second review (fresh session): approve; its nits (`%+1` decoded as a byte because
+  `from_str_radix` takes a sign; no unit test of `form_decode`; an unwrapped README line) are
+  fixed, the first test-first (`cargo test -p yulius-server --lib assets`: failed on `%+1`, then
+  passes).
 - Not tested: a browser against a real `yulius serve` following the redirect; the contract test
   drives the real router in-process instead.
