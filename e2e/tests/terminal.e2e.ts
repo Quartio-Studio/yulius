@@ -539,7 +539,9 @@ test('the wheel scrolls the program; pinch-zoom and horizontal swipes stay with 
   await browser.mouse.wheel(0, -200);
   await expect.poll(async () => (await sent()).some((data) => data.startsWith('\x1b[<64;')), { message: 'a wheel report' }).toBe(true);
   // Ctrl+wheel (a trackpad pinch) and a horizontal swipe are the browser's: xterm neither reports
-  // nor cancels them (SPEC-098 MSE-006, #78).
+  // nor cancels them (SPEC-098 MSE-006, #78). The turn above sends a report per row: all of them
+  // arrive first.
+  await settle();
   const before = (await sent()).length;
   const kept = await browser.evaluate(({ x, y }) => {
     const target = document.elementFromPoint(x, y)!;
@@ -552,6 +554,62 @@ test('the wheel scrolls the program; pinch-zoom and horizontal swipes stay with 
   expect(kept, 'pinch and swipe left to the browser').toEqual([true, true]);
   await settle();
   expect((await sent()).length, 'no report for a pinch or a swipe').toBe(before);
+});
+
+test('a wheel turn reports one row per row of its distance (#863)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
+  await holdStill(browser);
+  const sent = await recordInput(browser);
+  const point = await spot(browser, 'Searched for 2 patterns');
+  expect(point, 'the group is on the screen').not.toBeNull();
+  // Claude Code moves one row per wheel report, so a turn must send a report per row it covers:
+  // xterm alone sends one per event and damps small (trackpad) ones (SPEC-280 WHL-001, WHL-002).
+  const prevented = await browser.evaluate(({ x, y }) => {
+    const target = document.elementFromPoint(x, y)!;
+    const screen = document.querySelector('.taskview .xterm-screen')!;
+    const row = screen.getBoundingClientRect().height / document.querySelectorAll('.taskview .xterm-rows > div').length;
+    const wheel = (deltaY: number, deltaMode = 0) => {
+      const event = new WheelEvent('wheel', { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, deltaMode, deltaY });
+      target.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    const turns = [wheel(-5.5 * row)];
+    for (let i = 0; i < 10; i++) turns.push(wheel(-0.2 * row));
+    turns.push(wheel(-3, 1), wheel(2.5 * row));
+    return turns.every(Boolean);
+  }, point!);
+  expect(prevented, 'the page does not scroll as well').toBe(true);
+  const count = (all: string[], button: number) => all.join('').split(`\x1b[<${button};`).length - 1;
+  // 5.5 rows: 5 up; ten of 0.2 with the half row carried: 2; three lines: 3; then 2.5 rows down: 2.
+  await expect.poll(async () => count(await sent(), 64), { message: 'wheel-up reports' }).toBe(10);
+  await expect.poll(async () => count(await sent(), 65), { message: 'wheel-down reports' }).toBe(2);
+  // Each report is xterm's, at the pointer's cell (WHL-003).
+  const cell = await browser.evaluate(({ x, y }) => {
+    const box = document.querySelector('.taskview .xterm-screen')!.getBoundingClientRect();
+    type WithSessions = { __yuliusMock: { sessions: Map<string, { cols: number }> } };
+    const session = (window as unknown as WithSessions).__yuliusMock.sessions.get('tsk_studio_12')!;
+    const rowCount = document.querySelectorAll('.taskview .xterm-rows > div').length;
+    return `${Math.floor((x - box.left) / (box.width / session.cols)) + 1};${Math.floor((y - box.top) / (box.height / rowCount)) + 1}M`;
+  }, point!);
+  const cells = new Set((await sent()).join('').match(/\x1b\[<6[45];\d+;\d+M/g)!.map((report) => report.slice(6)));
+  expect([...cells], 'every report at the pointer\'s cell').toEqual([cell]);
+  // Two pages send one screen of rows (WHL-002). A modified wheel stays xterm's (WHL-004): it
+  // reports Alt+wheel once with Alt's flag (SGR 64 + 8) and Shift+wheel not at all.
+  const before = (await sent()).length;
+  const screenRows = await browser.evaluate(({ x, y }) => {
+    const target = document.elementFromPoint(x, y)!;
+    for (const init of [{ deltaY: -2, deltaMode: 2 }, { deltaY: -400, shiftKey: true }, { deltaY: -400, altKey: true }]) {
+      target.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, ...init }));
+    }
+    return document.querySelectorAll('.taskview .xterm-rows > div').length;
+  }, point!);
+  await expect.poll(async () => count((await sent()).slice(before), 72), { message: 'the Alt wheel, once' }).toBe(1);
+  await settle();
+  const after = (await sent()).slice(before);
+  expect(count(after, 64), 'two pages: one screen of rows').toBe(screenRows);
+  expect(count(after, 68), 'the Shift wheel: nothing').toBe(0);
+  expect(count(after, 72), 'the Alt wheel: once').toBe(1);
 });
 
 test('mouse use while disconnected says nothing; typed input still warns', async ({ app, browser }) => {
