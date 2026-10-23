@@ -48,6 +48,9 @@ session, and a Continue, a limit rotation or a queued start resumes the real ses
   session id: it becomes the attempt's session at once; the supervisor then records it in the
   lineage, re-opens the transcript watch on it and treats it as a session a person took in hand
   (as `/clear` and `/resume` before). The drift check no longer reads the project directory.
+- SSN-001a: the hook records the new session in the lineage at once (a restart before the next
+  drift check keeps it), and refuses an invalid id or one already in another task's lineage (the
+  sandbox's tasks share one Claude directory); the store's upsert never moves another task's entry.
 - SSN-002: a session file no hook of the run named (a nested `claude`) is never adopted: the
   attempt's session and the lineage stay as they were.
 - SSN-003: the lineage is listed in the order sessions were adopted (`last_seen`, then
@@ -58,10 +61,12 @@ session, and a Continue, a limit rotation or a queued start resumes the real ses
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Spec and regression tests that fail: a nested session is not adopted, a hook-named /clear is
-- [ ] Only the run's hooks change the task's session (drift poll follows the attempt)
-- [ ] Watchers and resumes use the session adopted last
-- [ ] ADR, architecture and changes updated; independent review answered
+- [x] Spec and regression tests that fail: a nested session is not adopted, a hook-named /clear is
+- [x] Only the run's hooks change the task's session (drift poll follows the attempt)
+- [x] Watchers and resumes use the session adopted last
+- [x] ADR, architecture and changes updated
+- [x] Review round 1 fixed test-first: lineage at the hook, another task's session refused
+- [ ] Review round 2 approves the exact head
 - [ ] Gates green and merged into dev
 
 ## Acceptance criteria
