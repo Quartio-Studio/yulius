@@ -14,6 +14,7 @@ pub mod store_ext;
 pub mod system;
 pub mod updates;
 pub mod usage;
+pub mod variables;
 pub mod vault;
 pub mod vidoc;
 

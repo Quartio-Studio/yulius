@@ -829,6 +829,90 @@ fn an_agent_run_gets_the_instance_vidoc_key_as_a_placeholder() -> TestResult {
     })
 }
 
+/// SPEC-275 VAR-004, VAR-002: a task run gets the project's variables in its environment, in
+/// plain; an agent secret of the same name (created after the variable) wins with its
+/// placeholder.
+#[test]
+fn a_task_run_gets_the_project_variables() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            report_env: vec![
+                "OVH_ENDPOINT".into(),
+                "LANGFUSE_BASE_URL".into(),
+                "SHOP_TOKEN".into(),
+                "RUST_TEST_THREADS".into(),
+            ],
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let var =
+            |name: &str, value: &str| yulius_contracts::api::variables::ProjectVariableInput {
+                name: name.into(),
+                value: value.into(),
+                description: None,
+            };
+        app.set_project_variables(
+            &ctx,
+            sandbox.as_str(),
+            &[
+                var("OVH_ENDPOINT", "ovh-ca"),
+                var("LANGFUSE_BASE_URL", "https://cloud.langfuse.com"),
+                var("SHOP_TOKEN", "plain"),
+                // Review round 1: Yulius's own environment wins over a variable of its name.
+                var("RUST_TEST_THREADS", "123456789"),
+            ],
+            false,
+        )
+        .await?;
+        app.create_agent_secret(
+            &ctx,
+            sandbox.as_str(),
+            &yulius_contracts::api::secrets::AgentSecretInput {
+                name: "SHOP_TOKEN".into(),
+                value: "shop-token-value-0123456789".into(),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let id = new_task(&app, &sandbox, &user, "Vars").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("ENV SHOP_TOKEN=") }
+        })
+        .await?;
+        let shown = screen(&app, &id);
+        assert!(shown.contains("ENV OVH_ENDPOINT=set len=6"), "{shown}");
+        assert!(
+            shown.contains("ENV LANGFUSE_BASE_URL=set len=26"),
+            "{shown}"
+        );
+        assert!(shown.contains("ENV RUST_TEST_THREADS=set len="), "{shown}");
+        assert!(
+            !shown.contains("ENV RUST_TEST_THREADS=set len=9"),
+            "the base environment's value wins: {shown}"
+        );
+        let placeholder = "yulius-secret-SHOP_TOKEN";
+        assert!(
+            shown.contains(&format!("ENV SHOP_TOKEN=set len={}", placeholder.len())),
+            "{shown}"
+        );
+        Ok(())
+    })
+}
+
 /// SPEC-095 PMC-001/002/005: the servers of the repository's `.mcp.json` join the sandbox's MCP
 /// servers before the run, audited, and reach the run like any server configured in Yulius. One
 /// already configured (here turned off) is left as it is. Agents can write the file, so a variable

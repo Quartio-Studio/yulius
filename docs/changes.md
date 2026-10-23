@@ -18,6 +18,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-22
 
+- Projects have variables (SPEC-275, task #259, ADR-0203): non-secret values such as a region
+  (`OVH_ENDPOINT=ovh-ca`), an environment name (`production`), ids, base URLs and contact
+  addresses, shown in plain on the Secrets page's new Variables tab and in every task run's
+  environment. Before, such a value was refused as a secret (under 8 characters) or masked every
+  occurrence of the word. A laptop agent sets them with `yulius vars set|import|list|delete`
+  (remote tools `variables_*`), and `yulius secrets import --to agent` now sends a `.env`'s plain
+  values (short ones, and the ordinary text SPEC-274 refuses as secrets, not under a
+  credential's name) to variables instead of skipping them. A name that is an agent secret is
+  refused; every change is audited without its value; `secrets_list` and the onboarding prompt
+  name them.
 - Agent secrets no longer mask ordinary text (SPEC-274, task #258, ADR-0204). Onboarding
   Quartio-Studio/product, a company `.env` imported with `yulius secrets import --to agent --yes`
   held `PIPEDREAM_PROJECT_ENVIRONMENT=production`, and every "production" read `[secret:…]` in 221

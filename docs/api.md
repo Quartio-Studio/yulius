@@ -1500,6 +1500,16 @@ after an unlock.
 | PUT | `/api/sandboxes/{sid}/agent-states/{name}?description&replace` | raw `application/gzip` tar body, ≤ 64 MiB (larger `Content-Length` refused before reading) → `AgentState`: stores a packed folder as the agent state `name` (an agent secret name), sealed per version. Only files and folders with relative paths, ≤ 20 000 entries and 512 MiB unpacked (422 otherwise). Write access; the slot and the access are checked before the body is read, 429 while two states are moving. A state never restored is replaced (version + 1); once restored, 409 naming the sandbox's copy unless `replace=true`. Audited `vault.state.import` / `vault.state.replace` with name, files and bytes ([ADR-0200](decisions/0200-operator-state-is-a-sealed-agent-state-with-one-writer.md)) |
 | GET | `/api/sandboxes/{sid}/agent-states/{name}/archive` | → the newest packed state (`application/gzip`, `Cache-Control: no-store`), for people with write access, never through a read-only token (403 for both; 429 while two states are moving). Audited `vault.state.export` |
 
+**Project variables** — a project's non-secret values (regions, environment names, ids, base URLs,
+contact addresses), in plain; every task run of the project gets them in its environment
+([ADR-0203](decisions/0203-project-variables-are-plain-per-project-values-in-task-runs.md)).
+
+| Method | Path | Body → Response |
+| --- | --- | --- |
+| GET | `/api/sandboxes/{sid}/variables` | (read) → `{variables: [{name, value, description, updated_by, updated_at}], can_manage}` by name |
+| PUT | `/api/sandboxes/{sid}/variables` | `{variables: [{name, value, description?}], only_new?: bool}` → `{created, changed, unchanged, existing}` (names): creates or changes each, all checked before any is written and each outcome decided in one transaction; `only_new` (the secrets import) leaves an existing one as it is (`existing`). Write access. `name` follows agent secret names; `value` one line, ≤ 4096 bytes, may be empty; `description` ≤ 1000 characters, absent keeps the stored one. 422 for a bad entry, a name given twice, more than 200 in the body or in the project; 409 when a name is an agent secret of the project (its own, or a global one switched on for it). Audited `variable.create` / `variable.update` (name and changed fields, never the value) |
+| DELETE | `/api/sandboxes/{sid}/variables/{name}` | → 204 (404 when there is none). Write access. Audited `variable.delete` |
+
 ## UI event stream
 
 `WS /api/events` → JSON: `{"type":"task.updated","task":TaskSummary}`, `{"type":"task.removed",

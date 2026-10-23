@@ -1,6 +1,8 @@
 //! `yulius secrets import` (SPEC-205): team or agent secrets created over the vault API from a
 //! dotenv file, key files or hidden prompts, after the person has read the names and typed `yes`,
-//! or unattended with the operate token made for their agent (SPEC-256, ADR-0194).
+//! or unattended with the operate token made for their agent (SPEC-256, ADR-0194). Entries that
+//! are not secrets (too short, a plain word, a URL or an e-mail address without credentials) go to
+//! the project's variables instead, when offered (SPEC-275, ADR-0203).
 //!
 //! Values never reach output: [`SecretsIo::say`] gets names, classes and server messages only,
 //! values stay in [`Secret`] (wiped on drop), and nothing is written to disk. A create is not
@@ -13,7 +15,11 @@ use reqwest::Url;
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 use yulius_contracts::api::secrets::{AgentSecretInput, TeamSecretInput};
+use yulius_contracts::api::variables::{
+    ProjectVariableInput, ProjectVariables, ProjectVariablesSet, ProjectVariablesSetResult,
+};
 use yulius_domain::vault::names::SecretName;
+use yulius_domain::vault::plain::{NotASecret, not_a_secret};
 use yulius_domain::vault::{MAX_FIELD_BYTES, check_agent_value, dotenv, ordinary_text};
 use zeroize::Zeroize;
 
@@ -81,7 +87,9 @@ pub trait SecretsIo {
 pub struct SecretsSummary {
     /// Created.
     pub imported: Vec<String>,
-    /// Skipped: one with that name exists.
+    /// Sent as project variables (SPEC-275).
+    pub variables: Vec<String>,
+    /// Skipped: a secret (or a project variable) with that name exists.
     pub existing: Vec<String>,
     /// Skipped: refused before sending.
     pub invalid: Vec<String>,
@@ -189,6 +197,16 @@ impl VaultClient {
             .execute(&|client| client.get(url.clone()).timeout(JSON_TIMEOUT))
     }
 
+    fn put<B: serde::Serialize, T: serde::de::DeserializeOwned>(
+        &self,
+        segments: &[&str],
+        body: &B,
+    ) -> Result<T, ApiError> {
+        let url = self.api.endpoint(segments)?;
+        self.api
+            .execute(&|client| client.put(url.clone()).timeout(JSON_TIMEOUT).json(body))
+    }
+
     fn post<B: serde::Serialize>(&self, segments: &[&str], body: &B) -> Result<(), ApiError> {
         let url = self.api.endpoint(segments)?;
         let _: IgnoredAny = self
@@ -268,6 +286,7 @@ pub struct PreparedTarget {
     /// Agent secrets: the project (`owner/name`) and its checkout the run is in, if it is in one
     /// (SPEC-274 PLW-003).
     project: Option<(String, Option<std::path::PathBuf>)>,
+    variables: bool,
 }
 
 impl PreparedTarget {
@@ -285,6 +304,14 @@ impl PreparedTarget {
     #[must_use]
     pub fn env_files_allowed(mut self) -> Self {
         self.env_files = true;
+        self
+    }
+
+    /// Entries that are not secrets go to the project's variables (SPEC-275 VAR-007): only for
+    /// one project's agent secrets.
+    #[must_use]
+    pub fn with_variables(mut self) -> Self {
+        self.variables = !self.team && !self.instance;
         self
     }
 
@@ -459,6 +486,7 @@ pub fn prepare_target(
         unattended: false,
         env_files: false,
         project,
+        variables: false,
     })
 }
 
@@ -469,6 +497,34 @@ enum Class {
     InRepo(Secret, String),
     Exists,
     Invalid(String),
+    /// Not a secret: a project variable (SPEC-275).
+    Variable(Secret, NotASecret),
+    /// Not a secret, and a project variable of that name exists.
+    VariableExists,
+}
+
+/// The project variables that exist, or `None` when the server has none (older than SPEC-275).
+fn variable_names(
+    client: &VaultClient,
+    sandbox: &str,
+    io: &mut dyn SecretsIo,
+) -> Result<Option<Vec<String>>, ApiError> {
+    match client.get::<ProjectVariables>(&["api", "sandboxes", sandbox, "variables"]) {
+        Ok(found) => Ok(Some(found.variables.into_iter().map(|v| v.name).collect())),
+        Err(ApiError::NotFound(_)) => {
+            io.say(
+                "This server has no project variables: values that are not secrets are checked \
+                 as secrets.",
+            );
+            Ok(None)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+/// `count` things, singular or plural.
+fn counted(count: usize, thing: &str) -> String {
+    format!("{count} {thing}{}", if count == 1 { "" } else { "s" })
 }
 
 /// Why a value found in the repository is not imported unattended.
@@ -476,7 +532,8 @@ const IN_REPO: &str = "redaction would mask it there";
 
 /// Where ordinary text belongs, and where a credential that only looks like it goes: never into
 /// the hand-over, which tasks read (review of SPEC-274).
-const BELONGS: &str = "it belongs in configuration or the hand-over; if it is a credential after \
+const BELONGS: &str = "it belongs in configuration, a project variable (`yulius vars set`) or \
+                       the hand-over; if it is a credential after \
                        all, a person adds it on the Secrets page";
 
 /// Imports `entries`: classifies each, shows the plan, asks for `yes` and creates the new ones.
@@ -502,16 +559,34 @@ pub fn import_secrets(
         source_file,
         unattended,
         env_files,
+        variables,
         project,
     } = target;
     let instance = *instance;
+    let variables = match (variables, target.project_sandbox()) {
+        (true, Some(id)) => variable_names(client, id, io)?,
+        _ => None,
+    };
     let mut classes: Vec<(DotenvEntry, Class)> = entries
         .into_iter()
         .map(|entry| {
+            let plain = variables
+                .as_ref()
+                .filter(|_| SecretName::parse(&entry.name).is_ok())
+                .and_then(|names| {
+                    not_a_secret(&entry.name, entry.value.expose())
+                        .map(|why| (names.contains(&entry.name), why))
+                });
             let class = if existing.contains(&entry.name) {
                 Class::Exists
             } else if *team {
                 team_value(&entry)
+            } else if let Some((exists, why)) = plain {
+                if exists {
+                    Class::VariableExists
+                } else {
+                    Class::Variable(entry.value.clone(), why)
+                }
             } else {
                 agent_value(&entry)
             };
@@ -538,11 +613,19 @@ pub fn import_secrets(
             Class::InRepo(_, found) => ('?', format!("{found}: asked below")),
             Class::Exists => ('=', "exists: skipped, never overwritten".to_owned()),
             Class::Invalid(why) => ('!', format!("skipped: {why}")),
+            Class::Variable(_, why) => (
+                '~',
+                format!("not a secret ({}): a project variable", why.describe()),
+            ),
+            Class::VariableExists => (
+                '=',
+                "a project variable already: skipped, never overwritten".to_owned(),
+            ),
         };
         io.say(&format!("  {mark} {:<width$}  {what}", entry.name));
         match class {
-            Class::New(_) | Class::InRepo(..) => {}
-            Class::Exists => summary.existing.push(entry.name.clone()),
+            Class::New(_) | Class::InRepo(..) | Class::Variable(..) => {}
+            Class::Exists | Class::VariableExists => summary.existing.push(entry.name.clone()),
             Class::Invalid(_) => summary.invalid.push(entry.name.clone()),
         }
     }
@@ -568,15 +651,32 @@ pub fn import_secrets(
         .iter()
         .filter(|(_, c)| matches!(c, Class::New(_)))
         .count();
-    if new == 0 {
+    let plain = classes
+        .iter()
+        .filter(|(_, c)| matches!(c, Class::Variable(..)))
+        .count();
+    if new == 0 && plain == 0 {
         io.say("Nothing new to import; nothing was sent.");
         return Ok(summary);
     }
+    let mut sent = Vec::new();
+    if new > 0 || plain == 0 {
+        sent.push(counted(new, "new secret"));
+    }
+    if plain > 0 {
+        sent.push(counted(plain, "project variable"));
+    }
     io.say(&format!(
-        "{new} new secret{} will be sent. Values are not shown.",
-        if new == 1 { "" } else { "s" }
+        "{} will be sent. Values are not shown.",
+        sent.join(" and ")
     ));
-    if !team {
+    if plain > 0 {
+        io.say(
+            "Project variables are not secrets: every task of the project has them in its \
+             environment, and anyone who sees the project reads them.",
+        );
+    }
+    if !team && new > 0 {
         io.say(if *confirm_hosts {
             "Agents ask for their hosts: a person allows each host and production deploys on the \
              Secrets page."
@@ -600,8 +700,20 @@ pub fn import_secrets(
     }
 
     let mut stopped: Option<String> = None;
+    let mut plain_values: Vec<ProjectVariableInput> = Vec::new();
     for (entry, class) in classes {
-        let Class::New(value) = class else { continue };
+        let value = match class {
+            Class::New(value) => value,
+            Class::Variable(value, _) => {
+                plain_values.push(ProjectVariableInput {
+                    name: entry.name,
+                    value: value.expose().to_owned(),
+                    description: (!entry.comment.is_empty()).then(|| entry.comment.clone()),
+                });
+                continue;
+            }
+            _ => continue,
+        };
         if stopped.is_some() {
             summary.unsent.push(entry.name);
             continue;
@@ -636,9 +748,24 @@ pub fn import_secrets(
             }
         }
     }
+    if !plain_values.is_empty() {
+        send_variables(
+            client,
+            sandbox.as_deref(),
+            plain_values,
+            stopped.is_some(),
+            &mut summary,
+            io,
+        );
+    }
     io.say(&format!(
-        "Imported {}, skipped {} existing, {} invalid and {} declined, {} failed{}.",
+        "Imported {}{}, skipped {} existing, {} invalid and {} declined, {} failed{}.",
         summary.imported.len(),
+        if summary.variables.is_empty() {
+            String::new()
+        } else {
+            format!(", {} as project variables", summary.variables.len())
+        },
         summary.existing.len(),
         summary.invalid.len(),
         summary.declined.len(),
@@ -787,6 +914,94 @@ fn agent_value(entry: &DotenvEntry) -> Class {
             kind.describe()
         )),
         None => Class::New(value),
+    }
+}
+
+/// The project variables of a run (SPEC-275 VAR-007), after its secrets, only created, never
+/// overwriting one made meanwhile: in one set, or one by one when the set is refused, so a bad
+/// entry (a global secret's name, a long description) fails alone. Not sent when the run stopped.
+fn send_variables(
+    client: &VaultClient,
+    sandbox: Option<&str>,
+    variables: Vec<ProjectVariableInput>,
+    stopped: bool,
+    summary: &mut SecretsSummary,
+    io: &mut dyn SecretsIo,
+) {
+    let Some(sandbox) = sandbox.filter(|_| !stopped) else {
+        summary.unsent.extend(variables.into_iter().map(|v| v.name));
+        return;
+    };
+    let batches: Vec<Vec<ProjectVariableInput>> = match put_variables(client, sandbox, &variables) {
+        Err(ApiError::Conflict(_) | ApiError::Rejected { .. }) if variables.len() > 1 => {
+            variables.into_iter().map(|v| vec![v]).collect()
+        }
+        first => {
+            report_variables(first, variables, summary, io);
+            return;
+        }
+    };
+    let mut stop: Option<String> = None;
+    for batch in batches {
+        if stop.is_some() {
+            summary.unsent.extend(batch.into_iter().map(|v| v.name));
+            continue;
+        }
+        let sent = put_variables(client, sandbox, &batch);
+        if let Err(err) = &sent
+            && !matches!(
+                err,
+                ApiError::NotFound(_) | ApiError::Conflict(_) | ApiError::Rejected { .. }
+            )
+        {
+            stop = Some(err.to_string());
+        }
+        report_variables(sent, batch, summary, io);
+    }
+}
+
+fn put_variables(
+    client: &VaultClient,
+    sandbox: &str,
+    variables: &[ProjectVariableInput],
+) -> Result<ProjectVariablesSetResult, ApiError> {
+    let body = ProjectVariablesSet {
+        variables: variables.to_vec(),
+        only_new: true,
+    };
+    client.put(&["api", "sandboxes", sandbox, "variables"], &body)
+}
+
+/// Says and counts what one set of variables did.
+fn report_variables(
+    sent: Result<ProjectVariablesSetResult, ApiError>,
+    variables: Vec<ProjectVariableInput>,
+    summary: &mut SecretsSummary,
+    io: &mut dyn SecretsIo,
+) {
+    let names: Vec<String> = variables.into_iter().map(|v| v.name).collect();
+    match sent {
+        Ok(done) => {
+            let set: Vec<String> = done.created.into_iter().chain(done.changed).collect();
+            if !set.is_empty() {
+                io.say(&format!("  set {} as project variables", set.join(", ")));
+            }
+            for name in &done.existing {
+                io.say(&format!(
+                    "  = {name}  a project variable already: skipped, never overwritten"
+                ));
+            }
+            summary.variables.extend(set);
+            summary.existing.extend(done.existing);
+        }
+        Err(err @ (ApiError::NotFound(_) | ApiError::Conflict(_) | ApiError::Rejected { .. })) => {
+            io.say(&format!("  failed {}: {err}", names.join(", ")));
+            summary.failed.extend(names);
+        }
+        Err(err) => {
+            io.say(&format!("  stopped at the project variables: {err}"));
+            summary.unsent.extend(names);
+        }
     }
 }
 

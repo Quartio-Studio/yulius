@@ -31,6 +31,7 @@ mod tasks;
 mod terminal;
 mod updates;
 mod uploads;
+mod variables;
 mod workflows;
 
 use std::sync::Arc;
@@ -46,6 +47,7 @@ use crate::AppState;
 pub fn public(_app: Arc<App>) -> Router<AppState> {
     Router::new()
         .merge(secrets::public())
+        .merge(variables::public())
         .route("/healthz", get(|| async { "ok" }))
         .route("/api/setup/status", get(setup_auth::setup_status))
         .route("/api/setup", post(setup_auth::setup))

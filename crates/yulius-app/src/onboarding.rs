@@ -137,8 +137,9 @@ never the repository), and an environment with nothing to deploy yet is an empty
 hosted platform, a staging machine) gets one more [cd.<name>] table per target, with \
 `stage = \"dev\"` or `stage = \"prod\"`, which decides its rules as for dev and production. \
 Yulius reads them from the protected branches and only a person deploys \
-production. Before asking anyone for a credential or a machine, read secrets_list and any \
-hand-over in your request: the person's own agent may have imported the keys (described) and said \
+production. Before asking anyone for a credential or a machine, read secrets_list (its agent \
+secrets and the project variables: non-secret values such as regions, environment names, ids and \
+base URLs, also in your environment) and any hand-over in your request: the person's own agent may have imported the keys (described) and said \
 where and how deploys run; a key used outside the proxy (ssh, a deploy script) reaches the ignored \
 .env through secret_copy_to_env. Operator state the person sent (the states in secrets_list: a \
 deploy tool's inventory, rollout folders) goes where the hand-over says with secret_state_restore \
@@ -1539,12 +1540,14 @@ mod tests {
         assert!(prompt.contains("git-crypt"));
         assert!(prompt.contains("Reverse-engineer"));
         // SPEC-256 LOB-006: the keys and hand-over of the person's agent come before a person.
-        assert!(
-            prompt.contains("read secrets_list and any hand-over"),
-            "{prompt}"
-        );
+        assert!(prompt.contains("and any hand-over"), "{prompt}");
         // SPEC-271 OPS-009: operator state the person sent is restored, not asked for again.
         assert!(prompt.contains("secret_state_restore"), "{prompt}");
+        // SPEC-275 VAR-008: the project variables are read beside the secrets.
+        assert!(
+            prompt.contains("read secrets_list (its agent secrets and the project variables"),
+            "{prompt}"
+        );
         assert!(prompt.contains("nobody needs to approve"));
         assert!(!prompt.contains("Ask the user"), "onboarding is autonomous");
         assert!(prompt.contains("delete .github/workflows/"));

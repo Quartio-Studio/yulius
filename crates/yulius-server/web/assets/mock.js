@@ -2767,6 +2767,67 @@ route('DELETE', `/api/agent-secrets/${ID}`, ({ db, p }) => {
   return json(204);
 });
 
+// Project variables (SPEC-275): non-secret values in plain.
+const RESERVED_VARIABLE = /^(PATH|HOME|USER|LOGNAME|SHELL|TERM|COLORTERM|LANG|LANGUAGE|PWD|OLDPWD|TMPDIR|TMP|TEMP|PORT|HOSTNAME|EDITOR|VISUAL|PAGER|IFS|PS1|PS2|PROMPT_COMMAND|ENV|BASH_ENV|CDPATH|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|FTP_PROXY|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|DISABLE_AUTOUPDATER)$|^(YULIUS_|CLAUDE_|ANTHROPIC_|GIT_|SSL_|NODE_|NPM_CONFIG_|LD_|DYLD_|XDG_|LC_|BASH_|ZSH_)/;
+const variablesOf = (db, sandbox) => {
+  // sandbox-3 (read access) starts with one, for the reader's view.
+  db.variables = db.variables || { sb_three: [{ name: 'APP_REGION', value: 'eu-west-1', description: 'Where the app runs', updated_by: 'anna-q', updated_at: new Date().toISOString() }] };
+  db.variables[sandbox.id] = db.variables[sandbox.id] || [];
+  return db.variables[sandbox.id];
+};
+route('GET', `/api/sandboxes/${ID}/variables`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  const variables = [...variablesOf(db, sandbox)].sort((a, b) => a.name.localeCompare(b.name));
+  return { variables, can_manage: (RANK[sandbox.access] || 0) >= RANK.write };
+});
+route('PUT', `/api/sandboxes/${ID}/variables`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'write');
+  const held = variablesOf(db, sandbox);
+  const out = { created: [], changed: [], unchanged: [], existing: [] };
+  const inputs = body.variables || [];
+  // The server's checks (crates/yulius-app/src/variables.rs), all before anything is written.
+  if (inputs.length > 200) fail(422, 'invalid', 'at most 200 variables at once');
+  const seen = new Set();
+  for (const input of inputs) {
+    if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(input.name || '') || RESERVED_VARIABLE.test(input.name)) fail(422, 'invalid', `invalid name ${JSON.stringify(input.name)}: capital letters, digits and _, starting with a letter, not a reserved name`);
+    if (seen.has(input.name)) fail(422, 'invalid', `${input.name} is given twice`);
+    seen.add(input.name);
+    if (new TextEncoder().encode(input.value || '').length > 4096) fail(422, 'invalid', `${input.name}: the value is longer than 4096 bytes`);
+    if (/[\u0000-\u001f\u007f]/.test(input.value || '')) fail(422, 'invalid', `${input.name}: a variable is one line, without control characters`);
+    if ([...(input.description || '').trim()].length > 1000) fail(422, 'invalid', `${input.name}: the description is longer than 1000 characters`);
+    if (vaultOf(db).agent.some((s) => s.name === input.name && (s.scope === 'sandbox' ? s.sandbox === sandbox.id : s.scope === 'instance' && (s.on || []).includes(sandbox.id)))) fail(409, 'conflict', `${input.name} is an agent secret of this project: a name is either a secret or a variable; nothing was set`);
+  }
+  if (held.length + inputs.filter((i) => !held.some((v) => v.name === i.name)).length > 200) fail(422, 'invalid', 'a project holds at most 200 variables; nothing was set');
+  for (const input of inputs) {
+    const now = new Date().toISOString();
+    const before = held.find((v) => v.name === input.name);
+    if (before && body.only_new) { out.existing.push(input.name); continue; }
+    const description = input.description != null ? input.description.trim() : (before ? before.description : '');
+    if (!before) {
+      held.push({ name: input.name, value: input.value, description, updated_by: db.me.user.login, updated_at: now });
+      out.created.push(input.name);
+      audit(db, 'variable.create', sandbox.id, input.name);
+    } else if (before.value !== input.value || before.description !== description) {
+      const fields = [before.value !== input.value && 'value', before.description !== description && 'description'].filter(Boolean);
+      Object.assign(before, { value: input.value, description, updated_by: db.me.user.login, updated_at: now });
+      out.changed.push(input.name);
+      audit(db, 'variable.update', sandbox.id, `${input.name} (${fields.join(', ')})`);
+    } else out.unchanged.push(input.name);
+  }
+  return out;
+});
+route('DELETE', `/api/sandboxes/${ID}/variables/${ID}`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'write');
+  const held = variablesOf(db, sandbox);
+  const at = held.findIndex((v) => v.name === p[1]);
+  if (at < 0) fail(404, 'not_found', 'not found');
+  held.splice(at, 1);
+  audit(db, 'variable.delete', sandbox.id, p[1]);
+  return json(204);
+});
+
 route('GET', `/api/sandboxes/${ID}/mcp`, ({ db, p }) => db.mcp.filter((m) => m.scope === 'instance' || m.sandbox === p[0]).map(({ sandbox: _s, ...m }) => m));
 route('POST', `/api/sandboxes/${ID}/mcp`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');

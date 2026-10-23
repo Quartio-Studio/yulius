@@ -777,7 +777,7 @@ test('the Project, Global and Personal tabs hold each scope, with a switch for t
   await screen.getByRole('switch', 'STRIPE_KEY on for studio').click();
   await expect(screen.getByRole('switch', 'STRIPE_KEY on for studio')).not.toBeChecked();
 
-  // The four tabs fit a phone.
+  // The five tabs (Variables too, SPEC-275) fit a phone.
   await browser.setViewport({ width: 390, height: 844 });
   expect(await browser.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
@@ -787,5 +787,62 @@ test('a member sees the global secrets but cannot switch or add them', async ({ 
   await expect(screen.getByRole('switch', 'ARGO_TOKEN on for studio')).toBeDisabled();
   await expect(screen.getByText('Instance administrators switch it.').first()).toBeVisible();
   await expect(screen.getByRole('button', 'Add global secret').first()).toBeDisabled();
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+// SPEC-275 VAR-009 (task #259): a project's non-secret values sit on a Variables tab beside the
+// secrets, in plain, and people with write access add, edit and delete them; an agent secret's
+// name is refused.
+test('project variables are shown in plain and changed on the Variables tab', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=variables'));
+  await expect(screen.getByRole('radio', 'Variables')).toHaveAttribute('aria-checked', 'true');
+  await expect(screen.getByText('No variables yet')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await screen.getByRole('button', 'Add variable').first().click();
+  const add = screen.getByRole('dialog', 'Add variable');
+  expect(await browser.evaluate(() => [...document.querySelectorAll('dialog.modal .field-label')].map((l) => l.textContent!.trim()))).toEqual(['Name', 'Value', 'Description']);
+  expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByLabel('Name').fill('ovh');
+  await add.getByRole('button', 'Add').click();
+  await expect(browser.locator('.field-error')).toHaveText(/Capital letters/);
+  // The name of an agent secret of the project is refused, in the dialog.
+  await screen.getByLabel('Name').fill('STRIPE_KEY');
+  await screen.getByLabel('Value').fill('plain');
+  await add.getByRole('button', 'Add').click();
+  await expect(add.getByRole('alert')).toHaveText(/STRIPE_KEY is an agent secret/);
+  await screen.getByLabel('Name').fill('OVH_ENDPOINT');
+  await screen.getByLabel('Value').fill('ovh-ca');
+  await screen.getByLabel('Description').fill('OVH region');
+  await add.getByRole('button', 'Add').click();
+  await expect(add).toBeHidden();
+  const card = browser.locator('.item-card:has-text("OVH_ENDPOINT")');
+  await expect(card.getByText('ovh-ca')).toBeVisible();
+  await expect(card.getByText('OVH region')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await screen.getByRole('button', 'Edit OVH_ENDPOINT').click();
+  const edit = screen.getByRole('dialog', 'Edit OVH_ENDPOINT');
+  await expect(screen.getByLabel('Name')).toBeDisabled();
+  await screen.getByLabel('Value').fill('ovh-us');
+  await edit.getByRole('button', 'Save').click();
+  await expect(edit).toBeHidden();
+  await expect(card.getByText('ovh-us')).toBeVisible();
+  await expect(card.getByText('OVH region')).toBeVisible();
+
+  await screen.getByRole('button', 'Delete OVH_ENDPOINT').click();
+  await screen.getByRole('dialog', 'Delete OVH_ENDPOINT?').getByRole('button', 'Delete').click();
+  await expect(screen.getByText('No variables yet')).toBeVisible();
+});
+
+// SPEC-275 review round 1: a member who only reads the sandbox sees its variables in plain but
+// cannot add, edit or delete them.
+test('members who only read a sandbox see its variables but cannot change them', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/sandbox-3/secrets?section=variables'));
+  const card = browser.locator('.item-card:has-text("APP_REGION")');
+  await expect(card.getByText('eu-west-1')).toBeVisible();
+  await expect(screen.getByRole('button', 'Add variable').first()).toBeDisabled();
+  await expect(screen.getByRole('button', 'Edit APP_REGION')).toBeDisabled();
+  await expect(screen.getByRole('button', 'Delete APP_REGION')).toBeDisabled();
   expect(await axeViolations(browser)).toEqual([]);
 });

@@ -8,6 +8,7 @@ pub mod encode;
 pub mod hosts;
 pub mod names;
 pub mod ordinary;
+pub mod plain;
 pub mod redact;
 pub mod totp;
 

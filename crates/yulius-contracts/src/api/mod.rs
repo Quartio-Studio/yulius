@@ -24,4 +24,5 @@ pub mod stages;
 pub mod status;
 pub mod tasks;
 pub mod updates;
+pub mod variables;
 pub mod workflows;
