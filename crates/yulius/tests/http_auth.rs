@@ -1090,6 +1090,149 @@ async fn a_quiet_event_stream_sends_heartbeats() -> TestResult {
     Ok(())
 }
 
+type EventSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// One round on an open event stream: an admin-only event, then an event everyone sees. `None`
+/// when the marker did not arrive (the stream is not subscribed yet), else whether the admin-only
+/// event of this round arrived before it.
+async fn admin_round(
+    h: &support::Harness,
+    socket: &mut EventSocket,
+    round: usize,
+) -> Result<Option<bool>, Box<dyn std::error::Error>> {
+    use yulius_contracts::events::UiEvent;
+    let (admin, marker) = (format!("admin-{round}"), format!("marker-{round}"));
+    h.app.events.publish(
+        None,
+        true,
+        UiEvent::TaskRemoved {
+            task_id: admin.clone(),
+        },
+    );
+    h.app.events.publish(
+        None,
+        false,
+        UiEvent::TaskRemoved {
+            task_id: marker.clone(),
+        },
+    );
+    let mut saw_admin = false;
+    loop {
+        match next_ws_text(socket, std::time::Duration::from_millis(250)).await {
+            None => return Ok(None),
+            Some(Err(code)) => return Err(format!("the stream closed: {code:?}").into()),
+            Some(Ok(text)) => {
+                let event: Value = serde_json::from_str(&text)?;
+                if event["task_id"] == json!(admin) {
+                    saw_admin = true;
+                } else if event["task_id"] == json!(marker) {
+                    return Ok(Some(saw_admin));
+                }
+            }
+        }
+    }
+}
+
+/// Rounds until one answers `want`, within `wait`; the number of the next round.
+async fn admin_rounds_until(
+    h: &support::Harness,
+    socket: &mut EventSocket,
+    mut round: usize,
+    want: bool,
+    wait: std::time::Duration,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        let seen = admin_round(h, socket, round).await?;
+        round += 1;
+        if seen == Some(want) {
+            return Ok(round);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!("no round answered {want} within {wait:?}; last {seen:?}").into());
+        }
+    }
+}
+
+/// #722 (EVS-001/002): an open event stream follows instance administration. Once the superadmin
+/// removes it, the next re-check stops admin-only events (such as `account.updated`) without
+/// closing the stream.
+#[tokio::test]
+async fn an_event_stream_stops_admin_events_once_administration_is_removed() -> TestResult {
+    use support::{HarnessOptions, harness_with, serve, ws_connect};
+    let h = harness_with(HarnessOptions {
+        configure: Some(Box::new(|c| c.viewer_recheck_ms = 150)),
+        ..HarnessOptions::default()
+    })?;
+    let superadmin = setup_superadmin(&h).await?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    let set_admin = |on: bool| {
+        call(
+            &h.router,
+            Method::PATCH,
+            "/api/admin/users/u-alice",
+            Some(json!({"is_instance_admin": on})),
+            &superadmin,
+        )
+    };
+    assert_eq!(set_admin(true).await?.status, StatusCode::OK);
+    let served = serve(h.router.clone()).await?;
+    let origin = h.app.config.public_url.clone();
+    let mut socket = ws_connect(served.addr, "/api/events", &alice, &origin).await?;
+    let wait = std::time::Duration::from_secs(5);
+    // An administrator's stream carries admin-only events.
+    let round = admin_rounds_until(&h, &mut socket, 0, true, wait).await?;
+
+    assert_eq!(set_admin(false).await?.status, StatusCode::OK);
+    let round = admin_rounds_until(&h, &mut socket, round, false, wait).await?;
+    // After that re-check, none arrives any more, over several re-check intervals.
+    for round in round..round + 4 {
+        let seen = admin_round(&h, &mut socket, round).await?;
+        assert_eq!(seen, Some(false), "round {round}");
+    }
+    Ok(())
+}
+
+/// #722 (EVS-002): gaining instance administration takes effect on an open event stream at the
+/// next re-check, without a reconnect.
+#[tokio::test]
+async fn an_event_stream_starts_admin_events_once_administration_is_granted() -> TestResult {
+    use support::{HarnessOptions, harness_with, serve, ws_connect};
+    let h = harness_with(HarnessOptions {
+        configure: Some(Box::new(|c| c.viewer_recheck_ms = 150)),
+        ..HarnessOptions::default()
+    })?;
+    let superadmin = setup_superadmin(&h).await?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    let served = serve(h.router.clone()).await?;
+    let origin = h.app.config.public_url.clone();
+    let mut socket = ws_connect(served.addr, "/api/events", &alice, &origin).await?;
+    let wait = std::time::Duration::from_secs(5);
+    // Subscribed, and a member's stream carries no admin-only event.
+    let mut round = 0;
+    let first = loop {
+        let seen = admin_round(&h, &mut socket, round).await?;
+        round += 1;
+        if seen.is_some() || round > 20 {
+            break seen;
+        }
+    };
+    assert_eq!(first, Some(false));
+
+    let granted = call(
+        &h.router,
+        Method::PATCH,
+        "/api/admin/users/u-alice",
+        Some(json!({"is_instance_admin": true})),
+        &superadmin,
+    )
+    .await?;
+    assert_eq!(granted.status, StatusCode::OK);
+    admin_rounds_until(&h, &mut socket, round, true, wait).await?;
+    Ok(())
+}
+
 /// The next text frame within `wait`: `Ok(text)`, `Err(close code)` when the socket closed, or
 /// `None` when nothing arrived.
 async fn next_ws_text(
