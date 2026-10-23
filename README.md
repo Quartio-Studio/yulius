@@ -47,7 +47,7 @@ flowchart TD
     A["👀 You see Yulius<br/>on X/Twitter or online"] --> B["🌐 You open juliusz.dev<br/>or this GitHub page"]
     B --> C{"Is it for you?<br/>(table above)"}
     C -- "not yet" --> Z["⭐ Star the repo and<br/>come back later"]
-    C -- "yes" --> D["🖥️ Rent a Linux VPS<br/>(4+ vCPU, 16 GB RAM)"]
+    C -- "yes" --> D["🖥️ Rent a Linux VPS<br/>(8 vCPU, 16 GB RAM)"]
     D --> E["🔗 Point a domain at it<br/>yulius.example.com"]
     E --> F["⚙️ Install Yulius<br/>(two commands + HTTPS proxy)"]
     F --> G["🔑 Open the site, paste the<br/>setup token, choose a password"]
@@ -85,7 +85,7 @@ plans do not allow.
 
 | Setting | Choose |
 | --- | --- |
-| Operating system | **Ubuntu 24.04 LTS** (Debian 12 also works), x86_64 or arm64 |
+| Operating system | **Ubuntu 24.04 LTS** (Debian 13 also works; it needs systemd 254 or newer), x86_64 or arm64 |
 | CPU | 4 vCPU minimum; **8 vCPU** for a team running several tasks at once |
 | Memory | 8 GB minimum; **16 GB** recommended (every task runs Claude Code, builds and tests) |
 | Disk | 80 GB minimum; **160 GB+ SSD/NVMe** (sandboxes, build caches and Docker images add up) |
@@ -122,41 +122,52 @@ the server (a person or their AI agent over SSH).
 
 ### ☐ 2. 💻 Install Yulius
 
-On the server, as root:
+On the server, as root. **a. Build the binary:**
 
 ```sh
-# 1. Tools to build Yulius (Rust, Git, a C linker)
 apt-get update && apt-get install -y git build-essential curl
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && . "$HOME/.cargo/env"
-
-# 2. Build and install the binary
 git clone https://github.com/Quartio-Studio/yulius.git && cd yulius
 cargo build --release -p yulius
 install -m 0755 target/release/yulius /usr/local/bin/yulius
+```
 
-# 3. One command sets up everything else on the host (Docker, sandboxes, the service)
+**b. Install what sandboxes copy from the host**, *before* the host setup: every sandbox starts
+from a copy of the server's system, so tools installed later are missing there until that copy
+is rebuilt ([prerequisites](docs/operations.md#1-prerequisites)):
+
+- ☐ **Claude Code**, system-wide (under `/usr/local` or `/opt`, not `~/.local`) so the agents
+  can see it.
+- ☐ **GitHub CLI** (`gh`) 2.82.1 or newer, from GitHub's own package repository (Ubuntu's is too
+  old).
+- ☐ *Optional:* Google Chrome, `xvfb`, `ffmpeg` and fonts for the in-sandbox browser.
+
+**c. Set up the host** (Docker, sandbox isolation, the service user, the systemd service and the
+sandbox base):
+
+```sh
 yulius host setup --public-url https://yulius.example.com
 ```
 
-`yulius host setup` prints `ok`, `changed`, `manual` or `FAIL` for each item and is safe to run
-again. Then install the pieces it leaves to you, all described in the
-[operations guide](docs/operations.md#2-build-and-install):
+It prints `ok`, `changed`, `manual` or `FAIL` for each item and is safe to run again. Installed
+something from list b afterwards? Rebuild the base:
+`sudo -u yulius yulius sandbox-base build --data-dir /var/lib/yulius`.
 
-- ☐ **Claude Code**, system-wide (under `/usr/local` or `/opt`) so the agents can see it
-  ([prerequisites](docs/operations.md#1-prerequisites)).
-- ☐ **GitHub CLI** (`gh`) 2.82.1 or newer, from GitHub's own package repository.
-- ☐ **HTTPS reverse proxy**, for example Caddy, which also gets the TLS certificate for you
-  ([reverse proxy](docs/operations.md#4-reverse-proxy-tls-websockets)).
-- ☐ *Optional:* Google Chrome, `xvfb`, `ffmpeg` and fonts for the in-sandbox browser.
+**d. Put HTTPS in front**: a reverse proxy such as Caddy, which also gets the TLS certificate
+for you ([reverse proxy](docs/operations.md#4-reverse-proxy-tls-websockets)).
 
-Check with `yulius doctor --data-dir /var/lib/yulius --contained`.
+Check everything with `sudo -u yulius yulius doctor --data-dir /var/lib/yulius --contained`. The
+[operations guide](docs/operations.md#2-build-and-install) has every detail, and the optional
+update helper that installs new Yulius versions from `main`.
 
 ### ☐ 3. 👤 Open Yulius and create the superadmin
 
 1. On the server, read the **setup token**: `cat /var/lib/yulius/setup.token`
    ([what is it?](#setup-token)).
 2. Open `https://yulius.example.com`, paste the token, choose the superadmin password (twice, at
-   least 8 characters, 12+ recommended).
+   least 8 characters, 12+ recommended) and tick both boxes ("the password can only be
+   recovered with the recovery code", "I have stored the password…"): the button stays grey until
+   you do.
 3. Yulius shows your **recovery code** once ([what is it?](#recovery-code)). Store it apart from
    the password, tick "I have stored the recovery code safely" and continue.
 
@@ -178,7 +189,7 @@ subscription no agent can start.
 | Option | When | How |
 | --- | --- | --- |
 | 🧪 **Playground** | You want to try Yulius first, without GitHub | Home → drop a project folder or pick a template. Nothing is pushed anywhere. |
-| 🐙 **GitHub repository** | You are ready to work on real code | User menu → **Administration → GitHub connection**: enter your organization or user name, click **Create GitHub App on GitHub**, confirm on GitHub, then install the App on the repositories Yulius may use. Then import the repository. |
+| 🐙 **GitHub repository** | You are ready to work on real code | User menu → **Administration → GitHub connection**: enter your organization or user name, pick **Organization** or **Personal account**, click **Create GitHub App on GitHub**, confirm on GitHub, then install the App on the repositories Yulius may use. Then import the repository. |
 | 💻 **From your laptop** | The code and your Claude sessions are on your machine | Ask your local Claude Code "onboard this into Yulius" ([remote control](docs/remote-control.md)) or run `yulius onboard`. |
 
 A GitHub project goes through **onboarding** first (click **Start onboarding** on the sandbox
@@ -233,8 +244,8 @@ reset a forgotten superadmin password** (Yulius sends no reset emails).
   paper copy.
 - ✅ **Use it:** sign-in page → *Superadmin password* → **Forgot password?** → enter the code and
   a new password. You then get a new code; save it too.
-- ⚠️ **Three wrong codes disable recovery for good.** A signed-in superadmin can turn it back on by
-  generating a new code.
+- ⚠️ **Three wrong codes lock recovery.** Only a superadmin who is still signed in (or knows the
+  password) can unlock it, by generating a new code.
 
 ### Jev
 
@@ -248,8 +259,8 @@ Yulius uses its defaults.
 - **The Jev API key** is your password for Jev's service. Get one from
   [typesafe.ai](https://typesafe.ai), paste it on the setup screen "Task intake with Jev" or in
   **Settings → Instance**, and click **Save and test**.
-- It is stored encrypted on your server and never shown again. Each check sends the task's prompt
-  (and step titles) to TypeSafe.
+- It is stored encrypted on your server and never shown again. Each check sends the task's prompt and
+  related task details (title, step titles, typed text, workflow names) to TypeSafe.
 
 ### Vidoc
 
