@@ -969,7 +969,7 @@ impl TaskStore for SqliteStore {
             let mut stmt = c
                 .prepare(
                     "SELECT id, sandbox_id, task_id, harness, session_id, transcript_ref, origin, first_seen, last_seen \
-                     FROM provider_sessions WHERE task_id = ?1 ORDER BY first_seen",
+                     FROM provider_sessions WHERE task_id = ?1 ORDER BY last_seen, first_seen, rowid",
                 )
                 .map_err(db)?;
             let rows = stmt
