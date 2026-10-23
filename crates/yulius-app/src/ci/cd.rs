@@ -1078,7 +1078,12 @@ impl App {
             .cd_process(
                 &sandbox,
                 &run,
-                (secrets, &states, &named, &mut held),
+                RunInputs {
+                    secrets,
+                    states: &states,
+                    variables: &named,
+                    held: &mut held,
+                },
                 &run_dir,
                 &mut ring,
                 &mut cancel,
@@ -1241,7 +1246,12 @@ impl App {
         &self,
         sandbox: &SandboxRecord,
         run: &CdRunRecord,
-        (secrets, states, named, held): (Vec<(String, String)>, &[String], &[String], &mut CdHeld),
+        RunInputs {
+            secrets,
+            states,
+            variables: named,
+            held,
+        }: RunInputs<'_>,
         run_dir: &Path,
         ring: &mut OutputRing,
         cancel: &mut watch::Receiver<Option<String>>,
@@ -1539,6 +1549,15 @@ impl App {
     ) -> AppResult<Option<CdRunRecord>> {
         self.deps.store.latest_cd_run_of_task(&task.id).await
     }
+}
+
+/// What a run's process gets beside its record: the secrets' values, the agent states and project
+/// variables its table names, and where the held states go (SPEC-278).
+struct RunInputs<'a> {
+    secrets: Vec<(String, String)>,
+    states: &'a [String],
+    variables: &'a [String],
+    held: &'a mut CdHeld,
 }
 
 /// The agent states a run holds and what it restored of them (SPEC-278).
