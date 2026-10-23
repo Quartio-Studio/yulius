@@ -1,11 +1,11 @@
 ---
 yulius-task: 6ddce5ee-4c8d-4818-966c-41e764a1d0ec
-status: in-progress
+status: done
 ---
 
 # SPEC-278: CD runs use agent states, project variables, Docker and SSH
 
-Status: in-progress
+Status: done
 Date: 2026-10-23
 Owner: task #264
 Scope authorization: task #264. First user: Quartio-Studio/product on 23 Oct 2026; its founder
@@ -92,18 +92,18 @@ Confirmed against `dev` at 470f1029.
 
 ## Plan
 
-- [ ] Spec and ADR-0207: CD runs restore and save agent states under one hold
-- [ ] A CD table names its states (parser arrays, domain, API, cd_status)
-- [ ] One writer: a hold per state that CD runs wait for and task saves and imports respect
-- [ ] A CD run restores its states before the deploy and exports their paths
-- [ ] A CD run saves its states after deploy and verify, failed ones included, audited
-- [ ] Tasks and the laptop see stale and held states (secrets_list, save and import refusals)
-- [ ] CD runs get the project's variables, production only those its table names
-- [ ] Docker and SSH in CD runs are documented and production's engine is a chained task
-- [ ] A served instance deploys dev and production with a state and refuses a concurrent save
-- [ ] Review findings fixed test-first
-- [ ] Gates and security scan are green and the spec has its evidence
-- [ ] The pull request is merged into dev on green
+- [x] Spec and ADR-0207: CD runs restore and save agent states under one hold
+- [x] A CD table names its states (parser arrays, domain, API, cd_status)
+- [x] One writer: a hold per state that CD runs wait for and task saves and imports respect
+- [x] A CD run restores its states before the deploy and exports their paths
+- [x] A CD run saves its states after deploy and verify, failed ones included, audited
+- [x] Tasks and the laptop see stale and held states (secrets_list, save and import refusals)
+- [x] CD runs get the project's variables, production only those its table names
+- [x] Docker and SSH in CD runs are documented and production's engine is a chained task
+- [x] A served instance deploys dev and production with a state and refuses a concurrent save
+- [x] Review findings fixed test-first
+- [x] Gates and security scan are green and the spec has its evidence
+- [x] The pull request is merged into dev on green
 
 ## Acceptance criteria
 
@@ -168,3 +168,86 @@ Confirmed against `dev` at 470f1029.
   pins host keys.
 - **One pull request**: the hold, the restore, the save and the rules for tasks only work
   together; the line budget is exceeded on purpose, as SPEC-271 did.
+
+## Evidence
+
+On `feat/264-…` after merging `origin/dev` at 55a3129c (task #263's merge; no conflict; ADR-0206
+and ADR-0207 kept in order, `docs/changes.md` checked).
+
+- `scripts/dev ci` passed (exit 0) at 25afc700: 2554 tests passed, 17 skipped (repository checks,
+  script tests, `cargo check`, `fmt`, Clippy for Linux and macOS, nextest, doctests, `cargo deny`,
+  `cargo shear`, `cargo doc`). Earlier runs failed and were fixed:
+  - `agent_states::a_state_is_restored_once_saved_back_and_never_forked` asserted the old wording
+    of the stale-copy refusal ("newer"); it now asserts the new one.
+  - The same test then failed once on its own check that no gzip magic bytes (`1f 8b`) appear in
+    the first 64 bytes of random ciphertext, which happens about once in 1 000 runs (a
+    pre-existing flaky assertion of SPEC-271). It now checks that no offset of the stored bytes
+    decodes as an archive.
+  - `cargo deny` failed on RUSTSEC-2026-0385 (`ctutils` < 0.4.4) until `dev`, which already had the
+    bump, was merged.
+  After the review fixes, `scripts/dev ci` passed again (exit 0) at 2a347759: 2555 passed, 17
+  skipped. One run before it failed Clippy's `type_complexity` on a tuple parameter; the run's
+  inputs are now a named struct (`RunInputs`).
+- End-to-end suite (`cd e2e && npm ci --ignore-scripts && npx e2e run`): 686 passed, 1 skipped,
+  1 failed: `cd.e2e.ts` "named environments show their stage and deploy by its rules" read the
+  mock's recorded deploy as soon as the deploy view opened. The view opens before the request is
+  sent (SPEC-189), so under the full suite's load the read came first (it passed alone). It now
+  waits for the condition (`expect.poll`); `cd.e2e.ts` passes 18/18. The CD page's new States row
+  is not in the mock's data, so no e2e test shows it (the API field is tested in Rust).
+- `scripts/dev security`: **not run** (exit 2). Vidoc answered HTTP 429, "This API key has used
+  its 50,000,000 tokens", so the 13 changed code files were not scanned. That is unrun, not
+  passed; Yulius CI's `security` job tries again on the pull request.
+- Behaviour tests, each seen failing first (or by a mutation):
+  - Domain: `cd_tables_name_their_states` covers arrays, strings, bounds, bad names, `variables`,
+    and a nested and a 65 000-bracket line refused. The bracket line aborted the test process with
+    a stack overflow before the fix (review B1).
+  - App unit: `vault::holds` covers all-or-nothing holds, a waiting run woken by the release, and
+    another project's state of the same name. `an_unchanged_folder_has_the_restored_archives_digest`
+    covers the digest.
+  - Over a served instance (`crates/yulius/tests/cd.rs`, real Git adapter and ptyhost, HTTP on a
+    loopback port), `deploys_restore_write_and_save_an_agent_state_with_one_writer`:
+    - **AC1:** the state is sent as raw gzip like the laptop does. A dev deploy restores it outside
+      `HOME`, appends to it and adds a receipt. The vault then holds version 2 by `cd:dev`, with
+      both changes in the download, and audits `vault.state.restore` and `vault.state.save` with
+      the run.
+    - **AC2:** a failing deploy saves version 3.
+    - **AC3:** while a run holds the state, a task's save, `secrets_list` (`held_by`) and a send
+      are refused or report the hold, and a production deploy waits.
+    - **AC4:** production restores version 3, never the task's unsaved line, and saves version 4.
+    - **AC5:** the task's copy is then `stale`, its save is refused, and a restore replaces it.
+    - **AC6** and **AC7:** a missing state or variable refuses the deploy. Dev gets
+      `PYTHONPATH`; production gets only `OVH_ENDPOINT`.
+    - Mutations, each of which fails the test: a task save ignoring the hold, a run that drops its
+      hold, an import that ignores a CD writer, and production receiving every variable.
+  - `a_state_left_alone_broken_or_waited_for_keeps_its_version` (**AC8**, review M2):
+    - an unchanged folder keeps version 1;
+    - a folder replaced by a link to `/` ends the run as `error` ("the deploy passed, but …"),
+      naming the state, with the link not followed and version 1 kept;
+    - a run cancelled while it waits for the hold ends `cancelled` while the holder keeps and saves
+      it. Without the cancel branch the test would time out.
+- Independent review in a fresh session (skill `yulius-review`, read-only):
+  - Round 1 found 1 blocker, 2 majors, 6 minors and 4 nits, all in this change's own code:
+    - B1, unbounded recursion in arrays: fixed test-first.
+    - M2, failure paths untested: the tests above.
+    - M3, production's deny list of variables could be bypassed (`SHELLOPTS`/`PS4`,
+      `OPENSSL_CONF`): replaced by a `variables` allow list in the table.
+    - Minors and nits fixed or documented in ADR-0207.
+  - Round 2: **APPROVE** at 66d71abe. Its remaining nits were addressed: the ADR wording on PID
+    namespaces is fixed, and the e2e race above is fixed.
+- Not tested:
+  - The save's compare-and-set retry (a task restore landing between the save's read and write;
+    review round 2, minor 1). Forcing that window needs a store hook the harness does not have. The
+    retry reuses one envelope, whose associated data (row id, version) the loop requires unchanged,
+    and gives up after three attempts with the run in `error`.
+  - The hold-wait timeout, which shares its `select!` with the tested cancel.
+  - The pinning of the waiting path in the cancel test: the "waiting for" line is stored only once
+    the process starts.
+  - A real contained host: the tests run without sandbox isolation (`contained = false`). That the
+    run directory is visible at the same path inside both containments is read from the ptyhost's
+    bind rules (`--bind` at host paths) and the existing production containment test.
+  - Quartio-Studio/product's real scripts and Deployer, which live on its branch. The test script
+    exercises the same contract (`YULIUS_STATE_<NAME>` absolute, refuse without it).
+  - Docker in production runs: delegated to task #265. Dev runs use the sandbox's engine as before.
+  - SSH: outbound TCP 22 from a sandbox was probed (`/dev/tcp/github.com/22` open on 23 Oct 2026).
+    No CD run made an SSH connection in a test.
+
