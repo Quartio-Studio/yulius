@@ -262,7 +262,9 @@ pub fn own_engines(data_dir: &Path) -> Vec<OwnEngine> {
         .flatten()
         .filter_map(|entry| {
             let sandbox = entry.file_name().to_str()?.to_owned();
-            if sandbox.starts_with("docker-smoke-") {
+            if sandbox.starts_with("docker-smoke-")
+                || yulius_contracts::sandbox::production_sandbox(&sandbox).is_some()
+            {
                 return None;
             }
             let dockerd = own_engine(&base, &entry.path().join("upper"))?;
@@ -433,10 +435,17 @@ mod tests {
                 crate::base::BASE_FORMAT
             ),
         )?;
-        for sandbox in ["product", "docker-smoke-12", "plain", "same"] {
+        for sandbox in [
+            "product",
+            "docker-smoke-12",
+            "plain",
+            "same",
+            "product.prod",
+        ] {
             std::fs::create_dir_all(data.path().join("sysroots").join(sandbox).join("upper"))?;
         }
-        for sandbox in ["product", "docker-smoke-12"] {
+        // A production holder's layer is never a sandbox's (SPEC-279).
+        for sandbox in ["product", "docker-smoke-12", "product.prod"] {
             let sbin = data
                 .path()
                 .join("sysroots")
