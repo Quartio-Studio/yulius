@@ -173,14 +173,15 @@ update helper that installs new Yulius versions from `main`.
 
 ### ☐ 4. 👤 Add the optional keys (or skip them)
 
-The last two setup screens ask for a [Jev](#jev) key and a [Vidoc](#vidoc) key. Both are
-optional: **Skip for now** is fine, and you can add, replace or remove them later in
+The next two setup screens (steps 3 and 4 of 5) ask for a [Jev](#jev) key and a [Vidoc](#vidoc)
+key. Both are optional: **Skip for now** is fine, and you can add, replace or remove them later in
 **Settings → Instance**.
 
 ### ☐ 5. 👤 Add a Claude subscription
 
-User menu → **Administration → Subscriptions → Add subscription**. Claude's own sign-in opens in a
-terminal in your browser. Add more subscriptions later for more capacity: Yulius uses them as one
+The last setup screen, **Add your first Claude subscription**, offers it: **Add subscription**
+opens Claude's own sign-in in a terminal in your browser. Skipped it? Home lists it as the next
+step, or use User menu → **Administration → Subscriptions → Add subscription**. Add more subscriptions later for more capacity: Yulius uses them as one
 pool and moves tasks between them by itself. **Do this before anything else**: without a
 subscription no agent can start.
 
@@ -189,7 +190,7 @@ subscription no agent can start.
 | Option | When | How |
 | --- | --- | --- |
 | 🧪 **Playground** | You want to try Yulius first, without GitHub | Home → drop a project folder or pick a template. Nothing is pushed anywhere. |
-| 🐙 **GitHub repository** | You are ready to work on real code | User menu → **Administration → GitHub connection**: enter your organization or user name, pick **Organization** or **Personal account**, click **Create GitHub App on GitHub**, confirm on GitHub, then install the App on the repositories Yulius may use. Then import the repository. |
+| 🐙 **GitHub repository** | You are ready to work on real code | User menu → **Administration → GitHub connection**: enter your organization or user name, pick **Organization** or **Personal account**, click **Create GitHub App on GitHub**: GitHub opens in a new tab, where you confirm the App and install it on the repositories Yulius may use. Back in the Yulius tab, the page shows the App connected and the next steps; import the repository from there. |
 | 💻 **From your laptop** | The code and your Claude sessions are on your machine | Ask your local Claude Code "onboard this into Yulius" ([remote control](docs/remote-control.md)) or run `yulius onboard`. |
 
 A GitHub project goes through **onboarding** first (click **Start onboarding** on the sandbox
