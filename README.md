@@ -244,8 +244,8 @@ reset a forgotten superadmin password** (Yulius sends no reset emails).
   paper copy.
 - ✅ **Use it:** sign-in page → *Superadmin password* → **Forgot password?** → enter the code and
   a new password. You then get a new code; save it too.
-- ⚠️ **Three wrong codes lock recovery.** Only a superadmin who is still signed in (or knows the
-  password) can unlock it, by generating a new code.
+- ⚠️ **Three wrong codes lock recovery.** A superadmin who still knows the password can unlock it by
+  generating a new code.
 
 ### Jev
 
