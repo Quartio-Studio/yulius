@@ -28,11 +28,17 @@ pub fn with_home_tools(home: &str, rest: &str) -> String {
 pub struct IsolationLease {
     isolation: Arc<dyn SandboxIsolation>,
     sandbox: SandboxId,
+    /// A lease on the sandbox's production holder (SPEC-279).
+    production: bool,
 }
 
 impl Drop for IsolationLease {
     fn drop(&mut self) {
-        self.isolation.release(&self.sandbox);
+        if self.production {
+            self.isolation.release_production(&self.sandbox);
+        } else {
+            self.isolation.release(&self.sandbox);
+        }
     }
 }
 
@@ -51,6 +57,26 @@ impl App {
         &self,
         sandbox: &SandboxRecord,
     ) -> AppResult<Option<(SandboxJoin, IsolationLease)>> {
+        self.holder_join(sandbox, false).await
+    }
+
+    /// The production holder a production-stage run of `sandbox` joins (SPEC-279 PDE-003), with
+    /// its lease; `None` when the run uses the previous containment.
+    ///
+    /// # Errors
+    /// As [`App::isolation_join`]: the quota is the sandbox's.
+    pub(crate) async fn production_join(
+        &self,
+        sandbox: &SandboxRecord,
+    ) -> AppResult<Option<(SandboxJoin, IsolationLease)>> {
+        self.holder_join(sandbox, true).await
+    }
+
+    async fn holder_join(
+        &self,
+        sandbox: &SandboxRecord,
+        production: bool,
+    ) -> AppResult<Option<(SandboxJoin, IsolationLease)>> {
         // An adapter is installed only on a contained server, so none means the previous
         // containment.
         let Some(isolation) = self.isolation.get() else {
@@ -59,7 +85,14 @@ impl App {
         let request = self.sandbox_ref(sandbox);
         // Over the quota: free what can be freed (caches of tasks that do not work) and ask
         // once more before refusing (NFR-009).
-        let prepared = match isolation.prepare(&request).await {
+        let prepare = |request| async move {
+            if production {
+                isolation.prepare_production(request).await
+            } else {
+                isolation.prepare(request).await
+            }
+        };
+        let prepared = match prepare(&request).await {
             Err(AppError::Conflict(reason)) => {
                 let over = isolation
                     .disk(&request)
@@ -75,7 +108,7 @@ impl App {
                         self.naming_consumers(sandbox, reason).await,
                     ));
                 }
-                match isolation.prepare(&request).await {
+                match prepare(&request).await {
                     Err(AppError::Conflict(reason)) => {
                         return Err(AppError::Conflict(
                             self.naming_consumers(sandbox, reason).await,
@@ -92,6 +125,7 @@ impl App {
                 IsolationLease {
                     isolation: Arc::clone(isolation),
                     sandbox: sandbox.id.clone(),
+                    production,
                 },
             )
         }))

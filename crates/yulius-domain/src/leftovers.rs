@@ -157,6 +157,8 @@ pub fn removed_long_enough(removed_ms: i64, now_ms: i64) -> bool {
 /// The process id of a Docker smoke test's sandbox name (`docker-smoke-<pid>`).
 #[must_use]
 pub fn smoke_pid(name: &str) -> Option<u32> {
+    // Its production holder's trees are `<name>.prod` (SPEC-279).
+    let name = name.strip_suffix(".prod").unwrap_or(name);
     name.strip_prefix("docker-smoke-")?.parse().ok()
 }
 
@@ -211,6 +213,9 @@ mod tests {
     fn smoke_names_and_checkout_keys_are_read() {
         assert_eq!(smoke_pid("docker-smoke-4242"), Some(4242));
         assert_eq!(smoke_pid("docker-smoke-x"), None);
+        // Its production holder's trees (SPEC-279).
+        assert_eq!(smoke_pid("docker-smoke-4242.prod"), Some(4242));
+        assert_eq!(smoke_pid("docker-smoke-4242.x"), None);
         assert_eq!(smoke_pid("s1"), None);
         assert_eq!(checkout_job_key("gate"), "gate");
         assert_eq!(checkout_job_key("gate.2"), "gate");

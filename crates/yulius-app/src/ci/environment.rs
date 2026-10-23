@@ -77,10 +77,24 @@ impl App {
         ring: &mut OutputRing,
     ) -> Result<CommandEnd, String> {
         let run_dir = self.environment_run_dir(run_id);
+        let files = self.run_files_dir(
+            &sandbox.id,
+            cd_stage(stage),
+            &run_dir,
+            &format!("env-{run_id}"),
+        );
         let ended = self
-            .environment_launch(sandbox, stage, (run_id, sha), command, vars, &run_dir, ring)
+            .environment_launch(
+                sandbox,
+                stage,
+                (run_id, sha),
+                command,
+                vars,
+                (&run_dir, &files),
+                ring,
+            )
             .await;
-        let _ = std::fs::remove_dir_all(&run_dir);
+        self.remove_run_dirs(&run_dir, &files).await;
         ended
     }
 
@@ -92,10 +106,10 @@ impl App {
         (run_id, sha): (&str, &str),
         command: &str,
         vars: Vec<(String, String)>,
-        run_dir: &Path,
+        (run_dir, files): (&Path, &Path),
         ring: &mut OutputRing,
     ) -> Result<CommandEnd, String> {
-        let work = run_dir.join("work");
+        let work = files.join("work");
         let (src, home, cache, log) = (
             work.join("src"),
             work.join("home"),
@@ -103,6 +117,7 @@ impl App {
             work.join("log"),
         );
         let _ = std::fs::remove_dir_all(run_dir);
+        let _ = std::fs::remove_dir_all(files);
         for dir in [&home, &cache] {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("preparing the run's directories failed: {e}"))?;
@@ -113,12 +128,8 @@ impl App {
             .await
             .map_err(|err| format!("writing {sha}'s files failed: {}", err.public_message()))?;
         std::fs::File::create(&log).map_err(|e| format!("creating the run log failed: {e}"))?;
-        let env = match stage {
-            Stage::Integration => CdStage::Dev,
-            Stage::Production => CdStage::Prod,
-        };
         let (containment, _lease) = self
-            .cd_containment(sandbox, env, &work, &home, &cache)
+            .cd_containment(sandbox, cd_stage(stage), &work, &home, &cache)
             .await?;
         let path = std::env::var("PATH")
             .ok()
@@ -185,13 +196,22 @@ impl App {
         }
     }
 
-    /// Stops what is left of a run that has no watcher any more (a restart): its process host,
-    /// and its directory.
-    pub(crate) fn environment_end_lost(&self, run_id: &str) {
+    /// Stops what is left of a run of `sandbox` that has no watcher any more (a restart): its
+    /// process host, its directory and, for a production run, its files (SPEC-279).
+    pub(crate) async fn environment_end_lost(&self, sandbox: &SandboxId, run_id: &str) {
         let run_dir = self.environment_run_dir(run_id);
         if run_dir.exists() {
             let _ = self.deps.session_host.terminate(&run_dir);
-            let _ = std::fs::remove_dir_all(&run_dir);
         }
+        let files = self.run_files_dir(sandbox, CdStage::Prod, &run_dir, &format!("env-{run_id}"));
+        self.remove_run_dirs(&run_dir, &files).await;
+    }
+}
+
+/// The CD stage whose containment an environment run of `stage` uses.
+fn cd_stage(stage: Stage) -> CdStage {
+    match stage {
+        Stage::Integration => CdStage::Dev,
+        Stage::Production => CdStage::Prod,
     }
 }

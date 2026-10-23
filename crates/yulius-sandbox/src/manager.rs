@@ -4,6 +4,9 @@
 //! Ownership and bounds:
 //! - **One holder per sandbox**, started by [`Manager::prepare`] under a per-sandbox lock.
 //!   Starting runs `yulius sandbox-host start` as a child process within [`START_TIMEOUT`].
+//!   Production-stage runs get a second one, the sandbox's production holder
+//!   ([`Manager::prepare_production`], SPEC-279): its own namespaces, cgroup, system layer and
+//!   Docker engine under the name `<sandbox>.prod`, with no forwarded ports and no relays.
 //! - **Leases.** A run holds a lease from `prepare` until its process has joined
 //!   ([`Manager::release`]); a sandbox with a lease or a process in its network namespace is
 //!   never idle.
@@ -33,7 +36,8 @@ use tokio::task::JoinHandle;
 use yulius_contracts::ptyhost::SandboxJoin;
 use yulius_contracts::sandbox::{
     DockerFrontRecord, DockerFrontSpec, DockerServe, EngineSpec, HOLDER_RECORD_FILE,
-    HOLDER_RECORD_VERSION, HolderRecord, HolderSpec, IdMap,
+    HOLDER_RECORD_VERSION, HolderRecord, HolderSpec, IdMap, production_holder, production_runs_dir,
+    production_sandbox, valid_holder_name,
 };
 
 use crate::base::{BaseInfo, Bases};
@@ -400,19 +404,38 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// Whether `path` lies below `sandboxes/` of `data`, which a sandbox's runs can rearrange (any
-/// folder may become a link): removed only by the walk from the data directory (ADR-0176).
+/// folder may become a link), or is a production run's files (SPEC-279 PDE-004): removed only by
+/// the walk from the data directory (ADR-0176).
 fn reachable_by_runs(data: &Path, path: &Path) -> bool {
-    path.starts_with(data.join("sandboxes"))
+    path.starts_with(data.join("sandboxes")) || production_run_files(data, path)
 }
 
-/// Whether `name` is a sandbox name as the server makes them (its ids' alphabet: ASCII letters,
-/// digits, `-` and `_`, at most 64): one path component that cannot leave its directory.
+/// Whether `path` is (or lies below) one production run's files, `cd/<sandbox>/runs/<run>`.
+fn production_run_files(data: &Path, path: &Path) -> bool {
+    let Ok(rest) = path.strip_prefix(data.join("cd")) else {
+        return false;
+    };
+    let parts: Vec<_> = rest.components().collect();
+    parts.len() >= 3
+        && parts
+            .iter()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+        && parts[1].as_os_str() == "runs"
+        && parts[0].as_os_str().to_str().is_some_and(valid_name)
+}
+
+/// Whether `name` is a holder name as the server makes them: a sandbox id (ASCII letters,
+/// digits, `-` and `_`, at most 64) or its production holder's (`<id>.prod`, SPEC-279): one path
+/// component that cannot leave its directory.
 fn valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 64
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    valid_holder_name(name)
+}
+
+/// The production holder's host name for a sandbox named `hostname`: `<hostname>-prod`, the
+/// sandbox's part cut so the whole stays a host name (63).
+fn production_hostname(hostname: &str) -> String {
+    let cut: String = hostname.chars().take(58).collect();
+    format!("{cut}-prod")
 }
 
 /// The path component of the sandbox `name`: the name itself, or for anything else a fixed
@@ -533,19 +556,50 @@ impl Manager {
     /// The request of a sandbox known only from its holder's files (an adopted holder before
     /// any run asked for it): its host name and ports from `holder.json`.
     fn adopted_request(&self, sandbox: &str) -> SandboxRequest {
-        let spec = read_json::<HolderSpec>(&StatePaths::new(self.state_dir(sandbox)).spec()).ok();
+        let spec = std::fs::read(StatePaths::new(self.state_dir(sandbox)).spec())
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+        let field = |name: &str| spec.as_ref().and_then(|s| s[name].as_u64());
+        let port = |name: &str| field(name).and_then(|p| u16::try_from(p).ok()).unwrap_or(0);
         SandboxRequest {
             id: sandbox.to_owned(),
             hostname: spec
                 .as_ref()
-                .map_or_else(|| sandbox.to_owned(), |s| s.hostname.clone()),
-            dir: self
-                .config
-                .data_dir
-                .join("sandboxes")
-                .join(path_name(sandbox)),
-            port_first: spec.as_ref().map_or(0, |s| s.port_first),
-            port_last: spec.as_ref().map_or(0, |s| s.port_last),
+                .and_then(|s| s["hostname"].as_str())
+                .map_or_else(|| sandbox.to_owned(), str::to_owned),
+            dir: match production_sandbox(sandbox) {
+                Some(of) => production_runs_dir(&self.config.data_dir, of),
+                None => self
+                    .config
+                    .data_dir
+                    .join("sandboxes")
+                    .join(path_name(sandbox)),
+            },
+            port_first: port("port_first"),
+            port_last: port("port_last"),
+        }
+    }
+
+    /// The request of `sandbox`'s production holder (SPEC-279 PDE-001): its name, a host name
+    /// of its own, the production runs directory (what its engine binds) and no dev ports.
+    #[must_use]
+    pub fn production_request(&self, sandbox: &SandboxRequest) -> SandboxRequest {
+        SandboxRequest {
+            id: production_holder(&sandbox.id),
+            hostname: production_hostname(&sandbox.hostname),
+            dir: production_runs_dir(&self.config.data_dir, &sandbox.id),
+            port_first: 0,
+            port_last: 0,
+        }
+    }
+
+    /// Ports forwarded out of the holder `name` to the host: none for a production holder,
+    /// whose runs reach only the Internet (SPEC-279 PDE-001).
+    fn forwards_of(&self, name: &str) -> Vec<u16> {
+        if production_sandbox(name).is_some() {
+            Vec::new()
+        } else {
+            self.config.forwards.keys().copied().collect()
         }
     }
 
@@ -553,6 +607,10 @@ impl Manager {
     /// forwards listen on loopback only (started before engines; SPEC-187 specs carry `engine`,
     /// newer ones `containers`).
     fn bridge_forwards(&self, sandbox: &str) -> Vec<u16> {
+        // A production holder forwards nothing (SPEC-279 PDE-001).
+        if production_sandbox(sandbox).is_some() {
+            return Vec::new();
+        }
         let spec = std::fs::read(StatePaths::new(self.state_dir(sandbox)).spec())
             .ok()
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
@@ -666,6 +724,11 @@ impl Manager {
             // A holder from before engines has no storage yet (review round 1).
             let storage = self.sysroot(sandbox).join("docker");
             std::fs::create_dir_all(&storage).map_err(|e| format!("{}: {e}", storage.display()))?;
+            // The production engine binds the production runs directory (SPEC-279 PDE-004).
+            if let Some(of) = production_sandbox(sandbox) {
+                let runs = production_runs_dir(&self.config.data_dir, of);
+                std::fs::create_dir_all(&runs).map_err(|e| format!("{}: {e}", runs.display()))?;
+            }
         }
         let _ =
             std::fs::set_permissions(paths.docker_dir(), std::fs::Permissions::from_mode(0o755));
@@ -901,6 +964,59 @@ impl Manager {
     /// # Errors
     /// Over the disk quota, or the holder cannot start.
     pub async fn prepare(&self, request: &SandboxRequest) -> Result<Option<Joined>, PrepareError> {
+        self.prepare_holder(request, true).await
+    }
+
+    /// Enters `sandbox`'s production holder (SPEC-279 PDE-003), started when needed, with a
+    /// lease the caller ends with [`Manager::release`] of [`production_holder`]. Refused while
+    /// the sandbox is retired or over its quota without the production holder's own files,
+    /// which count toward it: those never refuse a deploy, whose engine the upkeep then prunes
+    /// (review finding 1). `Ok(None)` while no base exists yet.
+    ///
+    /// # Errors
+    /// Retired, over the disk quota, or the holder cannot start.
+    pub async fn prepare_production(
+        &self,
+        sandbox: &SandboxRequest,
+    ) -> Result<Option<Joined>, PrepareError> {
+        if self.retired(&sandbox.id) {
+            return Err(PrepareError::Retired);
+        }
+        {
+            let entry = self.entry(&sandbox.id);
+            let mut state = entry.lock().await;
+            // Measured by the upkeep even while the sandbox's own holder never ran.
+            if state.request.is_none() {
+                state.request = Some(sandbox.clone());
+            }
+            if let Some(refusal) = self.quota_refusal(sandbox, &mut state).await {
+                let limit = self.config.disk_max.unwrap_or(u64::MAX);
+                let without_production = state.usage.as_ref().map_or(u64::MAX, |(usage, _)| {
+                    let production = usage
+                        .largest
+                        .iter()
+                        .find(|(consumer, _)| consumer == "production")
+                        .map_or(0, |(_, bytes)| *bytes);
+                    usage.bytes.saturating_sub(production)
+                });
+                if without_production > limit {
+                    return Err(refusal);
+                }
+            }
+        }
+        let production = self.production_request(sandbox);
+        std::fs::create_dir_all(&production.dir)
+            .map_err(|e| PrepareError::Holder(format!("{}: {e}", production.dir.display())))?;
+        self.prepare_holder(&production, false).await
+    }
+
+    /// [`Manager::prepare`] for any holder name; `quota`: refuse over the holder's own quota
+    /// reading (a production holder's is its sandbox's, checked by the caller).
+    async fn prepare_holder(
+        &self,
+        request: &SandboxRequest,
+        quota: bool,
+    ) -> Result<Option<Joined>, PrepareError> {
         if self.retired(&request.id) {
             return Err(PrepareError::Retired);
         }
@@ -910,7 +1026,7 @@ impl Manager {
         let entry = self.entry(&request.id);
         let mut state = entry.lock().await;
         state.request = Some(request.clone());
-        if let Some(refusal) = self.quota_refusal(request, &mut state).await {
+        if quota && let Some(refusal) = self.quota_refusal(request, &mut state).await {
             return Err(refusal);
         }
         let reusable = state.live.as_ref().is_some_and(|live| alive(&live.record));
@@ -1036,7 +1152,7 @@ impl Manager {
     }
 
     /// Removes `path`, under `sysroots/`, `runtime/sandboxes/`, `system/` or `sandboxes/` of the
-    /// data directory, as root of a mapped namespace where the service user cannot (its files belong
+    /// data directory, or a production run's files (`cd/<sandbox>/runs/<run>`, SPEC-279), as root of a mapped namespace where the service user cannot (its files belong
     /// to a sandbox's mapped ids; SPEC-215). Below `sandboxes/`, which a sandbox's runs can
     /// rearrange, the removal walks down from the data directory without following a link
     /// (ADR-0176).
@@ -1045,7 +1161,7 @@ impl Manager {
     /// `path` lies elsewhere, or the removal failed.
     pub async fn remove_owned_tree(&self, path: &Path) -> Result<(), String> {
         let data = &self.config.data_dir;
-        let allowed = [
+        let allowed = ([
             data.join("sysroots"),
             data.join("runtime").join("sandboxes"),
             data.join("system"),
@@ -1053,6 +1169,7 @@ impl Manager {
         ]
         .iter()
         .any(|root| path.starts_with(root) && path != root.as_path())
+            || production_run_files(data, path))
             && !path
                 .components()
                 .any(|c| matches!(c, std::path::Component::ParentDir));
@@ -1122,10 +1239,17 @@ impl Manager {
             tracing::warn!(sandbox, "not a sandbox name: nothing retired");
             return;
         }
-        let dir = self.state_dir(sandbox);
+        // Its production holder goes with it (SPEC-279 PDE-005).
+        let mut dirs = vec![self.state_dir(sandbox)];
+        if production_sandbox(sandbox).is_none() {
+            dirs.push(self.state_dir(&production_holder(sandbox)));
+        }
         let marked = tokio::task::spawn_blocking(move || {
-            std::fs::create_dir_all(&dir)?;
-            std::fs::write(dir.join(RETIRED), b"")
+            for dir in dirs {
+                std::fs::create_dir_all(&dir)?;
+                std::fs::write(dir.join(RETIRED), b"")?;
+            }
+            Ok(())
         })
         .await
         .unwrap_or_else(|error| Err(std::io::Error::other(error)));
@@ -1207,7 +1331,7 @@ impl Manager {
             cgroup: groups.map(|g| g.system.to_string_lossy().into_owned()),
             port_first: request.port_first,
             port_last: request.port_last,
-            forwards: self.config.forwards.keys().copied().collect(),
+            forwards: self.forwards_of(&request.id),
             containers: self.docker(),
         };
         spec.validate().map_err(|e| e.to_string())?;
@@ -1245,6 +1369,10 @@ impl Manager {
     }
 
     fn start_relays(&self, sandbox: &str, record: &HolderRecord) -> Vec<JoinHandle<()>> {
+        // A production holder forwards nothing and has no dev ports (SPEC-279 PDE-001).
+        if production_sandbox(sandbox).is_some() {
+            return Vec::new();
+        }
         let state = StatePaths::new(self.state_dir(sandbox));
         let mut tasks = Vec::new();
         let _ = std::fs::remove_file(state.outbound());
@@ -1447,27 +1575,54 @@ impl Manager {
     /// start a stopped engine and reset its idle time, keeping it and the holder up for as long
     /// as the disk is under pressure. `None` without a live holder serving one, with the engine
     /// stopped, or when it could not prune.
+    ///
+    /// The sandbox's running production engine is pruned the same way (SPEC-279 PDE-006),
+    /// credited up to the production files measured; the sum is returned.
     pub async fn prune_engine(&self, sandbox: &str) -> Option<u64> {
-        let (socket, measured) = {
-            let entry = self.entry(sandbox);
+        let own = self.prune_one(sandbox, sandbox, "containers").await;
+        let production = match production_sandbox(sandbox) {
+            Some(_) => None,
+            None => {
+                let name = production_holder(sandbox);
+                // Only a production holder this server knows (no empty entry is made).
+                if lock(&self.sandboxes).contains_key(&name) {
+                    self.prune_one(&name, sandbox, "production").await
+                } else {
+                    None
+                }
+            }
+        };
+        match (own, production) {
+            (None, None) => None,
+            (own, production) => Some(own.unwrap_or(0).saturating_add(production.unwrap_or(0))),
+        }
+    }
+
+    /// Prunes the running engine of the holder `name`, credited up to the consumer `label` of
+    /// `measured_in`'s last measurement.
+    async fn prune_one(&self, name: &str, measured_in: &str, label: &str) -> Option<u64> {
+        let socket = {
+            let entry = self.entry(name);
             let state = entry.lock().await;
             if !state.live.as_ref()?.serves_engine() {
                 return None;
             }
-            let measured = state.usage.as_ref().map_or(0, |(usage, _)| {
+            StatePaths::new(self.state_dir(name))
+                .engine_control()
+                .join(yulius_contracts::sandbox::ENGINE_SOCKET)
+        };
+        let measured = {
+            let entry = self.entry(measured_in);
+            let state = entry.lock().await;
+            state.usage.as_ref().map_or(0, |(usage, _)| {
                 usage
                     .largest
                     .iter()
-                    .find(|(name, _)| name == "containers")
+                    .find(|(consumer, _)| consumer == label)
                     .map_or(0, |(_, bytes)| *bytes)
-            });
-            (
-                StatePaths::new(self.state_dir(sandbox))
-                    .engine_control()
-                    .join(yulius_contracts::sandbox::ENGINE_SOCKET),
-                measured,
-            )
+            })
         };
+        let sandbox = name;
         match crate::engine::prune(&socket).await {
             Ok(reported) => {
                 let bytes = reported.min(measured);
@@ -1495,9 +1650,11 @@ impl Manager {
         }
         if at.elapsed() >= QUOTA_RECHECK {
             let (dir, sysroot) = (request.dir.clone(), self.sysroot(&request.id));
-            let fresh = tokio::task::spawn_blocking(move || measure_sandbox(&dir, &sysroot))
-                .await
-                .ok()?;
+            let production = self.sysroot(&production_holder(&request.id));
+            let fresh =
+                tokio::task::spawn_blocking(move || measure_sandbox(&dir, &sysroot, &production))
+                    .await
+                    .ok()?;
             state.usage = Some((fresh, Instant::now()));
         }
         let (usage, _) = state.usage.as_ref()?;
@@ -1508,7 +1665,11 @@ impl Manager {
     }
 
     fn refresh_usage(self: &Arc<Self>, sandbox: &str, state: &mut SandboxState) {
-        if self.config.disk_max.is_none() || state.measuring {
+        // A production holder's files are measured with its sandbox's (SPEC-279 PDE-006).
+        if self.config.disk_max.is_none()
+            || state.measuring
+            || production_sandbox(sandbox).is_some()
+        {
             return;
         }
         let Some(request) = state.request.clone() else {
@@ -1525,11 +1686,13 @@ impl Manager {
         let manager = Arc::clone(self);
         let sandbox = sandbox.to_owned();
         let sysroot = self.sysroot(&sandbox);
+        let production = self.sysroot(&production_holder(&sandbox));
         tokio::spawn(async move {
-            let usage =
-                tokio::task::spawn_blocking(move || measure_sandbox(&request.dir, &sysroot))
-                    .await
-                    .unwrap_or_default();
+            let usage = tokio::task::spawn_blocking(move || {
+                measure_sandbox(&request.dir, &sysroot, &production)
+            })
+            .await
+            .unwrap_or_default();
             let entry = manager.entry(&sandbox);
             let mut state = entry.lock().await;
             state.measuring = false;
@@ -1693,9 +1856,11 @@ impl Manager {
     pub async fn measure_disk(&self, request: &SandboxRequest) -> Option<(u64, u64)> {
         let limit = self.config.disk_max?;
         let (dir, sysroot) = (request.dir.clone(), self.sysroot(&request.id));
-        let usage = tokio::task::spawn_blocking(move || measure_sandbox(&dir, &sysroot))
-            .await
-            .ok()?;
+        let production = self.sysroot(&production_holder(&request.id));
+        let usage =
+            tokio::task::spawn_blocking(move || measure_sandbox(&dir, &sysroot, &production))
+                .await
+                .ok()?;
         let bytes = usage.bytes;
         let entry = self.entry(&request.id);
         entry.lock().await.usage = Some((usage, Instant::now()));
@@ -1814,13 +1979,15 @@ fn bind_record(known: &mut HashMap<u64, u8>, tried: &[(u32, u64)], output: &str)
     }
 }
 
-/// A sandbox's usage: its directory, split by consumer, its system layer (`sysroot/upper`) and
-/// its Docker engine's storage (`sysroot/docker`, SPEC-187 DKR-006) as one each.
-fn measure_sandbox(dir: &Path, sysroot: &Path) -> Usage {
+/// A sandbox's usage: its directory, split by consumer, its system layer (`sysroot/upper`), its
+/// Docker engine's storage (`sysroot/docker`, SPEC-187 DKR-006) and its production holder's
+/// system layer and engine storage (`production`, SPEC-279 PDE-006) as one each.
+fn measure_sandbox(dir: &Path, sysroot: &Path, production: &Path) -> Usage {
     crate::usage::measure(&[
         (dir, None),
         (&sysroot.join("upper"), Some("system")),
         (&sysroot.join("docker"), Some("containers")),
+        (production, Some("production")),
     ])
 }
 
@@ -2557,7 +2724,7 @@ while True:
         std::fs::write(dir.join("worktrees/t1/a"), vec![1u8; 64 * 1024])?;
         std::fs::write(sysroot.join("upper/usr/b"), vec![1u8; 128 * 1024])?;
         std::fs::write(sysroot.join("docker/overlay2/l1/c"), vec![1u8; 512 * 1024])?;
-        let usage = measure_sandbox(&dir, &sysroot);
+        let usage = measure_sandbox(&dir, &sysroot, &data.path().join("sysroots/s1.prod"));
         assert_eq!(
             usage.largest.first().map(|(name, _)| name.as_str()),
             Some("containers"),
@@ -2902,6 +3069,13 @@ while True:
             d.join("sysroots"),
             d.join("sysroots/../sandboxes/s1"),
             PathBuf::from("/tmp"),
+            // Of the CD directory only production runs' files (SPEC-279 PDE-004).
+            d.join("cd"),
+            d.join("cd/s1"),
+            d.join("cd/s1/source.git"),
+            d.join("cd/s1/cache/prod"),
+            d.join("cd/s1/runs"),
+            d.join("cd/s1/runs/../source.git"),
         ] {
             assert!(
                 manager.remove_owned_tree(&refused).await.is_err(),
@@ -2936,6 +3110,8 @@ while True:
             "sandboxes/s1/ci",
             "sandboxes/s1/ci/jobs/old",
             "sandboxes/docker-smoke-1",
+            // A production run and its engine's containers write there (SPEC-279 PDE-004).
+            "cd/s1/runs/cd-r",
         ] {
             assert!(reachable_by_runs(d, &d.join(walked)), "{walked}");
         }
@@ -2986,6 +3162,222 @@ while True:
         kill(pid);
         assert!(stopped, "the retired holder is stopped");
         assert!(restarted.entry("s1").lock().await.live.is_none());
+        Ok(())
+    }
+
+    /// SPEC-279 PDE-001, PDE-005: a sandbox's production holder has trees of its own (none
+    /// below the sandbox's), a valid name for every by-name operation, and is retired with its
+    /// sandbox.
+    #[tokio::test]
+    async fn a_production_holder_has_its_own_trees_and_is_retired_with_its_sandbox()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 1 << 40);
+        let d = data.path();
+        assert_eq!(
+            manager.state_dir("s1.prod"),
+            d.join("runtime/sandboxes/s1.prod")
+        );
+        assert_eq!(manager.sysroot("s1.prod"), d.join("sysroots/s1.prod"));
+        assert_eq!(
+            manager.state_dir("x.y"),
+            d.join("runtime/sandboxes/.invalid")
+        );
+        assert!(!manager.holder_live("s1.prod").await, "no record yet");
+        manager.retire("s1").await;
+        assert!(manager.retired("s1") && manager.retired("s1.prod"));
+        assert_eq!(
+            manager.prepare_production(&request(d)).await.err(),
+            Some(PrepareError::Retired)
+        );
+        Ok(())
+    }
+
+    /// SPEC-279 PDE-001, PDE-004: the production request has no dev ports, a host name of its
+    /// own and the production runs directory; an adopted production holder gets the same.
+    #[test]
+    fn a_production_request_has_its_runs_directory_and_no_ports()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 1 << 40);
+        let production = manager.production_request(&request(data.path()));
+        assert_eq!(
+            production,
+            SandboxRequest {
+                id: "s1.prod".into(),
+                hostname: "s1-prod".into(),
+                dir: data.path().join("cd/s1/runs"),
+                port_first: 0,
+                port_last: 0,
+            }
+        );
+        let mut long = request(data.path());
+        long.hostname = "a".repeat(63);
+        let hostname = manager.production_request(&long).hostname;
+        assert_eq!(hostname, format!("{}-prod", "a".repeat(58)));
+        assert!(yulius_contracts::sandbox::valid_hostname(&hostname));
+        let state = StatePaths::new(manager.state_dir("s1.prod"));
+        std::fs::create_dir_all(&state.dir)?;
+        let spec = serde_json::json!({"hostname": "s1-prod", "port_first": 0, "port_last": 0});
+        std::fs::write(state.spec(), serde_json::to_vec(&spec)?)?;
+        let adopted = manager.adopted_request("s1.prod");
+        assert_eq!(adopted.dir, data.path().join("cd/s1/runs"));
+        assert_eq!(adopted.hostname, "s1-prod");
+        Ok(())
+    }
+
+    /// SPEC-279 PDE-002, PDE-004: the production engine keeps its storage by its own system
+    /// layer, binds the production runs directory and nothing of the sandbox.
+    #[test]
+    fn the_production_engine_binds_its_runs_and_nothing_of_the_sandbox()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 1);
+        let cgroup = PathBuf::from("/sys/fs/cgroup/yulius.service/sandboxes/s1.prod/engine");
+        let production = manager.production_request(&request(data.path()));
+        let spec = manager.engine_spec(&production, &cgroup);
+        let d = data.path().to_string_lossy().into_owned();
+        let has = |window: &[String]| spec.command.windows(window.len()).any(|w| w == window);
+        assert!(has(&[
+            "--bind".into(),
+            format!("{d}/sysroots/s1.prod/docker"),
+            "/var/lib/docker".into()
+        ]));
+        assert!(has(&[
+            "--bind".into(),
+            format!("{d}/cd/s1/runs"),
+            format!("{d}/cd/s1/runs")
+        ]));
+        assert!(has(&[
+            "--bind-try".into(),
+            format!("{d}/runtime/sandboxes/s1.prod/root/usr"),
+            "/usr".into()
+        ]));
+        assert!(has(&["--hostname".into(), "s1-prod".into()]));
+        let everything = spec.command.join(" ");
+        for sandbox in ["/sandboxes/s1 ", "/sandboxes/s1/", "/sysroots/s1/"] {
+            assert!(!everything.contains(sandbox), "{sandbox} in {everything}");
+        }
+        Ok(())
+    }
+
+    /// SPEC-279 PDE-001: a production holder has no forwarded ports (no relay to Yulius's
+    /// internal port) and no relays on the host.
+    #[tokio::test]
+    async fn a_production_holder_has_no_forwards_and_no_relays() {
+        let data = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let mut config = config(data.path(), 1 << 40);
+        config.forwards = BTreeMap::from([(
+            8081,
+            "127.0.0.1:8081".parse().unwrap_or_else(|e| panic!("{e}")),
+        )]);
+        let manager = Manager::new(config);
+        assert_eq!(manager.forwards_of("s1"), vec![8081]);
+        assert!(manager.forwards_of("s1.prod").is_empty());
+        // Review finding 5: nor on its engine's bridge, whatever its holder spec says.
+        assert_eq!(
+            manager.bridge_forwards("s1"),
+            vec![8081],
+            "no spec: an old holder"
+        );
+        assert!(manager.bridge_forwards("s1.prod").is_empty());
+        let record = live_record(false);
+        for name in ["s1", "s1.prod"] {
+            std::fs::create_dir_all(manager.state_dir(name)).unwrap_or_else(|e| panic!("{e}"));
+        }
+        assert!(manager.start_relays("s1.prod", &record).is_empty());
+        assert!(!manager.state_dir("s1.prod").join("out.sock").exists());
+        let relays = manager.start_relays("s1", &record);
+        assert_eq!(relays.len(), 2, "out.sock and the dev ports");
+        for relay in relays {
+            relay.abort();
+        }
+    }
+
+    /// SPEC-279 PDE-006: a production prepare is refused while its sandbox is over its quota,
+    /// and the production holder's layer and storage count toward it as one consumer.
+    #[tokio::test]
+    async fn production_counts_toward_and_is_refused_by_its_sandbox_s_quota()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 10_000_000);
+        let request = request(data.path());
+        std::fs::create_dir_all(&request.dir)?;
+        manager.set_usage("s1", 112_000_000_000).await;
+        assert!(matches!(
+            manager.prepare_production(&request).await,
+            Err(PrepareError::OverQuota { .. })
+        ));
+        let production = data.path().join("sysroots/s1.prod");
+        std::fs::create_dir_all(production.join("docker/overlay2/l1"))?;
+        std::fs::write(
+            production.join("docker/overlay2/l1/c"),
+            vec![1u8; 512 * 1024],
+        )?;
+        // Review finding 1: production's own files never refuse a production deploy (a
+        // deploy starts the engine whose storage the upkeep then prunes); the agents' do.
+        manager.entry("s1").lock().await.usage = Some((
+            crate::usage::Usage {
+                bytes: 20_000_000,
+                largest: vec![("production".into(), 15_000_000)],
+                ..crate::usage::Usage::default()
+            },
+            Instant::now(),
+        ));
+        assert_eq!(manager.prepare_production(&request).await, Ok(None));
+        manager.entry("s1").lock().await.usage = Some((
+            crate::usage::Usage {
+                bytes: 20_000_000,
+                largest: vec![("production".into(), 5_000_000)],
+                ..crate::usage::Usage::default()
+            },
+            Instant::now(),
+        ));
+        assert!(matches!(
+            manager.prepare_production(&request).await,
+            Err(PrepareError::OverQuota { .. })
+        ));
+        let usage = manager.measure_disk(&request).await;
+        assert!(usage.is_some_and(|(used, _)| used >= 512 * 1024));
+        let largest = manager.largest("s1").await;
+        assert_eq!(
+            largest.first().map(|(name, _)| name.as_str()),
+            Some("production"),
+            "{largest:?}"
+        );
+        Ok(())
+    }
+
+    /// SPEC-279 PDE-006: the disk upkeep's prune of a sandbox reaches its running production
+    /// engine through that engine's control socket, credited up to the production storage
+    /// measured.
+    #[tokio::test]
+    async fn pruning_a_sandbox_prunes_its_running_production_engine()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let data = tempfile::tempdir()?;
+        let manager = manager(data.path(), 1);
+        let state = StatePaths::new(manager.state_dir("s1.prod"));
+        std::fs::create_dir_all(state.engine_control())?;
+        let control = state.engine_control().join("docker.sock");
+        let (engine, hits) = fake_api(tokio::net::UnixListener::bind(&control)?);
+        manager.entry("s1.prod").lock().await.live = Some(Live::new(
+            HolderRecord {
+                sandbox: "s1.prod".into(),
+                ..live_record(true)
+            },
+            Vec::new(),
+        ));
+        manager.entry("s1").lock().await.usage = Some((
+            crate::usage::Usage {
+                bytes: 5_000,
+                largest: vec![("production".into(), 700)],
+                ..crate::usage::Usage::default()
+            },
+            Instant::now(),
+        ));
+        assert_eq!(manager.prune_engine("s1").await, Some(700));
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        engine.abort();
         Ok(())
     }
 }

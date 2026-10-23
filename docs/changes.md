@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-23
 
+- Production deploys get a Docker engine of their own (SPEC-279, task #265, ADR-0208). Each
+  sandbox has a production holder (`<sid>.prod`: its own namespaces, network, cgroup, system layer
+  over the base and engine storage in `sysroots/<sid>.prod`), started for production-stage runs
+  and stopped when idle. Production runs join it on the host's read-only system with its Docker
+  directory, so `docker buildx build --load`, `docker load` and `docker run -v "$PWD":…` work,
+  with images and build cache kept between deploys and out of every agent's reach; their files
+  moved to `<data>/cd/<sid>/runs`. It counts toward the sandbox's quota and is pruned, retired and
+  removed with it; `yulius doctor --docker-smoke` proves it on a host, and `cd_status` says so.
 - CD runs use agent states (SPEC-278, task #264, ADR-0207). A `[cd.<name>]` names the states
   its deploy needs (`states = ["QUARTIO_OPERATOR"]`): the run restores the vault's newest version
   into its own folder (`$YULIUS_STATE_<NAME>`, production too, never a task's copy) and saves what

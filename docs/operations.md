@@ -915,14 +915,16 @@ up at once there, agents with `repo_cleanup`. Each removal is audited `hygiene.c
 
 CD (deployment, SPEC-134) needs no configuration on the server: projects define `[cd.dev]`, `[cd.prod]`
 and any other `[cd.<name>]` with its `stage` in their `yulius.toml` ([API](api.md#cd-deployment)). A run uses the CI job timeout (`--ci-job-timeout-min`, `YULIUS_CI_JOB_TIMEOUT_MIN`) and the
-containment: dev runs inside the sandbox (its tools, its network); production joins only the
-sandbox's network (no host loopback) on the host's read-only `/usr`, `/etc` and `/opt`, so its
-scripts install the tools they need into `$YULIUS_CD_CACHE`. Files: `<data>/cd/<id>/source.git` (the verified
+containment: dev runs inside the sandbox (its tools, its network); production joins the sandbox's
+production holder (its own network, no host loopback, and its own Docker engine; ADR-0208) on the
+host's read-only `/usr`, `/etc` and `/opt`, so its scripts install the tools they need into
+`$YULIUS_CD_CACHE`. Files: `<data>/cd/<id>/source.git` (the verified
 mirror), `<data>/cd/<id>/environments.git` (the mirror delivery environment runs take their commits
 from, ADR-0175), `<data>/cd/<id>/cache/<name>` (`$YULIUS_CD_CACHE`; `cache/<stage>.<name>` for an
 environment other than `dev` and `prod`, so a name moved to the other stage gets a fresh cache),
 and `<data>/runs/cd-<run>/work` or `<data>/runs/env-<run>/work` (the commit's tree, `HOME` and log, removed
-after each run); none is visible to agents. Runs are kept
+after each run; a production run's are in `<data>/cd/<id>/runs/cd-<run>/work` or
+`…/env-<run>/work`, which its Docker engine binds); none is visible to agents. Runs are kept
 14 days, 50 per environment, and each environment's last passed run always.
 
 - **Secrets.** A dev run gets the real value of each secret its table names once a person allowed
@@ -935,7 +937,7 @@ after each run); none is visible to agents. Runs are kept
 - **Agent states** ([ADR-0207](decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)).
   A table's `states = ["NAME"]` makes the run hold those agent states (a second run naming one waits,
   its output says for which run), restore the vault's newest version of each into
-  `<data>/runs/cd-<run>/work/states/<NAME>` (`$YULIUS_STATE_<NAME>`, never a task's copy, never
+  `<run files>/work/states/<NAME>` (`$YULIUS_STATE_<NAME>`, never a task's copy, never
   inside `HOME`) and save each changed folder back as a new version after the deploy and the
   verify, failed ones included. A failed save makes the run an `error`. Each restore and save is
   audited `vault.state.restore`/`vault.state.save` as `cd:<environment>`. While a run holds a state,
@@ -948,13 +950,23 @@ after each run); none is visible to agents. Runs are kept
   since a person with write access sets them and an administrator deploys production. A named
   variable the project lacks refuses the deploy.
 - **Docker.** Dev runs use the sandbox's engine, as tasks do (`docker buildx`, `docker load`).
-  Production runs have no engine yet (task #265 adds one agents cannot reach).
-- **SSH and other hosts.** Runs use the sandbox's network: every Internet host over TCP, port 22
-  included, but not the host's loopback. Yulius keeps no host list; a project names its hosts and
+  Production runs use their production holder's engine (SPEC-279, ADR-0208): `dockerd` of the
+  sandbox base (the host's Docker, which `yulius host setup` installs, with buildx), started on
+  the first `docker` command, named `<slug>-prod`, its images and build cache in
+  `<data>/sysroots/<id>.prod/docker` and kept between deploys, out of every agent's reach. The
+  run's own files can be mounted (`docker run -v "$PWD":…`); nothing of the sandbox can. The
+  `docker` CLI and its buildx plugin are the host's. Its storage counts toward the sandbox's
+  disk quota (but never refuses a production deploy by itself) and is pruned after a production
+  run that leaves the sandbox under disk pressure (90 % of its quota); the holder stops when idle and goes with the sandbox. Without
+  a `dockerd` in the base, `docker` answers why (run `sudo yulius host setup`), and
+  `yulius doctor --docker-smoke` proves it on the host.
+- **SSH and other hosts.** Runs use their holder's network (dev the sandbox's, production its
+  production holder's): every Internet host over TCP, port 22 included, but not the host's
+  loopback. Yulius keeps no host list; a project names its hosts and
   pins their keys in its own state or repository (`StrictHostKeyChecking=yes` with its own
   `UserKnownHostsFile`), since each run's `HOME` is fresh.
 - **Egress off.** With `YULIUS_SANDBOX_EGRESS=none` sandboxes have no network, and production
-  deploys (which use the sandbox's network) have none either.
+  deploys (whose production holder has no `slirp4netns` then either) have none.
 - **Production.** Only an administrator deploys it, on the CD page, typing the project's slug. With
   `promote = true` the deploy first promotes under that person's GitHub identity; a promotion pull
   request whose checks still run refuses the deploy until they pass.

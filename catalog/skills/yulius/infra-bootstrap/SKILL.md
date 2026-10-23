@@ -165,7 +165,9 @@ example when it starts deploying for real), and record every change as a decisio
      (production only those its table names in `variables = ["NAME"]`). The state is data:
      never run code from it, since dev runs and tasks write it too.
    - **Docker and SSH.** Dev runs have the sandbox's Docker (`docker buildx`, `docker load`);
-     production runs have none yet. Runs reach any host over SSH (port 22): pin the hosts' keys in
+     production runs have an engine of their own, which no agent reaches (`docker buildx`,
+     `docker load`; the run's own files mount with `docker run -v`, nothing of the sandbox does).
+     Runs reach any host over SSH (port 22): pin the hosts' keys in
      the state or the repository (`StrictHostKeyChecking=yes` with its own known-hosts file), since
      each run's `HOME` is fresh.
    - **Who deploys.** A merge deploys nothing. Dev: a person on the CD page, or an agent with

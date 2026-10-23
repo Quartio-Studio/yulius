@@ -210,6 +210,38 @@ pub fn valid_sandbox_id(text: &str) -> bool {
     crate::ptyhost::valid_identifier(text)
 }
 
+/// What a sandbox's production holder adds to the sandbox's id (SPEC-279, ADR-0208): `.` is
+/// outside the ids' alphabet, so no sandbox has the name.
+pub const PRODUCTION_SUFFIX: &str = ".prod";
+
+/// The name of `sandbox`'s production holder: its directories under `runtime/sandboxes/` and
+/// `sysroots/`, and its cgroup.
+#[must_use]
+pub fn production_holder(sandbox: &str) -> String {
+    format!("{sandbox}{PRODUCTION_SUFFIX}")
+}
+
+/// The sandbox whose production holder `name` is; `None` for any other name.
+#[must_use]
+pub fn production_sandbox(name: &str) -> Option<&str> {
+    name.strip_suffix(PRODUCTION_SUFFIX)
+        .filter(|sandbox| valid_sandbox_id(sandbox))
+}
+
+/// `<data>/cd/<sandbox>/runs`: where production-stage runs of `sandbox` have their directories,
+/// bound into its production engine at the same path (SPEC-279 PDE-004).
+#[must_use]
+pub fn production_runs_dir(data_dir: &std::path::Path, sandbox: &str) -> std::path::PathBuf {
+    data_dir.join("cd").join(sandbox).join("runs")
+}
+
+/// Whether `name` names a holder: a sandbox's id or its production holder's name. Either is one
+/// path component that cannot leave its directory.
+#[must_use]
+pub fn valid_holder_name(name: &str) -> bool {
+    valid_sandbox_id(name) || production_sandbox(name).is_some()
+}
+
 /// Whether `text` is a host name (1–63 letters, digits or dashes).
 #[must_use]
 pub fn valid_hostname(text: &str) -> bool {
@@ -225,8 +257,11 @@ impl HolderSpec {
         if self.version != HOLDER_RECORD_VERSION {
             return Err(spec_err("version", "unsupported record version"));
         }
-        if !valid_sandbox_id(&self.sandbox) {
-            return Err(spec_err("sandbox", "must be 1-64 of [A-Za-z0-9_-]"));
+        if !valid_holder_name(&self.sandbox) {
+            return Err(spec_err(
+                "sandbox",
+                "must be 1-64 of [A-Za-z0-9_-], or that and .prod",
+            ));
         }
         if !valid_hostname(&self.hostname) {
             return Err(spec_err(
@@ -343,8 +378,11 @@ impl DockerFrontSpec {
         if self.version != HOLDER_RECORD_VERSION {
             return Err(spec_err("version", "unsupported record version"));
         }
-        if !valid_sandbox_id(&self.sandbox) {
-            return Err(spec_err("sandbox", "must be 1-64 of [A-Za-z0-9_-]"));
+        if !valid_holder_name(&self.sandbox) {
+            return Err(spec_err(
+                "sandbox",
+                "must be 1-64 of [A-Za-z0-9_-], or that and .prod",
+            ));
         }
         if !abs(&self.state_dir) || self.cgroup.as_deref().is_some_and(|p| !abs(p)) {
             return Err(spec_err("paths", "must be absolute and not /"));
@@ -583,6 +621,29 @@ mod tests {
         assert_eq!(s.validate().map_err(|e| e.field), Err("forwards"));
         let mut s = spec();
         s.sandbox = "../x".into();
+        assert_eq!(s.validate().map_err(|e| e.field), Err("sandbox"));
+    }
+
+    /// SPEC-279 PDE-001: a sandbox's production holder has a name no sandbox can have, and the
+    /// holder and front specs take it; nothing else with a `.` passes.
+    #[test]
+    fn a_production_holder_is_named_apart_from_every_sandbox() {
+        let name = production_holder("s1");
+        assert_eq!(name, "s1.prod");
+        assert!(!valid_sandbox_id(&name), "no sandbox id has a dot");
+        assert!(valid_holder_name(&name));
+        assert_eq!(production_sandbox(&name), Some("s1"));
+        assert_eq!(production_sandbox("s1"), None);
+        for bad in [".prod", "s1.prod.prod", "a.b", "../x.prod", "s1.prod/", ""] {
+            assert!(!valid_holder_name(bad), "{bad}");
+            assert_eq!(production_sandbox(bad), None, "{bad}");
+        }
+        assert!(valid_holder_name(&"a".repeat(64)));
+        assert!(valid_holder_name(&production_holder(&"a".repeat(64))));
+        let mut s = spec();
+        s.sandbox = name.clone();
+        assert_eq!(s.validate().map_err(|e| e.field), Ok(()));
+        s.sandbox = "a.b".into();
         assert_eq!(s.validate().map_err(|e| e.field), Err("sandbox"));
     }
 }

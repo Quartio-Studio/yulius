@@ -17,7 +17,7 @@ use yulius_app::ports::isolation::{
 use yulius_domain::ids::SandboxId;
 use yulius_sandbox::cgroup::Limits;
 use yulius_sandbox::manager::{
-    IdleConfig, IsolationConfig, Manager, PrepareError, SandboxRequest, TICK,
+    IdleConfig, IsolationConfig, Joined, Manager, PrepareError, SandboxRequest, TICK,
 };
 
 /// Which containment contained runs use.
@@ -292,10 +292,15 @@ impl NamespaceIsolation {
     }
 }
 
-#[async_trait]
-impl SandboxIsolation for NamespaceIsolation {
-    async fn prepare(&self, sandbox: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
-        match self.manager.prepare(&request_of(sandbox)).await {
+impl NamespaceIsolation {
+    /// The port's answer to a manager's `prepare` (of a sandbox's holder or its production
+    /// holder).
+    fn joined(
+        &self,
+        sandbox: &SandboxRef,
+        prepared: Result<Option<Joined>, PrepareError>,
+    ) -> AppResult<Option<SandboxJoin>> {
+        match prepared {
             Ok(Some(joined)) => {
                 let join = joined.join;
                 Ok(Some(SandboxJoin {
@@ -336,6 +341,25 @@ impl SandboxIsolation for NamespaceIsolation {
                 Ok(None)
             }
         }
+    }
+}
+
+#[async_trait]
+impl SandboxIsolation for NamespaceIsolation {
+    async fn prepare(&self, sandbox: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
+        let prepared = self.manager.prepare(&request_of(sandbox)).await;
+        self.joined(sandbox, prepared)
+    }
+
+    async fn prepare_production(&self, sandbox: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
+        let prepared = self.manager.prepare_production(&request_of(sandbox)).await;
+        self.joined(sandbox, prepared)
+    }
+
+    fn release_production(&self, sandbox: &SandboxId) {
+        let manager = Arc::clone(&self.manager);
+        let name = yulius_contracts::sandbox::production_holder(sandbox.as_str());
+        tokio::spawn(async move { manager.release(&name).await });
     }
 
     async fn disk(&self, sandbox: &SandboxRef) -> Option<DiskUsage> {

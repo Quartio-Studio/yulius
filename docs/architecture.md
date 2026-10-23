@@ -23,13 +23,18 @@ flowchart LR
   APP --- SUP
   APP --- CI
   APP --- CD
-  CD -->|"deploy + verify, allowed secrets"| SB
+  CD -->|"dev: deploy + verify, allowed secrets"| SB
+  CD -->|"production: deploy + verify, allowed secrets"| PSB
   APP -->|"prune caches, quota"| SB
   SUP <-->|"Unix socket"| PH["yulius ptyhost (per run)"]
   subgraph SB["Sandbox (namespace holder)"]
     PH --> AG["claude TUI"]
     AG -->|"/run/yulius/docker"| DF["Docker front"]
     DF --> DE["Docker engine (on demand)"]
+  end
+  subgraph PSB["Production holder (per sandbox; no agent joins it)"]
+    PR["production run (host's read-only system)"] -->|"/run/yulius/docker"| PDF["its Docker front"]
+    PDF --> PDE["its Docker engine (on demand)"]
   end
   AG -->|"MCP + hooks"| INT
   APP <--> GH["GitHub App + REST"]
@@ -131,16 +136,36 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   `engine/` leaf is then empty, so systemd prunes it when `yulius.service` stops
   (`KillMode=process` keeps the holder and front running). The front makes it again before each
   start, and the upkeep tick does the same for a kept engine or relay front (SPEC-201, #614).
-- **Disk.** Its storage counts toward the quota. Under pressure, a running engine's unused images
-  and build cache are pruned through its own control socket; a stopped engine is never started
-  for that.
+- **Disk.** Its storage counts toward the quota, and so do the production holder's layer and
+  engine storage (consumer `production`). Under pressure, a running engine's unused images
+  and build cache are pruned through its own control socket, the production engine's too; a
+  stopped engine is never started for that.
 - **When the prerequisites are missing** (the cgroup delegation), the briefing's `## Containers`
   section says there is no engine and `docker info` says why. A sandbox whose own system (its
   upper layer, else its base) has no `dockerd` is told to install it there
   (`sudo apt-get install -y docker.io docker-buildx docker-compose-v2`, buildx and compose
   included, SPEC-201) or that the host's Docker reaches new bases (ADR-0160).
+- **Production's own engine** ([SPEC-279](../.ai/specs/SPEC-279-production-cd-runs-get-a-docker-engine-a.md),
+  [decision 0208](decisions/0208-production-cd-runs-use-a-production-holder-with-its-own-docker-engine.md)).
+  Production-stage runs never use the sandbox's engine (agents run its `dockerd` from a layer
+  they change, and its images and socket are theirs). Each sandbox has a second holder, its
+  production holder `<sid>.prod` (`.` is outside the ids' alphabet), which the manager runs like
+  any holder under that name: its own user, network and mount namespaces with its own
+  `slirp4netns` and no forwarded or dev ports, its cgroup `sandboxes/<sid>.prod`, state
+  `runtime/sandboxes/<sid>.prod`, a system layer `sysroots/<sid>.prod/{upper,work}` over the
+  current base and engine storage `sysroots/<sid>.prod/docker`. Its front starts `dockerd` of the
+  base (never of the sandbox's layer) as `<slug>-prod`, binding `<data>/cd/<sid>/runs`, where
+  production runs keep their files, and nothing of the sandbox directory.
+  `Manager::prepare_production` starts it for a production run (refused while the sandbox is
+  over its quota without production's own files, which the upkeep prunes right after a
+  production run under disk pressure); the run joins it on the host's read-only system with its
+  Docker directory; it stops when idle, is adopted after a restart, is retired with its sandbox
+  and its trees go with the sandbox's. It maps the same ids as the sandbox's holder: what
+  separates them is namespaces and the covered data directory, as between two sandboxes.
 - **Proof on a host.** `yulius doctor --docker-smoke` walks a throwaway sandbox through an
-  upgrade (a run older than the engine, adoption with Docker on, a recreated socket).
+  upgrade (a run older than the engine, adoption with Docker on, a recreated socket), then a
+  production run in the sandbox's production holder (its own engine, `docker buildx build
+  --load`, `docker save`/`docker load`, a bind of its files) that a sandbox run cannot reach.
 
 ```mermaid
 flowchart LR
@@ -155,6 +180,19 @@ flowchart LR
   M["server: disk upkeep"] -->|"running engine only: prune build cache, unused images"| E
   K["server: upkeep tick"] -->|"start / restart the front"| H
   K -->|"bind-docker: move the directory into runs without it"| R
+```
+
+```mermaid
+flowchart LR
+  subgraph PNS["Production holder sid.prod: own user + network namespace"]
+    P["production CD run (host's /usr, /etc, /opt read-only)"] -->|"/run/yulius/docker/docker.sock"| PF["its Docker front"]
+    PF -->|"first connection"| PE["dockerd of the base, named slug-prod"]
+    PE --> PC["containers (engine/ of sandboxes/sid.prod)"]
+  end
+  PE -->|"storage"| PS["sysroots/sid.prod/docker"]
+  PE -->|"binds"| PR["data/cd/sid/runs (production run files)"]
+  PC --> PT["its own slirp4netns"] --> I2["Internet (SSH to the machines)"]
+  A["agent runs, sandbox engine"] -. "other namespaces, data dir covered" .-x PF
 ```
 
 **The host's part** ([SPEC-203](../.ai/specs/SPEC-203-docker-in-sandboxes-works-out-of-the-box.md),
@@ -1244,12 +1282,13 @@ person with write access or an agent (`cd_deploy`), production only an administr
 project's slug. The commit is the one GitHub reports, taken into a mirror only Yulius writes
 (`yulius_git::Git::cd_mirror_fetch`, every object checked); its tree is written into the run's
 own directory (`export_tree`) and runs through the process host like a CI job (`ci_watch`): dev in
-the sandbox's containment, production in the sandbox's network only on the host's read-only system (the launch spec's `host_system` join mode), each with the
+the sandbox's containment, production in the sandbox's production holder (its own network and Docker engine, [Containers](#containers)) on the host's read-only system (the launch spec's `host_system` join mode), each with the
 secrets allowed for that environment; nothing agents can write is bound in. Output is redacted
 before it is stored in `cd_runs`. A run also gets the project's variables and the agent states its
 table names (restored before, saved after; [Agent states](#agent-states)); dev runs use the
-sandbox's Docker engine, production runs have none yet (task #265), and both reach any Internet
-host over TCP (SSH included) through the sandbox's network. A run has no lane and no retry: a deploy is not assumed repeatable, so one left by a
+sandbox's Docker engine, production runs their production holder's (ADR-0208; their files in
+`<data>/cd/<sandbox>/runs`, which that engine binds), and both reach any Internet host over TCP
+(SSH included) through their holder's network. A run has no lane and no retry: a deploy is not assumed repeatable, so one left by a
 restart is recorded as an error. `needs_you` (table column `tasks.needs_you`) puts a task in Needs
 you until a person writes to it. `POST …/cd/{env}/deploy` answers only once the run is recorded,
 after the checks and production's promotion (seconds to a minute), so the CD page opens the Deploy

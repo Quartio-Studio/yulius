@@ -227,13 +227,9 @@ fn joined_argv(
     for dir in &join.private_dirs {
         argv.extend(["--tmpfs".into(), dir.clone()]);
     }
-    // The sandbox's Docker directory, a directory so a recreated socket reaches the run
-    // (ADR-0158); a production CD run has none.
-    if let Some(dir) = join
-        .docker_dir
-        .as_ref()
-        .filter(|_| join.host_system.is_none())
-    {
+    // The holder's Docker directory, a directory so a recreated socket reaches the run
+    // (ADR-0158): the sandbox's, or for a production CD run its production holder's (SPEC-279).
+    if let Some(dir) = &join.docker_dir {
         // Read-only: it holds only the socket (connecting needs no write access to the mount).
         argv.extend([
             "--ro-bind".into(),
@@ -570,7 +566,8 @@ mod tests {
 
     /// SPEC-196 DKL-001 (#597): a joined run sees the sandbox's Docker *directory*, so a socket
     /// recreated inside it reaches the run, finds it at `/var/run/docker.sock` through a link,
-    /// and has `DOCKER_HOST`. A production CD run gets none of it.
+    /// and has `DOCKER_HOST`. A production CD run joins its production holder and gets that
+    /// holder's directory the same way (SPEC-279 PDE-003).
     #[test]
     fn a_joined_run_binds_the_docker_directory_and_sets_docker_host() {
         let dir = "/data/runtime/sandboxes/s1/docker";
@@ -599,15 +596,39 @@ mod tests {
             .is_some(),
             "{argv:?}"
         );
+        let production = "/data/runtime/sandboxes/s1.prod/docker";
         let cd = bwrap_argv(
-            &joined(Some(dir), Some("/data/runs/cd-r/work/resolv.conf")),
+            &joined(
+                Some(production),
+                Some("/data/cd/s1/runs/cd-r/work/resolv.conf"),
+            ),
             &["sh".into()],
             "/",
         );
+        let bind = position(&cd, &["--ro-bind", production, "/run/yulius/docker"]);
+        let var = position(&cd, &["--tmpfs", "/var"]);
+        let var_run = position(&cd, &["--symlink", "../run", "/var/run"]);
+        assert!(bind.is_some() && var < bind && var_run < bind, "{cd:?}");
         assert!(
-            !cd.iter()
-                .any(|a| a.contains("docker") || a == "DOCKER_HOST"),
+            position(
+                &cd,
+                &["--symlink", "yulius/docker/docker.sock", "/run/docker.sock"]
+            )
+            .is_some()
+                && position(
+                    &cd,
+                    &[
+                        "--setenv",
+                        "DOCKER_HOST",
+                        "unix:///run/yulius/docker/docker.sock"
+                    ]
+                )
+                .is_some(),
             "{cd:?}"
+        );
+        assert!(
+            !cd.iter().any(|a| a.contains("/data/runtime/sandboxes/s1/")),
+            "nothing of the sandbox's holder: {cd:?}"
         );
     }
 
