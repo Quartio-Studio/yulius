@@ -1,11 +1,11 @@
 ---
 yulius-task: 6671e26d-ee17-4a62-b936-716717241058
-status: in-progress
+status: done
 ---
 
 # SPEC-289: `git worktree list` never reads another checkout's half-written registration
 
-Status: in-progress
+Status: done
 Date: 2026-10-24
 Owner: task #275
 Scope authorization: task #275: "Solve GitHub issue #666 … in one pull request into `dev`".
@@ -53,8 +53,8 @@ Confirmed against `dev` at 2025e0f0 with Git 2.43.0.
 - [x] Deterministic regression test that fails on dev
 - [x] worktree list runs under the worktree-registration lock
 - [x] Docs: SPEC-050 CI-109, changes.md
-- [ ] Independent review answered and gate green
-- [ ] Merged into dev on green CI, #666 closed with summary
+- [x] Independent review answered and gate green
+- [x] Merged into dev on green CI, #666 closed with summary
 
 ## Acceptance criteria
 
@@ -99,3 +99,32 @@ Confirmed against `dev` at 2025e0f0 with Git 2.43.0.
   add and prune. The commands under the lock last milliseconds in practice; a per-repository lock
   can replace it if that queueing is ever measured.
 - No ADR: this applies the existing SPEC-021 lock decision to one more command.
+
+## Evidence
+
+- **Reproduction (Git 2.43.0).** A registration `.git/worktrees/zz/` with `gitdir` and an empty
+  `commondir` makes `git worktree list --porcelain` exit 128 with `fatal: failed to read
+  .git/worktrees/zz/commondir: Success`; a `locked` that cannot be read gives `failed to read
+  '.git/worktrees/zz/locked'`. These are the two messages of #666.
+- **Fails before the fix.** At 713f4a2d (test only), `cargo nextest run -p yulius-git --test
+  git_ops -E 'test(a_ci_checkout_never_lists)'` failed 10 runs of 10 with `Failed { command:
+  "worktree list", code: Some(128), stderr: "fatal: failed to read
+  .git/worktrees/zz/commondir: Success" }`.
+- **Passes after.** At 83803de9, `-E 'test(ci_checkout)'` (the regression test and
+  `ci_checkouts_created_at_once_all_succeed`) passed 5 runs of 5; `cargo nextest run -p
+  yulius-git` passed 66 of 66 (including the unit test
+  `runner::tests::worktree_listings_and_changes_take_the_registration_lock`).
+- **Full gate.** `scripts/dev ci` at 80713409 exited 0: 2574 tests passed, 17 skipped, lint,
+  deps, macOS build and docs green. Later commits change only this spec.
+- **Security.** `scripts/dev security` at 4df68a3a exited 2, which means it did not run: the
+  instance's Vidoc key is out of quota (HTTP 429, "This API key has used its 50,000,000 tokens").
+  This is unrun, not passed.
+- **Review.** An independent read-only review in a fresh session approved 80713409 with no blocker
+  or major finding. Its two minor findings are answered in 4df68a3a: the Plan progress is ticked,
+  and the queueing behind a process-wide lock is recorded under Decisions. Its two nits need no
+  change. Lock waiting outside the command timeout was already the case before this change. The
+  test's ~2 s wait after the fix is accepted.
+- **Not tested here.** Git run outside the Yulius process (out of scope, see Decisions). The
+  failure under real load is shown only by the deterministic test, since the original race is too
+  rare to reproduce on demand.
+
