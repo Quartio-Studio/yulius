@@ -468,23 +468,23 @@ mod tests {
             mnt_ns: 3,
             cgroup: Some("/sys/fs/cgroup/yulius/sandboxes/s1/agents".into()),
             ci_cgroup: Some("/sys/fs/cgroup/yulius/sandboxes/s1/ci".into()),
-            system_root: "/data/runtime/sandboxes/s1/root".into(),
-            hostname: "app".into(),
+            system_root: "/data/runtime/sandboxes/s1.prod/root".into(),
+            hostname: "app-prod".into(),
             exec_shim: Some("/usr/local/bin/yulius".into()),
             extra_readonly: Vec::new(),
             private_dirs: vec!["/data".into()],
             system_passwd: None,
             system_group: None,
             host_system: None,
-            // The sandbox has an engine; a production CD run still gets none (SPEC-187).
-            docker_dir: Some("/data/runtime/sandboxes/s1/docker".into()),
+            // The production holder's engine (SPEC-279), never the sandbox's.
+            docker_dir: Some("/data/runtime/sandboxes/s1.prod/docker".into()),
         };
         let containment = yulius_app::ci::cd::production_containment(
-            std::path::Path::new("/data/runs/cd-r/work"),
-            std::path::Path::new("/data/runs/cd-r/work/home"),
+            std::path::Path::new("/data/cd/s1/runs/cd-r/work"),
+            std::path::Path::new("/data/cd/s1/runs/cd-r/work/home"),
             std::path::Path::new("/data/cd/s1/cache/prod"),
             vec!["/usr/local/bin/yulius".into()],
-            std::path::Path::new("/data/runs/cd-r/work/resolv.conf"),
+            std::path::Path::new("/data/cd/s1/runs/cd-r/work/resolv.conf"),
             join,
         );
         let launch = LaunchSpec {
@@ -492,7 +492,7 @@ mod tests {
             attempt_id: "r".into(),
             task_id: "cd-r".into(),
             argv: vec!["/bin/sh".into(), "-c".into(), "true".into()],
-            cwd: "/data/runs/cd-r/work/src".into(),
+            cwd: "/data/cd/s1/runs/cd-r/work/src".into(),
             env: BTreeMap::new(),
             secret_env_names: vec!["PROD_TOKEN".into()],
             cols: 160,
@@ -516,9 +516,19 @@ mod tests {
             argv.windows(2).any(|w| w == ["--tmpfs", "/var"]),
             "{argv:?}"
         );
-        assert!(!argv.iter().any(|a| a == "/run/docker.sock"), "{argv:?}");
         assert!(
-            !argv.iter().any(|a| a.contains("/data/runtime/sandboxes")),
+            argv.windows(3).any(|w| w
+                == [
+                    "--ro-bind",
+                    "/data/runtime/sandboxes/s1.prod/docker",
+                    "/run/yulius/docker"
+                ]),
+            "the production holder's Docker directory: {argv:?}"
+        );
+        assert!(
+            !argv
+                .iter()
+                .any(|a| a.contains("/data/runtime/sandboxes/s1/")),
             "{argv:?}"
         );
         assert!(
