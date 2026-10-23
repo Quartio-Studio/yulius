@@ -1871,7 +1871,7 @@ fn environment_text(out: &mut String, env: &CdEnvironment) {
         ));
     }
     if env.stage == "prod" && (env.deploy.is_some() || env.verify.is_some()) {
-        out.push_str("  no Docker engine in production runs yet (task #265)\n");
+        out.push_str("  Docker: production's own engine (buildx, load), which no agent reaches\n");
     }
     match (&env.deployed, &env.head) {
         (Some(deployed), Some(head)) if deployed == head => {
@@ -2037,6 +2037,39 @@ mod tests {
             text.contains(
                 "secrets: PAY_KEY agents use it (production never gets it: name a separate secret), \
                  HOST not allowed"
+            ),
+            "{text}"
+        );
+    }
+
+    /// SPEC-279 PDE-009: `cd_status` tells an agent writing a production deploy that it has a
+    /// Docker engine, production's own.
+    #[test]
+    fn agents_read_that_production_runs_have_their_own_docker_engine() {
+        let env = CdEnvironment {
+            name: "prod".into(),
+            label: "production".into(),
+            stage: "prod".into(),
+            state: "ready".into(),
+            branch: "main".into(),
+            head: None,
+            problem: None,
+            about: None,
+            deploy: Some("sh deploy.sh".into()),
+            verify: None,
+            promote: false,
+            promotes_from: None,
+            secrets: Vec::new(),
+            states: Vec::new(),
+            deployed: None,
+            last_run: None,
+        };
+        let mut text = String::new();
+        environment_text(&mut text, &env);
+        assert!(!text.contains("no Docker engine"), "{text}");
+        assert!(
+            text.contains(
+                "  Docker: production's own engine (buildx, load), which no agent reaches\n"
             ),
             "{text}"
         );

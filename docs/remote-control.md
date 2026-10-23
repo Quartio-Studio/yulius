@@ -143,7 +143,10 @@ The server's instructions tell your agent what to do ([SPEC-256](../.ai/specs/SP
    ([ADR-0207](decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)). From the
    first such save the vault's copy is the one written to, so a send without `--replace-state` is
    refused even before any task restored it, and a send while a deploy holds the state is refused
-   whatever you pass.
+   whatever you pass. Deploys that build and ship images (`docker buildx`, `docker load`, then
+   SSH to the machines) run as they did on your laptop: dev deploys use the sandbox's Docker,
+   production deploys an engine of their own that no agent reaches
+   ([ADR-0208](decisions/0208-production-cd-runs-use-a-production-holder-with-its-own-docker-engine.md)).
 4. **Hand over and start.** Your agent writes what it learned, without values: which secret is
    which, which state goes where in the sandbox home, the hosts and commands deploys use, what
    only ran on your laptop, what it could not find. `yulius project onboard --notes handover.md` (`onboarding_start` with `notes`) adds it to

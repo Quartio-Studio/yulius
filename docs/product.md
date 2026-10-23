@@ -22,7 +22,8 @@ watching, steering and unblocking.
   `compose` work for agents, the Superagent, shells and CI jobs; SPEC-196: in sessions started
   before too, `yulius doctor --docker-smoke` proves it on a host; SPEC-203: `sudo yulius host
   setup` installs what it needs on a fresh host, every update re-checks it, and Settings →
-  Instance shows whether sandboxes get Docker and runs the smoke check), home, shells per user,
+  Instance shows whether sandboxes get Docker and runs the smoke check; SPEC-279: production
+  deploys get a Docker engine of their own that no agent reaches), home, shells per user,
   browser and editor. Files nothing needs any more (a removed sandbox's worktrees and system
   layer, a done task's build cache) are deleted by themselves after every start and hourly, and
   the superadmin reviews and deletes the rest in Settings → Instance → Leftovers or with
