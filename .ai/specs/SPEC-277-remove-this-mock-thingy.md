@@ -1,11 +1,11 @@
 ---
 yulius-task: 363f9443-870a-4d86-8245-a4805507ca71
-status: in-progress
+status: done
 ---
 
 # SPEC-277: Demo mode (`?mock=1`) is no longer part of a real instance
 
-Status: in-progress
+Status: done
 Date: 2026-10-23
 Owner: task #263
 Scope authorization: task #263 (requested by MrFishPL): "remove this mock thingy", about demo
@@ -45,11 +45,11 @@ what the e2e suite and local UI work run on, served from the source tree.
 
 ## Plan
 
-- [ ] Spec and ADR: demo mode is test-only
-- [ ] Server binary no longer serves mock.js (contract test first)
-- [ ] ?mock=1 on a real instance drops to the normal app (redirect, test first)
-- [ ] Docs, changes and gates green
-- [ ] Independent review and delivery
+- [x] Spec and ADR: demo mode is test-only
+- [x] Server binary no longer serves mock.js (contract test first)
+- [x] ?mock=1 on a real instance drops to the normal app (redirect, test first)
+- [x] Docs, changes and gates green
+- [x] Independent review and delivery
 
 ## Acceptance criteria
 
@@ -71,3 +71,23 @@ what the e2e suite and local UI work run on, served from the source tree.
   server answers `?mock=1` with a redirect rather than leaving the app to fail on a missing
   module. Alternatives (delete the mock, move it under `e2e/`, rename the Quartio fixtures, a
   client-side fallback) are in the ADR.
+
+## Evidence
+
+- `cargo test -p yulius --test main ui_contract`: the 404 assertion for `/assets/mock.js` and the
+  redirect test failed before their changes (`GET /assets/mock.js` 200; `GET /?mock=1` 200; then
+  `//example.com/x` kept as an open redirect; then `/?mock=%31` not redirected), and pass after
+  (8 passed). Removing `\` from the leading-slash trim makes `/\example.com/x?mock=1` fail
+  (mutation check).
+- `scripts/dev ci` (doctor, check, lint, macos, test, deps, docs): exit 0; nextest 2547 passed,
+  17 skipped. Its first run failed `cargo deny` on RUSTSEC-2026-0385 (`ctutils` 0.4.3, a
+  transitive dependency, new on every branch); `ctutils` is bumped to 0.4.4 in its own commit.
+- e2e (`npm ci`, `npx e2e run`): exit 0; 65 files passed, 1 skipped (`agent.e2e.ts`, needs a
+  model key); 687 tests passed, unchanged by this change, which proves MCK-003.
+- `yulius security-scan`: exit 2, not run: Vidoc is out of quota for this key (HTTP 429, "used
+  its 50,000,000 tokens"). Not a pass; CI runs it again.
+- Independent review (fresh session, read-only, `om-code-review`): approve; its minor findings
+  (encoded or repeated `mock` switches skipped the redirect; no test of the backslash guard; empty
+  pairs kept) are fixed test-first in this change.
+- Not tested: a browser against a real `yulius serve` following the redirect; the contract test
+  drives the real router in-process instead.
