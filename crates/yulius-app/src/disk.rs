@@ -638,7 +638,12 @@ impl App {
     /// `node_modules`, declared ones): files Git ignores that are not (local configuration,
     /// data) are not Git's to lose, so only then may Yulius remove the worktree by itself.
     pub(crate) async fn worktree_only_caches(&self, worktree: &Path) -> bool {
-        let declared = declared_caches(worktree);
+        // File I/O stays off the async workers (SPEC-288 FIF-003); a failed read declares nothing,
+        // which only keeps the worktree.
+        let dir = worktree.to_path_buf();
+        let declared = tokio::task::spawn_blocking(move || declared_caches(&dir))
+            .await
+            .unwrap_or_default();
         matches!(
             self.deps.git.ignored_entries(worktree).await,
             Ok(Some(ignored)) if only_rebuildable(&ignored, &declared)
