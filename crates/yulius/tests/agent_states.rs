@@ -267,7 +267,11 @@ async fn a_state_is_restored_once_saved_back_and_never_forked() -> TestResult {
     assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.body);
     assert_eq!(replaced.body["version"], 4);
     let (error, said) = tool(&w, "secret_state_save", json!({"name": "OPS"})).await?;
-    assert!(error && said.to_string().contains("newer"), "{said}");
+    let said = said.to_string();
+    assert!(
+        error && said.contains("is stale: alice sent version 4"),
+        "{said}"
+    );
     let (error, restored) = tool(
         &w,
         "secret_state_restore",
