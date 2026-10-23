@@ -3,7 +3,7 @@
 //! request (304, no body) instead of being downloaded again on every page load.
 
 use axum::http::{HeaderMap, StatusCode, Uri, header};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Redirect, Response};
 
 include!(concat!(env!("OUT_DIR"), "/assets.rs"));
 
@@ -49,6 +49,23 @@ fn respond(headers: &HeaderMap, asset: &'static Asset, cache: &'static str) -> R
         .into_response()
 }
 
+/// Where a page link with `mock=1` goes instead: the same path without it. The mock is the e2e
+/// suite's backend, served from the source tree, and a real instance does not ship it (ADR-0206).
+fn without_mock(uri: &Uri) -> Option<String> {
+    let query = uri.query()?;
+    if !query.split('&').any(|pair| pair == "mock=1") {
+        return None;
+    }
+    // One leading slash: `//host` or `/\host` would send the browser to another site.
+    let path = format!("/{}", uri.path().trim_start_matches(['/', '\\']));
+    let rest: Vec<&str> = query.split('&').filter(|pair| *pair != "mock=1").collect();
+    Some(if rest.is_empty() {
+        path
+    } else {
+        format!("{path}?{}", rest.join("&"))
+    })
+}
+
 /// Serves `/assets/...` files and the SPA shell for any other non-API path.
 pub async fn serve(uri: Uri, headers: HeaderMap) -> Response {
     let path = uri.path().trim_start_matches('/');
@@ -58,6 +75,11 @@ pub async fn serve(uri: Uri, headers: HeaderMap) -> Response {
             axum::Json(serde_json::json!({"error": {"code": "not_found", "message": "not found"}})),
         )
             .into_response();
+    }
+    if !path.starts_with("assets/")
+        && let Some(location) = without_mock(&uri)
+    {
+        return Redirect::to(&location).into_response();
     }
     if let Some(asset) = find(path).filter(|_| !path.is_empty()) {
         let cache = if path.starts_with("assets/vendor/") {
