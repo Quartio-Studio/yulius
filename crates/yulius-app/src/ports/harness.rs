@@ -284,7 +284,8 @@ pub trait HarnessPort: Send + Sync {
         worktree: &Path,
         session_id: &str,
     ) -> AppResult<bool>;
-    /// Newest Claude session for `worktree` modified after `since` (session-id drift, HRN-004).
+    /// Newest Claude session for `worktree` modified after `since` (the cockpit's folder). Never a
+    /// task's session: any `claude` in the folder writes there (SPEC-281).
     ///
     /// # Errors
     /// I/O failures.

@@ -14,6 +14,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   (skippable). Home's empty view lists the getting-started steps with their state. The recovery
   card of setup and of a password reset keeps its frame (only the administration dialog drops it),
   and the GitHub owner toggle keeps its width.
+- A `claude` an agent runs in its worktree no longer takes over its task's session (SPEC-281,
+  task #267, ADR-0209, #862). Its transcript lands beside the TUI's, and the drift check adopted
+  the newest one: watchers saw the nested session ("Not logged in") while the owner's terminal
+  showed the real one, and a Continue would have resumed it. Now only the run's own `SessionStart`
+  hook changes the task's session (`/clear`, `/resume`), and the lineage is listed in the order
+  sessions were adopted, so watchers and resumes use the session adopted last (task #266 included).
 - The wheel and the trackpad scroll Claude Code's conversation as far as they scroll a page
   (SPEC-280, task #266, #863, ADR-0210). A task's terminal and the Superagent sent one wheel report
   per wheel event, small trackpad deltas damped, and Claude Code moves one row per report, so a
