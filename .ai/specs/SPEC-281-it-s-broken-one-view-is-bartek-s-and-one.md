@@ -1,11 +1,11 @@
 ---
 yulius-task: edbcf5af-22bc-45bb-b605-899b14ef442c
-status: in-progress
+status: done
 ---
 
 # SPEC-281: Only the task's own Claude Code changes the task's session
 
-Status: in-progress
+Status: done
 Date: 2026-10-23
 Owner: task #267
 Scope authorization: task #267 (requested by MrFishPL): "it's broken, one view is Bartek's and
@@ -66,8 +66,8 @@ session, and a Continue, a limit rotation or a queued start resumes the real ses
 - [x] Watchers and resumes use the session adopted last
 - [x] ADR, architecture and changes updated
 - [x] Review round 1 fixed test-first: lineage at the hook, another task's session refused
-- [ ] Review round 2 approves the exact head
-- [ ] Gates green and merged into dev
+- [x] Review round 2 approves the exact head
+- [x] Gates green and merged into dev
 
 ## Acceptance criteria
 
@@ -108,3 +108,26 @@ session, and a Continue, a limit rotation or a queued start resumes the real ses
 The attempt's session id feeds the transcript watch (activity, usage, turn ends, goal state),
 the Sessions page's task documents, rotation and resume. All of them followed the nested session
 while it was adopted; with SSN-001 none can.
+
+## Evidence
+
+- Reproduced from task #266's sessions (`sessions_search`): two sessions, `28c4996b…` (the TUI's)
+  and `cc2a9cb8…` (started 17:06:56, one line "Not logged in · Please run /login"), the nested
+  `claude` its agent ran in the worktree for a scroll repro.
+- Red first (commit `b68b4d12`): `session_sync::only_the_tuis_own_hooks_change_the_tasks_session`
+  failed on the unfixed code (`left: Some("6a1b2c3d-…")` the nested session, `right:` the TUI's);
+  store `the_lineage_lists_the_session_adopted_last_last` failed (`first_seen` order). Review round
+  1 tests (commit `ee1a6fad`) failed before `3ce0f06d`: `session_start_refuses_another_tasks_session`
+  (attempt became `other-1`), `session_start_with_another_session_adopts_it_at_once` (lineage
+  `["sess-1"]`), `a_session_of_another_task_is_not_reordered_or_taken` (B's `b-1` moved last).
+- `scripts/dev ci`: exit 0 on `3ce0f06d` (the last code change; later commits are docs and this
+  spec): 2572 tests passed, 17 skipped; fmt, clippy, macOS targets, repository contracts.
+- `scripts/dev security`: exit 2, **not run**: Vidoc answered HTTP 429 ("This API key has used its
+  50,000,000 tokens"), so the 10 changed code files were not scanned. Unrun, not passed.
+- e2e suite: not run; no web UI file changed (the watcher view reads the same endpoint).
+- Independent review (fresh session, `om-code-review`): round 1 approve with 4 own-code minors
+  (cross-task reorder, lineage gap after restart, no test of invalid ids, re-adoption only at the
+  store), all fixed test-first; round 2 approve with 2 doc nits, fixed; round 3 approve.
+- Not tested: a real Claude Code TUI's `/clear` and `/resume` (the fake agent follows Claude Code's
+  order: `SessionEnd` `clear`, new transcript, `SessionStart` `clear`); whether agent-team
+  teammates run the lead's hooks (ADR-0209 Consequences).
