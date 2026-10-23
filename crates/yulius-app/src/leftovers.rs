@@ -926,6 +926,19 @@ impl App {
                 "a run directory no attempt, CI job or deploy owns, untouched for a day",
             ));
         }
+        // Production runs' files a failed removal left (SPEC-279; review finding 2).
+        for (sandbox, _) in entries(&self.data_path(&["cd"])) {
+            for (name, path) in entries(&self.data_path(&["cd", &sandbox, "runs"])) {
+                if self.run_dir_owned(&name, &path).await? {
+                    continue;
+                }
+                out.push(Leftover::new(
+                    Kind::EndedRun,
+                    path,
+                    "a production run's files no deploy owns, untouched for a day",
+                ));
+            }
+        }
         for (name, path) in entries(&self.data_path(&["transcripts"])) {
             let Ok(task) = TaskId::parse(&name) else {
                 continue;
@@ -1253,11 +1266,21 @@ impl App {
         }
         // A sandbox's CD files: production runs' files, which its production engine's containers
         // may have written as mapped ids, go as mapped root first (SPEC-279 PDE-004).
-        if path.parent() == Some(self.data_path(&["cd"]).as_path())
-            && let Some(isolation) = self.isolation.get()
-        {
-            for (_, run) in entries(&path.join("runs")) {
-                isolation.remove_owned_tree(&run).await?;
+        let cd = self.data_path(&["cd"]);
+        if let Some(isolation) = self.isolation.get() {
+            if path.parent() == Some(cd.as_path()) {
+                for (_, run) in entries(&path.join("runs")) {
+                    isolation.remove_owned_tree(&run).await?;
+                }
+            }
+            let one_run = path
+                .parent()
+                .filter(|runs| runs.file_name().is_some_and(|n| n == "runs"))
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+                == Some(cd.as_path());
+            if one_run {
+                return isolation.remove_owned_tree(path).await;
             }
         }
         let (root, target) = (self.config.data_dir.clone(), path.to_path_buf());

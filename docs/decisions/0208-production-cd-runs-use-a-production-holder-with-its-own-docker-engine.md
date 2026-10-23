@@ -39,7 +39,9 @@ not run from Yulius CD.
 - **Lifecycle and disk.** It stops when idle like any holder, is adopted after a restart, is
   retired with its sandbox, and its trees go with the removed sandbox's once it stopped. Its layer
   and storage count toward the sandbox's quota (consumer `production`); the upkeep prunes a
-  running production engine with the sandbox's.
+  running production engine with the sandbox's, and runs right after each production run when
+  the sandbox is over its quota. Production's own files never refuse a production deploy (only
+  the rest of the sandbox's usage does), so they can always be pruned.
 
 ## Alternatives
 
@@ -69,7 +71,9 @@ not run from Yulius CD.
   as between two sandboxes. An escape from a sandbox's containment reaches it, as it reaches
   every other sandbox.
 - Each sandbox may run two holders (and two engines) at once; the production one only during and
-  shortly after a production run. Its disk is the project's: a full sandbox refuses production
-  deploys, as before.
+  shortly after a production run. Its disk is the project's: a sandbox the agents filled refuses
+  production deploys, as before; production's images are pruned when the sandbox is over its
+  quota, so a deploy may rebuild layers it had cached. Production run files a failed removal
+  left are listed as ended runs.
 - A production run's directory moved from `<data>/runs/cd-<run>` to `<data>/cd/<sid>/runs/`.
 - The smoke test (`yulius doctor --docker-smoke`) proves the production engine on a host.

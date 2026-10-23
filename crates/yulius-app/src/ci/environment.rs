@@ -95,6 +95,9 @@ impl App {
             )
             .await;
         self.remove_run_dirs(&run_dir, &files).await;
+        if stage == Stage::Production {
+            self.after_production_run(sandbox).await;
+        }
         ended
     }
 

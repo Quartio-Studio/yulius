@@ -78,9 +78,11 @@ Confirmed against `dev` at 2d9923df.
   any holder (its engine first), is adopted after a server restart, and is retired with its
   sandbox (stopped once no run holds it).
 - **PDE-006** Disk upkeep: its system layer and engine storage count toward the sandbox's quota
-  (consumer `production`), a production run is refused over the quota as before (after the
-  upkeep tried to free space), and under pressure a running production engine is pruned (build
-  cache, unused images) through its control socket with the sandbox's engine.
+  (consumer `production`); a production run is refused while the sandbox is over the quota
+  without that consumer (after the upkeep tried to free space), so production's own files never
+  block the deploy that lets them be pruned; after each production run a sandbox over its quota
+  gets the upkeep at once, which prunes the still-running production engine (build cache, unused
+  images) through its control socket with the sandbox's engine.
 - **PDE-007** Leftovers: `sysroots/<sid>.prod` and `runtime/sandboxes/<sid>.prod` belong to the
   sandbox `<sid>` (never `Unowned` while it lives) and go with a removed sandbox's files once its
   production holder stopped.
@@ -119,8 +121,8 @@ Confirmed against `dev` at 2d9923df.
 - AC4 (PDE-005) Retiring a sandbox retires its production holder; a production holder is adopted
   by name; its relays are not served.
 - AC5 (PDE-006) The sandbox's measurement includes the production trees as `production`; a
-  production prepare is refused while the sandbox is over its quota; pruning reaches a running
-  production engine.
+  production prepare is refused while the sandbox is over its quota without them; pruning
+  reaches a running production engine, and a production run over the quota triggers it.
 - AC6 (PDE-007) A live sandbox's `<sid>.prod` trees are not `Unowned`; a removed sandbox lists
   them, kept while the production holder runs.
 - AC7 (PDE-008) The smoke has the production checks, and its unit tests pin their scripts.

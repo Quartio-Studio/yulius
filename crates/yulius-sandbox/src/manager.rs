@@ -607,6 +607,10 @@ impl Manager {
     /// forwards listen on loopback only (started before engines; SPEC-187 specs carry `engine`,
     /// newer ones `containers`).
     fn bridge_forwards(&self, sandbox: &str) -> Vec<u16> {
+        // A production holder forwards nothing (SPEC-279 PDE-001).
+        if production_sandbox(sandbox).is_some() {
+            return Vec::new();
+        }
         let spec = std::fs::read(StatePaths::new(self.state_dir(sandbox)).spec())
             .ok()
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
@@ -965,8 +969,9 @@ impl Manager {
 
     /// Enters `sandbox`'s production holder (SPEC-279 PDE-003), started when needed, with a
     /// lease the caller ends with [`Manager::release`] of [`production_holder`]. Refused while
-    /// the sandbox is retired or over its quota, which the production holder's files count
-    /// toward. `Ok(None)` while no base exists yet.
+    /// the sandbox is retired or over its quota without the production holder's own files,
+    /// which count toward it: those never refuse a deploy, whose engine the upkeep then prunes
+    /// (review finding 1). `Ok(None)` while no base exists yet.
     ///
     /// # Errors
     /// Retired, over the disk quota, or the holder cannot start.
@@ -985,7 +990,18 @@ impl Manager {
                 state.request = Some(sandbox.clone());
             }
             if let Some(refusal) = self.quota_refusal(sandbox, &mut state).await {
-                return Err(refusal);
+                let limit = self.config.disk_max.unwrap_or(u64::MAX);
+                let without_production = state.usage.as_ref().map_or(u64::MAX, |(usage, _)| {
+                    let production = usage
+                        .largest
+                        .iter()
+                        .find(|(consumer, _)| consumer == "production")
+                        .map_or(0, |(_, bytes)| *bytes);
+                    usage.bytes.saturating_sub(production)
+                });
+                if without_production > limit {
+                    return Err(refusal);
+                }
             }
         }
         let production = self.production_request(sandbox);
@@ -3258,6 +3274,13 @@ while True:
         let manager = Manager::new(config);
         assert_eq!(manager.forwards_of("s1"), vec![8081]);
         assert!(manager.forwards_of("s1.prod").is_empty());
+        // Review finding 5: nor on its engine's bridge, whatever its holder spec says.
+        assert_eq!(
+            manager.bridge_forwards("s1"),
+            vec![8081],
+            "no spec: an old holder"
+        );
+        assert!(manager.bridge_forwards("s1.prod").is_empty());
         let record = live_record(false);
         for name in ["s1", "s1.prod"] {
             std::fs::create_dir_all(manager.state_dir(name)).unwrap_or_else(|e| panic!("{e}"));
@@ -3291,6 +3314,29 @@ while True:
             production.join("docker/overlay2/l1/c"),
             vec![1u8; 512 * 1024],
         )?;
+        // Review finding 1: production's own files never refuse a production deploy (a
+        // deploy starts the engine whose storage the upkeep then prunes); the agents' do.
+        manager.entry("s1").lock().await.usage = Some((
+            crate::usage::Usage {
+                bytes: 20_000_000,
+                largest: vec![("production".into(), 15_000_000)],
+                ..crate::usage::Usage::default()
+            },
+            Instant::now(),
+        ));
+        assert_eq!(manager.prepare_production(&request).await, Ok(None));
+        manager.entry("s1").lock().await.usage = Some((
+            crate::usage::Usage {
+                bytes: 20_000_000,
+                largest: vec![("production".into(), 5_000_000)],
+                ..crate::usage::Usage::default()
+            },
+            Instant::now(),
+        ));
+        assert!(matches!(
+            manager.prepare_production(&request).await,
+            Err(PrepareError::OverQuota { .. })
+        ));
         let usage = manager.measure_disk(&request).await;
         assert!(usage.is_some_and(|(used, _)| used >= 512 * 1024));
         let largest = manager.largest("s1").await;

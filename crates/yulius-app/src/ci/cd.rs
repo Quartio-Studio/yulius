@@ -259,6 +259,23 @@ impl App {
         }
     }
 
+    /// After a production-stage run of `sandbox`, while its production engine still runs: a
+    /// fresh measurement, and over the quota the upkeep, which prunes that engine's unused
+    /// images and build cache with the sandbox's (SPEC-279 PDE-006, review finding 1); an
+    /// idle engine is never started for that.
+    pub(super) async fn after_production_run(&self, sandbox: &SandboxRecord) {
+        let Some(isolation) = self.isolation.get() else {
+            return;
+        };
+        let over = isolation
+            .measure_disk(&self.sandbox_ref(sandbox))
+            .await
+            .is_some_and(|usage| usage.used > usage.limit);
+        if over && let Err(err) = self.disk_upkeep(sandbox, true).await {
+            tracing::warn!(sandbox = %sandbox.id, error = %err, "the upkeep after a production run failed");
+        }
+    }
+
     /// Removes a run's directory and, when elsewhere, its files; files a container of the
     /// production engine wrote as a mapped id go as mapped root, links not followed (SPEC-279
     /// PDE-004).
@@ -1139,6 +1156,9 @@ impl App {
         drop(held);
         // The run's files (the tree, its HOME, its log) go with it.
         self.remove_run_dirs(&run_dir, &files).await;
+        if run.stage == CdStage::Prod {
+            self.after_production_run(&sandbox).await;
+        }
         let (state, exit_code, reason) = match ended {
             Ok(Ended::Exit(exit)) if exit.spawn_failed => (
                 RunState::Error,
@@ -1765,6 +1785,18 @@ pub fn production_containment(
     let mut join = ci_join(join);
     join.host_system = Some(resolver.to_path_buf());
     join.extra_readonly.clear();
+    // Only a production holder's engine, never the sandbox's (review finding 4): its Docker
+    // directory is `<state of <sid>.prod>/docker`.
+    let production_engine = join.docker_dir.as_deref().is_some_and(|dir| {
+        dir.parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .and_then(yulius_contracts::sandbox::production_sandbox)
+            .is_some()
+    });
+    if !production_engine {
+        join.docker_dir = None;
+    }
     Containment::Bubblewrap {
         sandbox_root: work.to_path_buf(),
         home: home.to_path_buf(),
@@ -2081,7 +2113,18 @@ mod tests {
     /// holder's, and nothing of the sandbox (its directory, its system layer) is bound in.
     #[test]
     fn production_runs_in_its_production_holder_with_the_hosts_system() {
-        let join = SandboxJoin {
+        let join = production_join();
+        let (work, home, cache) = (
+            Path::new("/data/cd/s1/runs/cd-r/work"),
+            Path::new("/data/cd/s1/runs/cd-r/work/home"),
+            Path::new("/data/cd/s1/cache/prod"),
+        );
+        let resolver = Path::new("/data/cd/s1/runs/cd-r/work/resolv.conf");
+        production_checks(work, home, cache, resolver, join);
+    }
+
+    fn production_join() -> SandboxJoin {
+        SandboxJoin {
             holder_pid: 7,
             user_ns: 1,
             net_ns: 2,
@@ -2097,13 +2140,16 @@ mod tests {
             system_group: None,
             host_system: None,
             docker_dir: Some("/data/runtime/sandboxes/s1.prod/docker".into()),
-        };
-        let (work, home, cache) = (
-            Path::new("/data/cd/s1/runs/cd-r/work"),
-            Path::new("/data/cd/s1/runs/cd-r/work/home"),
-            Path::new("/data/cd/s1/cache/prod"),
-        );
-        let resolver = Path::new("/data/cd/s1/runs/cd-r/work/resolv.conf");
+        }
+    }
+
+    fn production_checks(
+        work: &Path,
+        home: &Path,
+        cache: &Path,
+        resolver: &Path,
+        join: SandboxJoin,
+    ) {
         let Containment::Bubblewrap {
             sandbox_root,
             writable,
@@ -2144,6 +2190,29 @@ mod tests {
         assert_eq!(joined.net_ns, 2, "the holder's network: no host loopback");
         assert_eq!(joined.cgroup.as_deref(), Some(Path::new("/cg/ci")));
         assert!(binds.is_empty());
+        // Review finding 4: a join that is not a production holder's never hands production
+        // the sandbox's engine.
+        let mut sandbox = SandboxJoin {
+            docker_dir: Some("/data/runtime/sandboxes/s1/docker".into()),
+            ..production_join()
+        };
+        let Containment::Bubblewrap {
+            join: Some(guarded),
+            ..
+        } = production_containment(work, home, cache, Vec::new(), resolver, sandbox.clone())
+        else {
+            panic!("a joined containment");
+        };
+        assert_eq!(guarded.docker_dir, None, "the sandbox's engine is dropped");
+        sandbox.docker_dir = Some("/data/runtime/sandboxes/x.prod.prod/docker".into());
+        let Containment::Bubblewrap {
+            join: Some(guarded),
+            ..
+        } = production_containment(work, home, cache, Vec::new(), resolver, sandbox)
+        else {
+            panic!("a joined containment");
+        };
+        assert_eq!(guarded.docker_dir, None);
         let everything = format!("{readonly:?} {writable:?} {binds:?} {sandbox_root:?}");
         assert!(!everything.contains("/data/sandboxes"), "{everything}");
     }

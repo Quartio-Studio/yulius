@@ -1252,6 +1252,10 @@ async fn a_lost_run_leaves_no_files_behind() -> TestResult {
     let run_dir = f.h.app.config.data_dir.join("runs/cd-lost2");
     std::fs::create_dir_all(run_dir.join("work/home"))?;
     std::fs::write(run_dir.join("work/home/key"), "secret material")?;
+    // A production run's files (SPEC-279 PDE-004).
+    let files = f.h.app.config.data_dir.join("cd/s1/runs/cd-lost2");
+    std::fs::create_dir_all(files.join("work/home"))?;
+    std::fs::write(files.join("work/home/key"), "secret material")?;
     f.h.store
         .insert_cd_run(&CdRunRecord {
             id: "lost2".into(),
@@ -1275,6 +1279,10 @@ async fn a_lost_run_leaves_no_files_behind() -> TestResult {
         .await?;
     assert_eq!(f.h.app.reconcile_cd_runs().await?, 1);
     assert!(!run_dir.exists(), "the lost run's files are removed");
+    assert!(
+        !files.exists(),
+        "the lost production run's files are removed"
+    );
     Ok(())
 }
 
@@ -2205,6 +2213,8 @@ async fn a_state_left_alone_broken_or_waited_for_keeps_its_version() -> TestResu
 #[derive(Default)]
 struct Holders {
     calls: std::sync::Mutex<Vec<&'static str>>,
+    /// The sandbox is over its disk quota.
+    over: bool,
 }
 
 impl Holders {
@@ -2264,6 +2274,28 @@ impl yulius_app::ports::isolation::SandboxIsolation for Holders {
         if let Ok(mut calls) = self.calls.lock() {
             calls.push("release_production");
         }
+    }
+    async fn disk(
+        &self,
+        _: &yulius_app::ports::isolation::SandboxRef,
+    ) -> Option<yulius_app::ports::isolation::DiskUsage> {
+        self.over
+            .then_some(yulius_app::ports::isolation::DiskUsage {
+                used: 2_000_000_000,
+                limit: 1_000_000_000,
+            })
+    }
+    async fn measure_disk(
+        &self,
+        sandbox: &yulius_app::ports::isolation::SandboxRef,
+    ) -> Option<yulius_app::ports::isolation::DiskUsage> {
+        self.disk(sandbox).await
+    }
+    async fn prune_engine(&self, _: &yulius_app::ports::isolation::SandboxRef) -> Option<u64> {
+        if let Ok(mut calls) = self.calls.lock() {
+            calls.push("prune_engine");
+        }
+        Some(0)
     }
 }
 
@@ -2388,5 +2420,41 @@ async fn production_runs_join_the_production_holder_with_its_docker_engine() -> 
         writable.contains(&data.join("runs").join(format!("cd-{dev_id}")).join("work")),
         "{writable:?}"
     );
+    Ok(())
+}
+
+/// SPEC-279 PDE-006 (review finding 1): after a production run, a sandbox over its quota has its
+/// engines pruned while the production engine still runs, so production's images and build cache
+/// never stay out of the upkeep's reach.
+#[tokio::test]
+async fn a_production_run_over_the_quota_prunes_the_engines_after_it() -> TestResult {
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let recording = Arc::new(Recording {
+        inner: PtySessionHost::new(exe),
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+    let f = fixture_with(&full_cd(), Some(recording)).await?;
+    let holders = Arc::new(Holders {
+        over: true,
+        ..Holders::default()
+    });
+    assert!(f.h.app.set_isolation(holders.clone()));
+    let started = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let run = f
+        .ended(started.body["run_id"].as_str().ok_or("id")?)
+        .await?;
+    assert_eq!(run["state"], "passed", "{}", run["output"]);
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !holders.calls().contains(&"prune_engine") && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let calls = holders.calls();
+    assert_eq!(
+        calls.iter().filter(|c| **c == "prepare_production").count(),
+        1,
+        "{calls:?}"
+    );
+    assert!(calls.contains(&"prune_engine"), "{calls:?}");
     Ok(())
 }

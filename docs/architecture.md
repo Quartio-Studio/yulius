@@ -156,8 +156,9 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
   current base and engine storage `sysroots/<sid>.prod/docker`. Its front starts `dockerd` of the
   base (never of the sandbox's layer) as `<slug>-prod`, binding `<data>/cd/<sid>/runs`, where
   production runs keep their files, and nothing of the sandbox directory.
-  `Manager::prepare_production` starts it for a production run (refused, like the sandbox,
-  while the sandbox is over its quota); the run joins it on the host's read-only system with its
+  `Manager::prepare_production` starts it for a production run (refused while the sandbox is
+  over its quota without production's own files, which the upkeep prunes right after a
+  production run over the quota); the run joins it on the host's read-only system with its
   Docker directory; it stops when idle, is adopted after a restart, is retired with its sandbox
   and its trees go with the sandbox's. It maps the same ids as the sandbox's holder: what
   separates them is namespaces and the covered data directory, as between two sandboxes.

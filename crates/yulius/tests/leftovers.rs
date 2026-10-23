@@ -394,6 +394,66 @@ async fn production_holder_trees_belong_to_their_sandbox() -> BoxResult<()> {
     Ok(())
 }
 
+/// SPEC-279 (review finding 2): a live sandbox's production run files no running deploy owns,
+/// left by a removal that failed, are an ended run: listed after a day and removed as mapped
+/// root; a running deploy's are kept.
+#[tokio::test]
+async fn production_run_files_left_behind_are_ended_runs() -> BoxResult<()> {
+    use yulius_app::ci::cd::CdRunRecord;
+    use yulius_app::ports::store_ext::CdStore as _;
+    let w = world().await?;
+    w.sandbox("live").await?;
+    write(&w.at("cd/live/runs/cd-gone/work/home/key"), "x")?;
+    write(&w.at("cd/live/runs/cd-running/work/home/key"), "x")?;
+    w.h.store
+        .insert_cd_run(&CdRunRecord {
+            id: "running".into(),
+            sandbox_id: SandboxId::parse("live")?,
+            environment: "prod".into(),
+            stage: yulius_domain::cd::CdStage::Prod,
+            branch: "main".into(),
+            sha: "0".repeat(40),
+            state: yulius_domain::ci::RunState::Running,
+            reason: None,
+            requested_by: "bob".into(),
+            task_id: None,
+            deploy: None,
+            verify: None,
+            note: None,
+            output: String::new(),
+            exit_code: None,
+            started_at: yulius_domain::time::Timestamp(1),
+            ended_at: None,
+        })
+        .await?;
+    let now_ms = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )?;
+    w.h.clock
+        .0
+        .store(now_ms + 2 * 24 * 60 * 60 * 1000, Ordering::SeqCst);
+    let items = w.scan().await?;
+    let found = kinds(&items);
+    let gone = w.at("cd/live/runs/cd-gone").to_string_lossy().into_owned();
+    assert!(found.contains(&(Kind::EndedRun, gone)), "{found:?}");
+    assert!(
+        !found.iter().any(|(_, p)| p.contains("cd-running")),
+        "{found:?}"
+    );
+    let report = w.h.app.run_leftovers_round().await.ok_or("round")?;
+    assert!(report.failed.is_empty(), "{report:?}");
+    assert!(!w.at("cd/live/runs/cd-gone").exists());
+    assert!(
+        w.holders.mapped().contains(&w.at("cd/live/runs/cd-gone")),
+        "{:?}",
+        w.holders.mapped()
+    );
+    assert!(w.at("cd/live/runs/cd-running/work/home/key").exists());
+    Ok(())
+}
+
 /// A sandbox a person half cleaned by hand (worktrees and sysroot gone): the round finishes the
 /// rest without failures, and Git's records of the vanished worktrees are pruned.
 #[tokio::test]
