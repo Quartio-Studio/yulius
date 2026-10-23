@@ -137,6 +137,7 @@ test('the waiting card starts again, and stops reading the connection then and w
   expect(await githubReads(browser, true)).toBe(afterRestart);
 
   // Waiting again, then leaving the page: no more reads.
+  await owner(browser).fill('Quartio-Studio');
   await screen.getByRole('button', 'Create GitHub App on GitHub').click();
   await expect(screen.getByRole('heading', { name: 'Finish on GitHub in the new tab' })).toBeVisible();
   await browser.evaluate(() => { location.hash = '#/'; });
