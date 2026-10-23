@@ -82,7 +82,8 @@ pub struct ClaudeSessionFile {
 }
 
 /// The most recently modified main-session transcript in a Claude project directory, modified
-/// at or after `since` (session-id drift detection, HRN-004). Subagent transcripts
+/// at or after `since` (the cockpit's session; a task's session is named by its hooks, SPEC-281,
+/// since any `claude` in the folder writes here). Subagent transcripts
 /// (`agent-*.jsonl`), subdirectories and symbolic links are ignored.
 ///
 /// # Errors

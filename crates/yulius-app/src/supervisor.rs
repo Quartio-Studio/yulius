@@ -2038,7 +2038,7 @@ impl App {
         env
     }
 
-    async fn record_lineage(
+    pub(crate) async fn record_lineage(
         &self,
         task: &TaskRecord,
         harness: Harness,

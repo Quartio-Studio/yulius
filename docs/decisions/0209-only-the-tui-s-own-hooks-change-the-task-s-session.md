@@ -49,5 +49,11 @@ and because the lineage was listed by `first_seen` the next resume would have co
   watchers' view or resume.
 - A session change is adopted only through hooks: a TUI whose hooks cannot reach the server (it is
   down) keeps the old session until a later `SessionStart`. Hooks are part of every Claude run.
+- The hook also records the new session in the lineage at once, so a restart before the next
+  drift check keeps it, and refuses a session already in another task's lineage (the sandbox's
+  tasks share one Claude directory); the store's upsert never moves another task's entry.
+- Assumed, not verified: Claude Code's agent-team teammates do not run the lead's `--settings`
+  hooks. If one did, its `SessionStart` would name its own session; teams are not enabled in
+  Yulius runs.
 - Task #266, whose TUI session was adopted again after the nested one, reads right after deploy
   without a migration.
