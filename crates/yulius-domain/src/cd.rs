@@ -302,6 +302,53 @@ pub fn state_variable(name: &str) -> String {
     format!("YULIUS_STATE_{name}")
 }
 
+/// Project variables a production-stage run does not get (SPEC-278 CDS-007, ADR-0207): names that
+/// make an interpreter, a package manager, Docker or SSH load code or reach another daemon or
+/// index. A person with write access sets variables, while only an administrator deploys
+/// production; agent-secret names already refuse `LD_*`, `NODE_*`, `GIT_*`, `BASH_ENV` and the
+/// proxies. Defence in depth, extended when a tool needs it, not a guarantee.
+pub const CD_WITHHELD_VARIABLES: &[&str] = &[
+    "JAVA_TOOL_OPTIONS",
+    "JDK_JAVA_OPTIONS",
+    "KUBECONFIG",
+    "GCONV_PATH",
+    "HOSTALIASES",
+    "RES_OPTIONS",
+    "LOCALDOMAIN",
+    "RUSTC_WRAPPER",
+    "RUSTFLAGS",
+    "GOFLAGS",
+    "GOPROXY",
+];
+
+/// Prefixes of [`CD_WITHHELD_VARIABLES`]' families.
+pub const CD_WITHHELD_PREFIXES: &[&str] = &[
+    "PYTHON",
+    "PERL",
+    "RUBY",
+    "DOCKER_",
+    "BUILDX_",
+    "BUILDKIT_",
+    "COMPOSE_",
+    "SSH_",
+    "PIP_",
+    "UV_",
+    "GEM_",
+    "BUNDLE_",
+    "YARN_",
+    "PNPM_",
+    "CARGO_",
+];
+
+/// Whether a production-stage run withholds the project variable `name` (SPEC-278 CDS-007).
+#[must_use]
+pub fn withheld_in_production(name: &str) -> bool {
+    CD_WITHHELD_VARIABLES.contains(&name)
+        || CD_WITHHELD_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+}
+
 /// Who asks for a deploy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Requester<'a> {
@@ -633,6 +680,32 @@ mod tests {
             authorize(&cd, "prod", CdStage::Prod, Requester::Agent, "app"),
             Err(CdRefusal::ProductionIsAPersons)
         );
+    }
+
+    /// SPEC-278 CDS-007: production withholds variables that load code or reach another daemon.
+    #[test]
+    fn production_withholds_code_loading_variables() {
+        for name in [
+            "PYTHONPATH",
+            "PERL5OPT",
+            "RUBYOPT",
+            "JAVA_TOOL_OPTIONS",
+            "DOCKER_HOST",
+            "SSH_AUTH_SOCK",
+            "PIP_INDEX_URL",
+            "CARGO_HOME",
+        ] {
+            assert!(withheld_in_production(name), "{name}");
+        }
+        for name in [
+            "QUARTIO_CD_DEV_DEPLOYMENTS",
+            "OVH_ENDPOINT",
+            "REGION",
+            "PYTH",
+        ] {
+            assert!(!withheld_in_production(name), "{name}");
+        }
+        assert_eq!(state_variable("OPS"), "YULIUS_STATE_OPS");
     }
 
     #[test]

@@ -19,7 +19,7 @@ use support::{
 use yulius::wiring::git::GitAdapter;
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::ci::cd::CdRunRecord;
-use yulius_app::ports::store_ext::CdStore as _;
+use yulius_app::ports::store_ext::{AutomationStore as _, CdStore as _};
 use yulius_app::ports::vault::{EnvFiles, VaultStore as _};
 use yulius_domain::cd::CdStage;
 use yulius_domain::ci::RunState;
@@ -1638,5 +1638,428 @@ async fn a_relabelled_environment_takes_the_integration_heads_stage() -> TestRes
         .ended(started.body["run_id"].as_str().ok_or("id")?)
         .await?;
     assert_eq!(run["state"], "passed", "a cache of its own: {run}");
+    Ok(())
+}
+
+/// The deploy of SPEC-278's tests: it reads the restored state where `YULIUS_STATE_OPERATOR`
+/// says (absolute, outside `HOME`), prints its inventory and the variables it got, appends a line
+/// and adds a receipt, waits while `$MARKS/hold` exists (after saying so with `$MARKS/holding`)
+/// and fails when the commit has a `fail` file.
+const STATE_SCRIPT: &str = r#"#!/bin/sh
+d="$YULIUS_STATE_OPERATOR"
+case "$d" in /*) ;; *) echo "no state path"; exit 7;; esac
+case "$d" in "$HOME"*) echo "the state is inside HOME"; exit 6;; esac
+echo "state at $d"
+echo "inventory: $(tr '\n' '|' < "$d/inventory.db")"
+echo "$YULIUS_CD_ENV $YULIUS_CD_RUN" >> "$d/inventory.db"
+mkdir -p "$d/receipts" && echo ok > "$d/receipts/$YULIUS_CD_RUN.json"
+echo "region ${OVH_ENDPOINT:-unset} python ${PYTHONPATH:-unset}"
+if [ -f "$MARKS/hold" ]; then : > "$MARKS/holding"; while [ -f "$MARKS/hold" ]; do sleep 0.1; done; fi
+if [ -f fail ]; then exit 3; fi
+"#;
+
+fn states_cd() -> String {
+    "[cd.dev]\n\
+     deploy = \"MARKS={marks} sh scripts/cd/state.sh\"\n\
+     states = [\"OPERATOR\"]\n\n\
+     [cd.prod]\n\
+     deploy = \"MARKS={marks} sh scripts/cd/state.sh\"\n\
+     states = [\"OPERATOR\"]\n\n\
+     [cd.staging]\n\
+     stage = \"dev\"\n\
+     deploy = \"true\"\n\
+     states = \"MISSING_STATE\"\n"
+        .to_owned()
+}
+
+/// A packed state of `(path, mode, content)` files, as a laptop sends it.
+fn state_archive(files: &[(&str, u32, &[u8])]) -> BoxResult<Vec<u8>> {
+    let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+        Vec::new(),
+        flate2::Compression::fast(),
+    ));
+    for (path, mode, content) in files {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_mode(*mode);
+        header.set_size(content.len() as u64);
+        builder.append_data(&mut header, path, *content)?;
+    }
+    Ok(builder.into_inner()?.finish()?)
+}
+
+/// The files of a packed state, by path.
+fn state_files(bytes: &[u8]) -> BoxResult<Vec<(String, String)>> {
+    use std::io::Read as _;
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(bytes));
+    let mut out = Vec::new();
+    for entry in tar.entries()? {
+        let mut entry = entry?;
+        if entry.header().entry_type().is_file() {
+            let mut content = String::new();
+            entry.read_to_string(&mut content)?;
+            out.push((entry.path()?.display().to_string(), content));
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// A served instance, called over HTTP as a browser and a laptop do.
+struct Web {
+    client: reqwest::Client,
+    base: String,
+    origin: String,
+}
+
+impl Web {
+    async fn send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<(Vec<u8>, &str)>,
+        who: &Creds,
+    ) -> BoxResult<(u16, Vec<u8>)> {
+        let mut request = self
+            .client
+            .request(method, format!("{}{path}", self.base))
+            .header("origin", &self.origin);
+        if let Some(token) = &who.bearer {
+            request = request.bearer_auth(token);
+        }
+        if let Some((bytes, kind)) = body {
+            request = request.header("content-type", kind).body(bytes);
+        }
+        let response = request.send().await?;
+        Ok((response.status().as_u16(), response.bytes().await?.to_vec()))
+    }
+
+    async fn json(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+        who: &Creds,
+    ) -> BoxResult<(u16, Value)> {
+        let body = body.map(|json| (json.to_string().into_bytes(), "application/json"));
+        let (status, bytes) = self.send(method, path, body, who).await?;
+        Ok((
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        ))
+    }
+
+    /// Starts a deploy; its run id.
+    async fn deploy(&self, env: &str, confirm: Option<&str>, who: &Creds) -> BoxResult<String> {
+        let (status, body) = self
+            .json(
+                reqwest::Method::POST,
+                &format!("/api/sandboxes/s1/cd/{env}/deploy"),
+                Some(json!({ "confirm": confirm })),
+                who,
+            )
+            .await?;
+        assert_eq!(status, 200, "{body}");
+        Ok(body["run_id"].as_str().ok_or("run id")?.to_owned())
+    }
+
+    /// Waits until run `id` ended; it with its output.
+    async fn ended(&self, id: &str, who: &Creds) -> BoxResult<Value> {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            let (_, run) = self
+                .json(
+                    reqwest::Method::GET,
+                    &format!("/api/sandboxes/s1/cd/runs/{id}"),
+                    None,
+                    who,
+                )
+                .await?;
+            if run["state"] != "running" {
+                return Ok(run);
+            }
+            if tokio::time::Instant::now() > deadline {
+                return Err(format!("the CD run did not end: {run}").into());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// The vault's record of the state `OPERATOR`.
+    async fn operator(&self, who: &Creds) -> BoxResult<Value> {
+        let (status, states) = self
+            .json(
+                reqwest::Method::GET,
+                "/api/sandboxes/s1/agent-states",
+                None,
+                who,
+            )
+            .await?;
+        assert_eq!(status, 200, "{states}");
+        Ok(states
+            .as_array()
+            .and_then(|list| list.iter().find(|s| s["name"] == "OPERATOR"))
+            .cloned()
+            .unwrap_or(Value::Null))
+    }
+}
+
+/// Waits until `path` exists.
+async fn exists(path: &Path) -> TestResult {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !path.exists() {
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("{} never appeared", path.display()).into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    Ok(())
+}
+
+/// SPEC-278 AC1–AC7 over a served instance: a laptop sends the state; a dev deploy restores the
+/// vault's version outside `HOME`, writes to it and saves it (audited, the laptop's next send
+/// refused); while a deploy holds it a task's save and a send are refused and a production deploy
+/// waits; a failing deploy still saves; production restores the vault's newest version, never the
+/// task's unsaved copy, and withholds a code-loading variable; the task's copy is then stale until
+/// it restores; a deploy naming a missing state runs nothing.
+#[tokio::test]
+async fn deploys_restore_write_and_save_an_agent_state_with_one_writer() -> TestResult {
+    use reqwest::Method as M;
+    use yulius_domain::task::TaskStatus;
+    let f = fixture(&states_cd()).await?;
+    for branch in ["dev", "main"] {
+        f.push(branch, &[("scripts/cd/state.sh", Some(STATE_SCRIPT))])?;
+    }
+    let served = support::serve(f.h.router.clone()).await?;
+    // As `yulius` does before its first client (plain HTTP here; reqwest still asks for one).
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let web = Web {
+        client: reqwest::Client::new(),
+        base: format!("http://{}", served.addr),
+        origin: f.h.app.config.public_url.clone(),
+    };
+    let data = f.h.app.config.data_dir.clone();
+    // Alice (write) and Bob (admin) with their CLI tokens, over HTTP.
+    let (alice, bob) = (&f.alice, &f.bob);
+
+    // The laptop sends version 1; the person sets two variables.
+    let laptop = state_archive(&[
+        ("inventory.db", 0o600, b"v1\n"),
+        ("rollouts/r0/bundle.json", 0o644, b"{}\n"),
+    ])?;
+    let (status, sent) = web
+        .send(
+            M::PUT,
+            "/api/sandboxes/s1/agent-states/OPERATOR",
+            Some((laptop.clone(), "application/gzip")),
+            alice,
+        )
+        .await?;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&sent));
+    let (status, set) = web
+        .json(
+            M::PUT,
+            "/api/sandboxes/s1/variables",
+            Some(json!({"variables": [
+                {"name": "OVH_ENDPOINT", "value": "ovh-ca"},
+                {"name": "PYTHONPATH", "value": "/tmp/elsewhere"},
+            ]})),
+            alice,
+        )
+        .await?;
+    assert_eq!(status, 200, "{set}");
+
+    // AC6: a state the vault does not hold: nothing runs.
+    let (status, refused) = web
+        .json(
+            M::POST,
+            "/api/sandboxes/s1/cd/staging/deploy",
+            Some(json!({})),
+            alice,
+        )
+        .await?;
+    assert_eq!(status, 409, "{refused}");
+    let said = refused.to_string();
+    assert!(
+        said.contains("MISSING_STATE") && said.contains("nothing ran"),
+        "{said}"
+    );
+
+    // AC1: dev restores version 1 outside HOME, writes, and saves version 2.
+    let (_, overview) = web
+        .json(M::GET, "/api/sandboxes/s1/cd", None, alice)
+        .await?;
+    assert_eq!(
+        overview["environments"][0]["states"],
+        json!([{"name": "OPERATOR", "version": 1, "held_by": null}]),
+        "{overview}"
+    );
+    let first = web.deploy("dev", None, alice).await?;
+    let run = web.ended(&first, alice).await?;
+    let output = run["output"].as_str().unwrap_or_default();
+    assert_eq!(run["state"], "passed", "{output}");
+    let folder = data.join(format!("runs/cd-{first}/work/states/OPERATOR"));
+    for line in [
+        format!("state at {}", folder.display()),
+        "inventory: v1|".to_owned(),
+        "agent state OPERATOR version 1 restored into $YULIUS_STATE_OPERATOR".to_owned(),
+        "region ovh-ca python /tmp/elsewhere".to_owned(),
+        "agent state OPERATOR saved as version 2".to_owned(),
+    ] {
+        assert!(output.contains(&line), "{line}: {output}");
+    }
+    assert!(!folder.exists(), "the run's copy goes with the run");
+    let stored = web.operator(alice).await?;
+    assert_eq!(stored["version"], 2, "{stored}");
+    assert_eq!(stored["updated_by"], "cd:dev", "{stored}");
+    let (status, archive) = web
+        .send(
+            M::GET,
+            "/api/sandboxes/s1/agent-states/OPERATOR/archive",
+            None,
+            alice,
+        )
+        .await?;
+    assert_eq!(status, 200);
+    assert_eq!(
+        state_files(&archive)?,
+        [
+            ("inventory.db".to_owned(), format!("v1\ndev {first}\n")),
+            (format!("receipts/{first}.json"), "ok\n".to_owned()),
+            ("rollouts/r0/bundle.json".to_owned(), "{}\n".to_owned()),
+        ]
+    );
+    let audit: Vec<(String, String, String)> =
+        f.h.store
+            .automation_audit("s1", 50)
+            .await?
+            .into_iter()
+            .map(|e| (e.action, e.actor, e.detail.unwrap_or_default()))
+            .collect();
+    for action in ["vault.state.restore", "vault.state.save"] {
+        assert!(
+            audit
+                .iter()
+                .any(|(a, by, detail)| a == action && by == "cd:dev" && detail.contains(&first)),
+            "{action}: {audit:?}"
+        );
+    }
+    // The laptop's copy is no longer the one written to.
+    let (status, again) = web
+        .send(
+            M::PUT,
+            "/api/sandboxes/s1/agent-states/OPERATOR",
+            Some((laptop.clone(), "application/gzip")),
+            alice,
+        )
+        .await?;
+    let again = String::from_utf8_lossy(&again).into_owned();
+    assert_eq!(status, 409, "{again}");
+    assert!(again.contains("written by a CD run of dev"), "{again}");
+
+    // A task restores version 2 into its home.
+    support::seed_task(&f.h, "t1", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&f.h, "t1", TOKEN).await?;
+    let home = data.join("sandboxes/s1/home");
+    std::fs::create_dir_all(&home)?;
+    let tool = |name: &'static str, args: Value| {
+        let h = &f.h;
+        async move {
+            let result = support::mcp_tool(h, TOKEN, name, args).await?;
+            Ok::<_, Box<dyn std::error::Error>>((
+                result["isError"].as_bool().unwrap_or(false),
+                support::tool_text(&result),
+            ))
+        }
+    };
+    let (error, restored) = tool(
+        "secret_state_restore",
+        json!({"name": "OPERATOR", "path": "~/.ops"}),
+    )
+    .await?;
+    assert!(!error, "{restored}");
+    assert_eq!(restored["version"], 2, "{restored}");
+
+    // AC2, AC3: a failing deploy holds the state while it runs.
+    f.push("dev", &[("fail", Some("x\n"))])?;
+    std::fs::write(f.marks.join("hold"), "")?;
+    let second = web.deploy("dev", None, alice).await?;
+    exists(&f.marks.join("holding")).await?;
+    let (error, said) = tool("secret_state_save", json!({"name": "OPERATOR"})).await?;
+    let said = said.to_string();
+    assert!(
+        error && said.contains(&format!("held by dev run {second}")),
+        "{said}"
+    );
+    let (error, listed) = tool("secrets_list", json!({})).await?;
+    assert!(!error, "{listed}");
+    assert_eq!(
+        listed["states"][0]["held_by"],
+        format!("dev run {second}"),
+        "{listed}"
+    );
+    let (status, held) = web
+        .send(
+            M::PUT,
+            "/api/sandboxes/s1/agent-states/OPERATOR?replace=true",
+            Some((laptop.clone(), "application/gzip")),
+            alice,
+        )
+        .await?;
+    let held = String::from_utf8_lossy(&held).into_owned();
+    assert_eq!(status, 409, "{held}");
+    assert!(held.contains("held by dev run"), "{held}");
+    // AC4: production waits for it; the task changes its copy without saving.
+    let third = web.deploy("prod", Some("app"), bob).await?;
+    let copy = home.join(".ops/inventory.db");
+    let mut unsaved = std::fs::read_to_string(&copy)?;
+    unsaved.push_str("task-unsaved\n");
+    std::fs::write(&copy, unsaved)?;
+    std::fs::remove_file(f.marks.join("hold"))?;
+
+    let run = web.ended(&second, alice).await?;
+    let output = run["output"].as_str().unwrap_or_default();
+    assert_eq!(run["state"], "failed", "{output}");
+    assert!(
+        output.contains("agent state OPERATOR saved as version 3"),
+        "{output}"
+    );
+    let run = web.ended(&third, bob).await?;
+    let output = run["output"].as_str().unwrap_or_default();
+    assert_eq!(run["state"], "passed", "{output}");
+    for line in [
+        format!("waiting for the agent state OPERATOR: dev run {second} holds it"),
+        format!("inventory: v1|dev {first}|dev {second}|"),
+        "region ovh-ca python unset".to_owned(),
+        "production runs do not get the variables PYTHONPATH".to_owned(),
+        "agent state OPERATOR saved as version 4".to_owned(),
+    ] {
+        assert!(output.contains(&line), "{line}: {output}");
+    }
+    assert!(!output.contains("task-unsaved"), "{output}");
+    assert_eq!(web.operator(bob).await?["updated_by"], "cd:prod");
+
+    // AC5: the task's copy is stale: its save is refused until a restore replaces it.
+    let (_, listed) = tool("secrets_list", json!({})).await?;
+    let state = &listed["states"][0];
+    assert_eq!(state["stale"], true, "{listed}");
+    assert_eq!(state["version"], 4, "{listed}");
+    assert!(state.get("held_by").is_none(), "{listed}");
+    let (error, said) = tool("secret_state_save", json!({"name": "OPERATOR"})).await?;
+    let said = said.to_string();
+    assert!(
+        error && said.contains("stale") && said.contains("a CD run of prod saved version 4"),
+        "{said}"
+    );
+    let (error, restored) = tool(
+        "secret_state_restore",
+        json!({"name": "OPERATOR", "path": "~/.ops"}),
+    )
+    .await?;
+    assert!(!error, "{restored}");
+    assert_eq!(
+        std::fs::read_to_string(&copy)?,
+        format!("v1\ndev {first}\ndev {second}\nprod {third}\n")
+    );
     Ok(())
 }

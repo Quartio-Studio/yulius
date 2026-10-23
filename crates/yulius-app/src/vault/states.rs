@@ -607,6 +607,21 @@ fn writer_elsewhere(name: &str, restored: &StateRestore) -> AppError {
     ))
 }
 
+/// The environment of the CD run that wrote `record`'s newest version (SPEC-278 CDS-006).
+fn cd_writer(record: &AgentStateRecord) -> Option<&str> {
+    record.updated_by.strip_prefix("cd:")
+}
+
+/// The answer to a write while another writer holds the state (SPEC-278 CDS-005).
+fn held_by_run(held: &super::holds::HeldElsewhere) -> AppError {
+    AppError::Conflict(format!(
+        "{} is held by {}, which restored it and saves it when it ends: wait for it, then \
+         restore it with secret_state_restore (that replaces your copy with the version it saved) \
+         before you change it",
+        held.name, held.holder
+    ))
+}
+
 /// Arguments of `secret_state_restore`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -780,6 +795,23 @@ impl App {
         .await
         .map_err(AppError::internal)??;
 
+        let actor = Self::vault_actor(ctx);
+        // One writer at a time (SPEC-278 CDS-005): never under a running deploy.
+        let _hold = self
+            .vault
+            .holds
+            .try_hold(
+                sid.as_str(),
+                std::slice::from_ref(&name),
+                &format!("{actor}'s import"),
+            )
+            .map_err(|held| {
+                AppError::Conflict(format!(
+                    "{} is held by {}, which saves it when it ends: nothing was stored; look at \
+                     it with `yulius secrets list` once it ended",
+                    held.name, held.holder
+                ))
+            })?;
         let existing = self
             .deps
             .store
@@ -788,12 +820,20 @@ impl App {
             .into_iter()
             .find(|r| r.name == name);
         let now = self.now();
-        let actor = Self::vault_actor(ctx);
         let bytes = u64::try_from(archive.len()).unwrap_or(u64::MAX);
         let record = match &existing {
             Some(old) => {
                 if let Some(restored) = old.restored.as_ref().filter(|_| !replace) {
                     return Err(writer_elsewhere(&name, restored));
+                }
+                if let Some(environment) = cd_writer(old).filter(|_| !replace) {
+                    return Err(AppError::Conflict(format!(
+                        "{name} version {} was written by a CD run of {environment}, so the \
+                         vault's copy is the one written to now: sending this one would undo \
+                         it. Get the newest copy with `yulius secrets state-get {name}`, or pass \
+                         --replace-state (replace=true) to overwrite it with this one on purpose",
+                        old.version
+                    )));
                 }
                 AgentStateRecord {
                     version: old.version + 1,
@@ -1046,6 +1086,17 @@ impl App {
         let args: SaveArgs = serde_json::from_value(args.clone())
             .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
         let sandbox = ctx.task.sandbox_id.clone();
+        // One writer at a time (SPEC-278 CDS-005): never under a running deploy, and read under
+        // the hold, so a deploy's save is seen.
+        let _hold = self
+            .vault
+            .holds
+            .try_hold(
+                sandbox.as_str(),
+                &[args.name.trim().to_owned()],
+                &format!("task #{}", ctx.task.number),
+            )
+            .map_err(|held| held_by_run(&held))?;
         let record = self.record_of(&sandbox, args.name.trim()).await?;
         let name = record.name.clone();
         let Some(restored) = record.restored.clone() else {
@@ -1054,10 +1105,16 @@ impl App {
             )));
         };
         if restored.version < record.version {
+            let by = match cd_writer(&record) {
+                Some(environment) => format!("a CD run of {environment} saved"),
+                None => format!("{} sent", record.updated_by),
+            };
             return Err(AppError::Conflict(format!(
-                "the person sent a newer {name} (version {}) to replace the copy at {}: restore it \
-                 with secret_state_restore at that path first, which replaces the folder",
-                record.version, restored.path
+                "your copy of {name} at {} is stale: {by} version {} after the version {} you \
+                 restored. Restore it with secret_state_restore at that path first, which replaces \
+                 the folder with the newest version (changes you did not save are not in it), then \
+                 make your change again",
+                restored.path, record.version, restored.version
             )));
         }
         let parts = Self::home_path(&restored.path)?;
@@ -1147,17 +1204,273 @@ impl App {
             .iter()
             .map(|r| {
                 let restored = r.restored.as_ref();
-                json!({
+                let stale = restored.is_some_and(|s| s.version < r.version);
+                let mut state = json!({
                     "name": r.name,
                     "description": r.description,
                     "version": r.version,
                     "files": r.files,
                     "bytes": r.bytes,
+                    "updated_by": r.updated_by,
                     "restored_path": restored.map(|s| s.path.clone()),
                     "restored_version": restored.map(|s| s.version),
-                })
+                    "stale": stale,
+                });
+                if let Some(holder) = self.vault.holds.holder(sandbox.as_str(), &r.name) {
+                    state["held_by"] = Value::String(holder);
+                }
+                if stale {
+                    state["note"] = Value::String(format!(
+                        "your copy at {} is version {}, the vault holds version {} (by {}): \
+                         restore it with secret_state_restore before you use or change it",
+                        restored.map(|s| s.path.as_str()).unwrap_or_default(),
+                        restored.map_or(0, |s| s.version),
+                        r.version,
+                        r.updated_by
+                    ));
+                }
+                state
             })
             .collect())
+    }
+}
+
+/// What a packed state holds, as one digest: each file's path, permission bits and content, in
+/// path order (folders, packing details and times left out), so a folder a run left unchanged
+/// is recognised whoever packed it (SPEC-278 CDS-004).
+pub(crate) fn archive_digest(archive: &[u8]) -> AppResult<[u8; 32]> {
+    use sha2::{Digest as _, Sha256};
+    let mut files: Vec<(PathBuf, u32, [u8; 32])> = Vec::new();
+    walk_archive(archive, |rel, kind, mode, reader| {
+        if kind == Kind::File {
+            let mut hasher = Sha256::new();
+            let mut buf = [0u8; 64 << 10];
+            loop {
+                let n = reader.read(&mut buf).map_err(|err| io_error(&err))?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+            }
+            files.push((
+                rel.to_path_buf(),
+                mode & MODE_BITS,
+                hasher.finalize().into(),
+            ));
+        }
+        Ok(())
+    })?;
+    files.sort();
+    let mut all = Sha256::new();
+    for (path, mode, content) in files {
+        let path = path.as_os_str().as_bytes();
+        all.update(u64::try_from(path.len()).unwrap_or(u64::MAX).to_le_bytes());
+        all.update(path);
+        all.update(mode.to_le_bytes());
+        all.update(content);
+    }
+    Ok(all.finalize().into())
+}
+
+/// A state a CD run restored into its directory (SPEC-278 CDS-003).
+#[derive(Debug, Clone)]
+pub(crate) struct CdRestored {
+    /// Its name.
+    pub(crate) name: String,
+    /// The version restored, which its save compares and sets.
+    pub(crate) version: u32,
+    /// What it held then ([`archive_digest`]).
+    digest: [u8; 32],
+    /// The folder, `<run>/work/states/<name>`.
+    pub(crate) path: PathBuf,
+}
+
+/// Who a CD run is in a state's audit and record (`cd:<environment>`), and the run it was.
+pub(crate) struct CdWriter<'a> {
+    /// The run's environment.
+    pub(crate) environment: &'a str,
+    /// The run's id.
+    pub(crate) run: &'a str,
+    /// Who asked for the run.
+    pub(crate) requested_by: &'a str,
+}
+
+impl CdWriter<'_> {
+    fn actor(&self) -> String {
+        format!("cd:{}", self.environment)
+    }
+
+    fn run_text(&self) -> String {
+        format!("CD run {} requested by {}", self.run, self.requested_by)
+    }
+}
+
+/// The folders below a run's directory that hold its states.
+const CD_STATES_DIR: [&str; 2] = ["work", "states"];
+
+impl App {
+    /// A slot for a CD run's state, waited for: a deploy does not fail because a laptop sends a
+    /// state meanwhile.
+    async fn state_slot_waited(&self) -> AppResult<tokio::sync::OwnedSemaphorePermit> {
+        std::sync::Arc::clone(&self.uploads.states)
+            .acquire_owned()
+            .await
+            .map_err(AppError::internal)
+    }
+
+    /// Restores the vault's newest version of the state `name` into `<run_dir>/work/states/<name>`
+    /// for a CD run that holds it (SPEC-278 CDS-003), audited `vault.state.restore`.
+    ///
+    /// # Errors
+    /// `Invalid` for a state the vault does not hold; archive and file errors.
+    pub(crate) async fn cd_restore_state(
+        &self,
+        sandbox: &SandboxId,
+        name: &str,
+        run_dir: &Path,
+        writer: &CdWriter<'_>,
+    ) -> AppResult<CdRestored> {
+        let _slot = self.state_slot_waited().await?;
+        let (record, sealed) = self.state_of(sandbox, name).await?;
+        let archive = self.open_state(&record, sealed).await?;
+        let path = run_dir
+            .join(CD_STATES_DIR[0])
+            .join(CD_STATES_DIR[1])
+            .join(name);
+        let (anchor, folder) = (run_dir.to_path_buf(), name.to_owned());
+        let (digest, contents) = tokio::task::spawn_blocking(move || {
+            let mut parts: Vec<&OsStr> = CD_STATES_DIR.iter().map(OsStr::new).collect();
+            parts.push(OsStr::new(&folder));
+            let root = crate::files::open_dirs_below(&anchor, &parts, true).map_err(errno_error)?;
+            let contents = unpack(&archive, &root)?;
+            Ok::<_, AppError>((archive_digest(&archive)?, contents))
+        })
+        .await
+        .map_err(AppError::internal)??;
+        self.vault_audit(
+            &writer.actor(),
+            "vault.state.restore",
+            Some(sandbox.as_str()),
+            &format!(
+                "{} version {} into the run ({}): {} files",
+                record.name,
+                record.version,
+                writer.run_text(),
+                contents.files
+            ),
+        )
+        .await?;
+        Ok(CdRestored {
+            name: record.name,
+            version: record.version,
+            digest,
+            path,
+        })
+    }
+
+    /// Saves a CD run's folder of `restored` as the next version, with a compare-and-set on the
+    /// version it restored (SPEC-278 CDS-004), audited `vault.state.save`. `None` when the folder
+    /// is unchanged (nothing stored); else the new version and what was left out.
+    ///
+    /// # Errors
+    /// `Conflict` when the vault moved past the restored version; packing and file errors.
+    pub(crate) async fn cd_save_state(
+        &self,
+        sandbox: &SandboxId,
+        restored: &CdRestored,
+        run_dir: &Path,
+        writer: &CdWriter<'_>,
+    ) -> AppResult<Option<(u32, Vec<String>)>> {
+        let _slot = self.state_slot_waited().await?;
+        let (anchor, folder) = (run_dir.to_path_buf(), restored.name.clone());
+        let packed = tokio::task::spawn_blocking(move || {
+            let mut parts: Vec<&OsStr> = CD_STATES_DIR.iter().map(OsStr::new).collect();
+            parts.push(OsStr::new(&folder));
+            // Each folder opened without following links: the run could have put one there.
+            let root =
+                crate::files::open_dirs_below(&anchor, &parts, false).map_err(|err| match err {
+                    Errno::ENOENT => AppError::Invalid(format!(
+                        "the run removed its folder of {folder}: nothing to save"
+                    )),
+                    Errno::ELOOP | Errno::ENOTDIR => AppError::Invalid(format!(
+                        "the run replaced its folder of {folder} with a link or a file"
+                    )),
+                    other => errno_error(other),
+                })?;
+            let packed = pack(&root)?;
+            let digest = archive_digest(&packed.archive)?;
+            Ok::<_, AppError>((packed, digest))
+        })
+        .await
+        .map_err(AppError::internal)??;
+        let (packed, digest) = packed;
+        if digest == restored.digest {
+            return Ok(None);
+        }
+        let packed_files = packed.contents.files;
+        let Packed {
+            mut archive,
+            skipped,
+            ..
+        } = packed;
+        let bytes = u64::try_from(archive.len()).unwrap_or(u64::MAX);
+        // Sealed once: the row and the version it binds do not change between attempts.
+        let mut sealed = None;
+        // A task may restore meanwhile (the hold does not cover restores), which changes the
+        // row's restored copy, not its version: then the compare-and-set is tried again.
+        let mut attempts = 0;
+        let next = loop {
+            attempts += 1;
+            let record = self.record_of(sandbox, &restored.name).await?;
+            if record.version != restored.version {
+                return Err(AppError::Conflict(format!(
+                    "{} is at version {} in the vault, not the version {} this run restored",
+                    record.name, record.version, restored.version
+                )));
+            }
+            let next = AgentStateRecord {
+                version: record.version + 1,
+                bytes,
+                files: packed_files,
+                updated_by: writer.actor(),
+                updated_at: self.now(),
+                ..record.clone()
+            };
+            let envelope = match sealed.take() {
+                Some(envelope) => envelope,
+                None => self.seal_state(&next, std::mem::take(&mut archive)).await?,
+            };
+            if self
+                .deps
+                .store
+                .agent_state_put(&next, envelope.clone(), Some(&record))
+                .await?
+            {
+                break next;
+            }
+            if attempts == 3 {
+                return Err(AppError::Conflict(format!(
+                    "{} changed in the vault while this run saved it",
+                    record.name
+                )));
+            }
+            sealed = Some(envelope);
+        };
+        self.vault_audit(
+            &writer.actor(),
+            "vault.state.save",
+            Some(sandbox.as_str()),
+            &format!(
+                "{} version {} ({}): {} files, {} bytes packed",
+                next.name,
+                next.version,
+                writer.run_text(),
+                next.files,
+                next.bytes
+            ),
+        )
+        .await?;
+        Ok(Some((next.version, skipped)))
     }
 }
 
