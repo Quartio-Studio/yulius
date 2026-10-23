@@ -1,11 +1,11 @@
 ---
 yulius-task: 13901ebb-10d3-43f6-94e1-c2f040a7869a
-status: in-progress
+status: done
 ---
 
 # SPEC-283: First-run onboarding says what each step does and what comes next; GitHub opens in a new tab
 
-Status: in-progress
+Status: done
 Date: 2026-10-23
 Owner: task #269
 Scope authorization: task #269 (requested by Noaksyy), with four screenshots of the setup wizard
@@ -69,15 +69,15 @@ what comes next.
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] GitHub App creation opens in a new tab and the page follows it
-- [ ] The GitHub page says what comes next once connected
-- [ ] Setup wizard numbers its steps and explains each one
-- [ ] Setup ends with the first Claude subscription, skippable
-- [ ] Home lists the getting-started steps with their state and next action
-- [ ] Onboarding cards keep their layout (recovery card, owner toggle)
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Read the product context and related work, then write and validate the spec
+- [x] GitHub App creation opens in a new tab and the page follows it
+- [x] The GitHub page says what comes next once connected
+- [x] Setup wizard numbers its steps and explains each one
+- [x] Setup ends with the first Claude subscription, skippable
+- [x] Home lists the getting-started steps with their state and next action
+- [x] Onboarding cards keep their layout (recovery card, owner toggle)
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -108,3 +108,27 @@ what comes next.
   opener cut, and the Yulius tab waits by reading the connection; the setup wizard ends with the
   first subscription as a skippable step. Alternatives (same tab with a return link via a
   `setup_url`, a pop-up window, embedding the subscription sign-in in the wizard) are in the ADR.
+
+## Evidence
+
+- `e2e/tests/onboarding-flow.e2e.ts` (11 tests): each written before its change and seen failing
+  for the right reason (no `window.open` call; no waiting heading; no Next steps region; no step
+  labels; no Getting started list; recovery card padding 0; manifest form absent; closed tab not
+  detected), then passing (11 passed). Mutation check: removing the page's `destroy` cleanup makes
+  "stops reading the connection … when the page is left" fail (3 reads, expected 2).
+- `update.e2e.ts` setup tests updated for the new last step; `password-setup.e2e.ts`,
+  `home.e2e.ts`, `claude-connect.e2e.ts`, `loading-shapes.e2e.ts` pass unchanged.
+- `scripts/dev ci`: exit 0. Whole e2e suite: 66 files passed, 1 skipped (696 tests passed,
+  1 skipped) before the review fixes; rerun after them is recorded in the pull request.
+- Screenshots of setup steps 1, 2 and 5, Home's Getting started, the GitHub form, waiting and
+  connected cards checked by eye (mock, Chromium).
+- `scripts/dev security`: **not run** (exit 2): Vidoc answered HTTP 429, this key has used its
+  50,000,000 tokens. No finding was checked; CI's security job reports the same state.
+- Independent review (fresh session, om-code-review) at 1a442dc4: request changes on one medium
+  (no test for the failed-manifest path) and lows/nits. Fixed test-first: failure-path test,
+  closed-tab guard with test, mock builds the real form (asserted), Check now after the 15-minute
+  limit, focus moved to each new card (asserted), empty action row, polling stop tested, heading
+  class, docs. Kept: step 1 says "of 5" while the 4-step path exists only in the mock (the server
+  always issues a recovery code).
+- Not tested automatically: the real post to GitHub (needs a GitHub account and a public URL)
+  and the 15-minute expiry of the waiting reads (no clock control in the runner).
