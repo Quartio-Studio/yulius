@@ -26,7 +26,9 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
   (WebCodecs) and JPEG frames (`blob:`) on a canvas and opens preview origins only in new windows,
   so it needs nothing beyond the policy above. The server sends only `frame-ancestors 'none'` so
   far, and `boot.js` makes the app refuse to run inside any frame.
-- `README.md` files are documentation and need not be embedded.
+- `README.md` files are documentation and need not be embedded. `assets/mock.js` is not embedded
+  either: it runs the e2e suite and local UI work from this directory, and a real instance answers
+  a page link with `?mock=1` by redirecting to the same page without it (ADR-0206).
 
 ## Layout of the code
 
@@ -86,7 +88,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/leftovers.js` | The instance page's Leftovers card (SPEC-215): the disk's usage and the reclaimable total, each item's path, kind, size, owner, reason and whether Yulius deletes it by itself; Refresh, Delete and Delete all safe, each confirmed with the size, followed while they run in the background. |
 | `assets/claude.js` | Connecting a Claude account comes first (SPEC-246): `claude_connected`, the Connect Claude step shown in place of whatever would start an agent, and its toast action. |
 | `assets/pages/apitokens.js` | Settings → Connect your local agent (SPEC-247): make an `operate` or `read` token (shown once, with its `claude mcp add` and `yulius remote login` commands), list tokens with scope and last use, revoke. |
-| `assets/mock.js` | In-memory backend and fake WebSockets used with `?mock=1`. |
+| `assets/mock.js` | In-memory backend and fake WebSockets used with `?mock=1` when the UI is served from this directory (e2e, local work); not in the server binary (ADR-0206). |
 | `assets/brand.js` | Brand identity in one place: product name, tagline and mark (the SVG path used by the sidebar, sign-in, favicon and tab title). |
 | `assets/boot.js` | The only classic script: runs in `<head>` after the stylesheets and before the first paint, applies the stored theme (no dark flash for light or system) and sets the browser's theme colour from the tokens; notes when the page is framed, and app.js then shows only a notice (Yulius never runs inside a frame). |
 | `assets/theme.js` | Theme choice (dark, light, system) per browser: sets `data-theme`, the colour-scheme and theme-color metas, and re-colours terminals and editors from the tokens. |
@@ -261,8 +263,10 @@ python3 -m http.server --bind 127.0.0.1 8765
 # open http://127.0.0.1:8765/?mock=1   (stop the server with Ctrl-C afterwards)
 ```
 
-`?mock=1` replaces the HTTP client and every WebSocket with `assets/mock.js` and switches
-routing to `#/…` paths so a plain static server can reload deep links. The protocol code
+Only a static server of this directory runs the mock: `yulius serve` does not embed
+`assets/mock.js` and redirects `?mock=1` away (ADR-0206). `?mock=1` replaces the HTTP client and
+every WebSocket with `assets/mock.js` and switches routing to `#/…` paths so a plain static server
+can reload deep links. The protocol code
 (request building, error parsing, binary frames, reconnect) is the same code used against
 the real server. Options (combine with `&`): `setup=1` (setup required; token
 `YUL-SETUP-1234`), `signedout=1` (password `correct horse battery`), `role=member|admin`,
@@ -312,7 +316,7 @@ The source of truth for paths and methods is the route table in
 - **Checked automatically.** `crates/yulius/tests/ui_contract.rs` reads these sources at test
   time: every `/api/...` literal (HTTP calls, WebSocket `path:`s, links) must reach a real route with the method used (`api.get|post|put|patch|del`; WebSocket
   paths and links are `GET`), every route `assets/mock.js` fakes must exist on the server,
-  every imported module must be embedded, and UI routes must fall back to `index.html`.
+  every imported module but the mock must be embedded (the mock must not be), and UI routes must fall back to `index.html`.
   Keep API paths **literal** at the call site (``ctx.api.post(`/api/tasks/${enc(id)}/stop`)``):
   an interpolation may only fill a whole path segment, never choose the endpoint.
 - **Known gaps.** None: every documented route the UI calls is routed (`KNOWN_UNROUTED` in the

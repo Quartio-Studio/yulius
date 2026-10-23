@@ -57,7 +57,9 @@ fn main() {
             .unwrap_or(file)
             .to_string_lossy()
             .replace('\\', "/");
-        if rel.ends_with(".md") {
+        // The mock is the e2e suite's backend, served from the source tree; a real instance does
+        // not ship it (ADR-0206).
+        if rel.ends_with(".md") || rel == "assets/mock.js" {
             continue;
         }
         let etag = std::fs::read(file).map_or(0, |bytes| fnv1a(&bytes));
