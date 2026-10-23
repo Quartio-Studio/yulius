@@ -1,11 +1,11 @@
 ---
 yulius-task: 8501149c-5fee-4b63-b82a-a4f501db7a60
-status: done
+status: in-progress
 ---
 
 # SPEC-280: A wheel turn scrolls Claude Code as far as it scrolls a page
 
-Status: done
+Status: in-progress
 Date: 2026-10-23
 Owner: task #266
 Scope authorization: task #266: "I can't scroll up in Claude conversation for some reason, fix".
