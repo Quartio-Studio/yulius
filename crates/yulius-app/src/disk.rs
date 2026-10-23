@@ -28,7 +28,7 @@ use yulius_domain::task::{Activity, StopReason, TaskStatus};
 
 use crate::context::App;
 use crate::error::AppResult;
-use crate::leftovers::no_link_between;
+use crate::leftovers::{no_link_between, read_small_file};
 use crate::model::{SandboxRecord, TaskRecord};
 use crate::ports::isolation::SandboxRef;
 
@@ -162,16 +162,10 @@ fn root_entries(worktree: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The caches `worktree`'s `yulius.toml` declares: none unless it is a regular file of at most
+/// `MAX_TOML_BYTES` (a FIFO or a link swapped in by the sandbox is never waited on or followed).
 fn declared_caches(worktree: &Path) -> Vec<String> {
-    let path = worktree.join("yulius.toml");
-    let Ok(meta) = std::fs::symlink_metadata(&path) else {
-        return Vec::new();
-    };
-    if !meta.is_file() || meta.len() > MAX_TOML_BYTES {
-        return Vec::new();
-    }
-    std::fs::read_to_string(&path)
-        .ok()
+    read_small_file(&worktree.join("yulius.toml"), MAX_TOML_BYTES)
         .and_then(|text| parse_yulius_toml_caches(&text).ok())
         .unwrap_or_default()
 }

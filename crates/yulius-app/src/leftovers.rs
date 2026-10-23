@@ -264,6 +264,35 @@ fn size_of(path: &Path) -> Option<u64> {
     }
 }
 
+/// The text of the regular file at `path` when it holds at most `max` bytes, else `None`. The
+/// file is opened once, without following a link at its end and without waiting on a FIFO, and
+/// the handle, not the path, is checked and read: a sandbox swapping the file after a check by
+/// path changes nothing (#853, ADR-0174). At most `max + 1` bytes are read, so a file grown after
+/// the check is refused too.
+pub(crate) fn read_small_file(path: &Path, max: u64) -> Option<String> {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let flags = nix::fcntl::OFlag::O_NOFOLLOW
+        | nix::fcntl::OFlag::O_NONBLOCK
+        | nix::fcntl::OFlag::O_CLOEXEC;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(flags.bits())
+        .open(path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > max {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(max.saturating_add(1))
+        .read_to_string(&mut text)
+        .ok()?;
+    u64::try_from(text.len())
+        .is_ok_and(|len| len <= max)
+        .then_some(text)
+}
+
 /// Whether every directory from `root` (exclusive) down to `path`'s parent is a real directory,
 /// not a link: a sandbox's agents and shells can replace a directory of their sandbox with a link,
 /// which would steer a removal elsewhere (review of SPEC-215). `path` itself may be a link (it is
@@ -481,7 +510,7 @@ fn gone_worktree(record: &Path, sandbox_dir: &Path) -> Option<PathBuf> {
     if exists(&record.join("locked")) {
         return None;
     }
-    let gitdir = std::fs::read_to_string(record.join("gitdir")).ok()?;
+    let gitdir = read_small_file(&record.join("gitdir"), MAX_GITDIR_BYTES)?;
     let dot_git = PathBuf::from(gitdir.trim());
     let worktree = dot_git.parent()?.to_path_buf();
     // Inside the sandbox directory, with no link on the part of the way that still exists (a
