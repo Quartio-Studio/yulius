@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-23
 
+- A `claude` an agent runs in its worktree no longer takes over its task's session (SPEC-281,
+  task #267, ADR-0209, #862). Its transcript lands beside the TUI's, and the drift check adopted
+  the newest one: watchers saw the nested session ("Not logged in") while the owner's terminal
+  showed the real one, and a Continue would have resumed it. Now only the run's own `SessionStart`
+  hook changes the task's session (`/clear`, `/resume`), and the lineage is listed in the order
+  sessions were adopted, so watchers and resumes use the session adopted last (task #266 included).
 - Production deploys get a Docker engine of their own (SPEC-279, task #265, ADR-0208). Each
   sandbox has a production holder (`<sid>.prod`: its own namespaces, network, cgroup, system layer
   over the base and engine storage in `sysroots/<sid>.prod`), started for production-stage runs

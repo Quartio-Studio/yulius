@@ -1915,7 +1915,7 @@ warning) while nothing answers to it.
 | Status line | `--settings` JSON `statusLine` → `yulius hook claude StatusLine` (§7.5): the repository and branch, and the session's plan usage for the pool (ADR-17) |
 | Skills | `<config>/skills/<name>/SKILL.md` + repository `.claude/skills` |
 | Login (account add) | `claude setup-token` in a server-owned PTY; token captured from output and masked before display; ends `ok` on exit or 5 s after a complete token, and the UI's dialog closes itself on `ok`, retries on failure and cancels the sign-in when closed early (SPEC-243, ADR-0184) |
-| Session-id drift | new `.jsonl` for the same worktree slug → adopt into lineage (HRN-004) |
+| Session-id drift | the run's `SessionStart` hook names another session (`/clear`, `/resume`) → it becomes the attempt's and is adopted into the lineage (HRN-004); a new `.jsonl` no hook named (a nested `claude`) is not (SPEC-281, ADR-0209) |
 
 Transcript tailing: poll size every 1 s; parse only complete lines; max line 4 MiB (longer lines
 skipped with a diagnostic); unknown record types ignored; malformed lines counted, never fatal.
