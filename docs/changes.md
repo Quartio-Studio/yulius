@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-23
 
+- First-run onboarding says what each step does and what comes next (SPEC-283, task #269,
+  ADR-0211). Create GitHub App on GitHub opens GitHub in a new tab (opener cut) instead of
+  replacing Yulius; the Yulius tab waits, notices the App, and lists the next steps (install on
+  repositories, import or create a sandbox, admit users). The setup wizard is numbered, explains
+  the setup token, recovery code and keys, and ends with "Add your first Claude subscription"
+  (skippable). Home's empty view lists the getting-started steps with their state. The setup
+  recovery card keeps its frame and the GitHub owner toggle its width.
 - Production deploys get a Docker engine of their own (SPEC-279, task #265, ADR-0208). Each
   sandbox has a production holder (`<sid>.prod`: its own namespaces, network, cgroup, system layer
   over the base and engine storage in `sysroots/<sid>.prod`), started for production-stage runs
