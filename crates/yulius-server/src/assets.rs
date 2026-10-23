@@ -49,16 +49,50 @@ fn respond(headers: &HeaderMap, asset: &'static Asset, cache: &'static str) -> R
         .into_response()
 }
 
-/// Where a page link with `mock=1` goes instead: the same path without it. The mock is the e2e
-/// suite's backend, served from the source tree, and a real instance does not ship it (ADR-0206).
+/// A query component decoded as the page's `URLSearchParams` does: `+` is a space, `%xx` a byte.
+fn form_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while let Some(&byte) = bytes.get(i) {
+        let hex = bytes
+            .get(i + 1..i + 3)
+            .and_then(|pair| std::str::from_utf8(pair).ok())
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok());
+        match (byte, hex) {
+            (b'%', Some(decoded)) => {
+                out.push(decoded);
+                i += 3;
+            }
+            (b'+', _) => {
+                out.push(b' ');
+                i += 1;
+            }
+            _ => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Where a page link in mock mode goes instead: the same path without the `mock` parameter. The
+/// page is in mock mode when its first `mock` is `1` (app.js); the mock is the e2e suite's
+/// backend, served from the source tree, and a real instance does not ship it (ADR-0206).
 fn without_mock(uri: &Uri) -> Option<String> {
     let query = uri.query()?;
-    if !query.split('&').any(|pair| pair == "mock=1") {
+    let is_mock = |pair: &&str| form_decode(pair.split('=').next().unwrap_or_default()) == "mock";
+    let first = query.split('&').find(is_mock)?;
+    if form_decode(first.split_once('=').map_or("", |(_, value)| value)) != "1" {
         return None;
     }
     // One leading slash: `//host` or `/\host` would send the browser to another site.
     let path = format!("/{}", uri.path().trim_start_matches(['/', '\\']));
-    let rest: Vec<&str> = query.split('&').filter(|pair| *pair != "mock=1").collect();
+    let rest: Vec<&str> = query
+        .split('&')
+        .filter(|pair| !pair.is_empty() && !is_mock(pair))
+        .collect();
     Some(if rest.is_empty() {
         path
     } else {

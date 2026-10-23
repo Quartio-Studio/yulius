@@ -593,8 +593,15 @@ async fn a_mock_link_opens_the_real_app() -> TestResult {
         ("/?mock=1&lab=1", "/?lab=1"),
         ("/s/x/tasks?a=1&mock=1&b=2", "/s/x/tasks?a=1&b=2"),
         ("/index.html?mock=1", "/index.html"),
-        // Never another site: `//host` in Location is a protocol-relative URL.
+        // Never another site: `//host` in Location is a protocol-relative URL, and browsers
+        // read `/\host` as one too.
         ("//example.com/x?mock=1", "/example.com/x"),
+        ("/\\example.com/x?mock=1", "/example.com/x"),
+        // The page decodes the query (`URLSearchParams`), so encoded and repeated switches count.
+        ("/?mock=%31", "/"),
+        ("/?%6Dock=1&a=1", "/?a=1"),
+        ("/?mock=1&mock=1&x=2", "/?x=2"),
+        ("/?mock=1&&x=2&", "/?x=2"),
     ] {
         let request = Request::builder().uri(path).body(Body::empty())?;
         let response = h.router.clone().oneshot(request).await?;
@@ -608,6 +615,8 @@ async fn a_mock_link_opens_the_real_app() -> TestResult {
     for (path, status) in [
         ("/?mock=0", StatusCode::OK),
         ("/?mockery=1", StatusCode::OK),
+        // The page reads the first `mock`.
+        ("/?mock=0&mock=1", StatusCode::OK),
         ("/assets/app.js?mock=1", StatusCode::OK),
         ("/api/setup/status?mock=1", StatusCode::OK),
     ] {

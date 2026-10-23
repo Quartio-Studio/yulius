@@ -36,8 +36,10 @@ what the e2e suite and local UI work run on, served from the source tree.
 
 - MCK-001: the server binary embeds no `assets/mock.js`: `GET /assets/mock.js` answers 404.
 - MCK-002: a page request (any path outside `/api/` and `/assets/`, `index.html` included) whose
-  query has `mock=1` is redirected (303) to the same path with that parameter removed and every
-  other parameter kept in order, so the real app opens instead of a broken mock start.
+  query puts the page in mock mode (its first `mock`, decoded as `URLSearchParams` does, is `1`)
+  is redirected (303) to the same path, with one leading slash, without any `mock` or empty
+  parameter and every other parameter kept in order, so the real app opens instead of a broken
+  mock start and the redirect never leaves the site.
 - MCK-003: the mock keeps working where the UI is served from the source tree (e2e suite, local
   UI work); the contract test still checks it fakes only real routes.
 
