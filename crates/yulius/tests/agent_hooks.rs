@@ -1031,3 +1031,127 @@ async fn a_hook_whose_client_hangs_up_is_still_applied() -> TestResult {
     }
     Ok(())
 }
+
+fn lineage_entry(
+    f: &Fixture,
+    task: &str,
+    session: &str,
+    at: i64,
+) -> Result<yulius_app::model::ProviderSessionRecord, Box<dyn std::error::Error>> {
+    Ok(yulius_app::model::ProviderSessionRecord {
+        id: format!("ps-{task}-{session}"),
+        sandbox_id: f.sandbox.clone(),
+        task_id: TaskId::parse(task)?,
+        harness: Agent::ClaudeCode,
+        session_id: session.into(),
+        transcript_ref: None,
+        origin: "native".into(),
+        first_seen: Timestamp(at),
+        last_seen: Timestamp(at),
+    })
+}
+
+async fn lineage_of(f: &Fixture, task: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    Ok(f.h
+        .app
+        .deps
+        .store
+        .provider_sessions(&TaskId::parse(task)?)
+        .await?
+        .into_iter()
+        .map(|s| s.session_id)
+        .collect())
+}
+
+async fn attempt_session(f: &Fixture) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    Ok(f.h
+        .app
+        .deps
+        .store
+        .live_attempt(&f.task)
+        .await?
+        .ok_or("attempt")?
+        .provider_session_id)
+}
+
+/// SPEC-281 SSN-001: the TUI's `SessionStart` naming another session (`/clear`) makes it the
+/// attempt's and records it in the lineage at once, so a restart before the supervisor's next
+/// drift check cannot lose it.
+#[tokio::test]
+async fn session_start_with_another_session_adopts_it_at_once() -> TestResult {
+    let f = fixture().await?;
+    let store = &f.h.app.deps.store;
+    store
+        .upsert_provider_session(&lineage_entry(&f, "t-main", "sess-1", 1)?)
+        .await?;
+    store
+        .set_attempt_session(&AttemptId::parse("at1")?, "sess-1")
+        .await?;
+    hook(
+        &f,
+        "SessionStart",
+        json!({"session_id": "sess-2", "hook_event_name": "SessionStart", "source": "clear"}),
+    )
+    .await?;
+    assert_eq!(attempt_session(&f).await?.as_deref(), Some("sess-2"));
+    assert_eq!(lineage_of(&f, "t-main").await?, ["sess-1", "sess-2"]);
+    Ok(())
+}
+
+/// SPEC-281 SSN-001: a session id the hook reports is a path component later; one Yulius does not
+/// accept (a traversal, an option, too long) changes nothing.
+#[tokio::test]
+async fn session_start_ignores_an_invalid_session_id() -> TestResult {
+    let f = fixture().await?;
+    f.h.app
+        .deps
+        .store
+        .set_attempt_session(&AttemptId::parse("at1")?, "sess-1")
+        .await?;
+    for bad in ["../x", "-rf", "a/b", &"a".repeat(129)] {
+        hook(
+            &f,
+            "SessionStart",
+            json!({"session_id": bad, "hook_event_name": "SessionStart", "source": "clear"}),
+        )
+        .await?;
+        assert_eq!(
+            attempt_session(&f).await?.as_deref(),
+            Some("sess-1"),
+            "{bad}"
+        );
+    }
+    assert!(lineage_of(&f, "t-main").await?.is_empty());
+    Ok(())
+}
+
+/// SPEC-281, HRN-004 "without corrupting another task": a hook naming another task's session (its
+/// id is in the sandbox's shared Claude directory) is refused: neither this attempt nor the other
+/// task's lineage changes.
+#[tokio::test]
+async fn session_start_refuses_another_tasks_session() -> TestResult {
+    let f = fixture().await?;
+    let store = &f.h.app.deps.store;
+    store
+        .upsert_provider_session(&lineage_entry(&f, "t-main", "sess-1", 1)?)
+        .await?;
+    store
+        .upsert_provider_session(&lineage_entry(&f, "t-other", "other-1", 2)?)
+        .await?;
+    store
+        .upsert_provider_session(&lineage_entry(&f, "t-other", "other-2", 3)?)
+        .await?;
+    store
+        .set_attempt_session(&AttemptId::parse("at1")?, "sess-1")
+        .await?;
+    hook(
+        &f,
+        "SessionStart",
+        json!({"session_id": "other-1", "hook_event_name": "SessionStart", "source": "resume"}),
+    )
+    .await?;
+    assert_eq!(attempt_session(&f).await?.as_deref(), Some("sess-1"));
+    assert_eq!(lineage_of(&f, "t-main").await?, ["sess-1"]);
+    assert_eq!(lineage_of(&f, "t-other").await?, ["other-1", "other-2"]);
+    Ok(())
+}

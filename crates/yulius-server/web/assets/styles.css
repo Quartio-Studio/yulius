@@ -140,6 +140,7 @@ p { margin: 0; }
 
 .seg { display: inline-flex; border: 1px solid var(--border-control); border-radius: var(--radius); overflow: hidden; }
 .seg label { position: relative; display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; height: var(--control-md); cursor: pointer; color: var(--text-2); }
+.seg-fit { align-self: flex-start; max-width: 100%; }
 .seg label + label { border-left: 1px solid var(--border-strong); }
 .seg input { position: absolute; opacity: 0; pointer-events: none; }
 .seg label:has(input:checked) { background: var(--accent-soft); color: var(--text); }
@@ -2436,7 +2437,8 @@ a.dl-task:hover { text-decoration: underline; }
 .btn-link { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; text-align: left; }
 .btn-link:hover { text-decoration: underline; }
 .card-warn { border-color: var(--warn); }
-.recovery-card { box-shadow: none; border: 0; padding: 0; max-width: none; }
+/* In the administration page's modal only: the setup page keeps the auth card's frame (SPEC-283). */
+.modal .recovery-card { box-shadow: none; border: 0; padding: 0; max-width: none; }
 .modal .recovery-card .auth-logo { display: none; }
 .token-totals { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 4px; }
 .kv-line { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; font-size: var(--fs-sm); line-height: var(--lh-sm); }
@@ -2893,3 +2895,24 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
   .st-axis > :first-child, .st-axis > :last-child { display: none; }
   .st-axis-ticks { grid-column: 1 / -1; }
 }
+
+/* Onboarding says what comes next (SPEC-283): the GitHub page's waiting and next steps. */
+.steps-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.next-steps { margin: 0; padding: 0; list-style: none; counter-reset: next-step; display: flex; flex-direction: column; gap: 12px; }
+.next-step { counter-increment: next-step; display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 8px 12px; }
+.next-step::before { content: counter(next-step); grid-row: span 2; width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border-strong); color: var(--text-2); font-size: var(--fs-xs); line-height: 1; }
+.next-step > .row-wrap { grid-column: 2; }
+.next-step a.btn { text-decoration: none; }
+/* Home's getting-started steps (SPEC-283). */
+.getting-started { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; padding-bottom: 12px; }
+.gs-heading { margin: 0; font-size: var(--fs); font-weight: 600; }
+.gs-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.gs-step { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: start; gap: 12px; }
+.gs-mark { width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border-strong); color: var(--text-2); font-size: var(--fs-xs); line-height: 1; }
+.gs-done .gs-mark { background: var(--accent-soft); color: var(--text); }
+.gs-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.gs-text { color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.gs-done .gs-title { color: var(--text-2); }
+.gs-state { font-size: var(--fs-xs); line-height: var(--lh-xs); color: var(--muted); white-space: nowrap; }
+.gs-next .gs-state { color: var(--text); font-weight: 600; }
+.gs-next .gs-mark { border-color: var(--text-2); color: var(--text); }

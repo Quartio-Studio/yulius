@@ -41,17 +41,7 @@ pub fn claude_transcript_path(config_dir: &Path, cwd: &Path, session_id: &str) -
     claude_project_dir(config_dir, cwd).join(format!("{session_id}.jsonl"))
 }
 
-/// `true` for provider session ids Yulius accepts in paths and argv: 1–128 ASCII letters,
-/// digits, `-` or `_`, not starting with `-`.
-#[must_use]
-pub fn valid_session_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 128
-        && !id.starts_with('-')
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-}
+pub use yulius_domain::harness::valid_session_id;
 
 fn walk_limit_error() -> io::Error {
     io::Error::other("directory walk limit exceeded")
@@ -92,7 +82,8 @@ pub struct ClaudeSessionFile {
 }
 
 /// The most recently modified main-session transcript in a Claude project directory, modified
-/// at or after `since` (session-id drift detection, HRN-004). Subagent transcripts
+/// at or after `since` (the cockpit's session; a task's session is named by its hooks, SPEC-281,
+/// since any `claude` in the folder writes here). Subagent transcripts
 /// (`agent-*.jsonl`), subdirectories and symbolic links are ignored.
 ///
 /// # Errors

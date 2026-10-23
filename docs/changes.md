@@ -6,6 +6,33 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-23
 
+- First-run onboarding says what each step does and what comes next (SPEC-283, task #269,
+  ADR-0211). Create GitHub App on GitHub opens GitHub in a new tab (opener cut) instead of
+  replacing Yulius; the Yulius tab waits, notices the App, and lists the next steps (install on
+  repositories, import or create a sandbox, admit users). The setup wizard is numbered, explains
+  the setup token, recovery code and keys, and ends with "Add your first Claude subscription"
+  (skippable). Home's empty view lists the getting-started steps with their state. The recovery
+  card of setup and of a password reset keeps its frame (only the administration dialog drops it),
+  and the GitHub owner toggle keeps its width.
+- A `claude` an agent runs in its worktree no longer takes over its task's session (SPEC-281,
+  task #267, ADR-0209, #862). Its transcript lands beside the TUI's, and the drift check adopted
+  the newest one: watchers saw the nested session ("Not logged in") while the owner's terminal
+  showed the real one, and a Continue would have resumed it. Now only the run's own `SessionStart`
+  hook changes the task's session (`/clear`, `/resume`), and the lineage is listed in the order
+  sessions were adopted, so watchers and resumes use the session adopted last (task #266 included).
+- The wheel and the trackpad scroll Claude Code's conversation as far as they scroll a page
+  (SPEC-280, task #266, #863, ADR-0210). A task's terminal and the Superagent sent one wheel report
+  per wheel event, small trackpad deltas damped, and Claude Code moves one row per report, so a
+  notch moved one row and scrolling up a long conversation looked stuck. A plain wheel turn now
+  sends one report per row of its distance (pixels over the row height, lines, pages), carrying a
+  fraction on in the same direction; modified wheels, pinch-zoom and read-only viewers are as
+  before.
+- The README is a step-by-step onboarding guide for people who just found Yulius (task #268): who
+  it is for, the path from discovery to a first task as a diagram, a checklist of what to have,
+  recommended VPS providers and sizes, seven steps marked person or server, and plain explanations
+  of VMs, the setup token, the recovery code, Jev and Vidoc with their keys. The developer start
+  moved to its own section. The CD agent-state test no longer races the production run's start
+  (#864).
 - Production deploys get a Docker engine of their own (SPEC-279, task #265, ADR-0208). Each
   sandbox has a production holder (`<sid>.prod`: its own namespaces, network, cgroup, system layer
   over the base and engine storage in `sysroots/<sid>.prod`), started for production-stage runs

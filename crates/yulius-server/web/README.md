@@ -269,7 +269,7 @@ every WebSocket with `assets/mock.js` and switches routing to `#/…` paths so a
 can reload deep links. The protocol code
 (request building, error parsing, binary frames, reconnect) is the same code used against
 the real server. Options (combine with `&`): `setup=1` (setup required; token
-`YUL-SETUP-1234`), `signedout=1` (password `correct horse battery`), `role=member|admin`,
+`YUL-SETUP-1234`; with `recovery=1` setup issues a recovery code, as the server does), `signedout=1` (password `correct horse battery`), `role=member|admin`,
 `role=superadmin` (the default), `contained=0` (shows "Not isolated"), `github=0` (GitHub App not configured), `github_linked=0`
 (the account has no GitHub link: the superadmin still sees every sandbox, other roles see none and
 the home page asks them to sign in with GitHub), `sandboxes=0` (a fresh instance without sandboxes: the
