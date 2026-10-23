@@ -3153,3 +3153,117 @@ async fn a_grant_verifies_without_a_fresh_fetch_when_the_clone_has_the_head() ->
     assert!(scan.contains("key=yulius-secret-API_KEY"), "{scan}");
     Ok(())
 }
+
+/// Every job of every run, as the run details show them.
+async fn all_jobs(f: &Fixture) -> BoxResult<Vec<Value>> {
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let mut jobs = Vec::new();
+    for run in overview["runs"].as_array().ok_or("runs")? {
+        let id = run["id"].as_str().ok_or("id")?;
+        let detail = f.get(&format!("/api/sandboxes/s1/ci/runs/{id}")).await?;
+        jobs.extend(detail["jobs"].as_array().ok_or("jobs")?.iter().cloned());
+    }
+    Ok(jobs)
+}
+
+/// Asserts that every job passed and recorded `output`.
+fn all_passed_with(jobs: &[Value], output: &str) {
+    assert!(!jobs.is_empty(), "no job ran");
+    for job in jobs {
+        assert_eq!(job["state"], "passed", "{job}");
+        let recorded = job["output"].as_str().unwrap_or_default();
+        assert!(recorded.contains(output), "the job's output is kept: {job}");
+    }
+}
+
+/// #663 (SPEC-285 AC-1): a sandbox's `ci/logs` replaced by a link to a host folder gets no job log
+/// created in that folder; the link is replaced by a folder of the sandbox and the jobs' output is
+/// still recorded.
+#[tokio::test]
+async fn a_linked_ci_logs_folder_gets_no_host_write() -> TestResult {
+    let f = fixture_with(false, |data| {
+        let host = data.join("host-logs");
+        format!(
+            "[[ci.jobs]]\nname = \"check\"\ncommand = \"ls '{}' >> '{}'; echo linked-output\"\n",
+            host.display(),
+            data.join("seen.txt").display()
+        )
+    })
+    .await?;
+    let host = f.data.join("host-logs");
+    std::fs::create_dir_all(&host)?;
+    std::fs::write(host.join("keep.txt"), "host\n")?;
+    let ci = f.data.join("sandboxes/s1/ci");
+    std::fs::create_dir_all(&ci)?;
+    std::os::unix::fs::symlink(&host, ci.join("logs"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    all_passed_with(&all_jobs(&f).await?, "linked-output");
+    let seen = std::fs::read_to_string(f.data.join("seen.txt"))?;
+    assert!(
+        seen.lines().all(|name| name == "keep.txt"),
+        "while the jobs ran the host folder held only its own file: {seen:?}"
+    );
+    assert_eq!(std::fs::read_to_string(host.join("keep.txt"))?, "host\n");
+    assert!(
+        !std::fs::symlink_metadata(ci.join("logs"))?.is_symlink(),
+        "the link was replaced by a folder of the sandbox"
+    );
+    Ok(())
+}
+
+/// #663 (SPEC-285 AC-2): a link to a host file planted at a job log's path exactly between the
+/// removal of the old log and the create is never followed: the host file keeps its content and
+/// the job's output is still recorded.
+#[tokio::test]
+async fn a_link_planted_at_the_job_log_is_never_followed() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"check\"\ncommand = \"echo job-output\"\n".to_owned()
+    })
+    .await?;
+    let host_file = f.data.join("host-secret.txt");
+    std::fs::write(&host_file, "HOST-KEEP\n")?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let logs = f.data.join("sandboxes/s1/ci/logs");
+    for job in all_jobs(&f).await? {
+        let log = logs.join(format!("{}.log", job["id"].as_str().ok_or("id")?));
+        let target = host_file.clone();
+        let planted = log.clone();
+        yulius_app::race::on(yulius_app::race::Point::CiLogCreate, &log, move || {
+            let _ = std::os::unix::fs::symlink(&target, &planted);
+        });
+    }
+    f.settle().await?;
+    assert_eq!(std::fs::read_to_string(&host_file)?, "HOST-KEEP\n");
+    all_passed_with(&all_jobs(&f).await?, "job-output");
+    Ok(())
+}
+
+/// #663 (SPEC-285 AC-3): a job that relinks `ci/logs` to a host folder holding its log's name while
+/// it runs leaves that host file in place when its log is removed, and its output is recorded.
+#[tokio::test]
+async fn a_job_relinking_ci_logs_keeps_the_host_file() -> TestResult {
+    let f = fixture_with(false, |data| {
+        let host = data.join("host-logs");
+        format!(
+            "[[ci.jobs]]\nname = \"check\"\ncommand = \"log=$(basename $(readlink /proc/$$/fd/1)); echo kept > '{host}'/$log; [ -L ../../logs ] || {{ mv ../../logs ../../logs-$log && ln -s '{host}' ../../logs; }}; echo relinked-output\"\n",
+            host = host.display()
+        )
+    })
+    .await?;
+    let host = f.data.join("host-logs");
+    std::fs::create_dir_all(&host)?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let jobs = all_jobs(&f).await?;
+    all_passed_with(&jobs, "relinked-output");
+    for job in &jobs {
+        let name = format!("{}.log", job["id"].as_str().ok_or("id")?);
+        assert_eq!(
+            std::fs::read_to_string(host.join(&name)).map_err(|e| format!("{name}: {e}"))?,
+            "kept\n",
+            "the host file is not removed through the link"
+        );
+    }
+    Ok(())
+}

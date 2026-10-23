@@ -940,6 +940,7 @@ impl App {
             .map_err(|err| format!("checking out {} failed: {}", run.sha, err.public_message()))?;
         let log = logs.join(format!("{}.log", job.id));
         let _ = std::fs::remove_file(&log);
+        crate::race::reached(crate::race::Point::CiLogCreate, &log);
         std::fs::File::create(&log).map_err(|e| format!("creating the job log failed: {e}"))?;
         // Held until the job ends: the sandbox's holder is not stopped as idle meanwhile. A
         // refusal while the reading is over the quota is the quota: the run waits for disk
