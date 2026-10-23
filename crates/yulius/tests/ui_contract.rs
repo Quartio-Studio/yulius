@@ -10,8 +10,8 @@
 //!   405 for a wrong method;
 //! - the `?mock=1` backend (`assets/mock.js`) only fakes routes the server has;
 //! - the embedded assets are served with the right content types, every module the UI
-//!   imports is embedded, and UI routes fall back to the SPA shell while unknown `/api/`
-//!   paths and missing assets stay 404.
+//!   imports is embedded (but the mock, which a real instance does not ship), and UI routes
+//!   fall back to the SPA shell while unknown `/api/` paths and missing assets stay 404.
 
 use crate::support;
 
@@ -556,7 +556,11 @@ async fn embedded_assets_serve_with_content_types_and_every_import_resolves() ->
         referenced.contains("/assets/mock.js")
             && referenced.contains("/assets/vendor/xterm/xterm.mjs")
     );
-    for path in &referenced {
+    // The mock is the e2e suite's backend, served from the source tree; a real instance does not
+    // ship it (SPEC-277 MCK-001).
+    let mock = probe(&h.router, "GET", "/assets/mock.js").await?;
+    assert_eq!(mock.status, StatusCode::NOT_FOUND, "GET /assets/mock.js");
+    for path in referenced.iter().filter(|path| *path != "/assets/mock.js") {
         let response = probe(&h.router, "GET", path).await?;
         assert_eq!(
             response.status,
