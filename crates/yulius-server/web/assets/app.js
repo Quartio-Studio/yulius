@@ -143,7 +143,7 @@ function createApp(root, transport) {
 
   function renderSetup() {
     if (currentLocation().path !== '/setup') navigate('/setup', { replace: true });
-    setChildren(root, mountSetup(ctx, { onDone: (me) => signedIn(me, '/') }).el);
+    setChildren(root, mountSetup(ctx, { onDone: (me, target = '/') => signedIn(me, target) }).el);
   }
 
   function renderSignIn() {

@@ -97,3 +97,63 @@ test('the connected card says what comes next, Connect Claude first without a su
   await expect(next.getByRole('link', { name: 'Connect Claude' })).toBeVisible();
   await expect(next.getByRole('button', { name: 'Import repository' })).toHaveCount(0);
 });
+
+/** Fills the first setup card and creates the superadmin (the mock's setup token, not a real one). */
+async function createSuperadmin(browser: Browser, screen: Parameters<Parameters<typeof test>[1]>[0]['screen']) {
+  await screen.getByLabel('Setup token').fill('YUL-SETUP-1234');
+  await browser.locator('input[autocomplete="new-password"]').nth(0).fill('a long enough password');
+  await browser.locator('input[autocomplete="new-password"]').nth(1).fill('a long enough password');
+  await browser.locator('#ack-recover').check();
+  await browser.locator('#ack-stored').check();
+  await screen.getByRole('button', 'Create superadmin').click();
+}
+
+// The step label is set in capitals (CSS), which the runner reads.
+const stepLabel = (browser: Browser) => browser.locator('.auth-card .auth-step');
+const nextLine = (browser: Browser) => browser.locator('.auth-card .auth-next');
+
+test('setup numbers its steps, says what each does and what comes next, and ends with the first subscription', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&setup=1&signedout=1&recovery=1'));
+  await expect(stepLabel(browser)).toHaveText(/^Step 1 of 5 · Superadmin$/i);
+  await expect(browser.locator('#setup-token-why')).toHaveText(/protects your instance from unauthorized access/);
+  await expect(nextLine(browser)).toHaveText('Next: your recovery code, two optional keys, then your first Claude subscription.');
+  expect(await axeViolations(browser)).toEqual([]);
+  await createSuperadmin(browser, screen);
+
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Your recovery code');
+  await expect(stepLabel(browser)).toHaveText(/^Step 2 of 5 · Recovery code$/i);
+  await expect(nextLine(browser)).toHaveText('Next: two optional keys, then your first Claude subscription.');
+  await browser.locator('.recovery-card input[type="checkbox"]').check();
+  await screen.getByRole('button', 'Continue').click();
+
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Task intake with Jev');
+  await expect(stepLabel(browser)).toHaveText(/^Step 3 of 5 · Optional$/i);
+  await expect(nextLine(browser)).toHaveText('Next: security scans with Vidoc (optional).');
+  await screen.getByRole('button', 'Skip for now').click();
+
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Security scans with Vidoc');
+  await expect(stepLabel(browser)).toHaveText(/^Step 4 of 5 · Optional$/i);
+  await expect(nextLine(browser)).toHaveText('Next: your first Claude subscription.');
+  await screen.getByRole('button', 'Skip for now').click();
+
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Add your first Claude subscription');
+  await expect(stepLabel(browser)).toHaveText(/^Step 5 of 5 · Claude subscription$/i);
+  await expect(screen.getByText(/Agents run on a Claude subscription/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByRole('button', 'Add subscription').click();
+  await expect(screen.getByRole('dialog', 'Add a Claude subscription')).toBeVisible();
+  await expect(browser).toHaveURL(/#\/admin\/accounts$/);
+});
+
+test('skipping the first subscription ends setup on Home', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&setup=1&signedout=1'));
+  await createSuperadmin(browser, screen);
+  // No recovery code from this mock: four steps.
+  await expect(stepLabel(browser)).toHaveText(/^Step 2 of 4 · Optional$/i);
+  await screen.getByRole('button', 'Skip for now').click();
+  await expect(stepLabel(browser)).toHaveText(/^Step 3 of 4 · Optional$/i);
+  await screen.getByRole('button', 'Skip for now').click();
+  await expect(stepLabel(browser)).toHaveText(/^Step 4 of 4 · Claude subscription$/i);
+  await screen.getByRole('button', 'Skip for now').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+});

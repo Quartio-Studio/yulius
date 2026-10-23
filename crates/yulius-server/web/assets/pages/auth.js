@@ -5,6 +5,7 @@
 import { h, icon, field, setChildren, toast, skeleton } from '../dom.js';
 import { BRAND } from '../brand.js';
 import { keySetupCard } from '../instancekeys.js';
+import { CONNECT_PATH } from '../claude.js';
 
 /** The product's mark and name (brand.js) at the top of the sign-in and setup cards. */
 function brandLockup() {
@@ -19,6 +20,9 @@ const PASSWORD_HINT = `At least ${MIN_PASSWORD} characters; ${RECOMMENDED_PASSWO
 
 /** Length in code points, as the server counts (`chars()`), not UTF-16 units. */
 const passwordLength = (value) => [...value].length;
+
+/** The setup wizard's steps: superadmin, recovery code, Jev, Vidoc, first subscription (SPEC-283). */
+const SETUP_STEPS = 5;
 
 /**
  * Advice for a password long enough to be accepted but easy to guess, or '' (SPEC-242 PWM-004).
@@ -36,7 +40,7 @@ function passwordAdvice(value) {
  * The recovery code, shown once with the warnings; Continue needs the acknowledgement.
  * Used by setup, recovery and the administration page.
  */
-export function recoveryCodeCard(code, { title = 'Your recovery code', continueLabel = 'Continue', onContinue }) {
+export function recoveryCodeCard(code, { title = 'Your recovery code', continueLabel = 'Continue', onContinue, step = null, next: after = null }) {
   const ack = h('input', { type: 'checkbox' });
   const next = h('button', { type: 'button', class: 'btn btn-primary', disabled: true, onClick: () => onContinue() }, continueLabel);
   ack.addEventListener('change', () => { next.disabled = !ack.checked; });
@@ -45,6 +49,7 @@ export function recoveryCodeCard(code, { title = 'Your recovery code', continueL
   } }, 'Copy');
   return h('div', { class: 'auth-card recovery-card' },
     brandLockup(),
+    step ? h('div', { class: 'auth-step' }, step) : null,
     h('h1', { class: 'auth-title' }, title),
     h('div', { class: 'recovery-code', 'aria-label': `Recovery code ${code.split('').join(' ')}` }, code.slice(0, 3), h('span', { class: 'recovery-gap' }), code.slice(3)),
     h('div', { class: 'row justify-center' }, copy),
@@ -54,7 +59,25 @@ export function recoveryCodeCard(code, { title = 'Your recovery code', continueL
         h('span', null, 'It is the only way to reset a forgotten superadmin password, and it is shown only now. Store it apart from the password — for example in a password manager and on a sealed paper copy.'),
         h('span', null, 'Three wrong codes disable password recovery permanently.'))),
     h('label', { class: 'check' }, ack, h('span', null, 'I have stored the recovery code safely.')),
-    next);
+    next,
+    after ? h('p', { class: 'auth-next muted small' }, after) : null);
+}
+
+/**
+ * The wizard's last step (SPEC-283 ONB-005): the first Claude subscription, which every agent runs
+ * on. Add subscription ends setup on Subscriptions with its sign-in open; Skip for now on Home.
+ */
+function subscriptionStep({ step, onAdd, onSkip }) {
+  const add = h('button', { type: 'button', class: 'btn btn-primary', onClick: onAdd }, 'Add subscription');
+  setTimeout(() => add.focus(), 30);
+  return h('div', { class: 'auth-card' },
+    brandLockup(),
+    h('div', { class: 'auth-step' }, step),
+    h('h1', { class: 'auth-title' }, 'Add your first Claude subscription'),
+    h('p', { class: 'text-2' }, `Agents run on a Claude subscription: every task, and the onboarding of each repository, uses one, so nothing starts until one is connected. Add subscription signs one in from a terminal on this server; ${BRAND.name} never sees its password.`),
+    h('p', { class: 'muted xs' }, 'You can add it, or more of them, later in Settings → Subscriptions.'),
+    h('div', { class: 'row' }, add, h('button', { type: 'button', class: 'btn btn-ghost', onClick: onSkip }, 'Skip for now')),
+    h('p', { class: 'auth-next muted small' }, 'Next: Home, where you create your first sandbox. A playground from a project folder needs no GitHub.'));
 }
 
 /**
@@ -87,10 +110,12 @@ function passwordChecks(password, confirm, prefix) {
 
 /**
  * Setup wizard: token, password + confirmation, non-recoverable warning (ACC-002), the recovery
- * code, then the optional Jev key (ADM-001) and the optional Vidoc key (SPEC-195 VDK-004).
+ * code, the optional Jev key (ADM-001) and Vidoc key (SPEC-195 VDK-004), then the first Claude
+ * subscription (SPEC-283): each step numbered, explained and saying what follows. `onDone(me,
+ * path)` opens the app at `path`.
  */
 export function mountSetup(ctx, { onDone }) {
-  const token = h('input', { class: 'input mono', type: 'text', autocomplete: 'one-time-code', spellcheck: 'false', placeholder: 'printed on the VM by `yulius serve`', autofocus: true });
+  const token = h('input', { class: 'input mono', type: 'text', autocomplete: 'one-time-code', spellcheck: 'false', placeholder: 'printed on the VM by `yulius serve`', autofocus: true, 'aria-describedby': 'setup-token-why' });
   const password = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', minlength: MIN_PASSWORD });
   const confirm = h('input', { class: 'input', type: 'password', autocomplete: 'new-password' });
   const show = h('input', { type: 'checkbox' });
@@ -115,9 +140,12 @@ export function mountSetup(ctx, { onDone }) {
   const form = h('form', { class: 'auth-card', novalidate: true },
     h('input', { type: 'text', name: 'username', autocomplete: 'username', value: 'superadmin', hidden: true, readOnly: true, tabindex: '-1', 'aria-hidden': 'true' }),
     brandLockup(),
+    h('div', { class: 'auth-step' }, `Step 1 of ${SETUP_STEPS} · Superadmin`),
     h('h1', { class: 'auth-title' }, 'Set up this instance'),
-    h('p', { class: 'text-2' }, 'Create the single superadmin. You need the one-time setup token printed on the server console.'),
+    h('p', { class: 'text-2' }, 'Create the single superadmin: the account that owns this instance, connects Claude and GitHub, and admits your team.'),
     field('Setup token', token),
+    // Said beside the field, not in its label, so the field's name stays "Setup token".
+    h('p', { class: 'muted xs', id: 'setup-token-why' }, 'This one-time token protects your instance from unauthorized access: only someone who can read the server’s console, where `yulius serve` printed it, can claim the instance, so nobody who merely reaches this address can take it over.'),
     field('Superadmin password', password, PASSWORD_HINT, [checks.passwordNote, checks.adviceNote]),
     field('Repeat password', confirm, null, checks.confirmNote),
     h('label', { class: 'check small' }, show, h('span', null, 'Show passwords')),
@@ -129,7 +157,8 @@ export function mountSetup(ctx, { onDone }) {
     h('label', { class: 'check', for: 'ack-recover' }, ackRecover, h('span', null, 'I understand the password can only be recovered with the recovery code.')),
     h('label', { class: 'check', for: 'ack-stored' }, ackStored, h('span', null, 'I have stored the password in several safe places.')),
     problems,
-    submit);
+    submit,
+    h('p', { class: 'auth-next muted small' }, 'Next: your recovery code, two optional keys, then your first Claude subscription.'));
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -144,10 +173,19 @@ export function mountSetup(ctx, { onDone }) {
       if (me) delete me.recovery_code;
       // The session exists now: the optional key steps save through the superadmin's API.
       if (me && me.csrf_token) ctx.api.setCsrf(me.csrf_token);
-      const vidocStep = () => setChildren(root, keySetupCard(ctx, 'vidoc', { header: brandLockup(), step: 'Optional · 2 of 2', onDone: () => onDone(me) }));
-      const jevStep = () => setChildren(root, keySetupCard(ctx, 'jev', { header: brandLockup(), step: 'Optional · 1 of 2', onDone: vidocStep }));
+      // The steps after this one: the recovery code (the server always issues one), the two
+      // optional keys, the first subscription.
+      const total = code ? SETUP_STEPS : SETUP_STEPS - 1;
+      const at = (n) => `Step ${n - (code ? 0 : 1)} of ${total}`;
+      const claudeStep = () => setChildren(root, subscriptionStep({
+        step: `${at(5)} · Claude subscription`,
+        onAdd: () => onDone(me, CONNECT_PATH),
+        onSkip: () => onDone(me, '/'),
+      }));
+      const vidocStep = () => setChildren(root, keySetupCard(ctx, 'vidoc', { header: brandLockup(), step: `${at(4)} · Optional`, next: 'Next: your first Claude subscription.', onDone: claudeStep }));
+      const jevStep = () => setChildren(root, keySetupCard(ctx, 'jev', { header: brandLockup(), step: `${at(3)} · Optional`, next: 'Next: security scans with Vidoc (optional).', onDone: vidocStep }));
       if (code) {
-        setChildren(root, recoveryCodeCard(code, { onContinue: jevStep }));
+        setChildren(root, recoveryCodeCard(code, { step: `${at(2)} · Recovery code`, next: 'Next: two optional keys, then your first Claude subscription.', onContinue: jevStep }));
       } else {
         jevStep();
       }
