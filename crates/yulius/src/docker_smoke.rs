@@ -13,7 +13,12 @@
 //!    `docker run --rm hello-world`, a `docker build` and a two-service `docker compose up`;
 //! 3. kills the front: the next upkeep starts another, recreating the socket, and the old run
 //!    must still reach the engine;
-//! 4. starts a new run, which must have `DOCKER_HOST` and reach the same engine.
+//! 4. starts a new run, which must have `DOCKER_HOST` and reach the same engine;
+//! 5. starts the sandbox's production holder (SPEC-279) and a production run on the host's
+//!    read-only system in it: the run must reach that holder's own engine (`docker-smoke-prod`),
+//!    build with `docker buildx build --load`, round-trip the image through `docker save` and
+//!    `docker load`, and mount its own files with `docker run -v`; a sandbox run must then reach
+//!    neither that engine's image nor its socket.
 //!
 //! One line per check; exit 0 only when every check passed. The sandbox is removed at the end.
 
@@ -24,6 +29,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use yulius_contracts::ptyhost::{BubblewrapSpec, SandboxJoin};
+use yulius_contracts::sandbox::{production_holder, production_sandbox};
 use yulius_sandbox::manager::{DOCKER_OFF, Manager, SandboxRequest};
 
 use crate::wiring::sandbox::{Egress, IsolationArgs, resolve};
@@ -63,6 +69,28 @@ log engine-done
 wait_for "$P/go-again" || exit 1
 docker info --format '{{.Name}}' > "$P/again.txt" 2>&1 && log again-ok || log again-failed
 log again-done
+"#;
+
+/// A production run (SPEC-279): its engine, `docker buildx build --load`, `docker save` and
+/// `docker load`, and a bind of its own files.
+const PRODUCTION_RUN: &str = r#"P="$1"
+O="$P/production.txt"
+{ echo "host=${DOCKER_HOST:-unset}"; docker info --format 'name={{.Name}}'; } > "$O" 2>&1
+docker buildx build -q --load -t yulius-production-smoke "$P" > "$P/buildx.txt" 2>&1 && echo buildx-ok >> "$O" || echo buildx-failed >> "$O"
+{ docker save -o "$P/image.tar" yulius-production-smoke && docker image rm yulius-production-smoke && docker load -i "$P/image.tar" && docker run --rm yulius-production-smoke; } > "$P/load.txt" 2>&1 && echo load-ok >> "$O" || echo load-failed >> "$O"
+echo bound > "$P/marker"
+docker run --rm -v "$P:/files" busybox cat /files/marker > "$P/bind.txt" 2>&1 && echo bind-ok >> "$O" || echo bind-failed >> "$O"
+echo done >> "$O"
+"#;
+
+/// A sandbox run after the production run: its engine's name, whether it sees the production
+/// image, and whether the production holder's Docker directory (`$2`) exists for it.
+const SANDBOX_SIDE: &str = r#"P="$1"
+O="$P/side.txt"
+docker info --format 'name={{.Name}}' > "$O" 2>&1
+docker image inspect yulius-production-smoke > /dev/null 2>&1 && echo sees-image >> "$O" || echo no-image >> "$O"
+[ -e "$2" ] && echo sees-socket >> "$O" || echo no-socket >> "$O"
+echo done >> "$O"
 "#;
 
 /// A run started now: `DOCKER_HOST` and the engine's name.
@@ -304,14 +332,22 @@ pub async fn smoke(
 /// Sandbox names of smoke tests.
 const SMOKE_PREFIX: &str = "docker-smoke-";
 
-/// Smoke sandboxes in `data_dir` whose smoke process is gone.
+/// Smoke sandboxes in `data_dir` whose smoke process is gone, also those of which only the
+/// production holder is left (SPEC-279).
 fn stale_smokes(data_dir: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(data_dir.join("runtime").join("sandboxes")) else {
         return Vec::new();
     };
-    entries
+    let names: std::collections::BTreeSet<String> = entries
         .flatten()
         .filter_map(|entry| entry.file_name().to_str().map(str::to_owned))
+        .map(|name| match production_sandbox(&name) {
+            Some(sandbox) => sandbox.to_owned(),
+            None => name,
+        })
+        .collect();
+    names
+        .into_iter()
         .filter(|name| {
             name.strip_prefix(SMOKE_PREFIX)
                 .and_then(|pid| pid.parse::<i32>().ok())
@@ -323,10 +359,13 @@ fn stale_smokes(data_dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Stops the smoke sandbox `id`'s holder and front, and removes its files.
+/// Stops the smoke sandbox `id`'s holder and its production holder with their fronts, and
+/// removes their files.
 async fn remove_sandbox(config: &yulius_sandbox::manager::IsolationConfig, exe: &Path, id: &str) {
     let manager = Manager::new(config.clone());
+    let production = production_holder(id);
     manager.adopt_one(id).await;
+    manager.adopt_one(&production).await;
     manager.stop_all().await;
     let mapper = yulius_sandbox::userns::Mapper {
         bwrap: config.bwrap.clone(),
@@ -340,6 +379,9 @@ async fn remove_sandbox(config: &yulius_sandbox::manager::IsolationConfig, exe: 
         data_dir.join("sandboxes").join(id),
         data_dir.join("sysroots").join(id),
         data_dir.join("runtime").join("sandboxes").join(id),
+        data_dir.join("sysroots").join(&production),
+        data_dir.join("runtime").join("sandboxes").join(&production),
+        data_dir.join("cd").join(id),
     ] {
         if let Err(error) = yulius_sandbox::base::remove_tree(&mapper, exe, data_dir, &tree) {
             eprintln!("yulius: {error}");
@@ -504,6 +546,105 @@ async fn phases(
             && text.contains(&format!("name={HOSTNAME}")),
         text.lines().take(2).collect::<Vec<_>>().join(" "),
     );
+
+    // 5. The production holder (SPEC-279): a production run on the host's system reaches its own
+    // engine, which builds, loads and binds; the sandbox's runs reach neither.
+    let production = after
+        .prepare_production(request)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("no sandbox base")?;
+    let production_name = production_holder(&request.id);
+    let apart = production.join.net_ns != joined.join.net_ns
+        && production.join.user_ns != joined.join.user_ns
+        && production.join.docker_dir != joined.join.docker_dir;
+    check(
+        "the production holder has its own namespaces and Docker directory",
+        apart,
+        format!(
+            "net {} / {}, docker {}",
+            production.join.net_ns,
+            joined.join.net_ns,
+            production.join.docker_dir.as_deref().unwrap_or("none")
+        ),
+    );
+    let files =
+        yulius_contracts::sandbox::production_runs_dir(&config.data_dir, &request.id).join("smoke");
+    std::fs::create_dir_all(files.join("home")).map_err(|e| format!("{}: {e}", files.display()))?;
+    for (name, text) in [
+        ("Dockerfile", DOCKERFILE),
+        ("production.sh", PRODUCTION_RUN),
+        ("resolv.conf", "nameserver 10.0.2.3\n"),
+    ] {
+        std::fs::write(files.join(name), text).map_err(|e| format!("{name}: {e}"))?;
+    }
+    let mut join = production.join.clone();
+    join.host_system = Some(files.join("resolv.conf").to_string_lossy().into_owned());
+    runs.push(spawn_run_in(
+        exe,
+        &join,
+        &files,
+        &files,
+        &["production.sh".to_owned()],
+    )?);
+    after.release(&production_name).await;
+    let out = files.join("production.txt");
+    let _ = wait_line(&out, "done", PULL_WAIT).await;
+    let text = read(&out);
+    check(
+        "a production run reaches its own engine",
+        text.contains("host=unix:///run/yulius/docker/docker.sock")
+            && text.contains(&format!("name={HOSTNAME}-prod")),
+        text.lines().take(2).collect::<Vec<_>>().join(" "),
+    );
+    for (name, word, file) in [
+        (
+            "docker buildx build --load in a production run",
+            "buildx-ok",
+            "buildx.txt",
+        ),
+        (
+            "docker save and docker load in a production run",
+            "load-ok",
+            "load.txt",
+        ),
+        (
+            "docker run -v of a production run's own files",
+            "bind-ok",
+            "bind.txt",
+        ),
+    ] {
+        check(
+            name,
+            text.contains(word),
+            last_line(&read(&files.join(file))),
+        );
+    }
+    std::fs::write(probe.join("side.sh"), SANDBOX_SIDE).map_err(|e| e.to_string())?;
+    let joined = after
+        .prepare(request)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("no sandbox base")?;
+    let production_docker = production.join.docker_dir.clone().unwrap_or_default();
+    runs.push(spawn_run_in(
+        exe,
+        &joined.join,
+        &request.dir,
+        &probe,
+        &["side.sh".to_owned(), production_docker],
+    )?);
+    after.release(&request.id).await;
+    let side = probe.join("side.txt");
+    let _ = wait_line(&side, "done", WAIT).await;
+    let text = read(&side);
+    check(
+        "a sandbox run reaches neither the production engine nor its socket",
+        text.contains(&format!("name={HOSTNAME}\n"))
+            && text.contains("no-image")
+            && text.contains("no-socket"),
+        text.lines().take(3).collect::<Vec<_>>().join(" "),
+    );
     Ok(())
 }
 
@@ -515,9 +656,22 @@ fn spawn_run(
     probe: &Path,
     script: &str,
 ) -> Result<std::process::Child, String> {
+    spawn_run_in(exe, join, &request.dir, probe, &[script.to_owned()])
+}
+
+/// Starts `/bin/sh <probe>/<script> <probe> <args…>` (`script_args`: the script, then its
+/// arguments) in a run joined to the holder of `join`, rooted at `root` with its `home`.
+fn spawn_run_in(
+    exe: &Path,
+    join: &SandboxJoin,
+    root: &Path,
+    probe: &Path,
+    script_args: &[String],
+) -> Result<std::process::Child, String> {
+    let (script, args) = script_args.split_first().ok_or("no script")?;
     let file = probe.join(format!("{script}.join.json"));
     yulius_sandbox::holder::write_json(&file, join).map_err(|e| e.to_string())?;
-    let root = request.dir.to_string_lossy().into_owned();
+    let root = root.to_string_lossy().into_owned();
     let spec = BubblewrapSpec {
         sandbox_root: root.clone(),
         home: format!("{root}/home"),
@@ -529,11 +683,12 @@ fn spawn_run(
         join: Some(Box::new(join.clone())),
     };
     let probe_text = probe.to_string_lossy().into_owned();
-    let inner = [
+    let mut inner = vec![
         "/bin/sh".to_owned(),
         format!("{probe_text}/{script}"),
         probe_text,
     ];
+    inner.extend(args.iter().cloned());
     let argv = yulius_ptyhost::bwrap_argv(&spec, &inner, &root);
     std::process::Command::new(exe)
         .arg("sandbox-exec")
@@ -782,10 +937,17 @@ mod tests {
             &dead,
             &"s1".to_owned(),
             &format!("{SMOKE_PREFIX}x"),
+            // Production holders (SPEC-279): a dead smoke's, alone or beside its sandbox's.
+            &format!("{dead}.prod"),
+            &format!("{alive}.prod"),
+            &format!("{SMOKE_PREFIX}{}.prod", (1u32 << 23) + 1),
         ] {
             std::fs::create_dir_all(root.join(name))?;
         }
-        assert_eq!(stale_smokes(data.path()), vec![dead]);
+        assert_eq!(
+            stale_smokes(data.path()),
+            vec![dead, format!("{SMOKE_PREFIX}{}", (1u32 << 23) + 1)]
+        );
         let _ = child.kill();
         let _ = child.wait();
         Ok(())
@@ -900,6 +1062,24 @@ mod tests {
             assert!(OLD_RUN.contains(line), "{line}");
         }
         assert!(NEW_RUN.contains("echo done"));
+        // SPEC-279 PDE-008: the production phase's runs, and what each of its checks reads.
+        for script in [PRODUCTION_RUN, SANDBOX_SIDE] {
+            assert!(script.contains("echo done >> \"$O\""), "{script}");
+        }
+        for word in [
+            "docker buildx build -q --load",
+            "docker save",
+            "docker load",
+            "-v \"$P:/files\"",
+            "buildx-ok",
+            "load-ok",
+            "bind-ok",
+        ] {
+            assert!(PRODUCTION_RUN.contains(word), "{word}");
+        }
+        for word in ["no-image", "no-socket", "[ -e \"$2\" ]"] {
+            assert!(SANDBOX_SIDE.contains(word), "{word}");
+        }
     }
 
     /// SPEC-203 HST-015: with `--json` each check is one JSON line (Settings → Instance reads

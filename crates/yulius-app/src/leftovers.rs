@@ -19,6 +19,7 @@ use std::time::Duration;
 use yulius_contracts::api::leftovers::{
     DeleteLeftoversRequest, KeptSandboxView, LeftoverJobView, LeftoverView, LeftoversView,
 };
+use yulius_contracts::sandbox::production_holder;
 use yulius_domain::disk::human;
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId};
 use yulius_domain::leftovers::{
@@ -568,10 +569,11 @@ impl App {
         for sandbox in live.iter().chain(&removed) {
             self.scan_git_records(sandbox, &mut found);
         }
+        // A sandbox's production holder trees are its own (SPEC-279 PDE-007).
         let known: HashSet<String> = live
             .iter()
             .chain(&removed)
-            .map(|s| s.id.to_string())
+            .flat_map(|s| [s.id.to_string(), production_holder(s.id.as_str())])
             .collect();
         self.scan_instance(&known, &mut found).await?;
         // One item per path: a removed sandbox's run directory is also an old one. Nothing
@@ -608,6 +610,7 @@ impl App {
         out: &mut Vec<Leftover>,
     ) -> AppResult<()> {
         let id = sandbox.id.as_str();
+        let production = production_holder(id);
         let dir = self.sandbox_dir(&sandbox.id);
         let mut parts = vec![
             (Kind::RemovedWorktrees, dir.join("worktrees")),
@@ -619,6 +622,15 @@ impl App {
             (
                 Kind::RemovedRuntime,
                 self.data_path(&["runtime", "sandboxes", id]),
+            ),
+            // Its production holder's (SPEC-279 PDE-007).
+            (
+                Kind::RemovedSystem,
+                self.data_path(&["sysroots", &production]),
+            ),
+            (
+                Kind::RemovedRuntime,
+                self.data_path(&["runtime", "sandboxes", &production]),
             ),
         ];
         let mut tasks = self.deps.store.tasks(&sandbox.id, false).await?;
@@ -635,10 +647,7 @@ impl App {
         // Listed once its rule holds (a removed sandbox still stopping is not a leftover yet);
         // the system layer and state wait for the holder too.
         let blocked = self.removed_blocker(sandbox, None).await?.is_some();
-        let holder = match self.isolation.get() {
-            Some(isolation) => isolation.holder_live(id).await,
-            None => false,
-        };
+        let holder = self.holders_live(id).await;
         for (kind, path) in &parts {
             let waits_for_holder = matches!(kind, Kind::RemovedSystem | Kind::RemovedRuntime);
             if !exists(path) || blocked || (holder && waits_for_holder) {
@@ -729,13 +738,19 @@ impl App {
             kind,
             Some(Kind::RemovedSystem | Kind::RemovedRuntime | Kind::RemovedSandbox)
         );
-        if holder
-            && let Some(isolation) = self.isolation.get()
-            && isolation.holder_live(sandbox.id.as_str()).await
-        {
+        if holder && self.holders_live(sandbox.id.as_str()).await {
             return Ok(Some("its holder still runs".into()));
         }
         Ok(None)
+    }
+
+    /// Whether the holder of `sandbox` or its production holder (SPEC-279) is alive.
+    async fn holders_live(&self, sandbox: &str) -> bool {
+        let Some(isolation) = self.isolation.get() else {
+            return false;
+        };
+        isolation.holder_live(sandbox).await
+            || isolation.holder_live(&production_holder(sandbox)).await
     }
 
     /// A live sandbox: caches the upkeep would remove, worktrees no task owns, checkouts of jobs
@@ -910,6 +925,19 @@ impl App {
                 path,
                 "a run directory no attempt, CI job or deploy owns, untouched for a day",
             ));
+        }
+        // Production runs' files a failed removal left (SPEC-279; review finding 2).
+        for (sandbox, _) in entries(&self.data_path(&["cd"])) {
+            for (name, path) in entries(&self.data_path(&["cd", &sandbox, "runs"])) {
+                if self.run_dir_owned(&name, &path).await? {
+                    continue;
+                }
+                out.push(Leftover::new(
+                    Kind::EndedRun,
+                    path,
+                    "a production run's files no deploy owns, untouched for a day",
+                ));
+            }
         }
         for (name, path) in entries(&self.data_path(&["transcripts"])) {
             let Ok(task) = TaskId::parse(&name) else {
@@ -1235,6 +1263,25 @@ impl App {
             .any(|root| path.starts_with(root));
         if mapped && let Some(isolation) = self.isolation.get() {
             return isolation.remove_owned_tree(path).await;
+        }
+        // A sandbox's CD files: production runs' files, which its production engine's containers
+        // may have written as mapped ids, go as mapped root first (SPEC-279 PDE-004).
+        let cd = self.data_path(&["cd"]);
+        if let Some(isolation) = self.isolation.get() {
+            if path.parent() == Some(cd.as_path()) {
+                for (_, run) in entries(&path.join("runs")) {
+                    isolation.remove_owned_tree(&run).await?;
+                }
+            }
+            let one_run = path
+                .parent()
+                .filter(|runs| runs.file_name().is_some_and(|n| n == "runs"))
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+                == Some(cd.as_path());
+            if one_run {
+                return isolation.remove_owned_tree(path).await;
+            }
         }
         let (root, target) = (self.config.data_dir.clone(), path.to_path_buf());
         tokio::task::spawn_blocking(move || remove_below(&root, &target))

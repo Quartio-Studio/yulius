@@ -34,7 +34,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::sync::watch;
-use yulius_contracts::api::cd::{CdDeploy, CdEnvironment, CdOverview, CdRun, CdSecret};
+use yulius_contracts::api::cd::{
+    CdAgentState, CdDeploy, CdEnvironment, CdOverview, CdRun, CdSecret,
+};
 use yulius_domain::cd::{
     self as dom, CdConfig, CdRefusal, CdStage, CdState, CdTarget, Requester, env_label,
 };
@@ -55,6 +57,8 @@ use crate::delivery::runner::OutputRing;
 use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, Secret, UserRecord};
 use crate::ports::session::{Containment, LaunchPlan};
+use crate::vault::holds::StateHold;
+use crate::vault::states::{CdRestored, CdWriter};
 
 /// Runs listed per sandbox.
 pub const CD_RUN_LIST_LIMIT: u32 = 20;
@@ -235,6 +239,61 @@ impl App {
             .join(format!("cd-{run_id}"))
     }
 
+    /// Where run `name` of `sandbox` at `stage` keeps its files (its tree, `HOME`, states and
+    /// log): a dev run in its run directory `run_dir`, a production run in
+    /// `<data>/cd/<sandbox>/runs/<name>`, which its production engine binds (SPEC-279 PDE-004).
+    pub(super) fn run_files_dir(
+        &self,
+        sandbox: &SandboxId,
+        stage: CdStage,
+        run_dir: &Path,
+        name: &str,
+    ) -> PathBuf {
+        match stage {
+            CdStage::Dev => run_dir.to_path_buf(),
+            CdStage::Prod => yulius_contracts::sandbox::production_runs_dir(
+                &self.config.data_dir,
+                sandbox.as_str(),
+            )
+            .join(name),
+        }
+    }
+
+    /// After a production-stage run of `sandbox` (its end recorded), while its production
+    /// engine still runs: a fresh measurement, and under disk pressure the upkeep, which prunes
+    /// that engine's unused images and build cache with the sandbox's (SPEC-279 PDE-006, review
+    /// finding 1, round 2); an idle engine is never started for that.
+    pub(crate) async fn after_production_run(&self, sandbox: &SandboxRecord) {
+        let Some(isolation) = self.isolation.get() else {
+            return;
+        };
+        let pressure = isolation
+            .measure_disk(&self.sandbox_ref(sandbox))
+            .await
+            .is_some_and(|usage| yulius_domain::disk::bytes_to_free(usage.used, usage.limit) > 0);
+        if pressure && let Err(err) = self.disk_upkeep(sandbox, true).await {
+            tracing::warn!(sandbox = %sandbox.id, error = %err, "the upkeep after a production run failed");
+        }
+    }
+
+    /// Removes a run's directory and, when elsewhere, its files; files a container of the
+    /// production engine wrote as a mapped id go as mapped root, links not followed (SPEC-279
+    /// PDE-004).
+    pub(super) async fn remove_run_dirs(&self, run_dir: &Path, files: &Path) {
+        let _ = std::fs::remove_dir_all(run_dir);
+        if files == run_dir || std::fs::symlink_metadata(files).is_err() {
+            return;
+        }
+        if std::fs::remove_dir_all(files).is_ok() {
+            return;
+        }
+        if let Some(isolation) = self.isolation.get()
+            && let Err(error) = isolation.remove_owned_tree(files).await
+        {
+            tracing::warn!(path = %files.display(), %error, "cannot remove a production run's files");
+        }
+    }
+
     /// `[cd.dev]` and `[cd.prod]` of `yulius.toml` at `rev`: none without the file, `Err` with
     /// the problem when it is invalid.
     pub(crate) async fn cd_config_at(&self, repo: &Path, rev: &str) -> Result<CdConfig, String> {
@@ -356,6 +415,7 @@ impl App {
             .cd_runs(&sandbox.id, CD_RUN_LIST_LIMIT)
             .await?;
         let shown = self.cd_shown(sandbox, &profile).await;
+        let stored_states = self.deps.store.agent_states(&sandbox.id).await?;
         let listed = dom::environments_of(
             shown.integration_config.as_ref().ok(),
             shown.production_config.as_ref().ok(),
@@ -383,6 +443,18 @@ impl App {
                     .collect(),
                 None => Vec::new(),
             };
+            let states = target
+                .iter()
+                .flat_map(|target| target.states.iter())
+                .map(|state| CdAgentState {
+                    name: state.clone(),
+                    version: stored_states
+                        .iter()
+                        .find(|stored| &stored.name == state)
+                        .map(|stored| stored.version),
+                    held_by: self.vault.holds.holder(sandbox.id.as_str(), state),
+                })
+                .collect();
             let deployed = self
                 .deps
                 .store
@@ -411,6 +483,7 @@ impl App {
                 promote: target.promote,
                 promotes_from: source.promotes_from,
                 secrets,
+                states,
                 deployed,
                 last_run,
             });
@@ -588,13 +661,14 @@ impl App {
         self.cd_start_spans(&run, requested, prepared.promoted, confirm_ms)
             .await;
         let detail = format!(
-            "run {} of {} at {}; deploy: {}; verify: {}; secrets: [{}]{}",
+            "run {} of {} at {}; deploy: {}; verify: {}; secrets: [{}]; states: [{}]{}",
             run.id,
             run.branch,
             run.sha,
             prepared.target.deploy.as_deref().unwrap_or("-"),
             prepared.target.verify.as_deref().unwrap_or("-"),
             prepared.target.secrets.join(" "),
+            prepared.target.states.join(" "),
             run.note
                 .as_deref()
                 .map(|n| format!("; {n}"))
@@ -638,7 +712,14 @@ impl App {
         let app = Arc::clone(self);
         let (sandbox, started) = (sandbox.clone(), run.clone());
         tokio::spawn(async move {
-            app.cd_execute(sandbox, started, prepared.secrets, rx).await;
+            app.cd_execute(
+                sandbox,
+                started,
+                prepared.secrets,
+                (prepared.target.states, prepared.target.variables),
+                rx,
+            )
+            .await;
         });
         Ok(run)
     }
@@ -885,6 +966,7 @@ impl App {
             CdActor::Person(..) => None,
         };
         let why = format!("CD {} deploy", env_label(env));
+        self.cd_names_present(sandbox, &target).await?;
         // Secrets first: a refusal never comes after a promotion.
         let secrets = self
             .cd_secret_values(sandbox, stage, &target.secrets, asker, &why)
@@ -955,6 +1037,7 @@ impl App {
         let Some(target) = checked.target_of(env, stage).cloned() else {
             return Err(refusal(&CdRefusal::not_defined(env)));
         };
+        self.cd_names_present(sandbox, &target).await?;
         let secrets = self
             .cd_secret_values(sandbox, stage, &target.secrets, None, &why)
             .await?;
@@ -1031,6 +1114,7 @@ impl App {
         sandbox: SandboxRecord,
         run: CdRunRecord,
         secrets: Vec<(String, String)>,
+        (states, named): (Vec<String>, Vec<String>),
         mut cancel: watch::Receiver<Option<String>>,
     ) {
         let mut ring = OutputRing::new(OUTPUT_BYTES);
@@ -1044,15 +1128,34 @@ impl App {
             env_label(&run.environment)
         ));
         let run_dir = self.cd_run_dir(&run.id);
+        let files = self.run_files_dir(&sandbox.id, run.stage, &run_dir, &format!("cd-{}", run.id));
+        let mut held = CdHeld::default();
         let (ended, usage) = match self
-            .cd_process(&sandbox, &run, secrets, &run_dir, &mut ring, &mut cancel)
+            .cd_process(
+                &sandbox,
+                &run,
+                RunInputs {
+                    secrets,
+                    states: &states,
+                    variables: &named,
+                    held: &mut held,
+                },
+                (&run_dir, &files),
+                &mut ring,
+                &mut cancel,
+            )
             .await
         {
             Ok((ended, usage)) => (Ok(ended), usage),
             Err(reason) => (Err(reason), None),
         };
+        // Saved after the deploy and the verify, whatever their outcome; then released.
+        let unsaved = self
+            .cd_save_states(&sandbox, &run, &files, &held.restored, &mut ring)
+            .await;
+        drop(held);
         // The run's files (the tree, its HOME, its log) go with it.
-        let _ = std::fs::remove_dir_all(&run_dir);
+        self.remove_run_dirs(&run_dir, &files).await;
         let (state, exit_code, reason) = match ended {
             Ok(Ended::Exit(exit)) if exit.spawn_failed => (
                 RunState::Error,
@@ -1091,6 +1194,22 @@ impl App {
         if let Some(reason) = &reason {
             ring.push_str(&format!("\n[yulius] {reason}\n"));
         }
+        // A state the run could not save is lost work: the run is an error, whatever it did,
+        // and says what it did (review of SPEC-278, m6).
+        let (state, reason) = match unsaved {
+            Some(unsaved) if state == RunState::Passed => (
+                RunState::Error,
+                Some(format!("the deploy passed, but {unsaved}")),
+            ),
+            Some(unsaved) => (
+                RunState::Error,
+                Some(format!(
+                    "{}; and {unsaved}",
+                    reason.unwrap_or_else(|| format!("the run {}", state.as_str()))
+                )),
+            ),
+            None => (state, reason),
+        };
         let output = self
             .redact_for_sandbox(&sandbox.id, &whole_lines(&ring))
             .await;
@@ -1121,11 +1240,16 @@ impl App {
             ),
         )
         .await;
+        // Once its end is recorded (SPEC-279 PDE-006, review round 2).
+        if run.stage == CdStage::Prod {
+            self.after_production_run(&sandbox).await;
+        }
     }
 
     /// The run's containment (review C1, H-A). Dev joins the sandbox: agents build and use
-    /// dev, with their tools. Production joins only the sandbox's network (no host loopback),
-    /// on the host's read-only system with empty `/var`, `/root` and `/home` and the sandbox's
+    /// dev, with their tools. Production joins the sandbox's production holder (SPEC-279): its
+    /// own network (no host loopback) and Docker engine, which no agent reaches, on the host's
+    /// read-only system with empty `/var`, `/root` and `/home` and the sandbox network's
     /// resolver: nothing an agent installed or wrote runs with production's secrets. Without
     /// sandbox isolation both run in the previous containment, production with the run's
     /// directory as its root. Only the run's directory and its environment's cache are bound in.
@@ -1140,8 +1264,12 @@ impl App {
         if !self.config.contained {
             return Ok((Containment::None, None));
         }
-        // Held until the run ends: the sandbox's holder is not stopped as idle meanwhile.
-        let (join, lease) = match self.isolation_join(sandbox).await {
+        // Held until the run ends: the holder is not stopped as idle meanwhile.
+        let joined = match stage {
+            CdStage::Prod => self.production_join(sandbox).await,
+            CdStage::Dev => self.isolation_join(sandbox).await,
+        };
+        let (join, lease) = match joined {
             Ok(joined) => joined.unzip(),
             Err(err) => return Err(err.public_message()),
         };
@@ -1183,18 +1311,24 @@ impl App {
         &self,
         sandbox: &SandboxRecord,
         run: &CdRunRecord,
-        secrets: Vec<(String, String)>,
-        run_dir: &Path,
+        RunInputs {
+            secrets,
+            states,
+            variables: named,
+            held,
+        }: RunInputs<'_>,
+        (run_dir, files): (&Path, &Path),
         ring: &mut OutputRing,
         cancel: &mut watch::Receiver<Option<String>>,
     ) -> Result<(Ended, super::exec::Used), String> {
-        let work = run_dir.join("work");
+        let work = files.join("work");
         let (src, home, log) = (work.join("src"), work.join("home"), work.join("log"));
         let cache = self
             .cd_private_dir(&sandbox.id)
             .join("cache")
             .join(cache_name(&run.environment, run.stage));
         let _ = std::fs::remove_dir_all(run_dir);
+        let _ = std::fs::remove_dir_all(files);
         for dir in [&home, &cache] {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("preparing the run's directories failed: {e}"))?;
@@ -1211,11 +1345,70 @@ impl App {
                 )
             })?;
         std::fs::File::create(&log).map_err(|e| format!("creating the run log failed: {e}"))?;
+        // The states it names, held first (SPEC-278 CDS-003): another run's wait ends here.
+        if !states.is_empty() {
+            match self
+                .cd_hold_states(sandbox, run, states, ring, cancel)
+                .await
+            {
+                Ok(hold) => held.hold = Some(hold),
+                Err(ended) => return Ok((ended, None)),
+            }
+        }
+        let mut state_env = Vec::new();
+        let writer = CdWriter {
+            environment: &run.environment,
+            run: &run.id,
+            requested_by: &run.requested_by,
+        };
+        for name in states {
+            let restored = self
+                .cd_restore_state(&sandbox.id, name, files, &writer)
+                .await
+                .map_err(|err| {
+                    format!(
+                        "nothing ran: restoring the agent state {name} failed: {}",
+                        err.public_message()
+                    )
+                })?;
+            let variable = dom::state_variable(name);
+            ring.push_str(&format!(
+                "[yulius] agent state {name} version {} restored into ${variable}\n",
+                restored.version
+            ));
+            state_env.push((variable, restored.path.to_string_lossy().into_owned()));
+            held.restored.push(restored);
+        }
+        // The project's variables first: Yulius's own and the secrets win (SPEC-278 CDS-007).
+        // Production gets only those its verified table names: a person with write access sets
+        // them, an administrator deploys production (review of SPEC-278, M3).
+        let mut env = Vec::new();
+        let mut left_out = Vec::new();
+        let variables = self.variables_env(&sandbox.id).await.map_err(|err| {
+            format!(
+                "reading the project's variables failed: {}",
+                err.public_message()
+            )
+        })?;
+        for (name, value) in variables {
+            if run.stage == CdStage::Prod && !named.contains(&name) {
+                left_out.push(name);
+            } else {
+                env.push((name, value));
+            }
+        }
+        if !left_out.is_empty() {
+            ring.push_str(&format!(
+                "[yulius] production runs get only the variables [cd.{}] names; left out: {}\n",
+                run.environment,
+                left_out.join(", ")
+            ));
+        }
         let (containment, _lease) = self
             .cd_containment(sandbox, run.stage, &work, &home, &cache)
             .await?;
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
-        let env = vec![
+        env.extend([
             ("HOME".to_owned(), home.to_string_lossy().into_owned()),
             ("PATH".to_owned(), path),
             ("LANG".to_owned(), "C.UTF-8".to_owned()),
@@ -1233,7 +1426,8 @@ impl App {
                 cache.to_string_lossy().into_owned(),
             ),
             ("YULIUS_SANDBOX".to_owned(), sandbox.slug.clone()),
-        ];
+        ]);
+        env.extend(state_env);
         let plan = LaunchPlan {
             argv: vec![
                 "/bin/sh".into(),
@@ -1314,8 +1508,14 @@ impl App {
         let run_dir = self.cd_run_dir(&run.id);
         if run_dir.exists() {
             let _ = self.deps.session_host.terminate(&run_dir);
-            let _ = std::fs::remove_dir_all(&run_dir);
         }
+        let files = self.run_files_dir(
+            &run.sandbox_id,
+            run.stage,
+            &run_dir,
+            &format!("cd-{}", run.id),
+        );
+        self.remove_run_dirs(&run_dir, &files).await;
         let full = self.deps.store.cd_run(&run.id, true).await?.unwrap_or(run);
         self.deps
             .store
@@ -1423,6 +1623,138 @@ impl App {
     }
 }
 
+/// What a run's process gets beside its record: the secrets' values, the agent states and project
+/// variables its table names, and where the held states go (SPEC-278).
+struct RunInputs<'a> {
+    secrets: Vec<(String, String)>,
+    states: &'a [String],
+    variables: &'a [String],
+    held: &'a mut CdHeld,
+}
+
+/// The agent states a run holds and what it restored of them (SPEC-278).
+#[derive(Default)]
+struct CdHeld {
+    hold: Option<StateHold>,
+    restored: Vec<CdRestored>,
+}
+
+impl App {
+    /// Refuses a deploy naming a project variable the project lacks or an agent state its vault
+    /// does not hold (SPEC-278 CDS-002), before anything ran.
+    async fn cd_names_present(&self, sandbox: &SandboxRecord, target: &CdTarget) -> AppResult<()> {
+        if !target.variables.is_empty() {
+            let set = self.variables_env(&sandbox.id).await?;
+            if let Some(name) = target
+                .variables
+                .iter()
+                .find(|name| !set.iter().any(|(set, _)| set == *name))
+            {
+                return Err(AppError::Conflict(format!(
+                    "nothing ran: [cd.{}] names the project variable {name}, which this project \
+                     does not have; a person sets it on the Secrets page's Variables tab or with \
+                     `yulius vars set {name}=…`",
+                    target.name
+                )));
+            }
+        }
+        if target.states.is_empty() {
+            return Ok(());
+        }
+        let stored = self.deps.store.agent_states(&sandbox.id).await?;
+        for name in &target.states {
+            if !stored.iter().any(|state| &state.name == name) {
+                return Err(AppError::Conflict(format!(
+                    "nothing ran: [cd.{}] names the agent state {name}, which this project's \
+                     vault does not hold; a person sends it with `yulius secrets import --to \
+                     agent --state {name}=DIR`",
+                    target.name
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Holds every state `names` for `run`, waiting while another run holds one (SPEC-278
+    /// CDS-003): bounded by the run's timeout, ended by its cancel.
+    async fn cd_hold_states(
+        &self,
+        sandbox: &SandboxRecord,
+        run: &CdRunRecord,
+        names: &[String],
+        ring: &mut OutputRing,
+        cancel: &mut watch::Receiver<Option<String>>,
+    ) -> Result<StateHold, Ended> {
+        let holder = format!("{} run {}", run.environment, run.id);
+        let holds = Arc::clone(&self.vault.holds);
+        let wait = holds.hold(sandbox.id.as_str(), names, &holder, |elsewhere| {
+            ring.push_str(&format!(
+                "[yulius] waiting for the agent state {}: {} holds it\n",
+                elsewhere.name, elsewhere.holder
+            ));
+        });
+        tokio::select! {
+            held = tokio::time::timeout(self.config.ci.job_timeout, wait) => {
+                held.map_err(|_| Ended::TimedOut)
+            }
+            reason = super::exec::wait_cancel(cancel) => Err(Ended::Cancelled(reason)),
+        }
+    }
+
+    /// Saves each state a run restored (SPEC-278 CDS-004) and says so in its output; the reason
+    /// the run is an error when one could not be saved.
+    async fn cd_save_states(
+        &self,
+        sandbox: &SandboxRecord,
+        run: &CdRunRecord,
+        run_dir: &Path,
+        restored: &[CdRestored],
+        ring: &mut OutputRing,
+    ) -> Option<String> {
+        let writer = CdWriter {
+            environment: &run.environment,
+            run: &run.id,
+            requested_by: &run.requested_by,
+        };
+        let mut unsaved = Vec::new();
+        for state in restored {
+            match self
+                .cd_save_state(&sandbox.id, state, run_dir, &writer)
+                .await
+            {
+                Ok(None) => ring.push_str(&format!(
+                    "[yulius] agent state {} unchanged: version {} kept\n",
+                    state.name, state.version
+                )),
+                Ok(Some((version, skipped))) => {
+                    ring.push_str(&format!(
+                        "[yulius] agent state {} saved as version {version}\n",
+                        state.name
+                    ));
+                    if !skipped.is_empty() {
+                        ring.push_str(&format!(
+                            "[yulius] links and special files are not kept in a state; left out: \
+                             {}\n",
+                            skipped.join(", ")
+                        ));
+                    }
+                }
+                Err(err) => {
+                    let why = err.public_message();
+                    ring.push_str(&format!(
+                        "[yulius] saving the agent state {} failed: {why}; what this run wrote to \
+                         it is not in the vault\n",
+                        state.name
+                    ));
+                    unsaved.push(format!("{} ({why})", state.name));
+                }
+            }
+        }
+        (!unsaved.is_empty())
+            .then(|| format!("the agent state could not be saved: {}", unsaved.join("; ")))
+    }
+}
+
 /// One lock per sandbox around its CD mirror's reads and writes.
 fn mirror_lock(sandbox: &SandboxId) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: std::sync::OnceLock<
@@ -1435,13 +1767,13 @@ fn mirror_lock(sandbox: &SandboxId) -> Arc<tokio::sync::Mutex<()>> {
     map.entry(sandbox.as_str().to_owned()).or_default().clone()
 }
 
-/// The resolver of a sandbox's network (`slirp4netns`'s DNS; `yulius_sandbox::base`).
+/// The resolver of a holder's network (`slirp4netns`'s DNS; `yulius_sandbox::base`).
 const SANDBOX_RESOLVER: &str = "nameserver 10.0.2.3\n";
 
-/// A production run (review H-A, C1; round 3): it joins its sandbox's holder for the network
-/// only (no host loopback); the process host gives it the host's system read-only instead of the
-/// sandbox's system layer (`host_system`), with the sandbox's resolver, and only the run's
-/// directory and its cache are bound in.
+/// A production run (review H-A, C1; round 3; SPEC-279): it joins its sandbox's production
+/// holder for its network (no host loopback) and its Docker directory; the process host gives it
+/// the host's system read-only instead of a system layer (`host_system`), with the network's
+/// resolver, and only the run's directory and its cache are bound in.
 #[must_use]
 pub fn production_containment(
     work: &Path,
@@ -1453,8 +1785,21 @@ pub fn production_containment(
 ) -> Containment {
     let mut join = ci_join(join);
     join.host_system = Some(resolver.to_path_buf());
-    join.docker_dir = None;
     join.extra_readonly.clear();
+    // Only a production holder's engine, never the sandbox's (review finding 4): its Docker
+    // directory is `<state of <sid>.prod>/docker`.
+    let production_engine = join.docker_dir.as_deref().is_some_and(|dir| {
+        dir.file_name().is_some_and(|name| name == "docker")
+            && dir
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .and_then(yulius_contracts::sandbox::production_sandbox)
+                .is_some()
+    });
+    if !production_engine {
+        join.docker_dir = None;
+    }
     Containment::Bubblewrap {
         sandbox_root: work.to_path_buf(),
         home: home.to_path_buf(),
@@ -1541,6 +1886,27 @@ fn environment_text(out: &mut String, env: &CdEnvironment) {
             })
             .collect();
         out.push_str(&format!("  secrets: {}\n", secrets.join(", ")));
+    }
+    if !env.states.is_empty() {
+        let states: Vec<String> = env
+            .states
+            .iter()
+            .map(|s| match (s.version, &s.held_by) {
+                (None, _) => format!(
+                    "{} missing (send it with yulius secrets import --state)",
+                    s.name
+                ),
+                (Some(v), Some(by)) => format!("{} version {v}, held by {by}", s.name),
+                (Some(v), None) => format!("{} version {v}", s.name),
+            })
+            .collect();
+        out.push_str(&format!(
+            "  states (restored into the run, saved back after it): {}\n",
+            states.join(", ")
+        ));
+    }
+    if env.stage == "prod" && (env.deploy.is_some() || env.verify.is_some()) {
+        out.push_str("  Docker: production's own engine (buildx, load), which no agent reaches\n");
     }
     match (&env.deployed, &env.head) {
         (Some(deployed), Some(head)) if deployed == head => {
@@ -1696,6 +2062,7 @@ mod tests {
                     state: "not_allowed".into(),
                 },
             ],
+            states: Vec::new(),
             deployed: None,
             last_run: None,
         };
@@ -1710,34 +2077,82 @@ mod tests {
         );
     }
 
-    /// Review H-A and C1: production joins the sandbox's network only. Its system is the host's,
-    /// read-only, `/var` (Yulius's data) is empty, the resolver is the sandbox's, and nothing of
-    /// the sandbox (its directory, its system layer) is bound in.
+    /// SPEC-279 PDE-009: `cd_status` tells an agent writing a production deploy that it has a
+    /// Docker engine, production's own.
     #[test]
-    fn production_runs_on_the_sandbox_network_with_the_hosts_system() {
-        let join = SandboxJoin {
+    fn agents_read_that_production_runs_have_their_own_docker_engine() {
+        let env = CdEnvironment {
+            name: "prod".into(),
+            label: "production".into(),
+            stage: "prod".into(),
+            state: "ready".into(),
+            branch: "main".into(),
+            head: None,
+            problem: None,
+            about: None,
+            deploy: Some("sh deploy.sh".into()),
+            verify: None,
+            promote: false,
+            promotes_from: None,
+            secrets: Vec::new(),
+            states: Vec::new(),
+            deployed: None,
+            last_run: None,
+        };
+        let mut text = String::new();
+        environment_text(&mut text, &env);
+        assert!(!text.contains("no Docker engine"), "{text}");
+        assert!(
+            text.contains(
+                "  Docker: production's own engine (buildx, load), which no agent reaches\n"
+            ),
+            "{text}"
+        );
+    }
+
+    /// Review H-A and C1, SPEC-279 PDE-003: production joins its production holder (its own
+    /// network and Docker engine) only. Its system is the host's, read-only, `/var` (Yulius's
+    /// data) is empty, the resolver is the holder's, its Docker directory is the production
+    /// holder's, and nothing of the sandbox (its directory, its system layer) is bound in.
+    #[test]
+    fn production_runs_in_its_production_holder_with_the_hosts_system() {
+        let join = production_join();
+        let (work, home, cache) = (
+            Path::new("/data/cd/s1/runs/cd-r/work"),
+            Path::new("/data/cd/s1/runs/cd-r/work/home"),
+            Path::new("/data/cd/s1/cache/prod"),
+        );
+        let resolver = Path::new("/data/cd/s1/runs/cd-r/work/resolv.conf");
+        production_checks(work, home, cache, resolver, join);
+    }
+
+    fn production_join() -> SandboxJoin {
+        SandboxJoin {
             holder_pid: 7,
             user_ns: 1,
             net_ns: 2,
             mnt_ns: 3,
             cgroup: Some("/cg/agents".into()),
             ci_cgroup: Some("/cg/ci".into()),
-            system_root: "/data/sandboxes/s1/system/root".into(),
-            hostname: "app".into(),
+            system_root: "/data/runtime/sandboxes/s1.prod/root".into(),
+            hostname: "app-prod".into(),
             exec_shim: None,
             extra_readonly: vec!["/opt/claude".into()],
             private_dirs: vec!["/tmp/x".into()],
             system_passwd: None,
             system_group: None,
             host_system: None,
-            docker_dir: None,
-        };
-        let (work, home, cache) = (
-            Path::new("/data/runs/cd-r/work"),
-            Path::new("/data/runs/cd-r/work/home"),
-            Path::new("/data/cd/s1/cache/prod"),
-        );
-        let resolver = Path::new("/data/runs/cd-r/work/resolv.conf");
+            docker_dir: Some("/data/runtime/sandboxes/s1.prod/docker".into()),
+        }
+    }
+
+    fn production_checks(
+        work: &Path,
+        home: &Path,
+        cache: &Path,
+        resolver: &Path,
+        join: SandboxJoin,
+    ) {
         let Containment::Bubblewrap {
             sandbox_root,
             writable,
@@ -1767,12 +2182,40 @@ mod tests {
         assert!(joined.extra_readonly.is_empty());
         assert_eq!(
             joined.system_root,
-            PathBuf::from("/data/sandboxes/s1/system/root"),
+            PathBuf::from("/data/runtime/sandboxes/s1.prod/root"),
             "kept for validation; the process host does not bind it in host mode"
         );
-        assert_eq!(joined.net_ns, 2, "the sandbox's network: no host loopback");
+        assert_eq!(
+            joined.docker_dir.as_deref(),
+            Some(Path::new("/data/runtime/sandboxes/s1.prod/docker")),
+            "the production holder's engine"
+        );
+        assert_eq!(joined.net_ns, 2, "the holder's network: no host loopback");
         assert_eq!(joined.cgroup.as_deref(), Some(Path::new("/cg/ci")));
         assert!(binds.is_empty());
+        // Review finding 4: a join that is not a production holder's never hands production
+        // the sandbox's engine.
+        let mut sandbox = SandboxJoin {
+            docker_dir: Some("/data/runtime/sandboxes/s1/docker".into()),
+            ..production_join()
+        };
+        let Containment::Bubblewrap {
+            join: Some(guarded),
+            ..
+        } = production_containment(work, home, cache, Vec::new(), resolver, sandbox.clone())
+        else {
+            panic!("a joined containment");
+        };
+        assert_eq!(guarded.docker_dir, None, "the sandbox's engine is dropped");
+        sandbox.docker_dir = Some("/data/runtime/sandboxes/x.prod.prod/docker".into());
+        let Containment::Bubblewrap {
+            join: Some(guarded),
+            ..
+        } = production_containment(work, home, cache, Vec::new(), resolver, sandbox)
+        else {
+            panic!("a joined containment");
+        };
+        assert_eq!(guarded.docker_dir, None);
         let everything = format!("{readonly:?} {writable:?} {binds:?} {sandbox_root:?}");
         assert!(!everything.contains("/data/sandboxes"), "{everything}");
     }

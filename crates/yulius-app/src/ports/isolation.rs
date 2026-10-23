@@ -55,10 +55,12 @@ pub struct SandboxJoin {
     /// Same for `/etc/group`.
     pub system_group: Option<PathBuf>,
     /// Run on the host's read-only system instead of the system layer, in the holder's network
-    /// (a production CD run, SPEC-134); the resolver file shown at the host's resolver path.
+    /// (a production CD run in its production holder, SPEC-134, SPEC-279); the resolver file
+    /// shown at the host's resolver path.
     pub host_system: Option<PathBuf>,
-    /// The sandbox's Docker directory on the host (ADR-0158), shown to the run at
-    /// `/run/yulius/docker` with `DOCKER_HOST`; `None` for a host-system run.
+    /// The holder's Docker directory on the host (ADR-0158), shown to the run at
+    /// `/run/yulius/docker` with `DOCKER_HOST`: the sandbox's, or for a production run its
+    /// production holder's (SPEC-279).
     pub docker_dir: Option<PathBuf>,
 }
 
@@ -137,6 +139,19 @@ pub trait SandboxIsolation: Send + Sync {
     /// # Errors
     /// `Conflict` over the disk quota; `Upstream` when the holder cannot start.
     async fn prepare(&self, sandbox: &SandboxRef) -> AppResult<Option<SandboxJoin>>;
+
+    /// Prepares `sandbox`'s production holder (SPEC-279, ADR-0208): its own namespaces and
+    /// Docker engine, which no agent run joins, for a production-stage run, with a lease that
+    /// [`SandboxIsolation::release_production`] ends. `Ok(None)`: the previous containment.
+    ///
+    /// # Errors
+    /// As [`SandboxIsolation::prepare`]; the quota is the sandbox's.
+    async fn prepare_production(&self, _sandbox: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
+        Ok(None)
+    }
+
+    /// Ends a lease of [`SandboxIsolation::prepare_production`].
+    fn release_production(&self, _sandbox: &SandboxId) {}
 
     /// The last measurement of `sandbox` against its quota; `None` when unmeasured or without
     /// a quota.

@@ -764,7 +764,8 @@ stage = "prod"                      # "dev" or "prod" (fixed for [cd.dev] and [c
 A run deploys the commit GitHub reports for the branch, taken into a mirror only Yulius writes
 (every object checked, replacement refs ignored). It writes the commit's files into the run's own
 directory and runs `deploy` then `verify` through the process host (dev inside the sandbox's
-containment, production on the sandbox's network only and the host's read-only system), for at most the CI job
+containment, production in the sandbox's production holder, with its own network and Docker
+engine, on the host's read-only system), for at most the CI job
 timeout, with `YULIUS_CD=1`, `YULIUS_CD_ENV` (its name), `YULIUS_CD_STAGE`, `YULIUS_CD_RUN`, `YULIUS_CD_SHA`,
 `YULIUS_CD_BRANCH`, `YULIUS_CD_CACHE` (persistent, per environment and stage, so a name relabelled to dev never shares production's; out of the agents' reach), a
 `HOME` made for the run and removed after it, and the real value of each named secret allowed for
@@ -791,6 +792,7 @@ CdEnvironment = {"name": "dev|prod|<name>", "label": "dev|production|<name>", "s
                  "branch", "head", "problem": "yulius.toml line 3: …"|null, "about", "deploy", "verify",
                  "promote", "promotes_from": "<integration head>"|null,
                  "secrets": [{"name", "state": "ready|not_allowed|missing|production|agents_use"}],
+                 "states": [{"name", "version": <newest>|null (missing), "held_by": "<env> run <id>"|null}],
                  "deployed": "<sha of the last passed run>"|null, "last_run": CdRun|null}
 CdRun = {"run_id", "environment": "<name>", "stage": "dev|prod", "state": "running|passed|failed|error|cancelled",
          "branch", "commit", "requested_by": "<login>|task #<n>", "deploy", "verify",

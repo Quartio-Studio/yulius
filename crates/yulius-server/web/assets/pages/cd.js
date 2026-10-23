@@ -160,6 +160,11 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     }
     if (env.deploy) facts.push(['Deploy', h('code', null, env.deploy)]);
     if (env.verify) facts.push(['Verify', h('code', null, env.verify)]);
+    // Agent states the run restores before its deploy and saves after it (SPEC-278).
+    if ((env.states || []).length) {
+      facts.push(['States', env.states.map((st, i) => [i ? ', ' : null, h('code', null, st.name),
+        h('span', { class: 'muted' }, st.version == null ? ' · missing' : ` · v${st.version}${st.held_by ? ` · held by ${st.held_by}` : ''}`)])]);
+    }
     facts.push(['From', [h('code', null, env.branch), env.head ? h('span', { class: 'muted' }, ` at ${shortSha(env.head)}`) : null]]);
     facts.push(['Deployed', env.deployed
       ? [h('code', null, shortSha(env.deployed)), env.head && env.head === env.deployed ? h('span', { class: 'muted' }, ' · the branch head') : h('span', { class: 'muted' }, ' · the branch has moved on')]

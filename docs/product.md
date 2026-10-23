@@ -22,7 +22,8 @@ watching, steering and unblocking.
   `compose` work for agents, the Superagent, shells and CI jobs; SPEC-196: in sessions started
   before too, `yulius doctor --docker-smoke` proves it on a host; SPEC-203: `sudo yulius host
   setup` installs what it needs on a fresh host, every update re-checks it, and Settings →
-  Instance shows whether sandboxes get Docker and runs the smoke check), home, shells per user,
+  Instance shows whether sandboxes get Docker and runs the smoke check; SPEC-279: production
+  deploys get a Docker engine of their own that no agent reaches), home, shells per user,
   browser and editor. Files nothing needs any more (a removed sandbox's worktrees and system
   layer, a done task's build cache) are deleted by themselves after every start and hourly, and
   the superadmin reviews and deletes the rest in Settings → Instance → Leftovers or with
@@ -59,7 +60,9 @@ watching, steering and unblocking.
   (`yulius secrets import --state NAME=DIR`, up to 64 MiB packed), restored by a task into the
   sandbox home and saved back after each rollout. Once restored, the sandbox's copy is the only
   writer: a second send is refused unless the person replaces it on purpose, and
-  `yulius secrets state-get` brings the newest copy back.
+  `yulius secrets state-get` brings the newest copy back. CD deploys use it too (SPEC-278): a
+  `[cd.<name>]` names its states, each run restores the vault's newest version and saves it back
+  after the deploy, one writer at a time.
 - **Project variables** (SPEC-275): a project's non-secret values (regions, environment names,
   ids, base URLs, contact addresses) are shown in plain on the Secrets page's Variables tab and
   are in every task's environment. The laptop agent sets them with `yulius vars`, and the secrets

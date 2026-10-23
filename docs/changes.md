@@ -6,6 +6,29 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-23
 
+- Production deploys get a Docker engine of their own (SPEC-279, task #265, ADR-0208). Each
+  sandbox has a production holder (`<sid>.prod`: its own namespaces, network, cgroup, system layer
+  over the base and engine storage in `sysroots/<sid>.prod`), started for production-stage runs
+  and stopped when idle. Production runs join it on the host's read-only system with its Docker
+  directory, so `docker buildx build --load`, `docker load` and `docker run -v "$PWD":…` work,
+  with images and build cache kept between deploys and out of every agent's reach; their files
+  moved to `<data>/cd/<sid>/runs`. It counts toward the sandbox's quota and is pruned, retired and
+  removed with it; `yulius doctor --docker-smoke` proves it on a host, and `cd_status` says so.
+- CD runs use agent states (SPEC-278, task #264, ADR-0207). A `[cd.<name>]` names the states
+  its deploy needs (`states = ["QUARTIO_OPERATOR"]`): the run restores the vault's newest version
+  into its own folder (`$YULIUS_STATE_<NAME>`, production too, never a task's copy) and saves what
+  changed as a new version after the deploy and the verify, failed ones included, audited as
+  `cd:<environment>`. One writer at a time: another deploy naming it waits, a task's save and a
+  laptop send are refused meanwhile, and a task's copy made stale by a CD save is restored before
+  it is written (`secrets_list` says `stale` and `held_by`). CD runs get the project's variables
+  (production only those its table names, `variables = [...]`). `yulius.toml`
+  accepts one-line arrays of strings. Dev runs use the sandbox's Docker and every run reaches SSH
+  hosts; production runs get a Docker engine of their own in task #265.
+- Demo mode is no longer part of a real instance (SPEC-277, task #263, ADR-0206). The server binary
+  leaves out `assets/mock.js`, the e2e suite's fake backend with its sandboxes of Quartio's
+  repositories, so `GET /assets/mock.js` is 404, and a page link with `?mock=1` is redirected to
+  the same page without it. The e2e suite and local UI work still run on the mock, served from the
+  source tree.
 - Yulius reclaims disk by itself, and removing a sandbox asks about its files (SPEC-276, task #261,
   ADR-0205). Cargo build directories of worktrees and CI checkouts are swept hourly under Cargo's
   own lock: whole units unused for 48 hours go (compiled artifacts only where nothing runs tests),

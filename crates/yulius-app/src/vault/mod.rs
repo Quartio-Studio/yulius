@@ -14,6 +14,7 @@
 mod agents;
 mod create;
 mod env_files;
+pub(crate) mod holds;
 pub(crate) mod reach;
 mod requests;
 mod runtime;
@@ -71,6 +72,8 @@ pub struct VaultState {
     ci_clients: runtime::CiClients,
     /// Held while a run's fingerprint file is rewritten: two never overlap (SPEC-248 FUP-002).
     fingerprint_rewrites: tokio::sync::Mutex<()>,
+    /// Who writes each agent state now (SPEC-278 CDS-005).
+    pub(crate) holds: Arc<holds::StateHolds>,
 }
 
 impl VaultState {

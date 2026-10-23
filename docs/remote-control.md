@@ -136,7 +136,17 @@ The server's instructions tell your agent what to do ([SPEC-256](../.ai/specs/SP
    rollouts from that folder. A second send of the same state is refused once it is restored, so
    the two copies never fork; `--replace-state` overwrites the sandbox's copy on purpose.
    `yulius secrets state-get SHOP_OPERATOR --out shop-operator.tar.gz` downloads the newest saved
-   copy.
+   copy. When the project deploys from Yulius CD, its `[cd.<name>]` names the state
+   (`states = ["SHOP_OPERATOR"]`): each deploy restores the vault's newest version into its own
+   run (`$YULIUS_STATE_SHOP_OPERATOR`, production included, never a task's copy) and saves a new
+   version after it, failed deploys too, audited as `cd:<environment>`
+   ([ADR-0207](decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)). From the
+   first such save the vault's copy is the one written to, so a send without `--replace-state` is
+   refused even before any task restored it, and a send while a deploy holds the state is refused
+   whatever you pass. Deploys that build and ship images (`docker buildx`, `docker load`, then
+   SSH to the machines) run as they did on your laptop: dev deploys use the sandbox's Docker,
+   production deploys an engine of their own that no agent reaches
+   ([ADR-0208](decisions/0208-production-cd-runs-use-a-production-holder-with-its-own-docker-engine.md)).
 4. **Hand over and start.** Your agent writes what it learned, without values: which secret is
    which, which state goes where in the sandbox home, the hosts and commands deploys use, what
    only ran on your laptop, what it could not find. `yulius project onboard --notes handover.md` (`onboarding_start` with `notes`) adds it to
@@ -230,5 +240,6 @@ no tool (no token, a revoked token, the network).
 - An operate token can set and delete project variables; each create, change and delete is
   audited as you (`variable.*`, with the name, never the value).
 - An operate token can send agent states (`--state`) and download them (`state-get`); each send,
-  replace and download is audited as you, and each restore and save as the task.
+  replace and download is audited as you, each restore and save as the task, and a CD run's as
+  `cd:<environment>` (`vault.state.restore`, `vault.state.save`, with the run).
 - A lost laptop: revoke its token on Settings. Disabling a person refuses all their tokens.

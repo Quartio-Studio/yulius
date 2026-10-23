@@ -145,6 +145,8 @@ where and how deploys run; a key used outside the proxy (ssh, a deploy script) r
 deploy tool's inventory, rollout folders) goes where the hand-over says with secret_state_restore \
 (a ~/ folder of the sandbox home, kept for later tasks), and is saved after each change with \
 secret_state_save; configs naming keys by a laptop path point to files secret_copy_to_env writes. \
+A deploy that uses such a state runs from CD with the state named in its [cd.<name>] table \
+(states = [\"NAME\"]): each run restores it into $YULIUS_STATE_NAME and saves it after. \
 Only a credential or machine nobody gave: ask with needs_you and go on.";
 
 /// The security scan at onboarding (SPEC-195 VIB-002, SPEC-217 VDP-002), skill infra-bootstrap:
@@ -1543,6 +1545,8 @@ mod tests {
         assert!(prompt.contains("and any hand-over"), "{prompt}");
         // SPEC-271 OPS-009: operator state the person sent is restored, not asked for again.
         assert!(prompt.contains("secret_state_restore"), "{prompt}");
+        // SPEC-278: a CD deploy names the states it uses.
+        assert!(prompt.contains("states = [\"NAME\"]"), "{prompt}");
         // SPEC-275 VAR-008: the project variables are read beside the secrets.
         assert!(
             prompt.contains("read secrets_list (its agent secrets and the project variables"),
