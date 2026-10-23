@@ -48,7 +48,7 @@ depends on domain and contracts. `scripts/check_repository.py` enforces this.
 | contracts | `yulius-contracts` |
 | application | `yulius-app` |
 | adapter | `yulius-store`, `yulius-ptyhost`, `yulius-sandbox`, `yulius-harness`, `yulius-github`, `yulius-git`, `yulius-browser`, `yulius-egress`, `yulius-import` |
-| interface | `yulius-server` (axum routes, embedded web UI in `web/`) |
+| interface | `yulius-server` (axum routes, embedded web UI in `web/`; its e2e mock backend `assets/mock.js` is left out, ADR-0206) |
 | composition | `yulius` (configuration, wiring, subcommands) |
 | tooling | `tools/` (fake agent, xtask) and `scripts/` (the gates, among them the macOS compile check with `zig_macos.py`, and `vidoc_scan.py`, the security scan that `yulius` embeds as `yulius security-scan`, switched on or off in `.config/vidoc.toml`) |
 

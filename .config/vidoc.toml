@@ -8,9 +8,10 @@ enabled = true
 # mock.js is the web UI's in-browser fake backend for the e2e tests (`?mock=1`, loaded only by
 # `import('./mock.js')` then): its "missing authorization" holds fake data in the viewer's own
 # browser and guards nothing. The real API's checks are in yulius-app and are scanned. (Its first
-# scan, PR #600, reported 3 high findings of that kind there.) `?mock=1` also works on a real
-# origin, so this holds only while mock.js has no DOM sink (innerHTML, eval, document.write,
-# location assignment): rendering stays in scanned code. Remove the exclusion if it gains one.
+# scan, PR #600, reported 3 high findings of that kind there.) A real instance does not ship it
+# (ADR-0206: not embedded, `?mock=1` redirected away). Keep it free of DOM sinks (innerHTML, eval,
+# document.write, location assignment) anyway: rendering stays in scanned code. Remove the
+# exclusion if it gains one.
 exclude = ["crates/yulius-server/web/assets/mock.js"]
 
 # `yulius gh-token` holds no credential: it asks `/internal/git-credential` (loopback) with the
