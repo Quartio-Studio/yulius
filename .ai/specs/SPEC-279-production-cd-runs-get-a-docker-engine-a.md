@@ -1,11 +1,11 @@
 ---
 yulius-task: 98bb4310-8b5c-43c4-b97f-13977a7545f1
-status: in-progress
+status: done
 ---
 
 # SPEC-279: Production CD runs get a Docker engine agents cannot reach
 
-Status: in-progress
+Status: done
 Date: 2026-10-23
 Owner: task #265
 Scope authorization: task #265, split out of task #264 (SPEC-278, ADR-0207). First user:
@@ -97,15 +97,15 @@ Confirmed against `dev` at 2d9923df.
 ## Plan
 
 - [x] Spec and ADR 0208: the production holder, compared with a per-run engine and the host's
-- [ ] Production holder names, paths and validation (contracts, manager), retired with the sandbox
-- [ ] Manager prepares the production holder: own engine view, no forwards, quota from the sandbox, measured and pruned
-- [ ] Isolation port and wiring: prepare and release the production holder
-- [ ] Production runs join the production holder with its Docker directory in host-system mode
-- [ ] Production run directories under the CD directory, bound into the engine and removed as mapped root
-- [ ] Leftovers know production trees and remove them with the sandbox
-- [ ] Docker smoke proves the production engine (buildx, load, unreachable from the sandbox)
-- [ ] Docs, cd_status and the infra-bootstrap skill say production runs have their engine
-- [ ] Independent review, fixes, gates green, delivered into dev
+- [x] Production holder names, paths and validation (contracts, manager), retired with the sandbox
+- [x] Manager prepares the production holder: own engine view, no forwards, quota from the sandbox, measured and pruned
+- [x] Isolation port and wiring: prepare and release the production holder
+- [x] Production runs join the production holder with its Docker directory in host-system mode
+- [x] Production run directories under the CD directory, bound into the engine and removed as mapped root
+- [x] Leftovers know production trees and remove them with the sandbox
+- [x] Docker smoke proves the production engine (buildx, load, unreachable from the sandbox)
+- [x] Docs, cd_status and the infra-bootstrap skill say production runs have their engine
+- [x] Independent review, fixes, gates green, delivered into dev
 
 ## Acceptance criteria
 
@@ -157,3 +157,67 @@ Confirmed against `dev` at 2d9923df.
   as between two sandboxes. Recorded as a consequence.
 - Quota shared with the sandbox (one budget per project), as production runs were already refused
   over it.
+
+## Evidence
+
+Run in this task's sandbox on 2026-10-23, branch `feat/265-production-cd-runs-get-a-docker-engine-a`.
+
+- `scripts/dev ci` (the full gate: format, lint, check, unit and integration tests, web tests,
+  deps, macOS compile): exit 0 before the review; rerun on the final head after the fixes.
+- New and changed tests (each fails without its change; the review-fix integration tests were
+  checked by disabling the fix and seeing them fail):
+  - contracts: `a_production_holder_is_named_apart_from_every_sandbox`;
+  - manager: `a_production_holder_has_its_own_trees_and_is_retired_with_its_sandbox`,
+    `a_production_request_has_its_runs_directory_and_no_ports`,
+    `the_production_engine_binds_its_runs_and_nothing_of_the_sandbox`,
+    `a_production_holder_has_no_forwards_and_no_relays` (bridge forwards too),
+    `production_counts_toward_and_is_refused_by_its_sandbox_s_quota` (production's own files
+    never refuse), `pruning_a_sandbox_prunes_its_running_production_engine`, removal of
+    `cd/<sid>/runs/<run>` only (`only_a_sandbox_s_system_tree_is_removed`,
+    `only_trees_below_sandboxes_skip_the_by_path_removal`), `sandboxes_on_their_own_engine_are_listed`;
+  - process host: `a_joined_run_binds_the_docker_directory_and_sets_docker_host` (production
+    run in host-system mode gets its holder's Docker directory);
+  - app: `production_runs_in_its_production_holder_with_the_hosts_system` (and a sandbox join's
+    engine is dropped), `agents_read_that_production_runs_have_their_own_docker_engine`;
+  - wiring: `a_production_cd_run_launches_on_the_hosts_system`;
+  - integration (`crates/yulius/tests`): `cd::production_runs_join_the_production_holder_with_its_docker_engine`
+    (a recording isolation adapter and process host: only the production holder is prepared and
+    released, its join and Docker directory, files in `<data>/cd/s1/runs` and removed; dev keeps
+    the sandbox's holder), `cd::a_production_run_over_the_quota_prunes_the_engines_after_it`,
+    `cd::a_lost_run_leaves_no_files_behind` (production files too),
+    `leftovers::production_holder_trees_belong_to_their_sandbox`,
+    `leftovers::production_run_files_left_behind_are_ended_runs`,
+    `delivery::a_production_environment_run_starts_in_production_containment` (new files dir);
+  - smoke: `only_sandboxes_of_finished_smoke_tests_are_stale`,
+    `every_phase_ends_with_a_line_the_smoke_waits_for` (production phase scripts).
+- Independent review (fresh read-only session, `yulius-review`): round 1 REQUEST CHANGES with one
+  medium (production storage pruned only while its engine runs, and could block deploys over the
+  quota) and lows (stale production run files never listed; untested lost-run cleanup; the
+  process host's guard gone; production bridge forwards); all fixed test-first in 5efb174c
+  (`production_containment` now keeps only a production holder's Docker directory). Not changed:
+  the default `prepare_production` of the port returns `Ok(None)` like `prepare` (the only real
+  adapter overrides it); `retire` writes the production holder's marker even when it never ran
+  (an empty runtime directory removed with the sandbox's); the `remove_owned_tree` fallback of
+  `remove_run_dirs` is not exercised by a test (this sandbox runs as one uid, so a file the
+  service user cannot remove cannot be made here); it is the same call the leftovers tests cover.
+- `scripts/dev security`: **not run** (exit 2): Vidoc answered HTTP 429, "This API key has used
+  its 50,000,000 tokens" (out of quota). No finding was checked; the CI `security` job reports
+  skipped, not passed.
+
+### What could not be tested here
+
+- **The real-host proof** (`yulius doctor --docker-smoke` with its new production phase, and
+  the opt-in `isolation::` tests): this sandbox has no cgroup filesystem (`/sys/fs/cgroup` is
+  absent), runs as root of a user namespace (no service user with its own `/etc/subuid` range,
+  `newuidmap` cannot map further ids) and has no systemd to start the delegated unit the smoke
+  re-runs itself in. So the real holder start of `<sid>.prod` (bwrap, `newuidmap`,
+  `slirp4netns`), its cgroup `sandboxes/<sid>.prod` (a `.` in a cgroup v2 name is allowed: the
+  kernel refuses only `\n`, and systemd's `*.service`/`*.slice` groups use dots), the
+  production `dockerd` start, `docker buildx build --load`, `docker save`/`docker load` and the
+  bind of `<data>/cd/<sid>/runs` were not run end to end. An operator runs
+  `sudo yulius doctor --docker-smoke` (or Settings → Instance → Sandbox Docker → smoke) on the
+  host after the update: phase 5 prints one line per production check.
+- What was tested instead: every piece of the containment as argv and specs (the engine's bwrap
+  argv, the run's bwrap argv in host-system mode, the holder spec without forwards, the front's
+  bridge forwards), the manager's naming, paths, quota, measurement, prune, retirement and
+  relays, and the CD flow end to end with the real ptyhost and Git through recording adapters.
