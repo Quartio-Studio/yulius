@@ -21,6 +21,7 @@ use yulius_app::model::{AttemptRecord, LaunchKind};
 use yulius_app::ports::isolation::{DiskUsage, SandboxIsolation, SandboxJoin, SandboxRef};
 use yulius_app::ports::session::{AttachedRun, LaunchPlan, RunInspection, SessionHost, SpawnedRun};
 use yulius_app::ports::store::{CoordinationStore as _, TaskFieldUpdate, TaskStore as _};
+use yulius_app::ports::store_ext::AutomationStore as _;
 use yulius_app::ports::store_ext::DeliveryStore as _;
 use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::harness::Harness as Agent;
@@ -75,6 +76,8 @@ impl SandboxIsolation for Quota {
 
 struct World {
     h: support::Harness,
+    /// The sandbox's owner, signed in.
+    alice: support::Creds,
     sandbox: SandboxRecord,
     repo: PathBuf,
     root: PathBuf,
@@ -93,7 +96,9 @@ async fn world_with(session_host: Option<Arc<dyn SessionHost>>) -> BoxResult<Wor
         session_host,
         ..HarnessOptions::default()
     })?;
-    seed_github_user(&h, "u-alice", "alice").await?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    h.github
+        .set_perm("alice", "acme/app", support::perms("write"));
     let sandbox = seed_sandbox(&h, "s1", "app", "u-alice").await?;
     let root = h.app.config.data_dir.join("sandboxes/s1");
     let repo = root.join("repo");
@@ -108,6 +113,7 @@ async fn world_with(session_host: Option<Arc<dyn SessionHost>>) -> BoxResult<Wor
     git(&repo, &["commit", "-q", "-m", "init"])?;
     Ok(World {
         h,
+        alice,
         sandbox,
         repo,
         root,
@@ -1168,5 +1174,309 @@ async fn an_ended_worktree_swapped_for_a_link_after_the_scan_is_not_removed() ->
         "a worktree swapped for a link after the scan was removed ({report:?})"
     );
     assert_eq!(report.worktrees, 0, "{report:?}");
+    Ok(())
+}
+
+/// Writes a Cargo unit of `hash` into `profile`, last used `hours` before the app's clock.
+fn cargo_unit(w: &World, profile: &Path, hash: &str, hours: i64) -> BoxResult<()> {
+    let ms = w.h.app.now().0 - hours * 3_600_000;
+    let at = std::time::UNIX_EPOCH + std::time::Duration::from_millis(u64::try_from(ms)?);
+    let times = std::fs::FileTimes::new().set_accessed(at).set_modified(at);
+    for (path, bytes) in [
+        (profile.join(format!(".fingerprint/dep-{hash}/lib-dep")), 16),
+        (profile.join(format!("deps/libdep-{hash}.rlib")), BIG),
+    ] {
+        std::fs::create_dir_all(path.parent().ok_or("parent")?)?;
+        std::fs::write(&path, vec![7u8; bytes])?;
+        std::fs::File::options()
+            .write(true)
+            .open(&path)?
+            .set_times(times)?;
+    }
+    std::fs::File::open(profile.join(format!(".fingerprint/dep-{hash}")))?.set_times(times)?;
+    std::fs::write(profile.join(".cargo-lock"), "")?;
+    Ok(())
+}
+
+/// SPEC-276 RDA-001..RDA-004: the sweep reaches the build directories of worktrees and CI
+/// checkouts and deletes units unused for two days, keeps recent ones and audits what it freed.
+/// Artifact units, which tests read after Cargo released its lock, go only where nothing runs
+/// tests: a resting task's worktree, a CI checkout under the CI claim. A working task keeps them
+/// (its incremental state still goes), a busy CI keeps its checkout whole, and a held lock keeps a
+/// build directory whole.
+#[tokio::test]
+async fn the_sweep_deletes_unused_build_units_of_worktrees_and_ci_checkouts() -> BoxResult<()> {
+    use yulius_domain::sweep::Level;
+    let w = world().await?;
+    let resting = w
+        .task("t-rest", TaskStatus::Stopped(StopReason::Crashed), None)
+        .await?;
+    let profile = resting.join("target/debug");
+    cargo_unit(&w, &profile, "35f5dbd50d1a473d", 72)?;
+    cargo_unit(&w, &profile, "9caa50b098b82860", 1)?;
+    let working = w
+        .task("t-work", TaskStatus::Running, Some(Activity::Working))
+        .await?;
+    let working_profile = working.join("target/debug");
+    cargo_unit(&w, &working_profile, "1111111111111111", 72)?;
+    let stale = working_profile.join("incremental/yulius-0u6e73f24ohkf");
+    std::fs::create_dir_all(stale.join("s-a-b"))?;
+    for dir in [stale.join("s-a-b"), stale.clone()] {
+        let ms = w.h.app.now().0 - 72 * 3_600_000;
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_millis(u64::try_from(ms)?);
+        std::fs::File::open(&dir)?
+            .set_times(std::fs::FileTimes::new().set_accessed(at).set_modified(at))?;
+    }
+    let checkout = w.root.join("ci/jobs/quality");
+    std::fs::create_dir_all(&checkout)?;
+    std::fs::write(checkout.join("Cargo.toml"), "[package]\n")?;
+    let ci_profile = checkout.join("target/debug");
+    cargo_unit(&w, &ci_profile, "0123456789abcdef", 72)?;
+    let busy = w.root.join("worktrees/t-busy");
+    std::fs::create_dir_all(&busy)?;
+    std::fs::write(busy.join("Cargo.toml"), "[package]\n")?;
+    cargo_unit(&w, &busy.join("target/debug"), "fedcba9876543210", 72)?;
+    let lock = std::fs::File::open(busy.join("target/debug/.cargo-lock"))?;
+    lock.lock()?;
+
+    // A CI run holds the checkouts: the CI target stays whole.
+    assert!(w.h.app.ci_claim(&w.sandbox.id));
+    let report = w.h.app.sweep_build_caches(Level::Ok).await;
+    assert!(
+        ci_profile
+            .join("deps/libdep-0123456789abcdef.rlib")
+            .exists(),
+        "a CI run reads it"
+    );
+    w.h.app.ci_release(&w.sandbox.id);
+    assert_eq!(
+        report.busy, 2,
+        "the CI checkout and the locked worktree: {report:?}"
+    );
+
+    let report = w.h.app.sweep_build_caches(Level::Ok).await;
+    assert_eq!((report.swept, report.busy), (3, 1), "{report:?}");
+    assert!(!profile.join("deps/libdep-35f5dbd50d1a473d.rlib").exists());
+    assert!(!profile.join(".fingerprint/dep-35f5dbd50d1a473d").exists());
+    assert!(
+        profile.join("deps/libdep-9caa50b098b82860.rlib").exists(),
+        "used an hour ago"
+    );
+    assert!(
+        !ci_profile
+            .join("deps/libdep-0123456789abcdef.rlib")
+            .exists()
+    );
+    assert!(
+        working_profile
+            .join("deps/libdep-1111111111111111.rlib")
+            .exists(),
+        "a working task's tests may read it"
+    );
+    assert!(!stale.exists(), "its unused incremental state goes");
+    assert!(
+        busy.join("target/debug/deps/libdep-fedcba9876543210.rlib")
+            .exists(),
+        "a build holds it"
+    );
+    assert!(
+        w.h.app.ci_claim(&w.sandbox.id),
+        "the sweep released its CI claim"
+    );
+    w.h.app.ci_release(&w.sandbox.id);
+    let audited: Vec<String> =
+        w.h.store
+            .automation_audit("app", 100)
+            .await?
+            .into_iter()
+            .filter(|a| a.action == "disk.sweep")
+            .filter_map(|a| a.detail)
+            .collect();
+    assert_eq!(audited.len(), 3, "{audited:?}");
+    assert!(
+        audited.iter().any(|d| d.starts_with("target of task #")),
+        "{audited:?}"
+    );
+    assert!(
+        audited
+            .iter()
+            .any(|d| d.starts_with("target of CI job quality")),
+        "{audited:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-276 RDA-006: a waiting task keeps its caches while the data disk is fine or merely low;
+/// once the disk is critical, a round prunes them (back towards 85 %), sweeps, and the rise is
+/// audited once.
+#[tokio::test]
+async fn a_critical_data_disk_prunes_idle_caches_and_is_audited() -> BoxResult<()> {
+    use yulius_domain::sweep::Level;
+    let w = world().await?;
+    let idle = w
+        .task("t-wait", TaskStatus::Running, Some(Activity::Waiting))
+        .await?;
+    let app = &w.h.app;
+    w.h.system.set_disk(1_000_000, 500_000);
+    let round = app.disk_round(false).await;
+    assert_eq!(round.level, Level::Ok);
+    assert!(round.sweep.is_none(), "not due, not low");
+    w.h.system.set_disk(1_000_000, 900_000);
+    let round = app.disk_round(false).await;
+    assert_eq!(round.level, Level::Low);
+    assert!(round.sweep.is_some(), "a low disk sweeps every round");
+    assert!(idle.join("target/blob").exists(), "low: idle caches stay");
+
+    w.h.system.set_disk(1_000_000, 960_000);
+    let round = app.disk_round(false).await;
+    assert_eq!(round.level, Level::Critical);
+    assert!(
+        !idle.join("target/blob").exists(),
+        "critical: idle caches go"
+    );
+    assert!(idle.exists(), "the worktree stays");
+    assert!(round.upkeep.freed > 0, "{round:?}");
+    app.disk_round(false).await;
+    let audited: Vec<String> =
+        w.h.store
+            .automation_audit("instance", 100)
+            .await?
+            .into_iter()
+            .filter(|a| a.action == "disk.pressure")
+            .filter_map(|a| a.detail)
+            .collect();
+    assert_eq!(
+        audited.len(),
+        2,
+        "low, then critical, once each: {audited:?}"
+    );
+    assert!(
+        audited
+            .iter()
+            .any(|d| d.starts_with("the data disk is critical (96 % used")),
+        "{audited:?}"
+    );
+    assert_eq!(app.disk_view().await.level, "critical");
+    Ok(())
+}
+
+/// SPEC-276 RDA-007: anyone signed in reads the data disk's level; a change of level, and while
+/// the disk is low of its used percent, reaches every page as `disk.updated`; the same reading
+/// again sends nothing.
+#[tokio::test]
+async fn the_disk_level_is_served_and_its_changes_are_published() -> BoxResult<()> {
+    use axum::http::{Method, StatusCode};
+    let w = world().await?;
+    let bob = seed_github_user(&w.h, "u-bob", "bob").await?;
+    let r = support::call(&w.h.router, Method::GET, "/api/disk", None, &bob).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["level"], "ok", "unknown disk: {}", r.body);
+    let anonymous = support::Creds::default();
+    let r = support::call(&w.h.router, Method::GET, "/api/disk", None, &anonymous).await?;
+    assert_eq!(r.status, StatusCode::UNAUTHORIZED);
+
+    let mut events = w.h.app.events.subscribe();
+    w.h.system.set_disk(1_000, 500);
+    w.h.app.check_disk().await;
+    w.h.system.set_disk(1_000, 600);
+    w.h.app.check_disk().await;
+    w.h.system.set_disk(1_000, 860);
+    w.h.app.check_disk().await;
+    w.h.system.set_disk(1_000, 870);
+    w.h.app.check_disk().await;
+    w.h.app.check_disk().await;
+    let r = support::call(&w.h.router, Method::GET, "/api/disk", None, &bob).await?;
+    assert_eq!(
+        (
+            r.body["level"].as_str(),
+            r.body["used"].as_u64(),
+            r.body["total"].as_u64()
+        ),
+        (Some("low"), Some(870), Some(1_000))
+    );
+    let mut changes = Vec::new();
+    while let Ok(envelope) = events.try_recv() {
+        if let yulius_contracts::events::UiEvent::DiskChanged { level, .. } = envelope.event {
+            assert!(envelope.sandbox.is_none() && !envelope.admin_only);
+            changes.push(level);
+        }
+    }
+    assert_eq!(
+        changes,
+        ["low", "low"],
+        "at ok nothing; low at 86 %, again at 87 % (the pill shows the percent), once"
+    );
+    Ok(())
+}
+
+/// SPEC-276 RDA-008: an archived task's build output goes in the next round, without the
+/// 10-minute grace an ended task gets (it may be continued at once; an archived one is put away).
+#[tokio::test]
+async fn an_archived_task_loses_its_caches_without_the_grace() -> BoxResult<()> {
+    let w = world().await?;
+    let stopped = w
+        .task("t-arch", TaskStatus::Stopped(StopReason::Crashed), None)
+        .await?;
+    let kept = w
+        .task("t-stop", TaskStatus::Stopped(StopReason::Crashed), None)
+        .await?;
+    w.archive("t-arch").await?;
+    w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(!stopped.join("target").exists(), "archived: no grace");
+    assert!(stopped.exists(), "its worktree stays");
+    assert!(
+        kept.join("target/blob").exists(),
+        "not archived: the grace holds"
+    );
+    Ok(())
+}
+
+/// SPEC-276 RDA-008: archiving a task through the API starts a round at once: its build output
+/// goes without anyone running the upkeep (review round 1: the test above calls it by hand).
+#[tokio::test]
+async fn archiving_a_task_through_the_api_removes_its_build_output() -> BoxResult<()> {
+    use axum::http::{Method, StatusCode};
+    let w = world().await?;
+    let worktree = w
+        .task("t-arch", TaskStatus::Stopped(StopReason::Crashed), None)
+        .await?;
+    let r = support::call(
+        &w.h.router,
+        Method::POST,
+        "/api/tasks/t-arch/archive",
+        Some(serde_json::json!({})),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while worktree.join("target").exists() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        !worktree.join("target").exists(),
+        "the archive's round removed it"
+    );
+    assert!(worktree.exists(), "its worktree stays");
+    Ok(())
+}
+
+/// SPEC-276 RDA-006: while the disk is low, the safe leftovers round starts with a disk round, at
+/// most once every 10 minutes; at ok it does not.
+#[tokio::test]
+async fn a_low_disk_starts_the_leftovers_round_at_most_every_ten_minutes() -> BoxResult<()> {
+    let w = world().await?;
+    let app = &w.h.app;
+    w.h.system.set_disk(1_000, 500);
+    assert!(
+        !app.disk_round(false).await.leftovers,
+        "ok: the hourly round is enough"
+    );
+    w.h.system.set_disk(1_000, 900);
+    assert!(app.disk_round(false).await.leftovers, "low: at once");
+    assert!(
+        !app.disk_round(false).await.leftovers,
+        "not again within 10 minutes"
+    );
     Ok(())
 }

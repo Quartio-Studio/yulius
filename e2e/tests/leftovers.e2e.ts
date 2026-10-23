@@ -27,6 +27,7 @@ test('a scan lists the leftovers with the disk and what is safe to delete', asyn
   expect(text).toMatch(/Everything else of a removed sandbox/);
   expect(text).toMatch(/Host Docker data/);
   expect(text).toMatch(/reclaimable/);
+  expect(text).toMatch(/Last automatic cleanup 20 min ago: 2 items deleted, 3\.0 GiB freed\./);
   expect(await browser.locator('.leftovers-table tr[data-kind="host-docker"] input:disabled').count()).toBe(1);
   expect(await axeViolations(browser)).toEqual([]);
 });
@@ -66,4 +67,23 @@ test('an empty scan says nothing is left over, and members never see the card', 
   await expect(screen.getByText(/Nothing left over/)).toBeVisible({ timeout: 8000 });
   await app.open(mock('/admin/instance', '&role=member'));
   await expect(screen.getByRole('heading', { level: 2, name: 'Leftovers' })).toBeHidden();
+});
+
+// SPEC-276 RDA-012: a removed sandbox whose files were kept is listed with its size; Delete files
+// confirms with the size and deletes them.
+test('kept files of a removed sandbox are listed with their size and deleted on request', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance'));
+  await screen.getByRole('button', 'Refresh').click();
+  await expect(screen.getByRole('heading', { level: 3, name: 'Kept files of removed sandboxes' })).toBeVisible({ timeout: 8000 });
+  const row = browser.locator('.leftovers-kept-row[data-sandbox="product"]');
+  await expect(row).toContainText('removed 3 d ago');
+  await expect(row).toContainText('5.6 GiB');
+  expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByRole('button', 'Delete the files of product').click();
+  const dialog = screen.getByRole('dialog', /^Delete every file of product \(5\.6 GiB\)/);
+  await expect(dialog).toContainText('This cannot be undone.');
+  await dialog.getByRole('button', 'Delete 5.6 GiB').click();
+  await expect(browser.locator('.toast:has-text("The files of product are deleted.")')).toBeVisible();
+  await expect(screen.getByRole('heading', { level: 3, name: 'Kept files of removed sandboxes' })).toBeHidden();
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { purges?: string[] } }).__yuliusMock.purges || null)).toEqual(['product']);
 });

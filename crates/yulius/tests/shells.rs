@@ -1141,3 +1141,65 @@ async fn shell_keystrokes_never_wait_for_a_permission_check() -> TestResult {
     }
     Ok(())
 }
+
+/// SPEC-276 RDA-002 (review round 2): a person's Shell may run tests in a resting task's worktree
+/// after Cargo released its lock, so while a Shell of the sandbox lives the sweep keeps the
+/// task's compiled artifacts; once it is closed they go.
+#[tokio::test]
+async fn a_live_shell_keeps_a_resting_task_s_build_artifacts() -> TestResult {
+    use yulius_domain::sweep::Level;
+    let f = fixture().await?;
+    let worktree = f.data.join("sandboxes/s1/worktrees/t3");
+    std::fs::create_dir_all(&worktree)?;
+    std::fs::write(worktree.join("Cargo.toml"), "[package]\n")?;
+    seed_task(
+        &f.h,
+        "t3",
+        "s1",
+        "u-alice",
+        TaskStatus::Stopped(yulius_domain::task::StopReason::Crashed),
+        Some(&worktree),
+    )
+    .await?;
+    let profile = worktree.join("target/debug");
+    let rlib = profile.join("deps/libdep-35f5dbd50d1a473d.rlib");
+    let ms = f.h.app.now().0 - 72 * 3_600_000;
+    let at = std::time::UNIX_EPOCH + Duration::from_millis(u64::try_from(ms)?);
+    for path in [
+        profile.join(".fingerprint/dep-35f5dbd50d1a473d/lib-dep"),
+        rlib.clone(),
+    ] {
+        std::fs::create_dir_all(path.parent().ok_or("parent")?)?;
+        std::fs::write(&path, b"x")?;
+        std::fs::File::options()
+            .write(true)
+            .open(&path)?
+            .set_times(std::fs::FileTimes::new().set_accessed(at).set_modified(at))?;
+    }
+    std::fs::File::open(profile.join(".fingerprint/dep-35f5dbd50d1a473d"))?
+        .set_times(std::fs::FileTimes::new().set_accessed(at).set_modified(at))?;
+
+    let created = create(&f, &f.writer, "s1", None).await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+    f.h.app.sweep_build_caches(Level::Critical).await;
+    assert!(rlib.exists(), "a Shell may be running its tests");
+
+    let closed = call(
+        &f.h.router,
+        Method::DELETE,
+        &format!("/api/sandboxes/s1/shells/{id}"),
+        None,
+        &f.writer,
+    )
+    .await?;
+    assert!(closed.status.is_success(), "{:?}", closed.body);
+    let s1 = SandboxId::parse("s1")?;
+    wait_for("the shell to end", || {
+        f.h.app.sandbox_shells(&s1).is_empty()
+    })
+    .await?;
+    f.h.app.sweep_build_caches(Level::Critical).await;
+    assert!(!rlib.exists(), "no Shell: the resting task's artifacts go");
+    Ok(())
+}

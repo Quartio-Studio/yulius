@@ -743,6 +743,217 @@ async fn the_round_runs_at_start_and_every_period() -> BoxResult<()> {
     Ok(())
 }
 
+/// SPEC-276 RDA-011, RDA-012: a removed sandbox whose files were asked to go loses every one of
+/// them (clone, home and sessions, worktrees, CI, browser, system layer, holder state, CD files,
+/// transcripts and export) as soon as nothing of it runs, without the 10-minute wait, and waits
+/// while its holder lives; a kept one keeps what PRJ-009 keeps; another sandbox's export whose slug
+/// only starts with the same name stays.
+#[tokio::test]
+async fn a_purged_sandbox_loses_every_file_once_nothing_runs_and_a_kept_one_keeps_them()
+-> BoxResult<()> {
+    use yulius_domain::ids::UserId;
+    let w = world().await?;
+    let gone = w.sandbox("gone").await?;
+    let kept = w.sandbox("kept").await?;
+    w.remove("gone").await?;
+    w.remove("kept").await?;
+    let other_export = w.at("exports/sandbox-gone-2-5.json");
+    write(&other_export, "{}")?;
+    w.holders.set_live("gone", true);
+    w.h.store
+        .request_purge(
+            &SandboxId::parse("gone")?,
+            &UserId::parse("u-alice")?,
+            w.h.app.now(),
+        )
+        .await?;
+    assert_eq!(w.h.app.run_purges().await, 0, "its holder lives");
+    assert!(gone.join("repo").exists() && w.at("sysroots/gone").exists());
+
+    w.holders.set_live("gone", false);
+    assert_eq!(w.h.app.run_purges().await, 1, "no 10-minute wait");
+    for path in [
+        "sandboxes/gone",
+        "sysroots/gone",
+        "runtime/sandboxes/gone",
+        "cd/gone",
+        "transcripts/t-gone",
+        "exports/sandbox-gone-1.json",
+    ] {
+        assert!(!w.at(path).exists(), "{path} is deleted");
+    }
+    assert!(other_export.exists(), "another sandbox's export stays");
+    assert_eq!(w.h.app.run_purges().await, 0, "done once");
+    let audited = w.audit("gone", "sandbox.purged").await?;
+    assert_eq!(audited.len(), 1, "{audited:?}");
+
+    // Kept: the round deletes its disposable parts once 10 minutes passed, never what PRJ-009 keeps.
+    w.later(REMOVED_KEEP_MS + 1_000);
+    w.h.app.run_leftovers_round().await.ok_or("the round ran")?;
+    assert!(!kept.join("ci").exists());
+    for path in [
+        "sandboxes/kept/repo",
+        "sandboxes/kept/home",
+        "transcripts/t-kept",
+        "exports/sandbox-kept-1.json",
+    ] {
+        assert!(w.at(path).exists(), "{path} is kept");
+    }
+    Ok(())
+}
+
+/// SPEC-276 RDA-012: a removed sandbox whose files were kept is listed with its removal and the
+/// size of everything of it; the superadmin's Delete files (the purge) deletes them and the list
+/// no longer shows it; a member cannot purge a removed sandbox.
+#[tokio::test]
+async fn kept_files_of_a_removed_sandbox_are_listed_and_deleted_on_request() -> BoxResult<()> {
+    let w = world().await?;
+    let admin = setup_superadmin_creds(&w.h).await?;
+    configure_github_app(&w.h).await?;
+    let member = admit_and_sign_in(&w.h, &admin, "bob", 12, true).await?;
+    let old = w.sandbox("old").await?;
+    w.remove("old").await?;
+    let r = call(
+        &w.h.router,
+        Method::POST,
+        "/api/admin/leftovers/scan",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let listed = settled(&w.h, &admin).await?;
+    let kept = listed["kept"].as_array().ok_or("kept")?;
+    assert_eq!(kept.len(), 1, "{listed}");
+    assert_eq!(
+        (kept[0]["id"].as_str(), kept[0]["slug"].as_str()),
+        (Some("old"), Some("old"))
+    );
+    assert!(kept[0]["bytes"].as_u64().unwrap_or(0) > 0, "{listed}");
+    assert!(kept[0]["removed_at"].is_string());
+    assert_eq!(kept[0]["purge_requested"], false);
+
+    let refused = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/old/purge",
+        None,
+        &member,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::NOT_FOUND, "{}", refused.body);
+    assert!(old.join("repo").exists());
+    let purged = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/old/purge",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(purged.status, StatusCode::OK, "{}", purged.body);
+    assert_eq!(purged.body["state"], "purged", "{}", purged.body);
+    assert!(!old.exists() && !w.at("sysroots/old").exists());
+    let after = view(&w.h, &admin).await?;
+    assert_eq!(after["kept"], json!([]), "{after}");
+    Ok(())
+}
+
+/// SPEC-276 RDA-011: a purge waiting for its holder is tried again by its watch, which deletes the
+/// files soon after the holder stopped, with no round and no person.
+#[tokio::test]
+async fn the_purge_watch_deletes_the_files_once_the_holder_stops() -> BoxResult<()> {
+    use yulius_domain::ids::UserId;
+    let w = world().await?;
+    let gone = w.sandbox("gone").await?;
+    w.remove("gone").await?;
+    w.holders.set_live("gone", true);
+    let id = SandboxId::parse("gone")?;
+    w.h.store
+        .request_purge(&id, &UserId::parse("u-alice")?, w.h.app.now())
+        .await?;
+    w.h.app
+        .watch_purge_with(id, Duration::from_millis(50), Duration::from_secs(30));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(gone.exists(), "kept while its holder lives");
+    w.holders.set_live("gone", false);
+    assert!(
+        gone_within(&gone, Duration::from_secs(10)).await,
+        "the watch deleted it"
+    );
+    assert!(
+        gone_within(&w.at("sysroots/gone"), Duration::from_secs(10)).await,
+        "its system layer too"
+    );
+    Ok(())
+}
+
+/// SPEC-276 RDA-011 (review round 1): the leftovers round leaves a sandbox whose purge was
+/// requested to the purge, so two deleters never work on one tree.
+#[tokio::test]
+async fn the_leftovers_round_leaves_a_purged_sandbox_to_its_purge() -> BoxResult<()> {
+    use yulius_domain::ids::UserId;
+    let w = world().await?;
+    let gone = w.sandbox("gone").await?;
+    w.remove("gone").await?;
+    w.later(REMOVED_KEEP_MS + 1_000);
+    w.h.store
+        .request_purge(
+            &SandboxId::parse("gone")?,
+            &UserId::parse("u-alice")?,
+            w.h.app.now(),
+        )
+        .await?;
+    let report = w.h.app.run_leftovers_round().await.ok_or("the round ran")?;
+    assert!(gone.join("ci").exists(), "the purge's: {report:?}");
+    assert_eq!(w.h.app.run_purges().await, 1);
+    assert!(!gone.exists());
+    Ok(())
+}
+
+/// SPEC-276 RDA-012 (review round 1): a sandbox removed with its files kept is listed at once,
+/// before any scan measured it.
+#[tokio::test]
+async fn a_kept_sandbox_is_listed_before_a_scan() -> BoxResult<()> {
+    let w = world().await?;
+    w.sandbox("old").await?;
+    w.remove("old").await?;
+    let view = w.h.app.leftovers_overview().await;
+    assert_eq!(view.kept.len(), 1, "{:?}", view.kept);
+    assert_eq!(
+        (view.kept[0].slug.as_str(), view.kept[0].bytes),
+        ("old", None)
+    );
+    Ok(())
+}
+
+/// SPEC-276 RDA-009: the automatic round deletes the safe leftovers with nobody running the
+/// CLI, and the view says when it last ran and what it did.
+#[tokio::test]
+async fn the_view_shows_what_the_last_automatic_round_did() -> BoxResult<()> {
+    let w = world().await?;
+    let old = w.sandbox("old").await?;
+    w.remove("old").await?;
+    w.later(REMOVED_KEEP_MS + 1_000);
+    assert!(
+        w.h.app.leftovers_overview().await.last_auto.is_none(),
+        "no round yet"
+    );
+    let report = w.h.app.run_leftovers_round().await.ok_or("the round ran")?;
+    assert!(report.deleted > 0, "{report:?}");
+    assert!(!old.join("ci").exists());
+    let last =
+        w.h.app
+            .leftovers_overview()
+            .await
+            .last_auto
+            .ok_or("the last round is shown")?;
+    assert_eq!((last.actor.as_str(), last.running), ("yulius", false));
+    assert_eq!((last.deleted, last.freed), (report.deleted, report.freed));
+    assert!(last.ended_at.is_some());
+    Ok(())
+}
+
 /// LFT-012: `yulius leftovers` lists and deletes through the loopback listener with the key the
 /// server wrote; a refused confirmation deletes nothing; a wrong key or no server is reported
 /// with exit 2.
@@ -779,6 +990,10 @@ async fn the_cli_lists_and_deletes_with_the_server_s_key() -> BoxResult<()> {
         "{text}"
     );
     assert!(text.contains("Reclaimable:"), "{text}");
+    assert!(
+        text.contains("No automatic cleanup since the server started."),
+        "{text}"
+    );
 
     let delete = |yes| Action::Delete {
         all_safe: true,

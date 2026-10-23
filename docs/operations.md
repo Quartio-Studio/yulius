@@ -979,14 +979,17 @@ directory (or `--name`). The first run makes it, with the uncommitted work as on
 checked-out branch (a detached `HEAD` is refused); later runs land in it under `import/<login>/`.
 Nothing is pushed anywhere and GitHub is never called; it counts toward your 10 playgrounds.
 
-Removing a playground can delete its code for good (the removal dialog's "Also delete its code
-from this server for good", or `POST /api/sandboxes/{sid}/purge`; the superadmin can purge an
-already removed one through the API). Its `<data>/playgrounds/<id>.git` and
-`<data>/sandboxes/<id>/` are deleted once no agent run, shell, browser, CI run or other process of
-it is left, within a disk upkeep round (5 minutes); task records, the removal's export under
-`<data>/exports/` and the audit (`sandbox.purge_requested`, `sandbox.purged`) stay (ADR-0139).
-Its system layer, holder state and CD files go with the leftovers of any removed sandbox (see
-"Leftovers" below).
+Removing any sandbox asks what happens to its files on this server, with no default (SPEC-276,
+ADR-0205). **Delete its files permanently** (`POST /api/sandboxes/{sid}/purge`; the superadmin can
+also purge an already removed one, from Settings → Instance → Leftovers → Kept files of removed
+sandboxes) deletes everything of it: `<data>/sandboxes/<id>/` (clone, home with the sessions,
+worktrees with any uncommitted work, CI, browser), `<data>/sysroots/<id>`,
+`<data>/runtime/sandboxes/<id>`, `<data>/cd/<id>`, `<data>/displays/<id>`, its runs, transcripts,
+the removal's export and a playground's `<data>/playgrounds/<id>.git`, as soon as no agent run,
+shell, browser, CI run, deploy or other process of it is left and its holder stopped: tried at
+once, every 15 seconds for 10 minutes, then with every disk round. The GitHub repository, task
+records and the audit (`sandbox.purge_requested`, `leftovers.delete`, `sandbox.purged`) stay.
+**Keep its files** keeps what PRJ-009 keeps (below), listed with its size until someone deletes it.
 
 ### Importing secrets (`yulius secrets import`)
 
@@ -1082,8 +1085,9 @@ task that started working again keeps its files. Every deletion is audited as `l
 | --- | --- | --- |
 | A removed sandbox's `worktrees/`, `ci/`, `browser/`, `<data>/cd/<id>`, `<data>/displays/<id>` and its agent runs' `<data>/runs/<attempt>` | 10 minutes after the removal, once nothing of it runs | yes |
 | A removed sandbox's `<data>/sysroots/<id>` (installed packages, Docker images and volumes) and `<data>/runtime/sandboxes/<id>` | once its holder has stopped (a minute after the removal, SPEC-206); removed as root of a mapped namespace | yes |
-| Everything else of a removed sandbox: its clone, home with the Claude sessions, attachments, `<data>/transcripts/<task>`, a playground's `origin`, `<data>/exports/sandbox-<slug>-*.json` | kept (PRJ-009); the database records always stay | **only a person** |
-| A task's rebuildable caches (`target`, `node_modules`, `[disk] caches`, …) | closed, stopped or failed: after 10 minutes; **done**: after 30 quiet minutes; waiting: after 4 hours; any idle task at 90 % of the quota | yes (the worktree and uncommitted work stay) |
+| Everything else of a removed sandbox: its clone, home with the Claude sessions, attachments, `<data>/transcripts/<task>`, a playground's `origin`, `<data>/exports/sandbox-<slug>-<ms>.json` | removed with **Delete its files permanently**: as soon as nothing of it runs; removed with **Keep**: kept (PRJ-009), listed under Kept files of removed sandboxes; the database records always stay | on request |
+| A task's rebuildable caches (`target`, `node_modules`, `[disk] caches`, …) | closed, stopped or failed: after 10 minutes; **archived**: at once; **done**: after 30 quiet minutes; waiting: after 4 hours; any idle task at 90 % of the quota or with the data disk critical | yes (the worktree and uncommitted work stay) |
+| Units of a Cargo `target` (worktrees and CI checkouts) | unused for 48 hours (6 h with the disk low, 1 h critical), then the least recently used incremental ones above 5 % of the disk (at least 8 GB; half when low, a quarter when critical); never while Cargo compiles there (its locks); compiled artifacts only in a CI checkout with no CI run and in the worktree of a task that neither works nor runs background work while no Shell of the sandbox is open (otherwise only incremental state goes) | yes, hourly (audited `disk.sweep`) |
 | A closed or cancelled task's clean worktree | after 10 minutes (its branch keeps the work) | yes |
 | Git's record of a worktree inside the sandbox directory whose directory is gone (`.git/worktrees/<name>`), not locked | always (that record only; a worktree an agent keeps in its own `/tmp` keeps its record) | yes |
 | A CI checkout of a job or lane no run used for 14 days | while no CI run of that sandbox runs | yes |
@@ -1095,10 +1099,18 @@ task that started working again keeps its files. Every deletion is audited as `l
 | The host's `/var/lib/docker` and `/var/lib/containerd` (docker-ce; Yulius's host daemons are off) | listed, never deleted: remove them on the host if nothing else uses them | report only |
 | Update backups under `/var/lib/yulius-update/backups/` | the helper keeps the last 3 | yes (not listed) |
 
+**When the disk runs low.** The upkeep reads the data disk every minute. From 85 % used every page
+shows a "Disk 88% full" pill, each 5-minute round sweeps the build directories harder and the safe
+leftovers round runs (at most every 10 minutes); from 95 % ("Disk almost full") idle tasks' and
+CI checkouts' caches go too until the disk is back at 85 %. Each rise is audited `disk.pressure`.
+If it stays low, delete kept files of removed sandboxes in the Leftovers card.
+
 **Settings → Instance → Leftovers** (superadmin) lists every item with its path, kind, size, owner,
 why it is a leftover and whether Yulius deletes it by itself, with the disk's usage and the
-reclaimable total. **Refresh** rescans, and **Delete** (the selected items) and **Delete all safe**
-ask for confirmation with the size, then run in the background. The same from SSH, as root or the
+reclaimable total, when the automatic cleanup last ran and what it freed, and the kept files of
+removed sandboxes with their size and **Delete files**. **Refresh** rescans, and **Delete** (the
+selected items) and **Delete all safe** ask for confirmation with the size, then run in the
+background. `yulius leftovers list` also prints the last automatic cleanup. The same from SSH, as root or the
 service user while the server runs:
 
 ```sh

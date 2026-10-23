@@ -26,7 +26,11 @@ watching, steering and unblocking.
   browser and editor. Files nothing needs any more (a removed sandbox's worktrees and system
   layer, a done task's build cache) are deleted by themselves after every start and hourly, and
   the superadmin reviews and deletes the rest in Settings → Instance → Leftovers or with
-  `yulius leftovers` (SPEC-215). `yulius onboard`
+  `yulius leftovers` (SPEC-215). Cargo build directories of worktrees and CI checkouts lose what
+  nobody used for two days and stay under a cap, never while a build holds them; when the
+  server's disk runs low Yulius sweeps harder, prunes idle caches and every page shows a warning
+  (SPEC-276). Removing a sandbox asks whether to delete its files permanently or keep them; kept
+  ones are listed with their size for a later deletion. `yulius onboard`
   only uploads: the onboarding task that adapts the repository to the Yulius standards is created
   and started when someone clicks Start onboarding on the sandbox page, or when the person's own
   agent calls `onboarding_start` with an operate token (SPEC-247). It also lays the

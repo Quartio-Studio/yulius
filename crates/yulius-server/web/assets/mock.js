@@ -160,6 +160,12 @@ function seed(params) {
     docker: { mode: params.get('docker') || 'ok', smokeFails: params.get('smoke') === 'fail', smoke: null, hostCheck: undefined },
     // Leftovers on the disk (SPEC-215): `leftovers=none` scans to an empty list.
     leftovers: { none: params.get('leftovers') === 'none', items: null, scannedAt: null, job: null },
+    // `disk=low|critical` (SPEC-276 RDA-007): the server's data disk, 386 GiB, as the warning pill reads it.
+    disk: params.get('disk') === 'critical'
+      ? { level: 'critical', used: 370 * 1024 ** 3, total: 386 * 1024 ** 3 }
+      : params.get('disk') === 'low'
+        ? { level: 'low', used: 340 * 1024 ** 3, total: 386 * 1024 ** 3 }
+        : { level: 'ok', used: 141 * 1024 ** 3, total: 386 * 1024 ** 3 },
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
     vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config' },
@@ -1081,15 +1087,24 @@ route('DELETE', `/api/sandboxes/${ID}`, ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'admin');
   db.sandboxes = db.sandboxes.filter((s) => s.id !== sandbox.id);
+  // Removed with its files kept (`__yuliusMock.kept`, SPEC-276).
+  (db.kept = db.kept || []).push(sandbox.slug);
   resync(db);
   return json(204);
 });
-// Purging a playground (SPEC-171): removes it and deletes its code once nothing of it runs; the
-// mock keeps the requests (`__yuliusMock.purges`), and `purgeWaitsFor` makes it wait.
+// Purging a sandbox (SPEC-171, SPEC-276): removes it and deletes its files once nothing of it
+// runs; the mock keeps the requests (`__yuliusMock.purges`), and `purgeWaitsFor` makes it wait.
 route('POST', `/api/sandboxes/${ID}/purge`, ({ db, p }) => {
+  // A removed sandbox with kept files: the superadmin deletes them (SPEC-276 RDA-012).
+  const kept = (db.leftovers.items || []).find((i) => i.kind === 'removed-sandbox' && `removed-${i.sandbox}` === p[0]);
+  if (kept) {
+    if (!db.me.user.is_superadmin) fail(404, 'not_found', 'No such sandbox');
+    db.leftovers.items = db.leftovers.items.filter((i) => i.sandbox !== kept.sandbox || !i.kind.startsWith('removed-'));
+    (db.purges = db.purges || []).push(kept.sandbox);
+    return { state: 'purged', waiting_for: [] };
+  }
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'admin');
-  if (!sandbox.playground) fail(409, 'conflict', "only a playground's code can be purged");
   db.sandboxes = db.sandboxes.filter((s) => s.id !== sandbox.id);
   (db.purges = db.purges || []).push(sandbox.slug);
   resync(db);
@@ -3584,6 +3599,7 @@ route('GET', '/api/update', async ({ db }) => {
   response.text = async () => { const body = await text(); db.updateReadsTaken += 1; return body; };
   return response;
 });
+route('GET', '/api/disk', ({ db }) => clone(db.disk));
 route('POST', '/api/admin/update/check', ({ db }) => {
   if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
   db.update.checkedAt = new Date().toISOString();
@@ -3710,6 +3726,12 @@ function leftoversView(db) {
     safe_bytes: deletable.filter((i) => i.auto).reduce((n, i) => n + (i.bytes || 0), 0),
     disk_used: 312 * 1024 ** 3, disk_total: 386 * 1024 ** 3,
     job: clone(l.job), next_auto_at: isoIn(40 * MIN),
+    // Removed sandboxes whose files were kept (SPEC-276 RDA-012): one per removed-sandbox item.
+    kept: items.filter((i) => i.kind === 'removed-sandbox').map((i) => ({
+      id: `removed-${i.sandbox}`, slug: i.sandbox, removed_at: isoIn(-3 * 24 * 60 * MIN), bytes: i.bytes, purge_requested: false,
+    })),
+    // The automatic round 20 minutes ago (SPEC-276 RDA-009).
+    last_auto: { action: 'delete', running: false, actor: 'yulius', total: 2, done: 2, deleted: 2, freed: 3 * 1024 ** 3, kept: [], failed: [], started_at: isoIn(-20 * MIN), ended_at: isoIn(-20 * MIN) },
   };
 }
 
@@ -5291,6 +5313,11 @@ export function createMockTransport(params) {
   db.releaseUpdate = () => { const resolve = db.updateHolds.pop(); if (resolve) resolve(); };
   // The server says the update view changed (`update.updated`), as after a check.
   db.announceUpdate = () => emit(db, { type: 'update.updated', phase: null });
+  // The data disk changes level (`disk.updated`, SPEC-276).
+  db.setDisk = (level, used) => {
+    db.disk = { level, used, total: db.disk.total };
+    emit(db, { type: 'disk.updated', level, used, total: db.disk.total });
+  };
   db.gitHolds = [];
   db.gitReads = () => db.gitHolds.length;
   db.gitRequests = 0; // Git overview reads the page asked for

@@ -445,6 +445,18 @@ impl App {
         };
         self.deps.store.update_task(&task.id, &update, now).await?;
         self.publish_task(&task.id).await;
+        if archive {
+            // Its build output goes now, not in the next round (SPEC-276 RDA-008).
+            let app = Arc::clone(self);
+            let sandbox = task.sandbox_id.clone();
+            tokio::spawn(async move {
+                if let Ok(Some(record)) = app.deps.store.sandbox(&sandbox).await
+                    && let Err(err) = app.disk_upkeep(&record, false).await
+                {
+                    tracing::warn!(sandbox = %sandbox, error = %err, "disk upkeep after archiving failed");
+                }
+            });
+        }
         let task = self
             .deps
             .store

@@ -844,6 +844,7 @@ impl World {
             "http://127.0.0.1:1",
             "/bin/false".into(),
         );
+        let system = Arc::new(super::SettableSystem::default());
         let deps = Deps {
             store: Arc::new(store.clone()),
             clock: clock.clone(),
@@ -855,7 +856,7 @@ impl World {
                 "http://127.0.0.1:1",
             )),
             git: git.clone(),
-            system: Arc::new(super::FixedSystem),
+            system: system.clone(),
             browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
             usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),
         };
@@ -878,6 +879,7 @@ impl World {
                 github: base,
                 clock,
                 store,
+                system,
                 router,
                 _dir: dir,
             },

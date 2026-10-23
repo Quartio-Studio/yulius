@@ -2396,26 +2396,38 @@ async fn purging_a_playground_deletes_its_code_once_nothing_runs() -> TestResult
     assert!(!sandbox_dir(&h, &last).exists());
     let again = from_template(&h, &alice, "lab again").await?;
     assert_eq!(again.status, StatusCode::CREATED, "{:?}", again.body);
-    // The removal's export of its tasks stays.
+    // The removal's export of its tasks goes with it (SPEC-276 RDA-011).
     let exports = std::fs::read_dir(h.app.config.data_dir.join("exports"))?.count();
-    assert!(exports >= 1);
+    assert_eq!(exports, 0);
     no_github_writes(&h)?;
     Ok(())
 }
 
-/// SPEC-171 PGL-005: a GitHub sandbox's code is on GitHub and is never purged; nothing is removed.
+/// SPEC-276 RDA-011 (was SPEC-171 PGL-005's refusal): a GitHub sandbox's files on this server are
+/// purged too, as soon as nothing of it runs; its repository on GitHub is never written to.
 #[tokio::test]
-async fn a_github_sandbox_is_never_purged() -> TestResult {
+async fn a_github_sandbox_s_files_are_purged_and_its_repository_stays() -> TestResult {
     let (h, owner) = world().await?;
     let creator = {
         use yulius_app::ports::store::UserStore;
         h.store.superadmin().await?.ok_or("superadmin")?.id
     };
     support::seed_sandbox(&h, "s1", "shop", creator.as_str()).await?;
-    let refused = purge(&h, &owner, "s1").await?;
-    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
-    let still = call(&h.router, Method::GET, "/api/sandboxes/s1", None, &owner).await?;
-    assert_eq!(still.status, StatusCode::OK, "{:?}", still.body);
+    let dir = h.app.config.data_dir.join("sandboxes/s1");
+    std::fs::create_dir_all(dir.join("repo"))?;
+    std::fs::write(dir.join("repo/README.md"), "hello")?;
+    let purged = purge(&h, &owner, "s1").await?;
+    assert_eq!(purged.status, StatusCode::OK, "{:?}", purged.body);
+    assert_eq!(purged.body["state"], "purged", "{:?}", purged.body);
+    assert!(!dir.exists(), "its files are gone");
+    let gone = call(&h.router, Method::GET, "/api/sandboxes/s1", None, &owner).await?;
+    assert_eq!(
+        gone.status,
+        StatusCode::NOT_FOUND,
+        "removed: {:?}",
+        gone.body
+    );
+    no_github_writes(&h)?;
     Ok(())
 }
 

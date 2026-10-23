@@ -454,16 +454,18 @@ export function openModal({ title, body, actions = [], wide = false, full = fals
  * box is ticked (explicit confirmation for deploys and destructive actions).
  * With `typeToConfirm`, the user must type that exact text.
  */
-export function confirmDialog({ title, message, confirmLabel = 'Confirm', danger = false, checkbox, typeToConfirm, details }) {
+export function confirmDialog({ title, message, confirmLabel = 'Confirm', danger = false, checkbox, typeToConfirm, details, ready }) {
   let confirmButton;
   const check = checkbox ? h('input', { type: 'checkbox', id: 'confirm-check' }) : null;
   const typed = typeToConfirm ? h('input', { type: 'text', class: 'input', autocomplete: 'off', 'aria-label': `Type ${typeToConfirm} to confirm` }) : null;
+  // `ready()`: a choice in `details` the confirmation waits for (its changes are listened to).
   const update = () => {
-    const ok = (!check || check.checked) && (!typed || typed.value === typeToConfirm);
+    const ok = (!check || check.checked) && (!typed || typed.value === typeToConfirm) && (!ready || ready());
     if (confirmButton) confirmButton.disabled = !ok;
   };
   if (check) check.addEventListener('change', update);
   if (typed) typed.addEventListener('input', update);
+  if (details && ready) details.addEventListener('change', update);
   const body = h('div', { class: 'stack' },
     typeof message === 'string' ? h('p', null, message) : message,
     details || null,

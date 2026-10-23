@@ -92,3 +92,15 @@ pub struct StatusView {
     /// OS containment active for sandboxes.
     pub contained: bool,
 }
+
+/// `GET /api/disk` (SPEC-276 RDA-007): how full the server's data disk is, for the warning every
+/// page shows while it runs low.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DiskView {
+    /// `ok`, `low` (from 85 % used) or `critical` (from 95 %).
+    pub level: String,
+    /// Used bytes of the data disk; `None` when unknown.
+    pub used: Option<u64>,
+    /// Its total bytes; `None` when unknown.
+    pub total: Option<u64>,
+}
