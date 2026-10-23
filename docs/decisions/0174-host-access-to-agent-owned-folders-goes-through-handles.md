@@ -58,3 +58,7 @@ removal makes directories writable through `O_PATH` handles and `/proc/self/fd`,
 - `files_list`, folder creation and deletion in the editor, and attachment and draft removal,
   went through handles too in [SPEC-265](../../.ai/specs/SPEC-265-editor-delete-folder-create-and-listing.md)
   (#660): walked from the sandbox directory, so they need no real-path check.
+- A CI job's log in `<sandbox>/ci/logs` is created with `O_CREAT | O_EXCL | O_NOFOLLOW`, read
+  through that handle and removed with `unlinkat` in the folder's handle
+  ([SPEC-285](../../.ai/specs/SPEC-285-ci-job-log-created-without-following-pla.md), #663); a link
+  at `ci/logs` is removed and a folder made in its place, so the sandbox's CI keeps running.
