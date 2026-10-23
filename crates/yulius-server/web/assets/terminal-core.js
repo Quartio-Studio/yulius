@@ -475,9 +475,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   const programHasMouse = () => term.modes.mouseTrackingMode !== 'none';
   /** The key that takes the mouse back from the program: Option on macOS, Shift elsewhere (xterm). */
   const pageKey = (event) => (IS_MAC ? event.altKey : event.shiftKey);
-  // A plain wheel turn reaches the program as one report per row it covers, as a native terminal
-  // sends (SPEC-280, ADR-0210): xterm sends one per event and damps small (trackpad) deltas, and
-  // Claude Code moves one row per report, so a notch moved one row of a long conversation (#863).
+  // A plain wheel turn reaches the program as one report per row it covers, as Alacritty, kitty
+  // and iTerm2 send (SPEC-280, ADR-0210): xterm sends one per event and damps small (trackpad)
+  // deltas, and Claude Code moves one row per report, so a notch moved one row of a long
+  // conversation (#863).
   // The turn becomes line-mode wheel events of one row each, which xterm reports in the program's
   // encoding at the pointer's cell; the fraction of a row left carries on in the same direction.
   const rowEvents = new WeakSet();

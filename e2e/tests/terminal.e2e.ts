@@ -539,7 +539,9 @@ test('the wheel scrolls the program; pinch-zoom and horizontal swipes stay with 
   await browser.mouse.wheel(0, -200);
   await expect.poll(async () => (await sent()).some((data) => data.startsWith('\x1b[<64;')), { message: 'a wheel report' }).toBe(true);
   // Ctrl+wheel (a trackpad pinch) and a horizontal swipe are the browser's: xterm neither reports
-  // nor cancels them (SPEC-098 MSE-006, #78).
+  // nor cancels them (SPEC-098 MSE-006, #78). The turn above sends a report per row: all of them
+  // arrive first.
+  await settle();
   const before = (await sent()).length;
   const kept = await browser.evaluate(({ x, y }) => {
     const target = document.elementFromPoint(x, y)!;
@@ -583,10 +585,16 @@ test('a wheel turn reports one row per row of its distance (#863)', async ({ app
   await expect.poll(async () => count(await sent(), 64), { message: 'wheel-up reports' }).toBe(10);
   await expect.poll(async () => count(await sent(), 65), { message: 'wheel-down reports' }).toBe(2);
   // Each report is xterm's, at the pointer's cell (WHL-003).
+  const cell = await browser.evaluate(({ x, y }) => {
+    const box = document.querySelector('.taskview .xterm-screen')!.getBoundingClientRect();
+    const [session] = [...(window as unknown as { __yuliusMock: { sessions: Map<string, { cols: number }> } }).__yuliusMock.sessions.values()];
+    const rowCount = document.querySelectorAll('.taskview .xterm-rows > div').length;
+    return `${Math.floor((x - box.left) / (box.width / session.cols)) + 1};${Math.floor((y - box.top) / (box.height / rowCount)) + 1}M`;
+  }, point!);
   const cells = new Set((await sent()).join('').match(/\x1b\[<6[45];\d+;\d+M/g)!.map((report) => report.slice(6)));
-  expect(cells.size, 'every report at the same cell').toBe(1);
-  // Two pages send one screen of rows (WHL-002); a Shift or Alt wheel stays xterm's: at most one
-  // report, as before (WHL-004).
+  expect([...cells], 'every report at the pointer\'s cell').toEqual([cell]);
+  // Two pages send one screen of rows (WHL-002). A modified wheel stays xterm's (WHL-004): it
+  // reports Alt+wheel once with Alt's flag (SGR 64 + 8) and Shift+wheel not at all.
   const before = (await sent()).length;
   const screenRows = await browser.evaluate(({ x, y }) => {
     const target = document.elementFromPoint(x, y)!;
@@ -595,9 +603,12 @@ test('a wheel turn reports one row per row of its distance (#863)', async ({ app
     }
     return document.querySelectorAll('.taskview .xterm-rows > div').length;
   }, point!);
-  await expect.poll(async () => count((await sent()).slice(before), 64), { message: 'a screen of rows, then at most one' }).toBeGreaterThanOrEqual(screenRows);
+  await expect.poll(async () => count((await sent()).slice(before), 72), { message: 'the Alt wheel, once' }).toBe(1);
   await settle();
-  expect(count((await sent()).slice(before), 64)).toBeLessThanOrEqual(screenRows + 1);
+  const after = (await sent()).slice(before);
+  expect(count(after, 64), 'two pages: one screen of rows').toBe(screenRows);
+  expect(count(after, 68), 'the Shift wheel: nothing').toBe(0);
+  expect(count(after, 72), 'the Alt wheel: once').toBe(1);
 });
 
 test('mouse use while disconnected says nothing; typed input still warns', async ({ app, browser }) => {

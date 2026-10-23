@@ -1,11 +1,11 @@
 ---
 yulius-task: 8501149c-5fee-4b63-b82a-a4f501db7a60
-status: in-progress
+status: done
 ---
 
 # SPEC-280: A wheel turn scrolls Claude Code as far as it scrolls a page
 
-Status: in-progress
+Status: done
 Date: 2026-10-23
 Owner: task #266
 Scope authorization: task #266: "I can't scroll up in Claude conversation for some reason, fix".
@@ -69,7 +69,7 @@ Confirmed against `dev` at acb1adba.
 - [x] Write the fix spec and the regression test that fails
 - [x] Fix the cause until the regression test and every gate pass
 - [x] ADR, SPEC-098 and changes record wheel rows
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 - [ ] Merged into dev on green CI
 
 ## Acceptance criteria
@@ -106,4 +106,23 @@ Confirmed against `dev` at acb1adba.
 
 ## Evidence
 
-To be filled at delivery.
+- **Reproduction.** Claude Code 2.1.292 in a PTY (`seq 1 300` in shell mode, then
+  `ESC[<64;20;10M` × 10): the transcript moved one row per report and showed "Jump to bottom". In
+  the mock UI, the real Claude Code byte stream replayed into the task terminal still sent wheel
+  reports, one per event (the counts in Context).
+- **Regression test first.** `npx e2e run tests/terminal.e2e.ts --grep 'one row per row'` at
+  3073779d (test only): failed, "wheel-up reports: expected 3 to be 10". With the fix: passed.
+- **Gate.** `scripts/dev ci` at 5b92659c: exit 0 (the review rounds after it touch only JS, the
+  e2e test and docs).
+- **e2e.** Full suite at a1be0553: 65 files passed, 1 skipped; 688 tests passed, 1 skipped. The
+  terminal file at the final head (round-2 test assertions): 16 of 16 passed.
+- **Security.** `yulius security-scan`: exit 2, not run. Vidoc answered HTTP 429: the instance key
+  has used its 50,000,000 tokens. This is unrun, not passed; Yulius CI's `security` job repeats it.
+- **Review.** Round 1 approved with minors (doc wording on other terminals and vim, missing cell,
+  page-cap and modifier assertions, presence counted per row event, the mock's 3-line step,
+  ADR-0079 back-reference): all fixed in a1be0553. Round 2 asked for exact modifier counts (xterm
+  reports Alt+wheel as SGR 72 once and Shift+wheel not at all), a settle before the older test's
+  `before`, the pointer's cell compared and two leftover "native terminal" phrases: all fixed.
+- **Not tested.** Real hardware wheels and trackpads on macOS, Windows and Linux: the deltas were
+  dispatched as Chrome reports them (40 px per macOS notch, 100 px elsewhere, 3 lines in Firefox).
+  The fix was not tried on the live instance, because the sandbox browser cannot open Yulius.
