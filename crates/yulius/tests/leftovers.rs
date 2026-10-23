@@ -334,6 +334,66 @@ async fn the_system_layer_waits_for_the_holder_to_stop() -> BoxResult<()> {
     Ok(())
 }
 
+/// SPEC-279 PDE-007: a sandbox's production holder trees (`<sid>.prod`) are the sandbox's: never
+/// `Unowned` while it lives; with a removed sandbox they go once its production holder stopped,
+/// and a production run's files (written as mapped ids) go through the mapped removal.
+#[tokio::test]
+async fn production_holder_trees_belong_to_their_sandbox() -> BoxResult<()> {
+    let w = world().await?;
+    for id in ["live", "old"] {
+        w.sandbox(id).await?;
+        write(
+            &w.at(&format!("sysroots/{id}.prod/docker/overlay2/l1/f")),
+            "layer",
+        )?;
+        write(
+            &w.at(&format!("runtime/sandboxes/{id}.prod/holder.log")),
+            "log",
+        )?;
+        write(&w.at(&format!("cd/{id}/runs/cd-r/work/src/f")), "tree")?;
+    }
+    let items = w.scan().await?;
+    assert!(
+        !items
+            .iter()
+            .any(|i| i.path.to_string_lossy().contains(".prod")),
+        "a live sandbox's production trees are not leftovers: {:?}",
+        kinds(&items)
+    );
+
+    w.remove("old").await?;
+    w.later(REMOVED_KEEP_MS + 1_000);
+    w.holders.set_live("old.prod", true);
+    let report = w.h.app.run_leftovers_round().await.ok_or("round")?;
+    assert!(report.failed.is_empty(), "{report:?}");
+    assert!(
+        w.at("sysroots/old.prod/docker").exists() && w.at("runtime/sandboxes/old.prod").exists(),
+        "kept while the production holder runs"
+    );
+    assert!(!w.at("cd/old").exists(), "the CD files go");
+    assert!(
+        w.holders.mapped().contains(&w.at("cd/old/runs/cd-r")),
+        "a production run's files go as mapped root: {:?}",
+        w.holders.mapped()
+    );
+
+    w.holders.set_live("old.prod", false);
+    let report = w.h.app.run_leftovers_round().await.ok_or("round")?;
+    assert!(report.failed.is_empty(), "{report:?}");
+    for gone in ["sysroots/old.prod", "runtime/sandboxes/old.prod"] {
+        assert!(!w.at(gone).exists(), "{gone} is gone");
+        assert!(w.holders.mapped().contains(&w.at(gone)), "{gone} mapped");
+    }
+    for kept in [
+        "sysroots/live.prod",
+        "runtime/sandboxes/live.prod",
+        "cd/live/runs",
+    ] {
+        assert!(w.at(kept).exists(), "a live sandbox keeps {kept}");
+    }
+    Ok(())
+}
+
 /// A sandbox a person half cleaned by hand (worktrees and sysroot gone): the round finishes the
 /// rest without failures, and Git's records of the vanished worktrees are pruned.
 #[tokio::test]
