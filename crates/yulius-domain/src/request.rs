@@ -487,13 +487,19 @@ pub fn queued_addition(login: &str, at: &str, text: &str) -> Option<String> {
 
 /// What the person's own agent hands over to the onboarding task it starts (SPEC-256 LOB-005):
 /// what it learned on their computer (which secret is which, deploy hosts, how a deploy runs),
-/// added to the request as a queued message is. `None` for notes with no text.
+/// added to the request as a queued message is, with what a masked word means (SPEC-274
+/// PLW-006). `None` for notes with no text.
 #[must_use]
 pub fn handover_addition(login: &str, notes: &str) -> Option<String> {
     let notes = notes.trim();
     (!notes.is_empty()).then(|| {
         format!(
-            "\n\n**Hand-over from {}'s agent on their computer (it started this onboarding; use \
+            "\n\n`[secret:NAME]` in this hand-over, the repository or any output is the value of \
+             the agent secret NAME, masked wherever it appears. Where it stands for an ordinary \
+             word (for example `[secret:NAME]_branch: main`), that secret holds plain text by \
+             mistake: read the word from its context and ask the person to delete the secret \
+             (their agent runs `yulius secrets delete NAME`, or the Secrets page).\
+             \n\n**Hand-over from {}'s agent on their computer (it started this onboarding; use \
              it before asking anyone):**\n\n{notes}",
             one_line(login)
         )
@@ -624,8 +630,15 @@ mod tests {
         let added =
             handover_addition("alice", "  deploy@203.0.113.7 runs it\n").unwrap_or_default();
         assert!(
-            added.starts_with("\n\n**Hand-over from alice's agent on their computer")
+            added.contains("\n\n**Hand-over from alice's agent on their computer")
                 && added.ends_with(":**\n\ndeploy@203.0.113.7 runs it"),
+            "{added}"
+        );
+        // SPEC-274 PLW-006: a masked word is a secret's value, which the agent can ask about.
+        assert!(
+            added.contains("`[secret:NAME]`")
+                && added.contains("ordinary word")
+                && added.contains("yulius secrets delete NAME"),
             "{added}"
         );
         assert_eq!(handover_addition("alice", "\n "), None);

@@ -160,6 +160,12 @@ function seed(params) {
     docker: { mode: params.get('docker') || 'ok', smokeFails: params.get('smoke') === 'fail', smoke: null, hostCheck: undefined },
     // Leftovers on the disk (SPEC-215): `leftovers=none` scans to an empty list.
     leftovers: { none: params.get('leftovers') === 'none', items: null, scannedAt: null, job: null },
+    // `disk=low|critical` (SPEC-276 RDA-007): the server's data disk, 386 GiB, as the warning pill reads it.
+    disk: params.get('disk') === 'critical'
+      ? { level: 'critical', used: 370 * 1024 ** 3, total: 386 * 1024 ** 3 }
+      : params.get('disk') === 'low'
+        ? { level: 'low', used: 340 * 1024 ** 3, total: 386 * 1024 ** 3 }
+        : { level: 'ok', used: 141 * 1024 ** 3, total: 386 * 1024 ** 3 },
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
     vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config' },
@@ -576,7 +582,7 @@ function detail(db, task) {
     ...(isAdmin(db) && task.account_label && accountEmailOf(task.account_label) ? { account_email: accountEmailOf(task.account_label) } : {}),
     spec_path: task.stepsList.length && task.branch ? `docs/specs/2026-10-07-${task.branch.replace('feat/', '')}.md` : null,
     worktree: task.branch ? `/srv/yulius/sandboxes/${task.sandbox_id.slice(3)}/worktrees/${task.number}` : null,
-    attempts: ran ? [{ seq: 1, harness: task.harness, account_label: task.account_label || 'Claude #1', ...(isAdmin(db) && accountEmailOf(task.account_label || 'Claude #1') ? { account_email: accountEmailOf(task.account_label || 'Claude #1') } : {}), launch_kind: 'new', state: live ? 'live' : 'exited', started_at: task.created_at, ended_at: live ? null : task.updated_at, exit_code: live ? null : 0, exit_reason: live ? null : 'normal' }] : [],
+    attempts: ran ? [{ seq: 1, harness: task.harness, account_label: task.account_label || 'Claude #1', ...(isAdmin(db) && accountEmailOf(task.account_label || 'Claude #1') ? { account_email: accountEmailOf(task.account_label || 'Claude #1') } : {}), launch_kind: 'new', state: live ? 'live' : 'exited', started_at: task.created_at, ended_at: live ? null : task.updated_at, exit_code: live || task.status === 'stopped_crashed' ? null : 0, exit_reason: live ? null : task.status === 'stopped_crashed' ? 'exited code=None signal=Some(6) limit=pids' : 'normal' }] : [],
     steps_list: task.stepsList,
     // Unknown usage stays null (task #6 never reported tokens).
     metrics: task.number === 6
@@ -1081,15 +1087,24 @@ route('DELETE', `/api/sandboxes/${ID}`, ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'admin');
   db.sandboxes = db.sandboxes.filter((s) => s.id !== sandbox.id);
+  // Removed with its files kept (`__yuliusMock.kept`, SPEC-276).
+  (db.kept = db.kept || []).push(sandbox.slug);
   resync(db);
   return json(204);
 });
-// Purging a playground (SPEC-171): removes it and deletes its code once nothing of it runs; the
-// mock keeps the requests (`__yuliusMock.purges`), and `purgeWaitsFor` makes it wait.
+// Purging a sandbox (SPEC-171, SPEC-276): removes it and deletes its files once nothing of it
+// runs; the mock keeps the requests (`__yuliusMock.purges`), and `purgeWaitsFor` makes it wait.
 route('POST', `/api/sandboxes/${ID}/purge`, ({ db, p }) => {
+  // A removed sandbox with kept files: the superadmin deletes them (SPEC-276 RDA-012).
+  const kept = (db.leftovers.items || []).find((i) => i.kind === 'removed-sandbox' && `removed-${i.sandbox}` === p[0]);
+  if (kept) {
+    if (!db.me.user.is_superadmin) fail(404, 'not_found', 'No such sandbox');
+    db.leftovers.items = db.leftovers.items.filter((i) => i.sandbox !== kept.sandbox || !i.kind.startsWith('removed-'));
+    (db.purges = db.purges || []).push(kept.sandbox);
+    return { state: 'purged', waiting_for: [] };
+  }
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'admin');
-  if (!sandbox.playground) fail(409, 'conflict', "only a playground's code can be purged");
   db.sandboxes = db.sandboxes.filter((s) => s.id !== sandbox.id);
   (db.purges = db.purges || []).push(sandbox.slug);
   resync(db);
@@ -1763,6 +1778,7 @@ function seedCi() {
       ],
       hygiene: {
         scanned_at: new Date(Date.now() - 2 * 3600000).toISOString(), notes: [],
+        last_cleanup: null, next_cleanup_at: new Date(Date.now() + 4 * 3600000).toISOString(),
         items: [
           { kind: 'remote_branch', name: 'feat/12-old-landing', reason_code: 'pull_merged', reason: 'pull request #12 was merged', safe: true },
           { kind: 'local_branch', name: 'feat/12-old-landing', reason_code: 'local_copy', reason: 'no worktree uses it and its commits are on GitHub', safe: true },
@@ -1789,9 +1805,9 @@ function ciOf(db, sid) {
   return db.ci[sid];
 }
 
-/** A running mock run finishes about 20 s after it was created. */
-function progressCi(run) {
-  if (run.state === 'running' && Date.now() - run.created > 20000) {
+/** A running mock run finishes about 20 s after it was created (`__yuliusMock.ciRunMs` changes it). */
+function progressCi(run, ms = 20000) {
+  if (run.state === 'running' && Date.now() - run.created > ms) {
     run.state = 'passed';
     run.status = 'published';
     run.ended_at = new Date().toISOString();
@@ -1812,7 +1828,7 @@ function ciOverview(db, sid) {
   const sandbox = sandboxOf(db, sid);
   const ci = ciOf(db, sid);
   return {
-    gate: clone(ci.gate), gate_problem: ci.gate_problem, runs: ci.runs.map((r) => ciSummary(progressCi(r))),
+    gate: clone(ci.gate), gate_problem: ci.gate_problem, runs: ci.runs.map((r) => ciSummary(progressCi(r, db.ciRunMs))),
     can_run: (RANK[sandbox.access] || 0) >= RANK.write, status_access: ci.status_access, actions_workflows: ci.actions_workflows.slice(),
   };
 }
@@ -1825,7 +1841,7 @@ route('POST', `/api/sandboxes/${ID}/ci/sync`, ({ db, p }) => {
 route('GET', `/api/sandboxes/${ID}/ci/runs/${ID}`, ({ db, p }) => {
   const run = ciOf(db, p[0]).runs.find((r) => r.id === p[1]);
   if (!run) fail(404, 'not_found', 'not found');
-  return { ...progressCi(run), created: undefined };
+  return { ...progressCi(run, db.ciRunMs), created: undefined };
 });
 route('POST', `/api/sandboxes/${ID}/ci/runs/${ID}/cancel`, ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
@@ -1973,8 +1989,12 @@ route('POST', `/api/sandboxes/${ID}/hygiene/scan`, ({ db, p }) => {
   hygiene.scanned_at = new Date().toISOString();
   return clone(hygiene);
 });
-route('POST', `/api/sandboxes/${ID}/hygiene/cleanup`, ({ db, p, body }) => {
+route('POST', `/api/sandboxes/${ID}/hygiene/cleanup`, async ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
+  // A test can hold the answer (`__yuliusMock.holdHygieneCleanup = promise`): the scans, GitHub's
+  // deletions and the refetch take a while (SPEC-269), and make it fail (`failHygieneCleanup`).
+  if (db.holdHygieneCleanup) { await db.holdHygieneCleanup; db.holdHygieneCleanup = null; }
+  if (db.failHygieneCleanup) fail(502, 'upstream', db.failHygieneCleanup);
   const hygiene = ciOf(db, p[0]).hygiene;
   const force = Boolean(body && body.force);
   const wanted = body && Array.isArray(body.items) && body.items.length ? body.items : null;
@@ -1988,6 +2008,7 @@ route('POST', `/api/sandboxes/${ID}/hygiene/cleanup`, ({ db, p, body }) => {
     return false;
   });
   hygiene.scanned_at = new Date().toISOString();
+  hygiene.last_cleanup = { at: hygiene.scanned_at, by: db.me.user.login, automatic: false, removed, skipped };
   return { removed, skipped, report: clone(hygiene) };
 });
 
@@ -2743,6 +2764,67 @@ route('DELETE', `/api/agent-secrets/${ID}`, ({ db, p }) => {
   if (secret.scope === 'sandbox') need(sandboxOf(db, secret.sandbox), 'write');
   vaultOf(db).agent = vaultOf(db).agent.filter((s) => s !== secret);
   audit(db, 'vault.agent.delete', secret.id, secret.name);
+  return json(204);
+});
+
+// Project variables (SPEC-275): non-secret values in plain.
+const RESERVED_VARIABLE = /^(PATH|HOME|USER|LOGNAME|SHELL|TERM|COLORTERM|LANG|LANGUAGE|PWD|OLDPWD|TMPDIR|TMP|TEMP|PORT|HOSTNAME|EDITOR|VISUAL|PAGER|IFS|PS1|PS2|PROMPT_COMMAND|ENV|BASH_ENV|CDPATH|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|FTP_PROXY|REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|DISABLE_AUTOUPDATER)$|^(YULIUS_|CLAUDE_|ANTHROPIC_|GIT_|SSL_|NODE_|NPM_CONFIG_|LD_|DYLD_|XDG_|LC_|BASH_|ZSH_)/;
+const variablesOf = (db, sandbox) => {
+  // sandbox-3 (read access) starts with one, for the reader's view.
+  db.variables = db.variables || { sb_three: [{ name: 'APP_REGION', value: 'eu-west-1', description: 'Where the app runs', updated_by: 'anna-q', updated_at: new Date().toISOString() }] };
+  db.variables[sandbox.id] = db.variables[sandbox.id] || [];
+  return db.variables[sandbox.id];
+};
+route('GET', `/api/sandboxes/${ID}/variables`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  const variables = [...variablesOf(db, sandbox)].sort((a, b) => a.name.localeCompare(b.name));
+  return { variables, can_manage: (RANK[sandbox.access] || 0) >= RANK.write };
+});
+route('PUT', `/api/sandboxes/${ID}/variables`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'write');
+  const held = variablesOf(db, sandbox);
+  const out = { created: [], changed: [], unchanged: [], existing: [] };
+  const inputs = body.variables || [];
+  // The server's checks (crates/yulius-app/src/variables.rs), all before anything is written.
+  if (inputs.length > 200) fail(422, 'invalid', 'at most 200 variables at once');
+  const seen = new Set();
+  for (const input of inputs) {
+    if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(input.name || '') || RESERVED_VARIABLE.test(input.name)) fail(422, 'invalid', `invalid name ${JSON.stringify(input.name)}: capital letters, digits and _, starting with a letter, not a reserved name`);
+    if (seen.has(input.name)) fail(422, 'invalid', `${input.name} is given twice`);
+    seen.add(input.name);
+    if (new TextEncoder().encode(input.value || '').length > 4096) fail(422, 'invalid', `${input.name}: the value is longer than 4096 bytes`);
+    if (/[\u0000-\u001f\u007f]/.test(input.value || '')) fail(422, 'invalid', `${input.name}: a variable is one line, without control characters`);
+    if ([...(input.description || '').trim()].length > 1000) fail(422, 'invalid', `${input.name}: the description is longer than 1000 characters`);
+    if (vaultOf(db).agent.some((s) => s.name === input.name && (s.scope === 'sandbox' ? s.sandbox === sandbox.id : s.scope === 'instance' && (s.on || []).includes(sandbox.id)))) fail(409, 'conflict', `${input.name} is an agent secret of this project: a name is either a secret or a variable; nothing was set`);
+  }
+  if (held.length + inputs.filter((i) => !held.some((v) => v.name === i.name)).length > 200) fail(422, 'invalid', 'a project holds at most 200 variables; nothing was set');
+  for (const input of inputs) {
+    const now = new Date().toISOString();
+    const before = held.find((v) => v.name === input.name);
+    if (before && body.only_new) { out.existing.push(input.name); continue; }
+    const description = input.description != null ? input.description.trim() : (before ? before.description : '');
+    if (!before) {
+      held.push({ name: input.name, value: input.value, description, updated_by: db.me.user.login, updated_at: now });
+      out.created.push(input.name);
+      audit(db, 'variable.create', sandbox.id, input.name);
+    } else if (before.value !== input.value || before.description !== description) {
+      const fields = [before.value !== input.value && 'value', before.description !== description && 'description'].filter(Boolean);
+      Object.assign(before, { value: input.value, description, updated_by: db.me.user.login, updated_at: now });
+      out.changed.push(input.name);
+      audit(db, 'variable.update', sandbox.id, `${input.name} (${fields.join(', ')})`);
+    } else out.unchanged.push(input.name);
+  }
+  return out;
+});
+route('DELETE', `/api/sandboxes/${ID}/variables/${ID}`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'write');
+  const held = variablesOf(db, sandbox);
+  const at = held.findIndex((v) => v.name === p[1]);
+  if (at < 0) fail(404, 'not_found', 'not found');
+  held.splice(at, 1);
+  audit(db, 'variable.delete', sandbox.id, p[1]);
   return json(204);
 });
 
@@ -3517,6 +3599,7 @@ route('GET', '/api/update', async ({ db }) => {
   response.text = async () => { const body = await text(); db.updateReadsTaken += 1; return body; };
   return response;
 });
+route('GET', '/api/disk', ({ db }) => clone(db.disk));
 route('POST', '/api/admin/update/check', ({ db }) => {
   if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
   db.update.checkedAt = new Date().toISOString();
@@ -3643,6 +3726,12 @@ function leftoversView(db) {
     safe_bytes: deletable.filter((i) => i.auto).reduce((n, i) => n + (i.bytes || 0), 0),
     disk_used: 312 * 1024 ** 3, disk_total: 386 * 1024 ** 3,
     job: clone(l.job), next_auto_at: isoIn(40 * MIN),
+    // Removed sandboxes whose files were kept (SPEC-276 RDA-012): one per removed-sandbox item.
+    kept: items.filter((i) => i.kind === 'removed-sandbox').map((i) => ({
+      id: `removed-${i.sandbox}`, slug: i.sandbox, removed_at: isoIn(-3 * 24 * 60 * MIN), bytes: i.bytes, purge_requested: false,
+    })),
+    // The automatic round 20 minutes ago (SPEC-276 RDA-009).
+    last_auto: { action: 'delete', running: false, actor: 'yulius', total: 2, done: 2, deleted: 2, freed: 3 * 1024 ** 3, kept: [], failed: [], started_at: isoIn(-20 * MIN), ended_at: isoIn(-20 * MIN) },
   };
 }
 
@@ -5224,6 +5313,11 @@ export function createMockTransport(params) {
   db.releaseUpdate = () => { const resolve = db.updateHolds.pop(); if (resolve) resolve(); };
   // The server says the update view changed (`update.updated`), as after a check.
   db.announceUpdate = () => emit(db, { type: 'update.updated', phase: null });
+  // The data disk changes level (`disk.updated`, SPEC-276).
+  db.setDisk = (level, used) => {
+    db.disk = { level, used, total: db.disk.total };
+    emit(db, { type: 'disk.updated', level, used, total: db.disk.total });
+  };
   db.gitHolds = [];
   db.gitReads = () => db.gitHolds.length;
   db.gitRequests = 0; // Git overview reads the page asked for

@@ -11,7 +11,8 @@ use async_trait::async_trait;
 use clap::Args;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::isolation::{
-    DiskUsage, DockerStatus, SandboxIsolation, SandboxJoin, SandboxLimits, SandboxRef, SmokeCheck,
+    DiskUsage, DockerStatus, LimitCounters, SandboxIsolation, SandboxJoin, SandboxLimits,
+    SandboxRef, SmokeCheck,
 };
 use yulius_domain::ids::SandboxId;
 use yulius_sandbox::cgroup::Limits;
@@ -64,13 +65,12 @@ pub struct IsolationArgs {
     /// CPU limit per sandbox in CPUs (`cpu.max`; default: none, the CPU is shared by weight).
     #[arg(long = "sandbox-cpus", env = "YULIUS_SANDBOX_CPUS")]
     pub cpus: Option<u32>,
-    /// Task (process and thread) limit per sandbox.
-    #[arg(
-        long = "sandbox-pids",
-        env = "YULIUS_SANDBOX_PIDS",
-        default_value_t = 8192
-    )]
-    pub pids: u64,
+    /// Task (process and thread) limit per sandbox (default: a quarter of the host's
+    /// `kernel.threads-max` or `kernel.pid_max`, whichever is smaller, at least 8192, at most
+    /// three quarters of the service's own `pids.max`). All sandboxes together stop at three
+    /// quarters of the service's limit too, also above an explicit value.
+    #[arg(long = "sandbox-pids", env = "YULIUS_SANDBOX_PIDS")]
+    pub pids: Option<u64>,
     /// Soft disk quota per sandbox in GB (sandbox directory plus installed packages); 0: none.
     #[arg(
         long = "sandbox-disk-gb",
@@ -106,7 +106,7 @@ impl Default for IsolationArgs {
             egress: Egress::Direct,
             memory_gb: None,
             cpus: None,
-            pids: 8192,
+            pids: None,
             disk_gb: 100,
             forward: Vec::new(),
             idle_minutes: 5,
@@ -190,11 +190,16 @@ pub fn resolve(
         .ok()
         .and_then(|t| yulius_sandbox::cgroup::mem_total(&t))
         .unwrap_or(8 << 30);
-    let defaults = Limits::defaults(total);
+    let sysctl = |name: &str| std::fs::read_to_string(format!("/proc/sys/kernel/{name}"));
+    let host_tasks = match (sysctl("threads-max"), sysctl("pid_max")) {
+        (Ok(threads), Ok(pids)) => yulius_sandbox::cgroup::host_tasks(&threads, &pids),
+        _ => None,
+    };
+    let defaults = Limits::defaults(total, host_tasks);
     let limits = Limits {
         memory_max: args.memory_gb.map(|g| g << 30).or(defaults.memory_max),
         cpus: args.cpus.or(defaults.cpus),
-        pids_max: Some(args.pids),
+        pids_max: args.pids.or(defaults.pids_max),
     };
     let loopback = |port| SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
     let mut forwards = BTreeMap::from([(internal_port, loopback(internal_port))]);
@@ -349,6 +354,18 @@ impl SandboxIsolation for NamespaceIsolation {
 
     async fn processes(&self, sandbox: &SandboxId) -> usize {
         self.manager.processes(sandbox.as_str()).await
+    }
+
+    async fn limit_counters(&self, sandbox: &SandboxId) -> Option<LimitCounters> {
+        let delegation = self.manager.config().delegation.clone()?;
+        let sandbox = sandbox.as_str().to_owned();
+        let counters = tokio::task::spawn_blocking(move || delegation.limit_counters(&sandbox))
+            .await
+            .ok()?;
+        Some(LimitCounters {
+            task_limit_hits: counters.task_limit_hits,
+            oom_kills: counters.oom_kills,
+        })
     }
 
     fn release(&self, sandbox: &SandboxId) {
@@ -525,6 +542,21 @@ pub async fn run_smoke(
     Ok(all_ok && status.success())
 }
 
+/// The per-sandbox limits under a service limited to `service` tasks, and the common limit of
+/// all sandboxes when it is below an explicit task limit (SPEC-272 SHR-002). The service caps the
+/// default only (`within_service`); an `explicit` `YULIUS_SANDBOX_PIDS` stays as written.
+fn task_limits(limits: Limits, explicit: bool, service: Option<u64>) -> (Limits, Option<u64>) {
+    if !explicit {
+        return (limits.within_service(service), None);
+    }
+    let common = yulius_sandbox::cgroup::sandboxes_tasks(service);
+    let binding = match (limits.pids_max, common) {
+        (Some(pids), Some(common)) if pids > common => Some(common),
+        _ => None,
+    };
+    (limits, binding)
+}
+
 /// Sets up isolation for a contained server: resolves the prerequisites, prepares the cgroup
 /// delegation, adopts holders of the previous process, starts the upkeep loop and installs the
 /// port. Returns the manager (`None`: the previous containment stays).
@@ -561,6 +593,26 @@ pub async fn install(
     };
     match delegation() {
         Ok(delegation) => {
+            let root = Path::new(yulius_sandbox::cgroup::CGROUP_ROOT);
+            let service = yulius_sandbox::cgroup::tasks_max_above(root, &delegation.unit);
+            let (limits, binding) = task_limits(config.limits, args.pids.is_some(), service);
+            config.limits = limits;
+            match delegation.limit_sandboxes(service) {
+                Err(error) => {
+                    tracing::warn!(%error, "sandboxes together have no task limit below the service's");
+                }
+                Ok(true) => {
+                    if let (Some(pids), Some(common)) = (args.pids, binding) {
+                        tracing::warn!(
+                            sandbox_pids = pids,
+                            common,
+                            "YULIUS_SANDBOX_PIDS is above the task limit of all sandboxes together, \
+                             which binds each sandbox too"
+                        );
+                    }
+                }
+                Ok(false) => {}
+            }
             tracing::info!(cgroup = %delegation.unit.display(), limits = ?config.limits, "per-sandbox limits on");
             config.delegation = Some(delegation);
         }
@@ -595,6 +647,31 @@ pub async fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-272 SHR-002 (SPEC-268 review round 3, F7): the service caps the default task limit
+    /// only; an explicit `YULIUS_SANDBOX_PIDS` stays, and one above the common limit is named.
+    #[test]
+    fn an_explicit_task_limit_is_not_capped_by_the_service() {
+        let defaults = Limits::defaults(48 << 30, Some(385_088));
+        let explicit = Limits {
+            pids_max: Some(50_000),
+            ..defaults
+        };
+        let (limits, above) = task_limits(explicit, true, Some(57_763));
+        assert_eq!(limits.pids_max, Some(50_000));
+        assert_eq!(above, Some(43_320), "the common limit binds below it");
+        let (limits, above) = task_limits(defaults, false, Some(57_763));
+        assert_eq!(limits.pids_max, Some(43_320));
+        assert_eq!(above, None);
+        let (limits, above) = task_limits(explicit, true, None);
+        assert_eq!(limits.pids_max, Some(50_000));
+        assert_eq!(above, None, "no common limit");
+        let small = Limits {
+            pids_max: Some(10_000),
+            ..defaults
+        };
+        assert_eq!(task_limits(small, true, Some(57_763)), (small, None));
+    }
 
     /// SPEC-199 DSY-001 (task #185): the engine runs the sandbox's own `dockerd`, so only the
     /// setting turns sandboxes' Docker off, never the host's missing `dockerd`.

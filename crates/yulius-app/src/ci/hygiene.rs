@@ -1,6 +1,6 @@
 //! Repository hygiene (SPEC-001 DLV-007): after Yulius merges a pull request its branch is
-//! deleted; a periodic, bounded scan lists stale branches and worktrees per sandbox; people and
-//! agents clean them up through Yulius.
+//! deleted; a periodic, bounded round removes each sandbox's safe stale branches and worktrees
+//! itself (SPEC-269, ADR-0199) and lists the rest; people and agents clean up on request too.
 //!
 //! Safety: protected branches (integration, production, default) and branches with an open
 //! pull request are never stale; a live task's worktree never is; worktrees are removed only
@@ -15,7 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use yulius_contracts::api::ci::{
-    HygieneCleanup, HygieneCleanupResult, HygieneItem, HygieneReport, HygieneSkip, HygieneTarget,
+    HygieneCleanup, HygieneCleanupResult, HygieneItem, HygieneLastCleanup, HygieneReport,
+    HygieneSkip, HygieneTarget,
 };
 use yulius_domain::ci::{
     BranchPull, LocalBranchFacts, RemoteBranchFacts, StaleReason, WorktreeOwner,
@@ -46,6 +47,11 @@ pub const MAX_CLEANUP_ITEMS: usize = 100;
 const REMOTE: &str = "remote_branch";
 const LOCAL: &str = "local_branch";
 const WORKTREE: &str = "worktree";
+/// The start of a snapshot import's checkout name under `worktrees/` (`import-<job>[-<n>]`, as
+/// `imports.rs` names it): hygiene leaves it to the import (SPEC-269).
+const IMPORT_WORKTREE_PREFIX: &str = "import-";
+/// Who the background round acts as in the audit log.
+const AUTO_ACTOR: &str = "yulius";
 
 fn item(kind: &str, name: String, reason: &StaleReason) -> HygieneItem {
     HygieneItem {
@@ -57,33 +63,100 @@ fn item(kind: &str, name: String, reason: &StaleReason) -> HygieneItem {
     }
 }
 
-fn pulls_facts(pulls: &[GhPull]) -> Vec<BranchPull> {
+fn pulls_facts(pulls: &[GhPull], tip: &str) -> Vec<BranchPull> {
     pulls
         .iter()
         .map(|p| BranchPull {
             number: p.number,
             open: p.state == "open" && !p.merged,
             merged: p.merged,
+            tip_on_pull: p.head_sha == tip,
         })
         .collect()
+}
+
+/// The task worktree a cleanup item names: `worktrees/<one plain name>` under the sandbox
+/// directory, nothing else (an absolute path, `..`, `.` or a nested name never reaches Git).
+fn task_worktree_path(sandbox_dir: &Path, name: &str) -> Option<std::path::PathBuf> {
+    use std::path::Component;
+    let mut parts = Path::new(name).components();
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(Component::Normal(root)), Some(Component::Normal(leaf)), None)
+            if root == "worktrees" && name == format!("worktrees/{}", leaf.to_string_lossy()) =>
+        {
+            Some(sandbox_dir.join("worktrees").join(leaf))
+        }
+        _ => None,
+    }
+}
+
+/// The order a cleanup removes items in: remote branches first, so local copies are judged
+/// again against GitHub after them; then worktrees; then local branches.
+fn removal_order(kind: &str) -> u8 {
+    match kind {
+        REMOTE => 0,
+        WORKTREE => 1,
+        _ => 2,
+    }
 }
 
 impl App {
     pub(super) fn start_hygiene(self: &Arc<Self>) {
         let app = Arc::clone(self);
+        app.schedule_hygiene(HYGIENE_FIRST);
         tokio::spawn(async move {
             tokio::time::sleep(HYGIENE_FIRST).await;
             let mut every = tokio::time::interval(HYGIENE_EVERY);
             loop {
                 every.tick().await;
-                let Ok(sandboxes) = app.deps.store.sandboxes().await else {
-                    continue;
-                };
-                for sandbox in sandboxes.iter().filter(|s| s.removed_at.is_none()) {
-                    let _ = app.hygiene_scan(sandbox).await;
-                }
+                app.hygiene_round().await;
             }
         });
+    }
+
+    /// One background round (SPEC-269 HSC-001): each live sandbox is scanned and its safe items
+    /// are removed as Yulius, through the same checks as a person's Clean up. Unmerged work
+    /// (`idle`) stays listed for a person.
+    pub async fn hygiene_round(&self) {
+        // The interval ticks from the start of a round.
+        self.schedule_hygiene(HYGIENE_EVERY);
+        let Ok(sandboxes) = self.deps.store.sandboxes().await else {
+            return;
+        };
+        for sandbox in sandboxes.iter().filter(|s| s.removed_at.is_none()) {
+            let request = HygieneCleanup::default();
+            if let Err(err) = self
+                .hygiene_cleanup_by(sandbox, &request, AUTO_ACTOR, true)
+                .await
+            {
+                tracing::warn!(sandbox = %sandbox.slug, error = %err, "automatic hygiene cleanup failed");
+            }
+        }
+    }
+
+    fn schedule_hygiene(&self, after: Duration) {
+        let after_ms = i64::try_from(after.as_millis()).unwrap_or(i64::MAX);
+        if let Ok(mut next) = self.ci.hygiene_next.lock() {
+            *next = Some(self.now().0.saturating_add(after_ms));
+        }
+    }
+
+    /// A report with the sandbox's last cleanup and the next automatic one.
+    fn with_cleanups(&self, sandbox: &SandboxRecord, mut report: HygieneReport) -> HygieneReport {
+        report.last_cleanup = self
+            .ci
+            .hygiene_cleanups
+            .lock()
+            .ok()
+            .and_then(|cleanups| cleanups.get(sandbox.id.as_str()).cloned());
+        report.next_cleanup_at = self
+            .ci
+            .hygiene_next
+            .lock()
+            .ok()
+            .and_then(|next| *next)
+            .map(|ms| rfc3339(yulius_domain::time::Timestamp(ms)));
+        report
     }
 
     fn protected_branches(sandbox: &SandboxRecord) -> HashSet<String> {
@@ -99,6 +172,16 @@ impl App {
 
     /// Scans a sandbox for stale branches and worktrees and keeps the report.
     pub(crate) async fn hygiene_scan(&self, sandbox: &SandboxRecord) -> HygieneReport {
+        self.hygiene_scan_judged(sandbox).await.0
+    }
+
+    /// [`Self::hygiene_scan`] with the commit each listed GitHub branch was judged at: a cleanup
+    /// deletes a branch only while GitHub still has it there (SPEC-269 review rounds 2 and 3).
+    async fn hygiene_scan_judged(
+        &self,
+        sandbox: &SandboxRecord,
+    ) -> (HygieneReport, HashMap<String, String>) {
+        let mut judged = HashMap::new();
         let mut report = HygieneReport {
             scanned_at: Some(rfc3339(self.now())),
             ..HygieneReport::default()
@@ -108,7 +191,7 @@ impl App {
             report
                 .notes
                 .push("The sandbox repository is not cloned yet.".into());
-            return self.keep_report(sandbox, report);
+            return (self.keep_report(sandbox, report), judged);
         }
         // A playground's branches are all local: no GitHub to ask (SPEC-099).
         let token = match self.dlv_installation_token(sandbox).await {
@@ -138,19 +221,26 @@ impl App {
         let protected = Self::protected_branches(sandbox);
         let profile = delivery_profile(sandbox);
         if let Some(token) = &token {
-            self.hygiene_remote(sandbox, &repo, token, &protected, &profile, &mut report)
-                .await;
+            self.hygiene_remote(
+                sandbox,
+                &repo,
+                token,
+                (&protected, &profile),
+                &mut report,
+                &mut judged,
+            )
+            .await;
         }
         self.hygiene_local(sandbox, &repo, &protected, &mut report)
             .await;
-        self.keep_report(sandbox, report)
+        (self.keep_report(sandbox, report), judged)
     }
 
     fn keep_report(&self, sandbox: &SandboxRecord, report: HygieneReport) -> HygieneReport {
         if let Ok(mut reports) = self.ci.hygiene.lock() {
             reports.insert(sandbox.id.as_str().to_owned(), report.clone());
         }
-        report
+        self.with_cleanups(sandbox, report)
     }
 
     async fn hygiene_remote(
@@ -158,14 +248,16 @@ impl App {
         sandbox: &SandboxRecord,
         repo: &Path,
         token: &crate::model::Secret,
-        protected: &HashSet<String>,
-        profile: &yulius_domain::delivery::DeliveryProfile,
+        (protected, profile): (&HashSet<String>, &yulius_domain::delivery::DeliveryProfile),
         report: &mut HygieneReport,
+        judged: &mut HashMap<String, String>,
     ) {
         let (owner, name) = (&sandbox.repo_owner, &sandbox.repo_name);
         let open: HashSet<String> =
             match self.deps.github.list_pulls(token, owner, name, None).await {
-                Ok(pulls) => pulls.into_iter().map(|p| p.head).collect(),
+                // Heads and bases: a branch an open pull request targets (a stacked one) is in
+                // use too.
+                Ok(pulls) => pulls.into_iter().flat_map(|p| [p.head, p.base]).collect(),
                 Err(err) => {
                     report.notes.push(format!(
                         "Open pull requests can't be listed ({}): remote branches are not checked.",
@@ -198,8 +290,7 @@ impl App {
             .map(|b| format!("origin/{b}"))
             .collect();
         let now = self.now().0;
-        let mut lookups = 0usize;
-        let mut bound_hit = false;
+        let mut examined = Vec::with_capacity(branches.len());
         for branch in branches {
             if protected.contains(&branch.name) {
                 continue;
@@ -214,22 +305,49 @@ impl App {
                     break;
                 }
             }
-            let pulls = if open.contains(&branch.name) {
+            examined.push((branch, merged));
+        }
+        // An unmerged branch's verdict needs its pull requests; a merged one is safe either way
+        // and only gets the lookups the unmerged ones leave (review round 4).
+        let unmerged = examined
+            .iter()
+            .filter(|(b, merged)| !merged && !open.contains(&b.name))
+            .count();
+        let mut merged_budget = MAX_PULL_LOOKUPS.saturating_sub(unmerged);
+        let mut lookups = 0usize;
+        let mut bound_hit = false;
+        let mut merged_unread = 0usize;
+        for (branch, merged) in examined {
+            // An open pull request's branch is in use: it takes no lookup (review round 5).
+            let in_use = open.contains(&branch.name);
+            let lookup = if in_use {
+                false
+            } else if merged {
+                merged_budget
+                    .checked_sub(1)
+                    .map(|left| merged_budget = left)
+                    .is_some()
+            } else {
+                (lookups < MAX_PULL_LOOKUPS).then(|| lookups += 1).is_some()
+            };
+            let pulls = if in_use {
                 Some(vec![BranchPull {
                     number: 0,
                     open: true,
                     merged: false,
+                    tip_on_pull: true,
                 }])
-            } else if merged {
-                Some(Vec::new())
-            } else if lookups < MAX_PULL_LOOKUPS {
-                lookups += 1;
+            } else if lookup {
                 self.deps
                     .github
                     .branch_pulls(token, &sandbox.repo_owner, &sandbox.repo_name, &branch.name)
                     .await
                     .ok()
-                    .map(|pulls| pulls_facts(&pulls))
+                    .map(|pulls| pulls_facts(&pulls, &branch.sha))
+            } else if merged {
+                // Past the bound, a branch already in dev is still `Merged` (safe for a person).
+                merged_unread += 1;
+                Some(Vec::new())
             } else {
                 bound_hit = true;
                 None
@@ -241,12 +359,23 @@ impl App {
                 last_commit_ms: branch.committed_ms,
             };
             if let Some(reason) = classify_remote_branch(&facts, now) {
+                judged.insert(branch.name.clone(), branch.sha.clone());
                 report.items.push(item(REMOTE, branch.name, &reason));
             }
         }
         if bound_hit {
             report.notes.push(format!(
                 "Pull requests were looked up for {MAX_PULL_LOOKUPS} branches; the rest is checked by the next scan."
+            ));
+        }
+        if merged_unread > 0 {
+            let branches = if merged_unread == 1 {
+                "branch"
+            } else {
+                "branches"
+            };
+            report.notes.push(format!(
+                "Pull requests of {merged_unread} {branches} already in the integration branch were not looked up (the bound went to unmerged ones): they read merged and stay for you."
             ));
         }
     }
@@ -313,6 +442,8 @@ impl App {
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
                     match tasks.get(&id) {
+                        // A snapshot import's checkout is the import's, not a task's.
+                        None if id.starts_with(IMPORT_WORKTREE_PREFIX) => WorktreeOwner::Other,
                         None => WorktreeOwner::Deleted,
                         Some(task) => WorktreeOwner::Task {
                             number: task.number,
@@ -321,7 +452,9 @@ impl App {
                                 Ok(task_id) => self.task_merged(&task_id).await,
                                 Err(_) => false,
                             },
-                            live: task.status.is_live(),
+                            // In use unless resting: a queued or paused task (its process alive
+                            // at a turn boundary) resumes in this worktree (SPEC-269).
+                            live: !task.status.is_resting(),
                             ended: matches!(
                                 task.status,
                                 TaskStatus::Closed | TaskStatus::Stopped(StopReason::Cancelled)
@@ -342,7 +475,7 @@ impl App {
     }
 
     /// The last report of a sandbox, scanning when there is none yet.
-    pub(crate) async fn hygiene_report(&self, sandbox: &SandboxRecord) -> HygieneReport {
+    pub async fn hygiene_report(&self, sandbox: &SandboxRecord) -> HygieneReport {
         let kept = self
             .ci
             .hygiene
@@ -350,30 +483,51 @@ impl App {
             .ok()
             .and_then(|reports| reports.get(sandbox.id.as_str()).cloned());
         match kept {
-            Some(report) => report,
-            None => self.hygiene_scan(sandbox).await,
+            Some(report) => self.with_cleanups(sandbox, report),
+            None => self.hygiene_scan_locked(sandbox).await,
         }
     }
 
     /// Removes stale items (all safe ones when `request.items` is empty), after a fresh scan.
+    ///
+    /// # Errors
+    /// Too many items requested.
     pub async fn hygiene_cleanup_as(
         &self,
         sandbox: &SandboxRecord,
         request: &HygieneCleanup,
         actor: &str,
     ) -> AppResult<HygieneCleanupResult> {
+        self.hygiene_cleanup_by(sandbox, request, actor, false)
+            .await
+    }
+
+    /// [`Self::hygiene_cleanup_as`], `automatic` for the background round. One cleanup of a
+    /// sandbox runs at a time: a person's Clean up during the round waits for it, then scans.
+    async fn hygiene_cleanup_by(
+        &self,
+        sandbox: &SandboxRecord,
+        request: &HygieneCleanup,
+        actor: &str,
+        automatic: bool,
+    ) -> AppResult<HygieneCleanupResult> {
         if request.items.len() > MAX_CLEANUP_ITEMS {
             return Err(AppError::Invalid(format!(
                 "clean up at most {MAX_CLEANUP_ITEMS} items at once"
             )));
         }
-        let report = self.hygiene_scan(sandbox).await;
+        let lock = self.hygiene_lock(sandbox);
+        let _one = lock.lock().await;
+        let (report, judged) = self.hygiene_scan_judged(sandbox).await;
         let mut skipped = Vec::new();
-        let selected: Vec<HygieneItem> = if request.items.is_empty() {
+        let mut selected: Vec<HygieneItem> = if request.items.is_empty() {
             report
                 .items
                 .iter()
                 .filter(|i| i.safe || request.force)
+                // A branch already in dev that no pull request had (a release or staging
+                // branch) is a person's call: the round leaves it listed (review round 3).
+                .filter(|i| !(automatic && i.kind == REMOTE && i.reason_code == "merged"))
                 .cloned()
                 .collect()
         } else {
@@ -393,6 +547,7 @@ impl App {
             }
             chosen
         };
+        selected.sort_by_key(|i| removal_order(&i.kind));
         let repo = self.sandbox_repo(&sandbox.id);
         let token = if sandbox.is_playground() {
             None
@@ -400,7 +555,8 @@ impl App {
             self.dlv_installation_token(sandbox).await.ok()
         };
         let mut removed = Vec::new();
-        let mut remote_deleted = false;
+        // Whether the clone was fetched after the remote deletions (`Err`: it could not be).
+        let mut fetched: Option<Result<(), String>> = None;
         for found in selected.into_iter().take(MAX_CLEANUP_ITEMS) {
             let target = HygieneTarget {
                 kind: found.kind.clone(),
@@ -415,47 +571,51 @@ impl App {
             }
             let outcome: Result<(), String> = match found.kind.as_str() {
                 REMOTE => match &token {
-                    Some(token) => self
-                        .deps
-                        .github
-                        .delete_branch(token, &sandbox.repo_owner, &sandbox.repo_name, &found.name)
-                        .await
-                        .map(|_| remote_deleted = true)
-                        .map_err(|e| e.public_message()),
+                    Some(token) => {
+                        let at = judged.get(&found.name).map(String::as_str);
+                        self.delete_remote_branch(sandbox, token, &found.name, at)
+                            .await
+                    }
                     None => Err("GitHub is not available".into()),
                 },
-                LOCAL => self
-                    .deps
-                    .git
-                    .delete_local_branch(&repo, &found.name)
-                    .await
-                    .map_err(|e| e.public_message()),
+                LOCAL => {
+                    // Judged again against GitHub as it is now, after the remote deletions
+                    // above: a local copy whose branch just went may hold the only commits.
+                    if fetched.is_none() {
+                        fetched = Some(
+                            self.dlv_refresh_clone(sandbox)
+                                .await
+                                .map_err(|e| e.public_message()),
+                        );
+                    }
+                    match &fetched {
+                        Some(Err(err)) => Err(format!(
+                            "GitHub could not be fetched ({err}), so its commits there are not confirmed"
+                        )),
+                        _ => match self
+                            .deps
+                            .git
+                            .on_remote(&repo, &format!("refs/heads/{}", found.name))
+                            .await
+                        {
+                            Ok(true) => self
+                                .deps
+                                .git
+                                .delete_local_branch(&repo, &found.name)
+                                .await
+                                .map_err(|e| e.public_message()),
+                            Ok(false) => Err("its commits are no longer on GitHub".into()),
+                            Err(err) => Err(err.public_message()),
+                        },
+                    }
+                }
                 WORKTREE if found.reason_code == "missing" => self
                     .deps
                     .git
                     .prune_worktrees(&repo)
                     .await
                     .map_err(|e| e.public_message()),
-                WORKTREE => {
-                    let path = self.sandbox_dir(&sandbox.id).join(&found.name);
-                    let owned = self.sandbox_dir(&sandbox.id).join("worktrees");
-                    // An ended task's worktree with ignored files left (local configuration,
-                    // caches the disk upkeep has not removed yet) is not Git's to lose.
-                    if found.reason_code == "task_ended"
-                        && self.deps.git.has_ignored_files(&path).await.unwrap_or(true)
-                    {
-                        skipped.push(HygieneSkip {
-                            target,
-                            reason: "it still holds files Git ignores (build output or local configuration)".into(),
-                        });
-                        continue;
-                    }
-                    match self.deps.git.remove_worktree(&repo, &path, &owned).await {
-                        Ok(true) => Ok(()),
-                        Ok(false) => Err("it has uncommitted changes or is locked".into()),
-                        Err(err) => Err(err.public_message()),
-                    }
-                }
+                WORKTREE => self.remove_task_worktree(sandbox, &repo, &found.name).await,
                 _ => Err("unknown kind".into()),
             };
             match outcome {
@@ -472,15 +632,110 @@ impl App {
                 Err(reason) => skipped.push(HygieneSkip { target, reason }),
             }
         }
-        if remote_deleted {
+        if fetched.is_none() && removed.iter().any(|t| t.kind == REMOTE) {
             let _ = self.dlv_refresh_clone(sandbox).await;
         }
-        let report = self.hygiene_scan(sandbox).await;
+        // An automatic round with nothing to do keeps the last cleanup on the report.
+        if !(automatic && removed.is_empty() && skipped.is_empty())
+            && let Ok(mut cleanups) = self.ci.hygiene_cleanups.lock()
+        {
+            cleanups.insert(
+                sandbox.id.as_str().to_owned(),
+                HygieneLastCleanup {
+                    at: rfc3339(self.now()),
+                    by: actor.to_owned(),
+                    automatic,
+                    removed: removed.clone(),
+                    skipped: skipped.clone(),
+                },
+            );
+        }
+        // Nothing removed: nothing changed since the scan above (a round with nothing to do
+        // costs one scan).
+        let report = if removed.is_empty() {
+            self.with_cleanups(sandbox, report)
+        } else {
+            self.hygiene_scan(sandbox).await
+        };
         Ok(HygieneCleanupResult {
             removed,
             skipped,
             report,
         })
+    }
+
+    /// Deletes a branch on GitHub only while its tip there is `judged`, the commit the scan
+    /// judged: a fetch that failed, or a push since, leaves new commits the verdict never saw
+    /// (SPEC-269 review rounds 2 and 3). A push between this read and the deletion is not caught:
+    /// GitHub's API has no conditional ref deletion.
+    async fn delete_remote_branch(
+        &self,
+        sandbox: &SandboxRecord,
+        token: &crate::model::Secret,
+        branch: &str,
+        judged: Option<&str>,
+    ) -> Result<(), String> {
+        let (owner, name) = (&sandbox.repo_owner, &sandbox.repo_name);
+        let now = self
+            .deps
+            .github
+            .branch_sha(token, owner, name, branch)
+            .await
+            .map_err(|e| e.public_message())?;
+        match (judged, now) {
+            (_, None) => Err("it is already gone from GitHub".into()),
+            (Some(judged), Some(now)) if judged == now => self
+                .deps
+                .github
+                .delete_branch(token, owner, name, branch)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.public_message()),
+            _ => Err(
+                "it moved on GitHub since Yulius last fetched it; its new commits are judged at the next check"
+                    .into(),
+            ),
+        }
+    }
+
+    /// Removes a task's worktree (`worktrees/<task id>`), checking right before it that Git
+    /// ignores nothing in it but rebuildable caches (SPEC-019, SPEC-269: local configuration or
+    /// data is not Git's to lose) and that its task is still resting or gone.
+    async fn remove_task_worktree(
+        &self,
+        sandbox: &SandboxRecord,
+        repo: &Path,
+        name: &str,
+    ) -> Result<(), String> {
+        let Some(path) = task_worktree_path(&self.sandbox_dir(&sandbox.id), name) else {
+            return Err("it is not a task worktree under worktrees/".into());
+        };
+        let owned = self.sandbox_dir(&sandbox.id).join("worktrees");
+        if !self.worktree_only_caches(&path).await {
+            return Err(
+                "it still holds files Git ignores that are not rebuildable caches (local configuration or data)"
+                    .into(),
+            );
+        }
+        // Read last, right before Git removes it; a task that cannot be read keeps it.
+        let task_id = path
+            .file_name()
+            .and_then(|n| TaskId::parse(&n.to_string_lossy()).ok());
+        if let Some(task_id) = task_id {
+            match self.deps.store.task(&task_id).await {
+                Ok(None) => {}
+                Ok(Some(task)) if task.status.is_resting() => {}
+                Ok(Some(_)) => return Err("its task is running or waiting again".into()),
+                Err(err) => {
+                    return Err(format!("its task can't be read: {}", err.public_message()));
+                }
+            }
+        }
+        match self.deps.git.remove_worktree(repo, &path, &owned).await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("it has uncommitted changes or is locked".into()),
+            Err(err) => Err(err.public_message()),
+        }
     }
 
     /// After a merge through Yulius: deletes the pull request's head branch unless it is
@@ -560,6 +815,26 @@ impl App {
         Ok(self.hygiene_report(&sandbox).await)
     }
 
+    /// A scan on request, after any cleanup of the sandbox running now: a scan that ended after
+    /// it would keep listing what it removed.
+    pub(crate) async fn hygiene_scan_locked(&self, sandbox: &SandboxRecord) -> HygieneReport {
+        let lock = self.hygiene_lock(sandbox);
+        let _one = lock.lock().await;
+        self.hygiene_scan(sandbox).await
+    }
+
+    fn hygiene_lock(&self, sandbox: &SandboxRecord) -> Arc<tokio::sync::Mutex<()>> {
+        // Nothing panics while the map is held; a poisoned map is still the one map, so every
+        // caller keeps sharing one lock per sandbox.
+        self.ci
+            .hygiene_locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(sandbox.id.as_str().to_owned())
+            .or_default()
+            .clone()
+    }
+
     /// `POST /api/sandboxes/{sid}/hygiene/scan`.
     ///
     /// # Errors
@@ -570,7 +845,7 @@ impl App {
         sandbox_id: &str,
     ) -> AppResult<HygieneReport> {
         let (sandbox, _) = self.ci_sandbox(ctx, sandbox_id, Action::Work).await?;
-        Ok(self.hygiene_scan(&sandbox).await)
+        Ok(self.hygiene_scan_locked(&sandbox).await)
     }
 
     /// `POST /api/sandboxes/{sid}/hygiene/cleanup`.
@@ -586,5 +861,37 @@ impl App {
         let (sandbox, _) = self.ci_sandbox(ctx, sandbox_id, Action::Work).await?;
         let actor = Self::dlv_actor_login(&ctx.user);
         self.hygiene_cleanup_as(&sandbox, request, &actor).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::task_worktree_path;
+    use std::path::Path;
+
+    /// SPEC-269 (CI security scan): only `worktrees/<one name>` under the sandbox directory is a
+    /// task worktree the cleanup may remove; anything else never reaches Git.
+    #[test]
+    fn only_a_worktree_directly_under_worktrees_is_removable() {
+        let sandbox = Path::new("/data/sandboxes/s1");
+        assert_eq!(
+            task_worktree_path(sandbox, "worktrees/t-1"),
+            Some(sandbox.join("worktrees/t-1"))
+        );
+        for name in [
+            "/etc",
+            "/data/sandboxes/s1/worktrees/t-1",
+            "worktrees/../repo",
+            "worktrees/..",
+            "worktrees/a/b",
+            "worktrees/",
+            "worktrees",
+            "repo",
+            "ci/jobs/quality",
+            "",
+            "worktrees/.",
+        ] {
+            assert_eq!(task_worktree_path(sandbox, name), None, "{name:?}");
+        }
     }
 }

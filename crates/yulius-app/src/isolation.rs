@@ -8,7 +8,7 @@ use yulius_domain::ids::SandboxId;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
-use crate::ports::isolation::{SandboxIsolation, SandboxJoin};
+use crate::ports::isolation::{LimitCounters, SandboxIsolation, SandboxJoin};
 
 /// `PATH` of runs in an isolated sandbox (root's, with `sbin` for package tools).
 pub const SANDBOX_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -37,6 +37,11 @@ impl Drop for IsolationLease {
 }
 
 impl App {
+    /// `sandbox`'s limit counters, where an isolation adapter counts them (SPEC-268 PID-004).
+    pub(crate) async fn limit_counters(&self, sandbox: &SandboxId) -> Option<LimitCounters> {
+        self.isolation.get()?.limit_counters(sandbox).await
+    }
+
     /// The holder a contained run of `sandbox` joins, with its lease; `None` when the run uses
     /// the previous containment (no adapter, no base yet).
     ///

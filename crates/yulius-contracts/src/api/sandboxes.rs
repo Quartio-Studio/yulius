@@ -190,12 +190,12 @@ pub struct MoveToGitHub {
     pub name: String,
 }
 
-/// `POST /api/sandboxes/{sid}/purge` response (SPEC-171): where the purge of a removed
-/// playground's code stands.
+/// `POST /api/sandboxes/{sid}/purge` response (SPEC-171, SPEC-276): where the purge of a removed
+/// sandbox's files stands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PurgeState {
-    /// `purged` (its code is deleted) or `waiting` (requested; deleted once nothing of its sandbox
-    /// runs).
+    /// `purged` (its files are deleted) or `waiting` (requested; deleted once nothing of its
+    /// sandbox runs).
     pub state: String,
     /// What still runs while `waiting`, such as `1 agent run` or `2 shells`.
     pub waiting_for: Vec<String>,

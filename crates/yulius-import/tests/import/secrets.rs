@@ -9,8 +9,8 @@ use yulius_import::{
     VaultClient, import_secrets, parse_dotenv, prepare_target, prompt_secrets, secret_file_entry,
 };
 
-use crate::support::TestResult;
 use crate::support::server::{FakeServer, TOKEN};
+use crate::support::{RepoFixture, TestResult};
 
 const PEM: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----";
 
@@ -24,6 +24,7 @@ const VALUES: &[&str] = &[
     "multi-line-value",
     "tiny-v1",
     "hidden-typed-value-9",
+    "acme-bucket-0042",
 ];
 
 /// A scripted terminal: answers in order, records what was said.
@@ -701,4 +702,438 @@ fn a_key_file_is_imported_by_path() -> TestResult {
         .ok_or("missing")?;
     assert!(err.contains("gone"), "{err}");
     Ok(())
+}
+
+/// SPEC-274 PLW-002: values that are ordinary text (a configuration word, a host, an e-mail
+/// address, a URL without credentials) are refused before anything is sent and named with why,
+/// with or without --yes; credentials go on.
+#[test]
+fn ordinary_text_values_are_refused_and_named() -> TestResult {
+    let file = "PIPEDREAM_PROJECT_ENVIRONMENT=production\nAPI_HOST=api.example.com\n\
+                OPS_EMAIL=ops@example.com\nAPI_URL=https://api.example.com/v1\n\
+                DATABASE_URL=postgres://app:s3cretPass@db.internal/app\nNEW_KEY=sk_live_new_value_1\n";
+    for unattended in [false, true] {
+        let server = FakeServer::start()?;
+        with_sandbox(&server)?;
+        let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+        let mut target = prepare_target(&agent("Quartio-Studio/yulius", false), &client)?;
+        if unattended {
+            target = target.unattended();
+        }
+        let mut terminal = Terminal::answering(&["yes"]);
+        let summary = import_secrets(parse_dotenv(file)?, &target, &client, &mut terminal)?;
+        assert_eq!(summary.imported, vec!["DATABASE_URL", "NEW_KEY"]);
+        assert_eq!(
+            summary.invalid,
+            vec![
+                "PIPEDREAM_PROJECT_ENVIRONMENT",
+                "API_HOST",
+                "OPS_EMAIL",
+                "API_URL"
+            ]
+        );
+        let sent: Vec<String> = server
+            .with(|s| s.agent_created.clone())?
+            .into_iter()
+            .map(|(_, input)| input.name)
+            .collect();
+        assert_eq!(sent, vec!["DATABASE_URL", "NEW_KEY"]);
+        let said = &terminal.said;
+        for line in [
+            "PIPEDREAM_PROJECT_ENVIRONMENT  skipped: a configuration word",
+            "API_HOST                       skipped: a host name or address",
+            "OPS_EMAIL                      skipped: an e-mail address",
+            "API_URL                        skipped: a URL without credentials",
+        ] {
+            assert!(said.contains(line), "{line:?} in:\n{said}");
+        }
+        // Review of SPEC-274: a credential taken for ordinary text never goes to the hand-over.
+        assert!(
+            said.contains(
+                "belongs in configuration, a project variable (`yulius vars set`) or the hand-over"
+            ) && said
+                .contains("if it is a credential after all, a person adds it on the Secrets page"),
+            "{said}"
+        );
+        // "production deploys" is the run's own text: the values are looked for in the plan.
+        let plan: Vec<&str> = said.lines().filter(|l| l.starts_with("  ")).collect();
+        for value in [
+            "production",
+            "api.example.com",
+            "ops@example.com",
+            "s3cretPass",
+        ] {
+            assert!(
+                plan.iter().all(|l| !l.contains(value)),
+                "said {value:?}:\n{said}"
+            );
+        }
+        terminal.assert_no_value();
+    }
+    Ok(())
+}
+
+/// The fake server's sandbox of [`RepoFixture`]'s repository, and a checkout of it holding
+/// `acme-bucket-0042` in a tracked file.
+fn demo_checkout(server: &FakeServer) -> TestResult<(RepoFixture, SecretsImportOptions)> {
+    server.with(|s| {
+        s.sandboxes = vec![(
+            "sb-demo".into(),
+            "quartio-demo".into(),
+            "Quartio-Studio".into(),
+            "demo".into(),
+        )];
+    })?;
+    let fixture = RepoFixture::new()?;
+    fixture.commit_file("deploy/config.yml", "bucket: acme-bucket-0042\n", "config")?;
+    let options = SecretsImportOptions {
+        target: SecretsTarget::Agent {
+            sandbox: None,
+            instance: false,
+            confirm_hosts: false,
+        },
+        checkout: fixture.root()?,
+        source_file: None,
+    };
+    Ok((fixture, options))
+}
+
+const IN_REPO: &str = "BUCKET=acme-bucket-0042\nNEW_KEY=sk_live_new_value_1\n";
+
+fn sent_names(server: &FakeServer) -> TestResult<Vec<String>> {
+    Ok(server
+        .with(|s| s.agent_created.clone())?
+        .into_iter()
+        .map(|(_, input)| input.name)
+        .collect())
+}
+
+/// SPEC-274 PLW-003: with --yes a value found in a tracked file of the project's checkout is
+/// skipped and listed, naming where it was found, never the value.
+#[test]
+fn an_unattended_run_skips_values_found_in_the_repository() -> TestResult {
+    let server = FakeServer::start()?;
+    let (_fixture, options) = demo_checkout(&server)?;
+    let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+    let target = prepare_target(&options, &client)?.unattended();
+    let mut terminal = Terminal {
+        no_terminal: true,
+        ..Terminal::default()
+    };
+    let summary = import_secrets(parse_dotenv(IN_REPO)?, &target, &client, &mut terminal)?;
+    assert_eq!(summary.invalid, vec!["BUCKET"]);
+    assert_eq!(sent_names(&server)?, vec!["NEW_KEY"]);
+    assert!(
+        terminal.said.contains(
+            "BUCKET   skipped: occurs in 1 tracked file of the repository (deploy/config.yml)"
+        ),
+        "{}",
+        terminal.said
+    );
+    assert!(
+        terminal
+            .said
+            .contains("a person adds it on the Secrets page"),
+        "{}",
+        terminal.said
+    );
+    assert!(terminal.asked.is_empty(), "asked {:?}", terminal.asked);
+    terminal.assert_no_value();
+    Ok(())
+}
+
+/// SPEC-274 PLW-003: at the terminal such a value is asked about: yes imports it, anything else
+/// skips it.
+#[test]
+fn a_value_found_in_the_repository_is_asked_about() -> TestResult {
+    for (answer, imported, declined) in [
+        ("yes", vec!["BUCKET", "NEW_KEY"], Vec::<&str>::new()),
+        ("no", vec!["NEW_KEY"], vec!["BUCKET"]),
+    ] {
+        let server = FakeServer::start()?;
+        let (_fixture, options) = demo_checkout(&server)?;
+        let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+        let target = prepare_target(&options, &client)?;
+        let mut terminal = Terminal::answering(&[answer, "yes"]);
+        let summary = import_secrets(parse_dotenv(IN_REPO)?, &target, &client, &mut terminal)?;
+        assert_eq!(summary.imported, imported, "{answer}");
+        // A deliberate no is the person's choice, not a failure of the run.
+        assert_eq!(summary.declined, declined, "{answer}");
+        assert!(summary.invalid.is_empty() && summary.ok(), "{answer}");
+        assert!(
+            terminal.asked[0]
+                .contains("BUCKET occurs in 1 tracked file of the repository (deploy/config.yml)")
+                && terminal.asked[0].contains("Import it anyway?"),
+            "{:?}",
+            terminal.asked
+        );
+        terminal.assert_no_value();
+    }
+    Ok(())
+}
+
+/// SPEC-274 PLW-003: outside a checkout of the project nothing is looked for, and the run says so.
+#[test]
+fn outside_the_project_checkout_the_repository_is_not_searched() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    let mut terminal = Terminal::answering(&["yes"]);
+    let summary = run(
+        &server,
+        IN_REPO,
+        &agent("Quartio-Studio/yulius", false),
+        &mut terminal,
+    )??;
+    assert_eq!(summary.imported, vec!["BUCKET", "NEW_KEY"]);
+    assert!(
+        terminal.said.contains(
+            "not looked for in the repository: run it in a checkout of Quartio-Studio/yulius"
+        ),
+        "{}",
+        terminal.said
+    );
+    Ok(())
+}
+
+/// Review of SPEC-274: a checkout of the project on a detached HEAD is still searched.
+#[test]
+fn a_detached_checkout_of_the_project_is_searched() -> TestResult {
+    let server = FakeServer::start()?;
+    let (fixture, options) = demo_checkout(&server)?;
+    crate::support::git(&fixture.repo, &["checkout", "-q", "--detach"])?;
+    let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+    let target = prepare_target(&options, &client)?.unattended();
+    let mut terminal = Terminal {
+        no_terminal: true,
+        ..Terminal::default()
+    };
+    let summary = import_secrets(parse_dotenv(IN_REPO)?, &target, &client, &mut terminal)?;
+    assert_eq!(summary.invalid, vec!["BUCKET"], "{}", terminal.said);
+    Ok(())
+}
+
+/// Review of SPEC-274: a checkout of the project with no commit yet is still searched.
+#[test]
+fn a_checkout_without_commits_is_searched() -> TestResult {
+    let server = FakeServer::start()?;
+    let (_fixture, mut options) = demo_checkout(&server)?;
+    let fresh = tempfile::tempdir()?;
+    let repo = fresh.path();
+    crate::support::git(repo, &["init", "-q", "-b", "main"])?;
+    crate::support::git(
+        repo,
+        &["remote", "add", "origin", crate::support::GITHUB_URL],
+    )?;
+    std::fs::write(repo.join("config.yml"), "bucket: acme-bucket-0042\n")?;
+    crate::support::git(repo, &["add", "config.yml"])?;
+    options.checkout = repo.to_path_buf();
+    // Without a commit the sandbox is named, as `yulius secrets import --sandbox` does.
+    options.target = SecretsTarget::Agent {
+        sandbox: Some("Quartio-Studio/demo".into()),
+        instance: false,
+        confirm_hosts: false,
+    };
+    let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+    let target = prepare_target(&options, &client)?.unattended();
+    let mut terminal = Terminal {
+        no_terminal: true,
+        ..Terminal::default()
+    };
+    let summary = import_secrets(parse_dotenv(IN_REPO)?, &target, &client, &mut terminal)?;
+    assert_eq!(summary.invalid, vec!["BUCKET"], "{}", terminal.said);
+    Ok(())
+}
+
+/// SPEC-275 VAR-007: with variables offered, the plain values of a company `.env` (too short, or
+/// SPEC-274's ordinary text: a configuration word, a URL or an e-mail address without
+/// credentials) are sent as project variables in one set, never as secrets; a credential's name
+/// keeps its value out of variables; a variable that exists is skipped, never overwritten; no
+/// value is said.
+#[test]
+fn plain_values_are_sent_as_project_variables() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    server.with(|s| s.variable_names = Some(vec!["AWS_REGION".into()]))?;
+    let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+    let target = prepare_target(&agent("Quartio-Studio/yulius", false), &client)?
+        .unattended()
+        .with_variables();
+    let mut terminal = Terminal {
+        no_terminal: true,
+        ..Terminal::default()
+    };
+    let file = "NEW_KEY=sk_live_new_value_1\nOVH_ENDPOINT=ovh-ca\n\
+                # Which Pipedream environment\nPIPEDREAM_PROJECT_ENVIRONMENT=production\n\
+                LANGFUSE_BASE_URL=https://cloud.langfuse.com\nCONTACT=ops@quartio.example\n\
+                API_TOKEN=production\nAWS_REGION=eu-west-1\n";
+    let summary = import_secrets(parse_dotenv(file)?, &target, &client, &mut terminal)?;
+
+    assert_eq!(summary.imported, vec!["NEW_KEY"]);
+    // A credential's name keeps it out of variables, and SPEC-274 refuses it as a secret.
+    assert_eq!(summary.invalid, vec!["API_TOKEN"]);
+    assert_eq!(
+        summary.variables,
+        vec![
+            "OVH_ENDPOINT",
+            "PIPEDREAM_PROJECT_ENVIRONMENT",
+            "LANGFUSE_BASE_URL",
+            "CONTACT"
+        ]
+    );
+    assert_eq!(summary.existing, vec!["AWS_REGION"]);
+    assert!(!summary.ok(), "{summary:?}");
+    let sets = server.with(|s| s.variables_set.clone())?;
+    assert_eq!(sets.len(), 1, "one set");
+    let (sid, set) = &sets[0];
+    assert_eq!(sid, "sb-1");
+    let sent: Vec<(&str, &str, Option<&str>)> = set
+        .variables
+        .iter()
+        .map(|v| (v.name.as_str(), v.value.as_str(), v.description.as_deref()))
+        .collect();
+    assert_eq!(
+        sent,
+        [
+            ("OVH_ENDPOINT", "ovh-ca", None),
+            (
+                "PIPEDREAM_PROJECT_ENVIRONMENT",
+                "production",
+                Some("Which Pipedream environment")
+            ),
+            ("LANGFUSE_BASE_URL", "https://cloud.langfuse.com", None),
+            ("CONTACT", "ops@quartio.example", None),
+        ]
+    );
+    let created = server.with(|s| s.agent_created.clone())?;
+    assert!(
+        created.iter().all(|(_, i)| i.name != "OVH_ENDPOINT"),
+        "{created:?}"
+    );
+    for line in [
+        "~ OVH_ENDPOINT                   not a secret (shorter than 8 characters): a project variable",
+        "~ PIPEDREAM_PROJECT_ENVIRONMENT  not a secret (a configuration word): a project variable",
+        "~ LANGFUSE_BASE_URL              not a secret (a URL without credentials): a project variable",
+        "~ CONTACT                        not a secret (an e-mail address): a project variable",
+        "= AWS_REGION                     a project variable already: skipped, never overwritten",
+        "1 new secret and 4 project variables will be sent",
+        "Imported 1, 4 as project variables, skipped 1 existing, 1 invalid",
+    ] {
+        assert!(terminal.said.contains(line), "{line}\n{}", terminal.said);
+    }
+    // "production" also occurs in the plan's own words ("production deploys").
+    for value in ["ovh-ca", "langfuse", "ops@", "eu-west-1"] {
+        assert!(
+            !terminal.said.contains(value),
+            "said {value}:\n{}",
+            terminal.said
+        );
+    }
+    terminal.assert_no_value();
+    Ok(())
+}
+
+/// SPEC-275 VAR-007: a server without project variables keeps the old classification and says
+/// so; the run still sends its secrets.
+#[test]
+fn an_older_server_without_variables_keeps_plain_values_out() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+    let target = prepare_target(&agent("Quartio-Studio/yulius", false), &client)?
+        .unattended()
+        .with_variables();
+    let mut terminal = Terminal::default();
+    let summary = import_secrets(
+        parse_dotenv("NEW_KEY=sk_live_new_value_1\nOVH_ENDPOINT=ovh-ca\n")?,
+        &target,
+        &client,
+        &mut terminal,
+    )?;
+    assert_eq!(summary.imported, vec!["NEW_KEY"]);
+    assert_eq!(summary.invalid, vec!["OVH_ENDPOINT"]);
+    assert!(summary.variables.is_empty());
+    assert!(
+        terminal.said.contains("has no project variables"),
+        "{}",
+        terminal.said
+    );
+    Ok(())
+}
+
+/// Review round 1 (SPEC-275 VAR-007): variables are only created, so one made after the plan is
+/// left as it is and counted as existing; a refused set is sent again one by one, so only the
+/// refused variable fails.
+#[test]
+fn variables_are_only_created_and_a_refused_one_fails_alone() -> TestResult {
+    let server = FakeServer::start()?;
+    with_sandbox(&server)?;
+    server.with(|s| s.variable_names = Some(Vec::new()))?;
+    let client = VaultClient::new(server.url.clone(), Secret::new(TOKEN))?;
+    let target = prepare_target(&agent("Quartio-Studio/yulius", false), &client)?.with_variables();
+    // Made by someone else after the plan was shown, before the typed yes.
+    let mut terminal = Terminal::answering(&["yes"]);
+    server.with(|s| {
+        s.variable_names = Some(Vec::new());
+        s.refuse_names = vec!["TEAM_REGION".into()];
+    })?;
+    let file = "OVH_ENDPOINT=ovh-ca\nTEAM_REGION=eu\nAPP_ENV=production\n";
+    let entries = parse_dotenv(file)?;
+    // The plan reads no variable; one appears before the set is sent.
+    let plan_then_race = {
+        let server = &server;
+        move || server.with(|s| s.variable_names = Some(vec!["APP_ENV".into()]))
+    };
+    let summary = import_secrets(
+        entries,
+        &target,
+        &client,
+        &mut RacingTerminal {
+            inner: &mut terminal,
+            before_yes: Some(Box::new(plan_then_race)),
+        },
+    )?;
+    assert_eq!(summary.variables, vec!["OVH_ENDPOINT"]);
+    assert_eq!(summary.failed, vec!["TEAM_REGION"]);
+    assert_eq!(summary.existing, vec!["APP_ENV"]);
+    let sets = server.with(|s| s.variables_set.clone())?;
+    assert!(sets.iter().all(|(_, set)| set.only_new), "only created");
+    // The refused sets (the whole one, then TEAM_REGION's) are not recorded: two accepted, one by one.
+    assert_eq!(
+        sets.iter()
+            .map(|(_, set)| set.variables.len())
+            .collect::<Vec<_>>(),
+        [1, 1],
+        "{sets:?}"
+    );
+    assert!(
+        terminal
+            .said
+            .contains("APP_ENV  a project variable already: skipped, never overwritten"),
+        "{}",
+        terminal.said
+    );
+    Ok(())
+}
+
+/// A terminal that runs `before_yes` when it is asked for the typed yes.
+struct RacingTerminal<'a> {
+    inner: &'a mut Terminal,
+    before_yes: Option<Box<dyn FnOnce() -> TestResult<()> + 'a>>,
+}
+
+impl SecretsIo for RacingTerminal<'_> {
+    fn say(&mut self, line: &str) {
+        self.inner.say(line);
+    }
+
+    fn ask(&mut self, prompt: &str) -> io::Result<String> {
+        if let Some(race) = self.before_yes.take() {
+            race().map_err(|e| io::Error::other(e.to_string()))?;
+        }
+        self.inner.ask(prompt)
+    }
+
+    fn ask_hidden(&mut self, prompt: &str) -> io::Result<Secret> {
+        self.inner.ask_hidden(prompt)
+    }
 }

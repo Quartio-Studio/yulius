@@ -24,12 +24,14 @@ mod jsonl;
 mod process;
 mod redact;
 mod remote;
+mod repo_values;
 mod run;
 mod secret;
 mod secrets_import;
 mod sessions;
 mod since;
 mod snapshot;
+mod states;
 mod time;
 mod token_store;
 mod ui;
@@ -60,6 +62,10 @@ pub use sessions::{DiscoveredSession, SessionFile, discover_claude_sessions};
 pub use since::{DEFAULT_SINCE, MAX_SINCE_DAYS, SinceError, parse_since, prompt_since};
 pub use snapshot::{
     MAX_SNAPSHOT_FILE_BYTES, SkipReason, SkippedPath, Snapshot, SnapshotError, snapshot_uncommitted,
+};
+pub use states::{
+    MAX_STATE_BYTES, StateEntry, StatesSummary, download_state, import_states, pack_state_dir,
+    state_entry,
 };
 pub use time::format_rfc3339;
 pub use token_store::{TokenStore, TokenStoreError};

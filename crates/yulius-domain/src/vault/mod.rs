@@ -7,6 +7,8 @@ pub mod dotenv;
 pub mod encode;
 pub mod hosts;
 pub mod names;
+pub mod ordinary;
+pub mod plain;
 pub mod redact;
 pub mod totp;
 
@@ -16,6 +18,7 @@ use crate::time::Timestamp;
 
 pub use hosts::HostPattern;
 pub use names::SecretName;
+pub use ordinary::{OrdinaryText, ordinary_text};
 
 /// Errors validating vault input. Messages never contain secret values.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

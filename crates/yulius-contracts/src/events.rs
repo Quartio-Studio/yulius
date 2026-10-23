@@ -70,6 +70,16 @@ pub enum UiEvent {
         /// `building`, `pausing`, `restarting`, `resuming`, or `None` when no update runs.
         phase: Option<String>,
     },
+    /// The server's data disk changed level (SPEC-276 RDA-007): `ok`, `low` or `critical`.
+    #[serde(rename = "disk.updated")]
+    DiskChanged {
+        /// The new level.
+        level: String,
+        /// Used bytes of the data disk.
+        used: Option<u64>,
+        /// Its total bytes.
+        total: Option<u64>,
+    },
     /// A notepad was saved (SPEC-041): open notepads with nothing unsaved fetch the note again.
     /// A sandbox note's event reaches only the people who can view that sandbox, a personal
     /// note's only its owner (SPEC-103).

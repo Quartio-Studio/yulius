@@ -34,6 +34,7 @@ pub mod scope;
 pub mod spec_format;
 pub mod stages;
 pub mod steps;
+pub mod sweep;
 pub mod task;
 pub mod time;
 pub mod update;

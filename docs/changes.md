@@ -4,8 +4,104 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-23
+
+- Yulius reclaims disk by itself, and removing a sandbox asks about its files (SPEC-276, task #261,
+  ADR-0205). Cargo build directories of worktrees and CI checkouts are swept hourly under Cargo's
+  own lock: whole units unused for 48 hours go (compiled artifacts only where nothing runs tests),
+  and a directory above 5 % of the disk loses its least recently used incremental state. From 85 % disk use the sweep runs harder every round with a warning
+  pill on every page; from 95 % idle caches go too. Archived tasks lose their build output at
+  once, and the Leftovers card and `yulius leftovers list` show the last automatic cleanup.
+  Removing a sandbox now asks whether to delete its files permanently (as soon as nothing of it
+  runs, no CLI step) or keep them; kept files are listed with their size and a Delete files
+  button.
+
 ## 2026-10-22
 
+- Projects have variables (SPEC-275, task #259, ADR-0203): non-secret values such as a region
+  (`OVH_ENDPOINT=ovh-ca`), an environment name (`production`), ids, base URLs and contact
+  addresses, shown in plain on the Secrets page's new Variables tab and in every task run's
+  environment. Before, such a value was refused as a secret (under 8 characters) or masked every
+  occurrence of the word. A laptop agent sets them with `yulius vars set|import|list|delete`
+  (remote tools `variables_*`), and `yulius secrets import --to agent` now sends a `.env`'s plain
+  values (short ones, and the ordinary text SPEC-274 refuses as secrets, not under a
+  credential's name) to variables instead of skipping them. A name that is an agent secret is
+  refused; every change is audited without its value; `secrets_list` and the onboarding prompt
+  name them.
+- Agent secrets no longer mask ordinary text (SPEC-274, task #258, ADR-0204). Onboarding
+  Quartio-Studio/product, a company `.env` imported with `yulius secrets import --to agent --yes`
+  held `PIPEDREAM_PROJECT_ENVIRONMENT=production`, and every "production" read `[secret:…]` in 221
+  files, the project's config and the hand-over. The import now skips values that are ordinary
+  text (configuration words, host names, e-mail addresses, URLs without credentials) and names why;
+  run in the project's checkout it asks about values its tracked files hold (`--yes` skips them).
+  The person's agent deletes a secret imported by mistake: `yulius secrets delete NAME` and the
+  remote tool `secret_delete`, audited with the token, never the value. The onboarding hand-over
+  says a masked word is a secret's value. Secrets already imported and stored hand-overs are
+  unchanged.
+- The Vidoc security job makes less noise (SPEC-273, task #262, ADR-0202, #850). A reworded
+  repeat of an ignored finding on code the branch did not touch passes: an `[[ignore]]` may name
+  its `function` and `line`, Vidoc is told each file's accepted risks and can answer "accepted",
+  and every open finding shows its nearest ignore and how similar it is. An answer cut at
+  `max_tokens` splits its chunk instead of failing the scan; files Vidoc's outage left unscanned
+  make the scan incomplete (exit 3): in CI the job ends error "incomplete: …" naming them, which
+  blocks the merge until a rerun passes, instead of skipped or failed. The security job and the
+  tests no longer cancel each other, and issues for findings outside the change are filed only
+  from a run whose other jobs passed.
+- Yulius cleans up stale branches and worktrees itself (SPEC-269, task #255, ADR-0199). The
+  6-hourly hygiene round now removes what loses nothing (branches of merged or closed pull
+  requests, local copies already on GitHub, clean worktrees of finished tasks) instead of only
+  listing it; unmerged work stays for a person. The CI tab's card says this and when the next
+  round runs; Clean up turns the card busy at once ("Removing 3 items… 2 s so far") and then
+  shows what was removed and what was kept and why, on the card, also after a reload. Before,
+  only a short count toast followed a silent wait.
+
+- Laptop onboarding moves a project's operator state into its sandbox (SPEC-271, ADR-0200, task
+  #257). A deploy tool's live state (Quartio-Studio/product's `~/.quartio-operator-20260901`: a
+  SQLite inventory, rollout folders, configs) could not move: `--from-file` takes 64 KiB of one
+  value. `yulius secrets import --state NAME=DIR` now sends a folder (or a `.tar.gz` of one, up to
+  64 MiB packed) as an agent state, sealed per version in the vault and audited as the person; a
+  task restores it into the sandbox home with `secret_state_restore` (through folder handles,
+  modes kept) and saves it back with `secret_state_save`; `yulius secrets state-get` downloads it.
+  Once restored the sandbox's copy is the only writer: a second send is refused (409) unless
+  `--replace-state`. Debug and test builds now optimize the vault's cipher, gzip and yulius-store,
+  so a 50 MiB state takes a tenth of a second to seal instead of ten.
+- All sandboxes together now keep the server a quarter of `yulius.service`'s tasks (SPEC-272,
+  task #260, ADR-0201): `<unit>/sandboxes/pids.max` is three quarters of the service's limit
+  (43 320 on the VM), written at every start and reset to `max` without one, so two busy sandboxes
+  can no longer leave the server unable to fork. A session that aborts at that common limit still
+  says "the sandbox hit its process limit" on kernels with `pids.events.local` (6.13+), and an
+  explicit `YULIUS_SANDBOX_PIDS` above it is logged. Also from #254's review: the end banner keeps
+  keyboard focus on Continue / Try again when the task's details are read again, a knob set through
+  a dotted key (`RUST_TEST_THREADS.value`, `build.jobs`) keeps its value, and a paused run's group
+  that met a limit is no longer removed while its counts matter.
+- Parallel tasks of one sandbox no longer use up its process budget and crash Claude Code (SPEC-268,
+  task #254, ADR-0198). Five quartio-v2 tasks building Rust and running tests with containers
+  shared the sandbox's 8192 tasks (threads count), and a session that could not start a thread
+  aborted ("Stopped (crashed)", exit 134). The default `pids.max` is now a quarter of the host's
+  task table, at most three quarters of `yulius.service`'s own limit (43 320 on the VM's default
+  unit; `YULIUS_SANDBOX_PIDS` still sets it); CI jobs and the Docker engine
+  with its containers each stop at 3/8 of it, so the sessions keep a quarter. A session that still
+  ends while the sandbox refused forks or the OOM killer ran says "the sandbox hit its process
+  limit" or "ran out of memory" in its banner and overview (`limit=pids`/`limit=memory` in the
+  run's exit reason). Repositories without `[resources.env]` get `CARGO_BUILD_JOBS`,
+  `NEXTEST_TEST_THREADS` and `RUST_TEST_THREADS` at their budget, unless they set that knob in
+  `.cargo/config.toml` or `.config/nextest.toml`. Per-container `--pids-limit` joins the
+  unsupported Docker flags.
+- The token form on Settings → Connect your local agent lines up (SPEC-270, task #256). The Scope
+  hint bottom-aligned the name field and a small Create token button to its last line, so the
+  labels and controls sat on different lines. Each field now spans label, control and hint rows
+  (CSS subgrid), the button takes the control row at the fields' height, the scope select has the
+  app's `.select` look, and the form stacks when it is narrower than 600px (a phone, or a window
+  up to about 900px beside the sidebar).
+- A task reads another repository of its project's GitHub owner without asking a person (SPEC-267,
+  ADR-0197, task #253, fixes #803). A task that had to port from Quartio-Studio/product asked a
+  person to give the GitHub App access, because an agent's token reaches only its own repository;
+  the person's Superagent then showed nothing was needed. The new `reference_repo` tool fetches the
+  repository's default branch as the task's owner (after GitHub says they can read it) into a
+  private folder, bundles it and attaches the bundle to the task, which clones it into
+  `<sandbox>/reference/<owner>/<name>`. Another owner, no read access, a disabled owner and a
+  playground are refused, and only then does the agent ask with `needs_you`. Onboarding prompts
+  now fetch the repositories a project refers to and name them in AGENTS.md.
 - The usage-limit step-back and the task home's creation go through handles (SPEC-266, task #252,
   fixes #661). The transcript `<home>/.claude/projects/<slug>/<session>.jsonl` is reached from
   the folder above the home without following links, read only when it is a regular file, and

@@ -12,8 +12,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use yulius_domain::resources::{Budget, Capacity, EnvTemplate, budget_env};
-use yulius_domain::spec_format::{MAX_CONFIG_BYTES, parse_yulius_toml_resources};
+use yulius_domain::resources::{Budget, Capacity, EnvTemplate, budget_env, default_templates};
+use yulius_domain::spec_format::{MAX_CONFIG_BYTES, parse_yulius_toml_resources_table};
 
 use crate::context::App;
 
@@ -46,22 +46,114 @@ pub(crate) struct Reservation {
     _memory: OwnedSemaphorePermit,
 }
 
-/// The `[resources.env]` of the `yulius.toml` in `dir` (a worktree, a checkout); none when the
-/// file is missing, not a regular file, too large or invalid there (the budget's own variables
+/// Where a repository sets a default variable's knob itself, and the key it sets there: the
+/// variable would override it (review round 1), so the default is left out.
+const OWN_SETTINGS: [(&str, &[&str], &str); 3] = [
+    // Cargo's `[env]` sets it only where it is not set already (review round 2).
+    (
+        "RUST_TEST_THREADS",
+        &[".cargo/config.toml", ".cargo/config"],
+        "RUST_TEST_THREADS",
+    ),
+    (
+        "CARGO_BUILD_JOBS",
+        &[".cargo/config.toml", ".cargo/config"],
+        "jobs",
+    ),
+    (
+        "NEXTEST_TEST_THREADS",
+        &[".config/nextest.toml"],
+        "test-threads",
+    ),
+];
+
+/// The dotted key paths a TOML line names, their components unquoted: a table header's
+/// (`[env.RUST_TEST_THREADS]`, `[[x.y]]`), a key's before `=` (`build.jobs = 2`,
+/// `RUST_TEST_THREADS.value = "1"`) and the keys of an inline table in its value
+/// (`build = { jobs = 2 }`, review of SPEC-272). None for a comment or a blank line; a line inside
+/// a multi-line array may name a key that is a string there (a harmless false positive).
+fn key_paths(line: &str) -> Vec<Vec<&str>> {
+    fn split(path: &str) -> Vec<&str> {
+        path.split('.')
+            .map(|part| part.trim().trim_matches(|c| c == '"' || c == '\''))
+            .collect()
+    }
+    let line = line.trim();
+    if let Some(header) = line.strip_prefix('[') {
+        return header
+            .trim_start_matches('[')
+            .split(']')
+            .next()
+            .map(split)
+            .into_iter()
+            .collect();
+    }
+    if line.starts_with('#') {
+        return Vec::new();
+    }
+    let Some((key, value)) = line.split_once('=') else {
+        return Vec::new();
+    };
+    let inline = value
+        .split(['{', ','])
+        .skip(1)
+        .filter_map(|piece| piece.split_once('=').map(|(key, _)| key))
+        .filter(|key| !key.contains(['[', ']', '{', '}']));
+    std::iter::once(key).chain(inline).map(split).collect()
+}
+
+/// Whether `dir` sets the knob of the default variable `name` in its tools' own files: `<key>`
+/// as a component of a key path there ([`key_paths`]: `<key> = …`, `build.<key> = …`,
+/// `<key>.value = …`, `[env.<key>]`, `build = { <key> = … }`, SPEC-272 SHR-005) in one of them
+/// (a regular file of at most [`MAX_CONFIG_BYTES`]).
+fn sets_own(dir: &Path, name: &str) -> bool {
+    let Some((_, files, key)) = OWN_SETTINGS.iter().find(|(n, _, _)| *n == name) else {
+        return false;
+    };
+    files.iter().any(|file| {
+        let path = dir.join(file);
+        let regular = std::fs::symlink_metadata(&path)
+            .is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_CONFIG_BYTES as u64);
+        regular
+            && std::fs::read_to_string(&path).is_ok_and(|text| {
+                text.lines()
+                    .flat_map(key_paths)
+                    .any(|parts| parts.contains(key))
+            })
+    })
+}
+
+/// [`default_templates`] but those whose knob `dir` sets itself ([`sets_own`]).
+fn defaults_for(dir: &Path) -> Vec<EnvTemplate> {
+    default_templates()
+        .into_iter()
+        .filter(|template| !sets_own(dir, &template.name))
+        .collect()
+}
+
+/// The `[resources.env]` of the `yulius.toml` in `dir` (a worktree, a checkout). Without the
+/// file or without the table there, the Rust defaults ([`default_templates`], SPEC-268 PID-007)
+/// but those whose knob the repository sets in its tools' own files;
+/// none when the file is not a regular file, too large or invalid (the budget's own variables
 /// are set anyway).
 #[must_use]
 pub fn repository_templates(dir: &Path) -> Vec<EnvTemplate> {
     let path = dir.join("yulius.toml");
-    let Ok(meta) = std::fs::symlink_metadata(&path) else {
-        return Vec::new();
+    let meta = match std::fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return defaults_for(dir);
+        }
+        Err(_) => return Vec::new(),
     };
     if !meta.is_file() || meta.len() > MAX_CONFIG_BYTES as u64 {
         return Vec::new();
     }
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| parse_yulius_toml_resources(&text).ok())
-        .unwrap_or_default()
+    match std::fs::read_to_string(&path).map(|text| parse_yulius_toml_resources_table(&text)) {
+        Ok(Ok(Some(templates))) => templates,
+        Ok(Ok(None)) => defaults_for(dir),
+        Ok(Err(_)) | Err(_) => Vec::new(),
+    }
 }
 
 impl App {
@@ -117,5 +209,148 @@ impl App {
             _cpus: cpus,
             _memory: memory,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(templates: &[EnvTemplate]) -> Vec<&str> {
+        templates.iter().map(|t| t.name.as_str()).collect()
+    }
+
+    /// SPEC-268 PID-007: no table (or no `yulius.toml`) gives the Rust defaults; a declared table,
+    /// even an empty one, replaces them; an invalid one sets none.
+    #[test]
+    fn a_repository_without_a_mapping_gets_the_rust_defaults()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let defaults = [
+            "CARGO_BUILD_JOBS",
+            "NEXTEST_TEST_THREADS",
+            "RUST_TEST_THREADS",
+        ];
+        assert_eq!(names(&repository_templates(dir.path())), defaults);
+        let toml = dir.path().join("yulius.toml");
+        std::fs::write(&toml, "[docs]\nproduct = \"docs/product.md\"\n")?;
+        assert_eq!(names(&repository_templates(dir.path())), defaults);
+        assert!(
+            repository_templates(dir.path())
+                .iter()
+                .all(|t| t.template == "{cpus}")
+        );
+        // A knob the repository sets in its tools' own files keeps its value (review round 1).
+        std::fs::create_dir_all(dir.path().join(".config"))?;
+        std::fs::write(
+            dir.path().join(".config/nextest.toml"),
+            "[profile.default]\ntest-threads = 1\n",
+        )?;
+        std::fs::create_dir_all(dir.path().join(".cargo"))?;
+        std::fs::write(dir.path().join(".cargo/config.toml"), "[build]\njobs = 2\n")?;
+        assert_eq!(
+            names(&repository_templates(dir.path())),
+            ["RUST_TEST_THREADS"]
+        );
+        // Review round 2: Cargo's `[env]` does not replace a variable that is set.
+        std::fs::write(
+            dir.path().join(".cargo/config.toml"),
+            "[build]\njobs = 2\n\n[env]\nRUST_TEST_THREADS = \"1\"\n",
+        )?;
+        assert!(repository_templates(dir.path()).is_empty());
+        std::fs::write(&toml, "[resources.env]\n")?;
+        assert!(repository_templates(dir.path()).is_empty());
+        std::fs::write(&toml, "[resources.env]\nMAKEFLAGS = \"-j{cpus}\"\n")?;
+        assert_eq!(names(&repository_templates(dir.path())), ["MAKEFLAGS"]);
+        std::fs::write(&toml, "[resources.env]\nPATH = \"/x\"\n")?;
+        assert!(repository_templates(dir.path()).is_empty(), "invalid");
+        std::fs::write(&toml, "[resources.env\n")?;
+        assert!(repository_templates(dir.path()).is_empty(), "unparsable");
+        Ok(())
+    }
+
+    /// SPEC-272 SHR-005 (SPEC-268 review round 3): a knob set through a dotted key or a table
+    /// header keeps its value; a value or a comment naming the key sets nothing.
+    #[test]
+    fn a_knob_set_through_a_dotted_key_keeps_its_value() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(dir.path().join(".cargo"))?;
+        std::fs::create_dir_all(dir.path().join(".config"))?;
+        let cargo = dir.path().join(".cargo/config.toml");
+        let nextest = dir.path().join(".config/nextest.toml");
+        for (file, text, name) in [
+            (
+                &cargo,
+                "[env]\nRUST_TEST_THREADS.value = \"1\"\n",
+                "RUST_TEST_THREADS",
+            ),
+            (
+                &cargo,
+                "[env]\nRUST_TEST_THREADS = { value = \"1\" }\n",
+                "RUST_TEST_THREADS",
+            ),
+            (
+                &cargo,
+                "env.RUST_TEST_THREADS = \"1\"\n",
+                "RUST_TEST_THREADS",
+            ),
+            (
+                &cargo,
+                "[env.RUST_TEST_THREADS]\nvalue = \"1\"\n",
+                "RUST_TEST_THREADS",
+            ),
+            (
+                &cargo,
+                "[env]\n\"RUST_TEST_THREADS\" = \"1\"\n",
+                "RUST_TEST_THREADS",
+            ),
+            // Review: keys of an inline table are keys too.
+            (&cargo, "build = { jobs = 2 }\n", "CARGO_BUILD_JOBS"),
+            (
+                &cargo,
+                "env = { FOO = \"x\", RUST_TEST_THREADS = \"1\" }\n",
+                "RUST_TEST_THREADS",
+            ),
+            (&cargo, "build.jobs = 2\n", "CARGO_BUILD_JOBS"),
+            (&cargo, "[build]\njobs.x = 2\n", "CARGO_BUILD_JOBS"),
+            (
+                &nextest,
+                "profile.default.test-threads = 1\n",
+                "NEXTEST_TEST_THREADS",
+            ),
+            (
+                &nextest,
+                "[profile.ci]\n'test-threads' = 1\n",
+                "NEXTEST_TEST_THREADS",
+            ),
+        ] {
+            std::fs::write(file, text)?;
+            assert!(sets_own(dir.path(), name), "{text}");
+            std::fs::remove_file(file)?;
+        }
+        for (file, text, name) in [
+            (
+                &cargo,
+                "[env]\nFOO = \"RUST_TEST_THREADS\"\n",
+                "RUST_TEST_THREADS",
+            ),
+            (
+                &cargo,
+                "env = { FOO = \"RUST_TEST_THREADS\" }\n",
+                "RUST_TEST_THREADS",
+            ),
+            (&cargo, "# jobs = 2\n", "CARGO_BUILD_JOBS"),
+            (&cargo, "[build]\njobsx = 2\n", "CARGO_BUILD_JOBS"),
+            (
+                &nextest,
+                "[profile.default]\nslow-timeout = \"test-threads\"\n",
+                "NEXTEST_TEST_THREADS",
+            ),
+        ] {
+            std::fs::write(file, text)?;
+            assert!(!sets_own(dir.path(), name), "{text}");
+            std::fs::remove_file(file)?;
+        }
+        Ok(())
     }
 }

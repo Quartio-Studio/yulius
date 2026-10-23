@@ -36,7 +36,7 @@ import { createMouseFilter } from './mousefilter.js';
 import { clipboardKeyAction, osc52Text } from './termkeys.js';
 import { isTyping } from './typing.js';
 import { createFileChecker, createFileLinkProvider, relativeCwd, trackOscFileLinks } from './termlinks.js';
-import { h, icon, setChildren, openMenu } from './dom.js';
+import { h, icon, setChildren, openMenu, keepFocus } from './dom.js';
 import { terminalColors, onThemeChange, token, isPhone, px } from './theme.js';
 import { readJson } from './store.js';
 import { IS_MAC } from './shortcuts.js';
@@ -821,6 +821,13 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     /** The caller's empty-screen message may have changed (e.g. the task's status). */
     refreshEmpty() {
       renderEmpty();
+    },
+    /**
+     * The caller's exit message may have changed (e.g. the task's details arrived, SPEC-268). Every
+     * detail read redraws it: a keyboard user on Continue or Try again stays there (SPEC-272).
+     */
+    refreshBanner() {
+      if (opened && !destroyed) keepFocus(banner, render);
     },
     refit() {
       applySize();

@@ -26,7 +26,11 @@ watching, steering and unblocking.
   browser and editor. Files nothing needs any more (a removed sandbox's worktrees and system
   layer, a done task's build cache) are deleted by themselves after every start and hourly, and
   the superadmin reviews and deletes the rest in Settings → Instance → Leftovers or with
-  `yulius leftovers` (SPEC-215). `yulius onboard`
+  `yulius leftovers` (SPEC-215). Cargo build directories of worktrees and CI checkouts lose what
+  nobody used for two days and stay under a cap, never while a build holds them; when the
+  server's disk runs low Yulius sweeps harder, prunes idle caches and every page shows a warning
+  (SPEC-276). Removing a sandbox asks whether to delete its files permanently or keep them; kept
+  ones are listed with their size for a later deletion. `yulius onboard`
   only uploads: the onboarding task that adapts the repository to the Yulius standards is created
   and started when someone clicks Start onboarding on the sandbox page, or when the person's own
   agent calls `onboarding_start` with an operate token (SPEC-247). It also lays the
@@ -50,6 +54,16 @@ watching, steering and unblocking.
   already usable by agents in `.env` files (values never pass through the agent), and starts
   onboarding with its hand-over (which key is which, where deploys run). The onboarding task uses
   those keys before asking anyone.
+- **Operator state moves with the project** (SPEC-271): a deploy tool's live state on the laptop
+  (an inventory database, rollout folders, configs) is sent as an encrypted agent state
+  (`yulius secrets import --state NAME=DIR`, up to 64 MiB packed), restored by a task into the
+  sandbox home and saved back after each rollout. Once restored, the sandbox's copy is the only
+  writer: a second send is refused unless the person replaces it on purpose, and
+  `yulius secrets state-get` brings the newest copy back.
+- **Project variables** (SPEC-275): a project's non-secret values (regions, environment names,
+  ids, base URLs, contact addresses) are shown in plain on the Secrets page's Variables tab and
+  are in every task's environment. The laptop agent sets them with `yulius vars`, and the secrets
+  import sends a `.env`'s plain values there instead of making them secrets.
 - **Playgrounds**: a team tries Yulius on its own code before it connects GitHub. On a fresh
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server
@@ -201,7 +215,10 @@ watching, steering and unblocking.
   administrator types the project's slug, and on GitHub a ruleset only repository admins bypass
   keeps the production branch out of reach of the agents' own token, which is never a person's
   (onboarding says when that ruleset is missing, and its agent adds it with `production_protect`
-  as the person who started onboarding when they are a repository admin). Agents build and improve CD through pull requests but
+  as the person who started onboarding when they are a repository admin). A task that needs to read
+  another repository of the same GitHub owner gets it with `reference_repo`, fetched as the task's
+  owner, instead of asking a person for access; onboarding fetches the repositories a project
+  refers to first (SPEC-267). Agents build and improve CD through pull requests but
   cannot change what a deploy runs, and they ask a person with `needs_you` for what only a person
   can give (a machine's credentials). Onboarding finds how a project deploys today and writes it
   down this way; "Set up CD with an agent" does the same later, through a task. For Yulius itself
@@ -270,7 +287,11 @@ watching, steering and unblocking.
   for that sandbox (agent secrets):
   every name is listed first, nothing that exists is overwritten, nothing is sent before the
   person types `yes` (or, for their own agent, `--yes` with its operate token, SPEC-256), and no value is ever shown, passed as an argument or written down
-  (SPEC-205). Agents add one themselves from a file they can reach (a key they generated, a key in
+  (SPEC-205). Values that are ordinary text (configuration words such as `production`, host
+  names, e-mail addresses, URLs without credentials), which would mask that text everywhere as
+  `[secret:NAME]`, are skipped and named; values found in the project's tracked files are asked
+  about, or skipped with `--yes`; and the person's agent deletes a secret imported by mistake
+  with `yulius secrets delete NAME` (SPEC-274). Agents add one themselves from a file they can reach (a key they generated, a key in
   `~/.ssh`): Yulius reads the file, so no one sees the value. The new secret has no hosts and no
   `.env` allowance until a person allows them, an existing name is never replaced, and the
   Superagent asks before it does this on an uncontained server (SPEC-211).

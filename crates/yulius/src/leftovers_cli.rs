@@ -169,6 +169,23 @@ fn print_disk(out: &mut dyn Write, view: &LeftoversView) {
         human(view.total_bytes),
         human(view.safe_bytes)
     );
+    // The automatic round deletes the safe ones without anyone running this (SPEC-276 RDA-009).
+    match &view.last_auto {
+        Some(last) => {
+            let _ = writeln!(
+                out,
+                "Last automatic cleanup: {}: {} deleted, {} freed, {} kept, {} failed.",
+                last.ended_at.as_deref().unwrap_or(&last.started_at),
+                last.deleted,
+                human(last.freed),
+                last.kept.len(),
+                last.failed.len()
+            );
+        }
+        None => {
+            let _ = writeln!(out, "No automatic cleanup since the server started.");
+        }
+    }
 }
 
 fn read_key(data_dir: &Path) -> Result<String, String> {

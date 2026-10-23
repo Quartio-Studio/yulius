@@ -60,12 +60,26 @@ the sandbox and the agents at least 20 %, and idle CPU goes to whoever wants it.
 5 nice levels below the agents themselves ([SPEC-053](../.ai/specs/SPEC-053-ci-e2e-timeouts-under-agent-load-give-ci.md),
 [decision 0039](decisions/0039-ci-jobs-get-the-cpu-first.md)).
 
+Tasks (processes and threads) are one budget too, sized from the host (a quarter of its task
+table, at least 8192, at most three quarters of the service's own limit). CI jobs and the engine with its containers each stop at 3/8 of it, so the
+agent sessions keep at least a quarter. A session that still ends while the sandbox was at its
+task or memory limit says so in the task
+([SPEC-268](../.ai/specs/SPEC-268-parallel-tasks-in-one-sandbox-crash-clau.md),
+[decision 0198](decisions/0198-sandbox-task-limits-are-sized-from-the-host-and-leave-sessions-a-reserve.md)).
+All sandboxes together stop at three quarters of the service's limit (`sandboxes/pids.max`), so
+the server keeps a quarter however many are busy; a hit there counts as the sandbox's
+([SPEC-272](../.ai/specs/SPEC-272-all-sandboxes-together-keep-the-server-a.md),
+[decision 0201](decisions/0201-all-sandboxes-share-a-task-limit-below-the-services.md)).
+
 ```mermaid
 flowchart TD
+  UNIT["yulius.service: pids.max (TasksMax)"] --> SRV["server/: yulius serve"]
+  UNIT --> ALL["sandboxes/: pids.max 3/4 of the service's"]
+  ALL --> SBX
   SBX["sandboxes/sandbox: cpu.max, memory.max, pids.max"] --> SYS["system/ weight 100: holder, slirp4netns"]
   SBX --> AGS["agents/ weight 100: agent runs, shells, browsers"]
-  SBX --> CIG["ci/ weight 400: CI jobs"]
-  SBX --> ENG["engine/ weight 100: dockerd, containers below it"]
+  SBX --> CIG["ci/ weight 400, pids.max 3/8: CI jobs"]
+  SBX --> ENG["engine/ weight 100, pids.max 3/8: dockerd, containers below it"]
 ```
 
 The e2e suite (`e2e/`, test-only) shares that CPU with the agents when an agent runs it, and the
@@ -355,11 +369,22 @@ playground the job's files go under an id reserved when the job is created; the 
 when the upload completes, as from a folder (the bundle's refs copied into `origin` with the
 hardened Git, the uncommitted work one commit on the checked-out branch). Into the person's
 existing playground of that name the upload lands as an import does, under `import/<login>/`.
-A removed playground's code goes on request
-([decision 0139](decisions/0139-a-removed-playground-s-code-is-purged-once-nothing-of-it-runs.md)):
-the request is kept in `playground_purges`, and its `origin` and sandbox directory are deleted
-only once no agent run, shell, browser, CI run or other process of its sandbox is left (tried at
-once and with every disk upkeep round); the quota counts only the `origin`s left on disk.
+A removed sandbox's files go on request
+([decision 0139](decisions/0139-a-removed-playground-s-code-is-purged-once-nothing-of-it-runs.md) for a
+playground's code, [decision 0205](decisions/0205-build-caches-are-swept-under-cargo-s-lock-and-a-removed-sandbox-s-files-go-on-request.md)
+for every sandbox): the remove dialog asks whether to delete them or keep them, the request is
+kept in `playground_purges` (every sandbox, the name is historical), and `playground::purge`
+deletes the leftovers engine's "everything of the removed sandbox" item through its guard (no
+10-minute wait for a requested purge) only once no agent run, shell, browser, CI run, deploy or
+other process of its sandbox is left and its holder stopped (tried at once, every 15 s for 10
+minutes, then with every disk round); a playground's quota counts only the `origin`s left on disk.
+
+**Repository hygiene** (SPEC-001 DLV-007, [SPEC-269](../.ai/specs/SPEC-269-i-don-t-understand-the-idea-of-manual-cl.md),
+[decision 0199](decisions/0199-yulius-removes-safe-stale-branches-and-worktrees-itself.md)).
+`yulius-app::ci::hygiene` classifies branches and worktrees with `yulius-domain::ci` and, every 6
+hours, removes each live sandbox's safe ones as `yulius` through the same cleanup a person's Clean
+up or an agent's `repo_cleanup` runs; unmerged work without a pull request stays for a person.
+The kept report (in memory) carries the last cleanup and the next round for the CI tab's card.
 
 **Leftovers** ([SPEC-215](../.ai/specs/SPEC-215-leftovers-are-found-and-cleaned-accurate.md),
 [decision 0170](decisions/0170-leftovers-are-deleted-by-kind-rules-checked-again-at-deletion.md)).
@@ -382,6 +407,32 @@ removal opens each directory from the data directory down with `O_NOFOLLOW` and 
 the opened directory, so a link a sandbox swaps in after the check fails the removal. A tree that stays is made writable directory by directory through `O_PATH` handles, its owner's unreadable directories included ([decision 0179](decisions/0179-a-tree-is-made-writable-through-o-path-handles.md)), and removed again. The automatic round runs at every start and hourly. People reach the
 same engine through `/api/admin/leftovers*` (Settings → Instance) and `yulius leftovers` (the
 loopback `/internal/leftovers*` with the key in `<data>/leftovers-cli.key`).
+
+**Build caches and disk pressure** ([SPEC-276](../.ai/specs/SPEC-276-reclaim-disk-automatically-ask-on-sandbo.md),
+[decision 0205](decisions/0205-build-caches-are-swept-under-cargo-s-lock-and-a-removed-sandbox-s-files-go-on-request.md)).
+The disk upkeep (`yulius-app::disk`) reads the data disk every minute through
+`SystemProbe::disk`; `yulius-domain::sweep` turns it into a level (low from 85 %, critical from
+95 %) and a policy. `yulius-app::pressure` runs a round every 5 minutes, and at once when the level
+rises: `yulius-app::sweep` sweeps every Cargo `target` of the live sandboxes' worktrees and CI
+checkouts (hourly, every round while low) holding each profile's Cargo locks with a non-blocking
+`flock` (a held one, or one that is not a plain file, skips the directory), deleting whole units
+(an `incremental/<crate>-<hash>` directory without a `*-working` session anywhere; a hash's
+`.fingerprint`, `deps` and `build` entries only under the CI claim or for a resting task, since
+tests read `deps/` after Cargo unlocks) unused for 48 h (6 h low, 1 h critical) and then the least
+recently used incremental units above a cap of 5 % of the disk; at critical the upkeep also prunes idle caches until the disk is back at 85 %. A change of
+level is published (`disk.updated`, `GET /api/disk`, a pill on every page) and a rise audited
+(`disk.pressure`).
+
+```mermaid
+flowchart LR
+  P["disk upkeep: every minute"] -->|"SystemProbe::disk"| LV{"level: ok / low ≥ 85 % / critical ≥ 95 %"}
+  LV -->|"change"| EV["disk.updated → pill on every page"]
+  LV -->|"round: 5 min, or the level rose"| SW["sweep Cargo targets (hourly; every round when low)"]
+  SW -->|"flock every Cargo lock; held → skip"| U["whole units unused 48 h / 6 h / 1 h (artifacts: CI claim or resting task), then LRU incremental above the cap"]
+  LV -->|"critical"| IDLE["prune idle tasks' and CI checkouts' caches to 85 %"]
+  LV -->|"low, ≤ every 10 min"| LR["safe leftovers round"]
+  RM["remove sandbox: Delete permanently"] -->|"playground_purges"| PG["purge: guard, then everything of it"]
+```
 
 ```mermaid
 flowchart LR
@@ -939,7 +990,13 @@ the `yulius login` token, else the `yulius remote login` one: it reads a dotenv 
 hidden prompts or whole files (`--from-file NAME=PATH`), lists the caller's existing team titles
 or a sandbox's agent names, classifies each secret, asks for `yes` at `/dev/tty` (unless `--yes`
 runs with an `operate` token, [decision 0194](decisions/0194-an-operate-token-confirms-for-its-person-s-laptop-onboarding.md))
-and posts the new ones once each (no retry). Values stay in `Secret` (redacted `Debug`,
+and posts the new ones once each (no retry). Agent values that are ordinary text
+(`yulius_domain::vault::ordinary_text`: configuration words, hosts, e-mail addresses, URLs without
+credentials) are skipped, and values found in the tracked files of the project's checkout
+(`repo_values::find_in_checkout`, in memory) are asked about or, with `--yes`, skipped
+([SPEC-274](../.ai/specs/SPEC-274-agent-secrets-refuse-plain-words-that-ma.md),
+[decision 0204](decisions/0204-secrets-import-refuses-ordinary-text-and-an-operate-token-deletes.md));
+`yulius secrets delete NAME` calls the remote tool `secret_delete`. Values stay in `Secret` (redacted `Debug`,
 wiped on drop) and never reach its output
 ([SPEC-205](../.ai/specs/SPEC-205-to-cli-add-and-option-to-import-secrets.md),
 [decision 0163](decisions/0163-the-cli-imports-secrets-after-a-typed-yes-and-shows-no-value.md)).
@@ -951,6 +1008,7 @@ sequenceDiagram
     participant App as Yulius (vault API)
     P->>C: --to agent .env (or stdin, or hidden prompts)
     C->>App: GET /api/sandboxes, GET agent-secrets (names only)
+    C->>C: ordinary text skipped; values in the project's tracked files asked about
     C-->>P: names: new / exists (skipped) / skipped with reason
     P->>C: yes at /dev/tty (or --yes with an operate token)
     C->>App: POST agent-secrets per new name (hosts [], once, audited by name)
@@ -1133,11 +1191,18 @@ Vidoc is an optional instance service, like Jev
   It reads the JSON findings back. It fails on open critical or high ones, and on open medium ones
   in the lines the branch changed (`git diff -U0`, 3 lines of slack; SPEC-217, ADR-0172). It prints
   low ones in the change for the agent to decide, and fingerprints the rest as outside the change.
+- **Repeats and gaps.** Each request lists the `[[ignore]]` entries of its files as accepted risks.
+  Outside the changed lines an entry also matches a finding in its `function`, near its `line`, or
+  one Vidoc answers as `accepted`; open findings name their nearest ignore. An answer cut at
+  `max_tokens` halves its chunk (3 levels); a chunk still unreviewed (5xx, timeouts, unreadable,
+  the deadline) leaves the scan incomplete, exit 3, and in CI `$YULIUS_CI_INCOMPLETE_CODE` with a
+  `::yulius-incomplete` line (SPEC-273, ADR-0202).
 - **The default pipeline.** `App::ci_gate` and `ci_verified_gate` add the built-in `security` job
   (`yulius-domain` `ci::with_security_job`: `yulius security-scan --ci`, granted `VIDOC_API_KEY`)
   when the sandbox's applied agent secrets have that key and its CI does not scan already.
-- **Issues.** When a `security` job ends, `ci/findings.rs` reads its `::yulius-finding` lines. On a
-  pull request head, it files each new fingerprint (table `security_findings`, migration 0036) and
+- **Issues.** When a run with a `security` job ends (`ci_follow_run_findings`), `ci/findings.rs`
+  reads that job's `::yulius-finding` lines. On a pull request head whose other jobs passed or were
+  skipped (SPEC-273), it files each new fingerprint (table `security_findings`, migration 0036) and
   reopens the issue of one reported again. On a pull request or on the integration branch, it
   closes the issues whose fingerprint no line of the file on `origin/<integration>` has any more
   (`GitHubPort::create_issue`, `set_issue_state`).
@@ -1152,8 +1217,8 @@ flowchart LR
   AG["Agent: yulius security-scan, scripts/dev security"] -->|"x-api-key: yulius-secret-VIDOC_API_KEY"| PX
   CI["CI job security (built in when the key applies), granted VIDOC_API_KEY: --ci"] -->|"the same placeholder"| PX
   PX -->|"the key toward model.vidocsecurity.com only"| V["Vidoc /v1/messages, vidoc-1"]
-  V -->|"JSON findings: exit 0, 1, or 2 when not run"| AG
-  CI -->|"::yulius-finding lines: outside the change"| ISS["ci/findings.rs: file, reopen, close"]
+  V -->|"JSON findings: exit 0, 1, 2 when not run, 3 when incomplete"| AG
+  CI -->|"::yulius-finding lines: outside the change, at the run's end"| ISS["ci/findings.rs: file (other jobs passed), reopen, close"]
   ISS -->|"issues, once per fingerprint"| GH["GitHub issues"]
   APP -->|"key set: briefing and onboarding add the scan rule"| BOOT["infra bootstrap"]
 ```
@@ -1259,6 +1324,30 @@ flowchart LR
   ONB -->|"production_protect: owner's admin token adds the ruleset"| GH
 ```
 
+That token reaches only the sandbox's own repository. To read another repository of the same
+GitHub owner (an earlier version to port from, a shared library), an agent calls `reference_repo`
+([ADR-0197](decisions/0197-tasks-read-other-repositories-of-their-owner-through-a-bundle.md),
+[SPEC-267](../.ai/specs/SPEC-267-i-got-this-such-things-should-usually-ha.md)):
+`App::tool_reference_repo` checks with the task owner's user token that they can read it
+(`repo_access`), and `GitPort::bundle_branch` fetches its default branch with that token into a
+fresh bare repository under `<data>/tmp` and writes a bundle of it. `App::attach_server_file`
+streams the bundle into the task's attachments through the upload path's handles (ADR-0174), the
+fetch folder is removed, and the agent clones the bundle itself into
+`<sandbox>/reference/<owner>/<name>`, outside every worktree. Git never runs on the host in a folder
+an agent writes, and the agent never holds the person's token. Another owner, the sandbox's own
+repository, a playground, a disabled or unsigned owner and no read access are refused with
+`needs_you`; onboarding fetches the repositories a project refers to first.
+
+```mermaid
+flowchart LR
+  AG["agent"] -->|"reference_repo owner/name"| APP["Yulius"]
+  APP -->|"repo_access, owner's token"| GH["GitHub"]
+  APP -->|"bundle_branch, owner's token"| TMP["data/tmp/reference-*: bare fetch + bundle"]
+  TMP -->|"attach_server_file (handles)"| ATT["sandbox attachments/tasks/task"]
+  AG -->|"git clone bundle"| REF["sandbox reference/owner/name"]
+  ATT --> REF
+```
+
 ## Keys in .env
 
 A project keeps its keys in a `.env` that Git ignores, beside a tracked `.env.example` that names
@@ -1283,6 +1372,72 @@ sequenceDiagram
     G-->>App: ignored, untracked
     App->>W: .env gets STRIPE_KEY=value, .env.example gets STRIPE_KEY=
     App-->>A: copied (no value in the result)
+```
+
+## Agent states
+
+A project's operator state (a deploy tool's inventory database, rollout folders, configs) moves
+from a laptop as an *agent state*
+([SPEC-271](../.ai/specs/SPEC-271-laptop-onboarding-move-a-project-s-opera.md),
+[decision 0200](decisions/0200-operator-state-is-a-sealed-agent-state-with-one-writer.md)).
+`yulius secrets import --state NAME=DIR` (`yulius-import`'s `states`) packs the folder into a
+gzip tar with each entry's permission bits, refusing links and special files, and sends it with
+`PUT /api/sandboxes/{sid}/agent-states/{name}` under ADR-0194's rules (typed `yes`, or `--yes`
+with the operate token). The server (`vault/states.rs`) checks it (files and folders only,
+relative paths, ≤ 64 MiB packed, ≤ 512 MiB and 20 000 entries unpacked), seals it as one envelope
+bound to the row and version (`agent_states`, schema 42) and audits `vault.state.*` without
+content; at most two states move at once (`UploadState::states`). A task's
+`secret_state_restore` opens the target's parent from the canonical sandbox folder's `home`
+without links (creating missing folders), unpacks into a fresh sibling folder and renames it into
+place; `secret_state_save` packs the folder back through handles as the next version with a
+compare-and-set on the version. Once restored, `restored_path` is the only writer: an import over
+it is refused unless `replace=true`, which makes that copy stale until a restore replaces it.
+
+```mermaid
+sequenceDiagram
+    participant L as Laptop agent (yulius CLI)
+    participant App as Yulius (vault/states.rs)
+    participant DB as agent_states (sealed archive)
+    participant T as Task agent
+    participant H as Sandbox home
+    L->>App: PUT agent-states/OPS (packed folder, operate token)
+    App->>DB: check, seal (row id + version), version 1, audit vault.state.import
+    T->>App: secret_state_restore(OPS, ~/.ops)
+    App->>H: unpack into .yulius-state-x through handles, rename to ~/.ops
+    App->>DB: restored_path ~/.ops (the writer)
+    L->>App: PUT agent-states/OPS again
+    App-->>L: 409: restored at ~/.ops (only with replace=true)
+    T->>App: secret_state_save(OPS) after a rollout
+    App->>DB: version 2 (compare-and-set), audit vault.state.save
+    L->>App: GET agent-states/OPS/archive (state-get)
+```
+
+## Project variables
+
+A project's non-secret values (regions, environment names, account and project ids, base URLs,
+contact addresses) are *project variables*
+([SPEC-275](../.ai/specs/SPEC-275-project-variables-non-secret-values-regi.md),
+[decision 0203](decisions/0203-project-variables-are-plain-per-project-values-in-task-runs.md)):
+plain rows of `project_variables` (schema 43), not secrets, so they are neither sealed, redacted nor
+proxied. `App::set_project_variables` (`variables.rs`) checks a batch (agent secret names, one-line
+values ≤ 4 KiB, ≤ 200 per project), refuses a name that is an agent secret of the project, writes
+it in one transaction and audits `variable.*` without values; the Secrets page's Variables tab,
+`/api/sandboxes/{sid}/variables` and the remote tools (`variables_list`, `variables_set`,
+`variable_delete`, behind `yulius vars`) all go through it. A task run's environment starts with
+them (`supervisor.rs`), so `base_env` and the agent secret placeholders win over a variable of the
+same name; `secrets_list` names them. `yulius_domain::vault::plain` tells a plain value from a
+secret (shorter than 8 characters and plain-shaped, or the ordinary text of SPEC-274's
+`ordinary_text`, never under a credential-like name), and `yulius secrets import --to agent` sends such entries of a
+`.env` as variables.
+
+```mermaid
+flowchart LR
+    E[".env on the laptop"] --> I["yulius secrets import (plain rule)"]
+    I -->|keys| S["agent secrets (sealed, placeholders, proxy)"]
+    I -->|plain values| V["project_variables"]
+    C["yulius vars / variables_set / Variables tab"] --> V
+    V --> R["task run environment (first)"]
+    S --> R
 ```
 
 ## Terminal input
@@ -1617,8 +1772,11 @@ that failed early in a long job stays diagnosable
 
 A job's exit decides its state in `App::ci_job` (`crates/yulius-app/src/ci/exec.rs`):
 0 is passed, the skip code `yulius_domain::ci::SKIP_EXIT_CODE` (78, given to every job as
-`YULIUS_CI_SKIP_CODE`) is skipped, any other exit or a signal is failed; a timeout, the output
-limit, a lost host or a refused start is error. `yulius_domain::ci::aggregate` makes the run's
+`YULIUS_CI_SKIP_CODE`) is skipped, the incomplete code `INCOMPLETE_EXIT_CODE` (75,
+`YULIUS_CI_INCOMPLETE_CODE`) is error with the reason `incomplete: <its ::yulius-incomplete
+line>` (ADR-0202), any other exit or a signal is failed; a timeout, the output limit, a lost host
+or a refused start is error. A failed job cancels the run's other jobs (fail-fast), except that the
+`security` job neither cancels nor is cancelled by them (SPEC-273). `yulius_domain::ci::aggregate` makes the run's
 state, where skipped counts like passed, so a run is never skipped and the merge gate stays one
 rule; the commit status counts the skipped jobs
 ([SPEC-162](../.ai/specs/SPEC-162-all-security-checks-kept-getting-yulius.md),
@@ -1632,6 +1790,7 @@ the run ends, after every job's task. A published status resets the run's retry 
 flowchart LR
   EXIT["job's process ends"] -->|"exit 0"| P["passed"]
   EXIT -->|"exit $YULIUS_CI_SKIP_CODE (78)"| S["skipped: checked nothing"]
+  EXIT -->|"exit $YULIUS_CI_INCOMPLETE_CODE (75)"| E
   EXIT -->|"other exit or a signal"| F["failed"]
   EXIT -->|"timeout, output limit, lost host"| E["error"]
   P --> RUN["run: passed when every job passed or was skipped"]

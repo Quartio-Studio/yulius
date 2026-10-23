@@ -2,7 +2,7 @@
 //! the current directory, for every project's agents and CI jobs. The scanner is one stdlib-only
 //! Python file, `scripts/vidoc_scan.py`, embedded here so each instance ships the scanner of its
 //! release (ADR-0157); this process becomes `python3 -I -c <scanner> <args>`, so signals and the
-//! exit code (0 passed, 1 failed, 2 not run) are the scanner's own.
+//! exit code (0 passed, 1 failed, 2 not run, 3 incomplete) are the scanner's own.
 
 use std::ffi::OsString;
 use std::process::{Command, ExitCode};

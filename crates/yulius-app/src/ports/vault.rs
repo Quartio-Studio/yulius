@@ -347,3 +347,75 @@ pub trait VaultStore: Send + Sync {
     /// The newest vault audit entries (`vault.*`), newest first.
     async fn vault_audit(&self, limit: u32) -> AppResult<Vec<VaultAuditEntry>>;
 }
+
+/// Where and from which version an agent state was restored (SPEC-271 OPS-001): that copy is
+/// the one written to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateRestore {
+    /// The folder in the sandbox home, as `~/…`.
+    pub path: String,
+    /// The version it was restored from (or saved as).
+    pub version: u32,
+    /// The task that restored or saved it last.
+    pub by: String,
+    /// When.
+    pub at: Timestamp,
+}
+
+/// An agent state of a sandbox without its archive (SPEC-271 OPS-001, ADR-0200).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentStateRecord {
+    /// Row id (part of the envelope's associated data).
+    pub id: String,
+    /// Its sandbox.
+    pub sandbox_id: SandboxId,
+    /// Its name (an agent secret name).
+    pub name: String,
+    /// What it is (agents read it), never content.
+    pub description: String,
+    /// 1 at import, +1 on each replace or save (part of the envelope's associated data).
+    pub version: u32,
+    /// Packed size.
+    pub bytes: u64,
+    /// Files in it.
+    pub files: u64,
+    /// Who imported it first (audit actor).
+    pub created_by: String,
+    /// When.
+    pub created_at: Timestamp,
+    /// Who wrote its newest version.
+    pub updated_by: String,
+    /// When.
+    pub updated_at: Timestamp,
+    /// The sandbox's copy, once restored.
+    pub restored: Option<StateRestore>,
+}
+
+/// Agent state persistence (SPEC-271): one sealed archive per sandbox and name.
+#[async_trait]
+pub trait AgentStateStore: Send + Sync {
+    /// The states of `sandbox`, by name, without archives.
+    async fn agent_states(&self, sandbox: &SandboxId) -> AppResult<Vec<AgentStateRecord>>;
+    /// One state with its sealed archive.
+    async fn agent_state(
+        &self,
+        sandbox: &SandboxId,
+        name: &str,
+    ) -> AppResult<Option<(AgentStateRecord, Envelope)>>;
+    /// Writes `record` with `archive`: inserted when `expect` is `None` (`false` when the name is
+    /// taken), else replacing the row `record.id` only while its version and restored copy are
+    /// still those of `expect`, the record as read (`false` otherwise: another writer won).
+    async fn agent_state_put(
+        &self,
+        record: &AgentStateRecord,
+        archive: Envelope,
+        expect: Option<&AgentStateRecord>,
+    ) -> AppResult<bool>;
+    /// Records where the state was restored, only while its version and restored copy are still
+    /// those of `expect`, the record as read.
+    async fn agent_state_restored(
+        &self,
+        expect: &AgentStateRecord,
+        restore: &StateRestore,
+    ) -> AppResult<bool>;
+}

@@ -177,6 +177,9 @@ const EGRESS_CA_META: &str = "egress-ca";
 /// Associated data of the egress CA's envelope.
 const EGRESS_CA_AAD: &[u8] = b"vault-meta|egress-ca";
 
+/// What `secrets_list` says about project variables (SPEC-275 VAR-008).
+const VARIABLES_HOW: &str = "variables are the project's non-secret values (regions, environment names, account and project ids, base URLs, contact addresses), in plain: every task run of the project has each as the environment variable NAME (a session started before a change still has the old value). People change them on the Secrets page's Variables tab; never put a key, token or password there, and never make a plain value an agent secret.";
+
 impl App {
     /// The egress proxy's CA material (sealed in the vault): loaded, or made by `generate` and
     /// stored on first use (a concurrent first use keeps the stored one).
@@ -657,6 +660,17 @@ impl App {
                 })
             })
             .collect();
+        // Folders of operator state sent from a laptop (SPEC-271 OPS-007): names, never content.
+        let states = self.states_for_list(&caller.sandbox).await?;
+        // Non-secret values, in plain (SPEC-275 VAR-008).
+        let variables: Vec<Value> = self
+            .deps
+            .store
+            .project_variables(&caller.sandbox)
+            .await?
+            .into_iter()
+            .map(|v| json!({"name": v.name, "value": v.value, "description": v.description}))
+            .collect();
         if caller.task.is_none() {
             let sandbox = self
                 .deps
@@ -666,6 +680,8 @@ impl App {
                 .ok_or(AppError::NotFound)?;
             return Ok(json!({
                 "secrets": secrets,
+                "states": states,
+                "variables": variables,
                 "how_to_use": [
                     "This session uses the project's agent secrets as a task's agent does, without seeing them: Yulius' proxy adds a secret to requests for its bound hosts (call them normally, for example curl https://<host>/...), and in code or CLIs the environment variable NAME holds the placeholder yulius-secret-NAME (for example Authorization: Bearer $NAME), which the proxy replaces for the bound hosts only. Several secrets on one host and header: choose with the request header X-Yulius-Secret: NAME. Secrets added after this session started have no variable yet: write the placeholder.",
                     "A secret with no hosts (or not the one you need) is sent nowhere yet: work out the service's API host from its description and documentation and ask for it with secret_request_hosts; a person allows it on the Secrets page (they may be the person in front of you: give them the link). For a secret with auto_allow: true its creator let agents set it up: the hosts you ask for are bound at once, so ask only for the service's own documented hosts.",
@@ -673,12 +689,16 @@ impl App {
                     "To check that a value someone holds (a file, a key they pasted into a file) is the one in the vault, compute its SHA-256 in a shell without printing the value (for example sha256sum key.pem, or printf %s \"$VAR\" | sha256sum) and call secret_verify with the secret's name and that hash. It says whether it matches exactly, only without a final line break, or with its line breaks written as literal \\n (an agent secret never spans lines, so a multi-line key is stored that way), and on a match how many lines the value stands for.",
                     "A secret that is in a file you can reach (a key in ~/.ssh, a key or token you generated without printing it) becomes a new agent secret with secret_create_from_file: Yulius reads the file, so neither you nor anyone sees the value. Never print the file or ask a person to paste it. The new secret has no hosts and no .env allowance until a person allows them.",
                     format!("A person adds, rotates and reveals agent secrets (with their two-factor code) and allows the hosts and .env copies asked for on the Secrets page: {}", self.agent_secrets_link(&sandbox.slug)),
-                    "You never receive values: anything that would show one (command output, files, tool results, web pages) shows [secret:NAME] instead. Do not try to print, copy or move secret values yourself."
+                    "You never receive values: anything that would show one (command output, files, tool results, web pages) shows [secret:NAME] instead. Do not try to print, copy or move secret values yourself.",
+                    "states are folders of operator state (a deploy tool's inventory, rollout folders, configs) a person sent from their computer with yulius secrets import --state: a task restores one into the sandbox home with secret_state_restore and saves it back with secret_state_save; restored_path is the copy written to. The person gets the newest saved copy with yulius secrets state-get NAME.",
+                    VARIABLES_HOW
                 ],
             }));
         }
         Ok(json!({
             "secrets": secrets,
+            "states": states,
+            "variables": variables,
             "how_to_use": [
                 "A secret with no hosts (or not the one you need) is sent nowhere yet: work out the service's API or sign-in host from its description and the service's documentation, then ask for it with secret_request_hosts; a person allows it. Hosts in requested_hosts already wait for them. For a secret with auto_allow: true its creator let agents set it up: the hosts you ask for are bound at once, so ask only for the service's own documented hosts.",
                 "HTTP APIs: call the bound host normally (for example curl https://<host>/...). Yulius' proxy adds the credential to requests for that host only; you never send or see it.",
@@ -687,7 +707,9 @@ impl App {
                 "Website sign-in in the project browser: browser_fill_secret types the value into a field of a page on a bound host; a login's user name is in the description (older secrets may also store a user name or a two-factor seed: field username or totp).",
                 "Code that runs outside Yulius' proxy (a deployed app, a deploy script) reads its keys from the project's git-ignored .env, named without values in the tracked .env.example. Put an agent secret there with secret_copy_to_env, never by writing or editing the file: you would write [secret:NAME], not the value. A person allows each secret once (env_files: allowed); until then the call asks them.",
                 "A secret that is in a file you can reach (a key in ~/.ssh, a key or token you generated without printing it) becomes a new agent secret with secret_create_from_file: Yulius reads the file, so neither you nor anyone sees the value. Never print the file or ask a person to paste it. The new secret has no hosts and no .env allowance until a person allows them.",
-                "You never receive values: anything that would show one (command output, files, tool results, web pages) shows [secret:NAME] instead. Do not try to print, copy or move secret values yourself."
+                "You never receive values: anything that would show one (command output, files, tool results, web pages) shows [secret:NAME] instead. Do not try to print, copy or move secret values yourself.",
+                "states are folders of operator state (a deploy tool's inventory, rollout folders, configs) the person sent from their computer. Restore one where the project's tools expect it, in your home (~/…), with secret_state_restore; once restored_path is set, that folder is the copy written to and later tasks use it as it is. Never print its files or copy them into the conversation, and call secret_state_save after each change (a rollout) so the vault keeps the newest copy.",
+                VARIABLES_HOW
             ],
         }))
     }
@@ -921,6 +943,17 @@ impl EgressPolicy for App {
                 };
             }
         };
+        // A value with a control character (stored before `check_agent_value` refused them) could
+        // add headers or split the request line: it is never sent.
+        let (bound, unfit): (Vec<_>, Vec<_>) = bound
+            .into_iter()
+            .partition(|(_, payload)| transportable(payload));
+        for (record, _) in &unfit {
+            tracing::warn!(
+                secret = %record.name,
+                "an agent secret holding a control character was not sent; a person replaces its value"
+            );
+        }
         let resolve = |name: &str| -> Option<String> {
             bound
                 .iter()
@@ -1025,9 +1058,38 @@ impl EgressPolicy for App {
     }
 }
 
+/// Whether a secret's value and user name can go into a proxied request: no line breaks or other
+/// control characters, which could add headers or split the request line.
+fn transportable(payload: &AgentPayload) -> bool {
+    let clean = |text: &str| !text.chars().any(char::is_control);
+    clean(&payload.value) && payload.username.as_deref().is_none_or(clean)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Vidoc (CI scan of SPEC-271's change): a stored value or user name with a line break or
+    /// another control character (one stored before `check_agent_value` refused them) never goes
+    /// into a proxied request, where it could add headers or split the request line.
+    #[test]
+    fn values_with_control_characters_are_never_sent() {
+        let payload = |username: Option<&str>, value: &str| AgentPayload {
+            username: username.map(str::to_owned),
+            value: value.to_owned(),
+            totp: None,
+        };
+        assert!(transportable(&payload(None, "sk_live_abcdefgh")));
+        assert!(transportable(&payload(Some("deploy"), "sk_live_abcdefgh")));
+        for (username, value) in [
+            (None, "sk_live\r\nX-Evil: 1"),
+            (None, "line\nbreak"),
+            (None, "nul\0byte"),
+            (Some("user\r\nX: y"), "sk_live_abcdefgh"),
+        ] {
+            assert!(!transportable(&payload(username, value)), "{value:?}");
+        }
+    }
 
     #[test]
     fn page_hosts_and_authorities() {

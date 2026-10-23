@@ -182,9 +182,9 @@ async fn serve(
                 Ok(HubFrame::Snapshot { seq, bytes }) => send_binary(socket, KIND_SNAPSHOT, seq, &bytes).await?,
                 Ok(HubFrame::Notice(text)) => send_json(socket, &TerminalServerMsg::Notice { text }).await?,
                 Ok(HubFrame::State) => send_json(socket, &terminal.state()).await?,
-                Ok(HubFrame::Exit { status, code }) => {
+                Ok(HubFrame::Exit { status, code, cause }) => {
                     send_json(socket, &terminal.state()).await?;
-                    send_json(socket, &TerminalServerMsg::Exit { status, code }).await?;
+                    send_json(socket, &TerminalServerMsg::Exit { status, code, cause }).await?;
                 }
                 Err(RecvError::Lagged(_)) => {
                     let _ = socket.send(Message::Close(Some(CloseFrame {

@@ -1077,6 +1077,102 @@ async fn secrets_are_managed_by_name_and_binding_only() -> TestResult {
     Ok(())
 }
 
+/// SPEC-274 PLW-004: the person's agent deletes a project's own agent secret by name with an
+/// operate token and the right the Secrets page needs; refused for a read token, a reader and a
+/// global secret; audited with the token and the name, never the value.
+#[tokio::test]
+async fn an_operate_token_deletes_a_projects_agent_secret() -> TestResult {
+    use yulius_app::ports::vault::VaultStore as _;
+    const VALUE: &str = "production";
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, browser, alice) = person(&w, "alice").await?;
+    let (_, _, bob) = person(&w, "bob").await?;
+    let (root, _) = w.user("root", true).await?;
+    let root_browser = w.browser(&root).await?;
+    w.grant("alice", "acme/shop", "admin");
+    w.grant("bob", "acme/shop", "pull");
+    w.grant("root", "acme/shop", "admin");
+    for (creds, body) in [
+        (
+            &browser,
+            json!({"name": "SHOP_ENVIRONMENT", "value": "production-like-1"}),
+        ),
+        (
+            &root_browser,
+            json!({"scope": "instance", "name": "GLOBAL_KEY", "value": "global-value-123"}),
+        ),
+        (
+            &browser,
+            json!({"scope": "personal", "name": "MY_KEY", "value": "personal-value-01234"}),
+        ),
+    ] {
+        let created = call(
+            &w.h.router,
+            Method::POST,
+            "/api/sandboxes/s1/agent-secrets",
+            Some(body),
+            creds,
+        )
+        .await?;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    }
+    let read = make_token(&w, &browser, "reader", "read").await?;
+    let read = bearer(text(&read["token"]));
+    let shop = |secret: &str| json!({"project": "acme/shop", "secret": secret});
+
+    let (error, said, _) = remote(&w, &read, "secret_delete", shop("SHOP_ENVIRONMENT")).await?;
+    assert!(error && said.contains("read-only"), "{said}");
+    let (error, said, _) = remote(&w, &bob, "secret_delete", shop("SHOP_ENVIRONMENT")).await?;
+    assert!(error && said.contains("write access"), "{said}");
+    let (error, said, _) = remote(&w, &alice, "secret_delete", shop("GLOBAL_KEY")).await?;
+    assert!(
+        error && said.contains("global") && said.contains("Secrets page"),
+        "{said}"
+    );
+    let (error, said, _) = remote(&w, &alice, "secret_delete", shop("MY_KEY")).await?;
+    assert!(
+        error && said.contains("personal") && said.contains("Secrets page"),
+        "{said}"
+    );
+    let (error, said, _) = remote(&w, &alice, "secret_delete", shop("NOPE")).await?;
+    assert!(error && said.contains("no agent secret NOPE"), "{said}");
+
+    let (error, said, deleted) =
+        remote(&w, &alice, "secret_delete", shop("SHOP_ENVIRONMENT")).await?;
+    assert!(!error, "{said}");
+    assert_eq!(deleted["deleted"], "SHOP_ENVIRONMENT", "{deleted}");
+    assert!(!deleted.to_string().contains(VALUE), "{deleted}");
+    let (_, said, _) = remote(&w, &alice, "secrets_list", json!({"project": "acme/shop"})).await?;
+    assert!(
+        !said.contains("SHOP_ENVIRONMENT") && said.contains("GLOBAL_KEY"),
+        "{said}"
+    );
+
+    let entries = audits(&w, "s1").await?;
+    let tool = entries
+        .iter()
+        .find(|(action, _, detail)| {
+            action == "remote.tool" && detail.contains("secret_delete") && detail.contains("true")
+        })
+        .ok_or("the delete is audited with its token")?;
+    assert_eq!(tool.1, "remote:alice");
+    let all = format!("{entries:?}");
+    assert!(!all.contains("production-like-1"), "{all}");
+    let vault =
+        w.h.store
+            .vault_audit(50)
+            .await?
+            .into_iter()
+            .find(|e| e.action == "vault.agent.delete")
+            .ok_or("vault.agent.delete")?;
+    assert!(
+        format!("{vault:?}").contains("SHOP_ENVIRONMENT"),
+        "{vault:?}"
+    );
+    Ok(())
+}
+
 /// Runs the `yulius` binary with `args` (configuration under `home`, `stdin` piped); returns its
 /// exit code, stdout and stderr.
 async fn yulius_cli(
@@ -1205,6 +1301,58 @@ async fn the_cli_drives_the_remote_mcp_with_a_stored_token() -> TestResult {
     assert!(err.contains("wrong or revoked"), "{err}");
     let (code, out, _) = yulius_cli(home, &["remote", "logout"], "").await?;
     assert_eq!(code, Some(0), "{out}");
+    Ok(())
+}
+
+/// SPEC-274 PLW-005: `yulius secrets delete NAME` deletes the project's agent secret through
+/// `secret_delete` with the stored operate token; an unknown name is the tool's refusal (exit 1).
+#[tokio::test]
+async fn the_cli_deletes_an_agent_secret_by_name() -> TestResult {
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, browser, alice) = person(&w, "alice").await?;
+    w.grant("alice", "acme/shop", "admin");
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "OPS_EMAIL", "value": "ops@example.com"})),
+        &browser,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let served = support::serve(w.h.router.clone()).await?;
+    let url = format!("http://{}", served.addr);
+    let home = tempfile::tempdir()?;
+    let home = home.path();
+    let token = alice.bearer.clone().ok_or("token")?;
+    let (code, out, err) = yulius_cli(
+        home,
+        &["remote", "login", &url, "--token-stdin"],
+        &format!("{token}\n"),
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+
+    let (code, out, err) = yulius_cli(
+        home,
+        &["secrets", "delete", "OPS_EMAIL", "-p", "acme/shop"],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(out.contains("OPS_EMAIL"), "{out}");
+    assert!(!out.contains("ops@example.com"), "{out}");
+    let (_, said, _) = remote(&w, &alice, "secrets_list", json!({"project": "acme/shop"})).await?;
+    assert!(!said.contains("OPS_EMAIL"), "{said}");
+    let (code, _, err) = yulius_cli(
+        home,
+        &["secrets", "delete", "OPS_EMAIL", "-p", "acme/shop"],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(1), "{err}");
+    assert!(err.contains("no agent secret OPS_EMAIL"), "{err}");
     Ok(())
 }
 
@@ -2453,5 +2601,581 @@ async fn a_hand_over_overtaken_by_another_start_is_refused() -> TestResult {
     )
     .await?;
     assert!(error && said.contains("already started"), "{said}");
+    Ok(())
+}
+
+/// SPEC-271 (AC1..AC4): with only the operate token made for their agent, a person's laptop agent
+/// sends the project's operator state (a folder with a 50 MiB file, nested folders and modes) with
+/// `yulius secrets import --state`, showing no content; a task restores it into the sandbox home;
+/// the laptop's second send is then refused, so the two copies never fork; the task's saved copy
+/// comes back with `yulius secrets state-get`, and `--replace-state` overwrites it on purpose.
+#[tokio::test]
+async fn a_laptops_operator_state_moves_into_the_sandbox_with_one_writer() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+    use yulius_app::ports::vault::VaultStore as _;
+    use yulius_domain::task::TaskStatus;
+
+    const TASK_TOKEN: &str = "state-move-task-token-s1-0123456789";
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (alice, _) = w.user("alice", false).await?;
+    w.grant("alice", "acme/shop", "admin");
+    let browser = w.browser(&alice).await?;
+    let token =
+        text(&make_token(&w, &browser, "laptop agent", "operate").await?["token"]).to_owned();
+    let served = support::serve(w.h.router.clone()).await?;
+    let url = format!("http://{}", served.addr);
+    let laptop = tempfile::tempdir()?;
+    let laptop = laptop.path();
+    let (code, out, err) = yulius_cli(
+        laptop,
+        &["remote", "login", &url, "--token-stdin"],
+        &format!("{token}\n"),
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+
+    // The Deployer's state on the laptop.
+    let ops = laptop.join(".quartio-operator-20260901");
+    std::fs::create_dir_all(ops.join("rollouts/2026-10-01"))?;
+    std::fs::write(
+        ops.join("inventory.sqlite"),
+        b"SQLite format 3\0pinned-host-key-v1",
+    )?;
+    std::fs::set_permissions(
+        ops.join("inventory.sqlite"),
+        std::fs::Permissions::from_mode(0o600),
+    )?;
+    std::fs::write(
+        ops.join("rollouts/2026-10-01/operator.json"),
+        b"{\"step\": 1}",
+    )?;
+    let mut big = Vec::with_capacity(50 << 20);
+    let mut x: u64 = 0x2545_f491_4f6c_dd1d;
+    while big.len() < 50 << 20 {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        big.extend_from_slice(&x.to_le_bytes());
+    }
+    std::fs::write(ops.join("rollouts/2026-10-01/bundle.bin"), &big)?;
+    std::fs::set_permissions(
+        ops.join("rollouts/2026-10-01"),
+        std::fs::Permissions::from_mode(0o755),
+    )?;
+    let send = |replace: bool| {
+        let mut args = vec![
+            "secrets",
+            "import",
+            "--to",
+            "agent",
+            "--sandbox",
+            "acme/shop",
+            "--yes",
+            "--no-color",
+            // As a shell passes it unexpanded: the CLI reads `~/` as the home.
+            "--state",
+            "QUARTIO_OPERATOR=~/.quartio-operator-20260901",
+        ];
+        if replace {
+            args.push("--replace-state");
+        }
+        args
+    };
+
+    // 1. Sent with no terminal, names and sizes only.
+    let (code, out, err) = yulius_cli(laptop, &send(false), "").await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(
+        out.contains("QUARTIO_OPERATOR") && out.contains("3 files") && out.contains("version 1"),
+        "{out}"
+    );
+    assert!(out.contains("stop using the folder"), "{out}");
+    assert!(
+        !out.contains("pinned-host-key") && !err.contains("pinned-host-key"),
+        "{out}{err}"
+    );
+
+    // 2. A task of the project restores it into the sandbox home.
+    support::seed_task(&w.h, "t1", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&w.h, "t1", TASK_TOKEN).await?;
+    let home = w.h.app.config.data_dir.join("sandboxes/s1/home");
+    std::fs::create_dir_all(&home)?;
+    let restore = support::mcp_tool(
+        &w.h,
+        TASK_TOKEN,
+        "secret_state_restore",
+        json!({"name": "QUARTIO_OPERATOR", "path": "~/.quartio-operator-20260901"}),
+    )
+    .await?;
+    let restored = support::tool_text(&restore);
+    assert_eq!(restored["files"], 3, "{restored}");
+    let copy = home.join(".quartio-operator-20260901");
+    assert_eq!(
+        std::fs::metadata(copy.join("inventory.sqlite"))?
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    assert_eq!(
+        std::fs::read(copy.join("rollouts/2026-10-01/bundle.bin"))?,
+        big
+    );
+    assert_eq!(
+        std::fs::metadata(copy.join("rollouts/2026-10-01"))?
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755
+    );
+
+    // 3. The laptop sends again: refused, nothing changes.
+    let (code, out, err) = yulius_cli(laptop, &send(false), "").await?;
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(
+        out.contains("refused QUARTIO_OPERATOR")
+            && out.contains("was restored into the sandbox at ~/.quartio-operator-20260901"),
+        "the server's refusal: {out}"
+    );
+
+    // 4. A rollout writes the sandbox's copy; the task saves it; the laptop gets it back.
+    std::fs::write(
+        copy.join("inventory.sqlite"),
+        b"SQLite format 3\0pinned-host-key-v2",
+    )?;
+    let saved = support::tool_text(
+        &support::mcp_tool(
+            &w.h,
+            TASK_TOKEN,
+            "secret_state_save",
+            json!({"name": "QUARTIO_OPERATOR"}),
+        )
+        .await?,
+    );
+    assert_eq!(saved["version"], 2, "{saved}");
+    let (code, out, err) = yulius_cli(
+        laptop,
+        &[
+            "secrets",
+            "state-get",
+            "QUARTIO_OPERATOR",
+            "--sandbox",
+            "acme/shop",
+            "--out",
+            "ops-back.tar.gz",
+        ],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(out.contains("stays the one written to"), "{out}");
+    let back = laptop.join("ops-back.tar.gz");
+    assert_eq!(std::fs::metadata(&back)?.permissions().mode() & 0o077, 0);
+    std::fs::create_dir(laptop.join("back"))?;
+    let unpacked = std::process::Command::new("tar")
+        .args(["-xzf", "ops-back.tar.gz", "-C", "back"])
+        .current_dir(laptop)
+        .status()?;
+    assert!(unpacked.success());
+    assert_eq!(
+        std::fs::read(laptop.join("back/inventory.sqlite"))?,
+        b"SQLite format 3\0pinned-host-key-v2"
+    );
+    // Never over an existing file.
+    let (code, _, err) = yulius_cli(
+        laptop,
+        &[
+            "secrets",
+            "state-get",
+            "QUARTIO_OPERATOR",
+            "--sandbox",
+            "acme/shop",
+            "--out",
+            "ops-back.tar.gz",
+        ],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(1), "{err}");
+
+    // A read-only token of the same person never downloads it (review of SPEC-271, M4).
+    let read = text(&make_token(&w, &browser, "reader", "read").await?["token"]).to_owned();
+    let refused = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/agent-states/QUARTIO_OPERATOR/archive",
+        None,
+        &bearer(&read),
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+
+    // 5. On purpose, the laptop's copy replaces the sandbox's.
+    let (code, out, err) = yulius_cli(laptop, &send(true), "").await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(out.contains("version 3"), "{out}");
+
+    // Refused before anything is read or sent.
+    for (args, said) in [
+        (
+            vec![
+                "--to",
+                "team",
+                "--state",
+                "OPS=~/.quartio-operator-20260901",
+            ],
+            "--state belongs to one project",
+        ),
+        (
+            vec!["--to", "agent", "--replace-state", "x.env"],
+            "--replace-state applies to --state",
+        ),
+        (
+            vec![
+                "--to",
+                "agent",
+                "--yes",
+                "--state",
+                "OPS=~/.quartio-operator-20260901",
+                "--state",
+                "OPS=~/.quartio-operator-20260901",
+            ],
+            "OPS is given twice",
+        ),
+    ] {
+        let mut all = vec!["secrets", "import", "--sandbox", "acme/shop"];
+        all.extend(args);
+        let (code, out, err) = yulius_cli(laptop, &all, "").await?;
+        assert_eq!(code, Some(1), "{out}{err}");
+        assert!(err.contains(said), "{said}: {err}");
+    }
+
+    let audit = w.h.store.vault_audit(50).await?;
+    let by_alice = |action: &str| {
+        audit
+            .iter()
+            .any(|e| e.action == action && e.actor == "alice")
+    };
+    for action in [
+        "vault.state.import",
+        "vault.state.export",
+        "vault.state.replace",
+    ] {
+        assert!(by_alice(action), "{action} in {audit:?}");
+    }
+    Ok(())
+}
+
+/// SPEC-275 AC1, AC2 (VAR-002, VAR-003, VAR-005): with only an operate token stored, the CLI sets
+/// variables by argument and from a dotenv file, lists them in plain and deletes them; a name that
+/// is an agent secret or says it is a credential is refused and nothing of it is written; a read
+/// token lists but cannot set; every change is audited without its value.
+#[tokio::test]
+async fn variables_are_set_from_a_laptop_and_listed_in_plain() -> TestResult {
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (alice, _) = w.user("alice", false).await?;
+    w.grant("alice", "acme/shop", "admin");
+    let browser = w.browser(&alice).await?;
+    let listener = support::serve(w.h.router.clone()).await?;
+    let url = format!("http://{}", listener.addr);
+    let home = tempfile::tempdir()?;
+    let home = home.path();
+    let operate = text(&make_token(&w, &browser, "laptop", "operate").await?["token"]).to_owned();
+    let (code, out, err) = yulius_cli(
+        home,
+        &["remote", "login", &url, "--token-stdin"],
+        &format!("{operate}\n"),
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    let vars = |args: &[&str]| -> Vec<String> {
+        ["vars", "-p", "acme/shop"]
+            .iter()
+            .chain(args)
+            .map(|a| (*a).to_owned())
+            .collect()
+    };
+    let cli = |args: Vec<String>| {
+        let home = home.to_path_buf();
+        async move {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            yulius_cli(&home, &args, "").await
+        }
+    };
+
+    let (code, out, err) = cli(vars(&[
+        "set",
+        "OVH_ENDPOINT=ovh-ca",
+        "--description",
+        "OVH region",
+    ]))
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    std::fs::write(
+        home.join("vars.env"),
+        "# Pipedream environment\nPIPEDREAM_PROJECT_ENVIRONMENT=production\n\
+         LANGFUSE_BASE_URL=https://cloud.langfuse.com\nOLD_FLAG=1\n",
+    )?;
+    let (code, out, err) = cli(vars(&["import", "vars.env"])).await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(out.contains("LANGFUSE_BASE_URL"), "{out}");
+    let (code, out, err) = cli(vars(&["delete", "OLD_FLAG"])).await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+
+    let (code, out, err) = cli(vars(&["list"])).await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert_eq!(
+        out.trim(),
+        "LANGFUSE_BASE_URL=https://cloud.langfuse.com\n# OVH region\nOVH_ENDPOINT=ovh-ca\n\
+         # Pipedream environment\nPIPEDREAM_PROJECT_ENVIRONMENT=production"
+    );
+
+    // Refused before sending: a credential's name; by the server: an agent secret's name.
+    std::fs::write(home.join("mixed.env"), "REGION=eu\nSHOP_API_KEY=abc\n")?;
+    let (code, out, err) = cli(vars(&["import", "mixed.env"])).await?;
+    assert_eq!(code, Some(2), "{out}{err}");
+    assert!(
+        err.contains("SHOP_API_KEY") && err.contains("yulius secrets import"),
+        "{err}"
+    );
+    // Review round 1: a value that carries a credential is refused whatever its name, and a
+    // malformed argument is not echoed.
+    let (code, out, err) = cli(vars(&["set", "DATABASE_URL=postgres://u:p4ss@db/app"])).await?;
+    assert_eq!(code, Some(2), "{out}{err}");
+    assert!(
+        err.contains("DATABASE_URL") && !err.contains("p4ss"),
+        "{err}"
+    );
+    let (code, out, err) = cli(vars(&["set", "no-equals-sign-secretish"])).await?;
+    assert_eq!(code, Some(2), "{out}{err}");
+    assert!(!err.contains("secretish"), "{err}");
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "SHOP_ACCOUNT", "value": "shop-account-0123456"})),
+        &browser,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let (code, out, err) = cli(vars(&["set", "REGION=eu", "SHOP_ACCOUNT=acme"])).await?;
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(err.contains("SHOP_ACCOUNT is an agent secret"), "{err}");
+    let listed = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/variables",
+        None,
+        &browser,
+    )
+    .await?;
+    let listed = listed.body["variables"].to_string();
+    assert!(
+        !listed.contains("REGION"),
+        "nothing of it was set: {listed}"
+    );
+
+    // A read token lists, never sets.
+    let read = text(&make_token(&w, &browser, "reader", "read").await?["token"]).to_owned();
+    let reader = bearer(&read);
+    let (failed, shown, _) = remote(
+        &w,
+        &reader,
+        "variables_list",
+        json!({"project": "acme/shop"}),
+    )
+    .await?;
+    assert!(!failed && shown.contains("OVH_ENDPOINT=ovh-ca"), "{shown}");
+    // VAR-008: secrets_list names the variables beside the secrets, values in plain.
+    let (failed, _, listed) =
+        remote(&w, &reader, "secrets_list", json!({"project": "acme/shop"})).await?;
+    assert!(!failed);
+    assert_eq!(listed["variables"][1]["name"], "OVH_ENDPOINT", "{listed}");
+    assert_eq!(listed["variables"][1]["value"], "ovh-ca", "{listed}");
+    assert_eq!(
+        listed["variables"][1]["description"], "OVH region",
+        "{listed}"
+    );
+    let names = served(&w, &reader).await?;
+    assert!(names.iter().all(|n| n != "variables_set"), "{names:?}");
+    let (failed, said, _) = remote(
+        &w,
+        &reader,
+        "variables_set",
+        json!({"project": "acme/shop", "variables": [{"name": "X_Y", "value": "z"}]}),
+    )
+    .await?;
+    assert!(failed && said.contains("read-only"), "{said}");
+
+    let audit = audits(&w, "s1").await?;
+    let changes: Vec<(&str, &str, &str)> = audit
+        .iter()
+        .filter(|(action, _, _)| action.starts_with("variable."))
+        .map(|(a, actor, d)| (a.as_str(), actor.as_str(), d.as_str()))
+        .collect();
+    assert_eq!(
+        changes,
+        [
+            ("variable.delete", "alice", "OLD_FLAG"),
+            ("variable.create", "alice", "OLD_FLAG"),
+            ("variable.create", "alice", "LANGFUSE_BASE_URL"),
+            ("variable.create", "alice", "PIPEDREAM_PROJECT_ENVIRONMENT"),
+            ("variable.create", "alice", "OVH_ENDPOINT"),
+        ]
+    );
+    assert!(
+        audit.iter().any(|(a, actor, d)| a == "remote.tool"
+            && actor == "remote:alice"
+            && d.contains("variables_set")),
+        "{audit:?}"
+    );
+    let all = format!("{audit:?}");
+    assert!(
+        !all.contains("ovh-ca") && !all.contains("production"),
+        "{all}"
+    );
+    Ok(())
+}
+
+/// SPEC-275 AC4 (VAR-006, VAR-007): `yulius secrets import --yes` of a company `.env` sends its
+/// keys as agent secrets and its plain values (a short region, a plain word, a base URL, an
+/// e-mail address) as project variables; a credential's name keeps its value a secret; with
+/// `--no-vars` nothing goes to variables.
+#[tokio::test]
+async fn a_secrets_import_sends_plain_values_to_project_variables() -> TestResult {
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (alice, _) = w.user("alice", false).await?;
+    w.grant("alice", "acme/shop", "admin");
+    let browser = w.browser(&alice).await?;
+    let listener = support::serve(w.h.router.clone()).await?;
+    let url = format!("http://{}", listener.addr);
+    let home = tempfile::tempdir()?;
+    let home = home.path();
+    let operate = text(&make_token(&w, &browser, "laptop", "operate").await?["token"]).to_owned();
+    let (code, out, err) = yulius_cli(
+        home,
+        &["remote", "login", &url, "--token-stdin"],
+        &format!("{operate}\n"),
+    )
+    .await?;
+    assert_eq!(code, Some(0), "{out}{err}");
+    std::fs::write(
+        home.join("company.env"),
+        "OVH_ENDPOINT=ovh-ca\n# Pipedream's environment\nPIPEDREAM_PROJECT_ENVIRONMENT=production\n\
+         LANGFUSE_BASE_URL=https://cloud.langfuse.com\nCONTACT_EMAIL=ops@quartio.example\n\
+         API_TOKEN=production\nOPENAI_API_KEY=synthetic-openai-key-0123456789abcdef\n",
+    )?;
+    let import = [
+        "secrets",
+        "import",
+        "--to",
+        "agent",
+        "--sandbox",
+        "acme/shop",
+        "--yes",
+        "company.env",
+    ];
+    let (code, out, err) = yulius_cli(home, &import, "").await?;
+    // API_TOKEN=production: a credential's name keeps it out of variables, and SPEC-274 refuses
+    // it as a secret (ordinary text), so the run is not ok.
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(out.contains("Imported 1, 4 as project variables"), "{out}");
+    assert!(
+        out.contains("API_TOKEN") && out.contains("a configuration word"),
+        "{out}"
+    );
+    for value in ["ovh-ca", "cloud.langfuse", "ops@", "synthetic-openai"] {
+        assert!(!out.contains(value), "said {value}: {out}");
+    }
+
+    let secrets: Vec<String> = agent_secrets(&w, "s1", &browser)
+        .await?
+        .iter()
+        .map(|s| text(&s["name"]).to_owned())
+        .collect();
+    assert_eq!(secrets, ["OPENAI_API_KEY"]);
+    let listed = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/variables",
+        None,
+        &browser,
+    )
+    .await?;
+    let variables: Vec<(String, String, String)> = listed.body["variables"]
+        .as_array()
+        .ok_or("variables")?
+        .iter()
+        .map(|v| {
+            (
+                text(&v["name"]).to_owned(),
+                text(&v["value"]).to_owned(),
+                text(&v["description"]).to_owned(),
+            )
+        })
+        .collect();
+    let var = |n: &str, v: &str, d: &str| (n.to_owned(), v.to_owned(), d.to_owned());
+    assert_eq!(
+        variables,
+        [
+            var("CONTACT_EMAIL", "ops@quartio.example", ""),
+            var("LANGFUSE_BASE_URL", "https://cloud.langfuse.com", ""),
+            var("OVH_ENDPOINT", "ovh-ca", ""),
+            var(
+                "PIPEDREAM_PROJECT_ENVIRONMENT",
+                "production",
+                "Pipedream's environment"
+            ),
+        ]
+    );
+
+    // Run again: everything exists and nothing is sent (API_TOKEN is still refused).
+    let (code, out, err) = yulius_cli(home, &import, "").await?;
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(out.contains("Nothing new to import"), "{out}");
+
+    // --no-vars: a new plain value is checked as a secret again (too short: skipped).
+    std::fs::write(home.join("more.env"), "SECOND_REGION=ovh-us\n")?;
+    let (code, out, err) = yulius_cli(
+        home,
+        &[
+            "secrets",
+            "import",
+            "--to",
+            "agent",
+            "--sandbox",
+            "acme/shop",
+            "--yes",
+            "--no-vars",
+            "more.env",
+        ],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(
+        out.contains("SECOND_REGION") && out.contains("at least 8"),
+        "{out}"
+    );
+    // --no-vars belongs to one project's agent secrets.
+    let (code, out, err) = yulius_cli(
+        home,
+        &[
+            "secrets",
+            "import",
+            "--to",
+            "agent",
+            "--instance",
+            "--no-vars",
+            "more.env",
+        ],
+        "",
+    )
+    .await?;
+    assert_eq!(code, Some(1), "{out}{err}");
+    assert!(err.contains("--no-vars applies"), "{err}");
     Ok(())
 }

@@ -122,7 +122,10 @@ p { margin: 0; }
 .check { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; line-height: var(--lh); }
 .check input { margin: 2px 0 0; accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
 /* What a destructive choice of a dialog does, said before it happens (SPEC-171). */
-.purge-warning { color: var(--danger-fg); margin: 0; }
+.remove-files { margin: 0; padding: 0; border: 0; min-width: 0; }
+.remove-files > legend { padding: 0; margin-bottom: 6px; }
+.remove-choice { display: flex; flex-direction: column; gap: 4px; }
+.remove-choice > p { margin: 0 0 0 24px; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 
 .switch { position: relative; display: inline-flex; width: 30px; height: 17px; flex: none; }
@@ -1625,9 +1628,17 @@ span.composer-attachment-open { cursor: default; }
 .settings-identity + .settings-row, .settings-body > .settings-row:first-child { border-top: 0; }
 .settings-row-icon { display: inline-flex; color: var(--muted); }
 /* Connect your local agent (SPEC-247): API tokens and the commands that use them. */
-.agent-connect { display: grid; gap: 12px; padding: 12px 20px 16px; min-width: 0; }
-.agent-token-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 240px) auto; gap: 12px; align-items: end; }
-@media (max-width: 640px) { .agent-token-form { grid-template-columns: minmax(0, 1fr); } }
+.agent-connect { display: grid; gap: 12px; padding: 12px 20px 16px; min-width: 0; container-type: inline-size; }
+/* Rows of labels, controls, hints and field messages (`invalid()`): each field spans them (subgrid)
+   and the button takes the control row, so a long scope hint moves nothing beside it (SPEC-270). */
+.agent-token-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 240px) auto; grid-template-rows: repeat(4, auto); gap: 4px 12px; }
+.agent-token-form > .field { display: grid; grid-row: span 4; grid-template-rows: subgrid; }
+.agent-token-submit { grid-area: 2 / 3; display: flex; }
+/* Stacked once the name would be too narrow for its placeholder beside the scope and the button. */
+@container (max-width: 600px) {
+  .agent-token-form { display: flex; flex-direction: column; gap: 12px; }
+  .agent-token-form > .field { display: flex; }
+}
 .agent-created-box { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); }
 .agent-command .secret-value { overflow-x: auto; white-space: nowrap; }
 .agent-token-list { list-style: none; margin: 0; padding: 0; display: grid; }
@@ -2636,6 +2647,8 @@ button.task-group-head:hover { color: var(--text); }
 .update-banner.update-warn { border-color: var(--warn-border); }
 .update-banner.update-warn > .icon { color: var(--warn); }
 .update-banner .icon { flex: none; }
+.update-banner.disk-critical { border-color: var(--danger-border); }
+.update-banner.disk-critical > .icon { color: var(--danger); }
 .update-text { display: block; min-width: 0; padding: 4px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; text-decoration: none; }
 a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .update-close, .update-action { flex: none; display: inline-flex; align-items: center; justify-content: center; height: var(--control-sm); padding: 0 6px; border: 0; border-radius: var(--radius-full); background: transparent; color: var(--muted); cursor: pointer; font: inherit; }
@@ -2687,6 +2700,10 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .leftovers-body { gap: 12px; padding: 16px 20px; }
 .leftovers-disk { display: flex; flex-wrap: wrap; gap: 4px 16px; }
 .leftovers-actions { flex-wrap: wrap; }
+.leftovers-kept h3 { margin: 0; }
+.leftovers-kept-list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.leftovers-kept-row { flex-wrap: wrap; gap: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.leftovers-kept-name { min-width: 0; overflow-wrap: anywhere; }
 .leftovers-result ul { margin: 4px 0 0; padding-left: 16px; overflow-wrap: anywhere; }
 .leftovers-table .leftovers-check { width: 32px; }
 .leftovers-what { min-width: 0; }
@@ -2737,6 +2754,10 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .ci-job-command { min-width: 0; overflow-wrap: anywhere; color: var(--text-2); }
 .ci-hygiene li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
 .ci-hygiene code { overflow-wrap: anywhere; }
+.ci-hygiene-part { display: contents; }
+.ci-hygiene-status { margin: 0; color: var(--text-2); }
+.ci-hygiene-status:has(> span:not(:empty)) { margin-top: 6px; }
+.ci-hygiene-status.ci-hygiene-problem { color: var(--danger-fg); }
 .ci-state { display: inline-flex; color: var(--muted); }
 .ci-passed { color: var(--ok-fg); }
 .ci-failed, .ci-error { color: var(--danger-fg); }

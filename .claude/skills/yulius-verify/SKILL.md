@@ -20,9 +20,10 @@ For every change, after committing and before the review, run `scripts/dev secur
 vidoc-1 reviews the files the branch changed against `dev`, read from `HEAD` (ADR-0157). It gets
 `VIDOC_API_KEY` as a placeholder: the project's agent secret, else the instance's Vidoc key. If it
 reports findings, fix them test-first. A false positive becomes an `[[ignore]]` entry, with its
-reason, in `.config/vidoc.toml`, only after the independent reviewer agrees, and it is listed in
-the spec's Evidence. Exit 2 means unrun (no key, a refused key, no quota, Vidoc unreachable):
-report the scan as unrun, never as passed. When `.config/vidoc.toml` sets `enabled = false`
+reason and the `function` it is in, in `.config/vidoc.toml`, only after the independent reviewer
+agrees, and it is listed in the spec's Evidence. Exit 2 means unrun (no key, a refused key, no
+quota) and exit 3 incomplete (Vidoc unreachable or failing, the files listed): report the scan as
+unrun or incomplete, never as passed. When `.config/vidoc.toml` sets `enabled = false`
 (ADR-0107), the gate prints "Security scan disabled" and exits 0: report the scan as disabled,
 never as passed. `scripts/dev security --all --report FILE` is the broad scan of the whole
 repository, for an audit task. The scan fails on critical or high findings in the changed files

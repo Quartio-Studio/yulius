@@ -25,7 +25,7 @@ use yulius_app::ports::github::GhPull;
 use yulius_app::ports::isolation::{
     DiskUsage, SandboxIsolation, SandboxJoin, SandboxLimits, SandboxRef,
 };
-use yulius_app::ports::store_ext::CiStore as _;
+use yulius_app::ports::store_ext::{AutomationStore as _, CiStore as _};
 use yulius_domain::ci::{GateResult, RunState};
 use yulius_domain::ids::SandboxId;
 
@@ -584,11 +584,9 @@ async fn without_the_status_permission_runs_still_gate() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn hygiene_lists_and_cleans_up_stale_branches() -> TestResult {
-    let f = fixture().await?;
-    // feat/old is merged into dev; feat/closed had a pull request closed without merging;
-    // feat/one has an open pull request; feat/wip is recent work without a pull request.
+/// feat/old is merged into dev; feat/closed had a pull request closed without merging;
+/// feat/one has an open pull request; feat/wip is recent work without a pull request.
+fn stale_branches(f: &Fixture) -> BoxResult<()> {
     for (branch, file) in [
         ("feat/old", "old.txt"),
         ("feat/closed", "closed.txt"),
@@ -616,6 +614,13 @@ async fn hygiene_lists_and_cleans_up_stale_branches() -> TestResult {
             from_fork: false,
         });
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn hygiene_lists_and_cleans_up_stale_branches() -> TestResult {
+    let f = fixture().await?;
+    stale_branches(&f)?;
     let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
     assert_eq!(scan.status, StatusCode::OK, "{}", scan.body);
     let items = scan.body["items"].as_array().ok_or("items")?.clone();
@@ -649,6 +654,389 @@ async fn hygiene_lists_and_cleans_up_stale_branches() -> TestResult {
             .is_some_and(|items| items.iter().all(|i| i["kind"] != "remote_branch")),
         "{}",
         cleaned.body["report"]
+    );
+    Ok(())
+}
+
+/// A pull request of `head` into `base`, `state` closed (merged or not) or open.
+fn pull(
+    f: &Fixture,
+    number: u64,
+    head: &str,
+    base: &str,
+    open: bool,
+    merged: bool,
+) -> BoxResult<()> {
+    let head_sha = git(&f.origin, &["rev-parse", head])?;
+    if let Ok(mut pulls) = f.h.github.pulls.lock() {
+        pulls.push(GhPull {
+            number,
+            html_url: format!("https://github.test/acme/app/pull/{number}"),
+            title: head.into(),
+            state: if open { "open" } else { "closed" }.into(),
+            merged,
+            base: base.into(),
+            head: head.into(),
+            head_sha: head_sha.trim().to_owned(),
+            mergeable: None,
+            behind: false,
+            from_fork: false,
+        });
+    }
+    Ok(())
+}
+
+/// SPEC-269 HSC-001: the background round removes what loses nothing, as Yulius, and keeps
+/// unmerged work. A branch already in dev that never was a pull request's head (a release or
+/// staging branch) is left to a person, and a branch an open pull request targets is never stale
+/// (review round 3).
+#[tokio::test]
+async fn the_hygiene_round_removes_safe_items_itself() -> TestResult {
+    let f = fixture().await?;
+    stale_branches(&f)?;
+    // feat/landed was merged into dev with a merge commit through pull request #4; feat/base is
+    // in dev too and an open pull request is stacked on it.
+    for (branch, file) in [("feat/landed", "landed.txt"), ("feat/base", "base.txt")] {
+        git(&f.work, &["checkout", "-q", "-B", branch, "origin/dev"])?;
+        std::fs::write(f.work.join(file), "x\n")?;
+        git(&f.work, &["add", "-A"])?;
+        git(&f.work, &["commit", "-q", "-m", branch])?;
+        git(&f.work, &["push", "-q", "origin", branch])?;
+        git(&f.work, &["push", "-q", "origin", &format!("{branch}:dev")])?;
+        git(&f.work, &["fetch", "-q", "origin"])?;
+    }
+    pull(&f, 4, "feat/landed", "dev", false, true)?;
+    git(
+        &f.work,
+        &["checkout", "-q", "-B", "feat/stacked", "origin/feat/base"],
+    )?;
+    std::fs::write(f.work.join("stacked.txt"), "x\n")?;
+    git(&f.work, &["add", "-A"])?;
+    git(&f.work, &["commit", "-q", "-m", "stacked"])?;
+    git(&f.work, &["push", "-q", "origin", "feat/stacked"])?;
+    pull(&f, 5, "feat/stacked", "feat/base", true, false)?;
+
+    f.h.app.hygiene_round().await;
+    let remaining = git(&f.origin, &["branch", "--format=%(refname:short)"])?;
+    assert!(
+        !remaining.contains("feat/landed") && !remaining.contains("feat/closed"),
+        "{remaining}"
+    );
+    assert!(remaining.contains("feat/one") && remaining.contains("feat/wip"));
+    assert!(
+        remaining.contains("feat/old"),
+        "no pull request: a person's call: {remaining}"
+    );
+    assert!(
+        remaining.contains("feat/base"),
+        "an open pull request's base: {remaining}"
+    );
+    let report = f.get("/api/sandboxes/s1/hygiene").await?;
+    let items = report["items"].as_array().ok_or("items")?;
+    assert!(
+        items
+            .iter()
+            .any(|i| i["name"] == "feat/old" && i["reason_code"] == "merged"),
+        "still listed for a person: {report}"
+    );
+    assert!(items.iter().all(|i| i["name"] != "feat/base"), "{report}");
+    let audited: Vec<String> =
+        f.h.store
+            .automation_audit(&f.sandbox.slug, 100)
+            .await?
+            .into_iter()
+            .filter(|e| e.action == "hygiene.cleanup")
+            .map(|e| format!("{} {}", e.actor, e.detail.unwrap_or_default()))
+            .collect();
+    for branch in ["feat/landed", "feat/closed"] {
+        assert!(
+            audited
+                .iter()
+                .any(|a| a.starts_with("yulius remote_branch ") && a.contains(branch)),
+            "{audited:?}"
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-269 HSC-002: the report says what the last cleanup did and who did it, across scans; an
+/// automatic round with nothing to do leaves it, and the round names when it runs next.
+#[tokio::test]
+async fn a_cleanup_is_kept_on_the_report() -> TestResult {
+    let f = fixture().await?;
+    stale_branches(&f)?;
+    let before = f.get("/api/sandboxes/s1/hygiene").await?;
+    assert!(before["last_cleanup"].is_null(), "{before}");
+    assert!(
+        before["next_cleanup_at"].is_null(),
+        "not scheduled here: {before}"
+    );
+
+    let cleaned = f.post("/api/sandboxes/s1/hygiene/cleanup", None).await?;
+    assert_eq!(cleaned.status, StatusCode::OK, "{}", cleaned.body);
+    let last = cleaned.body["report"]["last_cleanup"].clone();
+    assert_eq!(last["by"], "alice", "{last}");
+    assert_eq!(last["automatic"], false, "{last}");
+    let removed: Vec<&str> = last["removed"]
+        .as_array()
+        .ok_or("removed")?
+        .iter()
+        .filter_map(|i| i["name"].as_str())
+        .collect();
+    assert!(
+        removed.contains(&"feat/old") && removed.contains(&"feat/closed"),
+        "{last}"
+    );
+    assert!(last["at"].is_string(), "{last}");
+
+    let scanned = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    assert_eq!(scanned.body["last_cleanup"], last, "kept across scans");
+
+    f.h.app.hygiene_round().await;
+    let after = f.get("/api/sandboxes/s1/hygiene").await?;
+    assert_eq!(
+        after["last_cleanup"], last,
+        "a round with nothing to do keeps it"
+    );
+    assert!(after["next_cleanup_at"].is_string(), "{after}");
+    Ok(())
+}
+
+/// SPEC-269 (review round 1): a branch with commits pushed after its pull request closed is
+/// unmerged work, and a local copy whose GitHub branch the same cleanup deleted is judged again
+/// (its commits are on GitHub no more) and kept.
+#[tokio::test]
+async fn a_cleanup_never_loses_commits_that_only_a_branch_held() -> TestResult {
+    let f = fixture().await?;
+    stale_branches(&f)?;
+    // feat/later had a pull request closed at its first commit, then got another one.
+    git(
+        &f.work,
+        &["checkout", "-q", "-B", "feat/later", "origin/dev"],
+    )?;
+    std::fs::write(f.work.join("later.txt"), "1\n")?;
+    git(&f.work, &["add", "-A"])?;
+    git(&f.work, &["commit", "-q", "-m", "first"])?;
+    let closed_at = git(&f.work, &["rev-parse", "HEAD"])?;
+    std::fs::write(f.work.join("later.txt"), "2\n")?;
+    git(&f.work, &["commit", "-q", "-am", "after closing"])?;
+    git(&f.work, &["push", "-q", "origin", "feat/later"])?;
+    if let Ok(mut pulls) = f.h.github.pulls.lock() {
+        pulls.push(GhPull {
+            number: 3,
+            html_url: "https://github.test/acme/app/pull/3".into(),
+            title: "Later".into(),
+            state: "closed".into(),
+            merged: false,
+            base: "dev".into(),
+            head: "feat/later".into(),
+            head_sha: closed_at.trim().to_owned(),
+            mergeable: None,
+            behind: false,
+            from_fork: false,
+        });
+    }
+    // The sandbox clone keeps a local copy of feat/closed, whose only other home is GitHub's
+    // branch that this cleanup deletes.
+    let clone = f.data.join("sandboxes/s1/repo");
+    git(&clone, &["fetch", "-q", "origin"])?;
+    git(
+        &clone,
+        &["branch", "-q", "feat/closed", "origin/feat/closed"],
+    )?;
+
+    let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    let items = scan.body["items"].as_array().ok_or("items")?.clone();
+    assert!(
+        items.iter().all(|i| i["name"] != "feat/later"),
+        "recent unmerged work: {items:?}"
+    );
+    assert!(
+        items
+            .iter()
+            .any(|i| i["kind"] == "local_branch" && i["name"] == "feat/closed"),
+        "{items:?}"
+    );
+    let cleaned = f.post("/api/sandboxes/s1/hygiene/cleanup", None).await?;
+    assert_eq!(cleaned.status, StatusCode::OK, "{}", cleaned.body);
+    let remaining = git(&f.origin, &["branch", "--format=%(refname:short)"])?;
+    assert!(remaining.contains("feat/later"), "{remaining}");
+    assert!(!remaining.contains("feat/closed"), "{remaining}");
+    let local = git(&clone, &["branch", "--format=%(refname:short)"])?;
+    assert!(
+        local.contains("feat/closed"),
+        "the local copy stays: {local}"
+    );
+    let skipped = cleaned.body["skipped"].as_array().ok_or("skipped")?;
+    assert!(
+        skipped.iter().any(|s| s["name"] == "feat/closed"
+            && s["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("no longer on GitHub"))),
+        "{}",
+        cleaned.body
+    );
+    Ok(())
+}
+
+/// SPEC-269 (review round 2): when the clone cannot be fetched, a branch is judged by the commit
+/// Yulius last saw: one that moved on GitHub since (new commits, no pull request) is kept, and
+/// local copies are kept as they cannot be confirmed on GitHub.
+#[tokio::test]
+async fn a_failed_fetch_never_deletes_what_moved_on_github() -> TestResult {
+    let f = fixture().await?;
+    stale_branches(&f)?;
+    let clone = f.data.join("sandboxes/s1/repo");
+    let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    assert_eq!(scan.status, StatusCode::OK, "{}", scan.body);
+    git(&clone, &["branch", "-q", "feat/old", "origin/feat/old"])?;
+    // feat/closed gets a commit on GitHub after its pull request closed.
+    git(&f.work, &["checkout", "-q", "feat/closed"])?;
+    std::fs::write(f.work.join("closed.txt"), "more\n")?;
+    git(&f.work, &["commit", "-q", "-am", "after closing"])?;
+    git(&f.work, &["push", "-q", "origin", "feat/closed"])?;
+    // A ref lock left by another fetch: every fetch of the clone fails now.
+    let lock = clone.join(".git/refs/remotes/origin/feat/closed.lock");
+    std::fs::write(&lock, "")?;
+
+    let cleaned = f.post("/api/sandboxes/s1/hygiene/cleanup", None).await?;
+    std::fs::remove_file(&lock)?;
+    assert_eq!(cleaned.status, StatusCode::OK, "{}", cleaned.body);
+    let remaining = git(&f.origin, &["branch", "--format=%(refname:short)"])?;
+    assert!(remaining.contains("feat/closed"), "{remaining}");
+    assert!(
+        !remaining.contains("feat/old"),
+        "unmoved and merged: {remaining}"
+    );
+    let skipped = cleaned.body["skipped"].as_array().ok_or("skipped")?;
+    let reason = |kind: &str, name: &str| {
+        skipped
+            .iter()
+            .find(|s| s["kind"] == kind && s["name"] == name)
+            .and_then(|s| s["reason"].as_str())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    assert!(
+        reason("remote_branch", "feat/closed").contains("moved on GitHub"),
+        "{}",
+        cleaned.body
+    );
+    assert!(
+        reason("local_branch", "feat/old").contains("could not be fetched"),
+        "{}",
+        cleaned.body
+    );
+    let local = git(&clone, &["branch", "--format=%(refname:short)"])?;
+    assert!(local.contains("feat/old"), "{local}");
+    Ok(())
+}
+
+/// SPEC-269 (review round 4): branches already in dev never use up the pull-request lookups an
+/// unmerged branch's verdict needs, however many there are.
+#[tokio::test]
+async fn merged_branches_leave_the_lookups_to_unmerged_ones() -> TestResult {
+    let f = fixture().await?;
+    let bound = yulius_app::ci::hygiene::MAX_PULL_LOOKUPS;
+    // Old release branches at dev's commit, older than anything else.
+    let refspecs: Vec<String> = (0..bound)
+        .map(|n| format!("origin/dev:refs/heads/release/{n}"))
+        .collect();
+    let mut push = vec!["push", "-q", "origin"];
+    push.extend(refspecs.iter().map(String::as_str));
+    git(&f.work, &["fetch", "-q", "origin"])?;
+    git(&f.work, &push)?;
+    // A newer branch whose pull request was closed: only a lookup can tell.
+    git(
+        &f.work,
+        &["checkout", "-q", "-B", "feat/closed", "origin/dev"],
+    )?;
+    std::fs::write(f.work.join("closed.txt"), "x\n")?;
+    git(&f.work, &["add", "-A"])?;
+    // Committed a day later than dev's commit, so the scan, oldest first, meets it last.
+    let committed = Command::new("git")
+        .args([
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@t.test",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(["commit", "-q", "-m", "closed"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_COMMITTER_DATE", "@4000000000 +0000")
+        .current_dir(&f.work)
+        .output()?;
+    assert!(committed.status.success(), "{committed:?}");
+    git(&f.work, &["push", "-q", "origin", "feat/closed"])?;
+    pull(&f, 2, "feat/closed", "dev", false, false)?;
+
+    let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    assert_eq!(scan.status, StatusCode::OK, "{}", scan.body);
+    let items = scan.body["items"].as_array().ok_or("items")?;
+    assert!(
+        items
+            .iter()
+            .any(|i| i["name"] == "feat/closed" && i["reason_code"] == "pull_closed"),
+        "{}",
+        scan.body
+    );
+    assert_eq!(
+        items
+            .iter()
+            .filter(|i| i["reason_code"] == "merged")
+            .count(),
+        bound,
+        "{}",
+        scan.body
+    );
+    Ok(())
+}
+
+/// SPEC-269 (review round 5): an open pull request's branch takes no lookup, and branches already
+/// in dev whose pull requests the bound left unread are named in a note.
+#[tokio::test]
+async fn the_lookup_bound_counts_only_lookups_and_says_what_it_left() -> TestResult {
+    let f = fixture().await?;
+    let bound = yulius_app::ci::hygiene::MAX_PULL_LOOKUPS;
+    git(&f.work, &["fetch", "-q", "origin"])?;
+    // `bound` recent unmerged branches without a pull request (one commit), after feat/one,
+    // whose pull request is open, and one release branch at dev's commit.
+    git(&f.work, &["checkout", "-q", "-B", "wip", "origin/dev"])?;
+    std::fs::write(f.work.join("wip.txt"), "x\n")?;
+    git(&f.work, &["add", "-A"])?;
+    git(&f.work, &["commit", "-q", "-m", "wip"])?;
+    let refspecs: Vec<String> = (0..bound)
+        .map(|n| format!("wip:refs/heads/zz/{n:02}"))
+        .chain(std::iter::once(
+            "origin/dev:refs/heads/release/1".to_owned(),
+        ))
+        .collect();
+    let mut push = vec!["push", "-q", "origin"];
+    push.extend(refspecs.iter().map(String::as_str));
+    git(&f.work, &push)?;
+
+    let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    assert_eq!(scan.status, StatusCode::OK, "{}", scan.body);
+    let notes: Vec<&str> = scan.body["notes"]
+        .as_array()
+        .ok_or("notes")?
+        .iter()
+        .filter_map(|n| n.as_str())
+        .collect();
+    assert!(
+        !notes
+            .iter()
+            .any(|n| n.starts_with("Pull requests were looked up for")),
+        "every unmerged branch got its lookup: {notes:?}"
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.contains("1 branch already in the integration branch")),
+        "{notes:?}"
     );
     Ok(())
 }
@@ -833,6 +1221,202 @@ command = 'if [ "$YULIUS_CI_MATRIX" = 2 ]; then exit "$YULIUS_CI_SKIP_CODE"; fi'
     assert_eq!(job("split (2)")?["state"], "skipped", "{detail}");
     let (_, description, _) = f.last_status(&merged).ok_or("status")?;
     assert!(description.contains("2 skipped"), "{description}");
+    Ok(())
+}
+
+/// SPEC-273 NOI-006: a job that exits `$YULIUS_CI_INCOMPLETE_CODE` (a security scan Vidoc's
+/// outage cut short) ends error with the files it names, never failed: the status says
+/// incomplete, the merge is blocked, and the other job still ends passed.
+#[tokio::test]
+async fn a_job_that_exits_the_incomplete_code_ends_in_error_naming_what_it_missed() -> TestResult {
+    let f = fixture_with(false, |_| {
+        r#"[[ci.jobs]]
+name = "check"
+command = "true"
+
+[[ci.jobs]]
+name = "security"
+command = 'echo "::yulius-incomplete 2 file(s) not scanned (a.rs, b.rs): HTTP 503"; exit "${YULIUS_CI_INCOMPLETE_CODE:-1}"'
+"#
+        .to_owned()
+    })
+    .await?;
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let run = overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["reference"] == "pr/1")
+        .cloned()
+        .ok_or("pr/1 run")?;
+    assert_eq!(run["state"], "error", "{run}");
+    let detail = f
+        .get(&format!(
+            "/api/sandboxes/s1/ci/runs/{}",
+            run["id"].as_str().ok_or("id")?
+        ))
+        .await?;
+    let jobs = detail["jobs"].as_array().ok_or("jobs")?;
+    let job = |name: &str| jobs.iter().find(|j| j["name"] == name).ok_or("job");
+    assert_eq!(job("check")?["state"], "passed", "{detail}");
+    assert_eq!(job("security")?["state"], "error", "{detail}");
+    assert_eq!(job("security")?["exit_code"], 75, "{detail}");
+    assert_eq!(
+        job("security")?["reason"],
+        "incomplete: 2 file(s) not scanned (a.rs, b.rs): HTTP 503; infrastructure, not a \
+         finding: run it again",
+        "{detail}"
+    );
+    assert_eq!(
+        f.h.app.ci_gate_result(&f.sandbox, &pr_sha).await,
+        GateResult::Run(Some(RunState::Error))
+    );
+    let (state, description, _) = f.last_status(&pr_sha).ok_or("status")?;
+    assert_eq!(state, "error", "{description}");
+    assert!(
+        description.starts_with("Error: security: incomplete: 2 file(s) not scanned (a.rs, b.rs)"),
+        "{description}"
+    );
+    Ok(())
+}
+
+impl Fixture {
+    /// Dispatches until every named job of `sha`'s run is in its state; returns the jobs.
+    async fn until_jobs(&self, sha: &str, states: &[(&str, &str)]) -> BoxResult<Vec<Value>> {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            self.h.app.ci_dispatch().await;
+            let overview = self.get("/api/sandboxes/s1/ci").await?;
+            if let Some(run) = overview["runs"]
+                .as_array()
+                .ok_or("runs")?
+                .iter()
+                .find(|r| r["sha"] == sha)
+            {
+                let detail = self
+                    .get(&format!(
+                        "/api/sandboxes/s1/ci/runs/{}",
+                        run["id"].as_str().ok_or("id")?
+                    ))
+                    .await?;
+                let jobs = detail["jobs"].as_array().ok_or("jobs")?.clone();
+                let state_of = |name: &str| {
+                    jobs.iter()
+                        .find(|j| j["name"] == name)
+                        .map(|j| j["state"].clone())
+                };
+                if states
+                    .iter()
+                    .all(|(name, state)| state_of(name).is_some_and(|s| s == *state))
+                {
+                    return Ok(jobs);
+                }
+                if tokio::time::Instant::now() > deadline {
+                    return Err(format!("jobs never reached {states:?}: {detail}").into());
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+/// SPEC-273 NOI-007: a failed `security` job no longer stops the other jobs ("stopped early: job
+/// security failed" left a commit without a test result), and a failed test job no longer stops
+/// the scan; both run to the end and report. Fail-fast among the other jobs stays.
+#[tokio::test]
+async fn the_security_job_and_the_others_never_cancel_each_other() -> TestResult {
+    let f = fixture_with(false, |data| {
+        format!(
+            r#"[[ci.jobs]]
+name = "security"
+command = 'if [ -f fail-security ]; then exit 1; fi; while [ ! -f "{release}" ]; do sleep 0.05; done'
+
+[[ci.jobs]]
+name = "quality"
+command = 'if [ -f fail-quality ]; then exit 1; fi; while [ ! -f "{release}" ]; do sleep 0.05; done'
+
+[[ci.jobs]]
+name = "e2e"
+command = 'while [ ! -f "{release}" ]; do sleep 0.05; done'
+"#,
+            release = data.join("release").display()
+        )
+    })
+    .await?;
+    let release = f.data.join("release");
+    // The scan fails at once; quality and e2e are still running when it does.
+    let first = f.push_feature("fail-security", Some("x\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.until_jobs(
+        &first,
+        &[
+            ("security", "failed"),
+            ("quality", "running"),
+            ("e2e", "running"),
+        ],
+    )
+    .await?;
+    // GitHub hears of the failed scan at once, while the tests run (review round 1).
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while f.last_status(&first).map(|(_, d, _)| d)
+        != Some("Running on Yulius: 0 of 3 jobs passed, security failed".to_owned())
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{:?}",
+            f.h.github.statuses()
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    std::fs::write(&release, "")?;
+    f.settle().await?;
+    f.until_jobs(
+        &first,
+        &[
+            ("security", "failed"),
+            ("quality", "passed"),
+            ("e2e", "passed"),
+        ],
+    )
+    .await?;
+    let (state, description, _) = f.last_status(&first).ok_or("status")?;
+    assert_eq!(state, "failure", "{description}");
+    assert!(
+        description.contains("security (exit code 1)"),
+        "{description}"
+    );
+
+    // Quality fails at once: e2e stops early as before, the scan runs to its end.
+    std::fs::remove_file(&release)?;
+    f.push_feature("fail-security", None)?;
+    let second = f.push_feature("fail-quality", Some("x\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let jobs = f
+        .until_jobs(
+            &second,
+            &[
+                ("quality", "failed"),
+                ("e2e", "cancelled"),
+                ("security", "running"),
+            ],
+        )
+        .await?;
+    let e2e = jobs.iter().find(|j| j["name"] == "e2e").ok_or("e2e")?;
+    assert_eq!(e2e["reason"], "stopped early: job quality failed", "{e2e}");
+    std::fs::write(&release, "")?;
+    f.settle().await?;
+    f.until_jobs(
+        &second,
+        &[
+            ("quality", "failed"),
+            ("e2e", "cancelled"),
+            ("security", "passed"),
+        ],
+    )
+    .await?;
     Ok(())
 }
 
@@ -1448,8 +2032,11 @@ async fn a_run_s_jobs_record_their_stages_and_test_counts() -> TestResult {
         compile.duration_ms().ok_or("compile ended")?,
         unit.duration_ms().ok_or("unit ended")?,
     );
+    // Each stage sleeps 1 s. Its bounds are stamped when Yulius reads the markers, so under load
+    // the line between the two stages moves (1540 ms and 480 ms were seen); both are real and
+    // together cover the job's sleeps.
     assert!(
-        compiled >= 500 && tested >= 500,
+        compiled >= 100 && tested >= 100 && compiled + tested >= 1500,
         "real durations: {compiled} ms, {tested} ms"
     );
     assert!(unit.ended_at <= job.ended_at && compile.started_at >= job.started_at);
@@ -2171,6 +2758,50 @@ async fn the_security_jobs_findings_outside_the_change_are_filed_once() -> TestR
     let security = output_of(&outputs, "security")?;
     assert!(
         security.contains("2 finding(s) outside the change were filed before"),
+        "{security}"
+    );
+    Ok(())
+}
+
+/// SPEC-273 NOI-008: findings outside the change wait for the tests. A run whose other job failed
+/// files no issue and says why in the security job's output; once that job passes, the same
+/// findings are filed.
+#[tokio::test]
+async fn findings_are_filed_only_from_a_run_whose_other_jobs_passed() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"security\"\ncommand = \"cat findings.txt\"\n\n\
+         [[ci.jobs]]\nname = \"quality\"\ncommand = \"if [ -f fail-quality ]; then exit 1; fi\"\n"
+            .to_owned()
+    })
+    .await?;
+    f.push_feature(
+        "findings.txt",
+        Some(&finding_line("medium", "README.md", "8464a81d5a585dd2")),
+    )?;
+    let failing = f.push_feature("fail-quality", Some("x\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let filed = |f: &Fixture| -> BoxResult<usize> {
+        Ok(f.h.github.issues.lock().map_err(|_| "issues")?.len())
+    };
+    assert_eq!(filed(&f)?, 0, "nothing filed while quality fails");
+    let outputs = job_outputs(&f, &failing).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains(
+            "[yulius] 1 finding(s) outside the change not filed or reopened as issues yet: job \
+             quality did not pass"
+        ),
+        "{security}"
+    );
+    let passing = f.push_feature("fail-quality", None)?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert_eq!(filed(&f)?, 1, "filed once the tests pass");
+    let outputs = job_outputs(&f, &passing).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("[yulius] filed issue #101 for the medium finding 8464a81d5a585dd2"),
         "{security}"
     );
     Ok(())

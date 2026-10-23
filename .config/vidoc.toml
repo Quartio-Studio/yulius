@@ -1,8 +1,9 @@
 # The Vidoc security scan, `scripts/dev security` (SPEC-131, ADR-0107; SPEC-195, ADR-0157). With
 # `enabled = false` it exits 0 at once and says nothing was scanned; agents then report the scan as
 # disabled, never as passed. Turn it off in a reviewed pull request that says why. Without this
-# file the scan is on. `exclude` (globs) and `[[ignore]]` (path, title, reason) are reviewed like
-# code.
+# file the scan is on. `exclude` (globs) and `[[ignore]]` (path, title, reason, and optionally the
+# `function` and `line` of the accepted code, which match a reworded repeat there; SPEC-273) are
+# reviewed like code.
 enabled = true
 # mock.js is the web UI's in-browser fake backend for the e2e tests (`?mock=1`, loaded only by
 # `import('./mock.js')` then): its "missing authorization" holds fake data in the viewer's own

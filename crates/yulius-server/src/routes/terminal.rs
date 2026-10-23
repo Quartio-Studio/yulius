@@ -166,7 +166,7 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: TerminalAttach, mut s
                     }
                     Ok(HubFrame::Notice(text)) => send_json(&mut socket, &TerminalServerMsg::Notice { text }).await,
                     Ok(HubFrame::State) => send_state(&app, &mut socket, &attach).await,
-                    Ok(HubFrame::Exit { status, code }) => send_json(&mut socket, &TerminalServerMsg::Exit { status, code }).await,
+                    Ok(HubFrame::Exit { status, code, cause }) => send_json(&mut socket, &TerminalServerMsg::Exit { status, code, cause }).await,
                     Err(RecvError::Lagged(_)) => {
                         let _ = socket.send(Message::Close(Some(CloseFrame { code: CLOSE_LAGGING, reason: "lagging; reconnect".into() }))).await;
                         false

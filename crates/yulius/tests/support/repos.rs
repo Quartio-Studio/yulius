@@ -164,6 +164,57 @@ impl GitPort for LocalGit {
         Ok(())
     }
 
+    async fn bundle_branch(
+        &self,
+        url: &str,
+        branch: &str,
+        work: &Path,
+        bundle: &Path,
+        token: &Secret,
+    ) -> AppResult<String> {
+        let remote = self.remote(url)?;
+        self.record(format!("bundle {url} token={}", token.expose()));
+        let parent = work.parent().ok_or(AppError::NotFound)?;
+        let full = format!("refs/heads/{branch}");
+        git(
+            parent,
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                &format!("--initial-branch={branch}"),
+                &work.to_string_lossy(),
+            ],
+        )
+        .map_err(upstream)?;
+        git(
+            work,
+            &[
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                &remote.to_string_lossy(),
+                &format!("+{full}:{full}"),
+            ],
+        )
+        .map_err(upstream)?;
+        git(
+            work,
+            &[
+                "bundle",
+                "create",
+                "--quiet",
+                &bundle.to_string_lossy(),
+                &full,
+            ],
+        )
+        .map_err(upstream)?;
+        Ok(git(work, &["rev-parse", &full])
+            .map_err(upstream)?
+            .trim()
+            .to_owned())
+    }
+
     /// As the real adapter: `origin/HEAD`, else the branch the clone's `HEAD` names (an empty
     /// clone's local default, not GitHub's).
     async fn default_branch(&self, repo: &Path) -> AppResult<String> {
@@ -468,6 +519,9 @@ pub struct RepoGitHub {
     pub selected_only: AtomicBool,
     /// GitHub fails every repository read with an installation token (an outage).
     pub fail_installation_reads: AtomicBool,
+    /// Repositories moved to another owner (`old owner/name` → `new owner/name`): GitHub
+    /// answers a person's read of the old name with the new repository, as its redirect does.
+    pub transferred: Mutex<HashMap<String, String>>,
 }
 
 impl RepoGitHub {
@@ -552,6 +606,15 @@ impl GitHubPort for RepoGitHub {
                     repo,
                 }),
             );
+        }
+        let moved = self
+            .transferred
+            .lock()
+            .map_err(AppError::internal)?
+            .get(&format!("{owner}/{name}"))
+            .cloned();
+        if let Some((owner, name)) = moved.as_deref().and_then(|m| m.split_once('/')) {
+            return self.base.repo_access(token, owner, name).await;
         }
         self.base.repo_access(token, owner, name).await
     }
@@ -772,6 +835,7 @@ impl World {
             refuse_creation: Mutex::new(None),
             selected_only: AtomicBool::new(false),
             fail_installation_reads: AtomicBool::new(false),
+            transferred: Mutex::new(HashMap::new()),
         });
         let clock = Arc::new(TestClock(AtomicI64::new(1_791_331_200_000)));
         let config = AppConfig::new(
@@ -780,6 +844,7 @@ impl World {
             "http://127.0.0.1:1",
             "/bin/false".into(),
         );
+        let system = Arc::new(super::SettableSystem::default());
         let deps = Deps {
             store: Arc::new(store.clone()),
             clock: clock.clone(),
@@ -791,7 +856,7 @@ impl World {
                 "http://127.0.0.1:1",
             )),
             git: git.clone(),
-            system: Arc::new(super::FixedSystem),
+            system: system.clone(),
             browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
             usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),
         };
@@ -814,6 +879,7 @@ impl World {
                 github: base,
                 clock,
                 store,
+                system,
                 router,
                 _dir: dir,
             },

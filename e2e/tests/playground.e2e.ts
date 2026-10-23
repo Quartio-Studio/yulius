@@ -125,22 +125,26 @@ async function playgroundMenu(browser: Browser, screen: Screen, item: RegExp = /
   await screen.getByRole('menuitem', item).click();
 }
 
-// SPEC-171 PGL-008 (issue #420): removing a playground offers to delete its code for good, and says
-// before it happens that this cannot be undone; left unchecked, the code stays.
-test('removing a playground offers to delete its code for good', async ({ app, browser, screen }) => {
+// SPEC-171 PGL-008 (issue #420), SPEC-276 RDA-010: removing a playground asks what happens to its
+// files, with no default: deleting them says first that its code goes and that this cannot be
+// undone; keeping them keeps its code.
+test('removing a playground asks whether to delete its code for good', async ({ app, browser, screen }) => {
   await app.open(mock('/', '&sandboxes=0&github=0'));
   await playgroundMenu(browser, screen);
   const dialog = screen.getByRole('dialog', /^Remove lab/);
-  await expect(dialog).toContainText('Its code stays on this server');
-  const purge = dialog.getByRole('checkbox', 'Also delete its code from this server for good');
+  const remove = dialog.getByRole('button', 'Remove playground');
+  const purge = dialog.getByRole('radio', /^Delete its files permanently/);
   await expect(purge).not.toBeChecked();
-  await expect(dialog.getByRole('alert')).toBeHidden();
-  await purge.click();
-  await expect(dialog.getByRole('alert')).toHaveText(/deleted from this server for good .* This cannot be undone\. Task records and the audit trail stay\./);
-  expect(await axeViolations(browser)).toEqual([]);
+  await expect(dialog.getByRole('radio', /^Keep its files/)).not.toBeChecked();
   await dialog.getByRole('textbox', /^Type/).fill('lab');
-  await dialog.getByRole('button', 'Remove playground').click();
-  await expect(browser.locator('.toast:has-text("Playground lab removed and its code deleted.")')).toBeVisible();
+  await expect(remove).toBeDisabled();
+  await expect(dialog).toContainText('Its code (the repository and every branch)');
+  await expect(dialog).toContainText('This cannot be undone.');
+  await purge.click();
+  await expect(remove).toBeEnabled();
+  expect(await axeViolations(browser)).toEqual([]);
+  await remove.click();
+  await expect(browser.locator('.toast:has-text("Playground lab removed and its files deleted.")')).toBeVisible();
   const purges = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.purges);
   expect(purges).toEqual(['lab']);
 });
@@ -150,19 +154,20 @@ test('a playground removed while it still runs says when its code goes', async (
   await playgroundMenu(browser, screen);
   await browser.evaluate(() => { (window as unknown as Mocked).__yuliusMock.purgeWaitsFor = ['1 agent run']; });
   const dialog = screen.getByRole('dialog', /^Remove lab/);
-  await dialog.getByRole('checkbox', 'Also delete its code from this server for good').click();
+  await dialog.getByRole('radio', /^Delete its files permanently/).click();
   await dialog.getByRole('textbox', /^Type/).fill('lab');
   await dialog.getByRole('button', 'Remove playground').click();
-  await expect(browser.locator('.toast:has-text("Its code is deleted once 1 agent run ended.")')).toBeVisible();
+  await expect(browser.locator('.toast:has-text("Its files are deleted once 1 agent run ended.")')).toBeVisible();
 });
 
-test('removing a playground without the purge keeps its code', async ({ app, browser, screen }) => {
+test('removing a playground and keeping its files keeps its code', async ({ app, browser, screen }) => {
   await app.open(mock('/', '&sandboxes=0&github=0'));
   await playgroundMenu(browser, screen);
   const dialog = screen.getByRole('dialog', /^Remove lab/);
+  await dialog.getByRole('radio', /^Keep its files/).click();
   await dialog.getByRole('textbox', /^Type/).fill('lab');
   await dialog.getByRole('button', 'Remove playground').click();
-  await expect(browser.locator('.toast:has-text("Playground lab removed.")')).toBeVisible();
+  await expect(browser.locator('.toast:has-text("Playground lab removed. Its files are kept on this server.")')).toBeVisible();
   const purges = await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.purges);
   expect(purges).toBeUndefined();
 });

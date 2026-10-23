@@ -19,8 +19,9 @@ use serde_json::{Map, Value, json};
 use tracing::Instrument as _;
 use yulius_contracts::api::cd::CdDeploy;
 use yulius_contracts::api::sandboxes::CreateSandbox;
-use yulius_contracts::api::secrets::{AgentSecretPatch, HostRequestAnswer};
+use yulius_contracts::api::secrets::{AgentSecretPatch, AgentSecretView, HostRequestAnswer};
 use yulius_contracts::api::tasks::ContinueTask;
+use yulius_contracts::api::variables::ProjectVariableInput;
 use yulius_contracts::mcp::{
     RpcRequest, RpcResponse, SUPPORTED_PROTOCOL_VERSIONS, ToolDescriptor, text_result,
 };
@@ -42,7 +43,7 @@ pub const MAX_REMOTE_BODY_BYTES: usize = 32 << 20;
 pub const REMOTE_REQUESTS_PER_MINUTE: usize = 120;
 
 /// The remote MCP's instructions for a person's own agent.
-pub const REMOTE_INSTRUCTIONS: &str = "Yulius runs coding-agent tasks on the person's GitHub repositories, which it calls projects. Every project tool takes `project`: owner/name as projects_list shows it. To bring a repository in: repositories_list, project_import, project_get (what onboarding will do), onboarding_start; its onboarding task then adapts the repository and its CI; follow it with tasks_list and task_get. CI is Yulius CI, configured by [[ci.jobs]] in the repository's yulius.toml: read files with project_files and project_file_read, change them with project_change (a commit on a new branch and a pull request that Yulius CI tests), follow it with ci_runs and ci_run, and merge it with change_merge once it passed. Work that needs judgment is a task: task_create, then task_get, session_read (its transcript), task_delivery (its pull request and checks), task_message to tell it something, task_restart to continue it, task_stop. To onboard a folder on this computer (\"onboard this into Yulius\"), use the `yulius` CLI here, signed in with `yulius remote login <url>` and this operate token, so nothing waits for the person: 1. `yulius onboard <folder> --yes --sessions all` sends its unpublished branches, uncommitted work and Claude Code sessions (secrets redacted on this computer) and adds the project. 2. Find every key the project uses to build, test and deploy: `secrets.*` in .github/workflows, deploy scripts and docs, .env* files, the ~/.ssh/config hosts and keys its deploys use, cloud CLI credentials; never print or read a value into this conversation. Import them by file: `yulius secrets import --to agent --sandbox owner/name --yes --env-files [dotenv file] --from-file NAME=PATH ...` (a dotenv comment above a key becomes its description; a multi-line value other than a PEM or OpenSSH key must be made one line first), then describe each with secret_update. 3. Write a hand-over without values (which secret is which, the hosts and commands deploys use, what only ran on this computer, what you could not find) and start onboarding with it: `yulius project onboard --notes <file>` (onboarding_start with notes). Its task adapts the repository, its docs, CI and CD by itself. Act only on what the person asks; delete, skip and merge only what they name.";
+pub const REMOTE_INSTRUCTIONS: &str = "Yulius runs coding-agent tasks on the person's GitHub repositories, which it calls projects. Every project tool takes `project`: owner/name as projects_list shows it. To bring a repository in: repositories_list, project_import, project_get (what onboarding will do), onboarding_start; its onboarding task then adapts the repository and its CI; follow it with tasks_list and task_get. CI is Yulius CI, configured by [[ci.jobs]] in the repository's yulius.toml: read files with project_files and project_file_read, change them with project_change (a commit on a new branch and a pull request that Yulius CI tests), follow it with ci_runs and ci_run, and merge it with change_merge once it passed. Work that needs judgment is a task: task_create, then task_get, session_read (its transcript), task_delivery (its pull request and checks), task_message to tell it something, task_restart to continue it, task_stop. To onboard a folder on this computer (\"onboard this into Yulius\"), use the `yulius` CLI here, signed in with `yulius remote login <url>` and this operate token, so nothing waits for the person: 1. `yulius onboard <folder> --yes --sessions all` sends its unpublished branches, uncommitted work and Claude Code sessions (secrets redacted on this computer) and adds the project. 2. Find every key the project uses to build, test and deploy: `secrets.*` in .github/workflows, deploy scripts and docs, .env* files, the ~/.ssh/config hosts and keys its deploys use, cloud CLI credentials; never print or read a value into this conversation. Import them by file: `yulius secrets import --to agent --sandbox owner/name --yes --env-files [dotenv file] --from-file NAME=PATH ...` (a dotenv comment above a key becomes its description; a multi-line value other than a PEM or OpenSSH key must be made one line first), then describe each with secret_update. The import never makes ordinary text a secret (configuration words such as production, host names, e-mail addresses, URLs without credentials), because a secret's value is masked as [secret:NAME] wherever it appears: it sends such values, and plain values shorter than 8 characters, to the project variables instead (marked ~, not a secret), which every task of the project has in its environment in plain; under a credential's name, or with --no-vars, it skips them. Run in the project's checkout, it asks about secret values its tracked files hold (with --yes it skips them). Set other values that are not secrets, such as account or project ids, with `yulius vars set NAME=value` (variables_set) or `yulius vars import FILE`; never make them secrets, which would mask them everywhere. A secret imported by mistake, whose [secret:NAME] now masks ordinary words, is deleted with `yulius secrets delete NAME` (secret_delete). Live state a deploy tool keeps on this computer (a folder with an inventory database, rollout folders, configs, for example ~/.<tool>-operator or ~/.local/share/<tool>) moves as an agent state, without reading it: `yulius secrets import --to agent --sandbox owner/name --yes --state NAME=DIR ...` (one per folder, up to 64 MiB packed; links are refused). Once the project's task restores it, the sandbox's copy is the one written to and this computer is no longer the writer: say so to the person, never run rollouts from that folder again, and resend only on purpose with --replace-state; `yulius secrets state-get NAME --out FILE` downloads the sandbox's copy. 3. Write a hand-over without values (which secret is which, which state goes where in the sandbox home, the hosts and commands deploys use, what only ran on this computer, what you could not find) and start onboarding with it: `yulius project onboard --notes <file>` (onboarding_start with notes). Its task adapts the repository, its docs, CI and CD by itself. Act only on what the person asks; delete, skip and merge only what they name.";
 
 /// Where a tool acts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +101,10 @@ const REMOTE_TOOLS: &[(&str, Reach, Action)] = &[
     ("secrets_list", Reach::Project, Action::View),
     ("secret_update", Reach::Project, Action::Configure),
     ("secret_hosts_answer", Reach::Project, Action::Configure),
+    ("secret_delete", Reach::Project, Action::Configure),
+    ("variables_list", Reach::Project, Action::View),
+    ("variables_set", Reach::Project, Action::Configure),
+    ("variable_delete", Reach::Project, Action::Configure),
 ];
 
 /// Tools that run in a task of their own, to their end and their audit, even when the caller goes
@@ -353,6 +358,44 @@ fn own_descriptors() -> Vec<ToolDescriptor> {
                 "hosts": {"type": "array", "items": {"type": "string"}, "description": "The requested hosts secrets_list showed"}
             }),
             &["secret", "allow", "hosts"],
+        ),
+        tool(
+            "secret_delete",
+            "Delete one of the project's own agent secrets by name, for example one imported by mistake whose value is ordinary text (a word every [secret:NAME] in files stands for). Global and personal secrets are removed on the Secrets page. Audited; the value is never shown.",
+            json!({"secret": {"type": "string", "description": "Secret NAME from secrets_list"}}),
+            &["secret"],
+        ),
+        tool(
+            "variables_list",
+            "The project's variables (SPEC-275): its non-secret values (regions, environment names, account and project ids, base URLs, contact addresses) with their descriptions, in plain. Every task run of the project has them in its environment.",
+            json!({}),
+            &[],
+        ),
+        tool(
+            "variables_set",
+            "Create or change project variables, in plain: non-secret values only, never a key, token or password (those are agent secrets: `yulius secrets import`). A name that is an agent secret of the project is refused. An absent description keeps the stored one. Audited without values.",
+            json!({
+                "variables": {
+                    "type": "array",
+                    "description": "At most 200",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "NAME, like an environment variable"},
+                            "value": {"type": "string", "description": "One line, at most 4 KiB"},
+                            "description": {"type": "string", "description": "What it is"}
+                        },
+                        "required": ["name", "value"]
+                    }
+                }
+            }),
+            &["variables"],
+        ),
+        tool(
+            "variable_delete",
+            "Delete a project variable by name. Audited.",
+            json!({"name": {"type": "string", "description": "Variable NAME from variables_list"}}),
+            &["name"],
         ),
     ];
     instance
@@ -908,6 +951,50 @@ impl App {
                     "requested_hosts": view.requested_hosts,
                 }}))
             }
+            // SPEC-274 PLW-004: the project's own secret only; the value is never read.
+            "secret_delete" => {
+                let secret = str_arg(args, "secret")?;
+                let named: Vec<AgentSecretView> = self
+                    .agent_secrets(ctx, sid)
+                    .await?
+                    .into_iter()
+                    .filter(|s| s.name == secret)
+                    .collect();
+                let Some(own) = named.iter().find(|s| s.scope == "sandbox") else {
+                    return Err(match named.first() {
+                        Some(other) => AppError::Forbidden(format!(
+                            "{secret} is a {} secret, not the project's: remove it on the Secrets page",
+                            if other.scope == "instance" {
+                                "global"
+                            } else {
+                                "personal"
+                            }
+                        )),
+                        None => {
+                            AppError::Invalid(format!("the project has no agent secret {secret}"))
+                        }
+                    });
+                };
+                self.delete_agent_secret(ctx, &own.id).await?;
+                Ok(json!({"deleted": own.name}))
+            }
+            // Project variables (SPEC-275 VAR-005): plain values, shown as they are.
+            "variables_list" => record(&self.project_variables(ctx, sid).await?),
+            "variables_set" => {
+                let inputs: Vec<ProjectVariableInput> =
+                    serde_json::from_value(args.get("variables").cloned().unwrap_or(Value::Null))
+                        .map_err(|e| {
+                        AppError::Invalid(format!(
+                            "`variables` must be a list of {{name, value, description?}}: {e}"
+                        ))
+                    })?;
+                record(&self.set_project_variables(ctx, sid, &inputs, false).await?)
+            }
+            "variable_delete" => {
+                let variable = str_arg(args, "name")?;
+                self.delete_project_variable(ctx, sid, variable).await?;
+                Ok(json!({"deleted": variable}))
+            }
             other => Err(AppError::Invalid(format!("unknown tool: {other}"))),
         }
     }
@@ -942,8 +1029,16 @@ mod tests {
             "yulius secrets import --to agent",
             "--yes --env-files",
             "--from-file NAME=PATH",
+            "--state NAME=DIR",
+            "no longer the writer",
             "never print",
             "yulius project onboard --notes",
+            // SPEC-275 VAR-008: plain values go to the project's variables, never secrets.
+            "project variables",
+            "yulius vars set NAME=value",
+            // SPEC-274 PLW-006.
+            "ordinary text",
+            "yulius secrets delete NAME",
         ] {
             assert!(REMOTE_INSTRUCTIONS.contains(step), "{step}");
         }

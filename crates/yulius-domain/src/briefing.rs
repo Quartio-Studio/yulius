@@ -47,7 +47,7 @@ const MAX_STEPS_LISTED: usize = 100;
 const MAX_ENVIRONMENTS_LISTED: usize = 8;
 
 /// Yulius MCP tools announced to every session (SPEC-002 §7.4), as `(name, purpose)`.
-pub const YULIUS_TOOLS: [(&str, &str); 39] = [
+pub const YULIUS_TOOLS: [(&str, &str); 40] = [
     (
         "project_context",
         "project summary, architecture and decision index, recent changes, delivery rules",
@@ -131,6 +131,10 @@ pub const YULIUS_TOOLS: [(&str, &str); 39] = [
     (
         "production_protect",
         "onboarding: protect the production branch from agents, as its admin owner",
+    ),
+    (
+        "reference_repo",
+        "read another repository of this project's owner, fetched as the task's owner (not needs_you)",
     ),
     (
         "issue_create",
@@ -779,9 +783,10 @@ fn foundations(input: &BriefingInput<'_>) -> String {
 /// A playground leaves out the tools of GitHub and deployment (SPEC-099); its Yulius CI is
 /// read and run again like any other (SPEC-163).
 fn tools(playground: bool) -> String {
-    const NOT_IN_A_PLAYGROUND: [&str; 6] = [
+    const NOT_IN_A_PLAYGROUND: [&str; 7] = [
         "delivery_deploy",
         "production_protect",
+        "reference_repo",
         "cd_status",
         "cd_deploy",
         "issue_create",
@@ -798,8 +803,8 @@ fn tools(playground: bool) -> String {
     let shell = " Remove this task's files at `/`, in `/tmp` or via a variable with \
                  `yulius remove`, not `rm`.";
     format!(
-        "## Yulius tools\n\nThe `yulius` MCP server (each tool's description says when to use \
-         it): {names}.{shell}\n\n"
+        "## Yulius tools\n\nThe `yulius` MCP server (each tool says when to use it): \
+         {names}.{shell}\n\n"
     )
 }
 
@@ -857,7 +862,8 @@ fn security_scan(input: &BriefingInput<'_>) -> String {
     "## Security scan\n\nThis instance has a Vidoc key: `yulius security-scan` sends the files your \
      branch changed (`--all`: the whole repository) to Vidoc's vidoc-1. It exits 1 on critical \
      or high findings, or medium ones in your changed lines; decide on low ones there (fix, or \
-     say why not in Evidence); 2 is not run, never a pass. A project's CI runs it built in (`yulius \
+     say why not in Evidence); 2 is not run and 3 incomplete (rerun it), never a pass. A \
+     project's CI runs it built in (`yulius \
      security-scan --ci`) and files findings outside your change as issues.\n\n"
         .to_owned()
 }

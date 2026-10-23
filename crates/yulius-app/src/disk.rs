@@ -21,8 +21,9 @@ use yulius_domain::disk::{
     Candidate, Owner, bytes_to_free, cache_paths, human, job_cache_cap, only_rebuildable, owner_of,
     plan_prune, prune_after,
 };
-use yulius_domain::ids::TaskId;
+use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::spec_format::parse_yulius_toml_caches;
+use yulius_domain::sweep::Level;
 use yulius_domain::task::{Activity, StopReason, TaskStatus};
 
 use crate::context::App;
@@ -33,6 +34,10 @@ use crate::ports::isolation::SandboxRef;
 
 /// How often the upkeep runs.
 pub const DISK_EVERY: Duration = Duration::from_secs(5 * 60);
+/// How often the upkeep reads the data disk's level (SPEC-276 RDA-006).
+pub const DISK_TICK: Duration = Duration::from_secs(60);
+/// How often Cargo build directories are swept while the disk is not low (SPEC-276 RDA-001).
+pub const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
 /// First round after start.
 const DISK_FIRST: Duration = Duration::from_secs(2 * 60);
 /// A task that ended this recently keeps its caches (it is often continued at once) unless the
@@ -88,6 +93,12 @@ struct Scan {
     found: Vec<Found>,
     /// Worktrees of closed and cancelled tasks.
     ended: Vec<(TaskRecord, PathBuf)>,
+}
+
+/// Whether the upkeep runs a round now: the first one, one [`DISK_EVERY`] after the last
+/// (`since_last`), or at once when the data disk's level rose (SPEC-276 RDA-006).
+pub(crate) fn round_due(since_last: Option<Duration>, level: Level, before: Level) -> bool {
+    since_last.is_none_or(|since| since >= DISK_EVERY) || level > before
 }
 
 /// Allocated bytes under `path` (links not followed), bounded in entries.
@@ -165,25 +176,59 @@ fn declared_caches(worktree: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Marks a sandbox's upkeep running until dropped.
+struct UpkeepMark<'a> {
+    app: &'a App,
+    sandbox: SandboxId,
+}
+
+impl<'a> UpkeepMark<'a> {
+    fn take(app: &'a App, sandbox: &SandboxId) -> Option<Self> {
+        let mut running = app
+            .upkeeps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        running.insert(sandbox.clone()).then(|| Self {
+            app,
+            sandbox: sandbox.clone(),
+        })
+    }
+}
+
+impl Drop for UpkeepMark<'_> {
+    fn drop(&mut self) {
+        self.app
+            .upkeeps
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.sandbox);
+    }
+}
+
 impl App {
     pub(super) fn start_disk_upkeep(self: &Arc<Self>) {
         let app = Arc::clone(self);
         tokio::spawn(async move {
             tokio::time::sleep(DISK_FIRST).await;
-            let mut every = tokio::time::interval(DISK_EVERY);
+            // The disk's level is read every minute; a round runs every DISK_EVERY, and at once
+            // when the level rises (SPEC-276 RDA-006).
+            let mut tick = tokio::time::interval(DISK_TICK);
+            let mut rounds: Option<tokio::time::Instant> = None;
+            let mut swept: Option<tokio::time::Instant> = None;
             loop {
-                every.tick().await;
-                let Ok(sandboxes) = app.deps.store.sandboxes().await else {
+                tick.tick().await;
+                let (level, before) = app.check_disk().await;
+                if !round_due(rounds.map(|at| at.elapsed()), level, before) {
                     continue;
-                };
-                for sandbox in &sandboxes {
-                    if let Err(err) = app.disk_upkeep(sandbox, false).await {
-                        tracing::warn!(sandbox = %sandbox.id, error = %err, "disk upkeep failed");
-                    }
                 }
-                // Removed playgrounds whose code was asked to go, once nothing of them runs
-                // (SPEC-171).
-                app.run_purges().await;
+                rounds = Some(tokio::time::Instant::now());
+                // Cargo build directories lose what nobody used (RDA-001): hourly, and every
+                // round while the disk is low.
+                let sweep_due = swept.is_none_or(|at| at.elapsed() >= SWEEP_EVERY);
+                if sweep_due || level >= Level::Low {
+                    swept = Some(tokio::time::Instant::now());
+                }
+                app.disk_round(sweep_due).await;
             }
         });
     }
@@ -210,13 +255,35 @@ impl App {
         sandbox: &SandboxRecord,
         pressure: bool,
     ) -> AppResult<DiskReport> {
+        self.disk_upkeep_needing(sandbox, pressure, 0).await
+    }
+
+    /// [`App::disk_upkeep`] that also frees `host_need` bytes for a critical data disk (SPEC-276
+    /// RDA-006), as quota pressure does: the engine's unused images, then the largest caches of
+    /// idle tasks and CI checkouts.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn disk_upkeep_needing(
+        &self,
+        sandbox: &SandboxRecord,
+        pressure: bool,
+        host_need: u64,
+    ) -> AppResult<DiskReport> {
+        // One upkeep of a sandbox at a time (the archive's round beside the loop's): a second
+        // would remove the same caches and report spurious failures.
+        let Some(_one) = UpkeepMark::take(self, &sandbox.id) else {
+            return Ok(DiskReport::default());
+        };
         let reference = self.sandbox_ref(sandbox);
         let isolation = self.isolation.get();
         let usage = match isolation {
             Some(isolation) => isolation.disk(&reference).await,
             None => None,
         };
-        let need = usage.map_or(0, |usage| bytes_to_free(usage.used, usage.limit));
+        let need = usage
+            .map_or(0, |usage| bytes_to_free(usage.used, usage.limit))
+            .max(host_need);
         // The engine's unused images and build cache go first: rebuilt or pulled again, never
         // a task's (SPEC-187 DKR-006).
         let engine_freed = match isolation {
@@ -350,7 +417,12 @@ impl App {
                 let Some(owner) = self.cache_owner(&task, pressure).await else {
                     continue;
                 };
-                if owner == Owner::Ended && !pressure && now - task.updated_at.0 < ENDED_GRACE_MS {
+                // An archived task was put away: no grace (SPEC-276 RDA-008).
+                if owner == Owner::Ended
+                    && !pressure
+                    && task.archived_at.is_none()
+                    && now - task.updated_at.0 < ENDED_GRACE_MS
+                {
                     continue;
                 }
                 let worktree = root.join(task.id.as_str());
@@ -523,7 +595,7 @@ impl App {
     /// "unknown" read as "none" under a running gate). Without `pressure` an idle task that moved
     /// within [`prune_after`] its activity is idle whatever it runs (its caches stay anyway), so
     /// it is not probed: each probe can take up to the probe timeout.
-    async fn cache_owner(&self, task: &TaskRecord, pressure: bool) -> Option<Owner> {
+    pub(crate) async fn cache_owner(&self, task: &TaskRecord, pressure: bool) -> Option<Owner> {
         let quiet_ms = self.now().0 - task.updated_at.0;
         let idle =
             task.status == TaskStatus::Running && task.activity.is_some_and(Activity::is_idle);
@@ -568,18 +640,25 @@ impl App {
         )
     }
 
+    /// Whether Git ignores nothing in `worktree` but rebuildable caches (`target`, `.tools`,
+    /// `node_modules`, declared ones): files Git ignores that are not (local configuration,
+    /// data) are not Git's to lose, so only then may Yulius remove the worktree by itself.
+    pub(crate) async fn worktree_only_caches(&self, worktree: &Path) -> bool {
+        let declared = declared_caches(worktree);
+        matches!(
+            self.deps.git.ignored_entries(worktree).await,
+            Ok(Some(ignored)) if only_rebuildable(&ignored, &declared)
+        )
+    }
+
     async fn remove_ended_worktree(
         &self,
         sandbox: &SandboxRecord,
         task: &TaskRecord,
         worktree: &Path,
     ) -> bool {
-        // Files Git ignores that are not rebuildable caches (local configuration, data) are not
-        // Git's to lose; caches (`target`, `.tools`, `node_modules`, declared ones) are.
-        let declared = declared_caches(worktree);
-        match self.deps.git.ignored_entries(worktree).await {
-            Ok(Some(ignored)) if only_rebuildable(&ignored, &declared) => {}
-            _ => return false,
+        if !self.worktree_only_caches(worktree).await {
+            return false;
         }
         // Checked again right before Git removes it: a link on the way would hand Git another
         // sandbox's folder (SPEC-263 DUL-003). Git resolves the path itself once more.
@@ -601,5 +680,28 @@ impl App {
             }
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_round_runs_first_every_five_minutes_and_at_once_when_the_disk_fills() {
+        let minute = Duration::from_secs(60);
+        assert!(round_due(None, Level::Ok, Level::Ok), "the first one");
+        assert!(!round_due(Some(minute), Level::Ok, Level::Ok));
+        assert!(round_due(Some(DISK_EVERY), Level::Ok, Level::Ok));
+        assert!(
+            round_due(Some(minute), Level::Low, Level::Ok),
+            "the level rose"
+        );
+        assert!(round_due(Some(minute), Level::Critical, Level::Low));
+        assert!(
+            !round_due(Some(minute), Level::Low, Level::Low),
+            "low already: every 5 minutes"
+        );
+        assert!(!round_due(Some(minute), Level::Ok, Level::Low), "it fell");
     }
 }

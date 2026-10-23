@@ -266,7 +266,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "repo_cleanup".into(),
-            description: "Remove stale branches and worktrees reported by repo_hygiene: the given items, or every safe item when items is omitted. Unmerged branches without a pull request (reason idle) are removed only with force. Live tasks' worktrees, protected branches and branches with an open pull request are never removed; dirty worktrees are kept.".into(),
+            description: "Remove stale branches and worktrees reported by repo_hygiene: the given items, or every safe item when items is omitted. Unmerged branches without a pull request (reason idle) are removed only with force. Live or paused tasks' worktrees, protected branches and branches an open pull request uses (head or base) are never removed; dirty worktrees, worktrees with ignored files that are not caches and branches that moved on GitHub since the scan are kept. Yulius also removes the safe items by itself every 6 hours, except merged branches no pull request had.".into(),
             input_schema: schema(json!({
                 "items": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string", "enum": ["remote_branch", "local_branch", "worktree"]}, "name": {"type": "string"}}, "required": ["kind", "name"]}},
                 "force": {"type": "boolean"}
@@ -299,7 +299,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "needs_you".into(),
-            description: "Ask a person to do something only a person can (add a credential to the vault on the Secrets page, allow a secret, deploy production, decide on a paid plan): the task shows \"Needs you: <action>\" and people are notified, until a person writes to the task or you call it again with resolved: true (for example once cd_status shows the secret). Say exactly what to do and where; go on with other work meanwhile. Not for questions you can decide yourself.".into(),
+            description: "Ask a person to do something only a person can (add a credential to the vault on the Secrets page, allow a secret, deploy production, decide on a paid plan): the task shows \"Needs you: <action>\" and people are notified, until a person writes to the task or you call it again with resolved: true (for example once cd_status shows the secret). Say exactly what to do and where; go on with other work meanwhile. Not for questions you can decide yourself, and not for reading another repository of this project's owner: reference_repo fetches it without a person.".into(),
             input_schema: schema(json!({
                 "action": {"type": "string", "description": "What the person should do, imperative, one line (at most 200 characters), e.g. 'Add DEV_SSH_KEY on the Secrets page'"},
                 "why": {"type": "string", "description": "Why it is needed (at most 500 characters)"},
@@ -311,6 +311,13 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
             name: "production_protect".into(),
             description: "Protect this project's production branch from agents (ADR-0114, ADR-0129): Yulius adds a GitHub branch ruleset on it (Restrict updates, Restrict deletions, Block force pushes; only the Repository admin role may bypass) acting as this task's owner, and only in the onboarding task and when GitHub says that person is a repository admin (and their account is enabled). It only adds protection and changes nothing when agents already cannot write the branch. Use it when your onboarding prompt says the production branch is not protected from agents; never change protection from your shell. When it is refused, ask a person with needs_you, quoting the setting it names.".into(),
             input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "reference_repo".into(),
+            description: "Read another GitHub repository of this project's owner (an earlier version to port from, a shared library, a product's source) that your own Git and gh cannot (they reach only this repository): Yulius fetches its default branch as this task's owner, when GitHub says that person can read it, and places a Git bundle of it among this task's attachments; clone it outside your worktree into <sandbox>/reference/<owner>/<name> as the answer says, and call it again for a fresh copy. Read-only: port what you need, never push from it. Use it before asking a person for access; only when it is refused (another owner, no read access) ask with needs_you.".into(),
+            input_schema: schema(json!({
+                "repo": {"type": "string", "description": "The repository as owner/name, e.g. Quartio-Studio/product"}
+            }), &["repo"]),
         },
         ToolDescriptor {
             name: "issue_create".into(),
@@ -424,6 +431,21 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
             }), &["name", "file"]),
         },
         ToolDescriptor {
+            name: "secret_state_restore".into(),
+            description: "Restore an agent state (secrets_list names them: a folder of operator state a person sent from their computer, such as a deploy tool's inventory, rollout folders and configs) into a folder of the sandbox home, which later tasks keep: Yulius writes the files with their modes; you never receive their content. Once restored, that copy is the one written to: run the project's tools against it there, never print its files or copy them into the conversation, and save it with secret_state_save after each change. A state already restored and current is refused: use the folder secrets_list names (restored_path). The target must be missing or an empty folder (follows no links). Audited.".into(),
+            input_schema: schema(json!({
+                "name": {"type": "string", "description": "The state's NAME from secrets_list"},
+                "path": {"type": "string", "description": "A folder of your home as ~/path, e.g. ~/.quartio-operator (where the project's tools expect it)"}
+            }), &["name", "path"]),
+        },
+        ToolDescriptor {
+            name: "secret_state_save".into(),
+            description: "Save the restored copy of an agent state back into the vault as its next version (a backup, and what the person downloads with yulius secrets state-get): call it after each change, such as a rollout, once the tools that write it are done. Links and special files are left out and named. Refused when the person sent a newer copy to replace it (restore that first) or another task saved meanwhile. Audited.".into(),
+            input_schema: schema(json!({
+                "name": {"type": "string", "description": "The state's NAME from secrets_list"}
+            }), &["name"]),
+        },
+        ToolDescriptor {
             name: "browser_fill_secret".into(),
             description: "Type an agent secret into the project browser without seeing it: its value (password or key) or, when the secret stores them (Basic credentials, older secrets), its user name or current two-factor (TOTP) code, into the focused field or the element matching selector, in a tab whose page is on one of the secret's bound hosts. Use browser_snapshot first to find the field.".into(),
             input_schema: schema(json!({
@@ -514,7 +536,11 @@ impl App {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let project = caller.project();
+        // A Superagent calls only the tools it is served, whatever the arms below allow.
         let outcome: AppResult<Value> = match name {
+            _ if matches!(caller, McpCaller::Cockpit(_)) && !COCKPIT_TOOLS.contains(&name) => {
+                Err(AppError::Invalid(format!("unknown tool: {name}")))
+            }
             "tasks_list" => self.tool_tasks_list(&project, &args).await,
             "task_get" => self.tool_task_get(&project, &args).await,
             "task_create" => self.tool_task_create(&project, &args).await,
@@ -609,6 +635,7 @@ impl App {
             "cd_deploy" => self.tool_cd_deploy(ctx, &args).await,
             "needs_you" => self.tool_needs_you(ctx, &args).await,
             "production_protect" => self.tool_production_protect(ctx).await,
+            "reference_repo" => self.tool_reference_repo(ctx, &args).await,
             "issue_create" => self.tool_issue_create(ctx, &args).await,
             "browser_tabs" => self.tool_browser_tabs(ctx, &args).await,
             "browser_open" => self.tool_browser_open(ctx, &args).await,
@@ -636,6 +663,8 @@ impl App {
                 self.tool_secret_create_from_file(SecretUser::Task(ctx), &args)
                     .await
             }
+            "secret_state_restore" => self.tool_secret_state_restore(ctx, &args).await,
+            "secret_state_save" => self.tool_secret_state_save(ctx, &args).await,
             other => Err(AppError::Invalid(format!("unknown tool: {other}"))),
         })
     }

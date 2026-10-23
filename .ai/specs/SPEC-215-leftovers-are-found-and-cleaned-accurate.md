@@ -12,6 +12,8 @@ Scope authorization: task #202 (requested by MrFishPL): "Make Yulius find and cl
 leftover accurately, never touching anything still in use. It cleans by itself after every update
 (and on a schedule). A superadmin can list the leftovers and delete them by hand." Fixes #625 and
 #582. Amends PRJ-009 (SPEC-001) and SPEC-008's upkeep of finished tasks. Decision: ADR-0170.
+Amended by SPEC-276 (ADR-0205): removing a sandbox asks whether to delete its files permanently,
+so "everything of the removed sandbox" goes on request as well.
 
 ## Goal
 

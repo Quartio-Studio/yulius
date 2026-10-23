@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use yulius_contracts::api::leftovers::{
-    DeleteLeftoversRequest, LeftoverJobView, LeftoverView, LeftoversView,
+    DeleteLeftoversRequest, KeptSandboxView, LeftoverJobView, LeftoverView, LeftoversView,
 };
 use yulius_domain::disk::human;
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId};
@@ -128,6 +128,8 @@ struct Inner {
     scanned_at: Option<Timestamp>,
     job: Option<LeftoverJobView>,
     next_auto_at: Option<Timestamp>,
+    /// The last automatic round, as it ended (SPEC-276 RDA-009).
+    last_auto: Option<LeftoverJobView>,
 }
 
 /// What a deletion did.
@@ -198,6 +200,16 @@ impl Drop for JobEnd<'_> {
 #[derive(Default)]
 struct Pass {
     ci_keys: std::collections::HashMap<SandboxId, Option<HashSet<String>>>,
+}
+
+/// Whether `name` is the export a removal of the sandbox `slug` wrote (`sandbox-<slug>-<ms>.json`):
+/// never another sandbox's whose slug only starts with it (`app` and `app-2`).
+fn is_export_of(name: &str, slug: &str) -> bool {
+    name.strip_prefix("sandbox-")
+        .and_then(|rest| rest.strip_prefix(slug))
+        .and_then(|rest| rest.strip_prefix('-'))
+        .and_then(|rest| rest.strip_suffix(".json"))
+        .is_some_and(|ms| !ms.is_empty() && ms.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn exists(path: &Path) -> bool {
@@ -650,9 +662,8 @@ impl App {
         for task in &tasks {
             extra.push(self.data_path(&["transcripts", task.id.as_str()]));
         }
-        let prefix = format!("sandbox-{}-", sandbox.slug);
         for (name, path) in entries(&self.data_path(&["exports"])) {
-            if name.starts_with(&prefix) && name.ends_with(".json") {
+            if is_export_of(&name, &sandbox.slug) {
                 extra.push(path);
             }
         }
@@ -688,7 +699,16 @@ impl App {
         let Some(removed) = record.removed_at else {
             return Ok(Some("the sandbox is live again".into()));
         };
-        if !removed_long_enough(removed.0, self.now().0) {
+        // Files asked to go permanently go as soon as nothing of the sandbox runs (SPEC-276
+        // RDA-011): no 10-minute wait.
+        if !removed_long_enough(removed.0, self.now().0)
+            && !self
+                .deps
+                .store
+                .pending_purges()
+                .await?
+                .contains(&sandbox.id)
+        {
             return Ok(Some("it was removed less than 10 minutes ago".into()));
         }
         let running = self.still_running(&sandbox.id).await?;
@@ -1304,6 +1324,35 @@ impl App {
         }
     }
 
+    /// Deletes every file of the removed `sandbox` (SPEC-276 RDA-011): "everything of the
+    /// removed sandbox", which holds its disposable parts too, through its guard and the mapped
+    /// removal, audited `leftovers.delete`. `Ok(None)` once nothing of it is left; `Ok(Some(why))`
+    /// while its rule keeps it (something of it runs, its holder lives).
+    ///
+    /// # Errors
+    /// Store failures, and a removal that failed (tried again on the next round).
+    pub(crate) async fn purge_removed_files(
+        &self,
+        sandbox: &SandboxRecord,
+    ) -> AppResult<Option<String>> {
+        let mut found = Vec::new();
+        self.scan_removed(sandbox, &mut found).await?;
+        let Some(item) = found.into_iter().find(|i| i.kind == Kind::RemovedSandbox) else {
+            return Ok(None);
+        };
+        let mut report = DeleteReport::default();
+        self.delete_leftover(&item, "yulius", &mut Pass::default(), &mut report)
+            .await;
+        if let Some(kept) = report.kept.first() {
+            let why = kept.split_once(": ").map_or(kept.as_str(), |(_, why)| why);
+            return Ok(Some(why.to_owned()));
+        }
+        if let Some(failed) = report.failed.first() {
+            return Err(AppError::Internal(format!("cannot delete {failed}")));
+        }
+        Ok(None)
+    }
+
     /// Deletes `items` one after the other, each after its guard, updating the job's progress.
     pub async fn delete_leftovers(&self, items: &[Leftover], actor: &str) -> DeleteReport {
         let mut report = DeleteReport::default();
@@ -1397,13 +1446,18 @@ impl App {
         if let Err(err) = self.scan_into_state().await {
             tracing::warn!(error = %err, "the leftovers scan failed");
             self.end_leftover_job(Some(err.to_string()));
+            self.with_leftovers(|inner| inner.last_auto = inner.job.clone());
             return None;
         }
+        // A sandbox whose files were asked to go is the purge's (SPEC-276 RDA-011): two deleters of
+        // one tree would report each other's removals as failures.
+        let purged = self.deps.store.pending_purges().await.unwrap_or_default();
         let safe: Vec<Leftover> = self.with_leftovers(|inner| {
             inner
                 .items
                 .iter()
                 .filter(|item| item.kind.auto())
+                .filter(|item| item.sandbox.as_ref().is_none_or(|id| !purged.contains(id)))
                 .cloned()
                 .collect()
         });
@@ -1415,6 +1469,7 @@ impl App {
         });
         let report = self.delete_leftovers(&safe, "yulius").await;
         self.end_leftover_job(None);
+        self.with_leftovers(|inner| inner.last_auto = inner.job.clone());
         if report.deleted > 0 || !report.failed.is_empty() {
             tracing::info!(
                 deleted = report.deleted,
@@ -1520,6 +1575,7 @@ impl App {
         let disk = tokio::task::spawn_blocking(move || probe.snapshot(&dir))
             .await
             .unwrap_or_default();
+        let kept = self.kept_sandboxes().await;
         self.with_leftovers(|inner| {
             let deletable = inner.items.iter().filter(|i| i.kind.deletable());
             let total_bytes = deletable.clone().filter_map(|i| i.bytes).sum();
@@ -1537,8 +1593,47 @@ impl App {
                 data_dir: data_dir.to_string_lossy().into_owned(),
                 job: inner.job.clone(),
                 next_auto_at: inner.next_auto_at.map(rfc3339),
+                last_auto: inner.last_auto.clone(),
+                kept,
             }
         })
+    }
+
+    /// The removed sandboxes whose files are still on the server (RDA-012): each with the size its
+    /// "everything of the removed sandbox" item had at the last scan (`None` before one).
+    async fn kept_sandboxes(&self) -> Vec<KeptSandboxView> {
+        let sizes: std::collections::HashMap<SandboxId, Option<u64>> =
+            self.with_leftovers(|inner| {
+                inner
+                    .items
+                    .iter()
+                    .filter(|i| i.kind == Kind::RemovedSandbox)
+                    .filter_map(|i| Some((i.sandbox.clone()?, i.bytes)))
+                    .collect()
+            });
+        let removed = self
+            .deps
+            .store
+            .removed_sandboxes()
+            .await
+            .unwrap_or_default();
+        let pending = self.deps.store.pending_purges().await.unwrap_or_default();
+        removed
+            .into_iter()
+            .filter(|s| sizes.contains_key(&s.id) || exists(&self.sandbox_dir(&s.id)))
+            .map(|s| KeptSandboxView {
+                id: s.id.to_string(),
+                slug: s.slug.clone(),
+                removed_at: s.removed_at.map(rfc3339),
+                bytes: sizes.get(&s.id).copied().flatten(),
+                purge_requested: pending.contains(&s.id),
+            })
+            .collect()
+    }
+
+    /// Drops the purged sandbox `id`'s items from the last scan: its files are gone.
+    pub(crate) fn forget_leftovers_of(&self, id: &SandboxId) {
+        self.with_leftovers(|inner| inner.items.retain(|i| i.sandbox.as_ref() != Some(id)));
     }
 
     /// `GET /api/admin/leftovers` (superadmin; LFT-010).
@@ -1714,6 +1809,17 @@ mod tests {
         remove_below(&data, &data.join("sandboxes/s1/worktrees/t1"))?;
         assert!(remove_below(&data, &tmp.path().join("elsewhere")).is_err());
         Ok(())
+    }
+
+    /// SPEC-276 RDA-011: a purge takes its own removal's export, never another sandbox's whose
+    /// slug only starts with the same name.
+    #[test]
+    fn a_removal_s_export_is_told_from_another_sandbox_s() {
+        assert!(is_export_of("sandbox-app-1700000000000.json", "app"));
+        assert!(!is_export_of("sandbox-app-2-1700000000000.json", "app"));
+        assert!(is_export_of("sandbox-app-2-1700000000000.json", "app-2"));
+        assert!(!is_export_of("sandbox-app-.json", "app"));
+        assert!(!is_export_of("sandbox-app-17.json.bak", "app"));
     }
 
     /// #675: a removal that fails names the entry that stayed, not only the item. Nobody, root

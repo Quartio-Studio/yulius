@@ -93,7 +93,7 @@ person's access for its action: view (`project_get`, `tasks_list`, `task_get`, `
 (`onboarding_start`, `task_create`, `task_message`, `task_stop`, `task_restart`, `task_pause`,
 `task_unpause`, `task_start_now`, `task_archive`, `task_delete`, `ci_rerun`, `ci_cancel`,
 `cd_deploy` (dev-stage environments only), `project_change`, `change_merge`), configure (`automation_*`,
-`secret_update`, `secret_hosts_answer`) or administer (`onboarding_skip`). A project the person
+`secret_update`, `secret_hosts_answer`, `secret_delete` (the project's own agent secret, SPEC-274)) or administer (`onboarding_skip`). A project the person
 cannot see answers like one that does not exist. `tools/call` with `_meta: {"yulius/structured":
 true}` adds the tool's record as `structuredContent`. `initialize` answers
 `_meta: {"yulius/person": login, "yulius/scope": scope}`. See [remote-control.md](remote-control.md).
@@ -488,7 +488,8 @@ Server → client:
   the terminal and write the bytes; a full screen redraw).
 - Text frames: `{"type":"state","attempt_seq":n,"harness":"claude","cols":c,"rows":r,
   "can_write":bool,"controller":bool,"status":"running"}`, `{"type":"notice","text":"↻ switched
-  to …"}`, `{"type":"exit","status":"closed","code":0}`, `{"type":"error","code","message"}`.
+  to …"}`, `{"type":"exit","status":"closed","code":0}` (with `"cause":"pids"` or `"memory"` when the run
+  ended while its sandbox was at its task or memory limit, SPEC-268), `{"type":"error","code","message"}`.
 - Close code 4008: viewer lagged; reconnect with `last_seq`.
 
 Write access is confirmed when the terminal opens and then held as the viewer's grant
@@ -674,7 +675,9 @@ starts once its CPUs and memory are free: the CI jobs of all lanes never ask for
 sandbox has, and each is told its budget in `YULIUS_CPUS`, `YULIUS_MEMORY_MB` and the variables of
 `[resources.env]` in its checkout's `yulius.toml` (its output starts with
 `[yulius] budget: 4 CPUs, 8192 MiB …`). Agent sessions, terminals and the Cockpit get the agent
-budget the same way, from the `yulius.toml` where they start.
+budget the same way, from the `yulius.toml` where they start. Where there is no `[resources.env]`
+table (or no `yulius.toml`), `CARGO_BUILD_JOBS`, `NEXTEST_TEST_THREADS` and `RUST_TEST_THREADS`
+get `{cpus}`; a declared table, even an empty one, replaces them (SPEC-268).
 
 | Method and path | Access | Result |
 | --- | --- | --- |
@@ -704,7 +707,10 @@ CiRun = {"id", "reference": "pr/12|branch/dev", "label": "PR #12|dev", "pr_numbe
          "status": "published|pending|not published: …"}
 HygieneReport = {"scanned_at": "…" | null, "items": [{"kind": "remote_branch|local_branch|worktree",
                  "name", "reason_code": "pull_merged|pull_closed|merged|local_copy|idle|task_deleted|task_archived|task_merged|missing",
-                 "reason", "safe": true}], "notes": ["…"]}
+                 "reason", "safe": true}], "notes": ["…"],
+                 "last_cleanup": {"at", "by": "yulius|<login>|superadmin|task:<n>", "automatic": false,
+                                  "removed": [Target], "skipped": [Target + "reason"]} | null,
+                 "next_cleanup_at": "…" | null}
 Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force": false}
 ```
 
@@ -720,7 +726,14 @@ Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force"
 - **Merge gate.** Once a sandbox has CI, the latest run at the pull request head alone decides the
   delivery checks (`pending` / `success` / `failure`); GitHub's other checks are not read.
 - **Hygiene.** After a merge through Yulius the head branch is deleted (not the integration,
-  production or default branch, nor one another open pull request uses). Cleanup never forces a
+  production or default branch, nor one another open pull request uses). Every 6 hours (first 10
+  minutes after start) Yulius removes each sandbox's safe items itself, as `yulius` (SPEC-269,
+  ADR-0199), except `merged` branches (already in the integration branch, no pull request had
+  them: a release branch), which stay for a person; `next_cleanup_at` says when. A branch an open
+  pull request targets is in use, and a branch on GitHub is deleted only while its tip there is
+  the commit the scan judged. `last_cleanup` is the last cleanup since the server
+  started that a person or agent asked for or that removed or kept something (in memory; the
+  audit log `hygiene.cleanup` keeps the history). Cleanup never forces a
   worktree removal, never removes a live task's worktree, a protected branch or one with an open
   pull request, and removes `idle` branches (unmerged, no pull request) only with `force`.
 
@@ -1483,6 +1496,19 @@ after an unlock.
 | POST | `/api/agent-secrets/{id}/request` | `{allow: bool, hosts: [..]}` → `AgentSecret`: answers the hosts an agent asked for with `secret_request_hosts` (SPEC-121): `true` binds them, `false` dismisses them; the request is cleared either way, in one step with the bindings. `hosts` are the requested hosts the person saw, in any order: 409 unless they are exactly what waits (a host asked for meanwhile is never allowed unseen), and 409 when nothing waits or the bindings changed meanwhile; 422 when allowing would bind more than 16 hosts (the request stays). People who manage it (403 for readers, 404 without access). Audited (`vault.agent.allow` / `vault.agent.dismiss`) |
 | POST | `/api/agent-secrets/{id}/env` | `{allow: bool, env_files, env_requested_by?}` → `AgentSecret`: whether agents (every task of each project it reaches: its own, or those a global secret is switched on for) may copy the value into git-ignored `.env` files with `secret_copy_to_env` (SPEC-129). `true` answers an agent's request (`env_files` `asked` → `allowed`); `false` dismisses it or revokes an allowance (→ `no`; copies already written stay). `env_files` and `env_requested_by` are what the person saw: 409 unless they still hold, and when there is nothing to answer; 422 for an unknown `env_files`; 409 when allowing a personal or a production secret. People who manage it (403 for readers, 404 without access). Audited (`vault.agent.env_allow` / `vault.agent.env_dismiss` / `vault.agent.env_revoke`) |
 | POST | `/api/agent-secrets/{id}/reveal` | `{purpose?, fields?: ["value","notes"]}` → `{value, notes}` (`notes` = the description, led by a stored user name and, for older secrets, `Two-factor seed: …`) for people who manage it, after an unlock (403 `reauth_required` otherwise; 403 for readers, 404 without access). Audited (`vault.agent.reveal` / `vault.agent.copy`) |
+| GET | `/api/sandboxes/{sid}/agent-states` | (read) → `[AgentState]`: `{name, description, version, bytes, files, updated_by, updated_at, restored_path?, restored_version?, restored_at?}`, never content (SPEC-271): the project's folders of operator state; `restored_path` (`~/…` of the sandbox home) is the copy written to, stale while `restored_version` < `version` |
+| PUT | `/api/sandboxes/{sid}/agent-states/{name}?description&replace` | raw `application/gzip` tar body, ≤ 64 MiB (larger `Content-Length` refused before reading) → `AgentState`: stores a packed folder as the agent state `name` (an agent secret name), sealed per version. Only files and folders with relative paths, ≤ 20 000 entries and 512 MiB unpacked (422 otherwise). Write access; the slot and the access are checked before the body is read, 429 while two states are moving. A state never restored is replaced (version + 1); once restored, 409 naming the sandbox's copy unless `replace=true`. Audited `vault.state.import` / `vault.state.replace` with name, files and bytes ([ADR-0200](decisions/0200-operator-state-is-a-sealed-agent-state-with-one-writer.md)) |
+| GET | `/api/sandboxes/{sid}/agent-states/{name}/archive` | → the newest packed state (`application/gzip`, `Cache-Control: no-store`), for people with write access, never through a read-only token (403 for both; 429 while two states are moving). Audited `vault.state.export` |
+
+**Project variables** — a project's non-secret values (regions, environment names, ids, base URLs,
+contact addresses), in plain; every task run of the project gets them in its environment
+([ADR-0203](decisions/0203-project-variables-are-plain-per-project-values-in-task-runs.md)).
+
+| Method | Path | Body → Response |
+| --- | --- | --- |
+| GET | `/api/sandboxes/{sid}/variables` | (read) → `{variables: [{name, value, description, updated_by, updated_at}], can_manage}` by name |
+| PUT | `/api/sandboxes/{sid}/variables` | `{variables: [{name, value, description?}], only_new?: bool}` → `{created, changed, unchanged, existing}` (names): creates or changes each, all checked before any is written and each outcome decided in one transaction; `only_new` (the secrets import) leaves an existing one as it is (`existing`). Write access. `name` follows agent secret names; `value` one line, ≤ 4096 bytes, may be empty; `description` ≤ 1000 characters, absent keeps the stored one. 422 for a bad entry, a name given twice, more than 200 in the body or in the project; 409 when a name is an agent secret of the project (its own, or a global one switched on for it). Audited `variable.create` / `variable.update` (name and changed fields, never the value) |
+| DELETE | `/api/sandboxes/{sid}/variables/{name}` | → 204 (404 when there is none). Write access. Audited `variable.delete` |
 
 ## UI event stream
 
@@ -1591,6 +1617,18 @@ task; other hooks answer as usual.
   `VIDOC_API_KEY`, is audited `vault.agent.create` with the agent as actor, publishes
   `secrets.updated` for the sandbox (SPEC-209), deletes the file only
   with `delete_file`, and never returns the value.
+- MCP `secret_state_restore {name, path}` (SPEC-271, tasks only) → `{restored, path, version, files,
+  bytes, next}`: writes the agent state into `path`, a `~/…` folder of the sandbox home (missing
+  or empty; reached from the canonical sandbox folder one folder at a time without links, created
+  when missing), unpacked into a fresh sibling folder renamed into place, with each file's
+  permission bits (setuid, setgid, sticky dropped). Refused (409) while the recorded copy exists
+  and is current, or for another path; a newer version (a replace from the laptop) replaces the
+  recorded folder; a recorded copy that is gone is restored again. Audited `vault.state.restore`
+  as the task. Never returns content.
+- MCP `secret_state_save {name}` (SPEC-271, tasks only) → `{saved, version, files, bytes,
+  skipped?, note?}`: packs the restored folder (links and special files left out and named) as the
+  next version, compare-and-set on the version (409 when the person replaced it and it was not
+  restored since, or another save won). Audited `vault.state.save`.
 - MCP `secret_verify {secret, sha256}` (SPEC-178, the Superagent only; `sha256` may be
   `sha256sum`'s line) →
   `{secret, match: exact|trailing_newline|escaped_newlines|different, lines?, meaning}` (`lines`

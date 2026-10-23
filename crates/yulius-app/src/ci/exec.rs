@@ -329,7 +329,9 @@ impl App {
                 let sandbox = Arc::new(sandbox);
                 // Fail fast: the run's jobs share a cancel signal that follows the run's own
                 // (superseded, stopped) and fires when one of them fails, so a failed `quality`
-                // no longer leaves `e2e` holding the sandbox's CI lane for half an hour.
+                // no longer leaves `e2e` holding the sandbox's CI lane for half an hour. The
+                // `security` job is out of it both ways (SPEC-273 NOI-007): its findings are no
+                // reason to lose the tests' result, nor a failed test the scan's.
                 let (siblings_tx, siblings) = watch::channel(cancel.borrow().clone());
                 let siblings_tx = Arc::new(siblings_tx);
                 {
@@ -354,7 +356,12 @@ impl App {
                     let app = Arc::clone(self);
                     let (sandbox, run, job) = (Arc::clone(&sandbox), run.clone(), job.clone());
                     let checkout = checkout_name(&job, &jobs, lane);
-                    let job_cancel = siblings.clone();
+                    let scan = job.key == dom::SECURITY_JOB;
+                    let job_cancel = if scan {
+                        cancel.clone()
+                    } else {
+                        siblings.clone()
+                    };
                     let stop_siblings = Arc::clone(&siblings_tx);
                     let publishing = Arc::clone(&publishing);
                     let run_cancel = cancel.clone();
@@ -371,14 +378,15 @@ impl App {
                         let ended = all.iter().find(|j| j.id == job.id).map(|j| j.state);
                         let others_run = all.iter().any(|j| j.state.is_active());
                         let failed = ended == Some(RunState::Failed);
-                        if (failed || no_disk) && stop_siblings.borrow().is_none() {
+                        if ((failed && !scan) || no_disk) && stop_siblings.borrow().is_none() {
                             let reason = if no_disk {
                                 "stopped early: the sandbox is over its disk quota".to_owned()
                             } else {
                                 format!("stopped early: job {} failed", job.name)
                             };
                             let _ = stop_siblings.send(Some(reason));
-                        } else if matches!(ended, Some(RunState::Passed | RunState::Skipped))
+                        } else if (matches!(ended, Some(RunState::Passed | RunState::Skipped))
+                            || (failed && scan))
                             && others_run
                             && stop_siblings.borrow().is_none()
                             && run_cancel.borrow().is_none()
@@ -471,6 +479,11 @@ impl App {
                     tracing::warn!(run = %run.id, error = %err, "requeueing a CI run failed");
                 }
             }
+        }
+        // The findings outside the change follow the code as issues (SPEC-217 VSI-001, VSI-004),
+        // once the other jobs ended (SPEC-273 NOI-008).
+        if cancel.borrow().is_none() {
+            self.ci_follow_run_findings(run).await;
         }
         let reason = match state {
             RunState::Cancelled => cancel
@@ -638,6 +651,17 @@ impl App {
             {
                 (RunState::Skipped, exit.code, None)
             }
+            // It could not check everything for a passing reason (SPEC-273 NOI-006): an error,
+            // which blocks the merge until a rerun passes, not a failure.
+            Ok(Ended::Exit(exit))
+                if exit.code == Some(dom::INCOMPLETE_EXIT_CODE) && exit.signal.is_none() =>
+            {
+                (
+                    RunState::Error,
+                    exit.code,
+                    Some(dom::incomplete_reason(&ring.text())),
+                )
+            }
             Ok(Ended::Exit(exit)) => {
                 let code = exit.code.or_else(|| exit.signal.map(|signal| 128 + signal));
                 (RunState::Failed, code, None)
@@ -667,17 +691,6 @@ impl App {
         };
         if let Some(reason) = &reason {
             ring.push_str(&format!("\n[yulius] {reason}\n"));
-        }
-        // The findings outside the change follow the code as issues (SPEC-217 VSI-001, VSI-004).
-        if job.key == super::findings::SECURITY_JOB
-            && matches!(
-                state,
-                RunState::Passed | RunState::Failed | RunState::Skipped
-            )
-        {
-            for note in self.ci_follow_findings(sandbox, run, &ring.text()).await {
-                ring.push_str(&format!("{note}\n"));
-            }
         }
         let end = CiJobUpdate {
             reason,
@@ -728,6 +741,10 @@ impl App {
             (
                 "YULIUS_CI_SKIP_CODE".to_owned(),
                 dom::SKIP_EXIT_CODE.to_string(),
+            ),
+            (
+                "YULIUS_CI_INCOMPLETE_CODE".to_owned(),
+                dom::INCOMPLETE_EXIT_CODE.to_string(),
             ),
             (
                 "YULIUS_CI_CACHE".to_owned(),

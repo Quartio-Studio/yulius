@@ -78,6 +78,10 @@ fn statvfs_of(path: &Path) -> Option<(u64, u64)> {
 }
 
 impl SystemProbe for SysinfoProbe {
+    fn disk(&self, data_dir: &Path) -> Option<(u64, u64)> {
+        volume_of(data_dir)
+    }
+
     fn snapshot(&self, data_dir: &Path) -> SystemSnapshot {
         let disk = volume_of(data_dir);
         let load = System::load_average();

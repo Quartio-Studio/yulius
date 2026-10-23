@@ -221,18 +221,165 @@ test('a run’s summary keeps its content off the edges of its card', async ({ a
   }
 });
 
-test('repository hygiene removes only what is safe', async ({ app, screen }) => {
+// SPEC-269: Yulius removes the safe leftovers itself every 6 hours; Clean up does it now, shows
+// at once that it runs, and the card then says what was removed and what was kept.
+type HeldCleanup = Window & { __yuliusMock: { holdHygieneCleanup?: Promise<void>; failHygieneCleanup?: string }; __releaseCleanup?: () => void };
+
+test('repository hygiene says Yulius cleans up itself and that unmerged work stays', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/ci'));
-  await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();
-  await expect(screen.getByText('spike/websocket-pool')).toBeVisible();
-  await screen.getByRole('button', 'Clean up').click();
+  const card = screen.getByRole('region', 'Repository hygiene');
+  await expect(card.getByText('Branches and worktrees no task needs any more. Yulius removes the safe ones by itself (next in 4 h); Clean up removes them now.')).toBeVisible();
+  await expect(browser.locator('.ci-hygiene li:has-text("spike/websocket-pool")')).toContainText('Kept');
+  await expect(browser.locator('.ci-hygiene li:has-text("spike/websocket-pool")')).toContainText('unmerged work, which Yulius never deletes by itself');
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('a cleanup shows at once that it runs, then what it removed and kept', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci'));
+  const card = screen.getByRole('region', 'Repository hygiene');
+  await expect(card.getByText('spike/websocket-pool')).toBeVisible();
+  await browser.evaluate(() => {
+    const w = window as unknown as HeldCleanup;
+    w.__yuliusMock.holdHygieneCleanup = new Promise((resolve) => { w.__releaseCleanup = resolve; });
+  });
+  await card.getByRole('button', 'Clean up').click();
   const confirm = screen.getByRole('dialog', 'Remove 3 stale items?');
-  await expect(confirm).toBeVisible();
   await confirm.getByRole('button', 'Clean up').click();
-  await expect(screen.getByText('3 items removed.')).toBeVisible();
-  // Unmerged work without a pull request stays.
-  await expect(screen.getByText('spike/websocket-pool')).toBeVisible();
-  await expect(screen.getByText('worktrees/tsk_studio_9')).toBeHidden();
+  // Before the server answers: the card is busy and says what it is doing.
+  await expect(card.getByRole('button', 'Cleaning up…')).toBeDisabled();
+  await expect(card.getByRole('button', 'Check now')).toBeDisabled();
+  await expect(card.getByRole('status')).toHaveText('Removing 3 items…');
+  // The seconds so far count beside the live region, not in it (read once, not every second).
+  await expect(browser.locator('.ci-hygiene-status')).toContainText('so far');
+  await expect(card.getByRole('status')).not.toContainText('so far');
+  // The pressed button is disabled: the keyboard stays on the card.
+  await expect.poll(() => browser.evaluate(() => document.activeElement?.getAttribute('aria-label'))).toBe('Repository hygiene');
+  expect(await axeViolations(browser)).toEqual([]);
+  await browser.evaluate(() => { (window as unknown as HeldCleanup).__releaseCleanup?.(); });
+  // The answer: the result stays on the card, no toast repeats it.
+  const result = card.getByRole('status');
+  await expect(result).toContainText('Cleaned up just now by mkarp: 3 removed.');
+  await expect(browser.locator('.ci-hygiene-result li:has-text("worktrees/tsk_studio_9")')).toContainText('Removed');
+  await expect(browser.locator('.ci-hygiene-result li:has-text("feat/12-old-landing")')).toHaveCount(2);
+  await expect(card.getByRole('button', 'Clean up')).toBeDisabled();
+  await expect(card.getByRole('button', 'Check now')).toBeEnabled();
+  // Unmerged work without a pull request stays listed.
+  await expect(browser.locator('.ci-hygiene:not(.ci-hygiene-result) li')).toHaveCount(1);
+  await expect(browser.locator('.ci-hygiene:not(.ci-hygiene-result) li')).toContainText('spike/websocket-pool');
+  await expect(browser.locator('.toast:has-text("removed")')).toHaveCount(0);
+  expect(await axeViolations(browser)).toEqual([]);
+  // A reload shows the same result: it is the report's, not the page's.
+  await app.open(mock('/s/studio/ci'));
+  await expect(screen.getByRole('region', 'Repository hygiene').getByRole('status')).toContainText('3 removed');
+});
+
+test('a failed cleanup says why in the card and can be tried again', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci'));
+  const card = screen.getByRole('region', 'Repository hygiene');
+  await expect(card.getByText('spike/websocket-pool')).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as HeldCleanup).__yuliusMock.failHygieneCleanup = 'GitHub is not available'; });
+  await card.getByRole('button', 'Clean up').click();
+  await screen.getByRole('dialog', 'Remove 3 stale items?').getByRole('button', 'Clean up').click();
+  await expect(card.getByRole('status')).toContainText('Couldn’t clean up: GitHub is not available');
+  await expect(card.getByRole('button', 'Clean up')).toBeEnabled();
+  await expect(card.getByRole('button', 'Check now')).toBeEnabled();
+  await expect(card.getByText('worktrees/tsk_studio_9')).toBeVisible();
+  // Tried again once GitHub answers: it goes through.
+  await browser.evaluate(() => { (window as unknown as HeldCleanup).__yuliusMock.failHygieneCleanup = undefined; });
+  await card.getByRole('button', 'Clean up').click();
+  await screen.getByRole('dialog', 'Remove 3 stale items?').getByRole('button', 'Clean up').click();
+  await expect(card.getByRole('status')).toHaveText('Cleaned up just now by mkarp: 3 removed.');
+});
+
+test('a cleanup still running after the person left the tab shows as running when they come back', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci'));
+  const card = screen.getByRole('region', 'Repository hygiene');
+  await expect(card.getByText('spike/websocket-pool')).toBeVisible();
+  await browser.evaluate(() => {
+    const w = window as unknown as HeldCleanup;
+    w.__yuliusMock.holdHygieneCleanup = new Promise((resolve) => { w.__releaseCleanup = resolve; });
+  });
+  await card.getByRole('button', 'Clean up').click();
+  await screen.getByRole('dialog', 'Remove 3 stale items?').getByRole('button', 'Clean up').click();
+  await expect(card.getByRole('button', 'Cleaning up…')).toBeDisabled();
+  await screen.getByRole('radio', 'CD (deployment)').click();
+  await screen.getByRole('radio', 'CI (tests)').click();
+  const back = screen.getByRole('region', 'Repository hygiene');
+  await expect(back.getByRole('button', 'Cleaning up…')).toBeDisabled();
+  await expect(back.getByRole('status')).toHaveText('Removing 3 items…');
+  await browser.evaluate(() => { (window as unknown as HeldCleanup).__releaseCleanup?.(); });
+  await expect(back.getByRole('status')).toHaveText('Cleaned up just now by mkarp: 3 removed.');
+  await expect(back.getByRole('button', 'Check now')).toBeEnabled();
+});
+
+test('a cleanup that fails after the person left the tab says why when they come back', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci'));
+  const card = screen.getByRole('region', 'Repository hygiene');
+  await expect(card.getByText('spike/websocket-pool')).toBeVisible();
+  await browser.evaluate(() => {
+    const w = window as unknown as HeldCleanup;
+    w.__yuliusMock.holdHygieneCleanup = new Promise((resolve) => { w.__releaseCleanup = resolve; });
+    w.__yuliusMock.failHygieneCleanup = 'GitHub is not available';
+  });
+  await card.getByRole('button', 'Clean up').click();
+  await screen.getByRole('dialog', 'Remove 3 stale items?').getByRole('button', 'Clean up').click();
+  await expect(card.getByRole('button', 'Cleaning up…')).toBeDisabled();
+  await screen.getByRole('radio', 'CD (deployment)').click();
+  await screen.getByRole('radio', 'CI (tests)').click();
+  await browser.evaluate(() => { (window as unknown as HeldCleanup).__releaseCleanup?.(); });
+  const back = screen.getByRole('region', 'Repository hygiene');
+  await expect(back.getByRole('status')).toHaveText('Couldn’t clean up: GitHub is not available');
+  await expect(back.getByRole('button', 'Clean up')).toBeEnabled();
+});
+
+test('a cleanup newer than a failed one replaces its message', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci'));
+  const card = screen.getByRole('region', 'Repository hygiene');
+  await expect(card.getByText('spike/websocket-pool')).toBeVisible();
+  await browser.evaluate(() => { (window as unknown as HeldCleanup).__yuliusMock.failHygieneCleanup = 'GitHub is not available'; });
+  await card.getByRole('button', 'Clean up').click();
+  await screen.getByRole('dialog', 'Remove 3 stale items?').getByRole('button', 'Clean up').click();
+  await expect(card.getByRole('status')).toHaveText('Couldn’t clean up: GitHub is not available');
+  // The automatic round then removes them.
+  await browser.evaluate(() => {
+    const db = (window as unknown as { __yuliusMock: { ci: Record<string, { hygiene: { items: unknown[]; last_cleanup: unknown } }> } }).__yuliusMock;
+    const hygiene = db.ci.sb_studio.hygiene;
+    hygiene.last_cleanup = { at: new Date(Date.now() + 1000).toISOString(), by: 'yulius', automatic: true, removed: [{ kind: 'worktree', name: 'worktrees/tsk_studio_9' }], skipped: [] };
+    hygiene.items = hygiene.items.filter((i) => (i as { name: string }).name !== 'worktrees/tsk_studio_9');
+  });
+  await screen.getByRole('radio', 'CD (deployment)').click();
+  await screen.getByRole('radio', 'CI (tests)').click();
+  await expect(screen.getByRole('region', 'Repository hygiene').getByRole('status')).toHaveText(/^Cleaned up .* by Yulius: 1 removed\.$/);
+});
+
+test('a failure reads whatever the clocks say, and a branch no pull request had is left to the person', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci'));
+  const card = screen.getByRole('region', 'Repository hygiene');
+  await expect(card.getByText('spike/websocket-pool')).toBeVisible();
+  // The server's clock runs 5 minutes ahead of the browser's; its round ran just now.
+  await browser.evaluate(() => {
+    const db = (window as unknown as { __yuliusMock: { failHygieneCleanup?: string; ci: Record<string, { hygiene: { items: unknown[]; last_cleanup: unknown } }> } }).__yuliusMock;
+    const hygiene = db.ci.sb_studio.hygiene;
+    hygiene.last_cleanup = { at: new Date(Date.now() + 5 * 60000).toISOString(), by: 'yulius', automatic: true, removed: [], skipped: [] };
+    hygiene.items.push({ kind: 'remote_branch', name: 'release/1.x', reason_code: 'merged', reason: 'its commits are already in the integration branch', safe: true });
+    db.failHygieneCleanup = 'GitHub is not available';
+  });
+  await card.getByRole('button', 'Check now').click();
+  await expect(browser.locator('.ci-hygiene li:has-text("release/1.x")')).toContainText('no merged pull request was found for it, so Yulius leaves it to you');
+  await card.getByRole('button', 'Clean up').click();
+  await screen.getByRole('dialog', 'Remove 4 stale items?').getByRole('button', 'Clean up').click();
+  await expect(card.getByRole('status')).toHaveText('Couldn’t clean up: GitHub is not available');
+});
+
+test('a cleanup round that runs late reads as shortly, not in the past', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci'));
+  await browser.evaluate(() => {
+    const db = (window as unknown as { __yuliusMock: { ci: Record<string, { hygiene: { next_cleanup_at: string } }> } }).__yuliusMock;
+    db.ci.sb_studio.hygiene.next_cleanup_at = new Date(Date.now() - 5 * 60000).toISOString();
+  });
+  const card = screen.getByRole('region', 'Repository hygiene');
+  await card.getByRole('button', 'Check now').click();
+  await expect(card.getByText(/removes the safe ones by itself \(next shortly\)/)).toBeVisible();
 });
 
 test('a sandbox without CI says how to add it and names leftover GitHub Actions', async ({ app, browser, screen }) => {

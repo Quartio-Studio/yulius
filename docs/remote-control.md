@@ -84,9 +84,62 @@ The server's instructions tell your agent what to do ([SPEC-256](../.ai/specs/SP
    copy them into git-ignored `.env` files with `secret_copy_to_env` from the start, as ssh and
    deploy scripts need; agents already bind the hosts they need themselves. A secret that exists
    is skipped, never overwritten. Your agent then describes each one (`secret_update`).
-3. **Hand over and start.** Your agent writes what it learned, without values: which secret is
-   which, the hosts and commands deploys use, what only ran on your laptop, what it could not
-   find. `yulius project onboard --notes handover.md` (`onboarding_start` with `notes`) adds it to
+   A value that is ordinary text (a configuration word such as `production`, a host name, an
+   e-mail address, a URL without credentials) is skipped and named, and so is, with `--yes`, a
+   value that a tracked file of the project's checkout holds (run it there; at the terminal you
+   are asked): a secret's value is masked as `[secret:NAME]` wherever it appears, so such values
+   belong in configuration or the hand-over
+   ([SPEC-274](../.ai/specs/SPEC-274-agent-secrets-refuse-plain-words-that-ma.md),
+   [ADR-0204](decisions/0204-secrets-import-refuses-ordinary-text-and-an-operate-token-deletes.md)).
+   A secret imported by mistake is deleted with `yulius secrets delete NAME` (`secret_delete`).
+
+   A `.env` also holds values that are not secrets: a region (`OVH_ENDPOINT=ovh-ca`), an
+   environment name (`production`), account and project ids, base URLs, a contact address. They
+   go to the project's **variables** instead, which every task of the project has in its
+   environment, in plain ([SPEC-275](../.ai/specs/SPEC-275-project-variables-non-secret-values-regi.md),
+   [ADR-0203](decisions/0203-project-variables-are-plain-per-project-values-in-task-runs.md)).
+   The import moves some of them itself: instead of skipping ordinary text, it sends a plain entry
+   shorter than 8 characters or ordinary text (SPEC-274's rule) as a variable with the secrets,
+   shown as `~ NAME  not a secret (a configuration word): a project variable` (`--no-vars` skips
+   them as before). A name that says it is a credential (`…_KEY`, `…_TOKEN`, `…_PASSWORD`, …)
+   never becomes a variable: its value is imported as a secret, or skipped when it is ordinary
+   text. Values the rule cannot tell from a secret, such as account and project ids, stay with
+   the secrets; your agent sets those, and any other, directly:
+
+   ```sh
+   yulius vars set OVH_ENDPOINT=ovh-ca --description "OVH region"
+   yulius vars import config.env      # NAME=value lines; a comment above one is its description
+   yulius vars list                   # NAME=value, in plain
+   yulius vars delete OLD_FLAG
+   ```
+
+   (`variables_set`, `variables_list`, `variable_delete`.) A variable never takes the name of an
+   agent secret of the project, and `set`/`import` refuse a credential's name before sending.
+3. **Move the operator state.** A deploy tool that keeps live state on your laptop (a folder with
+   an inventory database, pinned host keys, rollout folders and receipts, configs) sends each such
+   folder as an *agent state* of the project, without reading it
+   ([SPEC-271](../.ai/specs/SPEC-271-laptop-onboarding-move-a-project-s-opera.md),
+   [ADR-0200](decisions/0200-operator-state-is-a-sealed-agent-state-with-one-writer.md)):
+
+   ```sh
+   yulius secrets import --to agent --sandbox acme/shop --yes \
+     --state SHOP_OPERATOR=~/.shop-operator --state SHOP_TOOLS=~/.local/share/shop/tools
+   ```
+
+   The CLI packs each folder (or sends a `.tar.gz` of one) with its files' modes, up to 64 MiB
+   packed and 512 MiB unpacked, and shows names, file counts and sizes only; a link or special
+   file in the folder refuses it. Yulius keeps it encrypted in the vault, as agent secrets are, and
+   audits each send and download as you, each restore and save as the task. The onboarding task restores it where the project's tools expect it,
+   in the sandbox home (`secret_state_restore`, for example `~/.shop-operator`), which later tasks
+   keep, and saves it back after each rollout (`secret_state_save`). From the restore on, the
+   sandbox's copy is the one written to: your laptop is no longer the writer, so stop running
+   rollouts from that folder. A second send of the same state is refused once it is restored, so
+   the two copies never fork; `--replace-state` overwrites the sandbox's copy on purpose.
+   `yulius secrets state-get SHOP_OPERATOR --out shop-operator.tar.gz` downloads the newest saved
+   copy.
+4. **Hand over and start.** Your agent writes what it learned, without values: which secret is
+   which, which state goes where in the sandbox home, the hosts and commands deploys use, what
+   only ran on your laptop, what it could not find. `yulius project onboard --notes handover.md` (`onboarding_start` with `notes`) adds it to
    the onboarding task's request and starts it.
 
 The onboarding task then adapts the format, writes the docs, moves CI into Yulius CI and CD into
@@ -139,7 +192,10 @@ Values never pass through an agent. Add them on the Secrets page, or from a dote
 files with `yulius secrets import --to agent --sandbox acme/shop .env` (section 3 for an agent doing
 it unattended). Your agent manages names and
 bindings: `secrets_list` (`yulius secrets list`), `secret_update` (bound hosts, description)
-and `secret_hosts_answer` (allow or dismiss the hosts a task asked for).
+and `secret_hosts_answer` (allow or dismiss the hosts a task asked for), and deletes one of the
+project's own secrets by name: `secret_delete` (`yulius secrets delete NAME`), audited with the
+token, never showing the value (SPEC-274). Non-secret values are project variables (section 3):
+the Secrets page's Variables tab, or `yulius vars`.
 
 ## 5. Day-to-day
 
@@ -155,6 +211,7 @@ and `secret_hosts_answer` (allow or dismiss the hosts a task asked for).
 | "Why did CI fail?" | `ci_runs`, `ci_run`, `ci_rerun` | `yulius ci runs`, `yulius ci run <id>`, `yulius ci rerun <id>` |
 | "Every night, update the docs" | `automation_create`, `automations_list`, … | `yulius remote call automation_create '{…}'` |
 | "Deploy dev" | `cd_status`, `cd_deploy` (dev-stage environments only) | `yulius remote call cd_deploy '{"environment": "dev"}'` |
+| "Set the region to ovh-ca" | `variables_list`, `variables_set`, `variable_delete` | `yulius vars list`, `yulius vars set OVH_ENDPOINT=ovh-ca` |
 
 `yulius remote tools` lists every tool your token may call. `yulius remote call <tool> '<JSON>'`
 calls any of them. `--json` prints a tool's record instead of its text. The CLI exits 0 when the
@@ -170,4 +227,8 @@ no tool (no token, a revoked token, the network).
   and the token, without its arguments.
 - An operate token can add agent secrets that the project's agents may copy into `.env` files
   (`yulius secrets import --yes --env-files`); each create and allowance is audited as you.
+- An operate token can set and delete project variables; each create, change and delete is
+  audited as you (`variable.*`, with the name, never the value).
+- An operate token can send agent states (`--state`) and download them (`state-get`); each send,
+  replace and download is audited as you, and each restore and save as the task.
 - A lost laptop: revoke its token on Settings. Disabling a person refuses all their tokens.

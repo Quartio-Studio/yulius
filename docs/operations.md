@@ -502,7 +502,7 @@ other instead of overlapping.
 | `YULIUS_SANDBOX_EGRESS` | `direct` | `none`: no egress, only the relayed endpoints (the internal listener, which also serves the secrets proxy, and `YULIUS_SANDBOX_FORWARD`). |
 | `YULIUS_SANDBOX_MEMORY_GB` | the RAM but an eighth (at least 4 GiB kept for the host) | `memory.max` per sandbox. One sandbox runs all its agents and CI jobs: size it to the sessions, not to half the host. |
 | `YULIUS_SANDBOX_CPUS` | none | `cpu.max` per sandbox. Without it the CPU is shared by weight: a quota of all CPUs but two throttled the sandbox in half of its busy periods while the two CPUs it left idled (SPEC-082). The sandbox's capacity for budgets is this limit, else the host's CPUs. |
-| `YULIUS_SANDBOX_PIDS` | 8192 | `pids.max` per sandbox. |
+| `YULIUS_SANDBOX_PIDS` | a quarter of the host's `kernel.threads-max` or `kernel.pid_max`, whichever is smaller, at least 8192, at most three quarters of `yulius.service`'s own `pids.max` | `pids.max` per sandbox: processes and threads of all its tasks, CI jobs and containers together. With the CPU split, CI jobs (`ci/`) and the Docker engine with its containers (`engine/`) each get 3/8 of it, so agent sessions keep at least a quarter (ADR-0198). All sandboxes together stop at three quarters of the service's limit (ADR-0201): a higher explicit value is not capped, but that common limit binds it. |
 | `YULIUS_SANDBOX_DISK_GB` | 100 | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. Caches are found and removed only with no link from the sandbox directory down, and on Linux only ([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)). |
 | `YULIUS_SANDBOX_FORWARD` | — | Extra host loopback ports reachable inside every sandbox at the same port (for example a loopback MCP server), comma-separated. |
 | `YULIUS_SANDBOX_IDLE_MINUTES` | 5 | A holder without runs is stopped after this long; the next run starts a fresh one on the newest base. A sandbox's Docker engine stops after this long without a client and without a running container. |
@@ -629,10 +629,11 @@ from a sandbox, and no daemon needs to run on the host.
   when the engine starts again.
 - **Limits.** Image files owned by ids above 65535 cannot be stored. Setuid binaries and file
   capabilities do not raise privileges inside containers (`no_new_privs`).
-  - Per-container resource flags (`docker run -m`, `--cpus`, compose `mem_limit` or `cpus`) are
-    not supported; leave them out. The engine lives in its own group, so cgroup v2 passes no
-    controller below it: memory flags are discarded, and CPU flags may make the container fail
-    to start. The sandbox's own limits still bound every container.
+  - Per-container resource flags (`docker run -m`, `--cpus`, `--pids-limit`, compose `mem_limit`,
+    `cpus` or `pids_limit`) are not supported; leave them out. The engine lives in its own group,
+    so cgroup v2 passes no controller below it: memory flags are discarded, and CPU and task flags
+    may make the container fail to start. The sandbox's own limits, and the engine's 3/8 of its
+    task limit (SPEC-268), still bound every container.
   - A bind mount resolves in the engine's view: the sandbox directory, the system layer and the
     engine's `/tmp`. A run's own `/tmp`, a Shell user's home and run directories are not there.
 - **When it fails.** `docker` prints "the sandbox's Docker engine is not available: …" with the
@@ -905,9 +906,10 @@ involved.
 5. Rulesets that require Actions checks must switch to `yulius/ci`, or go. Yulius's own merge gate
    enforces the delivery profile either way.
 
-**Hygiene.** After a merge through Yulius the head branch is deleted. Every 6 hours each sandbox is
-scanned for stale branches and worktrees, shown on its CI page. People clean them up there, agents
-with `repo_cleanup`.
+**Hygiene.** After a merge through Yulius the head branch is deleted. Every 6 hours (first 10 minutes
+after start) Yulius removes each sandbox's safe stale branches and worktrees itself and lists the
+rest on its CI page, with what the last cleanup removed and kept (SPEC-269, ADR-0199). People clean
+up at once there, agents with `repo_cleanup`. Each removal is audited `hygiene.cleanup`.
 
 ### CD on this machine
 
@@ -977,14 +979,17 @@ directory (or `--name`). The first run makes it, with the uncommitted work as on
 checked-out branch (a detached `HEAD` is refused); later runs land in it under `import/<login>/`.
 Nothing is pushed anywhere and GitHub is never called; it counts toward your 10 playgrounds.
 
-Removing a playground can delete its code for good (the removal dialog's "Also delete its code
-from this server for good", or `POST /api/sandboxes/{sid}/purge`; the superadmin can purge an
-already removed one through the API). Its `<data>/playgrounds/<id>.git` and
-`<data>/sandboxes/<id>/` are deleted once no agent run, shell, browser, CI run or other process of
-it is left, within a disk upkeep round (5 minutes); task records, the removal's export under
-`<data>/exports/` and the audit (`sandbox.purge_requested`, `sandbox.purged`) stay (ADR-0139).
-Its system layer, holder state and CD files go with the leftovers of any removed sandbox (see
-"Leftovers" below).
+Removing any sandbox asks what happens to its files on this server, with no default (SPEC-276,
+ADR-0205). **Delete its files permanently** (`POST /api/sandboxes/{sid}/purge`; the superadmin can
+also purge an already removed one, from Settings → Instance → Leftovers → Kept files of removed
+sandboxes) deletes everything of it: `<data>/sandboxes/<id>/` (clone, home with the sessions,
+worktrees with any uncommitted work, CI, browser), `<data>/sysroots/<id>`,
+`<data>/runtime/sandboxes/<id>`, `<data>/cd/<id>`, `<data>/displays/<id>`, its runs, transcripts,
+the removal's export and a playground's `<data>/playgrounds/<id>.git`, as soon as no agent run,
+shell, browser, CI run, deploy or other process of it is left and its holder stopped: tried at
+once, every 15 seconds for 10 minutes, then with every disk round. The GitHub repository, task
+records and the audit (`sandbox.purge_requested`, `leftovers.delete`, `sandbox.purged`) stay.
+**Keep its files** keeps what PRJ-009 keeps (below), listed with its size until someone deletes it.
 
 ### Importing secrets (`yulius secrets import`)
 
@@ -1019,14 +1024,27 @@ sandbox ([ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.
 up: they bind the hosts they need and production deploys get them, which the list says before
 `yes`; `--confirm-hosts` makes a person allow each host and production deploys instead (SPEC-216).
 
+Agent secrets are masked as `[secret:NAME]` wherever their value appears, so the import skips a
+value that is ordinary text, naming why: a configuration word (`production`, `staging`, `main`,
+`true`, …), a cloud region, time zone, locale or path, a host name or address, an e-mail
+address, or a URL without credentials (no user information, no key-named parameter, no
+token-like host label or path segment); if one is a credential after all, a person adds it on
+the Secrets page, never in the hand-over. Run in a checkout of the
+project, it also looks for each new value in the tracked files (up to 1 MiB each, 256 MiB in all;
+the value never leaves memory) and asks about one found there (a no is counted as declined, not as a failure; `--yes` skips
+and lists it); elsewhere
+it says the repository was not searched (SPEC-274, ADR-0204). A secret imported by mistake is
+deleted by name with `yulius secrets delete NAME` (the operate token of `yulius remote login`;
+`-p owner/name`, else the checkout's project).
+
 Put keys that span lines in a file. The hidden prompt reads one line: a pasted key arrives cut
 to its first line, which is refused, and the terminal usually discards the rest; if part of it
 still shows at the next `Name:` prompt, press Ctrl-C (nothing has been sent).
 
 Values never appear: no option takes one, the output holds names only, nothing is written to disk,
 and the server logs no request bodies; the vault audit records who added which name. The command
-reminds you that the source file still holds the values. Exit 0 when every secret was imported or
-already there, 1 otherwise (skipped as invalid, refused, cancelled, or not sent after an expired
+reminds you that the source file still holds the values. Exit 0 when every secret was imported,
+already there or declined at the question about the repository, 1 otherwise (skipped as invalid, refused, cancelled, or not sent after an expired
 sign-in, a 403 or an unreachable server; creates are never retried, and a second run skips the
 imported ones as existing).
 
@@ -1067,8 +1085,9 @@ task that started working again keeps its files. Every deletion is audited as `l
 | --- | --- | --- |
 | A removed sandbox's `worktrees/`, `ci/`, `browser/`, `<data>/cd/<id>`, `<data>/displays/<id>` and its agent runs' `<data>/runs/<attempt>` | 10 minutes after the removal, once nothing of it runs | yes |
 | A removed sandbox's `<data>/sysroots/<id>` (installed packages, Docker images and volumes) and `<data>/runtime/sandboxes/<id>` | once its holder has stopped (a minute after the removal, SPEC-206); removed as root of a mapped namespace | yes |
-| Everything else of a removed sandbox: its clone, home with the Claude sessions, attachments, `<data>/transcripts/<task>`, a playground's `origin`, `<data>/exports/sandbox-<slug>-*.json` | kept (PRJ-009); the database records always stay | **only a person** |
-| A task's rebuildable caches (`target`, `node_modules`, `[disk] caches`, …) | closed, stopped or failed: after 10 minutes; **done**: after 30 quiet minutes; waiting: after 4 hours; any idle task at 90 % of the quota | yes (the worktree and uncommitted work stay) |
+| Everything else of a removed sandbox: its clone, home with the Claude sessions, attachments, `<data>/transcripts/<task>`, a playground's `origin`, `<data>/exports/sandbox-<slug>-<ms>.json` | removed with **Delete its files permanently**: as soon as nothing of it runs; removed with **Keep**: kept (PRJ-009), listed under Kept files of removed sandboxes; the database records always stay | on request |
+| A task's rebuildable caches (`target`, `node_modules`, `[disk] caches`, …) | closed, stopped or failed: after 10 minutes; **archived**: at once; **done**: after 30 quiet minutes; waiting: after 4 hours; any idle task at 90 % of the quota or with the data disk critical | yes (the worktree and uncommitted work stay) |
+| Units of a Cargo `target` (worktrees and CI checkouts) | unused for 48 hours (6 h with the disk low, 1 h critical), then the least recently used incremental ones above 5 % of the disk (at least 8 GB; half when low, a quarter when critical); never while Cargo compiles there (its locks); compiled artifacts only in a CI checkout with no CI run and in the worktree of a task that neither works nor runs background work while no Shell of the sandbox is open (otherwise only incremental state goes) | yes, hourly (audited `disk.sweep`) |
 | A closed or cancelled task's clean worktree | after 10 minutes (its branch keeps the work) | yes |
 | Git's record of a worktree inside the sandbox directory whose directory is gone (`.git/worktrees/<name>`), not locked | always (that record only; a worktree an agent keeps in its own `/tmp` keeps its record) | yes |
 | A CI checkout of a job or lane no run used for 14 days | while no CI run of that sandbox runs | yes |
@@ -1080,10 +1099,18 @@ task that started working again keeps its files. Every deletion is audited as `l
 | The host's `/var/lib/docker` and `/var/lib/containerd` (docker-ce; Yulius's host daemons are off) | listed, never deleted: remove them on the host if nothing else uses them | report only |
 | Update backups under `/var/lib/yulius-update/backups/` | the helper keeps the last 3 | yes (not listed) |
 
+**When the disk runs low.** The upkeep reads the data disk every minute. From 85 % used every page
+shows a "Disk 88% full" pill, each 5-minute round sweeps the build directories harder and the safe
+leftovers round runs (at most every 10 minutes); from 95 % ("Disk almost full") idle tasks' and
+CI checkouts' caches go too until the disk is back at 85 %. Each rise is audited `disk.pressure`.
+If it stays low, delete kept files of removed sandboxes in the Leftovers card.
+
 **Settings → Instance → Leftovers** (superadmin) lists every item with its path, kind, size, owner,
 why it is a leftover and whether Yulius deletes it by itself, with the disk's usage and the
-reclaimable total. **Refresh** rescans, and **Delete** (the selected items) and **Delete all safe**
-ask for confirmation with the size, then run in the background. The same from SSH, as root or the
+reclaimable total, when the automatic cleanup last ran and what it freed, and the kept files of
+removed sandboxes with their size and **Delete files**. **Refresh** rescans, and **Delete** (the
+selected items) and **Delete all safe** ask for confirmation with the size, then run in the
+background. `yulius leftovers list` also prints the last automatic cleanup. The same from SSH, as root or the
 service user while the server runs:
 
 ```sh
@@ -1351,10 +1378,28 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
   `cat /sys/fs/cgroup/system.slice/yulius.service/sandboxes/<sandbox>/ci/cpu.weight` (400).
   A holder that was already running keeps its `slirp4netns` in `agents/` until the holder stops
   when idle. **Rolling back to an older binary:** a server that stops gracefully undoes the split
-  (`-cpu`), so the older binary can join the sandbox groups again. After a crash or a forced stop,
-  undo it by hand before starting the older binary. Otherwise its holders and runs fail with
-  "Device or resource busy":
-  `for f in /sys/fs/cgroup/system.slice/yulius.service/sandboxes/*/cgroup.subtree_control; do echo -cpu > "$f"; done`.
+  (`-pids`, then `-cpu`), so the older binary can join the sandbox groups again. After a crash or a
+  forced stop, undo it by hand before starting the older binary. Otherwise its holders and runs
+  fail with "Device or resource busy":
+  `for f in /sys/fs/cgroup/system.slice/yulius.service/sandboxes/*/cgroup.subtree_control; do echo -pids > "$f"; echo -cpu > "$f"; done`.
+- Upgrading to host-sized task limits (SPEC-268, 2026-10-22): no migration. At its next start the
+  server gives each sandbox a quarter of the host's task table, at most three quarters of
+  `yulius.service`'s own `pids.max` (systemd's `DefaultTasksMax` is 15 % of the table unless the
+  unit sets `TasksMax=`; raise it there for bigger sandboxes), and `ci/` and `engine/` 3/8 of a
+  sandbox's;
+  the log line "per-sandbox limits on" shows the figure. An explicit `YULIUS_SANDBOX_PIDS` stays.
+- Upgrading to a common task limit for all sandboxes (SPEC-272, task #260, 2026-10-22): no
+  migration. At every start the server writes `<unit>/sandboxes/pids.max`: three quarters of
+  `yulius.service`'s own `pids.max` (43 320 under the VM's default 57 763, so the server keeps
+  14 443), or `max` when the unit has `TasksMax=infinity`. Check it with
+  `cat /sys/fs/cgroup/system.slice/yulius.service/sandboxes/pids.max`. An explicit
+  `YULIUS_SANDBOX_PIDS` above it is not capped, but the common limit binds each sandbox too: the
+  server logs a warning naming both. **Rolling back to an older binary:** it leaves
+  `sandboxes/pids.max` as it is. That only keeps the server its share, but the older binary does
+  not count a hit there on a 6.13+ kernel (a session that dies at it reads "The agent stopped
+  unexpectedly") and does not follow a later change of `TasksMax=`. On such a kernel, or before
+  changing `TasksMax=` under the older binary, clear it:
+  `echo max > /sys/fs/cgroup/system.slice/yulius.service/sandboxes/pids.max`.
 - Upgrading to tasks acting as their creator on GitHub (GIT-003, #188, 2026-10-11): no migration
   and no configuration. The agents' Git switches to the creator's token at its next credential
   request; a run gets `gh` logged in as the creator when it is started or continued (`gh` itself

@@ -100,6 +100,15 @@ sandbox's own user namespace), so file permissions never stop a read: a test tha
 verified; a check that still cannot run is a problem to report there, never a reason to skip it \
 silently.";
 
+/// Other repositories the project needs are settled during onboarding, through Yulius
+/// (SPEC-267 REF-005, ADR-0197).
+const REFERENCE_SETUP: &str = "Other repositories: when the code, docs, instructions or this \
+request refer to another GitHub repository the work needs to read (an earlier version to port \
+from, a shared library, a product's source), fetch each one now with the `reference_repo` tool, \
+which reads it as the person who owns this task, and name them in AGENTS.md (the repository and \
+what it is for) so later tasks fetch them the same way. Never ask a person for GitHub App access \
+to read a repository; only when `reference_repo` refuses, ask one with `needs_you`.";
+
 /// The gate every onboarding lays in its own pull request (SPEC-116 OBG-001, F 2026-10-14: the
 /// studio onboarding filed its missing linter, dead-code check and per-project CI as issues, so
 /// the project started without the checks every later task relies on).
@@ -128,11 +137,15 @@ never the repository), and an environment with nothing to deploy yet is an empty
 hosted platform, a staging machine) gets one more [cd.<name>] table per target, with \
 `stage = \"dev\"` or `stage = \"prod\"`, which decides its rules as for dev and production. \
 Yulius reads them from the protected branches and only a person deploys \
-production. Before asking anyone for a credential or a machine, read secrets_list and any \
-hand-over in your request: the person's own agent may have imported the keys (described) and said \
+production. Before asking anyone for a credential or a machine, read secrets_list (its agent \
+secrets and the project variables: non-secret values such as regions, environment names, ids and \
+base URLs, also in your environment) and any hand-over in your request: the person's own agent may have imported the keys (described) and said \
 where and how deploys run; a key used outside the proxy (ssh, a deploy script) reaches the ignored \
-.env through secret_copy_to_env. Only a credential or machine nobody gave: ask with needs_you and \
-go on.";
+.env through secret_copy_to_env. Operator state the person sent (the states in secrets_list: a \
+deploy tool's inventory, rollout folders) goes where the hand-over says with secret_state_restore \
+(a ~/ folder of the sandbox home, kept for later tasks), and is saved after each change with \
+secret_state_save; configs naming keys by a laptop path point to files secret_copy_to_env writes. \
+Only a credential or machine nobody gave: ask with needs_you and go on.";
 
 /// The security scan at onboarding (SPEC-195 VIB-002, SPEC-217 VDP-002), skill infra-bootstrap:
 /// with an instance Vidoc key, the rule to scan before delivery (Yulius CI runs the built-in
@@ -148,8 +161,9 @@ pub fn security_setup(vidoc: bool) -> &'static str {
          that cannot run ends skipped. Add the AGENTS.md rule that every change runs `yulius \
          security-scan` before delivery, fixes each failing finding test-first and decides on \
          each low finding in the change (fix it, or say why not in the spec's Evidence): exit 2 \
-         is not run, never passed, and a false positive goes into `.config/vidoc.toml` as an \
-         `[[ignore]]` with its reason once the reviewer agrees. Say in AGENTS.md that the scan \
+         is not run and exit 3 incomplete, never passed, and a false positive goes into \
+         `.config/vidoc.toml` as an `[[ignore]]` naming its function, with its reason, once the \
+         reviewer agrees. Say in AGENTS.md that the scan \
          sends the changed code to Vidoc. Do not scan the existing code here: `yulius \
          security-scan --all` is a broad audit for its own task."
     } else {
@@ -351,7 +365,7 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
          1. Read the repository's own instructions first (AGENTS.md, CLAUDE.md, .agents/skills, \
          .claude/skills, CONTRIBUTING and README). They stay authoritative: follow them for \
          branches, commits, tests and reviews.\n\
-         2. {environment}\n\
+         2. {environment} {references}\n\
          3. Reverse-engineer the existing project into these documents: the product summary, an \
          architecture document and decision records derived from the code and its history, so \
          every later task knows the whole product before it builds anything.\n\
@@ -399,6 +413,7 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
         preset = profile.preset,
         problems = problems.join("\n"),
         environment = ENVIRONMENT_SETUP,
+        references = REFERENCE_SETUP,
         gate = GATE_SETUP,
         cd = CD_SETUP,
     )
@@ -418,7 +433,7 @@ pub fn environment_prompt(repo: &str, profile: &Profile) -> String {
          its gate.\n\n\
          1. Read the repository's own instructions first (AGENTS.md, CLAUDE.md, README, \
          CONTRIBUTING and the development docs). They stay authoritative.\n\
-         2. {ENVIRONMENT_SETUP}\n\
+         2. {ENVIRONMENT_SETUP} {REFERENCE_SETUP}\n\
          3. {GATE_SETUP}\n\
          4. {CD_SETUP}\n\
          5. Change only what the environment, the gate and CD need (yulius.toml [commands], \
@@ -1525,8 +1540,12 @@ mod tests {
         assert!(prompt.contains("git-crypt"));
         assert!(prompt.contains("Reverse-engineer"));
         // SPEC-256 LOB-006: the keys and hand-over of the person's agent come before a person.
+        assert!(prompt.contains("and any hand-over"), "{prompt}");
+        // SPEC-271 OPS-009: operator state the person sent is restored, not asked for again.
+        assert!(prompt.contains("secret_state_restore"), "{prompt}");
+        // SPEC-275 VAR-008: the project variables are read beside the secrets.
         assert!(
-            prompt.contains("read secrets_list and any hand-over"),
+            prompt.contains("read secrets_list (its agent secrets and the project variables"),
             "{prompt}"
         );
         assert!(prompt.contains("nobody needs to approve"));
@@ -1559,6 +1578,25 @@ mod tests {
         assert!(prompt.contains("dead-code-cleanup"));
         assert!(prompt.contains("--no-verify"));
         assert!(prompt.len() < crate::lifecycle::MAX_PROMPT_BYTES);
+        Ok(())
+    }
+
+    /// SPEC-267 REF-005: onboarding fetches the other repositories the project refers to through
+    /// Yulius, and never asks a person for GitHub App access to read one.
+    #[test]
+    fn prompts_fetch_referenced_repositories_without_a_person() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let (report, _) = validate_checkout(dir.path());
+        let profile =
+            crate::projects::profile_view(&yulius_domain::delivery::DeliveryProfile::studio());
+        let preparation = onboarding_prompt("Quartio-Studio/studio", &profile, &report);
+        let environment = environment_prompt("Quartio-Studio/studio", &profile);
+        for prompt in [&preparation, &environment] {
+            for wording in ["`reference_repo`", "AGENTS.md", "GitHub App access"] {
+                assert!(prompt.contains(wording), "missing {wording:?}\n{prompt}");
+            }
+            assert!(prompt.len() < crate::lifecycle::MAX_PROMPT_BYTES);
+        }
         Ok(())
     }
 

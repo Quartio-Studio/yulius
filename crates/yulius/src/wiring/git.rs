@@ -14,7 +14,7 @@ use yulius_app::ports::git::{
 };
 use yulius_contracts::api::git::{ChangedFile, DiffHunk, DiffLine, TaskCommit};
 use yulius_git::{
-    Author, FileDiff, FileStatus, Git, GitError, ImportRef, LineKind, WorktreeRemoval,
+    Author, BundleSpec, FileDiff, FileStatus, Git, GitError, ImportRef, LineKind, WorktreeRemoval,
 };
 
 /// Git adapter.
@@ -168,6 +168,27 @@ impl GitPort for GitAdapter {
     async fn fetch_branches_from(&self, repo: &Path, source: &Path) -> AppResult<()> {
         let (git, repo, source) = (self.git(), repo.to_path_buf(), source.to_path_buf());
         blocking(move || git.fetch_branches_from(&repo, &source)).await
+    }
+
+    async fn bundle_branch(
+        &self,
+        url: &str,
+        branch: &str,
+        work: &Path,
+        bundle: &Path,
+        token: &Secret,
+    ) -> AppResult<String> {
+        let (plain, git) = (self.git(), self.git_with_token(token));
+        let (url, branch) = (url.to_owned(), branch.to_owned());
+        let (work, bundle) = (work.to_path_buf(), bundle.to_path_buf());
+        blocking(move || {
+            let full = format!("refs/heads/{branch}");
+            plain.init(&work, &branch, true)?;
+            git.fetch_branch(&work, &url, &branch)?;
+            plain.create_bundle(&work, &bundle, &[BundleSpec::Include(full.clone())])?;
+            plain.rev_parse(&work, &full)
+        })
+        .await
     }
 
     async fn copy_refs(&self, repo: &Path, source: &Path) -> AppResult<()> {
@@ -331,11 +352,6 @@ impl GitPort for GitAdapter {
     async fn is_disposable(&self, worktree: &Path, relative: &str) -> AppResult<bool> {
         let (git, wt, rel) = (self.git(), worktree.to_path_buf(), relative.to_owned());
         blocking(move || git.is_ignored_and_untracked(&wt, &rel)).await
-    }
-
-    async fn has_ignored_files(&self, worktree: &Path) -> AppResult<bool> {
-        let (git, wt) = (self.git(), worktree.to_path_buf());
-        blocking(move || git.has_ignored_files(&wt)).await
     }
 
     async fn ignored_entries(&self, worktree: &Path) -> AppResult<Option<Vec<String>>> {

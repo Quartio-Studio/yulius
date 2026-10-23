@@ -126,7 +126,7 @@ deployments:
   owners:
   - .
   active_owner: .
-  content_hash: sha256:4ae9f75908127d40942014c5761691eff0a9dc447769f3293397abd2d2ad4ffa
+  content_hash: sha256:88802ac9cb5737e2070135f7c468a7d3139ad9246ff8f1d8bfa0a2cc93dbe404
 - kind: project-relative
   target: legacy
   value: .agents/skills/yulius-git
@@ -252,7 +252,7 @@ deployments:
   owners:
   - .
   active_owner: .
-  content_hash: sha256:4ae9f75908127d40942014c5761691eff0a9dc447769f3293397abd2d2ad4ffa
+  content_hash: sha256:88802ac9cb5737e2070135f7c468a7d3139ad9246ff8f1d8bfa0a2cc93dbe404
 local_deployed_files:
 - .agents/skills/yulius-git
 - .agents/skills/yulius-git/SKILL.md
@@ -289,11 +289,11 @@ local_deployed_file_hashes:
   .agents/skills/yulius-runner/SKILL.md: sha256:1c0745a5b44b0b8126ffde8f8ebea68e7e318e6def0d07e2f474502b56ce746b
   .agents/skills/yulius-rust-slice/SKILL.md: sha256:276b65d41d99440aa173548804e6fe1da5bf3ed6f523b493971bb0a0eed57fd6
   .agents/skills/yulius-spec/SKILL.md: sha256:71bbfb4358443c18c0d9d912e77a44faa43b2e7be20e5307106d5b5aee6d8405
-  .agents/skills/yulius-verify/SKILL.md: sha256:4ae9f75908127d40942014c5761691eff0a9dc447769f3293397abd2d2ad4ffa
+  .agents/skills/yulius-verify/SKILL.md: sha256:88802ac9cb5737e2070135f7c468a7d3139ad9246ff8f1d8bfa0a2cc93dbe404
   .claude/skills/yulius-git/SKILL.md: sha256:7b8056ca01f08f98515b5fb70d4c3aecc63aae42b876fae9148cdbd26224dd51
   .claude/skills/yulius-primitives/SKILL.md: sha256:a841128f265cc6bdbdaedf9c3d2f2c91291e76afad264f22491ee6f9546faafe
   .claude/skills/yulius-review/SKILL.md: sha256:dedeabd6d8f379bd0f6083b1281d8d288d55f4d0c9c4b78110ebb404d024a50e
   .claude/skills/yulius-runner/SKILL.md: sha256:1c0745a5b44b0b8126ffde8f8ebea68e7e318e6def0d07e2f474502b56ce746b
   .claude/skills/yulius-rust-slice/SKILL.md: sha256:276b65d41d99440aa173548804e6fe1da5bf3ed6f523b493971bb0a0eed57fd6
   .claude/skills/yulius-spec/SKILL.md: sha256:71bbfb4358443c18c0d9d912e77a44faa43b2e7be20e5307106d5b5aee6d8405
-  .claude/skills/yulius-verify/SKILL.md: sha256:4ae9f75908127d40942014c5761691eff0a9dc447769f3293397abd2d2ad4ffa
+  .claude/skills/yulius-verify/SKILL.md: sha256:88802ac9cb5737e2070135f7c468a7d3139ad9246ff8f1d8bfa0a2cc93dbe404

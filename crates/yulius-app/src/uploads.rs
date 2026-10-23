@@ -69,6 +69,8 @@ use crate::files::{
 pub const DEFAULT_UPLOAD_MAX_BYTES: u64 = 25 * 1024 * 1024;
 /// Uploads in progress at once on this instance.
 pub const MAX_CONCURRENT_UPLOADS: usize = 8;
+/// Agent states sent, restored, saved or downloaded at once (SPEC-271 OPS-008).
+pub const MAX_CONCURRENT_STATES: usize = 2;
 /// Longest pause in an upload's body before it fails.
 pub const UPLOAD_IDLE: Duration = Duration::from_secs(60);
 /// Attachments kept per task or shell.
@@ -90,12 +92,22 @@ const DRAFT_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 /// Uploads in progress (the concurrency bound).
 pub struct UploadState {
     slots: Arc<Semaphore>,
+    /// Reference fetches running at once (SPEC-267): each may write a repository's history to
+    /// the data disk before its size is known.
+    pub(crate) references: Arc<Semaphore>,
+    /// Agent states moving at once (SPEC-271 OPS-008): each holds a packed state of up to
+    /// 64 MiB in memory.
+    pub(crate) states: Arc<Semaphore>,
 }
 
 impl Default for UploadState {
     fn default() -> Self {
         Self {
             slots: Arc::new(Semaphore::new(MAX_CONCURRENT_UPLOADS)),
+            references: Arc::new(Semaphore::new(
+                crate::reference_repo::MAX_CONCURRENT_FETCHES,
+            )),
+            states: Arc::new(Semaphore::new(MAX_CONCURRENT_STATES)),
         }
     }
 }
@@ -524,7 +536,7 @@ impl App {
     }
 
     /// The sandbox directory as processes see it (absolute; containment binds it at this path).
-    fn sandbox_dir_absolute(&self, sandbox: &SandboxId) -> PathBuf {
+    pub(crate) fn sandbox_dir_absolute(&self, sandbox: &SandboxId) -> PathBuf {
         let dir = self.sandbox_dir(sandbox);
         std::path::absolute(&dir).unwrap_or(dir)
     }
@@ -654,11 +666,11 @@ impl App {
             return Err(AppError::Forbidden("this account is disabled".into()));
         }
         self.begin_attachment(
-            ctx,
+            Self::upload_actor(ctx),
             &record.sandbox_id,
             &Owner::Task(&record.id),
             name,
-            declared,
+            (declared, false),
         )
         .await
     }
@@ -680,8 +692,14 @@ impl App {
         let runtime = self.own_shell_of(ctx, sandbox, shell, None).await?;
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         let id = runtime.info().id;
-        self.begin_attachment(ctx, &sandbox_id, &Owner::Shell(&id), name, declared)
-            .await
+        self.begin_attachment(
+            Self::upload_actor(ctx),
+            &sandbox_id,
+            &Owner::Shell(&id),
+            name,
+            (declared, false),
+        )
+        .await
     }
 
     /// Starts an attachment for the new-task composer of `sandbox` (write access to it): the
@@ -709,8 +727,14 @@ impl App {
         }
         let user = ctx.user.id.as_str();
         self.prune_old_drafts(&sandbox_id, user);
-        self.begin_attachment(ctx, &sandbox_id, &Owner::Draft(user), name, declared)
-            .await
+        self.begin_attachment(
+            Self::upload_actor(ctx),
+            &sandbox_id,
+            &Owner::Draft(user),
+            name,
+            (declared, false),
+        )
+        .await
     }
 
     /// Removes the files of a user's drafts folder that are older than [`DRAFT_MAX_AGE`].
@@ -745,13 +769,62 @@ impl App {
         }
     }
 
+    /// Places the server's own file `source` among `task`'s attachments as `name`, replacing an
+    /// earlier regular file of that name (never a link or a folder), streamed through the
+    /// attachment path's handles (a reference bundle, SPEC-267): at most `limit` bytes, audited
+    /// for `actor`.
+    ///
+    /// # Errors
+    /// `Invalid` above `limit`; otherwise as [`App::begin_task_attachment`] and
+    /// [`App::finish_upload`]; I/O errors reading `source`.
+    pub(crate) async fn attach_server_file(
+        &self,
+        (sandbox, task): (&SandboxId, &TaskId),
+        name: &str,
+        source: &Path,
+        limit: u64,
+        actor: String,
+    ) -> AppResult<UploadedFile> {
+        use tokio::io::AsyncReadExt as _;
+        let mut file = tokio::fs::File::open(source)
+            .await
+            .map_err(|e| upload_io_error(&e))?;
+        let size = file
+            .metadata()
+            .await
+            .map_err(|e| upload_io_error(&e))?
+            .len();
+        if size > limit {
+            return Err(too_large(limit));
+        }
+        let mut upload = self
+            .begin_attachment(actor, sandbox, &Owner::Task(task), name, (None, true))
+            .await?;
+        upload.limit = limit;
+        upload.placement = Placement::Overwrite;
+        let mut chunk = vec![0u8; 256 * 1024];
+        loop {
+            let read = file
+                .read(&mut chunk)
+                .await
+                .map_err(|e| upload_io_error(&e))?;
+            if read == 0 {
+                break;
+            }
+            upload.write(chunk.get(..read).unwrap_or_default()).await?;
+        }
+        self.finish_upload(upload).await
+    }
+
+    /// `replaces`: the caller places the file over an existing one of that name (see
+    /// [`App::attach_server_file`]).
     async fn begin_attachment(
         &self,
-        ctx: &AuthContext,
+        actor: String,
         sandbox: &SandboxId,
         owner: &Owner<'_>,
         name: &str,
-        declared: Option<u64>,
+        (declared, replaces): (Option<u64>, bool),
     ) -> AppResult<Upload> {
         self.check_declared(declared)?;
         let name = attachment_name(name);
@@ -759,8 +832,10 @@ impl App {
         let sandbox_dir = std::fs::canonicalize(self.sandbox_dir(sandbox))
             .map_err(|_| AppError::Conflict("the sandbox has no folder yet".into()))?;
         let dir = ensure_plain_dirs(&sandbox_dir, &owner.parts())?;
+        // A name that replaces a regular file adds none, so a full folder still takes it.
+        let replacing = replaces && kind_in(&dir.1, &name)? == Some(SFlag::S_IFREG);
         let count = count_entries(&dir.1, MAX_ATTACHMENTS_PER_FOLDER + 1)?;
-        if count >= MAX_ATTACHMENTS_PER_FOLDER {
+        if !replacing && count >= MAX_ATTACHMENTS_PER_FOLDER {
             return Err(AppError::Conflict(format!(
                 "at most {MAX_ATTACHMENTS_PER_FOLDER} attachments are kept per terminal or draft"
             )));
@@ -778,7 +853,7 @@ impl App {
             dir,
             (name, shown_dir),
             Placement::FreeName,
-            (Self::upload_actor(ctx), owner.audit_target()),
+            (actor, owner.audit_target()),
         )
         .await
     }
