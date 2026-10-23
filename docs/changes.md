@@ -4,6 +4,16 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-24
+
+- An agent can no longer stop the disk upkeep with a FIFO (SPEC-288, task #274, #853). A
+  worktree's `yulius.toml` was checked by path and then read by path, so a FIFO swapped in between
+  blocked the read for good, and with it every later disk round of the sandbox; a worktree
+  record's `gitdir` was read with no check at all (a FIFO blocked the leftovers round, a link was
+  followed). Both are now opened once without following a link or waiting on a FIFO, and read
+  only when the handle is a small regular file (64 KiB, 4 KiB); anything else declares nothing.
+  The declared caches of an ended worktree are read off the async workers.
+
 ## 2026-10-23
 
 - First-run onboarding says what each step does and what comes next (SPEC-283, task #269,
