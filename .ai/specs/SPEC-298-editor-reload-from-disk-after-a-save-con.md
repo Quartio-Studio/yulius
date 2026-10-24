@@ -69,7 +69,7 @@ marked "Saved": it shows the disk's text, or it keeps the text marked modified a
 
 - `e2e/tests/editor.e2e.ts`: two tests next to "unsaved edits are kept when the disk moves on",
   using the mock's file tree (`__yuliusMock.repoFile`, and new `removeRepoFile`, `repoFileTooLarge`
-  and `holdRead` hooks). The first two fail before the fix: the status says "Saved" and the text is
+  and `holdReads` hooks). The first two fail before the fix: the status says "Saved" and the text is
   the person's. Review: a too-large file's toast, and a look started while the reload's read is held
   (`visibilitychange`), which asks for the whole file and shows the disk's text.
 - The full e2e suite and the repository gate (`scripts/dev ci`), and `scripts/dev security`.
@@ -85,4 +85,8 @@ marked "Saved": it shows the disk's text, or it keeps the text marked modified a
   brings them back): the person chose to lose their changes (review nit).
 - A newer look carries the reload (`tab.reloading`) rather than being refused while one is on its
   way: the newest look still wins (EDT-015), and no look of the person's choice is lost.
+- A look that loads the disk's text over a modified one redraws the tab and the status bar itself
+  (`markSaved`): when the reload's moot answer came first, the save's end had drawn them still
+  modified and nothing drew them again (found by the full e2e run; the mock's `holdReads` now
+  orders the answers).
 - No ADR: this restores the intended behavior of an existing requirement.

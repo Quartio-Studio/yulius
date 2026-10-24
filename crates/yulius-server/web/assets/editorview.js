@@ -739,13 +739,13 @@ export function createEditorView(ctx, sandbox, getTask) {
         tab.text = file.content;
         savedAs(tab, file.content, null);
         tab.sha = file.sha256;
-        tab.dirty = false;
+        markSaved(tab);
         return;
       }
       replaceText(tab, file.content);
       tab.sha = file.sha256;
       savedAs(tab, tab.model.getValue());
-      tab.dirty = false;
+      markSaved(tab);
       presenceMoved(tab);
     } catch (error) {
       // Deleted or unreachable: the text stays, the next save reports it. A reload says so now,
@@ -757,6 +757,14 @@ export function createEditorView(ctx, sandbox, getTask) {
     } finally {
       if (tab.look === look) { tab.looking = false; tab.reloading = false; }
     }
+  }
+
+  /** `tab` holds the disk's text: no longer modified, as its tab and the status bar say. */
+  function markSaved(tab) {
+    if (!tab.dirty) return;
+    tab.dirty = false;
+    renderTabs();
+    renderStatus();
   }
 
   /** The disk's version when it differs from what the person edits (`null`: the same). */
