@@ -1189,3 +1189,157 @@ async fn login_terminal_websocket_streams_masked_output_and_accepts_input() -> T
     assert!(s.host.log().contains(&"input:pasted\r".to_owned()));
     Ok(())
 }
+
+/// An open login terminal over a real loopback connection.
+type LoginSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Opens the login terminal of `login_id` with a cookie session or a bearer token.
+async fn open_login_terminal(
+    addr: std::net::SocketAddr,
+    login_id: &str,
+    creds: &Creds,
+) -> Result<LoginSocket, Box<dyn std::error::Error>> {
+    let url = format!("ws://{addr}/api/admin/accounts/login/{login_id}/terminal");
+    let mut req = url.into_client_request()?;
+    if let Some(cookie) = creds.cookie.as_deref() {
+        req.headers_mut()
+            .insert("cookie", support::cookie_header(cookie).parse()?);
+    }
+    if let Some(token) = creds.bearer.as_deref() {
+        req.headers_mut()
+            .insert("authorization", format!("Bearer {token}").parse()?);
+    }
+    req.headers_mut()
+        .insert("origin", "https://yulius.test".parse()?);
+    let (ws, _) = tokio_tungstenite::connect_async(req).await?;
+    Ok(ws)
+}
+
+/// Waits (bounded) for the socket's close frame and returns its code.
+async fn login_terminal_closed(ws: &mut LoginSocket) -> Result<u16, Box<dyn std::error::Error>> {
+    let wait = async {
+        while let Some(message) = ws.next().await {
+            if let tungstenite::Message::Close(frame) = message? {
+                return Ok::<_, Box<dyn std::error::Error>>(
+                    frame.map_or(1005, |f| u16::from(f.code)),
+                );
+            }
+        }
+        Err("the connection ended without a close frame".into())
+    };
+    tokio::time::timeout(Duration::from_secs(10), wait)
+        .await
+        .map_err(|_| "the login terminal stayed open")?
+}
+
+/// Asserts the socket still answers: a `hello` gets a `state` back (bounded).
+async fn login_terminal_answers(ws: &mut LoginSocket) -> TestResult {
+    ws.send(tungstenite::Message::Text(
+        json!({"type": "hello", "last_seq": null, "cols": 80, "rows": 24})
+            .to_string()
+            .into(),
+    ))
+    .await?;
+    let wait = async {
+        while let Some(message) = ws.next().await {
+            match message? {
+                tungstenite::Message::Text(text) => {
+                    let v: Value = serde_json::from_str(&text)?;
+                    if v["type"] == "state" {
+                        return Ok::<(), Box<dyn std::error::Error>>(());
+                    }
+                }
+                tungstenite::Message::Close(frame) => {
+                    return Err(format!("closed: {frame:?}").into());
+                }
+                _ => {}
+            }
+        }
+        Err("the connection ended".into())
+    };
+    tokio::time::timeout(Duration::from_secs(10), wait).await??;
+    Ok(())
+}
+
+/// #759 (SPEC-295 LTR-001..005): an open login terminal is re-checked like the other sockets. A
+/// revoked API token, a signed-out session and a removed instance administration each close their
+/// own terminal with 4003 within the re-check interval; the others stay open.
+#[tokio::test]
+async fn a_login_terminal_closes_once_its_sign_in_or_administration_ends() -> TestResult {
+    use yulius_app::ports::store::UserStore as _;
+    let host = Arc::new(FakeHost::default());
+    let h = support::harness_with(support::HarnessOptions {
+        git: Some(Arc::new(yulius::wiring::pending::UnavailableGit)),
+        session_host: Some(host.clone()),
+        configure: Some(Box::new(|c| c.viewer_recheck_ms = 200)),
+        ..support::HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    let s = Setup { h, host, admin };
+    configure_github_app(&s.h).await?;
+    let alice = admit_and_sign_in(&s.h, &s.admin, "alice", 11, true).await?;
+    let bob = admit_and_sign_in(&s.h, &s.admin, "bob", 12, true).await?;
+    let made = call(
+        &s.h.router,
+        Method::POST,
+        "/api/me/tokens",
+        Some(json!({"label": "laptop", "scope": "operate"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.body);
+    let token = Creds {
+        bearer: Some(made.body["token"].as_str().ok_or("token")?.to_owned()),
+        ..Creds::default()
+    };
+    let token_id = made.body["view"]["id"]
+        .as_str()
+        .ok_or("token id")?
+        .to_owned();
+    // A sign-in that runs until it is stopped.
+    s.host.push(Script::default());
+    let (_, login_id) = create(&s, "anthropic", "Claude recheck").await?;
+
+    let served = support::serve(s.h.router.clone()).await?;
+    let mut by_cookie = open_login_terminal(served.addr, &login_id, &alice).await?;
+    let mut by_token = open_login_terminal(served.addr, &login_id, &token).await?;
+    let mut by_bob = open_login_terminal(served.addr, &login_id, &bob).await?;
+    for ws in [&mut by_cookie, &mut by_token, &mut by_bob] {
+        login_terminal_answers(ws).await?;
+    }
+
+    // Revoking the operate token ends the terminal opened with it, not the others.
+    let revoked = call(
+        &s.h.router,
+        Method::DELETE,
+        &format!("/api/me/tokens/{token_id}"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+    assert_eq!(login_terminal_closed(&mut by_token).await?, 4003);
+    login_terminal_answers(&mut by_cookie).await?;
+    login_terminal_answers(&mut by_bob).await?;
+
+    // Signing out ends the terminal opened with that session.
+    let logout = call(&s.h.router, Method::POST, "/api/auth/logout", None, &alice).await?;
+    assert_eq!(logout.status, StatusCode::NO_CONTENT);
+    assert_eq!(login_terminal_closed(&mut by_cookie).await?, 4003);
+    login_terminal_answers(&mut by_bob).await?;
+
+    // Removing bob's instance administration ends his terminal although he is still signed in.
+    let bob_id = s.h.store.user_by_login("bob").await?.ok_or("bob")?.id;
+    let demoted = call(
+        &s.h.router,
+        Method::PATCH,
+        &format!("/api/admin/users/{bob_id}"),
+        Some(json!({"is_instance_admin": false})),
+        &s.admin,
+    )
+    .await?;
+    assert_eq!(demoted.status, StatusCode::OK, "{}", demoted.body);
+    assert_eq!(login_terminal_closed(&mut by_bob).await?, 4003);
+    Ok(())
+}
