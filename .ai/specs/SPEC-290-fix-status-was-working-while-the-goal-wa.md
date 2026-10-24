@@ -59,7 +59,7 @@ left, reads Done, whatever happened to Yulius's own Stop hook for that turn. It 
 
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
+- [x] Fix the cause until the regression test and every gate pass
 - [ ] Independent review, findings fixed, delivered on green
 
 ## Acceptance criteria
@@ -73,14 +73,23 @@ left, reads Done, whatever happened to Yulius's own Stop hook for that turn. It 
   ending: the goal turn leaves a background shell and gets no verdict, the shell's end wakes the
   session, the woken turn's verdict (achieved) comes seconds after its Stop hook.
 - A test for the Stop hook that Yulius did not settle (failed open) followed by the achieved goal.
+- Unit tests of `closes_unanswered_turn` (an answered Stop, one in flight, a record read late
+  after a newer prompt, no hooks, no time) and `unanswered_turn_settles` (context recovery, limit,
+  pause).
 
 ## Decisions
 
 - [ADR-0212](../../docs/decisions/0212-a-turn-whose-stop-yulius-never-answered-settles-at-its-record.md):
   Yulius records when it answers a Stop (`stop_answered_ms`, any decision) and when a turn
-  begins (`turn_began_ms`: the prompt's transcript time, the UserPromptSubmit hook, or resumed
-  work). `turn_record_seen` settles a Working turn begun after the last answered Stop with
-  `settle_clean_turn`. Not while a full context is recovered, at a usage limit or with an open
-  pause. The hook client stays fail-open.
+  begins (`turn_began_ms`: the prompt's transcript time, the UserPromptSubmit hook, resumed work,
+  or a turn open at a restart's catch-up). `turn_record_seen` settles a Working turn with
+  `settle_clean_turn` when all of these hold (`closes_unanswered_turn`):
+  - the turn began after the last answered Stop;
+  - no Stop is in flight;
+  - the record's own time is after the turn began.
+
+  It does not settle the turn while a full context is recovered, at a usage limit or with an open
+  pause (`unanswered_turn_settles`). A Stop that fails after its record was seen settles the turn
+  itself. Only the live attempt's answers count. The hook client stays fail-open.
 - Not settled on `met: true` alone: a Stop that Yulius answered with a gate block can come with an
   achieved goal while the agent works on.

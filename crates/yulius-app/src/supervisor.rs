@@ -206,6 +206,9 @@ pub struct TaskRuntime {
     pub(crate) stop_answered_ms: AtomicI64,
     /// When the last turn began (ms): its prompt's transcript time, or when work resumed it.
     pub(crate) turn_began_ms: AtomicI64,
+    /// Stop hooks of this run Yulius is answering now: the record that closes their turn leaves
+    /// the turn to them (SPEC-290 GDW-001; a client that gave up still has it answered, ADR-0115).
+    pub(crate) stops_in_flight: AtomicU32,
     /// Background work the transcript says the session started and no notification ended yet:
     /// Monitor streams and background agents by Claude Code's task id (SPEC-079 BGW-002).
     pub(crate) launches: Mutex<std::collections::BTreeMap<String, crate::finish::Launch>>,
@@ -332,6 +335,7 @@ impl TaskRuntime {
             last_stop_ms: AtomicI64::new(0),
             stop_answered_ms: AtomicI64::new(0),
             turn_began_ms: AtomicI64::new(0),
+            stops_in_flight: AtomicU32::new(0),
             background_shells: AtomicI64::new(-1),
             limits_at_start: Mutex::new(None),
             background_waits: AtomicI64::new(-1),
@@ -3952,10 +3956,13 @@ impl App {
                 self.turn_interrupted(task_id, at).await;
             }
             Observation::Goal(outcome) => self.goal_observed(task_id, outcome).await,
-            Observation::TurnEnded { background_agents } => {
+            Observation::TurnEnded {
+                background_agents,
+                at,
+            } => {
                 self.background_agents_observed(task_id, background_agents.unwrap_or(0))
                     .await;
-                self.turn_record_seen(task_id).await;
+                self.turn_record_seen(task_id, at).await;
             }
             Observation::AgentWork { at } => {
                 self.context_replied(task_id, &attempt.id);

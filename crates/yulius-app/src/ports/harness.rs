@@ -155,6 +155,9 @@ pub enum Observation {
     TurnEnded {
         /// Background agents Claude Code still waits for; `None` when it does not say.
         background_agents: Option<u32>,
+        /// When it was recorded, if known: a record read late belongs to the turn before a newer
+        /// prompt (SPEC-290 GDW-001).
+        at: Option<Timestamp>,
     },
     /// The agent works: an assistant line that is not a turn's end.
     AgentWork {

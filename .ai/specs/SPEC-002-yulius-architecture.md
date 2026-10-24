@@ -1661,9 +1661,10 @@ wake-ups do — or a user prompt record in the transcript), a new goal, a "not m
   transcript); permission prompt or browser request → `needs_attention`; process exit → `closed` /
   `stopped`. A prompt of a turn that already ended cleanly, read late from the transcript, does not
   reopen it (its record time ≤ the last clean Stop). A turn whose Stop Yulius never answered (the
-  hook client failed open on an error answer or an unreachable server) settles at the record that
-  closes it (`turn_duration`) as that clean Stop would have, unless a full context, a usage limit
-  or an open pause decides how it goes on (SPEC-290, ADR-0212).
+  hook client failed open on an error answer or an unreachable server, or an error ended the turn
+  with no Stop hook) settles at the record that closes it (`turn_duration`, written after the turn
+  began; none while a Stop is being answered) as that clean Stop would have, unless a full
+  context, a usage limit or an open pause decides how it goes on (SPEC-290, ADR-0212).
 - **Background shells** are a live overlay, not a state: while the task is idle (`waiting`/`done`)
   the supervisor probes the agent's process tree at the clean Stop, when the goal is achieved and
   every 5 s, counting Bash-tool shells (command line with Claude Code's wrapper `… && pwd -P >| <cwd

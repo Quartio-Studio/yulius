@@ -163,13 +163,32 @@ impl App {
             return Err(AppError::NotFound);
         }
         let ctx = self.agent_context(token).await?;
+        if event != events::STOP {
+            return self.answer_hook(&ctx, event, input).await;
+        }
+        // While Yulius answers a Stop, the record that closes its turn leaves the turn to it.
+        let runtime = self.runtime(&ctx.task.id);
+        runtime.stops_in_flight.fetch_add(1, Ordering::SeqCst);
         let reply = self.answer_hook(&ctx, event, input).await;
-        // An answered Stop, whatever Yulius decided; one that fails here fails open in the CLI,
-        // which ends the turn anyway: its turn record settles it (SPEC-290 GDW-001).
-        if event == events::STOP && reply.is_ok() {
-            self.runtime(&ctx.task.id)
-                .stop_answered_ms
-                .store(self.now().0, Ordering::SeqCst);
+        runtime.stops_in_flight.fetch_sub(1, Ordering::SeqCst);
+        // Only the live run's answers count: a late one of a run a switch ended is not this
+        // session's (SPEC-290 GDW-001).
+        let live = matches!(
+            self.deps.store.live_attempt(&ctx.task.id).await,
+            Ok(Some(attempt)) if attempt.id == ctx.attempt.id
+        );
+        let now = self.now().0;
+        if reply.is_ok() && live {
+            // An answered Stop, whatever Yulius decided.
+            runtime.stop_answered_ms.store(now, Ordering::SeqCst);
+        } else if reply.is_err()
+            && live
+            && runtime.turn_record_ms.load(Ordering::SeqCst)
+                > runtime.turn_began_ms.load(Ordering::SeqCst)
+        {
+            // It failed (the CLI went on, failing open) and its turn's record came meanwhile:
+            // the turn settles as its clean Stop would have.
+            self.settle_unanswered_turn(&ctx.task.id, now).await;
         }
         reply
     }

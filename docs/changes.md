@@ -10,8 +10,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   turn's Stop hook (SPEC-290, task #276, #877). The hook client fails open, so a Stop that Yulius
   answered with an error, or could not answer, still ended the turn in Claude Code, and the task
   stayed Working after "Goal achieved". Task #272 read "working 11h 15m". Yulius now records each
-  Stop it answers, and the record that closes a later turn settles it like a clean Stop: Done when
-  the goal is achieved, otherwise waiting, with its pull request, chains and queue (ADR-0212).
+  Stop it answers. The record that closes a later turn settles that turn like a clean Stop: Done
+  when the goal is achieved, otherwise waiting, with its pull request, chains and queue. The same
+  applies to a turn that an error ended with no Stop hook. A record read late, after a newer
+  prompt, and a Stop still being answered leave the turn as it is (ADR-0212).
 - The remote MCP's `secret_update` and `secret_hosts_answer` act on the secret `secrets_list`
   shows for the name (SPEC-287, task #273, #787): the project's, else the person's own personal
   one, else a global one switched on for the project. They took the oldest secret of the name

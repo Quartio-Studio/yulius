@@ -98,7 +98,9 @@ impl TranscriptFacts {
                 self.background_agents = 0;
                 self.limit_pending = false;
             }
-            Observation::TurnEnded { background_agents } => {
+            Observation::TurnEnded {
+                background_agents, ..
+            } => {
                 self.turn_open = Some(false);
                 self.background_agents = background_agents.unwrap_or(0);
             }
@@ -395,6 +397,37 @@ pub fn prompt_starts_work(prompt: Option<&str>) -> bool {
     !prompt.is_some_and(is_compact_command)
 }
 
+/// Whether the record that closes a turn, written at `record_at`, closes a turn whose Stop Yulius
+/// never answered (SPEC-290 GDW-001): the run reports through hooks (`hooks`), a turn began
+/// (`began_ms`) after the last answered Stop (`answered_ms`), no Stop of the run is being answered
+/// now (`stops_in_flight`), and the record was written after that turn began. A record read late,
+/// after a newer prompt, belongs to the turn before; one without a time says nothing.
+#[must_use]
+pub(crate) fn closes_unanswered_turn(
+    hooks: bool,
+    answered_ms: i64,
+    began_ms: i64,
+    stops_in_flight: u32,
+    record_at: Option<yulius_domain::time::Timestamp>,
+) -> bool {
+    hooks
+        && stops_in_flight == 0
+        && began_ms > answered_ms
+        && record_at.is_some_and(|at| at.0 > began_ms)
+}
+
+/// Whether a turn closed with no Stop Yulius answered settles now: not while a full context is
+/// being recovered (`context_clear` false), at a usage limit, or with an open pause, whose own
+/// paths say how the task goes on (SPEC-290 GDW-001).
+#[must_use]
+pub(crate) fn unanswered_turn_settles(
+    context_clear: bool,
+    at_limit: bool,
+    pause_open: bool,
+) -> bool {
+    context_clear && !at_limit && !pause_open
+}
+
 impl App {
     /// A clean Stop ended the turn (TSK-014): remembers when, and settles it now, or once the goal
     /// verdict came while a goal is open (SPEC-079 BGW-005; Claude Code's evaluator is a Stop
@@ -670,7 +703,12 @@ impl App {
             // A turn is open: this attempt just started, or Claude Code works. A replay never
             // sets Working; the next prompt or Stop hook says what happens.
             Some(true) if task.activity == Some(Activity::Working) => {
-                runtime.start_turn(self.now());
+                let now = self.now();
+                runtime.turn_began_ms.store(
+                    facts.last_turn_at.map_or(now.0, |at| at.0),
+                    Ordering::SeqCst,
+                );
+                runtime.start_turn(now);
             }
             _ => {}
         }
@@ -753,20 +791,34 @@ impl App {
     /// The record that closes a turn was seen (its background agents are applied already). A
     /// turn the verdict or later work had resumed and that ends with no Stop hook (an error ended
     /// it) leaves the task idle again, not Working for good.
-    pub(crate) async fn turn_record_seen(self: &Arc<Self>, task_id: &TaskId) {
+    pub(crate) async fn turn_record_seen(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        at: Option<yulius_domain::time::Timestamp>,
+    ) {
         let runtime = self.runtime(task_id);
-        runtime.turn_record_ms.store(self.now().0, Ordering::SeqCst);
+        let record_ms = self.now().0;
+        runtime.turn_record_ms.store(record_ms, Ordering::SeqCst);
         // The turn closed with no verdict (the evaluator deferred or failed): it settles now.
         if runtime.verdict_stop_ms.take_any() {
             self.settle_waited_turn(task_id).await;
             return;
         }
         // The turn closed with no Stop Yulius answered (its hook failed open on an error answer
-        // or an unreachable server): it settles as that clean Stop would have (SPEC-290 GDW-001).
-        let unanswered = runtime.hooks_seen.load(Ordering::SeqCst)
-            && runtime.stop_answered_ms.load(Ordering::SeqCst)
-                < runtime.turn_began_ms.load(Ordering::SeqCst);
-        if !runtime.resumed_turn.swap(false, Ordering::SeqCst) && !unanswered {
+        // or an unreachable server, or an error ended the turn with no Stop hook): it settles as
+        // that clean Stop would have (SPEC-290 GDW-001).
+        let unanswered = closes_unanswered_turn(
+            runtime.hooks_seen.load(Ordering::SeqCst),
+            runtime.stop_answered_ms.load(Ordering::SeqCst),
+            runtime.turn_began_ms.load(Ordering::SeqCst),
+            runtime.stops_in_flight.load(Ordering::SeqCst),
+            at,
+        );
+        if unanswered && self.settle_unanswered_turn(task_id, record_ms).await {
+            runtime.resumed_turn.store(false, Ordering::SeqCst);
+            return;
+        }
+        if !runtime.resumed_turn.swap(false, Ordering::SeqCst) {
             return;
         }
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
@@ -774,17 +826,6 @@ impl App {
         };
         let working =
             task.status == TaskStatus::Running && task.activity == Some(Activity::Working);
-        if unanswered {
-            if working && self.settles_unanswered(&task).await {
-                tracing::warn!(task = %task_id, "the turn closed with no Stop Yulius answered: it settles");
-                runtime.last_stop_ms.store(self.now().0, Ordering::SeqCst);
-                runtime.end_turn(self.now());
-                if let Err(err) = self.settle_clean_turn(&task).await {
-                    tracing::warn!(task = %task_id, error = %err, "could not settle the task");
-                }
-            }
-            return;
-        }
         if working {
             runtime.end_turn(self.now());
             let next = Activity::after_clean_turn(runtime.goal_achieved.load(Ordering::SeqCst));
@@ -795,18 +836,43 @@ impl App {
         }
     }
 
-    /// Whether a turn whose Stop Yulius never answered may settle at its record: not while the
-    /// task recovers a full context or waits out a usage limit or a hold, which say how it goes
-    /// on themselves.
-    async fn settles_unanswered(&self, task: &TaskRecord) -> bool {
-        let runtime = self.runtime(&task.id);
+    /// Settles the Working turn of `task_id` that closed with no Stop Yulius answered, as that
+    /// clean Stop at `stop_ms` would have, unless [`unanswered_turn_settles`] says its own path
+    /// decides. Whether it settled (SPEC-290 GDW-001).
+    pub(crate) async fn settle_unanswered_turn(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        stop_ms: i64,
+    ) -> bool {
+        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+            return false;
+        };
+        if task.status != TaskStatus::Running || task.activity != Some(Activity::Working) {
+            return false;
+        }
+        let runtime = self.runtime(task_id);
         let context_clear = runtime
             .context
             .lock()
             .is_ok_and(|episode| matches!(*episode, crate::context_full::ContextEpisode::Clear));
-        context_clear
-            && !runtime.at_limit.load(Ordering::SeqCst)
-            && matches!(self.deps.store.open_pause(&task.id).await, Ok(None))
+        let pause_open = !matches!(self.deps.store.open_pause(task_id).await, Ok(None));
+        if !unanswered_turn_settles(
+            context_clear,
+            runtime.at_limit.load(Ordering::SeqCst),
+            pause_open,
+        ) {
+            return false;
+        }
+        tracing::warn!(task = %task_id, "the turn closed with no Stop Yulius answered: it settles");
+        // The Stop it stands for came with its record: chains do not wait for another one, and a
+        // prompt of the turn read late does not reopen it.
+        runtime.last_stop_ms.store(stop_ms, Ordering::SeqCst);
+        runtime.verdict_stop_ms.clear();
+        runtime.end_turn(self.now());
+        if let Err(err) = self.settle_clean_turn(&task).await {
+            tracing::warn!(task = %task_id, error = %err, "could not settle the task");
+        }
+        true
     }
 
     /// Probes the background shells of an idle task (bounded) and publishes the task when their
@@ -1044,6 +1110,7 @@ mod tests {
 
     const ENDED: Observation = Observation::TurnEnded {
         background_agents: None,
+        at: None,
     };
     const WORK: Observation = Observation::AgentWork {
         at: Some(Timestamp(2)),
@@ -1055,6 +1122,7 @@ mod tests {
     fn a_replay_keeps_the_background_agents_of_the_last_turn_end() {
         let pending = Observation::TurnEnded {
             background_agents: Some(2),
+            at: None,
         };
         let waiting = reduce(&[
             PROMPT,
@@ -1507,5 +1575,36 @@ mod tests {
             assert!(!settled.context_full, "{after:?}");
         }
         assert!(!reduce(&[PROMPT, Observation::TurnComplete { at: None }]).context_full);
+    }
+
+    /// SPEC-290 GDW-001: the record that closes a turn begun after the last answered Stop
+    /// settles it; GDW-002: not when a Stop of the turn was answered (a block, a hold, a switch)
+    /// or is being answered, not for a record read late after a newer prompt, not without hooks
+    /// or the record's time.
+    #[test]
+    fn only_a_record_of_a_turn_with_no_answered_stop_settles_it() {
+        let at = |ms| Some(Timestamp(ms));
+        // Stop answered at 100, the turn began at 200, its record written at 300.
+        assert!(closes_unanswered_turn(true, 100, 200, 0, at(300)));
+        // Its Stop was answered (at 250), whatever Yulius decided.
+        assert!(!closes_unanswered_turn(true, 250, 200, 0, at(300)));
+        // A Stop of the run is being answered: the hook decides.
+        assert!(!closes_unanswered_turn(true, 100, 200, 1, at(300)));
+        // The record of the turn before, read after a newer prompt (began at 200).
+        assert!(!closes_unanswered_turn(true, 100, 200, 0, at(150)));
+        // No time on the record, no turn begun, or a run without hooks.
+        assert!(!closes_unanswered_turn(true, 100, 200, 0, None));
+        assert!(!closes_unanswered_turn(true, 0, 0, 0, at(300)));
+        assert!(!closes_unanswered_turn(false, 100, 200, 0, at(300)));
+    }
+
+    /// SPEC-290 GDW-001: a full context being recovered, a usage limit or an open pause decide
+    /// how the task goes on; the unanswered turn's record does not settle it then.
+    #[test]
+    fn recovery_a_limit_or_a_pause_keep_an_unanswered_turn_as_it_is() {
+        assert!(unanswered_turn_settles(true, false, false));
+        assert!(!unanswered_turn_settles(false, false, false));
+        assert!(!unanswered_turn_settles(true, true, false));
+        assert!(!unanswered_turn_settles(true, false, true));
     }
 }

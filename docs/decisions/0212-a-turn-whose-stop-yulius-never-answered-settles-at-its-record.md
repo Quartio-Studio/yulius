@@ -22,11 +22,22 @@ ends it there.
   decided: settle, block, hold or switch. It also remembers when the last turn began
   (`turn_began_ms`): the prompt's transcript time, the UserPromptSubmit hook, or work that resumed
   a stopped turn.
-- When the record that closes a turn (`turn_duration`) arrives, the run has hooks, and no Stop was
-  answered since the turn began, the turn settles as that clean Stop would have: Done when the goal
-  is achieved, waiting otherwise. The automatic pull request, chains and queue follow as after a
-  clean Stop. This applies only to a Working task, and not while it recovers a full context, sits
-  at a usage limit or has an open pause, since those paths decide how the task goes on.
+- The record that closes a turn (`turn_duration`) settles that turn as its clean Stop would have
+  (Done when the goal is achieved, waiting otherwise; the automatic pull request, chains and queue
+  follow) when all of these hold:
+  - the run reports through hooks;
+  - no Stop was answered since the turn began;
+  - no Stop of the run is being answered right now;
+  - the record was written after the turn began. A record read late, after a newer prompt, belongs
+    to the turn before it.
+- This also covers a turn that Claude Code ends with no Stop hook at all, such as an API error.
+- It applies only to a Working task. It does not apply while the task recovers a full context, is
+  at a usage limit or has an open pause: those paths decide how the task goes on.
+- A Stop that Yulius was still answering when the record came, and that then fails, settles the
+  turn when it fails. The client had already given up and failed open.
+- Only the live run's answers count. A late answer from a run that a switch ended does not.
+- A turn still open when a restarted Yulius catches up counts as begun at its last prompt or work
+  line.
 
 ## Alternatives
 
@@ -41,5 +52,5 @@ ends it there.
 - An achieved goal reads Done within one transcript poll of the turn's record, even when the Stop
   hook failed. A failed Stop is logged as a warning ("the turn closed with no Stop Yulius
   answered").
-- A turn that began before a restart and whose Stop failed while Yulius was down is still settled
-  by the replay, as before.
+- A turn that closed while Yulius was down is settled by the replay, as before. A turn that was
+  still open at the restart and whose Stop then fails is settled by this rule.
