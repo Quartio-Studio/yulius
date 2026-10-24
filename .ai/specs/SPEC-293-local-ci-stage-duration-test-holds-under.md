@@ -1,11 +1,11 @@
 ---
 yulius-task: 93a7464c-251c-4d9e-a7b9-eb7899a7e4c8
-status: in-progress
+status: done
 ---
 
 # SPEC-293: The CI stage-duration test holds under host load
 
-Status: in-progress
+Status: done
 Date: 2026-10-24
 Owner: task #279
 Scope authorization: task #279 (issue #538, opened by task #155; started by the nightly issue
@@ -53,11 +53,11 @@ non-zero durations inside the job, timed by Yulius as it reads the output (SPEC-
 ## Plan
 
 - [x] Spec SPEC-293 with root cause and plan
-- [ ] Flake reproduced with probe delays
-- [ ] Stage test gated by files with a test-moved clock
-- [ ] Proof: probes pass and 50 runs under 0.2 CPU share
-- [ ] Independent review answered
-- [ ] Gate green, docs/changes entry, delivered
+- [x] Flake reproduced with probe delays
+- [x] Stage test gated by files with a test-moved clock
+- [x] Proof: probes pass and 50 runs under 0.2 CPU share
+- [x] Independent review answered
+- [x] Gate green, docs/changes entry, delivered
 
 ## Acceptance criteria
 
@@ -87,3 +87,30 @@ non-zero durations inside the job, timed by Yulius as it reads the output (SPEC-
 - Gate files are named after `$YULIUS_CI_RUN`, so the other run of the fixture (the integration
   branch's) is released at once and never holds the pull request's run.
 - No ADR: a test-only change with no lasting product decision.
+
+## Evidence
+
+- Reproduction at dev 3768adba with temporary probes (removed; `grep -rn PROBE-538 crates` is
+  empty): a 2.5 s stall of the read loop after the read that saw `::yulius-stage compile` failed
+  the old test 3/3 with `real durations: 2500 ms, 0 ms`; the fake clock task at half speed (an
+  extra 40 ms sleep per 20 ms tick, `MissedTickBehavior::Delay`) failed it 3/3 with
+  `real durations: 480 ms, 480 ms`.
+- New test (`cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+  test(=local_ci::a_run_s_jobs_record_their_stages_and_test_counts)'`): passes in 2.4 s; with the
+  read-loop probe 3/3 at 491502ee and 3/3 at 924248e9. The clock probe has no target any more (the
+  test runs no clock task).
+- Mutations: stamping every stage at a fixed time fails it (`(0, 0)` vs `(1000, 1000)`);
+  ignoring `::yulius-stage-end` in `stages.rs` fails it (the job waits for `done` until its 8 s
+  timeout, the run ends `error`).
+- Load proof at 924248e9 (the test code of the delivered head): 50/50 passed in a row under a
+  controller holding a 2 s CPU-bound probe's share at median 0.20 (0.16-0.27, median of the last 3
+  probes, 32-52 busy loops, load average ~52), 7.25 s per test median (max 9.48 s) against 2.4 s
+  unloaded. The job's real duration is not in its spans (they use the fake clock); a job over its
+  8 s timeout would have failed the run, so none of the 50 came near it.
+- `scripts/dev ci` at bd5083bf: exit 0, nextest `2590 tests run: 2590 passed, 17 skipped`.
+- `scripts/dev security` at bd5083bf: exit 2, not run: Vidoc is out of quota for this key
+  (HTTP 429, "used its 50,000,000 tokens"); unrun, not passed. The change is test and docs only.
+- Independent review (fresh session, om-code-review): round 1 approved with two own-code minors
+  (Evidence, doc wording) and three nits (unused span, stage end not told apart from the job's
+  end, `sleep 0.05`); all answered, the stage-end nit fixed with a `done` gate. Round 2 approved
+  bd5083bf conditional on the gate.
