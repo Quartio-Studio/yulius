@@ -163,6 +163,46 @@ impl App {
             return Err(AppError::NotFound);
         }
         let ctx = self.agent_context(token).await?;
+        if event != events::STOP {
+            return self.answer_hook(&ctx, event, input).await;
+        }
+        // While Yulius answers a Stop, the record that closes its turn leaves the turn to it, until
+        // the answer is recorded below.
+        let runtime = self.runtime(&ctx.task.id);
+        let _in_flight = crate::finish::StopInFlight::enter(&runtime);
+        let reply = self.answer_hook(&ctx, event, input).await;
+        // Only the live run's answers count: a late one of a run a switch ended is not this
+        // session's (SPEC-290 GDW-001).
+        let live = matches!(
+            self.deps.store.live_attempt(&ctx.task.id).await,
+            Ok(Some(attempt)) if attempt.id == ctx.attempt.id
+        );
+        let now = self.now().0;
+        if reply.is_ok() && live {
+            // An answered Stop, whatever Yulius decided.
+            runtime.stop_answered_ms.store(now, Ordering::SeqCst);
+        } else if reply.is_err()
+            && crate::finish::failed_stop_settles(
+                live,
+                runtime.turn_record_at_ms.load(Ordering::SeqCst),
+                runtime.turn_began_ms.load(Ordering::SeqCst),
+            )
+        {
+            // It failed (the CLI went on, failing open) and its turn's record came meanwhile:
+            // the turn settles as its clean Stop would have, the Stop standing at that record.
+            let record_ms = runtime.turn_record_ms.load(Ordering::SeqCst);
+            self.settle_unanswered_turn(&ctx.task.id, record_ms).await;
+        }
+        reply
+    }
+
+    /// Answers the hook `event` of the run `ctx` ([`Self::hook_event`]).
+    async fn answer_hook(
+        self: &Arc<Self>,
+        ctx: &AgentContext,
+        event: &str,
+        input: &HookInput,
+    ) -> AppResult<HookReply> {
         // This run reports its turn boundaries through hooks: the Stop hook decides switches
         // and pauses, not the transcript.
         self.runtime(&ctx.task.id)
@@ -202,10 +242,10 @@ impl App {
         }
         match event {
             events::SESSION_START => Ok(HookReply::Output(
-                self.hook_session_start(&ctx, input).await?,
+                self.hook_session_start(ctx, input).await?,
             )),
-            events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(&ctx, input).await,
-            events::STOP => self.hook_stop(&ctx, input).await,
+            events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(ctx, input).await,
+            events::STOP => self.hook_stop(ctx, input).await,
             events::NOTIFICATION => {
                 // Only a notice that asks a person to act needs one: Claude Code's reminder that
                 // it waits for input ("idle", about a minute after a turn ended) keeps a finished
@@ -228,7 +268,7 @@ impl App {
                 Ok(HookReply::Output(HookOutput::default()))
             }
             events::SESSION_END => {
-                self.session_ending(&ctx, input.reason.as_deref());
+                self.session_ending(ctx, input.reason.as_deref());
                 Ok(HookReply::Output(HookOutput::default()))
             }
             _ => Ok(HookReply::Output(HookOutput::default())),
@@ -619,9 +659,9 @@ impl App {
             };
             store.update_task(&ctx.task.id, &update, self.now()).await?;
         }
-        self.runtime(&ctx.task.id)
-            .resumed_turn
-            .store(false, Ordering::SeqCst);
+        let runtime = self.runtime(&ctx.task.id);
+        runtime.resumed_turn.store(false, Ordering::SeqCst);
+        runtime.turn_began_ms.store(self.now().0, Ordering::SeqCst);
         self.set_task_activity(&ctx.task, Activity::Working).await?;
         Ok(HookReply::Output(HookOutput::default()))
     }
