@@ -59,7 +59,8 @@ the sandbox's `ci/logs` folder, and its CI jobs' output is still recorded.
 - [x] Regression tests: planted links in ci/logs leave host files untouched
 - [x] Job log created, read and removed through anchored handles
 - [x] Docs: changes entry, ADR-0174 note, spec evidence
-- [ ] Independent review answered
+- [x] Independent review answered
+- [ ] Review round 2 approves the answered head
 - [ ] Gates and security scan green; delivered on green CI
 
 ## Acceptance criteria
