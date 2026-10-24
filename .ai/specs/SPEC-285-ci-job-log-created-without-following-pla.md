@@ -1,11 +1,11 @@
 ---
 yulius-task: 35ad07bd-9076-4ebe-ac02-a28b81f109d4
-status: in-progress
+status: done
 ---
 
 # SPEC-285: a CI job's log is created, read and removed without following a planted link
 
-Status: in-progress
+Status: done
 Date: 2026-10-24
 Owner: Yulius task #271
 Scope authorization: issue [#663](https://github.com/Quartio-Studio/yulius/issues/663) (found in the
@@ -60,8 +60,8 @@ the sandbox's `ci/logs` folder, and its CI jobs' output is still recorded.
 - [x] Job log created, read and removed through anchored handles
 - [x] Docs: changes entry, ADR-0174 note, spec evidence
 - [x] Independent review answered
-- [ ] Review round 2 approves the answered head
-- [ ] Gates and security scan green; delivered on green CI
+- [x] Review round 2 approves the answered head
+- [x] Gates green (security scan unrun: Vidoc quota); delivered on green CI
 
 ## Acceptance criteria
 
@@ -105,8 +105,10 @@ the sandbox's `ci/logs` folder, and its CI jobs' output is still recorded.
   relinked folder (AC-3, "No such file or directory").
 - Green with the fix: the same command, 3 passed, 5 runs in a row; `local_ci::` 46 passed;
   `delivery::` and `cd` 72 passed (CD and environment runs keep `RunLog::At`).
-- Gate: `scripts/dev ci` exit 0 (2575 tests passed, 17 skipped) on 56552d06; rerun on the final
-  head below.
+- Gate: `scripts/dev ci` exit 0 (2575 tests passed, 17 skipped) on 56552d06, and again exit 0
+  (2575 passed, 17 skipped) on the answered head 6f07e5cc; after the clean merge of `dev`
+  (ea5ae044, no file in common) `cargo check --workspace --all-targets` passes. Yulius CI runs the
+  gate on the pull request head.
 - Security: `scripts/dev security` exit 2, **unrun**: Vidoc answered HTTP 429 ("This API key has
   used its 50,000,000 tokens"); the 5 code files were not scanned. Not a pass. Vidoc's own issue
   #793 reports the same `File::create` and closes once its line is gone from `dev`.
@@ -122,3 +124,7 @@ the sandbox's `ci/logs` folder, and its CI jobs' output is still recorded.
     `crates/yulius-git/src/ci.rs`, and `create_dir_all(ci/home|ci/cache)`), on `dev` before this
     change (2025e0f0 `exec.rs:917,925`). Outside `ci/logs` and this issue; this task may not
     create issues, so it is reported in a comment on #663 and in the task summary.
+- Independent review round 2 (same reviewer session, 5038adf9 and 6f07e5cc): approve; every
+  round-1 finding answered. One nit (the gate bullet named a result it did not give) answered
+  above. The reviewer notes the pre-existing `ci/jobs` finding needs its own issue, which this
+  task may not file: it is in the #663 comment and the task summary for a person to file.
