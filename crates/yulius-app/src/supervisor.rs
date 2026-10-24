@@ -200,6 +200,12 @@ pub struct TaskRuntime {
     /// The task was made Working again by the goal verdict or by work after a stop, not by a
     /// prompt: when the turn closes without any Stop hook (an error ended it) it is idle again.
     pub(crate) resumed_turn: AtomicBool,
+    /// When Yulius last answered a Stop hook of this run, whatever it decided (ms, 0 = never).
+    /// A turn that began later and closes had no Stop Yulius answered: its hook failed open
+    /// (SPEC-290 GDW-001).
+    pub(crate) stop_answered_ms: AtomicI64,
+    /// When the last turn began (ms): its prompt's transcript time, or when work resumed it.
+    pub(crate) turn_began_ms: AtomicI64,
     /// Background work the transcript says the session started and no notification ended yet:
     /// Monitor streams and background agents by Claude Code's task id (SPEC-079 BGW-002).
     pub(crate) launches: Mutex<std::collections::BTreeMap<String, crate::finish::Launch>>,
@@ -324,6 +330,8 @@ impl TaskRuntime {
             armed: Mutex::new(crate::agent_wait::ArmedSlot::default()),
             push_problem: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
+            stop_answered_ms: AtomicI64::new(0),
+            turn_began_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
             limits_at_start: Mutex::new(None),
             background_waits: AtomicI64::new(-1),
@@ -3675,6 +3683,8 @@ impl App {
         runtime.notice_attention_ms.store(0, Ordering::SeqCst);
         runtime.turn_record_ms.store(0, Ordering::SeqCst);
         runtime.resumed_turn.store(false, Ordering::SeqCst);
+        runtime.stop_answered_ms.store(0, Ordering::SeqCst);
+        runtime.turn_began_ms.store(0, Ordering::SeqCst);
         // A new session runs none of the old one's monitors or agents.
         if let Ok(mut launches) = runtime.launches.lock() {
             launches.clear();
@@ -3909,7 +3919,11 @@ impl App {
                 runtime.resumed_turn.store(false, Ordering::SeqCst);
                 // A new turn: the one that waited for its verdict goes on (BGW-005).
                 runtime.verdict_stop_ms.clear();
-                runtime.start_turn(self.now());
+                let now = self.now();
+                runtime
+                    .turn_began_ms
+                    .store(at.map_or(now.0, |at| at.0), Ordering::SeqCst);
+                runtime.start_turn(now);
                 let _ = self
                     .deps
                     .store

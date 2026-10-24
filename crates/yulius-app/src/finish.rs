@@ -595,6 +595,7 @@ impl App {
         let runtime = self.runtime(&task.id);
         runtime.background_agents.store(0, Ordering::SeqCst);
         runtime.resumed_turn.store(true, Ordering::SeqCst);
+        runtime.turn_began_ms.store(self.now().0, Ordering::SeqCst);
         runtime.start_turn(self.now());
         if let Err(err) = self.set_task_activity(task, next).await {
             tracing::warn!(task = %task.id, error = %err, "could not update the task's activity");
@@ -759,13 +760,31 @@ impl App {
             self.settle_waited_turn(task_id).await;
             return;
         }
-        if !runtime.resumed_turn.swap(false, Ordering::SeqCst) {
+        // The turn closed with no Stop Yulius answered (its hook failed open on an error answer
+        // or an unreachable server): it settles as that clean Stop would have (SPEC-290 GDW-001).
+        let unanswered = runtime.hooks_seen.load(Ordering::SeqCst)
+            && runtime.stop_answered_ms.load(Ordering::SeqCst)
+                < runtime.turn_began_ms.load(Ordering::SeqCst);
+        if !runtime.resumed_turn.swap(false, Ordering::SeqCst) && !unanswered {
             return;
         }
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };
-        if task.status == TaskStatus::Running && task.activity == Some(Activity::Working) {
+        let working =
+            task.status == TaskStatus::Running && task.activity == Some(Activity::Working);
+        if unanswered {
+            if working && self.settles_unanswered(&task).await {
+                tracing::warn!(task = %task_id, "the turn closed with no Stop Yulius answered: it settles");
+                runtime.last_stop_ms.store(self.now().0, Ordering::SeqCst);
+                runtime.end_turn(self.now());
+                if let Err(err) = self.settle_clean_turn(&task).await {
+                    tracing::warn!(task = %task_id, error = %err, "could not settle the task");
+                }
+            }
+            return;
+        }
+        if working {
             runtime.end_turn(self.now());
             let next = Activity::after_clean_turn(runtime.goal_achieved.load(Ordering::SeqCst));
             if let Err(err) = self.set_task_activity(&task, next).await {
@@ -773,6 +792,20 @@ impl App {
             }
             self.probe_idle_shells(task_id).await;
         }
+    }
+
+    /// Whether a turn whose Stop Yulius never answered may settle at its record: not while the
+    /// task recovers a full context or waits out a usage limit or a hold, which say how it goes
+    /// on themselves.
+    async fn settles_unanswered(&self, task: &TaskRecord) -> bool {
+        let runtime = self.runtime(&task.id);
+        let context_clear = runtime
+            .context
+            .lock()
+            .is_ok_and(|episode| matches!(*episode, crate::context_full::ContextEpisode::Clear));
+        context_clear
+            && !runtime.at_limit.load(Ordering::SeqCst)
+            && matches!(self.deps.store.open_pause(&task.id).await, Ok(None))
     }
 
     /// Probes the background shells of an idle task (bounded) and publishes the task when their

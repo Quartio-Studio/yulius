@@ -163,6 +163,24 @@ impl App {
             return Err(AppError::NotFound);
         }
         let ctx = self.agent_context(token).await?;
+        let reply = self.answer_hook(&ctx, event, input).await;
+        // An answered Stop, whatever Yulius decided; one that fails here fails open in the CLI,
+        // which ends the turn anyway: its turn record settles it (SPEC-290 GDW-001).
+        if event == events::STOP && reply.is_ok() {
+            self.runtime(&ctx.task.id)
+                .stop_answered_ms
+                .store(self.now().0, Ordering::SeqCst);
+        }
+        reply
+    }
+
+    /// Answers the hook `event` of the run `ctx` ([`Self::hook_event`]).
+    async fn answer_hook(
+        self: &Arc<Self>,
+        ctx: &AgentContext,
+        event: &str,
+        input: &HookInput,
+    ) -> AppResult<HookReply> {
         // This run reports its turn boundaries through hooks: the Stop hook decides switches
         // and pauses, not the transcript.
         self.runtime(&ctx.task.id)
@@ -202,10 +220,10 @@ impl App {
         }
         match event {
             events::SESSION_START => Ok(HookReply::Output(
-                self.hook_session_start(&ctx, input).await?,
+                self.hook_session_start(ctx, input).await?,
             )),
-            events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(&ctx, input).await,
-            events::STOP => self.hook_stop(&ctx, input).await,
+            events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(ctx, input).await,
+            events::STOP => self.hook_stop(ctx, input).await,
             events::NOTIFICATION => {
                 // Only a notice that asks a person to act needs one: Claude Code's reminder that
                 // it waits for input ("idle", about a minute after a turn ended) keeps a finished
@@ -228,7 +246,7 @@ impl App {
                 Ok(HookReply::Output(HookOutput::default()))
             }
             events::SESSION_END => {
-                self.session_ending(&ctx, input.reason.as_deref());
+                self.session_ending(ctx, input.reason.as_deref());
                 Ok(HookReply::Output(HookOutput::default()))
             }
             _ => Ok(HookReply::Output(HookOutput::default())),
@@ -619,9 +637,9 @@ impl App {
             };
             store.update_task(&ctx.task.id, &update, self.now()).await?;
         }
-        self.runtime(&ctx.task.id)
-            .resumed_turn
-            .store(false, Ordering::SeqCst);
+        let runtime = self.runtime(&ctx.task.id);
+        runtime.resumed_turn.store(false, Ordering::SeqCst);
+        runtime.turn_began_ms.store(self.now().0, Ordering::SeqCst);
         self.set_task_activity(&ctx.task, Activity::Working).await?;
         Ok(HookReply::Output(HookOutput::default()))
     }

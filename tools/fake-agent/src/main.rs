@@ -1159,9 +1159,11 @@ fn wake_with(
         std::thread::sleep(Duration::from_millis(verdict.after_ms));
         let condition = &verdict.condition;
         write(&|t| {
-            t.goal_status(json!({"type": "goal_status", "met": true, "condition": condition,
+            t.goal_status(
+                json!({"type": "goal_status", "met": true, "condition": condition,
                 "reason": "Merged on green.", "iterations": 1, "durationMs": 51_000,
-                "tokens": 7_100}))
+                "tokens": 7_100}),
+            )
         });
         let _ = say("✓ Goal achieved");
     }
