@@ -955,6 +955,7 @@ type LiveWindow = Window & {
   monaco: { editor: { getEditors(): LiveEditor[] } };
   __yuliusMock: {
     repoFile(sandbox: string, path: string, text: string): void;
+    removeRepoFile(sandbox: string, path: string): void;
     fileReads?: { path: string; known: string | null; whileSaving: boolean }[];
     holdSave: Promise<void> | null;
   };
@@ -1009,6 +1010,45 @@ test('unsaved edits are kept when the disk moves on, and saving asks to overwrit
   await dialog.getByRole('button', 'Reload from disk').click();
   await expect.poll(() => editorText(browser)).toBe('theirs\n');
   await expect.poll(() => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? '')).not.toContain('Changed on disk');
+});
+
+// #571: "Reload from disk" cleared the modified mark before it read the disk, so a read that found
+// nothing to load left the person's text in the editor, marked Saved.
+const editorStatus = (browser: Browser) => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? '');
+
+/** Types into the file in front, has the disk move on, and saves: the conflict dialog opens. */
+async function conflictDialog(app: { open(url: string): Promise<void> }, browser: Browser, screen: import('@e2e-dev/web').Screen) {
+  await openLiveFile(app, browser, screen);
+  await browser.evaluate(() => { const ed = (window as unknown as LiveWindow).monaco.editor.getEditors()[0]; ed.focus(); ed.setPosition({ lineNumber: 1, column: 1 }); ed.trigger('keyboard', 'type', { text: 'mine ' }); });
+  await expect.poll(() => editorText(browser)).toBe(`mine ${ON_DISK}`);
+  await writeDisk(browser, 'theirs\n');
+  await browser.keyboard.press('Control+s');
+  const dialog = screen.getByRole('dialog', /changed on disk/);
+  await expect(dialog.getByRole('button', 'Reload from disk')).toBeVisible();
+  return dialog;
+}
+
+test('reloading a file deleted after a save conflict keeps the text modified and says it is gone', async ({ app, browser, screen }) => {
+  const dialog = await conflictDialog(app, browser, screen);
+  await browser.evaluate(() => (window as unknown as LiveWindow).__yuliusMock.removeRepoFile('sb_studio', 'notes.txt'));
+  await dialog.getByRole('button', 'Reload from disk').click();
+  await expect(browser.locator('.toast-msg:has-text("The file was deleted")')).toBeVisible();
+  expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
+  await expect.poll(() => editorStatus(browser)).toContain('Modified');
+  await expect(screen.getByRole('tab', /^notes\.txt, modified/)).toBeVisible();
+});
+
+test('reloading a file back at the tab\'s version after a save conflict shows the disk\'s text, saved, undoably', async ({ app, browser, screen }) => {
+  const dialog = await conflictDialog(app, browser, screen);
+  await writeDisk(browser, ON_DISK);
+  await dialog.getByRole('button', 'Reload from disk').click();
+  await expect.poll(() => editorText(browser)).toBe(ON_DISK);
+  await expect.poll(() => editorStatus(browser)).toContain('Saved');
+  expect(await editorStatus(browser)).not.toContain('Modified');
+  // The reload is one undo step: the person's text comes back, modified again.
+  await browser.evaluate(() => { const ed = (window as unknown as LiveWindow).monaco.editor.getEditors()[0]; ed.focus(); ed.trigger('keyboard', 'undo', null); });
+  expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
+  await expect.poll(() => editorStatus(browser)).toContain('Modified');
 });
 
 test('the Editor looks at the disk only while it is shown', async ({ app, browser, screen }) => {

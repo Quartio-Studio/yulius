@@ -5382,6 +5382,8 @@ export function createMockTransport(params) {
   if (db.presenceChannel) db.presenceChannel.onmessage = (message) => emit(db, message.data);
   // A file's text in the mock repository (`repoFile('sb_studio', 'long.md', text)`), before it is opened.
   db.repoFile = (sandboxId, path, text, root = 'sandbox') => { repoTree(db, sandboxId, root).files.set(path, text); };
+  // Someone else deletes a file of the mock repository (#571).
+  db.removeRepoFile = (sandboxId, path, root = 'sandbox') => { repoTree(db, sandboxId, root).files.delete(path); };
   db.resyncNow = () => resync(db);
   // Another administrator signs a subscription in again: its running sign-in ends `cancelled`.
   db.startLogin = (accountId) => startLogin(db, accountId);
