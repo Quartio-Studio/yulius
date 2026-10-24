@@ -1,0 +1,116 @@
+---
+yulius-task: 93a7464c-251c-4d9e-a7b9-eb7899a7e4c8
+status: done
+---
+
+# SPEC-293: The CI stage-duration test holds under host load
+
+Status: done
+Date: 2026-10-24
+Owner: task #279
+Scope authorization: task #279 (issue #538, opened by task #155; started by the nightly issue
+automation, task #277).
+
+## Goal
+
+`local_ci::a_run_s_jobs_record_their_stages_and_test_counts` passes regardless of host load while
+still proving that the stages a CI job's output names are spans with real, ordered, contiguous,
+non-zero durations inside the job, timed by Yulius as it reads the output (SPEC-137 STG-201..203).
+
+## Context
+
+- Symptom (#538): `real durations: 1040 ms, 480 ms` (task #155's gate, load ~38, 2026-10-15) and
+  `real durations: 1520 ms, 480 ms` (PR #760, run 4c9d8e77). 3adeb5bd (#826) loosened the bound to
+  `compiled >= 100 && tested >= 100 && compiled + tested >= 1500`, which both reports pass, but the
+  bound still depends on load.
+- Product path: `Executor` reads the job log every `READ_EVERY = 500ms` (`MissedTickBehavior::Skip`,
+  `crates/yulius-app/src/ci/exec.rs`) and stamps each stage boundary with the injected clock at the
+  read (`stages.feed(fresh, self.now())`, `stages.finish(self.now())`). A stage lasts from the read
+  that saw its marker to the read that saw the next one. This is the documented contract (SPEC-137:
+  "timed by Yulius as it reads the output"), not a defect.
+- Test path: the job runs `sleep 1` per stage, and the fake clock `clock_follows_real_time` adds
+  20 ms per `tokio::time::interval(20ms)` tick. Two independent things break any time bound:
+  1. the clock lags real time when its task is starved (ticks are late; the sum of both stages
+     falls below the 2 s the job slept);
+  2. the read that sees a marker can be late by any amount: a late read moves the line between the
+     stages (1520/480), and one starved read that sees two markers makes a stage zero long.
+- Why the existing tests missed it: the test asserts a wall-clock bound on time measured by a clock
+  the test does not control, at reads the test does not control; it only fails when the runtime is
+  starved, which a quiet developer machine never is.
+
+## Requirements
+
+- TST-001: the job holds each stage until the test releases it, and the test moves the fake clock
+  itself, only after it has seen the stage's start recorded; so the stage's recorded duration is
+  exactly the time the test moved the clock by, whatever the load and whenever the reads happen.
+- TST-002: the test still proves STG-201..203: the stages are children of the job span, contiguous
+  (`compile.ended_at == unit.started_at`), non-zero, inside the job, with their figures and test
+  counts, and all spans are `recorded`. `::yulius-stage-end` ends the stages before the job ends
+  (a third gate, `done`, holds the job after the marker; added on review: before, both were
+  stamped at the same time, so the test could not tell them apart).
+- TST-003: no product change: the read interval and read-time stamping stay as they are.
+
+## Plan
+
+- [x] Spec SPEC-293 with root cause and plan
+- [x] Flake reproduced with probe delays
+- [x] Stage test gated by files with a test-moved clock
+- [x] Proof: probes pass and 50 runs under 0.2 CPU share
+- [x] Independent review answered
+- [x] Gate green, docs/changes entry, delivered
+
+## Acceptance criteria
+
+- Temporary probe delays (one in the clock task, one before a log read) make the current test fail
+  deterministically; the same probes leave the new test passing.
+- The new test asserts exact stage durations set by the test (1000 ms each), contiguity, order and
+  containment in the job, with no bound on wall time.
+- 50 runs in a row pass under a held CPU share of 0.2.
+
+## Test plan
+
+- Probe A (clock starvation): a blocking delay in the fake clock's task, so its ticks lag.
+- Probe B (late read): a one-off delay in `exec.rs` before a log read so a read sees two markers.
+- Run the test with each probe, before and after the change; remove the probes (marker grep).
+- 50 runs of the test with nextest under a load controller holding a probe's CPU share at 0.2.
+- `scripts/dev ci`.
+
+## Decisions
+
+- Gate the stages on files and move the clock from the test, rather than a clock derived from
+  `Instant::now()`: a real-time clock fixes the lagging clock but not the late read (a starved read
+  that sees two markers still makes a zero-long stage), so any wall-time bound stays flaky. Gating
+  makes the reads' timing irrelevant and the durations exact. The pattern already exists in this
+  file (`jobs_wait_for_their_cpu_budget_and_are_told_it`, the `go` file).
+- The gated job needs about three log reads (≈1.5 s unloaded) against the fixture's 8 s
+  `job_timeout`, about what the old job's 2 s of sleeps needed; the loaded proof checks it.
+- Gate files are named after `$YULIUS_CI_RUN`, so the other run of the fixture (the integration
+  branch's) is released at once and never holds the pull request's run.
+- No ADR: a test-only change with no lasting product decision.
+
+## Evidence
+
+- Reproduction at dev 3768adba with temporary probes (removed; `grep -rn PROBE-538 crates` is
+  empty): a 2.5 s stall of the read loop after the read that saw `::yulius-stage compile` failed
+  the old test 3/3 with `real durations: 2500 ms, 0 ms`; the fake clock task at half speed (an
+  extra 40 ms sleep per 20 ms tick, `MissedTickBehavior::Delay`) failed it 3/3 with
+  `real durations: 480 ms, 480 ms`.
+- New test (`cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+  test(=local_ci::a_run_s_jobs_record_their_stages_and_test_counts)'`): passes in 2.4 s; with the
+  read-loop probe 3/3 at 491502ee and 3/3 at 924248e9. The clock probe has no target any more (the
+  test runs no clock task).
+- Mutations: stamping every stage at a fixed time fails it (`(0, 0)` vs `(1000, 1000)`);
+  ignoring `::yulius-stage-end` in `stages.rs` fails it (the job waits for `done` until its 8 s
+  timeout, the run ends `error`).
+- Load proof at 924248e9 (the test code of the delivered head): 50/50 passed in a row under a
+  controller holding a 2 s CPU-bound probe's share at median 0.20 (0.16-0.27, median of the last 3
+  probes, 32-52 busy loops, load average ~52), 7.25 s per test median (max 9.48 s) against 2.4 s
+  unloaded. The job's real duration is not in its spans (they use the fake clock); a job over its
+  8 s timeout would have failed the run, so none of the 50 exceeded it.
+- `scripts/dev ci` at bd5083bf: exit 0, nextest `2590 tests run: 2590 passed, 17 skipped`.
+- `scripts/dev security` at bd5083bf: exit 2, not run: Vidoc is out of quota for this key
+  (HTTP 429, "used its 50,000,000 tokens"); unrun, not passed. The change is test and docs only.
+- Independent review (fresh session, om-code-review): round 1 approved with two own-code minors
+  (Evidence, doc wording) and three nits (unused span, stage end not told apart from the job's
+  end, `sleep 0.05`); all answered, the stage-end nit fixed with a `done` gate. Round 2 approved
+  bd5083bf conditional on the gate.
