@@ -166,11 +166,11 @@ impl App {
         if event != events::STOP {
             return self.answer_hook(&ctx, event, input).await;
         }
-        // While Yulius answers a Stop, the record that closes its turn leaves the turn to it.
+        // While Yulius answers a Stop, the record that closes its turn leaves the turn to it, until
+        // the answer is recorded below.
         let runtime = self.runtime(&ctx.task.id);
-        runtime.stops_in_flight.fetch_add(1, Ordering::SeqCst);
+        let _in_flight = crate::finish::StopInFlight::enter(&runtime);
         let reply = self.answer_hook(&ctx, event, input).await;
-        runtime.stops_in_flight.fetch_sub(1, Ordering::SeqCst);
         // Only the live run's answers count: a late one of a run a switch ended is not this
         // session's (SPEC-290 GDW-001).
         let live = matches!(
@@ -182,13 +182,16 @@ impl App {
             // An answered Stop, whatever Yulius decided.
             runtime.stop_answered_ms.store(now, Ordering::SeqCst);
         } else if reply.is_err()
-            && live
-            && runtime.turn_record_ms.load(Ordering::SeqCst)
-                > runtime.turn_began_ms.load(Ordering::SeqCst)
+            && crate::finish::failed_stop_settles(
+                live,
+                runtime.turn_record_at_ms.load(Ordering::SeqCst),
+                runtime.turn_began_ms.load(Ordering::SeqCst),
+            )
         {
             // It failed (the CLI went on, failing open) and its turn's record came meanwhile:
-            // the turn settles as its clean Stop would have.
-            self.settle_unanswered_turn(&ctx.task.id, now).await;
+            // the turn settles as its clean Stop would have, the Stop standing at that record.
+            let record_ms = runtime.turn_record_ms.load(Ordering::SeqCst);
+            self.settle_unanswered_turn(&ctx.task.id, record_ms).await;
         }
         reply
     }

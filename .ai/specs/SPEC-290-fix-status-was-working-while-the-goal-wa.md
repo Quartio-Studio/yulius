@@ -75,7 +75,7 @@ left, reads Done, whatever happened to Yulius's own Stop hook for that turn. It 
 - A test for the Stop hook that Yulius did not settle (failed open) followed by the achieved goal.
 - Unit tests of `closes_unanswered_turn` (an answered Stop, one in flight, a record read late
   after a newer prompt, no hooks, no time) and `unanswered_turn_settles` (context recovery, limit,
-  pause).
+  pause), `failed_stop_settles`, and the `StopInFlight` guard (also on a panic).
 
 ## Decisions
 
@@ -89,7 +89,9 @@ left, reads Done, whatever happened to Yulius's own Stop hook for that turn. It 
   - the record's own time is after the turn began.
 
   It does not settle the turn while a full context is recovered, at a usage limit or with an open
-  pause (`unanswered_turn_settles`). A Stop that fails after its record was seen settles the turn
-  itself. Only the live attempt's answers count. The hook client stays fail-open.
+  pause (`unanswered_turn_settles`). A Stop that fails after its own turn's record was written
+  settles the turn itself (`failed_stop_settles`, compared with the record's own time). A guard
+  (`StopInFlight`) counts a Stop as in flight until its answer is recorded, even if its handling
+  panics. Only the live attempt's answers count. The hook client stays fail-open.
 - Not settled on `met: true` alone: a Stop that Yulius answered with a gate block can come with an
   achieved goal while the agent works on.

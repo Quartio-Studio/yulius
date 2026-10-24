@@ -416,6 +416,33 @@ pub(crate) fn closes_unanswered_turn(
         && record_at.is_some_and(|at| at.0 > began_ms)
 }
 
+/// Whether a Stop that Yulius failed to answer settles its turn itself (SPEC-290 GDW-001): the
+/// Stop is the live run's (`live`), and the record that closes its turn was written
+/// (`record_at_ms`) after that turn began (`began_ms`) while the Stop was being answered.
+#[must_use]
+pub(crate) fn failed_stop_settles(live: bool, record_at_ms: i64, began_ms: i64) -> bool {
+    live && began_ms > 0 && record_at_ms > began_ms
+}
+
+/// A Stop hook of the run being answered (SPEC-290 GDW-001): counted in
+/// [`crate::supervisor::TaskRuntime::stops_in_flight`] until dropped, also when its handling
+/// panics.
+pub(crate) struct StopInFlight(Arc<crate::supervisor::TaskRuntime>);
+
+impl StopInFlight {
+    /// Counts a Stop of `runtime`'s run as being answered.
+    pub(crate) fn enter(runtime: &Arc<crate::supervisor::TaskRuntime>) -> Self {
+        runtime.stops_in_flight.fetch_add(1, Ordering::SeqCst);
+        Self(Arc::clone(runtime))
+    }
+}
+
+impl Drop for StopInFlight {
+    fn drop(&mut self) {
+        self.0.stops_in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Whether a turn closed with no Stop Yulius answered settles now: not while a full context is
 /// being recovered (`context_clear` false), at a usage limit, or with an open pause, whose own
 /// paths say how the task goes on (SPEC-290 GDW-001).
@@ -799,6 +826,9 @@ impl App {
         let runtime = self.runtime(task_id);
         let record_ms = self.now().0;
         runtime.turn_record_ms.store(record_ms, Ordering::SeqCst);
+        runtime
+            .turn_record_at_ms
+            .store(at.map_or(0, |at| at.0), Ordering::SeqCst);
         // The turn closed with no verdict (the evaluator deferred or failed): it settles now.
         if runtime.verdict_stop_ms.take_any() {
             self.settle_waited_turn(task_id).await;
@@ -1606,5 +1636,36 @@ mod tests {
         assert!(!unanswered_turn_settles(false, false, false));
         assert!(!unanswered_turn_settles(true, true, false));
         assert!(!unanswered_turn_settles(true, false, true));
+    }
+
+    /// SPEC-290 GDW-001: a Stop of the live run that failed while its turn's record came settles
+    /// the turn; a record written before that turn began (the turn before's, read late), a turn
+    /// not known to have begun, or another run's Stop do not.
+    #[test]
+    fn a_failed_stop_settles_only_after_its_own_turns_record() {
+        assert!(failed_stop_settles(true, 300, 200));
+        assert!(!failed_stop_settles(true, 150, 200));
+        assert!(!failed_stop_settles(true, 0, 200));
+        assert!(!failed_stop_settles(true, 300, 0));
+        assert!(!failed_stop_settles(false, 300, 200));
+    }
+
+    /// SPEC-290 GDW-001: a Stop counts as in flight until its guard is dropped, also when its
+    /// handling panics.
+    #[test]
+    fn a_stop_in_flight_is_counted_until_its_guard_drops() {
+        let runtime = Arc::new(crate::supervisor::TaskRuntime::new());
+        let guard = StopInFlight::enter(&runtime);
+        assert_eq!(runtime.stops_in_flight.load(Ordering::SeqCst), 1);
+        drop(guard);
+        assert_eq!(runtime.stops_in_flight.load(Ordering::SeqCst), 0);
+        let held = Arc::clone(&runtime);
+        let panicked = std::thread::spawn(move || {
+            let _guard = StopInFlight::enter(&held);
+            panic!("the Stop's handling failed");
+        })
+        .join();
+        assert!(panicked.is_err());
+        assert_eq!(runtime.stops_in_flight.load(Ordering::SeqCst), 0);
     }
 }

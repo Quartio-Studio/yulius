@@ -209,6 +209,9 @@ pub struct TaskRuntime {
     /// Stop hooks of this run Yulius is answering now: the record that closes their turn leaves
     /// the turn to them (SPEC-290 GDW-001; a client that gave up still has it answered, ADR-0115).
     pub(crate) stops_in_flight: AtomicU32,
+    /// When the last record that closes a turn was written (its own time, ms; 0 = none or no
+    /// time): a failed Stop settles its turn only after that turn's record (SPEC-290 GDW-001).
+    pub(crate) turn_record_at_ms: AtomicI64,
     /// Background work the transcript says the session started and no notification ended yet:
     /// Monitor streams and background agents by Claude Code's task id (SPEC-079 BGW-002).
     pub(crate) launches: Mutex<std::collections::BTreeMap<String, crate::finish::Launch>>,
@@ -304,7 +307,7 @@ impl TaskRuntime {
         }
     }
 
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             hub: Hub::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
             run: tokio::sync::Mutex::new(None),
@@ -336,6 +339,7 @@ impl TaskRuntime {
             stop_answered_ms: AtomicI64::new(0),
             turn_began_ms: AtomicI64::new(0),
             stops_in_flight: AtomicU32::new(0),
+            turn_record_at_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
             limits_at_start: Mutex::new(None),
             background_waits: AtomicI64::new(-1),
@@ -3689,6 +3693,7 @@ impl App {
         runtime.resumed_turn.store(false, Ordering::SeqCst);
         runtime.stop_answered_ms.store(0, Ordering::SeqCst);
         runtime.turn_began_ms.store(0, Ordering::SeqCst);
+        runtime.turn_record_at_ms.store(0, Ordering::SeqCst);
         // A new session runs none of the old one's monitors or agents.
         if let Ok(mut launches) = runtime.launches.lock() {
             launches.clear();
