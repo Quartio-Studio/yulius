@@ -80,10 +80,11 @@ instance administration, it closes with 4003.
   `a_login_terminal_closes_once_its_sign_in_or_administration_ends`: the fake process host runs a
   login that never exits; a harness with the fake host and `viewer_recheck_ms = 200`; alice
   (instance admin, cookie session and an operate token) and bob (instance admin, cookie session)
-  open three terminals on the same login. Each step revokes one sign-in (alice's logout, then the
-  token's deletion, then bob's demotion), waits by condition (bounded at 10 s) for that socket's
-  close frame and asserts 4003, then sends `hello` on each socket still open and waits for its
-  `state` answer.
+  open three terminals on the same login. Each step revokes one sign-in (the token's deletion, then
+  alice's logout, then bob's demotion), waits by condition (bounded at 10 s) for that socket's
+  close frame and asserts 4003 with its reason (`signed out`, `signed out`, `access revoked`), then
+  sends `hello` on each socket still open and waits for its `state` answer. The token goes first so
+  the test can show the cookie terminal outlives it.
 - Fails on dev: the first wait times out with no close frame.
 
 ## Decisions

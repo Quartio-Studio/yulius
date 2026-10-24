@@ -1216,13 +1216,17 @@ async fn open_login_terminal(
     Ok(ws)
 }
 
-/// Waits (bounded) for the socket's close frame and returns its code.
-async fn login_terminal_closed(ws: &mut LoginSocket) -> Result<u16, Box<dyn std::error::Error>> {
+/// Waits (bounded) for the socket's close frame and returns its code and reason.
+async fn login_terminal_closed(
+    ws: &mut LoginSocket,
+) -> Result<(u16, String), Box<dyn std::error::Error>> {
     let wait = async {
         while let Some(message) = ws.next().await {
             if let tungstenite::Message::Close(frame) = message? {
                 return Ok::<_, Box<dyn std::error::Error>>(
-                    frame.map_or(1005, |f| u16::from(f.code)),
+                    frame.map_or((1005, String::new()), |f| {
+                        (u16::from(f.code), f.reason.to_string())
+                    }),
                 );
             }
         }
@@ -1319,14 +1323,20 @@ async fn a_login_terminal_closes_once_its_sign_in_or_administration_ends() -> Te
     )
     .await?;
     assert_eq!(revoked.status, StatusCode::NO_CONTENT);
-    assert_eq!(login_terminal_closed(&mut by_token).await?, 4003);
+    assert_eq!(
+        login_terminal_closed(&mut by_token).await?,
+        (4003, "signed out".to_owned())
+    );
     login_terminal_answers(&mut by_cookie).await?;
     login_terminal_answers(&mut by_bob).await?;
 
     // Signing out ends the terminal opened with that session.
     let logout = call(&s.h.router, Method::POST, "/api/auth/logout", None, &alice).await?;
     assert_eq!(logout.status, StatusCode::NO_CONTENT);
-    assert_eq!(login_terminal_closed(&mut by_cookie).await?, 4003);
+    assert_eq!(
+        login_terminal_closed(&mut by_cookie).await?,
+        (4003, "signed out".to_owned())
+    );
     login_terminal_answers(&mut by_bob).await?;
 
     // Removing bob's instance administration ends his terminal although he is still signed in.
@@ -1340,6 +1350,9 @@ async fn a_login_terminal_closes_once_its_sign_in_or_administration_ends() -> Te
     )
     .await?;
     assert_eq!(demoted.status, StatusCode::OK, "{}", demoted.body);
-    assert_eq!(login_terminal_closed(&mut by_bob).await?, 4003);
+    assert_eq!(
+        login_terminal_closed(&mut by_bob).await?,
+        (4003, "access revoked".to_owned())
+    );
     Ok(())
 }
