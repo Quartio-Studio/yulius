@@ -1,11 +1,11 @@
 ---
 yulius-task: d70cfa55-33e7-4766-8500-30e1e3d2717d
-status: in-progress
+status: done
 ---
 
 # SPEC-301: a run lost while Yulius runs saves its live screen
 
-Status: in-progress
+Status: done
 Date: 2026-10-24
 Owner: Yulius task #287
 Scope authorization: issue [#686](https://github.com/Quartio-Studio/yulius/issues/686) (found by
@@ -55,8 +55,8 @@ left, whenever the server still held that screen.
 - [x] Regression test: a lost run's final screen holds its hub's output (fails on dev)
 - [x] mark_lost saves the hub's screen before recording the loss
 - [x] Docs and changes entry true
-- [ ] Independent review answered
-- [ ] Gates green and PR merged on green
+- [x] Independent review answered
+- [x] Gates green and PR merged on green
 
 ## Acceptance criteria
 
@@ -87,3 +87,26 @@ left, whenever the server still held that screen.
   and `finalize_attempt` and `mark_lost` clear: a loss after `finalize_attempt` cleared it saves
   nothing, so no check of the attempt's state is needed (an earlier draft had one; review).
 - No new ADR: this applies ADR-0177's "the run's end writes it again" to the lost end too.
+
+## Evidence
+
+- Regression test first: `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+  test(/^task_done::a_run_lost_while_the_server_runs_saves_its_live_screen$/)'` at a6af50c0 (dev's
+  `mark_lost`): FAILED, the saved screen ended at `ECHO: one more`, without the output written
+  after the settled turn. Passes from a11a62ba.
+- Review round 1 (fresh read-only session, head e42f7fcf): APPROVE with 2 minor and 2 nits, all
+  own code. Minor 1 (a run lost before it attached saved the run before's screen): reproduced by
+  `a_run_lost_before_it_attached_saves_no_screen_of_the_run_before` at 4687ced4 (the round-1 fix)
+  (FAILED, `GOAL SET` of the first run in the second run's `final-screen`), fixed in a28e1e96 by
+  saving only for the runtime's attached run. Minor 2 (the attempt-state check had no test): the
+  check was removed as redundant, see Decisions. Nit 3: Context reworded ("normally"). Nit 4: the
+  test says why it feeds the hub directly.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^task_done::/)'`: 52 passed.
+- `scripts/dev ci` at 3de32acf: exit 0, 2602 tests passed (1 slow), 16 skipped; repository
+  contracts passed.
+- `scripts/dev security`: exit 2, not run: Vidoc answered HTTP 429 "This API key has used its
+  50,000,000 tokens" (2 files not scanned). Unrun, not passed (ADR-0133, ADR-0157); CI's
+  `security` job scans the pull request head.
+- Not tested: the `arm_escalation` loss of an attached run and reconciliation's server-lost
+  branches have no screen test of their own; they reach the same `mark_lost` code, and SPEC-229's
+  reboot test still passes (reconciliation keeps the saved screen).
