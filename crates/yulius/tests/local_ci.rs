@@ -1951,45 +1951,105 @@ async fn jobs_wait_for_their_cpu_budget_and_are_told_it() -> TestResult {
 }
 
 /// A job that names its stages, a figure and prints a cargo test summary (SPEC-137 STG-203).
-const STAGED_TOML: &str = r#"[[ci.jobs]]
-name = "build"
-command = 'echo "::yulius-stage compile"; echo "::yulius-measure cache_hits=2"; sleep 1; echo "::yulius-stage unit"; echo "test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured"; echo "test result: ok. 2 passed; 0 failed; 0 ignored"; sleep 1; echo "::yulius-stage-end"; echo done'
-"#;
+/// Each step holds until the test creates its gate, `<data>/<next step>-<run id>`: the unit stage,
+/// the end of the stages and the end of the job.
+fn staged_toml(data: &Path) -> String {
+    format!(
+        "[[ci.jobs]]\nname = \"build\"\ncommand = 'gate() {{ while [ ! -e \"{dir}/$1-$YULIUS_CI_RUN\" \
+         ]; do sleep 0.05; done; }}; echo \"::yulius-stage compile\"; echo \"::yulius-measure \
+         cache_hits=2\"; gate unit; echo \"::yulius-stage unit\"; echo \"test result: ok. 3 \
+         passed; 0 failed; 1 ignored; 0 measured\"; echo \"test result: ok. 2 passed; 0 failed; 0 \
+         ignored\"; gate end; echo \"::yulius-stage-end\"; gate done; echo done'\n",
+        dir = data.display()
+    )
+}
 
-/// The test clock follows real time while a job runs, so stages have real durations.
-fn clock_follows_real_time(f: &Fixture) -> tokio::task::JoinHandle<()> {
-    let clock = Arc::clone(&f.h.clock);
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_millis(20));
-        loop {
-            tick.tick().await;
-            clock.0.fetch_add(20, Ordering::SeqCst);
+/// The stage `name` of the run `run`, once Yulius has recorded its start (or its end, `ended`).
+async fn stage_recorded(
+    f: &Fixture,
+    run: &str,
+    name: &str,
+    ended: bool,
+) -> BoxResult<yulius_app::stages::SpanRecord> {
+    use yulius_app::ports::store_ext::SpanStore as _;
+    use yulius_domain::stages::SubjectKind;
+    let sandbox = SandboxId::parse("s1")?;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        f.h.app.ci_dispatch().await;
+        let spans =
+            f.h.store
+                .subject_spans(&sandbox, SubjectKind::CiRun, run, 1_000)
+                .await?;
+        if let Some(span) = spans
+            .into_iter()
+            .find(|s| s.kind == "stage" && s.name == name && (!ended || s.ended_at.is_some()))
+        {
+            return Ok(span);
         }
-    })
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("the stage {name} of {run} was never recorded").into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// SPEC-137 STG-201..203: a CI run's queue, preparation, its job with its slot wait and
-/// checkout, and the stages and figures the job's output names are spans with real durations,
-/// timed by Yulius as it reads the output.
+/// checkout, and the stages and figures the job's output names are spans timed by Yulius's clock
+/// as it reads the output. The test alone moves the clock, each time once Yulius has recorded a
+/// stage's start (or the end of the stages) and before the job goes on, so a stage lasts exactly
+/// what the test moved the clock by, however late Yulius reads the output (#538).
 #[tokio::test]
 async fn a_run_s_jobs_record_their_stages_and_test_counts() -> TestResult {
     use yulius_app::ports::store_ext::SpanStore as _;
     use yulius_domain::stages::SubjectKind;
-    let f = fixture_with(false, |_| STAGED_TOML.to_owned()).await?;
-    let clock = clock_follows_real_time(&f);
+    const STAGE_MS: i64 = 1_000;
+    let f = fixture_with(false, staged_toml).await?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let runs = f.get("/api/sandboxes/s1/ci").await?["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .clone();
+    let id = runs
+        .iter()
+        .find(|r| r["reference"] == "pr/1")
+        .and_then(|r| r["id"].as_str())
+        .ok_or("pr/1 run")?
+        .to_owned();
+    let gate = |run: &str, next: &str| std::fs::write(f.data.join(format!("{next}-{run}")), "");
+    for other in runs.iter().filter_map(|r| r["id"].as_str()) {
+        if other != id {
+            gate(other, "unit")?;
+            gate(other, "end")?;
+            gate(other, "done")?;
+        }
+    }
+    let mut started = Vec::new();
+    for (stage, next) in [("compile", "unit"), ("unit", "end")] {
+        started.push(stage_recorded(&f, &id, stage, false).await?.started_at.0);
+        f.h.clock.0.fetch_add(STAGE_MS, Ordering::SeqCst);
+        gate(&id, next)?;
+    }
+    // `::yulius-stage-end` ends the stages before the job ends.
+    stage_recorded(&f, &id, "unit", true).await?;
+    f.h.clock.0.fetch_add(STAGE_MS, Ordering::SeqCst);
+    gate(&id, "done")?;
+    assert_eq!(
+        started[1] - started[0],
+        STAGE_MS,
+        "unit starts when it is read"
+    );
     f.settle().await?;
-    clock.abort();
     let overview = f.get("/api/sandboxes/s1/ci").await?;
     let run = overview["runs"]
         .as_array()
         .ok_or("runs")?
         .iter()
-        .find(|r| r["reference"] == "pr/1")
+        .find(|r| r["id"] == id.as_str())
         .cloned()
         .ok_or("pr/1 run")?;
     assert_eq!(run["state"], "passed", "{run}");
-    let id = run["id"].as_str().ok_or("id")?;
+    let id = id.as_str();
     let spans =
         f.h.store
             .subject_spans(&SandboxId::parse("s1")?, SubjectKind::CiRun, id, 1_000)
@@ -2032,14 +2092,12 @@ async fn a_run_s_jobs_record_their_stages_and_test_counts() -> TestResult {
         compile.duration_ms().ok_or("compile ended")?,
         unit.duration_ms().ok_or("unit ended")?,
     );
-    // Each stage sleeps 1 s. Its bounds are stamped when Yulius reads the markers, so under load
-    // the line between the two stages moves (1540 ms and 480 ms were seen); both are real and
-    // together cover the job's sleeps.
-    assert!(
-        compiled >= 100 && tested >= 100 && compiled + tested >= 1500,
-        "real durations: {compiled} ms, {tested} ms"
+    assert_eq!(
+        (compiled, tested),
+        (STAGE_MS, STAGE_MS),
+        "each stage lasts the time that passed while it ran"
     );
-    assert!(unit.ended_at <= job.ended_at && compile.started_at >= job.started_at);
+    assert!(unit.ended_at < job.ended_at && compile.started_at >= job.started_at);
     let figures: Value = serde_json::from_str(compile.detail.as_deref().unwrap_or("{}"))?;
     assert_eq!(figures["cache_hits"], 2.0);
     let tests: Value = serde_json::from_str(unit.detail.as_deref().unwrap_or("{}"))?;
