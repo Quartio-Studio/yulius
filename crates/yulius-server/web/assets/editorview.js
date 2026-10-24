@@ -617,6 +617,9 @@ export function createEditorView(ctx, sandbox, getTask) {
     return opening.get(key);
   }
 
+  /** Why `file`, read from `path`, does not open in the editor. */
+  const notEditable = (path, file) => (file.too_large ? `${path} is too large for the editor (${Math.round(file.size / 1024)} KB).` : `${path} is a binary file.`);
+
   async function loadFile(path) {
     // Another folder chosen meanwhile: this file is not one of its files, and is not shown.
     const from = root;
@@ -630,7 +633,7 @@ export function createEditorView(ctx, sandbox, getTask) {
     }
     if (root !== from) return;
     if (file.binary || file.too_large || file.content == null) {
-      toast(file.too_large ? `${path} is too large for the editor (${Math.round(file.size / 1024)} KB).` : `${path} is a binary file.`, { kind: 'info' });
+      toast(notEditable(path, file), { kind: 'info' });
       return;
     }
     const tab = withPresence({ path, root, model: null, sha: file.sha256, saved: file.content, dirty: false, viewState: null, saving: false });
@@ -706,37 +709,62 @@ export function createEditorView(ctx, sandbox, getTask) {
    * Unedited text takes the disk's version as one undoable edit of the part that changed, so the
    * cursor and the teammates' marks stay with their text; edited text is kept and the status bar
    * says the disk moved on. The newest look wins: a save or a later look makes an earlier one moot.
-   * `reload`: the person chose "Reload from disk", so the whole file is asked for.
+   * `reload`: the person chose "Reload from disk": the whole file is asked for and replaces the
+   * text whatever its version; a file it cannot load keeps the text modified and says why (#571).
    */
   async function refreshFromDisk(tab, { reload = false } = {}) {
     // A look answered with the text from before a save would put that text back as saved.
     if (tab.saving) return;
+    // A reload on its way is the person's choice: a newer look takes its place, as a reload.
+    reload = reload || Boolean(tab.reloading);
     const look = (tab.look || 0) + 1;
     tab.look = look;
     tab.looking = true;
+    tab.reloading = reload;
     try {
       // Unchanged since what this tab knows (its saved version, or the disk's newer one) is a 204.
       const known = reload ? null : (tab.dirty && tab.diskSha) || tab.sha;
       const file = await api.get(`/api/sandboxes/${sid}/files/content?${query(tab.path)}${known ? `&known=${known}` : ''}`);
       if (tab.look !== look || !tabs.includes(tab) || tab.saving) return;
-      if (!file || file.content == null) return; // unchanged, or no longer text: the text stays
-      if (file.sha256 === tab.sha) { setDiskSha(tab, null); return; }
-      if (tab.dirty) { setDiskSha(tab, file.sha256); return; }
+      if (!file || file.content == null) {
+        // Unchanged, or no longer text: the text stays.
+        if (reload) toast(`${notEditable(tab.path, file)} Your text is kept, unsaved.`, { kind: 'info' });
+        return;
+      }
+      if (!reload && file.sha256 === tab.sha) { setDiskSha(tab, null); return; }
+      if (!reload && tab.dirty) { setDiskSha(tab, file.sha256); return; }
       setDiskSha(tab, null);
       if (!tab.model) {
         // Suspended meanwhile (another sandbox in front): the kept text takes the disk's version.
         tab.text = file.content;
         savedAs(tab, file.content, null);
         tab.sha = file.sha256;
+        markSaved(tab);
         return;
       }
       replaceText(tab, file.content);
       tab.sha = file.sha256;
       savedAs(tab, tab.model.getValue());
+      markSaved(tab);
       presenceMoved(tab);
-    } catch { /* deleted or unreachable: the text stays, the next save reports it */ } finally {
-      if (tab.look === look) tab.looking = false;
+    } catch (error) {
+      // Deleted or unreachable: the text stays, the next save reports it. A reload says so now,
+      // unless a newer look made it moot.
+      if (reload && tab.look === look && tabs.includes(tab)) {
+        if (error.status === 404) toast(`The file was deleted: your text in ${tab.path} is kept, unsaved.`, { kind: 'info' });
+        else errorToast(error, `Couldn’t reload ${tab.path}`);
+      }
+    } finally {
+      if (tab.look === look) { tab.looking = false; tab.reloading = false; }
     }
+  }
+
+  /** `tab` holds the disk's text: no longer modified, as its tab and the status bar say. */
+  function markSaved(tab) {
+    if (!tab.dirty) return;
+    tab.dirty = false;
+    renderTabs();
+    renderStatus();
   }
 
   /** The disk's version when it differs from what the person edits (`null`: the same). */
@@ -822,6 +850,7 @@ export function createEditorView(ctx, sandbox, getTask) {
     tab.saving = true;
     tab.look = (tab.look || 0) + 1; // a look in flight may predate this save
     tab.looking = false;
+    tab.reloading = false;
     renderStatus();
     try {
       let baseSha = tab.sha;
@@ -854,7 +883,8 @@ export function createEditorView(ctx, sandbox, getTask) {
         tab.saving = false;
         // Awaited: until the overwrite is written, the file is saving and no look starts.
         if (choice === 'overwrite') return await save(tab, true);
-        if (choice === 'reload') { tab.dirty = false; await refreshFromDisk(tab, { reload: true }); }
+        // The modified mark goes only once the disk's text is in the editor (#571).
+        if (choice === 'reload') await refreshFromDisk(tab, { reload: true });
       } else {
         errorToast(error, `Couldn’t save ${tab.path}`);
       }
