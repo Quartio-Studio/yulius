@@ -2472,6 +2472,62 @@ async fn kill_run_host(app: &App, id: &TaskId) -> TestResult {
     Ok(())
 }
 
+/// SPEC-301 LRS-001 (#686): a run's connection is lost while the server runs, after output that
+/// came since its last settled turn. The loss saves the hub's screen: the run's `final-screen`
+/// shows that output, not the screen its last turn settled on.
+#[test]
+fn a_run_lost_while_the_server_runs_saves_its_live_screen() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _host, id) = gated_goal_task(&data, &fake).await?;
+        wait_for("Done", Duration::from_secs(90), || async {
+            activity(&app, &id).await == Some(Activity::Done)
+        })
+        .await?;
+        app.send_input(&id, b"one more\r").await?;
+        let run_dir = PathBuf::from(
+            &app.deps
+                .store
+                .live_attempt(&id)
+                .await?
+                .ok_or("no run")?
+                .run_dir,
+        );
+        // The settled turn's save, so the output below comes after it.
+        wait_for("the settled turn's screen", Duration::from_secs(20), || {
+            let saved = std::fs::read(run_dir.join("final-screen"))
+                .is_ok_and(|s| String::from_utf8_lossy(&s).contains("ECHO: one more"));
+            async move { saved }
+        })
+        .await?;
+        assert_eq!(activity(&app, &id).await, Some(Activity::Waiting));
+        let hub = &app.runtime(&id).hub;
+        hub.output(hub.output_seq() + 1, b"\r\nwritten after the settled turn");
+
+        kill_run_host(&app, &id).await?;
+        let rests = wait_for("the loss", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await;
+        assert!(rests.is_ok(), "{}", run_states(&app, &id).await);
+        assert_eq!(
+            task(&app, &id).await?.status,
+            TaskStatus::Stopped(StopReason::Lost)
+        );
+        let screen = std::fs::read(run_dir.join("final-screen"))?;
+        assert!(
+            String::from_utf8_lossy(&screen).contains("written after the settled turn"),
+            "the lost run's saved screen is its last one: {:?}",
+            String::from_utf8_lossy(&screen)
+        );
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-250 STW-006 (review): the old run is lost while the switch waits for its end. The switch
 /// gives up and says the session ended: the task rests lost with its one run, and nothing
 /// starts that no one asked for.
