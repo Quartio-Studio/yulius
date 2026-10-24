@@ -1951,23 +1951,25 @@ async fn jobs_wait_for_their_cpu_budget_and_are_told_it() -> TestResult {
 }
 
 /// A job that names its stages, a figure and prints a cargo test summary (SPEC-137 STG-203).
-/// Each stage holds until the test creates its gate, `<data>/<next stage>-<run id>`.
+/// Each step holds until the test creates its gate, `<data>/<next step>-<run id>`: the unit stage,
+/// the end of the stages and the end of the job.
 fn staged_toml(data: &Path) -> String {
     format!(
         "[[ci.jobs]]\nname = \"build\"\ncommand = 'gate() {{ while [ ! -e \"{dir}/$1-$YULIUS_CI_RUN\" \
          ]; do sleep 0.05; done; }}; echo \"::yulius-stage compile\"; echo \"::yulius-measure \
          cache_hits=2\"; gate unit; echo \"::yulius-stage unit\"; echo \"test result: ok. 3 \
          passed; 0 failed; 1 ignored; 0 measured\"; echo \"test result: ok. 2 passed; 0 failed; 0 \
-         ignored\"; gate end; echo \"::yulius-stage-end\"; echo done'\n",
+         ignored\"; gate end; echo \"::yulius-stage-end\"; gate done; echo done'\n",
         dir = data.display()
     )
 }
 
-/// The stage `name` of the run `run`, once Yulius has recorded its start.
-async fn stage_started(
+/// The stage `name` of the run `run`, once Yulius has recorded its start (or its end, `ended`).
+async fn stage_recorded(
     f: &Fixture,
     run: &str,
     name: &str,
+    ended: bool,
 ) -> BoxResult<yulius_app::stages::SpanRecord> {
     use yulius_app::ports::store_ext::SpanStore as _;
     use yulius_domain::stages::SubjectKind;
@@ -1981,22 +1983,22 @@ async fn stage_started(
                 .await?;
         if let Some(span) = spans
             .into_iter()
-            .find(|s| s.kind == "stage" && s.name == name)
+            .find(|s| s.kind == "stage" && s.name == name && (!ended || s.ended_at.is_some()))
         {
             return Ok(span);
         }
         if tokio::time::Instant::now() > deadline {
-            return Err(format!("the stage {name} of {run} never started").into());
+            return Err(format!("the stage {name} of {run} was never recorded").into());
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
 /// SPEC-137 STG-201..203: a CI run's queue, preparation, its job with its slot wait and
-/// checkout, and the stages and figures the job's output names are spans with real durations,
-/// timed by Yulius as it reads the output. The test alone moves the clock, each time once Yulius
-/// has recorded a stage's start and before the job goes on, so a stage lasts exactly what the
-/// test moved the clock by, however late Yulius reads the output (#538).
+/// checkout, and the stages and figures the job's output names are spans timed by Yulius's clock
+/// as it reads the output. The test alone moves the clock, each time once Yulius has recorded a
+/// stage's start (or the end of the stages) and before the job goes on, so a stage lasts exactly
+/// what the test moved the clock by, however late Yulius reads the output (#538).
 #[tokio::test]
 async fn a_run_s_jobs_record_their_stages_and_test_counts() -> TestResult {
     use yulius_app::ports::store_ext::SpanStore as _;
@@ -2019,13 +2021,24 @@ async fn a_run_s_jobs_record_their_stages_and_test_counts() -> TestResult {
         if other != id {
             gate(other, "unit")?;
             gate(other, "end")?;
+            gate(other, "done")?;
         }
     }
+    let mut started = Vec::new();
     for (stage, next) in [("compile", "unit"), ("unit", "end")] {
-        stage_started(&f, &id, stage).await?;
+        started.push(stage_recorded(&f, &id, stage, false).await?.started_at.0);
         f.h.clock.0.fetch_add(STAGE_MS, Ordering::SeqCst);
         gate(&id, next)?;
     }
+    // `::yulius-stage-end` ends the stages before the job ends.
+    stage_recorded(&f, &id, "unit", true).await?;
+    f.h.clock.0.fetch_add(STAGE_MS, Ordering::SeqCst);
+    gate(&id, "done")?;
+    assert_eq!(
+        started[1] - started[0],
+        STAGE_MS,
+        "unit starts when it is read"
+    );
     f.settle().await?;
     let overview = f.get("/api/sandboxes/s1/ci").await?;
     let run = overview["runs"]
@@ -2084,7 +2097,7 @@ async fn a_run_s_jobs_record_their_stages_and_test_counts() -> TestResult {
         (STAGE_MS, STAGE_MS),
         "each stage lasts the time that passed while it ran"
     );
-    assert!(unit.ended_at <= job.ended_at && compile.started_at >= job.started_at);
+    assert!(unit.ended_at < job.ended_at && compile.started_at >= job.started_at);
     let figures: Value = serde_json::from_str(compile.detail.as_deref().unwrap_or("{}"))?;
     assert_eq!(figures["cache_hits"], 2.0);
     let tests: Value = serde_json::from_str(unit.detail.as_deref().unwrap_or("{}"))?;
