@@ -592,6 +592,87 @@ test('editing a team secret loads its current notes after a two-factor code', as
   await expect(screen.getByRole('dialog', 'Shared Gmail').getByText(/Recovery codes: new/)).toBeVisible();
 });
 
+/**
+ * Pastes `text` into the open team secret dialog's Value field as the clipboard would, after
+ * selecting `select` (start, end) of what it holds: whether the page took the paste, the field's
+ * type and whether the pasted text's first line is in the page's markup.
+ */
+function pasteTeamValue(browser: any, text: string, select?: [number, number]) {
+  return browser.evaluate(({ t, s }: { t: string; s: [number, number] | null }) => {
+    const label = [...document.querySelectorAll('dialog.modal label.field')].find((l) => l.querySelector('.field-label')!.textContent === 'Value')!;
+    const input = label.querySelector('input') as HTMLInputElement;
+    input.focus();
+    if (s) input.setSelectionRange(s[0], s[1]);
+    const data = new DataTransfer();
+    data.setData('text/plain', t);
+    const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+    input.dispatchEvent(event);
+    return { prevented: event.defaultPrevented, type: input.type, inMarkup: document.body.innerHTML.includes(t.split(/\r\n|\r|\n/)[0]) };
+  }, { t: text, s: select || null });
+}
+
+// Task #285 (#592): a team secret's Value is a masked one-line field, and the browser drops the
+// line breaks of a paste. A team secret keeps them as pasted (CRLF included, unlike an agent
+// secret's \n, SPEC-193): Show puts the value on its lines and Copy gives back the pasted text.
+test('a pasted multi-line team secret value keeps its line breaks, masked, and Show and Copy return them', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=team'));
+  await browser.evaluate(() => {
+    (window as any).__copied = [];
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as any).__copied.push(text); } } });
+  });
+  const copied = () => browser.evaluate(() => (window as any).__copied.filter((t: string) => t !== ''));
+  const stored = (title: string) => browser.evaluate((t: string) => (window as any).__yuliusMock.vault.team.find((s: any) => s.title === t).value, title);
+  const crlf = 'mock-recovery-0001\r\nmock-recovery-0002\r\nmock-recovery-0003\r\n';
+  const lf = 'mock-key-line-01\nmock-key-line-02\n';
+
+  // Add: a CRLF paste (copied on Windows) is kept as pasted; the field stays masked and the value
+  // out of the markup.
+  await screen.getByRole('button', 'Add team secret').click();
+  const add = screen.getByRole('dialog', 'Add team secret');
+  await screen.getByLabel('Title').fill('Recovery codes');
+  expect(await pasteTeamValue(browser, crlf)).toEqual({ prevented: true, type: 'password', inMarkup: false });
+  expect(await axeViolations(browser)).toEqual([]);
+  await add.getByRole('button', 'Add').click();
+  await expect(add).toBeHidden();
+  await expect(screen.getByText('Recovery codes').first()).toBeVisible();
+  expect(await stored('Recovery codes')).toBe(crlf);
+
+  // Edit: an LF paste over a selection replaces only the selection, the typed text around it stays.
+  await screen.getByRole('button', 'Edit Shared Gmail').click();
+  const edit = screen.getByRole('dialog', 'Edit Shared Gmail');
+  await browser.locator('dialog.modal input[type="password"]').fill('before-SELECTED-after');
+  expect(await pasteTeamValue(browser, lf, [7, 15])).toEqual({ prevented: true, type: 'password', inMarkup: false });
+  // A one-line paste is the browser's, as before.
+  expect((await pasteTeamValue(browser, 'one-line')).prevented).toBe(false);
+  await edit.getByRole('button', 'Save').click();
+  await expect(edit).toBeHidden();
+  const edited = `before-${lf}-after`;
+  expect(await stored('Shared Gmail')).toBe(edited);
+
+  // Show: masked until the eye, then on its three lines; the dialog's Copy gives the stored text.
+  await screen.getByRole('button', 'Show Shared Gmail').click();
+  await setUpTwoFactor(screen, browser);
+  const shown = screen.getByRole('dialog', 'Shared Gmail');
+  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), 'mock-key-line-01')).toBe(false);
+  await shown.getByRole('button', 'Show value').click();
+  expect(await browser.evaluate(() => {
+    const code = document.querySelector('dialog.modal .secret-value')!;
+    const range = document.createRange();
+    range.selectNodeContents(code);
+    return { text: code.textContent, lines: new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size };
+  })).toEqual({ text: edited, lines: 3 });
+  expect(await axeViolations(browser)).toEqual([]);
+  await shown.getByRole('button', 'Copy value').click();
+  await expect(screen.getByText(/Value copied/).first()).toBeVisible();
+  expect(await copied()).toEqual([edited]);
+  await shown.getByRole('button', 'Done').click();
+  await expect(shown).toBeHidden();
+
+  // The card's Copy gives back the CRLF value as pasted.
+  await screen.getByRole('button', 'Copy value of Recovery codes').click();
+  await expect.poll(copied).toEqual([edited, crlf]);
+});
+
 test('members who only read a sandbox cannot add agent secrets', async ({ app, screen }) => {
   await app.open(mock('/s/sandbox-3/secrets?section=agents'));
   await expect(screen.getByRole('button', 'Add agent secret')).toBeDisabled();
