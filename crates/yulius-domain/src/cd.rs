@@ -12,6 +12,7 @@
 //!
 //! [`authorize`] is the one rule of who may deploy: a dev-stage environment is a person's or an
 //! agent's, a production-stage one only an administrator's who typed the project's slug.
+//! [`production_instruction`] keeps the instructions Yulius ships to agents in line with it.
 
 use std::fmt;
 
@@ -410,9 +411,10 @@ pub fn authorize(
 /// The first word of `text` that tells an agent to promote, deploy or verify production, if any
 /// (ADR-0110, #556): instructions Yulius ships to agents are checked with it. The verb "promote"
 /// in any form is one; the noun "promotion" is not, so a text can say whose job promotion is. A
-/// "verif..." within two words of "production" or "prod", or a "deploy..." up to two words before
-/// one, is one too, looked for within a clause (`.`, `,`, `;`, `:` and parentheses end one), so
-/// "deploy dev only if asked (`cd_deploy`); production is a person's" is not.
+/// "deploy..." or "verif..." followed by "production" or "prod" in the same clause is one too, and
+/// so is a "verif..." right after one ("production verification"). `.`, `,`, `;`, `:` and
+/// parentheses end a clause, so "deploy dev only if asked (`cd_deploy`); production is a
+/// person's" is not, nor is "production defined with deploy and verify scripts".
 #[must_use]
 pub fn production_instruction(text: &str) -> Option<String> {
     let lower = text.to_lowercase();
@@ -423,12 +425,11 @@ pub fn production_instruction(text: &str) -> Option<String> {
             .collect();
         let production = |w: &&str| *w == "production" || *w == "prod";
         for (i, word) in words.iter().enumerate() {
-            let after = &words[i + 1..words.len().min(i + 3)];
-            let before = &words[i.saturating_sub(2)..i];
+            let later = words[i + 1..].iter().any(production);
+            let just_before = words[i.saturating_sub(2)..i].iter().any(production);
             let told = (word.starts_with("promot") && !word.starts_with("promotion"))
-                || (word.starts_with("verif")
-                    && (after.iter().any(production) || before.iter().any(production)))
-                || (word.starts_with("deploy") && after.iter().any(production));
+                || ((word.starts_with("deploy") || word.starts_with("verif")) && later)
+                || (word.starts_with("verif") && just_before);
             if told {
                 return Some((*word).to_owned());
             }
@@ -720,6 +721,7 @@ mod tests {
             "A merge deploys nothing; production is a person's.",
             "Production-grade defaults: explicit error handling.",
             "Deploy and verify `dev` only when the task asks. Promotions are a person's.",
+            "4. CD dev and production defined with deploy and verify scripts",
         ] {
             assert_eq!(production_instruction(fine), None, "{fine}");
         }
