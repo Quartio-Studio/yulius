@@ -119,7 +119,8 @@ left, whenever the server still held that screen.
 - `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^task_done::/) |
   test(/^supervision::/) | test(/^terminal/))'` after the round-2 fix: 75 passed.
 - `scripts/dev ci` at 3de32acf: exit 0, 2602 tests passed (1 slow), 16 skipped; repository
-  contracts passed.
+  contracts passed. Again at 6beb2509 (round-2 fix, dev at 0e2f3263 merged cleanly): exit 0, 2606
+  tests passed, 16 skipped.
 - `scripts/dev security`: exit 2, not run: Vidoc answered HTTP 429 "This API key has used its
   50,000,000 tokens" (2 files not scanned). Unrun, not passed (ADR-0133, ADR-0157); CI's
   `security` job scans the pull request head.
