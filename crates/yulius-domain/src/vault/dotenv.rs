@@ -552,51 +552,44 @@ mod tests {
         }
     }
 
-    /// SPEC-302 (review round 2): a body joined onto its header line (a paste whose breaks became
-    /// spaces, `\n` kept only around the armour) is key material: its base64 runs stay needles,
-    /// cut where the line's other text is. A run of plain words is not one.
+    /// SPEC-302 (review rounds 2 and 3): a body joined onto its header line, by spaces or glued
+    /// (a value whose breaks became spaces or were dropped, `\n` kept only around the armour), is
+    /// key material: a line with a run of more than 32 base64 symbols stays a needle whole. A
+    /// header alone never has one: an IV is at most 32 hex digits.
     #[test]
-    fn a_body_joined_onto_a_header_line_keeps_its_base64_runs() {
+    fn a_line_with_a_key_length_base64_run_stays_a_needle() {
         let one = "c3ludGhldGljLWpvaW5lZC1ib2R5LWxpbmUtMDE=";
         let two = "c3ludGhldGljLTAy";
-        let encrypted = key_file(
-            &format!("{} PRIVATE KEY", "RSA"),
-            &[&format!(
-                "Proc-Type: 4,ENCRYPTED DEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF \
-                 {one}  {two}"
-            )],
-        );
-        let pgp = key_file(
-            &format!("{} PRIVATE KEY BLOCK", "PGP"),
-            &[&format!(
-                "Version: GnuPG v2 Comment: a long comment of plain words here, {one} =c3lu"
-            )],
-        );
-        // A non-breaking space between body lines separates them too.
-        let nbsp = key_file(
-            "SYNTHETIC KEY",
-            &[
-                &format!("Comment: x, {one}\u{a0}{two}"),
-                &format!("{one}\u{a0}{two}"),
-            ],
-        );
-        let words = key_file(
-            "CERTIFICATE",
-            &["Comment: some long comment made of plain words only", one],
-        );
-        for (file, body) in [
-            (&encrypted, vec![format!("{one}  {two}")]),
-            (&pgp, vec![format!("{one} =c3lu")]),
-            (
-                &nbsp,
-                vec![format!("{one}\u{a0}{two}"), format!("{one}\u{a0}{two}")],
-            ),
-            (&words, vec![one.to_owned()]),
-        ] {
+        let iv = "00112233445566778899AABBCCDDEEFF";
+        let kept = [
+            format!("Proc-Type: 4,ENCRYPTED DEK-Info: AES-128-CBC,{iv} {one}  {two}"),
+            format!("Proc-Type: 4,ENCRYPTEDDEK-Info: AES-128-CBC,{iv}{one}{two}"),
+            format!("Version: GnuPG v2 Comment: https://synthetic.example/{one} =c3lu"),
+            // Separators that are no whitespace (zero-width space, BOM) or that are (NBSP).
+            format!("{one}\u{200b}{two}"),
+            format!("\u{feff}{one}"),
+            format!("Comment: x, {one}\u{a0}{two}"),
+            format!("Comment: x,{}", "k".repeat(33)),
+        ];
+        for line in &kept {
+            let file = key_file("SYNTHETIC KEY", &[line]);
             let stored = file.trim_end().replace('\n', "\\n");
             assert_eq!(key_block(&stored).as_deref(), Some(file.as_str()));
-            assert_eq!(key_lines(&stored), body, "{file}");
+            assert_eq!(key_lines(&stored), vec![line.trim().to_owned()], "{line}");
         }
+        let headers = key_file(
+            &format!("{} PRIVATE KEY", "RSA"),
+            &[
+                "Proc-Type: 4,ENCRYPTED",
+                &format!("DEK-Info: AES-256-CBC,{iv}"),
+                &format!("Comment: x,{}", "k".repeat(32)),
+                "Comment: some long comment made of plain words only.",
+                "",
+                one,
+            ],
+        );
+        let stored = headers.trim_end().replace('\n', "\\n");
+        assert_eq!(key_lines(&stored), vec![one.to_owned()]);
     }
 
     /// SPEC-186 SAV-005: a key stored with literal `\n` (an agent secret never spans lines) is
