@@ -113,5 +113,6 @@ next CI failure, now kept by SPEC-145, names the assertion.
   from the code. Answered: the plan labels now say the race step was skipped and the scan is unrun
   (minor), the spec is done (minor), the test's doc comment credits only SPEC-294 with the probes
   (nit). Pre-existing, outside this change: the status retry loop can send a stale status after a
-  run's final one in production (`ci_publish` is not serialized per run); it corrects itself and is
-  reported on #485.
+  run's final one in production (`ci_publish` is not serialized per run). The next retry corrects
+  it only when the stale publish also records last; when the final publish records last, GitHub
+  keeps the stale status. Reported on #485.
