@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-24
 
+- An import's snapshot is checked out in a folder of the server, not in the sandbox's
+  `worktrees/` (SPEC-296, task #282, #824). The import picked `worktrees/import-<job>` with an
+  existence check before Git created it. A link to an empty folder planted there in between made
+  the service user's Git check the head out in that folder and write the snapshot into it, and the
+  files stayed there. The checkout now lives in `<data>/import-worktrees/<sandbox>/`, out of
+  every sandbox. Its name is taken with a create-new `mkdir` (`import-<job>`, then `-2`, …), a
+  failed import removes it, disk upkeep lists what an interrupted one leaves, and
+  `extract_snapshot` refuses a linked root (ADR-0213).
 - The Feature and Fix workflows no longer tell agents to promote and verify production (SPEC-292,
   task #278, #556). Their instructions ended with "deliver: merge on green, deploy and verify,
   promote, verify production", the Feature description said "from spec to verified production",
