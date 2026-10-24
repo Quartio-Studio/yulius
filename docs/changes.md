@@ -10,7 +10,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   lost connection, or a stop or close whose escalation timed out, recorded the loss without saving
   the hub's screen, so the task's terminal later showed the screen of the last settled turn and
   lost any output after it. `mark_lost` now saves it to the run's `final-screen` before the
-  attempt becomes lost; a hub without output (a runtime made after a restart) keeps the saved one.
+  attempt becomes lost; a hub without output (a runtime made after a restart) keeps the saved one,
+  and a run lost before Yulius attached to it saves none (its hub still shows the run before).
 - An import's snapshot is checked out in a folder of the server, not in the sandbox's
   `worktrees/` (SPEC-296, task #282, #824). The import picked `worktrees/import-<job>` with an
   existence check before Git created it. A link to an empty folder planted there in between made
