@@ -41,7 +41,8 @@ async fn pump(app: AppState, ctx: AuthContext, mut socket: WebSocket) {
     let mut visible: HashMap<String, bool> = HashMap::new();
     // Sandboxes whose files this person may read (SPEC-127), decided again with `visible`.
     let mut writable: HashMap<String, bool> = HashMap::new();
-    let is_admin = ctx.user.is_superadmin || ctx.user.is_instance_admin;
+    // The person as of the last re-check: their roles decide admin-only events (#722).
+    let mut user = ctx.user.clone();
     let mut recheck =
         tokio::time::interval(Duration::from_millis(app.config.viewer_recheck_ms.max(100)));
     recheck.tick().await;
@@ -59,11 +60,13 @@ async fn pump(app: AppState, ctx: AuthContext, mut socket: WebSocket) {
             }
             _ = recheck.tick() => {
                 // Like the terminal viewers (ACC-008): an ended session closes the stream, and
-                // sandbox visibility is decided again from the current permissions (#66).
-                if !app.still_signed_in(&ctx).await {
+                // sandbox visibility (#66) and instance administration (#722) are decided again
+                // from the current permissions and roles.
+                let Some(current) = app.signed_in_user(&ctx).await else {
                     let _ = socket.send(Message::Close(Some(CloseFrame { code: 4003, reason: "signed out".into() }))).await;
                     break;
-                }
+                };
+                user = current;
                 visible.clear();
                 writable.clear();
             }
@@ -84,15 +87,15 @@ async fn pump(app: AppState, ctx: AuthContext, mut socket: WebSocket) {
                     }
                     Err(RecvError::Closed) => break,
                 };
-                if envelope.admin_only && !is_admin { continue; }
+                if envelope.admin_only && !(user.is_superadmin || user.is_instance_admin) { continue; }
                 // A person's own event (their notepad, SPEC-103) reaches no one else.
-                if envelope.user.as_ref().is_some_and(|user| *user != ctx.user.id) { continue; }
+                if envelope.user.as_ref().is_some_and(|id| *id != user.id) { continue; }
                 if let Some(sandbox) = &envelope.sandbox {
                     let key = sandbox.to_string();
                     let allowed = match visible.get(&key) {
                         Some(v) => *v,
                         None => {
-                            let ok = app.can_view(&ctx.user, sandbox).await;
+                            let ok = app.can_view(&user, sandbox).await;
                             visible.insert(key.clone(), ok);
                             ok
                         }
@@ -103,7 +106,7 @@ async fn pump(app: AppState, ctx: AuthContext, mut socket: WebSocket) {
                         let allowed = match writable.get(&key) {
                             Some(v) => *v,
                             None => {
-                                let ok = app.can_work_in(&ctx.user, sandbox).await;
+                                let ok = app.can_work_in(&user, sandbox).await;
                                 writable.insert(key, ok);
                                 ok
                             }

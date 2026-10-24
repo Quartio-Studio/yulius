@@ -13,6 +13,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   followed). Both are now opened once without following a link or waiting on a FIFO, and read
   only when the handle is a small regular file (64 KiB, 4 KiB); anything else declares nothing.
   The declared caches of an ended worktree are read off the async workers.
+- An open event stream follows instance administration (SPEC-286, task #272, #722). It decided
+  admin-only events (`account.updated`, with the subscription's account email) once, when the page
+  connected, so a person whose administration was removed kept receiving them until a reconnect.
+  Each re-check now reads the person again: losing the role stops those events, gaining it starts
+  them, within one re-check interval and without a reconnect.
 
 ## 2026-10-23
 
