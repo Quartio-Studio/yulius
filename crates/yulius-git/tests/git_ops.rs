@@ -250,6 +250,68 @@ fn ci_checkouts_created_at_once_all_succeed() -> TestResult {
     Ok(())
 }
 
+/// #666: a checkout's `worktree list` ran while another checkout's `worktree add` had written
+/// `.git/worktrees/<name>/` only partly, and Git died ("failed to read …/commondir: Success").
+/// The adapter's Git is a wrapper that holds that half-written state during the first add until
+/// a `worktree list` has finished (or 2 s have passed), so an overlapping list meets it every time.
+#[cfg(unix)]
+#[test]
+fn a_ci_checkout_never_lists_during_another_checkouts_add() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let sha = fx.git.rev_parse(&repo, "main")?;
+    let (ci, marks) = (fx.path("ci"), fx.path("marks"));
+    fs::create_dir(&ci)?;
+    fs::create_dir(&marks)?;
+    let (zz, marks_text) = (repo.join(".git/worktrees/zz"), marks.display());
+    let wrapper = fx.path("bin/git");
+    write_hook(
+        &wrapper,
+        &format!(
+            r#"#!/bin/sh
+case " $* " in
+*" worktree add "*)
+  if mkdir '{marks_text}/add' 2>/dev/null; then
+    rm -f '{marks_text}/listed'
+    mkdir -p '{zz}' && echo '{gone}' > '{zz}/gitdir' && : > '{zz}/commondir'
+    : > '{marks_text}/half-written'
+    n=0
+    while [ ! -e '{marks_text}/listed' ] && [ $n -lt 200 ]; do sleep 0.01; n=$((n + 1)); done
+    rm -rf '{zz}'
+  fi ;;
+*" worktree list "*)
+  git "$@"; status=$?; : > '{marks_text}/listed'; exit $status ;;
+esac
+exec git "$@"
+"#,
+            zz = zz.display(),
+            gone = fx.path("zz/.git").display(),
+        ),
+    )?;
+    let git = isolated(Git::new(&wrapper), &fx.home);
+    let checkout = |name: &str| {
+        let (git, repo, sha, ci) = (Clone::clone(&git), repo.clone(), sha.clone(), ci.clone());
+        let path = ci.join("jobs").join(name);
+        std::thread::spawn(move || git.ci_checkout(&repo, &path, &sha, &ci))
+    };
+    let first = checkout("first");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !marks.join("half-written").exists() {
+        if first.is_finished() || Instant::now() > deadline {
+            return Err("the first checkout never reached its add".into());
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let second = checkout("second");
+    let second = second.join().map_err(|_| "the second checkout panicked")?;
+    let first = first.join().map_err(|_| "the first checkout panicked")?;
+    first?;
+    second?;
+    assert!(!zz.exists());
+    assert_eq!(fx.git.worktree_list(&repo)?.len(), 3);
+    Ok(())
+}
+
 #[test]
 fn worktree_lifecycle_and_guarded_removal() -> TestResult {
     let fx = Fixture::new()?;
