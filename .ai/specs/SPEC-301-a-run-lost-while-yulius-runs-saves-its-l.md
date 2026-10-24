@@ -33,17 +33,19 @@ left, whenever the server still held that screen.
   reattach save the screen (SPEC-229 RBT-002).
 - Every path into `mark_lost` misses the save: `resolve_lost_connection` (directly, or through
   `terminate_then_mark_lost`), `arm_escalation` (through `terminate_then_mark_lost`) and
-  reconciliation's server-lost branches. In reconciliation the runtime is new and its hub has no
-  output, so `save_screen` keeps the file there.
+  reconciliation's server-lost branches. In reconciliation the runtime is new and normally has no
+  attached run and no output, so the saved file stays there.
 - Why the tests missed it: the SPEC-229 reboot test kills the processes while no server runs, so
   its loss is recorded by a new server with an empty hub; no test checked the screen of a run lost
   while the server was up.
 
 ## Requirements
 
-- LRS-001: When `mark_lost` records a loss and the task's runtime exists, it saves the hub's screen
-  to the attempt's `final-screen` with `save_screen` before the attempt becomes `Lost` (as
-  `finalize_attempt` does before its transition), so no reader sees the run ended with the old file.
+- LRS-001: When `mark_lost` records a loss, the task's runtime exists and its attached run is this
+  attempt, it saves the hub's screen to the attempt's `final-screen` with `save_screen` before the
+  attempt becomes `Lost` (as `finalize_attempt` does before its transition), so no reader sees the
+  run ended with the old file. A run lost before Yulius attached to it saves nothing: until the
+  attach resets the hub, the hub shows the run before.
 - LRS-002: A hub without output never overwrites the saved screen (`save_screen`'s existing rule);
   a deleted task's runtime is not brought back to save one.
 
@@ -61,7 +63,8 @@ left, whenever the server still held that screen.
 - A run whose host is killed while the server runs, after its turn settled (its `final-screen`
   saved) and more output reached its hub, ends `stopped(lost)` with a `final-screen` that shows
   that output.
-- A loss recorded after another observer already recorded the run's end saves nothing.
+- A continued task's new run lost before it attached (its stop's escalation, the attach held)
+  has no `final-screen`: the previous run's screen, still in the hub, is not saved as its own.
 - `a_screen_is_saved_only_from_a_hub_with_output` (existing) still passes: no blank overwrite.
 - SPEC-229's reboot test still passes (its loss is recorded with an empty hub: the file stays).
 
@@ -69,7 +72,10 @@ left, whenever the server still held that screen.
 
 - New integration test in `crates/yulius/tests/task_done.rs`:
   `a_run_lost_while_the_server_runs_saves_its_live_screen` (lost-connection path through
-  `kill_run_host`). Run on dev's code first to show it fails on the stand-in, then with the fix.
+  `kill_run_host`). Run on dev's code first to show it fails, then with the fix.
+- New integration test `a_run_lost_before_it_attached_saves_no_screen_of_the_run_before`
+  (`GatedHost` holds the continued run's attach, the stop's escalation loses the run): fails on
+  the first fix (the previous run's `GOAL SET` screen saved), passes with the attached-run check.
 - Existing: the `task_done::` file's tests and the `save_screen` unit test; the full gate.
 
 ## Decisions
@@ -77,4 +83,7 @@ left, whenever the server still held that screen.
 - Save before the transition, not after: `finalize_attempt` does the same, and the terminal reads
   `final-screen` once no live attempt is left, so a save after the transition could be read stale.
   A losing observer's save is harmless: it writes the same hub's screen whole.
+- Which run the hub shows is told by the runtime's attached run (`rt.run`), which `attach_run` sets
+  and `finalize_attempt` and `mark_lost` clear: a loss after `finalize_attempt` cleared it saves
+  nothing, so no check of the attempt's state is needed (an earlier draft had one; review).
 - No new ADR: this applies ADR-0177's "the run's end writes it again" to the lost end too.

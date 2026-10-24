@@ -2503,6 +2503,8 @@ fn a_run_lost_while_the_server_runs_saves_its_live_screen() -> TestResult {
         })
         .await?;
         assert_eq!(activity(&app, &id).await, Some(Activity::Waiting));
+        // Output since the settled turn, fed to the hub as the run's reader would (the idle fake
+        // agent writes none by itself).
         let hub = &app.runtime(&id).hub;
         hub.output(hub.output_seq() + 1, b"\r\nwritten after the settled turn");
 

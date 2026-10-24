@@ -2310,11 +2310,16 @@ impl App {
         let runtime = self.existing_runtime(task_id);
         let _finalizing = runtime.as_ref().map(|rt| Finalizing::start(&rt.finalizing));
         // Keep the screen the run was lost on, not its last settled turn's (SPEC-301 LRS-001). A
-        // runtime made after a restart has no output: the saved screen stays. An end recorded
-        // already saved its own.
+        // runtime made after a restart has no output: the saved screen stays. Only the attached
+        // run's: before it attaches, the hub still shows the run before.
         if let Some(rt) = &runtime
+            && rt
+                .run
+                .lock()
+                .await
+                .as_ref()
+                .is_some_and(|run| run.attempt_id == *attempt_id)
             && let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await
-            && !attempt.state.is_terminal()
         {
             save_screen(&rt.hub, Path::new(&attempt.run_dir));
         }
