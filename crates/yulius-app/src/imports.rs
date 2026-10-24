@@ -66,6 +66,9 @@ const MAX_AUX_DEPTH: usize = 16;
 const MAX_AUX_FILES: usize = 1_000;
 /// Snapshot branch name candidates tried per day.
 const MAX_SNAPSHOT_BRANCHES: u32 = 50;
+/// The folder below the data directory where snapshot imports check out, one folder per sandbox
+/// (ADR-0213).
+const SNAPSHOT_WORKTREES_DIR: &str = "import-worktrees";
 /// Version of the stored applied-import record.
 const APPLIED_VERSION: u32 = 1;
 
@@ -1143,20 +1146,16 @@ impl App {
         if !git.valid_branch(&branch) {
             return Err(AppError::Invalid(format!("invalid branch name {branch}")));
         }
-        let worktrees = self.sandbox_dir(&sandbox.id).join("worktrees");
-        let mut path = worktrees.join(format!("import-{}", job.id));
-        let mut attempt = 1;
-        while path.exists() {
-            attempt += 1;
-            if attempt > MAX_SNAPSHOT_BRANCHES {
-                return Err(AppError::Conflict(
-                    "snapshot worktree paths exhausted".into(),
-                ));
-            }
-            path = worktrees.join(format!("import-{}-{attempt}", job.id));
-        }
-        let parent = worktrees.clone();
-        blocking(move || fs::create_dir_all(&parent).map_err(AppError::internal)).await?;
+        // A folder of the server, out of every sandbox: Git resolves the worktree's path itself and
+        // follows links, so a checkout in the sandbox could be steered by a link the agent plants
+        // there (#824, ADR-0213).
+        let worktrees = self
+            .config
+            .data_dir
+            .join(SNAPSHOT_WORKTREES_DIR)
+            .join(sandbox.id.as_str());
+        let (root, id) = (worktrees.clone(), job.id.clone());
+        let path = blocking(move || reserve_snapshot_worktree(&root, &id)).await?;
         crate::race::reached(crate::race::Point::SnapshotWorktree, &path);
         git.add_worktree(&repo, &path, &branch, &manifest.repo.head_sha)
             .await?;
@@ -1668,6 +1667,30 @@ pub(crate) fn check_archive(archive: &Path, max_bytes: u64) -> AppResult<()> {
     Ok(())
 }
 
+/// Makes `root` (private to the server) and a new, empty folder in it for a snapshot's worktree:
+/// `import-<job>`, else `import-<job>-2`, … up to [`MAX_SNAPSHOT_BRANCHES`]. Each name is taken
+/// with a create-new `mkdir`, so whatever is there already (a folder, a file, a link, which is not
+/// followed) only moves on to the next name; Git fills the empty folder.
+fn reserve_snapshot_worktree(root: &Path, job: &str) -> AppResult<PathBuf> {
+    crate::remote_files::private_dir(root)?;
+    for attempt in 1..=MAX_SNAPSHOT_BRANCHES {
+        let name = if attempt == 1 {
+            format!("import-{job}")
+        } else {
+            format!("import-{job}-{attempt}")
+        };
+        let path = root.join(name);
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(AppError::internal(err)),
+        }
+    }
+    Err(AppError::Conflict(
+        "snapshot worktree paths exhausted".into(),
+    ))
+}
+
 /// Applies a snapshot archive (contracts layout: `files/…` entries and a `DELETED` list) to
 /// `root`, refusing paths that escape it, `.git` paths, writes through links and links
 /// pointing outside the root.
@@ -2100,6 +2123,53 @@ mod tests {
             extract_snapshot(&path, &root),
             Err(AppError::Invalid(_))
         ));
+        Ok(())
+    }
+
+    /// #824 (SPEC-296 AC-2): `import-<job>`, then `-2`, `-3` when taken by a folder, a file or a
+    /// link (never followed), and a conflict past the bound.
+    #[test]
+    fn snapshot_worktree_names_are_reserved_create_new() -> TestResult {
+        let work = tempfile::tempdir()?;
+        let root = work.path().join("import-worktrees").join("s1");
+        let first = reserve_snapshot_worktree(&root, "j1")?;
+        assert_eq!(first, root.join("import-j1"));
+        assert!(
+            fs::read_dir(&first)?.next().is_none(),
+            "an empty folder for Git"
+        );
+        assert_eq!(
+            fs::metadata(&root)?.permissions().mode() & 0o777,
+            0o700,
+            "private to the server"
+        );
+        assert_eq!(
+            reserve_snapshot_worktree(&root, "j1")?,
+            root.join("import-j1-2")
+        );
+        let outside = work.path().join("outside");
+        fs::create_dir_all(&outside)?;
+        std::os::unix::fs::symlink(&outside, root.join("import-j1-3"))?;
+        assert_eq!(
+            reserve_snapshot_worktree(&root, "j1")?,
+            root.join("import-j1-4")
+        );
+        assert_eq!(
+            fs::read_dir(&outside)?.count(),
+            0,
+            "the link is not followed"
+        );
+        for attempt in 5..=MAX_SNAPSHOT_BRANCHES {
+            fs::write(root.join(format!("import-j1-{attempt}")), "")?;
+        }
+        assert!(matches!(
+            reserve_snapshot_worktree(&root, "j1"),
+            Err(AppError::Conflict(_))
+        ));
+        assert_eq!(
+            reserve_snapshot_worktree(&root, "j2")?,
+            root.join("import-j2")
+        );
         Ok(())
     }
 

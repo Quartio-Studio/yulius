@@ -902,12 +902,22 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         offer.manifest.repo.head_sha,
         "created from the client's HEAD"
     );
-    let worktrees = repo.parent().ok_or("parent")?.join("worktrees");
+    let checkouts = w
+        .data_dir()
+        .join("import-worktrees")
+        .join(sandbox.id.as_str());
+    assert_eq!(
+        std::fs::read_dir(&checkouts)?.count(),
+        0,
+        "snapshot worktree removed (the preparation task has its own)"
+    );
     assert!(
-        std::fs::read_dir(&worktrees)?
+        std::fs::read_dir(repo.parent().ok_or("parent")?.join("worktrees"))
+            .into_iter()
+            .flatten()
             .flatten()
             .all(|entry| !entry.file_name().to_string_lossy().starts_with("import-")),
-        "snapshot worktree removed (the preparation task has its own)"
+        "the snapshot is never checked out in the sandbox (ADR-0213)"
     );
 
     // Sessions → read-only session documents attributed to the uploader, no tasks (SES-001).

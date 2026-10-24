@@ -124,7 +124,7 @@ pub fn parse_changes(args: &Value) -> AppResult<Vec<FileChange>> {
 }
 
 /// Makes `dir` (and its parents) and leaves it readable by the server's user only.
-fn private_dir(dir: &Path) -> AppResult<()> {
+pub(crate) fn private_dir(dir: &Path) -> AppResult<()> {
     std::fs::create_dir_all(dir).map_err(AppError::internal)?;
     #[cfg(unix)]
     {
