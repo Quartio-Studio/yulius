@@ -1,11 +1,11 @@
 ---
 yulius-task: d8437e67-a96a-41e2-bb69-1be7653a49df
-status: in-progress
+status: done
 ---
 
 # SPEC-292: Feature and Fix workflows no longer tell agents to promote production
 
-Status: in-progress
+Status: done
 Date: 2026-10-24
 Owner: task #278
 Scope authorization: task #278 (issue #556, started by the nightly issue automation, task #277).
@@ -42,8 +42,9 @@ that dev is deployed only when the task asks, and leave production, with its pro
 ## Requirements
 
 - FIX-1: No bundled workflow (its whole file: description, steps and instructions) contains the verb
-  "promote" (any form but the noun "promotion"), nor a "verif..." within two words of "production"
-  or "prod", nor a "deploy..." up to two words before one, within a clause. One domain rule,
+  "promote" (any form but the noun "promotion"), nor a "deploy..." or "verif..." followed by
+  "production" or "prod" in the same clause, nor a "verif..." right after one ("production
+  verification"). One domain rule,
   `yulius_domain::cd::production_instruction`, says so for every shipped text.
 - FIX-2: The Feature and Fix instructions end with: merge on green, clean up (`git-hygiene`), deploy
   dev only when the task asks (`cd_deploy`), and production being a person's.
@@ -58,8 +59,8 @@ that dev is deployed only when the task asks, and leave production, with its pro
 - [x] Root cause confirmed and fix spec written
 - [x] Regression tests that fail on the promote instructions
 - [x] Feature, Fix and AGENTS.md template tell agents not to promote
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, changes log updated
 
 ## Acceptance criteria
 
@@ -77,8 +78,10 @@ that dev is deployed only when the task asks, and leave production, with its pro
 - Unit, `crates/yulius-domain/src/cd.rs`:
   `production_instructions_are_found_and_the_rule_stays_sayable` gives `production_instruction`
   the old clause and rewordings ("Promote", "promotes", "verified production", "verify the
-  production deploy", "production verification", "deploy to production", "deploys the prod"), all
-  found, and the sentences that state the rule, none found.
+  production deploy", "production verification", "deploy to production", "deploys the prod",
+  "Deploy `main` to production", "verify it in production"), all found, and the sentences that
+  state the rule or set up CD ("CD dev and production defined with deploy and verify scripts"),
+  none found.
 - Unit, `crates/yulius-app/src/workflows/catalog.rs`: `no_workflow_tells_agents_to_promote`
   runs the rule over every embedded workflow file, so a new workflow that tells agents to promote
   fails too.
@@ -104,3 +107,24 @@ that dev is deployed only when the task asks, and leave production, with its pro
 - What else the cause could break: AGENTS.md files already generated for projects keep the old
   Delivery line; Yulius does not rewrite a project's AGENTS.md, and the agent briefing and the
   `delivery-pipeline` skill (both current) say production is a person's. Out of scope.
+
+## Evidence
+
+- Regression tests first: fbaa28f8 (`no_workflow_tells_agents_to_promote`,
+  `agents_md_leaves_production_to_a_person`) failed on the unchanged texts ("feature.md tells agents
+  to promote"; "empty: verify production"). With the shared rule, both still fail when dev's old
+  texts are put back (feature.md: "verified"; the old Delivery line: "verify") and pass with the fix.
+- `production_instructions_are_found_and_the_rule_stays_sayable` failed against a stub (e4fec606)
+  and on "Deploy `main` to production" (a1fcb148) before each rule change made it pass.
+- `scripts/dev ci` (after `python3 scripts/bootstrap.py`): exit 0 at e20f948e (2592 tests passed)
+  and at 831dc2b6 (2593 passed); rerun at the final head before delivery.
+- `scripts/dev security`: exit 2, not run. Vidoc answered HTTP 429 ("This API key has used its
+  50,000,000 tokens"), so this is unrun, not passed; the CI `security` job reports it.
+- Independent review (fresh session, `om-code-review`): round 1 APPROVE at e20f948e with own-code
+  findings 1-5 (a narrower AGENTS.md check, missed rewordings, a loose assertion, clause order,
+  Plan state). 1-3 and 5 fixed test-first; 4 kept (FIX-2, the 1,444-byte budget leaves Fix one
+  byte). Round 2 APPROVE at 831dc2b6 with two own-code findings (a two-word window, the module doc),
+  both fixed. Pre-existing findings (`.apm/skills/yulius-git/SKILL.md:33`,
+  `catalog/skills/yulius/README.md:9`, `crates/yulius-server/web/assets/mock.js:296`) were posted
+  on #556; this task opens no issues.
+- Fix's instructions block is about 1,443 of 1,444 bytes (budget assertion green).
