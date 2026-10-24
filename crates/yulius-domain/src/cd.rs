@@ -707,6 +707,9 @@ mod tests {
             "run the production\n  verification",
             "deploy to production",
             "Deploys the prod environment",
+            "Deploy `main` to production.",
+            "deploy the app to prod",
+            "then verify it in production",
         ] {
             assert!(production_instruction(told).is_some(), "{told}");
         }
