@@ -56,7 +56,7 @@ left, whenever the server still held that screen.
 - [x] mark_lost saves the hub's screen before recording the loss
 - [x] Docs and changes entry true
 - [x] Independent review answered
-- [x] Gates green and PR merged on green
+- [x] Gates green on the delivered head
 
 ## Acceptance criteria
 
@@ -76,6 +76,9 @@ left, whenever the server still held that screen.
 - New integration test `a_run_lost_before_it_attached_saves_no_screen_of_the_run_before`
   (`GatedHost` holds the continued run's attach, the stop's escalation loses the run): fails on
   the first fix (the previous run's `GOAL SET` screen saved), passes with the attached-run check.
+- New integration test `a_run_lost_as_it_attaches_saves_no_screen_of_the_run_before`: the pause
+  point `RunAttached` (the run just stored as attached, before a pending stop asks it to end)
+  waits until the stop's escalation lost the run; fails while the hub is reset after that point.
 - Existing: the `task_done::` file's tests and the `save_screen` unit test; the full gate.
 
 ## Decisions
@@ -86,6 +89,11 @@ left, whenever the server still held that screen.
 - Which run the hub shows is told by the runtime's attached run (`rt.run`), which `attach_run` sets
   and `finalize_attempt` and `mark_lost` clear: a loss after `finalize_attempt` cleared it saves
   nothing, so no check of the attempt's state is needed (an earlier draft had one; review).
+- For that to hold, `attach_run` resets the hub to the run's snapshot and stores the attached run
+  together, under the run's lock (review round 2: it stored the run first and reset the hub only
+  after a stop's shutdown request, up to 2 s later). Viewer input waits on that lock, so input is
+  still taken as soon as the screen shows. Rejected: recording in the hub which attempt it shows
+  (a second source of the same fact).
 - No new ADR: this applies ADR-0177's "the run's end writes it again" to the lost end too.
 
 ## Evidence
@@ -101,7 +109,14 @@ left, whenever the server still held that screen.
   saving only for the runtime's attached run. Minor 2 (the attempt-state check had no test): the
   check was removed as redundant, see Decisions. Nit 3: Context reworded ("normally"). Nit 4: the
   test says why it feeds the hub directly.
-- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^task_done::/)'`: 52 passed.
+- Review round 2 (fresh session, head 5d126b90): APPROVE with 1 minor and 1 nit, own code. Minor
+  (a loss between storing the attached run and the hub's reset saved the run before's screen):
+  reproduced by `a_run_lost_as_it_attaches_saves_no_screen_of_the_run_before` at b0d392f3 (FAILED,
+  `GOAL SET` saved), fixed by resetting the hub and storing the run together under its lock. Nit
+  (the Plan said merged before the merge): the last step is now "Gates green on the delivered
+  head".
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^task_done::/) |
+  test(/^supervision::/) | test(/^terminal/))'` after the round-2 fix: 75 passed.
 - `scripts/dev ci` at 3de32acf: exit 0, 2602 tests passed (1 slow), 16 skipped; repository
   contracts passed.
 - `scripts/dev security`: exit 2, not run: Vidoc answered HTTP 429 "This API key has used its

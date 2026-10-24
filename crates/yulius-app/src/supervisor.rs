@@ -2128,13 +2128,25 @@ impl App {
                 welcome.snapshot.as_deref().unwrap_or_default(),
             )
             .await;
-        // The run takes input before anything of it shows: a viewer who sees the agent's screen
-        // can type into it (F 2026-10-13: input right after the banner was refused as "not
-        // running" on a fast machine).
-        *runtime.run.lock().await = Some(ActiveRun {
-            attempt_id: attempt.id.clone(),
-            writer: attached.writer,
-        });
+        // A viewer who took the size while the run was starting (the PTY spawned at the size before
+        // it): the screen shows that viewer's size from the start, never the spawn size first,
+        // and the PTY follows (TSK-006, F 2026-10-10).
+        let (cols, rows) = runtime
+            .hub
+            .controller_size()
+            .unwrap_or((welcome.cols, welcome.rows));
+        // The screen and the run change together, under the run's lock: a viewer who sees the
+        // agent's screen can type into it (F 2026-10-13: input right after the banner was refused
+        // as "not running" on a fast machine), and while the hub still shows the run before, this
+        // run is not the attached one, so a loss saves no screen as its own (SPEC-301 LRS-001).
+        {
+            let mut run = runtime.run.lock().await;
+            runtime.hub.reset(welcome.seq, &screen, cols, rows);
+            *run = Some(ActiveRun {
+                attempt_id: attempt.id.clone(),
+                writer: attached.writer,
+            });
+        }
         crate::race::reached(crate::race::Point::RunAttached, Path::new(task_id.as_str()));
         // What the sandbox's limits counted so far: a rise by the run's end says it was at one.
         let counters = self.limit_counters(&sandbox).await;
@@ -2152,14 +2164,6 @@ impl App {
             self.end_person_pause(task_id).await;
             request_shutdown(&runtime).await;
         }
-        // A viewer who took the size while the run was starting (the PTY spawned at the size before
-        // it): the screen shows that viewer's size from the start, never the spawn size first,
-        // and the PTY follows (TSK-006, F 2026-10-10).
-        let (cols, rows) = runtime
-            .hub
-            .controller_size()
-            .unwrap_or((welcome.cols, welcome.rows));
-        runtime.hub.reset(welcome.seq, &screen, cols, rows);
         if (cols, rows) != (welcome.cols, welcome.rows)
             && let Err(err) = self.resize_run(task_id, cols, rows).await
         {
