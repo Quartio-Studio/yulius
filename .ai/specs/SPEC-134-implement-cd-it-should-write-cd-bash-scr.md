@@ -122,7 +122,11 @@ Runs (CDR):
 - CDR-003. Stored output is the run's tail with every agent secret's value replaced by
   `[secret:NAME]`.
 - CDR-004. One active run per environment and project; a second request is refused while one runs.
-  A run is bounded by the CI job timeout; cancelling kills its process group. A run that was
+  A run is bounded by the CI job timeout, by its output (256 MiB) and by a disk bound for its
+  files directory and its cache (`--cd-run-disk-gb`, default 20 GB, measured every 5 s; SPEC-300,
+  ADR-0216): past either, its process group is killed and it is recorded `error` saying why, and
+  a run stopped over the disk bound has its cache emptied. Cancelling kills its process group. A
+  run that was
   running when Yulius restarted (or that is cancelled without an executor) has its process host
   terminated and its files removed, is recorded as `error` ("outcome unknown") and is never
   started again by itself. Runs are kept 14 days, 50 per environment, and each environment's last
