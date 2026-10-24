@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-24
 
+- The disk-quota wait test runs in CI again (SPEC-294, task #280, fixes #485).
+  `local_ci::a_run_over_the_disk_quota_waits_and_starts_when_space_frees` had been quarantined
+  since one unexplained 2.16 s failure on 2026-10-15. Random delays at every status publish, at the
+  disk check, and at a run's start, job ends and end reproduced no fast failure. Neither did clock
+  jumps while the runs execute: 128 runs in all. The late disk-check publish suspected by #277
+  cannot reach this test, since no run starts before the check has published. CI keeps a failing
+  test's output (SPEC-145), so a next failure names its assertion.
 - An achieved goal no longer leaves its task Working for good when Yulius did not settle the
   turn's Stop hook (SPEC-290, task #276, #877). The hook client fails open, so a Stop that Yulius
   answered with an error, or could not answer, still ended the turn in Claude Code, and the task
