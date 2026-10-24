@@ -14,6 +14,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   every sandbox. Its name is taken with a create-new `mkdir` (`import-<job>`, then `-2`, …), a
   failed import removes it, disk upkeep lists what an interrupted one leaves, and
   `extract_snapshot` refuses a linked root (ADR-0213).
+- The disk-quota wait test runs in CI again (SPEC-294, task #280, fixes #485).
+  `local_ci::a_run_over_the_disk_quota_waits_and_starts_when_space_frees` had been quarantined
+  since one unexplained 2.16 s failure on 2026-10-15. Random delays at every status publish, at the
+  disk check, and at a run's start, job ends and end reproduced no fast failure. Neither did clock
+  jumps while the runs execute: 128 runs in all. The late disk-check publish suspected by #277
+  cannot reach this test, since no run starts before the check has published. CI keeps a failing
+  test's output (SPEC-145), so a next failure names its assertion.
 - An open provider sign-in terminal now closes when the sign-in that opened it ends (SPEC-295,
   task #281, #759). It checked administrator access once, at connect, so signing out, a revoked API
   token, an expired session, a disabled user or a removed instance administration left it streaming
