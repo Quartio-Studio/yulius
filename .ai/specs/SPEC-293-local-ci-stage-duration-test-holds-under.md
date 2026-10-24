@@ -106,7 +106,7 @@ non-zero durations inside the job, timed by Yulius as it reads the output (SPEC-
   controller holding a 2 s CPU-bound probe's share at median 0.20 (0.16-0.27, median of the last 3
   probes, 32-52 busy loops, load average ~52), 7.25 s per test median (max 9.48 s) against 2.4 s
   unloaded. The job's real duration is not in its spans (they use the fake clock); a job over its
-  8 s timeout would have failed the run, so none of the 50 came near it.
+  8 s timeout would have failed the run, so none of the 50 exceeded it.
 - `scripts/dev ci` at bd5083bf: exit 0, nextest `2590 tests run: 2590 passed, 17 skipped`.
 - `scripts/dev security` at bd5083bf: exit 2, not run: Vidoc is out of quota for this key
   (HTTP 429, "used its 50,000,000 tokens"); unrun, not passed. The change is test and docs only.
