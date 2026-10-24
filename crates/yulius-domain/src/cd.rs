@@ -414,7 +414,9 @@ pub fn authorize(
 /// "deploy..." or "verif..." followed by "production" or "prod" in the same clause is one too, and
 /// so is a "verif..." right after one ("production verification"). `.`, `,`, `;`, `:` and
 /// parentheses end a clause, so "deploy dev only if asked (`cd_deploy`); production is a
-/// person's" is not, nor is "production defined with deploy and verify scripts".
+/// person's" is not, nor is "production defined with deploy and verify scripts". A negation is not
+/// read: "never promote" and "never deploy production" are found too, so a shipped text says whose
+/// job it is ("production is a person's") instead.
 #[must_use]
 pub fn production_instruction(text: &str) -> Option<String> {
     let lower = text.to_lowercase();

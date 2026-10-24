@@ -44,8 +44,8 @@ that dev is deployed only when the task asks, and leave production, with its pro
 - FIX-1: No bundled workflow (its whole file: description, steps and instructions) contains the verb
   "promote" (any form but the noun "promotion"), nor a "deploy..." or "verif..." followed by
   "production" or "prod" in the same clause, nor a "verif..." right after one ("production
-  verification"). One domain rule,
-  `yulius_domain::cd::production_instruction`, says so for every shipped text.
+  verification"). One domain rule, `yulius_domain::cd::production_instruction`, says so for every
+  shipped text.
 - FIX-2: The Feature and Fix instructions end with: merge on green, clean up (`git-hygiene`), deploy
   dev only when the task asks (`cd_deploy`), and production being a person's.
 - FIX-3: The Feature description ends delivery at a merge on green, not at "verified production".
@@ -113,7 +113,8 @@ that dev is deployed only when the task asks, and leave production, with its pro
 - Regression tests first: fbaa28f8 (`no_workflow_tells_agents_to_promote`,
   `agents_md_leaves_production_to_a_person`) failed on the unchanged texts ("feature.md tells agents
   to promote"; "empty: verify production"). With the shared rule, both still fail when dev's old
-  texts are put back (feature.md: "verified"; the old Delivery line: "verify") and pass with the fix.
+  texts are put back (feature.md: "verified"; the old Delivery line: "verify") and pass with the
+  fix.
 - `production_instructions_are_found_and_the_rule_stays_sayable` failed against a stub (e4fec606)
   and on "Deploy `main` to production" (a1fcb148) before each rule change made it pass.
 - `scripts/dev ci` (after `python3 scripts/bootstrap.py`): exit 0 at e20f948e (2592 tests passed)
