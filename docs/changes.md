@@ -13,6 +13,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   base64 (and base64url) lines are needles now, and a line with other text only when it holds a
   key-length base64 run (a body joined onto its headers); a bundle's public
   certificate body stays one (ADR-0215).
+- CD and delivery environment runs are stopped past a disk bound for their files (SPEC-300,
+  task #286, #664). A run's tree, `HOME`, states and log, and a CD run's cache, lie outside every
+  sandbox directory, so the sandbox's quota never counted them: a deploy could write until its
+  timeout and fill the data disk. `ci_watch` now measures them every 5 s, off its loop, and stops
+  a run past `--cd-run-disk-gb` (`YULIUS_CD_RUN_DISK_GB`, default 20 GB) as an `error` that says
+  what it used; a CD run's cache is then emptied, so the next run starts under the bound. Charging
+  the sandbox's quota was rejected: a production deploy must not die because agents filled their
+  worktrees (ADR-0216).
 - An import's snapshot is checked out in a folder of the server, not in the sandbox's
   `worktrees/` (SPEC-296, task #282, #824). The import picked `worktrees/import-<job>` with an
   existence check before Git created it. A link to an empty folder planted there in between made
