@@ -126,7 +126,7 @@ snapshot import outside the sandbox directory, and imports keep working.
 - Review round 1 tests red on 4a095cb4's code (commit e1b46a92): the failed import left
   `import-<job>` in the private folder; the removed sandbox's `import-worktrees/old` stayed; the
   stray `import-worktrees/stray` was not listed.
-- Green with the fix: `import_server::` 10 passed, `leftovers::` 25 passed; `yulius-app`
+- Green with the fix: `import_server::` 10 passed, `leftovers::` 24 passed; `yulius-app`
   `imports::`/`playground`/`snapshot` 18 passed (AC-2 unit test included).
 - Gate: `scripts/dev ci` exit 0 on adb6a418 (2593 tests passed, 17 skipped); rerun on the
   answered head, see the pull request.
