@@ -631,6 +631,11 @@ test('a pasted multi-line team secret value keeps its line breaks, masked, and S
   const add = screen.getByRole('dialog', 'Add team secret');
   await screen.getByLabel('Title').fill('Recovery codes');
   expect(await pasteTeamValue(browser, crlf)).toEqual({ prevented: true, type: 'password', inMarkup: false });
+  // The field says so, in its description.
+  expect(await browser.evaluate(() => {
+    const input = document.querySelector('dialog.modal input[type="password"]')!;
+    return document.getElementById(input.getAttribute('aria-describedby')!)!.textContent;
+  })).toBe('A pasted value keeps its line breaks.');
   expect(await axeViolations(browser)).toEqual([]);
   await add.getByRole('button', 'Add').click();
   await expect(add).toBeHidden();

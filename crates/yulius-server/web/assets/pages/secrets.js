@@ -250,19 +250,23 @@ function withBreaks(text) {
   return text.replace(/[\uE00A\uE00D]/g, (c) => (c === BREAK_MARKS['\n'] ? '\n' : '\r'));
 }
 
+let teamHintIds = 0;
+
 /**
  * `loadNotes` reveals the stored notes (after a two-factor code) so they can be edited. A new one
  * in a sandbox picks its scope.
  */
 function teamForm(secret, loadNotes, sandbox) {
   const title = h('input', { class: 'input', value: secret ? secret.title : '', maxlength: 200, autofocus: true, placeholder: 'Shared Gmail' });
-  const value = h('input', { class: 'input mono', type: 'password', autocomplete: 'new-password', placeholder: secret && secret.has_value ? 'Unchanged' : '' });
+  // Named Value, its hint read as its description.
+  const hintId = `team-value-hint-${++teamHintIds}`;
+  const value = h('input', { class: 'input mono', type: 'password', 'aria-label': 'Value', 'aria-describedby': hintId, autocomplete: 'new-password', placeholder: secret && secret.has_value ? 'Unchanged' : '' });
   pasteKeepsBreaks(value);
   const stored = Boolean(secret && secret.has_notes);
   const notes = h('textarea', { class: 'textarea', rows: 3, readOnly: stored, placeholder: stored ? 'Stored notes stay as they are' : 'User name, address, recovery codes…' });
   const body = h('div', { class: 'stack' },
     field('Title', title),
-    field('Value', value, secret ? 'Leave empty to keep the stored value. A pasted value keeps its line breaks.' : 'A pasted value keeps its line breaks.'),
+    field('Value', value, h('span', { id: hintId }, secret ? 'Leave empty to keep the stored value. A pasted value keeps its line breaks.' : 'A pasted value keeps its line breaks.')),
     field('Notes', notes, stored ? 'To change them, load them first: what you save replaces them.' : 'Encrypted like the value.'),
     stored ? h('div', null, smallButton('Edit current notes', `Edit current notes of ${secret.title}`, async (event) => {
       try {
