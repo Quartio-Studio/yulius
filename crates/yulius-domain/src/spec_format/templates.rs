@@ -857,13 +857,12 @@ mod tests {
             let files = scaffold_files("Online Shop", template);
             let agents = file(&files, "AGENTS.md")?;
             let flat = agents.split_whitespace().collect::<Vec<_>>().join(" ");
-            for forbidden in [
-                "verify production",
-                "promote",
-                "promotion to `main` by a merge",
-            ] {
-                assert!(!flat.contains(forbidden), "{}: {forbidden}", template.id());
-            }
+            assert_eq!(
+                crate::cd::production_instruction(agents),
+                None,
+                "{}",
+                template.id()
+            );
             for needle in [
                 "merge on green, cleanup",
                 "deploy and verify `dev` only when the task asks",

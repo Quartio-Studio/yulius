@@ -415,7 +415,25 @@ pub fn authorize(
 /// "deploy dev only if asked (`cd_deploy`); production is a person's" is not.
 #[must_use]
 pub fn production_instruction(text: &str) -> Option<String> {
-    let _ = text;
+    let lower = text.to_lowercase();
+    for clause in lower.split(['.', ',', ';', ':', '(', ')']) {
+        let words: Vec<&str> = clause
+            .split(|c: char| !c.is_alphabetic())
+            .filter(|w| !w.is_empty())
+            .collect();
+        let production = |w: &&str| *w == "production" || *w == "prod";
+        for (i, word) in words.iter().enumerate() {
+            let after = &words[i + 1..words.len().min(i + 3)];
+            let before = &words[i.saturating_sub(2)..i];
+            let told = (word.starts_with("promot") && !word.starts_with("promotion"))
+                || (word.starts_with("verif")
+                    && (after.iter().any(production) || before.iter().any(production)))
+                || (word.starts_with("deploy") && after.iter().any(production));
+            if told {
+                return Some((*word).to_owned());
+            }
+        }
+    }
     None
 }
 
