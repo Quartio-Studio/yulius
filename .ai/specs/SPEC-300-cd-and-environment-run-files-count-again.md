@@ -1,11 +1,11 @@
 ---
 yulius-task: 657ff438-a1c7-4805-bc78-74bbf58c3f4e
-status: in-progress
+status: done
 ---
 
 # SPEC-300: CD and environment run files count against a disk bound
 
-Status: in-progress
+Status: done
 Date: 2026-10-24
 Owner: task #286
 Scope authorization: issue #664 (found in the review of task #205, SPEC-219), verified on `dev`
@@ -54,10 +54,10 @@ past its bound is stopped and recorded `error`, saying why.
 
 ## Plan
 
-- [ ] Spec, ADR-0216 and failing tests: a CD run and an environment run writing past the bound
-- [ ] Runs measured during ci_watch and stopped past the bound, recorded error
-- [ ] Configurable bound (--cd-run-disk-gb), cache emptied on a stop, docs (SPEC-134, operations, architecture, changes)
-- [ ] Independent review answered, gates green, merged into dev
+- [x] Spec, ADR-0216 and failing tests: a CD run and an environment run writing past the bound
+- [x] Runs measured during ci_watch and stopped past the bound, recorded error
+- [x] Configurable bound (--cd-run-disk-gb), cache emptied on a stop, docs (SPEC-134, operations, architecture, changes)
+- [x] Independent review answered, gates green, merged into dev
 
 ## Acceptance criteria
 
@@ -88,3 +88,28 @@ past its bound is stopped and recorded `error`, saying why.
   it made unreadable, over 4 M entries) is undercounted, as the sandbox quota is.
 - A production run's files written by mapped ids are measured as the server can read them; an
   unreadable directory makes the measurement a lower bound (as for the sandbox quota).
+
+## Evidence
+
+- Red on `dev` (e8cb3398 plus the tests, commit ce3fe385):
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/a_run_writing_past_its_disk_bound/) | test(/an_environment_run_writing_past_its_disk_bound/))'`
+  → both FAILED: the CD run ended "timed out after 20 s", the environment run `failed` with "the
+  command exceeded 0 minutes" (its 20 s timeout).
+- Green with the fix: the same command → 2 passed (5.4 s and 6.8 s).
+- Review round 1 (major: cache emptying could fail silently on read-only folders or mapped-id
+  files): `only_trees_below_sandboxes_skip_the_by_path_removal` red before ("cd/s1/cache/prod"),
+  green after; `cd::*`, delivery environment tests, `leftovers::*`, `yulius-app ci::*`: 73 passed.
+- Not testable here: the CD test's `chmod 555` cache folders cannot resist removal as root (tests
+  run as uid 0 in this sandbox), and the "its cache could not be emptied" reason has no test, since
+  this harness cannot make a cache resist the handle removal as root. The handle removal of
+  read-only trees is covered by the existing `leftovers` tests (#680).
+- `scripts/dev ci` at 0641272a: exit 0; nextest 2603 passed, 16 skipped; fmt, clippy, deps,
+  macOS compile and docs passed.
+- `scripts/dev security`: exit 2, not run: Vidoc answered HTTP 429 ("This API key has used its
+  50,000,000 tokens"), so the 8 changed code files were not scanned. Unrun, not passed.
+- Independent review (fresh session, read-only): round 1 request changes (1 major, 3 minor, 3
+  nits; all answered), round 2 approve with 2 minors and 2 nits (fixed: random fill data for
+  compressing filesystems, by-path removal only without `/proc`, removal off the runtime), round
+  3 approve at 0641272a; the untested failure text is accepted as the limit above.
+- Pre-existing, fixed on the way: run directories with read-only folders (a Go module cache in
+  `HOME`) were never removed by `remove_run_dirs`; they now go through the same handle removal.
