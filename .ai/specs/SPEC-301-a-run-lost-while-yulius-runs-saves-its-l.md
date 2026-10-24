@@ -56,6 +56,7 @@ left, whenever the server still held that screen.
 - [x] mark_lost saves the hub's screen before recording the loss
 - [x] Docs and changes entry true
 - [x] Independent review answered
+- [x] Attach-time loss saves no earlier run's screen (review rounds 1-2)
 - [x] Gates green on the delivered head
 
 ## Acceptance criteria
