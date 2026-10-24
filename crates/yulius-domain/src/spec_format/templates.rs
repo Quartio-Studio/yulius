@@ -848,6 +848,28 @@ mod tests {
         Ok(())
     }
 
+    /// Only a person promotes and deploys production (ADR-0110, #556): the generated AGENTS.md
+    /// never tells an agent to promote or to verify production, and says whose job it is.
+    #[test]
+    fn agents_md_leaves_production_to_a_person() -> TestResult {
+        for template in TemplateKind::ALL {
+            let files = scaffold_files("Online Shop", template);
+            let agents = file(&files, "AGENTS.md")?;
+            let flat = agents.split_whitespace().collect::<Vec<_>>().join(" ");
+            for forbidden in ["verify production", "promote", "promotion to `main` by a merge"] {
+                assert!(!flat.contains(forbidden), "{}: {forbidden}", template.id());
+            }
+            for needle in [
+                "merge on green, cleanup",
+                "deploy and verify `dev` only when the task asks",
+                "always a person's decision and action",
+            ] {
+                assert!(flat.contains(needle), "{}: lacks {needle}", template.id());
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn names_are_sanitized() {
         let odd = names("  class \n\t");

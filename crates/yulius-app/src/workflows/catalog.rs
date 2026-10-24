@@ -123,6 +123,41 @@ mod tests {
         Ok(())
     }
 
+    /// Only a person promotes and deploys production (ADR-0110, #556): no shipped workflow tells
+    /// an agent to promote or to verify production. The noun "promotion" stays allowed, so a
+    /// workflow can say whose job it is.
+    #[test]
+    fn no_workflow_tells_agents_to_promote() -> Result<(), Box<dyn std::error::Error>> {
+        for (stem, text) in WORKFLOW_FILES {
+            let lower = text.to_lowercase();
+            let words: Vec<&str> = lower
+                .split(|c: char| !c.is_alphabetic())
+                .filter(|w| !w.is_empty())
+                .collect();
+            for word in &words {
+                assert!(
+                    !(word.starts_with("promot") && *word != "promotion"),
+                    "catalog/workflows/{stem}.md tells agents to {word}"
+                );
+            }
+            for pair in words.windows(2) {
+                assert!(
+                    !(pair[0].starts_with("verif") && pair[1] == "production"),
+                    "catalog/workflows/{stem}.md tells agents to {} {}",
+                    pair[0],
+                    pair[1]
+                );
+            }
+        }
+        // Delivery still ends somewhere: dev deployed when asked, production a person's.
+        for id in ["wf-feature", "wf-fix"] {
+            let w = default_workflow(id).ok_or(id)?;
+            assert!(w.instructions.contains("`cd_deploy`"), "{id}");
+            assert!(w.instructions.contains("a person's"), "{id}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn order_then_name_and_bad_files_skipped() {
         let file = |name: &str, order: &str| {
