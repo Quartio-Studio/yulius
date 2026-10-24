@@ -93,3 +93,31 @@ the sandbox's `ci/logs` folder, and its CI jobs' output is still recorded.
   agent's planted link fail every CI job of the sandbox.
 - A planted `ci` link still fails the job (`ELOOP`): the checkout already ran there by path, out
   of this issue's scope (see Evidence).
+
+## Evidence
+
+- Red on `dev` (2025e0f0 with the test-only pause point, commit 4aa95f55), and again with the
+  review-round-1 tests against the unfixed `ci/` code:
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^local_ci::a_(linked_ci_logs|link_planted|job_relinking)/)'`
+  → 3 failed: the linked folder held `<job>.log` files while the jobs ran (AC-1); the planted
+  link's target was truncated to `""` (AC-2); the host `<job>.log` was deleted through the
+  relinked folder (AC-3, "No such file or directory").
+- Green with the fix: the same command, 3 passed, 5 runs in a row; `local_ci::` 46 passed;
+  `delivery::` and `cd` 72 passed (CD and environment runs keep `RunLog::At`).
+- Gate: `scripts/dev ci` exit 0 (2575 tests passed, 17 skipped) on 56552d06; rerun on the final
+  head below.
+- Security: `scripts/dev security` exit 2, **unrun**: Vidoc answered HTTP 429 ("This API key has
+  used its 50,000,000 tokens"); the 5 code files were not scanned. Not a pass. Vidoc's own issue
+  #793 reports the same `File::create` and closes once its line is gone from `dev`.
+- Independent review round 1 (fresh session, 56552d06), request changes, answered:
+  - own, major: the relinking test read `/proc` (absent on macOS, a supported host): the test now
+    writes the host files at the queued jobs' log names; still red on the old code.
+  - own, minor: the planted-link test did not prove its pause point fired: it counts the plants
+    and asserts one per job.
+  - own, minor: this Evidence section was missing.
+  - own, nit: the linked-folder test passed on an empty listing: it requires `keep.txt` in it.
+  - pre-existing, major: CI checkout preparation still follows a link at `ci` or `ci/jobs`
+    (`ci_checkout`'s `remove_dir_all`/`create_dir_all`/`git worktree add` by path in
+    `crates/yulius-git/src/ci.rs`, and `create_dir_all(ci/home|ci/cache)`), on `dev` before this
+    change (2025e0f0 `exec.rs:917,925`). Outside `ci/logs` and this issue; this task may not
+    create issues, so it is reported in a comment on #663 and in the task summary.
