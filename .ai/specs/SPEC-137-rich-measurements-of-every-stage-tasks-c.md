@@ -211,7 +211,7 @@ Commands run in the task's worktree (Linux, the pinned toolchain):
 | e2e suite at `ad8db475` | 441 passed, 1 failed: `pulls.e2e.ts` "a session that expires…", a race in the test (above), fixed; `pulls.e2e.ts` then 5 of 5 runs passed; `pipeline`, `cd`, `times`, `places` passed |
 | `scripts/dev security` | **not run**: Vidoc rejected the key (HTTP 401, exit 2; ADR-0104, issue #470) |
 | `cargo nextest run -p yulius -E 'test(/^stages::/)'` | 4 passed: timeline, summary with p50/p90 and delivery figures, export CSV/JSON and access, another sandbox's task |
-| `local_ci::a_run_s_jobs_record_their_stages_and_test_counts` | passed: a real CI job's stages (real durations ≥ 0.5 s; since SPEC-293 exactly the 1 s the test moves the clock by while each stage runs), checkout, slot wait, preparation, test counts and figures |
+| `local_ci::a_run_s_jobs_record_their_stages_and_test_counts` | passed: a real CI job's stages (timed by Yulius's clock as it reads the output; since SPEC-293 each lasts exactly the 1 s the test moves the clock by while it runs, and `::yulius-stage-end` ends them before the job), checkout, slot wait, preparation, test counts and figures |
 | `cd::a_deploy_records_its_confirmation_checks_promotion_phases_and_stages` | passed: confirmation (4.2 s, measured by the page), checks, promotion, deploy with its stages, verify; an hour-long confirmation not recorded |
 | store tests (`spans::`, the version-27 backfill, a 25k-event history in well under 10 s) | passed (63 store tests) |
 | e2e `pipeline.e2e.ts` | 4 passed: Pipeline page, filters in the address, waterfalls of a CI run, a deploy and a task, the Dashboard overview |

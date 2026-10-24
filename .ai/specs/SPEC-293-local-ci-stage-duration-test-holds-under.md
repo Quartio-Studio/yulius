@@ -45,7 +45,9 @@ non-zero durations inside the job, timed by Yulius as it reads the output (SPEC-
   exactly the time the test moved the clock by, whatever the load and whenever the reads happen.
 - TST-002: the test still proves STG-201..203: the stages are children of the job span, contiguous
   (`compile.ended_at == unit.started_at`), non-zero, inside the job, with their figures and test
-  counts, and all spans are `recorded`.
+  counts, and all spans are `recorded`. `::yulius-stage-end` ends the stages before the job ends
+  (a third gate, `done`, holds the job after the marker; added on review: before, both were
+  stamped at the same time, so the test could not tell them apart).
 - TST-003: no product change: the read interval and read-time stamping stay as they are.
 
 ## Plan
@@ -80,6 +82,8 @@ non-zero durations inside the job, timed by Yulius as it reads the output (SPEC-
   that sees two markers still makes a zero-long stage), so any wall-time bound stays flaky. Gating
   makes the reads' timing irrelevant and the durations exact. The pattern already exists in this
   file (`jobs_wait_for_their_cpu_budget_and_are_told_it`, the `go` file).
+- The gated job needs about three log reads (≈1.5 s unloaded) against the fixture's 8 s
+  `job_timeout`, about what the old job's 2 s of sleeps needed; the loaded proof checks it.
 - Gate files are named after `$YULIUS_CI_RUN`, so the other run of the fixture (the integration
   branch's) is released at once and never holds the pull request's run.
 - No ADR: a test-only change with no lasting product decision.
