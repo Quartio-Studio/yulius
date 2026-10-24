@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-24
 
+- An import's snapshot is checked out in a folder of the server, not in the sandbox's
+  `worktrees/` (SPEC-296, task #282, #824). The import picked `worktrees/import-<job>` with an
+  existence check before Git created it. A link to an empty folder planted there in between made
+  the service user's Git check the head out in that folder and write the snapshot into it, and the
+  worktree's removal then deleted the folder. The checkout now lives in
+  `<data>/import-worktrees/<sandbox>/`, out of every sandbox. Its name is taken with a create-new
+  `mkdir` (`import-<job>`, then `-2`, …), and `extract_snapshot` refuses a linked root
+  (ADR-0213).
 - An achieved goal no longer leaves its task Working for good when Yulius did not settle the
   turn's Stop hook (SPEC-290, task #276, #877). The hook client fails open, so a Stop that Yulius
   answered with an error, or could not answer, still ended the turn in Claude Code, and the task
