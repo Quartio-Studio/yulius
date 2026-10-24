@@ -1290,7 +1290,8 @@ changes what a deploy runs. `yulius_domain::cd::authorize` decides who may deplo
 person with write access or an agent (`cd_deploy`), production only an administrator who typed the
 project's slug. The commit is the one GitHub reports, taken into a mirror only Yulius writes
 (`yulius_git::Git::cd_mirror_fetch`, every object checked); its tree is written into the run's
-own directory (`export_tree`) and runs through the process host like a CI job (`ci_watch`): dev in
+own directory (`export_tree`) and runs through the process host like a CI job (`ci_watch`, which
+also stops a run whose files and cache grow past `--cd-run-disk-gb`, [decision 0216](decisions/0216-cd-and-environment-runs-have-a-disk-bound-of-their-own.md)): dev in
 the sandbox's containment, production in the sandbox's production holder (its own network and Docker engine, [Containers](#containers)) on the host's read-only system (the launch spec's `host_system` join mode), each with the
 secrets allowed for that environment; nothing agents can write is bound in. Output is redacted
 before it is stored in `cd_runs`. A run also gets the project's variables and the agent states its
