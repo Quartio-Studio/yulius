@@ -2204,6 +2204,10 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
   (`is_superadmin || is_instance_admin`) use the current record, so a role removed or granted by the
   superadmin takes effect within one interval without closing the stream (SPEC-286, #722); an ended
   sign-in still closes it with 4003.
+- The provider sign-in terminal (`WS /api/admin/accounts/login/{id}/terminal`) re-checks every
+  `viewer_recheck_ms` in a spawned task beside its loop (`App::login_terminal_recheck`): an ended
+  sign-in (`App::signed_in_user` is `None`) or a person no longer `is_superadmin ||
+  is_instance_admin` closes it with 4003 (SPEC-295, #759).
 - Internal listener binds 127.0.0.1 only; accepts task tokens only; tokens are per attempt, random
   256-bit, stored hashed, revoked when the attempt ends.
 - Secrets (provider credentials, GitHub App key, MCP env/headers) are encrypted at rest with the
