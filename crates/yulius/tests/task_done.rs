@@ -2690,6 +2690,47 @@ fn a_run_lost_as_it_attaches_saves_no_screen_of_the_run_before() -> TestResult {
     Ok(())
 }
 
+/// SPEC-301 (review round 3), TSK-006: a viewer controls the size as a continued run attaches and
+/// changes it just after the attach took it. The run ends at the viewer's new size, not the one
+/// the attach read.
+#[test]
+fn a_size_changed_as_the_run_attaches_is_kept() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let held = continue_on_held_attach(&data, &fake).await?;
+        let app = &held.app;
+        let hub = &app.runtime(&held.id).hub;
+        let viewer = hub.new_viewer_id();
+        hub.join_writer(viewer, Some((100, 30)));
+        let (resized, mut hooked) = tokio::sync::watch::channel(None);
+        {
+            let (app, id) = (app.clone(), held.id.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::RunAttached,
+                Path::new(held.id.as_str()),
+                move || {
+                    app.runtime(&id).hub.report_size(viewer, (90, 25));
+                    let done = wait_in_hook(&handle, app.resize_run(&id, 90, 25));
+                    resized.send_replace(Some(done.map_err(|e| e.to_string())));
+                },
+            );
+        }
+        held.host.release();
+        tokio::time::timeout(Duration::from_secs(60), hooked.wait_for(Option::is_some)).await??;
+        let done = hooked.borrow().clone();
+        assert_eq!(done, Some(Ok(())));
+        tokio::time::timeout(Duration::from_secs(30), held.continued).await???;
+        assert_eq!(app.runtime(&held.id).hub.size(), (90, 25));
+        hub.leave(viewer);
+        stop(app, &held.id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-250 STW-006 (review): the old run is lost while the switch waits for its end. The switch
 /// gives up and says the session ended: the task rests lost with its one run, and nothing
 /// starts that no one asked for.
