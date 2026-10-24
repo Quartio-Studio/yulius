@@ -582,6 +582,7 @@ async fn instance_leftovers_are_found_and_only_safe_ones_go_by_themselves() -> B
     write(&w.at("transcripts/t-gone/main.jsonl"), "{}")?;
     write(&w.at("sandboxes/stray/file"), "x")?;
     write(&w.at("import-worktrees/stray/import-j1/file"), "x")?;
+    write(&w.at("import-worktrees/live/import-j9/file"), "x")?;
     write(&live.join("worktrees/wt-206/work.txt"), "maybe work")?;
     write(&live.join("attachments/drafts/u-alice/old.png"), "png")?;
     // Real files are dated now; the clock moves two days past them.
@@ -603,6 +604,10 @@ async fn instance_leftovers_are_found_and_only_safe_ones_go_by_themselves() -> B
         (Kind::OrphanTranscripts, "transcripts/t-gone".to_owned()),
         (Kind::Unowned, "sandboxes/stray".to_owned()),
         (Kind::Unowned, "import-worktrees/stray".to_owned()),
+        (
+            Kind::OrphanWorktree,
+            "import-worktrees/live/import-j9".to_owned(),
+        ),
         (
             Kind::OrphanWorktree,
             "sandboxes/live/worktrees/wt-206".to_owned(),
@@ -636,6 +641,10 @@ async fn instance_leftovers_are_found_and_only_safe_ones_go_by_themselves() -> B
     assert!(
         live.join("worktrees/wt-206/work.txt").exists(),
         "it may hold work"
+    );
+    assert!(
+        w.at("import-worktrees/live/import-j9/file").exists(),
+        "it may hold a person's uncommitted files: a person decides"
     );
     assert!(
         w.at("transcripts/t-live").exists() && live.join("worktrees/t-live").exists(),

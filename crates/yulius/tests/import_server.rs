@@ -1302,6 +1302,70 @@ async fn a_failed_snapshot_import_leaves_no_checkout_behind() -> TestResult {
     Ok(())
 }
 
+/// #824 (SPEC-296 AC-4, review round 2): an import whose extraction fails after Git created the
+/// worktree leaves no folder in the server's folder and no live Git worktree of it.
+#[tokio::test]
+async fn a_snapshot_import_failing_after_git_leaves_no_worktree() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", false).await?;
+    let remote = w.remote(
+        OWNER,
+        "shop",
+        &[
+            ("README.md", "# Shop\n"),
+            ("src/app.txt", "v1\n"),
+            ("old.txt", "remove me\n"),
+        ],
+        &[],
+    )?;
+    w.grant("alice", "shop", "admin");
+    let offer = laptop_offer(&w, &remote)?;
+    let created = create_job(&w, &alice, offer.body()?).await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    let job = text(&created.body["job_id"]).to_owned();
+    upload_missing(&w, &alice, &offer, &created.body).await?;
+    let sandbox = w.h.store.sandboxes().await?.pop().ok_or("sandbox")?;
+    let sandbox_dir = w.data_dir().join("sandboxes").join(sandbox.id.as_str());
+    let checkouts = w
+        .data_dir()
+        .join("import-worktrees")
+        .join(sandbox.id.as_str());
+    // The stored archive turns unreadable once the worktree is reserved: Git still creates the
+    // worktree, the extraction fails.
+    let archive = sandbox_dir
+        .join("imports")
+        .join(&job)
+        .join("snapshot.tar.gz");
+    yulius_app::race::on(
+        yulius_app::race::Point::SnapshotWorktree,
+        &w.data_dir(),
+        move || {
+            let _ = std::fs::write(&archive, b"not a gzip archive");
+        },
+    );
+    let result = complete(&w, &alice, &job).await?;
+    assert_ne!(result.status, StatusCode::OK, "{:?}", result.body);
+    assert_eq!(
+        std::fs::read_dir(&checkouts)?
+            .flatten()
+            .map(|e| e.file_name())
+            .collect::<Vec<_>>(),
+        Vec::<std::ffi::OsString>::new(),
+        "the failed import's checkout is removed"
+    );
+    let list = git(
+        &sandbox_dir.join("repo"),
+        &["worktree", "list", "--porcelain"],
+    )?;
+    for entry in list.split("\n\n") {
+        assert!(
+            !entry.contains("import-") || entry.contains("prunable"),
+            "no live worktree of the failed import: {list}"
+        );
+    }
+    Ok(())
+}
+
 async fn continue_doc(w: &World, creds: &Creds, doc: &str) -> Result<TaskId, Error> {
     let resp = call(
         &w.h.router,
