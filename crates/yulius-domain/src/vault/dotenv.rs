@@ -457,6 +457,8 @@ mod tests {
                 "",
                 "c3ludGhldGljLWVuY3J5cHRlZC1ib2R5LTAx",
                 "c3ludGhldGljLTAy+/==",
+                // A body whose breaks became spaces still holds the key: kept, trimmed.
+                " c3ludGhldGlj LWJvZHktMDE= LTAy ",
             ],
         );
         let pgp = key_file(
@@ -472,7 +474,7 @@ mod tests {
             ],
         );
         let bundle = format!(
-            "{}subject=CN = synthetic.example\nissuer=CN = Synthetic CA\n{}",
+            "{}subject=CN = synthetic.example\nissuer=C = PL, O = Synthetic CA\n{}",
             key_file("SYNTHETIC KEY", &["c3ludGhldGljLWtleS1ib2R5"]),
             // A stray space around a body line: the line is kept, trimmed.
             key_file("CERTIFICATE", &["  c3ludGhldGljLWNlcnQtYm9keQ==  "])
@@ -483,6 +485,7 @@ mod tests {
                 vec![
                     "c3ludGhldGljLWVuY3J5cHRlZC1ib2R5LTAx",
                     "c3ludGhldGljLTAy+/==",
+                    "c3ludGhldGlj LWJvZHktMDE= LTAy",
                 ],
             ),
             (
