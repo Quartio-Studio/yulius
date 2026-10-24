@@ -134,8 +134,9 @@ snapshot import outside the sandbox directory, and imports keep working.
   stray `import-worktrees/stray` was not listed.
 - Green with the fix: `import_server::` 11 passed, `leftovers::` 24 passed; `yulius-app`
   `imports::`/`playground`/`snapshot` 18 passed (AC-2 unit test included).
-- Gate: `scripts/dev ci` exit 0 on adb6a418 (2593 tests passed, 17 skipped); rerun on the
-  answered head, see the pull request.
+- Gate: `scripts/dev ci` exit 0 on adb6a418 (2593 tests passed, 17 skipped), on the round-1
+  answers f6d3cf97 (2594 passed, 17 skipped) and on the round-2 answers merged with `dev`
+  d0957c1b (2595 passed, 17 skipped). Yulius CI runs it on the pull request head.
 - Security: `scripts/dev security` exit 2, **unrun**: Vidoc answered HTTP 429 ("This API key has
   used its 50,000,000 tokens"); the 5 code files were not scanned. Not a pass.
 - Independent review round 1 (fresh session, adb6a418), request changes, answered:
