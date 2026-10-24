@@ -1420,6 +1420,52 @@ fn a_background_shell_keeps_the_task_working_until_it_ends() -> TestResult {
     Ok(())
 }
 
+/// SPEC-290 GDW-001 (task #272, 2026-10-24: "working 11h 15m" after "Goal achieved"): the goal
+/// turn leaves a background shell (its `yulius wait`), so Claude Code's evaluator gives no verdict
+/// at its Stop. The shell's end wakes the session, and the woken turn's verdict, achieved, comes
+/// seconds after its Stop hook. With `stop_lost` that Stop hook never reached Yulius (the hook
+/// client fails open on an error answer or an unreachable server): the verdict and the record
+/// that closes the turn still settle it. The task is Done either way, never Working for good.
+fn a_goal_achieved_in_a_woken_turn_makes_the_task_done(stop_lost: bool) -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_background: Some(4),
+            goal_met_on_wake_ms: Some(3_000),
+            wake_stop_lost: stop_lost,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+        wait_for("the achieved goal", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "Goal achieved")
+        })
+        .await?;
+        wait_for("Done without shells", Duration::from_secs(30), || async {
+            shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn a_goal_achieved_in_the_turn_a_shell_woke_makes_the_task_done() -> TestResult {
+    a_goal_achieved_in_a_woken_turn_makes_the_task_done(false)
+}
+
+#[test]
+fn a_goal_achieved_after_a_stop_yulius_never_answered_makes_the_task_done() -> TestResult {
+    a_goal_achieved_in_a_woken_turn_makes_the_task_done(true)
+}
+
 /// SPEC-079 BGW-001 (#305), SES-101: under a limit of one session, a Done task with a background
 /// shell still holds the slot; once the shell ends, the queued task starts at once (no tick runs
 /// in this test, so without the drain it would never start).

@@ -46,6 +46,13 @@ pub struct FakeAgentOptions {
     /// The goal evaluator's last verdict: `met` (default), `failed` or `none`
     /// (`--goal-verdict`).
     pub goal_verdict: Option<&'static str>,
+    /// With `goal_background`: the goal turn gets no verdict, and the turn the shell's end wakes
+    /// records the goal as achieved this many milliseconds after its Stop hook
+    /// (`--goal-met-on-wake-ms`).
+    pub goal_met_on_wake_ms: Option<u64>,
+    /// With `goal_met_on_wake_ms`: the woken turn's Stop hook never reaches Yulius
+    /// (`--wake-stop-lost`).
+    pub wake_stop_lost: bool,
     /// After the goal turn's stop the agent works on for this many milliseconds with no new prompt
     /// (`--goal-continue-ms`): with `goal_continue_verdict` the goal evaluator says "not met"
     /// (`--goal-continue-verdict`), otherwise another Stop hook continued the turn.
@@ -193,6 +200,12 @@ impl HarnessPort for FakeAgentHarness {
         }
         if let Some(verdict) = self.options.goal_verdict {
             argv.extend(["--goal-verdict".into(), verdict.into()]);
+        }
+        if let Some(ms) = self.options.goal_met_on_wake_ms {
+            argv.extend(["--goal-met-on-wake-ms".into(), ms.to_string()]);
+        }
+        if self.options.wake_stop_lost {
+            argv.push("--wake-stop-lost".into());
         }
         if let Some(ms) = self.options.goal_continue_ms {
             argv.extend(["--goal-continue-ms".into(), ms.to_string()]);
