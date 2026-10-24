@@ -3201,6 +3201,10 @@ async fn a_linked_ci_logs_folder_gets_no_host_write() -> TestResult {
     all_passed_with(&all_jobs(&f).await?, "linked-output");
     let seen = std::fs::read_to_string(f.data.join("seen.txt"))?;
     assert!(
+        seen.contains("keep.txt"),
+        "the jobs listed the host folder: {seen:?}"
+    );
+    assert!(
         seen.lines().all(|name| name == "keep.txt"),
         "while the jobs ran the host folder held only its own file: {seen:?}"
     );
@@ -3225,15 +3229,23 @@ async fn a_link_planted_at_the_job_log_is_never_followed() -> TestResult {
     std::fs::write(&host_file, "HOST-KEEP\n")?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     let logs = f.data.join("sandboxes/s1/ci/logs");
-    for job in all_jobs(&f).await? {
+    let queued = all_jobs(&f).await?;
+    let plants = Arc::new(AtomicU32::new(0));
+    for job in &queued {
         let log = logs.join(format!("{}.log", job["id"].as_str().ok_or("id")?));
-        let target = host_file.clone();
-        let planted = log.clone();
+        let (target, planted, plants) = (host_file.clone(), log.clone(), Arc::clone(&plants));
         yulius_app::race::on(yulius_app::race::Point::CiLogCreate, &log, move || {
-            let _ = std::os::unix::fs::symlink(&target, &planted);
+            if std::os::unix::fs::symlink(&target, &planted).is_ok() {
+                plants.fetch_add(1, Ordering::SeqCst);
+            }
         });
     }
     f.settle().await?;
+    assert_eq!(
+        plants.load(Ordering::SeqCst) as usize,
+        queued.len(),
+        "a link was planted at every job's log"
+    );
     assert_eq!(std::fs::read_to_string(&host_file)?, "HOST-KEEP\n");
     all_passed_with(&all_jobs(&f).await?, "job-output");
     Ok(())
@@ -3246,7 +3258,7 @@ async fn a_job_relinking_ci_logs_keeps_the_host_file() -> TestResult {
     let f = fixture_with(false, |data| {
         let host = data.join("host-logs");
         format!(
-            "[[ci.jobs]]\nname = \"check\"\ncommand = \"log=$(basename $(readlink /proc/$$/fd/1)); echo kept > '{host}'/$log; [ -L ../../logs ] || {{ mv ../../logs ../../logs-$log && ln -s '{host}' ../../logs; }}; echo relinked-output\"\n",
+            "[[ci.jobs]]\nname = \"check\"\ncommand = \"[ -L ../../logs ] || {{ mv ../../logs ../../logs-$$ && ln -s '{host}' ../../logs; }}; echo relinked-output\"\n",
             host = host.display()
         )
     })
@@ -3254,6 +3266,11 @@ async fn a_job_relinking_ci_logs_keeps_the_host_file() -> TestResult {
     let host = f.data.join("host-logs");
     std::fs::create_dir_all(&host)?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    // The host folder holds a file at each queued job's log name.
+    for job in all_jobs(&f).await? {
+        let name = format!("{}.log", job["id"].as_str().ok_or("id")?);
+        std::fs::write(host.join(name), "kept\n")?;
+    }
     f.settle().await?;
     let jobs = all_jobs(&f).await?;
     all_passed_with(&jobs, "relinked-output");
