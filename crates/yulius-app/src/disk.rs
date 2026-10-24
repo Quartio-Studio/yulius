@@ -28,7 +28,7 @@ use yulius_domain::task::{Activity, StopReason, TaskStatus};
 
 use crate::context::App;
 use crate::error::AppResult;
-use crate::leftovers::no_link_between;
+use crate::leftovers::{no_link_between, read_small_file};
 use crate::model::{SandboxRecord, TaskRecord};
 use crate::ports::isolation::SandboxRef;
 
@@ -162,16 +162,10 @@ fn root_entries(worktree: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The caches `worktree`'s `yulius.toml` declares: none unless it is a regular file of at most
+/// `MAX_TOML_BYTES` (a FIFO or a link swapped in by the sandbox is never waited on or followed).
 fn declared_caches(worktree: &Path) -> Vec<String> {
-    let path = worktree.join("yulius.toml");
-    let Ok(meta) = std::fs::symlink_metadata(&path) else {
-        return Vec::new();
-    };
-    if !meta.is_file() || meta.len() > MAX_TOML_BYTES {
-        return Vec::new();
-    }
-    std::fs::read_to_string(&path)
-        .ok()
+    read_small_file(&worktree.join("yulius.toml"), MAX_TOML_BYTES)
         .and_then(|text| parse_yulius_toml_caches(&text).ok())
         .unwrap_or_default()
 }
@@ -644,7 +638,12 @@ impl App {
     /// `node_modules`, declared ones): files Git ignores that are not (local configuration,
     /// data) are not Git's to lose, so only then may Yulius remove the worktree by itself.
     pub(crate) async fn worktree_only_caches(&self, worktree: &Path) -> bool {
-        let declared = declared_caches(worktree);
+        // File I/O stays off the async workers (SPEC-288 FIF-003); a failed read declares nothing,
+        // which only keeps the worktree.
+        let dir = worktree.to_path_buf();
+        let declared = tokio::task::spawn_blocking(move || declared_caches(&dir))
+            .await
+            .unwrap_or_default();
         matches!(
             self.deps.git.ignored_entries(worktree).await,
             Ok(Some(ignored)) if only_rebuildable(&ignored, &declared)
@@ -703,5 +702,93 @@ mod tests {
             "low already: every 5 minutes"
         );
         assert!(!round_due(Some(minute), Level::Ok, Level::Low), "it fell");
+    }
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// `declared_caches(worktree)` on its own thread, or `None` when it has not answered within
+    /// `bound` (it is blocked; the thread is left behind).
+    fn declared_within(worktree: &Path, bound: Duration) -> Option<Vec<String>> {
+        let dir = worktree.to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(declared_caches(&dir));
+        });
+        rx.recv_timeout(bound).ok()
+    }
+
+    /// FIF-001 (#853): a regular `yulius.toml` declares its caches; a link to a valid file, a file
+    /// over the limit, a directory and a FIFO declare none, and none is waited on.
+    #[test]
+    fn only_a_small_regular_yulius_toml_declares_caches() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let bound = Duration::from_secs(10);
+        let wt = tmp.path().join("wt");
+        std::fs::create_dir_all(&wt)?;
+        let toml = wt.join("yulius.toml");
+        std::fs::write(&toml, "[disk]\ncaches = \"out\"\n")?;
+        assert_eq!(declared_within(&wt, bound), Some(vec!["out".to_owned()]));
+
+        std::fs::rename(&toml, tmp.path().join("valid.toml"))?;
+        std::os::unix::fs::symlink(tmp.path().join("valid.toml"), &toml)?;
+        assert_eq!(declared_within(&wt, bound), Some(vec![]), "a link");
+
+        std::fs::remove_file(&toml)?;
+        let mut big = "[disk]\ncaches = \"out\"\n".to_owned();
+        big.push_str(&"#".repeat(usize::try_from(MAX_TOML_BYTES)? - big.len() + 1));
+        std::fs::write(&toml, big)?;
+        assert_eq!(declared_within(&wt, bound), Some(vec![]), "one byte over");
+
+        std::fs::remove_file(&toml)?;
+        std::fs::create_dir(&toml)?;
+        assert_eq!(declared_within(&wt, bound), Some(vec![]), "a directory");
+        std::fs::remove_dir(&toml)?;
+        nix::unistd::mkfifo(&toml, nix::sys::stat::Mode::S_IRWXU)?;
+        assert_eq!(declared_within(&wt, bound), Some(vec![]), "a FIFO");
+        Ok(())
+    }
+
+    /// #853: an agent swapping `yulius.toml` between a regular file and a FIFO, as fast as it
+    /// can, never makes the read wait (before, a FIFO swapped in after the type check blocked
+    /// the read for good).
+    #[test]
+    fn a_yulius_toml_swapped_for_a_fifo_is_never_waited_on() -> TestResult {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let tmp = tempfile::tempdir()?;
+        let wt = tmp.path().join("wt");
+        std::fs::create_dir_all(&wt)?;
+        let (toml, fifo, file) = (
+            wt.join("yulius.toml"),
+            tmp.path().join("fifo"),
+            tmp.path().join("file"),
+        );
+        std::fs::write(&toml, "[disk]\ncaches = \"out\"\n")?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let swapper = {
+            let stop = Arc::clone(&stop);
+            let toml = toml.clone();
+            std::thread::spawn(move || -> std::io::Result<()> {
+                while !stop.load(Ordering::SeqCst) {
+                    nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU)?;
+                    std::fs::rename(&fifo, &toml)?;
+                    std::fs::write(&file, "[disk]\ncaches = \"out\"\n")?;
+                    std::fs::rename(&file, &toml)?;
+                }
+                Ok(())
+            })
+        };
+        let dir = wt.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for _ in 0..20_000 {
+                let _ = declared_caches(&dir);
+            }
+            let _ = tx.send(());
+        });
+        let ended = rx.recv_timeout(Duration::from_secs(60));
+        stop.store(true, Ordering::SeqCst);
+        swapper.join().map_err(|_| "the swapper panicked")??;
+        assert!(ended.is_ok(), "a read waited on the FIFO");
+        Ok(())
     }
 }

@@ -13,6 +13,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   project secret an older global one shared the name of, and an administrator could rebind the
   shadowed global secret. A secret switched off for the project, or another person's, is "no
   agent secret NAME".
+- An agent can no longer stop the disk upkeep with a FIFO (SPEC-288, task #274, #853). A
+  worktree's `yulius.toml` was checked by path and then read by path, so a FIFO swapped in between
+  blocked the read for good, and with it every later disk round of the sandbox; a worktree
+  record's `gitdir` was read with no check at all (a FIFO blocked the leftovers round, a link was
+  followed). Both are now opened once without following a link or waiting on a FIFO, and read
+  only when the handle is a small regular file (64 KiB, 4 KiB); anything else declares nothing.
+  The declared caches of an ended worktree are read off the async workers.
 - A CI job's log no longer follows a link an agent planted in its sandbox's `ci/logs` (SPEC-285,
   task #271, #663). The server created it with `File::create` by path and removed it by path, so a
   linked `ci/logs`, a link planted between the removal and the create, or `ci/logs` relinked while
