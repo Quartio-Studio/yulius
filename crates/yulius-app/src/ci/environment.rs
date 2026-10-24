@@ -15,7 +15,7 @@ use yulius_domain::cd::CdStage;
 use yulius_domain::delivery::Stage;
 use yulius_domain::ids::SandboxId;
 
-use super::exec::{Ended, RunLog, Sink};
+use super::exec::{DiskBound, Ended, RunLog, Sink};
 use crate::context::App;
 use crate::delivery::runner::{CommandEnd, OutputRing};
 use crate::error::AppResult;
@@ -175,7 +175,13 @@ impl App {
                 &token,
                 RunLog::At(&log),
                 (ring, None, None),
-                &mut cancel,
+                (
+                    &mut cancel,
+                    Some(DiskBound {
+                        dirs: vec![("run files", files.to_path_buf())],
+                        max: self.config.ci.run_disk_max,
+                    }),
+                ),
             )
             .await?;
         match ended {
@@ -192,7 +198,9 @@ impl App {
                 Err("the command wrote more than 256 MiB of output; it was stopped".to_owned())
             }
             Ended::Lost => Err("the run's process host was lost".to_owned()),
-            Ended::Cancelled(reason) | Ended::NoDisk(reason) => Err(reason),
+            Ended::Cancelled(reason) | Ended::NoDisk(reason) | Ended::DiskLimit(reason) => {
+                Err(reason)
+            }
         }
     }
 

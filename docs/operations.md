@@ -154,6 +154,8 @@ Environment=YULIUS_CI_LANES=2
 #Environment=YULIUS_AGENT_CPUS=4
 Environment=YULIUS_CI_JOB_TIMEOUT_MIN=30
 Environment=YULIUS_CI_POLL_SECS=60
+# GB a CD or delivery environment run's files and cache may use (ADR-0216).
+#Environment=YULIUS_CD_RUN_DISK_GB=20
 # Sandbox isolation (SPEC-002 ADR-22): auto (default), namespaces or legacy; see "Sandbox
 # isolation" below for limits and egress.
 #Environment=YULIUS_ISOLATION=auto
@@ -914,7 +916,10 @@ up at once there, agents with `repo_cleanup`. Each removal is audited `hygiene.c
 ### CD on this machine
 
 CD (deployment, SPEC-134) needs no configuration on the server: projects define `[cd.dev]`, `[cd.prod]`
-and any other `[cd.<name>]` with its `stage` in their `yulius.toml` ([API](api.md#cd-deployment)). A run uses the CI job timeout (`--ci-job-timeout-min`, `YULIUS_CI_JOB_TIMEOUT_MIN`) and the
+and any other `[cd.<name>]` with its `stage` in their `yulius.toml` ([API](api.md#cd-deployment)). A run uses the CI job timeout (`--ci-job-timeout-min`, `YULIUS_CI_JOB_TIMEOUT_MIN`), a disk bound
+for its files (`--cd-run-disk-gb`, `YULIUS_CD_RUN_DISK_GB`, default 20 GB: the run's directory and
+its cache, measured every 5 s; past it the run is stopped as an `error` and its cache emptied, a
+delivery environment run alike; ADR-0216) and the
 containment: dev runs inside the sandbox (its tools, its network); production joins the sandbox's
 production holder (its own network, no host loopback, and its own Docker engine; ADR-0208) on the
 host's read-only `/usr`, `/etc` and `/opt`, so its scripts install the tools they need into

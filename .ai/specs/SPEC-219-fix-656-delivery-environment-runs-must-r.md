@@ -163,7 +163,8 @@ inside the sandbox's containment like a CD dev run.
   server's global and system Git configuration and attributes
   (`an_exported_tree_runs_no_filter_of_the_servers_configuration`, red before).
 - Pre-existing, filed: #663 (a CI job's log is created by path in the agent-writable
-  `ci/logs`), #664 (CD and environment run files are outside the disk quota).
+  `ci/logs`), #664 (CD and environment run files are outside the disk quota; fixed by SPEC-300,
+  ADR-0216).
 - Nits, left with reasons: the tail's skip-ahead uses CI's 512 KiB, so a burst can keep less
   than 1 MiB (the stored tail is bounded either way); the restart test's double finish is
   harmless (the second write is refused); the delivery test fake ignores `source` and `token`,
