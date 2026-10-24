@@ -2309,6 +2309,15 @@ impl App {
         // `existing_runtime`: a deleted task's runtime is not brought back.
         let runtime = self.existing_runtime(task_id);
         let _finalizing = runtime.as_ref().map(|rt| Finalizing::start(&rt.finalizing));
+        // Keep the screen the run was lost on, not its last settled turn's (SPEC-301 LRS-001). A
+        // runtime made after a restart has no output: the saved screen stays. An end recorded
+        // already saved its own.
+        if let Some(rt) = &runtime
+            && let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await
+            && !attempt.state.is_terminal()
+        {
+            save_screen(&rt.hub, Path::new(&attempt.run_dir));
+        }
         let now = self.now();
         let update = AttemptUpdate {
             ended_at: Some(now),
