@@ -947,6 +947,25 @@ impl App {
         Ok(LoginTerminal { session })
     }
 
+    /// The periodic re-check of an open login terminal, run beside its socket (SPEC-295, #759):
+    /// `Some(reason)` to close it once the viewer's sign-in has ended (see
+    /// [`App::still_signed_in`]) or they are no longer an instance administrator.
+    pub fn login_terminal_recheck(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+    ) -> impl std::future::Future<Output = Option<&'static str>> + Send + 'static {
+        let (app, ctx) = (Arc::clone(self), ctx.clone());
+        async move {
+            match app.signed_in_user(&ctx).await {
+                None => Some("signed out"),
+                Some(user) if !(user.is_superadmin || user.is_instance_admin) => {
+                    Some("access revoked")
+                }
+                Some(_) => None,
+            }
+        }
+    }
+
     /// Cancels a running login (SPEC-243 LGN-002) and waits (at most 15 s) until
     /// it has ended: its process is stopped, its temporary directory removed, and the account
     /// keeps its state, unless a complete token had already been captured, which is sealed
