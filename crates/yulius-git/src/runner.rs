@@ -124,18 +124,19 @@ enum Stream {
     Stderr(std::io::Result<Vec<u8>>),
 }
 
-/// Changes to a repository's worktree registrations run one at a time in this process: a
-/// `git worktree prune` that runs while an add has created `.git/worktrees/<name>` but not yet
-/// written it removes the directory, and the add fails ("failed to read
-/// .git/worktrees/<name>/commondir"; two CI lanes creating checkouts at once, SPEC-021).
+/// Changes to a repository's worktree registrations, and listings of them, run one at a time in
+/// this process: a `git worktree prune` that runs while an add has created `.git/worktrees/<name>`
+/// but not yet written it removes the directory, and the add fails ("failed to read
+/// .git/worktrees/<name>/commondir"; two CI lanes creating checkouts at once, SPEC-021); a
+/// `git worktree list` at that moment dies reading the half-written files (#666, SPEC-289).
 static WORKTREE_CHANGES: Mutex<()> = Mutex::new(());
 
-/// Whether `args` add, move, remove or prune worktrees.
-fn changes_worktrees(args: &[OsString]) -> bool {
+/// Whether `args` add, move, remove, prune or list worktrees.
+fn touches_worktree_registrations(args: &[OsString]) -> bool {
     args.first()
         .is_some_and(|a| a.as_os_str() == OsStr::new("worktree"))
         && args.get(1).is_some_and(|a| {
-            ["add", "move", "remove", "prune"]
+            ["add", "move", "remove", "prune", "list"]
                 .iter()
                 .any(|c| a.as_os_str() == OsStr::new(c))
         })
@@ -155,7 +156,7 @@ impl Git {
 
     /// Runs and returns the output whatever the exit status.
     pub(crate) fn run(&self, invocation: Invocation<'_>) -> Result<Output, GitError> {
-        let _changes = changes_worktrees(&invocation.args).then(|| {
+        let _changes = touches_worktree_registrations(&invocation.args).then(|| {
             WORKTREE_CHANGES
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -375,5 +376,32 @@ pub(crate) fn failure(label: &'static str, output: &Output) -> GitError {
         command: label,
         code: output.status.code(),
         stderr: text,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn worktree_listings_and_changes_take_the_registration_lock() {
+        for command in ["add", "move", "remove", "prune", "list"] {
+            assert!(
+                touches_worktree_registrations(&args(&["worktree", command, "--porcelain"])),
+                "{command}"
+            );
+        }
+        assert!(!touches_worktree_registrations(&args(&[
+            "worktree", "lock", "x"
+        ])));
+        assert!(!touches_worktree_registrations(&args(&[
+            "rev-parse",
+            "list"
+        ])));
+        assert!(!touches_worktree_registrations(&args(&[])));
     }
 }
