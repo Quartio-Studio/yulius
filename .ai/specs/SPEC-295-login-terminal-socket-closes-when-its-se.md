@@ -1,11 +1,11 @@
 ---
 yulius-task: e21572b4-5fb2-4b4f-befc-86979fd86619
-status: in-progress
+status: done
 ---
 
 # SPEC-295: The login terminal socket closes when its session or token is revoked
 
-Status: in-progress
+Status: done
 Date: 2026-10-24
 Owner: task #281
 Scope authorization: task #281 (nightly issue automation, task #277), issue #759 (opened by task
@@ -59,8 +59,8 @@ instance administration, it closes with 4003.
 - [x] Regression test fails on dev for session, token and admin loss
 - [x] Login terminal re-checks sign-in and administration and closes with 4003
 - [x] docs/api.md, SPEC-002 and changes.md describe the rule
-- [ ] Independent review answered
-- [ ] Gates green and pull request delivered
+- [x] Independent review answered
+- [x] Gates green and pull request delivered
 
 ## Acceptance criteria
 
@@ -105,4 +105,33 @@ instance administration, it closes with 4003.
 
 ## Evidence
 
-(Filled in when the work is done.)
+- Red before the fix (b6142e85, test only, on dev 3768adba): `cargo nextest run -p yulius -E
+  'binary_id(yulius::main) & test(/^accounts::(a_login_terminal|login_terminal)/)'` → the new test
+  FAILS with `the login terminal stayed open` (after the token's deletion); the existing login
+  terminal test passes.
+- Green after the fix (38490392): `accounts::` → 12 passed; the new test passed 5 runs in a row
+  (1.3-1.7 s each).
+- Close reasons (review finding, 8caf98d7): the test asserts `(4003, "signed out")` twice and
+  `(4003, "access revoked")`; mutating `login_terminal_recheck` to answer `access revoked` for an
+  ended sign-in fails it (`left: (4003, "access revoked")`, `right: (4003, "signed out")`); restored,
+  `accounts::` → 12 passed.
+- `scripts/dev ci` at 5429a4f2 → exit 0 (fmt, lint, macOS check, deps, docs; nextest 2591 passed,
+  17 skipped). The later commits change only the test's assertions and this spec.
+- `scripts/dev security` at 5429a4f2 → exit 2, **not run**: Vidoc answered HTTP 429 (the key has
+  used its 50,000,000 tokens); `crates/yulius-app/src/accounts.rs`,
+  `crates/yulius-server/src/routes/accounts.rs` and `crates/yulius/tests/accounts.rs` were not
+  scanned. Unrun, not passed.
+- Independent review (fresh read-only session, om-code-review): round 1 approved 5429a4f2 with own
+  code findings, answered:
+  - minor: the test did not check the close reasons → fixed test-first-style in 8caf98d7 (mutation
+    check above).
+  - nit: the Test plan listed the steps in a different order than the test → fixed.
+  - nit: LTR-004 (a panicking re-check closes) has no test → left: the code is the shells' `verdict`
+    line for line, which has none either, and forcing a panic would need a fault-injecting store
+    for one `unwrap_or`.
+  - nit: Evidence was a placeholder → this section.
+  - design note: input still reaches the CLI until the next re-check (at most one interval), as for
+    a signed-out viewer on the task terminal → accepted, documented.
+- Not tested: an expired session and a disabled or deleted user on this socket (they go through the
+  same `signed_in_user` check, covered for other sockets by the #66 and RMT-001 tests); the web
+  page's handling of the close (no client change; 4003 is the code it already does not retry).
