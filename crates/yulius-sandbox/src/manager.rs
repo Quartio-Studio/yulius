@@ -404,13 +404,14 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// Whether `path` lies below `sandboxes/` of `data`, which a sandbox's runs can rearrange (any
-/// folder may become a link), or is a production run's files (SPEC-279 PDE-004): removed only by
-/// the walk from the data directory (ADR-0176).
+/// folder may become a link), or is a production run's files (SPEC-279 PDE-004) or a CD cache
+/// (SPEC-300): removed only by the walk from the data directory (ADR-0176).
 fn reachable_by_runs(data: &Path, path: &Path) -> bool {
     path.starts_with(data.join("sandboxes")) || production_run_files(data, path)
 }
 
-/// Whether `path` is (or lies below) one production run's files, `cd/<sandbox>/runs/<run>`.
+/// Whether `path` is (or lies below) one production run's files, `cd/<sandbox>/runs/<run>`, or
+/// one CD environment's cache, `cd/<sandbox>/cache/<name>`, which production runs write too.
 fn production_run_files(data: &Path, path: &Path) -> bool {
     let Ok(rest) = path.strip_prefix(data.join("cd")) else {
         return false;
@@ -420,7 +421,7 @@ fn production_run_files(data: &Path, path: &Path) -> bool {
         && parts
             .iter()
             .all(|c| matches!(c, std::path::Component::Normal(_)))
-        && parts[1].as_os_str() == "runs"
+        && (parts[1].as_os_str() == "runs" || parts[1].as_os_str() == "cache")
         && parts[0].as_os_str().to_str().is_some_and(valid_name)
 }
 
@@ -3112,8 +3113,14 @@ while True:
             "sandboxes/docker-smoke-1",
             // A production run and its engine's containers write there (SPEC-279 PDE-004).
             "cd/s1/runs/cd-r",
+            // And a CD environment's cache, emptied when a run passed its disk bound (SPEC-300).
+            "cd/s1/cache/prod",
+            "cd/s1/cache/dev/go/pkg",
         ] {
             assert!(reachable_by_runs(d, &d.join(walked)), "{walked}");
+        }
+        for neither in ["cd/s1/cache", "cd/s1/source.git", "cd/../cache/x"] {
+            assert!(!reachable_by_runs(d, &d.join(neither)), "{neither}");
         }
         for by_path in ["sysroots/s1", "runtime/sandboxes/s1", "system/base-0"] {
             assert!(!reachable_by_runs(d, &d.join(by_path)), "{by_path}");
