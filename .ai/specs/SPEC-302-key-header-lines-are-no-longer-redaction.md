@@ -47,9 +47,9 @@ encrypted PEM's `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour's `Vers
 
 - [x] Reproduce the defect and find its root cause
 - [x] Spec for base64-only key needles
-- [ ] Regression test with a synthetic encrypted PEM fails
-- [ ] key_lines keeps only base64 body lines
-- [ ] ADR, SPEC-186 and changes record the rule
+- [x] Regression test with a synthetic encrypted PEM fails
+- [x] key_lines keeps only base64 body lines
+- [x] ADR, SPEC-186 and changes record the rule
 - [ ] Independent review answered and gates green
 - [ ] Merged into dev on green CI
 
@@ -66,6 +66,9 @@ encrypted PEM's `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour's `Vers
 - Unit test in `dotenv.rs` (`header_lines_and_blank_lines_are_not_key_lines`): synthetic
   encrypted PEM, PGP block with headers and checksum, bundle with an openssl `subject=` line in
   between, a body line with trailing spaces. Fails before the fix (headers returned).
+- Integration test `secrets_env::an_encrypted_pem_redacts_its_body_not_its_headers`: an
+  encrypted PEM stored through the API; `redact_for_sandbox` keeps its `Proc-Type`/`DEK-Info`
+  lines and replaces its body. Fails before the fix.
 - Existing tests `a_key_and_certificate_bundle_is_written_as_its_file` and
   `a_key_stored_with_escaped_line_breaks_is_written_as_its_file` unchanged and green.
 - Full gate `scripts/dev ci`.

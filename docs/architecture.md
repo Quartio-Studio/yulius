@@ -1008,7 +1008,8 @@ final line break; literal `\n` as line breaks, since an agent secret never spans
 ([SPEC-178](../.ai/specs/SPEC-178-superagent-should-have-access-to-agent-s.md),
 [decision 0144](decisions/0144-the-superagent-reads-the-agent-vault-and-verifies-values-by-hash.md)).
 A key block stored that way is written to a `.env` as its file (`dotenv::key_block`), and its
-lines are redaction needles. The Secrets page's value field is one line, so it writes a pasted
+base64 lines are redaction needles, not its headers, blank lines or the text between a bundle's
+blocks ([decision 0215](decisions/0215-only-a-key-block-s-base64-lines-are-redaction-needles.md)). The Secrets page's value field is one line, so it writes a pasted
 key block's line breaks as literal `\n`; `check_agent_value` refuses a key flattened onto one line
 (`dotenv::flattened_key`), and the agent secrets list marks one stored before that `flattened`
 for the people who manage it
