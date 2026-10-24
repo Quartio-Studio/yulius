@@ -60,6 +60,9 @@ pub enum Point {
     /// The disk upkeep (SPEC-263) chose a cache to remove after its scan; it has not checked the
     /// path again nor removed it yet. The path is the cache's.
     CachePrune,
+    /// A CI job's log (SPEC-285): its folder is open and the old log removed; the new one is not
+    /// created yet. The path is the log's.
+    CiLogCreate,
 }
 
 #[cfg(feature = "test-support")]
