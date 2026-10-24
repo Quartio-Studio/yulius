@@ -71,6 +71,8 @@ pub fn default_workflow(id: &str) -> Option<&'static WorkflowRecord> {
 
 #[cfg(test)]
 mod tests {
+    use yulius_domain::cd::production_instruction;
+
     use super::*;
 
     /// Every shipped file parses (a malformed one fails here, not silently at runtime), the build
@@ -119,6 +121,25 @@ mod tests {
         for w in defaults() {
             let block = format!("\n\n## Workflow instructions\n\n{}\n", w.instructions);
             assert!(block.len() <= 1_444, "{} is {} bytes", w.id, block.len());
+        }
+        Ok(())
+    }
+
+    /// Only a person promotes and deploys production (ADR-0110, #556): no shipped workflow, in
+    /// its description, steps or instructions, tells an agent to promote or to deploy or verify
+    /// production.
+    #[test]
+    fn no_workflow_tells_agents_to_promote() -> Result<(), Box<dyn std::error::Error>> {
+        for (stem, text) in WORKFLOW_FILES {
+            if let Some(word) = production_instruction(text) {
+                return Err(format!("catalog/workflows/{stem}.md tells agents: {word}").into());
+            }
+        }
+        // Delivery still ends somewhere: dev deployed when asked, production a person's.
+        for id in ["wf-feature", "wf-fix"] {
+            let w = default_workflow(id).ok_or(id)?;
+            assert!(w.instructions.contains("`cd_deploy`"), "{id}");
+            assert!(w.instructions.contains("production is a person's"), "{id}");
         }
         Ok(())
     }
