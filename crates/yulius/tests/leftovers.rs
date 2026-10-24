@@ -646,6 +646,23 @@ async fn instance_leftovers_are_found_and_only_safe_ones_go_by_themselves() -> B
         w.at("import-worktrees/live/import-j9/file").exists(),
         "it may hold a person's uncommitted files: a person decides"
     );
+    // A person deletes it (ADR-0213): outside the sandbox directory, as the server's own files.
+    let checkout = w.at("import-worktrees/live/import-j9");
+    let item: Vec<Leftover> = items
+        .iter()
+        .filter(|i| i.path == checkout)
+        .cloned()
+        .collect();
+    assert_eq!(item.len(), 1, "{:?}", kinds(&items));
+    let deleted = w.h.app.delete_leftovers(&item, "root").await;
+    assert!(
+        deleted.failed.is_empty() && deleted.kept.is_empty(),
+        "{deleted:?}"
+    );
+    assert!(
+        !checkout.exists(),
+        "the person deleted the import's checkout"
+    );
     assert!(
         w.at("transcripts/t-live").exists() && live.join("worktrees/t-live").exists(),
         "a task's files stay"

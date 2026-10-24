@@ -165,3 +165,14 @@ snapshot import outside the sandbox directory, and imports keep working.
     there. The `removed-worktrees` item's `repo` was left as the other parts': its records are
     dropped with the repository.
   - pre-existing: a failed import keeps its new snapshot branch, as on `dev`.
+- Independent review round 3 (fresh session, dfc9f442), approve with minors, answered:
+  - own, minor: `docs/operations.md`'s leftovers table did not name `<data>/import-worktrees`:
+    added to the removed-sandbox row and the person-decides row.
+  - own, minor: a person's deletion of a live sandbox's import checkout was untested:
+    `leftovers::instance_leftovers_are_found_and_only_safe_ones_go_by_themselves` now deletes it
+    (green: the guard and `remove_below` already handled it).
+  - own, nit: `a_snapshot_import_failing_after_git_leaves_no_worktree` asserts the extraction's
+    error, so Git created the worktree first.
+  - own, nit, not changed: the orphan guard tells an interrupted import from a live one by the
+    hour without a change, the rule task worktrees already use; an import does not run an hour
+    without writing its folder.

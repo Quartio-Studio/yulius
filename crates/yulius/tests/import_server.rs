@@ -1345,6 +1345,11 @@ async fn a_snapshot_import_failing_after_git_leaves_no_worktree() -> TestResult 
     );
     let result = complete(&w, &alice, &job).await?;
     assert_ne!(result.status, StatusCode::OK, "{:?}", result.body);
+    assert!(
+        result.body.to_string().contains("gzip") || result.body.to_string().contains("unreadable"),
+        "the extraction ran, after Git: {:?}",
+        result.body
+    );
     assert_eq!(
         std::fs::read_dir(&checkouts)?
             .flatten()
