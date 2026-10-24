@@ -63,6 +63,9 @@ pub enum Point {
     /// A CI job's log (SPEC-285): its folder is open and the old log removed; the new one is not
     /// created yet. The path is the log's.
     CiLogCreate,
+    /// A snapshot import (SPEC-296): its worktree's path is reserved; Git has not created the
+    /// worktree there yet. The path is the reserved one.
+    SnapshotWorktree,
 }
 
 #[cfg(feature = "test-support")]

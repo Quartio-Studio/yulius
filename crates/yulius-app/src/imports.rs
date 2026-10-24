@@ -1157,6 +1157,7 @@ impl App {
         }
         let parent = worktrees.clone();
         blocking(move || fs::create_dir_all(&parent).map_err(AppError::internal)).await?;
+        crate::race::reached(crate::race::Point::SnapshotWorktree, &path);
         git.add_worktree(&repo, &path, &branch, &manifest.repo.head_sha)
             .await?;
         let archive = self.import_dir(&sandbox.id, &job.id).join(&file.name);
@@ -2099,6 +2100,28 @@ mod tests {
             extract_snapshot(&path, &root),
             Err(AppError::Invalid(_))
         ));
+        Ok(())
+    }
+
+    /// #824 (SPEC-296 AC-3): a root that is a link is refused, not followed.
+    #[test]
+    fn snapshot_extraction_refuses_a_linked_root() -> TestResult {
+        let work = tempfile::tempdir()?;
+        let outside = work.path().join("outside");
+        fs::create_dir_all(&outside)?;
+        let root = work.path().join("wt");
+        std::os::unix::fs::symlink(&outside, &root)?;
+        let path = work.path().join("snapshot.tar.gz");
+        fs::write(&path, archive(&[Entry::File("files/a.txt", b"a")], &[])?)?;
+        assert!(matches!(
+            extract_snapshot(&path, &root),
+            Err(AppError::Forbidden(_))
+        ));
+        assert_eq!(
+            fs::read_dir(&outside)?.count(),
+            0,
+            "nothing written through the link"
+        );
         Ok(())
     }
 

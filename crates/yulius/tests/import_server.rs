@@ -1154,6 +1154,95 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     Ok(())
 }
 
+/// #824 (SPEC-296 AC-1): a link to an empty folder outside the sandbox planted at the sandbox's
+/// `worktrees/import-<job>` exactly between the reservation of the snapshot's worktree and Git's
+/// create steers nothing: the outside folder stays empty, the link is left as it is and the
+/// snapshot branch is still committed.
+#[tokio::test]
+async fn a_link_planted_at_the_snapshot_worktree_is_never_followed() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", false).await?;
+    let remote = w.remote(
+        OWNER,
+        "shop",
+        &[
+            ("README.md", "# Shop\n"),
+            ("src/app.txt", "v1\n"),
+            ("old.txt", "remove me\n"),
+        ],
+        &[],
+    )?;
+    w.grant("alice", "shop", "admin");
+    let offer = laptop_offer(&w, &remote)?;
+    let created = create_job(&w, &alice, offer.body()?).await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    let job = text(&created.body["job_id"]).to_owned();
+    upload_missing(&w, &alice, &offer, &created.body).await?;
+    let sandbox = w.h.store.sandboxes().await?.pop().ok_or("sandbox")?;
+    let sandbox_dir = w.data_dir().join("sandboxes").join(sandbox.id.as_str());
+    let outside = w.data_dir().join("outside");
+    std::fs::create_dir_all(&outside)?;
+    // Git removes the worktree after the commit, through a followed link too: the folder's
+    // modification time keeps the trace of anything made in it.
+    let untouched = std::fs::metadata(&outside)?.modified()?;
+    let planted = sandbox_dir.join("worktrees").join(format!("import-{job}"));
+    let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (target, at, flag) = (
+        outside.clone(),
+        planted.clone(),
+        std::sync::Arc::clone(&fired),
+    );
+    yulius_app::race::on(
+        yulius_app::race::Point::SnapshotWorktree,
+        &w.data_dir(),
+        move || {
+            if let Some(parent) = at.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if std::os::unix::fs::symlink(&target, &at).is_ok() {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        },
+    );
+    let result = complete(&w, &alice, &job).await?;
+    assert!(
+        fired.load(std::sync::atomic::Ordering::SeqCst),
+        "the link was planted at the pause point"
+    );
+    assert!(
+        outside.is_dir(),
+        "the folder outside the sandbox is not removed through the link"
+    );
+    assert_eq!(
+        std::fs::metadata(&outside)?.modified()?,
+        untouched,
+        "nothing is made outside the sandbox"
+    );
+    assert_eq!(
+        std::fs::read_dir(&outside)?
+            .flatten()
+            .map(|e| e.file_name())
+            .collect::<Vec<_>>(),
+        Vec::<std::ffi::OsString>::new(),
+        "nothing is written outside the sandbox"
+    );
+    assert_eq!(result.status, StatusCode::OK, "{:?}", result.body);
+    assert!(
+        std::fs::symlink_metadata(&planted)?.is_symlink(),
+        "the planted link is left as it is"
+    );
+    let repo = sandbox_dir.join("repo");
+    assert_eq!(
+        git(
+            &repo,
+            &["show", "import/alice/snapshot-2026-10-07:src/app.txt"]
+        )?,
+        "v3-uncommitted\n",
+        "the snapshot branch is committed"
+    );
+    Ok(())
+}
+
 async fn continue_doc(w: &World, creds: &Creds, doc: &str) -> Result<TaskId, Error> {
     let resp = call(
         &w.h.router,
