@@ -56,9 +56,9 @@ instance administration, it closes with 4003.
 ## Plan
 
 - [x] Spec written and validated
-- [ ] Regression test fails on dev for session, token and admin loss
-- [ ] Login terminal re-checks sign-in and administration and closes with 4003
-- [ ] docs/api.md, SPEC-002 and changes.md describe the rule
+- [x] Regression test fails on dev for session, token and admin loss
+- [x] Login terminal re-checks sign-in and administration and closes with 4003
+- [x] docs/api.md, SPEC-002 and changes.md describe the rule
 - [ ] Independent review answered
 - [ ] Gates green and pull request delivered
 
