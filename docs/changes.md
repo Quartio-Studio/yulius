@@ -14,6 +14,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   every sandbox. Its name is taken with a create-new `mkdir` (`import-<job>`, then `-2`, …), a
   failed import removes it, disk upkeep lists what an interrupted one leaves, and
   `extract_snapshot` refuses a linked root (ADR-0213).
+- The CI stage-duration test (`local_ci::a_run_s_jobs_record_their_stages_and_test_counts`) no
+  longer fails under host load (SPEC-293, task #279, #538). Yulius times a stage from the log read
+  that saw its marker to the one that saw the next, and the test bounded those durations by wall
+  time while a fake clock ticked along: a starved clock task or a late read gave "480 ms" or a
+  zero-long stage. The job now holds each stage until the test, having seen the stage start
+  recorded, moves the clock by 1000 ms and releases it, so each stage lasts exactly 1000 ms. Test
+  only; Yulius's own timing is unchanged.
 - An achieved goal no longer leaves its task Working for good when Yulius did not settle the
   turn's Stop hook (SPEC-290, task #276, #877). The hook client fails open, so a Stop that Yulius
   answered with an error, or could not answer, still ended the turn in Claude Code, and the task
