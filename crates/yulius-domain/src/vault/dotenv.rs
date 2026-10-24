@@ -562,6 +562,28 @@ mod tests {
         assert_eq!(key_lines(&stored), vec![one.to_owned()]);
     }
 
+    /// SPEC-302 (review round 4): a key's text dump (`openssl genpkey -text`, then `cat` with its
+    /// certificate) holds private key material as colon-separated hex: those lines stay needles.
+    /// Only known public shapes (RFC 1421 headers, `subject=`, `issuer=`) are left out.
+    #[test]
+    fn a_key_dump_between_blocks_stays_a_needle() {
+        let body = "c3ludGhldGljLWR1bXAta2V5LWJvZHk=";
+        let cert = "c3ludGhldGljLWR1bXAtY2VydC1ib2R5";
+        let hex = "73:79:6e:74:68:65:74:69:63:2d:68:65:78:2d:30:31:";
+        let file = format!(
+            "{}Private-Key: (synthetic)\nprivateExponent:\n    {hex}\n    32:33\n    \
+             localKeyID: 01 02 03 04\nsubject=CN = synthetic.example\n{}",
+            key_file("SYNTHETIC KEY", &[body]),
+            key_file("CERTIFICATE", &[cert])
+        );
+        let stored = file.trim_end().replace('\n', "\\n");
+        assert_eq!(key_block(&stored).as_deref(), Some(file.as_str()));
+        assert_eq!(
+            key_lines(&stored),
+            vec![body, "privateExponent:", hex, "32:33", cert]
+        );
+    }
+
     /// SPEC-186 SAV-005: a key stored with literal `\n` (an agent secret never spans lines) is
     /// written as the key file it stands for, with its final line break, whether or not the
     /// stored value ends with a literal `\n`; `sh` and dotenv readers read single quotes
