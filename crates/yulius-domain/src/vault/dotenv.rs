@@ -127,68 +127,38 @@ fn wipe(value: String) {
     std::hint::black_box(&bytes);
 }
 
-/// Whether `text` holds only base64 or base64url symbols.
-fn base64_symbols(text: &str) -> bool {
-    text.chars()
-        .all(|c| c.is_ascii_alphanumeric() || "+/=-_".contains(c))
+/// A base64 (or base64url) symbol.
+fn base64_symbol(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "+/=-_".contains(c)
 }
 
-/// The length of a token that marks key material inside a line holding other text: a key body
-/// line is 64 (PEM) or 70 (OpenSSH) symbols, no word of a header is this long.
-const KEY_TOKEN_LEN: usize = 32;
+/// The longest run of base64 symbols a line of public key text holds: an IV in `DEK-Info` is at
+/// most 32 hex digits. Key material runs longer (a body line is 64 or 70 symbols).
+const PUBLIC_RUN_LEN: usize = 32;
 
-/// The runs of whitespace-separated base64 tokens in `line` that hold a token of at least
-/// [`KEY_TOKEN_LEN`] symbols, each cut from `line` as it stands (spaces between kept).
-fn key_runs(line: &str) -> Vec<&str> {
-    let mut runs = Vec::new();
-    // The current run's byte span and whether it holds a long token.
-    let mut run: Option<(usize, usize, bool)> = None;
-    let mut rest = line;
-    while let Some(skip) = rest.find(|c: char| !c.is_whitespace()) {
-        let start = line.len() - rest.len() + skip;
-        let token = line[start..]
-            .split(|c: char| c.is_whitespace())
-            .next()
-            .unwrap_or_default();
-        let end = start + token.len();
-        if base64_symbols(token) {
-            let long = token.len() >= KEY_TOKEN_LEN;
-            run = Some(run.map_or((start, end, long), |(from, _, held)| {
-                (from, end, held || long)
-            }));
-        } else if let Some((from, to, true)) = run.take() {
-            runs.push(&line[from..to]);
-        }
-        rest = &line[end..];
-    }
-    if let Some((from, to, true)) = run {
-        runs.push(&line[from..to]);
-    }
-    runs
-}
-
-/// The text of a key block's file that holds key material: a copied key file shows it one line
-/// per line, so redaction looks for each (SPEC-186 SAV-005). A line of base64 symbols (base64url
-/// too) and spaces counts whole, trimmed (a body whose breaks a paste turned into spaces); in a
-/// line with other text, each run of base64 tokens holding a key-length one counts (a body
-/// joined onto its headers). Armour, RFC 1421 headers (`Proc-Type: 4,ENCRYPTED`, `Version: …`),
-/// blank lines and the text between a bundle's blocks are public text, never a key's (SPEC-302,
-/// ADR-0215). Empty for a value that is not a key block.
+/// The lines of a key block's file that hold key material: a copied key file shows them one per
+/// line, so redaction looks for each (SPEC-186 SAV-005), trimmed. A line of base64 symbols
+/// (base64url too) and whitespace counts; so does a line with other text holding a run of more
+/// than [`PUBLIC_RUN_LEN`] base64 symbols (a body joined onto its headers). Armour, RFC 1421
+/// headers (`Proc-Type: 4,ENCRYPTED`, `Version: …`), blank lines and the text between a bundle's
+/// blocks are public text, never a key's (SPEC-302, ADR-0215). Empty for a value that is not a
+/// key block.
 #[must_use]
 pub fn key_lines(value: &str) -> Vec<String> {
     key_block(value).map_or_else(Vec::new, |file| {
-        let mut out = Vec::new();
-        for line in file.lines().map(str::trim) {
-            if line.is_empty() || armour(line, "BEGIN").is_some() || armour(line, "END").is_some() {
-                continue;
-            }
-            if line.split_whitespace().all(base64_symbols) {
-                out.push(line.to_owned());
-            } else {
-                out.extend(key_runs(line).into_iter().map(str::to_owned));
-            }
-        }
-        out
+        file.lines()
+            .map(str::trim)
+            .filter(|line| {
+                !line.is_empty() && armour(line, "BEGIN").is_none() && armour(line, "END").is_none()
+            })
+            .filter(|line| {
+                line.chars().all(|c| base64_symbol(c) || c.is_whitespace())
+                    || line
+                        .split(|c: char| !base64_symbol(c))
+                        .any(|run| run.len() > PUBLIC_RUN_LEN)
+            })
+            .map(str::to_owned)
+            .collect()
     })
 }
 
