@@ -1141,21 +1141,14 @@ impl App {
                     self.feed_stages(stages.as_deref_mut(), &fresh).await;
                     ticks += 1;
                     if let Some(bound) = bound.as_ref().filter(|_| stop.is_none()) {
-                        match measuring.take() {
-                            Some(done) if done.is_finished() => {
-                                if let Ok(sizes) = done.await
-                                    && sizes.iter().fold(0u64, |a, b| a.saturating_add(*b))
-                                        > bound.max
-                                {
-                                    let _ = writer.signal(RunSignal::Kill).await;
-                                    stop = Some(Ended::DiskLimit(bound.reason(&sizes)));
-                                }
-                            }
-                            Some(running) => measuring = Some(running),
-                            None if ticks.is_multiple_of(DISK_EVERY_TICKS) => {
-                                measuring = Some(bound.measure());
-                            }
-                            None => {}
+                        if let Some(done) = measuring.take_if(|m| m.is_finished())
+                            && let Ok(sizes) = done.await
+                            && sizes.iter().fold(0u64, |a, b| a.saturating_add(*b)) > bound.max
+                        {
+                            let _ = writer.signal(RunSignal::Kill).await;
+                            stop = Some(Ended::DiskLimit(bound.reason(&sizes)));
+                        } else if measuring.is_none() && ticks.is_multiple_of(DISK_EVERY_TICKS) {
+                            measuring = Some(bound.measure());
                         }
                     }
                     if ticks.is_multiple_of(FLUSH_EVERY_TICKS) {

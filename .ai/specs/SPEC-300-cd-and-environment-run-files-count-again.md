@@ -37,14 +37,18 @@ past its bound is stopped and recorded `error`, saying why.
 ## Requirements
 
 - RDB-001: while a CD run or an environment run executes, Yulius measures its files (the run's
-  files directory, and for a CD run its cache) every 5 s, off the watch loop, with the bounded
-  `yulius_sandbox::usage::measure` (no links followed, one filesystem, at most 4 M entries).
+  files directory, and for a CD run its cache) about every 5 s, off the watch loop, with the
+  application's bounded `crate::disk::dir_size` (allocated blocks, links not followed, at most
+  4 M entries; the application layer cannot use the sandbox adapter's `usage::measure`).
 - RDB-002: a run whose files use more than the bound (`--cd-run-disk-gb`, default 20 GB, one for
   every run of the instance) is killed with its process group and recorded `error` with the
-  reason "the run's files used X, past the Y disk bound for a run (largest: …); it was stopped".
-  An environment run records that reason in its output, as its other errors.
+  reason "the run's files used X (run files A, cache B), past the Y disk bound for a run; it was
+  stopped". An environment run records that reason in its output, as its other errors.
 - RDB-003: a CD run stopped over the bound has its cache emptied, so the next run starts under
-  it (a cache is rebuildable; out of agents' reach, nobody else could empty it).
+  it (a cache is rebuildable; out of agents' reach, nobody else could empty it): through handles
+  that never follow a link and make read-only folders writable, else as the sandbox's mapped root
+  for files a production run's containers wrote. The reason ends "; its cache was emptied", or
+  says it could not be emptied and why.
 - RDB-004: the bound is documented with the CD contract (SPEC-134 CDR-004) and in
   `docs/operations.md`.
 
@@ -68,7 +72,9 @@ past its bound is stopped and recorded `error`, saying why.
 - `crates/yulius/tests/cd.rs`: `a_run_writing_past_its_disk_bound_is_stopped` (bound 8 MB, the
   deploy writes 32 MB into `$YULIUS_CD_CACHE` then sleeps).
 - `crates/yulius/tests/delivery.rs`: `an_environment_run_writing_past_its_disk_bound_is_stopped`.
-- Unit test of the reason text (`disk_bound_reason`).
+- Unit test of the reason text (`a_disk_bound_reason_names_each_directory_and_the_bound`).
+- `yulius-sandbox` unit test: a CD cache is removed only by the walk as mapped root
+  (`only_trees_below_sandboxes_skip_the_by_path_removal`).
 
 ## Decisions
 
@@ -77,6 +83,8 @@ past its bound is stopped and recorded `error`, saying why.
   costly, and a run with containment off has no quota at all.
 - The cache counts toward the run's bound and is emptied when a run is stopped over it.
 - Measured every 10 ticks (5 s) in a blocking task polled from the watch loop: cancellation and
-  the log keep being served while a large tree is walked.
+  the log keep being served while a large tree is walked. The bound is soft: a run can write for
+  up to about 10 s plus a walk past it before it is stopped, and a run hiding files (a directory
+  it made unreadable, over 4 M entries) is undercounted, as the sandbox quota is.
 - A production run's files written by mapped ids are measured as the server can read them; an
   unreadable directory makes the measurement a lower bound (as for the sandbox quota).

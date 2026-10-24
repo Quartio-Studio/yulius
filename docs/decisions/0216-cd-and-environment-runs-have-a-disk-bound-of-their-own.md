@@ -28,7 +28,10 @@ task #286, issue #664. Completes the run bounds of SPEC-134 CDR-004 (time, outpu
 - A run past the bound is killed with its process group and recorded `error`: "the run's files
   used X (run files A, cache B), past the Y disk bound for a run; it was stopped".
 - A CD run stopped over the bound has its cache emptied ("; its cache was emptied"), since
-  nobody else can, and a cache past the bound would stop every next run of that environment.
+  nobody else can, and a cache past the bound would stop every next run of that environment. The
+  removal goes through handles (links never followed, read-only folders made writable), else as
+  the sandbox's mapped root for a production run's container files; a failure is said in the
+  reason.
 
 ## Alternatives
 
@@ -44,9 +47,10 @@ task #286, issue #664. Completes the run bounds of SPEC-134 CDR-004 (time, outpu
 
 ## Consequences
 
-- No CD or environment run can use more than about the bound plus 5 s of writing on the data
-  disk. A deploy that needs more (a large build cache) needs a higher `--cd-run-disk-gb`.
-- Measuring costs a walk of the run's files every 5 s; a tree of millions of entries is
-  undercounted past 4 M entries, as the sandbox quota is.
+- The bound is soft, like the sandbox quota: a run is stopped within about 10 s plus one walk of
+  its files after it passes the bound, not at the bound. A run can hide files from the walk (a
+  directory it makes unreadable, more than 4 M entries); the job timeout still ends it. A deploy
+  that needs more (a large build cache) needs a higher `--cd-run-disk-gb`.
+- Measuring costs a walk of the run's files every 5 s.
 - Files a production run's containers wrote under mapped ids count only as far as the server can
   read them.

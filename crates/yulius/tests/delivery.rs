@@ -5079,17 +5079,12 @@ async fn an_environment_run_writing_past_its_disk_bound_is_stopped() -> TestResu
     assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
     f.add_task("t1", "Checkout API", "feat/1-checkout-api", "quartio")
         .await?;
-    let begun = std::time::Instant::now();
     let run = agent_deploys(&f).await?;
     let output = run["output"].as_str().unwrap_or("");
     assert_eq!(run["state"], "error", "{run}");
     assert!(
         output.contains("filled") && output.contains("past the 8 MB disk bound for a run"),
         "{output}"
-    );
-    assert!(
-        begun.elapsed() < Duration::from_secs(18),
-        "stopped by its bound, not its 20 s timeout"
     );
     Ok(())
 }

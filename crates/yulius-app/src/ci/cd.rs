@@ -287,21 +287,30 @@ impl App {
     /// production engine wrote as a mapped id go as mapped root, links not followed (SPEC-279
     /// PDE-004).
     pub(super) async fn remove_run_dirs(&self, run_dir: &Path, files: &Path) {
-        let _ = std::fs::remove_dir_all(run_dir);
-        if files != run_dir {
-            self.remove_run_tree(files).await;
+        for dir in [run_dir, files] {
+            if let Err(error) = self.remove_run_tree(dir).await {
+                tracing::warn!(path = %dir.display(), %error, "cannot remove a run's files");
+            }
+            if files == run_dir {
+                break;
+            }
         }
     }
 
-    /// Removes `path`, a run's files or cache, as [`App::remove_run_dirs`] removes its files.
-    async fn remove_run_tree(&self, path: &Path) {
+    /// Removes `path`, a run's directory, files or cache below the data directory: through
+    /// handles, links never followed, folders a tool made read-only made writable (a Go module
+    /// cache); else by path (development hosts without `/proc`); else, for files a production
+    /// run's containers wrote as mapped ids, as the sandbox's mapped root (SPEC-279, SPEC-300).
+    async fn remove_run_tree(&self, path: &Path) -> Result<(), String> {
+        let Err(error) = crate::leftovers::remove_below(&self.config.data_dir, path) else {
+            return Ok(());
+        };
         if std::fs::symlink_metadata(path).is_err() || std::fs::remove_dir_all(path).is_ok() {
-            return;
+            return Ok(());
         }
-        if let Some(isolation) = self.isolation.get()
-            && let Err(error) = isolation.remove_owned_tree(path).await
-        {
-            tracing::warn!(path = %path.display(), %error, "cannot remove a production run's files");
+        match self.isolation.get() {
+            Some(isolation) => isolation.remove_owned_tree(path).await,
+            None => Err(error.to_string()),
         }
     }
 
@@ -1170,11 +1179,18 @@ impl App {
         // A cache past the bound would stop every next run, and nobody else can empty it
         // (SPEC-300 RDB-003).
         let ended = match ended {
-            Ok(Ended::DiskLimit(reason)) => {
-                self.remove_run_tree(&self.cd_cache_dir(&sandbox.id, &run))
-                    .await;
-                Err(format!("{reason}; its cache was emptied"))
-            }
+            Ok(Ended::DiskLimit(reason)) => Err(
+                match self
+                    .remove_run_tree(&self.cd_cache_dir(&sandbox.id, &run))
+                    .await
+                {
+                    Ok(()) => format!("{reason}; its cache was emptied"),
+                    Err(error) => format!(
+                        "{reason}; its cache could not be emptied ({error}), so the next run may \
+                         stop too until an administrator removes it"
+                    ),
+                },
+            ),
             ended => ended,
         };
         let (state, exit_code, reason) = match ended {

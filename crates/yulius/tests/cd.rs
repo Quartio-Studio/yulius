@@ -493,13 +493,16 @@ async fn a_failing_deploy_skips_verify_and_one_run_at_a_time() -> TestResult {
 }
 
 /// SPEC-300 RDB-002/003 (#664): a run whose files grow past the bound for a run (here into its
-/// cache, outside every sandbox quota) is stopped long before its timeout, recorded `error` saying
-/// why, and its cache is emptied, so the next run starts under the bound and passes.
+/// cache, outside every sandbox quota, in folders a tool made read-only as Go's module cache
+/// does) is stopped before its timeout, recorded `error` saying why, and its cache is emptied, so
+/// the next run, which outlives a measurement, starts under the bound and passes.
 #[tokio::test]
 async fn a_run_writing_past_its_disk_bound_is_stopped() -> TestResult {
     let cd = "[cd.dev]\n\
-              deploy = \"if [ -f big ]; then head -c 32000000 /dev/zero > $YULIUS_CD_CACHE/fill; \
-              echo filled; sleep 30; fi; echo small\"\n";
+              deploy = \"if [ -f big ]; then mkdir -p $YULIUS_CD_CACHE/mod/lib; \
+              head -c 32000000 /dev/zero > $YULIUS_CD_CACHE/mod/lib/fill; \
+              chmod 555 $YULIUS_CD_CACHE/mod/lib $YULIUS_CD_CACHE/mod; \
+              echo filled; sleep 30; else sleep 7; fi; echo small\"\n";
     let f = fixture_configured(
         cd,
         None,
@@ -509,7 +512,6 @@ async fn a_run_writing_past_its_disk_bound_is_stopped() -> TestResult {
     f.push("dev", &[("big", Some("x"))])?;
     let started = f.deploy(&f.alice, "dev", None).await?;
     assert_eq!(started.status, StatusCode::OK, "{}", started.body);
-    let begun = tokio::time::Instant::now();
     let run = f
         .ended(started.body["run_id"].as_str().ok_or("id")?)
         .await?;
@@ -517,20 +519,19 @@ async fn a_run_writing_past_its_disk_bound_is_stopped() -> TestResult {
     let reason = run["reason"].as_str().unwrap_or_default();
     assert_eq!(run["state"], "error", "{run}");
     assert!(
-        reason.contains("past the 8 MB disk bound for a run") && reason.contains("cache"),
+        reason.contains("past the 8 MB disk bound for a run")
+            && reason.contains("cache 32 MB")
+            && reason.ends_with("; its cache was emptied"),
         "{reason}"
     );
     assert!(
         output.contains("filled") && output.contains(reason),
         "{output}"
     );
+    let caches = f.h.app.config.data_dir.join("cd/s1/cache");
+    assert!(caches.is_dir(), "the caches are at {}", caches.display());
     assert!(
-        begun.elapsed() < Duration::from_secs(18),
-        "stopped by its bound, not its 20 s timeout"
-    );
-    let cache = f.h.app.config.data_dir.join("cd/s1/cache/dev");
-    assert!(
-        std::fs::read_dir(&cache).map_or(0, Iterator::count) == 0,
+        !caches.join("dev").exists(),
         "the cache of a run stopped over its bound is emptied"
     );
 
