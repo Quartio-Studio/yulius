@@ -956,8 +956,10 @@ type LiveWindow = Window & {
   __yuliusMock: {
     repoFile(sandbox: string, path: string, text: string): void;
     removeRepoFile(sandbox: string, path: string): void;
+    repoFileTooLarge(sandbox: string, path: string): void;
     fileReads?: { path: string; known: string | null; whileSaving: boolean }[];
     holdSave: Promise<void> | null;
+    holdRead?: Promise<void> | null;
   };
 };
 const ON_DISK = 'alpha\nbeta\ngamma\n';
@@ -1049,6 +1051,33 @@ test('reloading a file back at the tab\'s version after a save conflict shows th
   await browser.evaluate(() => { const ed = (window as unknown as LiveWindow).monaco.editor.getEditors()[0]; ed.focus(); ed.trigger('keyboard', 'undo', null); });
   expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
   await expect.poll(() => editorStatus(browser)).toContain('Modified');
+});
+
+test('reloading a file grown too large after a save conflict keeps the text modified and says so', async ({ app, browser, screen }) => {
+  const dialog = await conflictDialog(app, browser, screen);
+  await browser.evaluate(() => (window as unknown as LiveWindow).__yuliusMock.repoFileTooLarge('sb_studio', 'notes.txt'));
+  await dialog.getByRole('button', 'Reload from disk').click();
+  await expect(browser.locator('.toast-msg:has-text("notes.txt is too large for the editor")')).toBeVisible();
+  expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
+  await expect.poll(() => editorStatus(browser)).toContain('Modified');
+});
+
+// Review of SPEC-298: a look started while the reload was on its way (the page back in front) made
+// the reload moot, so the person's text stayed without the disk's and without a word.
+test('a look started while "Reload from disk" is on its way reloads in its place', async ({ app, browser, screen }) => {
+  const dialog = await conflictDialog(app, browser, screen);
+  const reads = () => browser.evaluate(() => ((window as unknown as LiveWindow).__yuliusMock.fileReads ?? []).filter((read) => read.path === 'notes.txt'));
+  await browser.evaluate(() => { const w = window as unknown as LiveWindow & { __releaseRead(): void }; w.__yuliusMock.holdRead = new Promise((resolve) => { w.__releaseRead = resolve; }); });
+  const before = (await reads()).length;
+  await dialog.getByRole('button', 'Reload from disk').click();
+  await expect.poll(async () => (await reads()).length).toBe(before + 1);
+  await browser.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect.poll(async () => (await reads()).length).toBe(before + 2);
+  // The newer look asks for the whole file, as the reload did.
+  expect((await reads()).slice(before).map((read) => read.known)).toEqual([null, null]);
+  await browser.evaluate(() => { const w = window as unknown as LiveWindow & { __releaseRead(): void }; w.__yuliusMock.holdRead = null; w.__releaseRead(); });
+  await expect.poll(() => editorText(browser)).toBe('theirs\n');
+  await expect.poll(() => editorStatus(browser)).toContain('Saved');
 });
 
 test('the Editor looks at the disk only while it is shown', async ({ app, browser, screen }) => {
