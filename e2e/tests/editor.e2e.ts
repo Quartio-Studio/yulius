@@ -959,7 +959,7 @@ type LiveWindow = Window & {
     repoFileTooLarge(sandbox: string, path: string): void;
     fileReads?: { path: string; known: string | null; whileSaving: boolean }[];
     holdSave: Promise<void> | null;
-    holdRead?: Promise<void> | null;
+    holdReads?: (() => void)[] | null;
   };
 };
 const ON_DISK = 'alpha\nbeta\ngamma\n';
@@ -1067,7 +1067,7 @@ test('reloading a file grown too large after a save conflict keeps the text modi
 test('a look started while "Reload from disk" is on its way reloads in its place', async ({ app, browser, screen }) => {
   const dialog = await conflictDialog(app, browser, screen);
   const reads = () => browser.evaluate(() => ((window as unknown as LiveWindow).__yuliusMock.fileReads ?? []).filter((read) => read.path === 'notes.txt'));
-  await browser.evaluate(() => { const w = window as unknown as LiveWindow & { __releaseRead(): void }; w.__yuliusMock.holdRead = new Promise((resolve) => { w.__releaseRead = resolve; }); });
+  await browser.evaluate(() => { (window as unknown as LiveWindow).__yuliusMock.holdReads = []; });
   const before = (await reads()).length;
   await dialog.getByRole('button', 'Reload from disk').click();
   await expect.poll(async () => (await reads()).length).toBe(before + 1);
@@ -1075,9 +1075,15 @@ test('a look started while "Reload from disk" is on its way reloads in its place
   await expect.poll(async () => (await reads()).length).toBe(before + 2);
   // The newer look asks for the whole file, as the reload did.
   expect((await reads()).slice(before).map((read) => read.known)).toEqual([null, null]);
-  await browser.evaluate(() => { const w = window as unknown as LiveWindow & { __releaseRead(): void }; w.__yuliusMock.holdRead = null; w.__releaseRead(); });
+  // The reload's answer comes first, moot: the save ends and draws the tab strip, still modified.
+  await browser.evaluate(() => { (document.querySelector('[role="tab"][data-path="notes.txt"]') as HTMLElement).dataset.before = 'reload'; });
+  await browser.evaluate(() => (window as unknown as LiveWindow).__yuliusMock.holdReads?.[0]());
+  await expect.poll(() => browser.evaluate(() => (document.querySelector('[role="tab"][data-path="notes.txt"]') as HTMLElement | null)?.dataset.before ?? 'redrawn')).toBe('redrawn');
+  // Then the newer look's: the disk's text, and the status bar and the tab say it is saved.
+  await browser.evaluate(() => { const held = (window as unknown as LiveWindow).__yuliusMock; const release = held.holdReads?.[1]; held.holdReads = null; release?.(); });
   await expect.poll(() => editorText(browser)).toBe('theirs\n');
   await expect.poll(() => editorStatus(browser)).toContain('Saved');
+  await expect(screen.getByRole('tab', /^notes\.txt$/)).toBeVisible();
 });
 
 test('the Editor looks at the disk only while it is shown', async ({ app, browser, screen }) => {

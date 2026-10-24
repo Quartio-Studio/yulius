@@ -4147,8 +4147,9 @@ async function handleFetch(db, url, init = {}) {
   if (fileContent && (init.method || 'GET') === 'GET') {
     const asked = new URL(url, ORIGIN).searchParams;
     (db.fileReads = db.fileReads || []).push({ path: asked.get('path'), known: asked.get('known'), whileSaving: (db.savesOnTheirWay || 0) > 0 });
-    // `holdRead = promise`: the read waits there, as on a slow connection (#571).
-    if (db.holdRead) await db.holdRead;
+    // `holdReads = []`: each read waits there, as on a slow connection, until the test calls its
+    // resolver (in the order asked), so the test says which answer comes first (#571).
+    if (db.holdReads) await new Promise((resolve) => db.holdReads.push(resolve));
   }
   if (fileContent && init.method === 'PUT') {
     db.savesOnTheirWay = (db.savesOnTheirWay || 0) + 1;
