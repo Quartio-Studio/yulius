@@ -139,10 +139,10 @@ const PUBLIC_RUN_LEN: usize = 32;
 /// The lines of a key block's file that hold key material: a copied key file shows them one per
 /// line, so redaction looks for each (SPEC-186 SAV-005), trimmed. A line of base64 symbols
 /// (base64url too) and whitespace counts; so does a line with other text holding a run of more
-/// than 32 base64 symbols (a body joined onto its headers). Armour, RFC 1421
-/// headers (`Proc-Type: 4,ENCRYPTED`, `Version: …`), blank lines and the text between a bundle's
-/// blocks are public text, never a key's (SPEC-302, ADR-0215). Empty for a value that is not a
-/// key block.
+/// than 32 base64 symbols (a body joined onto its headers). Armour, RFC 1421 headers
+/// (`Proc-Type: 4,ENCRYPTED`, `Version: …`), blank lines and the text between a bundle's blocks
+/// are public text, never a key's (SPEC-302, ADR-0215). Empty for a value that is not a key
+/// block.
 #[must_use]
 pub fn key_lines(value: &str) -> Vec<String> {
     key_block(value).map_or_else(Vec::new, |file| {
