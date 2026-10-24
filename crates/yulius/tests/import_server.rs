@@ -1253,6 +1253,55 @@ async fn a_link_planted_at_the_snapshot_worktree_is_never_followed() -> TestResu
     Ok(())
 }
 
+/// #824 (SPEC-296 AC-4, review finding 1): an import that fails after its worktree was reserved
+/// (here Git refuses the folder, which is no longer empty) leaves nothing in the server's folder.
+#[tokio::test]
+async fn a_failed_snapshot_import_leaves_no_checkout_behind() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", false).await?;
+    let remote = w.remote(
+        OWNER,
+        "shop",
+        &[
+            ("README.md", "# Shop\n"),
+            ("src/app.txt", "v1\n"),
+            ("old.txt", "remove me\n"),
+        ],
+        &[],
+    )?;
+    w.grant("alice", "shop", "admin");
+    let offer = laptop_offer(&w, &remote)?;
+    let created = create_job(&w, &alice, offer.body()?).await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    let job = text(&created.body["job_id"]).to_owned();
+    upload_missing(&w, &alice, &offer, &created.body).await?;
+    let sandbox = w.h.store.sandboxes().await?.pop().ok_or("sandbox")?;
+    let checkouts = w
+        .data_dir()
+        .join("import-worktrees")
+        .join(sandbox.id.as_str());
+    let reserved = checkouts.join(format!("import-{job}"));
+    let at = reserved.clone();
+    yulius_app::race::on(
+        yulius_app::race::Point::SnapshotWorktree,
+        &w.data_dir(),
+        move || {
+            let _ = std::fs::write(at.join("in-the-way.txt"), "x");
+        },
+    );
+    let result = complete(&w, &alice, &job).await?;
+    assert_ne!(result.status, StatusCode::OK, "{:?}", result.body);
+    assert_eq!(
+        std::fs::read_dir(&checkouts)?
+            .flatten()
+            .map(|e| e.file_name())
+            .collect::<Vec<_>>(),
+        Vec::<std::ffi::OsString>::new(),
+        "the failed import's checkout is removed"
+    );
+    Ok(())
+}
+
 async fn continue_doc(w: &World, creds: &Creds, doc: &str) -> Result<TaskId, Error> {
     let resp = call(
         &w.h.router,

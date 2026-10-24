@@ -230,6 +230,9 @@ async fn a_removed_sandbox_loses_its_disposable_parts_and_keeps_what_prj_009_kee
     let w = world().await?;
     let old = w.sandbox("old").await?;
     let live = w.sandbox("live").await?;
+    // A snapshot import's checkout a failed import left (ADR-0213).
+    write(&w.at("import-worktrees/old/import-j1/src/a.txt"), "x")?;
+    write(&w.at("import-worktrees/live/import-j2/src/a.txt"), "x")?;
     w.remove("old").await?;
 
     let early = w.h.app.run_leftovers_round().await.ok_or("round")?;
@@ -245,7 +248,12 @@ async fn a_removed_sandbox_loses_its_disposable_parts_and_keeps_what_prj_009_kee
             "{gone} of the removed sandbox is gone"
         );
     }
-    for gone in ["sysroots/old", "runtime/sandboxes/old", "cd/old"] {
+    for gone in [
+        "sysroots/old",
+        "runtime/sandboxes/old",
+        "cd/old",
+        "import-worktrees/old",
+    ] {
         assert!(!w.at(gone).exists(), "{gone} is gone");
     }
     let mapped = w.holders.mapped();
@@ -280,6 +288,7 @@ async fn a_removed_sandbox_loses_its_disposable_parts_and_keeps_what_prj_009_kee
         assert!(live.join(kept).exists(), "a live sandbox keeps {kept}");
     }
     assert!(w.at("sysroots/live").exists() && w.at("cd/live").exists());
+    assert!(w.at("import-worktrees/live/import-j2").exists());
     let audited = w.audit("old", "leftovers.delete").await?;
     assert_eq!(audited.len(), report.deleted, "{audited:?}");
     assert!(
@@ -572,6 +581,7 @@ async fn instance_leftovers_are_found_and_only_safe_ones_go_by_themselves() -> B
     write(&w.at("runs/a-ended/launch.json"), "{}")?;
     write(&w.at("transcripts/t-gone/main.jsonl"), "{}")?;
     write(&w.at("sandboxes/stray/file"), "x")?;
+    write(&w.at("import-worktrees/stray/import-j1/file"), "x")?;
     write(&live.join("worktrees/wt-206/work.txt"), "maybe work")?;
     write(&live.join("attachments/drafts/u-alice/old.png"), "png")?;
     // Real files are dated now; the clock moves two days past them.
@@ -592,6 +602,7 @@ async fn instance_leftovers_are_found_and_only_safe_ones_go_by_themselves() -> B
         (Kind::EndedRun, "runs/a-ended".to_owned()),
         (Kind::OrphanTranscripts, "transcripts/t-gone".to_owned()),
         (Kind::Unowned, "sandboxes/stray".to_owned()),
+        (Kind::Unowned, "import-worktrees/stray".to_owned()),
         (
             Kind::OrphanWorktree,
             "sandboxes/live/worktrees/wt-206".to_owned(),
