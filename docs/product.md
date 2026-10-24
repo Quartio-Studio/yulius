@@ -271,8 +271,9 @@ watching, steering and unblocking.
   (set up once, mandatory); an administrator resets it for someone who lost their authenticator.
   The people who manage an agent secret can read it too. A shown value stays masked until its eye
   button is pressed; it copies without being shown, from a copy icon always in its box, as the
-  notes do (SPEC-207). An agent secret is added with a name, a value
-  and a description: agents find the service's host and bind it themselves, and production deploys
+  notes do (SPEC-207). A multi-line value (a key, recovery codes) pasted into a team secret keeps
+  its line breaks as pasted, masked, and shows and copies on its lines (SPEC-299). An agent
+  secret is added with a name, a value and a description: agents find the service's host and bind it themselves, and production deploys
   get the secret, unless the person turns "Let agents set it up" off when adding it; then a person
   allows each host with one click and production separately (SPEC-121, SPEC-216). Team secrets
   belong to the sandbox they were added in, or are team-wide when the person picks that; team

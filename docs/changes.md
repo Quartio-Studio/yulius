@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-24
 
+- A multi-line value pasted into a team secret's Value keeps its line breaks (SPEC-299, task
+  #285, #592). The field is a one-line password input, which drops them, so a PEM key or recovery
+  codes were stored on one line and copied back flattened. A paste holding line breaks now carries
+  each LF and CR in the field as a private-use character that the form turns back on save: the
+  value is stored exactly as pasted (CRLF too) and the field stays masked. A shown value keeps its
+  lines, and Copy returns the original text (ADR-0214). Agent secrets keep their literal `\n`.
 - An import's snapshot is checked out in a folder of the server, not in the sandbox's
   `worktrees/` (SPEC-296, task #282, #824). The import picked `worktrees/import-<job>` with an
   existence check before Git created it. A link to an empty folder planted there in between made
