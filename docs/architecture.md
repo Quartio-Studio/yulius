@@ -1537,7 +1537,9 @@ grant, confirmed when it opens the terminal. The store's access epoch grows with
 can change who may type. While the epoch is unchanged, input is written at once. When it moves,
 the next input is checked first. A grant older than 30 s is re-confirmed in the background. The
 viewer's socket loop never awaits a permission check: the 60 s re-check runs in a spawned task, and
-the loop picks up its verdict.
+the loop picks up its verdict. The provider sign-in terminal (`routes/accounts.rs`) runs the same
+spawned re-check of the sign-in and the administrator role, and closes with 4003 when either has
+ended ([SPEC-295](../.ai/specs/SPEC-295-login-terminal-socket-closes-when-its-se.md), #759).
 
 ```mermaid
 sequenceDiagram

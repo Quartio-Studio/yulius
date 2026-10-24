@@ -14,6 +14,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   every sandbox. Its name is taken with a create-new `mkdir` (`import-<job>`, then `-2`, …), a
   failed import removes it, disk upkeep lists what an interrupted one leaves, and
   `extract_snapshot` refuses a linked root (ADR-0213).
+- An open provider sign-in terminal now closes when the sign-in that opened it ends (SPEC-295,
+  task #281, #759). It checked administrator access once, at connect, so signing out, a revoked API
+  token, an expired session, a disabled user or a removed instance administration left it streaming
+  and accepting input until the sign-in ended (up to 15 minutes). Like the task terminals and
+  shells, it now re-checks every `viewer_recheck_ms` (60 s) beside the stream and closes with 4003.
 - The CI stage-duration test (`local_ci::a_run_s_jobs_record_their_stages_and_test_counts`) no
   longer fails under host load (SPEC-293, task #279, #538). Yulius times a stage from the log read
   that saw its marker to the one that saw the next, and the test bounded those durations by wall

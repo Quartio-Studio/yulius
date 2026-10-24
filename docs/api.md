@@ -1318,7 +1318,10 @@ Once the output holds a complete token, the CLI gets 5 seconds to exit by itself
 so the login ends `ok` (SPEC-243). The web UI closes the login dialog on `ok`, and cancels a
 login that is still running when its dialog is closed. A terminal for an unknown or expired login
 is refused in band: an `error` frame `not_found`, then close code 4003, which the browser does not
-retry (non-administrators and other origins are still refused at the handshake).
+retry (non-administrators and other origins are still refused at the handshake). An open login
+terminal is re-checked every `viewer_recheck_ms` (60 s) beside the stream: a signed-out, expired or
+revoked session, a revoked API token, a disabled user or a person no longer an instance
+administrator closes it with 4003 (SPEC-295, #759).
 
 **Analytics.** `sandbox` is optional (default: every sandbox the caller can see; an invisible
 one is `not_found`); `from`/`to` are inclusive UTC days `YYYY-MM-DD` that select tasks by

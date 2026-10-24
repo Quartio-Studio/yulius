@@ -1,12 +1,16 @@
 //! Provider account administration and the login terminal WebSocket (instance admins).
 
+use std::time::Duration;
+
 use axum::Json;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::task::JoinHandle;
 use yulius_app::accounts::LoginTerminal;
+use yulius_app::auth::AuthContext;
 use yulius_app::error::AppError;
 use yulius_app::hub::HubFrame;
 use yulius_contracts::api::admin::{
@@ -88,7 +92,7 @@ pub async fn login_terminal(
 ) -> ApiResult<Response> {
     check_origin(&app, &headers)?;
     match app.login_terminal(&ctx, &login_id) {
-        Ok(terminal) => Ok(ws.on_upgrade(move |socket| pump(terminal, socket))),
+        Ok(terminal) => Ok(ws.on_upgrade(move |socket| pump(app, ctx, terminal, socket))),
         // An ended or expired sign-in is said in band with a close the browser does not retry;
         // a handshake 404 reads to it as a dropped connection (SPEC-243 LGN-007).
         Err(AppError::NotFound) => Ok(ws.on_upgrade(|mut socket| async move {
@@ -111,7 +115,8 @@ pub async fn login_terminal(
     }
 }
 
-/// Close code after which the browser does not reconnect (`CLOSE_REVOKED` in termsocket.js).
+/// Close code after which the browser does not reconnect (`CLOSE_REVOKED` in termsocket.js): an
+/// ended sign-in, or a viewer whose own sign-in or administration ended.
 const CLOSE_GONE: u16 = 4003;
 
 async fn send_json(socket: &mut WebSocket, msg: &TerminalServerMsg) -> Result<(), ()> {
@@ -129,22 +134,37 @@ async fn send_binary(socket: &mut WebSocket, kind: u8, seq: u64, bytes: &[u8]) -
         .map_err(|_| ())
 }
 
-async fn pump(terminal: LoginTerminal, mut socket: WebSocket) {
+async fn pump(app: AppState, ctx: AuthContext, terminal: LoginTerminal, mut socket: WebSocket) {
     let mut sub = terminal.subscribe();
-    let _ = serve(&terminal, &mut sub, &mut socket).await;
+    let mut pending: Option<JoinHandle<Option<&'static str>>> = None;
+    let _ = serve(&app, &ctx, &terminal, &mut sub, &mut socket, &mut pending).await;
+    if let Some(handle) = pending {
+        handle.abort();
+    }
     terminal.unsubscribe();
 }
 
 async fn serve(
+    app: &AppState,
+    ctx: &AuthContext,
     terminal: &LoginTerminal,
     sub: &mut yulius_app::hub::Subscription,
     socket: &mut WebSocket,
+    pending: &mut Option<JoinHandle<Option<&'static str>>>,
 ) -> Result<(), ()> {
     send_json(socket, &terminal.state()).await?;
     send_binary(socket, KIND_SNAPSHOT, sub.seq, &sub.snapshot).await?;
     if let Some(exit) = terminal.exit() {
         send_json(socket, &exit).await?;
     }
+    // Like the task terminals and shells, the sign-in and the administrator role are re-checked
+    // beside the loop: a revoked session or token, a disabled user or a removed administration
+    // ends the terminal (SPEC-295, #759).
+    let mut recheck =
+        tokio::time::interval(Duration::from_millis(app.config.viewer_recheck_ms.max(100)));
+    // A re-check that took longer than the interval delays the next one; no burst follows it.
+    recheck.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    recheck.tick().await;
     loop {
         tokio::select! {
             incoming = socket.recv() => match incoming {
@@ -195,7 +215,29 @@ async fn serve(
                 }
                 Err(RecvError::Closed) => return Ok(()),
             },
+            _ = recheck.tick(), if pending.is_none() => {
+                *pending = Some(tokio::spawn(app.login_terminal_recheck(ctx)));
+            }
+            found = verdict(pending), if pending.is_some() => {
+                *pending = None;
+                if let Some(reason) = found {
+                    let _ = socket.send(Message::Close(Some(CloseFrame {
+                        code: CLOSE_GONE,
+                        reason: reason.into(),
+                    }))).await;
+                    return Ok(());
+                }
+            }
         }
+    }
+}
+
+/// The pending re-check's verdict (`Some(reason)` to close); never ready without one.
+async fn verdict(pending: &mut Option<JoinHandle<Option<&'static str>>>) -> Option<&'static str> {
+    match pending.as_mut() {
+        // A re-check that failed proves nothing: the terminal is closed, as without access.
+        Some(handle) => handle.await.unwrap_or(Some("access re-check failed")),
+        None => std::future::pending().await,
     }
 }
 
