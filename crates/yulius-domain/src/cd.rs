@@ -12,6 +12,7 @@
 //!
 //! [`authorize`] is the one rule of who may deploy: a dev-stage environment is a person's or an
 //! agent's, a production-stage one only an administrator's who typed the project's slug.
+//! [`production_instruction`] keeps the instructions Yulius ships to agents in line with it.
 
 use std::fmt;
 
@@ -407,6 +408,38 @@ pub fn authorize(
     }
 }
 
+/// The first word of `text` that tells an agent to promote, deploy or verify production, if any
+/// (ADR-0110, #556): instructions Yulius ships to agents are checked with it. The verb "promote"
+/// in any form is one; the noun "promotion" is not, so a text can say whose job promotion is. A
+/// "deploy..." or "verif..." followed by "production" or "prod" in the same clause is one too, and
+/// so is a "verif..." right after one ("production verification"). `.`, `,`, `;`, `:` and
+/// parentheses end a clause, so "deploy dev only if asked (`cd_deploy`); production is a
+/// person's" is not, nor is "production defined with deploy and verify scripts". A negation is not
+/// read: "never promote" and "never deploy production" are found too, so a shipped text says whose
+/// job it is ("production is a person's") instead.
+#[must_use]
+pub fn production_instruction(text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+    for clause in lower.split(['.', ',', ';', ':', '(', ')']) {
+        let words: Vec<&str> = clause
+            .split(|c: char| !c.is_alphabetic())
+            .filter(|w| !w.is_empty())
+            .collect();
+        let production = |w: &&str| *w == "production" || *w == "prod";
+        for (i, word) in words.iter().enumerate() {
+            let later = words[i + 1..].iter().any(production);
+            let just_before = words[i.saturating_sub(2)..i].iter().any(production);
+            let told = (word.starts_with("promot") && !word.starts_with("promotion"))
+                || ((word.starts_with("deploy") || word.starts_with("verif")) && later)
+                || (word.starts_with("verif") && just_before);
+            if told {
+                return Some((*word).to_owned());
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,5 +697,39 @@ mod tests {
         assert_eq!(env_label("platform"), "platform");
         assert!(valid_secret_name("DEV_SSH_KEY"));
         assert!(!valid_secret_name("dev_key") && !valid_secret_name("1KEY"));
+    }
+
+    #[test]
+    fn production_instructions_are_found_and_the_rule_stays_sayable() {
+        for told in [
+            "deliver: merge on green, deploy and verify, promote, verify production, clean up",
+            "Promote `dev` to `main` once green.",
+            "The agent promotes the release.",
+            "then verified production",
+            "Verify the production deploy.",
+            "run the production\n  verification",
+            "deploy to production",
+            "Deploys the prod environment",
+            "Deploy `main` to production.",
+            "deploy the app to prod",
+            "then verify it in production",
+        ] {
+            assert!(production_instruction(told).is_some(), "{told}");
+        }
+        for fine in [
+            "Production, with its promotion to `main`, is always a person's decision and action.",
+            "merge on green, clean up (`git-hygiene`), deploy dev only if asked (`cd_deploy`); \
+             production is a person's.",
+            "A merge deploys nothing; production is a person's.",
+            "Production-grade defaults: explicit error handling.",
+            "Deploy and verify `dev` only when the task asks. Promotions are a person's.",
+            "4. CD dev and production defined with deploy and verify scripts",
+        ] {
+            assert_eq!(production_instruction(fine), None, "{fine}");
+        }
+        assert_eq!(
+            production_instruction("then promote it").as_deref(),
+            Some("promote")
+        );
     }
 }

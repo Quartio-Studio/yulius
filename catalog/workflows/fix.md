@@ -32,5 +32,5 @@ Follow `delivery-pipeline`; a fix is small, so keep it to one concern.
   answers each. Own code is fixed test-first whatever the round limit, never as a follow-up issue
   (that is request changes); only pre-existing bugs, flaky tests the change did not cause and nits
   left at the round limit become issues, saying why they are outside the change. Then
-  `om-check-and-commit` and deliver: merge on green, deploy and verify, promote, verify production,
-  clean up (`git-hygiene`).
+  `om-check-and-commit` and deliver: merge on green, clean up (`git-hygiene`), deploy dev only if
+  asked (`cd_deploy`); production is a person's.

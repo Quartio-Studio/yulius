@@ -14,6 +14,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   every sandbox. Its name is taken with a create-new `mkdir` (`import-<job>`, then `-2`, …), a
   failed import removes it, disk upkeep lists what an interrupted one leaves, and
   `extract_snapshot` refuses a linked root (ADR-0213).
+- The Feature and Fix workflows no longer tell agents to promote and verify production (SPEC-292,
+  task #278, #556). Their instructions ended with "deliver: merge on green, deploy and verify,
+  promote, verify production", the Feature description said "from spec to verified production",
+  and the AGENTS.md generated for new projects said "promotion to `main` by a merge commit, verify
+  production", against ADR-0110 (only a person promotes and deploys production). They now end at a
+  merge on green and cleanup, deploy dev only when the task asks (`cd_deploy`), and leave
+  production, with its promotion, to a person. Unit tests reject the instruction to promote or
+  verify production in every bundled workflow and in the AGENTS.md template.
 - The disk-quota wait test runs in CI again (SPEC-294, task #280, fixes #485).
   `local_ci::a_run_over_the_disk_quota_waits_and_starts_when_space_frees` had been quarantined
   since one unexplained 2.16 s failure on 2026-10-15. Random delays at every status publish, at the
