@@ -36,8 +36,16 @@ left, reads Done, whatever happened to Yulius's own Stop hook for that turn. It 
 - The hook client (`yulius-harness/src/hook_client.rs`) is fail-open: a Stop hook that Yulius
   answers with an error, or does not answer, prints nothing and Claude Code ends the turn. Nothing
   then settles it.
-- Root cause: being confirmed by a reproduction of #272's ending
-  (`task_done::a_goal_achieved_in_the_turn_a_shell_woke_makes_the_task_done`).
+- Root cause (issue #877): a fake-agent replay of #272's exact ending, with the Stop hook
+  answered (`task_done::a_goal_achieved_in_the_turn_a_shell_woke_makes_the_task_done`), reads
+  Done on `dev`. With the woken turn's Stop hook lost to Yulius, as the fail-open client allows
+  (`..._after_a_stop_yulius_never_answered_...`), the task stays Working for good. The 378 ms
+  hook carried no output (`hasOutput: false`), so it answered with nothing or failed open; Yulius
+  logs a refused hook only at debug level, so which error #272 met is not recorded.
+- Why the tests missed it: every finish test runs hooks that Yulius answers. None loses a Stop.
+- What else the cause could break: any turn whose Stop fails open while the task is Working. A
+  goal that is not achieved then reads Working instead of "Your turn", and Done chains and the
+  session slot wait. The replay after a restart was already right.
 
 ## Requirements
 
@@ -49,8 +57,8 @@ left, reads Done, whatever happened to Yulius's own Stop hook for that turn. It 
 
 ## Plan
 
-- [ ] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
+- [x] Reproduce the defect and find its root cause
+- [x] Write the fix spec and the regression test that fails
 - [ ] Fix the cause until the regression test and every gate pass
 - [ ] Independent review, findings fixed, delivered on green
 
@@ -68,4 +76,11 @@ left, reads Done, whatever happened to Yulius's own Stop hook for that turn. It 
 
 ## Decisions
 
-- Pending the root cause.
+- [ADR-0212](../../docs/decisions/0212-a-turn-whose-stop-yulius-never-answered-settles-at-its-record.md):
+  Yulius records when it answers a Stop (`stop_answered_ms`, any decision) and when a turn
+  begins (`turn_began_ms`: the prompt's transcript time, the UserPromptSubmit hook, or resumed
+  work). `turn_record_seen` settles a Working turn begun after the last answered Stop with
+  `settle_clean_turn`. Not while a full context is recovered, at a usage limit or with an open
+  pause. The hook client stays fail-open.
+- Not settled on `met: true` alone: a Stop that Yulius answered with a gate block can come with an
+  achieved goal while the agent works on.

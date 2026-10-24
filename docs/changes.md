@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-24
 
+- An achieved goal no longer leaves its task Working for good when Yulius did not settle the
+  turn's Stop hook (SPEC-290, task #276, #877). The hook client fails open, so a Stop that Yulius
+  answered with an error, or could not answer, still ended the turn in Claude Code, and the task
+  stayed Working after "Goal achieved". Task #272 read "working 11h 15m". Yulius now records each
+  Stop it answers, and the record that closes a later turn settles it like a clean Stop: Done when
+  the goal is achieved, otherwise waiting, with its pull request, chains and queue (ADR-0212).
 - The remote MCP's `secret_update` and `secret_hosts_answer` act on the secret `secrets_list`
   shows for the name (SPEC-287, task #273, #787): the project's, else the person's own personal
   one, else a global one switched on for the project. They took the oldest secret of the name

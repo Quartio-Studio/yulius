@@ -5,7 +5,8 @@
 //! since. Claude Code writes that record after its Stop hooks, so the order is usually: Stop hook
 //! → `waiting`, then the record → `done`; when the record comes first (Yulius' hook was slow or
 //! blocked the turn), the next clean Stop makes the task `done`. Any prompt makes it `working`
-//! again and the achieved goal no longer counts.
+//! again and the achieved goal no longer counts. A turn whose Stop Yulius never answered (the hook
+//! client fails open) settles at the record that closes it (SPEC-290 GDW-001).
 //!
 //! Background shells the agent left running (Claude Code's "· 1 shell") are probed from the
 //! process table while the task is idle — at the clean Stop, when the goal is achieved and every
