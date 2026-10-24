@@ -40,8 +40,10 @@ material stays a needle.
   needles.
 - R2. A trimmed line of public text of a known shape is not a needle: an RFC 1421 header
   (`<token>: <value>`, the token letters, digits and `-`, the value not empty) or a line starting
-  `subject=` or `issuer=`, unless it is only base64 symbols and whitespace or holds a run of more
-  than 32 consecutive base64/base64url symbols (a body joined onto it, by spaces or glued).
+  `subject=` or `issuer=`, unless its value holds `:` (another header or a key's colon-hex dump
+  joined onto it, review round 5) or `(0x` (OpenSSL's inline integer), it is only base64 symbols
+  and whitespace, or it holds a run of more than 32 consecutive base64/base64url symbols (a body
+  joined onto it, by spaces or glued).
 - R3. Every other line stays a needle, trimmed, as before this change: base64 body lines (PEM,
   OpenSSH, PGP), a body joined by spaces or split by a zero-width space, a key's OpenSSL text dump
   (colon-separated hex), text between a bundle's blocks of any other shape. The PGP checksum line
@@ -51,9 +53,9 @@ material stays a needle.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [x] Spec for base64-only key needles
+- [x] Spec for public-shape key needles
 - [x] Regression test with a synthetic encrypted PEM fails
-- [x] key_lines keeps only base64 body lines
+- [x] key_lines drops only blank, armour and public-shape lines
 - [x] ADR, SPEC-186 and changes record the rule
 - [x] Independent review answered and gates green
 - [x] Pull request ready to merge on green CI
@@ -67,7 +69,9 @@ material stays a needle.
 - A header line with a body joined to it (by spaces or glued) stays a needle;
   `DEK-Info: AES-256-CBC,<32 hex>` and a header with a 32-symbol word do not, one with a
   33-symbol run does.
-- A key's colon-hex dump between a bundle's blocks stays a needle, line by line.
+- A key's colon-hex dump between a bundle's blocks stays a needle, line by line, and so does the
+  dump joined onto a header line, a `subject=` line with a joined header, and an inline
+  `(0x…)` integer.
 - The existing bundle and OpenSSH tests still give every body line.
 
 ## Test plan
@@ -81,7 +85,9 @@ material stays a needle.
   separators, the 32/33-symbol threshold, and header-only lines (review rounds 2 and 3).
 - Unit test `a_key_dump_between_blocks_stays_a_needle`: a bundle holding a key's
   `privateExponent:` colon-hex dump, `Private-Key:`/`localKeyID:` headers and `subject=`; the
-  hex lines stay needles (review round 4).
+  hex lines stay needles (review round 4); the dump joined onto a header line (by spaces or
+  glued), `subject=` with a header joined on, `prime1: … (0x…)` and `Comment: https://…` are
+  needles whole (review round 5).
 - Integration test `secrets_env::an_encrypted_pem_redacts_its_body_not_its_headers`: an
   encrypted PEM stored through the API; `redact_for_sandbox` keeps its `Proc-Type`/`DEK-Info`
   lines and replaces its body. Fails before the fix.
@@ -98,12 +104,14 @@ material stays a needle.
   material outside them. The core team's base64-only suggestion is the rejected first rule;
   the issue's header rule is kept, with the run check. Recorded in ADR-0215.
 - D2. Lines are emitted trimmed: the trimmed text is part of the line a `.env` shows, so it still
-  matches; needles match only whole lines, so a header kept inside one is redacted only there.
+  matches. Needles match as substrings, so a header kept inside one is redacted only where the
+  whole trimmed line's text appears.
 - D3. A run of more than 32 base64 symbols keeps a header line a needle: an IV is at most 32 hex
   digits, a body line is 64 (PEM) or 70 (OpenSSH) symbols.
 - D4. Over-redaction left, never a leak: a public certificate's body (out of scope, said on
   #599), a PGP signed message's text, a dump's labels (`privateExponent:`, `Bag Attributes`) and
-  public values, a folded header's continuation.
+  public values, a folded header's continuation, a header whose value holds `:` or `(0x`
+  (`Comment: https://…`, `publicExponent: 65537 (0x10001)`).
 
 ## Evidence
 
@@ -119,7 +127,7 @@ material stays a needle.
   spaces (accepted by `key_block`) lost its needle and would leak in a `.env` copy. Fixed
   test-first: the extended test failed (the joined line missing), then passed with whitespace
   allowed inside a line. Nits answered: architecture paragraph rewrapped; folded header
-  continuations noted as over-redaction (D3, ADR-0215).
+  continuations noted as over-redaction (D4, ADR-0215).
 - `scripts/dev ci`: green after rounds 1 and 2. After round 3 its tests passed (2603) but `cargo doc`
   failed: `key_lines`' doc linked the private `PUBLIC_RUN_LEN`; the doc now names the length. With
   `origin/dev` merged (#886): exit 0, 2606 tests passed, 16 skipped. After round 4, with
@@ -146,4 +154,10 @@ material stays a needle.
   missing), then passed once the rule was inverted to drop only named public shapes (D1); every
   earlier test passes unchanged. Nits: SPEC-186 and architecture say the rule in short; ADR-0215
   lists `Bag Attributes` with the over-redacted shapes (renamed for the new rule).
+- Review round 5 (fresh session): request changes, one major in own code: a key's dump joined
+  onto a header line (`Private-Key: (…) privateExponent: 2a:9f:…`) passed as a public header
+  and would leak. Fixed test-first: the extended `a_key_dump_between_blocks_stays_a_needle`
+  failed (`[]`), then passed once a public header's value may hold no `:`. Minor answered the
+  same way: no `(0x` (OpenSSL's inline integer, toy keys). Nits: the Plan items name the final
+  rule, the Evidence cites D4, "match only whole lines" reworded (substring match).
 - Not tested: a real encrypted key from `openssl` (fixtures are synthetic by rule).

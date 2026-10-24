@@ -32,14 +32,16 @@ Every trimmed line of a key block stays a needle except:
 
 - blank lines and armour lines (`-----BEGIN|END <label>-----`);
 - public text of a known shape: an RFC 1421 header (`<token>: <value>`, the token letters,
-  digits and `-`, the value not empty) or a line starting `subject=` or `issuer=`, as long as it
-  is not only base64 symbols and whitespace and holds no run of more than 32 consecutive base64
-  or base64url symbols (`A-Z a-z 0-9 + / = - _`). An IV in `DEK-Info` is at most 32 hex digits;
-  a key body line is 64 (PEM) or 70 (OpenSSH) symbols, so a body joined onto a header keeps the
-  line a needle.
+  digits and `-`, the value not empty) or a line starting `subject=` or `issuer=`, as long as its
+  value holds no `:` and no `(0x`, the line is not only base64 symbols and whitespace, and it
+  holds no run of more than 32 consecutive base64 or base64url symbols (`A-Z a-z 0-9 + / = - _`).
+  A `:` in the value is another header or a key's colon-hex dump joined onto it (`Private-Key:
+  (…) privateExponent: 2a:9f:…`); `(0x` is OpenSSL's inline integer (`prime1: 1844… (0x…)` in
+  a toy key); an IV in `DEK-Info` is at most 32 hex digits, while a key body line is 64 (PEM) or
+  70 (OpenSSH) symbols, so a body joined onto a header keeps the line a needle.
 
-Needles are trimmed lines and match only those whole lines, so a header kept as part of a needle
-is redacted only where the whole line appears (a `.env` copy).
+Needles are trimmed lines, matched as substrings: a header kept as part of a needle is redacted
+only where the whole trimmed line's text appears (a `.env` copy).
 
 ## Alternatives
 
@@ -62,5 +64,8 @@ is redacted only where the whole line appears (a `.env` copy).
   line appears, never leaked: a public certificate's body (out of scope, said on #599), a PGP
   signed message's text, a dump's labels (`privateExponent:`, `Bag Attributes`) and public
   values (modulus), a folded header's continuation.
-- Key material written on a header-shaped line with no base64 run over 32 symbols would not be a
-  needle; no key format writes one.
+- A public header whose value holds `:` or `(0x` stays a needle: a PGP `Comment: https://…`,
+  OpenSSL's `publicExponent: 65537 (0x10001)`; over-redacted, never leaked.
+- Key material written on a header-shaped line with no `:`, no `(0x` and no base64 run over 32
+  symbols would not be a needle. None of the formats checked in review (PEM, PKCS#8, encrypted
+  PEM, OpenSSH, PGP armour, OpenSSL `-text` dumps, PKCS#12 `-nodes`, PuTTY text) writes one.

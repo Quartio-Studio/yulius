@@ -138,15 +138,21 @@ const PUBLIC_RUN_LEN: usize = 32;
 
 /// Whether a trimmed line of a key block is public text of a known shape: an RFC 1421 header
 /// (`Proc-Type: 4,ENCRYPTED`, `DEK-Info: …`, `Version: …`, `Hash: SHA256`) or OpenSSL's
-/// `subject=` and `issuer=` between a bundle's blocks, holding no key-length base64 run (a body
-/// joined onto it). A line of base64 symbols and whitespace is never public.
+/// `subject=` and `issuer=` between a bundle's blocks. Its value holds no `:` (another header
+/// or a key's colon-hex dump joined onto it), no `(0x` (OpenSSL's inline integer) and no
+/// key-length base64 run (a body joined onto it); a line of base64 symbols and whitespace is
+/// never public.
 fn public_line(line: &str) -> bool {
-    let header = line.split_once(": ").is_some_and(|(name, value)| {
+    let header = line.split_once(": ").filter(|(name, value)| {
         !name.is_empty()
             && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
             && !value.trim().is_empty()
     });
-    (header || line.starts_with("subject=") || line.starts_with("issuer="))
+    let value = header.map(|(_, value)| value).or_else(|| {
+        line.strip_prefix("subject=")
+            .or_else(|| line.strip_prefix("issuer="))
+    });
+    value.is_some_and(|value| !value.contains(':') && !value.contains("(0x"))
         && !line.chars().all(|c| base64_symbol(c) || c.is_whitespace())
         && line
             .split(|c: char| !base64_symbol(c))
