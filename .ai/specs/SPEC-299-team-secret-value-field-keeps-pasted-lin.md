@@ -1,11 +1,11 @@
 ---
 yulius-task: 50d1de50-7c3b-42e9-bd48-27fd7bf1d8ac
-status: in-progress
+status: done
 ---
 
 # SPEC-299: A team secret's Value keeps pasted line breaks
 
-Status: in-progress
+Status: done
 Date: 2026-10-24
 Owner: Yulius task #285 (fixes #592)
 Scope authorization: task #285, opened by task #283 for issue #592 (reported by task #179). No
@@ -46,12 +46,12 @@ dialog and on the card) gives back the original text.
 
 ## Plan
 
-- [ ] Regression e2e test for LF and CRLF pastes that fails on dev
-- [ ] Pasted line breaks are kept in a team secret's Add and Edit, masked
-- [ ] Show displays a multi-line value on its lines; Copy returns it
-- [ ] Decision record, docs and changes entry
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green and the spec's Evidence written
+- [x] Regression e2e test for LF and CRLF pastes that fails on dev
+- [x] Pasted line breaks are kept in a team secret's Add and Edit, masked
+- [x] Show displays a multi-line value on its lines; Copy returns it
+- [x] Decision record, docs and changes entry
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green and the spec's Evidence written
 
 ## Acceptance criteria
 
@@ -67,8 +67,8 @@ dialog and on the card) gives back the original text.
 ## Test plan
 
 - e2e (`e2e/tests/secrets.e2e.ts`): "a pasted multi-line team secret value keeps its line
-  breaks, masked, and Show and Copy return them" covering TLB-001..004 with a CRLF paste in Add and an LF
-  paste in Edit (paste dispatched as a `ClipboardEvent` with a `DataTransfer`, as SPEC-193's test
+  breaks, masked, and Show and Copy return them" covering TLB-001..004 with a CRLF paste in Add
+  and an LF paste in Edit (paste dispatched as a `ClipboardEvent` with a `DataTransfer`, as SPEC-193's test
   does), Show, the dialog's Copy and the card's Copy (clipboard stubbed), and axe.
 - Run first on the unchanged page to show it fails (the stored value has no line breaks).
 - The SPEC-193 agent-secret test and the rest of `secrets.e2e.ts` stay green.
@@ -82,3 +82,42 @@ dialog and on the card) gives back the original text.
   aloud and selectable, password managers ignore it); a "multi-line" toggle that unmasks; #591's
   literal `\n` (changes the value people copy back).
 - Line breaks are stored as pasted, CRLF included: Copy must return the original text.
+
+## Review
+
+Independent review in a fresh session (read-only subagent, skill `om-code-review`, diff
+`e8cb3398..HEAD` and this spec), two rounds, both APPROVE, every finding own code:
+
+- Round 1 at e1e2c6f7: minor, the paste helper's `inMarkup` check could never fail (a field's
+  value is never in the markup): removed, the `password` type carries the masking proof. Nits: the
+  ADR counted a CRLF as one dot (now "each LF and CR, a CRLF as two"); a short line in
+  product.md (reflowed); this spec's test title (corrected); drag and paste-less insertion still
+  lose line breaks (kept out of scope, written in ADR-0214's Consequences: the hint promises a
+  paste only).
+- Round 2 at b9872ad0: all answered; one cosmetic nit (long lines in this spec and the ADR),
+  wrapped in this commit. The reviewer ran the secrets e2e 5 times (pass) and showed the new test
+  fails with the old `secrets.js` (first paste not taken) and with the old CSS (`lines: 1`).
+
+## Evidence
+
+- Regression first: `npx e2e run tests/secrets.e2e.ts --grep "multi-line team secret"` on the
+  unchanged page (commit bc6e33a7) failed: `expected {"prevented":false,"type":"password",…} to
+  equal {"prevented":true,…}`. With only the JS fix it failed at Show (`lines: 1`, expected 3);
+  with the CSS it passed.
+- `cd e2e && npm ci --ignore-scripts && E2E_TELEMETRY_DISABLED=1 npx e2e run tests/secrets.e2e.ts
+  tests/api-tokens.e2e.ts`: 31 passed; after the review fixes `tests/secrets.e2e.ts`: 25 passed.
+- `python3 scripts/bootstrap.py && scripts/dev ci` at e1e2c6f7 (the code as reviewed; later
+  commits change only the e2e test and docs): every stage passed but the test stage, 2599 of 2600
+  tests. The one failure, `leftovers::kept_files_of_a_removed_sandbox_are_listed_and_deleted_on_request`
+  (`kept[0].bytes` was `null` while the same view listed the sandbox's item with 196608 bytes),
+  is in the disk-leftovers code this change does not touch (no Rust in the diff); alone it passed
+  5 of 5 (`cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+  test(/^leftovers::kept_files_of_a_removed_sandbox/)'`). Reported on #592 (this task opens no
+  issues).
+- Security: `yulius security-scan` (the scanner `scripts/dev security` runs, without a cargo
+  build beside the gate) exited 2, not run: Vidoc answered HTTP 429, this key has used its
+  50,000,000 tokens. The three changed code files were not scanned; this is unrun, not passed.
+- Not tested: Firefox and Safari (the suite runs Chromium only; `execCommand('insertText')` and
+  `setRangeText` are in both), a real OS clipboard (pastes are dispatched `ClipboardEvent`s, as in
+  SPEC-193's test), and the Rust server (unchanged: `vault::field` keeps line breaks, as read).
+
