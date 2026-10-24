@@ -4140,15 +4140,16 @@ impl App {
         Ok(out)
     }
 
-    /// Startup reconciliation: runs recorded as `running` have no runner after a restart: their
-    /// process hosts are terminated and they are recorded as `error`. Returns how many were closed. Call once before serving.
+    /// Startup reconciliation: runs recorded as `running` have no runner after a restart: they
+    /// are recorded as `error`, then their process hosts are terminated. Recorded first, so a
+    /// watcher still following the run (never after a real restart) cannot take its end while
+    /// the host goes. Returns how many were closed. Call once before serving.
     ///
     /// # Errors
     /// Store failures.
     pub async fn reconcile_environment_runs(&self) -> AppResult<u32> {
         let mut closed = 0;
         for run in self.deps.store.running_environment_runs().await? {
-            self.environment_end_lost(&run.sandbox_id, &run.id).await;
             let output = format!(
                 "{}\n[yulius] interrupted by a server restart; the command may have been killed or may have finished unobserved\n",
                 run.output
@@ -4167,6 +4168,7 @@ impl App {
             {
                 closed += 1;
             }
+            self.environment_end_lost(&run.sandbox_id, &run.id).await;
         }
         Ok(closed)
     }
