@@ -41,11 +41,12 @@ left, whenever the server still held that screen.
 
 ## Requirements
 
-- LRS-001: When `mark_lost` records a loss, the task's runtime exists and its attached run is this
-  attempt, it saves the hub's screen to the attempt's `final-screen` with `save_screen` before the
-  attempt becomes `Lost` (as `finalize_attempt` does before its transition), so no reader sees the
-  run ended with the old file. A run lost before Yulius attached to it saves nothing: until the
-  attach resets the hub, the hub shows the run before.
+- LRS-001: When `mark_lost` records a loss, the task's runtime exists and its hub shows this
+  attempt's screen, it saves the hub's screen to the attempt's `final-screen` with `save_screen`
+  before the attempt becomes `Lost` (as `finalize_attempt` does before its transition), so no
+  reader sees the run ended with the old file. The runtime records which run its hub shows
+  (`screen_of`), set when that run's attach resets the hub: a run lost before its attach reset the
+  hub saves nothing, since the hub still shows the run before.
 - LRS-002: A hub without output never overwrites the saved screen (`save_screen`'s existing rule);
   a deleted task's runtime is not brought back to save one.
 
@@ -58,6 +59,8 @@ left, whenever the server still held that screen.
 - [x] Independent review answered
 - [x] Attach-time loss saves no earlier run's screen (review rounds 1-3)
 - [x] `scripts/dev ci` green on the delivered head's tree
+- [x] Attach keeps dev's order; the hub's shown run guards the save (review round 4)
+- [ ] Gate green after review round 4
 
 ## Acceptance criteria
 
@@ -85,8 +88,8 @@ left, whenever the server still held that screen.
   point `RunAttached` (the run just stored as attached, before a pending stop asks it to end)
   waits until the stop's escalation lost the run; fails while the hub is reset after that point.
 - New integration test `a_size_changed_as_the_run_attaches_is_kept`: at `RunAttached` a viewer
-  that controls the size resizes; the run ends at that size. Fails while the attach resizes to
-  the size it read after that point.
+  that controls the size resizes; the hub and the PTY (`/size` → `SIZE 25 90`) end at that size.
+  Fails while the attach resizes to a size it read before that point (round-3 order).
 - Existing: the `task_done::` file's tests and the `save_screen` unit test; the full gate.
 
 ## Decisions
@@ -94,15 +97,17 @@ left, whenever the server still held that screen.
 - Save before the transition, not after: `finalize_attempt` does the same, and the terminal reads
   `final-screen` once no live attempt is left, so a save after the transition could be read stale.
   A losing observer's save is harmless: it writes the same hub's screen whole.
-- Which run the hub shows is told by the runtime's attached run (`rt.run`), which `attach_run` sets
-  and `finalize_attempt` and `mark_lost` clear: a loss after `finalize_attempt` cleared it saves
-  nothing, so no check of the attempt's state is needed (an earlier draft had one; review).
-- For that to hold, `attach_run` resets the hub to the run's snapshot and stores the attached run
-  together, under the run's lock (review round 2: it stored the run first and reset the hub only
-  after a stop's shutdown request, up to 2 s later). Viewer input waits on that lock, so input is
-  still taken as soon as the screen shows. Rejected: recording in the hub which attempt it shows
-  (a second source of the same fact). The PTY's resize to the viewer's size follows at once, before any other
-  await, so a viewer's resize meanwhile is not undone by the size the attach read (review round 3).
+- Which run the hub shows is recorded as such (`screen_of`, set right after the attach's
+  `hub.reset`, kept after the run ends until the next attach). A late loss after
+  `finalize_attempt` saves the same run's screen again, whole, which is harmless, so no check of
+  the attempt's state is needed (an earlier draft had one; review round 1).
+- Rejected: telling it by the runtime's attached run (`rt.run`). `attach_run` stores the run
+  before it resets the hub, with awaits in between (limit counters, a pending stop's shutdown
+  request), so a loss there saved the run before's screen (review round 2). Moving the reset
+  under the run's lock fixed that but changed the attach's order: the size was read before those
+  awaits (review round 3), and the PTY resize then ran before a pending stop's escalation was
+  armed, an unbounded write against SPEC-065 END-005 (review round 4). Keeping dev's order and
+  recording the screen's run touches the attach in one place.
 - No new ADR: this applies ADR-0177's "the run's end writes it again" to the lost end too.
 
 ## Evidence
@@ -130,6 +135,12 @@ left, whenever the server still held that screen.
   the commit adding it (FAILED, size (100, 30) instead of (90, 25)), fixed by resizing right after
   the locked reset. Nits: the race test's hook now fails when the run was lost before the attach;
   the Plan's last items say what ran; the acceptance criteria name the round-2 and round-3 cases.
+- Review round 4 (fresh session, head d83a8b8b): APPROVE with 2 minor and 2 nits, own code.
+  Minor 1 (the attach's PTY resize, an unbounded write, ran before a pending stop's escalation was
+  armed) and nit 3 (the size read before the run lock's await): removed at the source, `attach_run`
+  is back to dev's order (Decisions); the three attach tests still pass. Minor 2 (the size test
+  checked only the hub): it checks the PTY with `/size` too. Nit 4: the long spec line is
+  wrapped.
   Pre-existing, outside this change (said on #686): if a loss clears `rt.run` between a
   successful reattach in the reader loop and its store of the run, a stale run is left for the
   lost attempt.

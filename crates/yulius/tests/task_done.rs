@@ -2731,6 +2731,12 @@ fn a_size_changed_as_the_run_attaches_is_kept() -> TestResult {
         assert_eq!(done, Some(Ok(())));
         tokio::time::timeout(Duration::from_secs(30), held.continued).await???;
         assert_eq!(app.runtime(&held.id).hub.size(), (90, 25));
+        // The PTY follows too: the agent reports the size it reads.
+        app.send_input(&held.id, b"/size\r").await?;
+        wait_for("the PTY's size", Duration::from_secs(20), || {
+            screen_contains(app, &held.id, "SIZE 25 90")
+        })
+        .await?;
         hub.leave(viewer);
         stop(app, &held.id).await
     })?;

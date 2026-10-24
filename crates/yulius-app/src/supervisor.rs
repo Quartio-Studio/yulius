@@ -106,6 +106,9 @@ pub struct TaskRuntime {
     /// Terminal fan-out.
     pub hub: Hub,
     run: tokio::sync::Mutex<Option<ActiveRun>>,
+    /// The run whose screen `hub` shows: set when its attach resets the hub, kept after it ends
+    /// until the next run's attach (SPEC-301 LRS-001).
+    screen_of: Mutex<Option<AttemptId>>,
     intent: Mutex<Option<EndIntent>>,
     usage: Arc<Mutex<UsageSnapshot>>,
     /// The run whose transcript `usage` has read to its end at least once: only then is the
@@ -311,6 +314,7 @@ impl TaskRuntime {
         Self {
             hub: Hub::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
             run: tokio::sync::Mutex::new(None),
+            screen_of: Mutex::new(None),
             intent: Mutex::new(None),
             usage: Arc::new(Mutex::new(UsageSnapshot::default())),
             usage_read: Mutex::new(None),
@@ -2128,30 +2132,13 @@ impl App {
                 welcome.snapshot.as_deref().unwrap_or_default(),
             )
             .await;
-        // A viewer who took the size while the run was starting (the PTY spawned at the size before
-        // it): the screen shows that viewer's size from the start, never the spawn size first,
-        // and the PTY follows (TSK-006, F 2026-10-10).
-        let (cols, rows) = runtime
-            .hub
-            .controller_size()
-            .unwrap_or((welcome.cols, welcome.rows));
-        // The screen and the run change together, under the run's lock: a viewer who sees the
-        // agent's screen can type into it (F 2026-10-13: input right after the banner was refused
-        // as "not running" on a fast machine), and while the hub still shows the run before, this
-        // run is not the attached one, so a loss saves no screen as its own (SPEC-301 LRS-001).
-        {
-            let mut run = runtime.run.lock().await;
-            runtime.hub.reset(welcome.seq, &screen, cols, rows);
-            *run = Some(ActiveRun {
-                attempt_id: attempt.id.clone(),
-                writer: attached.writer,
-            });
-        }
-        if (cols, rows) != (welcome.cols, welcome.rows)
-            && let Err(err) = self.resize_run(task_id, cols, rows).await
-        {
-            tracing::debug!(task = %task_id, error = %err, "viewer size after attach failed");
-        }
+        // The run takes input before anything of it shows: a viewer who sees the agent's screen
+        // can type into it (F 2026-10-13: input right after the banner was refused as "not
+        // running" on a fast machine).
+        *runtime.run.lock().await = Some(ActiveRun {
+            attempt_id: attempt.id.clone(),
+            writer: attached.writer,
+        });
         crate::race::reached(crate::race::Point::RunAttached, Path::new(task_id.as_str()));
         // What the sandbox's limits counted so far: a rise by the run's end says it was at one.
         let counters = self.limit_counters(&sandbox).await;
@@ -2168,6 +2155,23 @@ impl App {
             self.arm_escalation(task_id, Some(attempt.id.clone()));
             self.end_person_pause(task_id).await;
             request_shutdown(&runtime).await;
+        }
+        // A viewer who took the size while the run was starting (the PTY spawned at the size before
+        // it): the screen shows that viewer's size from the start, never the spawn size first,
+        // and the PTY follows (TSK-006, F 2026-10-10).
+        let (cols, rows) = runtime
+            .hub
+            .controller_size()
+            .unwrap_or((welcome.cols, welcome.rows));
+        runtime.hub.reset(welcome.seq, &screen, cols, rows);
+        // The hub shows this run from now on (SPEC-301 LRS-001).
+        if let Ok(mut shown) = runtime.screen_of.lock() {
+            *shown = Some(attempt.id.clone());
+        }
+        if (cols, rows) != (welcome.cols, welcome.rows)
+            && let Err(err) = self.resize_run(task_id, cols, rows).await
+        {
+            tracing::debug!(task = %task_id, error = %err, "viewer size after attach failed");
         }
         let app = self.clone();
         let tid = task_id.clone();
@@ -2315,15 +2319,13 @@ impl App {
         let runtime = self.existing_runtime(task_id);
         let _finalizing = runtime.as_ref().map(|rt| Finalizing::start(&rt.finalizing));
         // Keep the screen the run was lost on, not its last settled turn's (SPEC-301 LRS-001). A
-        // runtime made after a restart has no output: the saved screen stays. Only the attached
-        // run's: before it attaches, the hub still shows the run before.
+        // runtime made after a restart has no output: the saved screen stays. Only when the hub
+        // shows this run: until its attach resets the hub, it shows the run before.
         if let Some(rt) = &runtime
             && rt
-                .run
+                .screen_of
                 .lock()
-                .await
-                .as_ref()
-                .is_some_and(|run| run.attempt_id == *attempt_id)
+                .is_ok_and(|shown| shown.as_ref() == Some(attempt_id))
             && let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await
         {
             save_screen(&rt.hub, Path::new(&attempt.run_dir));
