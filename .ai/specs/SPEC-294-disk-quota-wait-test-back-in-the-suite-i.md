@@ -1,11 +1,11 @@
 ---
 yulius-task: bedc3a84-e034-4989-b94b-b99919cf8515
-status: in-progress
+status: done
 ---
 
 # SPEC-294: The disk-quota wait test is back in the suite, its fast failure hunted (#485)
 
-Status: in-progress
+Status: done
 Date: 2026-10-24
 Owner: Yulius task #280 (started by the nightly issue automation, task #277)
 Scope authorization: task #280: "Try to reproduce the fast failure with probe delays at the await
@@ -54,10 +54,10 @@ next CI failure, now kept by SPEC-145, names the assertion.
 
 - [x] Spec SPEC-294 with the hunt plan
 - [x] Fast failure hunted with probe delays at the publish and clock races
-- [x] Any race found fixed test-first with a regression test
+- [x] Any race found fixed test-first (none reproduced: skipped, D1)
 - [x] Disk-quota wait test back in the suite, 50 loaded runs green
-- [x] Changes entry, gates and security scan green
-- [ ] Independent review answered and merged on green
+- [x] Changes entry and gate green, security scan unrun (Vidoc quota)
+- [x] Independent review answered and merged on green
 
 ## Acceptance criteria
 
@@ -109,3 +109,9 @@ next CI failure, now kept by SPEC-145, names the assertion.
   not passed. The change is a test attribute and doc comment, a spec and a changes entry.
 - Issue #485 comment with these results:
   https://github.com/Quartio-Studio/yulius/issues/485#issuecomment-6385884092
+- Independent review (fresh session, `om-code-review`) of `470ca50e`: APPROVE; it confirmed D1
+  from the code. Answered: the plan labels now say the race step was skipped and the scan is unrun
+  (minor), the spec is done (minor), the test's doc comment credits only SPEC-294 with the probes
+  (nit). Pre-existing, outside this change: the status retry loop can send a stale status after a
+  run's final one in production (`ci_publish` is not serialized per run); it corrects itself and is
+  reported on #485.
