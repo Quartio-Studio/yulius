@@ -128,10 +128,11 @@ fn wipe(value: String) {
 }
 
 /// The lines of a key block's file that hold key material: a copied key file shows them one per
-/// line, so redaction looks for each (SPEC-186 SAV-005). Only base64 lines (base64url too) count,
-/// trimmed: armour, RFC 1421 headers (`Proc-Type: 4,ENCRYPTED`, `Version: …`), blank lines and
-/// the text between a bundle's blocks are public text, never a key's (SPEC-302, ADR-0215). Empty
-/// for a value that is not a key block.
+/// line, so redaction looks for each (SPEC-186 SAV-005). Only base64 lines (base64url too)
+/// count, trimmed, spaces inside allowed (a body whose breaks a paste turned into spaces):
+/// armour, RFC 1421 headers (`Proc-Type: 4,ENCRYPTED`, `Version: …`), blank lines and the text
+/// between a bundle's blocks are public text, never a key's (SPEC-302, ADR-0215). Empty for a
+/// value that is not a key block.
 #[must_use]
 pub fn key_lines(value: &str) -> Vec<String> {
     key_block(value).map_or_else(Vec::new, |file| {
@@ -139,8 +140,9 @@ pub fn key_lines(value: &str) -> Vec<String> {
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with("-----"))
             .filter(|line| {
-                line.chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "+/=-_".contains(c))
+                line.chars().all(|c| {
+                    c.is_ascii_alphanumeric() || "+/=-_".contains(c) || c.is_ascii_whitespace()
+                })
             })
             .map(str::to_owned)
             .collect()

@@ -21,13 +21,18 @@ leaked; text was over-redacted.
 ## Decision
 
 A line of a key block's file is a needle only when, trimmed, it is not empty, is not armour, and
-holds only base64 or base64url symbols (`A-Z a-z 0-9 + / = - _`). The needle is the trimmed line.
-The whole stored value stays a needle as before.
+holds only base64 or base64url symbols (`A-Z a-z 0-9 + / = - _`) and whitespace. The needle is
+the trimmed line. Whitespace is allowed inside a line because a stored key can hold its body on
+one line joined by spaces (a paste whose breaks the browser turned into spaces, with `\n` written
+back only around the armour): that line is key material. The whole stored value stays a needle as
+before.
 
 ## Alternatives
 
 - **Skip `<token>: <value>` headers and blank lines only** (the issue's wording): leaves a
   bundle's in-between text and a PGP signed message's text as needles. Rejected.
+- **No whitespace inside a line**: drops a body joined by spaces, which `key_block` accepts, and
+  so leaks it in a `.env` copy (review round 1). Rejected.
 - **Standard base64 alphabet only**: a body line in the URL-safe alphabet (and the synthetic
   OpenSSH fixtures, which hold `-`) would lose its needle, the one outcome that leaks. Rejected:
   `-` and `_` cost at most an over-redaction.
@@ -39,5 +44,8 @@ The whole stored value stays a needle as before.
 - Public text inside a key block no longer turns into `[secret:NAME]`.
 - A public certificate's body in a bundle is base64 too, so it stays a needle and is still
   over-redacted (out of scope, said on #599).
-- A non-base64 line stored inside a key block (not key material by any format) is no longer
-  looked for on its own; it stays redacted as part of the whole value.
+- Text with only words, `=` and spaces (`issuer=CN = Synthetic CA`) and a folded header's
+  continuation of base64 symbols stay needles: over-redacted, rare, never a leak.
+- A line with a symbol outside base64, base64url and whitespace (`:`, `,`, `.`) is no longer
+  looked for on its own; no key format writes one in its body, and it stays redacted as part of
+  the whole value.

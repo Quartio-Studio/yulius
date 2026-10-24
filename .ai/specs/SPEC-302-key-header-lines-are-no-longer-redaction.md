@@ -36,10 +36,12 @@ encrypted PEM's `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour's `Vers
 ## Requirements
 
 - R1. A line of a key block's file is a redaction needle only when, its surrounding spaces
-  trimmed, it is not empty and holds only base64 or base64url symbols (`A-Z a-z 0-9 + / = - _`)
-  and is not armour (`-----…`). The needle is the trimmed line.
-- R2. RFC 1421 header lines (`<token>: <value>`), blank lines and any other text with a space,
-  `:` or another symbol outside those alphabets are not needles.
+  trimmed, it is not empty, is not armour (`-----…`) and holds only base64 or base64url symbols
+  (`A-Z a-z 0-9 + / = - _`) and whitespace. Whitespace is allowed inside: a stored key whose
+  body breaks a paste turned into spaces still has its body on a line (review round 1). The
+  needle is the trimmed line.
+- R2. RFC 1421 header lines (`<token>: <value>`), blank lines and any other text with `:`, `,`,
+  `.` or another symbol outside those alphabets are not needles.
 - R3. PEM and OpenSSH body lines (base64) stay needles, including the PGP checksum line (`=…`); the
   whole stored value stays a needle as before.
 
@@ -65,7 +67,8 @@ encrypted PEM's `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour's `Vers
 
 - Unit test in `dotenv.rs` (`header_lines_and_blank_lines_are_not_key_lines`): synthetic
   encrypted PEM, PGP block with headers and checksum, bundle with an openssl `subject=` line in
-  between, a body line with trailing spaces. Fails before the fix (headers returned).
+  between, a body line with spaces around it and one joined by spaces. Fails before the fix
+  (headers returned), and the joined line failed the first fix (review round 1).
 - Integration test `secrets_env::an_encrypted_pem_redacts_its_body_not_its_headers`: an
   encrypted PEM stored through the API; `redact_for_sandbox` keeps its `Proc-Type`/`DEK-Info`
   lines and replaces its body. Fails before the fix.
@@ -82,5 +85,7 @@ encrypted PEM's `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour's `Vers
   its needles (an over-redaction at worst). Recorded in ADR-0215.
 - D2. Lines are classified and emitted trimmed: a body line with stray spaces keeps a needle (the
   trimmed text is part of the line a `.env` shows), never dropped.
-- D3. Out of scope: public certificate body lines in a bundle (base64 too, so still needles and
+- D3. Text made only of words, `=` and spaces (`issuer=CN = Synthetic CA`) or a folded RFC 1421
+  header's continuation of base64 symbols stays a needle: over-redaction, never a leak.
+- D4. Out of scope: public certificate body lines in a bundle (base64 too, so still needles and
   over-redacted). Said on #599.
