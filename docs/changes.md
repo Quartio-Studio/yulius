@@ -13,6 +13,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   project secret an older global one shared the name of, and an administrator could rebind the
   shadowed global secret. A secret switched off for the project, or another person's, is "no
   agent secret NAME".
+- Concurrent CI checkouts of one run no longer fail on each other's worktree registration
+  (SPEC-289, task #275, #666). `git worktree list` now takes the same process-wide lock as
+  worktree add, move, remove and prune; before, a checkout's list could read another checkout's
+  half-written `.git/worktrees/<name>/` and die ("failed to read …/locked" or "…/commondir").
 - An open event stream follows instance administration (SPEC-286, task #272, #722). It decided
   admin-only events (`account.updated`, with the subscription's account email) once, when the page
   connected, so a person whose administration was removed kept receiving them until a reconnect.
