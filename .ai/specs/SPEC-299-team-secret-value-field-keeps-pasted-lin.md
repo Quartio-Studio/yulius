@@ -68,8 +68,8 @@ dialog and on the card) gives back the original text.
 
 - e2e (`e2e/tests/secrets.e2e.ts`): "a pasted multi-line team secret value keeps its line
   breaks, masked, and Show and Copy return them" covering TLB-001..004 with a CRLF paste in Add
-  and an LF paste in Edit (paste dispatched as a `ClipboardEvent` with a `DataTransfer`, as SPEC-193's test
-  does), Show, the dialog's Copy and the card's Copy (clipboard stubbed), and axe.
+  and an LF paste in Edit (paste dispatched as a `ClipboardEvent` with a `DataTransfer`, as
+  SPEC-193's test does), Show, the dialog's Copy and the card's Copy (clipboard stubbed), and axe.
 - Run first on the unchanged page to show it fails (the stored value has no line breaks).
 - The SPEC-193 agent-secret test and the rest of `secrets.e2e.ts` stay green.
 
@@ -94,9 +94,13 @@ Independent review in a fresh session (read-only subagent, skill `om-code-review
   product.md (reflowed); this spec's test title (corrected); drag and paste-less insertion still
   lose line breaks (kept out of scope, written in ADR-0214's Consequences: the hint promises a
   paste only).
-- Round 2 at b9872ad0: all answered; one cosmetic nit (long lines in this spec and the ADR),
-  wrapped in this commit. The reviewer ran the secrets e2e 5 times (pass) and showed the new test
-  fails with the old `secrets.js` (first paste not taken) and with the old CSS (`lines: 1`).
+- Round 2 at b9872ad0: all answered; one cosmetic nit (long lines): prose lines wrapped, the
+  lines left over 100 characters hold a link or a test name. The reviewer ran the new test 5
+  times (the secrets file once per round and four filtered reruns, all passed) and showed it fails
+  with the old `secrets.js` (first paste not taken) and with the old CSS (`lines: 1`).
+- Round 3 at a9197aa9: request changes until a green test stage at the head is recorded (the local
+  gate below had one failing test) and two statements here are corrected; no code change asked.
+  Answered with the PR's CI run at a9197aa9 and the corrections in the next commit.
 
 ## Evidence
 
@@ -106,14 +110,18 @@ Independent review in a fresh session (read-only subagent, skill `om-code-review
   with the CSS it passed.
 - `cd e2e && npm ci --ignore-scripts && E2E_TELEMETRY_DISABLED=1 npx e2e run tests/secrets.e2e.ts
   tests/api-tokens.e2e.ts`: 31 passed; after the review fixes `tests/secrets.e2e.ts`: 25 passed.
-- `python3 scripts/bootstrap.py && scripts/dev ci` at e1e2c6f7 (the code as reviewed; later
-  commits change only the e2e test and docs): every stage passed but the test stage, 2599 of 2600
-  tests. The one failure, `leftovers::kept_files_of_a_removed_sandbox_are_listed_and_deleted_on_request`
+- Yulius CI on PR #884 at a9197aa9 (run f9c792cf): **quality passed** (`scripts/dev ci`, the
+  whole gate with every test) in 12 min, **e2e passed** (the whole suite) in 17 min, security
+  skipped (Vidoc out of quota, below).
+- Local `python3 scripts/bootstrap.py && scripts/dev ci` at e1e2c6f7, before: every stage passed
+  but the test stage, 2599 of 2600 tests. The one failure,
+  `leftovers::kept_files_of_a_removed_sandbox_are_listed_and_deleted_on_request`
   (`kept[0].bytes` was `null` while the same view listed the sandbox's item with 196608 bytes),
   is in the disk-leftovers code this change does not touch (no Rust in the diff); alone it passed
   5 of 5 (`cargo nextest run -p yulius -E 'binary_id(yulius::main) &
-  test(/^leftovers::kept_files_of_a_removed_sandbox/)'`). Reported on #592 (this task opens no
-  issues).
+  test(/^leftovers::kept_files_of_a_removed_sandbox/)'`), and in the CI run above. Reported on
+  #592 and in the PR (this task opens no issues).
+- `python3 scripts/check_repository.py` and `--ui`: passed.
 - Security: `yulius security-scan` (the scanner `scripts/dev security` runs, without a cargo
   build beside the gate) exited 2, not run: Vidoc answered HTTP 429, this key has used its
   50,000,000 tokens. The three changed code files were not scanned; this is unrun, not passed.
