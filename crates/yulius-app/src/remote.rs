@@ -35,6 +35,7 @@ use crate::error::{AppError, AppResult};
 use crate::manage::TaskChange;
 use crate::mcp::{STRUCTURED_META, cockpit_tool_descriptors};
 use crate::model::SandboxRecord;
+use crate::vault::Holder;
 
 /// Largest remote MCP request: a `project_change` of 50 files of 256 KiB, JSON-escaped.
 pub const MAX_REMOTE_BODY_BYTES: usize = 32 << 20;
@@ -915,8 +916,10 @@ impl App {
                     ));
                 }
                 let secret = str_arg(args, "secret")?;
+                // The secret of the name that wins for this person, as `secrets_list` shows it
+                // (SPEC-287): never a shadowed one or a global one switched off.
                 let id = self
-                    .agent_secrets(ctx, sid)
+                    .resolved_agent_secrets(&sandbox.id, Holder::Person(&project.user))
                     .await?
                     .into_iter()
                     .find(|s| s.name == secret)

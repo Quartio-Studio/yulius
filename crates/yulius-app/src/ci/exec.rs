@@ -13,10 +13,16 @@
 //! tolerate a concurrent run), and each job keeps a persistent checkout per lane
 //! ([`checkout_name`]), so caches (dependency downloads, build outputs) survive between runs.
 
+use std::ffi::OsStr;
+use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use nix::errno::Errno;
+use nix::fcntl::{OFlag, openat};
+use nix::sys::stat::Mode;
+use nix::unistd::{UnlinkatFlags, unlinkat};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::watch;
 use yulius_domain::ci::failures::FailureScanner;
@@ -45,6 +51,9 @@ const READ_EVERY: Duration = Duration::from_millis(500);
 const FLUSH_EVERY_TICKS: u32 = 4;
 /// Bytes read from the log per tick (the rest follows on the next ticks).
 const READ_CHUNK: usize = 1 << 20;
+/// Most creates of a job's log when something appears at its name between the removal of the old
+/// one and the create (SPEC-285 LOG-002).
+const LOG_CREATE_TRIES: usize = 4;
 
 /// Removes terminal escape sequences (CSI, OSC and two-byte escapes) and turns carriage
 /// returns into line breaks, across chunk boundaries.
@@ -908,12 +917,8 @@ impl App {
     ) -> Result<(Ended, Used), String> {
         let ci_dir = self.ci_dir(&sandbox.id);
         let checkout = ci_dir.join("jobs").join(checkout_name);
-        let (home, cache, logs) = (
-            ci_dir.join("home"),
-            ci_dir.join("cache"),
-            ci_dir.join("logs"),
-        );
-        for dir in [&home, &cache, &logs] {
+        let (home, cache) = (ci_dir.join("home"), ci_dir.join("cache"));
+        for dir in [&home, &cache] {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("preparing the CI directory failed: {e}"))?;
         }
@@ -938,9 +943,12 @@ impl App {
         self.record_span(span).await;
         checked_out
             .map_err(|err| format!("checking out {} failed: {}", run.sha, err.public_message()))?;
-        let log = logs.join(format!("{}.log", job.id));
-        let _ = std::fs::remove_file(&log);
-        std::fs::File::create(&log).map_err(|e| format!("creating the job log failed: {e}"))?;
+        // Made and later removed through handles from the sandbox directory, never by its path
+        // (SPEC-285): the job writes it by its path, inside its containment.
+        let name = format!("{}.log", job.id);
+        let log = ci_dir.join("logs").join(&name);
+        let (logs, created) = create_job_log(&self.sandbox_dir(&sandbox.id), OsStr::new(&name))
+            .map_err(|e| format!("creating the job log failed: {}", e.desc()))?;
         // Held until the job ends: the sandbox's holder is not stopped as idle meanwhile. A
         // refusal while the reading is over the quota is the quota: the run waits for disk
         // instead (CI-303). Any other refusal (isolation still being prepared) is an error.
@@ -981,7 +989,7 @@ impl App {
                 Sink::CiJob(&job.id),
                 &plan,
                 &token,
-                &log,
+                RunLog::Created(created),
                 (ring, Some(stages), Some(failures)),
                 cancel,
             )
@@ -989,7 +997,7 @@ impl App {
         // The job's process ended (or its host is gone): its proxy credential ends too.
         drop(proxy);
         let _ = std::fs::remove_dir_all(&run_dir);
-        let _ = std::fs::remove_file(&log);
+        let _ = unlinkat(&logs, name.as_str(), UnlinkatFlags::NoRemoveDir);
         outcome
     }
 
@@ -1005,7 +1013,7 @@ impl App {
         sink: Sink<'_>,
         plan: &LaunchPlan,
         token: &[u8; 32],
-        log: &Path,
+        log: RunLog<'_>,
         (ring, mut stages, mut failures): (
             &mut OutputRing,
             Option<&mut OutputStages>,
@@ -1015,9 +1023,12 @@ impl App {
     ) -> Result<(Ended, Used), String> {
         // Opened before the process starts, and read only through this handle: the run can
         // replace the file at `log` (a link to a host file, a FIFO), never what Yulius reads.
-        let mut tail = LogTail::open(log)
-            .await
-            .map_err(|e| format!("opening the job log failed: {e}"))?;
+        let mut tail = match log {
+            RunLog::At(path) => LogTail::open(path)
+                .await
+                .map_err(|e| format!("opening the job log failed: {e}"))?,
+            RunLog::Created(file) => LogTail::new(tokio::fs::File::from_std(file)),
+        };
         let host = &self.deps.session_host;
         host.spawn(run_dir, ids.0, ids.1, plan, token, (160, 48))
             .await
@@ -1163,6 +1174,51 @@ pub(super) async fn wait_cancel(cancel: &mut watch::Receiver<Option<String>>) ->
     }
 }
 
+/// Opens `<sandbox>/ci/logs` from the sandbox directory, one folder at a time with
+/// `O_DIRECTORY | O_NOFOLLOW`, and creates the log `name` in it with `O_CREAT | O_EXCL |
+/// O_NOFOLLOW` after removing the old one (SPEC-285, ADR-0174). A link or a file at `logs` is
+/// removed, not followed, and a folder made in its place; an entry planted at `name` between the
+/// removal and the create is removed again, at most [`LOG_CREATE_TRIES`] times. Returns the
+/// folder, for the removal after the job, and the log, for reading it.
+fn create_job_log(sandbox_dir: &Path, name: &OsStr) -> Result<(OwnedFd, std::fs::File), Errno> {
+    let ci = crate::files::open_dirs_below(sandbox_dir, &[OsStr::new("ci")], true)?;
+    let logs = match crate::files::open_dir_at(&ci, OsStr::new("logs"), true) {
+        Err(Errno::ELOOP | Errno::ENOTDIR) => {
+            unlinkat(&ci, "logs", UnlinkatFlags::NoRemoveDir)?;
+            crate::files::open_dir_at(&ci, OsStr::new("logs"), true)?
+        }
+        opened => opened?,
+    };
+    let at = sandbox_dir.join("ci").join("logs").join(name);
+    for _ in 0..LOG_CREATE_TRIES {
+        match unlinkat(&logs, name, UnlinkatFlags::NoRemoveDir) {
+            Ok(()) | Err(Errno::ENOENT) => {}
+            Err(err) => return Err(err),
+        }
+        crate::race::reached(crate::race::Point::CiLogCreate, &at);
+        let flags = OFlag::O_RDWR | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW;
+        match openat(
+            &logs,
+            name,
+            flags | OFlag::O_CLOEXEC,
+            Mode::from_bits_truncate(0o666),
+        ) {
+            Ok(fd) => return Ok((logs, std::fs::File::from(fd))),
+            Err(Errno::EEXIST) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Err(Errno::EEXIST)
+}
+
+/// The log [`App::ci_watch`] follows.
+pub(super) enum RunLog<'a> {
+    /// A log in the run's own directory, out of the agent's reach: opened by its path.
+    At(&'a Path),
+    /// A log Yulius created through handles (a CI job's, SPEC-285): read through that handle.
+    Created(std::fs::File),
+}
+
 /// Follows a job's log file through the handle opened before the job started.
 struct LogTail {
     file: tokio::fs::File,
@@ -1187,13 +1243,18 @@ impl LogTail {
         if !file.metadata().await?.is_file() {
             return Err(std::io::Error::other("the log is not a regular file"));
         }
-        Ok(Self {
+        Ok(Self::new(file))
+    }
+
+    /// Follows the regular file `file`, from its beginning.
+    fn new(file: tokio::fs::File) -> Self {
+        Self {
             file,
             offset: 0,
             size: 0,
             strip: AnsiStripper::default(),
             fresh: Vec::new(),
-        })
+        }
     }
 
     /// The output read since the last call.

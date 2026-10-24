@@ -41,6 +41,8 @@ pub const AUTO_FIRST: Duration = Duration::from_secs(2 * 60);
 const ORPHAN_WORKTREE_AFTER_MS: i64 = 60 * 60 * 1000;
 /// CI runs read when looking for the jobs a sandbox still runs.
 const CI_RUNS_READ: u32 = 1000;
+/// Longest worktree record `gitdir` read: a path and its newline (#853).
+const MAX_GITDIR_BYTES: u64 = 4096;
 /// The host's own Docker data, reported only (ADR-0170).
 const HOST_DOCKER: [&str; 2] = ["/var/lib/docker", "/var/lib/containerd"];
 
@@ -262,6 +264,35 @@ fn size_of(path: &Path) -> Option<u64> {
     }
 }
 
+/// The text of the regular file at `path` when it holds at most `max` bytes, else `None`. The
+/// file is opened once, without following a link at its end and without waiting on a FIFO, and
+/// the handle, not the path, is checked and read: a sandbox swapping the file after a check by
+/// path changes nothing (#853, ADR-0174). At most `max + 1` bytes are read, so a file grown after
+/// the check is refused too.
+pub(crate) fn read_small_file(path: &Path, max: u64) -> Option<String> {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let flags = nix::fcntl::OFlag::O_NOFOLLOW
+        | nix::fcntl::OFlag::O_NONBLOCK
+        | nix::fcntl::OFlag::O_CLOEXEC;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(flags.bits())
+        .open(path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > max {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(max.saturating_add(1))
+        .read_to_string(&mut text)
+        .ok()?;
+    u64::try_from(text.len())
+        .is_ok_and(|len| len <= max)
+        .then_some(text)
+}
+
 /// Whether every directory from `root` (exclusive) down to `path`'s parent is a real directory,
 /// not a link: a sandbox's agents and shells can replace a directory of their sandbox with a link,
 /// which would steer a removal elsewhere (review of SPEC-215). `path` itself may be a link (it is
@@ -479,7 +510,7 @@ fn gone_worktree(record: &Path, sandbox_dir: &Path) -> Option<PathBuf> {
     if exists(&record.join("locked")) {
         return None;
     }
-    let gitdir = std::fs::read_to_string(record.join("gitdir")).ok()?;
+    let gitdir = read_small_file(&record.join("gitdir"), MAX_GITDIR_BYTES)?;
     let dot_git = PathBuf::from(gitdir.trim());
     let worktree = dot_git.parent()?.to_path_buf();
     // Inside the sandbox directory, with no link on the part of the way that still exists (a
@@ -2000,6 +2031,43 @@ mod tests {
             "a link's target is never changed"
         );
         assert_eq!(mode(&outside_dir)?, 0o750);
+        Ok(())
+    }
+
+    /// FIF-002 (#853): a worktree record's `gitdir` names a gone worktree only as a small regular
+    /// file; a FIFO is never waited on, and a link or an oversized file names none.
+    #[test]
+    fn only_a_small_regular_gitdir_names_a_gone_worktree() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let sandbox = tmp.path().join("sandbox");
+        let record = sandbox.join("repo/.git/worktrees/t1");
+        std::fs::create_dir_all(&record)?;
+        let gone = sandbox.join("worktrees/t1");
+        let named = format!("{}\n", gone.join(".git").display());
+        let gitdir = record.join("gitdir");
+        let within = |record: &Path| {
+            let (record, sandbox) = (record.to_path_buf(), sandbox.clone());
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(gone_worktree(&record, &sandbox));
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(10))
+        };
+        std::fs::write(&gitdir, &named)?;
+        assert_eq!(within(&record)?, Some(gone.clone()), "a regular file");
+
+        std::fs::rename(&gitdir, tmp.path().join("named"))?;
+        std::os::unix::fs::symlink(tmp.path().join("named"), &gitdir)?;
+        assert_eq!(within(&record)?, None, "a link");
+
+        std::fs::remove_file(&gitdir)?;
+        let padding = " ".repeat(usize::try_from(MAX_GITDIR_BYTES)? - named.len() + 1);
+        std::fs::write(&gitdir, format!("{named}{padding}"))?;
+        assert_eq!(within(&record)?, None, "one byte over");
+
+        std::fs::remove_file(&gitdir)?;
+        nix::unistd::mkfifo(&gitdir, nix::sys::stat::Mode::S_IRWXU)?;
+        assert_eq!(within(&record)?, None, "a FIFO");
         Ok(())
     }
 }

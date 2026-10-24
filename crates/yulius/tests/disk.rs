@@ -387,6 +387,46 @@ async fn declared_paths_with_tracked_files_and_unignored_paths_are_never_pruned(
     Ok(())
 }
 
+/// SPEC-288 FIF-004 (#853): a FIFO named `yulius.toml`, in a task whose caches go (the
+/// `find_caches` path) and in one whose worktree goes (`worktree_only_caches`), is never waited on:
+/// the round ends, recognised caches go, and what only that file declared stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fifo_named_yulius_toml_declares_nothing_and_never_stops_the_round() -> BoxResult<()> {
+    let w = world().await?;
+    let crashed = w
+        .task("t-crash", TaskStatus::Stopped(StopReason::Crashed), None)
+        .await?;
+    let closed = w.task("t-closed", TaskStatus::Closed, None).await?;
+    for worktree in [&crashed, &closed] {
+        std::fs::remove_file(worktree.join("yulius.toml"))?;
+        nix::unistd::mkfifo(&worktree.join("yulius.toml"), nix::sys::stat::Mode::S_IRWXU)?;
+    }
+    w.later();
+    let (app, sandbox) = (w.h.app.clone(), w.sandbox.clone());
+    let round = tokio::spawn(async move { app.disk_upkeep(&sandbox, false).await });
+    let Ok(done) = tokio::time::timeout(std::time::Duration::from_secs(60), round).await else {
+        // A reader blocked on a FIFO would hold the runtime's shutdown: opening the write end
+        // releases it, so the test fails instead of hanging.
+        use std::os::unix::fs::OpenOptionsExt as _;
+        for worktree in [&crashed, &closed] {
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(nix::fcntl::OFlag::O_NONBLOCK.bits())
+                .open(worktree.join("yulius.toml"));
+        }
+        return Err("the round waited on a FIFO".into());
+    };
+    let report = done??;
+    for worktree in [&crashed, &closed] {
+        assert!(!worktree.join("target").exists(), "{report:?}");
+        assert!(
+            worktree.join("out/blob").exists(),
+            "`out` was declared only by the FIFO: no cache"
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_closed_tasks_worktree_with_ignored_local_files_is_kept() -> BoxResult<()> {
     let w = world().await?;

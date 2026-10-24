@@ -4,6 +4,39 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-24
+
+- The remote MCP's `secret_update` and `secret_hosts_answer` act on the secret `secrets_list`
+  shows for the name (SPEC-287, task #273, #787): the project's, else the person's own personal
+  one, else a global one switched on for the project. They took the oldest secret of the name
+  among the project's, every global one and the person's own, so a project writer got 403 for a
+  project secret an older global one shared the name of, and an administrator could rebind the
+  shadowed global secret. A secret switched off for the project, or another person's, is "no
+  agent secret NAME".
+- An agent can no longer stop the disk upkeep with a FIFO (SPEC-288, task #274, #853). A
+  worktree's `yulius.toml` was checked by path and then read by path, so a FIFO swapped in between
+  blocked the read for good, and with it every later disk round of the sandbox; a worktree
+  record's `gitdir` was read with no check at all (a FIFO blocked the leftovers round, a link was
+  followed). Both are now opened once without following a link or waiting on a FIFO, and read
+  only when the handle is a small regular file (64 KiB, 4 KiB); anything else declares nothing.
+  The declared caches of an ended worktree are read off the async workers.
+- A CI job's log no longer follows a link an agent planted in its sandbox's `ci/logs` (SPEC-285,
+  task #271, #663). The server created it with `File::create` by path and removed it by path, so a
+  linked `ci/logs`, a link planted between the removal and the create, or `ci/logs` relinked while
+  the job ran made the service user create, truncate or delete a host file. The folder is now
+  opened from the sandbox directory with `O_DIRECTORY | O_NOFOLLOW` (a link there is replaced by a
+  folder), the log created with `O_EXCL | O_NOFOLLOW`, read through that handle and removed with
+  `unlinkat` in the folder's handle (ADR-0174).
+- Concurrent CI checkouts of one run no longer fail on each other's worktree registration
+  (SPEC-289, task #275, #666). `git worktree list` now takes the same process-wide lock as
+  worktree add, move, remove and prune; before, a checkout's list could read another checkout's
+  half-written `.git/worktrees/<name>/` and die ("failed to read …/locked" or "…/commondir").
+- An open event stream follows instance administration (SPEC-286, task #272, #722). It decided
+  admin-only events (`account.updated`, with the subscription's account email) once, when the page
+  connected, so a person whose administration was removed kept receiving them until a reconnect.
+  Each re-check now reads the person again: losing the role stops those events, gaining it starts
+  them, within one re-check interval and without a reconnect.
+
 ## 2026-10-23
 
 - First-run onboarding says what each step does and what comes next (SPEC-283, task #269,

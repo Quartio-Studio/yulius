@@ -594,9 +594,10 @@ flowchart TD
 The server runs outside containment as the service user, and a sandbox's whole directory is
 mounted read-write into its runs and shells, so an agent can swap any folder below it for a link
 at any moment. Wherever the server reads or writes there (editor reads and saves, uploads and
-attachments, imported transcripts, skill copies), it opens the folder once and does everything
-else through that handle
+attachments, imported transcripts, skill copies, a CI job's log in `ci/logs`), it opens the folder
+once and does everything else through that handle
 ([SPEC-220](../.ai/specs/SPEC-220-fix-657-host-writes-into-agent-owned-fol.md),
+[SPEC-285](../.ai/specs/SPEC-285-ci-job-log-created-without-following-pla.md),
 [decision 0174](decisions/0174-host-access-to-agent-owned-folders-goes-through-handles.md)). The
 helpers are `files::open_inside` (a resolved path opened with `O_NOFOLLOW`, the handle's real path
 checked to be inside the root), `files::open_dirs_below` (each folder from the sandbox directory
@@ -1121,7 +1122,9 @@ and the global and personal ones, of every owner, switched on there); `vault/rea
 them for a `Holder`: one per name, project > personal > global, then the instance Vidoc key, and
 never another person's. A task's holder is its owner unless an automation started it
 (`Holder::of_task`); the Superagent's is its person; CI jobs, CD runs and MCP references hold
-nobody, and a task an automation's task creates is an automation task too.
+nobody, and a task an automation's task creates is an automation task too. The remote MCP's
+`secrets_list`, `secret_update` and `secret_hosts_answer` name a secret by what wins for the
+project and the person (SPEC-287), never a shadowed or switched-off one.
 The Superagent's egress caller carries its person; an agent run's carries none: the proxy reads
 its task's current holder on every request, so a hand-over or a deleted task applies also to
 connections opened before it, a hand-over (also one during a launch) rewrites the run's
