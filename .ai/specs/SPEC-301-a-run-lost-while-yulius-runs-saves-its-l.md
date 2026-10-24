@@ -56,8 +56,8 @@ left, whenever the server still held that screen.
 - [x] mark_lost saves the hub's screen before recording the loss
 - [x] Docs and changes entry true
 - [x] Independent review answered
-- [x] Attach-time loss saves no earlier run's screen (review rounds 1-2)
-- [x] Gates green on the delivered head
+- [x] Attach-time loss saves no earlier run's screen (review rounds 1-3)
+- [x] `scripts/dev ci` green on the delivered head's tree
 
 ## Acceptance criteria
 
@@ -66,6 +66,10 @@ left, whenever the server still held that screen.
   that output.
 - A continued task's new run lost before it attached (its stop's escalation, the attach held)
   has no `final-screen`: the previous run's screen, still in the hub, is not saved as its own.
+- A continued task's new run lost just as it attaches (once it is the attached run, before a
+  pending stop asks it to end) saves no `GOAL SET` screen of the run before.
+- A viewer's size change just after the attach took the controller's size is kept: the run ends
+  at the new size (TSK-006).
 - `a_screen_is_saved_only_from_a_hub_with_output` (existing) still passes: no blank overwrite.
 - SPEC-229's reboot test still passes (its loss is recorded with an empty hub: the file stays).
 
@@ -80,6 +84,9 @@ left, whenever the server still held that screen.
 - New integration test `a_run_lost_as_it_attaches_saves_no_screen_of_the_run_before`: the pause
   point `RunAttached` (the run just stored as attached, before a pending stop asks it to end)
   waits until the stop's escalation lost the run; fails while the hub is reset after that point.
+- New integration test `a_size_changed_as_the_run_attaches_is_kept`: at `RunAttached` a viewer
+  that controls the size resizes; the run ends at that size. Fails while the attach resizes to
+  the size it read after that point.
 - Existing: the `task_done::` file's tests and the `save_screen` unit test; the full gate.
 
 ## Decisions
@@ -94,7 +101,8 @@ left, whenever the server still held that screen.
   together, under the run's lock (review round 2: it stored the run first and reset the hub only
   after a stop's shutdown request, up to 2 s later). Viewer input waits on that lock, so input is
   still taken as soon as the screen shows. Rejected: recording in the hub which attempt it shows
-  (a second source of the same fact).
+  (a second source of the same fact). The PTY's resize to the viewer's size follows at once, before any other
+  await, so a viewer's resize meanwhile is not undone by the size the attach read (review round 3).
 - No new ADR: this applies ADR-0177's "the run's end writes it again" to the lost end too.
 
 ## Evidence
@@ -116,6 +124,15 @@ left, whenever the server still held that screen.
   `GOAL SET` saved), fixed by resetting the hub and storing the run together under its lock. Nit
   (the Plan said merged before the merge): the last step is now "Gates green on the delivered
   head".
+- Review round 3 (fresh session, head a3b685b7): APPROVE with 1 minor and 3 nits, own code. Minor
+  (the round-2 reorder read the viewer's size before `limit_counters` and the stop branch, so a
+  resize in between was undone): reproduced by `a_size_changed_as_the_run_attaches_is_kept` at
+  the commit adding it (FAILED, size (100, 30) instead of (90, 25)), fixed by resizing right after
+  the locked reset. Nits: the race test's hook now fails when the run was lost before the attach;
+  the Plan's last items say what ran; the acceptance criteria name the round-2 and round-3 cases.
+  Pre-existing, outside this change (said on #686): if a loss clears `rt.run` between a
+  successful reattach in the reader loop and its store of the run, a stale run is left for the
+  lost attempt.
 - `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^task_done::/) |
   test(/^supervision::/) | test(/^terminal/))'` after the round-2 fix: 75 passed.
 - `scripts/dev ci` at 3de32acf: exit 0, 2602 tests passed (1 slow), 16 skipped; repository

@@ -2672,7 +2672,14 @@ fn a_run_lost_as_it_attaches_saves_no_screen_of_the_run_before() -> TestResult {
                 yulius_app::race::Point::RunAttached,
                 Path::new(held.id.as_str()),
                 move || {
-                    let ended = wait_in_hook(&handle, lost(&app, &attempt));
+                    // Lost already, the attach would test nothing: the loss must come here.
+                    let ended = wait_in_hook(&handle, async {
+                        let before = app.deps.store.attempt(&attempt).await?;
+                        if before.is_some_and(|a| a.state == AttemptState::Lost) {
+                            return Err("the run was lost before it attached".into());
+                        }
+                        lost(&app, &attempt).await
+                    });
                     seen.send_replace(Some(ended.map_err(|e| e.to_string())));
                 },
             );

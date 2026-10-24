@@ -2147,6 +2147,11 @@ impl App {
                 writer: attached.writer,
             });
         }
+        if (cols, rows) != (welcome.cols, welcome.rows)
+            && let Err(err) = self.resize_run(task_id, cols, rows).await
+        {
+            tracing::debug!(task = %task_id, error = %err, "viewer size after attach failed");
+        }
         crate::race::reached(crate::race::Point::RunAttached, Path::new(task_id.as_str()));
         // What the sandbox's limits counted so far: a rise by the run's end says it was at one.
         let counters = self.limit_counters(&sandbox).await;
@@ -2163,11 +2168,6 @@ impl App {
             self.arm_escalation(task_id, Some(attempt.id.clone()));
             self.end_person_pause(task_id).await;
             request_shutdown(&runtime).await;
-        }
-        if (cols, rows) != (welcome.cols, welcome.rows)
-            && let Err(err) = self.resize_run(task_id, cols, rows).await
-        {
-            tracing::debug!(task = %task_id, error = %err, "viewer size after attach failed");
         }
         let app = self.clone();
         let tid = task_id.clone();
