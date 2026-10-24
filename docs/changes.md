@@ -4,6 +4,14 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-24
+
+- An open event stream follows instance administration (SPEC-286, task #272, #722). It decided
+  admin-only events (`account.updated`, with the subscription's account email) once, when the page
+  connected, so a person whose administration was removed kept receiving them until a reconnect.
+  Each re-check now reads the person again: losing the role stops those events, gaining it starts
+  them, within one re-check interval and without a reconnect.
+
 ## 2026-10-23
 
 - First-run onboarding says what each step does and what comes next (SPEC-283, task #269,
