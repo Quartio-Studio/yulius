@@ -20,12 +20,22 @@ leaked; text was over-redacted.
 
 ## Decision
 
-A line of a key block's file is a needle only when, trimmed, it is not empty, is not armour, and
-holds only base64 or base64url symbols (`A-Z a-z 0-9 + / = - _`) and whitespace. The needle is
-the trimmed line. Whitespace is allowed inside a line because a stored key can hold its body on
-one line joined by spaces (a paste whose breaks the browser turned into spaces, with `\n` written
-back only around the armour): that line is key material. The whole stored value stays a needle as
-before.
+Blank lines and armour lines are never needles. Of the other lines, trimmed:
+
+- a line of base64 or base64url symbols (`A-Z a-z 0-9 + / = - _`) and whitespace is a needle
+  whole;
+- a line with other text gives a needle for each run of whitespace-separated base64 tokens that
+  holds a token of at least 32 symbols (`KEY_TOKEN_LEN`), cut from the line as it stands. A key
+  body line is 64 (PEM) or 70 (OpenSSH) symbols; no header word is that long, and header values
+  such as `4,ENCRYPTED` or `AES-128-CBC,<iv>` hold a comma, so they are never base64 tokens.
+
+Whitespace and mixed lines matter because the API (or an agent writing the value) can store a key
+whose body breaks are spaces, with `\n` only around the armour, and `key_block` accepts it: the
+body then sits on one line, alone or after its headers (`Proc-Type: 4,ENCRYPTED DEK-Info: …
+<body>`), and a `.env` copy shows that line. The Secrets page never writes that shape (it
+escapes the clipboard's own breaks), but a needle dropped there would leak the body. The whole
+stored value stays a needle as before; it holds literal `\n`, so it never matches a `.env` copy,
+where the breaks are real.
 
 ## Alternatives
 
@@ -33,6 +43,10 @@ before.
   bundle's in-between text and a PGP signed message's text as needles. Rejected.
 - **No whitespace inside a line**: drops a body joined by spaces, which `key_block` accepts, and
   so leaks it in a `.env` copy (review round 1). Rejected.
+- **Drop every line with a non-base64 symbol**: drops a body joined onto its header line, and
+  leaks it the same way (review round 2). Rejected.
+- **Every base64 token of a mixed line, with no length floor**: header words (`GnuPG v2`,
+  `Synthetic`) pass `MIN_NEEDLE_LEN` and would be over-redacted again. Rejected.
 - **Standard base64 alphabet only**: a body line in the URL-safe alphabet (and the synthetic
   OpenSSH fixtures, which hold `-`) would lose its needle, the one outcome that leaks. Rejected:
   `-` and `_` cost at most an over-redaction.
@@ -46,6 +60,5 @@ before.
   over-redacted (out of scope, said on #599).
 - Text with only words, `=` and spaces (`issuer=CN = Synthetic CA`) and a folded header's
   continuation of base64 symbols stay needles: over-redacted, rare, never a leak.
-- A line with a symbol outside base64, base64url and whitespace (`:`, `,`, `.`) is no longer
-  looked for on its own; no key format writes one in its body, and it stays redacted as part of
-  the whole value.
+- A body token shorter than 32 symbols on a mixed line, with no long token in its run (a body
+  of one short line joined onto a header), is not a needle. No private key's body is that short.

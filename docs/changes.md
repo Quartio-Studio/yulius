@@ -10,8 +10,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   line of a key block but its armour was a redaction needle, so an encrypted PEM's
   `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour headers (`Version: …`, `Hash: SHA256`)
   and the text between a bundle's blocks showed as `[secret:NAME]` anywhere in the sandbox. Only
-  base64 (and base64url) lines are needles now; a bundle's public certificate body stays one
-  (ADR-0215).
+  base64 (and base64url) lines are needles now, and on a line with other text only its runs of
+  base64 holding a key-length token (a body joined onto its headers); a bundle's public
+  certificate body stays one (ADR-0215).
 - An import's snapshot is checked out in a folder of the server, not in the sandbox's
   `worktrees/` (SPEC-296, task #282, #824). The import picked `worktrees/import-<job>` with an
   existence check before Git created it. A link to an empty folder planted there in between made

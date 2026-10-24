@@ -35,13 +35,14 @@ encrypted PEM's `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour's `Vers
 
 ## Requirements
 
-- R1. A line of a key block's file is a redaction needle only when, its surrounding spaces
-  trimmed, it is not empty, is not armour (`-----…`) and holds only base64 or base64url symbols
-  (`A-Z a-z 0-9 + / = - _`) and whitespace. Whitespace is allowed inside: a stored key whose
-  body breaks a paste turned into spaces still has its body on a line (review round 1). The
-  needle is the trimmed line.
-- R2. RFC 1421 header lines (`<token>: <value>`), blank lines and any other text with `:`, `,`,
-  `.` or another symbol outside those alphabets are not needles.
+- R1. Blank lines and armour lines (`-----BEGIN|END <label>-----`) of a key block's file are not
+  needles. Another line, trimmed, of only base64 or base64url symbols (`A-Z a-z 0-9 + / = - _`)
+  and whitespace is a needle whole: a stored key whose body breaks became spaces still has its
+  body on a line (review round 1).
+- R2. A line with other text (RFC 1421 headers `<token>: <value>`, a bundle's `subject=…`) gives a
+  needle for each run of whitespace-separated base64 tokens holding a token of at least 32
+  symbols, cut from the line as it stands: a body joined onto its headers stays a needle (review
+  round 2); headers alone give none.
 - R3. PEM and OpenSSH body lines (base64) stay needles, including the PGP checksum line (`=…`); the
   whole stored value stays a needle as before.
 
@@ -85,6 +86,9 @@ encrypted PEM's `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour's `Vers
   its needles (an over-redaction at worst). Recorded in ADR-0215.
 - D2. Lines are classified and emitted trimmed: a body line with stray spaces keeps a needle (the
   trimmed text is part of the line a `.env` shows), never dropped.
+- D2b. 32 symbols marks key material on a mixed line: body lines are 64 (PEM) or 70 (OpenSSH)
+  symbols and no header word is that long; header values (`4,ENCRYPTED`, `AES-128-CBC,<iv>`)
+  hold a comma. Whitespace is Unicode whitespace, so a non-breaking space also separates.
 - D3. Text made only of words, `=` and spaces (`issuer=CN = Synthetic CA`) or a folded RFC 1421
   header's continuation of base64 symbols stays a needle: over-redaction, never a leak.
 - D4. Out of scope: public certificate body lines in a bundle (base64 too, so still needles and
@@ -108,4 +112,10 @@ encrypted PEM's `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour's `Vers
 - `scripts/dev ci`: exit 0, 2602 tests passed, 16 skipped (after the round-1 fix).
 - `scripts/dev security`: unrun, Vidoc out of quota (HTTP 429, exit 2) for both changed code
   files (ADR-0104).
+- Review round 2 (fresh session): request changes, one major in own code: a body joined onto its
+  header line (`Proc-Type: … DEK-Info: … <body>`) was dropped whole and would leak. Fixed
+  test-first: `a_body_joined_onto_a_header_line_keeps_its_base64_runs` failed (`key_lines`
+  returned `[]`), then passed with base64 runs kept from mixed lines. One minor answered: ADR-0215
+  now says the joined shape comes through the API or an agent (the Secrets page escapes the
+  clipboard's breaks) and that the whole-value needle never matches a `.env` copy.
 - Not tested: a real encrypted key from `openssl` (fixtures are synthetic by rule).
