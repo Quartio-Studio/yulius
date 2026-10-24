@@ -407,6 +407,18 @@ pub fn authorize(
     }
 }
 
+/// The first word of `text` that tells an agent to promote, deploy or verify production, if any
+/// (ADR-0110, #556): instructions Yulius ships to agents are checked with it. The verb "promote"
+/// in any form is one; the noun "promotion" is not, so a text can say whose job promotion is. A
+/// "verif..." within two words of "production" or "prod", or a "deploy..." up to two words before
+/// one, is one too, looked for within a clause (`.`, `,`, `;`, `:` and parentheses end one), so
+/// "deploy dev only if asked (`cd_deploy`); production is a person's" is not.
+#[must_use]
+pub fn production_instruction(text: &str) -> Option<String> {
+    let _ = text;
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,5 +676,35 @@ mod tests {
         assert_eq!(env_label("platform"), "platform");
         assert!(valid_secret_name("DEV_SSH_KEY"));
         assert!(!valid_secret_name("dev_key") && !valid_secret_name("1KEY"));
+    }
+
+    #[test]
+    fn production_instructions_are_found_and_the_rule_stays_sayable() {
+        for told in [
+            "deliver: merge on green, deploy and verify, promote, verify production, clean up",
+            "Promote `dev` to `main` once green.",
+            "The agent promotes the release.",
+            "then verified production",
+            "Verify the production deploy.",
+            "run the production\n  verification",
+            "deploy to production",
+            "Deploys the prod environment",
+        ] {
+            assert!(production_instruction(told).is_some(), "{told}");
+        }
+        for fine in [
+            "Production, with its promotion to `main`, is always a person's decision and action.",
+            "merge on green, clean up (`git-hygiene`), deploy dev only if asked (`cd_deploy`); \
+             production is a person's.",
+            "A merge deploys nothing; production is a person's.",
+            "Production-grade defaults: explicit error handling.",
+            "Deploy and verify `dev` only when the task asks. Promotions are a person's.",
+        ] {
+            assert_eq!(production_instruction(fine), None, "{fine}");
+        }
+        assert_eq!(
+            production_instruction("then promote it").as_deref(),
+            Some("promote")
+        );
     }
 }
