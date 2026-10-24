@@ -471,9 +471,9 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-302 (#599): only the base64 lines of a key block are redaction needles. An encrypted
-    /// PEM's RFC 1421 headers, PGP armour headers, blank lines and the text between a bundle's
-    /// blocks are public text that would show as `[secret:NAME]` wherever it appears.
+    /// SPEC-302 (#599): an encrypted PEM's RFC 1421 headers, PGP armour headers, blank lines and
+    /// OpenSSL's `subject=`/`issuer=` between a bundle's blocks are public text that would show as
+    /// `[secret:NAME]` wherever it appears: not redaction needles. Body lines stay needles.
     #[test]
     fn header_lines_and_blank_lines_are_not_key_lines() {
         let encrypted = key_file(
@@ -536,8 +536,8 @@ mod tests {
 
     /// SPEC-302 (review rounds 2 and 3): a body joined onto its header line, by spaces or glued
     /// (a value whose breaks became spaces or were dropped, `\n` kept only around the armour), is
-    /// key material: a line with a run of more than 32 base64 symbols stays a needle whole. A
-    /// header alone never has one: an IV is at most 32 hex digits.
+    /// key material: a header line with a run of more than 32 base64 symbols stays a needle
+    /// whole. A header alone never has one: an IV is at most 32 hex digits.
     #[test]
     fn a_line_with_a_key_length_base64_run_stays_a_needle() {
         let one = "c3ludGhldGljLWpvaW5lZC1ib2R5LWxpbmUtMDE=";
