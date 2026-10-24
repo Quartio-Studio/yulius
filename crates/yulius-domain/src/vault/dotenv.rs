@@ -127,14 +127,21 @@ fn wipe(value: String) {
     std::hint::black_box(&bytes);
 }
 
-/// The lines of a key block's file that hold key material (its armour excluded): a copied key
-/// file shows them one per line, so redaction looks for each (SPEC-186 SAV-005). Empty for a
-/// value that is not a key block.
+/// The lines of a key block's file that hold key material: a copied key file shows them one per
+/// line, so redaction looks for each (SPEC-186 SAV-005). Only base64 lines (base64url too) count,
+/// trimmed: armour, RFC 1421 headers (`Proc-Type: 4,ENCRYPTED`, `Version: …`), blank lines and
+/// the text between a bundle's blocks are public text, never a key's (SPEC-302, ADR-0215). Empty
+/// for a value that is not a key block.
 #[must_use]
 pub fn key_lines(value: &str) -> Vec<String> {
     key_block(value).map_or_else(Vec::new, |file| {
         file.lines()
-            .filter(|line| !line.starts_with("-----"))
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with("-----"))
+            .filter(|line| {
+                line.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "+/=-_".contains(c))
+            })
             .map(str::to_owned)
             .collect()
     })
