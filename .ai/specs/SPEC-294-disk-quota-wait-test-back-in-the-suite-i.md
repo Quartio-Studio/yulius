@@ -53,10 +53,10 @@ next CI failure, now kept by SPEC-145, names the assertion.
 ## Plan
 
 - [x] Spec SPEC-294 with the hunt plan
-- [ ] Fast failure hunted with probe delays at the publish and clock races
-- [ ] Any race found fixed test-first with a regression test
-- [ ] Disk-quota wait test back in the suite, 50 loaded runs green
-- [ ] Changes entry, gates and security scan green
+- [x] Fast failure hunted with probe delays at the publish and clock races
+- [x] Any race found fixed test-first with a regression test
+- [x] Disk-quota wait test back in the suite, 50 loaded runs green
+- [x] Changes entry, gates and security scan green
 - [ ] Independent review answered and merged on green
 
 ## Acceptance criteria
@@ -87,3 +87,25 @@ next CI failure, now kept by SPEC-145, names the assertion.
   assertion message, which is the remaining way to find the cause (the issue's close condition).
 - D3. No ADR: nothing lasting is decided beyond SPEC-145's ADR-0119 (CI keeps failing tests'
   output).
+
+## Evidence
+
+- Probe rounds at dev `3768adba` (temporary `probe485` sleeps of 0-300 ms behind an environment
+  variable, reverted; `grep -rn PROBE485 crates` is empty): at `ci_try_publish`'s read and record,
+  the wait note, the end of the check, `ci_disk_room`'s reading, a run's start, the job-end publish
+  and a run's end and final publish. The probes fired (one run: 7.5 s without, 11.5 s with).
+  - 40/40 passed, sequential.
+  - 64/64 passed, 8 processes at a time.
+  - 24/24 passed with 20 extra clock jumps of 61 s while the runs execute.
+- No race reproduced: no product change (step "Any race found fixed test-first" skipped, D1).
+- Loaded proof (R4, AC3): 50/50 `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+  test(/^local_ci::a_run_over_the_disk_quota/)'` in a row while a controller held a 2 s CPU-bound
+  probe at 0.2 of a CPU (median 0.201 over 119 readings, 12-78 busy loops); the test took 3.3-12.5 s
+  (median 7.1 s; 1.6-5.8 s unloaded).
+- Gate (AC2, AC4): `scripts/dev ci` exit 0 at `7b85ca79`, 2591 tests run, 2591 passed, 16 skipped;
+  `local_ci::a_run_over_the_disk_quota_waits_and_starts_when_space_frees` PASS 1.961 s (no longer
+  skipped).
+- `scripts/dev security`: exit 2, not run: Vidoc is out of quota for this key (HTTP 429). Unrun,
+  not passed. The change is a test attribute and doc comment, a spec and a changes entry.
+- Issue #485 comment with these results:
+  https://github.com/Quartio-Studio/yulius/issues/485#issuecomment-6385884092
