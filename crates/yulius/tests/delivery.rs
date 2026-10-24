@@ -5071,7 +5071,7 @@ async fn an_environment_run_writing_past_its_disk_bound_is_stopped() -> TestResu
                 "preset": "product", "integration_branch": "quartio", "production_branch": "main",
                 "merge": "merge", "promote": "fast_forward", "auto_promote": false,
                 "environments": [{"name": "dev-vm", "after": "integration", "verify": "command",
-                    "command": "head -c 32000000 /dev/zero > \"$HOME/fill\"; echo filled; sleep 30"}]
+                    "command": "head -c 32000000 /dev/urandom > \"$HOME/fill\"; echo filled; sleep 30"}]
             }})),
             &f.alice,
         )

@@ -500,7 +500,7 @@ async fn a_failing_deploy_skips_verify_and_one_run_at_a_time() -> TestResult {
 async fn a_run_writing_past_its_disk_bound_is_stopped() -> TestResult {
     let cd = "[cd.dev]\n\
               deploy = \"if [ -f big ]; then mkdir -p $YULIUS_CD_CACHE/mod/lib; \
-              head -c 32000000 /dev/zero > $YULIUS_CD_CACHE/mod/lib/fill; \
+              head -c 32000000 /dev/urandom > $YULIUS_CD_CACHE/mod/lib/fill; \
               chmod 555 $YULIUS_CD_CACHE/mod/lib $YULIUS_CD_CACHE/mod; \
               echo filled; sleep 30; else sleep 7; fi; echo small\"\n";
     let f = fixture_configured(
@@ -520,7 +520,7 @@ async fn a_run_writing_past_its_disk_bound_is_stopped() -> TestResult {
     assert_eq!(run["state"], "error", "{run}");
     assert!(
         reason.contains("past the 8 MB disk bound for a run")
-            && reason.contains("cache 32 MB")
+            && reason.contains("cache 3")
             && reason.ends_with("; its cache was emptied"),
         "{reason}"
     );

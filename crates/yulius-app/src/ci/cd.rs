@@ -299,18 +299,26 @@ impl App {
 
     /// Removes `path`, a run's directory, files or cache below the data directory: through
     /// handles, links never followed, folders a tool made read-only made writable (a Go module
-    /// cache); else by path (development hosts without `/proc`); else, for files a production
-    /// run's containers wrote as mapped ids, as the sandbox's mapped root (SPEC-279, SPEC-300).
+    /// cache), off the async runtime; else by path on development hosts without `/proc`; else,
+    /// for files a production run's containers wrote as mapped ids, as the sandbox's mapped root
+    /// (SPEC-279, SPEC-300).
     async fn remove_run_tree(&self, path: &Path) -> Result<(), String> {
-        let Err(error) = crate::leftovers::remove_below(&self.config.data_dir, path) else {
-            return Ok(());
+        let (data, owned) = (self.config.data_dir.clone(), path.to_path_buf());
+        let removed = tokio::task::spawn_blocking(move || {
+            let error = crate::leftovers::remove_below(&data, &owned).err()?;
+            let gone = std::fs::symlink_metadata(&owned).is_err()
+                || (!cfg!(target_os = "linux") && std::fs::remove_dir_all(&owned).is_ok());
+            (!gone).then(|| error.to_string())
+        })
+        .await;
+        let error = match removed {
+            Ok(None) => return Ok(()),
+            Ok(Some(error)) => error,
+            Err(error) => error.to_string(),
         };
-        if std::fs::symlink_metadata(path).is_err() || std::fs::remove_dir_all(path).is_ok() {
-            return Ok(());
-        }
         match self.isolation.get() {
             Some(isolation) => isolation.remove_owned_tree(path).await,
-            None => Err(error.to_string()),
+            None => Err(error),
         }
     }
 
