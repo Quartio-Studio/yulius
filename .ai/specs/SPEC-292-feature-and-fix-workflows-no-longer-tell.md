@@ -42,7 +42,9 @@ that dev is deployed only when the task asks, and leave production, with its pro
 ## Requirements
 
 - FIX-1: No bundled workflow (its whole file: description, steps and instructions) contains the verb
-  "promote" (any form but the noun "promotion") or "verify production" in any form.
+  "promote" (any form but the noun "promotion"), nor a "verif..." within two words of "production"
+  or "prod", nor a "deploy..." up to two words before one, within a clause. One domain rule,
+  `yulius_domain::cd::production_instruction`, says so for every shipped text.
 - FIX-2: The Feature and Fix instructions end with: merge on green, clean up (`git-hygiene`), deploy
   dev only when the task asks (`cd_deploy`), and production being a person's.
 - FIX-3: The Feature description ends delivery at a merge on green, not at "verified production".
@@ -54,8 +56,8 @@ that dev is deployed only when the task asks, and leave production, with its pro
 ## Plan
 
 - [x] Root cause confirmed and fix spec written
-- [ ] Regression tests that fail on the promote instructions
-- [ ] Feature, Fix and AGENTS.md template tell agents not to promote
+- [x] Regression tests that fail on the promote instructions
+- [x] Feature, Fix and AGENTS.md template tell agents not to promote
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, changes log updated
 
@@ -64,17 +66,22 @@ that dev is deployed only when the task asks, and leave production, with its pro
 - `catalog/workflows/feature.md` and `fix.md` no longer tell the agent to promote or verify
   production; the Feature description no longer says "verified production".
 - `no_workflow_tells_agents_to_promote` (next to `the_shipped_catalog_is_valid`) fails on dev and
-  passes with the fix; it rejects "promote" and production verification in every bundled workflow
-  and requires the Feature and Fix delivery clause to name `cd_deploy` and a person's production.
+  passes with the fix; it rejects "promote" and production deploys or verification in every bundled
+  workflow and requires the Feature and Fix delivery clause to name `cd_deploy` and "production is
+  a person's".
 - `agents_md_leaves_production_to_a_person` fails on dev and passes with the fix.
 - A `docs/changes.md` entry.
 
 ## Test plan
 
+- Unit, `crates/yulius-domain/src/cd.rs`:
+  `production_instructions_are_found_and_the_rule_stays_sayable` gives `production_instruction`
+  the old clause and rewordings ("Promote", "promotes", "verified production", "verify the
+  production deploy", "production verification", "deploy to production", "deploys the prod"), all
+  found, and the sentences that state the rule, none found.
 - Unit, `crates/yulius-app/src/workflows/catalog.rs`: `no_workflow_tells_agents_to_promote`
-  scans every embedded workflow file (lowercased words), so a new workflow that tells agents to
-  promote fails too. It allows the noun "promotion", since a sentence saying promotion is a
-  person's job needs it.
+  runs the rule over every embedded workflow file, so a new workflow that tells agents to promote
+  fails too.
 - Unit, `crates/yulius-domain/src/spec_format/templates.rs`:
   `agents_md_leaves_production_to_a_person` renders AGENTS.md for every template.
 - The existing budget assertion in `the_shipped_catalog_is_valid` covers FIX-5.
@@ -82,6 +89,12 @@ that dev is deployed only when the task asks, and leave production, with its pro
 
 ## Decisions
 
+- One rule in the domain (`cd::production_instruction`, beside the deploy rule of ADR-0110), used
+  by both tests, instead of two hand-written checks that drifted (review round 1: the AGENTS.md
+  check matched exact, case-sensitive substrings).
+- Phrases are looked for within a clause: "deploy dev only if asked (`cd_deploy`); production is a
+  person's" is two clauses and states the rule. "Merge `dev` into `main`" is not looked for:
+  prohibitions name `main` too ("never commit or push to `dev` or `main` directly").
 - Reject the verb, allow the noun. Rejecting every occurrence of "promot" would forbid the sentence
   that states the rule; rejecting the verb forms and "verify/verified/verifies production" catches
   the instruction (its old wording and plausible rewordings) while the rule stays sayable.
