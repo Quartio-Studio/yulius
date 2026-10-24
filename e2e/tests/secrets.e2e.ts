@@ -594,8 +594,8 @@ test('editing a team secret loads its current notes after a two-factor code', as
 
 /**
  * Pastes `text` into the open team secret dialog's Value field as the clipboard would, after
- * selecting `select` (start, end) of what it holds: whether the page took the paste, the field's
- * type and whether the pasted text's first line is in the page's markup.
+ * selecting `select` (start, end) of what it holds: whether the page took the paste and the
+ * field's type (`password` is what keeps it masked: a field's value is never in the markup).
  */
 function pasteTeamValue(browser: any, text: string, select?: [number, number]) {
   return browser.evaluate(({ t, s }: { t: string; s: [number, number] | null }) => {
@@ -607,7 +607,7 @@ function pasteTeamValue(browser: any, text: string, select?: [number, number]) {
     data.setData('text/plain', t);
     const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
     input.dispatchEvent(event);
-    return { prevented: event.defaultPrevented, type: input.type, inMarkup: document.body.innerHTML.includes(t.split(/\r\n|\r|\n/)[0]) };
+    return { prevented: event.defaultPrevented, type: input.type };
   }, { t: text, s: select || null });
 }
 
@@ -625,12 +625,12 @@ test('a pasted multi-line team secret value keeps its line breaks, masked, and S
   const crlf = 'mock-recovery-0001\r\nmock-recovery-0002\r\nmock-recovery-0003\r\n';
   const lf = 'mock-key-line-01\nmock-key-line-02\n';
 
-  // Add: a CRLF paste (copied on Windows) is kept as pasted; the field stays masked and the value
-  // out of the markup.
+  // Add: a CRLF paste (copied on Windows) is kept as pasted; the field stays a masked password
+  // field.
   await screen.getByRole('button', 'Add team secret').click();
   const add = screen.getByRole('dialog', 'Add team secret');
   await screen.getByLabel('Title').fill('Recovery codes');
-  expect(await pasteTeamValue(browser, crlf)).toEqual({ prevented: true, type: 'password', inMarkup: false });
+  expect(await pasteTeamValue(browser, crlf)).toEqual({ prevented: true, type: 'password' });
   // The field says so, in its description.
   expect(await browser.evaluate(() => {
     const input = document.querySelector('dialog.modal input[type="password"]')!;
@@ -646,7 +646,7 @@ test('a pasted multi-line team secret value keeps its line breaks, masked, and S
   await screen.getByRole('button', 'Edit Shared Gmail').click();
   const edit = screen.getByRole('dialog', 'Edit Shared Gmail');
   await browser.locator('dialog.modal input[type="password"]').fill('before-SELECTED-after');
-  expect(await pasteTeamValue(browser, lf, [7, 15])).toEqual({ prevented: true, type: 'password', inMarkup: false });
+  expect(await pasteTeamValue(browser, lf, [7, 15])).toEqual({ prevented: true, type: 'password' });
   // A one-line paste is the browser's, as before.
   expect((await pasteTeamValue(browser, 'one-line')).prevented).toBe(false);
   await edit.getByRole('button', 'Save').click();

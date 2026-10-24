@@ -45,6 +45,8 @@ people: it must come back exactly as pasted. And it must stay masked while typed
   breaks as `\n`).
 - U+E00A or U+E00D typed or pasted into a team secret's Value become line breaks. They are
   private-use characters that no secret is expected to hold.
-- Each pasted line break counts as one masked dot.
-- A line break typed with the keyboard is still impossible: Enter submits the form. Multi-line
-  values come from a paste or `yulius secrets import`.
+- Each pasted LF and CR counts as one masked dot (a CRLF as two).
+- A line break typed with the keyboard is still impossible: Enter submits the form. Text dragged
+  into the field, or inserted without a `paste` event (a phone keyboard's clipboard suggestion),
+  still loses its line breaks; the hint promises them for a paste only. Multi-line values come
+  from a paste or `yulius secrets import`.

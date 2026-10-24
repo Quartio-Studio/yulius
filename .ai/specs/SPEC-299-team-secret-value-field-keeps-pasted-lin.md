@@ -67,7 +67,7 @@ dialog and on the card) gives back the original text.
 ## Test plan
 
 - e2e (`e2e/tests/secrets.e2e.ts`): "a pasted multi-line team secret value keeps its line
-  breaks, masked, and Copy returns it" covering TLB-001..004 with a CRLF paste in Add and an LF
+  breaks, masked, and Show and Copy return them" covering TLB-001..004 with a CRLF paste in Add and an LF
   paste in Edit (paste dispatched as a `ClipboardEvent` with a `DataTransfer`, as SPEC-193's test
   does), Show, the dialog's Copy and the card's Copy (clipboard stubbed), and axe.
 - Run first on the unchanged page to show it fails (the stored value has no line breaks).
