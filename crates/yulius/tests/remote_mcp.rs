@@ -1205,6 +1205,19 @@ async fn remote_secret_tools_act_on_the_secret_that_wins() -> TestResult {
         none,
         "the global one is untouched"
     );
+    // An administrator, who may manage both, changes the project's one too.
+    let (error, said, _) = remote(
+        &w,
+        &root_agent,
+        "secret_update",
+        shop(json!({"secret": "NPM_TOKEN", "description": "npm for the shop"})),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    for (key, description) in [("project npm", "npm for the shop"), ("global npm", "")] {
+        let record = w.h.store.vault_get(&ids[key]).await?.ok_or(key)?;
+        assert_eq!(record.description, description, "{key}");
+    }
 
     // Its host request is answered on the project's secret too.
     for key in ["global npm", "project npm"] {

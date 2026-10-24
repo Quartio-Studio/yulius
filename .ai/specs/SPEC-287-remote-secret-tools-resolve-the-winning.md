@@ -14,7 +14,7 @@ to the remote MCP of SPEC-247 (RMT-027); no new decision record.
 
 ## Goal
 
-The remote MCP's `secret_update` and `secret_hosts_answer` (and the CLI commands built on them)
+The remote MCP's `secret_update` and `secret_hosts_answer`
 act on the secret `secrets_list` showed the person for that name: the one that wins for this
 project and this person, project > the person's personal > a global switched on for the project.
 
@@ -89,7 +89,8 @@ project and this person, project > the person's personal > a global switched on 
 
 - Regression test first (commit 128cba1f, on dev's code): `cargo nextest run -p yulius -E
   'binary_id(yulius::main) & test(/^remote_mcp::remote_secret_tools/)'` failed at
-  `remote_mcp.rs:1185`: "global secrets are managed by instance administrators" (alice's
+  the assertion "the project's secret, which alice manages": "global secrets are managed by
+  instance administrators" (alice's
   `secret_update` of `NPM_TOKEN` hit the older global secret).
 - After the fix (0ae2b4e5): `remote_mcp::`, `secrets_scopes::` and `cli::` tests, 49 passed.
 - `scripts/dev ci` at 7a16509b: exit 0 (fmt, clippy, check, macOS, nextest, doctests, deps).
@@ -101,5 +102,13 @@ project and this person, project > the person's personal > a global switched on 
   `Holder::Person(&project.user)` is what it returns for a remote caller (no task). Nit: plan item,
   ticked here. No other lookup by name has this pattern (reviewer checked every
   `agent_secrets` / `vault_agent_*` caller; `secret_delete` picks the project's own by scope).
+- `scripts/dev ci` at a15c6eb3: exit 0. `yulius security-scan` at a15c6eb3: exit 2, not run
+  (Vidoc HTTP 429, the key's quota is used up); unrun, not passed. Yulius CI's `security` job
+  decides on the pull request head.
+- Review round 2 (fresh session): APPROVE at a15c6eb3, four nits, all own code, all fixed: the
+  failing assertion cited by its message, "CLI commands" dropped from the Goal (no CLI command
+  wraps these tools), the changes entry names every candidate dev's lookup took the oldest of, and
+  the test pins the administrator symptom (root's `secret_update` of `NPM_TOKEN` changes the
+  project's description, not the global one's).
 - `remote_mcp::` after round 1: 33 passed. Yulius CI runs the gate and the Vidoc change scan on the
   pull request head.
