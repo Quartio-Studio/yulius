@@ -437,6 +437,66 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-302 (#599): only the base64 lines of a key block are redaction needles. An encrypted
+    /// PEM's RFC 1421 headers, PGP armour headers, blank lines and the text between a bundle's
+    /// blocks are public text that would show as `[secret:NAME]` wherever it appears.
+    #[test]
+    fn header_lines_and_blank_lines_are_not_key_lines() {
+        let encrypted = key_file(
+            &format!("{} PRIVATE KEY", "RSA"),
+            &[
+                "Proc-Type: 4,ENCRYPTED",
+                "DEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF",
+                "",
+                "c3ludGhldGljLWVuY3J5cHRlZC1ib2R5LTAx",
+                "c3ludGhldGljLTAy+/==",
+            ],
+        );
+        let pgp = key_file(
+            &format!("{} PRIVATE KEY BLOCK", "PGP"),
+            &[
+                "Version: Synthetic 1.0",
+                "Hash: SHA256",
+                "",
+                "c3ludGhldGljLXBncC1ib2R5LTAx",
+                // A body in the base64url alphabet keeps its needle too.
+                "c3ludGhldGljLXVybC1ib2R5_-",
+                "=c3lu",
+            ],
+        );
+        let bundle = format!(
+            "{}subject=CN = synthetic.example\nissuer=CN = Synthetic CA\n{}",
+            key_file("SYNTHETIC KEY", &["c3ludGhldGljLWtleS1ib2R5"]),
+            // A stray space around a body line: the line is kept, trimmed.
+            key_file("CERTIFICATE", &["  c3ludGhldGljLWNlcnQtYm9keQ==  "])
+        );
+        for (file, body) in [
+            (
+                &encrypted,
+                vec![
+                    "c3ludGhldGljLWVuY3J5cHRlZC1ib2R5LTAx",
+                    "c3ludGhldGljLTAy+/==",
+                ],
+            ),
+            (
+                &pgp,
+                vec![
+                    "c3ludGhldGljLXBncC1ib2R5LTAx",
+                    "c3ludGhldGljLXVybC1ib2R5_-",
+                    "=c3lu",
+                ],
+            ),
+            (
+                &bundle,
+                vec!["c3ludGhldGljLWtleS1ib2R5", "c3ludGhldGljLWNlcnQtYm9keQ=="],
+            ),
+        ] {
+            let stored = file.trim_end().replace('\n', "\\n");
+            assert_eq!(key_block(&stored).as_deref(), Some(file.as_str()));
+            assert_eq!(key_lines(&stored), body, "{file}");
+        }
+    }
+
     /// SPEC-186 SAV-005: a key stored with literal `\n` (an agent secret never spans lines) is
     /// written as the key file it stands for, with its final line break, whether or not the
     /// stored value ends with a literal `\n`; `sh` and dotenv readers read single quotes
