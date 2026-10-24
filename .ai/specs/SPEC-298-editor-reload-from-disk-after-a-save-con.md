@@ -1,11 +1,11 @@
 ---
 yulius-task: 5ff9fbda-c027-4c25-a9ee-a0886ea15533
-status: in-progress
+status: done
 ---
 
 # SPEC-298: "Reload from disk" after a save conflict shows the disk's text or says why not
 
-Status: in-progress
+Status: done
 Date: 2026-10-24
 Owner: Yulius task #284
 Scope authorization: issue [#571](https://github.com/Quartio-Studio/yulius/issues/571) (found by
@@ -55,7 +55,7 @@ marked "Saved": it shows the disk's text, or it keeps the text marked modified a
 - [x] Failing e2e tests: deleted file and same version after a 409
 - [x] Reload from disk keeps the modified mark unless it loaded the disk's text
 - [x] Independent review answered
-- [ ] Gates green and docs updated
+- [x] Gates green and docs updated
 
 ## Acceptance criteria
 
@@ -67,7 +67,7 @@ marked "Saved": it shows the disk's text, or it keeps the text marked modified a
 
 ## Test plan
 
-- `e2e/tests/editor.e2e.ts`: two tests next to "unsaved edits are kept when the disk moves on",
+- `e2e/tests/editor.e2e.ts`: four tests next to "unsaved edits are kept when the disk moves on",
   using the mock's file tree (`__yuliusMock.repoFile`, and new `removeRepoFile`, `repoFileTooLarge`
   and `holdReads` hooks). The first two fail before the fix: the status says "Saved" and the text is
   the person's. Review: a too-large file's toast, and a look started while the reload's read is held
@@ -90,3 +90,22 @@ marked "Saved": it shows the disk's text, or it keeps the text marked modified a
   modified and nothing drew them again (found by the full e2e run; the mock's `holdReads` now
   orders the answers).
 - No ADR: this restores the intended behavior of an existing requirement.
+
+## Evidence
+
+- Regression tests first (commit 980b1e15): the deleted-file and same-version tests failed on the
+  unfixed code (no "The file was deleted" toast; the text stayed `mine alpha…` with "Saved").
+  Review round 1 tests (commit 88004dcd): the too-large toast and the look-while-reloading
+  test failed before their fix (wrong wording; the newer look asked with `known`). The full e2e run
+  then caught the moot-answer-first order; with `holdReads` the test failed 3/3 without
+  `markSaved` and passed 3/3 with it.
+- `npx e2e run tests/editor.e2e.ts`: 30 passed.
+- `npx e2e run` (full suite, HEAD b14e4477): 706 passed, 1 skipped (67 files).
+- `scripts/dev ci` (HEAD 43f20af5; later commits change only the web assets, e2e tests and docs):
+  exit 0, 2600 tests passed, 16 skipped.
+- `scripts/dev security`: not run, exit 2: Vidoc is out of quota for this key (HTTP 429 "This API
+  key has used its 50,000,000 tokens"); `editorview.js` and `editor.e2e.ts` were not scanned.
+- Independent review (fresh session, om-code-review): round 1 APPROVE with two minors (too-large
+  wording, a newer look dropping the reload), both fixed test-first; round 2 APPROVE; round 3
+  APPROVE of the redraw fix. Open nit left: the reload's `!file` branch would throw on a 204, which
+  a reload cannot get (it never sends `known`).
