@@ -106,6 +106,8 @@ pub struct CiSettings {
     pub job_timeout: Duration,
     /// How often each sandbox is checked for new heads.
     pub poll: Duration,
+    /// Bytes a CD or environment run's files and cache may use (SPEC-300, ADR-0216).
+    pub run_disk_max: u64,
 }
 
 impl Default for CiSettings {
@@ -116,6 +118,7 @@ impl Default for CiSettings {
             lanes: 2,
             job_timeout: Duration::from_secs(30 * 60),
             poll: Duration::from_secs(60),
+            run_disk_max: 20_000_000_000,
         }
     }
 }
