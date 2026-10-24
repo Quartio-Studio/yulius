@@ -48,7 +48,7 @@ use yulius_domain::spec_format::{MAX_CONFIG_BYTES, parse_yulius_toml_cd};
 use yulius_domain::time::Timestamp;
 
 use super::OUTPUT_BYTES;
-use super::exec::{Ended, Sink, ci_join};
+use super::exec::{Ended, RunLog, Sink, ci_join};
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::coordination::AgentContext;
@@ -1455,7 +1455,7 @@ impl App {
             Sink::CdRun(&run.id, &sandbox.id),
             &plan,
             &token,
-            &log,
+            RunLog::At(&log),
             (ring, Some(&mut stages), None),
             cancel,
         )

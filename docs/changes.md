@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-24
 
+- A CI job's log no longer follows a link an agent planted in its sandbox's `ci/logs` (SPEC-285,
+  task #271, #663). The server created it with `File::create` by path and removed it by path, so a
+  linked `ci/logs`, a link planted between the removal and the create, or `ci/logs` relinked while
+  the job ran made the service user create, truncate or delete a host file. The folder is now
+  opened from the sandbox directory with `O_DIRECTORY | O_NOFOLLOW` (a link there is replaced by a
+  folder), the log created with `O_EXCL | O_NOFOLLOW`, read through that handle and removed with
+  `unlinkat` in the folder's handle (ADR-0174).
 - Concurrent CI checkouts of one run no longer fail on each other's worktree registration
   (SPEC-289, task #275, #666). `git worktree list` now takes the same process-wide lock as
   worktree add, move, remove and prune; before, a checkout's list could read another checkout's
