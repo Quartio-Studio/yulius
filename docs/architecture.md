@@ -1011,8 +1011,8 @@ A key block stored that way is written to a `.env` as its file (`dotenv::key_blo
 base64 lines are redaction needles, not its headers, blank lines or the text between a bundle's
 blocks ([decision 0215](decisions/0215-only-a-key-block-s-base64-lines-are-redaction-needles.md)).
 The Secrets page's value field is one line, so it writes a pasted key block's line breaks as
-literal `\n`; `check_agent_value` refuses a key flattened onto one line (`dotenv::flattened_key`), and the agent secrets list marks one stored before that `flattened`
-for the people who manage it
+literal `\n`; `check_agent_value` refuses a key flattened onto one line (`dotenv::flattened_key`),
+and the agent secrets list marks one stored before that `flattened` for the people who manage it
 ([SPEC-193](../.ai/specs/SPEC-193-creating-multiline-keys-fails-make-sure.md),
 [decision 0156](decisions/0156-a-pasted-multi-line-secret-is-stored-with-escaped-line-breaks.md)).
 
