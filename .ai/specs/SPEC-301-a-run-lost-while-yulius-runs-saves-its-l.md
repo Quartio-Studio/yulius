@@ -50,17 +50,18 @@ left, whenever the server still held that screen.
 ## Plan
 
 - [x] Spec SPEC-301 written and valid
-- [ ] Regression test: a lost run's final screen holds its hub's output (fails on dev)
-- [ ] mark_lost saves the hub's screen before recording the loss
-- [ ] Docs and changes entry true
+- [x] Regression test: a lost run's final screen holds its hub's output (fails on dev)
+- [x] mark_lost saves the hub's screen before recording the loss
+- [x] Docs and changes entry true
 - [ ] Independent review answered
 - [ ] Gates green and PR merged on green
 
 ## Acceptance criteria
 
-- A run whose host is killed while the server runs, after its turn settled and its `final-screen`
-  was replaced by a stand-in for an older screen, ends `stopped(lost)` with a `final-screen` that
-  shows the hub's screen (`GOAL SET`), not the stand-in.
+- A run whose host is killed while the server runs, after its turn settled (its `final-screen`
+  saved) and more output reached its hub, ends `stopped(lost)` with a `final-screen` that shows
+  that output.
+- A loss recorded after another observer already recorded the run's end saves nothing.
 - `a_screen_is_saved_only_from_a_hub_with_output` (existing) still passes: no blank overwrite.
 - SPEC-229's reboot test still passes (its loss is recorded with an empty hub: the file stays).
 

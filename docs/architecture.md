@@ -1799,7 +1799,10 @@ whose conversation it continues decides when it is finished
 
 A reboot (or any lost run) ends a task by what it was doing
 ([ADR-0177](decisions/0177-a-run-lost-after-its-goal-closes-the-task.md)). Every settled turn saves
-the run's screen to its `final-screen`, so the terminal of a run lost later is not blank:
+the run's screen to its `final-screen`, so the terminal of a run lost later is not blank. A run
+lost while the server runs saves the screen it was lost on as well
+([SPEC-301](../.ai/specs/SPEC-301-a-run-lost-while-yulius-runs-saves-its-l.md)); after a restart the
+new server's hub has no output and the saved screen stays:
 
 ```mermaid
 flowchart LR
@@ -1807,6 +1810,7 @@ flowchart LR
     lost["run lost: reconcile found it dead or missing,\na lost connection, a stop that timed out"] --> which{"task running\nwith activity done?"}
     which -->|"yes: nothing was lost"| closed["closed"]
     which -->|"no"| stopped["stopped(server_lost / lost)\nContinue offered"]
+    lost -->|"writes (hub with output)"| screen
     screen -.->|"no live run: the terminal shows it"| view["task terminal"]
 ```
 
