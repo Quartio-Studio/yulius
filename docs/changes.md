@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-24
 
+- The Feature and Fix workflows no longer tell agents to promote and verify production (SPEC-292,
+  task #278, #556). Their instructions ended with "deliver: merge on green, deploy and verify,
+  promote, verify production", the Feature description said "from spec to verified production",
+  and the AGENTS.md generated for new projects said "promotion to `main` by a merge commit, verify
+  production", against ADR-0110 (only a person promotes and deploys production). They now end at a
+  merge on green and cleanup, deploy dev only when the task asks (`cd_deploy`), and leave
+  production, with its promotion, to a person. Unit tests reject the instruction to promote or
+  verify production in every bundled workflow and in the AGENTS.md template.
 - An achieved goal no longer leaves its task Working for good when Yulius did not settle the
   turn's Stop hook (SPEC-290, task #276, #877). The hook client fails open, so a Stop that Yulius
   answered with an error, or could not answer, still ended the turn in Claude Code, and the task

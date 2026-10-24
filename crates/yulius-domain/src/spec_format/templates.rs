@@ -362,8 +362,9 @@ fn agents_md(template: TemplateKind, names: &Names, commands: &Commands) -> Stri
          \n\
          Every feature and fix takes the same autonomous path: spec, implementation slice by\n\
          slice, independent review in a fresh session, fixes, gates, a small pull request into\n\
-         `dev`, merge on green, deploy and verify `dev`, promotion to `main` by a merge commit,\n\
-         verify production. There is no human acceptance step; the gates decide.\n\
+         `dev`, merge on green, cleanup. There is no human acceptance step; the gates decide. A\n\
+         merge deploys nothing: deploy and verify `dev` only when the task asks. Production,\n\
+         with its promotion to `main`, is always a person's decision and action.\n\
          \n\
          - One task, one branch, one worktree from `dev`; never commit or push to `dev` or\n  \
            `main` directly, never `--no-verify`, no `git stash` as a tool, never rebase or\n  \
@@ -856,7 +857,11 @@ mod tests {
             let files = scaffold_files("Online Shop", template);
             let agents = file(&files, "AGENTS.md")?;
             let flat = agents.split_whitespace().collect::<Vec<_>>().join(" ");
-            for forbidden in ["verify production", "promote", "promotion to `main` by a merge"] {
+            for forbidden in [
+                "verify production",
+                "promote",
+                "promotion to `main` by a merge",
+            ] {
                 assert!(!flat.contains(forbidden), "{}: {forbidden}", template.id());
             }
             for needle in [
