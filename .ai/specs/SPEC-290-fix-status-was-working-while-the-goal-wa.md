@@ -1,11 +1,11 @@
 ---
 yulius-task: 183b74e4-daf8-4087-bcff-3d1d480cdc35
-status: in-progress
+status: done
 ---
 
 # SPEC-290: An achieved goal never leaves its task Working
 
-Status: in-progress
+Status: done
 Date: 2026-10-24
 Owner: task #276
 Scope authorization: task #276 ("fix, status was working while the goal was achieved", with a
@@ -60,7 +60,7 @@ left, reads Done, whatever happened to Yulius's own Stop hook for that turn. It 
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
 - [x] Fix the cause until the regression test and every gate pass
-- [ ] Independent review, findings fixed, delivered on green
+- [x] Independent review, findings fixed, delivered on green
 
 ## Acceptance criteria
 
@@ -95,3 +95,29 @@ left, reads Done, whatever happened to Yulius's own Stop hook for that turn. It 
   panics. Only the live attempt's answers count. The hook client stays fail-open.
 - Not settled on `met: true` alone: a Stop that Yulius answered with a gate block can come with an
   achieved goal while the agent works on.
+
+## Evidence
+
+- **Reproduction.** On `dev` code, `task_done::a_goal_achieved_in_the_turn_a_shell_woke_makes_the_task_done`
+  replays #272's ending with its Stop answered, and it passes. That shows the normal path is
+  right. `task_done::a_goal_achieved_after_a_stop_yulius_never_answered_makes_the_task_done`
+  failed on the tests-only commit `51c95314` with `timed out waiting for Done without shells`.
+- **With the fix,** both pass, and so does the whole `task_done::` suite (50 tests).
+- **Unit tests.** All four new `finish::tests` pass: `only_a_record_of_a_turn_with_no_answered_stop_settles_it`,
+  `recovery_a_limit_or_a_pause_keep_an_unanswered_turn_as_it_is`,
+  `a_failed_stop_settles_only_after_its_own_turns_record` (red before `failed_stop_settles`
+  existed) and `a_stop_in_flight_is_counted_until_its_guard_drops`.
+- **Gate.** `scripts/dev ci` exited 0 on `03e30110`: 2590 tests run, 2590 passed, 17 skipped.
+- **Security scan.** `scripts/dev security` exited 2, so it did not run: the Vidoc key is out of
+  quota (HTTP 429, "This API key has used its 50,000,000 tokens"). That is unrun, not passed.
+- **Independent review.** A fresh session ran three rounds:
+  - Round 1 requested changes: a record read late could settle the next turn, plus minors.
+  - Round 2 approved with four minors.
+  - Round 3 approved `03e30110` with no findings left.
+  - Every finding was own code and was fixed in this pull request.
+- **Not tested.**
+  - Which error #272's real Stop hook met. Yulius logs a refused hook only at debug level, and
+    the server log is outside the sandbox.
+  - A real Claude Code turn ending with an API error and no Stop hook. That case is covered only
+    through the shared rule and its unit tests.
+
