@@ -1692,13 +1692,22 @@ fn reserve_snapshot_worktree(root: &Path, job: &str) -> AppResult<PathBuf> {
 }
 
 /// Applies a snapshot archive (contracts layout: `files/…` entries and a `DELETED` list) to
-/// `root`, refusing paths that escape it, `.git` paths, writes through links and links
-/// pointing outside the root.
+/// `root`, refusing a `root` that is a link, paths that escape it, `.git` paths, writes through
+/// links and links pointing outside the root.
 ///
 /// # Errors
 /// Unreadable archives, archives over the import bounds, I/O failures.
 pub fn extract_snapshot(archive: &Path, root: &Path) -> AppResult<SnapshotStats> {
     check_archive(archive, MAX_IMPORT_TOTAL_BYTES.saturating_mul(2))?;
+    // A link at the root is refused, never followed (#824).
+    if !fs::symlink_metadata(root)
+        .map_err(AppError::internal)?
+        .is_dir()
+    {
+        return Err(AppError::Forbidden(
+            "the snapshot's worktree is a link or not a folder: Yulius follows no links".into(),
+        ));
+    }
     let root = fs::canonicalize(root).map_err(AppError::internal)?;
     let file = File::open(archive).map_err(AppError::internal)?;
     let decoder = flate2::read::GzDecoder::new(BufReader::new(file));
