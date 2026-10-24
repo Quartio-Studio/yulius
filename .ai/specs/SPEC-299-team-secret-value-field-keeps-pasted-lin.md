@@ -34,6 +34,14 @@ dialog and on the card) gives back the original text.
   Copy must return the text they pasted.
 - Why tests missed it: the team e2e tests fill Value with one-line text only.
 
+- Found on the way, blocking this PR's merge: `delivery::a_restart_ends_a_running_environment_command`
+  (SPEC-219 ENV-004) failed the CI of the PR merged with dev twice (`reconcile_environment_runs`
+  returned 0, expected 1). The test reconciles while its in-process watcher (`ci_watch`) still
+  follows the run; `environment_end_lost` terminated the host and awaited the directory removal
+  before the reconciliation wrote `error`, so the watcher could record the end first and the
+  reconciliation's compare-and-set lost. No other open task touched it, and this task opens no
+  issues.
+
 ## Requirements
 
 - TLB-001: A paste holding line breaks (LF, CRLF or CR) into a team secret's Value, in Add or
@@ -43,6 +51,8 @@ dialog and on the card) gives back the original text.
 - TLB-003: Show displays a stored value on its lines (wrapping long ones); Copy, in the dialog and
   from the card, writes the stored value unchanged.
 - TLB-004: Pastes without line breaks, and agent secrets' Value (SPEC-193), behave as before.
+- TLB-005: The startup reconciliation records a run left `running` as `error` before it ends what
+  is left of it (process host, directories), so no watcher can take the run's end in between.
 
 ## Plan
 
@@ -52,6 +62,7 @@ dialog and on the card) gives back the original text.
 - [x] Decision record, docs and changes entry
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Every gate green and the spec's Evidence written
+- [x] Startup reconciliation records a lost environment run before ending it (CI blocker)
 
 ## Acceptance criteria
 
@@ -82,6 +93,10 @@ dialog and on the card) gives back the original text.
   aloud and selectable, password managers ignore it); a "multi-line" toggle that unmasks; #591's
   literal `\n` (changes the value people copy back).
 - Line breaks are stored as pasted, CRLF included: Copy must return the original text.
+- The flaky reconciliation test is fixed in the product, not the test: recording the run first
+  is right after a real restart too (the state is kept even if ending the host hangs), and it
+  removes the window the test hit. Rejected: rerunning CI until green; loosening the assertion
+  (`<= 1`), which would hide a reconciliation that closes nothing.
 
 ## Review
 
@@ -128,4 +143,8 @@ Independent review in a fresh session (read-only subagent, skill `om-code-review
 - Not tested: Firefox and Safari (the suite runs Chromium only; `execCommand('insertText')` and
   `setRangeText` are in both), a real OS clipboard (pastes are dispatched `ClipboardEvent`s, as in
   SPEC-193's test), and the Rust server (unchanged: `vault::field` keeps line breaks, as read).
-
+- TLB-005: `delivery::a_restart_ends_a_running_environment_command` failed at 34fe7bc9 locally 1
+  of 6 without load and in two CI runs (0971dcae at 59b842b5, 6931babd at 34fe7bc9). A probe of
+  1.5 s after `terminate` in `environment_end_lost` failed it 3 of 3 (`left: 0, right: 1`); with
+  the run recorded first it passed 3 of 3 with the probe and 20 of 20 without; the `delivery::`
+  and `cd::` tests of the product binary: 74 passed.
