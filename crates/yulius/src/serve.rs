@@ -170,6 +170,10 @@ pub struct ServeArgs {
     #[arg(long, env = "YULIUS_CI_POLL_SECS", default_value_t = 60,
           value_parser = clap::value_parser!(u64).range(10..=3600))]
     pub ci_poll_secs: u64,
+    /// Disk a CD or environment run's files and cache may use, in GB; a run past it is stopped.
+    #[arg(long, env = "YULIUS_CD_RUN_DISK_GB", default_value_t = 20,
+          value_parser = clap::value_parser!(u64).range(1..=10_000))]
+    pub cd_run_disk_gb: u64,
     /// Sandbox isolation (SPEC-002 ADR-22).
     #[command(flatten)]
     pub isolation: crate::wiring::sandbox::IsolationArgs,
@@ -445,6 +449,7 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
         lanes: args.ci_lanes,
         job_timeout: std::time::Duration::from_secs(args.ci_job_timeout_min * 60),
         poll: std::time::Duration::from_secs(args.ci_poll_secs),
+        run_disk_max: args.cd_run_disk_gb.saturating_mul(1_000_000_000),
     };
     config.own_ports = vec![args.bind.port(), args.internal_bind.port()];
     config.proxy_secret = crate::wiring::proxy::load(args.proxy_secret_file.as_deref());

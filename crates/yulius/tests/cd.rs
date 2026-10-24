@@ -144,6 +144,15 @@ async fn fixture_with(
     cd: &str,
     host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
 ) -> BoxResult<Fixture> {
+    fixture_configured(cd, host, Box::new(|_| {})).await
+}
+
+/// [`fixture_with`], then `configure` adjusts the configuration.
+async fn fixture_configured(
+    cd: &str,
+    host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
+    configure: support::ConfigureFn,
+) -> BoxResult<Fixture> {
     let contained = host.is_some();
     // A short base: run sockets live at <data>/runs/cd-<uuid>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("ycd").tempdir_in("/tmp")?;
@@ -157,6 +166,7 @@ async fn fixture_with(
         configure: Some(Box::new(move |config| {
             config.ci.job_timeout = Duration::from_secs(20);
             config.contained = contained;
+            configure(config);
         })),
         ..HarnessOptions::default()
     })?;
@@ -479,6 +489,57 @@ async fn a_failing_deploy_skips_verify_and_one_run_at_a_time() -> TestResult {
     let run = f.ended(&id).await?;
     assert_eq!(run["state"], "cancelled", "{run}");
     assert_eq!(run["reason"], "cancelled by alice");
+    Ok(())
+}
+
+/// SPEC-300 RDB-002/003 (#664): a run whose files grow past the bound for a run (here into its
+/// cache, outside every sandbox quota) is stopped long before its timeout, recorded `error` saying
+/// why, and its cache is emptied, so the next run starts under the bound and passes.
+#[tokio::test]
+async fn a_run_writing_past_its_disk_bound_is_stopped() -> TestResult {
+    let cd = "[cd.dev]\n\
+              deploy = \"if [ -f big ]; then head -c 32000000 /dev/zero > $YULIUS_CD_CACHE/fill; \
+              echo filled; sleep 30; fi; echo small\"\n";
+    let f = fixture_configured(
+        cd,
+        None,
+        Box::new(|config| config.ci.run_disk_max = 8_000_000),
+    )
+    .await?;
+    f.push("dev", &[("big", Some("x"))])?;
+    let started = f.deploy(&f.alice, "dev", None).await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let begun = tokio::time::Instant::now();
+    let run = f
+        .ended(started.body["run_id"].as_str().ok_or("id")?)
+        .await?;
+    let output = run["output"].as_str().unwrap_or_default();
+    let reason = run["reason"].as_str().unwrap_or_default();
+    assert_eq!(run["state"], "error", "{run}");
+    assert!(
+        reason.contains("past the 8 MB disk bound for a run") && reason.contains("cache"),
+        "{reason}"
+    );
+    assert!(
+        output.contains("filled") && output.contains(reason),
+        "{output}"
+    );
+    assert!(
+        begun.elapsed() < Duration::from_secs(18),
+        "stopped by its bound, not its 20 s timeout"
+    );
+    let cache = f.h.app.config.data_dir.join("cd/s1/cache/dev");
+    assert!(
+        std::fs::read_dir(&cache).map_or(0, Iterator::count) == 0,
+        "the cache of a run stopped over its bound is emptied"
+    );
+
+    f.push("dev", &[("big", None)])?;
+    let started = f.deploy(&f.alice, "dev", None).await?;
+    let run = f
+        .ended(started.body["run_id"].as_str().ok_or("id")?)
+        .await?;
+    assert_eq!(run["state"], "passed", "{run}");
     Ok(())
 }
 
