@@ -1,11 +1,11 @@
 ---
 yulius-task: d8dfba5c-03dc-4fef-ad77-1e94b82a18a5
-status: in-progress
+status: done
 ---
 
 # SPEC-296: a snapshot import's worktree is reserved where no planted link can steer it
 
-Status: in-progress
+Status: done
 Date: 2026-10-24
 Owner: Yulius task #282
 Scope authorization: issue [#824](https://github.com/Quartio-Studio/yulius/issues/824) (Vidoc
@@ -51,18 +51,21 @@ snapshot import outside the sandbox directory, and imports keep working.
 - SNW-002: its name is reserved with create-new semantics (`mkdir`, `EEXIST` means taken, never
   an existence check): `import-<job>`, then `import-<job>-2`, `-3`, … up to
   `MAX_SNAPSHOT_BRANCHES`, then the import fails with a conflict. Git accepts the empty folder.
-- SNW-003: `extract_snapshot` refuses a root that is a link or not a folder (checked with
-  `symlink_metadata`) instead of following it.
+- SNW-003: `extract_snapshot` refuses a root that is a link or not a folder instead of following
+  it: the root is opened with `O_DIRECTORY | O_NOFOLLOW` and used by the real path of the handle.
 - SNW-004: entries an agent puts at `<sandbox>/worktrees/import-…` are never touched.
+- SNW-005: a failure after the reservation (Git, extraction, commit) discards the worktree and
+  removes its folder; disk upkeep reclaims `<data>/import-worktrees/<sandbox>` with a removed
+  sandbox's worktrees and lists one no sandbox owns as unowned (review round 1).
 
 ## Plan
 
 - [x] Spec and ADR record the private snapshot worktree
-- [ ] Regression test shows a planted link steers the snapshot worktree
-- [ ] Snapshot worktree reserved create-new in a server-private folder
-- [ ] extract_snapshot refuses a linked root
-- [ ] Docs, changes entry and gates green
-- [ ] Independent review answered and delivered on green CI
+- [x] Regression test shows a planted link steers the snapshot worktree
+- [x] Snapshot worktree reserved create-new in a server-private folder
+- [x] extract_snapshot refuses a linked root
+- [x] Docs, changes entry and gates green
+- [x] Independent review answered and delivered on green CI
 
 ## Acceptance criteria
 
@@ -73,6 +76,10 @@ snapshot import outside the sandbox directory, and imports keep working.
 - AC-2: the reservation picks `import-<job>`, then `import-<job>-2` when that name is taken (by a
   folder, a file or a link, which is not followed), and fails past the bound.
 - AC-3: `extract_snapshot` on a root that is a link to a folder fails and writes nothing there.
+- AC-4: an import that fails after the reservation leaves `<data>/import-worktrees/<sandbox>`
+  empty.
+- AC-5: a removed sandbox's `import-worktrees/<sandbox>` is deleted by the automatic disk-upkeep
+  round (a live one's stays); one with no sandbox record is listed as unowned.
 
 ## Test plan
 
@@ -81,6 +88,10 @@ snapshot import outside the sandbox directory, and imports keep working.
 - `imports::tests::snapshot_worktree_names_are_reserved_create_new` (AC-2).
 - `imports::tests::snapshot_extraction_refuses_a_linked_root` (AC-3), red on `dev`: the files land
   in the link's target.
+- `import_server::a_failed_snapshot_import_leaves_no_checkout_behind` (AC-4): Git refuses the
+  reserved folder once a file is put in it at the pause point.
+- `leftovers::a_removed_sandbox_loses_its_disposable_parts_and_keeps_what_prj_009_keeps` and
+  `leftovers::instance_leftovers_are_found_and_only_safe_ones_go_by_themselves` (AC-5).
 - `import_server::import_resumes_applies_and_reruns_idempotently` stays green (the snapshot
   branch, its files and parent; no `import-*` left in `worktrees/`).
 
@@ -105,4 +116,30 @@ snapshot import outside the sandbox directory, and imports keep working.
 
 ## Evidence
 
-To be filled when the work is verified.
+- Red on `dev` (3768adba plus the test-only pause point, commit e8aa1865):
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^import_server::a_link_planted_at_the_snapshot/)'`
+  failed with "the folder outside the sandbox is not removed through the link": Git checked the
+  head out into the planted link's empty target (with the test double, whose removal compares paths
+  lexically, the worktree removal then deleted that folder; the real adapter refuses with
+  `OutsideOwnedRoot` and leaves the files there). `imports::tests::snapshot_extraction_refuses_a_linked_root`
+  failed: the file was written through the linked root.
+- Review round 1 tests red on 4a095cb4's code (commit e1b46a92): the failed import left
+  `import-<job>` in the private folder; the removed sandbox's `import-worktrees/old` stayed; the
+  stray `import-worktrees/stray` was not listed.
+- Green with the fix: `import_server::` 10 passed, `leftovers::` 25 passed; `yulius-app`
+  `imports::`/`playground`/`snapshot` 18 passed (AC-2 unit test included).
+- Gate: `scripts/dev ci` exit 0 on adb6a418 (2593 tests passed, 17 skipped); rerun on the
+  answered head, see the pull request.
+- Security: `scripts/dev security` exit 2, **unrun**: Vidoc answered HTTP 429 ("This API key has
+  used its 50,000,000 tokens"); the 5 code files were not scanned. Not a pass.
+- Independent review round 1 (fresh session, adb6a418), request changes, answered:
+  - own, major: a failed import left its checkout in `<data>/import-worktrees`, which disk upkeep
+    never scanned: fixed test-first (SNW-005, AC-4, AC-5).
+  - own, minor: the docs said the worktree removal deleted the outside folder on `dev`; only the
+    test double does: corrected (Context, changes, test comment).
+  - own, minor: spec not finalized: done here.
+  - own, nit: the root check and `canonicalize` were two calls: the root is now opened with
+    `O_NOFOLLOW` and used by its handle's real path.
+  - pre-existing, major: Git's administrative folder `repo/.git/worktrees/<name>` stays in the
+    agent-writable repository (also for task worktrees). This task may not create issues; it is
+    recorded on #824 for a person to file.
