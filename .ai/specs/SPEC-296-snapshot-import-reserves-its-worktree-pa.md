@@ -54,9 +54,11 @@ snapshot import outside the sandbox directory, and imports keep working.
 - SNW-003: `extract_snapshot` refuses a root that is a link or not a folder instead of following
   it: the root is opened with `O_DIRECTORY | O_NOFOLLOW` and used by the real path of the handle.
 - SNW-004: entries an agent puts at `<sandbox>/worktrees/import-…` are never touched.
-- SNW-005: a failure after the reservation (Git, extraction, commit) discards the worktree and
-  removes its folder; disk upkeep reclaims `<data>/import-worktrees/<sandbox>` with a removed
-  sandbox's worktrees and lists one no sandbox owns as unowned (review round 1).
+- SNW-005: a failure after the reservation (Git, extraction, commit) removes the worktree with
+  Git's safe removal (never `git worktree prune`, SPEC-215) and its folder; disk upkeep lists an
+  interrupted import's checkout in a live sandbox as an orphan worktree after an hour, removes
+  `<data>/import-worktrees/<sandbox>` with a removed sandbox's worktrees and lists one no sandbox
+  owns as unowned (review rounds 1 and 2).
 
 ## Plan
 
@@ -65,7 +67,7 @@ snapshot import outside the sandbox directory, and imports keep working.
 - [x] Snapshot worktree reserved create-new in a server-private folder
 - [x] extract_snapshot refuses a linked root
 - [x] Docs, changes entry and gates green
-- [x] Independent review answered and delivered on green CI
+- [x] Independent review answered and gates green on the answered head
 
 ## Acceptance criteria
 
@@ -76,10 +78,11 @@ snapshot import outside the sandbox directory, and imports keep working.
 - AC-2: the reservation picks `import-<job>`, then `import-<job>-2` when that name is taken (by a
   folder, a file or a link, which is not followed), and fails past the bound.
 - AC-3: `extract_snapshot` on a root that is a link to a folder fails and writes nothing there.
-- AC-4: an import that fails after the reservation leaves `<data>/import-worktrees/<sandbox>`
-  empty.
+- AC-4: an import that fails after the reservation, before or after Git created the worktree,
+  leaves `<data>/import-worktrees/<sandbox>` empty and no live Git worktree of it.
 - AC-5: a removed sandbox's `import-worktrees/<sandbox>` is deleted by the automatic disk-upkeep
-  round (a live one's stays); one with no sandbox record is listed as unowned.
+  round (a live one's stays); one with no sandbox record is listed as unowned; an hour-old one of a live sandbox is listed as an
+  orphan worktree and kept for a person.
 
 ## Test plan
 
@@ -90,6 +93,9 @@ snapshot import outside the sandbox directory, and imports keep working.
   in the link's target.
 - `import_server::a_failed_snapshot_import_leaves_no_checkout_behind` (AC-4): Git refuses the
   reserved folder once a file is put in it at the pause point.
+- `import_server::a_snapshot_import_failing_after_git_leaves_no_worktree` (AC-4): the stored
+  archive turns unreadable at the pause point, so Git creates the worktree and the extraction
+  fails.
 - `leftovers::a_removed_sandbox_loses_its_disposable_parts_and_keeps_what_prj_009_keeps` and
   `leftovers::instance_leftovers_are_found_and_only_safe_ones_go_by_themselves` (AC-5).
 - `import_server::import_resumes_applies_and_reruns_idempotently` stays green (the snapshot
@@ -126,7 +132,7 @@ snapshot import outside the sandbox directory, and imports keep working.
 - Review round 1 tests red on 4a095cb4's code (commit e1b46a92): the failed import left
   `import-<job>` in the private folder; the removed sandbox's `import-worktrees/old` stayed; the
   stray `import-worktrees/stray` was not listed.
-- Green with the fix: `import_server::` 10 passed, `leftovers::` 24 passed; `yulius-app`
+- Green with the fix: `import_server::` 11 passed, `leftovers::` 24 passed; `yulius-app`
   `imports::`/`playground`/`snapshot` 18 passed (AC-2 unit test included).
 - Gate: `scripts/dev ci` exit 0 on adb6a418 (2593 tests passed, 17 skipped); rerun on the
   answered head, see the pull request.
@@ -143,3 +149,18 @@ snapshot import outside the sandbox directory, and imports keep working.
   - pre-existing, major: Git's administrative folder `repo/.git/worktrees/<name>` stays in the
     agent-writable repository (also for task worktrees). This task may not create issues; it is
     recorded on #824 for a person to file.
+- Independent review round 2 (fresh session, f6d3cf97), approve with minors, answered:
+  - own, minor: the failure path's `discard_worktree` ran a sandbox-wide `git worktree prune`,
+    which SPEC-215 avoids: it now uses Git's safe `remove_worktree` and removes the folder; a
+    record Git keeps is prunable (the hygiene round's). The test double never prunes, so no test
+    can be red for this; the registered-worktree failure is covered by
+    `a_snapshot_import_failing_after_git_leaves_no_worktree` (green before and after).
+  - own, minor: an interrupted import's checkout in a live sandbox was never listed: disk upkeep
+    lists it as an orphan worktree after an hour (red first in
+    `leftovers::instance_leftovers_are_found_and_only_safe_ones_go_by_themselves`).
+  - own, minor: the registered-worktree failure branch was untested: test added.
+  - own, nits: the failed removal logs at `warn`; the plan's last item no longer claims delivery;
+    the first #824 comment's claim that the real removal deletes the outside folder is corrected
+    there. The `removed-worktrees` item's `repo` was left as the other parts': its records are
+    dropped with the repository.
+  - pre-existing: a failed import keeps its new snapshot branch, as on `dev`.

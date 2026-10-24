@@ -26,9 +26,9 @@ to a folder Git, not Yulius, writes into.
   snapshot bound; Git fills the empty folder.
 - `extract_snapshot` opens its root with `O_DIRECTORY | O_NOFOLLOW` and works from the real path
   of what it opened, refusing a link instead of canonicalizing it.
-- A failure after the reservation discards the worktree and removes its folder; disk upkeep knows
-  `<data>/import-worktrees/<sandbox>` (removed with a removed sandbox's worktrees, unowned when
-  no sandbox has its name).
+- A failure after the reservation removes the worktree and its folder; disk upkeep knows
+  `<data>/import-worktrees/<sandbox>` (an orphan worktree in a live sandbox after an hour, removed
+  with a removed sandbox's worktrees, unowned when no sandbox has its name).
 - Yulius never touches `<sandbox>/worktrees/import-…` any more; the hygiene round still leaves
   such checkouts of earlier imports to the import.
 
@@ -50,10 +50,12 @@ to a folder Git, not Yulius, writes into.
   a link it plants at the old name is simply not used.
 - `git worktree list` in the sandbox shows the server path while an import runs; the agent cannot
   open it, and pruning it only fails that import.
-- A failed import discards its worktree and removes its folder, so the user's uncommitted files do
-  not stay on the server. What a crash leaves is listed by disk upkeep: the folder of a removed
-  sandbox goes with its worktrees (`removed-worktrees`), and one with no sandbox record is
-  `unowned`. A retry takes the next free name.
+- A failed import removes its worktree (Git's safe removal, no `prune`, which would drop the records
+  of worktrees agents keep elsewhere) and its folder, so the user's uncommitted files do not stay
+  on the server; a record Git keeps of it is prunable and the hygiene round's. What an interrupted
+  import leaves is listed by disk upkeep: after an hour, in a live sandbox, as an orphan worktree a
+  person deletes; with a removed sandbox, among its worktrees (`removed-worktrees`); with no
+  sandbox record, as `unowned`. A retry takes the next free name.
 - Task worktrees in `<sandbox>/worktrees/` are still created by Git by path, while other tasks'
   agents of the sandbox may run; they must stay where the agents work, so this decision does not
   apply to them (noted on #824).

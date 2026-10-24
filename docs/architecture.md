@@ -621,7 +621,7 @@ ended worktree again before Git removes it
 Where Git, not the server, would write (it resolves the path it is given and follows links), the
 work moves out of the sandbox instead: an import's snapshot is checked out, filled and committed
 in `<data>/import-worktrees/<sandbox>/import-<job>[-<n>]` (0700, the name taken with a create-new
-`mkdir`, removed again when the import fails; disk upkeep reclaims a removed sandbox's), as
+`mkdir`, removed again when the import fails; disk upkeep lists what an interrupted import leaves), as
 `project_change` works in `<data>/changes`, and `extract_snapshot` refuses a linked root ([SPEC-296](../.ai/specs/SPEC-296-snapshot-import-reserves-its-worktree-pa.md),
 [decision 0213](decisions/0213-a-snapshot-import-checks-out-in-a-server-private-folder.md)).
 Races are tested at pause points

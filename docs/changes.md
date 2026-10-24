@@ -12,7 +12,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   the service user's Git check the head out in that folder and write the snapshot into it, and the
   files stayed there. The checkout now lives in `<data>/import-worktrees/<sandbox>/`, out of
   every sandbox. Its name is taken with a create-new `mkdir` (`import-<job>`, then `-2`, …), a
-  failed import removes it, disk upkeep reclaims the folder of a removed sandbox, and
+  failed import removes it, disk upkeep lists what an interrupted one leaves, and
   `extract_snapshot` refuses a linked root (ADR-0213).
 - An achieved goal no longer leaves its task Working for good when Yulius did not settle the
   turn's Stop hook (SPEC-290, task #276, #877). The hook client fails open, so a Stop that Yulius

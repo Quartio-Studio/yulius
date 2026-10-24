@@ -1181,10 +1181,13 @@ impl App {
         let (stats, committed) = match made {
             Ok(made) => made,
             Err(err) => {
-                // Nothing in the server's folder outlives a failed import: disk upkeep only
-                // reclaims it once the sandbox is removed.
-                if let Err(err) = git.discard_worktree(&repo, &path, &worktrees, None).await {
-                    tracing::debug!(error = %err, "discarding a failed snapshot worktree");
+                // Nothing in the server's folder outlives a failed import. Git removes a clean
+                // worktree; the folder goes anyway, and a record Git keeps of it is only
+                // prunable (the hygiene round's). No `git worktree prune` here: it would drop the
+                // records of worktrees agents keep elsewhere (SPEC-215).
+                match git.remove_worktree(&repo, &path, &worktrees).await {
+                    Ok(_) => {}
+                    Err(err) => tracing::warn!(error = %err, "removing a failed snapshot worktree"),
                 }
                 let leftover = path.clone();
                 let removed = blocking(move || match fs::remove_dir_all(&leftover) {

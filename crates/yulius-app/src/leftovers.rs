@@ -833,6 +833,21 @@ impl App {
             item.repo = Some(self.sandbox_repo(&sandbox.id));
             out.push(item);
         }
+        // A snapshot import's checkout an interrupted import left (ADR-0213): it may hold a
+        // person's uncommitted files, so a person decides, as for a worktree no task owns.
+        for (_, path) in entries(&self.data_path(&["import-worktrees", sandbox.id.as_str()])) {
+            if touched_ms(&path).is_some_and(|t| now - t >= ORPHAN_WORKTREE_AFTER_MS) {
+                out.push(
+                    Leftover::new(
+                        Kind::OrphanWorktree,
+                        path,
+                        "a snapshot import's checkout an interrupted import left (it may hold \
+                         uncommitted files)",
+                    )
+                    .of(sandbox),
+                );
+            }
+        }
         self.scan_checkouts(sandbox, out).await?;
         let drafts = dir.join("attachments").join("drafts");
         for (_, user_dir) in entries(&drafts) {
