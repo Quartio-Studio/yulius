@@ -48,7 +48,7 @@ use yulius_domain::spec_format::{MAX_CONFIG_BYTES, parse_yulius_toml_cd};
 use yulius_domain::time::Timestamp;
 
 use super::OUTPUT_BYTES;
-use super::exec::{Ended, RunLog, Sink, ci_join};
+use super::exec::{DiskBound, Ended, RunLog, Sink, ci_join};
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::coordination::AgentContext;
@@ -232,6 +232,13 @@ impl App {
         self.cd_private_dir(sandbox).join("source.git")
     }
 
+    /// The persistent cache of `run`'s environment (`YULIUS_CD_CACHE`).
+    fn cd_cache_dir(&self, sandbox: &SandboxId, run: &CdRunRecord) -> PathBuf {
+        self.cd_private_dir(sandbox)
+            .join("cache")
+            .join(cache_name(&run.environment, run.stage))
+    }
+
     fn cd_run_dir(&self, run_id: &str) -> PathBuf {
         self.config
             .data_dir
@@ -281,16 +288,20 @@ impl App {
     /// PDE-004).
     pub(super) async fn remove_run_dirs(&self, run_dir: &Path, files: &Path) {
         let _ = std::fs::remove_dir_all(run_dir);
-        if files == run_dir || std::fs::symlink_metadata(files).is_err() {
-            return;
+        if files != run_dir {
+            self.remove_run_tree(files).await;
         }
-        if std::fs::remove_dir_all(files).is_ok() {
+    }
+
+    /// Removes `path`, a run's files or cache, as [`App::remove_run_dirs`] removes its files.
+    async fn remove_run_tree(&self, path: &Path) {
+        if std::fs::symlink_metadata(path).is_err() || std::fs::remove_dir_all(path).is_ok() {
             return;
         }
         if let Some(isolation) = self.isolation.get()
-            && let Err(error) = isolation.remove_owned_tree(files).await
+            && let Err(error) = isolation.remove_owned_tree(path).await
         {
-            tracing::warn!(path = %files.display(), %error, "cannot remove a production run's files");
+            tracing::warn!(path = %path.display(), %error, "cannot remove a production run's files");
         }
     }
 
@@ -1156,6 +1167,16 @@ impl App {
         drop(held);
         // The run's files (the tree, its HOME, its log) go with it.
         self.remove_run_dirs(&run_dir, &files).await;
+        // A cache past the bound would stop every next run, and nobody else can empty it
+        // (SPEC-300 RDB-003).
+        let ended = match ended {
+            Ok(Ended::DiskLimit(reason)) => {
+                self.remove_run_tree(&self.cd_cache_dir(&sandbox.id, &run))
+                    .await;
+                Err(format!("{reason}; its cache was emptied"))
+            }
+            ended => ended,
+        };
         let (state, exit_code, reason) = match ended {
             Ok(Ended::Exit(exit)) if exit.spawn_failed => (
                 RunState::Error,
@@ -1189,7 +1210,9 @@ impl App {
                 None,
                 Some("the run's process host was lost".to_owned()),
             ),
-            Ok(Ended::NoDisk(reason)) | Err(reason) => (RunState::Error, None, Some(reason)),
+            Ok(Ended::NoDisk(reason) | Ended::DiskLimit(reason)) | Err(reason) => {
+                (RunState::Error, None, Some(reason))
+            }
         };
         if let Some(reason) = &reason {
             ring.push_str(&format!("\n[yulius] {reason}\n"));
@@ -1323,10 +1346,7 @@ impl App {
     ) -> Result<(Ended, super::exec::Used), String> {
         let work = files.join("work");
         let (src, home, log) = (work.join("src"), work.join("home"), work.join("log"));
-        let cache = self
-            .cd_private_dir(&sandbox.id)
-            .join("cache")
-            .join(cache_name(&run.environment, run.stage));
+        let cache = self.cd_cache_dir(&sandbox.id, run);
         let _ = std::fs::remove_dir_all(run_dir);
         let _ = std::fs::remove_dir_all(files);
         for dir in [&home, &cache] {
@@ -1457,7 +1477,13 @@ impl App {
             &token,
             RunLog::At(&log),
             (ring, Some(&mut stages), None),
-            cancel,
+            (
+                cancel,
+                Some(DiskBound {
+                    dirs: vec![("run files", files.to_path_buf()), ("cache", cache)],
+                    max: self.config.ci.run_disk_max,
+                }),
+            ),
         )
         .await
     }

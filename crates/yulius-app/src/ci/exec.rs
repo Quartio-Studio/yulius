@@ -15,7 +15,7 @@
 
 use std::ffi::OsStr;
 use std::os::fd::OwnedFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -49,6 +49,8 @@ const WRAPPER: &str = "exec >>\"$1\" 2>&1 </dev/null; exec /bin/sh -c \"$2\"";
 /// How often the log is read and the stored output refreshed.
 const READ_EVERY: Duration = Duration::from_millis(500);
 const FLUSH_EVERY_TICKS: u32 = 4;
+/// A run's files are measured every this many ticks (5 s; SPEC-300 RDB-001).
+const DISK_EVERY_TICKS: u32 = 10;
 /// Bytes read from the log per tick (the rest follows on the next ticks).
 const READ_CHUNK: usize = 1 << 20;
 /// Most creates of a job's log when something appears at its name between the removal of the old
@@ -146,6 +148,44 @@ pub(super) enum Ended {
     Lost,
     /// The sandbox refused the start over its disk quota (SPEC-059 CI-303).
     NoDisk(String),
+    /// Its files grew past the bound for a run, which this says (SPEC-300 RDB-002).
+    DiskLimit(String),
+}
+
+/// What a CD or environment run's files may use while it runs (SPEC-300, ADR-0216): the
+/// directories measured, each with its name in the reason, and the bound in bytes.
+pub(super) struct DiskBound {
+    pub(super) dirs: Vec<(&'static str, PathBuf)>,
+    pub(super) max: u64,
+}
+
+impl DiskBound {
+    /// Why a run whose `dirs` measured `sizes` (bytes, in order) was stopped.
+    fn reason(&self, sizes: &[u64]) -> String {
+        let total = sizes
+            .iter()
+            .fold(0u64, |sum, size| sum.saturating_add(*size));
+        let parts: Vec<String> = self
+            .dirs
+            .iter()
+            .zip(sizes)
+            .map(|((name, _), size)| format!("{name} {}", yulius_domain::disk::human(*size)))
+            .collect();
+        format!(
+            "the run's files used {} ({}), past the {} disk bound for a run; it was stopped",
+            yulius_domain::disk::human(total),
+            parts.join(", "),
+            yulius_domain::disk::human(self.max)
+        )
+    }
+
+    /// The sizes of its directories, measured off the async runtime.
+    fn measure(&self) -> tokio::task::JoinHandle<Vec<u64>> {
+        let dirs: Vec<PathBuf> = self.dirs.iter().map(|(_, dir)| dir.clone()).collect();
+        tokio::task::spawn_blocking(move || {
+            dirs.iter().map(|dir| crate::disk::dir_size(dir)).collect()
+        })
+    }
 }
 
 /// Whether a run whose jobs ended in `states` goes back to the queue to wait for disk (CI-303):
@@ -696,7 +736,9 @@ impl App {
                 None,
                 Some("the job's process host was lost".to_owned()),
             ),
-            Ok(Ended::NoDisk(reason)) | Err(reason) => (RunState::Error, None, Some(reason)),
+            Ok(Ended::NoDisk(reason) | Ended::DiskLimit(reason)) | Err(reason) => {
+                (RunState::Error, None, Some(reason))
+            }
         };
         if let Some(reason) = &reason {
             ring.push_str(&format!("\n[yulius] {reason}\n"));
@@ -991,7 +1033,7 @@ impl App {
                 &token,
                 RunLog::Created(created),
                 (ring, Some(stages), Some(failures)),
-                cancel,
+                (cancel, None),
             )
             .await;
         // The job's process ended (or its host is gone): its proxy credential ends too.
@@ -1003,8 +1045,8 @@ impl App {
 
     /// Starts `plan` through the process host as run `ids` (its id and its group) and follows
     /// it to its end: its log into `ring`, `sink`, `stages` (when its spans are recorded) and
-    /// `failures` (a CI job's), cancellation, the CI job timeout and the output limit. Returns how
-    /// it ended and what it used.
+    /// `failures` (a CI job's), cancellation, the CI job timeout, the output limit and, for a CD
+    /// or environment run, the disk `bound` of its files. Returns how it ended and what it used.
     #[allow(clippy::too_many_arguments)] // One job's whole context; split further it only moves.
     pub(super) async fn ci_watch(
         &self,
@@ -1019,7 +1061,7 @@ impl App {
             Option<&mut OutputStages>,
             Option<&mut FailureScanner>,
         ),
-        cancel: &mut watch::Receiver<Option<String>>,
+        (cancel, bound): (&mut watch::Receiver<Option<String>>, Option<DiskBound>),
     ) -> Result<(Ended, Used), String> {
         // Opened before the process starts, and read only through this handle: the run can
         // replace the file at `log` (a link to a host file, a FIFO), never what Yulius reads.
@@ -1050,6 +1092,8 @@ impl App {
         let mut ticks = 0u32;
         let mut stop: Option<Ended> = None;
         let mut usage: Used = None;
+        // The measurement of the run's files in progress: never more than one.
+        let mut measuring: Option<tokio::task::JoinHandle<Vec<u64>>> = None;
         let ended = loop {
             tokio::select! {
                 event = reader.next() => match event {
@@ -1096,6 +1140,24 @@ impl App {
                     }
                     self.feed_stages(stages.as_deref_mut(), &fresh).await;
                     ticks += 1;
+                    if let Some(bound) = bound.as_ref().filter(|_| stop.is_none()) {
+                        match measuring.take() {
+                            Some(done) if done.is_finished() => {
+                                if let Ok(sizes) = done.await
+                                    && sizes.iter().fold(0u64, |a, b| a.saturating_add(*b))
+                                        > bound.max
+                                {
+                                    let _ = writer.signal(RunSignal::Kill).await;
+                                    stop = Some(Ended::DiskLimit(bound.reason(&sizes)));
+                                }
+                            }
+                            Some(running) => measuring = Some(running),
+                            None if ticks.is_multiple_of(DISK_EVERY_TICKS) => {
+                                measuring = Some(bound.measure());
+                            }
+                            None => {}
+                        }
+                    }
                     if ticks.is_multiple_of(FLUSH_EVERY_TICKS) {
                         match sink {
                             Sink::CiJob(id) => {
@@ -1308,6 +1370,29 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    /// SPEC-300 RDB-002: the reason names what the run's files used, each directory and the
+    /// bound; a directory that read past `u64` saturates instead of wrapping under the bound.
+    #[test]
+    fn a_disk_bound_reason_names_each_directory_and_the_bound() {
+        let bound = DiskBound {
+            dirs: vec![
+                ("run files", PathBuf::from("/r")),
+                ("cache", PathBuf::from("/c")),
+            ],
+            max: 8_000_000,
+        };
+        assert_eq!(
+            bound.reason(&[1_000_000, 31_000_000]),
+            "the run's files used 32 MB (run files 1 MB, cache 31 MB), past the 8 MB disk bound \
+             for a run; it was stopped"
+        );
+        assert!(
+            bound
+                .reason(&[u64::MAX, 1])
+                .starts_with("the run's files used 18446744073.7 GB")
+        );
+    }
 
     /// SPEC-195 VSC-001: a CI job finds `yulius` (for `yulius security-scan`) on its PATH.
     #[test]
