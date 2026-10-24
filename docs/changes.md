@@ -13,6 +13,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   jumps while the runs execute: 128 runs in all. The late disk-check publish suspected by #277
   cannot reach this test, since no run starts before the check has published. CI keeps a failing
   test's output (SPEC-145), so a next failure names its assertion.
+- An open provider sign-in terminal now closes when the sign-in that opened it ends (SPEC-295,
+  task #281, #759). It checked administrator access once, at connect, so signing out, a revoked API
+  token, an expired session, a disabled user or a removed instance administration left it streaming
+  and accepting input until the sign-in ended (up to 15 minutes). Like the task terminals and
+  shells, it now re-checks every `viewer_recheck_ms` (60 s) beside the stream and closes with 4003.
 - The CI stage-duration test (`local_ci::a_run_s_jobs_record_their_stages_and_test_counts`) no
   longer fails under host load (SPEC-293, task #279, #538). Yulius times a stage from the log read
   that saw its marker to the one that saw the next, and the test bounded those durations by wall
