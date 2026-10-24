@@ -24,8 +24,11 @@ to a folder Git, not Yulius, writes into.
   (0700) outside every sandbox directory, like `project_change`'s `<data>/changes` (SPEC-247). Its
   name is reserved with a create-new `mkdir`: `import-<job>`, then `import-<job>-2`, … up to the
   snapshot bound; Git fills the empty folder.
-- `extract_snapshot` refuses a root that is a link or not a folder (`symlink_metadata`) instead of
-  canonicalizing it.
+- `extract_snapshot` opens its root with `O_DIRECTORY | O_NOFOLLOW` and works from the real path
+  of what it opened, refusing a link instead of canonicalizing it.
+- A failure after the reservation discards the worktree and removes its folder; disk upkeep knows
+  `<data>/import-worktrees/<sandbox>` (removed with a removed sandbox's worktrees, unowned when
+  no sandbox has its name).
 - Yulius never touches `<sandbox>/worktrees/import-…` any more; the hygiene round still leaves
   such checkouts of earlier imports to the import.
 
@@ -47,8 +50,10 @@ to a folder Git, not Yulius, writes into.
   a link it plants at the old name is simply not used.
 - `git worktree list` in the sandbox shows the server path while an import runs; the agent cannot
   open it, and pruning it only fails that import.
-- A worktree left by a failed import stays in the server's folder, as it stayed in `worktrees/`
-  before; a retry takes the next name.
+- A failed import discards its worktree and removes its folder, so the user's uncommitted files do
+  not stay on the server. What a crash leaves is listed by disk upkeep: the folder of a removed
+  sandbox goes with its worktrees (`removed-worktrees`), and one with no sandbox record is
+  `unowned`. A retry takes the next free name.
 - Task worktrees in `<sandbox>/worktrees/` are still created by Git by path, while other tasks'
   agents of the sandbox may run; they must stay where the agents work, so this decision does not
   apply to them (noted on #824).

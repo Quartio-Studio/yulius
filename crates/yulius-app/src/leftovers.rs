@@ -581,6 +581,7 @@ impl App {
             "displays",
             "transcripts",
             "system",
+            "import-worktrees",
         ] {
             let path = self.data_path(&[top]);
             if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
@@ -648,6 +649,11 @@ impl App {
             (Kind::RemovedCi, dir.join("ci")),
             (Kind::RemovedBrowser, dir.join("browser")),
             (Kind::RemovedCd, self.data_path(&["cd", id])),
+            // Snapshot imports' checkouts a failed import left (ADR-0213).
+            (
+                Kind::RemovedWorktrees,
+                self.data_path(&["import-worktrees", id]),
+            ),
             (Kind::RemovedDisplay, self.data_path(&["displays", id])),
             (Kind::RemovedSystem, self.data_path(&["sysroots", id])),
             (
@@ -989,6 +995,7 @@ impl App {
             &["runtime", "sandboxes"],
             &["cd"],
             &["displays"],
+            &["import-worktrees"],
         ] {
             for (name, path) in entries(&self.data_path(parent)) {
                 if known.contains(&name) || name.starts_with('.') {

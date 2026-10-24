@@ -32,8 +32,9 @@ snapshot import outside the sandbox directory, and imports keep working.
   the link, so a link to an empty directory elsewhere (another sandbox's folder, a server folder)
   makes the service user's Git check the head out there, and `extract_snapshot` then writes every
   snapshot file there too: it calls `fs::canonicalize(root)`, so a link at the root is followed;
-  `prepare_target` refuses links only below the root. Reproduced (Evidence): after the commit,
-  `git worktree remove` also deletes the link's target folder.
+  `prepare_target` refuses links only below the root. The real adapter's removal then refuses the
+  worktree (`OutsideOwnedRoot`), so the snapshot's files stay in the outside folder; the test
+  double's removal follows the link and deletes that folder (reproduced, Evidence).
 - Root cause: the temporary checkout lives in a folder the agent can change. A name reserved
   atomically there (create-new `mkdirat` through a handle) does not close it: the agent can rename
   the reserved folder away and plant the link before Git runs, and Git resolves the path itself

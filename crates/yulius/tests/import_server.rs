@@ -1192,8 +1192,8 @@ async fn a_link_planted_at_the_snapshot_worktree_is_never_followed() -> TestResu
     let sandbox_dir = w.data_dir().join("sandboxes").join(sandbox.id.as_str());
     let outside = w.data_dir().join("outside");
     std::fs::create_dir_all(&outside)?;
-    // Git removes the worktree after the commit, through a followed link too: the folder's
-    // modification time keeps the trace of anything made in it.
+    // The folder's modification time keeps the trace of anything made in it, even once removed
+    // again (the test double's worktree removal follows the link; the real one refuses).
     let untouched = std::fs::metadata(&outside)?.modified()?;
     let planted = sandbox_dir.join("worktrees").join(format!("import-{job}"));
     let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

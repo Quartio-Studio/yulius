@@ -1157,23 +1157,49 @@ impl App {
         let (root, id) = (worktrees.clone(), job.id.clone());
         let path = blocking(move || reserve_snapshot_worktree(&root, &id)).await?;
         crate::race::reached(crate::race::Point::SnapshotWorktree, &path);
-        git.add_worktree(&repo, &path, &branch, &manifest.repo.head_sha)
-            .await?;
-        let archive = self.import_dir(&sandbox.id, &job.id).join(&file.name);
-        let root = path.clone();
-        let stats = blocking(move || extract_snapshot(&archive, &root)).await?;
-        let (name, email) = identity(user);
-        let committed = git
-            .commit_all(
-                &path,
-                &format!(
-                    "Import uncommitted changes of {login} ({date})\n\nImported by yulius import from a local checkout at {}.",
-                    manifest.repo.head_sha
-                ),
-                &name,
-                &email,
-            )
-            .await?;
+        let made = async {
+            git.add_worktree(&repo, &path, &branch, &manifest.repo.head_sha)
+                .await?;
+            let archive = self.import_dir(&sandbox.id, &job.id).join(&file.name);
+            let root = path.clone();
+            let stats = blocking(move || extract_snapshot(&archive, &root)).await?;
+            let (name, email) = identity(user);
+            let committed = git
+                .commit_all(
+                    &path,
+                    &format!(
+                        "Import uncommitted changes of {login} ({date})\n\nImported by yulius import from a local checkout at {}.",
+                        manifest.repo.head_sha
+                    ),
+                    &name,
+                    &email,
+                )
+                .await?;
+            Ok::<_, AppError>((stats, committed))
+        }
+        .await;
+        let (stats, committed) = match made {
+            Ok(made) => made,
+            Err(err) => {
+                // Nothing in the server's folder outlives a failed import: disk upkeep only
+                // reclaims it once the sandbox is removed.
+                if let Err(err) = git.discard_worktree(&repo, &path, &worktrees, None).await {
+                    tracing::debug!(error = %err, "discarding a failed snapshot worktree");
+                }
+                let leftover = path.clone();
+                let removed = blocking(move || match fs::remove_dir_all(&leftover) {
+                    Err(err) if err.kind() != io::ErrorKind::NotFound => {
+                        Err(AppError::internal(err))
+                    }
+                    _ => Ok(()),
+                })
+                .await;
+                if let Err(err) = removed {
+                    tracing::warn!(error = %err, path = %path.display(), "failed snapshot worktree kept");
+                }
+                return Err(err);
+            }
+        };
         match git.remove_worktree(&repo, &path, &worktrees).await {
             Ok(true) => {}
             Ok(false) => tracing::warn!(path = %path.display(), "snapshot worktree kept"),
@@ -1699,16 +1725,21 @@ fn reserve_snapshot_worktree(root: &Path, job: &str) -> AppResult<PathBuf> {
 /// Unreadable archives, archives over the import bounds, I/O failures.
 pub fn extract_snapshot(archive: &Path, root: &Path) -> AppResult<SnapshotStats> {
     check_archive(archive, MAX_IMPORT_TOTAL_BYTES.saturating_mul(2))?;
-    // A link at the root is refused, never followed (#824).
-    if !fs::symlink_metadata(root)
-        .map_err(AppError::internal)?
-        .is_dir()
-    {
-        return Err(AppError::Forbidden(
-            "the snapshot's worktree is a link or not a folder: Yulius follows no links".into(),
-        ));
-    }
-    let root = fs::canonicalize(root).map_err(AppError::internal)?;
+    // A link at the root is refused, never followed (#824): the root is opened without following
+    // one and used by the real path of what was opened.
+    let flags = nix::fcntl::OFlag::O_RDONLY
+        | nix::fcntl::OFlag::O_DIRECTORY
+        | nix::fcntl::OFlag::O_NOFOLLOW
+        | nix::fcntl::OFlag::O_CLOEXEC;
+    let root = match nix::fcntl::open(root, flags, nix::sys::stat::Mode::empty()) {
+        Ok(dir) => crate::files::real_path(&dir)?,
+        Err(nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR) => {
+            return Err(AppError::Forbidden(
+                "the snapshot's worktree is a link or not a folder: Yulius follows no links".into(),
+            ));
+        }
+        Err(err) => return Err(crate::files::errno_error(err)),
+    };
     let file = File::open(archive).map_err(AppError::internal)?;
     let decoder = flate2::read::GzDecoder::new(BufReader::new(file));
     let mut tar = tar::Archive::new(decoder);
