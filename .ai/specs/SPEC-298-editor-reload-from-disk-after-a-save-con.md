@@ -42,8 +42,11 @@ marked "Saved": it shows the disk's text, or it keeps the text marked modified a
 - RLD-002: it replaces the text with the disk's text whatever the disk's version, including the
   one the tab already knows, as one undoable edit (EDT-015).
 - RLD-003: when the file was deleted (404), the text stays, stays marked modified and a toast says
-  "The file was deleted"; when it is no longer text, the toast says so; any other failure shows
-  "Couldn’t reload <path>" with the error. A reload made moot by a newer look says nothing.
+  "The file was deleted"; when it is binary or too large now, the toast says so in the words used
+  when such a file is opened; any other failure shows "Couldn’t reload <path>" with the error.
+- RLD-005: a look that starts while a reload is on its way (the page or the Editor back in front,
+  the tab activated) takes its place as a reload; a save makes it moot, and a moot reload says
+  nothing (review of SPEC-298).
 - RLD-004: the periodic look and the look on activation behave as before.
 
 ## Plan
@@ -65,8 +68,10 @@ marked "Saved": it shows the disk's text, or it keeps the text marked modified a
 ## Test plan
 
 - `e2e/tests/editor.e2e.ts`: two tests next to "unsaved edits are kept when the disk moves on",
-  using the mock's file tree (`__yuliusMock.repoFile`, and a new `removeRepoFile` helper). Both
-  fail before the fix: the status says "Saved" and the text is the person's.
+  using the mock's file tree (`__yuliusMock.repoFile`, and new `removeRepoFile`, `repoFileTooLarge`
+  and `holdRead` hooks). The first two fail before the fix: the status says "Saved" and the text is
+  the person's. Review: a too-large file's toast, and a look started while the reload's read is held
+  (`visibilitychange`), which asks for the whole file and shows the disk's text.
 - The full e2e suite and the repository gate (`scripts/dev ci`), and `scripts/dev security`.
 
 ## Decisions
@@ -76,4 +81,8 @@ marked "Saved": it shows the disk's text, or it keeps the text marked modified a
   the disk and replaces the text, so the undo, line-ending and presence handling stay shared.
 - A deleted file keeps the text modified rather than closing the tab: the person's text is the
   only copy left, and saving again goes through the conflict dialog (Overwrite recreates it).
+- Keys typed between the click on "Reload from disk" and its answer are replaced too (one undo
+  brings them back): the person chose to lose their changes (review nit).
+- A newer look carries the reload (`tab.reloading`) rather than being refused while one is on its
+  way: the newest look still wins (EDT-015), and no look of the person's choice is lost.
 - No ADR: this restores the intended behavior of an existing requirement.

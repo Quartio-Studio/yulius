@@ -617,6 +617,9 @@ export function createEditorView(ctx, sandbox, getTask) {
     return opening.get(key);
   }
 
+  /** Why `file`, read from `path`, does not open in the editor. */
+  const notEditable = (path, file) => (file.too_large ? `${path} is too large for the editor (${Math.round(file.size / 1024)} KB).` : `${path} is a binary file.`);
+
   async function loadFile(path) {
     // Another folder chosen meanwhile: this file is not one of its files, and is not shown.
     const from = root;
@@ -630,7 +633,7 @@ export function createEditorView(ctx, sandbox, getTask) {
     }
     if (root !== from) return;
     if (file.binary || file.too_large || file.content == null) {
-      toast(file.too_large ? `${path} is too large for the editor (${Math.round(file.size / 1024)} KB).` : `${path} is a binary file.`, { kind: 'info' });
+      toast(notEditable(path, file), { kind: 'info' });
       return;
     }
     const tab = withPresence({ path, root, model: null, sha: file.sha256, saved: file.content, dirty: false, viewState: null, saving: false });
@@ -712,9 +715,12 @@ export function createEditorView(ctx, sandbox, getTask) {
   async function refreshFromDisk(tab, { reload = false } = {}) {
     // A look answered with the text from before a save would put that text back as saved.
     if (tab.saving) return;
+    // A reload on its way is the person's choice: a newer look takes its place, as a reload.
+    reload = reload || Boolean(tab.reloading);
     const look = (tab.look || 0) + 1;
     tab.look = look;
     tab.looking = true;
+    tab.reloading = reload;
     try {
       // Unchanged since what this tab knows (its saved version, or the disk's newer one) is a 204.
       const known = reload ? null : (tab.dirty && tab.diskSha) || tab.sha;
@@ -722,7 +728,7 @@ export function createEditorView(ctx, sandbox, getTask) {
       if (tab.look !== look || !tabs.includes(tab) || tab.saving) return;
       if (!file || file.content == null) {
         // Unchanged, or no longer text: the text stays.
-        if (reload) toast(`${tab.path} is no longer a text file: your text is kept, unsaved.`, { kind: 'info' });
+        if (reload) toast(`${notEditable(tab.path, file)} Your text is kept, unsaved.`, { kind: 'info' });
         return;
       }
       if (!reload && file.sha256 === tab.sha) { setDiskSha(tab, null); return; }
@@ -749,7 +755,7 @@ export function createEditorView(ctx, sandbox, getTask) {
         else errorToast(error, `Couldn’t reload ${tab.path}`);
       }
     } finally {
-      if (tab.look === look) tab.looking = false;
+      if (tab.look === look) { tab.looking = false; tab.reloading = false; }
     }
   }
 
@@ -836,6 +842,7 @@ export function createEditorView(ctx, sandbox, getTask) {
     tab.saving = true;
     tab.look = (tab.look || 0) + 1; // a look in flight may predate this save
     tab.looking = false;
+    tab.reloading = false;
     renderStatus();
     try {
       let baseSha = tab.sha;
