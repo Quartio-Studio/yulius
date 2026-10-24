@@ -9,10 +9,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - Public lines of a stored key are no longer redacted (SPEC-302, task #288, fixes #599). Every
   line of a key block but its armour was a redaction needle, so an encrypted PEM's
   `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour headers (`Version: …`, `Hash: SHA256`)
-  and the text between a bundle's blocks showed as `[secret:NAME]` anywhere in the sandbox. Only
-  base64 (and base64url) lines are needles now, and a line with other text only when it holds a
-  key-length base64 run (a body joined onto its headers); a bundle's public
-  certificate body stays one (ADR-0215).
+  and OpenSSL's `subject=`/`issuer=` between a bundle's blocks showed as `[secret:NAME]` anywhere
+  in the sandbox. Blank lines and RFC 1421 headers or `subject=`/`issuer=` lines with no
+  key-length base64 run are no needles now; every other line stays one, so a body joined onto a
+  header or a key's colon-hex dump is still redacted (ADR-0215).
 - CD and delivery environment runs are stopped past a disk bound for their files (SPEC-300,
   task #286, #664). A run's tree, `HOME`, states and log, and a CD run's cache, lie outside every
   sandbox directory, so the sandbox's quota never counted them: a deploy could write until its

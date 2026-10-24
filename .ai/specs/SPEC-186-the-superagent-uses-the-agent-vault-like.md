@@ -78,7 +78,7 @@ what it is served gets the new tools and environment by itself.
   byte for byte, whether or not the stored value ends with a literal `\n`. Copying it again (after a
   rotation) replaces the whole multi-line value. Any other value holding `\` is still refused.
   Through the proxy a value is sent as stored (an HTTP header cannot carry line breaks).
-  Its base64 lines are redaction needles, not its headers or blank lines (SPEC-302, ADR-0215).
+  Its lines are redaction needles, not its blank lines, armour or public headers (SPEC-302, ADR-0215).
   Tested with a 3-line PEM key and a 7-line OpenSSH key (synthetic).
 - SAV-006 (new tools without a restart): Each Superagent records what it was started with, a
   digest of its MCP view (instructions, tools), whether the egress proxy was wired, and a

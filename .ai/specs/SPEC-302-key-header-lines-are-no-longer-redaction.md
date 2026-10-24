@@ -14,10 +14,11 @@ OpenSSH body lines stay needles)." Public certificate body lines stay out of sco
 
 ## Goal
 
-Only the lines of a stored key block that carry key material become redaction needles. An
-encrypted PEM's `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour's `Version: …` and
-`Hash: SHA256`, blank lines and the text between a bundle's blocks no longer turn into
-`[secret:NAME]` in a sandbox's transcripts and tool results.
+Public lines of a stored key block stop being redaction needles: an encrypted PEM's
+`Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour's `Version: …` and `Hash: SHA256`, blank
+lines and OpenSSL's `subject=`/`issuer=` between a bundle's blocks no longer turn into
+`[secret:NAME]` in a sandbox's transcripts and tool results. Every line that may hold key
+material stays a needle.
 
 ## Context
 
@@ -36,17 +37,16 @@ encrypted PEM's `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour's `Vers
 ## Requirements
 
 - R1. Blank lines and armour lines (`-----BEGIN|END <label>-----`) of a key block's file are not
-  needles. Another line, trimmed, of only base64 or base64url symbols (`A-Z a-z 0-9 + / = - _`)
-  and whitespace is a needle whole: a stored key whose body breaks became spaces still has its
-  body on a line (review round 1).
-- R2. A line with other text (RFC 1421 headers `<token>: <value>`, a bundle's `subject=…`) is a
-  needle whole when it holds a run of more than 32 consecutive base64 symbols: a body joined onto
-  its headers, by spaces or glued, or split by a separator that is no whitespace (a zero-width
-  space), stays a needle (review rounds 2 and 3). Headers alone have no such run (an IV is at
-  most 32 hex digits) and are not needles.
-- R3. PEM and OpenSSH body lines (base64) stay needles; the PGP checksum line (`=…`) is returned
-  by `key_lines` but, at 5 symbols, falls under `MIN_NEEDLE_LEN` (it is no key material). The
-  whole stored value stays a needle as before.
+  needles.
+- R2. A trimmed line of public text of a known shape is not a needle: an RFC 1421 header
+  (`<token>: <value>`, the token letters, digits and `-`, the value not empty) or a line starting
+  `subject=` or `issuer=`, unless it is only base64 symbols and whitespace or holds a run of more
+  than 32 consecutive base64/base64url symbols (a body joined onto it, by spaces or glued).
+- R3. Every other line stays a needle, trimmed, as before this change: base64 body lines (PEM,
+  OpenSSH, PGP), a body joined by spaces or split by a zero-width space, a key's OpenSSL text dump
+  (colon-separated hex), text between a bundle's blocks of any other shape. The PGP checksum line
+  (`=…`) is returned but, at 5 symbols, falls under `MIN_NEEDLE_LEN`. The whole stored value
+  stays a needle as before.
 
 ## Plan
 
@@ -62,23 +62,26 @@ encrypted PEM's `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour's `Vers
 
 - `key_lines` of a synthetic encrypted PEM (`Proc-Type`, `DEK-Info`, a blank line, base64 body)
   returns only its body lines.
-- `key_lines` of a bundle with text between its blocks and of a synthetic PGP block with
-  `Version:`/`Hash:` headers returns only base64 lines.
-- A line with headers and a body joined to them (by spaces, glued, or across a zero-width space)
-  stays a needle; `DEK-Info: AES-256-CBC,<32 hex>` and a 32-symbol header word do not, a
+- `key_lines` of a bundle with `subject=`/`issuer=` between its blocks and of a synthetic PGP
+  block with `Version:`/`Hash:` headers returns only their body lines.
+- A header line with a body joined to it (by spaces or glued) stays a needle;
+  `DEK-Info: AES-256-CBC,<32 hex>` and a header with a 32-symbol word do not, one with a
   33-symbol run does.
+- A key's colon-hex dump between a bundle's blocks stays a needle, line by line.
 - The existing bundle and OpenSSH tests still give every body line.
 
 ## Test plan
 
 - Unit test in `dotenv.rs` (`header_lines_and_blank_lines_are_not_key_lines`): synthetic
-  encrypted PEM, PGP block with headers and checksum, bundle with an openssl `subject=` line in
-  between, a body line with spaces around it and one joined by spaces. Fails before the fix
-  (headers returned), and the joined line failed the first fix (review round 1).
+  encrypted PEM, PGP block with headers and checksum, bundle with OpenSSL `subject=`/`issuer=`
+  lines in between, a body line with spaces around it and one joined by spaces. Fails before the
+  fix (headers returned), and the joined line failed the first fix (review round 1).
 - Unit test `a_line_with_a_key_length_base64_run_stays_a_needle`: a body joined to its headers by
   spaces and glued, a PGP comment running into a body, zero-width-space, BOM and NBSP
-  separators, the 32/33-symbol threshold, and header-only lines. Fails before the fix (review
-  rounds 2 and 3).
+  separators, the 32/33-symbol threshold, and header-only lines (review rounds 2 and 3).
+- Unit test `a_key_dump_between_blocks_stays_a_needle`: a bundle holding a key's
+  `privateExponent:` colon-hex dump, `Private-Key:`/`localKeyID:` headers and `subject=`; the
+  hex lines stay needles (review round 4).
 - Integration test `secrets_env::an_encrypted_pem_redacts_its_body_not_its_headers`: an
   encrypted PEM stored through the API; `redact_for_sandbox` keeps its `Proc-Type`/`DEK-Info`
   lines and replaces its body. Fails before the fix.
@@ -88,24 +91,19 @@ encrypted PEM's `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour's `Vers
 
 ## Decisions
 
-- D1. Base64-only rule (the core team's suggestion) over the issue's narrower "skip
-  `<token>: <value>` and blank lines": it also drops a bundle's in-between text and PGP
-  signed-message text, and every key body format a key block can hold (PEM, PKCS#8, OpenSSH, PGP)
-  is base64. The base64url symbols `-` and `_` are kept too so a body in that alphabet never loses
-  its needles (an over-redaction at worst). Recorded in ADR-0215.
-- D2. Lines are classified and emitted trimmed: a body line with stray spaces keeps a needle (the
-  trimmed text is part of the line a `.env` shows), never dropped.
-- D2b. Over 32 consecutive base64 symbols marks key material on a line with other text: body
-  lines are 64 (PEM) or 70 (OpenSSH) symbols, while an IV is at most 32 hex digits and header
-  values hold a comma, colon, dot or space. Such a line is kept whole, not cut: the needle then
-  matches only that whole line (what a `.env` copy shows), never a header alone elsewhere, and no
-  tokenisation can miss a body (review round 3 found glued and zero-width-space shapes the
-  round-2 token runs missed).
-- D3. Text made only of words, `=` and spaces (`issuer=CN = Synthetic CA`), a folded RFC 1421
-  header's continuation of base64 symbols, or a comment holding an unspaced 40-hex fingerprint
-  stays a needle whole: over-redaction of that exact line, never a leak.
-- D4. Out of scope: public certificate body lines in a bundle (base64 too, so still needles and
-  over-redacted). Said on #599.
+- D1. Name the public shapes and keep every other line, not guess which lines hold key material.
+  The first three rules (base64 lines only; then with spaces; then with base64 runs) each missed
+  a shape of key material found by review: a body joined by spaces, glued to its header or split
+  by a zero-width space, a key's colon-hex dump. Dropping only named public shapes cannot drop
+  material outside them. The core team's base64-only suggestion is the rejected first rule;
+  the issue's header rule is kept, with the run check. Recorded in ADR-0215.
+- D2. Lines are emitted trimmed: the trimmed text is part of the line a `.env` shows, so it still
+  matches; needles match only whole lines, so a header kept inside one is redacted only there.
+- D3. A run of more than 32 base64 symbols keeps a header line a needle: an IV is at most 32 hex
+  digits, a body line is 64 (PEM) or 70 (OpenSSH) symbols.
+- D4. Over-redaction left, never a leak: a public certificate's body (out of scope, said on
+  #599), a PGP signed message's text, a dump's labels (`privateExponent:`, `Bag Attributes`) and
+  public values, a folded header's continuation.
 
 ## Evidence
 
@@ -141,4 +139,10 @@ encrypted PEM's `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour's `Vers
   checksum falls under `MIN_NEEDLE_LEN`, acceptance criteria and test plan name the joined shape.
   Nits: the "no header word" claim softened (D3), the last Plan item renamed to what is true
   before the merge, wording fixed.
+- Review round 4 (fresh session): request changes, one major in own code: a key's OpenSSL text
+  dump (`privateExponent:` and colon-separated hex) between a bundle's blocks was dropped and
+  would leak. Fixed test-first: `a_key_dump_between_blocks_stays_a_needle` failed (hex lines
+  missing), then passed once the rule was inverted to drop only named public shapes (D1); every
+  earlier test passes unchanged. Nits: SPEC-186 and architecture say the rule in short; ADR-0215
+  lists `Bag Attributes` with the over-redacted shapes (renamed for the new rule).
 - Not tested: a real encrypted key from `openssl` (fixtures are synthetic by rule).
