@@ -44,17 +44,17 @@ marked "Saved": it shows the disk's text, or it keeps the text marked modified a
 - RLD-003: when the file was deleted (404), the text stays, stays marked modified and a toast says
   "The file was deleted"; when it is binary or too large now, the toast says so in the words used
   when such a file is opened; any other failure shows "Couldn’t reload <path>" with the error.
-- RLD-005: a look that starts while a reload is on its way (the page or the Editor back in front,
+- RLD-004: a look that starts while a reload is on its way (the page or the Editor back in front,
   the tab activated) takes its place as a reload; a save makes it moot, and a moot reload says
   nothing (review of SPEC-298).
-- RLD-004: the periodic look and the look on activation behave as before.
+- RLD-005: the periodic look and the look on activation behave as before.
 
 ## Plan
 
 - [x] Spec for the reload-after-conflict fix
-- [ ] Failing e2e tests: deleted file and same version after a 409
-- [ ] Reload from disk keeps the modified mark unless it loaded the disk's text
-- [ ] Independent review answered
+- [x] Failing e2e tests: deleted file and same version after a 409
+- [x] Reload from disk keeps the modified mark unless it loaded the disk's text
+- [x] Independent review answered
 - [ ] Gates green and docs updated
 
 ## Acceptance criteria
