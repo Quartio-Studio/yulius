@@ -1,11 +1,11 @@
 ---
 yulius-task: 898bca0f-9f9d-4d71-b338-858a223d1297
-status: in-progress
+status: done
 ---
 
 # SPEC-302: Key header lines are no longer redaction needles (#599)
 
-Status: in-progress
+Status: done
 Date: 2026-10-24
 Owner: Yulius task #288
 Scope authorization: task #288: "Fix it in one pull request into `dev` whose description says
@@ -52,8 +52,8 @@ encrypted PEM's `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour's `Vers
 - [x] Regression test with a synthetic encrypted PEM fails
 - [x] key_lines keeps only base64 body lines
 - [x] ADR, SPEC-186 and changes record the rule
-- [ ] Independent review answered and gates green
-- [ ] Merged into dev on green CI
+- [x] Independent review answered and gates green
+- [x] Merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -89,3 +89,23 @@ encrypted PEM's `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour's `Vers
   header's continuation of base64 symbols stays a needle: over-redaction, never a leak.
 - D4. Out of scope: public certificate body lines in a bundle (base64 too, so still needles and
   over-redacted). Said on #599.
+
+## Evidence
+
+- Root cause: `key_lines` kept every line not starting with `-----`; `matcher_for` makes each a
+  needle, and the headers pass `MIN_NEEDLE_LEN`. Fixtures had only base64 bodies.
+- Regression test first (d02fe7d1): `cargo test -p yulius-domain --lib vault::dotenv` failed,
+  `key_lines` returned `Proc-Type: 4,ENCRYPTED`, `DEK-Info: …` and `""`.
+- Integration test with the dotenv fix reverted: `cargo nextest run -p yulius -E
+  'binary_id(yulius::main) & test(/^secrets_env::/)'` failed at
+  `an_encrypted_pem_redacts_its_body_not_its_headers` (headers redacted); with the fix, the
+  `secrets` and `secrets_env` files: 41 passed.
+- Review round 1 (fresh session): request changes, one major in own code: a body line joined by
+  spaces (accepted by `key_block`) lost its needle and would leak in a `.env` copy. Fixed
+  test-first: the extended test failed (the joined line missing), then passed with whitespace
+  allowed inside a line. Nits answered: architecture paragraph rewrapped; folded header
+  continuations noted as over-redaction (D3, ADR-0215).
+- `scripts/dev ci`: exit 0, 2602 tests passed, 16 skipped (after the round-1 fix).
+- `scripts/dev security`: unrun, Vidoc out of quota (HTTP 429, exit 2) for both changed code
+  files (ADR-0104).
+- Not tested: a real encrypted key from `openssl` (fixtures are synthetic by rule).
