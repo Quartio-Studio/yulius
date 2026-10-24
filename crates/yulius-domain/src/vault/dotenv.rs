@@ -594,6 +594,19 @@ mod tests {
             key_lines(&stored),
             vec![body, "privateExponent:", hex, "32:33", cert]
         );
+        // The dump joined onto one line (its breaks became spaces or were dropped), a header
+        // joined onto another, and OpenSSL's inline small integers are not public text either.
+        for line in [
+            format!("Private-Key: (synthetic) privateExponent:     {hex} 32:33"),
+            format!("privateExponent:    {hex}"),
+            "prime1: 18446744073709551557 (0xffffffffffffffc5)".to_owned(),
+            "Comment: https://synthetic.example/".to_owned(),
+            "subject=CN = synthetic.example privateExponent: 2a:9f".to_owned(),
+        ] {
+            let file = key_file("SYNTHETIC KEY", &[&line]);
+            let stored = file.trim_end().replace('\n', "\\n");
+            assert_eq!(key_lines(&stored), vec![line.clone()], "{line}");
+        }
     }
 
     /// SPEC-186 SAV-005: a key stored with literal `\n` (an agent secret never spans lines) is
