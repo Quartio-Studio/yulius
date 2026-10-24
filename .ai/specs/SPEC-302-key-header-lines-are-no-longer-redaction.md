@@ -122,7 +122,9 @@ encrypted PEM's `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour's `Vers
   test-first: the extended test failed (the joined line missing), then passed with whitespace
   allowed inside a line. Nits answered: architecture paragraph rewrapped; folded header
   continuations noted as over-redaction (D3, ADR-0215).
-- `scripts/dev ci`: exit 0, 2603 tests passed, 16 skipped after the round-3 fix (also green after rounds 1 and 2).
+- `scripts/dev ci`: green after rounds 1 and 2. After round 3 its tests passed (2603) but `cargo doc`
+  failed: `key_lines`' doc linked the private `PUBLIC_RUN_LEN`; the doc now names the length. With
+  `origin/dev` merged (#886): exit 0, 2606 tests passed, 16 skipped.
 - `scripts/dev security`: unrun, Vidoc out of quota (HTTP 429, exit 2) for both changed code
   files (ADR-0104).
 - Review round 2 (fresh session): request changes, one major in own code: a body joined onto its
