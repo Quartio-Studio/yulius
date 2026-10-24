@@ -12,6 +12,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   lost any output after it. `mark_lost` now saves it to the run's `final-screen` before the
   attempt becomes lost; a hub without output (a runtime made after a restart) keeps the saved one,
   and a run lost before Yulius attached to it saves none (its hub still shows the run before).
+- "Reload from disk" after a save conflict no longer leaves the person's text marked "Saved"
+  (SPEC-298, task #284, #571). It cleared the modified mark before reading the disk, and the read
+  kept the text when the disk was back at the tab's version, the file was deleted or no longer
+  text. A reload now replaces the text whatever the version, as one undoable edit, and clears the
+  mark only then; a file it cannot load keeps the text modified and a toast says why ("The file
+  was deleted").
 - CD and delivery environment runs are stopped past a disk bound for their files (SPEC-300,
   task #286, #664). A run's tree, `HOME`, states and log, and a CD run's cache, lie outside every
   sandbox directory, so the sandbox's quota never counted them: a deploy could write until its
