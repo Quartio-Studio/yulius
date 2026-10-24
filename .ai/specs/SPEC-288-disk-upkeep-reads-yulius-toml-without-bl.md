@@ -1,11 +1,11 @@
 ---
 yulius-task: 360e1ba7-ab73-465a-acb2-c931079d7931
-status: in-progress
+status: done
 ---
 
 # SPEC-288: Disk upkeep reads a worktree's files without waiting on a FIFO
 
-Status: in-progress
+Status: done
 Date: 2026-10-24
 Owner: task #274
 Scope authorization: task #274: "Solve GitHub issue #853 … in one pull request into `dev`".
@@ -64,8 +64,8 @@ than a small regular file counts as absent.
 - [x] Failing regression tests for a FIFO, a link and an oversized yulius.toml and gitdir
 - [x] yulius.toml and gitdir read through one non-blocking no-follow handle
 - [x] Declared caches of an ended worktree read off the async workers
-- [ ] Independent review answered and gates green
-- [ ] Merged into dev on green CI and #853 closed with a summary
+- [x] Independent review answered and gates green
+- [x] Pull request into dev says Fixes #853 and #853 has the progress
 
 ## Acceptance criteria
 
@@ -108,3 +108,29 @@ than a small regular file counts as absent.
 - Links higher up the path (a worktree directory itself swapped for a link) are outside this
   change: `O_NOFOLLOW` covers the last component only, as before; the removal still checks the
   worktree with `real_dir_from`, and a link there can at most change the list of cache names read.
+
+## Evidence
+
+- Before the fix (commit `de64f2ab`, tests only):
+  `cargo nextest run -p yulius-app -E 'test(/yulius_toml|gitdir/)'` failed 2 of 4:
+  `a_yulius_toml_swapped_for_a_fifo_is_never_waited_on` (60.0 s, "a read waited on the FIFO")
+  and `only_a_small_regular_gitdir_names_a_gone_worktree` ("a link": the old read followed it).
+  The integration test passed there too (a FIFO in place was refused by the old type check).
+- After the fix: the same run, plus `disk::`/`leftovers::` unit tests, 12 passed; the race test
+  takes 0.33 s for 20 000 reads. `disk::`, `leftovers::` and `hygiene` integration tests: 58
+  passed.
+- Mutation (removing `O_NONBLOCK` from `read_small_file`): the integration test fails after 60 s
+  with "the round waited on a FIFO" and does not hang; restored afterwards.
+- `scripts/dev ci` at `2d90883b`: exit 0, 2576 tests passed, 17 skipped.
+- `scripts/dev security`: exit 2, not run: Vidoc is out of quota for this key (HTTP 429, "has
+  used its 50,000,000 tokens"); unrun, not passed. No ignore entry was added.
+- Independent review (fresh session, `om-code-review` and `yulius-review`) at `09ab6977`:
+  APPROVE, 4 minor and 2 nits, all on this change's own code. Answered in `2d90883b`: the
+  integration test releases a blocked reader on timeout (1); FIF-003 is checked by reading the
+  code, and the spec says the integration test guards FIF-004 rather than the race (2); Plan and
+  Evidence (3); a directory case (4); FIF-001 wording (5). Links higher up the path (6) are
+  pre-existing and unchanged; see Decisions.
+- Acceptance: FIFO `yulius.toml` ends `disk_upkeep` with no declared caches
+  (`a_fifo_named_yulius_toml_declares_nothing_and_never_stops_the_round`); a link, an oversized
+  file and a directory still declare nothing (`only_a_small_regular_yulius_toml_declares_caches`);
+  other reads checked (Context), `gitdir` fixed (`only_a_small_regular_gitdir_names_a_gone_worktree`).
