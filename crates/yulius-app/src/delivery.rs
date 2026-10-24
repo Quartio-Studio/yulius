@@ -4143,7 +4143,8 @@ impl App {
     /// Startup reconciliation: runs recorded as `running` have no runner after a restart: they
     /// are recorded as `error`, then their process hosts are terminated. Recorded first, so a
     /// watcher still following the run (never after a real restart) cannot take its end while
-    /// the host goes. Returns how many were closed. Call once before serving.
+    /// the host goes; a run whose record fails is still ended. Returns how many were closed. Call
+    /// once before serving.
     ///
     /// # Errors
     /// Store failures.
@@ -4154,7 +4155,7 @@ impl App {
                 "{}\n[yulius] interrupted by a server restart; the command may have been killed or may have finished unobserved\n",
                 run.output
             );
-            if self
+            let recorded = self
                 .deps
                 .store
                 .finish_environment_run(
@@ -4164,11 +4165,11 @@ impl App {
                     None,
                     self.now(),
                 )
-                .await?
-            {
+                .await;
+            self.environment_end_lost(&run.sandbox_id, &run.id).await;
+            if recorded? {
                 closed += 1;
             }
-            self.environment_end_lost(&run.sandbox_id, &run.id).await;
         }
         Ok(closed)
     }

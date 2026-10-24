@@ -116,6 +116,12 @@ Independent review in a fresh session (read-only subagent, skill `om-code-review
 - Round 3 at a9197aa9: request changes until a green test stage at the head is recorded (the local
   gate below had one failing test) and two statements here are corrected; no code change asked.
   Answered with the PR's CI run at a9197aa9 and the corrections in the next commit.
+- Round 4 at b74c5814 (TLB-005): APPROVE; the reviewer reproduced the race with the probe (old
+  order 2 of 2 failed, fix 3 of 3 passed). Minor, own code: a store error on the record returned
+  before the run was ended, leaving its host running until the next restart; now the run is
+  ended and the error returned after. Nits: the test's comment named the old order (updated);
+  `dlv_expire_lost_run` still ends the host first (pre-existing, kept: its watcher is past every
+  run limit, so no race applies); the "not tested" line now names the vault code.
 
 ## Evidence
 
@@ -142,7 +148,9 @@ Independent review in a fresh session (read-only subagent, skill `om-code-review
   50,000,000 tokens. The three changed code files were not scanned; this is unrun, not passed.
 - Not tested: Firefox and Safari (the suite runs Chromium only; `execCommand('insertText')` and
   `setRangeText` are in both), a real OS clipboard (pastes are dispatched `ClipboardEvent`s, as in
-  SPEC-193's test), and the Rust server (unchanged: `vault::field` keeps line breaks, as read).
+  SPEC-193's test), and the vault's Rust code (unchanged: `vault::field` keeps line breaks, as
+  read). TLB-005's store-error path (the record fails, the run is still ended, then the error is
+  returned) has no test: the harness cannot make one store write fail; it is read in review.
 - TLB-005: `delivery::a_restart_ends_a_running_environment_command` failed at 34fe7bc9 locally 1
   of 6 without load and in two CI runs (0971dcae at 59b842b5, 6931babd at 34fe7bc9). A probe of
   1.5 s after `terminate` in `environment_end_lost` failed it 3 of 3 (`left: 0, right: 1`); with
