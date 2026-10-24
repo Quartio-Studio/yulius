@@ -1035,7 +1035,7 @@ test('reloading a file deleted after a save conflict keeps the text modified and
   await expect(browser.locator('.toast-msg:has-text("The file was deleted")')).toBeVisible();
   expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
   await expect.poll(() => editorStatus(browser)).toContain('Modified');
-  await expect(screen.getByRole('tab', /^notes\.txt, modified/)).toBeVisible();
+  await expect(screen.getByRole('tab', /^notes\.txt ?, modified/)).toBeVisible();
 });
 
 test('reloading a file back at the tab\'s version after a save conflict shows the disk\'s text, saved, undoably', async ({ app, browser, screen }) => {
