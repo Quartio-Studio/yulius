@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-24
 
+- "Reload from disk" after a save conflict no longer leaves the person's text marked "Saved"
+  (SPEC-298, task #284, #571). It cleared the modified mark before reading the disk, and the read
+  kept the text when the disk was back at the tab's version, the file was deleted or no longer
+  text. A reload now replaces the text whatever the version, as one undoable edit, and clears the
+  mark only then; a file it cannot load keeps the text modified and a toast says why ("The file
+  was deleted").
 - An import's snapshot is checked out in a folder of the server, not in the sandbox's
   `worktrees/` (SPEC-296, task #282, #824). The import picked `worktrees/import-<job>` with an
   existence check before Git created it. A link to an empty folder planted there in between made
