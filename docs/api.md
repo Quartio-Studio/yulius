@@ -1539,6 +1539,12 @@ personal secret was switched on or off for a project; to a project secret's view
 for 1.5 beats when it is shown again or back online, takes the connection for dead and reconnects,
 which resyncs; SPEC-191).
 
+An open stream is re-checked every `viewer_recheck_ms` (60 s): a signed-out, disabled or revoked
+sign-in closes it with 4003; otherwise the person is read again, so sandbox visibility (#66) and
+instance administration decide the next events from their current permissions and roles. Losing
+instance administration stops `account.updated` (and any other administrators-only event) after the
+next re-check, gaining it starts them, without a reconnect (SPEC-286, #722).
+
 `TaskSummary.pause` is null or `{"by":"update|person","user":{"login"}|null,"since"|null,"pending"}`
 while a live run is paused (SPEC-191, ADR-0154): an update holds it, or a person paused it;
 `pending` while the pause has not taken hold yet. A capacity pause is `status: waiting_capacity`.

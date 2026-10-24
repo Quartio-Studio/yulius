@@ -394,25 +394,34 @@ impl App {
     /// WebSockets re-check it, so logout, disabling, session expiry and revoking a token end them
     /// as they end new requests (#66, SPEC-247 RMT-001).
     pub async fn still_signed_in(&self, ctx: &AuthContext) -> bool {
+        self.signed_in_user(ctx).await.is_some()
+    }
+
+    /// The person as stored now, when [`App::still_signed_in`] holds: an open event stream
+    /// filters with their current roles, so losing or gaining instance administration takes
+    /// effect at its next re-check (#722).
+    pub async fn signed_in_user(&self, ctx: &AuthContext) -> Option<UserRecord> {
         let Ok(Some(user)) = self.deps.store.user(&ctx.user.id).await else {
-            return false;
+            return None;
         };
         if user.disabled_at.is_some() {
-            return false;
+            return None;
         }
-        if let Some(grant) = &ctx.token {
-            return matches!(
+        let holds = if let Some(grant) = &ctx.token {
+            matches!(
                 self.deps.store.api_tokens_of(&user.id).await,
                 Ok(tokens) if tokens.iter().any(|t| t.id == grant.id)
-            );
-        }
-        match &ctx.session_hash {
-            Some(hash) => matches!(
-                self.deps.store.web_session(hash).await,
-                Ok(Some(session)) if session.revoked_at.is_none() && session.expires_at > self.now()
-            ),
-            None => true,
-        }
+            )
+        } else {
+            match &ctx.session_hash {
+                Some(hash) => matches!(
+                    self.deps.store.web_session(hash).await,
+                    Ok(Some(session)) if session.revoked_at.is_none() && session.expires_at > self.now()
+                ),
+                None => true,
+            }
+        };
+        holds.then_some(user)
     }
 
     /// Resolves a bearer API token (`yul_…`).
