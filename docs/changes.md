@@ -13,6 +13,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   jumps while the runs execute: 128 runs in all. The late disk-check publish suspected by #277
   cannot reach this test, since no run starts before the check has published. CI keeps a failing
   test's output (SPEC-145), so a next failure names its assertion.
+- The CI stage-duration test (`local_ci::a_run_s_jobs_record_their_stages_and_test_counts`) no
+  longer fails under host load (SPEC-293, task #279, #538). Yulius times a stage from the log read
+  that saw its marker to the one that saw the next, and the test bounded those durations by wall
+  time while a fake clock ticked along: a starved clock task or a late read gave "480 ms" or a
+  zero-long stage. The job now holds each stage until the test, having seen the stage start
+  recorded, moves the clock by 1000 ms and releases it, so each stage lasts exactly 1000 ms. Test
+  only; Yulius's own timing is unchanged.
 - An achieved goal no longer leaves its task Working for good when Yulius did not settle the
   turn's Stop hook (SPEC-290, task #276, #877). The hook client fails open, so a Stop that Yulius
   answered with an error, or could not answer, still ended the turn in Claude Code, and the task
