@@ -2135,6 +2135,7 @@ impl App {
             attempt_id: attempt.id.clone(),
             writer: attached.writer,
         });
+        crate::race::reached(crate::race::Point::RunAttached, Path::new(task_id.as_str()));
         // What the sandbox's limits counted so far: a rise by the run's end says it was at one.
         let counters = self.limit_counters(&sandbox).await;
         runtime.set_start_counters(&attempt.id, counters);
