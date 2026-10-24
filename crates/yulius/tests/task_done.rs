@@ -2528,6 +2528,90 @@ fn a_run_lost_while_the_server_runs_saves_its_live_screen() -> TestResult {
     Ok(())
 }
 
+/// SPEC-301 LRS-001 (review): a continued task's new run is lost before Yulius attached to it
+/// (its stop's escalation ends it). The hub still shows the previous run's screen, which is not
+/// the new run's: the new run saves no screen.
+#[test]
+fn a_run_lost_before_it_attached_saves_no_screen_of_the_run_before() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let host = Arc::new(support::gated::GatedHost::new(PathBuf::from(env!(
+            "CARGO_BIN_EXE_yulius"
+        ))));
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start_on(
+            &data,
+            &fake,
+            agent,
+            0,
+            Some(host.clone()),
+            Some(5_000),
+            false,
+            None,
+        )
+        .await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
+        wait_for("the launch goal", Duration::from_secs(60), || {
+            screen_contains(&app, &id, "GOAL SET")
+        })
+        .await?;
+        stop(&app, &id).await?;
+        assert!(screen_contains(&app, &id, "GOAL SET").await);
+
+        // The continued run's attach is held, so the hub keeps the first run's screen.
+        host.arm();
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        // The continue returns once its launch does: it waits on a worker.
+        let continued = {
+            let (app, id) = (app.clone(), id.clone());
+            tokio::spawn(async move {
+                app.continue_task(
+                    &ctx,
+                    id.as_str(),
+                    &yulius_contracts::api::tasks::ContinueTask { account_id: None },
+                )
+                .await
+                .map(drop)
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(60), host.reached()).await?;
+        let second = app.deps.store.live_attempt(&id).await?.ok_or("no run")?;
+        app.stop_task_now(&id).await?;
+        let lost = wait_for("the escalation", Duration::from_secs(30), || async {
+            app.deps
+                .store
+                .attempt(&second.id)
+                .await
+                .is_ok_and(|a| a.is_some_and(|a| a.state == AttemptState::Lost))
+        })
+        .await;
+        host.release();
+        let _ = tokio::time::timeout(Duration::from_secs(30), continued).await?;
+        assert!(lost.is_ok(), "{}", run_states(&app, &id).await);
+        let saved = Path::new(&second.run_dir).join("final-screen");
+        assert!(
+            !saved.exists(),
+            "the run that never attached took the run before's screen: {:?}",
+            std::fs::read(&saved).map(|s| String::from_utf8_lossy(&s).into_owned())
+        );
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-250 STW-006 (review): the old run is lost while the switch waits for its end. The switch
 /// gives up and says the session ended: the task rests lost with its one run, and nothing
 /// starts that no one asked for.
