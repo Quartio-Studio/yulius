@@ -1077,6 +1077,250 @@ async fn secrets_are_managed_by_name_and_binding_only() -> TestResult {
     Ok(())
 }
 
+/// SPEC-287 RSR-001..003 (#787): `secret_update` and `secret_hosts_answer` act on the secret of
+/// the name that wins for the project and the caller, as `secrets_list` shows it: the project's
+/// before the caller's personal one before a global one switched on; a shadowed secret, another
+/// person's personal one and a global one switched off are never reached by name.
+#[tokio::test]
+async fn remote_secret_tools_act_on_the_secret_that_wins() -> TestResult {
+    use std::sync::atomic::Ordering;
+    use yulius_app::ports::vault::VaultStore as _;
+    let w = World::new("org").await?;
+    support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
+    let (_, alice_browser, alice) = person(&w, "alice").await?;
+    let (_, bob_browser, _) = person(&w, "bob").await?;
+    let (root, _) = w.user("root", true).await?;
+    let root_browser = w.browser(&root).await?;
+    let root_token = make_token(&w, &root_browser, "laptop", "operate").await?;
+    let root_agent = bearer(text(&root_token["token"]));
+    // alice writes to the project but administers neither it nor the instance.
+    w.grant("alice", "acme/shop", "push");
+    w.grant("bob", "acme/shop", "push");
+    w.grant("root", "acme/shop", "admin");
+    let mut ids = std::collections::HashMap::new();
+    for (key, creds, body) in [
+        (
+            "global npm",
+            &root_browser,
+            json!({"scope": "instance", "name": "NPM_TOKEN", "value": "global-npm-0123456789"}),
+        ),
+        (
+            "project npm",
+            &alice_browser,
+            json!({"name": "NPM_TOKEN", "value": "project-npm-0123456789"}),
+        ),
+        (
+            "global gh",
+            &root_browser,
+            json!({"scope": "instance", "name": "GH_TOKEN", "value": "global-gh-0123456789"}),
+        ),
+        (
+            "bob gh",
+            &bob_browser,
+            json!({"scope": "personal", "name": "GH_TOKEN", "value": "bob-gh-0123456789ab"}),
+        ),
+        (
+            "alice gh",
+            &alice_browser,
+            json!({"scope": "personal", "name": "GH_TOKEN", "value": "alice-gh-0123456789"}),
+        ),
+        (
+            "bob only",
+            &bob_browser,
+            json!({"scope": "personal", "name": "BOB_ONLY", "value": "bob-only-0123456789"}),
+        ),
+        (
+            "global off",
+            &root_browser,
+            json!({"scope": "instance", "name": "OFF_KEY", "value": "global-off-0123456789"}),
+        ),
+        (
+            "alice off",
+            &alice_browser,
+            json!({"scope": "personal", "name": "ALICE_OFF", "value": "alice-off-0123456789"}),
+        ),
+    ] {
+        // Each a second after the one before: the oldest of a name is listed first.
+        w.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        let created = call(
+            &w.h.router,
+            Method::POST,
+            "/api/sandboxes/s1/agent-secrets",
+            Some(body),
+            creds,
+        )
+        .await?;
+        assert_eq!(
+            created.status,
+            StatusCode::CREATED,
+            "{key}: {}",
+            created.body
+        );
+        ids.insert(key, text(&created.body["id"]).to_owned());
+    }
+    for (key, creds) in [("global off", &root_browser), ("alice off", &alice_browser)] {
+        let off = call(
+            &w.h.router,
+            Method::PUT,
+            &format!("/api/sandboxes/s1/agent-secrets/{}/enabled", ids[key]),
+            Some(json!({"enabled": false})),
+            creds,
+        )
+        .await?;
+        assert!(off.status.is_success(), "{key}: {}", off.body);
+    }
+    let hosts_of = |key: &'static str| {
+        let id = ids[key].clone();
+        let store = &w.h.store;
+        async move {
+            let record = store.vault_get(&id).await?.ok_or(key)?;
+            Ok::<_, Error>((record.hosts, record.requested_hosts))
+        }
+    };
+    let none: (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    let shop = |extra: Value| {
+        let mut args = json!({"project": "acme/shop"});
+        if let (Some(args), Some(extra)) = (args.as_object_mut(), extra.as_object()) {
+            args.extend(extra.clone());
+        }
+        args
+    };
+
+    // The project's NPM_TOKEN wins over the older global one.
+    let (error, said, updated) = remote(
+        &w,
+        &alice,
+        "secret_update",
+        shop(json!({"secret": "NPM_TOKEN", "hosts": ["registry.npmjs.org"], "expect_hosts": []})),
+    )
+    .await?;
+    assert!(!error, "the project's secret, which alice manages: {said}");
+    assert_eq!(updated["secret"]["hosts"], json!(["registry.npmjs.org"]));
+    assert_eq!(
+        hosts_of("project npm").await?.0,
+        vec!["registry.npmjs.org".to_owned()]
+    );
+    assert_eq!(
+        hosts_of("global npm").await?,
+        none,
+        "the global one is untouched"
+    );
+    // An administrator, who may manage both, changes the project's one too.
+    let (error, said, _) = remote(
+        &w,
+        &root_agent,
+        "secret_update",
+        shop(json!({"secret": "NPM_TOKEN", "description": "npm for the shop"})),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    for (key, description) in [("project npm", "npm for the shop"), ("global npm", "")] {
+        let record = w.h.store.vault_get(&ids[key]).await?.ok_or(key)?;
+        assert_eq!(record.description, description, "{key}");
+    }
+
+    // Its host request is answered on the project's secret too.
+    for key in ["global npm", "project npm"] {
+        let asked = ["npm.pkg.github.com".to_owned()];
+        assert!(
+            w.h.store
+                .vault_set_request(&ids[key], &[], &asked, Some("a task"))
+                .await?,
+            "{key}"
+        );
+    }
+    let (error, said, answered) = remote(
+        &w,
+        &alice,
+        "secret_hosts_answer",
+        shop(json!({"secret": "NPM_TOKEN", "allow": true, "hosts": ["npm.pkg.github.com"]})),
+    )
+    .await?;
+    assert!(!error, "{said}");
+    assert_eq!(
+        answered["secret"]["hosts"],
+        json!(["registry.npmjs.org", "npm.pkg.github.com"])
+    );
+    assert_eq!(
+        hosts_of("project npm").await?,
+        (
+            vec![
+                "registry.npmjs.org".to_owned(),
+                "npm.pkg.github.com".to_owned()
+            ],
+            Vec::new()
+        )
+    );
+    assert_eq!(
+        hosts_of("global npm").await?,
+        (Vec::new(), vec!["npm.pkg.github.com".to_owned()]),
+        "the global one's request still waits"
+    );
+
+    // alice's personal GH_TOKEN wins over the older global one and bob's; bob's is never hers.
+    let (error, said, _) = remote(
+        &w,
+        &alice,
+        "secret_update",
+        shop(json!({"secret": "GH_TOKEN", "hosts": ["api.github.com"], "expect_hosts": []})),
+    )
+    .await?;
+    assert!(!error, "alice's own personal secret: {said}");
+    assert_eq!(
+        hosts_of("alice gh").await?.0,
+        vec!["api.github.com".to_owned()]
+    );
+    assert_eq!(hosts_of("global gh").await?, none);
+    assert_eq!(hosts_of("bob gh").await?, none);
+    for tool in ["secret_update", "secret_hosts_answer"] {
+        let (error, said, _) = remote(
+            &w,
+            &alice,
+            tool,
+            shop(json!({"secret": "BOB_ONLY", "hosts": ["evil.example"], "expect_hosts": [], "allow": true})),
+        )
+        .await?;
+        assert!(
+            error && said.contains("no agent secret BOB_ONLY"),
+            "{tool}: {said}"
+        );
+    }
+    assert_eq!(hosts_of("bob only").await?, none);
+
+    // A global secret switched off for the project is not reached by name, even by an
+    // administrator, nor is the caller's own personal one switched off there.
+    for (key, name, creds) in [
+        ("global off", "OFF_KEY", &root_agent),
+        ("alice off", "ALICE_OFF", &alice),
+    ] {
+        assert!(
+            w.h.store
+                .vault_set_request(&ids[key], &[], &["off.example".to_owned()], Some("a task"))
+                .await?,
+            "{key}"
+        );
+        for tool in ["secret_update", "secret_hosts_answer"] {
+            let (error, said, _) = remote(
+                &w,
+                creds,
+                tool,
+                shop(json!({"secret": name, "hosts": ["off.example"], "expect_hosts": [], "allow": true})),
+            )
+            .await?;
+            assert!(
+                error && said.contains(&format!("no agent secret {name}")),
+                "{key} {tool}: {said}"
+            );
+        }
+        assert_eq!(
+            hosts_of(key).await?,
+            (Vec::new(), vec!["off.example".to_owned()]),
+            "{key}"
+        );
+    }
+    Ok(())
+}
+
 /// SPEC-274 PLW-004: the person's agent deletes a project's own agent secret by name with an
 /// operate token and the right the Secrets page needs; refused for a read token, a reader and a
 /// global secret; audited with the token and the name, never the value.
