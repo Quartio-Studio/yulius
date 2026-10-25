@@ -12,7 +12,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   answer then put the older summary back until the next change. The view now counts the changes it
   hears, and a read during which one arrived leaves the summary as that change set it. The attention
   bar also keeps the keyboard on Reply when the task changes: each rebuild took the button out of
-  the page and dropped the focus (reply's "Escape closes…" under load). The e2e checks #506 lists wait on what they need under load:
+  the page and dropped the focus (reply's "Escape closes…" under load). The e2e checks #506 lists
+  wait on what they need under load:
   `touchTask` waits until the page hears live updates (a change announced before was lost:
   ownership, reply), and the supertask's texts run without the mock's ambient activity, which
   started #8 before a slow run reached them. Editor presence was already fixed by #523 and the

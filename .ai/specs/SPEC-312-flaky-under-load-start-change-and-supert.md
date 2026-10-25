@@ -1,11 +1,11 @@
 ---
 yulius-task: c2a0e6b6-f66d-47b9-badd-c1861b283082
-status: in-progress
+status: done
 ---
 
 # SPEC-312: Start-change, supertask, ownership and reply e2e checks wait on what they need (#506)
 
-Status: in-progress
+Status: done
 Date: 2026-10-25
 Owner: Yulius task #298
 Scope authorization: the issue-triage request (task #298). Fix GitHub issue #506 in one pull
@@ -84,11 +84,11 @@ with no retries and no longer first-load budgets (#354's open decision).
 - [x] Changes entry and docs follow the final fix
 - [x] Review round 1 answered: reads ordered by heard changes
 - [x] Attention bar keeps the keyboard on Reply across task updates
-- [ ] Full e2e suite passes at the final head
-- [ ] Loaded runs pass at the final head
-- [ ] Gate green and spec Evidence at the final head
-- [ ] Independent review approves the final head
-- [ ] Merged into dev with #506 commented
+- [x] Full e2e suite passes at the final head
+- [x] Loaded runs pass at the final head
+- [x] Gate green and spec Evidence at the final head
+- [x] Independent review approves the final head
+- [x] Merged into dev with #506 commented
 
 ## Acceptance criteria
 
@@ -115,8 +115,9 @@ with no retries and no longer first-load budgets (#354's open decision).
   - Millisecond times or a revision per task from the server: changes the API contract for a
     client-side ordering problem.
   - Count the changes the view hears, and leave the summary of a read during which one arrived:
-    chosen. Every change that alters the summary is announced with the whole summary
-    (`TaskSummary` holds every key `pickSummary` takes), so the view then shows the newest it
+    chosen. Every change that alters the summary is announced with the summary (`TaskSummary`
+    holds every key `pickSummary` takes; only `account_email`, which the view does not show, is
+    left out of events), so the view then shows the newest it
     heard, and a later change brings a later event. The read's details (steps, attempts, request)
     still apply. A read the view starts itself on a status change counts from after that change.
   - The store's `upsertTask`, and the answer to this page's own `PUT …/start`, have no ordering
@@ -131,3 +132,59 @@ with no retries and no longer first-load budgets (#354's open decision).
   field closed under typing still leaves it on the bar.
 - **`ambient=0` for the supertask case only.** The second supertask case names no working task.
 - **No ADR.** Applies existing rules (SPEC-056 WUI-105 for read ordering, wait on conditions).
+
+## Evidence
+
+All runs were on `feat/298` from dev 9e1a2870, in a sandbox with 12 cores and `YULIUS_CPUS=4` (2
+e2e workers). A load controller (scratchpad, not committed) held a 2 s CPU-bound probe at a target
+share by adding or removing busy loops (`sh -c 'while :; do :; done'`) every ~18 s, from the median
+of three probes. Probes were throwaway edits, reverted before each commit.
+
+- **Probe A (ambient tick 4 s → 0.4 s, `mock.js` `startAmbient`).** Unchanged `supertask.e2e.ts`:
+  failed `expect.toHaveText` on `.strip-status`, expected `/^Supertask · waits for #6, #9, #10 and
+  \d+ more$/`, observed "Supertask · waits for #6, #8, #9 and 3 more". With `ambient=0`: 3 of 3
+  passed. `reply.e2e.ts` passed under it (6 of 6): its races are elsewhere.
+- **Probe B (`/api/events` opens after 3 s, `MockSocket`).** Unchanged files: `ownership.e2e.ts`
+  failed 2 of 4 ("someone else's task…" `toBeHidden` of "You asked @anna-q for control.", "the
+  owner is asked…" `toBeVisible` of "@anna-q asks to take control…") and `reply.e2e.ts` 3 of 6
+  (`.attention-bar` `toHaveText`). With `touchTask` waiting for the connection: 13 of 13 passed
+  (ownership, reply, start-change).
+- **Probe C (each detail answer applied 1.5 s late, `taskview.js` `loadDetail`).** On dev,
+  `reply.e2e.ts` "Reply on a task waiting for your reply…" failed 4 of 4 runs (the field closed:
+  `activity` set back to the read's) and "Escape closes…" 1 of 4. With the heard-changes order: 3
+  of 3 runs of reply, ownership and start-change passed (14 tests each).
+- **Regression tests, each failing before its fix.**
+  - `ownership.e2e.ts` "a read answered before a hand-over…": failed at line 88 with no guard
+    (f4b00714), and at line 96 with the `updated_at` guard once the change shares the answer's
+    second (237245d5); passes with 5fd186c5.
+  - `reply.e2e.ts` "Escape closes…": failed at line 72 (b6842d71), the keyboard on the body after a
+    task update; passes with 72c7db74.
+- **Load alone on dev (9e1a2870, unchanged files).** 6 of 6 runs passed at a held 0.2 share (load
+  average ~66-78), 5 of 5 at 0.1 (~86-93).
+- **Loaded runs of the changed files** (`start-change`, `supertask`, `ownership`, `reply`, 16
+  tests per run, no retries):
+  - 2b6a7497: 10 of 10 passed, share mean 0.208 (63 samples).
+  - a7c21de4: 9 of 10 passed; run 5 failed reply's "Escape closes…" (focus on the body after
+    19.8 s), the cause fixed test-first in b6842d71 and 72c7db74.
+  - 7874f33e: 10 of 10 passed, share mean 0.213 (67 samples, min 0.053, max 0.42, load average
+    41-80).
+  - Seconds per test against the loaded dev runs (0.2 share): ownership 8.0 (dev 8.4), reply 8.3
+    (7.9), supertask 13.1 (13.8), start-change 21.8 (22.8), so the proof was as heavy as the
+    reproduction attempts.
+- **Task-view suites.** ownership, start-change, reply, watching, live-updates, pause,
+  queued-messages, task-done and prepared: 88 of 88 passed with 5fd186c5; reply, ownership,
+  start-change, prepared, watching, cd and pause: 64 of 64 with 72c7db74.
+- **Full suite.** `npx e2e run`: at a7c21de4, 711 tests passed, 1 skipped (agent, no model key),
+  1810 s; at 7874f33e, 66 files passed, 1 skipped, 711 tests passed, 1 skipped, 1070 s.
+- **Gate.** `python3 scripts/bootstrap.py && scripts/dev ci` exited 0 at a7c21de4 and again at
+  7874f33e: 2615 tests passed, 16 skipped; 143 Python tests passed.
+- **Security.** `yulius security-scan` at cd88d014: not run, exit 2 (Vidoc out of quota for this
+  key, HTTP 429 "This API key has used its 50,000,000 tokens"). Unrun, not passed. The changed code
+  is test code and two client-side ordering and focus changes in `taskview.js`, with no new input,
+  network or storage path.
+- **Review.** Round 1 (cd88d014) requested changes: the `updated_at` guard failed against the
+  server's second-precision times; `holdanswer` duplicated `holdDetail`; spec and changes wording.
+  All fixed (237245d5, 5fd186c5, a7c21de4). Round 2 (7874f33e) approved on the condition that the
+  gate and full suite pass (they did), with two nits, fixed after it (a comment in `taskview.js`
+  and a line in `docs/changes.md`), and one pre-existing note for #506: `publish_task` can publish
+  two changes of one task out of order, which a read no longer corrects while it is out.

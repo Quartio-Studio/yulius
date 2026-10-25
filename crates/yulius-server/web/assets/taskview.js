@@ -702,8 +702,8 @@ export function mountTaskView(ctx, sandbox, task) {
   // never brings back an older status. A newer read that fails leaves an older answer's details
   // standing (SPEC-056 WUI-105). A change heard of while a read was out (an event, the answer to an
   // action) may be newer than the read's answer: the server answered, then the change arrived first,
-  // both dated the same second. Every change carries the whole summary, so that answer leaves the
-  // summary as the change set it (#506).
+  // both dated the same second. Every change carries each summary key the view shows, so that
+  // answer leaves the summary as the change set it (#506).
   let detailRead = 0;
   let appliedRead = 0;
   let changesHeard = 0;
