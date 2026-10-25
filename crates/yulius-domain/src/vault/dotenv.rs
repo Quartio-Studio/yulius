@@ -499,8 +499,9 @@ mod tests {
         let encrypted = key_file(
             &format!("{} PRIVATE KEY", "RSA"),
             &[
-                "Proc-Type: 4,ENCRYPTED",
+                "proc-type: 4,ENCRYPTED",
                 "DEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF",
+                "friendlyName: synthetic",
                 "",
                 "c3ludGhldGljLWVuY3J5cHRlZC1ib2R5LTAx",
                 "c3ludGhldGljLTAy+/==",
@@ -513,6 +514,10 @@ mod tests {
             &[
                 "Version: Synthetic 1.0",
                 "Hash: SHA256",
+                // Every named header, in any case.
+                "Charset: UTF-8",
+                "MessageID: synthetic-message",
+                "comment: synthetic comment",
                 "",
                 "c3ludGhldGljLXBncC1ib2R5LTAx",
                 // A body in the base64url alphabet keeps its needle too.
@@ -596,7 +601,7 @@ mod tests {
 
     /// SPEC-302 (review round 4): a key's text dump (`openssl genpkey -text`, then `cat` with its
     /// certificate) holds private key material as colon-separated hex: those lines stay needles.
-    /// Only known public shapes (RFC 1421 headers, `subject=`, `issuer=`) are left out.
+    /// Only known public shapes (named public headers, `subject=`, `issuer=`) are left out.
     #[test]
     fn a_key_dump_between_blocks_stays_a_needle() {
         let body = "c3ludGhldGljLWR1bXAta2V5LWJvZHk=";
@@ -627,6 +632,8 @@ mod tests {
             format!("Private-Key: (synthetic) privateExponent:     {hex} 32:33"),
             format!("privateExponent:    {hex}"),
             "prime1: 18446744073709551557 (0xffffffffffffffc5)".to_owned(),
+            // Even under a named header: `openssl x509 -text` writes `Version: 3 (0x2)`.
+            "Version: 18446744073709551557 (0xffffffffffffffc5)".to_owned(),
             "Comment: https://synthetic.example/".to_owned(),
             "subject=CN = synthetic.example privateExponent: 2a:9f".to_owned(),
             format!("Private-Key: (synthetic)privateExponent:{hex}"),
