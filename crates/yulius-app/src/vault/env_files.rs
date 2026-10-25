@@ -890,16 +890,18 @@ impl App {
             .collect())
     }
 
-    /// The values of the secrets a CD run of `env` needs (SPEC-134 CDR-002): each must be an
-    /// agent secret of the project allowed for `env` ([`allowed_for`]). Otherwise nothing is
-    /// returned: for dev, a secret that exists is asked for when an agent (`asker`) wants the run
-    /// (as `secret_copy_to_env` does); the refusal says what a person must do.
+    /// The values of the secrets a CD run of `environment` (`[cd.<environment>]`, of stage `env`)
+    /// needs (SPEC-134 CDR-002): each must be an agent secret of the project allowed for `env`
+    /// ([`allowed_for`]). Otherwise nothing is returned: for dev, a secret that exists is asked for
+    /// when an agent (`asker`) wants the run (as `secret_copy_to_env` does); the refusal says what
+    /// a person must do, in the environment's own table (SPEC-314).
     ///
     /// # Errors
     /// `Conflict` naming the missing or not-allowed secrets; store or decryption failures.
     pub(crate) async fn cd_secret_values(
         &self,
         sandbox: &crate::model::SandboxRecord,
+        environment: &str,
         env: yulius_domain::cd::CdStage,
         names: &[String],
         asker: Option<&AgentContext>,
@@ -966,8 +968,9 @@ impl App {
                         "nothing ran: agents use {names} (copies into .env files or hosts the \
                          proxy sends {it} to), so production deploys never get {it} and nobody \
                          can allow {it} for them. Production names a separate secret of its own \
-                         in [cd.prod] secrets of yulius.toml, added on the Secrets page ({link}); \
-                         or a person first revokes the .env copies and hosts of {names}{also}",
+                         in [cd.{environment}] secrets of yulius.toml, added on the Secrets page \
+                         ({link}); or a person first revokes the .env copies and hosts of \
+                         {names}{also}",
                         names = used.join(", "),
                     )));
                 }
