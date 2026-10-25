@@ -10,6 +10,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   reads the descendant's pid only from a finished `CHILD <pid>` row (SPEC-307, task #293, fixes
   #647). The tty sends a line's text before the `\r\n` it makes of its `\n`; when the test typed
   `ping` in between, its echo joined the row (`CHILD 1234ping`) and the pid failed to parse.
+- The Docker front's socket is bound under a umask private to the binding thread (SPEC-304, task
+  #290, fixes #825). `Front::start` set the process umask around `bind`, so fronts started at once
+  in one process (the crate's unit tests under `cargo test`) could bind a socket under another
+  call's mask (not 0660) and leave the process umask at 0117. The bind now runs on a thread that
+  unshares `CLONE_FS` first; the process umask never changes (ADR-0217). Production was not
+  affected: each front is a process of its own.
 
 ## 2026-10-24
 
