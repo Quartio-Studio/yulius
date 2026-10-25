@@ -1,11 +1,11 @@
 ---
 yulius-task: caec492e-6f52-4a93-ae7d-5224e86a15a2
-status: in-progress
+status: done
 ---
 
 # SPEC-315: The idle task's stretch write applies only to the state it was decided on
 
-Status: in-progress
+Status: done
 Date: 2026-10-25
 Owner: task #301
 Scope authorization: task #301, issue #895 (found by the independent review of task #295,
@@ -51,7 +51,7 @@ is still in the state that decision was made on. A turn that starts in between k
 - [x] Regression test: a stale stretch write leaves a Working task's stretch (failing)
 - [x] The stretch write applies only to the state it was decided on
 - [x] Docs, changes and review answered
-- [ ] Gates green and delivered on dev
+- [x] Gates green and delivered on dev
 
 ## Acceptance criteria
 
@@ -94,7 +94,10 @@ is still in the state that decision was made on. A turn that starts in between k
   `(true, None)` branch took it before an unconditional write; with the write now refusable, a take
   would lose it when the task's own wake-up made the task Working in between, and that turn would
   start a new stretch. A refused write leaves it for `continue_working_stretch`; a person's prompt
-  still cannot use it (its state time changed).
+  still cannot use it (its state time changed). Accepted: the forget compares by value, so a
+  publish that ends the same stretch again in the same state between the store's answer and the
+  forget (microseconds, on the single database thread) has its record forgotten; the wake-up then
+  starts a new stretch, as before SPEC-309. A generation counter would close it for one call site.
 - **No app-level race test.** The race needs a store that pauses between the read and the write;
   the store port has one implementation, and a timing-based test would be flaky. The store test
   proves the guard, the call site passes the state it read.
@@ -111,3 +114,23 @@ Independent review (fresh session, `om-code-review`), round 1 at `e04073a3`: app
   passing with the fix).
 - Own, nit: a refused write was silent. Fixed: logged at debug.
 - Own, nit: Plan, Review and Evidence sections. Done.
+
+Round 2 at `dfcde9e9`: approve, with nits: the same-state forget race (accepted in Decisions), the
+missing Evidence section (added), and no test of the call site's `Ok(true)` gating (the
+"No app-level race test" decision covers it).
+
+## Evidence
+
+- Reproduction: `cargo nextest run -p yulius-store -E
+  'test(a_stretch_write_applies_only_to_the_state_it_read)'` at `fd598cd8` (the conditional write
+  ignoring its condition, as `set_working_since` does) failed with "the task is Working since the
+  read"; it passes with the guard (`ba9da63e`).
+- Round-1 finding: `cargo nextest run -p yulius-app -E 'test(/stretch/)'` at `337b22f3` (take-style
+  stub) failed `an_ended_stretch_is_forgotten_only_once_recorded`; passes at `5872a120`.
+- `task_done::` (56 tests) passes with the guarded write; `yulius-app` `*stretch*` (3) passes.
+- `scripts/dev ci` at `dfcde9e9`: exit 0 (fmt, check, clippy, macOS targets, deps, 2617 tests
+  passed, 16 skipped). Only this spec changed after it.
+- `yulius security-scan` at `dfcde9e9`: not run (exit 2), Vidoc answered HTTP 429, the key is out of
+  quota. Unrun, not passed; Yulius CI's `security` job reports its own state.
+- Not tested: the race in the running app (no deterministic hook between the read and the write;
+  the store test plays it in sequence), and the sidebar after a deploy (no deploy was asked for).
