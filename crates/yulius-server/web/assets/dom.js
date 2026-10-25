@@ -301,25 +301,25 @@ function toastHost() {
 
 /**
  * Moves the toasts to the other edge while they would cover the focused control (WCAG 2.4.11) or,
- * inside a dialog, its Close (its way out, WCAG 2.5.8); they stay when that edge would cover one too.
+ * inside a dialog, its Close (its way out, WCAG 2.5.8), when that edge is better: the focused
+ * control comes first, so an edge that covers it is never chosen to clear the Close.
  */
 function keepClear(host) {
   if (!host.children.length) return;
   const target = document.activeElement;
-  const kept = [
-    target && target !== document.body && !host.contains(target) ? target : null,
-    host.parentElement.querySelector(':scope > .modal-head > .modal-close'),
-  ].filter(Boolean);
-  const covers = () => {
+  const focused = target && target !== document.body && !host.contains(target) ? target : null;
+  const close = host.parentElement?.querySelector(':scope > .modal-head > .modal-close');
+  const covers = (el) => {
+    if (!el) return false;
     const a = host.getBoundingClientRect();
-    return kept.some((el) => {
-      const b = el.getBoundingClientRect();
-      return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
-    });
+    const b = el.getBoundingClientRect();
+    return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
   };
-  if (!covers()) return;
+  const cost = () => (covers(focused) ? 2 : 0) + (covers(close) ? 1 : 0);
+  const here = cost();
+  if (!here) return;
   host.classList.toggle('flipped');
-  if (covers()) host.classList.toggle('flipped');
+  if (cost() >= here) host.classList.toggle('flipped');
 }
 
 /**
