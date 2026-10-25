@@ -401,6 +401,55 @@ mod tests {
         Ok(())
     }
 
+    /// The process umask, read without changing it.
+    fn process_umask() -> io::Result<String> {
+        let status = std::fs::read_to_string("/proc/self/status")?;
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("Umask:"))
+            .map(|mask| mask.trim().to_owned())
+            .ok_or_else(|| io::Error::other("no Umask in /proc/self/status"))
+    }
+
+    /// SPEC-304 (#825): fronts started at once in one process (as unit tests are) each bind a
+    /// 0660 socket, and the process umask is never left changed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fronts_started_at_once_bind_group_only_sockets_and_keep_the_umask() -> io::Result<()>
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        const FRONTS: usize = 8;
+        let before = process_umask()?;
+        for _ in 0..25 {
+            let dirs = (0..FRONTS)
+                .map(|_| tempfile::tempdir())
+                .collect::<io::Result<Vec<_>>>()?;
+            let barrier = Arc::new(std::sync::Barrier::new(FRONTS));
+            let starts = dirs.iter().map(|dir| {
+                let paths = StatePaths::new(dir.path().to_path_buf());
+                let barrier = Arc::clone(&barrier);
+                tokio::task::spawn_blocking(move || {
+                    barrier.wait();
+                    let serve = DockerServe::Refuse { reason: "r".into() };
+                    Front::start(&paths, &serve, &[], ok())
+                })
+            });
+            let mut fronts = Vec::new();
+            for start in starts.collect::<Vec<_>>() {
+                fronts.push(start.await.map_err(io::Error::other)??);
+            }
+            for dir in &dirs {
+                let socket = StatePaths::new(dir.path().to_path_buf()).docker_socket();
+                let mode = std::fs::symlink_metadata(&socket)?.permissions().mode() & 0o777;
+                assert_eq!(mode, 0o660, "{}", socket.display());
+            }
+            for front in fronts {
+                front.stop(Duration::from_secs(1)).await;
+            }
+        }
+        assert_eq!(process_umask()?, before);
+        Ok(())
+    }
+
     /// SPEC-196 DKL-002/005: without a possible engine, `docker` gets a Docker-API error with
     /// the reason and the operator's fix, never a missing socket.
     #[tokio::test]
