@@ -4,6 +4,16 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-25
+
+- Toasts in a dialog no longer cover its Close (SPEC-305, task #291, fixes #640). The toast region
+  moves into an open dialog, and below 768 px it is pinned at the top right, where the dialog's
+  Close is. Toasts raised at a wider size stayed there when the window narrowed, and the check that
+  moves them to the other edge only protected the focused control. That check now also keeps the
+  dialog's Close clear. It runs again when the window is resized, and it moves the toasts only to
+  an edge that covers neither. This fixes the flaky axe `target-size` failure of the Team secrets
+  test "a failed copy shows no check…", which the mock's sign-in request toast set off on slow runs.
+
 ## 2026-10-24
 
 - Public lines of a stored key are no longer redacted (SPEC-302, task #288, fixes #599). Every
