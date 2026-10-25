@@ -375,6 +375,9 @@ export function mountTaskView(ctx, sandbox, task) {
     if (!textAnswer) replying = false;
     attention.classList.toggle('replying', replying);
     const typing = replyForm.contains(document.activeElement);
+    // A control kept across rebuilds (Reply) keeps the keyboard: taking it out of the page drops
+    // the focus to the body, on every task update (#506).
+    const kept = !typing && attention.contains(document.activeElement) ? document.activeElement : null;
     // Everything but the reply field is rebuilt; the field stays last.
     for (const child of [...attention.childNodes]) if (child !== replyForm) child.remove();
     attention.insertBefore(append(document.createDocumentFragment(), control && content
@@ -382,6 +385,7 @@ export function mountTaskView(ctx, sandbox, task) {
       : control || content), replyForm.parentNode === attention ? replyForm : null);
     if (replyForm.parentNode !== attention) attention.append(replyForm);
     replyForm.hidden = !replying;
+    if (kept && kept.isConnected && document.activeElement !== kept) kept.focus({ preventScroll: true });
     // A field closed under someone typing (or Escape) leaves the keyboard on the bar, which does
     // nothing with keys: never the terminal, where a permission menu may have opened.
     if (typing && !replying) attention.focus({ preventScroll: true });
@@ -696,18 +700,23 @@ export function mountTaskView(ctx, sandbox, task) {
   // Reads overlap (every status change reads again): an answer older than one already applied is
   // dropped, and only the latest read's answer sets the summary, so an older answer landing last
   // never brings back an older status. A newer read that fails leaves an older answer's details
-  // standing (SPEC-056 WUI-105).
+  // standing (SPEC-056 WUI-105). A change heard of while a read was out (an event, the answer to an
+  // action) may be newer than the read's answer: the server answered, then the change arrived first,
+  // both dated the same second. Every change carries each summary key the view shows, so that
+  // answer leaves the summary as the change set it (#506).
   let detailRead = 0;
   let appliedRead = 0;
+  let changesHeard = 0;
   async function loadDetail() {
     const read = ++detailRead;
+    const heardBefore = changesHeard;
     try {
       const fresh = await ctx.api.get(`/api/tasks/${enc(current.id)}`, { signal: reads.signal });
       if (!alive || read < appliedRead) return; // the view was left, or a newer answer was applied
       appliedRead = read;
       detail = fresh;
       if (detail && detail.id === current.id) {
-        if (read === detailRead) current = { ...current, ...pickSummary(detail) };
+        if (read === detailRead && changesHeard === heardBefore) current = { ...current, ...pickSummary(detail) };
         heldKey = '';
         renderStrip();
         // The end banner may name the limit the last run met (SPEC-268), known only from here.
@@ -753,6 +762,7 @@ export function mountTaskView(ctx, sandbox, task) {
       if (!isPhone()) terminal.focus();
     },
     update(next) {
+      changesHeard += 1;
       const wasLive = isLive(current.status);
       const previousStatus = current.status;
       const previousUpdate = current.updated_at;

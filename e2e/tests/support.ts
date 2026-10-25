@@ -132,10 +132,27 @@ export async function openSuperagent(browser: Browser, screen: Screen): Promise<
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent').click();
 }
 
-/** Changes a mock task as the server would announce it (`__yuliusMock.touchTask`). */
-export function touchTask(browser: Browser, sandbox: string, number: number, changes: Record<string, unknown>): Promise<void> {
+/**
+ * Waits until the page's live updates (`/api/events`) are connected. Like the server, the mock
+ * announces a change only to the pages connected then, and a page's first connection reads nothing
+ * again, so a change made before reaches the page only with its next read. A busy machine opens the
+ * connection late (#506).
+ */
+export async function eventsConnected(browser: Browser): Promise<void> {
+  type Sockets = { __yuliusMock: { eventSockets: Set<unknown> } };
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Sockets).__yuliusMock.eventSockets.size > 0), {
+    message: 'the page never connected to its live updates (/api/events)',
+  }).toBe(true);
+}
+
+/**
+ * Changes a mock task as the server would announce it (`__yuliusMock.touchTask`), once the page
+ * hears announcements (`eventsConnected`).
+ */
+export async function touchTask(browser: Browser, sandbox: string, number: number, changes: Record<string, unknown>): Promise<void> {
   type Touching = { __yuliusMock: { touchTask: (sandbox: string, number: number, changes: unknown) => void } };
-  return browser.evaluate(([s, n, c]) => (window as unknown as Touching).__yuliusMock.touchTask(s, n, c), [sandbox, number, changes] as const);
+  await eventsConnected(browser);
+  await browser.evaluate(([s, n, c]) => (window as unknown as Touching).__yuliusMock.touchTask(s, n, c), [sandbox, number, changes] as const);
 }
 
 /**

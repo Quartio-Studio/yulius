@@ -692,10 +692,14 @@ function workingSince(task) {
   return idle && task.background_shells == null ? task.working_since ?? null : null;
 }
 
-/** Task change: `task.updated` only; sandbox counters are not pushed (clients refetch). */
+/**
+ * Task change: `task.updated` only; sandbox counters are not pushed (clients refetch). It is dated
+ * now, or `changes.updated_at`: the server dates to the second, so a change and a read answered
+ * just before it may carry the same time (#506).
+ */
 function touch(db, task, changes = {}) {
   const [status, activity] = [task.status, task.activity];
-  Object.assign(task, changes, { updated_at: new Date().toISOString() });
+  Object.assign(task, changes, { updated_at: changes.updated_at || new Date().toISOString() });
   // Out of `closed` it starts: it has had a run from then on, as on the server (SPEC-153).
   if (task.status !== 'closed') Object.assign(task, { neverRan: false, awaitsStart: false });
   if (task.status !== status || task.activity !== activity) task.state_since = task.updated_at;
