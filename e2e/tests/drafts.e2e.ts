@@ -189,6 +189,25 @@ test('an upload that ends after leaving and coming back shows in the composer', 
   await expect.poll(() => attachmentNames(browser)).toEqual([]);
 });
 
+test('a file whose upload ends while the prompt is being read says it was not added', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await browser.evaluate(() => {
+    const w = window as unknown as Holding & { __releaseCreate?: () => void };
+    w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
+    w.__yuliusMock.holdCreate = new Promise<void>((resolve) => { w.__releaseCreate = resolve; });
+  });
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill('Read while uploading');
+  await drop(browser, [['late.pdf', 'pdf', 'application/pdf']]);
+  await prompt.press('ControlOrMeta+Enter');
+  await expect.poll(() => browser.evaluate(() => document.querySelector<HTMLElement>('.composer-prompt')?.getAttribute('aria-readonly'))).toBe('true');
+  await browser.evaluate(() => (window as unknown as Holding).__release!());
+  // The refusal stays in the upload status, whose summary agrees with it (SPEC-306 QFN-003, QFN-004).
+  await expect(browser.locator('.upload-status:has-text("The prompt is being read; the files were not added.") .upload-text')).toHaveText('Nothing was added.');
+  await browser.evaluate(() => (window as unknown as { __releaseCreate: () => void }).__releaseCreate());
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/^#\d+ Read while uploading$/);
+});
+
 test('a task still starting is not started again from a returned composer', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   const before = await browser.evaluate(() => (window as unknown as Holding).__yuliusMock.tasks.length);
