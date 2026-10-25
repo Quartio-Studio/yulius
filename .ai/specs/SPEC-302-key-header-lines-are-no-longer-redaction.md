@@ -118,7 +118,7 @@ material stays a needle.
 - D4. Over-redaction left, never a leak: a public certificate's body (out of scope, said on
   #599), a PGP signed message's text, a dump's labels (`privateExponent:`, `Bag Attributes`) and
   public values, a folded header's continuation, a header whose value holds `:` or `(0x`
-  (`Comment: https://…`, `publicExponent: 65537 (0x10001)`), a header not named public
+  (`Comment: https://…`, `openssl x509 -text`'s `Version: 3 (0x2)`), a header not named public
   (`Private-Key: (2048 bit)`), and OpenSSL 1.0's `subject=/C=…/CN=…` when it runs over 32
   base64 symbols.
 
@@ -179,4 +179,10 @@ material stays a needle.
   "only base64 and whitespace" condition kept `subject=CN = localhost` a needle: removed,
   test-first (the header test failed with `subject=`/`issuer=` returned). `changes.md` and
   architecture name the `:`/`(0x` conditions; a glued dump case was added to the test.
+- Review round 7 (fresh session): approve, with two minors and two nits in own code, all
+  answered. Tests now pin the `(0x` check under a named header (`Version: … (0x…)`), names in
+  any case (`proc-type`, `comment`) and `Charset`, `MessageID`, `friendlyName`; removing the
+  `(0x` check or matching names case-sensitively fails the suite (checked by mutation). The
+  dump test's doc says "named public headers"; ADR-0215's `(0x` examples are named headers and
+  it names `hexdump -C`/`od` among the residual shapes.
 - Not tested: a real encrypted key from `openssl` (fixtures are synthetic by rule).

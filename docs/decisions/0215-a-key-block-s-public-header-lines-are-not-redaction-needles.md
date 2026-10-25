@@ -39,9 +39,10 @@ Every trimmed line of a key block stays a needle except:
   (`A-Z a-z 0-9 + / = - _`). Any other `<token>: <value>` line is not public: a passphrase pasted
   beside the key (`Passphrase: …`) or an `xxd` line (`00000000: 3082 …`) stays a needle.
   A `:` in the value is another header or a key's colon-hex dump joined onto it (`Private-Key:
-  (…) privateExponent: 2a:9f:…`); `(0x` is OpenSSL's inline integer (`prime1: 1844… (0x…)` in
-  a toy key); an IV in `DEK-Info` is at most 32 hex digits, while a key body line is 64 (PEM) or
-  70 (OpenSSH) symbols, so a body joined onto a header keeps the line a needle.
+  (…) privateExponent: 2a:9f:…`); `(0x` is OpenSSL's inline integer, which a key's dump joined
+  onto a named header would bring (`Version: 1844… (0x…)`, a toy key's prime); an IV in
+  `DEK-Info` is at most 32 hex digits, while a key body line is 64 (PEM) or 70 (OpenSSH)
+  symbols, so a body joined onto a header keeps the line a needle.
 
 Needles are trimmed lines, matched as substrings: a header kept as part of a needle is redacted
 only where the whole trimmed line's text appears (a `.env` copy).
@@ -70,9 +71,10 @@ only where the whole trimmed line's text appears (a `.env` copy).
   named above, and a `subject=` with a run over 32 base64 symbols (OpenSSL 1.0's
   `subject=/C=…/O=…/CN=…` with no space or dot).
 - A public header whose value holds `:` or `(0x` stays a needle: a PGP `Comment: https://…`,
-  OpenSSL's `publicExponent: 65537 (0x10001)`; over-redacted, never leaked.
+  `openssl x509 -text`'s `Version: 3 (0x2)`; over-redacted, never leaked.
 - A secret written as the value of a named public header, or after `subject=`/`issuer=`, with no
   `:`, no `(0x` and no base64 run over 32 symbols, would not be a needle (a key could only land
   there by a person typing it so). None of the formats checked in review (PEM, PKCS#8, encrypted
   PEM, OpenSSH, PGP armour, OpenSSL `-text` dumps, `asn1parse`, PKCS#12 `-nodes`, PuTTY, xxd)
-  writes one.
+  writes one; a `hexdump -C` or `od` dump joined by spaces onto a named header would be such a
+  line, and no tool writes one inside armour.
