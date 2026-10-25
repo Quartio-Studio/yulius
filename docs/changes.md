@@ -4,6 +4,15 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-25
+
+- A file refused by the Queued messages box because its task started keeps its notice until the
+  person dismisses the card (SPEC-306, task #292, fixes #559). "The task has started: the file was
+  not added." went to the upload status, which the kept-card check does not see, so pasted into an
+  otherwise empty box it vanished with the card on the task's next update (`starting` →
+  `running`). It now goes to the card's error line, as other refusals do, and the upload status of
+  a refused batch says "Nothing was added." instead of "Added …".
+
 ## 2026-10-24
 
 - Public lines of a stored key are no longer redacted (SPEC-302, task #288, fixes #599). Every
