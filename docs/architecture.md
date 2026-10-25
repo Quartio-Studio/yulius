@@ -72,8 +72,10 @@ task or memory limit says so in the task
 ([SPEC-268](../.ai/specs/SPEC-268-parallel-tasks-in-one-sandbox-crash-clau.md),
 [decision 0198](decisions/0198-sandbox-task-limits-are-sized-from-the-host-and-leave-sessions-a-reserve.md)).
 All sandboxes together stop at three quarters of the service's limit (`sandboxes/pids.max`), so
-the server keeps a quarter however many are busy; a hit there counts as the sandbox's
+the server keeps a quarter however many are busy; a hit there or at the service's own limit
+counts as the sandbox's, one above the service does not
 ([SPEC-272](../.ai/specs/SPEC-272-all-sandboxes-together-keep-the-server-a.md),
+[SPEC-316](../.ai/specs/SPEC-316-limit-counters-count-forks-refused-at-th.md),
 [decision 0201](decisions/0201-all-sandboxes-share-a-task-limit-below-the-services.md)).
 
 ```mermaid
