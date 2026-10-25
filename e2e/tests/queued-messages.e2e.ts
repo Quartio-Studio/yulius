@@ -478,7 +478,8 @@ test('an upload that ends after the task started says so in the kept card', asyn
   // In the card's error line, where its refusals go (SPEC-306 QFN-001); the upload status adds
   // nothing that contradicts it.
   await expect(browser.locator('.queue-card .field-error:has-text("The task has started: the file was not added.")')).toBeVisible();
-  await expect(browser.locator('.queue-card .upload-status .upload-text:has-text("Nothing was added.")')).toBeVisible();
+  // Its summary, read whether or not the status has hidden itself yet (it goes after a few seconds).
+  await expect(browser.locator('.queue-card .upload-status .upload-text')).toHaveText('Nothing was added.');
   await expect(browser.locator('.queue-card .upload-status')).not.toContainText('the file was not added');
 });
 

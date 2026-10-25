@@ -84,6 +84,9 @@ the task's later updates, until the person dismisses the card.
   twice is noise, and the card's error line is where WUI-106 puts refusals.
 - The card writes the refusal only while it is shown and the view alive; a hidden card (the task
   ended or was archived) must not come back later with a stale refusal.
+- An upload that fails (rather than is refused) after the start still shows only in the upload
+  status and does not keep the card: the file was never stored, and keeping the card for any
+  upload error is option a, rejected above.
 - No ADR: a local UI wiring choice inside an existing requirement, recorded here.
 - Review round 1: the composer's refused batch also ends "Nothing was added." (QFN-003); QFN-004
   says so instead of "unchanged", and a drafts test covers it.
@@ -112,3 +115,7 @@ the task's later updates, until the person dismisses the card.
   QFN-004 reworded and the composer's summary covered; plan items ticked. One pre-existing note
   (an upload that fails, not refused, after the start shows only in the upload status) is by design
   (Decisions).
+- Review round 2 (09a75849): approve with nits, answered: the "Nothing was added." check reads the
+  summary without needing the status still shown (it hides after `SUMMARY_MS`), the failed-upload
+  case is a Decisions line, and the PR body gives the full e2e count (706 passed, 1 skipped, 1
+  failed). `queued-messages.e2e.ts` 21/21 after these.
