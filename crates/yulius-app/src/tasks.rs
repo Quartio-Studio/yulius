@@ -10,6 +10,7 @@ use yulius_contracts::api::tasks::{
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::permission::Action;
 use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::time::Timestamp;
 
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
@@ -52,6 +53,25 @@ pub fn idle_stretch(
         return None;
     }
     background.map(|count| count > 0)
+}
+
+/// A working stretch that ended because its idle task had no background work left (SPEC-309):
+/// its start, and the task's state time when it ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EndedStretch {
+    /// The start of the stretch.
+    pub since: Timestamp,
+    /// The task's state time (TIM-001) when the stretch ended.
+    pub state_at: Timestamp,
+}
+
+/// The start of the stretch a task continues when it goes on by itself (its own background work
+/// woke it, or its session went on without a prompt) from the state that began at `state_at`:
+/// the `ended` stretch's, when the task stayed in the state that stretch ended in (WSW-001).
+/// After any change of its status or activity in between it starts a new one (WSW-002).
+#[must_use]
+pub fn continued_stretch(ended: Option<EndedStretch>, state_at: Timestamp) -> Option<Timestamp> {
+    ended.filter(|e| e.state_at == state_at).map(|e| e.since)
 }
 
 /// Sums known metrics; a field stays unknown only when every run left it unknown.
@@ -243,12 +263,55 @@ impl App {
             return;
         };
         let next = match (working, times.working_since) {
-            (false, Some(_)) => None,
-            (true, None) => Some(self.now()),
+            (false, Some(since)) => {
+                // The shell's end wakes the agent a moment later: that turn continues it.
+                if let Ok(mut ended) = self.runtime(&task.id).ended_stretch.lock() {
+                    *ended = Some(EndedStretch {
+                        since,
+                        state_at: times.state_at,
+                    });
+                }
+                None
+            }
+            (true, None) => Some(
+                self.take_ended_stretch(&task.id, times.state_at)
+                    .unwrap_or_else(|| self.now()),
+            ),
             _ => return,
         };
         if let Err(err) = self.deps.store.set_working_since(&task.id, next).await {
             tracing::warn!(task = %task.id, error = %err, "could not record the working stretch");
+        }
+    }
+
+    /// The start of the stretch the task continues from the state that began at `state_at`
+    /// ([`continued_stretch`]); the remembered stretch is used up either way.
+    fn take_ended_stretch(&self, task_id: &TaskId, state_at: Timestamp) -> Option<Timestamp> {
+        let ended = self
+            .existing_runtime(task_id)?
+            .ended_stretch
+            .lock()
+            .ok()?
+            .take();
+        continued_stretch(ended, state_at)
+    }
+
+    /// The task goes on by itself, not at a person's prompt: Claude Code's own wake-up (its
+    /// background work ended), or its session went on after a stop. Called before it is made
+    /// Working, it continues the stretch its lack of background work ended, when nothing changed
+    /// since (SPEC-309 WSW-001); the store keeps that start when the task turns Working.
+    pub(crate) async fn continue_working_stretch(&self, task_id: &TaskId) {
+        let Ok(Some(times)) = self.deps.store.task_times(task_id).await else {
+            return;
+        };
+        if times.working_since.is_some() {
+            return;
+        }
+        let Some(since) = self.take_ended_stretch(task_id, times.state_at) else {
+            return;
+        };
+        if let Err(err) = self.deps.store.set_working_since(task_id, Some(since)).await {
+            tracing::warn!(task = %task_id, error = %err, "could not continue the working stretch");
         }
     }
 
@@ -702,5 +765,22 @@ mod tests {
             idle_stretch(TaskStatus::Queued, Some(Activity::Waiting), Some(0)),
             None
         );
+    }
+
+    /// SPEC-309 WSW-001/WSW-002: a task that goes on by itself from the idle state its stretch
+    /// ended in continues that stretch; after any change of state in between, or with none
+    /// remembered, it starts a new one.
+    #[test]
+    fn an_ended_stretch_continues_only_from_the_same_idle_state() {
+        let ended = EndedStretch {
+            since: Timestamp(1_000),
+            state_at: Timestamp(5_000),
+        };
+        assert_eq!(
+            continued_stretch(Some(ended), Timestamp(5_000)),
+            Some(Timestamp(1_000))
+        );
+        assert_eq!(continued_stretch(Some(ended), Timestamp(6_000)), None);
+        assert_eq!(continued_stretch(None, Timestamp(5_000)), None);
     }
 }

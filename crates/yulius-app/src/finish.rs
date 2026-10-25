@@ -658,6 +658,7 @@ impl App {
         runtime.resumed_turn.store(true, Ordering::SeqCst);
         runtime.turn_began_ms.store(self.now().0, Ordering::SeqCst);
         runtime.start_turn(self.now());
+        self.continue_working_stretch(&task.id).await;
         if let Err(err) = self.set_task_activity(task, next).await {
             tracing::warn!(task = %task.id, error = %err, "could not update the task's activity");
         }
