@@ -1,11 +1,11 @@
 ---
 yulius-task: a48d6e74-33fb-4413-8491-a447ee073171
-status: in-progress
+status: done
 ---
 
 # SPEC-309: A turn the agent's own background work wakes keeps its working stretch
 
-Status: in-progress
+Status: done
 Date: 2026-10-25
 Owner: task #295
 Scope authorization: task #295 ("this doesnt seem too real it has been working much longer.
@@ -58,8 +58,8 @@ agent.
 - [x] Fake agent wakes a session a moment after its shell ends
 - [x] Regression test: a woken turn keeps the working stretch (failing)
 - [x] A turn the agent's own background work wakes continues the stretch
-- [ ] Docs, changes and review answered
-- [ ] Gates green and delivered on dev
+- [x] Docs, changes and review answered
+- [x] Gates green and delivered on dev
 
 ## Acceptance criteria
 
@@ -124,3 +124,26 @@ Independent review (fresh session, `om-code-review`), round 1 at `511ec4ca`: req
   issue #895.
 - Nits: wake delay raised to `SHELL_PROBE_MS + 5 s`, lag fails the test, the gap is checked in
   the store; Plan ticked, Evidence added.
+
+Round 2 at `c8478fd2`: approve, with nits answered in the next commit (the typed prompt waits until
+the store shows the turn's stretch ended; a doc line reflowed; this Evidence section).
+
+## Evidence
+
+- Reproduction on the unfixed code (`b4eeda20`): `cargo nextest run -p yulius -E
+  'binary_id(yulius::main) & test(/^task_done::a_turn_its_shell_wakes/)'` failed with "one
+  working stretch through the woken turn: [Some(12:09:33Z), Some(12:09:44Z), Some(12:09:44Z)]":
+  the woken turn restarted the clock, as in the screenshot.
+- With the fix: both `task_done::*working_stretch` tests pass (run three times, about 17.7 s each);
+  `task_done::` (55 tests) passes; `yulius-app` `tasks::tests::*stretch*` passes.
+- Mutations (committed first, then reverted with `git checkout`): dropping the `is_typed_prompt`
+  guard in `hooks.rs` fails the typed-prompt check ("a new stretch after Some(12:29:19Z):
+  [Some(12:29:19Z)]"); removing the transcript-path restore in `supervisor.rs` fails
+  `a_wake_read_from_the_transcript_keeps_the_working_stretch` (12:29:19Z → 12:29:34Z).
+- `scripts/dev ci` at `c8478fd2`: exit 0 (fmt, check, clippy, macOS targets, deps, 2615 tests
+  passed, 16 skipped). After that only the test's extra wait and a doc reflow changed; both
+  stretch tests pass again.
+- `scripts/dev security`: not run (exit 2): Vidoc answered HTTP 429, the key is out of quota. Unrun,
+  not passed; Yulius CI's `security` job reports its own state.
+- Not tested: the real Claude Code's timing between a shell's exit and its wake (the fake agent
+  models it with `--wake-delay-ms`), and the sidebar after a deploy (no deploy was asked for).
