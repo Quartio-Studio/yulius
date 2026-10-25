@@ -5090,8 +5090,8 @@ async fn an_environment_run_writing_past_its_disk_bound_is_stopped() -> TestResu
 }
 
 /// SPEC-219 ENV-004: the process host of a run that a restart left `running` keeps no command
-/// going: the startup reconciliation terminates it, removes the run's directory and records the
-/// run as `error`.
+/// going: the startup reconciliation records the run as `error`, then terminates it and removes
+/// the run's directory.
 #[tokio::test]
 async fn a_restart_ends_a_running_environment_command() -> TestResult {
     let f = fixture(&DeliveryProfile::product()).await?;
