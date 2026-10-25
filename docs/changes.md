@@ -4,6 +4,14 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-25
+
+- A production secret's Edit dialog offers no hosts the server refuses (SPEC-308, task #294,
+  fixes #622). It offered the Hosts input on every secret, so a person who added a host to a
+  production secret got a 409 on Save. Now its Hosts field has no input and says the secret is
+  sent to no host; an older production secret that still has hosts offers only "Remove them". The web mock's
+  `PATCH /api/agent-secrets/{id}` refuses hosts on a production secret as the server does.
+
 ## 2026-10-24
 
 - Public lines of a stored key are no longer redacted (SPEC-302, task #288, fixes #599). Every
