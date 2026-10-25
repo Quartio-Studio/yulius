@@ -592,7 +592,7 @@ test('toasts in a dialog keep off its Close, also after the window narrows', asy
   await setUpTwoFactor(screen, browser);
   await expect(browser.locator('dialog.modal .secret-eye + .secret-copy')).toBeVisible();
   for (let n = 1; n <= 4; n += 1) {
-    // Clicked from script: focus stays where it is, so only the dialog's Close moves the toasts.
+    // Clicked from script: focus stays where it is.
     await browser.evaluate(() => (document.querySelector('dialog.modal .secret-eye + .secret-copy') as HTMLButtonElement).click());
     await expect(screen.getByText(`Couldn’t copy: Clipboard blocked ${n}`)).toBeVisible();
   }
@@ -601,6 +601,9 @@ test('toasts in a dialog keep off its Close, also after the window narrows', asy
     const b = document.querySelector('dialog.modal .modal-head button[aria-label="Close"]')!.getBoundingClientRect();
     return { toasts: document.querySelectorAll('dialog.modal #toasts .toast').length, covered: a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom };
   });
+  // The dialog gave its Close the keyboard; a tap on its text takes it away, so only the rule for
+  // the dialog's Close keeps the toasts off it, not the one for the focused control.
+  await browser.evaluate(() => (document.activeElement as HTMLElement).blur());
   expect(await covered()).toEqual({ toasts: 4, covered: false });
   await browser.setViewport({ width: 390, height: 844 });
   expect(await covered()).toEqual({ toasts: 4, covered: false });
