@@ -596,18 +596,30 @@ test('toasts in a dialog keep off its Close, also after the window narrows', asy
     await browser.evaluate(() => (document.querySelector('dialog.modal .secret-eye + .secret-copy') as HTMLButtonElement).click());
     await expect(screen.getByText(`Couldn’t copy: Clipboard blocked ${n}`)).toBeVisible();
   }
+  // Which of the dialog's Close and Done the toast region overlaps.
   const covered = () => browser.evaluate(() => {
     const a = document.getElementById('toasts')!.getBoundingClientRect();
-    const b = document.querySelector('dialog.modal .modal-head button[aria-label="Close"]')!.getBoundingClientRect();
-    return { toasts: document.querySelectorAll('dialog.modal #toasts .toast').length, covered: a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom };
+    const over = (b: DOMRect) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    const done = [...document.querySelectorAll('dialog.modal .modal-actions button')].find((b) => b.textContent === 'Done')!;
+    return {
+      toasts: document.querySelectorAll('dialog.modal #toasts .toast').length,
+      close: over(document.querySelector('dialog.modal .modal-head button[aria-label="Close"]')!.getBoundingClientRect()),
+      done: over(done.getBoundingClientRect()),
+    };
   });
   // The dialog gave its Close the keyboard; a tap on its text takes it away, so only the rule for
   // the dialog's Close keeps the toasts off it, not the one for the focused control.
   await browser.evaluate(() => (document.activeElement as HTMLElement).blur());
-  expect(await covered()).toEqual({ toasts: 4, covered: false });
+  expect(await covered()).toMatchObject({ toasts: 4, close: false });
   await browser.setViewport({ width: 390, height: 844 });
-  expect(await covered()).toEqual({ toasts: 4, covered: false });
+  // The page hears of the resize after the viewport changed, not before setViewport returns.
+  await expect.poll(covered).toMatchObject({ toasts: 4, close: false });
   expect(await axeViolations(browser)).toEqual([]);
+  // At the bottom the toasts cover Done: once Done has the keyboard it wins over the Close
+  // (WCAG 2.4.11), and the toasts go back to the top.
+  expect(await covered()).toEqual({ toasts: 4, close: false, done: true });
+  await browser.evaluate(() => ([...document.querySelectorAll('dialog.modal .modal-actions button')].find((b) => b.textContent === 'Done') as HTMLElement).focus());
+  expect(await covered()).toEqual({ toasts: 4, close: true, done: false });
 });
 
 // Review of SPEC-040: an older secret's address, user name and seed live in its notes, so its
