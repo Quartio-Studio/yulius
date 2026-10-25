@@ -118,15 +118,15 @@ server (10e5de4e) already has the SPEC-280 wheel fix.
   the same config entered the alternate screen with mouse reporting (1000, 1002, 1003, 1006), and
   sibling starts recorded no strike. The 2.1.292 code checks the variable before the crash
   auto-off, the feature gate and the `tui` setting. Only a screen reader,
-  `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` or a background session beat it. A probe of mine had left
+  `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` or `CLAUDE_CODE_NO_FLICKER=0` turn it off before it. A probe of mine had left
   a pending canary entry (pid 693) in this sandbox's real config, and I removed it.
 - **Regression test first.** `cargo test -p yulius-harness --test launch` at d4a1f7fa (test
   only) failed in `claude_new_session_argv_snapshot_and_files` (env without
   `CLAUDE_CODE_NO_FLICKER`) and in `a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment`.
   With the fix (7b29e374) all 13 passed. A mutation at 0dcf6794 (the Cockpit's entry removed)
   failed the tightened Cockpit assertion.
-- **Gate.** `scripts/dev ci` at 8574e88e: exit 0, 2612 tests passed, 16 skipped. The final head
-  is checked again (below).
+- **Gate.** `scripts/dev ci` at 8574e88e: exit 0, 2612 tests passed, 16 skipped. Run again at
+  40b9842c (after the dev merge; the commits after it change only prose).
 - **Security.** `yulius security-scan`: exit 2, not run. Vidoc answered HTTP 429: the instance key
   has used its 50,000,000 tokens. This is unrun, not passed; Yulius CI's `security` job repeats it.
 - **Review.** Round 1 (fresh session, om-code-review) approved 8574e88e with minors, all answered

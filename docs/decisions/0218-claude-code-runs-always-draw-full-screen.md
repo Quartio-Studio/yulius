@@ -27,10 +27,11 @@ screen, and nothing could be scrolled up (task #296, #898).
 ## Decision
 
 Every interactive Claude Code launch, meaning task runs (`plan_launch`) and the Superagent (the
-Cockpit, `plan_cockpit`), sets `CLAUDE_CODE_NO_FLICKER=1` (`FULL_SCREEN_ENV` in `yulius-harness`). Claude Code
-documents this variable as the override. It takes precedence over the recorded auto-disable, the
-feature gate and the `tui` setting, and with it Claude Code arms no canary. A screen reader or an
-explicit `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` still turns full screen off.
+Cockpit, `plan_cockpit`), sets `CLAUDE_CODE_NO_FLICKER=1` (`FULL_SCREEN_ENV` in
+`yulius-harness`). Claude Code documents this variable as the override. It takes precedence over
+the recorded auto-disable, the feature gate and the `tui` setting, and with it Claude Code arms no
+canary. A screen reader or an explicit `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` still turns full
+screen off.
 
 ## Alternatives
 
