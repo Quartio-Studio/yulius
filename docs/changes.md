@@ -8,11 +8,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Toasts in a dialog no longer cover its Close (SPEC-305, task #291, fixes #640). The toast region
   moves into an open dialog, and below 768 px it is pinned at the top right, where the dialog's
-  Close is. Toasts raised at a wider size stayed there when the window narrowed, and the check that
-  moves them to the other edge only protected the focused control. That check now also keeps the
-  dialog's Close clear (the focused control still comes first). It runs again when the window is
-  resized, and it moves the toasts only to an edge that covers less. This fixes the flaky axe `target-size` failure of the Team secrets
-  test "a failed copy shows no check…", which the mock's sign-in request toast set off on slow runs.
+  Close is. Toasts raised at a wider size ended up there when the window narrowed, and nothing moved
+  them: the check that moves them to the other edge only protected the focused control. That check
+  now also keeps the dialog's Close clear (the focused control still comes first). It runs again
+  when the window is resized, and it moves the toasts only to an edge that covers less. This fixes
+  the flaky axe `target-size` failure of the Team secrets test "a failed copy shows no check…",
+  which the mock's sign-in request toast set off on slow runs.
 - A production secret's Edit dialog offers no hosts the server refuses (SPEC-308, task #294,
   fixes #622). It offered the Hosts input on every secret, so a person who added a host to a
   production secret got a 409 on Save. Now its Hosts field has no input and says the secret is

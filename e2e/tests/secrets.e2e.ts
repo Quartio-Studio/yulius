@@ -691,6 +691,24 @@ test('toasts in a dialog keep off its Close, also after the window narrows', asy
   // Checked again (a resize), they stay: the bottom would clear the Close but cover Done.
   await browser.evaluate(() => window.dispatchEvent(new Event('resize')));
   expect(await covered()).toEqual({ toasts: 4, close: true, done: false });
+  // Back in the page, a focused control that both edges cover makes neither better: the toasts
+  // stay where they are instead of jumping at each check.
+  await browser.evaluate(() => ([...document.querySelectorAll('dialog.modal .modal-actions button')].find((b) => b.textContent === 'Done') as HTMLElement).click());
+  await expect(screen.getByRole('dialog', 'Shared Gmail')).toBeHidden();
+  expect(await browser.evaluate(() => {
+    const host = document.getElementById('toasts')!;
+    const tall = Object.assign(document.createElement('button'), { type: 'button', textContent: 'Tall' });
+    tall.style.cssText = 'position: fixed; left: 20px; top: 0; bottom: 0; width: 24px';
+    document.body.append(tall);
+    const at = () => host.classList.contains('flipped');
+    const before = at();
+    tall.focus();
+    const focused = at();
+    window.dispatchEvent(new Event('resize'));
+    const resized = at();
+    tall.remove();
+    return { inPage: host.parentElement === document.body, toasts: host.children.length, moved: [focused !== before, resized !== before] };
+  })).toEqual({ inPage: true, toasts: 4, moved: [false, false] });
 });
 
 // Review of SPEC-040: an older secret's address, user name and seed live in its notes, so its

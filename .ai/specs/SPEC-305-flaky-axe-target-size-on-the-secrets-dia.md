@@ -41,8 +41,8 @@ notes wrap and scroll in their box" then passes every time.
 - Why the tests missed it: no test raises 4 toasts in a dialog at phone width. The flaky test gets
   a 4th toast only when the run is slow.
 - What else the cause could break: any dialog with toasts at phone width. The focus avoidance
-  itself could flip the region onto a control as covered as before. It now flips only to a clear
-  edge.
+  itself could flip the region onto a control as covered as before. It now flips only to an edge
+  that costs less (TDC-001).
 
 ## Requirements
 
@@ -81,7 +81,9 @@ notes wrap and scroll in their box" then passes every time.
   and the copies are clicked from script, so focus does not move. It then switches to 390 px and
   asserts that the toast region does not overlap the dialog's ×, and that axe finds no violations.
   It then focuses Done, which the toasts at the bottom cover. The toasts move to the top (over the
-  Close), and they stay there when a resize event re-runs the check.
+  Close), and they stay there when a resize event re-runs the check. After the dialog closes (the
+  toasts back in the page), a focused control that both edges cover leaves them where they are,
+  on focus and on resize.
 - Each half of the fix is shown to be needed: the test fails without the resize check, and fails
   without the dialog Close in the check.
 - 20 runs in a row of the original test, and runs with the 3.5 s pause.
@@ -144,3 +146,13 @@ notes wrap and scroll in their box" then passes every time.
   - `npx e2e run tests/secrets.e2e.ts`: 27 passed.
   - `scripts/dev ci`: exit 0. Nextest: 2612 passed, 16 skipped.
   - `scripts/dev security`: exit 2 again, not run (Vidoc HTTP 429, quota). Unrun, not passed.
+- Review round 2 (fresh session, head 72a01c68): request changes. Answers:
+  - Minor, own code: the "stay when no better" case (equal cost) had no test. A `>` mutant passed.
+    Added the check after the dialog closes: a full-height focused button that both edges cover.
+    The `>` mutant now fails at line 711 (`moved: [true, false]`: it jumps on focus and back on
+    resize). The fix passes.
+  - Nit, own code: Context said "flips only to a clear edge". It now says "an edge that costs
+    less".
+  - Nit, own code: the `docs/changes.md` wording ("ended up there … nothing moved them") and its
+    wrapping are fixed.
+  - `npx e2e run tests/secrets.e2e.ts` after these changes: 27 passed, 3 runs of 3.
