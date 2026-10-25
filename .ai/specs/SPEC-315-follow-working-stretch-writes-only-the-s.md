@@ -48,9 +48,9 @@ is still in the state that decision was made on. A turn that starts in between k
 ## Plan
 
 - [x] Root cause and spec of the unconditional stretch write
-- [ ] Regression test: a stale stretch write leaves a Working task's stretch (failing)
-- [ ] The stretch write applies only to the state it was decided on
-- [ ] Docs, changes and review answered
+- [x] Regression test: a stale stretch write leaves a Working task's stretch (failing)
+- [x] The stretch write applies only to the state it was decided on
+- [x] Docs, changes and review answered
 - [ ] Gates green and delivered on dev
 
 ## Acceptance criteria
@@ -71,6 +71,9 @@ is still in the state that decision was made on. A turn that starts in between k
   stale stretch with the current state does not apply either; the current state applies (end
   and start). Fails before the fix: committed first against a conditional write that ignored its
   condition, as `set_working_since` does.
+- App unit test (`tasks::tests::an_ended_stretch_is_forgotten_only_once_recorded`): the stretch the
+  start continues stays remembered until it is recorded, and only that one is forgotten. Fails
+  against the take of the remembered stretch (committed first with that behaviour).
 - App: the existing stretch tests (`tasks::tests::*stretch*` in `yulius-app`,
   `task_done::*working_stretch` in `yulius`) keep passing with the guarded write.
 
@@ -86,7 +89,25 @@ is still in the state that decision was made on. A turn that starts in between k
 - **The remembered ended stretch is still recorded before the write**, as SPEC-309 needs (the wake
   must find it once `working_since` is gone). When the write does not apply, the remembered stretch
   carries the stale state time, so `continued_stretch` never continues from it (WSW-002).
+- **A stretch the start continues is forgotten only once that start is recorded**
+  (`TaskRuntime::ended_stretch_from`, `TaskRuntime::forget_ended_stretch`). Before, the
+  `(true, None)` branch took it before an unconditional write; with the write now refusable, a take
+  would lose it when the task's own wake-up made the task Working in between, and that turn would
+  start a new stretch. A refused write leaves it for `continue_working_stretch`; a person's prompt
+  still cannot use it (its state time changed).
 - **No app-level race test.** The race needs a store that pauses between the read and the write;
   the store port has one implementation, and a timing-based test would be flaky. The store test
   proves the guard, the call site passes the state it read.
 - No ADR: this corrects TIM-002's implementation; it takes no new lasting direction.
+
+## Review
+
+Independent review (fresh session, `om-code-review`), round 1 at `e04073a3`: approve, with:
+
+- Own, minor: in the `(true, None)` branch the remembered stretch (SPEC-309) was taken before the
+  now-refusable write, so a refused write lost it and the task's own wake-up started a new stretch.
+  Fixed test-first: it is forgotten only once its start is recorded
+  (`an_ended_stretch_is_forgotten_only_once_recorded`, failing at `337b22f3` with a take-style stub,
+  passing with the fix).
+- Own, nit: a refused write was silent. Fixed: logged at debug.
+- Own, nit: Plan, Review and Evidence sections. Done.
