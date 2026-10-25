@@ -47,6 +47,11 @@ with no retries and no longer first-load budgets (#354's open decision).
     late, reply's waiting case had its `activity` set back, closing the field. start-change's
     signature (the `Starts:` chip still there after the hand-over) is this rollback: the change to
     When I decide reads the detail again, and the hand-over landed while that read was out.
+  - `reply.e2e.ts` "Escape closes the reply field…" (not listed in #506; failed 1 of 10 loaded
+    runs at the final head of round 1, and 1 of 4 probe C runs on dev): after Escape the keyboard
+    was on the body. `renderAttention` takes every child but the reply field out of the bar and
+    puts the kept Reply button back, and taking a focused element out of the page drops the focus.
+    The mock's ambient touch of #12 (every 16 s) landed after Escape in a run slowed to 19.8 s.
   - `editor.e2e.ts`: fixed by #523; the ownership text the issue quotes is gone since #572.
 - **Not reproduced by load alone.** The unchanged files on dev passed 6 of 6 runs at a held 0.2
   CPU share (load average ~70) and 5 of 5 at 0.1 (~90), as with #515: the races need a timing that
@@ -65,17 +70,23 @@ with no retries and no longer first-load budgets (#354's open decision).
 | FUL-004 | The task view counts the task changes it hears (`update`: events and answers to its actions). A detail read during which one arrived applies its details but not its summary; otherwise the summary applies as before. A read answered before a hand-over and arriving after it, both dated the same second, leaves the newer owner. | `ownership.e2e.ts` "a read answered before a hand-over…", fails without the fix |
 | FUL-005 | The mock's `touch` takes `changes.updated_at`, so a test dates a change to the second of a read's answer, as the server dates to the second. | `mock.js` |
 | FUL-006 | No retries, sleeps or longer first-load budgets (#354). | diff |
+| FUL-007 | The attention bar gives the keyboard back to a control it kept across a rebuild (Reply), so a task update leaves the focus where it was. | `reply.e2e.ts` "Escape closes…", fails without the fix |
 
 ## Plan
 
-- [ ] Spec SPEC-312 drafted with each test's race candidates
-- [ ] Each failure reproduced with probe delays and its race named
-- [ ] Supertask and reply checks independent of ambient activity
-- [ ] Start-change's hand-over waits for the events socket
-- [ ] Ownership touches wait for the events socket
-- [ ] Task view keeps a newer event over an older detail read
-- [ ] Files pass repeated runs under a held 0.2 CPU share
-- [ ] Gate green, spec Evidence and changes entry written
+- [x] Spec SPEC-312 drafted with each test's race candidates
+- [x] Each failure reproduced with probe delays and its race named
+- [x] Supertask and reply checks independent of ambient activity
+- [x] Start-change's hand-over waits for the events socket
+- [x] Ownership touches wait for the events socket
+- [x] Task view keeps a newer event over an older detail read
+- [x] Files pass repeated runs under a held 0.2 CPU share
+- [x] Changes entry and docs follow the final fix
+- [x] Review round 1 answered: reads ordered by heard changes
+- [x] Attention bar keeps the keyboard on Reply across task updates
+- [ ] Full e2e suite passes at the final head
+- [ ] Loaded runs pass at the final head
+- [ ] Gate green and spec Evidence at the final head
 - [ ] Independent review approves the final head
 - [ ] Merged into dev with #506 commented
 
@@ -114,5 +125,9 @@ with no retries and no longer first-load budgets (#354's open decision).
 - **The socket wait lives in `touchTask`**, the helper every test uses to announce a change, so a
   caller cannot forget it. Other files that call `__yuliusMock.touchTask` directly were not
   reported and stay unchanged; they are listed on #506.
+- **The bar refocuses a kept control rather than moving focus by position.** `keepFocus` (dom.js)
+  would move the keyboard to whatever button takes the old one's place, which could put Enter on
+  Hand over. Only a control that is the same element after the rebuild (Reply) gets it back; a
+  field closed under typing still leaves it on the bar.
 - **`ambient=0` for the supertask case only.** The second supertask case names no working task.
 - **No ADR.** Applies existing rules (SPEC-056 WUI-105 for read ordering, wait on conditions).
