@@ -1,11 +1,11 @@
 ---
 yulius-task: c2a0e6b6-f66d-47b9-badd-c1861b283082
-status: draft
+status: in-progress
 ---
 
 # SPEC-312: Start-change, supertask, ownership and reply e2e checks wait on what they need (#506)
 
-Status: draft
+Status: in-progress
 Date: 2026-10-25
 Owner: Yulius task #298
 Scope authorization: the issue-triage request (task #298). Fix GitHub issue #506 in one pull
@@ -36,7 +36,8 @@ with no retries and no longer first-load budgets (#354's open decision).
      themselves (SPEC-056 WUI-105), not reads against events.
   4. start-change clicks the chip right after the URL changes. Ruled out: a click waits for its
      element within the action budget (30 s), not an assertion's 5 s.
-- **Causes, each forced by a throwaway probe (Evidence).**
+- **Causes, each forced by a throwaway probe (Evidence: probe A, faster ambient ticks; probe B, a
+  late `/api/events`; probe C, late detail answers).**
   - `supertask.e2e.ts`: candidate 1. With the ambient tick 10× faster the unchanged case failed
     with the issue's `toHaveText`, observing "Supertask · waits for #6, #8, #9 and 3 more": #8 had
     started before the supertask was created.
@@ -61,8 +62,8 @@ with no retries and no longer first-load budgets (#354's open decision).
 | FUL-001 | Each listed failure is reproduced (probe delays or a held CPU share) and its race named. | Context, Evidence |
 | FUL-002 | `touchTask` (`e2e/tests/support.ts`) waits until the page is connected to `/api/events` (`eventsConnected`) before it changes the task; `ownership.e2e.ts` and `start-change.e2e.ts` use it. | probe B runs |
 | FUL-003 | The supertask case that names the studio's working tasks opens the mock with `&ambient=0`. | probe A runs |
-| FUL-004 | The task view applies a detail read's summary only when its `updated_at` is not older than the one it shows; an unparseable time applies it, as before. A read answered before a hand-over and arriving after it leaves the newer owner. | `ownership.e2e.ts` "a read answered before a hand-over…", fails without the fix |
-| FUL-005 | The mock's `holdanswer=<path>` answers GET requests of that path at once and holds the answer until `__yuliusMock.release()`. | `mock.js`, web README |
+| FUL-004 | The task view counts the task changes it hears (`update`: events and answers to its actions). A detail read during which one arrived applies its details but not its summary; otherwise the summary applies as before. A read answered before a hand-over and arriving after it, both dated the same second, leaves the newer owner. | `ownership.e2e.ts` "a read answered before a hand-over…", fails without the fix |
+| FUL-005 | The mock's `touch` takes `changes.updated_at`, so a test dates a change to the second of a read's answer, as the server dates to the second. | `mock.js` |
 | FUL-006 | No retries, sleeps or longer first-load budgets (#354). | diff |
 
 ## Plan
@@ -70,7 +71,7 @@ with no retries and no longer first-load budgets (#354's open decision).
 - [ ] Spec SPEC-312 drafted with each test's race candidates
 - [ ] Each failure reproduced with probe delays and its race named
 - [ ] Supertask and reply checks independent of ambient activity
-- [ ] Start-change waits for the chained task's view and the events socket
+- [ ] Start-change's hand-over waits for the events socket
 - [ ] Ownership touches wait for the events socket
 - [ ] Task view keeps a newer event over an older detail read
 - [ ] Files pass repeated runs under a held 0.2 CPU share
@@ -96,11 +97,20 @@ with no retries and no longer first-load budgets (#354's open decision).
   later change on another connection, so a real page meets the same order. Options:
   - Wait in the test until the detail read is done before touching: hides a real page defect.
   - Read again after every event: more requests on every change, still racing.
-  - Compare `updated_at`: the server bumps it with every change the summary carries (owner, control
-    request, status), and the mock does on every touch. Chosen. `Date.parse` compares, since the
-    server's and the mock's fractional digits may differ in length.
-  - The store's `upsertTask` has the same lack of a guard, but nothing reached it here: its callers
-    are event handlers and answers to this page's own actions. Left as it is.
+  - Compare `updated_at`: first chosen, then dropped after review round 1. The server dates to the
+    second (`rfc3339`, `crates/yulius-app/src/auth.rs`), so a read answered in the same second as
+    the change carries the same time and the older answer went through. The new same-second case
+    failed with it.
+  - Millisecond times or a revision per task from the server: changes the API contract for a
+    client-side ordering problem.
+  - Count the changes the view hears, and leave the summary of a read during which one arrived:
+    chosen. Every change that alters the summary is announced with the whole summary
+    (`TaskSummary` holds every key `pickSummary` takes), so the view then shows the newest it
+    heard, and a later change brings a later event. The read's details (steps, attempts, request)
+    still apply. A read the view starts itself on a status change counts from after that change.
+  - The store's `upsertTask`, and the answer to this page's own `PUT …/start`, have no ordering
+    either (review round 1, pre-existing): an answer computed before a hand-over and arriving after
+    it would bring back the old owner. Outside this change; noted on #506.
 - **The socket wait lives in `touchTask`**, the helper every test uses to announce a change, so a
   caller cannot forget it. Other files that call `__yuliusMock.touchTask` directly were not
   reported and stay unchanged; they are listed on #506.
