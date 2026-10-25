@@ -69,21 +69,29 @@ test('a request for control leaves the way out of a chain', async ({ app, browse
 });
 
 // #506: the view's read of the task is answered before a hand-over and arrives after the hand-over
-// was announced (the server answered, then the change came first). The older answer does not take
-// the view back to its older owner.
+// was announced (the server answered, then the change came first). The server dates to the second,
+// so both may carry the same time. The older answer does not take the view back to its older owner.
 test('a read answered before a hand-over and arriving after it changes nothing back', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/t/12', '&ambient=0&holdanswer=/api/tasks/tsk_studio_12'));
-  type Holding = { __yuliusMock: { heldWaiting?: number; release: () => void } };
-  await expect.poll(() => browser.evaluate(() => ((window as unknown as Holding).__yuliusMock.heldWaiting ?? 0) > 0), {
-    message: "the view never read the task (its answer is held)",
-  }).toBe(true);
+  type Holding = { __yuliusMock: { holdDetail?: Promise<void> | null; detailReads?: Record<string, number>; tasks: { id: string; updated_at: string }[] }; __releaseDetail?: () => void };
+  await app.open(mock('/s/studio', '&ambient=0'));
+  await browser.evaluate(() => {
+    const w = window as unknown as Holding;
+    w.__yuliusMock.holdDetail = new Promise<void>((resolve) => { w.__releaseDetail = resolve; });
+    location.hash = '#/s/studio/t/12';
+  });
+  // The view's read is answered (mkarp owns it) and the answer waits on its way.
+  await expect.poll(() => browser.evaluate(() => {
+    const db = (window as unknown as Holding).__yuliusMock;
+    return Boolean(db.detailReads?.tsk_studio_12) && !db.holdDetail;
+  }), { message: 'the view never read the task' }).toBe(true);
   await browser.locator('.taskview .stepstrip-toggle').click();
   await expect(browser.locator('.taskview .steplist')).toHaveText(/Loading steps/);
 
-  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' } });
+  const answered = await browser.evaluate(() => (window as unknown as Holding).__yuliusMock.tasks.find((t) => t.id === 'tsk_studio_12')!.updated_at);
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' }, updated_at: answered });
   await expect(screen.getByText("You are watching @anna-q's task.")).toBeVisible();
-  // The answer, which says mkarp owns it, arrives: its steps show and the owner stays anna-q.
-  await browser.evaluate(() => (window as unknown as Holding).__yuliusMock.release());
+  // The answer arrives: its steps show and the owner stays anna-q.
+  await browser.evaluate(() => (window as unknown as Holding).__releaseDetail?.());
   await expect(browser.locator('.taskview .step-item').first()).toBeVisible();
   await expect(screen.getByText("You are watching @anna-q's task.")).toBeVisible();
   await expect(screen.getByRole('button', 'Request control')).toBeVisible();

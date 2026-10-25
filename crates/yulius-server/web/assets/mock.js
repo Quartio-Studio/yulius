@@ -178,7 +178,6 @@ function seed(params) {
     failedReads: 0,
     holdPath: params.get('hold') || null,
     holdPostPath: params.get('holdpost') || null,
-    holdAnswerPath: params.get('holdanswer') || null,
     // failpost=<path> does the same to POST requests, to show how an action says it failed;
     // `failedPosts` counts them.
     failPostPath: params.get('failpost') || null,
@@ -345,10 +344,8 @@ function seed(params) {
   // `tasks=0`: sandboxes without any task yet (the composer then offers no start rule, SPEC-022).
   if (params.get('tasks') === '0') db.tasks = [];
   // `hold=<path>`: its GET requests wait until `__yuliusMock.release()`, which may come first;
-  // `hold=frames` keeps the sandbox Chrome's picture back instead. `holdanswer=<path>`: its GET
-  // requests are answered at once and the answer waits on its way there, so a change the server
-  // announces meanwhile reaches the page first (#506).
-  if (db.holdPath || db.holdPostPath || db.holdAnswerPath) db.held = new Promise((resolve) => { db.release = () => { db.released = true; resolve(); }; });
+  // `hold=frames` keeps the sandbox Chrome's picture back instead.
+  if (db.holdPath || db.holdPostPath) db.held = new Promise((resolve) => { db.release = () => { db.released = true; resolve(); }; });
   // `tasks=many`: 30 more queued tasks in studio, a long "Run after" menu (SPEC-038).
   if (params.get('tasks') === 'many') {
     for (let number = 15; number < 45; number += 1) db.tasks.push(t('sb_studio', number, `Queued idea ${number}`, 'claude', 'queued', null, { noSteps: true }));
@@ -695,10 +692,14 @@ function workingSince(task) {
   return idle && task.background_shells == null ? task.working_since ?? null : null;
 }
 
-/** Task change: `task.updated` only; sandbox counters are not pushed (clients refetch). */
+/**
+ * Task change: `task.updated` only; sandbox counters are not pushed (clients refetch). It is dated
+ * now, or `changes.updated_at`: the server dates to the second, so a change and a read answered
+ * just before it may carry the same time (#506).
+ */
 function touch(db, task, changes = {}) {
   const [status, activity] = [task.status, task.activity];
-  Object.assign(task, changes, { updated_at: new Date().toISOString() });
+  Object.assign(task, changes, { updated_at: changes.updated_at || new Date().toISOString() });
   // Out of `closed` it starts: it has had a run from then on, as on the server (SPEC-153).
   if (task.status !== 'closed') Object.assign(task, { neverRan: false, awaitsStart: false });
   if (task.status !== status || task.activity !== activity) task.state_since = task.updated_at;
@@ -4155,12 +4156,6 @@ async function handleFetch(db, url, init = {}) {
     // `holdReads = []`: each read waits there, as on a slow connection, until the test calls its
     // resolver (in the order asked), so the test says which answer comes first (#571).
     if (db.holdReads) await new Promise((resolve) => db.holdReads.push(resolve));
-  }
-  if (db.held && (init.method || 'GET') === 'GET' && new URL(url, ORIGIN).pathname === db.holdAnswerPath) {
-    const answer = await handleFetchAfterLatency(db, url, init);
-    db.heldWaiting = (db.heldWaiting || 0) + 1;
-    try { await db.held; } finally { db.heldWaiting -= 1; }
-    return answer;
   }
   if (fileContent && init.method === 'PUT') {
     db.savesOnTheirWay = (db.savesOnTheirWay || 0) + 1;
