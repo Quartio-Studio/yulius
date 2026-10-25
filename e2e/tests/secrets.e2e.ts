@@ -469,6 +469,9 @@ test('a production secret’s Edit dialog offers no hosts and says why, and only
   await expect(old.getByText('old.prod.test')).toBeVisible();
   await expect(old.getByRole('textbox', 'Hosts')).toBeHidden();
   await expect(old.getByText('These hosts were kept from before production secrets became exclusive: agents’ requests to them still get it. Remove them, and add a separate secret for agents.')).toBeVisible();
+  // The choice is described by why (axe does not check that it is).
+  await expect(old.getByRole('checkbox', 'Remove these hosts')).toHaveAttribute('aria-describedby', 'prod-hosts-hint');
+  await expect(browser.locator('#prod-hosts-hint')).toHaveText(/agents’ requests to them still get it/);
   expect(await axeViolations(browser)).toEqual([]);
   // Saved without the choice, the hosts stay.
   await old.getByRole('button', 'Save').click();

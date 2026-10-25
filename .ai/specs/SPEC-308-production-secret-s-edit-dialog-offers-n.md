@@ -78,7 +78,7 @@ suite sees the refusal.
 
 - Replace the input with a note rather than keep it and refuse on Save: the issue asks that the
   dialog not let a person enter what the server refuses. Keeping a read-only list with one
-  "Remove them" choice (rather than dropping the field) keeps clearing old hosts possible, which
+  "Remove these hosts" choice (rather than dropping the field) keeps clearing old hosts possible, which
   the server allows. No ADR: this follows SPEC-204's rule that the page offers neither side of a
   production secret where the server refuses.
 - The mock's refusal is exercised through the page with a dialog opened before the secret became
