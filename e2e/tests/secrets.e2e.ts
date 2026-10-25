@@ -574,6 +574,39 @@ test('a failed copy shows no check, and long notes wrap and scroll in their box'
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// SPEC-305 (#640): toasts move into an open dialog, and the phone layout pins them at the top
+// right, where the dialog's Close is. Four toasts raised at 1440 px (bottom right, no focus moved)
+// covered the Close once the window narrowed to 390 px; they now move to the other edge.
+// `browserask=0`: exactly the four toasts of this test (no sign-in request 5 s after the start).
+test('toasts in a dialog keep off its Close, also after the window narrows', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=team', '&browserask=0'));
+  await expect(screen.getByText('Shared Gmail')).toBeVisible();
+  // Long notes make the dialog tall, so its Close sits where a fourth toast ends at 390 px.
+  const notes = Array.from({ length: 30 }, (_, i) => `Recovery code ${i + 1}`).join('\n');
+  await browser.evaluate((text: string) => {
+    (window as any).__yuliusMock.vault.team[0].notes = text;
+    (window as any).__fail = 1;
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error(`Clipboard blocked ${(window as any).__fail++}`); } } });
+  }, notes);
+  await screen.getByRole('button', 'Show Shared Gmail').click();
+  await setUpTwoFactor(screen, browser);
+  await expect(browser.locator('dialog.modal .secret-eye + .secret-copy')).toBeVisible();
+  for (let n = 1; n <= 4; n += 1) {
+    // Clicked from script: focus stays where it is, so only the dialog's Close moves the toasts.
+    await browser.evaluate(() => (document.querySelector('dialog.modal .secret-eye + .secret-copy') as HTMLButtonElement).click());
+    await expect(screen.getByText(`Couldn’t copy: Clipboard blocked ${n}`)).toBeVisible();
+  }
+  const covered = () => browser.evaluate(() => {
+    const a = document.getElementById('toasts')!.getBoundingClientRect();
+    const b = document.querySelector('dialog.modal .modal-head button[aria-label="Close"]')!.getBoundingClientRect();
+    return { toasts: document.querySelectorAll('dialog.modal #toasts .toast').length, covered: a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom };
+  });
+  expect(await covered()).toEqual({ toasts: 4, covered: false });
+  await browser.setViewport({ width: 390, height: 844 });
+  expect(await covered()).toEqual({ toasts: 4, covered: false });
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
 // Review of SPEC-040: an older secret's address, user name and seed live in its notes, so its
 // notes are edited from their current text, never replaced blindly.
 test('editing a team secret loads its current notes after a two-factor code', async ({ app, browser, screen }) => {
