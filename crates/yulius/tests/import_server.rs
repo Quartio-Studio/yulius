@@ -376,8 +376,11 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
 
     let cli = call(&w.h.router, Method::POST, &approve, None, &alice).await?;
     assert_eq!(cli.status, StatusCode::FORBIDDEN, "{:?}", cli.body);
+    // SPEC-313 NBW-003 (#790): it names the sandbox page and the operate token's way.
+    let refusal = text(&cli.body["error"]["message"]);
     assert!(
-        text(&cli.body["error"]["message"]).contains("in the browser"),
+        refusal.contains("Start onboarding on the sandbox page")
+            && refusal.contains("`yulius project onboard` with an operate token"),
         "{:?}",
         cli.body
     );
@@ -835,7 +838,8 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     // SPEC-313 NBW-002 (#790): both ways to start it.
     assert!(
         pending.contains("Start onboarding on the sandbox page: https://yulius.test/s/shop")
-            && pending.contains("`yulius project onboard` (`onboarding_start`) with an operate token"),
+            && pending
+                .contains("`yulius project onboard` (`onboarding_start`) with an operate token"),
         "{:?}",
         result.body["onboarding_status"]
     );

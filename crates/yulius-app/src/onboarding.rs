@@ -5,10 +5,11 @@
 //! documentation fails [`validate_project`] gets a meta-task whose prompt asks the agent to adapt
 //! the repository to the Yulius format without breaking its conventions. The task starts at once
 //! when the repository is added in the UI; one that came through `yulius onboard` waits until a
-//! person clicks Start onboarding on the sandbox page in the browser (SPEC-051, ADR-0038: the
-//! CLI only uploads, and a CLI token cannot start it). Until the task has finished and
-//! the project validates (`ready`), or an admin skips it, no other task starts in the sandbox: a
-//! new task — created, chained or run by an automation — waits after the preparation task and
+//! person clicks Start onboarding on the sandbox page in the browser, or their own agent runs
+//! `yulius project onboard` (`onboarding_start`) with an `operate` token (SPEC-051, ADR-0038,
+//! ADR-0188: the upload alone never starts it, nor can a `yulius login` token). Until the task
+//! has finished and the project validates (`ready`), or an admin skips it, no other task starts
+//! in the sandbox: a new task — created, chained or run by an automation — waits after the preparation task and
 //! starts by itself once the sandbox is ready ([`App::onboarding_wait`], U-08); continuing a
 //! resting task or an imported session is refused meanwhile ([`App::ensure_tasks_may_start`]).
 //! [`App::onboarding_status`] says what is still pending, for the CLI and the UI.
@@ -512,7 +513,9 @@ fn ensure_browser(ctx: &AuthContext) -> AppResult<()> {
         Ok(())
     } else {
         Err(AppError::Forbidden(
-            "Start onboarding on the sandbox page in the browser; the CLI only uploads".into(),
+            "Start onboarding on the sandbox page, or run `yulius project onboard` with an operate \
+             token (Settings → Connect your local agent); a `yulius login` token cannot start it"
+                .into(),
         ))
     }
 }
@@ -1185,12 +1188,15 @@ impl App {
                 "Ready: an admin skipped the preparation.".into(),
                 Vec::new(),
             ),
-            // A person starts onboarding in the browser, never the CLI (SPEC-051 OBD-003).
+            // A person starts onboarding on the sandbox page, or their agent with an operate
+            // token (SPEC-051 OBD-003, ADR-0188); the URL ends the item so a terminal links it.
             Some(OnboardingState::Pending) => (
                 format!("Not ready yet: {label} waits for someone to start onboarding."),
                 vec![
                     format!(
-                        "someone clicks Start onboarding on the sandbox page: {}/s/{}",
+                        "someone starts onboarding: their agent runs `yulius project onboard` \
+                         (`onboarding_start`) with an operate token, or they click Start \
+                         onboarding on the sandbox page: {}/s/{}",
                         self.config.public_url, sandbox.slug
                     ),
                     "the repository passes the Yulius format check".to_owned(),
