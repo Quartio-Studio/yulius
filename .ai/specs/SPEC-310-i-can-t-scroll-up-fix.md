@@ -1,11 +1,11 @@
 ---
 yulius-task: 1f8c824e-7ccb-45d2-826c-9a7aaede0b33
-status: in-progress
+status: done
 ---
 
 # SPEC-310: Every Claude Code run Yulius starts draws full screen
 
-Status: in-progress
+Status: done
 Date: 2026-10-25
 Owner: task #296
 Scope authorization: task #296: "i can't scroll up. Fix." (a screenshot of task #32's terminal
@@ -70,11 +70,11 @@ server (10e5de4e) already has the SPEC-280 wheel fix.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Fix spec and the regression test that fails
-- [ ] Every Claude Code run Yulius starts draws full screen
-- [ ] ADR, docs and changes record the forced renderer
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Merged into dev on green CI
+- [x] Fix spec and the regression test that fails
+- [x] Every Claude Code run Yulius starts draws full screen
+- [x] ADR, docs and changes record the forced renderer
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -112,4 +112,37 @@ server (10e5de4e) already has the SPEC-280 wheel fix.
 
 ## Evidence
 
-To be completed.
+- **Reproduction.** The PTY runs of Context, with a copy of this sandbox's config dir and the
+  instance's Claude Code 2.1.292. Two seeded sibling starts set `fullscreenAutoDisabled {strikes:
+  2}`, and later starts showed no `ESC[?1049h` and no mouse modes. With `CLAUDE_CODE_NO_FLICKER=1`
+  the same config entered the alternate screen with mouse reporting (1000, 1002, 1003, 1006), and
+  sibling starts recorded no strike. The 2.1.292 code checks the variable before the crash
+  auto-off, the feature gate and the `tui` setting. Only a screen reader,
+  `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` or a background session beat it. A probe of mine had left
+  a pending canary entry (pid 693) in this sandbox's real config, and I removed it.
+- **Regression test first.** `cargo test -p yulius-harness --test launch` at d4a1f7fa (test
+  only) failed in `claude_new_session_argv_snapshot_and_files` (env without
+  `CLAUDE_CODE_NO_FLICKER`) and in `a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment`.
+  With the fix (7b29e374) all 13 passed. A mutation at 0dcf6794 (the Cockpit's entry removed)
+  failed the tightened Cockpit assertion.
+- **Gate.** `scripts/dev ci` at 8574e88e: exit 0, 2612 tests passed, 16 skipped. The final head
+  is checked again (below).
+- **Security.** `yulius security-scan`: exit 2, not run. Vidoc answered HTTP 429: the instance key
+  has used its 50,000,000 tokens. This is unrun, not passed; Yulius CI's `security` job repeats it.
+- **Review.** Round 1 (fresh session, om-code-review) approved 8574e88e with minors, all answered
+  in 0dcf6794:
+  1. The Superagent is the Cockpit (`plan_cockpit`), not a task run: wording fixed everywhere.
+  2. `/tui default` typed in a session still switches it, because Claude Code relaunches itself
+     without the variable: FSR-001 and ADR-0218 reworded.
+  3. The spec was unfinished: completed here.
+  4. A `claude` typed in a Shell gets no variable: left as it is, with the reason in Context and
+     ADR-0218.
+  5. The Cockpit assertion now requires exactly one entry, set to `1`.
+  6. Pre-existing nit, outside this change: the comment at `supervisor.rs` (~1342) says Yulius's
+     environment wins over project variables, but the plan's variables come first. It is harmless
+     because project variables cannot use the `CLAUDE_` prefix. The change does not touch that
+     ordering.
+- **Not tested.** The fix was not tried on the live instance or on quartio-v2's task #32: its
+  sandbox is not reachable from here. Its next Claude Code start takes the variable. No test
+  starts a signed-in Claude Code, so a later CLI that drops the variable would not fail CI
+  (ADR-0218 Consequences).
