@@ -55,10 +55,10 @@ notes wrap and scroll in their box" then passes every time.
 
 - [x] Reproduce the flake and measure which Close is flagged
 - [x] Spec SPEC-305 written and valid
-- [ ] Regression test that fails on the race
-- [ ] Toasts never cover a dialog's header Close (fix)
-- [ ] 20 consecutive passing runs recorded
-- [ ] Docs, changes.md and gates green
+- [x] Regression test that fails on the race
+- [x] Toasts never cover a dialog's header Close (fix)
+- [x] 20 consecutive passing runs recorded
+- [x] Docs, changes.md and gates green
 - [ ] Independent review answered
 - [ ] Merged into dev on green CI
 
@@ -93,4 +93,23 @@ notes wrap and scroll in their box" then passes every time.
 
 ## Evidence
 
-(filled when done)
+- Reproduction on f770e4ff: the boxes are in Context. Pauses of 0, 1.5, 2.5, 4.5 and 5.5 s
+  passed. A 3.5 s pause failed with `serious target-size: button[aria-label="Close"]`, the
+  issue's message.
+- Red: `npx e2e run tests/secrets.e2e.ts --grep "toasts in a dialog keep off"` at 7f08742e (the
+  test only) failed 3 of 3 with `expected {"toasts":4,"covered":true}` after `setViewport(390)`.
+- Each half of the fix is needed (mutations of `dom.js` at 511ac118, then reverted):
+  - Without the resize listener: red (`covered: true`, line 609).
+  - Without the dialog's Close in `keepClear`: red as well, since the test takes the keyboard
+    off the Close. While the Close had the keyboard (the dialog's first focus), the old focus rule
+    already kept it clear, so the first version of the test missed this half.
+  - With the fix: green.
+- The original test with the probe's 3.5 s pause (4 toasts when axe runs) passed 3 of 3 with the
+  fix. The region moved to the bottom edge (`flipped`), and axe found no violation.
+- 20 consecutive runs of `--grep "a failed copy shows no check"` at 511ac118: 20 passed, 0 failed,
+  5.2 s to 9.4 s each. Most ran past 5 s, the window where the mock's sign-in toast arrives.
+- `npx e2e run` (full suite) at fc3a5349: 66 files passed, 1 skipped; 708 tests passed, 1 skipped.
+- `scripts/dev ci` at fc3a5349: exit 0. Nextest: 2611 passed, 16 skipped.
+- `scripts/dev security` at fc3a5349: exit 2, not run. Vidoc answered HTTP 429 ("This API key
+  has used its 50,000,000 tokens"), so `dom.js` and `secrets.e2e.ts` were not scanned. Unrun, not
+  passed.
