@@ -36,8 +36,10 @@ suite sees the refusal.
 - R1. The Edit dialog of a production secret without hosts has no Hosts input. In its place,
   under the label Hosts, it says: "None. This is a production secret: agents never get it, so it
   is sent to no host. Add a separate secret for agents to send to a host."
-- R2. The Edit dialog of a production secret that still has hosts (from before it became one)
-  shows them as text with one choice, "Remove them", and says why; checked, Save sends
+- R2. The Edit dialog of a production secret that still has hosts (kept from before production
+  secrets became exclusive) shows them as text with one choice, "Remove these hosts", and says
+  that agents' requests to them still get it (the egress proxy lets agent runs use a secret on
+  its bound hosts whatever `cd_prod` is, `EgressClient::may_use`); checked, Save sends
   `hosts: []` with `expect_hosts` (the hosts shown, SPEC-216); unchecked, it sends no hosts.
 - R3. The Edit dialog of any other secret keeps its Hosts input unchanged.
 - R4. The mock's `PATCH /api/agent-secrets/{id}` answers 409 `conflict` with the server's
@@ -48,18 +50,20 @@ suite sees the refusal.
 
 - [x] Reproduce the defect and find its root cause
 - [x] Spec for a production secret's Hosts in the Edit dialog
-- [ ] Regression e2e test fails against the dialog and the mock
-- [ ] Mock PATCH refuses hosts on a production secret
-- [ ] Edit dialog says why a production secret has no hosts and only clears old ones
-- [ ] Changes entry and SPEC-204 open item closed
+- [x] Regression e2e test fails against the dialog and the mock
+- [x] Mock PATCH refuses hosts on a production secret
+- [x] Edit dialog says why a production secret has no hosts and only clears old ones
+- [x] Changes entry and SPEC-204 open item closed
 - [ ] Independent review answered and gates green
 
 ## Acceptance criteria
 
 - AC1 (R1, R3). Editing `PROD_API_TOKEN` shows no Hosts textbox and the note; editing
   `STRIPE_KEY` still has its Hosts textbox.
-- AC2 (R2). With `PROD_API_TOKEN` carrying an old host, its dialog shows it, offers "Remove
-  them", and Save with it checked leaves the secret sent nowhere.
+- AC2 (R2). With `PROD_API_TOKEN` carrying an old host, its dialog shows it and says agents'
+  requests to it still get the secret; Save unchecked keeps it, Save with "Remove these hosts"
+  checked after a host was bound meanwhile is refused (hosts changed), and checked on a fresh
+  dialog it leaves the secret bound to no host.
 - AC3 (R4). A secret that becomes a production secret while its Edit dialog is open (another
   person allowed it for production meanwhile): adding a host and saving shows the server's
   production-secret message and keeps the secret without hosts.

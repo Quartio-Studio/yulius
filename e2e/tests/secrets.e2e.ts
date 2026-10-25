@@ -479,7 +479,7 @@ test('a production secret’s Edit dialog offers no hosts and says why, and only
   await setProdHosts(['old.prod.test', 'new.prod.test']);
   await old.getByRole('checkbox', 'Remove these hosts').check();
   await old.getByRole('button', 'Save').click();
-  await expect(old.getByRole('alert')).toHaveText(/its hosts changed since you opened it/);
+  await expect(old.getByRole('alert')).toHaveText(/^Its hosts changed since you opened it/);
   expect(await prodHosts()).toEqual(['old.prod.test', 'new.prod.test']);
   await old.getByRole('button', 'Cancel').click();
   await reopen();

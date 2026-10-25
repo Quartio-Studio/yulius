@@ -482,18 +482,17 @@ function agentForm(ctx, secret, scope = 'sandbox') {
         h('span', { class: 'muted small' }, scope === 'personal' ? 'Agents in your tasks bind the hosts they work out, without asking you. Turn off to allow each yourself.' : 'Agents bind the hosts they work out and production deploys get it, without asking you. Turn off to allow each yourself.'))));
   }
   if (secret && secret.cd_prod) {
-    // Nor sent to a host: the server refuses any (SPEC-308). An older one that still has hosts
-    // can only have them removed.
-    const why = 'This is a production secret: agents never get it, so it is sent to no host.';
+    // Nor bound to a host: the server refuses any (SPEC-308). An older one that still has hosts
+    // can only have them removed: agents' requests to them still get it (the egress proxy).
     if (secret.hosts.length) {
-      form.clearHosts = h('input', { type: 'checkbox' });
+      form.clearHosts = h('input', { type: 'checkbox', 'aria-describedby': 'prod-hosts-hint' });
       parts.push(h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Hosts'),
         h('span', { class: 'mono' }, secret.hosts.join(', ')),
-        h('label', { class: 'row-wrap' }, form.clearHosts, h('span', null, 'Remove them')),
-        h('span', { class: 'field-hint' }, `${why} Remove these hosts, kept from before it became one.`)));
+        h('label', { class: 'check' }, form.clearHosts, h('span', null, 'Remove these hosts')),
+        h('span', { class: 'field-hint', id: 'prod-hosts-hint' }, 'These hosts were kept from before production secrets became exclusive: agents’ requests to them still get it. Remove them, and add a separate secret for agents.')));
     } else {
       parts.push(h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Hosts'),
-        h('span', { class: 'field-hint' }, `None. ${why} Add a separate secret for agents to send to a host.`)));
+        h('span', { class: 'field-hint' }, 'None. This is a production secret: agents never get it, so it is sent to no host. Add a separate secret for agents to send to a host.')));
     }
   } else if (secret) {
     form.hosts = h('input', { class: 'input mono', 'aria-label': 'Hosts', value: secret.hosts.join(', '), placeholder: 'api.example.com', autocomplete: 'off' });
