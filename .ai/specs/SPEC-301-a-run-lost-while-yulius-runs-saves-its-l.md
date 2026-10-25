@@ -60,7 +60,7 @@ left, whenever the server still held that screen.
 - [x] Attach-time loss saves no earlier run's screen (review rounds 1-3)
 - [x] `scripts/dev ci` green on the delivered head's tree
 - [x] Attach keeps dev's order; the hub's shown run guards the save (review round 4)
-- [ ] Gate green after review round 4
+- [x] Gate green after review round 4
 
 ## Acceptance criteria
 
@@ -149,7 +149,10 @@ left, whenever the server still held that screen.
 - `scripts/dev ci` at 3de32acf: exit 0, 2602 tests passed (1 slow), 16 skipped; repository
   contracts passed. Again at 6beb2509 (round-2 fix, dev at 0e2f3263 merged cleanly): exit 0, 2606
   tests passed, 16 skipped. Again at 47b09c1e (round-3 fix, dev at 84f1e033 merged cleanly):
-  exit 0, 2607 tests passed, 16 skipped.
+  exit 0, 2607 tests passed, 16 skipped. Again at 5fa1f800 (round-4 fix): exit 0, 2607 tests
+  passed, 16 skipped.
+- Mutation check at 5fa1f800: with `mark_lost`'s shown-run check made always true, the before-
+  and as-it-attaches tests FAIL and the other two pass; restored.
 - `scripts/dev security`: exit 2, not run: Vidoc answered HTTP 429 "This API key has used its
   50,000,000 tokens" (2 files not scanned). Unrun, not passed (ADR-0133, ADR-0157); CI's
   `security` job scans the pull request head.
