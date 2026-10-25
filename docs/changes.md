@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-25
 
+- A turn that starts while Yulius publishes an idle task keeps its "working …" time (SPEC-315,
+  task #301, fixes #895). The publish read the task and its times, decided to end (or start) the
+  idle task's working stretch, and then wrote it unconditionally: when a prompt made the task
+  Working in between, its stretch was cleared and the sidebar's clock started over at the next
+  change. The write now applies only while the task is still running with the activity and times
+  it read.
 - A production-stage deploy refused for a secret agents use names the deploying environment's
   own table: "… in [cd.platform] secrets of yulius.toml …" for `[cd.platform]`, `[cd.prod]` for
   production (SPEC-314, task #300, fixes #788). It always said `[cd.prod]`, which predates named
