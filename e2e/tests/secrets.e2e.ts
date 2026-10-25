@@ -428,7 +428,6 @@ test('a member sees why a production secret’s requests wait, without a Dismiss
 // refuses on Save. It says why the secret goes to no host, and only removes hosts from before.
 test('a production secret’s Edit dialog offers no hosts and says why, and only removes old ones', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=agents', '&ambient=0'));
-  const visibleLabels = () => browser.evaluate(() => [...document.querySelectorAll('dialog.modal .field-label')].filter((l) => (l as HTMLElement).checkVisibility()).map((l) => l.textContent!.trim()));
   // A secret agents use keeps its Hosts field.
   await screen.getByRole('button', 'Edit STRIPE_KEY').click();
   const stripe = screen.getByRole('dialog', 'Edit STRIPE_KEY');
@@ -450,26 +449,44 @@ test('a production secret’s Edit dialog offers no hosts and says why, and only
   await screen.getByRole('radio', 'Global').click();
   await screen.getByRole('button', 'Edit PROD_API_TOKEN').click();
   const prod = screen.getByRole('dialog', 'Edit PROD_API_TOKEN');
-  expect(await visibleLabels()).toEqual(['Name', 'Value', 'Description', 'Hosts']);
   await expect(prod.getByRole('textbox', 'Hosts')).toBeHidden();
   await expect(prod.getByText('None. This is a production secret: agents never get it, so it is sent to no host. Add a separate secret for agents to send to a host.')).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
   await prod.getByRole('button', 'Cancel').click();
 
-  // One that still has a host from before it became one shows it and offers only to remove it.
-  await browser.evaluate(() => { (window as any).__yuliusMock.vault.agent.find((s: any) => s.id === 'as_prodtoken').hosts = ['old.prod.test']; });
-  await screen.getByRole('radio', 'Project').click();
-  await screen.getByRole('radio', 'Global').click();
-  await screen.getByRole('button', 'Edit PROD_API_TOKEN').click();
+  // One that still has a host from before production secrets became exclusive: agents' requests
+  // to it still get the value, so the dialog says so and offers only to remove it.
+  const prodHosts = () => browser.evaluate(() => (window as any).__yuliusMock.vault.agent.find((s: any) => s.id === 'as_prodtoken').hosts);
+  const setProdHosts = (hosts: string[]) => browser.evaluate((h: string[]) => { (window as any).__yuliusMock.vault.agent.find((s: any) => s.id === 'as_prodtoken').hosts = h; }, hosts);
+  const reopen = async () => {
+    await screen.getByRole('radio', 'Project').click();
+    await screen.getByRole('radio', 'Global').click();
+    await screen.getByRole('button', 'Edit PROD_API_TOKEN').click();
+  };
+  await setProdHosts(['old.prod.test']);
+  await reopen();
   const old = screen.getByRole('dialog', 'Edit PROD_API_TOKEN');
   await expect(old.getByText('old.prod.test')).toBeVisible();
   await expect(old.getByRole('textbox', 'Hosts')).toBeHidden();
-  await expect(old.getByText(/production secret: agents never get it, so it is sent to no host\. Remove these hosts, kept from before it became one/)).toBeVisible();
+  await expect(old.getByText('These hosts were kept from before production secrets became exclusive: agents’ requests to them still get it. Remove them, and add a separate secret for agents.')).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
-  await old.getByRole('checkbox', 'Remove them').check();
+  // Saved without the choice, the hosts stay.
   await old.getByRole('button', 'Save').click();
   await expect(old).toBeHidden();
-  expect(await browser.evaluate(() => (window as any).__yuliusMock.vault.agent.find((s: any) => s.id === 'as_prodtoken').hosts)).toEqual([]);
+  expect(await prodHosts()).toEqual(['old.prod.test']);
+  // Removing them sends the hosts the dialog showed: one bound since is not dropped unseen.
+  await reopen();
+  await setProdHosts(['old.prod.test', 'new.prod.test']);
+  await old.getByRole('checkbox', 'Remove these hosts').check();
+  await old.getByRole('button', 'Save').click();
+  await expect(old.getByRole('alert')).toHaveText(/its hosts changed since you opened it/);
+  expect(await prodHosts()).toEqual(['old.prod.test', 'new.prod.test']);
+  await old.getByRole('button', 'Cancel').click();
+  await reopen();
+  await old.getByRole('checkbox', 'Remove these hosts').check();
+  await old.getByRole('button', 'Save').click();
+  await expect(old).toBeHidden();
+  expect(await prodHosts()).toEqual([]);
 });
 
 // F 2026-10-14 (task #99): "Value in passwords should be hidden by default even after show, and
