@@ -131,7 +131,10 @@ material stays a needle.
 - `scripts/dev ci`: green after rounds 1 and 2. After round 3 its tests passed (2603) but `cargo doc`
   failed: `key_lines`' doc linked the private `PUBLIC_RUN_LEN`; the doc now names the length. With
   `origin/dev` merged (#886): exit 0, 2606 tests passed, 16 skipped. After round 4, with
-  `origin/dev` merged (#888): exit 0, 2607 tests passed, 16 skipped.
+  `origin/dev` merged (#888): exit 0, 2607 tests passed, 16 skipped. After round 5: the first run
+  failed one test outside this change, `delivery::a_restart_ends_a_running_environment_command`,
+  flaky on `dev` too (9/30 runs fail with `dev`'s `crates/`, 6/30 with this branch's; reported on
+  #599, since this task opens no issues); the next run: exit 0, 2607 tests passed, 16 skipped.
 - `scripts/dev security`: unrun, Vidoc out of quota (HTTP 429, exit 2) for both changed code
   files (ADR-0104).
 - Review round 2 (fresh session): request changes, one major in own code: a body joined onto its
