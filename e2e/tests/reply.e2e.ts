@@ -65,6 +65,11 @@ test('Escape closes the reply field and sends nothing', async ({ app, browser, s
   await expect(screen.getByRole('button', 'Reply')).toBeVisible();
   await expect.poll(() => browser.evaluate(() => document.activeElement?.textContent ?? null)).toBe('Reply');
   expect(await typedIntoTask(browser)).toBe('');
+  // The bar is rebuilt on a task update (the mock's ambient activity touches #12 every 16 s): the
+  // keyboard stays on Reply (#506, seen under load).
+  await touchTask(browser, 'sb_studio', 12, { title: 'Checkout API v2' });
+  await expect(browser.locator('.taskview .step-task')).toContainText('Checkout API v2');
+  await expect.poll(() => browser.evaluate(() => document.activeElement?.textContent ?? null)).toBe('Reply');
 
   // The words wait for the next Reply; Cancel closes it too.
   await screen.getByRole('button', 'Reply').click();
