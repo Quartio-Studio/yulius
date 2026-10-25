@@ -121,6 +121,8 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
             ),
             ("YULIUS_URL".to_owned(), "http://127.0.0.1:7801".to_owned()),
             ("DISABLE_AUTOUPDATER".to_owned(), "1".to_owned()),
+            // SPEC-310 FSR-001: full screen whatever the shared config recorded (#898).
+            ("CLAUDE_CODE_NO_FLICKER".to_owned(), "1".to_owned()),
             ("BASH_DEFAULT_TIMEOUT_MS".to_owned(), "600000".to_owned()),
             ("BASH_MAX_TIMEOUT_MS".to_owned(), "1800000".to_owned()),
             // SPEC-192 RMV-001: `yulius remove` knows the task's worktree, and `$TMPDIR/x` is
@@ -513,6 +515,11 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
     assert!(
         plan.env
             .contains(&("DISABLE_AUTOUPDATER".into(), "1".into()))
+    );
+    // SPEC-310 FSR-001: the person's session draws full screen too (#898).
+    assert!(
+        plan.env
+            .contains(&("CLAUDE_CODE_NO_FLICKER".into(), "1".into()))
     );
     assert!(!plan.env.iter().any(|(k, _)| k.starts_with("YULIUS")));
     assert_eq!(
