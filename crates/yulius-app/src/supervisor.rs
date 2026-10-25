@@ -3958,12 +3958,20 @@ impl App {
                     .turn_began_ms
                     .store(at.map_or(now.0, |at| at.0), Ordering::SeqCst);
                 runtime.start_turn(now);
+                // Claude Code's own wake-up goes on with the stretch (SPEC-309 WSW-001), also when
+                // its prompt hook never reached Yulius.
+                let stretch = if wake {
+                    self.continue_working_stretch(task_id).await
+                } else {
+                    None
+                };
                 let _ = self
                     .deps
                     .store
                     .set_activity(task_id, Some(Activity::Working), self.now())
                     .await;
                 self.publish_task(task_id).await;
+                self.keep_working_stretch(task_id, stretch).await;
             }
             Observation::TurnComplete { at } => {
                 self.context_replied(task_id, &attempt.id);

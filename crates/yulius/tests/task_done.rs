@@ -1466,13 +1466,37 @@ fn a_goal_achieved_after_a_stop_yulius_never_answered_makes_the_task_done() -> T
     a_goal_achieved_in_a_woken_turn_makes_the_task_done(true)
 }
 
-/// SPEC-309 WSW-001 (#894, task #295: "working 37m" for a task that had worked for hours): the
-/// goal turn leaves a background shell (its `yulius wait`), and Claude Code wakes the session only
-/// seconds after the shell exits (it polls), so Yulius's probe sees no background work left
-/// first, which ends the working stretch. The woken turn continues that stretch: everything the
-/// task publishes while it works carries the first turn's start.
-#[test]
-fn a_turn_its_shell_wakes_keeps_the_working_stretch() -> TestResult {
+/// The working stretches (`working_since`) the task `id` published while it worked, from the
+/// events received so far. A lagging receiver fails: lost events would prove nothing.
+fn working_stretches(
+    events: &mut tokio::sync::broadcast::Receiver<yulius_app::events::Envelope>,
+    id: &TaskId,
+) -> Result<Vec<Option<String>>, BoxError> {
+    let mut stretches = Vec::new();
+    loop {
+        match events.try_recv() {
+            Ok(envelope) => {
+                if let UiEvent::TaskUpdated { task } = envelope.event
+                    && task.id == id.as_str()
+                    && task.activity.as_deref() == Some("working")
+                {
+                    stretches.push(task.working_since);
+                }
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => return Ok(stretches),
+            Err(err) => return Err(format!("the task's events were not all read: {err}").into()),
+        }
+    }
+}
+
+/// SPEC-309 WSW-001/WSW-002 (#894, task #295: "working 37m" for a task that had worked for
+/// hours): the goal turn leaves a background shell (its `yulius wait`), and Claude Code wakes the
+/// session only seconds after the shell exits (it polls), so Yulius's probe sees no background
+/// work left first, which ends the working stretch. The woken turn continues that stretch:
+/// everything the task publishes while it works carries the first turn's start. With
+/// `prompt_lost` the wake's prompt hook never reaches Yulius, which reads the wake-up from the
+/// transcript. A prompt the person types afterwards starts a new stretch.
+fn a_woken_turn_keeps_the_working_stretch(prompt_lost: bool) -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
@@ -1482,8 +1506,9 @@ fn a_turn_its_shell_wakes_keeps_the_working_stretch() -> TestResult {
             hooks: true,
             goal_background: Some(4),
             goal_met_on_wake_ms: Some(1_000),
-            // Longer than the probe's period: the probe sees the shell gone before the wake.
-            wake_delay_ms: Some(u64::try_from(yulius_app::finish::SHELL_PROBE_MS)? + 2_000),
+            wake_prompt_lost: prompt_lost,
+            // Well past the probe's period: the probe sees the shell gone before the wake.
+            wake_delay_ms: Some(u64::try_from(yulius_app::finish::SHELL_PROBE_MS)? + 5_000),
             ..FakeAgentOptions::default()
         };
         let (app, _) = start(&data, &fake, agent, 0).await?;
@@ -1498,6 +1523,20 @@ fn a_turn_its_shell_wakes_keeps_the_working_stretch() -> TestResult {
             shown(&app, &id).await.ok() == Some((Some("waiting".into()), Some(0)))
         })
         .await?;
+        wait_for(
+            "the stretch ended with the shell",
+            Duration::from_secs(5),
+            || async {
+                app.deps
+                    .store
+                    .task_times(&id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|t| t.working_since.is_none())
+            },
+        )
+        .await?;
         assert!(
             !screen_contains(&app, &id, "BACKGROUND DONE").await,
             "the probe saw the shell's end before Claude Code woke the session"
@@ -1508,22 +1547,7 @@ fn a_turn_its_shell_wakes_keeps_the_working_stretch() -> TestResult {
             || async { shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0))) },
         )
         .await?;
-        let id_text = id.as_str().to_owned();
-        let mut stretches = Vec::new();
-        loop {
-            match events.try_recv() {
-                Ok(envelope) => {
-                    if let UiEvent::TaskUpdated { task } = envelope.event
-                        && task.id == id_text
-                        && task.activity.as_deref() == Some("working")
-                    {
-                        stretches.push(task.working_since);
-                    }
-                }
-                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
-                Err(_) => break,
-            }
-        }
+        let stretches = working_stretches(&mut events, &id)?;
         let first = stretches.first().cloned().flatten();
         assert!(
             first.is_some(),
@@ -1534,10 +1558,38 @@ fn a_turn_its_shell_wakes_keeps_the_working_stretch() -> TestResult {
             stretches.iter().all(|s| *s == first),
             "one working stretch through the woken turn: {stretches:?}"
         );
+
+        // The person types: a new stretch (WSW-002), although the task stayed in the state its
+        // last stretch ended in.
+        app.send_input(&id, b"one more\r").await?;
+        wait_for("the typed turn", Duration::from_secs(20), || {
+            screen_contains(&app, &id, "ECHO: one more")
+        })
+        .await?;
+        wait_for("Your turn", Duration::from_secs(20), || async {
+            activity(&app, &id).await == Some(Activity::Waiting)
+        })
+        .await?;
+        let typed = working_stretches(&mut events, &id)?;
+        assert!(!typed.is_empty(), "the typed turn worked");
+        assert!(
+            typed.iter().all(|s| s.is_some() && *s > first),
+            "a new stretch after {first:?}: {typed:?}"
+        );
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
+}
+
+#[test]
+fn a_turn_its_shell_wakes_keeps_the_working_stretch() -> TestResult {
+    a_woken_turn_keeps_the_working_stretch(false)
+}
+
+#[test]
+fn a_wake_read_from_the_transcript_keeps_the_working_stretch() -> TestResult {
+    a_woken_turn_keeps_the_working_stretch(true)
 }
 
 /// SPEC-079 BGW-001 (#305), SES-101: under a limit of one session, a Done task with a background

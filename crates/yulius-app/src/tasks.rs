@@ -299,17 +299,14 @@ impl App {
     /// The task goes on by itself, not at a person's prompt: Claude Code's own wake-up (its
     /// background work ended), or its session went on after a stop. Called before it is made
     /// Working, it continues the stretch its lack of background work ended, when nothing changed
-    /// since (SPEC-309 WSW-001); the store keeps that start when the task turns Working.
-    pub(crate) async fn continue_working_stretch(&self, task_id: &TaskId) {
-        let Ok(Some(times)) = self.deps.store.task_times(task_id).await else {
-            return;
-        };
+    /// since (SPEC-309 WSW-001), and returns that start for [`App::keep_working_stretch`]; the
+    /// store keeps it when the task turns Working.
+    pub(crate) async fn continue_working_stretch(&self, task_id: &TaskId) -> Option<Timestamp> {
+        let times = self.deps.store.task_times(task_id).await.ok().flatten()?;
         if times.working_since.is_some() {
-            return;
+            return None;
         }
-        let Some(since) = self.take_ended_stretch(task_id, times.state_at) else {
-            return;
-        };
+        let since = self.take_ended_stretch(task_id, times.state_at)?;
         if let Err(err) = self
             .deps
             .store
@@ -318,6 +315,35 @@ impl App {
         {
             tracing::warn!(task = %task_id, error = %err, "could not continue the working stretch");
         }
+        Some(since)
+    }
+
+    /// After the task was made Working: the stretch [`App::continue_working_stretch`] continued
+    /// stays, also when a publish between the two writes ended it again (its idle task had no
+    /// background work), and the task is published again then.
+    pub(crate) async fn keep_working_stretch(&self, task_id: &TaskId, since: Option<Timestamp>) {
+        let Some(since) = since else { return };
+        let working = matches!(
+            self.deps.store.task(task_id).await,
+            Ok(Some(task)) if task.status == TaskStatus::Running
+                && task.activity == Some(Activity::Working)
+        );
+        let Ok(Some(times)) = self.deps.store.task_times(task_id).await else {
+            return;
+        };
+        if !working || times.working_since == Some(since) {
+            return;
+        }
+        if let Err(err) = self
+            .deps
+            .store
+            .set_working_since(task_id, Some(since))
+            .await
+        {
+            tracing::warn!(task = %task_id, error = %err, "could not continue the working stretch");
+            return;
+        }
+        self.publish_task(task_id).await;
     }
 
     /// The task `id` for `action` by `ctx`'s person: viewing needs access to its sandbox;

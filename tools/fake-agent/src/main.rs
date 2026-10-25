@@ -12,7 +12,8 @@
 //!            [--hooks YULIUS_EXE] [--goal-background SECONDS]
 //!            [--goal-agent SECONDS [--goal-agent-interim SECONDS]]
 //!            [--goal-monitor SECONDS [--goal-monitor-ends]] [--goal-verdict met|failed|none]
-//!            [--goal-met-on-wake-ms MS [--wake-stop-lost]] [--wake-delay-ms MS]
+//!            [--goal-met-on-wake-ms MS [--wake-stop-lost] [--wake-prompt-lost]]
+//!            [--wake-delay-ms MS]
 //!            [--goal-continue-ms MS
 //!            [--goal-continue-verdict] [--goal-continue-dies]] [--goal-delay-ms MS] [--drop-lines N]
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
@@ -74,7 +75,8 @@
 //! Code's evaluator waits while background work runs) and the turn the shell's end wakes records
 //! the goal as achieved MS after its Stop hook (the evaluator's own time), then closes; with
 //! `--wake-stop-lost` too, that turn's Stop hook never reaches Yulius (the hook client fails open,
-//! as on an error answer or an unreachable server). `--wake-delay-ms MS` wakes the session MS after
+//! as on an error answer or an unreachable server); with `--wake-prompt-lost`, its prompt hook
+//! never does (Yulius reads the wake-up from the transcript only). `--wake-delay-ms MS` wakes the session MS after
 //! the background shell exits instead of at once, as Claude Code notices it only when it polls
 //! its background tasks. With
 //! `--idle-compact-ms MS` the idle session compacts itself MS after the goal turn, like Claude
@@ -207,6 +209,7 @@ struct Options {
     goal_delay_ms: u64,
     goal_met_on_wake_ms: Option<u64>,
     wake_stop_lost: bool,
+    wake_prompt_lost: bool,
     wake_delay_ms: u64,
     opening_turn_ms: Option<u64>,
     echo_turn_ms: u64,
@@ -256,6 +259,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         goal_delay_ms: 0,
         goal_met_on_wake_ms: None,
         wake_stop_lost: false,
+        wake_prompt_lost: false,
         wake_delay_ms: 0,
         opening_turn_ms: None,
         echo_turn_ms: 0,
@@ -350,6 +354,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 options.goal_met_on_wake_ms = Some(ms.min(MAX_GOAL_DELAY_MS));
             }
             "--wake-stop-lost" => options.wake_stop_lost = true,
+            "--wake-prompt-lost" => options.wake_prompt_lost = true,
             "--wake-delay-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.wake_delay_ms = ms.min(MAX_GOAL_DELAY_MS);
@@ -1135,6 +1140,8 @@ struct WakeVerdict {
     after_ms: u64,
     /// The turn's Stop hook never reaches Yulius (`--wake-stop-lost`).
     stop_lost: bool,
+    /// The turn's prompt hook never reaches Yulius (`--wake-prompt-lost`).
+    prompt_lost: bool,
 }
 
 /// [`wake`], with the goal `verdict` closing the woken turn.
@@ -1145,7 +1152,9 @@ fn wake_with(
     transcript: Option<&Arc<Mutex<Transcript>>>,
     hooks: Option<&Hooks>,
 ) {
-    if let Some(hooks) = hooks {
+    if let Some(hooks) = hooks
+        && !verdict.is_some_and(|v| v.prompt_lost)
+    {
         let _ = hooks.prompt(prompt);
     }
     let write = |f: &dyn Fn(&mut Transcript) -> io::Result<()>| {
@@ -1387,6 +1396,7 @@ fn goal_turn(
             condition: condition.clone(),
             after_ms,
             stop_lost: options.wake_stop_lost,
+            prompt_lost: options.wake_prompt_lost,
         });
         let pid = start_background(
             seconds,
