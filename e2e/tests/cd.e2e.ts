@@ -79,6 +79,8 @@ test('production says a secret agents use is never for production', async ({ app
   await confirm.getByRole('button', 'Deploy production').click();
   const refused = screen.getByRole('region', 'Deploy');
   await expect(refused.getByText(/agents use PAY_KEY/)).toBeVisible();
+  // The server's whole sentence, with the environment's own table (#788, SPEC-314).
+  await expect(refused.getByText(/separate secret of its own in \[cd\.prod\] secrets of yulius\.toml, added on the Secrets page \(\S+\/s\/studio\/secrets\?section=agents\); or a person first revokes the \.env copies and hosts of PAY_KEY$/)).toBeVisible();
   await expect(refused.getByText('Not started')).toBeVisible();
 });
 
