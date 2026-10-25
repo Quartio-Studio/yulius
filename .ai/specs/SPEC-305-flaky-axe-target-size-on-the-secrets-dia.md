@@ -61,7 +61,7 @@ notes wrap and scroll in their box" then passes every time.
 - [x] Toasts never cover a dialog's header Close (fix)
 - [x] 20 consecutive passing runs recorded
 - [x] Docs, changes.md and gates green
-- [ ] Independent review answered
+- [x] Independent review answered
 - [ ] Merged into dev on green CI
 
 ## Acceptance criteria
@@ -136,3 +136,11 @@ notes wrap and scroll in their box" then passes every time.
     detached and never moves. Reported on #640. `host.parentElement?.` was added as a guard.
 - At 3b552402, the original test with the 3.5 s pause passed 3 of 3. "Copy notes" had the keyboard
   and the toasts moved to the bottom, clear of it and of the Close.
+- After round 1, at e5aa60e1:
+  - 20 consecutive runs of `--grep "a failed copy shows no check"`: 20 passed.
+  - `npx e2e run` (full suite): 708 passed, 1 skipped.
+- After merging origin/dev (0f903217, which brings SPEC-308's changes to `secrets.js` and
+  `secrets.e2e.ts`), at 72b7d599:
+  - `npx e2e run tests/secrets.e2e.ts`: 27 passed.
+  - `scripts/dev ci`: exit 0. Nextest: 2612 passed, 16 skipped.
+  - `scripts/dev security`: exit 2 again, not run (Vidoc HTTP 429, quota). Unrun, not passed.
