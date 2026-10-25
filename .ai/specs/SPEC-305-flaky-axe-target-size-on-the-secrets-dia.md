@@ -46,9 +46,11 @@ notes wrap and scroll in their box" then passes every time.
 
 ## Requirements
 
-- TDC-001: while the toast region is inside a dialog, it does not cover the dialog's header Close
-  button, nor the focused control (as before). When it would cover either, it moves to the other
-  edge. It stays where it is when the other edge would cover one of them too.
+- TDC-001: the toast region keeps clear of the focused control (as before) and, while it is
+  inside a dialog, of the dialog's header Close button. The focused control comes first: an edge
+  costs 2 when it covers the focused control and 1 when it covers the Close. The region moves to
+  the other edge only when that edge costs less. So it never moves onto the focused control to
+  clear the Close, and it stays put when the other edge is no better.
 - TDC-002: the check runs when a toast is added, when focus moves and when the window is resized.
 
 ## Plan
@@ -64,8 +66,10 @@ notes wrap and scroll in their box" then passes every time.
 
 ## Acceptance criteria
 
-- The regression test (4 toasts raised in the secret dialog at 1440 px, then 390 px) fails on
-  f770e4ff with the toast region over the ×, and passes with the fix.
+- The regression test fails on f770e4ff with the toast region over the ×, and passes with the
+  fix. It raises 4 toasts in the secret dialog at 1440 px, then narrows the window to 390 px.
+- With the dialog's Done focused while the toasts at the bottom cover it, they move to the top
+  and stay there on the next check, although the top covers the Close.
 - The original test passes with the probe's 3.5 s pause, which forces the 4-toast state.
 - 20 consecutive runs of the original test pass.
 - The e2e suite and `scripts/dev ci` pass.
@@ -76,6 +80,8 @@ notes wrap and scroll in their box" then passes every time.
   narrows". It raises 4 failed-copy toasts at 1440 px, which nothing moves: they sit bottom-right,
   and the copies are clicked from script, so focus does not move. It then switches to 390 px and
   asserts that the toast region does not overlap the dialog's ×, and that axe finds no violations.
+  It then focuses Done, which the toasts at the bottom cover. The toasts move to the top (over the
+  Close), and they stay there when a resize event re-runs the check.
 - Each half of the fix is shown to be needed: the test fails without the resize check, and fails
   without the dialog Close in the check.
 - 20 runs in a row of the original test, and runs with the 3.5 s pause.
@@ -88,7 +94,11 @@ notes wrap and scroll in their box" then passes every time.
   the toasts covers some of a dialog's content on a phone. The Close is the way out, and focus
   avoidance (WCAG 2.4.11) already keeps the control being used clear.
 - A window resize re-runs the check. A `ResizeObserver` on the region would also fire on every
-  toast added or removed, which is already covered.
+  toast added or removed, which is already covered. The check does not run again when the dialog's
+  own layout changes, such as content revealed that moves its Close up (review nit). Such a change
+  usually comes with a click or a focus move, which re-runs it.
+- The focused control comes before the Close (review round 1): keyboard users must see the control
+  they are on (WCAG 2.4.11). A pointer user can still dismiss the toasts or wait for them to close.
 - No ADR: this extends the existing toast placement rule, and no lasting decision changes.
 
 ## Evidence
@@ -113,3 +123,16 @@ notes wrap and scroll in their box" then passes every time.
 - `scripts/dev security` at fc3a5349: exit 2, not run. Vidoc answered HTTP 429 ("This API key
   has used its 50,000,000 tokens"), so `dom.js` and `secrets.e2e.ts` were not scanned. Unrun, not
   passed.
+- Review round 1 (fresh session, head 433bbad6): request changes. Answers:
+  - Major, own code: the toasts could settle over the focused control to clear the Close. Fixed
+    test-first. The test that focuses Done failed at 433bbad6 with
+    `{"toasts":4,"close":false,"done":true}` (2 of 2), and passes with the cost rule at 3b552402.
+  - Minor, own code: the "stay" rule had no test. Added the check after a resize event. It fails
+    with the old unconditional toggle (line 625) and passes with the fix.
+  - Minor, own code: one read right after `setViewport`. It now waits with `expect.poll`.
+  - Nit, own code: no re-check on the dialog's own layout changes. Accepted in Decisions.
+  - Nit, pre-existing: `app.js` teardown and `spotlight.js` remove a dialog with the toasts still
+    inside, so the next toast makes a new region with new listeners. Harmless: the old region is
+    detached and never moves. Reported on #640. `host.parentElement?.` was added as a guard.
+- At 3b552402, the original test with the 3.5 s pause passed 3 of 3. "Copy notes" had the keyboard
+  and the toasts moved to the bottom, clear of it and of the Close.
