@@ -507,7 +507,7 @@ mod tests {
             ],
         );
         let bundle = format!(
-            "{}subject=CN = synthetic.example\nissuer=C = PL, O = Synthetic CA\n{}",
+            "{}subject=CN = localhost\nissuer=CN = Synthetic CA\n{}",
             key_file("SYNTHETIC KEY", &["c3ludGhldGljLWtleS1ib2R5"]),
             // A stray space around a body line: the line is kept, trimmed.
             key_file("CERTIFICATE", &["  c3ludGhldGljLWNlcnQtYm9keQ==  "])
@@ -598,7 +598,14 @@ mod tests {
         assert_eq!(key_block(&stored).as_deref(), Some(file.as_str()));
         assert_eq!(
             key_lines(&stored),
-            vec![body, "privateExponent:", hex, "32:33", cert]
+            vec![
+                body,
+                "Private-Key: (synthetic)",
+                "privateExponent:",
+                hex,
+                "32:33",
+                cert
+            ]
         );
         // The dump joined onto one line (its breaks became spaces or were dropped), a header
         // joined onto another, and OpenSSL's inline small integers are not public text either.
@@ -608,6 +615,12 @@ mod tests {
             "prime1: 18446744073709551557 (0xffffffffffffffc5)".to_owned(),
             "Comment: https://synthetic.example/".to_owned(),
             "subject=CN = synthetic.example privateExponent: 2a:9f".to_owned(),
+            format!("Private-Key: (synthetic)privateExponent:{hex}"),
+            // Header-shaped lines no format writes in a key block, but a person might paste:
+            // only the named public headers are left out.
+            "Passphrase: synthetic-pass".to_owned(),
+            "Key: 00112233445566778899aabbccddeeff".to_owned(),
+            "00000000: 3082 04a3 0201 0002 8201 0100 c3b2 a1f4  0...............".to_owned(),
         ] {
             let file = key_file("SYNTHETIC KEY", &[&line]);
             let stored = file.trim_end().replace('\n', "\\n");
