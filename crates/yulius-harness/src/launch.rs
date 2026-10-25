@@ -34,6 +34,12 @@ pub const TMPDIR_ENV: (&str, &str) = ("TMPDIR", "/tmp");
 /// on the host, and a contained session cannot write there, so the update could only fail
 /// (#45). Manual `claude update` is unaffected.
 pub const DISABLE_AUTOUPDATER_ENV: (&str, &str) = ("DISABLE_AUTOUPDATER", "1");
+/// Keeps Claude Code on its full-screen renderer, which Yulius's terminal needs: the wheel reaches
+/// it as mouse reports, and a late viewer gets the screen, never a scrollback (SPEC-280). Tasks of
+/// a project share one config dir and are each pid 2 in their own PID namespace, so Claude Code's
+/// boot canary took a sibling's start for its own failed one and turned full screen off for the
+/// project after two (#898, ADR-0218).
+pub const FULL_SCREEN_ENV: (&str, &str) = ("CLAUDE_CODE_NO_FLICKER", "1");
 /// Claude Code's Bash timeouts for agents: 10 minutes by default, 30 at most.
 pub const BASH_TIMEOUT_ENV: [(&str, &str); 2] = [
     ("BASH_DEFAULT_TIMEOUT_MS", "600000"),
@@ -590,6 +596,7 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
             DISABLE_AUTOUPDATER_ENV.0.into(),
             DISABLE_AUTOUPDATER_ENV.1.into(),
         ),
+        (FULL_SCREEN_ENV.0.into(), FULL_SCREEN_ENV.1.into()),
         // A cold build or a test run takes minutes: a 2-minute Bash default pushed such
         // commands into the background mid-run, and agents then polled them (F 2026-10-12).
         (BASH_TIMEOUT_ENV[0].0.into(), BASH_TIMEOUT_ENV[0].1.into()),
@@ -783,6 +790,7 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
             DISABLE_AUTOUPDATER_ENV.0.into(),
             DISABLE_AUTOUPDATER_ENV.1.into(),
         ),
+        (FULL_SCREEN_ENV.0.into(), FULL_SCREEN_ENV.1.into()),
     ];
     // Bypass-permissions mode rather than Claude Code's auto mode (SPEC-208 BYP-001); as uid 0
     // Claude Code takes the flag only inside a declared sandbox.
