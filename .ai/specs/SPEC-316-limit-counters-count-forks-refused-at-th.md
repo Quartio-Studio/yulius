@@ -1,11 +1,11 @@
 ---
 yulius-task: 28319e5f-57d1-4318-955a-bc5a03ea6d40
-status: in-progress
+status: done
 ---
 
 # SPEC-316: Limit counters count forks refused at the service's own task limit
 
-Status: in-progress
+Status: done
 Date: 2026-10-25
 Owner: Yulius task #302
 Scope authorization: task #302 (`/goal`), fixes #823. Amends
@@ -58,8 +58,10 @@ already does on 6.8, instead of "The agent stopped unexpectedly".
 ## Plan
 
 - [x] Spec and ADR-0201 record which limits are counted
-- [ ] A fork refused at the service's limit counts for the sandbox
-- [ ] Independent review answered and gates green
+- [x] A fork refused at the service's limit counts for the sandbox
+- [x] Review round 1 findings fixed
+- [x] Gate green and evidence recorded
+- [x] Review round 2 approves the final head
 
 ## Acceptance criteria
 
@@ -99,3 +101,25 @@ already does on 6.8, instead of "The agent stopped unexpectedly".
 - **On 6.8 the server's own refused forks are not attributed** (they count in `server/`, which is
   not read); on 6.13+ they are, through `<unit>`. Accepted: the asymmetry only adds hits when the
   whole service is at its limit.
+
+## Evidence
+
+- **Regression test first** (d15c289f): `cargo test -p yulius-sandbox --lib -- cgroup::tests::a_hit_at`
+  on the unfixed code: `a_hit_at_the_service_limit_counts_for_the_sandbox` failed, `left: 0,
+  right: 6` (AC-1). After the fix (49940749) all 19 `cgroup::` tests pass. AC-2 (6.8, `u/pids.events`
+  not read) and AC-3 (the unit's parent not read) are asserted in the same test.
+- **Gate** `scripts/dev ci` at 49940749: every stage passed but the tests, 2615 of 2616. The one
+  failure, `yulius::main leftovers::kept_files_of_a_removed_sandbox_are_listed_and_deleted_on_request`
+  (`kept[0]["bytes"]` null, `crates/yulius/tests/leftovers.rs:989`), is the known flake of the
+  disk-leftovers code, which this change does not touch (SPEC-299 and SPEC-307 met it too). It is
+  reported on #823 and in the pull request, since this task opens no issues. `scripts/dev ci` at
+  228b0d5f: exit 0, 2616 of 2616 passed, 16 skipped.
+- **Security** `yulius security-scan` at 49940749: not run, exit 2 (Vidoc HTTP 429, the key used
+  its 50,000,000 tokens). Per ADR-0133 and ADR-0157 that is unrun, not passed; CI's `security` job
+  is the live scan.
+- **Review** (fresh session, `om-code-review`): round 1 at 49940749 APPROVE, with 1 minor (the ADR
+  index entry) and 5 nits (the changes wording, the spec's no-internal-process reason, the
+  `task_limit_hits` doc, a needless clone, the Plan and Evidence). All were own code and all were
+  fixed in 228b0d5f. Round 2 reviews the final head; its verdict is in the pull request.
+- **Not tested:** a real 6.13+ kernel (the VM runs 6.8) and a real `TasksMax` hit. The fake cgroup
+  tree and the kernel's `pids.events.local` semantics are the proof.
