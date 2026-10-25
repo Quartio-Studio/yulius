@@ -156,3 +156,6 @@ notes wrap and scroll in their box" then passes every time.
   - Nit, own code: the `docs/changes.md` wording ("ended up there … nothing moved them") and its
     wrapping are fixed.
   - `npx e2e run tests/secrets.e2e.ts` after these changes: 27 passed, 3 runs of 3.
+- After merging origin/dev (edd013eb, #890; a clean merge), at ade9ac4e:
+  - `npx e2e run` (full suite): 66 files passed, 1 skipped; 710 tests passed, 1 skipped.
+  - `scripts/dev ci`: exit 0. Nextest: 2612 passed, 16 skipped.
