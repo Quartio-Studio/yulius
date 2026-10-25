@@ -330,7 +330,8 @@ async fn foreign_and_non_github_repositories_are_refused() -> TestResult {
     Ok(())
 }
 
-/// OBD-002: the CLI uploads; only a person in the browser starts onboarding.
+/// OBD-002: the CLI uploads; only a person (the browser, or their operate token) starts
+/// onboarding; a `yulius login` token is refused and told both ways (SPEC-313).
 #[tokio::test]
 async fn onboarding_starts_only_from_the_browser() -> TestResult {
     let w = World::new("org").await?;
@@ -376,8 +377,11 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
 
     let cli = call(&w.h.router, Method::POST, &approve, None, &alice).await?;
     assert_eq!(cli.status, StatusCode::FORBIDDEN, "{:?}", cli.body);
+    // SPEC-313 NBW-003 (#790): it names the sandbox page and the operate token's way.
+    let refusal = text(&cli.body["error"]["message"]);
     assert!(
-        text(&cli.body["error"]["message"]).contains("in the browser"),
+        refusal.contains("Start onboarding on the sandbox page")
+            && refusal.contains("`yulius project onboard` with an operate token"),
         "{:?}",
         cli.body
     );
@@ -428,8 +432,12 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
     )
     .await?;
     assert_eq!(resumed.status, StatusCode::FORBIDDEN, "{:?}", resumed.body);
+    // SPEC-313 NBW-003 (#790): the refusal names the operate token's way too.
+    let refusal = text(&resumed.body["error"]["message"]);
     assert!(
-        text(&resumed.body["error"]["message"]).contains("Start onboarding on the sandbox page"),
+        refusal.contains("Start onboarding on the sandbox page")
+            && refusal.contains("`yulius project onboard` with an operate token")
+            && refusal.contains("a `yulius login` token cannot start it"),
         "{:?}",
         resumed.body
     );
@@ -807,10 +815,11 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     );
     assert_eq!(result.body["sessions_imported"], 2);
     assert_eq!(result.body["sessions_skipped_existing"], 0);
-    // OBD-001: the upload never starts onboarding; a person starts it in the browser.
+    // OBD-001: the upload never starts onboarding; a person starts it on the sandbox page, or
+    // their agent with an operate token (ADR-0188).
     assert_eq!(
         result.body["onboarding"], "pending",
-        "the CLI uploads; onboarding waits for Start onboarding on the sandbox page"
+        "the upload alone never starts onboarding"
     );
     let stored = w.h.store.sandbox(&sandbox.id).await?.ok_or("sandbox")?;
     assert_eq!(stored.onboarding_state, "pending");
@@ -827,8 +836,11 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         "{summary}"
     );
     let pending = result.body["onboarding_status"]["pending"].to_string();
+    // SPEC-313 NBW-002 (#790): both ways to start it.
     assert!(
-        pending.contains("Start onboarding") && pending.contains("https://yulius.test/s/shop"),
+        pending.contains("Start onboarding on the sandbox page: https://yulius.test/s/shop")
+            && pending
+                .contains("`yulius project onboard` (`onboarding_start`) with an operate token"),
         "{:?}",
         result.body["onboarding_status"]
     );
