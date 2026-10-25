@@ -375,6 +375,9 @@ export function mountTaskView(ctx, sandbox, task) {
     if (!textAnswer) replying = false;
     attention.classList.toggle('replying', replying);
     const typing = replyForm.contains(document.activeElement);
+    // A control kept across rebuilds (Reply) keeps the keyboard: taking it out of the page drops
+    // the focus to the body, on every task update (#506).
+    const kept = !typing && attention.contains(document.activeElement) ? document.activeElement : null;
     // Everything but the reply field is rebuilt; the field stays last.
     for (const child of [...attention.childNodes]) if (child !== replyForm) child.remove();
     attention.insertBefore(append(document.createDocumentFragment(), control && content
@@ -382,6 +385,7 @@ export function mountTaskView(ctx, sandbox, task) {
       : control || content), replyForm.parentNode === attention ? replyForm : null);
     if (replyForm.parentNode !== attention) attention.append(replyForm);
     replyForm.hidden = !replying;
+    if (kept && kept.isConnected && document.activeElement !== kept) kept.focus({ preventScroll: true });
     // A field closed under someone typing (or Escape) leaves the keyboard on the bar, which does
     // nothing with keys: never the terminal, where a permission menu may have opened.
     if (typing && !replying) attention.focus({ preventScroll: true });
