@@ -80,12 +80,18 @@ impl crate::supervisor::TaskRuntime {
     /// ([`Self::forget_ended_stretch`]): a write the task's change refused leaves it for the
     /// turn the task goes on with (SPEC-315).
     pub(crate) fn ended_stretch_from(&self, state_at: Timestamp) -> Option<EndedStretch> {
-        let ended = self.ended_stretch.lock().ok()?.take();
+        let ended = *self.ended_stretch.lock().ok()?;
         ended.filter(|e| e.state_at == state_at)
     }
 
     /// Forgets `used` once its start is recorded, unless another stretch ended since.
-    pub(crate) fn forget_ended_stretch(&self, _used: EndedStretch) {}
+    pub(crate) fn forget_ended_stretch(&self, used: EndedStretch) {
+        if let Ok(mut ended) = self.ended_stretch.lock()
+            && *ended == Some(used)
+        {
+            *ended = None;
+        }
+    }
 }
 
 /// Sums known metrics; a field stays unknown only when every run left it unknown.
@@ -277,6 +283,7 @@ impl App {
         let Ok(Some(times)) = self.deps.store.task_times(&task.id).await else {
             return;
         };
+        let mut continued = None;
         let next = match (working, times.working_since) {
             (false, Some(since)) => {
                 // The shell's end wakes the agent a moment later: that turn continues it.
@@ -288,20 +295,32 @@ impl App {
                 }
                 None
             }
-            (true, None) => Some(
-                self.take_ended_stretch(&task.id, times.state_at)
-                    .unwrap_or_else(|| self.now()),
-            ),
+            (true, None) => {
+                continued = self
+                    .existing_runtime(&task.id)
+                    .and_then(|runtime| runtime.ended_stretch_from(times.state_at));
+                Some(continued.map_or_else(|| self.now(), |ended| ended.since))
+            }
             _ => return,
         };
         // Only the state this was decided on: a turn that started since keeps its stretch.
-        if let Err(err) = self
+        match self
             .deps
             .store
             .set_working_since_from(&task.id, (task.activity, times), next)
             .await
         {
-            tracing::warn!(task = %task.id, error = %err, "could not record the working stretch");
+            Ok(true) => {
+                if let (Some(used), Some(runtime)) = (continued, self.existing_runtime(&task.id)) {
+                    runtime.forget_ended_stretch(used);
+                }
+            }
+            Ok(false) => {
+                tracing::debug!(task = %task.id, "the task changed since it was read; its working stretch stays");
+            }
+            Err(err) => {
+                tracing::warn!(task = %task.id, error = %err, "could not record the working stretch");
+            }
         }
     }
 
@@ -832,7 +851,12 @@ mod tests {
         let remembered = |runtime: &crate::supervisor::TaskRuntime| {
             runtime.ended_stretch.lock().ok().and_then(|slot| *slot)
         };
-        *runtime.ended_stretch.lock().expect("slot") = Some(ended);
+        let remember = |runtime: &crate::supervisor::TaskRuntime, ended| {
+            if let Ok(mut slot) = runtime.ended_stretch.lock() {
+                *slot = Some(ended);
+            }
+        };
+        remember(&runtime, ended);
         assert_eq!(runtime.ended_stretch_from(Timestamp(6_000)), None);
         assert_eq!(runtime.ended_stretch_from(Timestamp(5_000)), Some(ended));
         // The write was refused: nothing is forgotten.
@@ -842,7 +866,7 @@ mod tests {
             since: Timestamp(7_000),
             state_at: Timestamp(8_000),
         };
-        *runtime.ended_stretch.lock().expect("slot") = Some(later);
+        remember(&runtime, later);
         runtime.forget_ended_stretch(ended);
         assert_eq!(remembered(&runtime), Some(later));
         runtime.forget_ended_stretch(later);
