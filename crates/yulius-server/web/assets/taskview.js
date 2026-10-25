@@ -707,7 +707,9 @@ export function mountTaskView(ctx, sandbox, task) {
       appliedRead = read;
       detail = fresh;
       if (detail && detail.id === current.id) {
-        if (read === detailRead) current = { ...current, ...pickSummary(detail) };
+        // An answer the server gave before a change this view already heard of (the event came
+        // first) does not bring back the older owner, status or request (#506).
+        if (read === detailRead && !(Date.parse(detail.updated_at) < Date.parse(current.updated_at))) current = { ...current, ...pickSummary(detail) };
         heldKey = '';
         renderStrip();
         // The end banner may name the limit the last run met (SPEC-268), known only from here.
