@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-24
 
+- A run lost while Yulius runs saves the screen it was lost on (SPEC-301, task #287, #686). A
+  lost connection, or a stop or close whose escalation timed out, recorded the loss without saving
+  the hub's screen, so the task's terminal later showed the screen of the last settled turn and
+  lost any output after it. `mark_lost` now saves it to the run's `final-screen` before the
+  attempt becomes lost; a hub without output (a runtime made after a restart) keeps the saved one,
+  and a run lost before Yulius attached to it saves none (its hub still shows the run before).
 - The startup reconciliation records an environment run left `running` as `error` before it
   ends its process host and directories (task #285, SPEC-299 TLB-005). Ending them first let a
   watcher still following the run record its end in between, so
