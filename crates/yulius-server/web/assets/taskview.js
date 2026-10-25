@@ -696,20 +696,23 @@ export function mountTaskView(ctx, sandbox, task) {
   // Reads overlap (every status change reads again): an answer older than one already applied is
   // dropped, and only the latest read's answer sets the summary, so an older answer landing last
   // never brings back an older status. A newer read that fails leaves an older answer's details
-  // standing (SPEC-056 WUI-105).
+  // standing (SPEC-056 WUI-105). A change heard of while a read was out (an event, the answer to an
+  // action) may be newer than the read's answer: the server answered, then the change arrived first,
+  // both dated the same second. Every change carries the whole summary, so that answer leaves the
+  // summary as the change set it (#506).
   let detailRead = 0;
   let appliedRead = 0;
+  let changesHeard = 0;
   async function loadDetail() {
     const read = ++detailRead;
+    const heardBefore = changesHeard;
     try {
       const fresh = await ctx.api.get(`/api/tasks/${enc(current.id)}`, { signal: reads.signal });
       if (!alive || read < appliedRead) return; // the view was left, or a newer answer was applied
       appliedRead = read;
       detail = fresh;
       if (detail && detail.id === current.id) {
-        // An answer the server gave before a change this view already heard of (the event came
-        // first) does not bring back the older owner, status or request (#506).
-        if (read === detailRead && !(Date.parse(detail.updated_at) < Date.parse(current.updated_at))) current = { ...current, ...pickSummary(detail) };
+        if (read === detailRead && changesHeard === heardBefore) current = { ...current, ...pickSummary(detail) };
         heldKey = '';
         renderStrip();
         // The end banner may name the limit the last run met (SPEC-268), known only from here.
@@ -755,6 +758,7 @@ export function mountTaskView(ctx, sandbox, task) {
       if (!isPhone()) terminal.focus();
     },
     update(next) {
+      changesHeard += 1;
       const wasLive = isLive(current.status);
       const previousStatus = current.status;
       const previousUpdate = current.updated_at;
