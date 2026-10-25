@@ -12,6 +12,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   started a new one, so a task working for hours read "working 37m". A turn the task goes on with
   by itself from the state its stretch ended in (Claude Code's wake-up, work after a stop, newly
   found background work) now continues that stretch; a typed prompt still starts a new one.
+- `yulius-ptyhost::supervision shutdown_escalates_past_ignored_signals_and_reaps_descendants`
+  reads the descendant's pid only from a finished `CHILD <pid>` row (SPEC-307, task #293, fixes
+  #647). The tty sends a line's text before the `\r\n` it makes of its `\n`; when the test typed
+  `ping` in between, its echo joined the row (`CHILD 1234ping`) and the pid failed to parse.
 - A file refused by the Queued messages box because its task started keeps its notice until the
   person dismisses the card (SPEC-306, task #292, fixes #559). "The task has started: the file was
   not added." went to the upload status, which the kept-card check does not see, so pasted into an
