@@ -424,6 +424,54 @@ test('a member sees why a production secret’s requests wait, without a Dismiss
   await expect(screen.getByRole('button', 'Dismiss copying PROD_API_TOKEN into .env files')).toBeHidden();
 });
 
+// Task #294 (SPEC-308, #622): a production secret's Edit dialog offered Hosts, which the server
+// refuses on Save. It says why the secret goes to no host, and only removes hosts from before.
+test('a production secret’s Edit dialog offers no hosts and says why, and only removes old ones', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents', '&ambient=0'));
+  const visibleLabels = () => browser.evaluate(() => [...document.querySelectorAll('dialog.modal .field-label')].filter((l) => (l as HTMLElement).checkVisibility()).map((l) => l.textContent!.trim()));
+  // A secret agents use keeps its Hosts field.
+  await screen.getByRole('button', 'Edit STRIPE_KEY').click();
+  const stripe = screen.getByRole('dialog', 'Edit STRIPE_KEY');
+  await expect(stripe.getByLabel('Hosts')).toHaveValue('api.stripe.com');
+  await stripe.getByRole('button', 'Cancel').click();
+
+  // VIDOC_API_KEY becomes a production secret while its dialog is open (another person allowed it
+  // meanwhile): the host typed then is refused with the server's message, and none is bound.
+  await screen.getByRole('button', 'Edit VIDOC_API_KEY').click();
+  const vidoc = screen.getByRole('dialog', 'Edit VIDOC_API_KEY');
+  await vidoc.getByLabel('Hosts').fill('api.vidoc.test');
+  await browser.evaluate(() => { (window as any).__yuliusMock.vault.agent.find((s: any) => s.id === 'as_vidoc').cd_prod = true; });
+  await vidoc.getByRole('button', 'Save').click();
+  await expect(vidoc.getByRole('alert')).toHaveText(/^This is a production secret: production deploys get it and agents never do/);
+  expect(await browser.evaluate(() => (window as any).__yuliusMock.vault.agent.find((s: any) => s.id === 'as_vidoc').hosts)).toEqual([]);
+  await vidoc.getByRole('button', 'Cancel').click();
+
+  // PROD_API_TOKEN, a production secret with no host: no Hosts textbox, and why.
+  await screen.getByRole('radio', 'Global').click();
+  await screen.getByRole('button', 'Edit PROD_API_TOKEN').click();
+  const prod = screen.getByRole('dialog', 'Edit PROD_API_TOKEN');
+  expect(await visibleLabels()).toEqual(['Name', 'Value', 'Description', 'Hosts']);
+  await expect(prod.getByRole('textbox', 'Hosts')).toBeHidden();
+  await expect(prod.getByText('None. This is a production secret: agents never get it, so it is sent to no host. Add a separate secret for agents to send to a host.')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await prod.getByRole('button', 'Cancel').click();
+
+  // One that still has a host from before it became one shows it and offers only to remove it.
+  await browser.evaluate(() => { (window as any).__yuliusMock.vault.agent.find((s: any) => s.id === 'as_prodtoken').hosts = ['old.prod.test']; });
+  await screen.getByRole('radio', 'Project').click();
+  await screen.getByRole('radio', 'Global').click();
+  await screen.getByRole('button', 'Edit PROD_API_TOKEN').click();
+  const old = screen.getByRole('dialog', 'Edit PROD_API_TOKEN');
+  await expect(old.getByText('old.prod.test')).toBeVisible();
+  await expect(old.getByRole('textbox', 'Hosts')).toBeHidden();
+  await expect(old.getByText(/production secret: agents never get it, so it is sent to no host\. Remove these hosts, kept from before it became one/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await old.getByRole('checkbox', 'Remove them').check();
+  await old.getByRole('button', 'Save').click();
+  await expect(old).toBeHidden();
+  expect(await browser.evaluate(() => (window as any).__yuliusMock.vault.agent.find((s: any) => s.id === 'as_prodtoken').hosts)).toEqual([]);
+});
+
 // F 2026-10-14 (task #99): "Value in passwords should be hidden by default even after show, and
 // shown after explicitly clicking eye icon." (SPEC-114) F 2026-10-17 (task #194): "this UI is bad,
 // fix. For example copy icon is missing and overall": the value, its eye and its one copy icon sit
