@@ -261,7 +261,8 @@ p { margin: 0; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); }
 
 .toasts { position: fixed; right: 12px; bottom: 12px; z-index: var(--z-toast); display: flex; flex-direction: column; gap: 8px; width: min(380px, calc(100vw - 24px)); pointer-events: none; }
-/* When toasts would cover the focused control they move to the other edge (WCAG 2.4.11). */
+/* When toasts would cover the focused control or a dialog's Close they move to the other edge, if it
+   covers less (WCAG 2.4.11, `keepClear` in dom.js). */
 .toasts.flipped { top: calc(var(--tabrow-h) + 8px); bottom: auto; }
 .toast {
   display: flex; align-items: flex-start; gap: 8px; padding: 8px 6px 8px 12px; pointer-events: auto;

@@ -1,11 +1,11 @@
 ---
 yulius-task: 08b0c486-2cb5-4f53-800a-1e68f0cbda66
-status: in-progress
+status: done
 ---
 
 # SPEC-305: Toasts in a dialog never cover its Close (flaky axe target-size, #640)
 
-Status: in-progress
+Status: done
 Date: 2026-10-25
 Owner: task #291
 Scope authorization: issue #640 (opened by task #196), verified on `dev` at f770e4ff by task #289.
@@ -62,7 +62,7 @@ notes wrap and scroll in their box" then passes every time.
 - [x] 20 consecutive passing runs recorded
 - [x] Docs, changes.md and gates green
 - [x] Independent review answered
-- [ ] Merged into dev on green CI
+- [x] Merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -159,3 +159,8 @@ notes wrap and scroll in their box" then passes every time.
 - After merging origin/dev (edd013eb, #890; a clean merge), at ade9ac4e:
   - `npx e2e run` (full suite): 66 files passed, 1 skipped; 710 tests passed, 1 skipped.
   - `scripts/dev ci`: exit 0. Nextest: 2612 passed, 16 skipped.
+- Review round 3 (fresh session, head 590f9684): approve. The `>` mutant fails at line 711 (2 of 2),
+  the new check is deterministic (about 250 ms against the toasts' 8 s), and the whole file passed
+  (27). Two nits, own code, fixed: the `styles.css` comment on `.toasts.flipped` now names the
+  dialog's Close and the cost rule, and the `e2e/README.md` row names the in-page check.
+- Merged into dev by `delivery_merge` on green Yulius CI at the reviewed head.
