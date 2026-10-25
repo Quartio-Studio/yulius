@@ -975,6 +975,34 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-316 LIM-001, LIM-002 (#823): on kernels with `pids.events.local` a fork refused at the
+    /// service's own limit (`TasksMax`) is counted in the unit's group only, and counts for the
+    /// sandbox; a limit above the unit, outside the delegation, does not.
+    #[test]
+    fn a_hit_at_the_service_limit_counts_for_the_sandbox() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+        let groups = delegation.sandbox_group("s1", &Limits::default())?;
+        std::fs::write(dir.join("pids.events.local"), "max 0\n")?;
+        std::fs::write(groups.agents.join("pids.events.local"), "max 0\n")?;
+        std::fs::write(
+            delegation.unit.join(SANDBOXES).join("pids.events.local"),
+            "max 0\n",
+        )?;
+        std::fs::write(delegation.unit.join("pids.events.local"), "max 6\n")?;
+        // The slice above the unit counts every service's forks.
+        std::fs::write(root.path().join("pids.events.local"), "max 9\n")?;
+        assert_eq!(delegation.limit_counters("s1").task_limit_hits, 6);
+        // On 6.8 (no `.local` file) the unit holds no task and is not read.
+        let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+        let groups = delegation.sandbox_group("s1", &Limits::default())?;
+        std::fs::write(groups.agents.join("pids.events"), "max 3\n")?;
+        std::fs::write(delegation.unit.join("pids.events"), "max 5\n")?;
+        assert!(!dir.join("pids.events.local").exists());
+        assert_eq!(delegation.limit_counters("s1").task_limit_hits, 3);
+        Ok(())
+    }
+
     /// Without the split the runs live in the sandbox's group, which cannot pass `pids` down.
     #[test]
     fn without_the_split_the_leaves_get_no_task_limit() -> Result<(), Box<dyn std::error::Error>> {
