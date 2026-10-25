@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-25
 
+- `yulius onboard` and the onboarding status name both ways to start onboarding (SPEC-313, task
+  #299, fixes #790). A `pending` sandbox reads "● waiting to start: Start onboarding on the sandbox
+  page, or `yulius project onboard` with an operate token", its pending item names
+  `onboarding_start` too, and a `yulius login` token's refusal points to the operate token
+  instead of "the CLI only uploads". The messages predated ADR-0188.
 - On 6.13+ kernels a session that dies because `yulius.service` reached its own task limit
   (`TasksMax=`) says the sandbox hit its process limit, as on 6.8 (SPEC-316, task #302, fixes #823).
   Those kernels count such a refused fork only in the service's group, which the limit counters did

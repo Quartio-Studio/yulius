@@ -68,7 +68,7 @@ pub struct ServerState {
     pub sandbox_exists: bool,
     /// A refusal the plan answers with (permissions, foreign owner).
     pub refusal: Option<String>,
-    /// Onboarding is ready (else `pending`, waiting for Start onboarding in the browser).
+    /// Onboarding is ready (else `pending`, waiting for someone to start onboarding).
     pub onboarding_ready: bool,
     pub plan_requests: Vec<OnboardPlanRequest>,
     pub device_script: VecDeque<DeviceStatus>,
@@ -456,13 +456,16 @@ fn onboarding(state: &ServerState) -> OnboardingStatus {
             warnings: Vec::new(),
         }
     } else {
-        // The upload never starts onboarding: a person does in the browser (SPEC-051).
+        // The upload never starts onboarding: a person does on the sandbox page, or their agent
+        // with an operate token (SPEC-051, ADR-0188).
         OnboardingStatus {
             state: "pending".to_owned(),
             ready: false,
             summary: "Not ready yet: task #1 waits for someone to start onboarding.".to_owned(),
             pending: vec![
-                "someone clicks Start onboarding on the sandbox page: https://yulius.example/s/demo"
+                "someone starts onboarding: their agent runs `yulius project onboard` \
+                 (`onboarding_start`) with an operate token, or they click Start onboarding on \
+                 the sandbox page: https://yulius.example/s/demo"
                     .to_owned(),
                 "the repository passes the Yulius format check".to_owned(),
             ],

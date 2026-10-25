@@ -227,7 +227,7 @@ async fn the_superadmin_lists_and_imports_repositories_through_the_app() -> Test
 async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() -> TestResult {
     let w = World::new("org").await?;
     let (alice_user, alice) = w.user("alice", false).await?;
-    // Start onboarding is a browser action (SPEC-051 OBD-002).
+    // Start onboarding needs a person: here the browser (SPEC-051 OBD-002, ADR-0188).
     let alice_browser = w.browser(&alice_user).await?;
     let (_, bob) = w.user("bob", false).await?;
     w.remote(OWNER, "shop", &[("README.md", "# Shop\n")], &[])?;
@@ -299,8 +299,8 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
     // F 2026-10-11: a validating project still gets its environment set up by an onboarding
     // task (not the full preparation).
     assert_ne!(ready["onboarding"], "not_needed", "{ready}");
-    // A token import (the CLI, a script) waits for Start onboarding in the browser (SPEC-051),
-    // with no task until then (SPEC-097).
+    // A token import (the CLI, a script) waits until a person starts onboarding (SPEC-051,
+    // ADR-0188), with no task until then (SPEC-097).
     assert_eq!(ready["onboarding"], "pending", "{ready}");
     let ready_id = SandboxId::parse(text(&ready["id"]))?;
     let ready_record = w.h.store.sandbox(&ready_id).await?.ok_or("ready sandbox")?;

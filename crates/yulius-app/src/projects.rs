@@ -450,8 +450,9 @@ impl App {
     /// IMP-002): requires `admin` or `maintain` on GitHub (the superadmin: a repository the App
     /// installation can access, ACC-012); clones it and chooses the profile. The sandbox starts
     /// `pending`: with `start_preparation` its onboarding task is created and started at once;
-    /// through `yulius onboard` nothing is created until a person clicks Start onboarding on the
-    /// sandbox page (SPEC-051, SPEC-097).
+    /// through `yulius onboard` nothing is created until a person starts onboarding: Start
+    /// onboarding on the sandbox page, or `yulius project onboard` with an `operate` token
+    /// (SPEC-051, SPEC-097, ADR-0188).
     ///
     /// # Errors
     /// See [`App::create_sandbox`].

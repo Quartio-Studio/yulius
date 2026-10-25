@@ -194,8 +194,8 @@ subscription no agent can start.
 | 💻 **From your laptop** | The code and your Claude sessions are on your machine | Ask your local Claude Code "onboard this into Yulius" ([remote control](docs/remote-control.md)) or run `yulius onboard`. |
 
 A GitHub project goes through **onboarding** first (click **Start onboarding** on the sandbox
-page): an agent adds tests, lint, a dead-code check and a CI job to the repository, in its own
-pull request. To let teammates in: **Administration → Users → Admit user** with their GitHub
+page, or ask your agent to run `yulius project onboard`): an agent adds tests, lint, a dead-code
+check and a CI job to the repository, in its own pull request. To let teammates in: **Administration → Users → Admit user** with their GitHub
 login.
 
 ### ☐ 7. 👤 Write your first task 🎉

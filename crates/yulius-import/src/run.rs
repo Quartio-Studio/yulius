@@ -10,8 +10,9 @@
 //! 4. **Upload**: one confirmation, a resumable checksummed upload with a progress bar, applied
 //!    on the server.
 //! 5. **Summary**: what landed, links to the sandbox and its Sessions page, and the onboarding
-//!    state; new tasks wait for onboarding and start by themselves once it is ready. The CLI
-//!    never starts onboarding: a person clicks Start onboarding on the sandbox page (SPEC-051).
+//!    state; new tasks wait for onboarding and start by themselves once it is ready. The upload
+//!    never starts onboarding: a person clicks Start onboarding on the sandbox page, or their
+//!    agent runs `yulius project onboard` with an operate token (SPEC-051, ADR-0188).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -796,8 +797,13 @@ fn show_onboarding(ui: &mut dyn Ui, status: &OnboardingStatus) -> io::Result<()>
         "not_needed" | "ready" => "● ready",
         "skipped" => "● ready (preparation skipped)",
         "preparing" => "● preparing",
-        // The CLI never starts onboarding; a person does on the sandbox page (SPEC-051).
-        "pending" => "● waiting for Start onboarding in the browser",
+        // The upload never starts onboarding; a person does on the sandbox page, or their agent
+        // with an operate token (SPEC-051, ADR-0188). Both ways are named here, not only in the
+        // server's pending items, which an older server words for the browser alone (SPEC-313).
+        "pending" => {
+            "● waiting to start: Start onboarding on the sandbox page, or `yulius project onboard` \
+             with an operate token"
+        }
         other => other,
     };
     ui.fact("Onboarding", state, tone)?;
