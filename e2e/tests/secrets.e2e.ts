@@ -620,6 +620,9 @@ test('toasts in a dialog keep off its Close, also after the window narrows', asy
   expect(await covered()).toEqual({ toasts: 4, close: false, done: true });
   await browser.evaluate(() => ([...document.querySelectorAll('dialog.modal .modal-actions button')].find((b) => b.textContent === 'Done') as HTMLElement).focus());
   expect(await covered()).toEqual({ toasts: 4, close: true, done: false });
+  // Checked again (a resize), they stay: the bottom would clear the Close but cover Done.
+  await browser.evaluate(() => window.dispatchEvent(new Event('resize')));
+  expect(await covered()).toEqual({ toasts: 4, close: true, done: false });
 });
 
 // Review of SPEC-040: an older secret's address, user name and seed live in its notes, so its
