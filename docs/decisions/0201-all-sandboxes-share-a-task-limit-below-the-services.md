@@ -4,7 +4,9 @@
 
 Accepted. Specified in [SPEC-272](../../.ai/specs/SPEC-272-all-sandboxes-together-keep-the-server-a.md);
 task #260. Amends [0198](0198-sandbox-task-limits-are-sized-from-the-host-and-leave-sessions-a-reserve.md)
-(its open consequence: two saturated sandboxes could fill the service's limit).
+(its open consequence: two saturated sandboxes could fill the service's limit). Amended by
+[SPEC-316](../../.ai/specs/SPEC-316-limit-counters-count-forks-refused-at-th.md) (task #302,
+#823): hits at the service's own limit count too.
 
 ## Context
 
@@ -22,10 +24,13 @@ service's limit was removed: `<unit>/sandboxes` survives restarts (`KillMode=pro
   `<unit>/sandboxes/pids.max`: three quarters of the service's limit (`tasks_max_above`), or `max`
   when the service has none. The server keeps a quarter (14 443 on the VM) however many sandboxes
   are busy; a lone sandbox at its default loses nothing.
-- **Its hits are counted.** Where the kernel has `pids.events.local`, a sandbox's task-limit counter
-  adds `pids.events.local` `max` of its groups but CI's and the engine's subtrees, and of
-  `<unit>/sandboxes`. A hit at the shared limit is attributed to every sandbox whose run ends
+- **Its hits are counted, and the service's.** Where the kernel has `pids.events.local`, a
+  sandbox's task-limit counter adds `pids.events.local` `max` of its groups but CI's and the
+  engine's subtrees, of `<unit>/sandboxes` and of `<unit>` (the service's own `pids.max`,
+  `TasksMax=`; SPEC-316). A hit at a shared limit is attributed to every sandbox whose run ends
   crashed or killed meanwhile. On 6.8 the forking group counts the hit, as before.
+- **Limits above the service are not counted.** Ancestor slices (`system.slice`) are outside the
+  delegation, count every service's forks and have no task limit by default.
 - **An explicit `YULIUS_SANDBOX_PIDS` stays uncapped**, but when it is above the common limit the
   server warns: the common limit binds each sandbox too.
 - **Counters never fall.** `freeze::thaw_all` keeps an empty run group whose counters show a hit,
@@ -38,6 +43,10 @@ service's limit was removed: `<unit>/sandboxes` survives restarts (`KillMode=pro
   install; operators would have to know.
 - **Partitioning the service's limit by sandbox count.** Wastes it when one sandbox works, the
   common case, and changes as sandboxes come and go.
+- **Not counting hits at the service's limit** (SPEC-316), since they include the server's own
+  forks. When the service is at its limit every fork in it is refused, the sandboxes' too, so a
+  run that crashes meanwhile most likely died of it; not counting kept 6.13+ kernels silent where
+  6.8 names the limit.
 - **A group per sandbox above the common one for attribution.** That group is the sandbox's own;
   the common limit is what one cannot attribute, and naming the limit already points at the knob.
 - **Comparing counters per group across a run** instead of keeping groups with hits. Changes the
@@ -52,4 +61,7 @@ service's limit was removed: `<unit>/sandboxes` survives restarts (`KillMode=pro
 - An older binary (a rollback) leaves `sandboxes/pids.max` as it was. It still only protects the
   server, but that binary does not count hits there on 6.13+ kernels and does not follow a later
   `TasksMax=` change; `echo max > .../sandboxes/pids.max` clears it by hand (docs/operations.md).
-- On 6.13+ kernels a fork refused at the service's own limit or above it is not counted (#823).
+- On 6.13+ kernels a fork refused at the service's own limit counts for every sandbox whose run
+  crashed meanwhile, even when only the server's forks were refused; on 6.8 the server's own
+  refused forks count in `server/`, which is not read. A fork refused at an ancestor slice's limit
+  is not counted on 6.13+ (#823).

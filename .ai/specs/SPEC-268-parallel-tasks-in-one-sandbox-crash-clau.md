@@ -96,7 +96,9 @@ unexpectedly".
   hit), the sandbox's own `pids.events.local` `max`. And `memory.events` `oom_kill` of the
   sandbox's group. None without the delegation. Amended by
   [SPEC-272](SPEC-272-all-sandboxes-together-keep-the-server-a.md) SHR-003: on 6.13+ the `.local`
-  files of the same groups as on 6.8, and of the common `<unit>/sandboxes`.
+  files of the same groups as on 6.8, and of the common `<unit>/sandboxes`; and by
+  [SPEC-316](SPEC-316-limit-counters-count-forks-refused-at-th.md) LIM-001: also of `<unit>` (the
+  service's own limit), never of an ancestor slice.
 - PID-005: A run's counters are read when it starts (and when a restarted server takes it over).
   When it ends without Yulius ending it and not cleanly (`stopped_crashed`, `stopped_killed`), the
   counters are read again (only that attempt's start counters, left in place until its end's
