@@ -35,10 +35,11 @@ already does on 6.8, instead of "The agent stopped unexpectedly".
 - **How often.** Rarer since SPEC-272: `sandboxes/` stops at three quarters of the service's limit,
   so the unit's limit is reached only when the server itself (`<unit>/server`) uses more than its
   quarter. When it is reached, every fork in the unit, a sandbox's or the server's, is refused.
-- **Layout.** `prepare` delegates `<unit>` (the service's group); its children are `server/` and
-  `sandboxes/`. `prepare` moves the server's processes into `server/`, and with domain
-  controllers (`memory`) enabled in its subtree the unit cannot hold a task itself (cgroup v2's
-  no-internal-process rule), so with `pids_localevents` its `.local` `max` stays 0.
+- **Layout.** systemd delegates `<unit>` (the service's group) and starts the server in its
+  `server/` child (`DelegateSubgroup=server`); the sandboxes live in `sandboxes/`. `prepare` moves
+  any process left in the unit to `legacy/`, and with domain controllers (`memory`) enabled in its
+  subtree the unit cannot hold a task itself (cgroup v2's no-internal-process rule), so with
+  `pids_localevents` its `.local` `max` stays 0.
 - **Ancestors.** Above `<unit>` lie slices (`system.slice`, `-.slice`) that the delegation does not
   own. Their `.local` files are usually readable, but they count every service's forks refused at
   their limit, and they normally have none (`system.slice` has no `TasksMax` by default).
@@ -120,6 +121,8 @@ already does on 6.8, instead of "The agent stopped unexpectedly".
 - **Review** (fresh session, `om-code-review`): round 1 at 49940749 APPROVE, with 1 minor (the ADR
   index entry) and 5 nits (the changes wording, the spec's no-internal-process reason, the
   `task_limit_hits` doc, a needless clone, the Plan and Evidence). All were own code and all were
-  fixed in 228b0d5f. Round 2 reviews the final head; its verdict is in the pull request.
+  fixed in 228b0d5f. Round 2 at a9b5ac72 APPROVE, with 1 nit in own code (the Layout sentence
+  named `prepare` for what systemd does), fixed after it; round 3 reviews the final head, its
+  verdict is in the pull request.
 - **Not tested:** a real 6.13+ kernel (the VM runs 6.8) and a real `TasksMax` hit. The fake cgroup
   tree and the kernel's `pids.events.local` semantics are the proof.
