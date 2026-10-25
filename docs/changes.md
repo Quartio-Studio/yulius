@@ -12,6 +12,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   otherwise empty box it vanished with the card on the task's next update (`starting` →
   `running`). It now goes to the card's error line, as other refusals do, and the upload status of
   a refused batch says "Nothing was added." instead of "Added …".
+- A production secret's Edit dialog offers no hosts the server refuses (SPEC-308, task #294,
+  fixes #622). It offered the Hosts input on every secret, so a person who added a host to a
+  production secret got a 409 on Save. Now its Hosts field has no input and says the secret is
+  sent to no host; an older production secret that still has hosts says agents' requests to them
+  still get it and offers only "Remove these hosts". The web mock's
+  `PATCH /api/agent-secrets/{id}` refuses hosts on a production secret as the server does.
 - The Docker front's socket is bound under a umask private to the binding thread (SPEC-304, task
   #290, fixes #825). `Front::start` set the process umask around `bind`, so fronts started at once
   in one process (the crate's unit tests under `cargo test`) could bind a socket under another
