@@ -479,6 +479,7 @@ test('an upload that ends after the task started says so in the kept card', asyn
   // nothing that contradicts it.
   await expect(browser.locator('.queue-card .field-error:has-text("The task has started: the file was not added.")')).toBeVisible();
   await expect(browser.locator('.queue-card .upload-status .upload-text:has-text("Nothing was added.")')).toBeVisible();
+  await expect(browser.locator('.queue-card .upload-status')).not.toContainText('the file was not added');
 });
 
 test('an image put in the message twice keeps one number, also once queued', async ({ app, browser, screen }) => {
@@ -519,7 +520,11 @@ test('a file pasted into an empty box keeps the card when the task starts during
   const notice = browser.locator('.queue-card .field-error:has-text("The task has started: the file was not added.")');
   await expect(notice).toBeVisible();
   // The task's next update keeps the card and its notice until dismissed (#559, SPEC-306 QFN-002).
+  // The update has landed (the strip and the card render together) before the notice is looked at.
+  const strip = screen.getByRole('status').filter({ hasText: /Working|Running|Starting/ }).first();
+  await expect(strip).toContainText('Starting');
   await touchProduct7(browser, { status: 'running', started: true });
+  await expect(strip).not.toContainText('Starting');
   await expect(card).toContainText('The task has started: copy your message into its session.');
   await expect(notice).toBeVisible();
   // The card's Dismiss (the upload status has its own).

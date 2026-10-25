@@ -44,13 +44,13 @@ the task's later updates, until the person dismisses the card.
   archived still takes the card away.
 - QFN-003: the upload status of a refused batch says "Nothing was added." rather than "Added …".
 - QFN-004: the new-task composer's own refusal ("The prompt is being read; the files were not
-  added.") is unchanged: it stays in its upload status.
+  added.") stays in its upload status, which now ends "Nothing was added." too (QFN-003).
 
 ## Plan
 
 - [x] Spec SPEC-306 with root cause and plan
-- [ ] Regression e2e step: notice survives the running update, Dismiss removes the card
-- [ ] Refusal written into the card's error line (onRefused)
+- [x] Regression e2e step: notice survives the running update, Dismiss removes the card
+- [x] Refusal written into the card's error line (onRefused)
 - [ ] Docs, gates and security scan green
 - [ ] Independent review answered
 - [ ] Merged into dev on green CI with closing summary
