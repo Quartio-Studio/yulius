@@ -174,11 +174,34 @@ impl Session {
         self.text.contains(needle) || self.screen().contains(needle)
     }
 
-    /// The rest of the first screen line starting with `prefix`.
-    fn screen_line(&self, prefix: &str) -> Option<String> {
-        self.screen()
-            .lines()
-            .find_map(|line| line.strip_prefix(prefix).map(|rest| rest.trim().to_owned()))
+    /// The rest of the first finished screen row starting with `prefix`: one above the cursor,
+    /// so its line end arrived and nothing else (an echo of typed input) can join it.
+    fn finished_line(&self, prefix: &str) -> Option<String> {
+        let screen = self.parser.screen();
+        let (cursor_row, _) = screen.cursor_position();
+        let (_, cols) = screen.size();
+        screen
+            .rows(0, cols)
+            .take(usize::from(cursor_row))
+            .find_map(|row| row.strip_prefix(prefix).map(|rest| rest.trim().to_owned()))
+    }
+
+    /// Waits for a finished row starting with `prefix` and returns the rest of it.
+    async fn wait_line(&mut self, prefix: &str) -> Res<String> {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            if let Some(rest) = self.finished_line(prefix) {
+                return Ok(rest);
+            }
+            if self.closed || Instant::now() > deadline {
+                return Err(format!(
+                    "no finished {prefix:?} line appeared; screen:\n{}",
+                    self.screen()
+                )
+                .into());
+            }
+            self.step().await?;
+        }
     }
 
     /// Searches only output that arrived since the last check (plus an overlap).
@@ -549,14 +572,12 @@ async fn shutdown_escalates_past_ignored_signals_and_reaps_descendants() -> Test
     let mut run = start(&["--mode", "fork-child", "--ignore-term", "--seconds", "60"]).await?;
     let child_pid = i32::try_from(run.host.status().child_pid)?;
     let mut session = Session::connect(&run.run_dir).await?;
-    session.wait_for("CHILD ").await?;
-    // Wait until the whole line (and the echo loop) is up: the agent answers input next.
+    // Read the pid only once its line ended: the tty sends the line end after the text, and
+    // input typed in between is echoed onto the same row (`CHILD 1234ping`, #647).
+    let descendant: i32 = session.wait_line("CHILD ").await?.parse()?;
+    // The echo loop is up once the agent answers input.
     session.line("ping").await?;
     session.wait_for("ECHO: ping").await?;
-    let descendant: i32 = session
-        .screen_line("CHILD ")
-        .ok_or("no descendant pid")?
-        .parse()?;
     assert!(!gone(descendant), "descendant running before shutdown");
 
     let grace = 300;
