@@ -1735,9 +1735,9 @@ import branches and the snapshot worktree, then stores each session as a session
 (§6.10): new, replaced (same uploader, other digest), unchanged (same digest) or kept as another
 person's. It never starts onboarding: a `pending` sandbox waits until a person starts it (Start
 onboarding on the sandbox page, or `onboarding_start` with an `operate` token; §6.6, SPEC-051,
-ADR-0188). Reapplying is idempotent (same digests). Before the job, `POST /api/onboard/plan` tells the CLI the sandbox,
-its onboarding status and which fingerprints (`sha256` of the redacted transcript) the server
-already holds, so unchanged sessions are never offered. Sessions arrive redacted (IMP-008,
+ADR-0188). Reapplying is idempotent (same digests). Before the job, `POST /api/onboard/plan`
+tells the CLI the sandbox, its onboarding status and which fingerprints (`sha256` of the redacted
+transcript) the server already holds, so unchanged sessions are never offered. Sessions arrive redacted (IMP-008,
 `yulius_domain::redact` applied by `yulius_import::stage_redacted`).
 
 ### 6.6 Sandbox onboarding
@@ -1747,9 +1747,10 @@ triggers: `pending → preparing` when the preparation task starts — at once f
 added in the UI; for `yulius onboard` only when a person clicks Start onboarding on the sandbox
 page or their agent runs `yulius project onboard` (`POST …/onboarding/approve`, which accepts a
 browser session or an `operate` token: a `yulius login` (`cli`) token gets 403 naming both ways,
-SPEC-051, ADR-0038, ADR-0188, SPEC-313; it also serves a UI-added sandbox whose start failed; a missing preparation
-task is created then; continuing a `pending` sandbox's onboarding task and importing through
-`POST /api/sandboxes` start it only from a browser session too); `preparing → ready` when the task has finished — it rests after running, or its turn ended
+SPEC-051, ADR-0038, ADR-0188, SPEC-313; it also serves a UI-added sandbox whose start failed; a
+missing preparation task is created then; continuing a `pending` sandbox's onboarding task starts
+it only for a browser session or an `operate` token too, and importing through
+`POST /api/sandboxes` starts it only from a browser session); `preparing → ready` when the task has finished — it rests after running, or its turn ended
 with every step of its plan resolved — and the project validates in its worktree or the clone
 (re-evaluated on reads, turn ends, task closes and the gate);
 `→ skipped` by an admin. Every change is a compare-and-set from the state it was decided on, so a

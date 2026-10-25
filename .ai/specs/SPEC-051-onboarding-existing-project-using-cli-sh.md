@@ -93,7 +93,8 @@ that adapts the repository to the Yulius standards. That task starts only when a
 - `show_onboarding` in the CLI labels a `pending` sandbox "● waiting for Start onboarding in the
   browser" and keeps printing the summary, the pending items and the closing line ("New tasks
   wait for it and start by themselves once onboarding is ready."). SPEC-313 rewords the label, the
-  pending item and the refusal to name `yulius project onboard` with an operate token too (ADR-0188).
+  pending item and the refusal to name `yulius project onboard` with an operate token too
+  (ADR-0188).
 - UI copy only: the banner and the button in `taskview.js`, the badge in `pages/home.js`, the mock
   route and the web README.
 

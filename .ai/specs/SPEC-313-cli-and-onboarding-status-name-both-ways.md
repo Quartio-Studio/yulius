@@ -110,3 +110,6 @@ both ways: **Start onboarding** on the sandbox page, or `yulius project onboard`
   and SPEC-002 §6.5/§6.6 (missed by the sweep, fixed); this spec's ticks and Evidence (added);
   long test literals (wrapped); SPEC-051's "rewords both" (made precise); the test's doc comment
   (fixed); README.md's onboarding line (pre-existing, fixed since it is the same wording).
+- Review round 2 of `35c154cb..162450e9`: approve; SPEC-002 §6.6's continue clause (fixed: a
+  browser session or an `operate` token, the import stays browser-only), long Markdown lines
+  (rewrapped) and a ragged `# Errors` line (joined).

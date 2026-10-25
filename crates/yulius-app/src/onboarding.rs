@@ -1344,8 +1344,7 @@ impl App {
     ///
     /// # Errors
     /// `Forbidden` for a token that is not `operate` (a `yulius login` token); `Conflict` when
-    /// nothing awaits preparation or the
-    /// task cannot start.
+    /// nothing awaits preparation or the task cannot start.
     pub async fn approve_onboarding(
         self: &Arc<Self>,
         ctx: &AuthContext,
