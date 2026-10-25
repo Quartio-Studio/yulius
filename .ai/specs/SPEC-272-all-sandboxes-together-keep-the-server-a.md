@@ -70,6 +70,8 @@ the limit was hit; and the small defects left by #254's review round 3 are fixed
   `pids_localevents` it counts the forks refused to the sessions' own groups, like 6.8. The common
   group is shared, so its hits are attributed to every sandbox whose run ends crashed or killed
   meanwhile. Without `.local` (6.8) nothing changes: the forking group counts, wherever the limit.
+  Amended by [SPEC-316](SPEC-316-limit-counters-count-forks-refused-at-th.md) LIM-001: `<unit>`'s
+  `.local` file counts too (the service's own limit, shared the same way); ancestor slices' do not.
 - SHR-004: A run group whose `pids.events` or `pids.events.local` `max` is above 0 is not removed by
   `freeze::thaw_all`, so the counters never fall while the server lives (systemd removes empty
   groups when the service stops; a restarted server reads a run's counters again, PID-005).
