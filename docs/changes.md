@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-25
 
+- Every Claude Code run Yulius starts draws full screen again, so its terminal scrolls up
+  (SPEC-310, task #296, fixes #898). Tasks of a project share one Claude config dir, and each
+  contained run is pid 2 in its own PID namespace. Claude Code's full-screen boot canary
+  therefore took a sibling task's start for a failed one of its own, and after two it turned full
+  screen off for the project. In the classic renderer, a viewer who opened the task had no
+  scrollback and the wheel nothing to scroll. Task runs, the Superagent and the Cockpit now set
+  `CLAUDE_CODE_NO_FLICKER=1` (ADR-0218).
 - `yulius-ptyhost::supervision shutdown_escalates_past_ignored_signals_and_reaps_descendants`
   reads the descendant's pid only from a finished `CHILD <pid>` row (SPEC-307, task #293, fixes
   #647). The tty sends a line's text before the `\r\n` it makes of its `\n`; when the test typed
