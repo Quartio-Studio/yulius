@@ -67,3 +67,24 @@ test('a request for control leaves the way out of a chain', async ({ app, browse
   await expect(screen.getByRole('button', 'Start now')).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
 });
+
+// #506: the view's read of the task is answered before a hand-over and arrives after the hand-over
+// was announced (the server answered, then the change came first). The older answer does not take
+// the view back to its older owner.
+test('a read answered before a hand-over and arriving after it changes nothing back', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&ambient=0&holdanswer=/api/tasks/tsk_studio_12'));
+  type Holding = { __yuliusMock: { heldWaiting?: number; release: () => void } };
+  await expect.poll(() => browser.evaluate(() => ((window as unknown as Holding).__yuliusMock.heldWaiting ?? 0) > 0), {
+    message: "the view never read the task (its answer is held)",
+  }).toBe(true);
+  await browser.locator('.taskview .stepstrip-toggle').click();
+  await expect(browser.locator('.taskview .steplist')).toHaveText(/Loading steps/);
+
+  await touchTask(browser, 'sb_studio', 12, { owner: { login: 'anna-q' } });
+  await expect(screen.getByText("You are watching @anna-q's task.")).toBeVisible();
+  // The answer, which says mkarp owns it, arrives: its steps show and the owner stays anna-q.
+  await browser.evaluate(() => (window as unknown as Holding).__yuliusMock.release());
+  await expect(browser.locator('.taskview .step-item').first()).toBeVisible();
+  await expect(screen.getByText("You are watching @anna-q's task.")).toBeVisible();
+  await expect(screen.getByRole('button', 'Request control')).toBeVisible();
+});

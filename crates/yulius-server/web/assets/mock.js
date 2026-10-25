@@ -178,6 +178,7 @@ function seed(params) {
     failedReads: 0,
     holdPath: params.get('hold') || null,
     holdPostPath: params.get('holdpost') || null,
+    holdAnswerPath: params.get('holdanswer') || null,
     // failpost=<path> does the same to POST requests, to show how an action says it failed;
     // `failedPosts` counts them.
     failPostPath: params.get('failpost') || null,
@@ -344,8 +345,10 @@ function seed(params) {
   // `tasks=0`: sandboxes without any task yet (the composer then offers no start rule, SPEC-022).
   if (params.get('tasks') === '0') db.tasks = [];
   // `hold=<path>`: its GET requests wait until `__yuliusMock.release()`, which may come first;
-  // `hold=frames` keeps the sandbox Chrome's picture back instead.
-  if (db.holdPath || db.holdPostPath) db.held = new Promise((resolve) => { db.release = () => { db.released = true; resolve(); }; });
+  // `hold=frames` keeps the sandbox Chrome's picture back instead. `holdanswer=<path>`: its GET
+  // requests are answered at once and the answer waits on its way there, so a change the server
+  // announces meanwhile reaches the page first (#506).
+  if (db.holdPath || db.holdPostPath || db.holdAnswerPath) db.held = new Promise((resolve) => { db.release = () => { db.released = true; resolve(); }; });
   // `tasks=many`: 30 more queued tasks in studio, a long "Run after" menu (SPEC-038).
   if (params.get('tasks') === 'many') {
     for (let number = 15; number < 45; number += 1) db.tasks.push(t('sb_studio', number, `Queued idea ${number}`, 'claude', 'queued', null, { noSteps: true }));
@@ -4152,6 +4155,12 @@ async function handleFetch(db, url, init = {}) {
     // `holdReads = []`: each read waits there, as on a slow connection, until the test calls its
     // resolver (in the order asked), so the test says which answer comes first (#571).
     if (db.holdReads) await new Promise((resolve) => db.holdReads.push(resolve));
+  }
+  if (db.held && (init.method || 'GET') === 'GET' && new URL(url, ORIGIN).pathname === db.holdAnswerPath) {
+    const answer = await handleFetchAfterLatency(db, url, init);
+    db.heldWaiting = (db.heldWaiting || 0) + 1;
+    try { await db.held; } finally { db.heldWaiting -= 1; }
+    return answer;
   }
   if (fileContent && init.method === 'PUT') {
     db.savesOnTheirWay = (db.savesOnTheirWay || 0) + 1;

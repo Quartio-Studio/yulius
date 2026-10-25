@@ -283,7 +283,8 @@ activity at all: neither that request, which also moves #10 into "Needs you", no
 changing by themselves, #8 starting after about 12 s; a test that hovers a sidebar row needs it), `fail=<path>` (GET
 requests of that exact API path answer 500, to see a view say what failed to load), `hold=<path>` (GET
 requests of that path wait until `__yuliusMock.release()`, to see a view while it loads; `hold=frames` holds
-the browser panel's picture) or `failpost=<path>`
+the browser panel's picture), `holdanswer=<path>` (GET requests of that path are answered at once and
+the answers wait until `__yuliusMock.release()`, so a change announced meanwhile arrives first) or `failpost=<path>`
 (POST requests of that path answer 500, to see an action say it failed).
 
 The mock mirrors the real response shapes (it is the UI's offline test bed and
