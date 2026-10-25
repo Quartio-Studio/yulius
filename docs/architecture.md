@@ -110,10 +110,12 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
 
 - **The socket** ([decision 0158](decisions/0158-docker-reaches-every-run-through-a-front-and-a-directory-moved-into-live-runs.md)).
   A Docker front (`yulius sandbox-host docker`), a process the server starts beside every live
-  holder, adopted ones included, serves `<state>/docker/docker.sock`. Agents, the Superagent,
-  Shells and CI jobs bind that directory at `/run/yulius/docker`, with `DOCKER_HOST` and a
-  `/run/docker.sock` link, so a recreated socket reaches them. Runs started without it get the
-  directory moved into their mount namespace at the next upkeep (`yulius sandbox-host
+  holder, adopted ones included, serves `<state>/docker/docker.sock` (0660 by a umask private to
+  the binding thread,
+  [decision 0217](decisions/0217-the-docker-front-binds-its-socket-under-a-thread-private-umask.md)).
+  Agents, the Superagent, Shells and CI jobs bind that directory at `/run/yulius/docker`, with
+  `DOCKER_HOST` and a `/run/docker.sock` link, so a recreated socket reaches them. Runs started
+  without it get the directory moved into their mount namespace at the next upkeep (`yulius sandbox-host
   bind-docker`: `open_tree` in the holder's namespace, `move_mount` in the run's). Without an
   engine (a missing prerequisite) the front answers a Docker-API error naming the reason.
 - **Start on demand.** The first connection starts the engine: `yulius sandbox-exec --engine`
