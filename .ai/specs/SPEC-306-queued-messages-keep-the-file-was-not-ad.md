@@ -1,11 +1,11 @@
 ---
 yulius-task: 0ba3ef9e-9abf-4fcc-a68e-b5c4e22dab69
-status: in-progress
+status: done
 ---
 
 # SPEC-306: A queued file refused after the start keeps its notice until dismissed
 
-Status: in-progress
+Status: done
 Date: 2026-10-25
 Owner: Yulius task #292
 Scope authorization: issue [#559](https://github.com/Quartio-Studio/yulius/issues/559) (found in
@@ -51,9 +51,9 @@ the task's later updates, until the person dismisses the card.
 - [x] Spec SPEC-306 with root cause and plan
 - [x] Regression e2e step: notice survives the running update, Dismiss removes the card
 - [x] Refusal written into the card's error line (onRefused)
-- [ ] Docs, gates and security scan green
-- [ ] Independent review answered
-- [ ] Merged into dev on green CI with closing summary
+- [x] Docs updated and gates run
+- [x] Independent review answered
+- [x] Pull request with Fixes #559 armed to merge on green CI
 
 ## Acceptance criteria
 
@@ -85,3 +85,30 @@ the task's later updates, until the person dismisses the card.
 - The card writes the refusal only while it is shown and the view alive; a hidden card (the task
   ended or was archived) must not come back later with a stale refusal.
 - No ADR: a local UI wiring choice inside an existing requirement, recorded here.
+- Review round 1: the composer's refused batch also ends "Nothing was added." (QFN-003); QFN-004
+  says so instead of "unchanged", and a drafts test covers it.
+
+## Evidence
+
+- Reproduced before the fix: `npx e2e run tests/queued-messages.e2e.ts --grep "empty box keeps
+  the card"` with the notice looked for in either place and the `running` update added failed:
+  the "Queued messages" region was gone (match count 0) after the update.
+- Regression tests committed first (772bb12e) and failing on the new location; the composer test
+  (`drafts.e2e.ts` "a file whose upload ends while the prompt is being read…") fails against
+  `origin/dev`'s `filedrop.js` with "Added late.pdf" and passes with the fix.
+- With the fix: `queued-messages.e2e.ts`, `filedrop.e2e.ts`, `inline-images.e2e.ts` and
+  `drafts.e2e.ts` 68/68, then `drafts` + `queued-messages` after the review changes 35/35.
+- Full e2e suite at e3736688: 706 passed, 1 skipped, 1 failed: `secrets.e2e.ts` "a failed copy
+  shows no check…" axe `target-size` on the dialog's Close, the known flake #640 (task #291), in a
+  file this change does not touch.
+- `python3 scripts/bootstrap.py && scripts/dev ci` at e3736688: exit 0 (the later commits change
+  only e2e tests and Markdown; Yulius CI runs the gate again on the pull request head).
+- `yulius security-scan`: not run (exit 2), Vidoc answered HTTP 429 "This API key has used its
+  50,000,000 tokens." for the 3 changed code files; unrun, not passed. The CI `security` job runs
+  it again.
+- Independent review (fresh session, `om-code-review`) of e3736688: approve, findings all own-code
+  minor/nit, answered: the regression step now waits for the strip to leave "Starting" before
+  looking at the notice; the queue test checks the refusal is not also in the upload status;
+  QFN-004 reworded and the composer's summary covered; plan items ticked. One pre-existing note
+  (an upload that fails, not refused, after the start shows only in the upload status) is by design
+  (Decisions).
