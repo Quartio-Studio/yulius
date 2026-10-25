@@ -1466,6 +1466,75 @@ fn a_goal_achieved_after_a_stop_yulius_never_answered_makes_the_task_done() -> T
     a_goal_achieved_in_a_woken_turn_makes_the_task_done(true)
 }
 
+/// SPEC-309 WSW-001 (#894, task #295: "working 37m" for a task that had worked for hours): the
+/// goal turn leaves a background shell (its `yulius wait`), and Claude Code wakes the session only
+/// seconds after the shell exits (it polls), so Yulius's probe sees no background work left
+/// first, which ends the working stretch. The woken turn continues that stretch: everything the
+/// task publishes while it works carries the first turn's start.
+#[test]
+fn a_turn_its_shell_wakes_keeps_the_working_stretch() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_background: Some(4),
+            goal_met_on_wake_ms: Some(1_000),
+            // Longer than the probe's period: the probe sees the shell gone before the wake.
+            wake_delay_ms: Some(u64::try_from(yulius_app::finish::SHELL_PROBE_MS)? + 2_000),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let mut events = app.events.subscribe();
+        let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+        wait_for("idle with its shell", Duration::from_secs(90), || async {
+            shown(&app, &id).await.ok() == Some((Some("waiting".into()), Some(1)))
+        })
+        .await?;
+        wait_for("the shell's end, seen", Duration::from_secs(30), || async {
+            shown(&app, &id).await.ok() == Some((Some("waiting".into()), Some(0)))
+        })
+        .await?;
+        assert!(
+            !screen_contains(&app, &id, "BACKGROUND DONE").await,
+            "the probe saw the shell's end before Claude Code woke the session"
+        );
+        wait_for("Done after the woken turn", Duration::from_secs(30), || async {
+            shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
+        })
+        .await?;
+        let id_text = id.as_str().to_owned();
+        let mut stretches = Vec::new();
+        loop {
+            match events.try_recv() {
+                Ok(envelope) => {
+                    if let UiEvent::TaskUpdated { task } = envelope.event
+                        && task.id == id_text
+                        && task.activity.as_deref() == Some("working")
+                    {
+                        stretches.push(task.working_since);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        let first = stretches.first().cloned().flatten();
+        assert!(first.is_some(), "the task published its work: {stretches:?}");
+        assert!(stretches.len() >= 2, "both turns worked: {stretches:?}");
+        assert!(
+            stretches.iter().all(|s| *s == first),
+            "one working stretch through the woken turn: {stretches:?}"
+        );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-079 BGW-001 (#305), SES-101: under a limit of one session, a Done task with a background
 /// shell still holds the slot; once the shell ends, the queued task starts at once (no tick runs
 /// in this test, so without the drain it would never start).
