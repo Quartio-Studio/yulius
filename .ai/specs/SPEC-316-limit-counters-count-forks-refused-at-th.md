@@ -36,7 +36,8 @@ already does on 6.8, instead of "The agent stopped unexpectedly".
   so the unit's limit is reached only when the server itself (`<unit>/server`) uses more than its
   quarter. When it is reached, every fork in the unit, a sandbox's or the server's, is refused.
 - **Layout.** `prepare` delegates `<unit>` (the service's group); its children are `server/` and
-  `sandboxes/`. With `pids` enabled in its subtree the unit holds no task itself (cgroup v2's
+  `sandboxes/`. `prepare` moves the server's processes into `server/`, and with domain
+  controllers (`memory`) enabled in its subtree the unit cannot hold a task itself (cgroup v2's
   no-internal-process rule), so with `pids_localevents` its `.local` `max` stays 0.
 - **Ancestors.** Above `<unit>` lie slices (`system.slice`, `-.slice`) that the delegation does not
   own. Their `.local` files are usually readable, but they count every service's forks refused at

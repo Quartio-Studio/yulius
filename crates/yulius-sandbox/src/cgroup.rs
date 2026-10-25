@@ -333,7 +333,7 @@ fn split_cpu(dir: &Path, groups: &SandboxGroups) -> io::Result<()> {
 /// only grow while the group lives; a rise between two reads is what tells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LimitCounters {
-    /// Forks and thread creations refused to the sandbox's sessions at a task limit
+    /// Forks and thread creations refused at a task limit the sandbox's sessions are under
     /// ([`Delegation::limit_counters`]).
     pub task_limit_hits: u64,
     /// Processes the OOM killer ended in the sandbox (`memory.events` `oom_kill`).
@@ -430,8 +430,8 @@ impl Delegation {
         let groups = self.sandbox_paths(sandbox);
         let apart = [groups.ci.as_path(), groups.engine.as_path()];
         let mut task_limit_hits = if local {
-            [self.unit.join(SANDBOXES), self.unit.clone()]
-                .iter()
+            [self.unit.join(SANDBOXES).as_path(), self.unit.as_path()]
+                .into_iter()
                 .map(|group| read(group, events, "max").unwrap_or(0))
                 .fold(0, u64::saturating_add)
         } else {
