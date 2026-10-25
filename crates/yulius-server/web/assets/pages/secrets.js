@@ -460,7 +460,7 @@ function insertPasted(input, text) {
  * how to send it. By default agents set it up themselves (SPEC-216): they bind its hosts and
  * production deploys get it; turned off, a person allows each. An instance administrator picks the
  * scope under More options. Editing keeps the hosts, and the request style of an older secret
- * that has one.
+ * that has one; a production secret's hosts can only be removed (SPEC-308).
  */
 function agentForm(ctx, secret, scope = 'sandbox') {
   const name = h('input', { class: 'input mono', 'aria-label': 'Name', value: secret ? secret.name : '', placeholder: 'VIDOC_API_KEY', autocomplete: 'off', autofocus: true });
@@ -481,7 +481,20 @@ function agentForm(ctx, secret, scope = 'sandbox') {
       h('span', { class: 'stack-tight' }, h('span', null, 'Let agents set it up'),
         h('span', { class: 'muted small' }, scope === 'personal' ? 'Agents in your tasks bind the hosts they work out, without asking you. Turn off to allow each yourself.' : 'Agents bind the hosts they work out and production deploys get it, without asking you. Turn off to allow each yourself.'))));
   }
-  if (secret) {
+  if (secret && secret.cd_prod) {
+    // Nor bound to a host: the server refuses any (SPEC-308). An older one that still has hosts
+    // can only have them removed: agents' requests to them still get it (the egress proxy).
+    if (secret.hosts.length) {
+      form.clearHosts = h('input', { type: 'checkbox', 'aria-describedby': 'prod-hosts-hint' });
+      parts.push(h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Hosts'),
+        h('span', { class: 'mono' }, secret.hosts.join(', ')),
+        h('label', { class: 'check' }, form.clearHosts, h('span', null, 'Remove these hosts')),
+        h('span', { class: 'field-hint', id: 'prod-hosts-hint' }, 'These hosts were kept from before production secrets became exclusive: agents’ requests to them still get it. Remove them, and add a separate secret for agents.')));
+    } else {
+      parts.push(h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Hosts'),
+        h('span', { class: 'field-hint' }, 'None. This is a production secret: agents never get it, so it is sent to no host. Add a separate secret for agents to send to a host.')));
+    }
+  } else if (secret) {
     form.hosts = h('input', { class: 'input mono', 'aria-label': 'Hosts', value: secret.hosts.join(', '), placeholder: 'api.example.com', autocomplete: 'off' });
     parts.push(field('Hosts', form.hosts, 'The only destinations it is sent to or typed into, comma-separated (*.example.com for subdomains). Agents ask for them; empty sends it nowhere.'));
   }
@@ -517,6 +530,10 @@ function agentForm(ctx, secret, scope = 'sandbox') {
         out.hosts = hosts;
         out.expect_hosts = secret.hosts;
       }
+    }
+    if (form.clearHosts && form.clearHosts.checked) {
+      out.hosts = [];
+      out.expect_hosts = secret.hosts;
     }
     if (form.injection) {
       out.injection = form.injection.value;

@@ -10,9 +10,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   moves into an open dialog, and below 768 px it is pinned at the top right, where the dialog's
   Close is. Toasts raised at a wider size stayed there when the window narrowed, and the check that
   moves them to the other edge only protected the focused control. That check now also keeps the
-  dialog's Close clear. It runs again when the window is resized, and it moves the toasts only to
-  an edge that covers neither. This fixes the flaky axe `target-size` failure of the Team secrets
+  dialog's Close clear (the focused control still comes first). It runs again when the window is
+  resized, and it moves the toasts only to an edge that covers less. This fixes the flaky axe `target-size` failure of the Team secrets
   test "a failed copy shows no check…", which the mock's sign-in request toast set off on slow runs.
+- A production secret's Edit dialog offers no hosts the server refuses (SPEC-308, task #294,
+  fixes #622). It offered the Hosts input on every secret, so a person who added a host to a
+  production secret got a 409 on Save. Now its Hosts field has no input and says the secret is
+  sent to no host; an older production secret that still has hosts says agents' requests to them
+  still get it and offers only "Remove these hosts". The web mock's
+  `PATCH /api/agent-secrets/{id}` refuses hosts on a production secret as the server does.
+- The Docker front's socket is bound under a umask private to the binding thread (SPEC-304, task
+  #290, fixes #825). `Front::start` set the process umask around `bind`, so fronts started at once
+  in one process (the crate's unit tests under `cargo test`) could bind a socket under another
+  call's mask (not 0660) and leave the process umask at 0117. The bind now runs on a thread that
+  unshares `CLONE_FS` first; the process umask never changes (ADR-0217). Production was not
+  affected: each front is a process of its own.
 
 ## 2026-10-24
 
