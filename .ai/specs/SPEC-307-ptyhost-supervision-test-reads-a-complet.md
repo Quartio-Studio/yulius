@@ -24,10 +24,10 @@ only; no product code changes.
   bytes arrive), types `ping\r`, waits for `ECHO: ping`, then parses the rest of the screen row
   that starts with `CHILD `.
 - Root cause (suspected by task #289, confirmed by the probe in Evidence): the PTY keeps the
-  kernel defaults (ICANON, ECHO, ONLCR). The fake agent writes `CHILD <pid>\n` in one `write`, but the line discipline turns the
-  `\n` into `\r\n` as a separate output step, so the master can read `CHILD <pid>` before its line
-  end. If the test types `ping` in that window, the kernel's echo of `ping` lands on the same row
-  (`CHILD 1234ping`), and `parse()` fails.
+  kernel defaults (ICANON, ECHO, ONLCR). The fake agent writes `CHILD <pid>\n` in one `write`,
+  but the line discipline turns the `\n` into `\r\n` as a separate output step, so the master can
+  read `CHILD <pid>` before its line end. If the test types `ping` in that window, the kernel's
+  echo of `ping` lands on the same row (`CHILD 1234ping`), and `parse()` fails.
 - Why the tests missed it: the window is microseconds wide and only opens when the agent is
   descheduled mid-write, which needs a loaded machine.
 - What else the cause could break: any test that types after matching a partial line and then
@@ -49,7 +49,7 @@ only; no product code changes.
 - [x] Flake reproduced with a split CHILD line and cause named
 - [x] Test waits for a finished CHILD line before typing
 - [x] Independent review answered and gates green
-- [x] PR merged into dev with evidence on #647
+- [x] Pull request armed to merge on green CI, evidence on #647
 
 ## Acceptance criteria
 
@@ -85,8 +85,11 @@ only; no product code changes.
 - `scripts/dev ci` on 7d3b50a9: 2610 of 2611 tests passed; the one failure was
   `yulius::main leftovers::kept_files_of_a_removed_sandbox_are_listed_and_deleted_on_request`
   (`kept[0]["bytes"]` was null, `crates/yulius/tests/leftovers.rs:989`), a flake outside this
-  change (no leftovers code touched; 5 of 5 passed alone), reported on #647. The gate is rerun on
-  the final head.
+  change (no leftovers code touched; 5 of 5 passed alone), reported on #647 (this task may not
+  open issues). `scripts/dev ci` on 4d77d3ba (spec-only change since): exit 0, 2611 of 2611 passed.
 - Independent review (fresh session, `om-code-review`): approved 7d3b50a9; finding 1 (this spec's
-  status, plan and wording) fixed here; findings 2 and 3 pre-existing, no change.
+  status, plan and wording) fixed here; findings 2 and 3 pre-existing, no change. Second round
+  approved 4d77d3ba: plan item 5 reworded (a merge cannot precede its own checks), line reflowed;
+  its advice to file the leftovers flake as an issue is declined because this task must not create
+  issues, so it stays on #647 and in the closing summary.
 - `scripts/dev security`: run by Yulius CI's `security` job on the pull request head.
