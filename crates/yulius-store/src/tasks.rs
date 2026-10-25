@@ -473,15 +473,23 @@ impl TaskStore for SqliteStore {
     async fn set_working_since_from(
         &self,
         task: &TaskId,
-        _from: (Option<Activity>, TaskTimes),
+        from: (Option<Activity>, TaskTimes),
         since: Option<Timestamp>,
     ) -> AppResult<bool> {
         let id = task.as_str().to_owned();
         self.call(move |c| {
             let n = c
                 .execute(
-                    "UPDATE tasks SET working_since = ?1 WHERE id = ?2",
-                    params![since.map(|t| t.0), id],
+                    "UPDATE tasks SET working_since = ?1 \
+                     WHERE id = ?2 AND status = 'running' AND activity IS ?3 AND state_at = ?4 \
+                     AND working_since IS ?5",
+                    params![
+                        since.map(|t| t.0),
+                        id,
+                        from.0.map(Activity::as_str),
+                        from.1.state_at.0,
+                        from.1.working_since.map(|t| t.0)
+                    ],
                 )
                 .map_err(db)?;
             Ok(n == 1)

@@ -253,7 +253,8 @@ impl App {
 
     /// Ends an idle task's working stretch once no background work is left, or keeps it while
     /// some is (SPEC-087 TIM-002). Every change of what the task shows is published, so this
-    /// follows what people see.
+    /// follows what people see. The write applies only while the task is still in the state it
+    /// read (SPEC-315 FWS-001).
     async fn follow_working_stretch(&self, task: &TaskRecord) {
         let background = self.background_shells_of(&task.id);
         let Some(working) = idle_stretch(task.status, task.activity, background) else {
@@ -279,7 +280,13 @@ impl App {
             ),
             _ => return,
         };
-        if let Err(err) = self.deps.store.set_working_since(&task.id, next).await {
+        // Only the state this was decided on: a turn that started since keeps its stretch.
+        if let Err(err) = self
+            .deps
+            .store
+            .set_working_since_from(&task.id, (task.activity, times), next)
+            .await
+        {
             tracing::warn!(task = %task.id, error = %err, "could not record the working stretch");
         }
     }
