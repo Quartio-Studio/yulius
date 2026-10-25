@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-25
 
+- Toasts in a dialog no longer cover its Close (SPEC-305, task #291, fixes #640). The toast region
+  moves into an open dialog, and below 768 px it is pinned at the top right, where the dialog's
+  Close is. Toasts raised at a wider size ended up there when the window narrowed, and nothing moved
+  them: the check that moves them to the other edge only protected the focused control. That check
+  now also keeps the dialog's Close clear (the focused control still comes first). It runs again
+  when the window is resized, and it moves the toasts only to an edge that covers less. This fixes
+  the flaky axe `target-size` failure of the Team secrets test "a failed copy shows no check…",
+  which the mock's sign-in request toast set off on slow runs.
 - `yulius-ptyhost::supervision shutdown_escalates_past_ignored_signals_and_reaps_descendants`
   reads the descendant's pid only from a finished `CHILD <pid>` row (SPEC-307, task #293, fixes
   #647). The tty sends a line's text before the `\r\n` it makes of its `\n`; when the test typed
