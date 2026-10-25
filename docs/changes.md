@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-25
 
+- A turn that starts while Yulius publishes an idle task keeps its "working …" time (SPEC-315,
+  task #301, fixes #895). The publish read the task and its times, decided to end (or start) the
+  idle task's working stretch, and then wrote it unconditionally: when a prompt made the task
+  Working in between, its stretch was cleared and the sidebar's clock started over at the next
+  change. The write now applies only while the task is still running with the activity and times
+  it read.
 - Every Claude Code run Yulius starts draws full screen again, so its terminal scrolls up
   (SPEC-310, task #296, fixes #898). Tasks of a project share one Claude config dir, and each
   contained run is pid 2 in its own PID namespace. Claude Code's full-screen boot canary
