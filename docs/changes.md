@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-25
 
+- `yulius onboard` and the onboarding status name both ways to start onboarding (SPEC-313, task
+  #299, fixes #790). A `pending` sandbox reads "● waiting to start: Start onboarding on the sandbox
+  page, or `yulius project onboard` with an operate token", its pending item names
+  `onboarding_start` too, and a `yulius login` token's refusal points to the operate token
+  instead of "the CLI only uploads". The messages predated ADR-0188.
 - Every Claude Code run Yulius starts draws full screen again, so its terminal scrolls up
   (SPEC-310, task #296, fixes #898). Tasks of a project share one Claude config dir, and each
   contained run is pid 2 in its own PID namespace. Claude Code's full-screen boot canary

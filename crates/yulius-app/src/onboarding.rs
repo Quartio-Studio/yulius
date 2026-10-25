@@ -522,10 +522,11 @@ fn ensure_browser(ctx: &AuthContext) -> AppResult<()> {
 
 impl App {
     /// Continuing the onboarding task of a `pending` sandbox starts onboarding, so it needs a
-    /// person in the browser too (SPEC-051 OBD-002); every other task is unaffected.
+    /// person too, in the browser or through their `operate` token (SPEC-051 OBD-002, ADR-0188);
+    /// every other task is unaffected.
     ///
     /// # Errors
-    /// `Forbidden` for a bearer token; `NotFound` for unknown sandboxes.
+    /// `Forbidden` for a token that is not `operate`; `NotFound` for unknown sandboxes.
     pub(crate) async fn ensure_onboarding_continue_allowed(
         &self,
         ctx: &AuthContext,
@@ -1335,9 +1336,10 @@ impl App {
         }
     }
 
-    /// `POST /api/sandboxes/{sid}/onboarding/approve` (write, browser only): Start onboarding —
-    /// starts the onboarding task and moves the sandbox to `preparing`. A person starts it in the
-    /// browser; a bearer token (the CLI) is refused before anything is read (SPEC-051 OBD-002).
+    /// `POST /api/sandboxes/{sid}/onboarding/approve` (write, browser or `operate` token): Start
+    /// onboarding — starts the onboarding task and moves the sandbox to `preparing`. A person
+    /// starts it in the browser, or their agent with an `operate` token (`onboarding_start`); a
+    /// `yulius login` token is refused before anything is read (SPEC-051 OBD-002, ADR-0188).
     ///
     /// # Errors
     /// `Forbidden` without a browser session; `Conflict` when nothing awaits preparation or the
