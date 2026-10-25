@@ -4,6 +4,13 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-25
+
+- `yulius-ptyhost::supervision shutdown_escalates_past_ignored_signals_and_reaps_descendants`
+  reads the descendant's pid only from a finished `CHILD <pid>` row (SPEC-307, task #293, fixes
+  #647). The tty sends a line's text before the `\r\n` it makes of its `\n`; when the test typed
+  `ping` in between, its echo joined the row (`CHILD 1234ping`) and the pid failed to parse.
+
 ## 2026-10-24
 
 - Public lines of a stored key are no longer redacted (SPEC-302, task #288, fixes #599). Every
