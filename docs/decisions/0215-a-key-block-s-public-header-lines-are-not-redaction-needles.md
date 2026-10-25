@@ -31,10 +31,13 @@ never matches it (it holds literal `\n` where the copy has real breaks), so a li
 Every trimmed line of a key block stays a needle except:
 
 - blank lines and armour lines (`-----BEGIN|END <label>-----`);
-- public text of a known shape: an RFC 1421 header (`<token>: <value>`, the token letters,
-  digits and `-`, the value not empty) or a line starting `subject=` or `issuer=`, as long as its
-  value holds no `:` and no `(0x`, the line is not only base64 symbols and whitespace, and it
-  holds no run of more than 32 consecutive base64 or base64url symbols (`A-Z a-z 0-9 + / = - _`).
+- public text of a known shape: a named public header (`<name>: <value>`, the name, in any case,
+  one of RFC 1421's `Proc-Type` and `DEK-Info`, OpenPGP armour's `Version`, `Comment`, `Hash`,
+  `Charset` and `MessageID`, and OpenSSL's PKCS#12 `localKeyID` and `friendlyName`) or a line
+  starting `subject=` or `issuer=`, as long as its value is not empty and holds no `:` and no
+  `(0x`, and the line holds no run of more than 32 consecutive base64 or base64url symbols
+  (`A-Z a-z 0-9 + / = - _`). Any other `<token>: <value>` line is not public: a passphrase pasted
+  beside the key (`Passphrase: …`) or an `xxd` line (`00000000: 3082 …`) stays a needle.
   A `:` in the value is another header or a key's colon-hex dump joined onto it (`Private-Key:
   (…) privateExponent: 2a:9f:…`); `(0x` is OpenSSL's inline integer (`prime1: 1844… (0x…)` in
   a toy key); an IV in `DEK-Info` is at most 32 hex digits, while a key body line is 64 (PEM) or
@@ -50,9 +53,9 @@ only where the whole trimmed line's text appears (a `.env` copy).
   glued to its header or split by a zero-width space, then a key's colon-hex dump) and leaked
   it. Rejected: guessing which lines hold key material can always miss one; naming the public
   shapes cannot drop material outside them.
-- **Skip `<token>: <value>` headers and blank lines only** (the issue's wording): no length
-  check, so a body glued onto a header line would leak. Rejected; this decision is that rule with
-  the check and OpenSSL's `subject=`/`issuer=`.
+- **Skip `<token>: <value>` headers and blank lines only** (the issue's wording): a body glued
+  onto a header line, a passphrase pasted as `Passphrase: …` and an `xxd` dump line would leak
+  (review rounds 3, 5 and 6). Rejected for named headers with the run and `:` checks.
 - **Parse each format (PEM, OpenSSH, PGP armour, OpenSSL dumps)**: much more code, and a format
   it does not know would still need a default. Rejected.
 
@@ -62,10 +65,14 @@ only where the whole trimmed line's text appears (a `.env` copy).
   lines no longer turn into `[secret:NAME]`.
 - Other public text inside a key block stays a needle and is over-redacted where that whole
   line appears, never leaked: a public certificate's body (out of scope, said on #599), a PGP
-  signed message's text, a dump's labels (`privateExponent:`, `Bag Attributes`) and public
-  values (modulus), a folded header's continuation.
+  signed message's text, a dump's labels (`Private-Key: (2048 bit)`, `privateExponent:`,
+  `Bag Attributes`) and public values (modulus), a folded header's continuation, a header not
+  named above, and a `subject=` with a run over 32 base64 symbols (OpenSSL 1.0's
+  `subject=/C=…/O=…/CN=…` with no space or dot).
 - A public header whose value holds `:` or `(0x` stays a needle: a PGP `Comment: https://…`,
   OpenSSL's `publicExponent: 65537 (0x10001)`; over-redacted, never leaked.
-- Key material written on a header-shaped line with no `:`, no `(0x` and no base64 run over 32
-  symbols would not be a needle. None of the formats checked in review (PEM, PKCS#8, encrypted
-  PEM, OpenSSH, PGP armour, OpenSSL `-text` dumps, PKCS#12 `-nodes`, PuTTY text) writes one.
+- A secret written as the value of a named public header, or after `subject=`/`issuer=`, with no
+  `:`, no `(0x` and no base64 run over 32 symbols, would not be a needle (a key could only land
+  there by a person typing it so). None of the formats checked in review (PEM, PKCS#8, encrypted
+  PEM, OpenSSH, PGP armour, OpenSSL `-text` dumps, `asn1parse`, PKCS#12 `-nodes`, PuTTY, xxd)
+  writes one.

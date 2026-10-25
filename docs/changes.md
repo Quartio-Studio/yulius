@@ -10,9 +10,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   line of a key block but its armour was a redaction needle, so an encrypted PEM's
   `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour headers (`Version: …`, `Hash: SHA256`)
   and OpenSSL's `subject=`/`issuer=` between a bundle's blocks showed as `[secret:NAME]` anywhere
-  in the sandbox. Blank lines and RFC 1421 headers or `subject=`/`issuer=` lines with no
-  key-length base64 run are no needles now; every other line stays one, so a body joined onto a
-  header or a key's colon-hex dump is still redacted (ADR-0215).
+  in the sandbox. Blank lines, named public headers (RFC 1421, PGP armour, PKCS#12) and
+  `subject=`/`issuer=` lines are no needles now when their value holds no `:` or `(0x` and no
+  key-length base64 run; every other line stays one, so a body joined onto a header or a key's
+  colon-hex dump is still redacted (ADR-0215).
 - "Reload from disk" after a save conflict no longer leaves the person's text marked "Saved"
   (SPEC-298, task #284, #571). It cleared the modified mark before reading the disk, and the read
   kept the text when the disk was back at the tab's version, the file was deleted or no longer

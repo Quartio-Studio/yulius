@@ -136,32 +136,46 @@ fn base64_symbol(c: char) -> bool {
 /// most 32 hex digits. Key material runs longer (a body line is 64 or 70 symbols).
 const PUBLIC_RUN_LEN: usize = 32;
 
-/// Whether a trimmed line of a key block is public text of a known shape: an RFC 1421 header
-/// (`Proc-Type: 4,ENCRYPTED`, `DEK-Info: …`, `Version: …`, `Hash: SHA256`) or OpenSSL's
-/// `subject=` and `issuer=` between a bundle's blocks. Its value holds no `:` (another header
-/// or a key's colon-hex dump joined onto it), no `(0x` (OpenSSL's inline integer) and no
-/// key-length base64 run (a body joined onto it); a line of base64 symbols and whitespace is
-/// never public.
+/// The headers a key block's text holds that are public: RFC 1421's (`Proc-Type`, `DEK-Info`),
+/// OpenPGP armour's (RFC 4880) and the PKCS#12 bag attributes OpenSSL prints.
+const PUBLIC_HEADERS: [&str; 9] = [
+    "Proc-Type",
+    "DEK-Info",
+    "Version",
+    "Comment",
+    "Hash",
+    "Charset",
+    "MessageID",
+    "localKeyID",
+    "friendlyName",
+];
+
+/// Whether a trimmed line of a key block is public text of a known shape: one of the
+/// [`PUBLIC_HEADERS`] (`Proc-Type: 4,ENCRYPTED`, `Hash: SHA256`) or OpenSSL's `subject=` and
+/// `issuer=` between a bundle's blocks. Its value holds no `:` (another header or a key's
+/// colon-hex dump joined onto it), no `(0x` (OpenSSL's inline integer) and no key-length base64
+/// run (a body joined onto it).
 fn public_line(line: &str) -> bool {
-    let header = line.split_once(": ").filter(|(name, value)| {
-        !name.is_empty()
-            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-            && !value.trim().is_empty()
+    let header = line.split_once(": ").and_then(|(name, value)| {
+        PUBLIC_HEADERS
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(name))
+            .then_some(value)
     });
-    let value = header.map(|(_, value)| value).or_else(|| {
+    let value = header.or_else(|| {
         line.strip_prefix("subject=")
             .or_else(|| line.strip_prefix("issuer="))
     });
-    value.is_some_and(|value| !value.contains(':') && !value.contains("(0x"))
-        && !line.chars().all(|c| base64_symbol(c) || c.is_whitespace())
-        && line
-            .split(|c: char| !base64_symbol(c))
-            .all(|run| run.len() <= PUBLIC_RUN_LEN)
+    value.is_some_and(|value| {
+        !value.trim().is_empty() && !value.contains(':') && !value.contains("(0x")
+    }) && line
+        .split(|c: char| !base64_symbol(c))
+        .all(|run| run.len() <= PUBLIC_RUN_LEN)
 }
 
 /// The lines of a key block's file that may hold key material: a copied key file shows them one
 /// per line, so redaction looks for each (SPEC-186 SAV-005), trimmed. Every line counts but its
-/// armour, blank lines and public text of a known shape (RFC 1421 headers, `subject=`,
+/// armour, blank lines and public text of a known shape (named public headers, `subject=`,
 /// `issuer=`), so a key's text dump or a body joined onto its headers stays a needle (SPEC-302,
 /// ADR-0215). Empty for a value that is not a key block.
 #[must_use]

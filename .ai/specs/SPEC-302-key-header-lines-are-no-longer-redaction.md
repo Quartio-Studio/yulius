@@ -38,12 +38,13 @@ material stays a needle.
 
 - R1. Blank lines and armour lines (`-----BEGIN|END <label>-----`) of a key block's file are not
   needles.
-- R2. A trimmed line of public text of a known shape is not a needle: an RFC 1421 header
-  (`<token>: <value>`, the token letters, digits and `-`, the value not empty) or a line starting
-  `subject=` or `issuer=`, unless its value holds `:` (another header or a key's colon-hex dump
-  joined onto it, review round 5) or `(0x` (OpenSSL's inline integer), it is only base64 symbols
-  and whitespace, or it holds a run of more than 32 consecutive base64/base64url symbols (a body
-  joined onto it, by spaces or glued).
+- R2. A trimmed line of public text of a known shape is not a needle: a named public header
+  (`<name>: <value>`, the name, in any case, one of `Proc-Type`, `DEK-Info`, `Version`,
+  `Comment`, `Hash`, `Charset`, `MessageID`, `localKeyID`, `friendlyName`; review round 6) or a
+  line starting `subject=` or `issuer=`, with a value that is not empty, unless its value holds
+  `:` (another header or a key's colon-hex dump joined onto it, review round 5) or `(0x`
+  (OpenSSL's inline integer), or the line holds a run of more than 32 consecutive
+  base64/base64url symbols (a body joined onto it, by spaces or glued).
 - R3. Every other line stays a needle, trimmed, as before this change: base64 body lines (PEM,
   OpenSSH, PGP), a body joined by spaces or split by a zero-width space, a key's OpenSSL text dump
   (colon-separated hex), text between a bundle's blocks of any other shape. The PGP checksum line
@@ -70,8 +71,10 @@ material stays a needle.
   `DEK-Info: AES-256-CBC,<32 hex>` and a header with a 32-symbol word do not, one with a
   33-symbol run does.
 - A key's colon-hex dump between a bundle's blocks stays a needle, line by line, and so does the
-  dump joined onto a header line, a `subject=` line with a joined header, and an inline
-  `(0x…)` integer.
+  dump joined onto a header line (by spaces or glued), a `subject=` line with a joined header,
+  an inline `(0x…)` integer, a header not named public (`Passphrase: …`, `Key: <hex>`,
+  `Private-Key: (…)`) and an `xxd` line; `subject=CN = localhost` and
+  `issuer=CN = Synthetic CA` are not needles.
 - The existing bundle and OpenSSH tests still give every body line.
 
 ## Test plan
@@ -87,7 +90,9 @@ material stays a needle.
   `privateExponent:` colon-hex dump, `Private-Key:`/`localKeyID:` headers and `subject=`; the
   hex lines stay needles (review round 4); the dump joined onto a header line (by spaces or
   glued), `subject=` with a header joined on, `prime1: … (0x…)` and `Comment: https://…` are
-  needles whole (review round 5).
+  needles whole (review round 5), and so are `Passphrase: …`, `Key: <hex>` and an `xxd` line
+  (review round 6). The header test pins `subject=CN = localhost` and `issuer=CN = Synthetic CA`
+  as not needles.
 - Integration test `secrets_env::an_encrypted_pem_redacts_its_body_not_its_headers`: an
   encrypted PEM stored through the API; `redact_for_sandbox` keeps its `Proc-Type`/`DEK-Info`
   lines and replaces its body. Fails before the fix.
@@ -101,8 +106,10 @@ material stays a needle.
   The first three rules (base64 lines only; then with spaces; then with base64 runs) each missed
   a shape of key material found by review: a body joined by spaces, glued to its header or split
   by a zero-width space, a key's colon-hex dump. Dropping only named public shapes cannot drop
-  material outside them. The core team's base64-only suggestion is the rejected first rule;
-  the issue's header rule is kept, with the run check. Recorded in ADR-0215.
+  material outside them. Headers are named, not matched by shape: any `<token>: <value>` let a
+  pasted passphrase or an `xxd` line through (review round 6). The core team's base64-only
+  suggestion is the rejected first rule; the issue's header rule is kept for named headers,
+  with the run and `:` checks. Recorded in ADR-0215.
 - D2. Lines are emitted trimmed: the trimmed text is part of the line a `.env` shows, so it still
   matches. Needles match as substrings, so a header kept inside one is redacted only where the
   whole trimmed line's text appears.
@@ -111,7 +118,9 @@ material stays a needle.
 - D4. Over-redaction left, never a leak: a public certificate's body (out of scope, said on
   #599), a PGP signed message's text, a dump's labels (`privateExponent:`, `Bag Attributes`) and
   public values, a folded header's continuation, a header whose value holds `:` or `(0x`
-  (`Comment: https://…`, `publicExponent: 65537 (0x10001)`).
+  (`Comment: https://…`, `publicExponent: 65537 (0x10001)`), a header not named public
+  (`Private-Key: (2048 bit)`), and OpenSSL 1.0's `subject=/C=…/CN=…` when it runs over 32
+  base64 symbols.
 
 ## Evidence
 
@@ -163,4 +172,10 @@ material stays a needle.
   failed (`[]`), then passed once a public header's value may hold no `:`. Minor answered the
   same way: no `(0x` (OpenSSL's inline integer, toy keys). Nits: the Plan items name the final
   rule, the Evidence cites D4, "match only whole lines" reworded (substring match).
+- Review round 6 (fresh session): approve, with minors and nits in own code, all fixed. A pasted
+  `Passphrase: …` or an `xxd` line passed as a header (dev kept them): headers are now named,
+  test-first (`a_key_dump_between_blocks_stays_a_needle` failed, those lines missing). The
+  "only base64 and whitespace" condition kept `subject=CN = localhost` a needle: removed,
+  test-first (the header test failed with `subject=`/`issuer=` returned). `changes.md` and
+  architecture name the `:`/`(0x` conditions; a glued dump case was added to the test.
 - Not tested: a real encrypted key from `openssl` (fixtures are synthetic by rule).
