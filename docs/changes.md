@@ -10,6 +10,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   reads the descendant's pid only from a finished `CHILD <pid>` row (SPEC-307, task #293, fixes
   #647). The tty sends a line's text before the `\r\n` it makes of its `\n`; when the test typed
   `ping` in between, its echo joined the row (`CHILD 1234ping`) and the pid failed to parse.
+- A file refused by the Queued messages box because its task started keeps its notice until the
+  person dismisses the card (SPEC-306, task #292, fixes #559). "The task has started: the file was
+  not added." went to the upload status, which the kept-card check does not see, so pasted into an
+  otherwise empty box it vanished with the card on the task's next update (`starting` →
+  `running`). It now goes to the card's error line, as other refusals do, and the upload status of
+  a refused batch says "Nothing was added." instead of "Added …".
 - A production secret's Edit dialog offers no hosts the server refuses (SPEC-308, task #294,
   fixes #622). It offered the Hosts input on every secret, so a person who added a host to a
   production secret got a 409 on Save. Now its Hosts field has no input and says the secret is
