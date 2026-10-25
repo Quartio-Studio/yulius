@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-25
 
+- "working 1h 20m" no longer restarts when a background shell's end wakes the agent (SPEC-309,
+  task #295, fixes #894). Yulius's shell probe could see a `yulius wait` shell gone a moment
+  before Claude Code woke the agent; the idle task's working stretch ended and the woken turn
+  started a new one, so a task working for hours read "working 37m". A turn the task goes on with
+  by itself from the state its stretch ended in (Claude Code's wake-up, work after a stop, newly
+  found background work) now continues that stretch; a typed prompt still starts a new one.
 - A production secret's Edit dialog offers no hosts the server refuses (SPEC-308, task #294,
   fixes #622). It offered the Hosts input on every secret, so a person who added a host to a
   production secret got a 409 on Save. Now its Hosts field has no input and says the secret is
