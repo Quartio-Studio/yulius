@@ -681,7 +681,13 @@ for task runs and the Superagent alike, adds `"outputStyle": "Concise"` to the c
 `settings.json` when it names no style, so sessions answer in Claude Code's Concise style while
 `/output-style` and a repository's committed style still win
 ([SPEC-210](../.ai/specs/SPEC-210-https-code-claude-com-docs-en-output-sty.md),
-[decision 0166](decisions/0166-sessions-default-to-the-concise-output-style.md)). If a trust prompt
+[decision 0166](decisions/0166-sessions-default-to-the-concise-output-style.md)). Task runs and the
+Superagent (the Cockpit) start Claude Code with `CLAUDE_CODE_NO_FLICKER=1`, so it always draws
+full screen with mouse reporting, which the web terminal's wheel and late viewers need. Without it,
+Claude Code's boot canary in the shared config dir took a sibling task's start (every contained run
+is pid 2) for a failed one of its own and turned full screen off for the project
+([SPEC-310](../.ai/specs/SPEC-310-i-can-t-scroll-up-fix.md),
+[decision 0218](decisions/0218-claude-code-runs-always-draw-full-screen.md)). If a trust prompt
 still shows before SessionStart, Yulius types nothing into it and says so, and the keys a person
 answers it with are no draft. A goal launched as the prompt runs once the prompt is answered, a
 typed one follows once it is gone, and a prompt left unanswered for 5 minutes flags the task

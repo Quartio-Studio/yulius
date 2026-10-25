@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-25
 
+- Every Claude Code run Yulius starts draws full screen again, so its terminal scrolls up
+  (SPEC-310, task #296, fixes #898). Tasks of a project share one Claude config dir, and each
+  contained run is pid 2 in its own PID namespace. Claude Code's full-screen boot canary
+  therefore took a sibling task's start for a failed one of its own, and after two it turned full
+  screen off for the project. In the classic renderer, a viewer who opened the task had no
+  scrollback and the wheel nothing to scroll. Task runs and the Superagent (the Cockpit) now set
+  `CLAUDE_CODE_NO_FLICKER=1` (ADR-0218).
 - "working 1h 20m" no longer restarts when a background shell's end wakes the agent (SPEC-309,
   task #295, fixes #894). Yulius's shell probe could see a `yulius wait` shell gone a moment
   before Claude Code woke the agent; the idle task's working stretch ended and the woken turn
