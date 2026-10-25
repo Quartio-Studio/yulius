@@ -1,11 +1,11 @@
 ---
 yulius-task: 1414d3b5-ea46-44c2-9932-fbc8092c73d5
-status: in-progress
+status: done
 ---
 
 # SPEC-304: The Docker front's socket is bound under a thread-private umask (#825)
 
-Status: in-progress
+Status: done
 Date: 2026-10-25
 Owner: Yulius task #290
 Scope authorization: task #290: "Solve GitHub issue #825 […] in one pull request whose description
@@ -47,11 +47,11 @@ start at once in one process, and leaves the process umask untouched.
 ## Plan
 
 - [x] Spec for the race-free socket bind
-- [ ] Regression test with concurrent fronts fails
-- [ ] Socket bound under a thread-private umask
-- [ ] ADR, docs and changes record the rule
-- [ ] Independent review answered and gates green
-- [ ] Pull request merged into dev on green CI
+- [x] Regression test with concurrent fronts fails
+- [x] Socket bound under a thread-private umask
+- [x] ADR, docs and changes record the rule
+- [x] Independent review answered and gates green
+- [x] Pull request ready to merge on green CI
 
 ## Acceptance criteria
 
@@ -84,3 +84,28 @@ start at once in one process, and leaves the process umask untouched.
   (it reads `/proc/self/status`).
 - **Thread start failure is an error** (review round 1): `Builder::spawn_scoped`, not
   `Scope::spawn`, so a sandbox at its process limit gets `docker.sock: …` instead of a panic.
+
+## Evidence
+
+- **Reproduced** (test first, `4682edbd`, old code): `cargo test -p yulius-sandbox --lib
+  docker_front::tests::fronts_started` failed 3 of 3 runs, with both modes: socket mode 0700 (448)
+  or 0600 (384) instead of 0660 (432), and the process umask left `0117` (was `0077`).
+- **Fixed** (`c9765ec9`, review fixes `684f40c6`): the 7 `docker_front` tests passed 5 of 5
+  runs; `cargo test -p yulius-sandbox --lib` (125 tests, in one process) passed 10 of 10 runs in a
+  row after the fix and 10 of 10 again after the review fixes.
+- **Mutation check**: with the `own_umask()` call removed the new test fails again (socket 0700).
+- **Lint**: `cargo clippy -p yulius-sandbox --all-targets -D warnings` clean for Linux and for
+  `aarch64-apple-darwin` (the non-Linux `own_umask`); `cargo fmt --check` clean.
+- **Gate**: `scripts/dev ci` at `8b0bde37`: exit 0, nextest 2612 passed, 16 skipped; rerun at the
+  final head before delivery (see the pull request).
+- **Security**: `scripts/dev security` at `322dfc8a`: not run, exit 2: Vidoc answered HTTP 429
+  "This API key has used its 50,000,000 tokens" (unrun, not passed); the pull request's CI
+  `security` job runs it again.
+- **Review** (fresh session, `om-code-review`): round 1 at `8b0bde37` APPROVE with 2 minors (macOS
+  test runs failed with the non-Linux refusal; `Scope::spawn` panics when no thread can be made)
+  and 4 nits (`fchmodat` claim, spec status, machine-specific modes in changes, a long line), all
+  own code, all fixed in `684f40c6` and `322dfc8a`.
+- **Production claim of #825 corrected** (comment on the issue): each front is its own
+  `yulius sandbox-host docker` process, so only in-process tests raced.
+- **Not tested:** a real macOS run (compile and clippy only; the regression test is Linux-only),
+  and thread creation failing (the error path is `Builder::spawn_scoped`'s `?`).
