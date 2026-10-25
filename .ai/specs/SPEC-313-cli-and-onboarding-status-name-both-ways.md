@@ -1,11 +1,11 @@
 ---
 yulius-task: e74724e5-ee8a-495a-8a0e-6337d51297f7
-status: in-progress
+status: done
 ---
 
 # SPEC-313: The CLI and the onboarding status name both ways to start onboarding
 
-Status: in-progress
+Status: done
 Date: 2026-10-25
 Owner: task #299
 Scope authorization: task #299 (solve issue #790 in one pull request, `Fixes #790`; no new
@@ -62,7 +62,7 @@ both ways: **Start onboarding** on the sandbox page, or `yulius project onboard`
 - [x] Regression tests ask for both ways (failing)
 - [x] CLI fact, status item and refusal name both ways
 - [x] Specs, ADR-0038 and comments match ADR-0188
-- [ ] Gates green, review answered and delivered on dev
+- [x] Gates green, review answered and delivered on dev
 
 ## Acceptance criteria
 
@@ -113,3 +113,11 @@ both ways: **Start onboarding** on the sandbox page, or `yulius project onboard`
 - Review round 2 of `35c154cb..162450e9`: approve; SPEC-002 §6.6's continue clause (fixed: a
   browser session or an `operate` token, the import stays browser-only), long Markdown lines
   (rewrapped) and a ragged `# Errors` line (joined).
+- Review round 3 of `162450e9..6fe40624`: approve. Left as is: three Markdown paragraphs (SPEC-002
+  §6.5/§6.6, README.md) still hold lines over 100 characters, as they did before this change; no
+  gate checks Markdown line length.
+- `scripts/dev ci` at `6fe40624`: exit 0 (repository check, script tests 143 OK, check, fmt,
+  clippy, nextest 2615 passed / 16 skipped, doctests, deny, shear, doc).
+- `scripts/dev security` at `6fe40624`: exit 2, not run: Vidoc's key is out of quota (HTTP 429
+  "This API key has used its 50,000,000 tokens"); the 9 changed code files were not scanned. The
+  change only rewords messages, comments and docs.
