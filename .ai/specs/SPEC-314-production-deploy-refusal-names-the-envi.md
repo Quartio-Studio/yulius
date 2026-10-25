@@ -46,7 +46,7 @@ separate secret in the deploying environment's own table: `[cd.platform]` for `[
   "Production names a separate secret of its own in [cd.<name>] secrets of yulius.toml", with
   `<name>` the deploying environment (`prod` for production).
 - **RNE-002** The mock's refusal is the same sentence as the server's, including the Secrets page
-  link and the revoke alternative.
+  link, the revoke alternative and the other secrets waiting for a person ("Also, …").
 
 ## Plan
 
@@ -71,7 +71,8 @@ separate secret in the deploying environment's own table: `[cd.platform]` for `[
   refusal (AC1); `production_secrets_need_their_own_allowance` pins `[cd.prod]` (AC2). The new
   test fails before the fix.
 - `e2e/tests/cd.e2e.ts`: the existing refusal check (`agents use PAY_KEY`) also asserts
-  `[cd.prod]` and the revoke alternative (AC3).
+  `[cd.prod]` and the revoke alternative, and a new test adds a secret waiting for a person and
+  asserts the "Also, …" tail (AC3).
 
 ## Decisions
 

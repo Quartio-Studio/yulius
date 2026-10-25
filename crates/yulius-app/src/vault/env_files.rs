@@ -890,8 +890,8 @@ impl App {
             .collect())
     }
 
-    /// The values of the secrets a CD run of `environment` (`[cd.<environment>]`, of stage `env`)
-    /// needs (SPEC-134 CDR-002): each must be an agent secret of the project allowed for `env`
+    /// The values of the secrets a CD run of `environment` (`[cd.<environment>]`) of `stage` needs
+    /// (SPEC-134 CDR-002): each must be an agent secret of the project allowed for `stage`
     /// ([`allowed_for`]). Otherwise nothing is returned: for dev, a secret that exists is asked for
     /// when an agent (`asker`) wants the run (as `secret_copy_to_env` does); the refusal says what
     /// a person must do, in the environment's own table (SPEC-314).
@@ -902,7 +902,7 @@ impl App {
         &self,
         sandbox: &crate::model::SandboxRecord,
         environment: &str,
-        env: yulius_domain::cd::CdStage,
+        stage: yulius_domain::cd::CdStage,
         names: &[String],
         asker: Option<&AgentContext>,
         why: &str,
@@ -930,7 +930,7 @@ impl App {
             .iter()
             .filter_map(|name| all.iter().find(|r| &r.name == name))
             .collect();
-        if env == yulius_domain::cd::CdStage::Dev
+        if stage == yulius_domain::cd::CdStage::Dev
             && let Some(production) = records.iter().find(|r| r.cd_prod)
         {
             return Err(AppError::Conflict(format!(
@@ -942,11 +942,11 @@ impl App {
         let waiting: Vec<&VaultSecretRecord> = records
             .iter()
             .copied()
-            .filter(|r| !allowed_for(r, env))
+            .filter(|r| !allowed_for(r, stage))
             .collect();
         if !waiting.is_empty() {
             let names: Vec<&str> = waiting.iter().map(|r| r.name.as_str()).collect();
-            if env == yulius_domain::cd::CdStage::Prod {
+            if stage == yulius_domain::cd::CdStage::Prod {
                 // Nobody can allow those (round 2, M-B): say what to do instead (SPEC-237 CAU-002),
                 // and name the others waiting for a person too, so one refusal says it all.
                 let (used, others): (Vec<&VaultSecretRecord>, Vec<&VaultSecretRecord>) =
