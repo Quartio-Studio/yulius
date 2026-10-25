@@ -1489,6 +1489,17 @@ fn working_stretches(
     }
 }
 
+/// Whether the task `id` has no working stretch in the store (it ended).
+async fn stretch_ended(app: &App, id: &TaskId) -> bool {
+    app.deps
+        .store
+        .task_times(id)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|t| t.working_since.is_none())
+}
+
 /// SPEC-309 WSW-001/WSW-002 (#894, task #295: "working 37m" for a task that had worked for
 /// hours): the goal turn leaves a background shell (its `yulius wait`), and Claude Code wakes the
 /// session only seconds after the shell exits (it polls), so Yulius's probe sees no background
@@ -1526,15 +1537,7 @@ fn a_woken_turn_keeps_the_working_stretch(prompt_lost: bool) -> TestResult {
         wait_for(
             "the stretch ended with the shell",
             Duration::from_secs(5),
-            || async {
-                app.deps
-                    .store
-                    .task_times(&id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_some_and(|t| t.working_since.is_none())
-            },
+            || stretch_ended(&app, &id),
         )
         .await?;
         assert!(
@@ -1561,6 +1564,12 @@ fn a_woken_turn_keeps_the_working_stretch(prompt_lost: bool) -> TestResult {
 
         // The person types: a new stretch (WSW-002), although the task stayed in the state its
         // last stretch ended in.
+        wait_for(
+            "the stretch ended with the turn",
+            Duration::from_secs(5),
+            || stretch_ended(&app, &id),
+        )
+        .await?;
         app.send_input(&id, b"one more\r").await?;
         wait_for("the typed turn", Duration::from_secs(20), || {
             screen_contains(&app, &id, "ECHO: one more")

@@ -76,9 +76,9 @@
 //! the goal as achieved MS after its Stop hook (the evaluator's own time), then closes; with
 //! `--wake-stop-lost` too, that turn's Stop hook never reaches Yulius (the hook client fails open,
 //! as on an error answer or an unreachable server); with `--wake-prompt-lost`, its prompt hook
-//! never does (Yulius reads the wake-up from the transcript only). `--wake-delay-ms MS` wakes the session MS after
-//! the background shell exits instead of at once, as Claude Code notices it only when it polls
-//! its background tasks. With
+//! never does (Yulius reads the wake-up from the transcript only). `--wake-delay-ms MS` wakes
+//! the session MS after the background shell exits instead of at once, as Claude Code notices it
+//! only when it polls its background tasks. With
 //! `--idle-compact-ms MS` the idle session compacts itself MS after the goal turn, like Claude
 //! Code 2.1.292 "before the prompt cache expired": the `compact_boundary` record, the summary
 //! user record it continues from (`isCompactSummary`), the files it reads again, its
