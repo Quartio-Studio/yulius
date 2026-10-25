@@ -12,6 +12,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   lost any output after it. `mark_lost` now saves it to the run's `final-screen` before the
   attempt becomes lost; a hub without output (a runtime made after a restart) keeps the saved one,
   and a run lost before Yulius attached to it saves none (its hub still shows the run before).
+- The startup reconciliation records an environment run left `running` as `error` before it
+  ends its process host and directories (task #285, SPEC-299 TLB-005). Ending them first let a
+  watcher still following the run record its end in between, so
+  `delivery::a_restart_ends_a_running_environment_command` failed now and then.
+- A multi-line value pasted into a team secret's Value keeps its line breaks (SPEC-299, task
+  #285, #592). The field is a one-line password input, which drops them, so a PEM key or recovery
+  codes were stored on one line and copied back flattened. A paste holding line breaks now carries
+  each LF and CR in the field as a private-use character that the form turns back on save: the
+  value is stored exactly as pasted (CRLF too) and the field stays masked. A shown value keeps its
+  lines, and Copy returns the original text (ADR-0214). Agent secrets keep their literal `\n`.
 - "Reload from disk" after a save conflict no longer leaves the person's text marked "Saved"
   (SPEC-298, task #284, #571). It cleared the modified mark before reading the disk, and the read
   kept the text when the disk was back at the tab's version, the file was deleted or no longer
