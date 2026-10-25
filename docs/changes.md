@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-25
 
+- "working 1h 20m" no longer restarts when a background shell's end wakes the agent (SPEC-309,
+  task #295, fixes #894). Yulius's shell probe could see a `yulius wait` shell gone a moment
+  before Claude Code woke the agent; the idle task's working stretch ended and the woken turn
+  started a new one, so a task working for hours read "working 37m". A turn the task goes on with
+  by itself from the state its stretch ended in (Claude Code's wake-up, work after a stop, newly
+  found background work) now continues that stretch; a typed prompt still starts a new one.
 - Toasts in a dialog no longer cover its Close (SPEC-305, task #291, fixes #640). The toast region
   moves into an open dialog, and below 768 px it is pinned at the top right, where the dialog's
   Close is. Toasts raised at a wider size ended up there when the window narrowed, and nothing moved

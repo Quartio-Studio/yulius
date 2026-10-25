@@ -218,6 +218,9 @@ pub struct TaskRuntime {
     /// Background work the transcript says the session started and no notification ended yet:
     /// Monitor streams and background agents by Claude Code's task id (SPEC-079 BGW-002).
     pub(crate) launches: Mutex<std::collections::BTreeMap<String, crate::finish::Launch>>,
+    /// The working stretch this idle task's lack of background work last ended: a turn the task
+    /// goes on with by itself from that same state continues it (SPEC-309 WSW-001).
+    pub(crate) ended_stretch: Mutex<Option<crate::tasks::EndedStretch>>,
     /// Claude Code recorded a goal that is active and not achieved (set, or "not met"): its
     /// evaluator gives a verdict after each Stop (SPEC-079 BGW-005).
     pub(crate) goal_open: AtomicBool,
@@ -355,6 +358,7 @@ impl TaskRuntime {
             turn_record_ms: AtomicI64::new(0),
             resumed_turn: AtomicBool::new(false),
             launches: Mutex::new(std::collections::BTreeMap::new()),
+            ended_stretch: Mutex::new(None),
             goal_open: AtomicBool::new(false),
             verdict_stop_ms: crate::finish::VerdictSlot::default(),
             watch_polls: AtomicU64::new(0),
@@ -3954,12 +3958,20 @@ impl App {
                     .turn_began_ms
                     .store(at.map_or(now.0, |at| at.0), Ordering::SeqCst);
                 runtime.start_turn(now);
+                // Claude Code's own wake-up goes on with the stretch (SPEC-309 WSW-001), also when
+                // its prompt hook never reached Yulius.
+                let stretch = if wake {
+                    self.continue_working_stretch(task_id).await
+                } else {
+                    None
+                };
                 let _ = self
                     .deps
                     .store
                     .set_activity(task_id, Some(Activity::Working), self.now())
                     .await;
                 self.publish_task(task_id).await;
+                self.keep_working_stretch(task_id, stretch).await;
             }
             Observation::TurnComplete { at } => {
                 self.context_replied(task_id, &attempt.id);

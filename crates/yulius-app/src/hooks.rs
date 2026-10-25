@@ -662,7 +662,14 @@ impl App {
         let runtime = self.runtime(&ctx.task.id);
         runtime.resumed_turn.store(false, Ordering::SeqCst);
         runtime.turn_began_ms.store(self.now().0, Ordering::SeqCst);
+        // Claude Code's own wake-up goes on with the stretch; a typed prompt starts a new one.
+        let stretch = if crate::finish::is_typed_prompt(input.prompt.as_deref()) {
+            None
+        } else {
+            self.continue_working_stretch(&ctx.task.id).await
+        };
         self.set_task_activity(&ctx.task, Activity::Working).await?;
+        self.keep_working_stretch(&ctx.task.id, stretch).await;
         Ok(HookReply::Output(HookOutput::default()))
     }
 
