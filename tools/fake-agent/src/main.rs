@@ -2072,7 +2072,10 @@ mod tests {
         assert!(parse(&["--unknown"]).is_err());
         assert!(parse(&["--mode", "ignore-term"]).is_ok_and(|o| o.ignore_term));
         assert!(parse(&["--tui"]).is_ok_and(|o| o.tui));
-        assert!(parse(&["--wake-delay-ms", "999999"]).is_ok_and(|o| o.wake_delay_ms == MAX_GOAL_DELAY_MS));
+        assert!(
+            parse(&["--wake-delay-ms", "999999"])
+                .is_ok_and(|o| o.wake_delay_ms == MAX_GOAL_DELAY_MS)
+        );
         assert!(parse(&["--seconds", "999999"]).is_ok_and(|o| o.seconds == MAX_SLEEP_SECONDS));
         assert!(parse(&["--hooks"]).is_err());
         assert!(parse(&["--interrupts"]).is_ok_and(|o| o.interrupts));

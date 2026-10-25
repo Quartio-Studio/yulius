@@ -1502,9 +1502,11 @@ fn a_turn_its_shell_wakes_keeps_the_working_stretch() -> TestResult {
             !screen_contains(&app, &id, "BACKGROUND DONE").await,
             "the probe saw the shell's end before Claude Code woke the session"
         );
-        wait_for("Done after the woken turn", Duration::from_secs(30), || async {
-            shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
-        })
+        wait_for(
+            "Done after the woken turn",
+            Duration::from_secs(30),
+            || async { shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0))) },
+        )
         .await?;
         let id_text = id.as_str().to_owned();
         let mut stretches = Vec::new();
@@ -1523,7 +1525,10 @@ fn a_turn_its_shell_wakes_keeps_the_working_stretch() -> TestResult {
             }
         }
         let first = stretches.first().cloned().flatten();
-        assert!(first.is_some(), "the task published its work: {stretches:?}");
+        assert!(
+            first.is_some(),
+            "the task published its work: {stretches:?}"
+        );
         assert!(stretches.len() >= 2, "both turns worked: {stretches:?}");
         assert!(
             stretches.iter().all(|s| *s == first),

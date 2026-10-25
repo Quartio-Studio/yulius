@@ -310,7 +310,12 @@ impl App {
         let Some(since) = self.take_ended_stretch(task_id, times.state_at) else {
             return;
         };
-        if let Err(err) = self.deps.store.set_working_since(task_id, Some(since)).await {
+        if let Err(err) = self
+            .deps
+            .store
+            .set_working_since(task_id, Some(since))
+            .await
+        {
             tracing::warn!(task = %task_id, error = %err, "could not continue the working stretch");
         }
     }
