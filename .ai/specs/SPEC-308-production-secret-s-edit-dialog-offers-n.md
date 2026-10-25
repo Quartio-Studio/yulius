@@ -1,11 +1,11 @@
 ---
 yulius-task: cbb818cd-cebd-4a67-8f92-ad8f0dc73341
-status: in-progress
+status: done
 ---
 
 # SPEC-308: A production secret's Edit dialog offers no Hosts the server refuses (#622)
 
-Status: in-progress
+Status: done
 Date: 2026-10-25
 Owner: Yulius task #294
 Scope authorization: task #294: "Solve GitHub issue #622 […] in one pull request whose description
@@ -54,7 +54,7 @@ suite sees the refusal.
 - [x] Mock PATCH refuses hosts on a production secret
 - [x] Edit dialog says why a production secret has no hosts and only clears old ones
 - [x] Changes entry and SPEC-204 open item closed
-- [ ] Independent review answered and gates green
+- [x] Independent review answered and gates green
 
 ## Acceptance criteria
 
@@ -78,9 +78,34 @@ suite sees the refusal.
 
 - Replace the input with a note rather than keep it and refuse on Save: the issue asks that the
   dialog not let a person enter what the server refuses. Keeping a read-only list with one
-  "Remove these hosts" choice (rather than dropping the field) keeps clearing old hosts possible, which
-  the server allows. No ADR: this follows SPEC-204's rule that the page offers neither side of a
+  "Remove these hosts" choice (rather than dropping the field) keeps clearing old hosts
+  possible, which the server allows. No ADR: this follows SPEC-204's rule that the page offers neither side of a
   production secret where the server refuses.
 - The mock's refusal is exercised through the page with a dialog opened before the secret became
   a production secret, a real race the server also refuses (`update_refused`), rather than with
   a request the page can no longer send.
+
+## Evidence
+
+- Regression first: `5b3566e6` (test only) fails at the VIDOC_API_KEY Save (no alert: the mock
+  accepted the host); with the mock fix `91d68d24` it fails on the Hosts textbox shown for
+  PROD_API_TOKEN; with the dialog fix it passes. The round-1 test `a3ea949f` fails before
+  `81bd4374` (the old "sent to no host" hint). Mutation: dropping the checkbox's
+  `aria-describedby` fails the round-2 assertion.
+- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run tests/secrets.e2e.ts`: 26 passed (at
+  `81bd4374`; the new test alone also at `50f6103c`).
+- `python3 scripts/bootstrap.py && scripts/dev ci` at `8e77b445`: exit 0, nextest 2611 passed,
+  16 skipped. Later commits change only the page, the test and docs; `scripts/dev check` at
+  `50f6103c`: exit 0.
+- Security: `yulius security-scan` at `50f6103c` did not run (exit 2: Vidoc HTTP 429, the key has
+  used its 50,000,000 tokens), which is unrun, not passed (ADR-0133, ADR-0157); the PR's CI
+  `security` job is the live scan.
+- Independent review (fresh sessions): round 1 requested changes on `8e77b445` (major: the hint
+  said "sent to no host" beside hosts agent runs still use, `EgressClient::may_use`; minors: test
+  gaps for unchecked Save and `expect_hosts`, the checkbox's name and style; nits), all fixed in
+  `a3ea949f` and `81bd4374`; round 2 approved `81bd4374` with two nits, fixed in `50f6103c`; round 3
+  approved `50f6103c`.
+- Pre-existing, outside this change, reported on #622 (this task creates no issues): agent runs
+  still use a production secret on hosts it kept (`egress.rs:81`, from `e593dc71`), which also
+  makes the production card's "agents never do" untrue for such a secret; the mock checks
+  `auto_allow` before `expect_hosts` and lacks the "send expect_hosts" refusal.
