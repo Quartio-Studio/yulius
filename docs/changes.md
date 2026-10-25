@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-25
 
+- A task view no longer goes back to an older owner, status or request when its read of the task
+  arrives after a newer change (SPEC-312, task #298, fixes #506). The server could answer the read,
+  then announce a hand-over that reached the page first; the read's answer then put the older
+  summary back until the next change. The view now applies a read's summary only when it is not
+  older than what it shows. The e2e checks #506 lists wait on what they need under load:
+  `touchTask` waits until the page hears live updates (a change announced before was lost:
+  ownership, reply), and the supertask's texts run without the mock's ambient activity, which
+  started #8 before a slow run reached them. Editor presence was already fixed by #523 and the
+  ownership text by #572.
 - Every Claude Code run Yulius starts draws full screen again, so its terminal scrolls up
   (SPEC-310, task #296, fixes #898). Tasks of a project share one Claude config dir, and each
   contained run is pid 2 in its own PID namespace. Claude Code's full-screen boot canary
