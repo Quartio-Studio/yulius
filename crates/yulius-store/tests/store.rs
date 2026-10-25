@@ -321,6 +321,110 @@ async fn the_state_time_moves_only_when_the_state_changes() -> R {
     Ok(())
 }
 
+/// SPEC-315 FWS-001: publishing an idle task ends or starts its working stretch only while the
+/// task is still in the state that was decided on; a turn that started in between keeps its
+/// stretch (issue #895).
+#[tokio::test]
+async fn a_stretch_write_applies_only_to_the_state_it_read() -> R {
+    use yulius_app::model::TaskTimes;
+    use yulius_domain::task::Activity;
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let t = store.insert_task(&task("t1", &sid, &uid)?).await?;
+    let times = |at: i64, working: Option<i64>| TaskTimes {
+        state_at: Timestamp(at),
+        working_since: working.map(Timestamp),
+    };
+    store
+        .transition_task(
+            &t.id,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Working),
+            Timestamp(20),
+        )
+        .await?;
+    store
+        .set_activity(&t.id, Some(Activity::Waiting), Timestamp(30))
+        .await?;
+    // The publish reads the idle task and its times …
+    let read = store.task_times(&t.id).await?.ok_or("times")?;
+    assert_eq!(read, times(30, Some(10)));
+    // … the prompt hook makes it Working …
+    assert!(
+        store
+            .set_activity_from(
+                &t.id,
+                (Some(Activity::Waiting), read.state_at),
+                Some(Activity::Working),
+                Timestamp(40)
+            )
+            .await?
+    );
+    // … and the publish's end of the stretch no longer applies.
+    assert!(
+        !store
+            .set_working_since_from(&t.id, (Some(Activity::Waiting), read), None)
+            .await?,
+        "the task is Working since the read"
+    );
+    assert_eq!(
+        store.task_times(&t.id).await?,
+        Some(times(40, Some(10))),
+        "the Working task keeps its stretch"
+    );
+    store
+        .set_activity(&t.id, Some(Activity::Waiting), Timestamp(50))
+        .await?;
+    for stale in [
+        (Some(Activity::Working), times(50, Some(10))),
+        (None, times(50, Some(10))),
+        (Some(Activity::Waiting), times(40, Some(10))),
+        (Some(Activity::Waiting), times(50, None)),
+        (Some(Activity::Waiting), times(50, Some(5))),
+    ] {
+        assert!(
+            !store.set_working_since_from(&t.id, stale, None).await?,
+            "{stale:?} is not the task's state"
+        );
+    }
+    assert_eq!(store.task_times(&t.id).await?, Some(times(50, Some(10))));
+    // The state it read: the stretch ends, and starts again (TIM-002).
+    assert!(
+        store
+            .set_working_since_from(&t.id, (Some(Activity::Waiting), times(50, Some(10))), None)
+            .await?
+    );
+    assert_eq!(store.task_times(&t.id).await?, Some(times(50, None)));
+    assert!(
+        store
+            .set_working_since_from(
+                &t.id,
+                (Some(Activity::Waiting), times(50, None)),
+                Some(Timestamp(55))
+            )
+            .await?
+    );
+    assert_eq!(store.task_times(&t.id).await?, Some(times(50, Some(55))));
+    // Only a running task's stretch.
+    store
+        .transition_task(&t.id, None, TaskStatus::Queued, None, Timestamp(60))
+        .await?;
+    let queued = store.task_times(&t.id).await?.ok_or("times")?;
+    assert!(
+        !store
+            .set_working_since_from(&t.id, (None, queued), Some(Timestamp(65)))
+            .await?
+    );
+    assert_eq!(store.task_times(&t.id).await?, Some(queued));
+    assert!(
+        !store
+            .set_working_since_from(&TaskId::parse("missing")?, (None, queued), None)
+            .await?
+    );
+    Ok(())
+}
+
 /// SPEC-070: one person at a time asks for control, and control passes only from the owner the
 /// decision saw to the person whose request still waits.
 #[tokio::test]

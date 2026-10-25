@@ -470,6 +470,25 @@ impl TaskStore for SqliteStore {
         .await
     }
 
+    async fn set_working_since_from(
+        &self,
+        task: &TaskId,
+        _from: (Option<Activity>, TaskTimes),
+        since: Option<Timestamp>,
+    ) -> AppResult<bool> {
+        let id = task.as_str().to_owned();
+        self.call(move |c| {
+            let n = c
+                .execute(
+                    "UPDATE tasks SET working_since = ?1 WHERE id = ?2",
+                    params![since.map(|t| t.0), id],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
     async fn person_pause(&self, task: &TaskId) -> AppResult<Option<PersonPause>> {
         let id = task.as_str().to_owned();
         self.call(move |c| {
