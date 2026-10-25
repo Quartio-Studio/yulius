@@ -12,6 +12,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Working in between, its stretch was cleared and the sidebar's clock started over at the next
   change. The write now applies only while the task is still running with the activity and times
   it read.
+- A production-stage deploy refused for a secret agents use names the deploying environment's
+  own table: "… in [cd.platform] secrets of yulius.toml …" for `[cd.platform]`, `[cd.prod]` for
+  production (SPEC-314, task #300, fixes #788). It always said `[cd.prod]`, which predates named
+  environments. The web mock now answers the server's whole sentence.
 - `yulius onboard` and the onboarding status name both ways to start onboarding (SPEC-313, task
   #299, fixes #790). A `pending` sandbox reads "● waiting to start: Start onboarding on the sandbox
   page, or `yulius project onboard` with an operate token", its pending item names

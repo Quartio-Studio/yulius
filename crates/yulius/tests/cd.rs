@@ -1181,7 +1181,8 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
     assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
     let said = refused.body.to_string();
     assert!(
-        said.contains("agents use DEV_TOKEN") && said.contains("separate secret"),
+        said.contains("agents use DEV_TOKEN")
+            && said.contains("separate secret of its own in [cd.prod] secrets of yulius.toml"),
         "{said}"
     );
     assert!(!said.contains("allows it for production"), "{said}");
@@ -1624,6 +1625,29 @@ async fn named_environments_deploy_by_their_stage() -> TestResult {
         !staging.iter().any(|e| e.action == "cd.refused"),
         "{staging:?}"
     );
+    Ok(())
+}
+
+/// #788 (SPEC-314 RNE-001): a named production-stage environment naming a secret agents use is
+/// refused with its own table to edit, not production's.
+#[tokio::test]
+async fn a_named_production_refusal_names_its_own_table() -> TestResult {
+    let cd = named_cd().replace(
+        "[cd.platform]\nstage = \"prod\"\n",
+        "[cd.platform]\nstage = \"prod\"\nsecrets = \"DEV_TOKEN\"\n",
+    );
+    assert!(cd.contains("secrets = \"DEV_TOKEN\""), "{cd}");
+    let f = fixture(&cd).await?;
+    f.allow_secret().await?;
+    let refused = f.deploy(&f.bob, "platform", Some("app")).await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    let said = refused.body.to_string();
+    assert!(
+        said.contains("agents use DEV_TOKEN")
+            && said.contains("separate secret of its own in [cd.platform] secrets of yulius.toml"),
+        "{said}"
+    );
+    assert!(!said.contains("[cd.prod]"), "{said}");
     Ok(())
 }
 
