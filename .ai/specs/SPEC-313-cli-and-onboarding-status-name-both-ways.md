@@ -38,9 +38,11 @@ both ways: **Start onboarding** on the sandbox page, or `yulius project onboard`
 - Why the tests missed it: the tests pin the old strings (`end_to_end.rs`, the import test
   server's stub status, `import_server.rs` with `contains("Start onboarding")`), so they kept
   passing; none asks for the CLI way.
-- What else the cause left stale: the "CLI never starts it" wording in SPEC-051 (OBD-003, the
-  implementation notes), SPEC-001 (IMP-010, AC-IMP-4), ADR-0038's decision, the module doc of
-  `onboarding.rs` and `run.rs`, and comments in the tests. The web UI does not show the pending
+- What else the cause left stale: the "CLI never starts it" wording in SPEC-051 (OBD-002,
+  OBD-003, the implementation notes), SPEC-001 (IMP-010, AC-IMP-4), SPEC-002 (§6.5, §6.6),
+  ADR-0038's decision, README.md, the module docs of `onboarding.rs` and `run.rs`, doc comments
+  and comments in `onboarding.rs`, `projects.rs`, `lifecycle.rs` and `imports.rs`, and comments
+  in the tests. The web UI does not show the pending
   items (it has its own gate, ADR-0076), so it is unaffected.
 
 ## Requirements
@@ -57,9 +59,9 @@ both ways: **Start onboarding** on the sandbox page, or `yulius project onboard`
 ## Plan
 
 - [x] Spec and root cause of the browser-only messages
-- [ ] Regression tests ask for both ways (failing)
-- [ ] CLI fact, status item and refusal name both ways
-- [ ] Specs, ADR-0038 and comments match ADR-0188
+- [x] Regression tests ask for both ways (failing)
+- [x] CLI fact, status item and refusal name both ways
+- [x] Specs, ADR-0038 and comments match ADR-0188
 - [ ] Gates green, review answered and delivered on dev
 
 ## Acceptance criteria
@@ -89,3 +91,22 @@ both ways: **Start onboarding** on the sandbox page, or `yulius project onboard`
   word of the line and a terminal's link detection does not take a trailing comma with it.
 - No new ADR: ADR-0188 already decided the operate token starts onboarding; ADR-0038 gets an
   amendment note pointing to it, as SPEC-051 OBD-002 already has.
+
+## Evidence
+
+- Red (commit `768e4e5b`, tests only, on `dev` 9e1a2870):
+  `cargo nextest run -p yulius-import -p yulius -E 'binary_id(yulius-import::import) |
+  (binary_id(yulius::main) & test(/^import_server::/))'`: 72 run, 4 failed:
+  `import_server::onboarding_starts_only_from_the_browser` (the continue refusal),
+  `import_server::import_resumes_applies_and_reruns_idempotently` (the pending item),
+  `end_to_end::onboards_everything_then_sends_nothing_new_on_rerun` and
+  `end_to_end::dry_runs_status_and_declined_confirmations_upload_nothing` (the CLI fact).
+- Green (fix `5ecb4494`): the same filter plus `projects::` and `remote`: 131 run, 131 passed.
+  The approve refusal's old `contains("in the browser")` in
+  `onboarding_starts_only_from_the_browser` now asks for both ways too.
+- Independent review (fresh session, `om-code-review`) of `9e1a2870..35c154cb`: approve, with
+  minors and nits, all answered in this change: a 112-character doc line and the stale `# Errors`
+  of `approve_onboarding` (own code, fixed); stale comments in `lifecycle.rs` and `imports.rs`
+  and SPEC-002 §6.5/§6.6 (missed by the sweep, fixed); this spec's ticks and Evidence (added);
+  long test literals (wrapped); SPEC-051's "rewords both" (made precise); the test's doc comment
+  (fixed); README.md's onboarding line (pre-existing, fixed since it is the same wording).

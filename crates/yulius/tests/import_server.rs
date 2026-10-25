@@ -330,7 +330,8 @@ async fn foreign_and_non_github_repositories_are_refused() -> TestResult {
     Ok(())
 }
 
-/// OBD-002: the CLI uploads; only a person in the browser starts onboarding.
+/// OBD-002: the CLI uploads; only a person (the browser, or their operate token) starts
+/// onboarding; a `yulius login` token is refused and told both ways (SPEC-313).
 #[tokio::test]
 async fn onboarding_starts_only_from_the_browser() -> TestResult {
     let w = World::new("org").await?;

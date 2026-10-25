@@ -9,9 +9,10 @@
 //! `yulius project onboard` (`onboarding_start`) with an `operate` token (SPEC-051, ADR-0038,
 //! ADR-0188: the upload alone never starts it, nor can a `yulius login` token). Until the task
 //! has finished and the project validates (`ready`), or an admin skips it, no other task starts
-//! in the sandbox: a new task — created, chained or run by an automation — waits after the preparation task and
-//! starts by itself once the sandbox is ready ([`App::onboarding_wait`], U-08); continuing a
-//! resting task or an imported session is refused meanwhile ([`App::ensure_tasks_may_start`]).
+//! in the sandbox: a new task — created, chained or run by an automation — waits after the
+//! preparation task and starts by itself once the sandbox is ready ([`App::onboarding_wait`],
+//! U-08); continuing a resting task or an imported session is refused meanwhile
+//! ([`App::ensure_tasks_may_start`]).
 //! [`App::onboarding_status`] says what is still pending, for the CLI and the UI.
 
 use std::fs::{self, File};
@@ -1342,7 +1343,8 @@ impl App {
     /// `yulius login` token is refused before anything is read (SPEC-051 OBD-002, ADR-0188).
     ///
     /// # Errors
-    /// `Forbidden` without a browser session; `Conflict` when nothing awaits preparation or the
+    /// `Forbidden` for a token that is not `operate` (a `yulius login` token); `Conflict` when
+    /// nothing awaits preparation or the
     /// task cannot start.
     pub async fn approve_onboarding(
         self: &Arc<Self>,
