@@ -10,6 +10,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   reads the descendant's pid only from a finished `CHILD <pid>` row (SPEC-307, task #293, fixes
   #647). The tty sends a line's text before the `\r\n` it makes of its `\n`; when the test typed
   `ping` in between, its echo joined the row (`CHILD 1234ping`) and the pid failed to parse.
+- A production secret's Edit dialog offers no hosts the server refuses (SPEC-308, task #294,
+  fixes #622). It offered the Hosts input on every secret, so a person who added a host to a
+  production secret got a 409 on Save. Now its Hosts field has no input and says the secret is
+  sent to no host; an older production secret that still has hosts says agents' requests to them
+  still get it and offers only "Remove these hosts". The web mock's
+  `PATCH /api/agent-secrets/{id}` refuses hosts on a production secret as the server does.
 - The Docker front's socket is bound under a umask private to the binding thread (SPEC-304, task
   #290, fixes #825). `Front::start` set the process umask around `bind`, so fronts started at once
   in one process (the crate's unit tests under `cargo test`) could bind a socket under another
