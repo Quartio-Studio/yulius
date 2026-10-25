@@ -14,6 +14,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   when the window is resized, and it moves the toasts only to an edge that covers less. This fixes
   the flaky axe `target-size` failure of the Team secrets test "a failed copy shows no check…",
   which the mock's sign-in request toast set off on slow runs.
+- A file refused by the Queued messages box because its task started keeps its notice until the
+  person dismisses the card (SPEC-306, task #292, fixes #559). "The task has started: the file was
+  not added." went to the upload status, which the kept-card check does not see, so pasted into an
+  otherwise empty box it vanished with the card on the task's next update (`starting` →
+  `running`). It now goes to the card's error line, as other refusals do, and the upload status of
+  a refused batch says "Nothing was added." instead of "Added …".
 - A production secret's Edit dialog offers no hosts the server refuses (SPEC-308, task #294,
   fixes #622). It offered the Hosts input on every secret, so a person who added a host to a
   production secret got a 409 on Save. Now its Hosts field has no input and says the secret is

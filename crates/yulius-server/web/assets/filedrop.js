@@ -489,9 +489,10 @@ export function attachTerminalDrop(ctx, view, { label, upload }) {
  * are dragged over the prompt), each file is uploaded with `upload(file, options)`
  * (draftAttachments), and `onAttach([{path, name, file}], place)` puts them there, inside the
  * text. `box` is the zone, `prompt` the prompt input (promptinput.js). `writable()` can refuse more
- * (a queued message's task that started, SPEC-168), saying `unwritable` when files end then.
+ * (a queued message's task that started, SPEC-168), saying `unwritable` when files end then: in the
+ * upload status, or through `onRefused(unwritable)` when given (SPEC-306).
  */
-export function attachPromptDrop(ctx, { box, prompt, label, upload, onAttach, writable = () => true, unwritable = 'The prompt is being read; the files were not added.' }) {
+export function attachPromptDrop(ctx, { box, prompt, label, upload, onAttach, onRefused, writable = () => true, unwritable = 'The prompt is being read; the files were not added.' }) {
   return attachPathDrop(ctx, {
     zone: box,
     overlayHost: () => box,
@@ -499,6 +500,7 @@ export function attachPromptDrop(ctx, { box, prompt, label, upload, onAttach, wr
     upload,
     canWrite: () => !prompt.readOnly && !prompt.disabled && writable(),
     unwritable,
+    onRefused,
     begin: (event) => prompt.begin(event),
     onOver: (event) => prompt.showPoint(event.clientX, event.clientY),
     insert(stored, place) {
@@ -562,9 +564,10 @@ export function draftAttachments(ctx, sandboxId) {
 /**
  * The shared drop/paste flow: upload the files, then `insert(paths)` where the user types. With
  * `begin(event)`, the place is kept when the files come (a drop's event, or null for a paste) and
- * handed to `insert` as its second argument; a place no file reached is cancelled.
+ * handed to `insert` as its second argument; a place no file reached is cancelled. Files stored
+ * once `canWrite()` refuses are not inserted: `onRefused(unwritable)` says so, else the status.
  */
-function attachPathDrop(ctx, { zone, overlayHost, label, upload, canWrite, unwritable, insert, begin, onOver }) {
+function attachPathDrop(ctx, { zone, overlayHost, label, upload, canWrite, unwritable, onRefused, insert, begin, onOver }) {
   const status = createStatus({ floating: true, label: 'Upload progress' });
   let queue = Promise.resolve();
   const place = () => {
@@ -586,12 +589,15 @@ function attachPathDrop(ctx, { zone, overlayHost, label, upload, canWrite, unwri
     }
     if (!jobs.length) { status.end(files.length || folders ? 'Nothing was sent.' : 'The drop held no files.'); return; }
     const stored = await uploadAll(jobs, status, (index, job) => `Uploading ${jobs.length > 1 ? `${index + 1} of ${jobs.length}: ` : ''}${job.path}`);
-    if (!canWrite()) {
-      if (stored.length) status.error(unwritable);
+    const refused = stored.length > 0 && !canWrite();
+    if (refused) {
+      if (onRefused) onRefused(unwritable);
+      else status.error(unwritable);
     } else if (stored.length) {
       insert(stored.map(({ job, result }) => ({ path: result.path, name: result.name, file: job.file })), spot);
     }
-    status.end(stored.length === 1 && jobs.length === 1 ? `Added ${stored[0].result.name}` : `Added ${counted(stored.length, jobs.length)}`);
+    if (refused) status.end('Nothing was added.');
+    else status.end(stored.length === 1 && jobs.length === 1 ? `Added ${stored[0].result.name}` : `Added ${counted(stored.length, jobs.length)}`);
   }
 
   const enqueue = (carried, spot = null) => {

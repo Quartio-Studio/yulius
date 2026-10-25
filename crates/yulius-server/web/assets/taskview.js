@@ -540,6 +540,13 @@ export function mountTaskView(ctx, sandbox, task) {
     // A task that started meanwhile takes no more queued files (its card is gone or kept read-only).
     writable: () => alive && !queueSlot.hidden,
     unwritable: 'The task has started: the file was not added.',
+    // In the card's error line, which keeps a kept card until dismissed (SPEC-306); a card already
+    // gone (the task ended or was archived) takes none, so none comes back with it.
+    onRefused: (message) => {
+      if (!alive || queueSlot.hidden) return;
+      queueError.textContent = message;
+      renderQueue();
+    },
     onAttach: (items, place) => {
       for (const item of items) queueFiles.set(item.path, { name: item.name, type: item.file.type, file: item.file });
       if (place) place.insert(items.map((item) => item.path));
