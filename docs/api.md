@@ -807,7 +807,8 @@ since. `confirm_ms` (optional, production) is how long the person kept the confi
 page measured it; up to an hour it is recorded as the run's confirmation wait (SPEC-137). A production secret (`cd_prod`) is exclusive: allowing it is refused while it has `.env`
 copies allowed or proxy hosts, and it then refuses both (`conflict`); dev deploys never get it. For
 production, such a secret (agents use it) has the state `agents_use`: production never gets it, a
-run naming it is refused, and production names a separate secret instead (SPEC-237).
+run naming it is refused, and production names a separate secret instead, in the deploying
+environment's own `[cd.<name>]` secrets, which the refusal names (SPEC-237, SPEC-314).
 
 Refusals: `forbidden` for production below administrator access, `invalid` for what cannot name an
 environment or a production deploy without the slug typed exactly, `conflict` for an empty or

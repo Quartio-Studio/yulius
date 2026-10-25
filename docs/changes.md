@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-25
 
+- A production-stage deploy refused for a secret agents use names the deploying environment's
+  own table: "… in [cd.platform] secrets of yulius.toml …" for `[cd.platform]`, `[cd.prod]` for
+  production (SPEC-314, task #300, fixes #788). It always said `[cd.prod]`, which predates named
+  environments. The web mock now answers the server's whole sentence.
 - Every Claude Code run Yulius starts draws full screen again, so its terminal scrolls up
   (SPEC-310, task #296, fixes #898). Tasks of a project share one Claude config dir, and each
   contained run is pid 2 in its own PID namespace. Claude Code's full-screen boot canary
