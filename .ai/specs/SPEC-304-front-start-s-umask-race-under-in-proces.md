@@ -76,7 +76,11 @@ start at once in one process, and leaves the process umask untouched.
   process-wide mutex around set/bind/restore (serializes fronts, but every other thread creating a
   file in the window still gets 0o117, so R2 fails); binding in a private subdirectory and renaming
   (needs a `chmod` by name, which a writer of the directory with the same uid, the engine, could
-  redirect with a link; Linux `fchmodat` has no working `AT_SYMLINK_NOFOLLOW` before 6.6).
-- **Linux only.** `unshare` is Linux's; elsewhere `Front::start` now fails with "sandbox
-  namespaces are Linux-only", as `enter::join_holder` already does, so `docker_front::run` could
-  not reach it there before either. macOS keeps compiling.
+  redirect with a link; doing it without following links takes `fchmodat2` (Linux 6.6) or libc's
+  `O_PATH` emulation, more moving parts than a private umask).
+- **Linux only.** `unshare` is Linux's. Elsewhere the bind keeps the process umask, set and
+  restored as before (review round 1: refusing broke the front's tests on a development Mac); the
+  front itself runs only on Linux, inside a holder's namespaces. The regression test is Linux-only
+  (it reads `/proc/self/status`).
+- **Thread start failure is an error** (review round 1): `Builder::spawn_scoped`, not
+  `Scope::spawn`, so a sandbox at its process limit gets `docker.sock: …` instead of a panic.

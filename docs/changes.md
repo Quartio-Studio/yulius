@@ -8,10 +8,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - The Docker front's socket is bound under a umask private to the binding thread (SPEC-304, task
   #290, fixes #825). `Front::start` set the process umask around `bind`, so fronts started at once
-  in one process (the crate's unit tests under `cargo test`) could bind a 0700 or 0600 socket and
-  leave the process umask at 0117. The bind now runs on a thread that unshares `CLONE_FS` first;
-  the process umask never changes (ADR-0217). Production was not affected: each front is a process
-  of its own.
+  in one process (the crate's unit tests under `cargo test`) could bind a socket under another
+  call's mask (not 0660) and leave the process umask at 0117. The bind now runs on a thread that
+  unshares `CLONE_FS` first; the process umask never changes (ADR-0217). Production was not
+  affected: each front is a process of its own.
 
 ## 2026-10-24
 
