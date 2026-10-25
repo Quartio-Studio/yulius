@@ -144,7 +144,9 @@ material stays a needle.
   failed one test outside this change, `delivery::a_restart_ends_a_running_environment_command`,
   flaky on `dev` too (9/30 runs fail with `dev`'s `crates/`, 6/30 with this branch's; reported on
   #599, since this task opens no issues); the next run: exit 0, 2607 tests passed, 16 skipped.
-  After round 6: exit 0, 2607 tests passed, 16 skipped.
+  After round 6: exit 0, 2607 tests passed, 16 skipped. After round 7, then again with
+  `origin/dev` merged (#884, which also fixed the flaky test above): exit 0, 2607 tests passed,
+  16 skipped.
 - `scripts/dev security`: unrun, Vidoc out of quota (HTTP 429, exit 2) for both changed code
   files (ADR-0104).
 - Review round 2 (fresh session): request changes, one major in own code: a body joined onto its
