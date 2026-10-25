@@ -361,8 +361,9 @@ second segment in the working colour. Older servers omit it (read 0).
 `updated_at` is the last change of anything (title, owner, archive, status …). `state_since` is
 the last change of the task's **status or activity** (setting the same value again does not move
 it); `working_since` is the start of its working stretch: it starts when the task starts working,
-goes on through idle turns while background work wakes it and through subscription switches, and
-is null while the task waits for a person, is queued or has ended (SPEC-087). The UI shows, per
+goes on through idle turns while background work wakes it (also when Yulius saw that work end a
+moment before the wake, SPEC-309) and through subscription switches, and is null while the task
+waits for a person, is queued or has ended (SPEC-087). The UI shows, per
 group, "working 1h 20m" from `working_since` and "waiting 12m", "queued 2h", "done 3h ago" from
 `state_since`.
 

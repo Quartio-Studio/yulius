@@ -289,7 +289,9 @@ function toastHost() {
   let host = document.getElementById('toasts');
   if (!host) {
     host = h('div', { id: 'toasts', class: 'toasts', role: 'status', 'aria-live': 'polite' });
-    document.addEventListener('focusin', () => avoidFocus(host));
+    document.addEventListener('focusin', () => keepClear(host));
+    // The phone layout pins the toasts at the top, over a dialog's Close (#640).
+    window.addEventListener('resize', () => keepClear(host));
   }
   const modal = [...document.querySelectorAll('dialog[open]')].filter((d) => d.matches(':modal')).pop();
   const parent = modal || document.body;
@@ -297,16 +299,27 @@ function toastHost() {
   return host;
 }
 
-/** Moves the toasts to the other edge while they would cover the focused control (WCAG 2.4.11). */
-function avoidFocus(host) {
+/**
+ * Moves the toasts to the other edge while they would cover the focused control (WCAG 2.4.11) or,
+ * inside a dialog, its Close (its way out, WCAG 2.5.8), when that edge is better: the focused
+ * control comes first, so an edge that covers it is never chosen to clear the Close.
+ */
+function keepClear(host) {
+  if (!host.children.length) return;
   const target = document.activeElement;
-  if (!host.children.length || !target || target === document.body || host.contains(target)) return;
-  const covers = () => {
+  const focused = target && target !== document.body && !host.contains(target) ? target : null;
+  const close = host.parentElement?.querySelector(':scope > .modal-head > .modal-close');
+  const covers = (el) => {
+    if (!el) return false;
     const a = host.getBoundingClientRect();
-    const b = target.getBoundingClientRect();
+    const b = el.getBoundingClientRect();
     return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
   };
-  if (covers()) host.classList.toggle('flipped');
+  const cost = () => (covers(focused) ? 2 : 0) + (covers(close) ? 1 : 0);
+  const here = cost();
+  if (!here) return;
+  host.classList.toggle('flipped');
+  if (cost() >= here) host.classList.toggle('flipped');
 }
 
 /**
@@ -323,7 +336,7 @@ export function toast(message, { kind = 'info', action, timeout = 5000, detail }
     iconButton('x', 'Dismiss', close, { class: 'toast-x' }),
   );
   host.append(el);
-  avoidFocus(host);
+  keepClear(host);
   const wait = action && timeout > 0 ? Math.max(timeout, 10000) : timeout;
   if (wait > 0) {
     let timer = setTimeout(close, wait);
@@ -366,7 +379,7 @@ export function openModal({ title, body, actions = [], wide = false, full = fals
   // A failed action says why inside the dialog, next to the button that failed (not in a toast).
   const errorEl = h('div', { class: 'modal-error', role: 'alert', hidden: true });
   const dialog = h('dialog', { class: ['modal', wide && 'modal-wide', full && 'modal-full', className], 'aria-label': title },
-    h('div', { class: 'modal-head' }, h('h2', { class: 'modal-title' }, title), dismissible ? iconButton('x', 'Close', () => close(undefined)) : null),
+    h('div', { class: 'modal-head' }, h('h2', { class: 'modal-title' }, title), dismissible ? iconButton('x', 'Close', () => close(undefined), { class: 'modal-close' }) : null),
     bodyEl,
     errorEl,
     footer,

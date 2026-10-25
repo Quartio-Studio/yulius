@@ -642,6 +642,75 @@ test('a failed copy shows no check, and long notes wrap and scroll in their box'
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// SPEC-305 (#640): toasts move into an open dialog, and the phone layout pins them at the top
+// right, where the dialog's Close is. Four toasts raised at 1440 px (bottom right, no focus moved)
+// covered the Close once the window narrowed to 390 px; they now move to the other edge.
+// `browserask=0`: exactly the four toasts of this test (no sign-in request 5 s after the start).
+test('toasts in a dialog keep off its Close, also after the window narrows', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=team', '&browserask=0'));
+  await expect(screen.getByText('Shared Gmail')).toBeVisible();
+  // Long notes make the dialog tall, so its Close sits where a fourth toast ends at 390 px.
+  const notes = Array.from({ length: 30 }, (_, i) => `Recovery code ${i + 1}`).join('\n');
+  await browser.evaluate((text: string) => {
+    (window as any).__yuliusMock.vault.team[0].notes = text;
+    (window as any).__fail = 1;
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error(`Clipboard blocked ${(window as any).__fail++}`); } } });
+  }, notes);
+  await screen.getByRole('button', 'Show Shared Gmail').click();
+  await setUpTwoFactor(screen, browser);
+  await expect(browser.locator('dialog.modal .secret-eye + .secret-copy')).toBeVisible();
+  for (let n = 1; n <= 4; n += 1) {
+    // Clicked from script: focus stays where it is.
+    await browser.evaluate(() => (document.querySelector('dialog.modal .secret-eye + .secret-copy') as HTMLButtonElement).click());
+    await expect(screen.getByText(`Couldn’t copy: Clipboard blocked ${n}`)).toBeVisible();
+  }
+  // Which of the dialog's Close and Done the toast region overlaps.
+  const covered = () => browser.evaluate(() => {
+    const a = document.getElementById('toasts')!.getBoundingClientRect();
+    const over = (b: DOMRect) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    const done = [...document.querySelectorAll('dialog.modal .modal-actions button')].find((b) => b.textContent === 'Done')!;
+    return {
+      toasts: document.querySelectorAll('dialog.modal #toasts .toast').length,
+      close: over(document.querySelector('dialog.modal .modal-head button[aria-label="Close"]')!.getBoundingClientRect()),
+      done: over(done.getBoundingClientRect()),
+    };
+  });
+  // The dialog gave its Close the keyboard; a tap on its text takes it away, so only the rule for
+  // the dialog's Close keeps the toasts off it, not the one for the focused control.
+  await browser.evaluate(() => (document.activeElement as HTMLElement).blur());
+  expect(await covered()).toMatchObject({ toasts: 4, close: false });
+  await browser.setViewport({ width: 390, height: 844 });
+  // The page hears of the resize after the viewport changed, not before setViewport returns.
+  await expect.poll(covered).toMatchObject({ toasts: 4, close: false });
+  expect(await axeViolations(browser)).toEqual([]);
+  // At the bottom the toasts cover Done: once Done has the keyboard it wins over the Close
+  // (WCAG 2.4.11), and the toasts go back to the top.
+  expect(await covered()).toEqual({ toasts: 4, close: false, done: true });
+  await browser.evaluate(() => ([...document.querySelectorAll('dialog.modal .modal-actions button')].find((b) => b.textContent === 'Done') as HTMLElement).focus());
+  expect(await covered()).toEqual({ toasts: 4, close: true, done: false });
+  // Checked again (a resize), they stay: the bottom would clear the Close but cover Done.
+  await browser.evaluate(() => window.dispatchEvent(new Event('resize')));
+  expect(await covered()).toEqual({ toasts: 4, close: true, done: false });
+  // Back in the page, a focused control that both edges cover makes neither better: the toasts
+  // stay where they are instead of jumping at each check.
+  await browser.evaluate(() => ([...document.querySelectorAll('dialog.modal .modal-actions button')].find((b) => b.textContent === 'Done') as HTMLElement).click());
+  await expect(screen.getByRole('dialog', 'Shared Gmail')).toBeHidden();
+  expect(await browser.evaluate(() => {
+    const host = document.getElementById('toasts')!;
+    const tall = Object.assign(document.createElement('button'), { type: 'button', textContent: 'Tall' });
+    tall.style.cssText = 'position: fixed; left: 20px; top: 0; bottom: 0; width: 24px';
+    document.body.append(tall);
+    const at = () => host.classList.contains('flipped');
+    const before = at();
+    tall.focus();
+    const focused = at();
+    window.dispatchEvent(new Event('resize'));
+    const resized = at();
+    tall.remove();
+    return { inPage: host.parentElement === document.body, toasts: host.children.length, moved: [focused !== before, resized !== before] };
+  })).toEqual({ inPage: true, toasts: 4, moved: [false, false] });
+});
+
 // Review of SPEC-040: an older secret's address, user name and seed live in its notes, so its
 // notes are edited from their current text, never replaced blindly.
 test('editing a team secret loads its current notes after a two-factor code', async ({ app, browser, screen }) => {
