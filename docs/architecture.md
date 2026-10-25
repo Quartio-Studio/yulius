@@ -1811,7 +1811,7 @@ flowchart LR
     lost["run lost: reconcile found it dead or missing,\na lost connection, a stop that timed out"] --> which{"task running\nwith activity done?"}
     which -->|"yes: nothing was lost"| closed["closed"]
     which -->|"no"| stopped["stopped(server_lost / lost)\nContinue offered"]
-    lost -->|"writes (hub with output)"| screen
+    lost -->|"writes (hub with output, showing this run)"| screen
     screen -.->|"no live run: the terminal shows it"| view["task terminal"]
 ```
 

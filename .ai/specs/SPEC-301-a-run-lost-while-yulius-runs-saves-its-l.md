@@ -41,7 +41,7 @@ left, whenever the server still held that screen.
 
 ## Requirements
 
-- LRS-001: When `mark_lost` records a loss, the task's runtime exists and its hub shows this
+- LRS-001: When `mark_lost` is called, the task's runtime exists and its hub shows this
   attempt's screen, it saves the hub's screen to the attempt's `final-screen` with `save_screen`
   before the attempt becomes `Lost` (as `finalize_attempt` does before its transition), so no
   reader sees the run ended with the old file. The runtime records which run its hub shows
@@ -151,6 +151,11 @@ left, whenever the server still held that screen.
   tests passed, 16 skipped. Again at 47b09c1e (round-3 fix, dev at 84f1e033 merged cleanly):
   exit 0, 2607 tests passed, 16 skipped. Again at 5fa1f800 (round-4 fix): exit 0, 2607 tests
   passed, 16 skipped.
+- Review round 5 (fresh session, head b256457e): APPROVE with 2 nits, own code, both fixed: the
+  architecture diagram's loss edge names the shown-run condition; LRS-001 says "is called" (the
+  save comes before the transition, also when another observer recorded the end). One
+  pre-existing observation (settled-turn save in `set_task_activity` does not check the shown
+  run; likely unreachable, the attach window is `Starting`/`Switching`) is said on #686.
 - Mutation check at 5fa1f800: with `mark_lost`'s shown-run check made always true, the before-
   and as-it-attaches tests FAIL and the other two pass; restored.
 - `scripts/dev security`: exit 2, not run: Vidoc answered HTTP 429 "This API key has used its
