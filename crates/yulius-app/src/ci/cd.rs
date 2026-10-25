@@ -997,7 +997,7 @@ impl App {
         self.cd_names_present(sandbox, &target).await?;
         // Secrets first: a refusal never comes after a promotion.
         let secrets = self
-            .cd_secret_values(sandbox, stage, &target.secrets, asker, &why)
+            .cd_secret_values(sandbox, env, stage, &target.secrets, asker, &why)
             .await?;
         if !(stage == CdStage::Prod && target.promote) {
             return Ok(Prepared {
@@ -1067,7 +1067,7 @@ impl App {
         };
         self.cd_names_present(sandbox, &target).await?;
         let secrets = self
-            .cd_secret_values(sandbox, stage, &target.secrets, None, &why)
+            .cd_secret_values(sandbox, env, stage, &target.secrets, None, &why)
             .await?;
         Ok(Prepared {
             stage,

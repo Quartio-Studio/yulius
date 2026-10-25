@@ -74,6 +74,26 @@ pub fn continued_stretch(ended: Option<EndedStretch>, state_at: Timestamp) -> Op
     ended.filter(|e| e.state_at == state_at).map(|e| e.since)
 }
 
+impl crate::supervisor::TaskRuntime {
+    /// The ended stretch this task continues from the state that began at `state_at`
+    /// ([`continued_stretch`]). It stays remembered until its start is recorded
+    /// ([`Self::forget_ended_stretch`]): a write the task's change refused leaves it for the
+    /// turn the task goes on with (SPEC-315).
+    pub(crate) fn ended_stretch_from(&self, state_at: Timestamp) -> Option<EndedStretch> {
+        let ended = *self.ended_stretch.lock().ok()?;
+        ended.filter(|e| e.state_at == state_at)
+    }
+
+    /// Forgets `used` once its start is recorded, unless another stretch ended since.
+    pub(crate) fn forget_ended_stretch(&self, used: EndedStretch) {
+        if let Ok(mut ended) = self.ended_stretch.lock()
+            && *ended == Some(used)
+        {
+            *ended = None;
+        }
+    }
+}
+
 /// Sums known metrics; a field stays unknown only when every run left it unknown.
 #[must_use]
 pub fn sum_metrics(records: &[MetricsRecord]) -> Metrics {
@@ -253,7 +273,8 @@ impl App {
 
     /// Ends an idle task's working stretch once no background work is left, or keeps it while
     /// some is (SPEC-087 TIM-002). Every change of what the task shows is published, so this
-    /// follows what people see.
+    /// follows what people see. The write applies only while the task is still in the state it
+    /// read (SPEC-315 FWS-001).
     async fn follow_working_stretch(&self, task: &TaskRecord) {
         let background = self.background_shells_of(&task.id);
         let Some(working) = idle_stretch(task.status, task.activity, background) else {
@@ -262,6 +283,7 @@ impl App {
         let Ok(Some(times)) = self.deps.store.task_times(&task.id).await else {
             return;
         };
+        let mut continued = None;
         let next = match (working, times.working_since) {
             (false, Some(since)) => {
                 // The shell's end wakes the agent a moment later: that turn continues it.
@@ -273,14 +295,32 @@ impl App {
                 }
                 None
             }
-            (true, None) => Some(
-                self.take_ended_stretch(&task.id, times.state_at)
-                    .unwrap_or_else(|| self.now()),
-            ),
+            (true, None) => {
+                continued = self
+                    .existing_runtime(&task.id)
+                    .and_then(|runtime| runtime.ended_stretch_from(times.state_at));
+                Some(continued.map_or_else(|| self.now(), |ended| ended.since))
+            }
             _ => return,
         };
-        if let Err(err) = self.deps.store.set_working_since(&task.id, next).await {
-            tracing::warn!(task = %task.id, error = %err, "could not record the working stretch");
+        // Only the state this was decided on: a turn that started since keeps its stretch.
+        match self
+            .deps
+            .store
+            .set_working_since_from(&task.id, (task.activity, times), next)
+            .await
+        {
+            Ok(true) => {
+                if let (Some(used), Some(runtime)) = (continued, self.existing_runtime(&task.id)) {
+                    runtime.forget_ended_stretch(used);
+                }
+            }
+            Ok(false) => {
+                tracing::debug!(task = %task.id, "the task changed since it was read; its working stretch stays");
+            }
+            Err(err) => {
+                tracing::warn!(task = %task.id, error = %err, "could not record the working stretch");
+            }
         }
     }
 
@@ -796,6 +836,41 @@ mod tests {
             idle_stretch(TaskStatus::Queued, Some(Activity::Waiting), Some(0)),
             None
         );
+    }
+
+    /// SPEC-315: the stretch an idle task with background work continues stays remembered until
+    /// its start is recorded; a write the task's change refused leaves it for the task's own
+    /// wake-up, and only the stretch that was used is forgotten.
+    #[test]
+    fn an_ended_stretch_is_forgotten_only_once_recorded() {
+        let runtime = crate::supervisor::TaskRuntime::new();
+        let ended = EndedStretch {
+            since: Timestamp(1_000),
+            state_at: Timestamp(5_000),
+        };
+        let remembered = |runtime: &crate::supervisor::TaskRuntime| {
+            runtime.ended_stretch.lock().ok().and_then(|slot| *slot)
+        };
+        let remember = |runtime: &crate::supervisor::TaskRuntime, ended| {
+            if let Ok(mut slot) = runtime.ended_stretch.lock() {
+                *slot = Some(ended);
+            }
+        };
+        remember(&runtime, ended);
+        assert_eq!(runtime.ended_stretch_from(Timestamp(6_000)), None);
+        assert_eq!(runtime.ended_stretch_from(Timestamp(5_000)), Some(ended));
+        // The write was refused: nothing is forgotten.
+        assert_eq!(remembered(&runtime), Some(ended), "kept for the wake-up");
+        // Another stretch ended since: the one used is not it.
+        let later = EndedStretch {
+            since: Timestamp(7_000),
+            state_at: Timestamp(8_000),
+        };
+        remember(&runtime, later);
+        runtime.forget_ended_stretch(ended);
+        assert_eq!(remembered(&runtime), Some(later));
+        runtime.forget_ended_stretch(later);
+        assert_eq!(remembered(&runtime), None, "recorded, so used up");
     }
 
     /// SPEC-309 WSW-001/WSW-002: a task that goes on by itself from the idle state its stretch

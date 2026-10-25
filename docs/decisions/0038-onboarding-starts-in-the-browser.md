@@ -9,7 +9,9 @@ the page offers no Skip for now; skipping is an admin's recovery path through th
 [ADR-0077](0077-onboarding-task-is-created-when-needed.md): a `pending` sandbox has no resting
 onboarding task; it is created when onboarding starts or a task waits for it. Amended by
 [ADR-0188](0188-remote-control-uses-scoped-personal-api-tokens.md): an `operate` token, made by a
-person for their own agent, may start onboarding too; a `yulius login` token still cannot.
+person for their own agent, may start onboarding too; a `yulius login` token still cannot. The CLI,
+the onboarding status and the refusal name both ways since
+[SPEC-313](../../.ai/specs/SPEC-313-cli-and-onboarding-status-name-both-ways.md).
 
 ## Context
 

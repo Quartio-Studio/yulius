@@ -991,7 +991,7 @@ impl App {
             }
         }
         // The upload never starts onboarding: a person starts it on the sandbox page in the
-        // browser (SPEC-051 OBD-001, ADR-0038).
+        // browser, or their agent with an operate token (SPEC-051 OBD-001, ADR-0038, ADR-0188).
         let onboarding = self.refresh_onboarding(&sid).await?;
         let record = store.sandbox(&sid).await?.ok_or(AppError::NotFound)?;
         let status = self.onboarding_status(&record).await?;

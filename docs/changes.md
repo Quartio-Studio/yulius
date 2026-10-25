@@ -18,6 +18,26 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   ownership, reply), and the supertask's texts run without the mock's ambient activity, which
   started #8 before a slow run reached them. Editor presence was already fixed by #523 and the
   ownership text by #572.
+- A turn that starts while Yulius publishes an idle task keeps its "working …" time (SPEC-315,
+  task #301, fixes #895). The publish read the task and its times, decided to end (or start) the
+  idle task's working stretch, and then wrote it unconditionally: when a prompt made the task
+  Working in between, its stretch was cleared and the sidebar's clock started over at the next
+  change. The write now applies only while the task is still running with the activity and times
+  it read.
+- A production-stage deploy refused for a secret agents use names the deploying environment's
+  own table: "… in [cd.platform] secrets of yulius.toml …" for `[cd.platform]`, `[cd.prod]` for
+  production (SPEC-314, task #300, fixes #788). It always said `[cd.prod]`, which predates named
+  environments. The web mock now answers the server's whole sentence.
+- `yulius onboard` and the onboarding status name both ways to start onboarding (SPEC-313, task
+  #299, fixes #790). A `pending` sandbox reads "● waiting to start: Start onboarding on the sandbox
+  page, or `yulius project onboard` with an operate token", its pending item names
+  `onboarding_start` too, and a `yulius login` token's refusal points to the operate token
+  instead of "the CLI only uploads". The messages predated ADR-0188.
+- On 6.13+ kernels a session that dies because `yulius.service` reached its own task limit
+  (`TasksMax=`) says the sandbox hit its process limit, as on 6.8 (SPEC-316, task #302, fixes #823).
+  Those kernels count such a refused fork only in the service's group, which the limit counters did
+  not read; they now add it, as they do for the sandboxes' common limit. Limits of slices above the
+  service are not counted (ADR-0201, amended).
 - Every Claude Code run Yulius starts draws full screen again, so its terminal scrolls up
   (SPEC-310, task #296, fixes #898). Tasks of a project share one Claude config dir, and each
   contained run is pid 2 in its own PID namespace. Claude Code's full-screen boot canary

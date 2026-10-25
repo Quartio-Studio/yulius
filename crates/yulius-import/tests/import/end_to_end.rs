@@ -188,8 +188,12 @@ fn onboards_everything_then_sends_nothing_new_on_rerun() -> TestResult {
         "✓ Quartio-Studio/demo is on Yulius",
         "2 new · 0 updated · 0 unchanged, attributed to @alice",
         "Sessions     https://yulius.example/s/demo/sessions",
-        "Onboarding   ● waiting for Start onboarding in the browser",
-        "· someone clicks Start onboarding on the sandbox page: https://yulius.example/s/demo",
+        "Onboarding   ● waiting to start: Start onboarding on the sandbox page, or \
+         `yulius project onboard` with an operate token",
+        // SPEC-313 NBW-001/NBW-002 (#790): both ways to start it, the operate token's too.
+        "· someone starts onboarding: their agent runs `yulius project onboard` \
+         (`onboarding_start`) with an operate token, or they click Start onboarding on the \
+         sandbox page: https://yulius.example/s/demo",
         "New tasks wait for it and start by themselves once onboarding is ready.",
         // SPEC-141 R5: what people must fix is said too.
         "The production branch `main` is not protected from agents: add a ruleset.",
@@ -553,7 +557,10 @@ fn dry_runs_status_and_declined_confirmations_upload_nothing() -> TestResult {
     let output = status.output();
     assert!(output.contains("[2/2] Yulius"), "{output}");
     assert!(
-        output.contains("Onboarding   ● waiting for Start onboarding in the browser"),
+        output.contains(
+            "Onboarding   ● waiting to start: Start onboarding on the sandbox page, or \
+             `yulius project onboard` with an operate token"
+        ),
         "{output}"
     );
     assert!(output.contains("Not ready yet: tasks start once onboarding is done."));

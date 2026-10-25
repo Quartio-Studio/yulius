@@ -79,6 +79,32 @@ test('production says a secret agents use is never for production', async ({ app
   await confirm.getByRole('button', 'Deploy production').click();
   const refused = screen.getByRole('region', 'Deploy');
   await expect(refused.getByText(/agents use PAY_KEY/)).toBeVisible();
+  // The server's whole sentence, with the environment's own table (#788, SPEC-314).
+  await expect(refused.getByText(/separate secret of its own in \[cd\.prod\] secrets of yulius\.toml, added on the Secrets page \(\S+\/s\/studio\/secrets\?section=agents\); or a person first revokes the \.env copies and hosts of PAY_KEY$/)).toBeVisible();
+  await expect(refused.getByText('Not started')).toBeVisible();
+});
+
+// #788 (SPEC-314 RNE-002): with a secret agents use and one waiting for a person, the mock's
+// refusal names both in one sentence, as the server's does
+// (cd::production_never_gets_a_secret_bound_to_hosts).
+test('a production refusal also names the secret waiting for a person, as the server does', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci?section=cd'));
+  const prod = screen.getByRole('region', 'Production environment');
+  await expect(prod.getByText('Promotes')).toBeVisible();
+  await browser.evaluate(() => {
+    const w = window as unknown as { __yuliusMock: { cd: Record<string, { environments: { secrets: { name: string; state: string }[] }[] }> } };
+    w.__yuliusMock.cd.sb_studio.environments[1].secrets.push({ name: 'PAY_KEY', state: 'agents_use' }, { name: 'MAIL_KEY', state: 'not_allowed' });
+  });
+  await screen.getByRole('radio', 'CI (tests)').click();
+  await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();
+  await screen.getByRole('radio', 'CD (deployment)').click();
+  await expect(prod.getByText('agents use it: production never gets it')).toBeVisible();
+  await prod.getByRole('button', 'Deploy production…').click();
+  const confirm = screen.getByRole('dialog', 'Deploy production?');
+  await confirm.getByRole('textbox', 'Type studio to confirm').fill('studio');
+  await confirm.getByRole('button', 'Deploy production').click();
+  const refused = screen.getByRole('region', 'Deploy');
+  await expect(refused.getByText(/or a person first revokes the \.env copies and hosts of PAY_KEY\. Also, a person who manages MAIL_KEY allows it for production deploys$/)).toBeVisible();
   await expect(refused.getByText('Not started')).toBeVisible();
 });
 

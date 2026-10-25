@@ -469,7 +469,8 @@ impl App {
                 task.status.as_str()
             )));
         }
-        // Continuing a pending sandbox's onboarding task starts onboarding: browser only.
+        // Continuing a pending sandbox's onboarding task starts onboarding: a person only, in the
+        // browser or through their operate token (ADR-0188).
         self.ensure_onboarding_continue_allowed(ctx, &task).await?;
         // Continuing is starting a task: refused while the sandbox is being prepared (U-08).
         self.ensure_tasks_may_start(&task.sandbox_id, task.origin)
