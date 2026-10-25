@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-25
 
+- On 6.13+ kernels a session that dies because `yulius.service` reached its own task limit
+  (`TasksMax=`) says the sandbox hit its process limit again (SPEC-316, task #302, fixes #823).
+  Those kernels count such a refused fork only in the service's group, which the limit counters
+  did not read; they now add it, as they do for the sandboxes' common limit. Limits of slices
+  above the service are not counted (ADR-0201, amended).
 - Every Claude Code run Yulius starts draws full screen again, so its terminal scrolls up
   (SPEC-310, task #296, fixes #898). Tasks of a project share one Claude config dir, and each
   contained run is pid 2 in its own PID namespace. Claude Code's full-screen boot canary

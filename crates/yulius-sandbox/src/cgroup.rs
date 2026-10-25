@@ -397,15 +397,17 @@ impl Delegation {
         }
     }
 
-    /// `sandbox`'s limit counters (SPEC-268 PID-004, review rounds 1 and 2; SPEC-272 SHR-003).
+    /// `sandbox`'s limit counters (SPEC-268 PID-004, review rounds 1 and 2; SPEC-272 SHR-003;
+    /// SPEC-316 LIM-001).
     /// Refused forks are `max` in `pids.events` of every group of the sandbox (at most 4096) but
     /// CI's and the engine's subtrees, whose processes are stopped at their own leaf limits while
     /// sessions keep forking; a paused run's `agents/run-*` group counts. Kernel 6.8 counts a
     /// refused fork there, in the forking task's own group, wherever the limit was. Where the
     /// sandbox has `pids.events.local` (6.13+) the same groups' `.local` files are read instead,
-    /// and `<unit>/sandboxes`'s: by default `max` there counts where a limit was hit (the
-    /// sandbox's own, or the common one of all sandboxes, which is shared), with
-    /// `pids_localevents` the forking group, as on 6.8. OOM kills are the sandbox's
+    /// and those of `<unit>/sandboxes` and `<unit>` (SPEC-316): by default `max` there counts
+    /// where a limit was hit (the sandbox's own, the common one of all sandboxes or the
+    /// service's, both shared), with `pids_localevents` the forking group, as on 6.8. Slices
+    /// above the unit are outside the delegation and not read. OOM kills are the sandbox's
     /// `memory.events` `oom_kill` (hierarchical). Zero for a group that is not there.
     #[must_use]
     pub fn limit_counters(&self, sandbox: &str) -> LimitCounters {
@@ -428,7 +430,10 @@ impl Delegation {
         let groups = self.sandbox_paths(sandbox);
         let apart = [groups.ci.as_path(), groups.engine.as_path()];
         let mut task_limit_hits = if local {
-            read(&self.unit.join(SANDBOXES), events, "max").unwrap_or(0)
+            [self.unit.join(SANDBOXES), self.unit.clone()]
+                .iter()
+                .map(|group| read(group, events, "max").unwrap_or(0))
+                .fold(0, u64::saturating_add)
         } else {
             0
         };
