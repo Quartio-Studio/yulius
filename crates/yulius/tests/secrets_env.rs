@@ -940,6 +940,34 @@ async fn multi_line_keys_reach_the_env_byte_identical_to_their_files() -> TestRe
     Ok(())
 }
 
+/// SPEC-302 (#599): an encrypted PEM stored as an agent secret redacts its body lines, not its
+/// public RFC 1421 headers: a transcript holding `Proc-Type: 4,ENCRYPTED` shows it as it is.
+#[tokio::test]
+async fn an_encrypted_pem_redacts_its_body_not_its_headers() -> TestResult {
+    let w = world().await?;
+    let body = "c3ludGhldGljLWVuY3J5cHRlZC1wZW0tYm9keQ==";
+    let headers = "Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF";
+    let pem = key_file(&format!("{} PRIVATE KEY", "RSA"), &[headers, "", body]);
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "ENCRYPTED_PEM", "value": pem.replace('\n', "\\n")})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let text = format!("$ head key.pem\n{headers}\n\n{body}\n");
+    let shown =
+        w.h.app
+            .redact_for_sandbox(&yulius_domain::ids::SandboxId::parse("s1")?, &text)
+            .await;
+    assert!(shown.contains(headers), "{shown}");
+    assert!(!shown.contains(body), "{shown}");
+    assert!(shown.contains("[secret:ENCRYPTED_PEM]"), "{shown}");
+    Ok(())
+}
+
 /// SPEC-256 LOB-004: a secret created already allowed into `.env` files (the person's laptop
 /// agent imports a deploy key) is copied by the first `secret_copy_to_env`, with no person;
 /// the allowance is audited at creation. Refused for a secret a person confirms (not

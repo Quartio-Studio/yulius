@@ -127,14 +127,68 @@ fn wipe(value: String) {
     std::hint::black_box(&bytes);
 }
 
-/// The lines of a key block's file that hold key material (its armour excluded): a copied key
-/// file shows them one per line, so redaction looks for each (SPEC-186 SAV-005). Empty for a
-/// value that is not a key block.
+/// A base64 (or base64url) symbol.
+fn base64_symbol(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "+/=-_".contains(c)
+}
+
+/// The longest run of base64 symbols a line of public key text holds: an IV in `DEK-Info` is at
+/// most 32 hex digits. Key material runs longer (a body line is 64 or 70 symbols).
+const PUBLIC_RUN_LEN: usize = 32;
+
+/// The headers a key block's text holds that are public: RFC 1421's (`Proc-Type`, `DEK-Info`),
+/// OpenPGP armour's (RFC 4880) and the PKCS#12 bag attributes OpenSSL prints.
+const PUBLIC_HEADERS: [&str; 9] = [
+    "Proc-Type",
+    "DEK-Info",
+    "Version",
+    "Comment",
+    "Hash",
+    "Charset",
+    "MessageID",
+    "localKeyID",
+    "friendlyName",
+];
+
+/// Whether a trimmed line of a key block is public text of a known shape: one of the
+/// [`PUBLIC_HEADERS`] (`Proc-Type: 4,ENCRYPTED`, `Hash: SHA256`) or OpenSSL's `subject=` and
+/// `issuer=` between a bundle's blocks. Its value holds no `:` (another header or a key's
+/// colon-hex dump joined onto it), no `(0x` (OpenSSL's inline integer) and no key-length base64
+/// run (a body joined onto it).
+fn public_line(line: &str) -> bool {
+    let header = line.split_once(": ").and_then(|(name, value)| {
+        PUBLIC_HEADERS
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(name))
+            .then_some(value)
+    });
+    let value = header.or_else(|| {
+        line.strip_prefix("subject=")
+            .or_else(|| line.strip_prefix("issuer="))
+    });
+    value.is_some_and(|value| {
+        !value.trim().is_empty() && !value.contains(':') && !value.contains("(0x")
+    }) && line
+        .split(|c: char| !base64_symbol(c))
+        .all(|run| run.len() <= PUBLIC_RUN_LEN)
+}
+
+/// The lines of a key block's file that may hold key material: a copied key file shows them one
+/// per line, so redaction looks for each (SPEC-186 SAV-005), trimmed. Every line counts but its
+/// armour, blank lines and public text of a known shape (named public headers, `subject=`,
+/// `issuer=`), so a key's text dump or a body joined onto its headers stays a needle (SPEC-302,
+/// ADR-0215). Empty for a value that is not a key block.
 #[must_use]
 pub fn key_lines(value: &str) -> Vec<String> {
     key_block(value).map_or_else(Vec::new, |file| {
         file.lines()
-            .filter(|line| !line.starts_with("-----"))
+            .map(str::trim)
+            .filter(|line| {
+                !line.is_empty()
+                    && armour(line, "BEGIN").is_none()
+                    && armour(line, "END").is_none()
+                    && !public_line(line)
+            })
             .map(str::to_owned)
             .collect()
     })
@@ -435,6 +489,164 @@ mod tests {
             ]
         );
         Ok(())
+    }
+
+    /// SPEC-302 (#599): an encrypted PEM's RFC 1421 headers, PGP armour headers, blank lines and
+    /// OpenSSL's `subject=`/`issuer=` between a bundle's blocks are public text that would show as
+    /// `[secret:NAME]` wherever it appears: not redaction needles. Body lines stay needles.
+    #[test]
+    fn header_lines_and_blank_lines_are_not_key_lines() {
+        let encrypted = key_file(
+            &format!("{} PRIVATE KEY", "RSA"),
+            &[
+                "proc-type: 4,ENCRYPTED",
+                "DEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF",
+                "friendlyName: synthetic",
+                "",
+                "c3ludGhldGljLWVuY3J5cHRlZC1ib2R5LTAx",
+                "c3ludGhldGljLTAy+/==",
+                // A body whose breaks became spaces still holds the key: kept, trimmed.
+                " c3ludGhldGlj LWJvZHktMDE= LTAy ",
+            ],
+        );
+        let pgp = key_file(
+            &format!("{} PRIVATE KEY BLOCK", "PGP"),
+            &[
+                "Version: Synthetic 1.0",
+                "Hash: SHA256",
+                // Every named header, in any case.
+                "Charset: UTF-8",
+                "MessageID: synthetic-message",
+                "comment: synthetic comment",
+                "",
+                "c3ludGhldGljLXBncC1ib2R5LTAx",
+                // A body in the base64url alphabet keeps its needle too.
+                "c3ludGhldGljLXVybC1ib2R5_-",
+                "=c3lu",
+            ],
+        );
+        let bundle = format!(
+            "{}subject=CN = localhost\nissuer=CN = Synthetic CA\n{}",
+            key_file("SYNTHETIC KEY", &["c3ludGhldGljLWtleS1ib2R5"]),
+            // A stray space around a body line: the line is kept, trimmed.
+            key_file("CERTIFICATE", &["  c3ludGhldGljLWNlcnQtYm9keQ==  "])
+        );
+        for (file, body) in [
+            (
+                &encrypted,
+                vec![
+                    "c3ludGhldGljLWVuY3J5cHRlZC1ib2R5LTAx",
+                    "c3ludGhldGljLTAy+/==",
+                    "c3ludGhldGlj LWJvZHktMDE= LTAy",
+                ],
+            ),
+            (
+                &pgp,
+                vec![
+                    "c3ludGhldGljLXBncC1ib2R5LTAx",
+                    "c3ludGhldGljLXVybC1ib2R5_-",
+                    "=c3lu",
+                ],
+            ),
+            (
+                &bundle,
+                vec!["c3ludGhldGljLWtleS1ib2R5", "c3ludGhldGljLWNlcnQtYm9keQ=="],
+            ),
+        ] {
+            let stored = file.trim_end().replace('\n', "\\n");
+            assert_eq!(key_block(&stored).as_deref(), Some(file.as_str()));
+            assert_eq!(key_lines(&stored), body, "{file}");
+        }
+    }
+
+    /// SPEC-302 (review rounds 2 and 3): a body joined onto its header line, by spaces or glued
+    /// (a value whose breaks became spaces or were dropped, `\n` kept only around the armour), is
+    /// key material: a header line with a run of more than 32 base64 symbols stays a needle
+    /// whole. A header alone never has one: an IV is at most 32 hex digits.
+    #[test]
+    fn a_line_with_a_key_length_base64_run_stays_a_needle() {
+        let one = "c3ludGhldGljLWpvaW5lZC1ib2R5LWxpbmUtMDE=";
+        let two = "c3ludGhldGljLTAy";
+        let iv = "00112233445566778899AABBCCDDEEFF";
+        let kept = [
+            format!("Proc-Type: 4,ENCRYPTED DEK-Info: AES-128-CBC,{iv} {one}  {two}"),
+            format!("Proc-Type: 4,ENCRYPTEDDEK-Info: AES-128-CBC,{iv}{one}{two}"),
+            format!("Version: GnuPG v2 Comment: https://synthetic.example/{one} =c3lu"),
+            // Separators that are no whitespace (zero-width space, BOM) or that are (NBSP).
+            format!("{one}\u{200b}{two}"),
+            format!("\u{feff}{one}"),
+            format!("Comment: x, {one}\u{a0}{two}"),
+            format!("Comment: x,{}", "k".repeat(33)),
+        ];
+        for line in &kept {
+            let file = key_file("SYNTHETIC KEY", &[line]);
+            let stored = file.trim_end().replace('\n', "\\n");
+            assert_eq!(key_block(&stored).as_deref(), Some(file.as_str()));
+            assert_eq!(key_lines(&stored), vec![line.trim().to_owned()], "{line}");
+        }
+        let headers = key_file(
+            &format!("{} PRIVATE KEY", "RSA"),
+            &[
+                "Proc-Type: 4,ENCRYPTED",
+                &format!("DEK-Info: AES-256-CBC,{iv}"),
+                &format!("Comment: x,{}", "k".repeat(32)),
+                "Comment: some long comment made of plain words only.",
+                "",
+                one,
+            ],
+        );
+        let stored = headers.trim_end().replace('\n', "\\n");
+        assert_eq!(key_lines(&stored), vec![one.to_owned()]);
+    }
+
+    /// SPEC-302 (review round 4): a key's text dump (`openssl genpkey -text`, then `cat` with its
+    /// certificate) holds private key material as colon-separated hex: those lines stay needles.
+    /// Only known public shapes (named public headers, `subject=`, `issuer=`) are left out.
+    #[test]
+    fn a_key_dump_between_blocks_stays_a_needle() {
+        let body = "c3ludGhldGljLWR1bXAta2V5LWJvZHk=";
+        let cert = "c3ludGhldGljLWR1bXAtY2VydC1ib2R5";
+        let hex = "73:79:6e:74:68:65:74:69:63:2d:68:65:78:2d:30:31:";
+        let file = format!(
+            "{}Private-Key: (synthetic)\nprivateExponent:\n    {hex}\n    32:33\n    \
+             localKeyID: 01 02 03 04\nsubject=CN = synthetic.example\n{}",
+            key_file("SYNTHETIC KEY", &[body]),
+            key_file("CERTIFICATE", &[cert])
+        );
+        let stored = file.trim_end().replace('\n', "\\n");
+        assert_eq!(key_block(&stored).as_deref(), Some(file.as_str()));
+        assert_eq!(
+            key_lines(&stored),
+            vec![
+                body,
+                "Private-Key: (synthetic)",
+                "privateExponent:",
+                hex,
+                "32:33",
+                cert
+            ]
+        );
+        // The dump joined onto one line (its breaks became spaces or were dropped), a header
+        // joined onto another, and OpenSSL's inline small integers are not public text either.
+        for line in [
+            format!("Private-Key: (synthetic) privateExponent:     {hex} 32:33"),
+            format!("privateExponent:    {hex}"),
+            "prime1: 18446744073709551557 (0xffffffffffffffc5)".to_owned(),
+            // Even under a named header: `openssl x509 -text` writes `Version: 3 (0x2)`.
+            "Version: 18446744073709551557 (0xffffffffffffffc5)".to_owned(),
+            "Comment: https://synthetic.example/".to_owned(),
+            "subject=CN = synthetic.example privateExponent: 2a:9f".to_owned(),
+            format!("Private-Key: (synthetic)privateExponent:{hex}"),
+            // Header-shaped lines no format writes in a key block, but a person might paste:
+            // only the named public headers are left out.
+            "Passphrase: synthetic-pass".to_owned(),
+            "Key: 00112233445566778899aabbccddeeff".to_owned(),
+            "00000000: 3082 04a3 0201 0002 8201 0100 c3b2 a1f4  0...............".to_owned(),
+        ] {
+            let file = key_file("SYNTHETIC KEY", &[&line]);
+            let stored = file.trim_end().replace('\n', "\\n");
+            assert_eq!(key_lines(&stored), vec![line.clone()], "{line}");
+        }
     }
 
     /// SPEC-186 SAV-005: a key stored with literal `\n` (an agent secret never spans lines) is

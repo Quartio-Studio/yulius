@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-24
 
+- Public lines of a stored key are no longer redacted (SPEC-302, task #288, fixes #599). Every
+  line of a key block but its armour was a redaction needle, so an encrypted PEM's
+  `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour headers (`Version: …`, `Hash: SHA256`)
+  and OpenSSL's `subject=`/`issuer=` between a bundle's blocks showed as `[secret:NAME]` anywhere
+  in the sandbox. Blank lines, named public headers (RFC 1421, PGP armour, PKCS#12) and
+  `subject=`/`issuer=` lines are no needles now when their value holds no `:` or `(0x` and no
+  key-length base64 run; every other line stays one, so a body joined onto a header or a key's
+  colon-hex dump is still redacted (ADR-0215).
 - A run lost while Yulius runs saves the screen it was lost on (SPEC-301, task #287, #686). A
   lost connection, or a stop or close whose escalation timed out, recorded the loss without saving
   the hub's screen, so the task's terminal later showed the screen of the last settled turn and
