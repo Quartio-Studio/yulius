@@ -12,7 +12,7 @@
 //!            [--hooks YULIUS_EXE] [--goal-background SECONDS]
 //!            [--goal-agent SECONDS [--goal-agent-interim SECONDS]]
 //!            [--goal-monitor SECONDS [--goal-monitor-ends]] [--goal-verdict met|failed|none]
-//!            [--goal-met-on-wake-ms MS [--wake-stop-lost]]
+//!            [--goal-met-on-wake-ms MS [--wake-stop-lost]] [--wake-delay-ms MS]
 //!            [--goal-continue-ms MS
 //!            [--goal-continue-verdict] [--goal-continue-dies]] [--goal-delay-ms MS] [--drop-lines N]
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
@@ -74,7 +74,9 @@
 //! Code's evaluator waits while background work runs) and the turn the shell's end wakes records
 //! the goal as achieved MS after its Stop hook (the evaluator's own time), then closes; with
 //! `--wake-stop-lost` too, that turn's Stop hook never reaches Yulius (the hook client fails open,
-//! as on an error answer or an unreachable server). With
+//! as on an error answer or an unreachable server). `--wake-delay-ms MS` wakes the session MS after
+//! the background shell exits instead of at once, as Claude Code notices it only when it polls
+//! its background tasks. With
 //! `--idle-compact-ms MS` the idle session compacts itself MS after the goal turn, like Claude
 //! Code 2.1.292 "before the prompt cache expired": the `compact_boundary` record, the summary
 //! user record it continues from (`isCompactSummary`), the files it reads again, its
@@ -205,6 +207,7 @@ struct Options {
     goal_delay_ms: u64,
     goal_met_on_wake_ms: Option<u64>,
     wake_stop_lost: bool,
+    wake_delay_ms: u64,
     opening_turn_ms: Option<u64>,
     echo_turn_ms: u64,
     session_start: bool,
@@ -253,6 +256,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         goal_delay_ms: 0,
         goal_met_on_wake_ms: None,
         wake_stop_lost: false,
+        wake_delay_ms: 0,
         opening_turn_ms: None,
         echo_turn_ms: 0,
         session_start: false,
@@ -346,6 +350,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 options.goal_met_on_wake_ms = Some(ms.min(MAX_GOAL_DELAY_MS));
             }
             "--wake-stop-lost" => options.wake_stop_lost = true,
+            "--wake-delay-ms" => {
+                let ms: u64 = parse_number(&flag, args.next())?;
+                options.wake_delay_ms = ms.min(MAX_GOAL_DELAY_MS);
+            }
             "--goal-delay-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.goal_delay_ms = ms.min(MAX_GOAL_DELAY_MS);
@@ -1028,9 +1036,10 @@ impl Hooks {
 }
 
 /// Starts a background shell shaped like Claude Code's Bash tool (`run_in_background`) and wakes
-/// the agent when it exits, like Claude Code does.
+/// the agent `wake_delay_ms` after it exits, like Claude Code does when it next polls.
 fn start_background(
     seconds: u64,
+    wake_delay_ms: u64,
     verdict: Option<WakeVerdict>,
     transcript: Option<Arc<Mutex<Transcript>>>,
     hooks: Option<Hooks>,
@@ -1044,6 +1053,7 @@ fn start_background(
     let pid = child.id();
     std::thread::spawn(move || {
         let _ = child.wait();
+        std::thread::sleep(Duration::from_millis(wake_delay_ms));
         let prompt = format!(
             "<task-notification>\n<task-id>bash-{pid}</task-id>\n<status>completed</status>\n</task-notification>"
         );
@@ -1378,7 +1388,13 @@ fn goal_turn(
             after_ms,
             stop_lost: options.wake_stop_lost,
         });
-        let pid = start_background(seconds, verdict, transcript.cloned(), hooks.cloned())?;
+        let pid = start_background(
+            seconds,
+            options.wake_delay_ms,
+            verdict,
+            transcript.cloned(),
+            hooks.cloned(),
+        )?;
         say(&format!("BACKGROUND {pid}"))?;
     }
     std::thread::sleep(Duration::from_millis(options.goal_delay_ms));
@@ -2056,6 +2072,7 @@ mod tests {
         assert!(parse(&["--unknown"]).is_err());
         assert!(parse(&["--mode", "ignore-term"]).is_ok_and(|o| o.ignore_term));
         assert!(parse(&["--tui"]).is_ok_and(|o| o.tui));
+        assert!(parse(&["--wake-delay-ms", "999999"]).is_ok_and(|o| o.wake_delay_ms == MAX_GOAL_DELAY_MS));
         assert!(parse(&["--seconds", "999999"]).is_ok_and(|o| o.seconds == MAX_SLEEP_SECONDS));
         assert!(parse(&["--hooks"]).is_err());
         assert!(parse(&["--interrupts"]).is_ok_and(|o| o.interrupts));
