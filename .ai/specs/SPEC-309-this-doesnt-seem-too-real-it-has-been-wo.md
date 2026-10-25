@@ -55,9 +55,9 @@ agent.
 ## Plan
 
 - [x] Root cause and spec of the reset working stretch
-- [ ] Fake agent wakes a session a moment after its shell ends
-- [ ] Regression test: a woken turn keeps the working stretch (failing)
-- [ ] A turn the agent's own background work wakes continues the stretch
+- [x] Fake agent wakes a session a moment after its shell ends
+- [x] Regression test: a woken turn keeps the working stretch (failing)
+- [x] A turn the agent's own background work wakes continues the stretch
 - [ ] Docs, changes and review answered
 - [ ] Gates green and delivered on dev
 
@@ -66,18 +66,25 @@ agent.
 - A goal task whose turn leaves a background shell, whose end Claude Code reports seconds after
   the shell exits (after Yulius's probe saw it), publishes one and the same `working_since` in
   every update while it works, before and after the wake (WSW-001).
-- A typed prompt to an idle task with no background work starts a new stretch (WSW-002; existing
-  behavior, kept by the state-time check).
+- A typed prompt to an idle task with no background work starts a new stretch (WSW-002). The
+  prompt hook runs while the task is still in the state its stretch ended in, so the state-time
+  check cannot tell it from a wake-up: only `is_typed_prompt` does (a typed prompt never calls
+  the restore). The state time guards every other change in between.
+- The same holds when the wake's prompt hook never reaches Yulius (it reads the wake-up from the
+  transcript, `Observation::UserTurn { wake: true }`).
 
 ## Test plan
 
 - Fake agent: `--wake-delay-ms MS` delays Claude Code's wake after the background shell exits, as
-  Claude Code's polling does.
-- Integration (`crates/yulius/tests/task_done.rs`):
-  `a_turn_its_shell_wakes_keeps_the_working_stretch`: goal turn with a 4 s shell, wake 7 s after
-  its exit (longer than `SHELL_PROBE_MS`, so the probe sees the shell gone first), the woken turn's
-  goal achieved; every `TaskUpdated` of the task while working carries the first stretch's start.
-  Fails on `dev` (the woken turn publishes a later `working_since`).
+  Claude Code's polling does; `--wake-prompt-lost` drops the wake's prompt hook.
+- Integration (`crates/yulius/tests/task_done.rs`), `a_woken_turn_keeps_the_working_stretch`:
+  goal turn with a 4 s shell, wake 10 s after its exit (well past `SHELL_PROBE_MS`, so the probe
+  sees the shell gone first; the test waits until the stretch is ended in the store), the woken
+  turn's goal achieved; every `TaskUpdated` of the task while working carries the first stretch's
+  start (a lagging event receiver fails the test). Then a typed prompt: its updates carry a later
+  start. Run as `a_turn_its_shell_wakes_keeps_the_working_stretch` (hooks) and
+  `a_wake_read_from_the_transcript_keeps_the_working_stretch` (prompt hook lost). Fails on `dev`
+  (the woken turn publishes a later `working_since`).
 - Pure rule: `tasks::tests::an_ended_stretch_continues_only_from_the_same_idle_state`.
 
 ## Decisions
@@ -91,4 +98,29 @@ agent.
 - **Tied to the state time, not a time window.** A grace period would guess Claude Code's latency;
   the unchanged state time proves nothing happened in between (no prompt, no attention flag, no
   status change), whatever the gap.
+- **The restored start is re-asserted after the task is Working** (`keep_working_stretch`): a
+  publish between the restore and the activity write would end the stretch again; once Working,
+  no publish ends it. One store write for both would need a new store method for one call site.
+- **Prompts starting with `<` count as Claude Code's own** (`is_typed_prompt`, pre-existing): a
+  person who pastes markup into an idle task continues its stretch, as it already keeps an
+  achieved goal. Accepted: cosmetic, and the same rule decides both.
 - No ADR: this corrects SPEC-087 TIM-002's implementation, it takes no new lasting direction.
+
+## Review
+
+Independent review (fresh session, `om-code-review`), round 1 at `511ec4ca`: request changes.
+
+- Own, major: no test of a typed prompt starting a new stretch; spec credited the wrong check.
+  Fixed: the integration test types a prompt after the woken turn (mutation: dropping the
+  `is_typed_prompt` guard fails it); acceptance criterion corrected.
+- Own, minor: a publish between the restore and the Working write undoes it. Fixed:
+  `keep_working_stretch` re-asserts the start once the task is Working.
+- Own, minor: the transcript's wake path (`UserTurn { wake }`) missed the restore. Fixed, tested
+  with `--wake-prompt-lost` (mutation: removing it fails the test). The `(true, None)` branch and
+  `resume_working` use the same remembered stretch and guard (unit test
+  `an_ended_stretch_continues_only_from_the_same_idle_state`); no separate integration test.
+  Markup prompts: accepted (Decisions).
+- Pre-existing, minor: `follow_working_stretch` writes unconditionally after separate reads:
+  issue #895.
+- Nits: wake delay raised to `SHELL_PROBE_MS + 5 s`, lag fails the test, the gap is checked in
+  the store; Plan ticked, Evidence added.
