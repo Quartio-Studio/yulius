@@ -475,7 +475,10 @@ test('an upload that ends after the task started says so in the kept card', asyn
   await touchProduct7(browser, { status: 'starting', started: false });
   await expect(card).toContainText('The task has started');
   await browser.evaluate(() => (window as unknown as Holding).__release!());
-  await expect(browser.locator('.queue-card .upload-status:has-text("The task has started: the file was not added.")')).toBeVisible();
+  // In the card's error line, where its refusals go (SPEC-306 QFN-001); the upload status adds
+  // nothing that contradicts it.
+  await expect(browser.locator('.queue-card .field-error:has-text("The task has started: the file was not added.")')).toBeVisible();
+  await expect(browser.locator('.queue-card .upload-status .upload-text:has-text("Nothing was added.")')).toBeVisible();
 });
 
 test('an image put in the message twice keeps one number, also once queued', async ({ app, browser, screen }) => {
@@ -513,7 +516,12 @@ test('a file pasted into an empty box keeps the card when the task starts during
   await touchProduct7(browser, { status: 'starting', started: false });
   await expect(card).toContainText('The task has started');
   await browser.evaluate(() => (window as unknown as Holding).__release!());
-  await expect(browser.locator('.queue-card .upload-status:has-text("The task has started: the file was not added.")')).toBeVisible();
+  const notice = browser.locator('.queue-card .field-error:has-text("The task has started: the file was not added.")');
+  await expect(notice).toBeVisible();
+  // The task's next update keeps the card and its notice until dismissed (#559, SPEC-306 QFN-002).
+  await touchProduct7(browser, { status: 'running', started: true });
+  await expect(card).toContainText('The task has started: copy your message into its session.');
+  await expect(notice).toBeVisible();
   // The card's Dismiss (the upload status has its own).
   await browser.locator('.queue-compose > button:has-text("Dismiss")').click();
   await expect(card).toBeHidden();
