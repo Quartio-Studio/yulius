@@ -2472,6 +2472,278 @@ async fn kill_run_host(app: &App, id: &TaskId) -> TestResult {
     Ok(())
 }
 
+/// SPEC-301 LRS-001 (#686): a run's connection is lost while the server runs, after output that
+/// came since its last settled turn. The loss saves the hub's screen: the run's `final-screen`
+/// shows that output, not the screen its last turn settled on.
+#[test]
+fn a_run_lost_while_the_server_runs_saves_its_live_screen() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, _host, id) = gated_goal_task(&data, &fake).await?;
+        wait_for("Done", Duration::from_secs(90), || async {
+            activity(&app, &id).await == Some(Activity::Done)
+        })
+        .await?;
+        app.send_input(&id, b"one more\r").await?;
+        let run_dir = PathBuf::from(
+            &app.deps
+                .store
+                .live_attempt(&id)
+                .await?
+                .ok_or("no run")?
+                .run_dir,
+        );
+        // The settled turn's save, so the output below comes after it.
+        wait_for("the settled turn's screen", Duration::from_secs(20), || {
+            let saved = std::fs::read(run_dir.join("final-screen"))
+                .is_ok_and(|s| String::from_utf8_lossy(&s).contains("ECHO: one more"));
+            async move { saved }
+        })
+        .await?;
+        assert_eq!(activity(&app, &id).await, Some(Activity::Waiting));
+        // Output since the settled turn, fed to the hub as the run's reader would (the idle fake
+        // agent writes none by itself).
+        let hub = &app.runtime(&id).hub;
+        hub.output(hub.output_seq() + 1, b"\r\nwritten after the settled turn");
+
+        kill_run_host(&app, &id).await?;
+        let rests = wait_for("the loss", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await;
+        assert!(rests.is_ok(), "{}", run_states(&app, &id).await);
+        assert_eq!(
+            task(&app, &id).await?.status,
+            TaskStatus::Stopped(StopReason::Lost)
+        );
+        let screen = std::fs::read(run_dir.join("final-screen"))?;
+        assert!(
+            String::from_utf8_lossy(&screen).contains("written after the settled turn"),
+            "the lost run's saved screen is its last one: {:?}",
+            String::from_utf8_lossy(&screen)
+        );
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A continued task whose new run's attach is held: the first run (its screen `GOAL SET`, still in
+/// the hub) stopped, the second spawned. The continue waits for its launch on a worker; stops arm
+/// a 5 s escalation.
+struct HeldContinue {
+    app: Arc<App>,
+    host: Arc<support::gated::GatedHost>,
+    id: TaskId,
+    second: yulius_app::model::AttemptRecord,
+    continued: tokio::task::JoinHandle<Result<(), yulius_app::error::AppError>>,
+}
+
+async fn continue_on_held_attach(data: &Path, fake: &Path) -> Result<HeldContinue, BoxError> {
+    let host = Arc::new(support::gated::GatedHost::new(PathBuf::from(env!(
+        "CARGO_BIN_EXE_yulius"
+    ))));
+    let agent = FakeAgentOptions {
+        transcript: true,
+        hooks: true,
+        ..FakeAgentOptions::default()
+    };
+    let (app, _) = start_on(
+        data,
+        fake,
+        agent,
+        0,
+        Some(host.clone()),
+        Some(5_000),
+        false,
+        None,
+    )
+    .await?;
+    let (sandbox, user) = seed(&app, data).await?;
+    let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
+    wait_for("the launch goal", Duration::from_secs(60), || {
+        screen_contains(&app, &id, "GOAL SET")
+    })
+    .await?;
+    stop(&app, &id).await?;
+    assert!(screen_contains(&app, &id, "GOAL SET").await);
+    host.arm();
+    let ctx = yulius_app::auth::AuthContext {
+        user: app.deps.store.user(&user).await?.ok_or("user")?,
+        csrf_token: None,
+        session_hash: None,
+        token: None,
+    };
+    let continued = {
+        let (app, id) = (app.clone(), id.clone());
+        tokio::spawn(async move {
+            app.continue_task(
+                &ctx,
+                id.as_str(),
+                &yulius_contracts::api::tasks::ContinueTask { account_id: None },
+            )
+            .await
+            .map(drop)
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(60), host.reached()).await?;
+    let second = app.deps.store.live_attempt(&id).await?.ok_or("no run")?;
+    Ok(HeldContinue {
+        app,
+        host,
+        id,
+        second,
+        continued,
+    })
+}
+
+/// Waits until `attempt` is recorded lost.
+async fn lost(app: &App, attempt: &yulius_domain::ids::AttemptId) -> TestResult {
+    wait_for("the run's loss", Duration::from_secs(30), || async {
+        app.deps
+            .store
+            .attempt(attempt)
+            .await
+            .is_ok_and(|a| a.is_some_and(|a| a.state == AttemptState::Lost))
+    })
+    .await
+}
+
+/// The run's saved screen, when it has one, is not the run before's (`GOAL SET`).
+fn not_the_run_befores_screen(run_dir: &str) -> TestResult {
+    let saved = Path::new(run_dir).join("final-screen");
+    if let Ok(screen) = std::fs::read(&saved) {
+        let screen = String::from_utf8_lossy(&screen);
+        assert!(
+            !screen.contains("GOAL SET"),
+            "the lost run took the run before's screen: {screen:?}"
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-301 LRS-001 (review): a continued task's new run is lost before Yulius attached to it
+/// (its stop's escalation ends it). The hub still shows the previous run's screen, which is not
+/// the new run's: the new run saves no screen.
+#[test]
+fn a_run_lost_before_it_attached_saves_no_screen_of_the_run_before() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let held = continue_on_held_attach(&data, &fake).await?;
+        let app = &held.app;
+        app.stop_task_now(&held.id).await?;
+        let ended = lost(app, &held.second.id).await;
+        held.host.release();
+        let _ = tokio::time::timeout(Duration::from_secs(30), held.continued).await?;
+        assert!(ended.is_ok(), "{}", run_states(app, &held.id).await);
+        assert!(
+            !Path::new(&held.second.run_dir)
+                .join("final-screen")
+                .exists(),
+            "the run that never attached saved a screen"
+        );
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-301 LRS-001 (review round 2): the new run is lost just as Yulius attaches to it, once it
+/// counts as the task's attached run. Its hub shows its own screen by then: the run before's is
+/// not saved as its own.
+#[test]
+fn a_run_lost_as_it_attaches_saves_no_screen_of_the_run_before() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let held = continue_on_held_attach(&data, &fake).await?;
+        let app = &held.app;
+        // At the attach, the stop's escalation loses the run before the attach goes on.
+        let (seen, mut hooked) = tokio::sync::watch::channel(None);
+        {
+            let (app, attempt) = (app.clone(), held.second.id.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::RunAttached,
+                Path::new(held.id.as_str()),
+                move || {
+                    // Lost already, the attach would test nothing: the loss must come here.
+                    let ended = wait_in_hook(&handle, async {
+                        let before = app.deps.store.attempt(&attempt).await?;
+                        if before.is_some_and(|a| a.state == AttemptState::Lost) {
+                            return Err("the run was lost before it attached".into());
+                        }
+                        lost(&app, &attempt).await
+                    });
+                    seen.send_replace(Some(ended.map_err(|e| e.to_string())));
+                },
+            );
+        }
+        app.stop_task_now(&held.id).await?;
+        held.host.release();
+        tokio::time::timeout(Duration::from_secs(60), hooked.wait_for(Option::is_some)).await??;
+        let ended = hooked.borrow().clone();
+        assert_eq!(ended, Some(Ok(())), "{}", run_states(app, &held.id).await);
+        let _ = tokio::time::timeout(Duration::from_secs(30), held.continued).await?;
+        not_the_run_befores_screen(&held.second.run_dir)?;
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-301 (review round 3), TSK-006: a viewer controls the size as a continued run attaches and
+/// changes it just after the attach took it. The run ends at the viewer's new size, not the one
+/// the attach read.
+#[test]
+fn a_size_changed_as_the_run_attaches_is_kept() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let held = continue_on_held_attach(&data, &fake).await?;
+        let app = &held.app;
+        let hub = &app.runtime(&held.id).hub;
+        let viewer = hub.new_viewer_id();
+        hub.join_writer(viewer, Some((100, 30)));
+        let (resized, mut hooked) = tokio::sync::watch::channel(None);
+        {
+            let (app, id) = (app.clone(), held.id.clone());
+            let handle = tokio::runtime::Handle::current();
+            yulius_app::race::on(
+                yulius_app::race::Point::RunAttached,
+                Path::new(held.id.as_str()),
+                move || {
+                    app.runtime(&id).hub.report_size(viewer, (90, 25));
+                    let done = wait_in_hook(&handle, app.resize_run(&id, 90, 25));
+                    resized.send_replace(Some(done.map_err(|e| e.to_string())));
+                },
+            );
+        }
+        held.host.release();
+        tokio::time::timeout(Duration::from_secs(60), hooked.wait_for(Option::is_some)).await??;
+        let done = hooked.borrow().clone();
+        assert_eq!(done, Some(Ok(())));
+        tokio::time::timeout(Duration::from_secs(30), held.continued).await???;
+        assert_eq!(app.runtime(&held.id).hub.size(), (90, 25));
+        // The PTY follows too: the agent reports the size it reads.
+        app.send_input(&held.id, b"/size\r").await?;
+        wait_for("the PTY's size", Duration::from_secs(20), || {
+            screen_contains(app, &held.id, "SIZE 25 90")
+        })
+        .await?;
+        hub.leave(viewer);
+        stop(app, &held.id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-250 STW-006 (review): the old run is lost while the switch waits for its end. The switch
 /// gives up and says the session ended: the task rests lost with its one run, and nothing
 /// starts that no one asked for.

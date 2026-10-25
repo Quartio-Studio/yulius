@@ -106,6 +106,9 @@ pub struct TaskRuntime {
     /// Terminal fan-out.
     pub hub: Hub,
     run: tokio::sync::Mutex<Option<ActiveRun>>,
+    /// The run whose screen `hub` shows: set when its attach resets the hub, kept after it ends
+    /// until the next run's attach (SPEC-301 LRS-001).
+    screen_of: Mutex<Option<AttemptId>>,
     intent: Mutex<Option<EndIntent>>,
     usage: Arc<Mutex<UsageSnapshot>>,
     /// The run whose transcript `usage` has read to its end at least once: only then is the
@@ -311,6 +314,7 @@ impl TaskRuntime {
         Self {
             hub: Hub::new(DEFAULT_SIZE.0, DEFAULT_SIZE.1),
             run: tokio::sync::Mutex::new(None),
+            screen_of: Mutex::new(None),
             intent: Mutex::new(None),
             usage: Arc::new(Mutex::new(UsageSnapshot::default())),
             usage_read: Mutex::new(None),
@@ -2135,6 +2139,7 @@ impl App {
             attempt_id: attempt.id.clone(),
             writer: attached.writer,
         });
+        crate::race::reached(crate::race::Point::RunAttached, Path::new(task_id.as_str()));
         // What the sandbox's limits counted so far: a rise by the run's end says it was at one.
         let counters = self.limit_counters(&sandbox).await;
         runtime.set_start_counters(&attempt.id, counters);
@@ -2159,6 +2164,10 @@ impl App {
             .controller_size()
             .unwrap_or((welcome.cols, welcome.rows));
         runtime.hub.reset(welcome.seq, &screen, cols, rows);
+        // The hub shows this run from now on (SPEC-301 LRS-001).
+        if let Ok(mut shown) = runtime.screen_of.lock() {
+            *shown = Some(attempt.id.clone());
+        }
         if (cols, rows) != (welcome.cols, welcome.rows)
             && let Err(err) = self.resize_run(task_id, cols, rows).await
         {
@@ -2309,6 +2318,18 @@ impl App {
         // `existing_runtime`: a deleted task's runtime is not brought back.
         let runtime = self.existing_runtime(task_id);
         let _finalizing = runtime.as_ref().map(|rt| Finalizing::start(&rt.finalizing));
+        // Keep the screen the run was lost on, not its last settled turn's (SPEC-301 LRS-001). A
+        // runtime made after a restart has no output: the saved screen stays. Only when the hub
+        // shows this run: until its attach resets the hub, it shows the run before.
+        if let Some(rt) = &runtime
+            && rt
+                .screen_of
+                .lock()
+                .is_ok_and(|shown| shown.as_ref() == Some(attempt_id))
+            && let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await
+        {
+            save_screen(&rt.hub, Path::new(&attempt.run_dir));
+        }
         let now = self.now();
         let update = AttemptUpdate {
             ended_at: Some(now),
