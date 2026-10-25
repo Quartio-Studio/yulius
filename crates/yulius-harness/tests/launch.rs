@@ -516,10 +516,14 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
         plan.env
             .contains(&("DISABLE_AUTOUPDATER".into(), "1".into()))
     );
-    // SPEC-310 FSR-001: the person's session draws full screen too (#898).
-    assert!(
+    // SPEC-310 FSR-001: the person's session draws full screen too, set once (#898).
+    assert_eq!(
         plan.env
-            .contains(&("CLAUDE_CODE_NO_FLICKER".into(), "1".into()))
+            .iter()
+            .filter(|(k, _)| k == "CLAUDE_CODE_NO_FLICKER")
+            .map(|(_, v)| v.as_str())
+            .collect::<Vec<_>>(),
+        ["1"]
     );
     assert!(!plan.env.iter().any(|(k, _)| k.starts_with("YULIUS")));
     assert_eq!(

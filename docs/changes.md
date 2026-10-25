@@ -11,7 +11,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   contained run is pid 2 in its own PID namespace. Claude Code's full-screen boot canary
   therefore took a sibling task's start for a failed one of its own, and after two it turned full
   screen off for the project. In the classic renderer, a viewer who opened the task had no
-  scrollback and the wheel nothing to scroll. Task runs, the Superagent and the Cockpit now set
+  scrollback and the wheel nothing to scroll. Task runs and the Superagent (the Cockpit) now set
   `CLAUDE_CODE_NO_FLICKER=1` (ADR-0218).
 - `yulius-ptyhost::supervision shutdown_escalates_past_ignored_signals_and_reaps_descendants`
   reads the descendant's pid only from a finished `CHILD <pid>` row (SPEC-307, task #293, fixes

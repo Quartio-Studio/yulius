@@ -681,8 +681,8 @@ for task runs and the Superagent alike, adds `"outputStyle": "Concise"` to the c
 `settings.json` when it names no style, so sessions answer in Claude Code's Concise style while
 `/output-style` and a repository's committed style still win
 ([SPEC-210](../.ai/specs/SPEC-210-https-code-claude-com-docs-en-output-sty.md),
-[decision 0166](decisions/0166-sessions-default-to-the-concise-output-style.md)). Task runs, the
-Superagent and the Cockpit start Claude Code with `CLAUDE_CODE_NO_FLICKER=1`, so it always draws
+[decision 0166](decisions/0166-sessions-default-to-the-concise-output-style.md)). Task runs and the
+Superagent (the Cockpit) start Claude Code with `CLAUDE_CODE_NO_FLICKER=1`, so it always draws
 full screen with mouse reporting, which the web terminal's wheel and late viewers need. Without it,
 Claude Code's boot canary in the shared config dir took a sibling task's start (every contained run
 is pid 2) for a failed one of its own and turned full screen off for the project

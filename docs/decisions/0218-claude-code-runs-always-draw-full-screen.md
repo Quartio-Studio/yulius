@@ -26,8 +26,8 @@ screen, and nothing could be scrolled up (task #296, #898).
 
 ## Decision
 
-Every interactive Claude Code launch, meaning task runs (which include the Superagent) and the
-Cockpit, sets `CLAUDE_CODE_NO_FLICKER=1` (`FULL_SCREEN_ENV` in `yulius-harness`). Claude Code
+Every interactive Claude Code launch, meaning task runs (`plan_launch`) and the Superagent (the
+Cockpit, `plan_cockpit`), sets `CLAUDE_CODE_NO_FLICKER=1` (`FULL_SCREEN_ENV` in `yulius-harness`). Claude Code
 documents this variable as the override. It takes precedence over the recorded auto-disable, the
 feature gate and the `tui` setting, and with it Claude Code arms no canary. A screen reader or an
 explicit `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` still turns full screen off.
@@ -49,7 +49,10 @@ explicit `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN` still turns full screen off.
 - Every Yulius-started Claude Code session draws full screen, and the wheel scrolls it for every
   viewer. A project whose config already recorded `fullscreenAutoDisabled` recovers at its next
   start, with no edit to the config.
-- A person cannot choose the classic renderer for Yulius sessions with `/tui default`. Yulius's
-  terminal does not support it.
+- A saved `tui: "default"` no longer chooses the classic renderer for Yulius sessions, which
+  Yulius's terminal does not support. A `/tui default` typed in a session still switches that
+  session, because Claude Code relaunches itself without the variable, until its next start.
+- A `claude` a person types in a Shell gets no variable: it is not a launch Yulius makes, and what
+  its canary records cannot turn off the forced launches.
 - If a later Claude Code renames or drops the variable, the launch tests still pass. The manual PTY
   check in SPEC-310 then has to be repeated for that version.

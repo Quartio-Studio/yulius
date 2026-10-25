@@ -14,7 +14,7 @@ in the quartio-v2 project). Fixes #898. Builds on [SPEC-280](SPEC-280-i-can-t-sc
 
 ## Goal
 
-In every task terminal, Superagent and Cockpit, Claude Code draws full screen, so the wheel
+In every task terminal and the Superagent (the Cockpit), Claude Code draws full screen, so the wheel
 scrolls its conversation for every viewer (SPEC-280). This holds whatever Claude Code recorded
 about earlier starts in the project's shared config.
 
@@ -51,15 +51,19 @@ server (10e5de4e) already has the SPEC-280 wheel fix.
 - **Why the tests missed it.** Every terminal test drives a mock agent that always draws full
   screen (`--tui`). No test covers Claude Code's own renderer choice, which depends on its config
   state and a remote feature gate.
-- **Same cause elsewhere.** The Cockpit (a person's own Claude Code) shares the same canary in the
-  person's config dir. Superagent runs are task runs (`plan_launch`). The commit-message proposer
-  (`claude -p`, `TERM=dumb`) does not render a TUI.
+- **Same cause elsewhere.** The Superagent (the Cockpit, `plan_cockpit`: a person's own Claude
+  Code) shares the same canary in the person's config dir. The commit-message proposer
+  (`claude -p`, `TERM=dumb`) and `claude setup-token` sign-ins draw no conversation screen. A
+  `claude` a person types in a Shell is not a launch Yulius makes and is left as it is: whatever it
+  records in the canary cannot turn off the forced launches.
 
 ## Requirements
 
-- **FSR-001** Every interactive Claude Code launch plan (task runs, which include the Superagent,
-  and the Cockpit) sets `CLAUDE_CODE_NO_FLICKER=1`. Claude Code then uses its full-screen renderer
-  whatever `fullscreenAutoDisabled`, its feature gate or a `/tui` choice says.
+- **FSR-001** Every interactive Claude Code launch plan (task runs, `plan_launch`, and the
+  Superagent, `plan_cockpit`) sets `CLAUDE_CODE_NO_FLICKER=1` once. Claude Code then starts on its
+  full-screen renderer whatever `fullscreenAutoDisabled`, its feature gate or a saved `tui`
+  setting says. A `/tui default` typed in a session still switches that session (Claude Code
+  relaunches itself without the variable) until its next start.
 - **FSR-002** Unchanged: the wheel, click and late-viewer behaviour of SPEC-280 and SPEC-098; the
   non-interactive proposer's environment.
 
@@ -75,7 +79,7 @@ server (10e5de4e) already has the SPEC-280 wheel fix.
 ## Acceptance criteria
 
 - `plan_launch`'s environment is exactly the earlier one plus `CLAUDE_CODE_NO_FLICKER=1`, and
-  `plan_cockpit`'s contains it.
+  `plan_cockpit`'s holds it exactly once, set to `1`.
 - With a config dir whose `fullscreenAutoDisabled` is set, Claude Code 2.1.292 started with the
   planned variable enters the alternate screen and turns on mouse reporting (manual reproduction
   above).
@@ -85,7 +89,7 @@ server (10e5de4e) already has the SPEC-280 wheel fix.
 
 - `crates/yulius-harness/tests/launch.rs`: `claude_new_session_argv_snapshot_and_files` pins the
   task run's environment, and `a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment`
-  checks the Cockpit's. Both fail on `dev`.
+  checks the Superagent's (one entry, `1`). Both fail on `dev`.
 - The manual PTY reproduction above, against the real CLI, shows the variable overrides the
   recorded auto-disable. A test cannot run it: it needs a signed-in Claude Code.
 

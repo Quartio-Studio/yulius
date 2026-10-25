@@ -34,11 +34,11 @@ pub const TMPDIR_ENV: (&str, &str) = ("TMPDIR", "/tmp");
 /// on the host, and a contained session cannot write there, so the update could only fail
 /// (#45). Manual `claude update` is unaffected.
 pub const DISABLE_AUTOUPDATER_ENV: (&str, &str) = ("DISABLE_AUTOUPDATER", "1");
-/// Keeps Claude Code on its full-screen renderer, which Yulius's terminal needs: the wheel reaches
-/// it as mouse reports, and a late viewer gets the screen, never a scrollback (SPEC-280). Tasks of
-/// a project share one config dir and are each pid 2 in their own PID namespace, so Claude Code's
-/// boot canary took a sibling's start for its own failed one and turned full screen off for the
-/// project after two (#898, ADR-0218).
+/// Keeps Claude Code on its full-screen renderer in task runs and the Cockpit, which Yulius's
+/// terminal needs: the wheel reaches it as mouse reports, and a late viewer gets the screen, never
+/// a scrollback (SPEC-280). Tasks of a project share one config dir and are each pid 2 in their
+/// own PID namespace, so Claude Code's boot canary took a sibling's start for its own failed one
+/// and turned full screen off for the project after two (#898, ADR-0218).
 pub const FULL_SCREEN_ENV: (&str, &str) = ("CLAUDE_CODE_NO_FLICKER", "1");
 /// Claude Code's Bash timeouts for agents: 10 minutes by default, 30 at most.
 pub const BASH_TIMEOUT_ENV: [(&str, &str); 2] = [
