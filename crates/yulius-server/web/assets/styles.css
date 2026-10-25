@@ -2727,9 +2727,9 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 @media (max-width: 767px) {
   .update-banner { max-width: 44vw; }
 }
-/* Secrets page (VLT-001..009): revealed values wrap and stay selectable; the activity trail is
-   a quiet list. */
-.secret-value { word-break: break-all; user-select: all; }
+/* Secrets page (VLT-001..009): revealed values wrap, keep their line breaks (#592) and stay
+   selectable; the activity trail is a quiet list. */
+.secret-value { word-break: break-all; user-select: all; white-space: pre-wrap; }
 /* A shown value (SPEC-114) sits in a box with its eye and copy buttons, always visible (SPEC-207);
    masked, it is a fixed run of dots that cannot be selected. */
 .secret-box {

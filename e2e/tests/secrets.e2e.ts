@@ -424,6 +424,74 @@ test('a member sees why a production secret’s requests wait, without a Dismiss
   await expect(screen.getByRole('button', 'Dismiss copying PROD_API_TOKEN into .env files')).toBeHidden();
 });
 
+// Task #294 (SPEC-308, #622): a production secret's Edit dialog offered Hosts, which the server
+// refuses on Save. It says why the secret goes to no host, and only removes hosts from before.
+test('a production secret’s Edit dialog offers no hosts and says why, and only removes old ones', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents', '&ambient=0'));
+  // A secret agents use keeps its Hosts field.
+  await screen.getByRole('button', 'Edit STRIPE_KEY').click();
+  const stripe = screen.getByRole('dialog', 'Edit STRIPE_KEY');
+  await expect(stripe.getByLabel('Hosts')).toHaveValue('api.stripe.com');
+  await stripe.getByRole('button', 'Cancel').click();
+
+  // VIDOC_API_KEY becomes a production secret while its dialog is open (another person allowed it
+  // meanwhile): the host typed then is refused with the server's message, and none is bound.
+  await screen.getByRole('button', 'Edit VIDOC_API_KEY').click();
+  const vidoc = screen.getByRole('dialog', 'Edit VIDOC_API_KEY');
+  await vidoc.getByLabel('Hosts').fill('api.vidoc.test');
+  await browser.evaluate(() => { (window as any).__yuliusMock.vault.agent.find((s: any) => s.id === 'as_vidoc').cd_prod = true; });
+  await vidoc.getByRole('button', 'Save').click();
+  await expect(vidoc.getByRole('alert')).toHaveText(/^This is a production secret: production deploys get it and agents never do/);
+  expect(await browser.evaluate(() => (window as any).__yuliusMock.vault.agent.find((s: any) => s.id === 'as_vidoc').hosts)).toEqual([]);
+  await vidoc.getByRole('button', 'Cancel').click();
+
+  // PROD_API_TOKEN, a production secret with no host: no Hosts textbox, and why.
+  await screen.getByRole('radio', 'Global').click();
+  await screen.getByRole('button', 'Edit PROD_API_TOKEN').click();
+  const prod = screen.getByRole('dialog', 'Edit PROD_API_TOKEN');
+  await expect(prod.getByRole('textbox', 'Hosts')).toBeHidden();
+  await expect(prod.getByText('None. This is a production secret: agents never get it, so it is sent to no host. Add a separate secret for agents to send to a host.')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await prod.getByRole('button', 'Cancel').click();
+
+  // One that still has a host from before production secrets became exclusive: agents' requests
+  // to it still get the value, so the dialog says so and offers only to remove it.
+  const prodHosts = () => browser.evaluate(() => (window as any).__yuliusMock.vault.agent.find((s: any) => s.id === 'as_prodtoken').hosts);
+  const setProdHosts = (hosts: string[]) => browser.evaluate((h: string[]) => { (window as any).__yuliusMock.vault.agent.find((s: any) => s.id === 'as_prodtoken').hosts = h; }, hosts);
+  const reopen = async () => {
+    await screen.getByRole('radio', 'Project').click();
+    await screen.getByRole('radio', 'Global').click();
+    await screen.getByRole('button', 'Edit PROD_API_TOKEN').click();
+  };
+  await setProdHosts(['old.prod.test']);
+  await reopen();
+  const old = screen.getByRole('dialog', 'Edit PROD_API_TOKEN');
+  await expect(old.getByText('old.prod.test')).toBeVisible();
+  await expect(old.getByRole('textbox', 'Hosts')).toBeHidden();
+  await expect(old.getByText('These hosts were kept from before production secrets became exclusive: agents’ requests to them still get it. Remove them, and add a separate secret for agents.')).toBeVisible();
+  // The choice is described by why (axe does not check that it is).
+  await expect(old.getByRole('checkbox', 'Remove these hosts')).toHaveAttribute('aria-describedby', 'prod-hosts-hint');
+  await expect(browser.locator('#prod-hosts-hint')).toHaveText(/agents’ requests to them still get it/);
+  expect(await axeViolations(browser)).toEqual([]);
+  // Saved without the choice, the hosts stay.
+  await old.getByRole('button', 'Save').click();
+  await expect(old).toBeHidden();
+  expect(await prodHosts()).toEqual(['old.prod.test']);
+  // Removing them sends the hosts the dialog showed: one bound since is not dropped unseen.
+  await reopen();
+  await setProdHosts(['old.prod.test', 'new.prod.test']);
+  await old.getByRole('checkbox', 'Remove these hosts').check();
+  await old.getByRole('button', 'Save').click();
+  await expect(old.getByRole('alert')).toHaveText(/^Its hosts changed since you opened it/);
+  expect(await prodHosts()).toEqual(['old.prod.test', 'new.prod.test']);
+  await old.getByRole('button', 'Cancel').click();
+  await reopen();
+  await old.getByRole('checkbox', 'Remove these hosts').check();
+  await old.getByRole('button', 'Save').click();
+  await expect(old).toBeHidden();
+  expect(await prodHosts()).toEqual([]);
+});
+
 // F 2026-10-14 (task #99): "Value in passwords should be hidden by default even after show, and
 // shown after explicitly clicking eye icon." (SPEC-114) F 2026-10-17 (task #194): "this UI is bad,
 // fix. For example copy icon is missing and overall": the value, its eye and its one copy icon sit
@@ -590,6 +658,92 @@ test('editing a team secret loads its current notes after a two-factor code', as
   await expect(edit).toBeHidden();
   await screen.getByRole('button', 'Show Shared Gmail').click();
   await expect(screen.getByRole('dialog', 'Shared Gmail').getByText(/Recovery codes: new/)).toBeVisible();
+});
+
+/**
+ * Pastes `text` into the open team secret dialog's Value field as the clipboard would, after
+ * selecting `select` (start, end) of what it holds: whether the page took the paste and the
+ * field's type (`password` is what keeps it masked: a field's value is never in the markup).
+ */
+function pasteTeamValue(browser: any, text: string, select?: [number, number]) {
+  return browser.evaluate(({ t, s }: { t: string; s: [number, number] | null }) => {
+    const label = [...document.querySelectorAll('dialog.modal label.field')].find((l) => l.querySelector('.field-label')!.textContent === 'Value')!;
+    const input = label.querySelector('input') as HTMLInputElement;
+    input.focus();
+    if (s) input.setSelectionRange(s[0], s[1]);
+    const data = new DataTransfer();
+    data.setData('text/plain', t);
+    const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+    input.dispatchEvent(event);
+    return { prevented: event.defaultPrevented, type: input.type };
+  }, { t: text, s: select || null });
+}
+
+// Task #285 (#592): a team secret's Value is a masked one-line field, and the browser drops the
+// line breaks of a paste. A team secret keeps them as pasted (CRLF included, unlike an agent
+// secret's \n, SPEC-193): Show puts the value on its lines and Copy gives back the pasted text.
+test('a pasted multi-line team secret value keeps its line breaks, masked, and Show and Copy return them', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=team'));
+  await browser.evaluate(() => {
+    (window as any).__copied = [];
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as any).__copied.push(text); } } });
+  });
+  const copied = () => browser.evaluate(() => (window as any).__copied.filter((t: string) => t !== ''));
+  const stored = (title: string) => browser.evaluate((t: string) => (window as any).__yuliusMock.vault.team.find((s: any) => s.title === t).value, title);
+  const crlf = 'mock-recovery-0001\r\nmock-recovery-0002\r\nmock-recovery-0003\r\n';
+  const lf = 'mock-key-line-01\nmock-key-line-02\n';
+
+  // Add: a CRLF paste (copied on Windows) is kept as pasted; the field stays a masked password
+  // field.
+  await screen.getByRole('button', 'Add team secret').click();
+  const add = screen.getByRole('dialog', 'Add team secret');
+  await screen.getByLabel('Title').fill('Recovery codes');
+  expect(await pasteTeamValue(browser, crlf)).toEqual({ prevented: true, type: 'password' });
+  // The field says so, in its description.
+  expect(await browser.evaluate(() => {
+    const input = document.querySelector('dialog.modal input[type="password"]')!;
+    return document.getElementById(input.getAttribute('aria-describedby')!)!.textContent;
+  })).toBe('A pasted value keeps its line breaks.');
+  expect(await axeViolations(browser)).toEqual([]);
+  await add.getByRole('button', 'Add').click();
+  await expect(add).toBeHidden();
+  await expect(screen.getByText('Recovery codes').first()).toBeVisible();
+  expect(await stored('Recovery codes')).toBe(crlf);
+
+  // Edit: an LF paste over a selection replaces only the selection, the typed text around it stays.
+  await screen.getByRole('button', 'Edit Shared Gmail').click();
+  const edit = screen.getByRole('dialog', 'Edit Shared Gmail');
+  await browser.locator('dialog.modal input[type="password"]').fill('before-SELECTED-after');
+  expect(await pasteTeamValue(browser, lf, [7, 15])).toEqual({ prevented: true, type: 'password' });
+  // A one-line paste is the browser's, as before.
+  expect((await pasteTeamValue(browser, 'one-line')).prevented).toBe(false);
+  await edit.getByRole('button', 'Save').click();
+  await expect(edit).toBeHidden();
+  const edited = `before-${lf}-after`;
+  expect(await stored('Shared Gmail')).toBe(edited);
+
+  // Show: masked until the eye, then on its three lines; the dialog's Copy gives the stored text.
+  await screen.getByRole('button', 'Show Shared Gmail').click();
+  await setUpTwoFactor(screen, browser);
+  const shown = screen.getByRole('dialog', 'Shared Gmail');
+  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), 'mock-key-line-01')).toBe(false);
+  await shown.getByRole('button', 'Show value').click();
+  expect(await browser.evaluate(() => {
+    const code = document.querySelector('dialog.modal .secret-value')!;
+    const range = document.createRange();
+    range.selectNodeContents(code);
+    return { text: code.textContent, lines: new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size };
+  })).toEqual({ text: edited, lines: 3 });
+  expect(await axeViolations(browser)).toEqual([]);
+  await shown.getByRole('button', 'Copy value').click();
+  await expect(screen.getByText(/Value copied/).first()).toBeVisible();
+  expect(await copied()).toEqual([edited]);
+  await shown.getByRole('button', 'Done').click();
+  await expect(shown).toBeHidden();
+
+  // The card's Copy gives back the CRLF value as pasted.
+  await screen.getByRole('button', 'Copy value of Recovery codes').click();
+  await expect.poll(copied).toEqual([edited, crlf]);
 });
 
 test('members who only read a sandbox cannot add agent secrets', async ({ app, screen }) => {

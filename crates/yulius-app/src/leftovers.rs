@@ -581,6 +581,7 @@ impl App {
             "displays",
             "transcripts",
             "system",
+            "import-worktrees",
         ] {
             let path = self.data_path(&[top]);
             if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
@@ -648,6 +649,11 @@ impl App {
             (Kind::RemovedCi, dir.join("ci")),
             (Kind::RemovedBrowser, dir.join("browser")),
             (Kind::RemovedCd, self.data_path(&["cd", id])),
+            // Snapshot imports' checkouts a failed import left (ADR-0213).
+            (
+                Kind::RemovedWorktrees,
+                self.data_path(&["import-worktrees", id]),
+            ),
             (Kind::RemovedDisplay, self.data_path(&["displays", id])),
             (Kind::RemovedSystem, self.data_path(&["sysroots", id])),
             (
@@ -827,6 +833,21 @@ impl App {
             item.repo = Some(self.sandbox_repo(&sandbox.id));
             out.push(item);
         }
+        // A snapshot import's checkout an interrupted import left (ADR-0213): it may hold a
+        // person's uncommitted files, so a person decides, as for a worktree no task owns.
+        for (_, path) in entries(&self.data_path(&["import-worktrees", sandbox.id.as_str()])) {
+            if touched_ms(&path).is_some_and(|t| now - t >= ORPHAN_WORKTREE_AFTER_MS) {
+                out.push(
+                    Leftover::new(
+                        Kind::OrphanWorktree,
+                        path,
+                        "a snapshot import's checkout an interrupted import left (it may hold \
+                         uncommitted files)",
+                    )
+                    .of(sandbox),
+                );
+            }
+        }
         self.scan_checkouts(sandbox, out).await?;
         let drafts = dir.join("attachments").join("drafts");
         for (_, user_dir) in entries(&drafts) {
@@ -989,6 +1010,7 @@ impl App {
             &["runtime", "sandboxes"],
             &["cd"],
             &["displays"],
+            &["import-worktrees"],
         ] {
             for (name, path) in entries(&self.data_path(parent)) {
                 if known.contains(&name) || name.starts_with('.') {

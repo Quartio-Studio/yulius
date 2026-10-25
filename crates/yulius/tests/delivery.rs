@@ -5050,9 +5050,48 @@ async fn an_environment_command_past_its_timeout_is_killed() -> TestResult {
     Err(format!("the background child {pid} of the timed-out command was not killed").into())
 }
 
+/// SPEC-300 RDB-002 (#664): an environment command whose files grow past the bound for a run is
+/// stopped before its timeout, and the run is an `error` that says why.
+#[tokio::test]
+async fn an_environment_run_writing_past_its_disk_bound_is_stopped() -> TestResult {
+    let f = fixture_with(
+        &DeliveryProfile::product(),
+        Box::new(|config| {
+            config.ci.job_timeout = Duration::from_secs(20);
+            config.ci.run_disk_max = 8_000_000;
+        }),
+        None,
+    )
+    .await?;
+    let patched = f
+        .req(
+            Method::PATCH,
+            "/api/sandboxes/s1",
+            Some(json!({"profile": {
+                "preset": "product", "integration_branch": "quartio", "production_branch": "main",
+                "merge": "merge", "promote": "fast_forward", "auto_promote": false,
+                "environments": [{"name": "dev-vm", "after": "integration", "verify": "command",
+                    "command": "head -c 32000000 /dev/urandom > \"$HOME/fill\"; echo filled; sleep 30"}]
+            }})),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    f.add_task("t1", "Checkout API", "feat/1-checkout-api", "quartio")
+        .await?;
+    let run = agent_deploys(&f).await?;
+    let output = run["output"].as_str().unwrap_or("");
+    assert_eq!(run["state"], "error", "{run}");
+    assert!(
+        output.contains("filled") && output.contains("past the 8 MB disk bound for a run"),
+        "{output}"
+    );
+    Ok(())
+}
+
 /// SPEC-219 ENV-004: the process host of a run that a restart left `running` keeps no command
-/// going: the startup reconciliation terminates it, removes the run's directory and records the
-/// run as `error`.
+/// going: the startup reconciliation records the run as `error`, then terminates it and removes
+/// the run's directory.
 #[tokio::test]
 async fn a_restart_ends_a_running_environment_command() -> TestResult {
     let f = fixture(&DeliveryProfile::product()).await?;

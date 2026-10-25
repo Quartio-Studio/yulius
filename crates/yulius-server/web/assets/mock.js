@@ -2228,6 +2228,7 @@ route('GET', `/api/sandboxes/${ID}/files/content`, ({ db, p, query }) => {
   if (known !== null && !/^[0-9a-f]{64}$/.test(known)) fail(422, 'invalid', 'known is 64 lowercase hex digits');
   if (known === mockSha(content)) return json(204);
   if (tree.binary && tree.binary.has(path)) return { path, content: null, binary: true, too_large: false, size: content.length, sha256: mockSha(content) };
+  if (tree.tooLarge && tree.tooLarge.has(path)) return { path, content: null, binary: false, too_large: true, size: content.length, sha256: mockSha(content) };
   return { path, content, binary: false, too_large: false, size: content.length, sha256: mockSha(content) };
 });
 route('PUT', `/api/sandboxes/${ID}/files/content`, async ({ db, p, body }) => {
@@ -2703,6 +2704,8 @@ route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
   if (body.username && (body.injection || secret.injection) !== 'basic') fail(422, 'invalid', 'a user name is only for Basic credentials: put a login\'s user name in the notes');
   // A production secret is never set up by agents (SPEC-216 SSA-004).
   if (body.auto_allow === true && secret.cd_prod) fail(409, 'conflict', PRODUCTION_SECRET);
+  // Nor sent to a host; clearing the hosts of an older one passes (update_agent_secret, SPEC-308).
+  if (body.hosts && body.hosts.length && secret.cd_prod) fail(409, 'conflict', PRODUCTION_SECRET);
   const sameHosts = (a, b) => a.length === b.length && a.every((x) => b.includes(String(x).toLowerCase()));
   if (body.expect_hosts && !sameHosts(body.expect_hosts, secret.hosts)) fail(409, 'conflict', `its hosts changed since you opened it (now ${secret.hosts.join(', ') || 'none'}): reload and edit again`);
   delete body.expect_hosts;
@@ -4146,6 +4149,9 @@ async function handleFetch(db, url, init = {}) {
   if (fileContent && (init.method || 'GET') === 'GET') {
     const asked = new URL(url, ORIGIN).searchParams;
     (db.fileReads = db.fileReads || []).push({ path: asked.get('path'), known: asked.get('known'), whileSaving: (db.savesOnTheirWay || 0) > 0 });
+    // `holdReads = []`: each read waits there, as on a slow connection, until the test calls its
+    // resolver (in the order asked), so the test says which answer comes first (#571).
+    if (db.holdReads) await new Promise((resolve) => db.holdReads.push(resolve));
   }
   if (fileContent && init.method === 'PUT') {
     db.savesOnTheirWay = (db.savesOnTheirWay || 0) + 1;
@@ -5382,6 +5388,10 @@ export function createMockTransport(params) {
   if (db.presenceChannel) db.presenceChannel.onmessage = (message) => emit(db, message.data);
   // A file's text in the mock repository (`repoFile('sb_studio', 'long.md', text)`), before it is opened.
   db.repoFile = (sandboxId, path, text, root = 'sandbox') => { repoTree(db, sandboxId, root).files.set(path, text); };
+  // Someone else deletes a file of the mock repository (#571).
+  db.removeRepoFile = (sandboxId, path, root = 'sandbox') => { repoTree(db, sandboxId, root).files.delete(path); };
+  // A file of the mock repository grows past the editor's limit: read without its text (#571).
+  db.repoFileTooLarge = (sandboxId, path, root = 'sandbox') => { const tree = repoTree(db, sandboxId, root); (tree.tooLarge = tree.tooLarge || new Set()).add(path); };
   db.resyncNow = () => resync(db);
   // Another administrator signs a subscription in again: its running sign-in ends `cancelled`.
   db.startLogin = (accountId) => startLogin(db, accountId);

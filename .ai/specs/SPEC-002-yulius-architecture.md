@@ -1660,7 +1660,11 @@ wake-ups do — or a user prompt record in the transcript), a new goal, a "not m
   next clean Stop makes it `done`. Exit from `done`: any prompt → `working` (UserPromptSubmit or the
   transcript); permission prompt or browser request → `needs_attention`; process exit → `closed` /
   `stopped`. A prompt of a turn that already ended cleanly, read late from the transcript, does not
-  reopen it (its record time ≤ the last clean Stop).
+  reopen it (its record time ≤ the last clean Stop). A turn whose Stop Yulius never answered (the
+  hook client failed open on an error answer or an unreachable server, or an error ended the turn
+  with no Stop hook) settles at the record that closes it (`turn_duration`, written after the turn
+  began; none while a Stop is being answered) as that clean Stop would have, unless a full
+  context, a usage limit or an open pause decides how it goes on (SPEC-290, ADR-0212).
 - **Background shells** are a live overlay, not a state: while the task is idle (`waiting`/`done`)
   the supervisor probes the agent's process tree at the clean Stop, when the goal is achieved and
   every 5 s, counting Bash-tool shells (command line with Claude Code's wrapper `… && pwd -P >| <cwd
@@ -2200,6 +2204,10 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
   (`is_superadmin || is_instance_admin`) use the current record, so a role removed or granted by the
   superadmin takes effect within one interval without closing the stream (SPEC-286, #722); an ended
   sign-in still closes it with 4003.
+- The provider sign-in terminal (`WS /api/admin/accounts/login/{id}/terminal`) re-checks every
+  `viewer_recheck_ms` in a spawned task beside its loop (`App::login_terminal_recheck`): an ended
+  sign-in (`App::signed_in_user` is `None`) or a person no longer `is_superadmin ||
+  is_instance_admin` closes it with 4003 (SPEC-295, #759).
 - Internal listener binds 127.0.0.1 only; accepts task tokens only; tokens are per attempt, random
   256-bit, stored hashed, revoked when the attempt ends.
 - Secrets (provider credentials, GitHub App key, MCP env/headers) are encrypted at rest with the

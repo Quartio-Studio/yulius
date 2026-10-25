@@ -4,8 +4,104 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-25
+
+- A production secret's Edit dialog offers no hosts the server refuses (SPEC-308, task #294,
+  fixes #622). It offered the Hosts input on every secret, so a person who added a host to a
+  production secret got a 409 on Save. Now its Hosts field has no input and says the secret is
+  sent to no host; an older production secret that still has hosts says agents' requests to them
+  still get it and offers only "Remove these hosts". The web mock's
+  `PATCH /api/agent-secrets/{id}` refuses hosts on a production secret as the server does.
+- The Docker front's socket is bound under a umask private to the binding thread (SPEC-304, task
+  #290, fixes #825). `Front::start` set the process umask around `bind`, so fronts started at once
+  in one process (the crate's unit tests under `cargo test`) could bind a socket under another
+  call's mask (not 0660) and leave the process umask at 0117. The bind now runs on a thread that
+  unshares `CLONE_FS` first; the process umask never changes (ADR-0217). Production was not
+  affected: each front is a process of its own.
+
 ## 2026-10-24
 
+- Public lines of a stored key are no longer redacted (SPEC-302, task #288, fixes #599). Every
+  line of a key block but its armour was a redaction needle, so an encrypted PEM's
+  `Proc-Type: 4,ENCRYPTED` and `DEK-Info: …`, PGP armour headers (`Version: …`, `Hash: SHA256`)
+  and OpenSSL's `subject=`/`issuer=` between a bundle's blocks showed as `[secret:NAME]` anywhere
+  in the sandbox. Blank lines, named public headers (RFC 1421, PGP armour, PKCS#12) and
+  `subject=`/`issuer=` lines are no needles now when their value holds no `:` or `(0x` and no
+  key-length base64 run; every other line stays one, so a body joined onto a header or a key's
+  colon-hex dump is still redacted (ADR-0215).
+- A run lost while Yulius runs saves the screen it was lost on (SPEC-301, task #287, #686). A
+  lost connection, or a stop or close whose escalation timed out, recorded the loss without saving
+  the hub's screen, so the task's terminal later showed the screen of the last settled turn and
+  lost any output after it. `mark_lost` now saves it to the run's `final-screen` before the
+  attempt becomes lost; a hub without output (a runtime made after a restart) keeps the saved one,
+  and a run lost before Yulius attached to it saves none (its hub still shows the run before).
+- The startup reconciliation records an environment run left `running` as `error` before it
+  ends its process host and directories (task #285, SPEC-299 TLB-005). Ending them first let a
+  watcher still following the run record its end in between, so
+  `delivery::a_restart_ends_a_running_environment_command` failed now and then.
+- A multi-line value pasted into a team secret's Value keeps its line breaks (SPEC-299, task
+  #285, #592). The field is a one-line password input, which drops them, so a PEM key or recovery
+  codes were stored on one line and copied back flattened. A paste holding line breaks now carries
+  each LF and CR in the field as a private-use character that the form turns back on save: the
+  value is stored exactly as pasted (CRLF too) and the field stays masked. A shown value keeps its
+  lines, and Copy returns the original text (ADR-0214). Agent secrets keep their literal `\n`.
+- "Reload from disk" after a save conflict no longer leaves the person's text marked "Saved"
+  (SPEC-298, task #284, #571). It cleared the modified mark before reading the disk, and the read
+  kept the text when the disk was back at the tab's version, the file was deleted or no longer
+  text. A reload now replaces the text whatever the version, as one undoable edit, and clears the
+  mark only then; a file it cannot load keeps the text modified and a toast says why ("The file
+  was deleted").
+- CD and delivery environment runs are stopped past a disk bound for their files (SPEC-300,
+  task #286, #664). A run's tree, `HOME`, states and log, and a CD run's cache, lie outside every
+  sandbox directory, so the sandbox's quota never counted them: a deploy could write until its
+  timeout and fill the data disk. `ci_watch` now measures them every 5 s, off its loop, and stops
+  a run past `--cd-run-disk-gb` (`YULIUS_CD_RUN_DISK_GB`, default 20 GB) as an `error` that says
+  what it used; a CD run's cache is then emptied, so the next run starts under the bound. Charging
+  the sandbox's quota was rejected: a production deploy must not die because agents filled their
+  worktrees (ADR-0216).
+- An import's snapshot is checked out in a folder of the server, not in the sandbox's
+  `worktrees/` (SPEC-296, task #282, #824). The import picked `worktrees/import-<job>` with an
+  existence check before Git created it. A link to an empty folder planted there in between made
+  the service user's Git check the head out in that folder and write the snapshot into it, and the
+  files stayed there. The checkout now lives in `<data>/import-worktrees/<sandbox>/`, out of
+  every sandbox. Its name is taken with a create-new `mkdir` (`import-<job>`, then `-2`, …), a
+  failed import removes it, disk upkeep lists what an interrupted one leaves, and
+  `extract_snapshot` refuses a linked root (ADR-0213).
+- The Feature and Fix workflows no longer tell agents to promote and verify production (SPEC-292,
+  task #278, #556). Their instructions ended with "deliver: merge on green, deploy and verify,
+  promote, verify production", the Feature description said "from spec to verified production",
+  and the AGENTS.md generated for new projects said "promotion to `main` by a merge commit, verify
+  production", against ADR-0110 (only a person promotes and deploys production). They now end at a
+  merge on green and cleanup, deploy dev only when the task asks (`cd_deploy`), and leave
+  production, with its promotion, to a person. Unit tests reject the instruction to promote or
+  verify production in every bundled workflow and in the AGENTS.md template.
+- The disk-quota wait test runs in CI again (SPEC-294, task #280, fixes #485).
+  `local_ci::a_run_over_the_disk_quota_waits_and_starts_when_space_frees` had been quarantined
+  since one unexplained 2.16 s failure on 2026-10-15. Random delays at every status publish, at the
+  disk check, and at a run's start, job ends and end reproduced no fast failure. Neither did clock
+  jumps while the runs execute: 128 runs in all. The late disk-check publish suspected by #277
+  cannot reach this test, since no run starts before the check has published. CI keeps a failing
+  test's output (SPEC-145), so a next failure names its assertion.
+- An open provider sign-in terminal now closes when the sign-in that opened it ends (SPEC-295,
+  task #281, #759). It checked administrator access once, at connect, so signing out, a revoked API
+  token, an expired session, a disabled user or a removed instance administration left it streaming
+  and accepting input until the sign-in ended (up to 15 minutes). Like the task terminals and
+  shells, it now re-checks every `viewer_recheck_ms` (60 s) beside the stream and closes with 4003.
+- The CI stage-duration test (`local_ci::a_run_s_jobs_record_their_stages_and_test_counts`) no
+  longer fails under host load (SPEC-293, task #279, #538). Yulius times a stage from the log read
+  that saw its marker to the one that saw the next, and the test bounded those durations by wall
+  time while a fake clock ticked along: a starved clock task or a late read gave "480 ms" or a
+  zero-long stage. The job now holds each stage until the test, having seen the stage start
+  recorded, moves the clock by 1000 ms and releases it, so each stage lasts exactly 1000 ms. Test
+  only; Yulius's own timing is unchanged.
+- An achieved goal no longer leaves its task Working for good when Yulius did not settle the
+  turn's Stop hook (SPEC-290, task #276, #877). The hook client fails open, so a Stop that Yulius
+  answered with an error, or could not answer, still ended the turn in Claude Code, and the task
+  stayed Working after "Goal achieved". Task #272 read "working 11h 15m". Yulius now records each
+  Stop it answers. The record that closes a later turn settles that turn like a clean Stop: Done
+  when the goal is achieved, otherwise waiting, with its pull request, chains and queue. The same
+  applies to a turn that an error ended with no Stop hook. A record read late, after a newer
+  prompt, and a Stop still being answered leave the turn as it is (ADR-0212).
 - The remote MCP's `secret_update` and `secret_hosts_answer` act on the secret `secrets_list`
   shows for the name (SPEC-287, task #273, #787): the project's, else the person's own personal
   one, else a global one switched on for the project. They took the oldest secret of the name

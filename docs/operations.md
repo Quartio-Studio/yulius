@@ -154,6 +154,8 @@ Environment=YULIUS_CI_LANES=2
 #Environment=YULIUS_AGENT_CPUS=4
 Environment=YULIUS_CI_JOB_TIMEOUT_MIN=30
 Environment=YULIUS_CI_POLL_SECS=60
+# GB a CD or delivery environment run's files and cache may use (ADR-0216).
+#Environment=YULIUS_CD_RUN_DISK_GB=20
 # Sandbox isolation (SPEC-002 ADR-22): auto (default), namespaces or legacy; see "Sandbox
 # isolation" below for limits and egress.
 #Environment=YULIUS_ISOLATION=auto
@@ -914,7 +916,10 @@ up at once there, agents with `repo_cleanup`. Each removal is audited `hygiene.c
 ### CD on this machine
 
 CD (deployment, SPEC-134) needs no configuration on the server: projects define `[cd.dev]`, `[cd.prod]`
-and any other `[cd.<name>]` with its `stage` in their `yulius.toml` ([API](api.md#cd-deployment)). A run uses the CI job timeout (`--ci-job-timeout-min`, `YULIUS_CI_JOB_TIMEOUT_MIN`) and the
+and any other `[cd.<name>]` with its `stage` in their `yulius.toml` ([API](api.md#cd-deployment)). A run uses the CI job timeout (`--ci-job-timeout-min`, `YULIUS_CI_JOB_TIMEOUT_MIN`), a disk bound
+for its files (`--cd-run-disk-gb`, `YULIUS_CD_RUN_DISK_GB`, default 20 GB: the run's directory and
+its cache, measured every 5 s; past it the run is stopped as an `error` and its cache emptied, a
+delivery environment run alike; ADR-0216) and the
 containment: dev runs inside the sandbox (its tools, its network); production joins the sandbox's
 production holder (its own network, no host loopback, and its own Docker engine; ADR-0208) on the
 host's read-only `/usr`, `/etc` and `/opt`, so its scripts install the tools they need into
@@ -1116,7 +1121,7 @@ task that started working again keeps its files. Every deletion is audited as `l
 
 | What | When it goes | By itself? |
 | --- | --- | --- |
-| A removed sandbox's `worktrees/`, `ci/`, `browser/`, `<data>/cd/<id>`, `<data>/displays/<id>` and its agent runs' `<data>/runs/<attempt>` | 10 minutes after the removal, once nothing of it runs | yes |
+| A removed sandbox's `worktrees/`, `ci/`, `browser/`, `<data>/import-worktrees/<id>`, `<data>/cd/<id>`, `<data>/displays/<id>` and its agent runs' `<data>/runs/<attempt>` | 10 minutes after the removal, once nothing of it runs | yes |
 | A removed sandbox's `<data>/sysroots/<id>` (installed packages, Docker images and volumes) and `<data>/runtime/sandboxes/<id>` | once its holder has stopped (a minute after the removal, SPEC-206); removed as root of a mapped namespace | yes |
 | Everything else of a removed sandbox: its clone, home with the Claude sessions, attachments, `<data>/transcripts/<task>`, a playground's `origin`, `<data>/exports/sandbox-<slug>-<ms>.json` | removed with **Delete its files permanently**: as soon as nothing of it runs; removed with **Keep**: kept (PRJ-009), listed under Kept files of removed sandboxes; the database records always stay | on request |
 | A task's rebuildable caches (`target`, `node_modules`, `[disk] caches`, …) | closed, stopped or failed: after 10 minutes; **archived**: at once; **done**: after 30 quiet minutes; waiting: after 4 hours; any idle task at 90 % of the quota or with the data disk critical | yes (the worktree and uncommitted work stay) |
@@ -1128,7 +1133,7 @@ task that started working again keeps its files. Every deletion is audited as `l
 | `<data>/runs/<name>` that no attempt record, live run, active CI job, running deploy or running delivery environment run owns, untouched for a day (an ended task's last run, with its final terminal screen, stays) | always | yes |
 | Transcripts of a deleted task; a Docker smoke test's sandbox whose process is gone | always | yes |
 | An unused sandbox base (not current, no live holder mounts it) | always | yes |
-| A worktree no task owns; a directory under `sandboxes/`, `sysroots/`, `runtime/sandboxes/`, `cd/` or `displays/` that no sandbox record owns | listed | **only a person** |
+| A worktree no task owns; a snapshot import's checkout an interrupted import left in `<data>/import-worktrees/<id>/` (after an hour, ADR-0213); a directory under `sandboxes/`, `sysroots/`, `runtime/sandboxes/`, `cd/`, `displays/` or `import-worktrees/` that no sandbox record owns | listed | **only a person** |
 | The host's `/var/lib/docker` and `/var/lib/containerd` (docker-ce; Yulius's host daemons are off) | listed, never deleted: remove them on the host if nothing else uses them | report only |
 | Update backups under `/var/lib/yulius-update/backups/` | the helper keeps the last 3 | yes (not listed) |
 

@@ -117,7 +117,8 @@ secret has no Allow for agents' requests.
   - The badge was the same as a real production secret's.
   - Nits: the note named one way forward, and could show twice.
 
-  The one pre-existing finding is #622: the Edit dialog offers Hosts on a production secret.
+  The one pre-existing finding is #622: the Edit dialog offers Hosts on a production secret
+  (fixed by SPEC-308).
   The mock's 409 routes are not reached by any test, because the page no longer offers those
   actions. That is accepted.
 - **Review, round 2** (fresh session): approved `18a4abcb`; every round-1 fix verified. Its

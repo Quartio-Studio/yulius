@@ -12,6 +12,7 @@
 //!            [--hooks YULIUS_EXE] [--goal-background SECONDS]
 //!            [--goal-agent SECONDS [--goal-agent-interim SECONDS]]
 //!            [--goal-monitor SECONDS [--goal-monitor-ends]] [--goal-verdict met|failed|none]
+//!            [--goal-met-on-wake-ms MS [--wake-stop-lost]]
 //!            [--goal-continue-ms MS
 //!            [--goal-continue-verdict] [--goal-continue-dies]] [--goal-delay-ms MS] [--drop-lines N]
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
@@ -69,6 +70,11 @@
 //! `--goal-monitor-ends` too, the stream ends after N/2 seconds and wakes the session
 //! (`MONITOR DONE`). `--goal-verdict failed` records the goal as failed instead of achieved, and
 //! `--goal-verdict none` records no verdict (the turn closes without one). With
+//! `--goal-met-on-wake-ms MS` and `--goal-background N`, the goal turn gets no verdict (Claude
+//! Code's evaluator waits while background work runs) and the turn the shell's end wakes records
+//! the goal as achieved MS after its Stop hook (the evaluator's own time), then closes; with
+//! `--wake-stop-lost` too, that turn's Stop hook never reaches Yulius (the hook client fails open,
+//! as on an error answer or an unreachable server). With
 //! `--idle-compact-ms MS` the idle session compacts itself MS after the goal turn, like Claude
 //! Code 2.1.292 "before the prompt cache expired": the `compact_boundary` record, the summary
 //! user record it continues from (`isCompactSummary`), the files it reads again, its
@@ -197,6 +203,8 @@ struct Options {
     goal_continue_verdict: bool,
     goal_continue_dies: bool,
     goal_delay_ms: u64,
+    goal_met_on_wake_ms: Option<u64>,
+    wake_stop_lost: bool,
     opening_turn_ms: Option<u64>,
     echo_turn_ms: u64,
     session_start: bool,
@@ -243,6 +251,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         goal_continue_verdict: false,
         goal_continue_dies: false,
         goal_delay_ms: 0,
+        goal_met_on_wake_ms: None,
+        wake_stop_lost: false,
         opening_turn_ms: None,
         echo_turn_ms: 0,
         session_start: false,
@@ -331,6 +341,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 options.idle_compact_ms = Some(ms.min(MAX_GOAL_DELAY_MS));
             }
             "--goal-continue-dies" => options.goal_continue_dies = true,
+            "--goal-met-on-wake-ms" => {
+                let ms: u64 = parse_number(&flag, args.next())?;
+                options.goal_met_on_wake_ms = Some(ms.min(MAX_GOAL_DELAY_MS));
+            }
+            "--wake-stop-lost" => options.wake_stop_lost = true,
             "--goal-delay-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.goal_delay_ms = ms.min(MAX_GOAL_DELAY_MS);
@@ -1016,6 +1031,7 @@ impl Hooks {
 /// the agent when it exits, like Claude Code does.
 fn start_background(
     seconds: u64,
+    verdict: Option<WakeVerdict>,
     transcript: Option<Arc<Mutex<Transcript>>>,
     hooks: Option<Hooks>,
 ) -> io::Result<u32> {
@@ -1031,9 +1047,10 @@ fn start_background(
         let prompt = format!(
             "<task-notification>\n<task-id>bash-{pid}</task-id>\n<status>completed</status>\n</task-notification>"
         );
-        wake(
+        wake_with(
             &prompt,
             "BACKGROUND DONE",
+            verdict.as_ref(),
             transcript.as_ref(),
             hooks.as_ref(),
         );
@@ -1098,6 +1115,26 @@ fn wake(
     transcript: Option<&Arc<Mutex<Transcript>>>,
     hooks: Option<&Hooks>,
 ) {
+    wake_with(prompt, done, None, transcript, hooks);
+}
+
+/// The goal verdict that closes a woken turn (`--goal-met-on-wake-ms`).
+struct WakeVerdict {
+    condition: String,
+    /// How long after the Stop hook the evaluator records the goal as achieved.
+    after_ms: u64,
+    /// The turn's Stop hook never reaches Yulius (`--wake-stop-lost`).
+    stop_lost: bool,
+}
+
+/// [`wake`], with the goal `verdict` closing the woken turn.
+fn wake_with(
+    prompt: &str,
+    done: &str,
+    verdict: Option<&WakeVerdict>,
+    transcript: Option<&Arc<Mutex<Transcript>>>,
+    hooks: Option<&Hooks>,
+) {
     if let Some(hooks) = hooks {
         let _ = hooks.prompt(prompt);
     }
@@ -1113,8 +1150,22 @@ fn wake(
     std::thread::sleep(Duration::from_millis(1_500));
     write(&|t| t.answer(prompt, "The background work finished."));
     let _ = say(done);
-    if let Some(hooks) = hooks {
+    if let Some(hooks) = hooks
+        && !verdict.is_some_and(|v| v.stop_lost)
+    {
         let _ = hooks.stop();
+    }
+    if let Some(verdict) = verdict {
+        std::thread::sleep(Duration::from_millis(verdict.after_ms));
+        let condition = &verdict.condition;
+        write(&|t| {
+            t.goal_status(
+                json!({"type": "goal_status", "met": true, "condition": condition,
+                "reason": "Merged on green.", "iterations": 1, "durationMs": 51_000,
+                "tokens": 7_100}),
+            )
+        });
+        let _ = say("✓ Goal achieved");
     }
     if let Some(transcript) = transcript
         && let Ok(mut t) = transcript.lock()
@@ -1322,7 +1373,12 @@ fn goal_turn(
         hooks.prompt(line);
     }
     if let Some(seconds) = options.goal_background {
-        let pid = start_background(seconds, transcript.cloned(), hooks.cloned())?;
+        let verdict = options.goal_met_on_wake_ms.map(|after_ms| WakeVerdict {
+            condition: condition.clone(),
+            after_ms,
+            stop_lost: options.wake_stop_lost,
+        });
+        let pid = start_background(seconds, verdict, transcript.cloned(), hooks.cloned())?;
         say(&format!("BACKGROUND {pid}"))?;
     }
     std::thread::sleep(Duration::from_millis(options.goal_delay_ms));
@@ -1395,10 +1451,17 @@ fn goal_turn(
             hooks.stop()?;
         }
     }
+    // The evaluator gives no verdict while background work runs: the woken turn gets it.
+    let deferred = options.goal_background.is_some() && options.goal_met_on_wake_ms.is_some();
+    let verdict = if deferred {
+        GoalVerdict::None
+    } else {
+        options.goal_verdict
+    };
     if let Some(transcript) = transcript
         && let Ok(mut t) = transcript.lock()
     {
-        match options.goal_verdict {
+        match verdict {
             GoalVerdict::Met => t.goal_status(
                 json!({"type": "goal_status", "met": true, "condition": condition,
                 "reason": "Done and verified.", "iterations": 1, "durationMs": 51_000,
@@ -1415,7 +1478,7 @@ fn goal_turn(
         }
         t.close_turn(51_000, u32::from(options.goal_agent.is_some()))?;
     }
-    if options.goal_verdict != GoalVerdict::Met {
+    if verdict != GoalVerdict::Met {
         return say("GOAL UNMET");
     }
     if let Some(seconds) = options.goal_agent {

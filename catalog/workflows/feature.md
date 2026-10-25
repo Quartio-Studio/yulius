@@ -1,6 +1,6 @@
 ---
 name: Feature
-description: New or changed behavior, from spec to verified production, through the autonomous delivery pipeline.
+description: New or changed behavior, from spec to a merge on green, through the autonomous delivery pipeline.
 when_to_use: The task adds or changes behavior that users or other code rely on - a new capability, a changed flow or screen, a new API or integration.
 spec: required
 tests: required
@@ -31,4 +31,4 @@ Follow `delivery-pipeline` end to end; nobody accepts the result for you.
   bugs, flaky tests the change did not cause and nits left at the round limit become issues, saying
   why they are outside the change.
 - Finish with `om-check-and-commit` and `verification-before-completion`, then deliver: merge on
-  green, deploy and verify, promote, verify production, clean up (`git-hygiene`).
+  green, clean up (`git-hygiene`), deploy dev only if asked (`cd_deploy`); production is a person's.

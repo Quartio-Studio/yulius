@@ -110,10 +110,12 @@ superseding [0140](decisions/0140-isolated-sandboxes-have-no-container-engine-ag
 
 - **The socket** ([decision 0158](decisions/0158-docker-reaches-every-run-through-a-front-and-a-directory-moved-into-live-runs.md)).
   A Docker front (`yulius sandbox-host docker`), a process the server starts beside every live
-  holder, adopted ones included, serves `<state>/docker/docker.sock`. Agents, the Superagent,
-  Shells and CI jobs bind that directory at `/run/yulius/docker`, with `DOCKER_HOST` and a
-  `/run/docker.sock` link, so a recreated socket reaches them. Runs started without it get the
-  directory moved into their mount namespace at the next upkeep (`yulius sandbox-host
+  holder, adopted ones included, serves `<state>/docker/docker.sock` (0660 by a umask private to
+  the binding thread,
+  [decision 0217](decisions/0217-the-docker-front-binds-its-socket-under-a-thread-private-umask.md)).
+  Agents, the Superagent, Shells and CI jobs bind that directory at `/run/yulius/docker`, with
+  `DOCKER_HOST` and a `/run/docker.sock` link, so a recreated socket reaches them. Runs started
+  without it get the directory moved into their mount namespace at the next upkeep (`yulius sandbox-host
   bind-docker`: `open_tree` in the holder's namespace, `move_mount` in the run's). Without an
   engine (a missing prerequisite) the front answers a Docker-API error naming the reason.
 - **Start on demand.** The first connection starts the engine: `yulius sandbox-exec --engine`
@@ -618,6 +620,12 @@ sandbox directory down to it is a real directory (`leftovers::no_link_between`),
 again right before removing it through `leftovers::remove_below`'s `O_NOFOLLOW` handles, and an
 ended worktree again before Git removes it
 ([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)).
+Where Git, not the server, would write (it resolves the path it is given and follows links), the
+work moves out of the sandbox instead: an import's snapshot is checked out, filled and committed
+in `<data>/import-worktrees/<sandbox>/import-<job>[-<n>]` (0700, the name taken with a create-new
+`mkdir`, removed again when the import fails; disk upkeep lists what an interrupted import leaves), as
+`project_change` works in `<data>/changes`, and `extract_snapshot` refuses a linked root ([SPEC-296](../.ai/specs/SPEC-296-snapshot-import-reserves-its-worktree-pa.md),
+[decision 0213](decisions/0213-a-snapshot-import-checks-out-in-a-server-private-folder.md)).
 Races are tested at pause points
 (`yulius_app::race`, only with the `test-support` feature).
 
@@ -1002,12 +1010,19 @@ final line break; literal `\n` as line breaks, since an agent secret never spans
 ([SPEC-178](../.ai/specs/SPEC-178-superagent-should-have-access-to-agent-s.md),
 [decision 0144](decisions/0144-the-superagent-reads-the-agent-vault-and-verifies-values-by-hash.md)).
 A key block stored that way is written to a `.env` as its file (`dotenv::key_block`), and its
-lines are redaction needles. The Secrets page's value field is one line, so it writes a pasted
-key block's line breaks as literal `\n`; `check_agent_value` refuses a key flattened onto one line
-(`dotenv::flattened_key`), and the agent secrets list marks one stored before that `flattened`
-for the people who manage it
+lines are redaction needles, except blank lines, armour and public text of a known shape (named
+RFC 1421, PGP armour and PKCS#12 headers, `subject=`/`issuer=`) holding no `:` or `(0x` in their
+value and no key-length base64 run
+([decision 0215](decisions/0215-a-key-block-s-public-header-lines-are-not-redaction-needles.md)).
+The Secrets page's value field is one line, so it writes a pasted key block's line breaks as
+literal `\n`; `check_agent_value` refuses a key flattened onto one line (`dotenv::flattened_key`),
+and the agent secrets list marks one stored before that `flattened` for the people who manage it
 ([SPEC-193](../.ai/specs/SPEC-193-creating-multiline-keys-fails-make-sure.md),
 [decision 0156](decisions/0156-a-pasted-multi-line-secret-is-stored-with-escaped-line-breaks.md)).
+A team secret keeps real line breaks: its value field, a password input too, carries each pasted
+LF and CR as a private-use character that the form turns back on save, so the vault stores the
+value as pasted ([SPEC-299](../.ai/specs/SPEC-299-team-secret-value-field-keeps-pasted-lin.md),
+[decision 0214](decisions/0214-a-team-secret-value-carries-pasted-line-breaks-in-its-password-field.md)).
 
 Agents create agent secrets from a file with `secret_create_from_file` (`vault/create.rs`, for
 a task's agent or the Superagent as a `SecretUser`). The tool takes a path relative to the work
@@ -1284,7 +1299,8 @@ changes what a deploy runs. `yulius_domain::cd::authorize` decides who may deplo
 person with write access or an agent (`cd_deploy`), production only an administrator who typed the
 project's slug. The commit is the one GitHub reports, taken into a mirror only Yulius writes
 (`yulius_git::Git::cd_mirror_fetch`, every object checked); its tree is written into the run's
-own directory (`export_tree`) and runs through the process host like a CI job (`ci_watch`): dev in
+own directory (`export_tree`) and runs through the process host like a CI job (`ci_watch`, which
+also stops a run whose files and cache grow past `--cd-run-disk-gb`, [decision 0216](decisions/0216-cd-and-environment-runs-have-a-disk-bound-of-their-own.md)): dev in
 the sandbox's containment, production in the sandbox's production holder (its own network and Docker engine, [Containers](#containers)) on the host's read-only system (the launch spec's `host_system` join mode), each with the
 secrets allowed for that environment; nothing agents can write is bound in. Output is redacted
 before it is stored in `cd_runs`. A run also gets the project's variables and the agent states its
@@ -1531,7 +1547,9 @@ grant, confirmed when it opens the terminal. The store's access epoch grows with
 can change who may type. While the epoch is unchanged, input is written at once. When it moves,
 the next input is checked first. A grant older than 30 s is re-confirmed in the background. The
 viewer's socket loop never awaits a permission check: the 60 s re-check runs in a spawned task, and
-the loop picks up its verdict.
+the loop picks up its verdict. The provider sign-in terminal (`routes/accounts.rs`) runs the same
+spawned re-check of the sign-in and the administrator role, and closes with 4003 when either has
+ended ([SPEC-295](../.ai/specs/SPEC-295-login-terminal-socket-closes-when-its-se.md), #759).
 
 ```mermaid
 sequenceDiagram
@@ -1791,7 +1809,10 @@ whose conversation it continues decides when it is finished
 
 A reboot (or any lost run) ends a task by what it was doing
 ([ADR-0177](decisions/0177-a-run-lost-after-its-goal-closes-the-task.md)). Every settled turn saves
-the run's screen to its `final-screen`, so the terminal of a run lost later is not blank:
+the run's screen to its `final-screen`, so the terminal of a run lost later is not blank. A run
+lost while the server runs saves the screen it was lost on as well
+([SPEC-301](../.ai/specs/SPEC-301-a-run-lost-while-yulius-runs-saves-its-l.md)); after a restart the
+new server's hub has no output and the saved screen stays:
 
 ```mermaid
 flowchart LR
@@ -1799,6 +1820,7 @@ flowchart LR
     lost["run lost: reconcile found it dead or missing,\na lost connection, a stop that timed out"] --> which{"task running\nwith activity done?"}
     which -->|"yes: nothing was lost"| closed["closed"]
     which -->|"no"| stopped["stopped(server_lost / lost)\nContinue offered"]
+    lost -->|"writes (hub with output, showing this run)"| screen
     screen -.->|"no live run: the terminal shows it"| view["task terminal"]
 ```
 

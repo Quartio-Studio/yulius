@@ -229,18 +229,44 @@ function scopeBadge(secret) {
 
 // ---------------------------------------------------------------- team secrets
 
+/** Each line break of a team secret's value, as its one-line field carries it (ADR-0214). */
+const BREAK_MARKS = { '\n': '\uE00A', '\r': '\uE00D' };
+
+/**
+ * Keeps the line breaks of a value pasted into a team secret's masked one-line field, which would
+ * drop them (#592): each is carried as a private-use character, LF and CR apart so a CRLF paste is
+ * stored as pasted, and `withBreaks` puts them back on save. A paste without one is the browser's.
+ */
+function pasteKeepsBreaks(input) {
+  input.addEventListener('paste', (event) => {
+    const text = event.clipboardData ? event.clipboardData.getData('text/plain') : '';
+    if (!/[\r\n]/.test(text)) return;
+    event.preventDefault();
+    insertPasted(input, text.replace(/[\r\n]/g, (c) => BREAK_MARKS[c]));
+  });
+}
+
+function withBreaks(text) {
+  return text.replace(/[\uE00A\uE00D]/g, (c) => (c === BREAK_MARKS['\n'] ? '\n' : '\r'));
+}
+
+let teamHintIds = 0;
+
 /**
  * `loadNotes` reveals the stored notes (after a two-factor code) so they can be edited. A new one
  * in a sandbox picks its scope.
  */
 function teamForm(secret, loadNotes, sandbox) {
   const title = h('input', { class: 'input', value: secret ? secret.title : '', maxlength: 200, autofocus: true, placeholder: 'Shared Gmail' });
-  const value = h('input', { class: 'input mono', type: 'password', autocomplete: 'new-password', placeholder: secret && secret.has_value ? 'Unchanged' : '' });
+  // Named Value, its hint read as its description.
+  const hintId = `team-value-hint-${++teamHintIds}`;
+  const value = h('input', { class: 'input mono', type: 'password', 'aria-label': 'Value', 'aria-describedby': hintId, autocomplete: 'new-password', placeholder: secret && secret.has_value ? 'Unchanged' : '' });
+  pasteKeepsBreaks(value);
   const stored = Boolean(secret && secret.has_notes);
   const notes = h('textarea', { class: 'textarea', rows: 3, readOnly: stored, placeholder: stored ? 'Stored notes stay as they are' : 'User name, address, recovery codes…' });
   const body = h('div', { class: 'stack' },
     field('Title', title),
-    field('Value', value, secret ? 'Leave empty to keep the stored value.' : null),
+    field('Value', value, h('span', { id: hintId }, secret ? 'Leave empty to keep the stored value. A pasted value keeps its line breaks.' : 'A pasted value keeps its line breaks.')),
     field('Notes', notes, stored ? 'To change them, load them first: what you save replaces them.' : 'Encrypted like the value.'),
     stored ? h('div', null, smallButton('Edit current notes', `Edit current notes of ${secret.title}`, async (event) => {
       try {
@@ -258,7 +284,7 @@ function teamForm(secret, loadNotes, sandbox) {
   if (scope) body.append(scope.part);
   const values = () => {
     const out = { title: title.value.trim() };
-    if (!secret || value.value) out.value = value.value;
+    if (!secret || value.value) out.value = withBreaks(value.value);
     if (!secret || notes.value) out.notes = notes.value;
     if (scope) out.scope = scope.select.value;
     return out;
@@ -407,8 +433,7 @@ function escapedKey(text) {
 
 /**
  * Keeps the line breaks of a key pasted into a one-line `input` as `\n`: the browser would turn
- * them into spaces or drop them (#591). Any other text pastes as usual. The paste can be undone
- * where the browser can insert text as typed.
+ * them into spaces or drop them (#591). Any other text pastes as usual.
  */
 function pasteKeysEscaped(input) {
   input.addEventListener('paste', (event) => {
@@ -416,10 +441,18 @@ function pasteKeysEscaped(input) {
     const key = /[\r\n]/.test(text) ? escapedKey(text) : null;
     if (key === null) return;
     event.preventDefault();
-    if (document.execCommand('insertText', false, key)) return;
-    input.setRangeText(key, input.selectionStart, input.selectionEnd, 'end');
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    insertPasted(input, key);
   });
+}
+
+/**
+ * Inserts `text` over the selection of `input` in place of a paste: as typed, so it can be undone,
+ * where the browser can.
+ */
+function insertPasted(input, text) {
+  if (document.execCommand('insertText', false, text)) return;
+  input.setRangeText(text, input.selectionStart, input.selectionEnd, 'end');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 /**
@@ -427,7 +460,7 @@ function pasteKeysEscaped(input) {
  * how to send it. By default agents set it up themselves (SPEC-216): they bind its hosts and
  * production deploys get it; turned off, a person allows each. An instance administrator picks the
  * scope under More options. Editing keeps the hosts, and the request style of an older secret
- * that has one.
+ * that has one; a production secret's hosts can only be removed (SPEC-308).
  */
 function agentForm(ctx, secret, scope = 'sandbox') {
   const name = h('input', { class: 'input mono', 'aria-label': 'Name', value: secret ? secret.name : '', placeholder: 'VIDOC_API_KEY', autocomplete: 'off', autofocus: true });
@@ -448,7 +481,20 @@ function agentForm(ctx, secret, scope = 'sandbox') {
       h('span', { class: 'stack-tight' }, h('span', null, 'Let agents set it up'),
         h('span', { class: 'muted small' }, scope === 'personal' ? 'Agents in your tasks bind the hosts they work out, without asking you. Turn off to allow each yourself.' : 'Agents bind the hosts they work out and production deploys get it, without asking you. Turn off to allow each yourself.'))));
   }
-  if (secret) {
+  if (secret && secret.cd_prod) {
+    // Nor bound to a host: the server refuses any (SPEC-308). An older one that still has hosts
+    // can only have them removed: agents' requests to them still get it (the egress proxy).
+    if (secret.hosts.length) {
+      form.clearHosts = h('input', { type: 'checkbox', 'aria-describedby': 'prod-hosts-hint' });
+      parts.push(h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Hosts'),
+        h('span', { class: 'mono' }, secret.hosts.join(', ')),
+        h('label', { class: 'check' }, form.clearHosts, h('span', null, 'Remove these hosts')),
+        h('span', { class: 'field-hint', id: 'prod-hosts-hint' }, 'These hosts were kept from before production secrets became exclusive: agents’ requests to them still get it. Remove them, and add a separate secret for agents.')));
+    } else {
+      parts.push(h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Hosts'),
+        h('span', { class: 'field-hint' }, 'None. This is a production secret: agents never get it, so it is sent to no host. Add a separate secret for agents to send to a host.')));
+    }
+  } else if (secret) {
     form.hosts = h('input', { class: 'input mono', 'aria-label': 'Hosts', value: secret.hosts.join(', '), placeholder: 'api.example.com', autocomplete: 'off' });
     parts.push(field('Hosts', form.hosts, 'The only destinations it is sent to or typed into, comma-separated (*.example.com for subdomains). Agents ask for them; empty sends it nowhere.'));
   }
@@ -484,6 +530,10 @@ function agentForm(ctx, secret, scope = 'sandbox') {
         out.hosts = hosts;
         out.expect_hosts = secret.hosts;
       }
+    }
+    if (form.clearHosts && form.clearHosts.checked) {
+      out.hosts = [];
+      out.expect_hosts = secret.hosts;
     }
     if (form.injection) {
       out.injection = form.injection.value;

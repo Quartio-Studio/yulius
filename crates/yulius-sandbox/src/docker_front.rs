@@ -99,13 +99,7 @@ impl Front {
         std::fs::create_dir_all(paths.docker_dir())?;
         let socket = paths.docker_socket();
         let _ = std::fs::remove_file(&socket);
-        // Created 0660 by the umask, never chmod'ed by name: the engine (and a container binding
-        // the directory) can write it, and could put a link there between bind and chmod.
-        let mask = nix::sys::stat::Mode::from_bits_truncate(0o117);
-        let previous = nix::sys::stat::umask(mask);
-        let listener = UnixListener::bind(&socket);
-        nix::sys::stat::umask(previous);
-        let listener = listener?;
+        let listener = UnixListener::from_std(bind_group_only(&socket)?)?;
         let inode = std::fs::symlink_metadata(&socket)?.ino();
         let mut tasks = Vec::new();
         let mut supervisor = None;
@@ -182,6 +176,49 @@ impl Front {
             let _ = std::fs::remove_file(&self.socket);
         }
     }
+}
+
+/// Binds `socket` created 0660 by the umask, never chmod'ed by name: the engine (and a container
+/// binding the directory) can write the directory, and could put a link there between bind and
+/// chmod. The umask is set on a thread of its own that first stops sharing it with the process
+/// (`unshare(CLONE_FS)`), so fronts started at once and other threads never see it (ADR-0217).
+///
+/// # Errors
+/// The thread cannot be started or made private, or the socket cannot be bound.
+fn bind_group_only(socket: &Path) -> io::Result<std::os::unix::net::UnixListener> {
+    use nix::sys::stat::{Mode, umask};
+    let listener = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .spawn_scoped(scope, || {
+                own_umask()?;
+                let previous = umask(Mode::from_bits_truncate(0o117));
+                let bound = std::os::unix::net::UnixListener::bind(socket);
+                umask(previous);
+                bound
+            })?
+            .join()
+            .map_err(|_| io::Error::other("the socket's bind thread panicked"))
+    })??;
+    listener.set_nonblocking(true)?;
+    Ok(listener)
+}
+
+/// Gives the calling thread its own umask (with its cwd and root).
+#[cfg(target_os = "linux")]
+fn own_umask() -> io::Result<()> {
+    use nix::sched::{CloneFlags, unshare};
+    unshare(CloneFlags::CLONE_FS).map_err(io::Error::from)
+}
+
+/// Elsewhere the umask stays the process's: the front runs on Linux only (it joins a holder's
+/// namespaces), so only tests on a development Mac get here.
+#[cfg(not(target_os = "linux"))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "same signature as the Linux version"
+)]
+fn own_umask() -> io::Result<()> {
+    Ok(())
 }
 
 async fn relay(listener: UnixListener, target: PathBuf) {
@@ -398,6 +435,57 @@ mod tests {
             0o600
         );
         front.stop(Duration::from_secs(1)).await;
+        Ok(())
+    }
+
+    /// The process umask, read without changing it.
+    #[cfg(target_os = "linux")]
+    fn process_umask() -> io::Result<String> {
+        let status = std::fs::read_to_string("/proc/self/status")?;
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("Umask:"))
+            .map(|mask| mask.trim().to_owned())
+            .ok_or_else(|| io::Error::other("no Umask in /proc/self/status"))
+    }
+
+    /// SPEC-304 (#825): fronts started at once in one process (as unit tests are) each bind a
+    /// 0660 socket, and the process umask is never left changed. Linux only: elsewhere the umask
+    /// is the process's (see `own_umask`).
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fronts_started_at_once_bind_group_only_sockets_and_keep_the_umask() -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+        const FRONTS: usize = 8;
+        let before = process_umask()?;
+        for _ in 0..25 {
+            let dirs = (0..FRONTS)
+                .map(|_| tempfile::tempdir())
+                .collect::<io::Result<Vec<_>>>()?;
+            let barrier = Arc::new(std::sync::Barrier::new(FRONTS));
+            let starts = dirs.iter().map(|dir| {
+                let paths = StatePaths::new(dir.path().to_path_buf());
+                let barrier = Arc::clone(&barrier);
+                tokio::task::spawn_blocking(move || {
+                    barrier.wait();
+                    let serve = DockerServe::Refuse { reason: "r".into() };
+                    Front::start(&paths, &serve, &[], ok())
+                })
+            });
+            let mut fronts = Vec::new();
+            for start in starts.collect::<Vec<_>>() {
+                fronts.push(start.await.map_err(io::Error::other)??);
+            }
+            for dir in &dirs {
+                let socket = StatePaths::new(dir.path().to_path_buf()).docker_socket();
+                let mode = std::fs::symlink_metadata(&socket)?.permissions().mode() & 0o777;
+                assert_eq!(mode, 0o660, "{}", socket.display());
+            }
+            for front in fronts {
+                front.stop(Duration::from_secs(1)).await;
+            }
+        }
+        assert_eq!(process_umask()?, before);
         Ok(())
     }
 
