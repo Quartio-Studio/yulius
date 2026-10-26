@@ -187,6 +187,7 @@ Confirmed against `dev` at 84b45934.
 - [x] Docs: operations guide, architecture, ADR, product summary
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Every gate green, docs and the changes log updated
+- [x] The merge-blocking e2e race (hidden terminal size) reproduced and fixed
 
 ## Acceptance criteria
 
