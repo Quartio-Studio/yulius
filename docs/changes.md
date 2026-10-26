@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-26
 
+- The sandbox tabs in the top row now drag as smoothly as the Notes tabs (SPEC-336, task #320,
+  fixes #929). They used the browser's own drag and drop: a ghost of the link, nothing moving
+  until the drop, then a jump. They now share `tabdrag.js` with the Notes and Editor tabs: the
+  tab follows the pointer, the others slide aside, it settles where it is let go, Escape puts it
+  back, and the release opens no sandbox.
 - A whole instance can be copied to another VM or a file and installed there (SPEC-329,
   ADR-0222, task #313): `sudo yulius instance export | ssh root@new-vm yulius instance import`.
   The export freezes `yulius.service` (server, agents, terminals, CI, Docker) so nothing drifts,

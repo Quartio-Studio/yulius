@@ -1,5 +1,5 @@
-// Dragging a tab along its strip (SPEC-112 NOT-015, SPEC-127 EDT-011), for the notepads' and the
-// Editor's tabs. Mouse or pen; touch scrolls the strip and moves tabs from the menu. Past a few
+// Dragging a tab along its strip (SPEC-112 NOT-015, SPEC-127 EDT-011, SPEC-336), for the notepads',
+// the Editor's and the sandbox tabs. Mouse or pen; touch scrolls the strip and moves tabs from the menu. Past a few
 // pixels the tab follows the pointer, the tabs it passes slide aside, and on release it settles
 // into its place from where it was let go; Escape puts it back. The click that ends a drag (or an
 // Escape) chooses nothing: the strip's click handler asks `clickConsumed()` first. A strip that
@@ -11,17 +11,18 @@
 const DRAG_THRESHOLD_PX = 4;
 
 /**
- * Drag for the tabs of `tablist`: `keyOf(tab)` names a tab element, `commit(order)` puts the tabs
- * in that order (keys) and answers the strip's tab elements as drawn again. Returns `{press,
- * cancel, clickConsumed}`; call `press(event, tab)` on a tab's `pointerdown`.
+ * Drag for the tabs of `tablist` (the elements matching `selector`): `keyOf(tab)` names a tab
+ * element, `commit(order)` puts the tabs in that order (keys) and answers the strip's tab elements
+ * as drawn again. Returns `{press, cancel, clickConsumed}`; call `press(event, tab)` on a tab's
+ * `pointerdown`.
  */
-export function createTabDrag(tablist, { keyOf, commit, cancelled = () => {} }) {
+export function createTabDrag(tablist, { keyOf, commit, cancelled = () => {}, selector = '[role="tab"]' }) {
   let drag = null; // {key, tab, startX, moved, tabs, keys, pointerId, lefts, widths}
   let dragged = false; // the click that ends a drag chooses nothing
 
   function press(event, tab) {
     if (event.button !== 0 || event.pointerType === 'touch' || drag) return;
-    const tabs = [...tablist.querySelectorAll('[role="tab"]')];
+    const tabs = [...tablist.querySelectorAll(selector)];
     drag = {
       key: keyOf(tab), tab, startX: event.clientX, moved: false, tabs, pointerId: event.pointerId,
       keys: tabs.map(keyOf), lefts: tabs.map((t) => t.offsetLeft), widths: tabs.map((t) => t.offsetWidth),
