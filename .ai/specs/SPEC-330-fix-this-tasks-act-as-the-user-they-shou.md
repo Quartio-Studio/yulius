@@ -88,3 +88,20 @@ files or change the repository's default branch for it.
 - [ADR-0223](../../docs/decisions/0223-a-reference-copy-carries-every-branch-and-tag-its-owner-can-read.md):
   the bundle carries every branch and tag, the tool picks the branch to check out; the agent still
   never holds the person's token (ADR-0114) and the same-owner boundary of ADR-0197 stays.
+
+## Evidence
+
+- Regression first (commit 3d1c58b2, before the fix): `cargo nextest run -p yulius -E
+  'binary_id(yulius::main) & test(/^reference_repo::/)'`: 7 run, 5 passed, 2 failed:
+  `a_task_gets_every_branch_and_tag_its_owner_can_read` (asked `dev`, answered `branch: main`) and
+  `a_branch_the_repository_lacks_is_invalid_and_names_the_branches` (`nope` answered `main`).
+- After the fix: the same filter, 9 tests run, 9 passed (with
+  `the_git_adapter_bundles_every_branch_and_tag` against a local bare remote with `dev`, `other`
+  and a tag).
+- `scripts/dev ci` at efd6561f: exit 0; nextest 2630 tests passed, 16 skipped; lint, docs, deps,
+  macOS compile green.
+- `yulius security-scan` at efd6561f: exit 2, **not run** (Vidoc HTTP 429: the instance key used
+  its token quota); 8 code files listed unscanned. Not a pass; Yulius CI's `security` job runs it
+  again on the pull request head.
+- Not tested here: a real GitHub fetch with a person's token and a real agent's containment cloning
+  the bundle (the tests clone on the host).
