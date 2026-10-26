@@ -393,3 +393,54 @@ test('a hidden Superagent or Shell terminal keeps its session’s size', async (
   expect(await size(false)).toBe(shell);
   expect(await size(true)).toBe(shown);
 });
+
+// SPEC-337 (#933): a sign-in in another tab gives the browser a new session and CSRF token; a page
+// open since then rereads its token on the first refusal instead of failing every write.
+type CsrfMock = { __yuliusMock: { me: { csrf_token: string; user: { id: string } }; refuseCsrf?: boolean; csrfRefusals?: number } };
+
+test('the Superagent starts after another tab signed in again (a new CSRF token)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  // Another tab's sign-in: the session, and its token, change under this page.
+  await browser.evaluate(() => { (window as unknown as CsrfMock).__yuliusMock.me.csrf_token = 'csrf-of-the-new-session'; return null; });
+
+  await openSuperagent(browser, screen);
+  await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
+  expect(await browser.locator('.agent .load-error').count()).toBe(0);
+  // One refusal, then the retry with the new token went through.
+  expect(await browser.evaluate(() => (window as unknown as CsrfMock).__yuliusMock.csrfRefusals ?? 0)).toBe(1);
+});
+
+test('a page reloads, retrying nothing, when another person signed in in another tab', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await browser.evaluate(() => {
+    const db = (window as unknown as CsrfMock).__yuliusMock;
+    db.me = { ...db.me, csrf_token: 'csrf-of-someone-else', user: { ...db.me.user, id: 'usr_2' } };
+    (window as unknown as { __beforeReload?: boolean }).__beforeReload = true;
+    return null;
+  });
+
+  await openSuperagent(browser, screen);
+  // The page reloads (its marker is gone) and shows the person now signed in; the write was not
+  // sent again as them.
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __beforeReload?: boolean }).__beforeReload ?? null), { timeout: 15_000 }).toBeNull();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+});
+
+test('a write refused again after its retry says so, once per attempt', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await browser.evaluate(() => { (window as unknown as CsrfMock).__yuliusMock.refuseCsrf = true; return null; });
+
+  await openSuperagent(browser, screen);
+  const error = browser.locator('.agent .load-error');
+  await expect(error).toHaveText(/Couldn’t start the Superagent: missing or invalid CSRF token/);
+  // The first try and its one retry; no loop.
+  expect(await browser.evaluate(() => (window as unknown as CsrfMock).__yuliusMock.csrfRefusals ?? 0)).toBe(2);
+
+  // Fixed meanwhile: Try again starts it.
+  await browser.evaluate(() => { (window as unknown as CsrfMock).__yuliusMock.refuseCsrf = false; return null; });
+  await screen.getByRole('button', 'Try again').click();
+  await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
+});

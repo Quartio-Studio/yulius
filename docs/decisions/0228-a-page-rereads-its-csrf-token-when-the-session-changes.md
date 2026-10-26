@@ -18,11 +18,11 @@ Superagent showed it first because opening it is a write.
 
 - The server refuses a missing or wrong CSRF token with 403 and its own error code,
   `csrf_invalid` (`AppError::CsrfInvalid`), so a client can tell it from other refusals.
-- On `csrf_invalid` the page reads `GET /api/auth/me`. That answer comes only to the page's own
+- On `csrf_invalid` the page reads `GET /api/me`. That answer comes only to the page's own
   origin, and the server's site checks still apply. When it names the user the page is signed in
   as, the page takes its token and sends the request again, once. Concurrent refusals share that
   one read.
-- When `/api/auth/me` names another user, the page retries nothing and reloads, so it never acts
+- When `/api/me` names another user, the page retries nothing and reloads, so it never acts
   as someone else with what the previous person typed. A 401 runs the usual signed-out handling.
 
 ## Alternatives

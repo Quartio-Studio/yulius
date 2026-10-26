@@ -44,10 +44,10 @@ never as someone else.
 
 - CSR-001: The server refuses a cookie request with a missing or wrong CSRF token with status 403
   and the error code `csrf_invalid` (message unchanged), distinct from other refusals.
-- CSR-002: On a `csrf_invalid` refusal the page reads `GET /api/auth/me`. If it names the user the
+- CSR-002: On a `csrf_invalid` refusal the page reads `GET /api/me`. If it names the user the
   page is signed in as, the page takes that response's CSRF token and sends the request again,
   once. Concurrent refusals share one read.
-- CSR-003: If `/api/auth/me` names another user, the page retries nothing and reloads, so it shows
+- CSR-003: If `/api/me` names another user, the page retries nothing and reloads, so it shows
   the person now signed in. If it answers 401, the usual "signed out" handling runs.
 - CSR-004: A request refused again after the retry, or refused before any sign-in, fails as before
   (no loop). Bearer-token clients are unchanged.
@@ -67,7 +67,7 @@ never as someone else.
 - AC-2 (CSR-002): in the mock, after the session's token is changed under the open page (what
   another tab's sign-in does), opening the Superagent shows its terminal, not the error. The test
   fails on dev's `api.js`.
-- AC-3 (CSR-003): in the mock, after the token changes and `/api/auth/me` names another user, a
+- AC-3 (CSR-003): in the mock, after the token changes and `/api/me` names another user, a
   write does not go through and the page reloads.
 - AC-4 (CSR-004): a request whose retry is refused again shows the refusal (one retry, no loop).
 
@@ -83,7 +83,7 @@ never as someone else.
 ## Decisions
 
 - [ADR-0228](../../docs/decisions/0228-a-page-rereads-its-csrf-token-when-the-session-changes.md):
-  refresh the token from `/api/auth/me` and retry once on `csrf_invalid`; reload when the user
+  refresh the token from `/api/me` and retry once on `csrf_invalid`; reload when the user
   changed. Rejected: a CSRF token per user instead of per session, reading the token from a
   non-HttpOnly cookie (double submit), a `storage` event between tabs, and reloading on every
   refusal.
