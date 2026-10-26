@@ -347,6 +347,56 @@ async fn the_answered_commands_clone_and_update_a_copy() -> TestResult {
         std::fs::read_to_string(copy.join("model.rs"))?,
         "pub struct Model2;\n"
     );
+    assert!(
+        !w.scratch.path().join("pwned").exists() && !copy.join("pwned").exists(),
+        "the branch name is not run by the update either"
+    );
+    Ok(())
+}
+
+/// SPEC-330 REF-103 (review round 2): an answer lists at most 100 branches by name and counts
+/// them all; a missing branch's error says how many it left out.
+#[tokio::test]
+async fn an_answer_lists_at_most_a_hundred_branches_and_counts_them_all() -> TestResult {
+    let (w, _alice, lib) = world().await?;
+    let main = git(&lib, &["rev-parse", "refs/heads/main"])?
+        .trim()
+        .to_owned();
+    for n in 0..101 {
+        git(&lib, &["update-ref", &format!("refs/heads/b{n:03}"), &main])?;
+    }
+    let done = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib"}),
+    )
+    .await?;
+    assert_ne!(done["isError"], true, "{done}");
+    let record = support::tool_text(&done);
+    assert_eq!(record["branch_count"], 102, "{record}");
+    let listed = record["branches"].as_array().ok_or("branches")?;
+    assert_eq!(listed.len(), 100);
+    assert_eq!(listed[0]["name"], "b000");
+    assert!(
+        listed.iter().all(|b| b["name"] != "main"),
+        "main is the 102nd"
+    );
+
+    let missing = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib", "branch": "nope"}),
+    )
+    .await?;
+    assert_eq!(missing["isError"], true, "{missing}");
+    let text = support::tool_text(&missing).to_string();
+    assert!(
+        text.contains("b099") && text.contains("and 2 more"),
+        "{text}"
+    );
+    assert!(!text.contains("b100"), "{text}");
     Ok(())
 }
 
