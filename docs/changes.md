@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-26
 
+- The reply e2e no-leak checks now fail when keys reach the terminal (SPEC-323, task #308, fixes
+  #524). They read the session right after the keys, before a leaked key had arrived, and on an
+  empty session, which a leaked Enter leaves empty: with the attention bar's keys forwarded to the
+  terminal the closing-field case could still pass, and an Enter sent on an empty Send passed
+  every case. Each check (closing field, Escape, Cancel, empty Send) now seeds the session, types a
+  marker behind the keys through the page's own terminal socket, which delivers in order, and
+  checks the session holds exactly both, with no `> x` line in the terminal.
 - An update cancelled at its 30-minute bound says how many tasks were still in a turn, however
   many there were (SPEC-319, task #304, fixes #533). The message counted the instance page's list,
   which shows at most 20 tasks and leaves out runs still being frozen; it now counts the tasks not
