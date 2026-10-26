@@ -13,6 +13,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   backticked commands as code, and the sidebar and notifications say "Needs your decision" for a
   choice. `why` still works as the problem's older name, and requests stored with it read as the
   problem ([ADR-0221](decisions/0221-a-needs-you-request-reads-what-happened-problem-to-do.md)).
+- Files up to 1 GB can be uploaded by default, so a screen recording of a bug can be given to a
+  task (SPEC-325, ADR-0219, task #309). The agent extracts frames from the video with `ffmpeg`
+  and looks at them. The limit was 25 MB (`YULIUS_UPLOAD_MAX_MB`, which still sets it). An upload
+  that would bring the data disk to 95 % used is refused before it starts. A large file attached
+  to a prompt now downloads from its link instead of being read into the page. Operators must
+  raise the reverse proxy's body limit to 1100 MB (operations guide, §4 and the upgrade notes).
 - The reply e2e no-leak checks now fail when keys reach the terminal (SPEC-323, task #308, fixes
   #524). They read the session right after the keys, before a leaked key had arrived, and on an
   empty session, which a leaked Enter leaves empty: with the attention bar's keys forwarded to the

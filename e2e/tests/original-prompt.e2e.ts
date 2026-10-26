@@ -28,6 +28,18 @@ test('the task menu shows the original prompt with its attached files', async ({
   await expect(files).toHaveText(/old-mockup\.png\s*No longer on the server/);
   expect(await axeViolations(browser)).toEqual([]);
 
+  // SPEC-325 UPL-003: a file can be as large as an upload (1 GiB): the browser downloads it from
+  // its link, never read into the page with a total timeout.
+  await files.getByRole('button', 'Download notes.txt').click();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { downloads?: string[][] } }).__yuliusMock.downloads ?? []))
+    .toEqual([['/api/tasks/tsk_studio_12/prompt/attachments/1', 'notes.txt']]);
+  // Asked once with HEAD, and read only by that download (the mock's stand-in for the browser,
+  // whose read lands after the mock's latency: polled).
+  await expect.poll(() => browser.evaluate(() => {
+    const m = (window as unknown as { __yuliusMock: { sent?: Record<string, number>; promptFileReads?: Record<string, number> } }).__yuliusMock;
+    return [m.sent?.['HEAD /api/tasks/tsk_studio_12/prompt/attachments/1'] ?? 0, m.promptFileReads?.['tsk_studio_12/1'] ?? 0];
+  }), { timeout: 5000 }).toEqual([1, 1]);
+
   await files.getByRole('button', 'Open Image 1, checkout-error.png').click();
   const preview = screen.getByRole('dialog', 'checkout-error.png');
   await expect(preview.getByRole('img', 'checkout-error.png')).toBeVisible();
@@ -36,6 +48,22 @@ test('the task menu shows the original prompt with its attached files', async ({
 
   await browser.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
+});
+
+// SPEC-325 review: a file removed after the list was read says so, as the queue card does, and
+// nothing is downloaded.
+test('a file removed after the list was shown says it is not on the server', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  await screen.getByRole('menuitem', 'See the original prompt').click();
+  const files = screen.getByRole('dialog', 'Original prompt · #12').getByRole('list', 'Attached files');
+  await expect(files.getByRole('button', 'Download notes.txt')).toBeVisible();
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { removePromptFile: (p: string) => void } }).__yuliusMock
+    .removePromptFile('/srv/yulius/sandboxes/sb_studio/attachments/drafts/usr_mkarp/notes.txt'));
+  await files.getByRole('button', 'Download notes.txt').click();
+  await expect(browser.locator('.toast-msg:has-text("notes.txt is not on the server")')).toBeVisible();
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { downloads?: string[][] } }).__yuliusMock.downloads ?? [])).toEqual([]);
 });
 
 test('the sidebar menu opens it too, and a failed load says why', async ({ app, browser, screen }) => {

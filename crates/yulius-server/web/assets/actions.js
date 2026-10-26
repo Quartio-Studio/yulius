@@ -527,7 +527,7 @@ export function openPromptDialog(ctx, task) {
     },
   };
   const fileUrl = (index) => `/api/tasks/${enc(task.id)}/prompt/attachments/${index}`;
-  // An attached file can be as large as an upload (25 MiB by default): longer than a JSON read.
+  // An image can be as large as an upload (1 GiB by default, SPEC-325): longer than a JSON read.
   const FILE_TIMEOUT_MS = 120000;
   // Each file is read once, for its thumbnail or its first opening, whichever comes first; a
   // failed read is tried again at the next opening.
@@ -582,16 +582,15 @@ export function openPromptDialog(ctx, task) {
       return h(tag, { class: ['prompt-file gone', inline && 'inline'] }, icon('file', { size: 16 }), h('span', { class: 'prompt-file-name' }, file.name), h('span', { class: 'muted xs' }, 'No longer on the server'));
     }
     if (!file.image) {
+      // A screen recording of up to 1 GiB (SPEC-325): the browser downloads it from its link.
       const download = async () => {
         try {
-          const url = URL.createObjectURL(await ctx.api.get(fileUrl(index), { as: 'blob', signal: controller.signal, timeoutMs: FILE_TIMEOUT_MS }));
-          urls.push(url);
-          const link = h('a', { href: url, download: file.name, hidden: true });
-          document.body.append(link);
-          link.click();
-          link.remove();
+          await ctx.api.download(fileUrl(index), file.name, { signal: controller.signal });
         } catch (error) {
-          if (error.code !== 'aborted') errorToast(error, `Couldn’t download ${file.name}`);
+          if (error.code === 'aborted') return;
+          // Removed since the list was read (drafts go after a week).
+          if (error.status === 404) toast(`${file.name} is not on the server.`, { kind: 'warn' });
+          else errorToast(error, `Couldn’t download ${file.name}`);
         }
       };
       return h(tag, { class: ['prompt-file', inline && 'inline'] }, h('button', { type: 'button', class: 'btn btn-ghost btn-sm', 'aria-label': `Download ${file.name}`, onClick: download },
