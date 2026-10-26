@@ -2103,6 +2103,44 @@ stateDiagram-v2
 The UI's event stream (`WS /api/events`) beats every 20 s; the page replaces a stream silent for
 50 s, so a connection that died without a close is noticed and the lists resync (SPEC-191).
 
+## Instance export and import
+
+`yulius instance export` and `yulius instance import` (SPEC-329, ADR-0222, module
+`crates/yulius/src/instance/`) copy a whole instance to another host. Both run as root on the host,
+outside Yulius. The export freezes the whole `yulius.service` unit with systemd's freezer (the
+cgroup v2 `cgroup.freeze` of the unit, above every run's own freeze of ADR-0131), so the server and
+everything it started stop at once and the data directory is read-only while it is read. A first
+walk of the data directory plans the archive's exact length and a fingerprint of its headers; the
+second streams an uncompressed pax tar to stdout (`archive.rs`): the manifest with the total first,
+`data/…` in bytewise order, a SHA-256 trailer last. The import reads it with the same module, checks
+the manifest, makes the service user and its subordinate ids with `host setup`'s items, extracts
+through `O_NOFOLLOW` directory handles (`extract.rs`) with the ids remapped, and checks the
+trailer. Nothing is staged on either disk; a pipe through `ssh` is the transport.
+
+```mermaid
+sequenceDiagram
+  participant O as Operator (root, SSH)
+  participant E as yulius instance export
+  participant D as systemd
+  participant F as Old data directory
+  participant I as yulius instance import (new VM)
+  participant N as New data directory
+  O->>E: sudo yulius instance export | ssh root@new yulius instance import
+  E->>D: systemctl freeze yulius.service (wait for frozen)
+  E->>F: walk 1: exact length + header fingerprint
+  E->>I: manifest (total_bytes) first
+  I->>I: check format, schema, free space, no instance; make user and ids
+  loop every entry
+    E->>F: walk 2: read
+    E->>I: header + data
+    I->>N: create through O_NOFOLLOW handles, owners remapped
+  end
+  E->>I: SHA-256 trailer
+  I->>I: compare checksum and length, remove the incomplete marker
+  E->>D: systemctl thaw (or --move: stay frozen, disable)
+  O->>I: then yulius host setup on the new VM
+```
+
 ## Agent primitives
 
 Repository skills are APM primitives ([ADR-0016](decisions/0016-apm-for-agent-primitives.md),

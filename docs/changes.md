@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-26
 
+- A whole instance can be copied to another VM or a file and installed there (SPEC-329,
+  ADR-0222, task #313): `sudo yulius instance export | ssh root@new-vm yulius instance import`.
+  The export freezes `yulius.service` (server, agents, terminals, CI, Docker) so nothing drifts,
+  prints the exact size before the first byte, streams an uncompressed tar of exactly that length
+  to standard output without writing on the VM's disk, and thaws the service after (`--move`
+  keeps it frozen and disabled). The import refuses an existing instance, a newer schema or too
+  little disk before writing, makes the service user and its ids, remaps owners, never follows a
+  link of the copy, and checks the SHA-256 trailer; `yulius host setup` then starts the new VM.
 - Files up to 1 GB can be uploaded by default, so a screen recording of a bug can be given to a
   task (SPEC-325, ADR-0219, task #309). The agent extracts frames from the video with `ffmpeg`
   and looks at them. The limit was 25 MB (`YULIUS_UPLOAD_MAX_MB`, which still sets it). An upload

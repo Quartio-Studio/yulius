@@ -1111,7 +1111,58 @@ sudo -u yulius yulius backup --data-dir /var/lib/yulius /var/backups/yulius-$(da
 wanted, `sandboxes/` (clones and worktrees can be re-created from GitHub, uncommitted work cannot).
 Restore: stop the service, put the database copy at `yulius.db`, restore `master.key`, start.
 The database copy holds the secrets vault and the egress CA key as ciphertext only; keep
-`master.key` apart from database backups (whoever has both can read every secret).
+`master.key` apart from database backups (whoever has both can read every secret). For a copy of
+everything, files included, see the next section.
+
+### Copy or move the whole instance
+
+`yulius instance export` and `yulius instance import` (SPEC-329, ADR-0222) copy everything: the
+database, `master.key`, every sandbox (clones, worktrees with uncommitted work, homes with the
+Claude sessions), installed packages and Docker images and volumes (`sysroots/`), transcripts and
+runs. Both run as root.
+
+```sh
+# straight from the old VM to a new one; nothing is written on the old VM's disk
+sudo yulius instance export --move | ssh root@new-vm yulius instance import
+# or from a laptop, between two VMs
+ssh root@old-vm yulius instance export --move | ssh root@new-vm yulius instance import
+# or keep a copy (as sensitive as the server: umask 077) and install it later
+ssh root@old-vm 'yulius instance export' > yulius-$(date +%F).tar
+ssh root@new-vm yulius instance import < yulius-2026-10-26.tar
+# then, on the new VM
+sudo yulius host setup --public-url https://yulius.example.com
+```
+
+**Export.** It freezes `yulius.service` (`systemctl freeze`): the server, every agent, terminal,
+browser, CI job, deploy and sandbox Docker engine pause, so nothing changes while it reads. The web
+UI does not answer during the export. It then prints the exact size ("Exporting 123.4 GiB
+(1,234,567 entries)"), streams an uncompressed tar of that exact length to standard output
+(refused when standard output is a terminal), shows progress on stderr and thaws the service
+(also when it fails, the reader goes away or it gets Ctrl-C, SIGTERM or SIGHUP). If it is killed
+with SIGKILL, thaw by hand: `sudo systemctl thaw yulius.service`. `--move` keeps the old instance
+frozen and disables its unit after a successful export, so it never runs beside the new one (both
+would run the same agents against the same repositories); undo with `sudo systemctl thaw
+yulius.service && sudo systemctl enable yulius.service`. Left out, because the new host makes its
+own: `system/` (the sandbox base), `runtime/`, `update/`, `yulius.db-shm`, sockets and FIFOs. It is
+refused (exit 2, nothing frozen) while the update helper runs, from a Yulius terminal (it would
+freeze itself), and while the service is stopped but its agents still run (start it first).
+`--service` and `--update-service` name other units. The copy is uncompressed so its size is known
+first; pipe it through `zstd` yourself if the link is slow.
+
+**Import.** On the new VM with the same or a newer `yulius` installed (§2, before `host setup`):
+it reads the manifest first and refuses (exit 2, nothing written) a copy of a newer database
+schema, a data directory that already holds an instance, too little free space or inodes, or a
+smaller subordinate id range. The copy goes to the exported data directory's path (Git worktrees
+and the database hold absolute paths). It makes the service user and its subordinate ids (as
+`host setup` does), extracts as the stream arrives, remaps the old service's ids and subordinate
+range to the new ones, and checks the copy's SHA-256 and length. A file of another owner (root
+included) becomes the service user's, without setuid. File capabilities and ACLs are not restored
+(it says how many). A cut or damaged stream fails (exit 1) and leaves the data directory marked
+incomplete: remove it (`sudo rm -rf /var/lib/yulius`) and import again. Then run `host setup`
+with the public URL the import prints (it writes the unit, builds the sandbox base for this host,
+checks Docker and starts Yulius), copy other `Environment=` lines you changed in the old unit,
+and point the reverse proxy and DNS at the new VM. Tasks that were running come back as after a
+reboot.
 
 ### Leftovers: what is kept, what is cleaned and when
 
