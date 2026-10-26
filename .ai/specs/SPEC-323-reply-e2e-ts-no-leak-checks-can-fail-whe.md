@@ -1,11 +1,11 @@
 ---
 yulius-task: 0f1a8ec0-0c11-48f5-ad81-1bdd1b402c84
-status: draft
+status: done
 ---
 
 # SPEC-323: reply.e2e.ts no-leak checks fail when keys reach the terminal (#524)
 
-Status: draft
+Status: done
 Date: 2026-10-26
 Owner: Yulius task #308
 Scope authorization: the issue-triage request (task #308). Fix GitHub issue #524 in one pull
@@ -52,8 +52,8 @@ attention bar), and Escape, Cancel and an empty Send in the reply field.
 - [x] Mutation that forwards the bar's keys shown to pass the current test
 - [x] No-leak checks seed the session and wait behind the keys
 - [x] Mutations make the new checks fail, recorded in Evidence
-- [ ] Independent review answered and gates green
-- [ ] Merged into dev on green CI with a closing summary
+- [x] Independent review answered and gates green
+- [x] Merged into dev on green CI with a closing summary
 
 ## Acceptance criteria
 
@@ -118,3 +118,17 @@ Review round 1 (all six reads covered, 85866c56):
 Review round 2 (fe424f10): unchanged product 6 passed; the field's Escape also sent to the
 terminal (`terminal.sendKeys('\x1b')`), which passed at 12fc18b8, now fails the Escape test
 (`expect.not.toContainText failed`, `reply.e2e.ts:45`).
+
+Gates:
+
+- `python3 scripts/bootstrap.py && scripts/dev ci` (started at f094a9ef; later commits change only
+  `e2e/tests/reply.e2e.ts` and documents): exit 0, cargo-deny "advisories ok, bans ok, licenses ok,
+  sources ok".
+- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run` at 3bd99043: 66 files passed, 1 skipped; 712
+  tests passed, 1 skipped.
+- `yulius security-scan` at 3bd99043: **not run** (exit 2): Vidoc answered HTTP 429 "This API key
+  has used its 50,000,000 tokens"; `e2e/tests/reply.e2e.ts` not scanned. Unrun, not passed
+  (ADR-0133); the PR's CI `security` job is the live scan.
+- Independent review (fresh session, `om-code-review`), three rounds: round 1 asked for the
+  Escape, Cancel and empty Send reads (fixed in 85866c56) and wording fixes; round 2 asked for a
+  leaked Escape check (fe424f10); round 3 approved 3bd99043 with no findings.
