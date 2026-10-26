@@ -696,6 +696,56 @@ test('a needs_you request reads What happened, Problem and To do', async ({ app,
   await expect(browser.locator('.attention-bar .needs-you-head')).toHaveCount(0);
 });
 
+// Review: the longest request a phone shows keeps its to-do and its buttons in view, the
+// terminal's corner notices start below the bar, and an unpaired backtick stays a backtick.
+test('the longest needs_you request keeps its to-do and buttons in view on a phone', async ({ app, browser }) => {
+  await browser.setViewport({ width: 360, height: 780 });
+  await app.open(mock('/s/studio/t/12'));
+  await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {
+    needs_you: {
+      happened: `Happened ${'word '.repeat(58)}`.slice(0, 300),
+      problem: `Problem ${'word '.repeat(98)}`.slice(0, 500),
+      action: `Run \`sudo systemctl reload caddy\` then the \`other step ${'x'.repeat(140)}`.slice(0, 200),
+      decision: false,
+      link: `${location.origin}/#/s/studio/secrets?section=agents`,
+      at: new Date().toISOString(),
+    },
+  }));
+  await expect(browser.locator('.attention-bar .needs-you-todo')).toBeVisible();
+  await expect(browser.locator('.taskview-term .term-corner')).toHaveCount(1);
+  const placed = await browser.evaluate(() => {
+    const inView = (el: Element | null) => {
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      return r.top >= 0 && r.bottom <= window.innerHeight && r.left >= 0 && r.right <= window.innerWidth;
+    };
+    const bar = document.querySelector('.attention-bar');
+    const todo = document.querySelector('.attention-bar .needs-you-todo');
+    const corner = document.querySelector('.taskview-term .term-corner');
+    // The to-do is drawn where it is, not under the scrolled context above it.
+    const r = todo!.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + 4, r.top + r.height / 2);
+    return {
+      todo: inView(todo),
+      todoOnTop: Boolean(hit && todo!.contains(hit)),
+      buttons: [...(bar?.querySelectorAll('a.btn, button.btn') || [])].filter((b) => b.checkVisibility()).map((b) => inView(b)),
+      cornerBelowBar: corner ? corner.getBoundingClientRect().top >= bar!.getBoundingClientRect().bottom : null,
+      code: [...document.querySelectorAll('.attention-bar .needs-you-todo code')].map((c) => c.textContent),
+      todoText: todo!.querySelector('dd')?.textContent?.slice(0, 50),
+    };
+  });
+  expect(placed).toEqual({
+    todo: true,
+    todoOnTop: true,
+    buttons: [true, true],
+    cornerBelowBar: true,
+    code: ['sudo systemctl reload caddy'],
+    todoText: 'Run sudo systemctl reload caddy then the `other st',
+  });
+  expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
 test('a needs_you decision reads Decide, and an action alone only To do', async ({ app, browser }) => {
   await app.open(mock('/s/studio/t/12'));
   await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {

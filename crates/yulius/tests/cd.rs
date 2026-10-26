@@ -968,6 +968,18 @@ async fn a_needs_you_request_reads_what_happened_problem_and_to_do() -> TestResu
     )
     .await?;
     assert_eq!(long["isError"], true, "{long}");
+    // A link elsewhere is described in a field the agent's schema has (review).
+    let outside = tool(
+        "needs_you",
+        json!({"action": "x", "link": "https://evil.test/x"}),
+    )
+    .await?;
+    assert!(
+        outside
+            .to_string()
+            .contains("describe other places in action or problem"),
+        "{outside}"
+    );
     Ok(())
 }
 

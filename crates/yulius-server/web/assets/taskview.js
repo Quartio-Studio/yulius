@@ -46,9 +46,12 @@ const QUICK_KEYS = [
   ['Enter', '\r'],
 ];
 
-/** Text with its `backticked` parts as code: commands and names stand out from the words. */
+/** Text with its `backticked` parts as code: commands and names stand out from the words. An
+ * unpaired backtick stays a backtick. */
 function withCode(text) {
-  return text.split('`').map((part, i) => (i % 2 ? h('code', null, part) : part)).filter((part) => part !== '');
+  const parts = text.split('`');
+  if (parts.length % 2 === 0) parts.splice(-2, 2, `${parts.at(-2)}\`${parts.at(-1)}`);
+  return parts.map((part, i) => (i % 2 ? part && h('code', null, part) : part)).filter(Boolean);
 }
 
 /**
@@ -61,9 +64,11 @@ function needsYouText(asked) {
     ['Problem', asked.problem],
     [asked.decision ? 'Decide' : 'To do', asked.action],
   ].filter(([, text]) => text);
-  return h('span', { class: 'attention-text' },
+  // The list scrolls when long (a phone), its to-do held in view at its foot; it takes the keyboard
+  // so that what scrolls can be read without a pointer.
+  return h('div', { class: 'attention-text needs-you-text' },
     h('strong', { class: 'needs-you-head' }, asked.decision ? 'Needs your decision' : 'Needs you'),
-    h('dl', { class: 'needs-you-parts' }, parts.map(([label, text], i) =>
+    h('dl', { class: 'needs-you-parts', tabindex: 0 }, parts.map(([label, text], i) =>
       h('div', { class: i === parts.length - 1 ? 'needs-you-todo' : null }, h('dt', null, label), h('dd', null, withCode(text))))));
 }
 
@@ -388,6 +393,8 @@ export function mountTaskView(ctx, sandbox, task) {
       textAnswer = !owner();
     }
     attention.hidden = !content && !control;
+    // A request's buttons go under it when the bar is too narrow for both (SPEC-327 review).
+    attention.classList.toggle('needs-you', Boolean(info.needsYou && content));
     attention.classList.toggle('waiting', !control && !info.request && current.activity === 'waiting' && info.group === 'needs');
     attention.classList.toggle('stacked', Boolean(control && content));
     // A waiting task's start chip and buttons go below its words (SPEC-126).
@@ -636,6 +643,10 @@ export function mountTaskView(ctx, sandbox, task) {
 
   // Watching, the control card sits above the transcript in the flow (SPEC-179 WAT-005).
   const termArea = h('div', { class: ['taskview-term', watch && 'watching'] }, terminal.el, attention, held, queueSlot);
+  // The terminal's corner notices start below the attention bar, however tall it is (SPEC-327).
+  const attentionSize = new ResizeObserver(() => termArea.style.setProperty('--attention-h', `${attention.offsetHeight}px`));
+  attentionSize.observe(attention);
+  destroyers.push(() => attentionSize.disconnect());
   const el = h('div', { class: 'taskview' }, heading, strip, termArea, quickbar);
 
   function renderStrip() {

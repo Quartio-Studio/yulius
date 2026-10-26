@@ -175,7 +175,7 @@ impl App {
                 let base = self.config.public_url.trim_end_matches('/');
                 if link != base && !link.starts_with(&format!("{base}/")) {
                     return Err(AppError::Invalid(format!(
-                        "link must be a page of this Yulius ({base}/…); describe other places in why"
+                        "link must be a page of this Yulius ({base}/…); describe other places in action or problem"
                     )));
                 }
                 Some(link)
