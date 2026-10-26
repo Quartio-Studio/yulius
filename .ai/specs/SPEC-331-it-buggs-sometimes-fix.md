@@ -60,8 +60,9 @@ fits it to its box and sends that size again.
 - [x] Spec SPEC-331 written and validated
 - [x] Regression e2e test fails on dev: hiding the Superagent or a Shell terminal sends no resize
 - [x] A hidden terminal measures nothing and reports no size
-- [ ] Docs, changes entry and gates green
-- [ ] Independent review answered
+- [x] Docs and changes entry updated
+- [x] Independent review answered
+- [ ] Local gate (scripts/dev ci) green
 - [ ] PR merged into dev on green
 
 ## Acceptance criteria
