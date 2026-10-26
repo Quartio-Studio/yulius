@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-26
 
+- An update cancelled at its 30-minute bound says how many tasks were still in a turn, however
+  many there were (SPEC-319, task #304, fixes #533). The message counted the instance page's list,
+  which shows at most 20 tasks and leaves out runs still being frozen; it now counts the tasks not
+  paused, as readiness does.
 - At phone width the Status panel's section summaries wrap inside the panel instead of running
   past it (SPEC-324, task #305, fixes #549): at 360 px "Subscriptions 4 ready · 1 at the limit ·
   1 need attention" was cut off at "…1 need attentio". A summary longer than the room beside its

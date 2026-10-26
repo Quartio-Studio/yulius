@@ -594,11 +594,10 @@ async fn pausing_is_bounded_and_updates_can_be_cancelled() -> TestResult {
     let _ = i.h.app.update_round().await;
     let view = get(&i, &i.admin).await?;
     assert_eq!(view["run"]["state"], "cancelled");
-    assert!(
-        view["run"]["error"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("still in a turn after 30 minutes")
+    assert_eq!(
+        view["run"]["error"],
+        "1 task(s) were still in a turn after 30 minutes; nothing was installed.",
+        "the idle task counts as paused"
     );
     assert!(view["phase"].is_null());
     assert_eq!(
@@ -658,6 +657,50 @@ async fn pausing_is_bounded_and_updates_can_be_cancelled() -> TestResult {
             .as_str()
             .unwrap_or_default()
             .contains("did not respond")
+    );
+    Ok(())
+}
+
+/// SPEC-319 (#533): the 30-minute cancel message counts every task still in a turn, not the
+/// page's list, which shows at most 20 of them.
+#[tokio::test]
+async fn the_cancel_message_counts_every_task_still_in_a_turn() -> TestResult {
+    let i = instance().await?;
+    two_tasks(&i).await?;
+    let alice = i.h.store.user_by_login("alice").await?.ok_or("alice")?.id;
+    for n in 0..20 {
+        let id = format!("t-busy-{n:02}");
+        let task = seed_task(&i.h, &id, "s1", alice.as_str(), TaskStatus::Running, None).await?;
+        seed_live_attempt_at(
+            &i.h,
+            &id,
+            &format!("update-token-busy-{n:02}-0123456789abcdef"),
+            &format!("/nonexistent/runs/a-{id}"),
+        )
+        .await?;
+        i.h.store
+            .set_activity(&task.id, Some(Activity::Working), i.h.app.now())
+            .await?;
+    }
+    built(&i).await?;
+    let _ = i.h.app.update_round().await;
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["tasks"]["total"], 22);
+    assert_eq!(view["run"]["tasks"]["paused"], 1);
+    assert_eq!(
+        view["run"]["tasks"]["waiting"]
+            .as_array()
+            .map_or(0, Vec::len),
+        20,
+        "the page lists at most 20"
+    );
+    advance(&i.h, 30 * 60_000 + 1);
+    let _ = i.h.app.update_round().await;
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "cancelled");
+    assert_eq!(
+        view["run"]["error"],
+        "21 task(s) were still in a turn after 30 minutes; nothing was installed."
     );
     Ok(())
 }
@@ -781,6 +824,26 @@ async fn a_run_that_never_settles_falls_back_to_its_turn_boundary() -> TestResul
     assert_eq!(
         i.helper.last().map(|r| r.action),
         Some(HelperAction::Install)
+    );
+    Ok(())
+}
+
+/// SPEC-319 (#533): a run still being frozen at the 30-minute bound is not paused: the cancel
+/// message counts it, though the page does not list it as still in a turn.
+#[tokio::test]
+async fn the_cancel_message_counts_a_run_still_being_frozen() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    two_tasks(&i).await?;
+    host.answer(RUN_WORKING, RunFreeze::Freezing);
+    built(&i).await?;
+    let _ = i.h.app.update_round().await;
+    advance(&i.h, 30 * 60_000 + 1);
+    let _ = i.h.app.update_round().await;
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "cancelled");
+    assert_eq!(
+        view["run"]["error"],
+        "1 task(s) were still in a turn after 30 minutes; nothing was installed."
     );
     Ok(())
 }
