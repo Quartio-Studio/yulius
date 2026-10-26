@@ -979,7 +979,8 @@ keeps the stored values; a given map replaces all values of that map (`{}` clear
 `yulius` is reserved for the always-attached Yulius tool server. A personal server reaches only runs
 its owner holds: their tasks (not an automation's) and their Superagent. Per name the most
 specific server wins, also when disabled: this sandbox's personal, its team, every sandbox's
-personal, then every sandbox's team server (SPEC-332). Agent runs receive HTTP secrets only as an
+personal, then every sandbox's team server (SPEC-332). Literal secret values of 8+ characters that
+are not ordinary text are redacted from the project's terminals, transcripts and MCP results. Agent runs receive HTTP secrets only as an
 `Authorization: Bearer` token; other headers are used by the test endpoint but not yet passed to
 Claude Code.
 

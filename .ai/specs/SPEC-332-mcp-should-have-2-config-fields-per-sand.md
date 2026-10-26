@@ -60,17 +60,25 @@ every agent of the instance, and either setting can be changed later with one cl
   applies (a person may turn a team server off for their own runs with a disabled personal one).
 - **MSC-006 Change later.** An update may change `scope` and `audience`. It needs the right to
   manage the server now and the combination it moves to; moving to `sandbox` scope from the
-  instance takes the sandbox from `sandbox` in the body. Making a server personal makes the caller
+  instance takes the sandbox from `sandbox` in the body (a sandbox's server never moves to another
+  sandbox, so a `.mcp.json` import stays with its repository). Making a server personal makes the caller
   its owner; making it team clears the owner. Names stay unique and at most 50 servers per
   (scope, owner).
-- **MSC-007 Paste.** Pasting `claude mcp add --scope user …` selects Only me; `--scope project`
-  selects Whole team. Other pastes leave the settings as they are.
+- **MSC-007 Paste.** Pasting `claude mcp add --scope user …` selects Only me; `--scope local`
+  (private to you in that project) Only me in this sandbox; `--scope project` Whole team. Other
+  pastes leave the settings as they are.
 - **MSC-008 Lifecycle.** Removing a user removes their personal servers. `.mcp.json` imports stay
   team servers of their sandbox and ignore personal names when deciding what is new.
 - **MSC-009 Directed by its owner.** As for personal secrets (SPEC-245), `task_message` from anyone
   but the owner is refused for a task whose runs get its owner's personal MCP server: another
-  person's message would steer an agent holding their credential. A live run keeps the servers it
-  started with; after a hand-over (SPEC-070) the task's next run gets the new owner's.
+  person's message would steer an agent holding their credential; the check covers what the live
+  run was started with too. A live run keeps its MCP configuration, so a hand-over (SPEC-070) of a
+  task whose live run holds the previous owner's personal server resumes it (same conversation)
+  with the new owner's servers.
+- **MSC-010 Redaction.** The literal secret values of every MCP server that can reach a sandbox's
+  runs (the team's and every person's personal ones; at least 8 characters, not ordinary text such
+  as `info`) join the project's redaction with the agent secrets: terminals, transcripts, MCP
+  results and a run's fingerprint file (its holder's servers only).
 
 ## Plan
 
@@ -100,11 +108,13 @@ every agent of the instance, and either setting can be changed later with one cl
 
 ## Test plan
 
-- Integration (`crates/yulius/tests/skills_mcp.rs`): AC-1..AC-4 through the HTTP API and
-  `App::mcp_attachments` with holders; automation holder through a task record.
-- Store unit test: schema 44 cascade on user delete, uniqueness per (scope, owner).
-- Unit (`mcpedit.js` via e2e): paste `--scope user` → Only me.
-- e2e (`e2e/`): AC-5 against the mock.
+- Integration (`crates/yulius/tests/mcp_scopes.rs`): AC-1..AC-4 through the HTTP API and
+  `App::mcp_attachments` with holders; permission-denied moves; redaction of MCP values.
+- Real runs (`pool_supervision.rs`): a person's task gets their personal server, an automation's
+  task does not, a hand-over resumes the run without it; the Superagent's (`cockpit.rs`).
+- `secrets_scopes.rs`: `task_message` refused for another person's task holding their server.
+- Store unit test: schema 44 cascade on user delete, uniqueness and room per (scope, owner).
+- e2e (`mcp.e2e.ts`): AC-5 against the mock; pasted `--scope user|local|project`.
 
 ## Decisions
 

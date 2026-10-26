@@ -41,7 +41,12 @@ sandbox share its file system and its sandbox user.
   in every sandbox. The API default stays `sandbox` + `team` so existing clients keep working.
   Pasting `claude mcp add --scope user` picks only me, `--scope project` the whole team.
 - **Directed by its owner.** `task_message` from anyone but the owner is refused for a task whose
-  runs get the owner's personal MCP server, as for personal secrets.
+  runs get the owner's personal MCP server, or whose live run was started with one, as for
+  personal secrets. A live run cannot drop a server, so a hand-over of a task whose live run holds
+  the previous owner's personal server resumes the run (same conversation) with the new owner's.
+- **Redacted like agent secrets.** The literal values of every MCP server that can reach a
+  sandbox's runs (team and personal; 8+ characters, not ordinary text) join the project's
+  redaction; a run's fingerprint file gets its holder's servers' only.
 
 ## Alternatives
 
@@ -60,11 +65,13 @@ sandbox share its file system and its sandbox user.
 
 - An agent can now honestly say a personal server reaches only its owner's own tasks and
   Superagent; the editor says so under the settings.
-- A personal server's values reach its owner's run environment (`YULIUS_MCP_<SERVER>_<VAR>`).
-  Personal limits whose runs get the server; it is not a containment boundary between tasks that
-  share a sandbox's file system and user, so a credential that must never be readable by a
-  teammate's concurrent task there belongs in a sandbox only its owner works in.
-- A live run keeps the servers it started with; after a hand-over the task's next run gets the new
-  owner's personal servers, not the previous owner's.
+- A personal server's values reach its owner's run environment (`YULIUS_MCP_<SERVER>_<VAR>`),
+  redacted from what people see of the project. Personal limits whose runs get the server; it is
+  not a containment boundary between tasks that share a sandbox's file system and user, so a
+  credential that must never be readable by a teammate's concurrent task there belongs in a
+  sandbox only its owner works in.
+- A hand-over restarts (resumes) a live run holding the previous owner's personal server.
+- The audit log (instance administrators) records a personal server's name and scope with its
+  owner as actor: the record of who changed what outweighs hiding that a server exists.
 - `${secret:NAME}` references in any MCP server still never resolve personal secrets (ADR-0186).
 - Schema version 44 adds `mcp_servers.owner_id`; existing servers are team servers.

@@ -12,7 +12,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   so a server holding your own credential (say a founder admin MCP) no longer goes to every
   agent. The editor starts on Every sandbox + Whole team (This sandbox for non-administrators),
   `claude mcp add --scope user` pastes as Only me, both settings change after adding, and the
-  list marks personal servers "Only you". Per name the most specific server wins
+  list marks personal servers "Only you". A hand-over resumes a live run holding the previous
+  owner's server without it, and MCP servers' secret values (team and personal) are now redacted
+  like agent secrets. Per name the most specific server wins
   ([ADR-0224](decisions/0224-an-mcp-server-is-for-every-sandbox-or-one-and-for-the-team-or-its-owner.md)).
 - A background task's wake-up reads as one line in a watched task and on the Sessions page
   (SPEC-328, task #312, fixes #913). When background work ended, Claude Code's
