@@ -1132,7 +1132,7 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .attention-bar.needs-you { flex-wrap: wrap; align-items: flex-start; row-gap: 8px; }
 .attention-bar.needs-you .needs-you-text { flex: 1 1 18em; }
 /* The bar's own colour (warn, or info while the agent waits) reaches the held to-do. */
-.needs-you-text, .needs-you-parts { background: inherit; }
+.attention-row:has(> .needs-you-text), .needs-you-text, .needs-you-parts { background: inherit; }
 :is(.attention-bar, .attention-row):has(> .needs-you-text) { align-items: flex-start; }
 :is(.attention-bar, .attention-row):has(> .needs-you-text) > .icon { margin-top: 2px; }
 .needs-you-head { display: block; margin-bottom: 4px; }

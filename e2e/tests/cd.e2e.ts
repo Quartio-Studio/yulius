@@ -746,6 +746,52 @@ test('the longest needs_you request keeps its to-do and buttons in view on a pho
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// Review round 2: a long list keeps where it was scrolled and its keyboard across task updates,
+// its to-do hides what scrolls under it in a stacked bar too, and only a list that scrolls is a
+// tab stop.
+test('a scrolled needs_you list survives task updates and its to-do stays opaque', async ({ app, browser }) => {
+  await browser.setViewport({ width: 360, height: 780 });
+  await app.open(mock('/s/studio/t/12'));
+  const long = {
+    happened: `Happened ${'word '.repeat(58)}`.slice(0, 300),
+    problem: `Problem ${'word '.repeat(98)}`.slice(0, 500),
+    action: 'Add DEV_SSH_KEY on the Secrets page',
+    decision: false,
+    at: new Date().toISOString(),
+  };
+  await browser.evaluate((needs) => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {
+    needs_you: needs, controlRequest: { by: { login: 'anna-q' }, at: new Date().toISOString() },
+  }), long);
+  await expect(browser.locator('.attention-bar.stacked .needs-you-todo')).toBeVisible();
+  const colours = await browser.evaluate(() => ({
+    own: getComputedStyle(document.querySelector('.attention-bar .needs-you-todo')!).backgroundColor,
+    bar: getComputedStyle(document.querySelector('.attention-bar')!).backgroundColor,
+  }));
+  expect(colours.own).toBe(colours.bar);
+
+  const list = '.attention-bar .needs-you-parts';
+  expect(await browser.evaluate((sel) => {
+    const el = document.querySelector(sel) as HTMLElement;
+    el.focus();
+    el.scrollTop = 40;
+    return [el.getAttribute('tabindex'), el.scrollTop];
+  }, list)).toEqual(['0', 40]);
+  await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, { title: 'Checkout API, renamed' }));
+  await expect(browser.locator('.taskview')).toContainText('Checkout API, renamed');
+  expect(await browser.evaluate((sel) => {
+    const el = document.querySelector(sel) as HTMLElement;
+    return { scrollTop: el.scrollTop, focused: document.activeElement === el };
+  }, list)).toEqual({ scrollTop: 40, focused: true });
+
+  // A short request does not scroll: no tab stop.
+  await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {
+    needs_you: { action: 'Deploy production on the CD page', decision: false, at: new Date().toISOString() }, controlRequest: null,
+  }));
+  await expect(browser.locator('.attention-bar .needs-you-todo')).toHaveText(/Deploy production/);
+  expect(await browser.evaluate((sel) => document.querySelector(sel)!.hasAttribute('tabindex'), list)).toBe(false);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
 test('a needs_you decision reads Decide, and an action alone only To do', async ({ app, browser }) => {
   await app.open(mock('/s/studio/t/12'));
   await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {
