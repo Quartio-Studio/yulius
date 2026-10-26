@@ -28,6 +28,12 @@ test('the task menu shows the original prompt with its attached files', async ({
   await expect(files).toHaveText(/old-mockup\.png\s*No longer on the server/);
   expect(await axeViolations(browser)).toEqual([]);
 
+  // SPEC-325 UPL-003: a file can be as large as an upload (1 GiB): the browser downloads it from
+  // its link, never read into the page with a total timeout.
+  await files.getByRole('button', 'Download notes.txt').click();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { downloads?: string[][] } }).__yuliusMock.downloads ?? []))
+    .toEqual([['/api/tasks/tsk_studio_12/prompt/attachments/1', 'notes.txt']]);
+
   await files.getByRole('button', 'Open Image 1, checkout-error.png').click();
   const preview = screen.getByRole('dialog', 'checkout-error.png');
   await expect(preview.getByRole('img', 'checkout-error.png')).toBeVisible();

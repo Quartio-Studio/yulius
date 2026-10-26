@@ -1477,6 +1477,13 @@ route('GET', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
   if (/\.png$/i.test(path)) return new Response(Uint8Array.from(atob(MOCK_PNG), (c) => c.charCodeAt(0)), { status: 200, headers: { 'Content-Type': 'image/png' } });
   return new Response('Mock notes attached to the prompt.\n', { status: 200, headers: { 'Content-Type': 'application/octet-stream' } });
 });
+// Whether the file is there before the browser downloads it (SPEC-325); not counted as a read.
+route('HEAD', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  const path = promptParts(task).paths[Number(p[1])];
+  if (!path || !promptFileServed(task, path)) fail(404, 'not_found', 'not found');
+  return new Response(null, { status: 200 });
+});
 route('POST', `/api/tasks/${ID}/stop`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
@@ -5452,6 +5459,20 @@ export function createMockTransport(params) {
       };
       setTimeout(tick, 30);
     }),
+    // The browser's own download of a link (SPEC-325), as the real one: recorded in `downloads`
+    // ([path, name]), then the file is read and saved from a blob link.
+    download: (url, name) => {
+      db.downloads = db.downloads || [];
+      db.downloads.push([url, name]);
+      handleFetch(db, url).then((response) => response.blob()).then((blob) => {
+        const href = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = href;
+        link.download = name;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(href), 1000);
+      });
+    },
     openSocket: (path) => openSocket(db, path),
   };
 }

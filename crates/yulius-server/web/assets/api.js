@@ -53,6 +53,13 @@ export function realTransport() {
     kind: 'real',
     fetch: (url, init) => window.fetch(url, init),
     upload: xhrUpload,
+    // The server names the file (`Content-Disposition: attachment`) and streams it to disk.
+    download(url, name) {
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = name;
+      link.click();
+    },
     openSocket(path) {
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       return new WebSocket(`${proto}//${window.location.host}${path}`);
@@ -69,7 +76,9 @@ export const enc = (value) => encodeURIComponent(String(value));
  * (a view that goes away aborts its reads); it then rejects with code `aborted`. A `Blob` or
  * `File` body is sent as it is (an upload, EDT-006); with `onProgress(sent, total)` the transport
  * reports its progress, and `timeoutMs` then counts from the last progress. With `as: 'blob'` a
- * successful answer is returned as a `Blob` (a file), not parsed.
+ * successful answer is returned as a `Blob` (a file), not parsed. `download(path, name)` hands a
+ * file to the browser's own download (SPEC-325): one as large as an upload (1 GiB) is never read
+ * into the page; a HEAD first, so a file gone from the server rejects (404) like a read.
  */
 export function createApi(transport, { onUnauthenticated } = {}) {
   let csrf = null;
@@ -142,6 +151,10 @@ export function createApi(transport, { onUnauthenticated } = {}) {
     put: (path, body, options) => request('PUT', path, body, options),
     patch: (path, body, options) => request('PATCH', path, body, options),
     del: (path, options) => request('DELETE', path, undefined, options),
+    download: async (path, name, options) => {
+      await request('HEAD', path, undefined, options);
+      transport.download(path, name);
+    },
     setCsrf(token) { csrf = token || null; },
   };
 }

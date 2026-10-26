@@ -348,6 +348,9 @@ test('the request shows its files as placeholders that open them', async ({ app,
   });
   await request.getByRole('button', 'notes.txt').click();
   await expect.poll(() => browser.evaluate(() => (window as unknown as { __downloads: string[][] }).__downloads)).toEqual([['blob:', 'notes.txt']]);
+  // From its link, as the browser's own download (SPEC-325 UPL-003).
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { downloads?: string[][] } }).__yuliusMock.downloads ?? []))
+    .toEqual([['/api/tasks/tsk_product_7/prompt/attachments/1', 'notes.txt']]);
 
   // Enter on a placeholder opens it too; a file gone from the server says so.
   await request.getByRole('button', 'Image 2, gone.png').focus();
