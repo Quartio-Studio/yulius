@@ -665,6 +665,114 @@ async fn only_its_owner_messages_a_task_holding_personal_secrets() -> TestResult
     Ok(())
 }
 
+/// SPEC-332 MSC-009: a task that gets its owner's personal MCP server is messaged by its owner
+/// alone, as one holding a personal secret is.
+#[tokio::test]
+async fn only_its_owner_messages_a_task_holding_a_personal_mcp_server() -> TestResult {
+    let w = world().await?;
+    let caller = |user: &str| -> Result<
+        yulius_app::coordination::ProjectCaller,
+        Box<dyn std::error::Error>,
+    > {
+        Ok(yulius_app::coordination::ProjectCaller {
+            sandbox: SandboxId::parse("s1")?,
+            user: UserId::parse(user)?,
+            task: None,
+            channel: yulius_app::coordination::Channel::Superagent,
+            actor: format!("cockpit:{user}"),
+            detail: json!({"via": "cockpit", "shell": "sh-test"}),
+        })
+    };
+    let args = json!({"task_id": "t1", "text": "query the fleet"});
+    let reached_session = |result: &Result<Value, yulius_app::error::AppError>| {
+        matches!(
+            result,
+            Err(yulius_app::error::AppError::Conflict(m)) if m.contains("no live session")
+        )
+    };
+    let added = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/mcp",
+        Some(
+            json!({"name": "fleet", "transport": "http", "url": "https://fleet.test/mcp",
+            "scope": "instance", "audience": "personal"}),
+        ),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(added.status, StatusCode::CREATED, "{}", added.body);
+    let refused = w.h.app.tool_task_message(&caller("u-bob")?, &args).await;
+    match refused {
+        Err(yulius_app::error::AppError::Forbidden(message)) => {
+            assert!(message.contains("MCP servers"), "{message}");
+        }
+        other => return Err(format!("bob's message was not refused: {other:?}").into()),
+    }
+    let own = w.h.app.tool_task_message(&caller("u-alice")?, &args).await;
+    assert!(reached_session(&own), "{own:?}");
+    // Bob's own task holds nothing of alice's, so alice's Superagent may message it.
+    let to_bob =
+        w.h.app
+            .tool_task_message(&caller("u-alice")?, &json!({"task_id": "t2", "text": "hi"}))
+            .await;
+    assert!(reached_session(&to_bob), "{to_bob:?}");
+    // Alice's automation's task holds nobody's personal server: bob may message it.
+    let to_automation =
+        w.h.app
+            .tool_task_message(&caller("u-bob")?, &json!({"task_id": "t3", "text": "hi"}))
+            .await;
+    assert!(reached_session(&to_automation), "{to_automation:?}");
+    Ok(())
+}
+
+/// Review of SPEC-332 (round 2): while a task holding its owner's personal MCP server is being
+/// launched, its run's servers are not settled, so control does not pass (it could not be
+/// restarted for the new owner); once it runs, it does.
+#[tokio::test]
+async fn control_waits_while_a_task_holding_a_personal_mcp_server_launches() -> TestResult {
+    let w = world().await?;
+    seed_task(&w.h, "t6", "s1", "u-alice", TaskStatus::Starting, None).await?;
+    let added = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/mcp",
+        Some(
+            json!({"name": "fleet", "transport": "http", "url": "https://fleet.test/mcp",
+            "scope": "instance", "audience": "personal"}),
+        ),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(added.status, StatusCode::CREATED, "{}", added.body);
+    let asked = call(
+        &w.h.router,
+        Method::POST,
+        "/api/tasks/t6/control-request",
+        None,
+        &w.bob,
+    )
+    .await?;
+    assert_eq!(asked.status, StatusCode::OK, "{}", asked.body);
+    let refused = call(
+        &w.h.router,
+        Method::POST,
+        "/api/tasks/t6/control-request/accept",
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert!(
+        refused.body.to_string().contains("starting"),
+        "{}",
+        refused.body
+    );
+    let task = w.h.store.task(&TaskId::parse("t6")?).await?.ok_or("t6")?;
+    assert_eq!(task.owner, UserId::parse("u-alice")?);
+    Ok(())
+}
+
 /// Review of SPEC-245, M2: control passed to bob ends alice's personal secrets in the run at once,
 /// not when the proxy's credential cache expires, and starts bob's (SPEC-248 FUP-004).
 #[tokio::test]

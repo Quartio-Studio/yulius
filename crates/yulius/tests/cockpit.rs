@@ -778,7 +778,7 @@ async fn a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking()
         .collect();
     rejected.sort_unstable();
     assert_eq!(rejected, ["apify", "legacy", "pipedream-gmail", "supabase"]);
-    let stored = f.h.store.mcp_servers(&sid()).await?;
+    let stored = f.h.store.mcp_servers(&sid(), None).await?;
     let mut names: Vec<(&str, &str)> = stored
         .iter()
         .map(|s| (s.name.as_str(), s.transport.as_str()))
@@ -811,7 +811,60 @@ async fn a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking()
     let config = PathBuf::from(printed(&screen, "config")?);
     let settings: Value = serde_json::from_slice(&std::fs::read(config.join("launch-settings"))?)?;
     assert!(settings["disabledMcpjsonServers"].is_null(), "{settings}");
-    assert_eq!(f.h.store.mcp_servers(&sid()).await?.len(), 3);
+    assert_eq!(f.h.store.mcp_servers(&sid(), None).await?.len(), 3);
+    Ok(())
+}
+
+/// SPEC-332 MSC-004: a person's Superagent gets their own personal MCP server and the team's;
+/// another person's Superagent gets only the team's.
+#[tokio::test]
+async fn a_superagent_gets_its_persons_personal_mcp_servers_only() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    for (body, who) in [
+        (
+            json!({"name": "fleet", "transport": "http", "url": "https://fleet.test/mcp",
+            "scope": "instance", "audience": "personal"}),
+            &f.alice,
+        ),
+        (
+            json!({"name": "docs", "transport": "http", "url": "https://docs.test/mcp"}),
+            &f.carol,
+        ),
+    ] {
+        let added = call(
+            &f.h.router,
+            Method::POST,
+            "/api/sandboxes/s1/mcp",
+            Some(body),
+            who,
+        )
+        .await?;
+        assert_eq!(added.status, StatusCode::CREATED, "{}", added.body);
+    }
+    for (who, expected) in [
+        (&f.alice, vec!["docs", "fleet", "yulius"]),
+        (&f.carol, vec!["docs", "yulius"]),
+    ] {
+        let opened = open_cockpit(&f, who).await?;
+        assert_eq!(opened.status, StatusCode::OK, "{:?}", opened.body);
+        let id = opened.body["id"].as_str().ok_or("id")?.to_owned();
+        let mut socket = attach(served.addr, &id, who).await?;
+        let mut screen = String::new();
+        read_until(&mut socket, &mut screen, "ready").await?;
+        let config = PathBuf::from(printed(&screen, "config")?);
+        let mcp_config: Value =
+            serde_json::from_slice(&std::fs::read(config.join("launch-mcp-config"))?)?;
+        let mut names: Vec<&str> = mcp_config["mcpServers"]
+            .as_object()
+            .ok_or("mcpServers")?
+            .keys()
+            .map(String::as_str)
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, expected);
+    }
+    f.h.app.end_all_shells().await;
     Ok(())
 }
 
