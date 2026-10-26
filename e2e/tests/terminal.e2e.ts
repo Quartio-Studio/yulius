@@ -612,6 +612,64 @@ test('a wheel turn reports one row per row of its distance (#863)', async ({ app
   expect(count(after, 72), 'the Alt wheel: once').toBe(1);
 });
 
+test('a wheel turn past the top offers the whole session from its first message (#911)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
+  await holdStill(browser);
+  // A transcript longer than the screen, so the program has rows to scroll.
+  await browser.evaluate(() => {
+    type Lines = { lines: string[]; broadcast(frame: unknown): void; snapshot(): unknown };
+    const session = (window as unknown as { __yuliusMock: { sessions: Map<string, Lines> } }).__yuliusMock.sessions.get('tsk_studio_12')!;
+    session.lines.push(...Array.from({ length: 60 }, (_, i) => `Earlier output line ${i + 1}`));
+    session.broadcast(session.snapshot());
+  });
+  await expect(rows(browser)).toHaveText(/Earlier output line 60/);
+  const point = await spot(browser, 'Earlier output line 60');
+  expect(point, 'the last line is on the screen').not.toBeNull();
+  const wheelUp = (rowsUp: number) => browser.evaluate(({ x, y, rowsUp }) => {
+    const screen = document.querySelector('.taskview .xterm-screen')!;
+    const row = screen.getBoundingClientRect().height / document.querySelectorAll('.taskview .xterm-rows > div').length;
+    document.elementFromPoint(x, y)!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, deltaY: -rowsUp * row }));
+  }, { ...point!, rowsUp });
+  const shown = () => browser.evaluate(() => document.querySelector('.taskview .xterm-rows')!.textContent);
+  const offer = browser.locator('.taskview .term-history-offer');
+
+  // Claude Code shows a session only from its last compaction: what scrolls still scrolls, and a
+  // turn that moved the screen offers nothing (SPEC-326 HIS-001).
+  const before = await shown();
+  await wheelUp(1);
+  await expect.poll(shown, { message: 'the program scrolled' }).not.toBe(before);
+  await settle(1000);
+  await expect(offer).toBeHidden();
+  // Past the program's top the screen stays as it was: the way on to the whole session shows (HIS-002).
+  for (let turn = 0; turn < 3; turn++) await wheelUp(200);
+  await expect(offer).toBeVisible();
+  await expect(offer).toHaveText(/Earlier messages: show the whole session/);
+  await offer.click();
+
+  // The whole session, read from its first line, in the terminal's place (HIS-003).
+  const history = browser.locator('.taskview .watch.history');
+  await expect(history).toBeVisible();
+  await expect(screen.getByText('Add Stripe checkout to the cart page. Use the test keys from .env.')).toBeVisible();
+  const queries = await browser.evaluate(() => (window as unknown as { __yuliusMock: { transcriptQueries?: string[] } }).__yuliusMock.transcriptQueries || []);
+  expect(queries[0], 'read from the first line').toMatch(/(^|&)from=0(&|$)/);
+  await expect(browser.locator('.taskview .watch.history .ss-locked')).toHaveText(/The whole session, from its first message\. Read-only\./);
+  // The terminal stays in the page, connected, until the person comes back to it.
+  expect(await browser.evaluate(() => document.querySelectorAll('.taskview .xterm').length), 'the terminal is kept').toBe(1);
+  await expect(browser.locator('.taskview .term')).toBeHidden();
+  await screen.getByRole('button', { name: 'Back to the terminal' }).click();
+  await expect(history).toBeHidden();
+  await expect(rows(browser)).toBeVisible();
+
+  // Escape in the view goes back as well.
+  for (let turn = 0; turn < 2; turn++) await wheelUp(200);
+  await offer.click();
+  await expect(history).toBeVisible();
+  await browser.keyboard.press('Escape');
+  await expect(history).toBeHidden();
+  await expect(rows(browser)).toBeVisible();
+});
+
 test('mouse use while disconnected says nothing; typed input still warns', async ({ app, browser }) => {
   await app.open(mock('/s/studio/t/12'));
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
