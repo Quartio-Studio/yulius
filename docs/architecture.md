@@ -949,8 +949,9 @@ It manages the project through the Yulius MCP server
 ([SPEC-037](../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md),
 [decision 0029](decisions/0029-cockpit-manages-through-mcp.md)). Its bearer (`ck_…`) is derived
 from the shell's persisted host token, and it is served the management tools (tasks,
-automations, workflows, sessions), `task_message` and the vault tools (below). Those tools act for a person (`ProjectCaller`): the Cockpit's
-owner, or a task's owner when a task's agent calls them. `task_create` takes the same path as
+automations, workflows, sessions), `task_message` and the vault tools (below). Those tools act for a person (`ProjectCaller`, which names its
+`Channel`: task agent, Superagent or remote MCP): the Cockpit's owner, the remote MCP token's
+person, or a task's owner when a task's agent calls them. `task_create` takes the same path as
 New task; `task_stop`, `task_archive`, `task_delete`, `automation_delete`, `automation_run_now`
 and `automation_template_enable` call the UI's own functions with that person and the caller as
 the audit actor, never on the caller's own task
@@ -959,7 +960,8 @@ the audit actor, never on the caller's own task
 `task_message`, the Superagent's and the remote MCP's (never a task agent's), passes on what its person says to a task
 (`App::tool_task_message`, `task_message.rs`): a task that never started gets it in its request
 through `App::queue_task_message` (SPEC-052); a running one gets it through `App::send_input` as
-one bracketed paste labelled with the person, then a separate Enter, refused before Claude Code's
+one bracketed paste labelled with the person and the caller's channel ("through their
+Superagent", or "through their own agent" for the remote MCP; SPEC-322), then a separate Enter, refused before Claude Code's
 session started (SessionStart, whose `session-started` marker in the run folder `reconcile`
 reads for a reattached run, or half the goal-ready timeout after the spawn, `spawned_ms`),
 while a person typed
