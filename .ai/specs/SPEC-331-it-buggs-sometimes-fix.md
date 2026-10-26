@@ -15,7 +15,8 @@ size travels with the connection; a writer reports the size its window fits).
 ## Goal
 
 A terminal that is not shown (closed panel, another tool in front, another sandbox's kept view)
-reports no size, so it never squeezes its session; showing it again still fits it to its box.
+measures nothing and sends no resize, so hiding it never squeezes its session; showing it again
+fits it to its box and sends that size again.
 
 ## Context
 
@@ -48,7 +49,9 @@ reports no size, so it never squeezes its session; showing it again still fits i
 
 - HTS-001: A terminal whose box is not rendered (zero width or height) measures nothing: it sends
   no resize, does not resize its own grid and does not refit another viewer's grid.
-- HTS-002: Shown again, the terminal fits its box and sends that size, as before.
+- HTS-002: Shown again, the terminal fits its box and sends that size, even when it equals the
+  last size it sent (another window of the same shell may have resized the session meanwhile), as
+  before.
 - HTS-003: A terminal that connects while hidden connects with its current grid (its last shown
   size, xterm's 80×24 before any), never with the hidden measure.
 
@@ -67,7 +70,8 @@ reports no size, so it never squeezes its session; showing it again still fits i
   leave its mock session at the size it had while shown (not 10×5). Putting the Superagent back in
   front leaves the Shell's session at its shown size too. The test fails on dev 2393032b.
 - AC-2 (HTS-002): reopening the Superagent after it was hidden still fits it: the session takes
-  the panel's size again after the panel is maximized and restored.
+  the panel's size again after the panel is maximized and restored, and after another window set
+  the session to 30×20 while this one was hidden (review round 1; fails on 6499449f).
 - AC-3 (HTS-003): covered by the same guard (`proposed()` returns nothing for a hidden box, so
   `getSize` falls back to the grid xterm has); no separate test.
 
@@ -90,4 +94,8 @@ reports no size, so it never squeezes its session; showing it again still fits i
 - **Size-control policy for shell terminals: not in this change.** Two visible windows of the
   same Superagent still follow the last resize (existing, documented behavior). This change only
   stops hidden views from taking part.
+- While hidden, the terminal forgets the size it last sent (`lastSent = null`), so its first
+  measure once shown is sent even if unchanged; the server ignores a resize to the size it has.
+- Known limit, not changed: `hello` must carry a size, so a view that (re)connects while hidden
+  still connects with its current grid (HTS-003). Avoiding that needs a protocol change.
 - No ADR: a measurement guard inside an existing component, recorded here.

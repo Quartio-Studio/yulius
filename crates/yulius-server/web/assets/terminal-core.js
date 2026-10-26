@@ -553,7 +553,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // xterm re-measures synchronously and draws once, on the next frame.
   let ownCache = null;
   function ownSize() {
-    if (!opened) return null;
+    if (!opened || !shown()) return null;
     const base = termSize();
     const key = `${fitBox.clientWidth}x${fitBox.clientHeight}|${base}|${term.options.fontFamily}`;
     if (ownCache && ownCache.key === key) return ownCache.size;
@@ -578,6 +578,9 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       if (state.cols && state.rows && (term.cols !== state.cols || term.rows !== state.rows)) term.resize(Math.max(2, state.cols), Math.max(1, state.rows));
       return;
     }
+    // Hidden, it says nothing; shown again it says its size again, whoever set one meanwhile (a
+    // shell follows the last resize).
+    if (opened && !shown()) lastSent = null;
     const own = ownSize();
     if (own && gotState && state.can_write && !exited && !sameSize(lastSent, own)) {
       if (socket.resize(own.cols, own.rows)) lastSent = own;
