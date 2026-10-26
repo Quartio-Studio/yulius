@@ -164,32 +164,40 @@ test('at phone width the Status panel and the Dashboard keep both percents and d
   expect(await axeViolations(browser)).toEqual([]);
 });
 
-/** The Status panel's Sessions tile: its value, the over-the-limit mark, its detail and its title. */
+/** The Status panel's Sessions tile: its value, the over-the-limit mark, its detail lines and its title. */
 const sessionsTile = (browser: Browser) => browser.evaluate(() => {
   const tile = [...document.querySelectorAll<HTMLElement>('.status-pop .stat-tile')]
     .find((t) => t.querySelector('.stat-head')?.textContent?.trim() === 'Sessions')!;
   const value = tile.querySelector('.tile-value')!;
+  const details = [...tile.querySelectorAll<HTMLElement>('.stat-detail')];
   return {
     value: [...value.childNodes].filter((n) => n.nodeType === Node.TEXT_NODE).map((n) => n.textContent).join('').trim(),
     over: value.querySelector('.tile-over')?.textContent ?? null,
-    detail: tile.querySelector('.stat-detail')?.textContent ?? null,
+    details: details.map((d) => d.textContent),
+    // A detail line cut off with an ellipsis (its text wider than it is shown).
+    clipped: details.filter((d) => d.scrollWidth > d.clientWidth).map((d) => d.textContent),
     title: tile.getAttribute('title'),
   };
 });
 
-test('the Sessions tile shows the limit full and the overshoot of resumed Done tasks, not 7 / 4 (SPEC-334)', async ({ app, browser }) => {
-  // 7 running mock tasks against a limit of 4, as resumed Done tasks can take it (SES-101, #928).
-  await app.open(mock('/s/studio/git', '&ambient=0&sessionlimit=4'));
+test('the Sessions tile shows the limit full and the overshoot, not 7 / 4 (SPEC-334)', async ({ app, browser }) => {
+  // 7 running mock tasks against a limit of 4, as resumed Done tasks can take it (SES-101, #928);
+  // 1 queued task and 5 more.
+  await app.open(mock('/s/studio/git', '&ambient=0&sessionlimit=4&sessionqueue=5'));
   await browser.locator('.btn-status').click();
   await expect(browser.locator('.status-pop .stat-tile').first()).toBeVisible();
   const over = await sessionsTile(browser);
   // OVL-001
   expect(over.value).toBe('4 / 4');
   expect(over.over).toBe('+3');
-  expect(over.detail).toMatch(/^3 over the limit( · \d+ queued)?$/);
-  // OVL-002
-  expect(over.title).toBe('3 Done tasks are working again, beyond the limit of 4 sessions. Queued tasks start once fewer than 4 run.');
+  expect(over.details).toEqual(['3 over the limit', '6 queued']);
+  // OVL-002: why, without naming one cause (a restart with a lower limit keeps its runs too).
+  expect(over.title).toBe('3 sessions more than the limit of 4: a Done task that works again counts again, and runs started before a restart with a lower limit keep running. Queued tasks start once fewer than 4 run.');
   expect(await axeViolations(browser)).toEqual([]);
+
+  // At phone width both detail lines are shown whole.
+  await browser.setViewport({ width: 360, height: 780 });
+  expect((await sessionsTile(browser)).clipped).toEqual([]);
 
   // OVL-003: within the limit the tile reads as before.
   await app.open(mock('/s/studio/git', '&ambient=0&sessionlimit=20'));
@@ -198,7 +206,7 @@ test('the Sessions tile shows the limit full and the overshoot of resumed Done t
   const within = await sessionsTile(browser);
   expect(within.value).toBe('7 / 20');
   expect(within.over).toBeNull();
-  expect(within.detail).toMatch(/^(\d+ queued|agent sessions running)$/);
+  expect(within.details).toEqual(['1 queued']);
   expect(within.title).toBeNull();
 });
 
