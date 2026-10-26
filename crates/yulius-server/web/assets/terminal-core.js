@@ -60,6 +60,8 @@ const REVEAL_LIMIT_MS = 5000;
 const PROGRAM_COPY_MS = 5000;
 /** A wheel turn up that left the screen's upper half unchanged this long reached the program's top. */
 const TOP_SETTLE_MS = 400;
+/** How long the way on past the top shows (SPEC-326 HIS-002). */
+const TOP_OFFER_MS = 8000;
 
 /**
  * Whether the person is typing in a text field outside `root` that is not a terminal's own input
@@ -101,14 +103,16 @@ function keyboardOnPage() {
  *   onReady()                  the terminal is shown (its first screen is drawn)
  *   onConnection(status)       the socket's status (connecting|open|reconnecting|failed|closed)
  *   onFatal(message)           the server refused this terminal for good (not_found, unauthenticated)
- *   onTop()                    a wheel turn up reached the top: the program's screen did not move, or
- *                              xterm's own scrollback is at its first line (SPEC-326 HIS-001)
+ *   topOffer                   optional {label, open()}: a button with `label` over the top of the
+ *                              terminal when a wheel turn up reached it (the program's screen did not
+ *                              move, or xterm's own scrollback is at its first line); `open()` on a
+ *                              click (SPEC-326)
  *   fileLinks                  optional {list(dir) → Promise<[{name, kind}]>, roots() → [absolute
  *                              folder paths], open({path, line, col}, event)}: paths of existing
  *                              files in the terminal's folder become links (termlinks.js)
  * Call start() after the element is in the document; destroy() when done.
  */
-export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, onFatal, onTop = null, fontSize, fileLinks = null, followServerSize = false }) {
+export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, onFatal, topOffer = null, fontSize, fileLinks = null, followServerSize = false }) {
   const banner = h('div', { class: 'term-banner', hidden: true, role: 'status' });
   const noticeEl = h('div', { class: 'term-notice', hidden: true, role: 'status', 'aria-live': 'polite' });
   // Connection trouble floats over the terminal: it never changes the terminal's size.
@@ -122,7 +126,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // Another viewer sets the size: a small, opaque chip in the corner (never a row that resizes the terminal).
   const sizeChip = h('span', { class: 'term-size-chip', hidden: true, role: 'status', title: 'Another viewer is using this terminal, so it shows their size, scaled to your window. Click in the terminal or type to use your own size.' }, 'Sized by another viewer');
   const corner = h('div', { class: 'term-corner' }, noticeEl, sizeChip);
-  const el = h('div', { class: 'term', 'aria-busy': 'true' }, banner, connEl, corner, host, skeleton, emptyEl);
+  // The way on past the terminal's top (SPEC-326): over the top, below the banner, out of the way of
+  // the keyboard and the size.
+  const topOfferEl = topOffer ? h('button', { type: 'button', class: 'btn btn-sm term-history-offer', hidden: true, onClick: () => { hideTopOffer(); topOffer.open(); } }, icon('up', { size: 14 }), topOffer.label) : null;
+  const el = h('div', { class: 'term', 'aria-busy': 'true' }, banner, connEl, topOfferEl, corner, host, skeleton, emptyEl);
   // The program's mouse reporting reaches xterm only for a viewer who can write (SPEC-098 MSE-004).
   const mouse = createMouseFilter();
 
@@ -497,6 +504,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // later, so the last turn's screen may still be moving towards the top.
   let topCheck = null;
   let gestureStart = null;
+  let topOfferTimer = null;
+  // The upper half when the screen check showed the offer: a program that answers later than the
+  // check (a slow link) moves it after all, and that turn was no top (HIS-001).
+  let topOfferScreen = null;
   const upperHalf = () => {
     const buffer = term.buffer.active;
     const lines = [];
@@ -506,17 +517,38 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     }
     return lines.join('\n');
   };
+  function showTopOffer(screen) {
+    topOfferEl.hidden = false;
+    topOfferScreen = screen;
+    clearTimeout(topOfferTimer);
+    topOfferTimer = setTimeout(hideTopOffer, TOP_OFFER_MS);
+  }
+  function hideTopOffer() {
+    if (!topOfferEl) return;
+    clearTimeout(topOfferTimer);
+    topOfferTimer = null;
+    topOfferScreen = null;
+    topOfferEl.hidden = true;
+  }
+  if (topOfferEl) {
+    term.onWriteParsed(() => {
+      if (topOfferScreen !== null && upperHalf() !== topOfferScreen) hideTopOffer();
+    });
+    // A key means the person stays in the terminal; the button's own keys open it.
+    el.addEventListener('keydown', (event) => { if (!topOfferEl.contains(event.target)) hideTopOffer(); }, true);
+  }
   const noticeTop = (event) => {
-    if (!onTop || event.ctrlKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+    if (!topOfferEl || event.ctrlKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
     if (!(event.deltaY < 0)) {
       // A turn back down ends the gesture: what it shows is not the top.
       clearTimeout(topCheck);
       topCheck = null;
+      hideTopOffer();
       return;
     }
     const buffer = term.buffer.active;
     if (buffer.type === 'normal' && !programHasMouse()) {
-      if (buffer.viewportY === 0) onTop();
+      if (buffer.viewportY === 0) showTopOffer(null);
       return;
     }
     const before = upperHalf();
@@ -525,7 +557,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     topCheck = setTimeout(() => {
       topCheck = null;
       const now = upperHalf();
-      if (!destroyed && (now === before || now === gestureStart)) onTop();
+      if (!destroyed && (now === before || now === gestureStart)) showTopOffer(now);
     }, TOP_SETTLE_MS);
   };
   host.addEventListener('wheel', (event) => {
@@ -919,6 +951,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       clearTimeout(presenceTimer);
       clearTimeout(clickTimer);
       clearTimeout(topCheck);
+      clearTimeout(topOfferTimer);
       window.removeEventListener('focus', onWindowFocus);
       window.removeEventListener('blur', updatePresence);
       document.removeEventListener('visibilitychange', updatePresence);

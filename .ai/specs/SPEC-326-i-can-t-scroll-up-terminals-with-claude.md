@@ -62,25 +62,30 @@ SPEC-310 fixes.
 
 - **HIS-001 The top is noticed.** In a task's terminal, a wheel turn up (no Ctrl, a vertical delta
   up) reaches the top when either:
-  - the program has the mouse and the upper half of its screen is unchanged 400 ms after the turn's
-    last report (the program did not scroll); or
-  - xterm scrolls itself and its viewport is at the buffer's first line. On the alternate screen
-    that is always true, because there is no scrollback.
+  - xterm scrolls a normal buffer itself (the program has no mouse) and its viewport is already at
+    the buffer's first line; or
+  - elsewhere (the program has the mouse, or the alternate screen, where xterm turns the wheel into
+    arrow keys for the program), the upper half of the screen is unchanged 400 ms after the turn.
+    Turns closer together than that are one gesture. The check compares the screen at the gesture's
+    start and at its last turn.
 
-  A turn that moved the screen does not count. Other terminals (Shells, sign-in terminals) get no
-  callback.
+  A turn that moved the screen does not count. If the screen moves after the check showed the offer
+  (a program slower than the check), the offer goes. Other terminals (Shells, sign-in terminals)
+  offer nothing.
 - **HIS-002 The way on is offered.** Reaching the top shows a button over the top of the task's
-  terminal: "Earlier messages: show the whole session". It hides after 8 s, on a wheel turn down,
-  on a key, or when clicked. It takes neither the keyboard nor the PTY size.
+  terminal, below its banner, its connection notice, and the attention bar or held card:
+  "Earlier messages: show the whole session". It hides after 8 s, on a wheel turn down, on a key
+  in the terminal, or when clicked. Enter or Space on the button opens the session. It takes
+  neither the keyboard nor the PTY size.
 - **HIS-003 The whole session.** The button opens the History view in the terminal's place, without
   closing the terminal: its socket, size and screen stay as they were.
-  - The view reads the task's session from line 0 (`from=0`) page by page to its end. It then
+  - The view reads the task's session from line 0 (`from=0`) in pages of 500 entries to its end. It then
     follows the session live, as a watcher's view does (SPEC-179 WAT-003), and starts at the
     bottom. Scrolling up reaches the session's first message.
   - A new session (a continue that started another) is read again from line 0.
   - The view says what it is: "The whole session, from its first message. Read-only." It has a
-    "Back to the terminal" button. Escape in the view goes back too, then focus returns to the
-    terminal.
+    "Back to the terminal" button. Escape anywhere in the view goes back too, and the keyboard
+    returns to the terminal.
 - **HIS-004 Unchanged.** The wheel's reports to the program (SPEC-280), the selection keys, and the
   watchers' view of someone else's task (SPEC-179) all work as before. So does a terminal without a
   task.

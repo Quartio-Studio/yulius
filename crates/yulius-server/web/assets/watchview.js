@@ -56,16 +56,17 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
   const locked = h('div', { class: 'ss-locked' }, h('span', { class: 'ss-mark ss-mark-prompt', 'aria-hidden': 'true' }, '>'), lockedText, back);
   const tui = h('div', { class: 'ss-tui ss-live' }, earlier, transcript.el, empty, working, locked);
   const scroller = h('div', { class: 'watch-scroll', tabindex: 0, role: 'region', 'aria-label': whole ? 'Whole session' : 'Live transcript' }, tui);
+  // Jumping down hides the button: the keyboard stays in the transcript, not on the page.
+  const jump = h('button', { type: 'button', class: 'btn btn-sm watch-jump', hidden: true, onClick: () => { toBottom(); scroller.focus({ preventScroll: true }); } }, icon('down', { size: 14 }), 'New messages');
+  const el = h('div', { class: ['watch', whole && 'history'], dataset: { reading: 'live' } }, scroller, jump);
+  // Escape anywhere in the view (the transcript, "New messages") goes back.
   if (whole) {
-    scroller.addEventListener('keydown', (event) => {
+    el.addEventListener('keydown', (event) => {
       if (event.key !== 'Escape' || !onBack) return;
       event.preventDefault();
       onBack();
     });
   }
-  // Jumping down hides the button: the keyboard stays in the transcript, not on the page.
-  const jump = h('button', { type: 'button', class: 'btn btn-sm watch-jump', hidden: true, onClick: () => { toBottom(); scroller.focus({ preventScroll: true }); } }, icon('down', { size: 14 }), 'New messages');
-  const el = h('div', { class: ['watch', whole && 'history'], dataset: { reading: 'live' } }, scroller, jump);
 
   let alive = true;
   let started = false;
@@ -167,7 +168,7 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
     // then on from where the last read ended. `seen` lets the server answer an unchanged transcript
     // without reading it; after a full page the rest is read whatever the size (null).
     const query = seen.loaded && seen.session
-      ? `from=${seen.end}&session=${encodeURIComponent(seen.session)}${seen.bytes === null ? '' : `&seen=${seen.bytes}`}`
+      ? `from=${seen.end}&session=${encodeURIComponent(seen.session)}${seen.bytes === null ? '' : `&seen=${seen.bytes}`}${whole ? `&limit=${WHOLE_PAGE}` : ''}`
       : whole ? `from=0&limit=${WHOLE_PAGE}` : `limit=${TAIL}`;
     reading = new AbortController();
     let page = null;

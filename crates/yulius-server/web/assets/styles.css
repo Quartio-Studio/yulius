@@ -2642,7 +2642,10 @@ button.task-group-head:hover { color: var(--text); }
 .watch-jump { position: absolute; bottom: 16px; left: 50%; z-index: var(--z-float); transform: translateX(-50%); box-shadow: var(--shadow); }
 /* The whole session (SPEC-326): offered over the top of the terminal when a wheel turn reached it,
    left by the button where the prompt box was. */
-.term-history-offer { position: absolute; top: 12px; left: 50%; z-index: var(--z-float); transform: translateX(-50%); max-width: calc(100% - 32px); box-shadow: var(--shadow); }
+.term-history-offer { position: absolute; top: calc(var(--term-banner-h, 0px) + 12px); left: 50%; z-index: var(--z-float); transform: translateX(-50%); max-width: calc(100% - 32px); box-shadow: var(--shadow); }
+/* Below the connection notice, and below the attention bar or held card that float over the task's terminal. */
+.term:has(> .term-conn:not([hidden])) > .term-history-offer { top: calc(var(--term-banner-h, 0px) + 52px); }
+.taskview-term:has(> .attention-bar:not([hidden]), > .held-slot:not([hidden])) .term-history-offer { top: calc(var(--term-banner-h, 0px) + 64px); }
 .watch.history .ss-locked { cursor: default; }
 .watch.history .ss-locked > .ss-line-body { flex: 1; min-width: 0; }
 .watch-back { flex: none; font-family: var(--font); }

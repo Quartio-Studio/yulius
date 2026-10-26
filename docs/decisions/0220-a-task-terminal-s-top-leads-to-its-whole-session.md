@@ -28,9 +28,12 @@ A wheel turn up that reaches the top of a task's terminal offers the whole sessi
   line. Elsewhere the program moves the screen, and the top is a turn that left the upper half of
   the screen unchanged 400 ms later. Turns closer together than that are one gesture. The check
   compares the screen at the gesture's start and at its last turn, because the program's answer
-  arrives a round trip after each turn.
+  arrives a round trip after each turn. If the screen moves after the check showed the button, the
+  button goes: the program answered later than the check.
 - **What is offered.** A button over the top of the terminal: "Earlier messages: show the whole
-  session". It hides after 8 s, on a turn down, on a key or when clicked.
+  session". The terminal view draws it (`topOffer` in `terminal-core.js`), so it sits below the
+  banner and the connection notice. It hides after 8 s, on a turn down, on a key in the terminal
+  or when clicked.
 - **The History view.** It opens in the terminal's place. It is the watchers' live transcript view
   in a `whole` mode: it reads from line 0, page by page, to the end and then follows the session.
   It starts at the bottom, and its "Back to the terminal" button or Escape returns. The terminal
@@ -61,6 +64,8 @@ A wheel turn up that reaches the top of a task's terminal offers the whole sessi
   a continue in a fresh session) stay in Sessions.
 - A gesture that ends within one round trip of reaching the top may offer nothing, because the
   screen was still moving. The next turn offers it.
+- The offer needs a wheel or a trackpad. A touch screen's swipe is no wheel turn, so phones are
+  not offered it.
 - A program that ignores the wheel (a dialog, a pager without mouse support) also gets the offer.
   The offer is harmless and goes away by itself.
 - The whole transcript is read up front, at most 500 entries or 2 MiB of text per request. A

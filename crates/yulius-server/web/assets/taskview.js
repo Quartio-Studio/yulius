@@ -35,8 +35,6 @@ const WAITING = new Set(['queued', 'chained', 'prepared', 'waiting_capacity']);
 const IMAGE_PATH = /\.(png|jpe?g|gif|webp)$/i;
 // States only a task with a run is in.
 const RAN = new Set(['running', 'switching', 'stopping']);
-/** How long the way on to the whole session shows after a wheel turn reached the top (SPEC-326 HIS-002). */
-const HISTORY_OFFER_MS = 8000;
 
 // Phone quick-input keys (SPEC-001 §6.4).
 const QUICK_KEYS = [
@@ -164,7 +162,7 @@ export function mountTaskView(ctx, sandbox, task) {
       emptyMessage: () => emptyTerminalMessage(current),
       // Claude Code shows a session only from its last compaction: past the terminal's top, the
       // whole session is offered (SPEC-326).
-      onTop: () => showHistoryOffer(),
+      topOffer: { label: 'Earlier messages: show the whole session', open: () => openHistory() },
       exitActions: (exit) => {
         const message = endedMessage(exit.status || current.status, exit.cause || lastLimitCause());
         const actions = [];
@@ -208,11 +206,10 @@ export function mountTaskView(ctx, sandbox, task) {
   /** Control passed (SPEC-070): a watcher gets the transcript, the owner the terminal. */
   function placeScreen() {
     if (Boolean(owner()) === Boolean(watch)) return;
-    closeHistory(false);
-    hideHistoryOffer();
     const previous = terminal;
     // The keyboard in the screen that goes moves to the one that comes (not to the page).
-    const focused = previous.el.contains(document.activeElement);
+    const focused = previous.el.contains(document.activeElement) || Boolean(history && history.el.contains(document.activeElement));
+    dropHistory();
     watch = owner() ? makeWatch() : null;
     terminal = watch ? watchingTerminal(watch) : makeTerminal();
     previous.el.replaceWith(terminal.el);
@@ -225,25 +222,11 @@ export function mountTaskView(ctx, sandbox, task) {
   }
 
   // ---- the whole session (SPEC-326): Claude Code shows a session only from its last compaction,
-  // so a wheel turn that reaches the terminal's top offers the session's transcript from its first
-  // line, in the terminal's place. The terminal stays connected underneath, hidden, until the person
-  // comes back to it.
-  const historyOffer = h('button', { type: 'button', class: 'btn btn-sm term-history-offer', hidden: true, onClick: () => openHistory() }, icon('up', { size: 14 }), 'Earlier messages: show the whole session');
-  let historyOfferTimer = null;
+  // so a wheel turn that reaches the terminal's top offers (terminal-core.js) the session's
+  // transcript from its first line, in the terminal's place. The terminal stays connected
+  // underneath, hidden, until the person comes back to it.
   let history = null;
-  function showHistoryOffer() {
-    if (watch || history) return;
-    historyOffer.hidden = false;
-    clearTimeout(historyOfferTimer);
-    historyOfferTimer = setTimeout(hideHistoryOffer, HISTORY_OFFER_MS);
-  }
-  function hideHistoryOffer() {
-    clearTimeout(historyOfferTimer);
-    historyOfferTimer = null;
-    historyOffer.hidden = true;
-  }
   function openHistory() {
-    hideHistoryOffer();
     if (watch || history) return;
     history = createWatchView(ctx, {
       taskId: task.id,
@@ -259,12 +242,17 @@ export function mountTaskView(ctx, sandbox, task) {
     history.start();
     history.focus();
   }
-  function closeHistory(focus) {
-    if (!history) return;
+  /** Removes the History view; true when there was one. */
+  function dropHistory() {
+    if (!history) return false;
     const view = history;
     history = null;
     view.el.remove();
     view.destroy();
+    return true;
+  }
+  function closeHistory(focus) {
+    if (!dropHistory()) return;
     terminal.el.hidden = false;
     terminal.refit();
     if (focus) terminal.focus();
@@ -666,10 +654,7 @@ export function mountTaskView(ctx, sandbox, task) {
   }
 
   // Watching, the control card sits above the transcript in the flow (SPEC-179 WAT-005).
-  const termArea = h('div', { class: ['taskview-term', watch && 'watching'] }, terminal.el, historyOffer, attention, held, queueSlot);
-  // A turn back down or a key means the person stays in the terminal (HIS-002).
-  termArea.addEventListener('wheel', (event) => { if (event.deltaY > 0) hideHistoryOffer(); }, { capture: true, passive: true });
-  termArea.addEventListener('keydown', () => hideHistoryOffer(), true);
+  const termArea = h('div', { class: ['taskview-term', watch && 'watching'] }, terminal.el, attention, held, queueSlot);
   const el = h('div', { class: 'taskview' }, heading, strip, termArea, quickbar);
 
   function renderStrip() {
@@ -852,8 +837,7 @@ export function mountTaskView(ctx, sandbox, task) {
       alive = false;
       reads.abort();
       destroyers.forEach((off) => off());
-      hideHistoryOffer();
-      closeHistory(false);
+      dropHistory();
       terminal.destroy();
     },
   };
