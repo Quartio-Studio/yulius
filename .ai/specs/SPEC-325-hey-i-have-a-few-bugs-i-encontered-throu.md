@@ -148,10 +148,11 @@ their computer.
   1 major (a non-ASCII name downloaded as "attachment"), 4 minor (the 404 toast in the prompt
   dialog, the refusal naming all free space, the "nothing created" checks unable to fail on
   ordering, AC-3 not proving no read), 6 nits; all own code except the pre-existing
-  `attach_server_file` below; the minors and 3 nits fixed test-first (587711a1,
-  632c6bef, a11f6717). Round 2 at be804ac8 REQUEST CHANGES: 1 major, own code (the read-count
+  `attach_server_file` below; the major, the minors and 4 nits (the spec's status included)
+  fixed, code test-first (587711a1, 632c6bef, a11f6717, b6671c2a). Round 2 at be804ac8 REQUEST CHANGES: 1 major, own code (the read-count
   assertion raced the mock's latency), fixed in 65f92673 with `expect.poll`.
-  Round 3 at 65f92673 APPROVE (one nit left as accepted: the rounding above).
+  Round 3 at 65f92673 APPROVE (one nit left as accepted: the rounding above); the spec-only
+  Evidence commits after it were approved too.
   Not changed, accepted by the reviewer: JS and Rust round sizes differently (cosmetic; limits are
   exact multiples); `attach_server_file` (reference bundles, pre-existing) passes no declared
   size, so the disk guard does not apply to that server-made file, which has its own bound.
