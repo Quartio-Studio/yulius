@@ -4,7 +4,9 @@
 // the fields fill themselves. Remote servers take a URL and a token (sent as Authorization:
 // Bearer); local ones a single command line and their environment. Secrets stay write-only: the
 // page shows stored key names and replaces values only when asked. After Add, the server opens
-// here and is tested at once. The API is unchanged (McpServerInput, docs/api.md).
+// here and is tested at once. Two settings say who gets it (SPEC-332): Available in (every sandbox
+// or this one) and For (the whole team or only me); a new server starts on every sandbox and the
+// whole team where the person may add that, and both change later (McpServerInput, docs/api.md).
 
 import { enc } from '../api.js';
 import { h, icon, iconButton, setChildren, placeholder, loadError, confirmDialog, toast, invalid } from '../dom.js';
@@ -108,24 +110,27 @@ export function parseMcpPaste(text) {
     const env = {};
     const headers = {};
     let transport = null;
+    let scope = null;
     const positional = [];
     for (let i = 0; i < rest.length; i += 1) {
       const w = rest[i];
       if (w === '--') { positional.push(...rest.slice(i + 1).map((x) => ({ cmd: x }))); break; }
       if (w === '--transport' || w === '-t') transport = rest[++i];
-      else if (w === '--scope' || w === '-s') i += 1;
+      else if (w === '--scope' || w === '-s') scope = rest[++i];
       else if (w === '--env' || w === '-e') { const [k, ...v] = String(rest[++i] || '').split('='); if (k) env[k] = v.join('='); } else if (w === '--header' || w === '-H') { const [k, ...v] = String(rest[++i] || '').split(':'); if (k) headers[k.trim()] = v.join(':').trim(); } else positional.push({ word: w });
     }
     const name = positional.find((p) => p.word)?.word;
     const after = positional.filter((p) => p !== positional.find((x) => x.word)).map((p) => p.cmd ?? p.word);
+    // Claude Code's user scope is the person's own; its project scope the team's (SPEC-332 MSC-007).
+    const audience = scope === 'user' ? 'personal' : scope === 'project' ? 'team' : undefined;
     if (transport === 'http' || transport === 'sse' || /^https?:\/\//.test(after[0] || '')) {
       const auth = Object.keys(headers).find((k) => k.toLowerCase() === 'authorization');
       const token = auth && /^Bearer\s+/i.test(headers[auth]) ? headers[auth].replace(/^Bearer\s+/i, '') : undefined;
       if (auth && token !== undefined) delete headers[auth];
-      return { name: name || guessName({ url: after[0] }), transport: 'http', url: after[0] || '', token, headers };
+      return { name: name || guessName({ url: after[0] }), transport: 'http', url: after[0] || '', token, headers, audience };
     }
     const [command, ...args] = after;
-    return { name: name || guessName({ command, args }), transport: 'stdio', command: command || '', args, env };
+    return { name: name || guessName({ command, args }), transport: 'stdio', command: command || '', args, env, audience };
   }
   if (/^https?:\/\/\S+$/.test(raw)) return { name: guessName({ url: raw }), transport: 'http', url: raw };
   const env = {};
@@ -149,7 +154,12 @@ export function mountMcpEditor(ctx, sandbox, id) {
   let saved = '';
   let picked = null; // catalog id
   // The form: env/header rows hold [key, value]; values are only what was typed (write-only).
-  const state = { name: '', transport: 'http', url: '', line: '', token: '', replaceToken: true, env: [], replaceEnv: true, headers: [], scope: query.get('scope') === 'instance' && admin ? 'instance' : 'sandbox' };
+  // A new server starts on every sandbox and the whole team (SPEC-332 MSC-002), which only an
+  // administrator may add; anyone else starts on this sandbox.
+  const state = { name: '', transport: 'http', url: '', line: '', token: '', replaceToken: true, env: [], replaceEnv: true, headers: [], scope: admin && query.get('scope') !== 'sandbox' ? 'instance' : 'sandbox', audience: 'team' };
+  // Every sandbox for the whole team is an administrator's; personal servers and this sandbox's
+  // team servers are anyone's who may write here.
+  const allowed = (scope, audience) => canEdit && (audience === 'personal' || scope === 'sandbox' || admin);
   const live = h('div', { class: 'sr-only', role: 'status' });
 
   const nameInput = h('input', { class: 'wf-name', placeholder: 'server-name', 'aria-label': 'Server name', maxlength: 64, autocomplete: 'off', spellcheck: 'false', onInput: (e) => { state.name = e.target.value; changed(); } });
@@ -170,6 +180,7 @@ export function mountMcpEditor(ctx, sandbox, id) {
   // ---- fill from the catalog or a paste
   function fill(spec, from) {
     state.transport = spec.transport;
+    if (spec.audience) { state.audience = spec.audience; if (!allowed(state.scope, state.audience)) state.scope = 'sandbox'; }
     if (spec.name) { state.name = spec.name; nameInput.value = spec.name; }
     if (spec.transport === 'http') {
       state.url = spec.url || '';
@@ -271,11 +282,26 @@ export function mountMcpEditor(ctx, sandbox, id) {
   }
 
   function scopeSection() {
-    const option = (value, label, iconName, allowed, why) => h('label', { title: allowed ? null : why },
-      h('input', { type: 'radio', name: 'mc-scope', value, checked: state.scope === value, disabled: !allowed || !creating, onChange: () => { state.scope = value; changed(); } }), icon(iconName, { size: 14 }), label);
-    return section('Available in', null, h('div', { class: 'wf-scope' },
-      h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Available in' }, option('sandbox', `This sandbox (${sandbox.name})`, 'folder', canEdit, ''), option('instance', 'Every sandbox', 'globe', canEdit && admin, 'Instance servers are added by instance administrators')),
-      h('span', { class: 'muted xs' }, !creating ? 'Set when the server is added.' : 'A sandbox server overrides an every-sandbox server of the same name.')));
+    const ADMIN_ONLY = 'Every sandbox for the whole team is set by instance administrators: choose Only me to have it in every sandbox';
+    const option = (group, value, label, iconName, ok, why) => h('label', { title: ok ? null : why },
+      h('input', { type: 'radio', name: `mc-${group}`, value, checked: state[group] === value, disabled: !ok, onChange: () => {
+        state[group] = value;
+        // A combination the person may not set gives way to the one they may (MSC-003).
+        if (!allowed(state.scope, state.audience)) state.scope = 'sandbox';
+        render();
+      } }), icon(iconName, { size: 14 }), label);
+    const who = state.audience === 'personal'
+      ? 'Only your own tasks and your Superagent get it — never a teammate’s task or an automation’s.'
+      : state.scope === 'instance' ? 'Every task in every sandbox gets it.' : `Every task in ${sandbox.name} gets it.`;
+    return section('Who gets it', null, h('div', { class: 'wf-scope stack-sm' },
+      h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Available in' },
+        option('scope', 'instance', 'Every sandbox', 'globe', allowed('instance', state.audience), ADMIN_ONLY),
+        option('scope', 'sandbox', 'This sandbox', 'folder', canEdit, '')),
+      h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'For' },
+        option('audience', 'team', 'Whole team', 'users', canEdit, ''),
+        option('audience', 'personal', 'Only me', 'user', canEdit, '')),
+      h('span', { class: 'muted xs mc-who' }, who),
+      h('span', { class: 'muted xs' }, 'Of servers with the same name the most specific wins: this sandbox over every sandbox, yours over the team’s.')));
   }
 
   // ---- test
@@ -373,7 +399,10 @@ export function mountMcpEditor(ctx, sandbox, id) {
         out.env = env;
       }
     }
-    if (creating) out.scope = state.scope;
+    out.scope = state.scope;
+    out.audience = state.audience;
+    // A server moved into one sandbox belongs to the one this page is about.
+    if (!creating) out.sandbox = sandbox.id;
     return out;
   }
 
@@ -393,7 +422,7 @@ export function mountMcpEditor(ctx, sandbox, id) {
       saved = snapshot();
       toast(creating ? `MCP server ${name} added.` : `MCP server ${name} saved.`, { kind: 'ok' });
       if (creating) navigate(`${base}/${encodeURIComponent(result.id)}?test=1`);
-      else { server = result; state.token = ''; state.replaceToken = false; state.replaceEnv = !(result.env_keys || []).length; state.env = []; state.headers = []; saved = snapshot(); render(); }
+      else { server = result; canEdit = write && (result.scope !== 'instance' || admin || result.audience === 'personal'); Object.assign(state, { scope: result.scope, audience: result.audience || 'team' }); state.token = ''; state.replaceToken = false; state.replaceEnv = !(result.env_keys || []).length; state.env = []; state.headers = []; saved = snapshot(); render(); }
     } catch (error) {
       toast(`Couldn’t ${creating ? 'add' : 'save'}: ${error.message}`, { kind: 'error' });
     } finally {
@@ -436,10 +465,10 @@ export function mountMcpEditor(ctx, sandbox, id) {
         server = servers.find((s) => s.id === id);
         // Nothing to edit, so nothing to guard: the way back leaves without asking.
         if (!server) { saved = snapshot(); setChildren(el, notFound({ title: 'MCP server not found', text: `There is no MCP server “${id}” for ${sandbox.name}. It may have been deleted.`, back: ['MCP', base] })); return; }
-        canEdit = write && (server.scope !== 'instance' || admin);
+        canEdit = write && (server.scope !== 'instance' || admin || server.audience === 'personal');
         Object.assign(state, {
           name: server.name, transport: server.transport, url: server.url || '', line: joinCommand([server.command, ...(server.args || [])].filter((x) => x != null)),
-          token: '', replaceToken: !(server.header_keys || []).some((k) => k.toLowerCase() === 'authorization'), env: [], replaceEnv: !(server.env_keys || []).length, headers: [], scope: server.scope,
+          token: '', replaceToken: !(server.header_keys || []).some((k) => k.toLowerCase() === 'authorization'), env: [], replaceEnv: !(server.env_keys || []).length, headers: [], scope: server.scope, audience: server.audience || 'team',
         });
         nameInput.value = server.name;
       }
