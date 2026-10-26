@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { editorShown, failOnPageErrors, mock, terminalShown } from './support.ts';
+import { editorShown, failOnPageErrors, mock, terminalShown, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -16,6 +16,8 @@ type Monaco = { editor: { getEditors(): { getPosition(): { lineNumber: number; c
 const rows = (browser: Browser) => browser.locator('.taskview .xterm-rows');
 /** The terminal row that shows `text` (in the task view, or in `scope`). */
 const row = (browser: Browser, text: string, scope = '.taskview') => browser.locator(`${scope} .xterm-rows > div`).filter({ hasText: text }).first();
+/** How long a wheel turn up waits for the program's answer before it counts as the top (terminal-core.js). */
+const TOP_SETTLE_MS = 400;
 /** Lets a pointer move settle (xterm asks its link providers when the pointer rests). */
 const settle = (ms = 500) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
@@ -610,6 +612,317 @@ test('a wheel turn reports one row per row of its distance (#863)', async ({ app
   expect(count(after, 64), 'two pages: one screen of rows').toBe(screenRows);
   expect(count(after, 68), 'the Shift wheel: nothing').toBe(0);
   expect(count(after, 72), 'the Alt wheel: once').toBe(1);
+});
+
+// ---- the whole session past the terminal's top (SPEC-326, #911)
+
+type Item = { role: string; text: string };
+type Session12 = { lines: string[]; viewers: Set<unknown>; broadcast(text: string): void; snapshot(): string; wheel(button: number): void };
+type HistoryMock = { __yuliusMock: { sessions: Map<string, Session12>; transcriptQueries?: string[]; appendTranscript(sid: string, n: number, items: Item[]): void; newTranscriptSession(sid: string, n: number, session: string, items: Item[]): void } };
+const FIRST_MESSAGE = 'Add Stripe checkout to the cart page. Use the test keys from .env.';
+const offer = (browser: Browser) => browser.locator('.taskview .term-history-offer');
+const history = (browser: Browser) => browser.locator('.taskview .watch.history');
+/** Whether the way on to the whole session is on the page now. */
+const offerShown = (browser: Browser) => browser.evaluate(() => {
+  const button = document.querySelector<HTMLElement>('.taskview .term-history-offer');
+  return Boolean(button && button.checkVisibility());
+});
+/** The terminal's rows as text. */
+const shown = (browser: Browser) => browser.evaluate(() => document.querySelector('.taskview .xterm-rows')!.textContent);
+/** The task transcript reads made so far. */
+const queries = (browser: Browser) => browser.evaluate(() => (window as unknown as HistoryMock).__yuliusMock.transcriptQueries || []);
+/** Turns the wheel over `point` by `deltaY` pixels (negative: up). */
+const turn = (browser: Browser, point: { x: number; y: number }, deltaY: number) => browser.evaluate(({ x, y, deltaY }) => {
+  document.elementFromPoint(x, y)!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, deltaY }));
+}, { ...point, deltaY });
+/** Turns the wheel up by `count` of the terminal's rows. */
+const turnRowsUp = (browser: Browser, point: { x: number; y: number }, count: number) => browser.evaluate(({ x, y, count }) => {
+  const screen = document.querySelector('.taskview .xterm-screen')!;
+  const row = screen.getBoundingClientRect().height / document.querySelectorAll('.taskview .xterm-rows > div').length;
+  document.elementFromPoint(x, y)!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, deltaY: -count * row }));
+}, { ...point, count });
+/** Waits until the terminal's rows stop changing. */
+async function screenStill(browser: Browser): Promise<void> {
+  let last = '';
+  await expect.poll(async () => { const now = await shown(browser); const still = now === last; last = now; await settle(300); return still; }, { message: 'the screen stopped moving' }).toBe(true);
+}
+
+/** Takes the way on away with a key that types nothing (Shift), and checks it went. */
+async function hideOfferWithKey(browser: Browser): Promise<void> {
+  await browser.evaluate(() => document.querySelector<HTMLElement>('.taskview .xterm-helper-textarea')!.focus());
+  await browser.keyboard.press('Shift');
+  expect(await offerShown(browser), 'a key takes the offer away').toBe(false);
+}
+
+/** Opens the whole session from task #12's terminal (an old run's: the first turn up offers it). */
+async function openClassicHistory(browser: Browser, point: { x: number; y: number }): Promise<void> {
+  await turn(browser, point, -120);
+  await offer(browser).click();
+  await expect(history(browser)).toBeVisible();
+}
+
+/** Task #12 with a transcript longer than its screen, so the program has rows to scroll; the pointer's spot. */
+async function longTask12(app: { open: (url: string) => Promise<unknown> }, browser: Browser): Promise<{ x: number; y: number }> {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
+  await holdStill(browser);
+  await browser.evaluate(() => {
+    const session = (window as unknown as HistoryMock).__yuliusMock.sessions.get('tsk_studio_12')!;
+    session.lines.push(...Array.from({ length: 60 }, (_, i) => `Earlier output line ${i + 1}`));
+    session.broadcast(session.snapshot());
+  });
+  await expect(rows(browser)).toHaveText(/Earlier output line 60/);
+  const point = await spot(browser, 'Earlier output line 60');
+  expect(point, 'the last line is on the screen').not.toBeNull();
+  return point!;
+}
+
+/** Task #12 as an old run on Claude Code's classic renderer; the pointer's spot. */
+async function classicTask12(app: { open: (url: string) => Promise<unknown> }, browser: Browser): Promise<{ x: number; y: number }> {
+  // Started before SPEC-310, the run kept Claude Code's main-screen renderer through the updates
+  // that froze and thawed it: no mouse reporting, and only the visible screen reaches a viewer.
+  await app.open(mock('/s/studio/t/12', '&classic=1'));
+  await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
+  await holdStill(browser);
+  const point = await spot(browser, 'Searched for 2 patterns');
+  expect(point, 'the group is on the screen').not.toBeNull();
+  return point!;
+}
+
+test('a wheel turn past the top offers the whole session from its first message (#911)', async ({ app, browser, screen }) => {
+  const point = await longTask12(app, browser);
+  // Claude Code shows a session only from its last compaction: what scrolls still scrolls, and a
+  // turn that moved the screen offers nothing (SPEC-326 HIS-001).
+  const before = await shown(browser);
+  await turnRowsUp(browser, point, 1);
+  await expect.poll(() => shown(browser), { message: 'the program scrolled' }).not.toBe(before);
+  await settle(1000);
+  await expect(offer(browser)).toBeHidden();
+  // Up to the program's top: the screen stops moving.
+  for (let i = 0; i < 3; i++) await turnRowsUp(browser, point, 200);
+  await expect(rows(browser)).toHaveText(/Welcome to Claude/);
+  await screenStill(browser);
+  const atTop = await shown(browser);
+  // The gesture may already have reached the top: a key takes any offer away first (HIS-002).
+  await hideOfferWithKey(browser);
+  // A turn past it leaves the screen as it was: the way on to the whole session shows.
+  await settle(TOP_SETTLE_MS);
+  await turnRowsUp(browser, point, 3);
+  await expect(offer(browser)).toBeVisible();
+  await expect(offer(browser)).toHaveText(/Earlier messages: show the whole session/);
+  // The terminal's connection is kept while the whole session shows.
+  await browser.evaluate(() => {
+    const session = (window as unknown as HistoryMock).__yuliusMock.sessions.get('tsk_studio_12')!;
+    (window as unknown as { __viewer: unknown }).__viewer = [...session.viewers][0];
+  });
+  await offer(browser).click();
+
+  // The whole session, read from its first line, in the terminal's place (HIS-003).
+  await expect(history(browser)).toBeVisible();
+  await expect(screen.getByText(FIRST_MESSAGE)).toBeVisible();
+  expect((await queries(browser))[0], 'read from the first line').toMatch(/^from=0&limit=500$/);
+  await expect(browser.locator('.taskview .watch.history .ss-locked')).toHaveText(/The whole session, from its first message\. Read-only\./);
+  expect(await browser.evaluate(() => document.querySelectorAll('.taskview .xterm').length), 'the terminal is kept').toBe(1);
+  await expect(browser.locator('.taskview .term')).toBeHidden();
+  await screen.getByRole('button', { name: 'Back to the terminal' }).click();
+  await expect(history(browser)).toBeHidden();
+  await expect(rows(browser)).toBeVisible();
+  expect(await browser.evaluate(() => {
+    const session = (window as unknown as HistoryMock).__yuliusMock.sessions.get('tsk_studio_12')!;
+    return session.viewers.size === 1 && [...session.viewers][0] === (window as unknown as { __viewer: unknown }).__viewer;
+  }), 'the same connection, never closed').toBe(true);
+
+  // A turn back down hides the way on and scrolls the program down.
+  await turnRowsUp(browser, point, 3);
+  await expect(offer(browser)).toBeVisible();
+  await turn(browser, point, 40);
+  await expect(offer(browser)).toBeHidden();
+  await expect.poll(() => shown(browser), { message: 'the program scrolled down' }).not.toBe(atTop);
+  // The turn back up moves it and offers nothing; the next one does.
+  await turnRowsUp(browser, point, 200);
+  await expect.poll(() => shown(browser), { message: 'back at the top' }).toBe(atTop);
+  await settle(TOP_SETTLE_MS + 600);
+  await expect(offer(browser)).toBeHidden();
+  await turnRowsUp(browser, point, 3);
+  await offer(browser).click();
+  await expect(history(browser)).toBeVisible();
+  // Escape goes back, with the keyboard in the terminal again.
+  await browser.keyboard.press('Escape');
+  await expect(history(browser)).toBeHidden();
+  await expect(rows(browser)).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => Boolean(document.activeElement && document.activeElement.closest('.taskview .xterm'))), { message: 'the keyboard is in the terminal' }).toBe(true);
+});
+
+test('a program that answers the wheel late takes the offer back once its screen moves (#911)', async ({ app, browser }) => {
+  const point = await longTask12(app, browser);
+  // Over a slow link the program's screen arrives after the check's wait: the turn was no top.
+  await browser.evaluate((delay) => {
+    const session = (window as unknown as HistoryMock).__yuliusMock.sessions.get('tsk_studio_12')!;
+    const wheel = session.wheel.bind(session);
+    session.wheel = (button) => { setTimeout(() => wheel(button), delay); };
+  }, TOP_SETTLE_MS + 300);
+  const before = await shown(browser);
+  await turnRowsUp(browser, point, 5);
+  await expect.poll(() => shown(browser), { message: 'the program scrolled, late' }).not.toBe(before);
+  await expect.poll(() => offerShown(browser), { message: 'no offer while the program scrolls' }).toBe(false);
+});
+
+test('an old run on the classic renderer, with nothing above its screen, offers the whole session at once (#911)', async ({ app, browser, screen }) => {
+  const point = await classicTask12(app, browser);
+  const sent = await recordInput(browser);
+  // xterm scrolls the main screen itself and is at its first line: the first turn up is the top.
+  await turn(browser, point, -120);
+  await expect(offer(browser)).toBeVisible();
+  expect((await sent()).join('').includes('\x1b['), 'nothing reaches a program without the mouse').toBe(false);
+  // The keyboard opens it too: Space on the button (the key does not take it away first).
+  await browser.evaluate(() => document.querySelector<HTMLElement>('.taskview .term-history-offer')!.focus());
+  await browser.keyboard.press('Space');
+  await expect(history(browser)).toBeVisible();
+  await expect(screen.getByText(FIRST_MESSAGE)).toBeVisible();
+});
+
+test('a live viewer of an old run scrolls its scrollback first, then is offered the whole session (#911)', async ({ app, browser }) => {
+  const point = await classicTask12(app, browser);
+  // The program writes on while this viewer watches: lines scroll off the screen into xterm's scrollback.
+  await browser.evaluate(() => {
+    const session = (window as unknown as HistoryMock).__yuliusMock.sessions.get('tsk_studio_12')!;
+    session.broadcast(`\x1b[r\x1b[999;1H${Array.from({ length: 80 }, (_, i) => `\r\nOld output ${i + 1}`).join('')}`);
+  });
+  await expect(rows(browser)).toHaveText(/Old output 80/);
+  // Turns within the scrollback scroll it and offer nothing. xterm scrolls its own buffer only for
+  // the browser's own wheel events.
+  await browser.mouse.move(point.x, point.y);
+  const bottom = await shown(browser);
+  await browser.mouse.wheel(0, -120);
+  await expect.poll(() => shown(browser), { message: 'the scrollback scrolled' }).not.toBe(bottom);
+  await settle(TOP_SETTLE_MS + 600);
+  expect(await offerShown(browser), 'no offer within the scrollback').toBe(false);
+  // At its first line, the next turn offers the whole session.
+  let last = '';
+  await expect.poll(async () => {
+    await browser.mouse.wheel(0, -2000);
+    await settle(300);
+    const now = await shown(browser);
+    const still = now === last;
+    last = now;
+    return still;
+  }, { message: 'the scrollback is at its first line', timeout: 30_000 }).toBe(true);
+  await expect(rows(browser)).toHaveText(/Welcome to Claude Code/);
+  await hideOfferWithKey(browser);
+  await browser.mouse.wheel(0, -120);
+  await expect(offer(browser)).toBeVisible();
+});
+
+test('the whole session is read page by page to its end, and from its first line again for a new session (#911)', async ({ app, browser, screen }) => {
+  const point = await classicTask12(app, browser);
+  await browser.evaluate(() => (window as unknown as HistoryMock).__yuliusMock.appendTranscript('sb_studio', 12, Array.from({ length: 600 }, (_, i) => ({ role: 'assistant', text: `Step ${i + 1} of 600.` }))));
+  const readsBefore = (await queries(browser)).length;
+  await turn(browser, point, -120);
+  await offer(browser).click();
+  await expect(history(browser)).toBeVisible();
+  // It starts at the bottom, the newest message, and the first one is above it.
+  await expect(screen.getByText('Step 600 of 600.')).toBeVisible();
+  await browser.evaluate(() => { document.querySelector('.taskview .watch.history .watch-scroll')!.scrollTop = 0; });
+  await expect(screen.getByText(FIRST_MESSAGE)).toBeVisible();
+  const reads = (await queries(browser)).slice(readsBefore);
+  expect(reads[0], 'the first page').toBe('from=0&limit=500');
+  expect(reads[1], 'the next page, as large').toMatch(/^from=500&session=b1f0-12&limit=500$/);
+  // A continue started another session: it is read from its first line too.
+  const readsThen = (await queries(browser)).length;
+  await browser.evaluate(() => (window as unknown as HistoryMock).__yuliusMock.newTranscriptSession('sb_studio', 12, 'b1f0-13', [{ role: 'user', text: 'Continue where you left off.' }]));
+  await expect(screen.getByText('Continue where you left off.')).toBeVisible();
+  await expect(screen.getByText('Step 600 of 600.')).toBeHidden();
+  expect((await queries(browser)).slice(readsThen), 'the new session from its first line').toContain('from=0&limit=500');
+});
+
+test('the attention bar’s Reply leaves the whole session for the terminal (#911)', async ({ app, browser, screen }) => {
+  const point = await classicTask12(app, browser);
+  // The agent asks in the terminal: Reply puts the keyboard there, so the terminal shows again.
+  await openClassicHistory(browser, point);
+  await touchTask(browser, 'sb_studio', 12, { activity: 'needs_attention', needs_you: { action: 'Add a ruleset', why: 'agents can push to main', at: new Date().toISOString() } });
+  await expect(browser.locator('.attention-bar')).toHaveText(/Needs you[\s\S]*To do[\s\S]*Add a ruleset/);
+  await screen.getByRole('button', 'Reply').click();
+  await expect(history(browser)).toBeHidden();
+  await expect.poll(() => browser.evaluate(() => Boolean(document.activeElement && document.activeElement.closest('.taskview .xterm'))), { message: 'the keyboard is in the terminal' }).toBe(true);
+  // A text reply is typed into the session: the terminal shows it arrive.
+  await openClassicHistory(browser, point);
+  await touchTask(browser, 'sb_studio', 12, { activity: 'waiting', needs_you: null, background_shells: 0 });
+  await expect(browser.locator('.attention-bar')).toHaveText(/waiting for your reply/);
+  await screen.getByRole('button', 'Reply').click();
+  await screen.getByRole('textbox', 'Reply to the agent').fill('Go on');
+  await screen.getByRole('button', 'Send').click();
+  await expect(history(browser)).toBeHidden();
+  await expect(rows(browser)).toHaveText(/> Go on/);
+});
+
+test('the way on sits below a held card over the terminal (#911)', async ({ app, browser }) => {
+  const point = await classicTask12(app, browser);
+  await touchTask(browser, 'sb_studio', 12, { heldPrompt: { id: 'hold_9', class: 'new_scope', excerpt: 'Also add a dark mode to the invoice settings page.', percent: 92, typed_by: 'mkarp', created_at: new Date().toISOString() } });
+  await expect(browser.locator('.taskview .held-slot')).toBeVisible();
+  await turn(browser, point, -120);
+  await expect(offer(browser)).toBeVisible();
+  const boxes = await browser.evaluate(() => {
+    const card = document.querySelector('.taskview .held-slot')!.getBoundingClientRect();
+    const button = document.querySelector('.taskview .term-history-offer')!.getBoundingClientRect();
+    return { cardBottom: card.bottom, buttonTop: button.top };
+  });
+  expect(boxes.buttonTop, 'the button is below the card').toBeGreaterThanOrEqual(boxes.cardBottom);
+});
+
+test('a task that never ran offers no earlier messages (#911)', async ({ app, browser }) => {
+  await app.open(mock('/s/product/t/7'));
+  // The mock draws a screen even for a waiting task: the task's state alone holds the offer back.
+  await expect(rows(browser)).toHaveText(/Welcome to Claude/);
+  const point = await browser.evaluate(() => {
+    const box = document.querySelector('.taskview .xterm-screen')!.getBoundingClientRect();
+    return { x: box.left + 40, y: box.top + 20 };
+  });
+  await turn(browser, point, -120);
+  await settle(TOP_SETTLE_MS + 600);
+  expect(await offerShown(browser), 'nothing to offer before a session').toBe(false);
+});
+
+test('a blank screen offers nothing (#911)', async ({ app, browser }) => {
+  const point = await classicTask12(app, browser);
+  // The program cleared the screen and its scrollback: nothing earlier to show here.
+  await browser.evaluate(() => (window as unknown as HistoryMock).__yuliusMock.sessions.get('tsk_studio_12')!.broadcast('\x1b[r\x1b[2J\x1b[3J\x1b[H'));
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .xterm-rows')!.textContent!.trim())).toBe('');
+  await turn(browser, point, -120);
+  await settle(TOP_SETTLE_MS + 600);
+  expect(await offerShown(browser), 'a blank screen offers nothing').toBe(false);
+});
+
+test('a reply that could not be sent shows why in the terminal, not behind the whole session (#911)', async ({ app, browser, screen }) => {
+  const point = await classicTask12(app, browser);
+  await openClassicHistory(browser, point);
+  await touchTask(browser, 'sb_studio', 12, { activity: 'waiting', needs_you: null, background_shells: 0 });
+  await expect(browser.locator('.attention-bar')).toHaveText(/waiting for your reply/);
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { goOffline(): void } }).__yuliusMock.goOffline());
+  await screen.getByRole('button', 'Reply').click();
+  await screen.getByRole('textbox', 'Reply to the agent').fill('Go on');
+  await screen.getByRole('button', 'Send').click();
+  await expect(history(browser)).toBeHidden();
+  await expect(browser.locator('.taskview .term-notice')).toHaveText('Not connected — input was not sent');
+});
+
+test('dismissing a queued message kept after the start leaves the whole session for the terminal (#911)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product/t/7'));
+  const card = screen.getByRole('region', 'Queued messages');
+  await card.getByRole('textbox', 'Message for the agent').click();
+  await browser.keyboard.type('Only for paid invoices, please.');
+  await touchTask(browser, 'sb_product', 7, { status: 'running', started: true });
+  await expect(card).toContainText('The task has started: copy your message into its session.');
+  await expect(rows(browser)).toHaveText(/Welcome to Claude/);
+  const point = await browser.evaluate(() => {
+    const box = document.querySelector('.taskview .xterm-screen')!.getBoundingClientRect();
+    return { x: box.left + 40, y: box.top + 20 };
+  });
+  await expect.poll(async () => { await turn(browser, point, -120); await settle(TOP_SETTLE_MS + 200); return offerShown(browser); }, { message: 'the started task offers its session' }).toBe(true);
+  await offer(browser).click();
+  await expect(history(browser)).toBeVisible();
+  await browser.locator('.queue-compose > button:has-text("Dismiss")').click();
+  await expect(history(browser)).toBeHidden();
+  await expect(rows(browser)).toBeVisible();
 });
 
 test('mouse use while disconnected says nothing; typed input still warns', async ({ app, browser }) => {
