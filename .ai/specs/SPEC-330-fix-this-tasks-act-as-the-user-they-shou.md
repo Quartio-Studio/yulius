@@ -119,6 +119,16 @@ files or change the repository's default branch for it.
   default branch); a listed branch over 255 bytes cannot be the `branch` argument (Yulius's own
   branch-name rule; the agent checks it out from the copy); a non-UTF-8 branch name is shown lossily
   (GitHub names are UTF-8).
+- Yulius CI on PR #922 (d1113b6e): quality passed; e2e failed on `agent-panel.e2e.ts` › "a hidden
+  Superagent or Shell terminal keeps its session's size" (`expected "50x39" to be "100x30"`), a test
+  #919 added, which failed the same way in merge train #919 + #916; security unrun (Vidoc quota).
+  Outside this change (no web code), but it blocks every pull request, so fixed here as its own
+  commits (#924): locally it failed 2 of 13 runs. Root cause: `fitted()` took any size above 20
+  columns, and the mock's shell session exists at its starting 100×30 before the page's hello gives
+  its size. Regression first (12c88f19): holding the Shell's hello (`__yuliusHoldShell`),
+  `fitted()` must still be waiting; it failed 2 of 2. Fix: the mock session marks `sized` when a
+  viewer says its size and the test reads only such sizes; 10 of 10 runs pass, and
+  `agent-panel`, `terminal`, `terminals` and `places` e2e files pass (70 of 70).
 - Delivery: merged into `dev` by `delivery_merge` only on green Yulius CI at the reviewed head.
 - Not tested here: a real GitHub fetch with a person's token and a real agent's containment cloning
   the bundle (the tests clone on the host).
