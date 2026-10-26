@@ -266,10 +266,9 @@ mod tests {
     }
 
     #[test]
-    fn a_row_stored_with_why_reads_it_as_the_problem() {
+    fn a_row_stored_with_why_reads_it_as_the_problem() -> Result<(), serde_json::Error> {
         let record: NeedsYouRecord =
-            serde_json::from_str(r#"{"action":"Add DEV_SSH_KEY","why":"SSH needs it","at":1}"#)
-                .expect("an older row");
+            serde_json::from_str(r#"{"action":"Add DEV_SSH_KEY","why":"SSH needs it","at":1}"#)?;
         assert_eq!(record.problem.as_deref(), Some("SSH needs it"));
         assert_eq!(record.happened, None);
         assert!(!record.decision);
@@ -277,5 +276,6 @@ mod tests {
             record.printed(),
             "Needs you\nProblem: SSH needs it\nTo do: Add DEV_SSH_KEY"
         );
+        Ok(())
     }
 }
