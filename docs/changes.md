@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-26
 
+- A task reading another repository of its owner now gets every branch and tag, not only the
+  default branch (SPEC-330, task #314, #915). A task that needed Quartio v2's `dev` asked a person
+  to paste files, because `reference_repo` fetched `main` alone. The bundle now carries every
+  branch and tag the task's owner can read, `branch` picks the one checked out, and a branch the
+  repository lacks is answered with its branch list instead of a person's action
+  ([ADR-0223](decisions/0223-a-reference-copy-carries-every-branch-and-tag-its-owner-can-read.md)).
 - A Needs you request now reads as What happened, Problem and To do (SPEC-327, task #311). The
   attention bar showed "Needs you: <action> · <why>" as one paragraph, where the to-do was the
   hardest part to find. `needs_you` takes `happened`, `problem`, `action` and `decision`; the bar
