@@ -73,6 +73,12 @@ watching, steering and unblocking.
   ids, base URLs, contact addresses) are shown in plain on the Secrets page's Variables tab and
   are in every task's environment. The laptop agent sets them with `yulius vars`, and the secrets
   import sends a `.env`'s plain values there instead of making them secrets.
+- **Move or copy the whole instance** (SPEC-329): `sudo yulius instance export | ssh root@new-vm
+  yulius instance import` pauses every Yulius process, announces the exact size, and streams the
+  whole instance (database, keys, sandboxes with uncommitted work and Claude sessions, installed
+  packages, Docker data) without writing anything on the old VM's disk; the new VM installs it as
+  it arrives, checks it, and `yulius host setup` starts it. `--move` keeps the old instance frozen
+  and disabled. A copy can also go to a file and be installed later.
 - **Playgrounds**: a team tries Yulius on its own code before it connects GitHub. On a fresh
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server
