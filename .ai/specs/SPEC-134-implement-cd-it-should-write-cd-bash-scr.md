@@ -164,7 +164,10 @@ Agents and people (CDT):
   <action>" (sidebar group Needs you, on every page that groups tasks) until a person writes to the
   task (a prompt they typed, or continuing it; prompts Yulius types do not count) or the agent calls
   `needs_you {resolved: true}`; an ended task shows none. The request is audited (`task.needs_you`).
-  Its link must be a page of this Yulius.
+  Its link must be a page of this Yulius. Since
+  [SPEC-327](SPEC-327-hey-i-really-like-those-notifications-ca.md) it is
+  `needs_you {happened?, problem?, action, decision?, link?}` (`why` the older name of `problem`),
+  shown as What happened, Problem and To do (Decide) ([ADR-0221](../../docs/decisions/0221-a-needs-you-request-reads-what-happened-problem-to-do.md)).
 - CDT-005. The **CD (deployment)** page (nav entry next to "CI (tests)") shows dev and production:
   state, what runs, secrets and their state with a link to Secrets, the deployed commit against the
   branch head, the last run, Deploy buttons (dev: confirm; production: a dialog that says what will

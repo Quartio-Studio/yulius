@@ -1319,7 +1319,8 @@ sandbox's Docker engine, production runs their production holder's (ADR-0208; th
 `<data>/cd/<sandbox>/runs`, which that engine binds), and both reach any Internet host over TCP
 (SSH included) through their holder's network. A run has no lane and no retry: a deploy is not assumed repeatable, so one left by a
 restart is recorded as an error. `needs_you` (table column `tasks.needs_you`) puts a task in Needs
-you until a person writes to it. `POST …/cd/{env}/deploy` answers only once the run is recorded,
+you until a person writes to it; its request (what happened, the problem, what to do or decide) is
+stored as JSON there ([ADR-0221](decisions/0221-a-needs-you-request-reads-what-happened-problem-to-do.md)). `POST …/cd/{env}/deploy` answers only once the run is recorded,
 after the checks and production's promotion (seconds to a minute), so the CD page opens the Deploy
 dialog as soon as the person confirms, saying what is being checked and promoted with the time so
 far, and turns it into the run's view when the answer comes, or shows the refusal in it

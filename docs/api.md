@@ -329,7 +329,7 @@ TaskSummary = {
   "start_at": "2026-10-15T09:00:00Z|null",
   "after": ChainLink|null, "next": [ChainLink],
   "held_prompt": {"id","class":"new_scope|drops_scope|redirect","excerpt","percent","typed_by|null","created_at"}|null,
-  "needs_you": {"action","why|null","link|null","at"}|null,   // SPEC-134: what the agent asked a person (`needs_you`)
+  "needs_you": {"action","happened|null","problem|null","decision","link|null","at"}|null,   // SPEC-134, SPEC-327: what the agent asked a person (`needs_you`)
   "background_shells": "0|1|…|null",
   "auto": {"mode":"jev|default|null","workflow":"jev|default|null","workflow_name":"Feature|null"}|null
 }

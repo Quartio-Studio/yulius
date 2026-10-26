@@ -126,7 +126,7 @@ pub const YULIUS_TOOLS: [(&str, &str); 40] = [
     ),
     (
         "needs_you",
-        "ask a person to do what only a person can (a credential, production)",
+        "ask a person to do or decide what only a person can (a credential, production): what happened, the problem, what to do",
     ),
     (
         "production_protect",
