@@ -833,8 +833,14 @@ mod tests {
             .map(|t| t.name)
             .collect();
         for name in ["sandboxes_list", "sandbox_task_create"] {
-            assert!(!task_tools.iter().any(|t| t == name), "a task gets `{name}`");
-            assert!(superagent.iter().any(|t| t == name), "`{name}` is not served");
+            assert!(
+                !task_tools.iter().any(|t| t == name),
+                "a task gets `{name}`"
+            );
+            assert!(
+                superagent.iter().any(|t| t == name),
+                "`{name}` is not served"
+            );
         }
     }
 

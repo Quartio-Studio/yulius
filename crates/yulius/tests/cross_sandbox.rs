@@ -16,8 +16,8 @@ use yulius_app::ports::store::TaskStore;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 
 use crate::support::{
-    self, Creds, Harness, TestResult, add_sandbox, admit_and_sign_in, call, configure_github_app, perms,
-    setup_superadmin_creds,
+    self, Creds, Harness, TestResult, add_sandbox, admit_and_sign_in, call, configure_github_app,
+    perms, setup_superadmin_creds,
 };
 
 type Error = Box<dyn std::error::Error>;
@@ -158,11 +158,10 @@ async fn task_count(w: &World, sandbox: &str) -> Result<usize, Error> {
 #[tokio::test]
 async fn the_superagent_lists_the_other_sandboxes_its_person_can_work_in() -> TestResult {
     let w = world(60_000).await?;
-    let listed = w
-        .h
-        .app
-        .tool_sandboxes_list(&superagent("s1", &w.alice_id, "alice")?)
-        .await?;
+    let listed =
+        w.h.app
+            .tool_sandboxes_list(&superagent("s1", &w.alice_id, "alice")?)
+            .await?;
     let slugs: Vec<&str> = listed["sandboxes"]
         .as_array()
         .ok_or("sandboxes")?
@@ -213,9 +212,19 @@ async fn an_approved_request_creates_the_task_in_the_other_sandbox() -> TestResu
     assert_eq!(task.title, "API client v2");
     assert_eq!(task.created_by, w.alice_id);
     assert_eq!(task.origin, TaskOrigin::Agent);
-    assert!(requests(&w, &w.alice, "s1").await?.is_empty(), "answered once");
+    assert!(
+        requests(&w, &w.alice, "s1").await?.is_empty(),
+        "answered once"
+    );
     // A second answer finds nothing.
-    let again = answer(&w, &w.alice, "s1", request["id"].as_str().ok_or("id")?, true).await?;
+    let again = answer(
+        &w,
+        &w.alice,
+        "s1",
+        request["id"].as_str().ok_or("id")?,
+        true,
+    )
+    .await?;
     assert_eq!(again.status, StatusCode::NOT_FOUND);
     assert_eq!(task_count(&w, "s2").await?, 1);
     Ok(())
@@ -225,9 +234,19 @@ async fn an_approved_request_creates_the_task_in_the_other_sandbox() -> TestResu
 #[tokio::test]
 async fn a_declined_request_creates_nothing() -> TestResult {
     let w = world(60_000).await?;
-    let call_ = ask(&w, json!({"sandbox": "Quartio-Studio/website", "prompt": "Rewrite it"}))?;
+    let call_ = ask(
+        &w,
+        json!({"sandbox": "Quartio-Studio/website", "prompt": "Rewrite it"}),
+    )?;
     let listed = waiting(&w, 1).await?;
-    let declined = answer(&w, &w.alice, "s1", listed[0]["id"].as_str().ok_or("id")?, false).await?;
+    let declined = answer(
+        &w,
+        &w.alice,
+        "s1",
+        listed[0]["id"].as_str().ok_or("id")?,
+        false,
+    )
+    .await?;
     assert_eq!(declined.status, StatusCode::OK, "{:?}", declined.body);
     let outcome = call_.await??;
     assert_eq!(outcome["outcome"], "declined", "{outcome}");
@@ -255,7 +274,14 @@ async fn a_dropped_call_takes_its_request_with_it() -> TestResult {
     let listed = waiting(&w, 1).await?;
     call_.abort();
     waiting(&w, 0).await?;
-    let late = answer(&w, &w.alice, "s1", listed[0]["id"].as_str().ok_or("id")?, true).await?;
+    let late = answer(
+        &w,
+        &w.alice,
+        "s1",
+        listed[0]["id"].as_str().ok_or("id")?,
+        true,
+    )
+    .await?;
     assert_eq!(late.status, StatusCode::NOT_FOUND);
     assert_eq!(task_count(&w, "s2").await?, 0);
     Ok(())
@@ -272,7 +298,12 @@ async fn only_the_person_in_a_browser_answers() -> TestResult {
 
     let alice_token = alice_api_token(&w).await?;
     let by_token = answer(&w, &alice_token, "s1", id, true).await?;
-    assert_eq!(by_token.status, StatusCode::FORBIDDEN, "{:?}", by_token.body);
+    assert_eq!(
+        by_token.status,
+        StatusCode::FORBIDDEN,
+        "{:?}",
+        by_token.body
+    );
     let by_bob = answer(&w, &w.bob, "s1", id, true).await?;
     assert_eq!(by_bob.status, StatusCode::NOT_FOUND, "{:?}", by_bob.body);
     assert_eq!(waiting(&w, 1).await?.len(), 1, "still waiting");
@@ -310,7 +341,10 @@ async fn what_cannot_be_asked_is_refused_without_asking() -> TestResult {
         (json!({"sandbox": "nowhere", "prompt": "x"}), "not found"),
         (json!({"sandbox": "website", "prompt": "  "}), "prompt"),
         (json!({"sandbox": "website"}), "prompt"),
-        (json!({"sandbox": "website", "prompt": "x", "colour": "red"}), "colour"),
+        (
+            json!({"sandbox": "website", "prompt": "x", "colour": "red"}),
+            "colour",
+        ),
     ] {
         let refused = w.h.app.tool_sandbox_task_create(&caller, &args).await;
         let err = refused.err().ok_or_else(|| format!("{args} was asked"))?;
@@ -329,19 +363,27 @@ async fn what_cannot_be_asked_is_refused_without_asking() -> TestResult {
 async fn a_fourth_waiting_request_is_refused() -> TestResult {
     let w = world(60_000).await?;
     let calls = (0..3)
-        .map(|i| ask(&w, json!({"sandbox": "website", "prompt": format!("Job {i}")})))
+        .map(|i| {
+            ask(
+                &w,
+                json!({"sandbox": "website", "prompt": format!("Job {i}")}),
+            )
+        })
         .collect::<Result<Vec<_>, _>>()?;
     waiting(&w, 3).await?;
-    let fourth = w
-        .h
-        .app
-        .tool_sandbox_task_create(
-            &superagent("s1", &w.alice_id, "alice")?,
-            &json!({"sandbox": "website", "prompt": "Job 4"}),
-        )
-        .await;
+    let fourth =
+        w.h.app
+            .tool_sandbox_task_create(
+                &superagent("s1", &w.alice_id, "alice")?,
+                &json!({"sandbox": "website", "prompt": "Job 4"}),
+            )
+            .await;
     let err = fourth.err().ok_or("a fourth request was asked")?;
-    assert!(err.public_message().contains("3"), "{}", err.public_message());
+    assert!(
+        err.public_message().contains("3"),
+        "{}",
+        err.public_message()
+    );
     // bob's Superagent has its own bound.
     let app = w.h.app.clone();
     let bob = superagent("s1", &w.bob_id, "bob")?;
@@ -351,7 +393,10 @@ async fn a_fourth_waiting_request_is_refused() -> TestResult {
     });
     let deadline = tokio::time::Instant::now() + WAIT;
     while requests(&w, &w.bob, "s1").await?.len() != 1 {
-        assert!(tokio::time::Instant::now() < deadline, "bob's request never waited");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "bob's request never waited"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     bobs.abort();
@@ -374,7 +419,14 @@ async fn approval_rechecks_access_to_the_target() -> TestResult {
     w.h.clock
         .0
         .fetch_add(w.h.app.config.permission_ttl_ms + 1, Ordering::SeqCst);
-    let refused = answer(&w, &w.alice, "s1", listed[0]["id"].as_str().ok_or("id")?, true).await?;
+    let refused = answer(
+        &w,
+        &w.alice,
+        "s1",
+        listed[0]["id"].as_str().ok_or("id")?,
+        true,
+    )
+    .await?;
     assert!(!refused.status.is_success(), "{:?}", refused.body);
     assert!(call_.await?.is_err());
     assert_eq!(task_count(&w, "s2").await?, 0);

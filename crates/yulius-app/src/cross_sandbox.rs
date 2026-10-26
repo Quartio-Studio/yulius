@@ -163,7 +163,9 @@ impl App {
         args: &Value,
     ) -> AppResult<Value> {
         if caller.channel != Channel::Superagent || caller.task.is_some() {
-            return Err(AppError::Forbidden("only a Superagent asks for this".into()));
+            return Err(AppError::Forbidden(
+                "only a Superagent asks for this".into(),
+            ));
         }
         let parsed: CrossTaskArgs = serde_json::from_value(args.clone())
             .map_err(|err| AppError::Invalid(format!("invalid arguments: {err}")))?;
@@ -320,7 +322,11 @@ impl App {
         };
         let (outcome, answer) = if approve {
             let created = self.tool_task_create(&caller, &request.args).await;
-            let audited = if created.is_ok() { "approved" } else { "failed" };
+            let audited = if created.is_ok() {
+                "approved"
+            } else {
+                "failed"
+            };
             let outcome = created.map(|created| {
                 json!({
                     "outcome": "approved",
