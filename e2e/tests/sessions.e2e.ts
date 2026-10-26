@@ -238,6 +238,8 @@ test('a background task’s wake-up parses to what ended, also when cut or sever
       // Review round 1: a result may quote its own closing tag, or a whole notification.
       quotesClose: notificationsOf('<task-notification><summary>Agent "Review" finished</summary><result>Fix: close </result> early</result>\n<usage><tool_uses>1</tool_uses></usage>\n</task-notification>'),
       quotesNotice: notificationsOf('<task-notification><summary>Agent "Review" finished</summary><result>It printed <task-notification><result>x</result>\n<usage>u</usage>\n</task-notification> raw.</result>\n<usage>u</usage>\n</task-notification>'),
+      // Review round 2: a result that names an opening tag alone ends at its own close.
+      proseOpen: notificationsOf('<task-notification><summary>Agent "A" finished</summary><result>The parser now reads the <result> tag.</result>\n<usage>u</usage>\n</task-notification>\n<task-notification><summary>Agent "B" finished</summary><result>ok</result></task-notification>'),
       prompt: notificationsOf('Fix the login test.'),
       mention: notificationsOf('Why does <task-notification> show up raw?'),
     };
@@ -250,6 +252,7 @@ test('a background task’s wake-up parses to what ended, also when cut or sever
   expect(parsed.two).toEqual({ notices: [{ summary: 'Background command "npm test" completed (exit code 0)', result: '' }, { summary: 'Agent "Review" finished', result: 'ok' }], rest: 'And then this.' });
   expect(parsed.quotesClose).toEqual({ notices: [{ summary: 'Agent "Review" finished', result: 'Fix: close </result> early' }], rest: '' });
   expect(parsed.quotesNotice).toEqual({ notices: [{ summary: 'Agent "Review" finished', result: 'It printed <task-notification><result>x</result>\n<usage>u</usage>\n</task-notification> raw.' }], rest: '' });
+  expect(parsed.proseOpen).toEqual({ notices: [{ summary: 'Agent "A" finished', result: 'The parser now reads the <result> tag.' }, { summary: 'Agent "B" finished', result: 'ok' }], rest: '' });
   expect(parsed.prompt).toBeNull();
   expect(parsed.mention).toBeNull();
 });
