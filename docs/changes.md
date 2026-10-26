@@ -4,6 +4,14 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-26
+
+- A message typed into a running task through the remote MCP now reads "Message from alice
+  (through their own agent):" instead of naming the Superagent, which was not used (SPEC-322,
+  task #307, fixes #789). The tool's caller names its channel (task agent, Superagent, remote
+  MCP) where it is authenticated, and the label is taken from it; the Superagent's label is
+  unchanged.
+
 ## 2026-10-25
 
 - A task view no longer goes back to an older owner, status or request when its read of the task

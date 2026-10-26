@@ -41,22 +41,37 @@ impl AgentContext {
             sandbox: self.task.sandbox_id.clone(),
             user: self.task.owner.clone(),
             task: Some(self.task.clone()),
+            channel: Channel::Task,
             actor: self.actor(),
             detail: json!({"task_id": self.task.id.as_str(), "task_number": self.task.number}),
         }
     }
 }
 
+/// The channel a project-management tool is called through, named where it matters to the
+/// reader (a message typed into a task says who sent it and how; SPEC-322).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    /// A task's agent (task token).
+    Task,
+    /// A person's Superagent, their Cockpit (`ck_` token).
+    Superagent,
+    /// A person's own agent through the remote MCP (`operate` token; SPEC-247).
+    Remote,
+}
+
 /// Who calls a project-management tool (tasks, automations, workflows, sessions): a task's
-/// agent or a person's Cockpit (SPEC-037).
+/// agent, a person's Cockpit or their own agent through the remote MCP (SPEC-037, SPEC-247).
 #[derive(Debug, Clone)]
 pub struct ProjectCaller {
     /// The project's sandbox.
     pub sandbox: SandboxId,
     /// The person on whose authority it acts.
     pub user: UserId,
-    /// The caller's own task; `None` for a Cockpit.
+    /// The caller's own task; `None` for a Cockpit or the remote MCP.
     pub task: Option<TaskRecord>,
+    /// The channel it calls through.
+    pub channel: Channel,
     /// Actor label recorded in histories and audits.
     pub actor: String,
     /// Audit detail naming the caller.

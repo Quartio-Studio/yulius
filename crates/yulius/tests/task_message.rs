@@ -7,12 +7,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use yulius_app::auth::{AuthContext, TokenGrant};
 use yulius_app::context::App;
-use yulius_app::coordination::ProjectCaller;
+use yulius_app::coordination::{Channel, ProjectCaller};
 use yulius_app::error::AppError;
 use yulius_app::needs_you::NeedsYouRecord;
 use yulius_app::ports::store::TaskStore;
+use yulius_app::remote::RemoteCaller;
+use yulius_contracts::mcp::RpcRequest;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
+use yulius_domain::permission::TokenScope;
 use yulius_domain::task::TaskStatus;
 use yulius_ptyhost::test_support::locate_fake_agent;
 
@@ -35,6 +39,7 @@ fn superagent(sandbox: &SandboxId, user: &UserId, login: &str) -> ProjectCaller 
         sandbox: sandbox.clone(),
         user: user.clone(),
         task: None,
+        channel: Channel::Superagent,
         actor: format!("cockpit:{login}"),
         detail: json!({"via": "cockpit", "shell": "sh-test"}),
     }
@@ -134,6 +139,87 @@ fn a_running_task_gets_the_message_typed_into_its_session() -> TestResult {
             !rows[0].1.contains("budget"),
             "the audit holds the text: {rows:?}"
         );
+        assert!(app.deps.store.task_needs_you(&id).await?.is_none());
+        stop(&app, &id).await
+    })
+}
+
+/// SPEC-322 AC-1 (RML-002, RML-004; #789): a message sent through the remote MCP (a person's own
+/// agent, with an `operate` token) is labelled with that channel, not the Superagent; it is
+/// audited as the token's person and ends the task's open `needs_you`, as the Superagent's does.
+#[test]
+fn a_remote_message_names_the_persons_own_agent() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, fake_agent()).await?;
+        let (id, superagent) = running(&app, &data).await?;
+        let asked = NeedsYouRecord {
+            action: "Approve spending on DigitalOcean".into(),
+            why: None,
+            link: None,
+            at: 1,
+        };
+        app.deps
+            .store
+            .set_task_needs_you(&id, Some(&asked), app.now())
+            .await?;
+        let user = app
+            .deps
+            .store
+            .user(&superagent.user)
+            .await?
+            .ok_or("the seeded person")?;
+        let remote = RemoteCaller {
+            ctx: AuthContext {
+                user,
+                csrf_token: None,
+                session_hash: None,
+                token: Some(TokenGrant {
+                    id: "tok-laptop".into(),
+                    scope: TokenScope::Operate,
+                }),
+            },
+            token_id: "tok-laptop".into(),
+            scope: TokenScope::Operate,
+            login: "admin".into(),
+        };
+
+        let request = RpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: "tools/call".into(),
+            params: json!({
+                "name": "task_message",
+                "arguments": {"project": "acme/pool", "task_id": id.as_str(), "text": "Use the DO budget."},
+                "_meta": {"yulius/structured": true},
+            }),
+        };
+        let response = app
+            .remote_mcp_handle(&remote, request)
+            .await
+            .ok_or("no answer")?;
+        let answer = serde_json::to_value(&response)?;
+        let result = &answer["result"];
+        assert_ne!(result["isError"], true, "{answer}");
+        assert_eq!(result["structuredContent"]["delivered"], "sent", "{answer}");
+        wait_for("the message", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("ECHO: Message from admin") }
+        })
+        .await?;
+        let shown = screen(&app, &id);
+        assert!(
+            shown.contains("ECHO: Message from admin (through their own agent):"),
+            "{shown}"
+        );
+        assert!(!shown.contains("through their Superagent"), "{shown}");
+        assert!(shown.contains("Use the DO budget."), "{shown}");
+
+        let rows = audited(&data, &id)?;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].0, "remote:admin");
         assert!(app.deps.store.task_needs_you(&id).await?.is_none());
         stop(&app, &id).await
     })

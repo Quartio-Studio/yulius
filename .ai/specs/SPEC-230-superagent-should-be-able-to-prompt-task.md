@@ -49,7 +49,9 @@ A task that cannot take it says why, so the Superagent can tell the person what 
   the task view's queued message does (same rules, size bound and wording, as the Superagent's
   person). The answer says `queued`.
 - TMS-003 (running): a task that is `running` with a live run gets the message typed into its
-  session: one bracketed paste of `Message from <login> (through their Superagent):` and the text,
+  session: one bracketed paste of `Message from <login> (through their Superagent):` (through
+  the remote MCP of SPEC-247, `Message from <login> (through their own agent):`;
+  [SPEC-322](SPEC-322-a-remote-mcp-task-message-names-the-chan.md)) and the text,
   then a separate Enter. The answer says `sent`. Control characters other than line breaks and
   tabs are removed first (no escape sequence reaches the TUI, nor the end of the paste); CRLF
   becomes LF.
