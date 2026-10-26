@@ -239,16 +239,114 @@ async fn a_task_gets_every_branch_and_tag_its_owner_can_read() -> TestResult {
     assert_eq!(record["branch_count"], 2, "{record}");
     assert_eq!(record["tag_count"], 1, "{record}");
     let message = record["message"].as_str().unwrap_or_default();
-    assert!(
-        message.contains("origin/dev") || message.contains("checkout"),
-        "{record}"
-    );
+    for command in ["clone_command", "update_command"] {
+        let text = record[command].as_str().ok_or(command)?;
+        assert!(message.contains(text), "{command}: {record}");
+    }
     let clone = clone_bundle(&record, w.scratch.path())?;
     assert!(!clone.join("model.rs").exists());
     assert_eq!(git(&clone, &["rev-parse", "origin/dev"])?.trim(), dev);
     assert_eq!(git(&clone, &["rev-parse", "v1^{commit}"])?.trim(), main);
     assert_eq!(attachments(&w), ["acme-lib.bundle"]);
     assert_eq!(tmp_entries(&w), 0);
+    Ok(())
+}
+
+/// Runs a command the tool answered through `sh`, as an agent pasting it would; `Err` with its
+/// output when it fails.
+fn run_answered(record: &Value, command: &str, cwd: &Path) -> Result<(), BoxError> {
+    let text = record[command].as_str().ok_or(command)?;
+    let out = std::process::Command::new("sh")
+        .args(["-c", text])
+        .current_dir(cwd)
+        .output()?;
+    if !out.status.success() {
+        return Err(format!(
+            "{command} `{text}` failed: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// SPEC-330 REF-103 (review round 1): the answered commands work as given: clone a branch whose
+/// name the shell would expand, then update that copy after the branch moved, a tag was re-pointed
+/// and another was added.
+#[tokio::test]
+async fn the_answered_commands_clone_and_update_a_copy() -> TestResult {
+    let (w, _alice, lib) = world().await?;
+    let dev = add_dev_and_tag(&w, &lib)?;
+    let seed = w.scratch.path().join("seed/acme/lib");
+    let odd = "odd$(touch${IFS}pwned)'q";
+    git(&seed, &["branch", odd, "dev"])?;
+    git(
+        &seed,
+        &[
+            "push",
+            "--quiet",
+            &lib.to_string_lossy(),
+            &format!("refs/heads/{odd}:refs/heads/{odd}"),
+        ],
+    )?;
+    let first = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib", "branch": odd}),
+    )
+    .await?;
+    assert_ne!(first["isError"], true, "{first}");
+    let record = support::tool_text(&first);
+    let copy = PathBuf::from(record["clone_into"].as_str().ok_or("clone_into")?);
+    std::fs::create_dir_all(copy.parent().ok_or("parent")?)?;
+    run_answered(&record, "clone_command", w.scratch.path())?;
+    assert_eq!(git(&copy, &["rev-parse", "HEAD"])?.trim(), dev);
+    assert!(
+        !w.scratch.path().join("pwned").exists() && !copy.join("pwned").exists(),
+        "the branch name is not run"
+    );
+
+    // The owner's repository moves on: the branch gets a commit, v1 is re-pointed, v2 is new.
+    git(&seed, &["checkout", "--quiet", odd])?;
+    std::fs::write(seed.join("model.rs"), "pub struct Model2;\n")?;
+    git(&seed, &["commit", "--quiet", "-am", "model 2"])?;
+    git(&seed, &["tag", "-f", "v1", "dev"])?;
+    git(&seed, &["tag", "v2"])?;
+    git(
+        &seed,
+        &[
+            "push",
+            "--quiet",
+            "--force",
+            &lib.to_string_lossy(),
+            &format!("refs/heads/{odd}:refs/heads/{odd}"),
+            "refs/tags/v1:refs/tags/v1",
+            "refs/tags/v2:refs/tags/v2",
+        ],
+    )?;
+    let moved = git(&lib, &["rev-parse", &format!("refs/heads/{odd}")])?;
+    let second = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib", "branch": odd}),
+    )
+    .await?;
+    assert_ne!(second["isError"], true, "{second}");
+    let record = support::tool_text(&second);
+    run_answered(&record, "update_command", w.scratch.path())?;
+    assert_eq!(git(&copy, &["rev-parse", "HEAD"])?.trim(), moved.trim());
+    assert_eq!(git(&copy, &["rev-parse", "v1^{commit}"])?.trim(), dev);
+    assert_eq!(
+        git(&copy, &["rev-parse", "v2^{commit}"])?.trim(),
+        moved.trim()
+    );
+    assert_eq!(
+        std::fs::read_to_string(copy.join("model.rs"))?,
+        "pub struct Model2;\n"
+    );
     Ok(())
 }
 
@@ -557,6 +655,9 @@ async fn the_git_adapter_bundles_every_branch_and_tag() -> TestResult {
     let lib = w.remote("acme", "lib", &[("README.md", "# Lib\n")], &["other"])?;
     let dev = add_dev_and_tag(&w, &lib)?;
     let main = git(&lib, &["rev-parse", "main"])?.trim().to_owned();
+    // Longer than Yulius's own branch names may be, but Git's: still in the bundle, so counted.
+    let long = format!("{}x", "long/".repeat(60));
+    git(&lib, &["update-ref", &format!("refs/heads/{long}"), &main])?;
     let adapter = yulius::wiring::git::GitAdapter::new("git")
         .with_github_base(&w.scratch.path().join("remotes"));
     let token = yulius_app::model::Secret("token-alice".into());
@@ -576,6 +677,7 @@ async fn the_git_adapter_bundles_every_branch_and_tag() -> TestResult {
         carried.branches,
         [
             ("dev".to_owned(), dev.clone()),
+            (long.clone(), main.clone()),
             ("main".to_owned(), main.clone()),
             ("other".to_owned(), main.clone()),
         ]
@@ -590,6 +692,7 @@ async fn the_git_adapter_bundles_every_branch_and_tag() -> TestResult {
         format!("{main} HEAD"),
         format!("{main} refs/heads/main"),
         format!("{main} refs/heads/other"),
+        format!("{main} refs/heads/{long}"),
         format!("{} refs/tags/v1", tag.trim()),
     ];
     wanted.sort_unstable();
