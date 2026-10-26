@@ -4,6 +4,13 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-26
+
+- A CI run or deploy view no longer draws a light frame around its content when it opens (SPEC-321,
+  task #306, fixes #777). Opening a run moves the keyboard to its view by script (SPEC-238); the
+  view's `:focus` rule cancelled only the outline, while the global focus ring is a box-shadow,
+  which now goes too. Controls in the view keep their ring from the keyboard.
+
 ## 2026-10-25
 
 - A task view no longer goes back to an older owner, status or request when its read of the task
