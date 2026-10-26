@@ -14,6 +14,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Spent retries, or a pause on an API error Claude Code does not retry, now open a Needs you
   request with the cause. A restart's replay does the same
   ([ADR-0225](decisions/0225-claude-code-owns-the-goal-retry-after-an-api-error.md)).
+- The status panel's Sessions tile no longer reads "9 / 8" (SPEC-334, task #318, fixes #928). A
+  Done task holds no session slot, and one that works again (a follow-up typed into it, or its own
+  background work) counts again without passing the start door, and a restart with a lower limit
+  keeps its runs, so the count can pass the limit until those turns end. No queued task starts
+  meanwhile. The tile now shows the limit full with the overshoot marked, "8 / 8 +1", then
+  "1 over the limit" and "6 queued", and says why on hover
+  ([ADR-0226](decisions/0226-the-sessions-tile-shows-the-overshoot-of-resumed-done-tasks.md)).
 - An MCP server is now for every sandbox or this one, and for the whole team or only you
   (SPEC-332, task #316). A personal server is seen and changed only by you and attached only to
   your own tasks and your Superagent, never to a teammate's task, an automation's task, CI or CD,
