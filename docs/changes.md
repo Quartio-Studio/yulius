@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-26
 
+- The status panel's Sessions tile no longer reads "9 / 8" (SPEC-334, task #318, fixes #928). A
+  Done task holds no session slot, and one that works again (a follow-up typed into it, or its own
+  background work) counts again without passing the start door, so the count can pass the limit
+  until those turns end. No queued task starts meanwhile. The tile now shows the limit full with
+  the overshoot marked, "8 / 8 +1" and "1 over the limit · 6 queued", and says why on hover
+  ([ADR-0226](decisions/0226-the-sessions-tile-shows-the-overshoot-of-resumed-done-tasks.md)).
 - A task reading another repository of its owner now gets every branch and tag, not only the
   default branch (SPEC-330, task #314, #915). A task that needed Quartio v2's `dev` asked a person
   to paste files, because `reference_repo` fetched `main` alone. The bundle now carries every
