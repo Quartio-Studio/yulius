@@ -3991,6 +3991,8 @@ function sessionDocs(db) {
     entry(13, 'user', [meta(['Base directory for this skill: /home/dev/.claude/skills/retry-policy', '', '# Retry policy — back-off for fulfilment', '─'.repeat(40), '', ...Array.from({ length: 36 }, (_, i) => `- Rule ${i + 1}: back off before attempt ${i + 2}.`)].join('\n'))]),
     // Claude Code woke the idle session when its background reviewer stopped (#913): no prompt.
     entry(14, 'user', [text('<task-notification>\n<task-id>a8f93b704fcd18284</task-id>\n<tool-use-id>toolu_01R2gWiaRe77</tool-use-id>\n<output-file>/tmp/claude-0/s/tasks/a8f93b704fcd18284.output</output-file>\n<status>completed</status>\n<summary>Agent "Review" finished</summary>\n<note>This agent stopped with background work of its own still running.</note>\n<result>The gate is still running, so I\'ll wait for it to finish.</result>\n<usage><subagent_tokens>79955</subagent_tokens><tool_uses>26</tool_uses><duration_ms>146878</duration_ms></usage>\n</task-notification>')], { at: iso(9 * HOUR - 17 * MIN) }),
+    // A wake-up the server cut inside its result (review round 1 of SPEC-328).
+    entry(15, 'user', [{ type: 'text', text: '<task-notification>\n<task-id>m1</task-id>\n<status>completed</status>\n<summary>Monitor "ci" stream ended</summary>\n<result>CI passed on the first', truncated: true }]),
   ];
   const task = (id, number) => db.tasks.find((t) => t.id === id && t.number === number);
   const docs = [];
