@@ -852,8 +852,10 @@ fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
         let mut fleet = mcp_input("fleet", "http");
         fleet.scope = Some("instance".into());
         fleet.audience = Some("personal".into());
-        app.create_mcp_server(&admin_ctx, sandbox.as_str(), &fleet)
-            .await?;
+        let fleet_id = app
+            .create_mcp_server(&admin_ctx, sandbox.as_str(), &fleet)
+            .await?
+            .id;
         app.create_mcp_server(&admin_ctx, sandbox.as_str(), &mcp_input("docs", "http"))
             .await?;
 
@@ -917,7 +919,31 @@ fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
         assert_eq!(run_servers(&nightly.run_dir)?, ["docs", "yulius"]);
         stop(&app, &automated).await?;
 
-        // Control passes to bob: the run holding the admin's server is resumed without it.
+        // Turned off meanwhile, the server is still in the live run: only its owner messages it.
+        let mut off = fleet.clone();
+        off.enabled = Some(false);
+        app.update_mcp_server(&admin_ctx, &fleet_id, &off).await?;
+        let caller = yulius_app::coordination::ProjectCaller {
+            sandbox: sandbox.clone(),
+            user: bob.id.clone(),
+            task: None,
+            channel: yulius_app::coordination::Channel::Superagent,
+            actor: "cockpit:bob".into(),
+            detail: serde_json::json!({"via": "cockpit", "shell": "sh-test"}),
+        };
+        let refused = app
+            .tool_task_message(&caller, &serde_json::json!({"task_id": id.as_str(), "text": "hi"}))
+            .await;
+        assert!(
+            matches!(&refused, Err(yulius_app::error::AppError::Forbidden(m)) if m.contains("MCP servers")),
+            "{refused:?}"
+        );
+        let mut on = fleet.clone();
+        on.enabled = Some(true);
+        app.update_mcp_server(&admin_ctx, &fleet_id, &on).await?;
+
+        // Control passes to bob: the run holding the admin's server is resumed without it, on
+        // the same subscription, with nothing typed.
         app.request_task_control(&ctx(bob.clone()), id.as_str())
             .await?;
         app.accept_task_control(&admin_ctx, id.as_str()).await?;
@@ -928,7 +954,10 @@ fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
         .await?;
         let second = app.deps.store.attempts(&id).await?.remove(1);
         assert_eq!(second.launch_kind, LaunchKind::Resume);
+        assert_eq!(second.account_id, first.account_id);
         assert_eq!(run_servers(&second.run_dir)?, ["docs", "yulius"]);
+        let launch = std::fs::read_to_string(Path::new(&second.run_dir).join("fake-launch.txt"))?;
+        assert!(launch.contains("prompt: None"), "nothing typed: {launch}");
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

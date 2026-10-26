@@ -11,6 +11,7 @@ use std::sync::atomic::Ordering;
 use serde_json::json;
 use yulius_contracts::api::tasks::TaskSummary;
 use yulius_domain::permission::Action;
+use yulius_domain::task::TaskStatus;
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -231,6 +232,17 @@ impl App {
         how: Handover,
     ) -> AppResult<()> {
         let store = &self.deps.store;
+        // A launch settles which personal MCP servers its run holds only when it is spawned: a
+        // hand-over then could not restart it for the new owner (SPEC-332 MSC-009).
+        if matches!(task.status, TaskStatus::Starting | TaskStatus::Switching)
+            && self.holds_personal_mcp(task).await?
+        {
+            return Err(AppError::Conflict(format!(
+                "task #{} is starting with @{}'s personal MCP servers; ask again once it runs",
+                task.number,
+                self.login_of(&task.owner).await
+            )));
+        }
         let now = self.now();
         let passed = match how {
             Handover::Requested => {
@@ -264,24 +276,17 @@ impl App {
         }
         // A live run keeps the MCP configuration it started with: one holding the previous
         // owner's personal servers resumes with the new owner's (SPEC-332 MSC-009).
-        let held = self
-            .runtime(&task.id)
-            .personal_mcp_of
-            .lock()
-            .ok()
-            .and_then(|held| held.clone());
+        let held = self.existing_runtime(&task.id).and_then(|runtime| {
+            runtime
+                .personal_mcp_of
+                .lock()
+                .ok()
+                .and_then(|held| held.clone())
+        });
         if held.is_some_and(|owner| owner != to.id)
-            && self.deps.store.live_attempt(&task.id).await?.is_some()
-            && let Err(err) = self
-                .switch_task_now(
-                    &task.id,
-                    None,
-                    "handover",
-                    Some("Continue the task exactly where you left off.".into()),
-                )
-                .await
+            && let Some(live) = self.deps.store.live_attempt(&task.id).await?
         {
-            tracing::warn!(task = %task.id, error = %err, "run holding the previous owner's MCP servers not restarted");
+            self.restart_for_new_owner(&task.id, live.account_id).await;
         }
         let (from, to) = (
             self.login_of(&task.owner).await,
@@ -302,6 +307,31 @@ impl App {
         .await;
         self.publish_task(&task.id).await;
         Ok(())
+    }
+
+    /// Resumes a task's live run for its new owner on the same subscription, as a manual switch
+    /// does but with nothing typed: past a usage limit, afresh for a first message never taken,
+    /// else the same conversation. A run that cannot be restarted is stopped, so the previous
+    /// owner's credential never stays with the new owner (fail closed).
+    async fn restart_for_new_owner(
+        self: &Arc<Self>,
+        task: &yulius_domain::ids::TaskId,
+        account: Option<yulius_domain::ids::AccountId>,
+    ) {
+        use crate::supervisor::RunStart;
+        let start = if self.runtime(task).at_limit.load(Ordering::SeqCst) {
+            RunStart::AfterLimit
+        } else if self.held_opening(task).await {
+            RunStart::Fresh { prompt: None }
+        } else {
+            RunStart::Resume { prompt: None }
+        };
+        if let Err(err) = self.switch_with(task, account, "handover", start).await {
+            tracing::warn!(task = %task, error = %err, "run holding the previous owner's MCP servers not restarted; stopping it");
+            if let Err(err) = self.stop_task_now(task).await {
+                tracing::error!(task = %task, error = %err, "run holding the previous owner's MCP servers not stopped");
+            }
+        }
     }
 
     /// Audits a control change of `task` by `ctx`'s person; a failed write is logged, as the

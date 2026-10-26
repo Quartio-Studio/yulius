@@ -1325,7 +1325,10 @@ impl App {
         std::fs::create_dir_all(&run_dir).map_err(AppError::internal)?;
         // The repository's `.mcp.json` servers join the sandbox's first (SPEC-095 PMC-001).
         self.import_project_mcp(&sandbox).await;
-        let personal_mcp = self.holds_personal_mcp(&task).await?;
+        // One read of the servers: what the run gets is what it is recorded to hold (MSC-009).
+        let (mcp, personal_mcp) = self
+            .mcp_launch(&sandbox, crate::vault::Holder::of_task(&task))
+            .await?;
         if let Ok(mut held) = self.runtime(&task.id).personal_mcp_of.lock() {
             *held = personal_mcp.then(|| task.owner.clone());
         }
@@ -1338,9 +1341,7 @@ impl App {
             model: task.model.clone(),
             effort: task.effort.clone(),
             contained: self.config.contained,
-            mcp: self
-                .mcp_attachments(&sandbox, crate::vault::Holder::of_task(&task))
-                .await?,
+            mcp,
             credential,
         })?;
         if let Some(session_id) = &stepped_back {

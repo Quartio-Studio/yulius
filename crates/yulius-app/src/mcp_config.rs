@@ -949,8 +949,11 @@ impl App {
         &self,
         task: &crate::model::TaskRecord,
     ) -> AppResult<bool> {
-        let held = self
-            .runtime(&task.id)
+        // Never creates a runtime: a task without one has no run.
+        let Some(runtime) = self.existing_runtime(&task.id) else {
+            return Ok(false);
+        };
+        let held = runtime
             .personal_mcp_of
             .lock()
             .map(|held| held.is_some())
@@ -971,8 +974,22 @@ impl App {
         sandbox: &SandboxRecord,
         holder: Holder<'_>,
     ) -> AppResult<Vec<McpAttachment>> {
+        Ok(self.mcp_launch(sandbox, holder).await?.0)
+    }
+
+    /// [`Self::mcp_attachments`] and whether one of them is a personal server, from one read.
+    ///
+    /// # Errors
+    /// Store, crypto or secret-resolution failures.
+    pub(crate) async fn mcp_launch(
+        &self,
+        sandbox: &SandboxRecord,
+        holder: Holder<'_>,
+    ) -> AppResult<(Vec<McpAttachment>, bool)> {
+        let servers = self.effective_mcp(&sandbox.id, holder).await?;
+        let personal = servers.iter().any(|s| s.owner_id.is_some());
         let mut out = Vec::new();
-        for server in self.effective_mcp(&sandbox.id, holder).await? {
+        for server in servers {
             match server.transport {
                 McpTransport::Stdio => {
                     let mut env = Vec::new();
@@ -1011,7 +1028,7 @@ impl App {
                 }
             }
         }
-        Ok(out)
+        Ok((out, personal))
     }
 }
 

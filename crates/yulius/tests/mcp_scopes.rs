@@ -562,5 +562,31 @@ async fn mcp_secret_values_are_redacted_like_agent_secrets() -> TestResult {
     let after = w.h.app.redact_for_sandbox(&s1, &text).await;
     assert!(!after.contains(TEAM) && !after.contains(MINE), "{after}");
     assert!(after.contains("log info, mode production"), "{after}");
+    // A run's own fingerprint file holds only its holder's servers' values.
+    let bob_id = UserId::parse("u-bob")?;
+    let alice_id = UserId::parse("u-alice")?;
+    let bobs =
+        w.h.app
+            .scrub_fingerprints_for(&s1, Holder::Person(&bob_id))
+            .await?;
+    assert!(
+        !bobs.names.iter().any(|n| n == "fleet.Authorization"),
+        "{:?}",
+        bobs.names
+    );
+    assert!(
+        bobs.names.iter().any(|n| n == "apify.APIFY_TOKEN"),
+        "{:?}",
+        bobs.names
+    );
+    let alices =
+        w.h.app
+            .scrub_fingerprints_for(&s1, Holder::Person(&alice_id))
+            .await?;
+    assert!(
+        alices.names.iter().any(|n| n == "fleet.Authorization"),
+        "{:?}",
+        alices.names
+    );
     Ok(())
 }
