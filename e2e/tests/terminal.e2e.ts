@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { editorShown, failOnPageErrors, mock, terminalShown } from './support.ts';
+import { editorShown, failOnPageErrors, mock, terminalShown, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -647,6 +647,20 @@ async function screenStill(browser: Browser): Promise<void> {
   await expect.poll(async () => { const now = await shown(browser); const still = now === last; last = now; await settle(300); return still; }, { message: 'the screen stopped moving' }).toBe(true);
 }
 
+/** Takes the way on away with a key that types nothing (Shift), and checks it went. */
+async function hideOfferWithKey(browser: Browser): Promise<void> {
+  await browser.evaluate(() => document.querySelector<HTMLElement>('.taskview .xterm-helper-textarea')!.focus());
+  await browser.keyboard.press('Shift');
+  expect(await offerShown(browser), 'a key takes the offer away').toBe(false);
+}
+
+/** Opens the whole session from task #12's terminal (an old run's: the first turn up offers it). */
+async function openClassicHistory(browser: Browser, point: { x: number; y: number }): Promise<void> {
+  await turn(browser, point, -120);
+  await offer(browser).click();
+  await expect(history(browser)).toBeVisible();
+}
+
 /** Task #12 with a transcript longer than its screen, so the program has rows to scroll; the pointer's spot. */
 async function longTask12(app: { open: (url: string) => Promise<unknown> }, browser: Browser): Promise<{ x: number; y: number }> {
   await app.open(mock('/s/studio/t/12'));
@@ -689,7 +703,9 @@ test('a wheel turn past the top offers the whole session from its first message 
   await expect(rows(browser)).toHaveText(/Welcome to Claude/);
   await screenStill(browser);
   const atTop = await shown(browser);
-  // A turn past it leaves the screen as it was: the way on to the whole session shows (HIS-002).
+  // The gesture may already have reached the top: a key takes any offer away first (HIS-002).
+  await hideOfferWithKey(browser);
+  // A turn past it leaves the screen as it was: the way on to the whole session shows.
   await settle(TOP_SETTLE_MS);
   await turnRowsUp(browser, point, 3);
   await expect(offer(browser)).toBeVisible();
@@ -792,6 +808,7 @@ test('a live viewer of an old run scrolls its scrollback first, then is offered 
     return still;
   }, { message: 'the scrollback is at its first line', timeout: 30_000 }).toBe(true);
   await expect(rows(browser)).toHaveText(/Welcome to Claude Code/);
+  await hideOfferWithKey(browser);
   await browser.mouse.wheel(0, -120);
   await expect(offer(browser)).toBeVisible();
 });
@@ -816,6 +833,52 @@ test('the whole session is read page by page to its end, and from its first line
   await expect(screen.getByText('Continue where you left off.')).toBeVisible();
   await expect(screen.getByText('Step 600 of 600.')).toBeHidden();
   expect((await queries(browser)).slice(readsThen), 'the new session from its first line').toContain('from=0&limit=500');
+});
+
+test('the attention bar’s Reply leaves the whole session for the terminal (#911)', async ({ app, browser, screen }) => {
+  const point = await classicTask12(app, browser);
+  // The agent asks in the terminal: Reply puts the keyboard there, so the terminal shows again.
+  await openClassicHistory(browser, point);
+  await touchTask(browser, 'sb_studio', 12, { activity: 'needs_attention', needs_you: { action: 'Add a ruleset', why: 'agents can push to main', at: new Date().toISOString() } });
+  await expect(browser.locator('.attention-bar')).toHaveText(/Needs you: Add a ruleset/);
+  await screen.getByRole('button', 'Reply').click();
+  await expect(history(browser)).toBeHidden();
+  await expect.poll(() => browser.evaluate(() => Boolean(document.activeElement && document.activeElement.closest('.taskview .xterm'))), { message: 'the keyboard is in the terminal' }).toBe(true);
+  // A text reply is typed into the session: the terminal shows it arrive.
+  await openClassicHistory(browser, point);
+  await touchTask(browser, 'sb_studio', 12, { activity: 'waiting', needs_you: null, background_shells: 0 });
+  await expect(browser.locator('.attention-bar')).toHaveText(/waiting for your reply/);
+  await screen.getByRole('button', 'Reply').click();
+  await screen.getByRole('textbox', 'Reply to the agent').fill('Go on');
+  await screen.getByRole('button', 'Send').click();
+  await expect(history(browser)).toBeHidden();
+  await expect(rows(browser)).toHaveText(/> Go on/);
+});
+
+test('the way on sits below a held card over the terminal (#911)', async ({ app, browser }) => {
+  const point = await classicTask12(app, browser);
+  await touchTask(browser, 'sb_studio', 12, { heldPrompt: { id: 'hold_9', class: 'new_scope', excerpt: 'Also add a dark mode to the invoice settings page.', percent: 92, typed_by: 'mkarp', created_at: new Date().toISOString() } });
+  await expect(browser.locator('.taskview .held-slot')).toBeVisible();
+  await turn(browser, point, -120);
+  await expect(offer(browser)).toBeVisible();
+  const boxes = await browser.evaluate(() => {
+    const card = document.querySelector('.taskview .held-slot')!.getBoundingClientRect();
+    const button = document.querySelector('.taskview .term-history-offer')!.getBoundingClientRect();
+    return { cardBottom: card.bottom, buttonTop: button.top };
+  });
+  expect(boxes.buttonTop, 'the button is below the card').toBeGreaterThanOrEqual(boxes.cardBottom);
+});
+
+test('a task that never ran offers no earlier messages (#911)', async ({ app, browser }) => {
+  await app.open(mock('/s/product/t/7'));
+  await expect(browser.locator('.taskview .xterm-screen')).toBeVisible();
+  const point = await browser.evaluate(() => {
+    const box = document.querySelector('.taskview .xterm-screen')!.getBoundingClientRect();
+    return { x: box.left + 40, y: box.top + 20 };
+  });
+  await turn(browser, point, -120);
+  await settle(TOP_SETTLE_MS + 600);
+  expect(await offerShown(browser), 'nothing to offer before a session').toBe(false);
 });
 
 test('mouse use while disconnected says nothing; typed input still warns', async ({ app, browser }) => {
