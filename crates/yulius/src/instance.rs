@@ -3,3 +3,4 @@
 //! host from a file or a pipe.
 
 pub mod archive;
+pub mod walk;
