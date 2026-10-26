@@ -357,17 +357,23 @@ const RESULT_TAIL = /^\s*(?:<usage>|<\/task-notification>|$)/;
 /**
  * Where the result opened at `from` ends: the `</result>` that closes it, skipping quoted pairs
  * and a quoted close (one not followed by what follows a result); -1 when the server cut it.
+ * Without such a close, a `<result>` named alone in the text left it unbalanced: the first close
+ * followed by what follows a result ends it.
  */
 function resultClose(text, from) {
   const tags = /<\/?result>/g;
+  const ends = (tag) => RESULT_TAIL.test(text.slice(tag.index + tag[0].length));
   tags.lastIndex = from;
   let depth = 1;
   for (let tag = tags.exec(text); tag; tag = tags.exec(text)) {
     depth += tag[0] === '<result>' ? 1 : -1;
     if (depth > 0) continue;
-    if (RESULT_TAIL.test(text.slice(tag.index + tag[0].length))) return tag.index;
+    if (ends(tag)) return tag.index;
     depth = 1;
   }
+  const closes = /<\/result>/g;
+  closes.lastIndex = from;
+  for (let tag = closes.exec(text); tag; tag = closes.exec(text)) if (ends(tag)) return tag.index;
   return -1;
 }
 
