@@ -1,11 +1,11 @@
 ---
 yulius-task: a6b65527-7716-4122-bff8-e28d498dcb14
-status: in-progress
+status: done
 ---
 
 # SPEC-332: An MCP server is for every sandbox or one, and for the team or only its owner
 
-Status: in-progress
+Status: done
 Date: 2026-10-26
 Owner: Yulius task #316
 Scope authorization: task #316: "MCP should have 2 config fields: per sandbox/global and
@@ -94,8 +94,8 @@ every agent of the instance, and either setting can be changed later with one cl
 - [x] Docs, ADR and changes entry describe the four combinations
 - [x] Review round 1: wiring tests, hand-over restart, MCP value redaction, move permissions
 - [x] Review round 2: live-run refusal tested, hand-over fails closed, one launch read
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Gates, security scan and e2e green, delivered on green CI
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Gates, security scan and e2e green, delivered on green CI
 
 ## Acceptance criteria
 
@@ -137,3 +137,39 @@ every agent of the instance, and either setting can be changed later with one cl
   out of scope; the server's own sealed values are the person's credential.
 - Personal limits whose runs get the server; it is not a containment boundary between tasks sharing
   one sandbox's file system and user (ADR-0224 Consequences).
+
+## Evidence
+
+- New tests, each seen failing before its change (or mutation-checked: the guard removed, the test
+  fails): `mcp_scopes.rs` (personal servers are their owner's alone, precedence, permissions and
+  moves, refused moves, redaction of MCP values and holder-only fingerprints),
+  `pool_supervision.rs` (real runs: a person's task gets their personal server and an
+  automation's does not; a run whose server was turned off still refuses another person's
+  message; a hand-over resumes the run without it on the same subscription with nothing typed; a
+  hand-over that cannot restart stops the run), `task_done.rs` (control passing during a held
+  launch restarts the run), `cockpit.rs` (the Superagent gets its person's servers only),
+  `secrets_scopes.rs` (`task_message` refusal; control waits while such a task starts), store
+  unit test (owner scope, room on moves, cascade on user delete), unit tests
+  `a_hand_over_interrupts_like_a_persons_switch` and `a_hand_over_restarts_a_run_once`, e2e
+  `mcp.e2e.ts` (defaults, both settings, change after adding, `--scope user|local|project`).
+- Mutation checks (all failed as expected): `task_message` guard, supervisor holder
+  (`Person(&task.owner)`), Superagent holder (`Nobody`), redaction removed, hand-over restart
+  inverted, stop fallback removed, launch-tail restart removed, Starting refusal removed,
+  `sandbox` move restriction reverted, fingerprints from every owner.
+- `scripts/dev ci` on `b185d995`: repository contracts, fmt, clippy (Linux and aarch64-apple),
+  build and nextest 2632 of 2633 passed; the one failure was the audit-detail expectation that
+  now names the audience, updated in the same change. On the final head `579a5731`: contracts,
+  fmt and both clippy runs passed; nextest had passed 234 tests when Claude Code stopped the run
+  for low host memory (the 4 counted as failed were the ones running when the signal came, all
+  `SIGTERM`). The affected suites (45 integration tests, the new unit tests) pass on the final
+  head; Yulius CI runs the whole gate on the pull request.
+- e2e: the full suite on `37ef19bc` passed 724 tests (1 skipped, opt-in); `mcp.e2e.ts`,
+  `agent-panel.e2e.ts` and `places.e2e.ts` passed again (53 tests) after the last UI change.
+- Security scan: `yulius security-scan` exit 2, **not run**: Vidoc answered HTTP 429, the key
+  has used its 50,000,000 tokens; nothing was scanned (unrun, not passed).
+- Independent review: 5 rounds in a fresh read-only session (`om-code-review`); approved at
+  `579a5731`. Three optional nits were left at the round limit; two are filed as #925, and the
+  third follows the existing pattern after a spawn.
+- Not tested here: a real Claude Code run against a real personal MCP server (the fake agent and
+  the harness configuration stand in), and the Quartio admin MCP itself, which needs its owner's
+  files and keys.
