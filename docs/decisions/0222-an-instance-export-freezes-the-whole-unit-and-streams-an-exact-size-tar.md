@@ -25,10 +25,11 @@ cgroup freezer from one run to the whole service; complements `yulius backup` (d
 - **Freeze the unit, server included**: `yulius instance export` runs as root and calls
   `systemctl freeze <unit>` (cgroup v2), waits until systemd reports it frozen (60 s, else it
   thaws and refuses), reads, then `systemctl thaw`, also on a broken pipe, SIGINT, SIGTERM and
-  SIGHUP. While frozen no Yulius process runs, so the data directory is read-only by
+  SIGHUP (answered on a thread of their own, so even while a write to a stalled pipe blocks). While frozen no Yulius process runs, so the data directory is read-only by
   construction and the database's main file and WAL are crash-consistent, which SQLite recovers.
   It refuses a stopped unit whose cgroup still holds processes, a run from inside the unit's
-  cgroup, and a running update helper. `--move` keeps the unit frozen and disables it after a
+  cgroup, and a running update helper (checked before the freeze, once frozen and before the
+  checksum, since a request written just before the freeze can start it). `--move` keeps the unit frozen and disables it after a
   successful export, so a reboot does not start the old instance beside the new one.
 - **An uncompressed POSIX pax tar on stdout, sized first**: a first walk computes the exact
   length (headers are computed from metadata, data padded to 512 bytes) and a SHA-256 of every
@@ -44,9 +45,11 @@ cgroup freezer from one run to the whole service; complements `yulius backup` (d
   every directory with `O_NOFOLLOW` from the data directory's handle, accepts five entry types,
   maps the old service ids and subordinate range to this host's (made with `host setup`'s own
   items) and gives anything else to the service user without setuid or setgid, restores only
-  `user.*` and `trusted.overlay.*` attributes, never installs a unit, never overwrites an
-  instance, and keeps a marker until the checksum and length matched. The copy goes to the same
-  data directory path, since Git worktrees and the database hold absolute paths.
+  `user.*` and `trusted.overlay.*` attributes, never installs a unit, and keeps a marker until
+  the checksum and length matched. The operator's `--data-dir` (default `/var/lib/yulius`), not
+  the manifest, says where the copy goes; it must equal the exported path (Git worktrees and the
+  database hold absolute paths), be plain, and be new or empty but for `lost+found` and
+  dotfiles, owned by the service user, so a crafted copy cannot fill someone's home.
 
 ## Alternatives
 

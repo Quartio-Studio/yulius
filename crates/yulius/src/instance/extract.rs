@@ -13,7 +13,7 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 
 use rustix::fs::{
-    AtFlags, CWD, FileType, Gid, Mode, OFlags, Timespec, Timestamps, Uid, XattrFlags,
+    AtFlags, CWD, FileType, Gid, Mode, OFlags, RawMode, Timespec, Timestamps, Uid, XattrFlags,
 };
 
 use super::archive::{Entry, Kind};
@@ -65,6 +65,27 @@ pub struct Report {
     /// Extended attributes not restored (not `user.*` or `trusted.overlay.*`, on a link, or
     /// not kept by this filesystem).
     pub skipped_xattrs: u64,
+}
+
+/// Permission bits as `rustix` takes them (`mode_t` is 16 bits on macOS).
+fn mode_bits(bits: u32) -> Mode {
+    Mode::from_bits_truncate(RawMode::try_from(bits & 0o7777).unwrap_or(0))
+}
+
+/// Makes an overlay whiteout, the character device 0:0.
+#[cfg(target_os = "linux")]
+fn whiteout(dir: &OwnedFd, name: &OsStr, mode: u32) -> io::Result<()> {
+    rustix::fs::mknodat(dir, name, FileType::CharacterDevice, mode_bits(mode), 0)?;
+    Ok(())
+}
+
+/// Overlay whiteouts exist only on Linux, where every export comes from.
+#[cfg(not(target_os = "linux"))]
+fn whiteout(_: &OwnedFd, name: &OsStr, _: u32) -> io::Result<()> {
+    Err(io::Error::other(format!(
+        "{}: an overlay whiteout needs Linux",
+        name.to_string_lossy()
+    )))
 }
 
 /// A path's hash, the same in every run (std's SipHash with its fixed keys).
@@ -237,7 +258,7 @@ impl Extractor {
         if self.chown {
             rustix::fs::fchown(fd, Some(Uid::from_raw(uid)), Some(Gid::from_raw(gid)))?;
         }
-        rustix::fs::fchmod(fd, Mode::from_raw_mode(mode))?;
+        rustix::fs::fchmod(fd, mode_bits(mode))?;
         for (name, value) in &e.xattrs {
             if !restorable(name) {
                 self.report.skipped_xattrs += 1;
@@ -279,7 +300,7 @@ impl Extractor {
         match &e.kind {
             Kind::Dir => {
                 if !Self::clear(&parent, name, true)? {
-                    rustix::fs::mkdirat(&parent, name, Mode::from_raw_mode(0o700))?;
+                    rustix::fs::mkdirat(&parent, name, mode_bits(0o700))?;
                 }
                 let fd = rustix::fs::openat(&parent, name, dir_flags(), Mode::empty())?;
                 self.dirs.push((e.path.clone(), e.mtime));
@@ -295,7 +316,7 @@ impl Extractor {
                         | OFlags::EXCL
                         | OFlags::NOFOLLOW
                         | OFlags::CLOEXEC,
-                    Mode::from_raw_mode(0o600),
+                    mode_bits(0o600),
                 )?;
                 let mut file = File::from(fd);
                 let copied = io::copy(&mut data.take(*size), &mut file)?;
@@ -352,13 +373,7 @@ impl Extractor {
             Kind::Whiteout => {
                 Self::clear(&parent, name, false)?;
                 let (uid, gid, mode) = self.owner(e);
-                rustix::fs::mknodat(
-                    &parent,
-                    name,
-                    FileType::CharacterDevice,
-                    Mode::from_raw_mode(mode),
-                    0,
-                )?;
+                whiteout(&parent, name, mode)?;
                 if self.chown {
                     rustix::fs::chownat(
                         &parent,

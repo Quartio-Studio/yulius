@@ -1,6 +1,6 @@
 ---
 yulius-task: 7ebbad1e-501f-45e7-b961-19cf7c7850ac
-status: draft
+status: in-progress
 ---
 
 # SPEC-329: Export the whole instance as one stream and install it on another VM
@@ -74,7 +74,8 @@ Confirmed against `dev` at 84b45934.
   and refuses: a process may hang in the kernel) and prints, before the first byte, the command
   that thaws it by hand (`sudo systemctl thaw yulius.service`). After the stream ends it thaws
   the unit, also when the export fails, the reader goes away (a broken pipe) or the command gets
-  SIGINT, SIGTERM or SIGHUP (a dropped SSH session); only SIGKILL leaves it frozen.
+  SIGINT, SIGTERM or SIGHUP (a dropped SSH session), answered on a thread of their own so a
+  thaw happens while the export is blocked on a stalled pipe; only SIGKILL leaves it frozen.
   - `--move`: a successful export leaves the instance frozen and disables the unit, so neither
     a thaw by mistake nor a reboot runs the old instance beside the new one (same agents, same
     repositories); it prints how to undo that (`systemctl thaw` and `systemctl enable`). A unit
@@ -83,7 +84,9 @@ Confirmed against `dev` at 84b45934.
     they would write during the copy. A stopped unit with an empty cgroup needs no freeze.
   - An export started from inside the unit's cgroup (a Yulius terminal) is refused: it would
     freeze itself.
-  - A running update helper (`yulius-update.service` active) is refused.
+  - A running update helper (`yulius-update.service` active) is refused, before the freeze, once
+    the unit is frozen (a request written just before it may start the helper: thawed and
+    refused) and before the checksum is written (the copy is left without it, so incomplete).
   - `--service NAME` names another unit; `--data-dir` (`YULIUS_DATA`) the data directory.
 - **EXP-002 Exact size first.** With everything frozen the command plans the archive: one walk
   of the data directory computing the exact byte length of the stream. It prints the size and
@@ -96,9 +99,10 @@ Confirmed against `dev` at 84b45934.
   second: done/total, percent, rate, time left. The stream is exactly the announced length; a
   file whose size changed under the freeze aborts the export (exit 1) rather than send a copy
   that differs from the plan.
-- **EXP-004 Format.** A POSIX pax tar (readable by GNU tar): every entry has a pax header with
-  its `path`, `uid`, `gid`, `mtime`, `size`, `linkpath` when needed and its extended attributes
-  (`SCHILY.xattr.*`), then a ustar header and the data padded to 512 bytes. Order:
+- **EXP-004 Format.** A POSIX pax tar (readable by GNU tar): an entry gets a pax header only when
+  a field does not fit ustar (`path`, `linkpath`, `uid`, `gid`, `size`, `mtime`) or it has
+  extended attributes (`SCHILY.xattr.*`), then a ustar header and the data padded to 512 bytes. An
+  entry whose pax header passes the reader's 1 MiB bound fails the plan, before the first byte. Order:
   `yulius-export.json` (manifest), `data` and `data/...` (the data directory, parents before
   children, names sorted bytewise), then `yulius-export.sha256`, the SHA-256 of every byte before that entry's header, and the two
   zero blocks. Entries keep numeric owners, mode bits (with setuid/setgid/sticky), mtimes,
@@ -120,23 +124,28 @@ Confirmed against `dev` at 84b45934.
   host), `yulius.db-shm`, sockets, FIFOs and block or character devices other than 0:0. Nothing
   else is left out: caches included (the copy is the whole state; "the size" is the size).
 - **IMP-001 Import.** `yulius instance import [FILE]` (stdin without FILE or with `-`) runs as root
-  on the new host with the `yulius` binary installed. It reads the manifest first and refuses,
-  before writing anything:
+  on the new host with the `yulius` binary installed. The target is `--data-dir` (`YULIUS_DATA`,
+  default `/var/lib/yulius`), never the manifest's alone. It reads the manifest first and
+  refuses, before writing anything:
   - a format it does not know, or a `schema` above its own ("install a Yulius at least as new as
     the exported one, build X");
-  - a data directory that already holds an instance (`yulius.db` or `sandboxes/` present), or
-    the marker of an import that did not finish (`.yulius-import-incomplete`: "remove the
-    data directory and retry");
-  - a data directory other than the manifest's (`--data-dir` must match it): Git worktrees,
-    database rows and sandbox files hold absolute paths under it;
-  - fewer free inodes than the manifest's `entries`;
-  - a subordinate range on this host smaller than the exported one;
+  - a target that is not a plain absolute path (no `.` or `..`), or not the manifest's
+    `data_dir`: Git worktrees, database rows and sandbox files hold absolute paths under it;
+  - the marker of an import that did not finish (`.yulius-import-incomplete`, even a link:
+    "remove the data directory and retry");
+  - an existing target that is not a directory, holds anything but `lost+found` and dotfiles
+    (what `useradd --create-home` copies), "already holds an instance" when `yulius.db` or
+    `sandboxes` is there, or belongs to another user than the service user, or to root (a new
+    disk: the refusal prints the `useradd`, `chown` and `chmod` to run);
+  - fewer free inodes than the manifest's `entries` (where the filesystem counts inodes);
   - a free space below `total_bytes` on the data directory's filesystem ("needs 123.4 GB, 80.2 GB
     free");
   - a non-root caller.
 - **IMP-002 Host first.** It then makes the service user (the manifest's name unless `--user`)
-  and its subordinate id range with `host setup`'s own items, and extracts `data/` into the data
-  directory as it reads, with progress to stderr against `total_bytes`. It writes the
+  and its subordinate id range with `host setup`'s own items (a range on this host smaller than
+  the exported one is refused then, before anything of the copy is written), creates the marker
+  (create-new: a link is never followed), and extracts `data/` into the data directory as it
+  reads, with progress to stderr against `total_bytes`. It writes the
   incomplete marker first and removes it last. A different `os_release` is a warning (copied
   package layers sit on this host's base).
 - **IMP-003 Owners.** Owners are remapped: the old service uid/gid → the new ones; an id inside
@@ -149,7 +158,8 @@ Confirmed against `dev` at 84b45934.
 - **IMP-004 Safe extraction.** Paths are relative, start with `data/`, and have no `..`, `.` or
   empty component. Every directory on the way is opened with `O_NOFOLLOW` from the data
   directory's handle, so a link in the archive (stored as a link) is never followed by a later
-  entry; a hard link must name an earlier regular file of the same archive. An existing file at
+  entry; a hard link must name an earlier regular file of the same archive (a set of the
+  written files' path hashes). An existing file at
   an entry's place is replaced; an existing directory is kept and given the entry's metadata.
 - **IMP-005 Integrity.** The import hashes what it reads and compares it with
   `yulius-export.sha256`, and the length read with `total_bytes`; a missing trailer, a short
