@@ -12,6 +12,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   branch and tag the task's owner can read, `branch` picks the one checked out, and a branch the
   repository lacks is answered with its branch list instead of a person's action
   ([ADR-0223](decisions/0223-a-reference-copy-carries-every-branch-and-tag-its-owner-can-read.md)).
+- A hidden terminal no longer squeezes its session to 10×5 (SPEC-331, task #315, fixes #918).
+  Closing the panel or putting another tool in front measured the hidden box's `100%` as 100 px
+  and sent a 10×5 resize. The Superagent and Shell terminals follow the last resize, so a tab
+  still showing the Superagent got Claude Code in ten columns, and what it wrote while hidden
+  stayed wrapped. A terminal that is not shown now measures nothing and sends no size.
 - A background task's wake-up reads as one line in a watched task and on the Sessions page
   (SPEC-328, task #312, fixes #913). When background work ended, Claude Code's
   `<task-notification>` record was printed as the person's typed prompt, with its time and all
