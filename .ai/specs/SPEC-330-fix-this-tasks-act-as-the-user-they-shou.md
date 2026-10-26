@@ -110,6 +110,15 @@ files or change the repository's default branch for it.
   out waiting for Done", 65 s, under host load average ~130). Not caused by this change (it touches
   no task, goal or TUI code); alone it passed 3 of 3 (about 18 s each): filed as #921. Every other
   gate step passed. Yulius CI on the pull request head is the merge gate.
+- Review round 2 (head a8a75a97: approve, no critical/high/medium). Low, own: the 100-branch
+  listing cap had no test; added `an_answer_lists_at_most_a_hundred_branches_and_counts_them_all`
+  (102 branches: 100 listed, `branch_count` 102, the missing-branch error says "and 2 more"); with
+  `take(MAX_LISTED_BRANCHES)` mutated away it fails, restored it passes (11 of 11). Nit, own: the
+  `pwned` check now also follows the update. Nits left as they are: `origin/HEAD` of an updated copy
+  is not refreshed after the default branch is renamed (harmless to reading; the answer names the
+  default branch); a listed branch over 255 bytes cannot be the `branch` argument (Yulius's own
+  branch-name rule; the agent checks it out from the copy); a non-UTF-8 branch name is shown lossily
+  (GitHub names are UTF-8).
 - Delivery: merged into `dev` by `delivery_merge` only on green Yulius CI at the reviewed head.
 - Not tested here: a real GitHub fetch with a person's token and a real agent's containment cloning
   the bundle (the tests clone on the host).
