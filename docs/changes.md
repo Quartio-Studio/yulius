@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-26
 
+- An MCP server is now for every sandbox or this one, and for the whole team or only you
+  (SPEC-332, task #316). A personal server is seen and changed only by you and attached only to
+  your own tasks and your Superagent, never to a teammate's task, an automation's task, CI or CD,
+  so a server holding your own credential (say a founder admin MCP) no longer goes to every
+  agent. The editor starts on Every sandbox + Whole team (This sandbox for non-administrators),
+  `claude mcp add --scope user` pastes as Only me, both settings change after adding, and the
+  list marks personal servers "Only you". Per name the most specific server wins
+  ([ADR-0224](decisions/0224-an-mcp-server-is-for-every-sandbox-or-one-and-for-the-team-or-its-owner.md)).
 - A background task's wake-up reads as one line in a watched task and on the Sessions page
   (SPEC-328, task #312, fixes #913). When background work ended, Claude Code's
   `<task-notification>` record was printed as the person's typed prompt, with its time and all

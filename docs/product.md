@@ -113,9 +113,13 @@ watching, steering and unblocking.
   file is the one in the vault, from the file's SHA-256 (SPEC-178, SPEC-186). After an update
   that gives it new tools, an open Superagent restarts by itself once it is idle and goes on with
   its conversation.
-- **MCP servers**: configured once for the instance or a sandbox (MCP page) and attached to every
-  task run on every subscription and to the Superagent, their secrets taken from the agent
-  secrets. A repository's
+- **MCP servers**: configured once on the MCP page with two settings, Available in (every sandbox
+  or this one) and For (the whole team or only me), and attached on every subscription. A team
+  server goes to every task run of its scope and to the Superagent; a personal one only to its
+  owner's own tasks and Superagent, never to a teammate's or an automation's task, and nobody else
+  sees it, so a server holding a person's own credential belongs there (SPEC-332). New servers
+  start on every sandbox and the whole team; both settings change later. Their secrets may come
+  from the agent secrets. A repository's
   `.mcp.json` servers join its sandbox's list by themselves, with `${VAR}` becoming the agent
   secret VAR's placeholder (the egress proxy swaps the value in on its bound hosts), and the
   Superagent never asks about them. They show "From .mcp.json", and since agents can write that

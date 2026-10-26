@@ -905,9 +905,9 @@ read-only in the UI.
 | GET | `/api/automations/{id}/runs` | read | `[AutomationRun]`, newest first (at most 100) |
 | GET | `/api/sandboxes/{sid}/automation-templates` | read | `[AutomationTemplate]`, the ready-made automations (SPEC-042) |
 | POST | `/api/sandboxes/{sid}/automation-templates/{id}/enable` | write | creates the automation from the template, enabled → 201 `Automation`; when the sandbox already has an automation of that name, enables it unchanged → 200 `Automation`; unknown template → 404 |
-| GET/POST | `/api/sandboxes/{sid}/mcp` | read/write | `McpServer` (sandbox + inherited instance servers); POST body `McpServerInput` → 201 |
-| PUT/DELETE | `/api/mcp/{id}` | write (instance: admin) | PUT `McpServerInput` → `McpServer`; DELETE → 204 |
-| POST | `/api/mcp/{id}/test` | write (instance: admin) | `{"ok","tools":["…"],"error"}`; HTTP ≤ 5 s, stdio ≤ 10 s then the process group is killed. On a contained instance stdio tests need an instance admin (they run outside the containment). A server with `origin` `mcp_json` is refused (`ok: false`, the reason in `error`, nothing started) for stdio, and for HTTP on a private or loopback address (SPEC-218). |
+| GET/POST | `/api/sandboxes/{sid}/mcp` | read/write (personal: work) | `McpServer` (the sandbox's and the instance's team servers and the caller's own personal ones, SPEC-332); POST body `McpServerInput` → 201; every sandbox + team needs an instance admin (403), personal needs work access |
+| PUT/DELETE | `/api/mcp/{id}` | write (instance team: admin; personal: its owner, else 404) | PUT `McpServerInput` → `McpServer`, `scope`/`audience` move it (with the right to manage it there; to `sandbox` from `instance` it takes `sandbox`, else 422); DELETE → 204 |
+| POST | `/api/mcp/{id}/test` | write (instance team: admin; personal: its owner) | `{"ok","tools":["…"],"error"}`; HTTP ≤ 5 s, stdio ≤ 10 s then the process group is killed. On a contained instance stdio tests need an instance admin (they run outside the containment). A server with `origin` `mcp_json` is refused (`ok: false`, the reason in `error`, nothing started) for stdio, and for HTTP on a private or loopback address (SPEC-218). |
 
 ```json
 Workflow = {"id","name","description","steps":["Write the spec","Implement","Test"],
@@ -923,12 +923,14 @@ AutomationTemplate = {"id":"docs-up-to-date","name","description","cron","utc_of
                       "workflow_id|null","automation_id|null"}
 AutomationRun = {"scheduled_for","state":"scheduled|task_created|skipped_previous_active|skipped_disabled|failed",
                  "task_id|null","error|null"}
-McpServer = {"id","scope":"instance|sandbox","name","transport":"stdio|http","command|null",
+McpServer = {"id","scope":"instance|sandbox","audience":"team|personal","name","transport":"stdio|http","command|null",
              "args":[],"url|null","env_keys":["APIFY_TOKEN"],"header_keys":[],"enabled":true,
              "origin":"person|mcp_json"}   // mcp_json: imported from .mcp.json until a PUT changes
                                            // what it runs (stdio command/args + env, or HTTP url)
 McpServerInput = {"name","transport","command?","args?","url?","env?":{"KEY":"value"},
-                  "headers?":{"Name":"value"},"enabled?":bool,"scope?":"sandbox|instance"}
+                  "headers?":{"Name":"value"},"enabled?":bool,"scope?":"sandbox|instance",
+                  "audience?":"team|personal","sandbox?":"sid"}   // create: sandbox + team by
+                  // default; update: unchanged when omitted, `sandbox` only to move into one
 ```
 
 The list starts with the **default workflows** (AUT-006): one per file of `catalog/workflows/`
@@ -964,7 +966,7 @@ write access; every changing call is audited with the caller (`task:<n>` or `coc
 | Tool | Same as | Notes |
 | --- | --- | --- |
 | `task_create` | New task | origin `agent`; at most 20 per project and rolling hour |
-| `task_message` (the Cockpit and the remote MCP, never task agents; SPEC-230, SPEC-247) | `POST /api/tasks/{tid}/queued-messages`, or typing into the task's terminal | `{task_id \| number, text}` → `{"task","delivered":"queued"\|"sent","note"}`; queued into a task that never started, typed into a `running` one as one bracketed paste `Message from <login> (through their Superagent):` from the Cockpit, `Message from <login> (through their own agent):` from the remote MCP (SPEC-322), + Enter; refused before Claude Code's session started there, while a person typed there in the last minute, while its folder-trust dialog shows, while the first message or another message is typed, and in every other state; 403 for anyone but the owner on a task holding its owner's personal secrets (SPEC-245); a sent message ends the task's `needs_you`; control characters but LF and tab removed, at most 64 KiB; audited `task.messaged` without the text |
+| `task_message` (the Cockpit and the remote MCP, never task agents; SPEC-230, SPEC-247) | `POST /api/tasks/{tid}/queued-messages`, or typing into the task's terminal | `{task_id \| number, text}` → `{"task","delivered":"queued"\|"sent","note"}`; queued into a task that never started, typed into a `running` one as one bracketed paste `Message from <login> (through their Superagent):` from the Cockpit, `Message from <login> (through their own agent):` from the remote MCP (SPEC-322), + Enter; refused before Claude Code's session started there, while a person typed there in the last minute, while its folder-trust dialog shows, while the first message or another message is typed, and in every other state; 403 for anyone but the owner on a task holding its owner's personal secrets (SPEC-245) or personal MCP servers (SPEC-332); a sent message ends the task's `needs_you`; control characters but LF and tab removed, at most 64 KiB; audited `task.messaged` without the text |
 | `task_stop`, `task_archive` (`archived`: false restores), `task_delete` | `POST /api/tasks/{tid}/stop`, `…/archive` (`…/restore`), `DELETE /api/tasks/{tid}` | by `task_id` or `number`; never the caller's own task; audited `task.stopped`, `task.archived`/`task.unarchived`, `task.deleted` |
 | `automation_create`, `automation_update` | `POST …/automations`, `PUT /api/automations/{id}` | `created_via: agent` |
 | `automation_delete`, `automation_run_now` | `DELETE /api/automations/{id}`, `POST /api/automations/{id}/run` | audited `automation.deleted`, `automation.run_now` |
@@ -973,9 +975,11 @@ write access; every changing call is audited with the caller (`task:<n>` or `coc
 
 MCP secrets are write-only: responses only list key names. On update, an omitted `env`/`headers`
 keeps the stored values; a given map replaces all values of that map (`{}` clears it). Names are
-1–64 letters, digits, `-` or `_`, unique per scope ignoring case and `-`/`_`; `yulius` is reserved
-for the always-attached Yulius tool server. A sandbox server overrides an instance server of the
-same name for that sandbox (also when disabled). Agent runs receive HTTP secrets only as an
+1–64 letters, digits, `-` or `_`, unique per scope (sandbox and owner) ignoring case and `-`/`_`;
+`yulius` is reserved for the always-attached Yulius tool server. A personal server reaches only runs
+its owner holds: their tasks (not an automation's) and their Superagent. Per name the most
+specific server wins, also when disabled: this sandbox's personal, its team, every sandbox's
+personal, then every sandbox's team server (SPEC-332). Agent runs receive HTTP secrets only as an
 `Authorization: Bearer` token; other headers are used by the test endpoint but not yet passed to
 Claude Code.
 
