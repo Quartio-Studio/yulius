@@ -76,8 +76,10 @@ every agent of the instance, and either setting can be changed later with one cl
   task whose live run holds the previous owner's personal server resumes it with the new owner's
   servers: the same conversation on the same subscription with nothing typed (past a usage limit,
   or afresh for a first message never taken, as a manual switch), and stops it when it cannot be
-  restarted. While such a task is being launched (Starting, Switching) control does not pass
-  (409): its run's servers are not settled yet.
+  restarted. The restart interrupts a turn in progress first, as a person's switch does. While
+  such a task is being launched (Starting, Switching) control does not pass (409), and a launch
+  that control passed during anyway (before its status changed) restarts its run for the new
+  owner once it is live.
 - **MSC-010 Redaction.** The literal secret values of every MCP server that can reach a sandbox's
   runs (the team's and every person's personal ones; at least 8 characters, not ordinary text such
   as `info`) join the project's redaction with the agent secrets: terminals, transcripts, MCP

@@ -44,8 +44,9 @@ sandbox share its file system and its sandbox user.
   runs get the owner's personal MCP server, or whose live run was started with one, as for
   personal secrets. A live run cannot drop a server, so a hand-over of a task whose live run holds
   the previous owner's personal server resumes the run (same conversation and subscription,
-  nothing typed) with the new owner's, and stops it if that fails (fail closed); while such a task
-  is being launched, control does not pass (409).
+  nothing typed, a turn in progress interrupted first) with the new owner's, and stops it if that
+  fails (fail closed); while such a task is being launched, control does not pass (409), and a
+  launch that control passed during restarts its run once it is live.
 - **Redacted like agent secrets.** The literal values of every MCP server that can reach a
   sandbox's runs (team and personal; 8+ characters, not ordinary text) join the project's
   redaction; a run's fingerprint file gets its holder's servers' only.
