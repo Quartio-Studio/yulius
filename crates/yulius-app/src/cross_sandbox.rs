@@ -118,6 +118,38 @@ impl Drop for Ends<'_> {
     }
 }
 
+/// How a waiting call ends.
+#[derive(Debug)]
+enum Settled {
+    /// Its person answered (or the call was cancelled).
+    Answered(AppResult<Value>),
+    /// The wait ended and the request was withdrawn before anyone answered.
+    Unanswered,
+    /// It was being answered when the wait ended, and no outcome came within the grace.
+    Lost,
+}
+
+/// Waits for the answer, at most `wait`; then `withdraw` takes the request back, unless its
+/// person is answering it (it is no longer waiting), whose outcome is awaited for `grace` more
+/// rather than said to be unanswered while the task is being created.
+async fn settle(
+    mut rx: oneshot::Receiver<AppResult<Value>>,
+    wait: Duration,
+    grace: Duration,
+    withdraw: impl FnOnce() -> bool,
+) -> Settled {
+    match tokio::time::timeout(wait, &mut rx).await {
+        Ok(Ok(answer)) => return Settled::Answered(answer),
+        Ok(Err(_)) => return Settled::Lost,
+        Err(_) if withdraw() => return Settled::Unanswered,
+        Err(_) => {}
+    }
+    match tokio::time::timeout(grace, rx).await {
+        Ok(Ok(answer)) => Settled::Answered(answer),
+        _ => Settled::Lost,
+    }
+}
+
 /// The person answered, but the outcome never came back to the call.
 fn unreported(target: &SandboxRecord) -> AppError {
     AppError::Conflict(format!(
@@ -251,23 +283,19 @@ impl App {
             source: caller.sandbox.clone(),
         };
         self.announce_cross_requests(&user.id, &caller.sandbox);
-        let mut rx = rx;
-        let answered = match tokio::time::timeout(wait, &mut rx).await {
-            Ok(answered) => answered,
-            // Still waiting: it ends unanswered. Taken already: its person is answering.
-            Err(_) if self.cross_requests.lock().remove(&id).is_some() => {
+        let withdraw = || self.cross_requests.lock().remove(&id).is_some();
+        match settle(rx, wait, ANSWER_GRACE, withdraw).await {
+            Settled::Answered(answer) => answer,
+            Settled::Unanswered => {
                 self.announce_cross_requests(&user.id, &caller.sandbox);
                 self.audit_cross(caller, &target, "expired").await;
-                return Ok(json!({
+                Ok(json!({
                     "outcome": "unanswered",
                     "note": "Nobody answered in time: nothing was created. Ask again when the person is here.",
-                }));
+                }))
             }
-            Err(_) => tokio::time::timeout(ANSWER_GRACE, rx)
-                .await
-                .map_err(|_| unreported(&target))?,
-        };
-        answered.map_err(|_| unreported(&target))?
+            Settled::Lost => Err(unreported(&target)),
+        }
     }
 
     /// `GET /api/sandboxes/{sid}/superagent/requests` (XSR-005): the caller's own requests of
@@ -329,6 +357,15 @@ impl App {
             }
         }
         .ok_or(AppError::NotFound)?;
+        // Taken, it is answered to the end even if this request is cancelled (the person's page
+        // went away): the waiting call gets the outcome either way.
+        let app = Arc::clone(self);
+        tokio::spawn(async move { app.answer_taken(request, approve).await })
+            .await
+            .map_err(AppError::internal)?
+    }
+
+    async fn answer_taken(self: Arc<Self>, request: Waiting, approve: bool) -> AppResult<Value> {
         self.announce_cross_requests(&request.user, &request.source);
         let caller = ProjectCaller {
             sandbox: request.target.id.clone(),
@@ -431,5 +468,72 @@ impl App {
         {
             tracing::warn!(error = %err, "cross-sandbox request audit failed");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use serde_json::json;
+    use tokio::sync::oneshot;
+
+    use super::{Settled, settle};
+
+    const LONG: Duration = Duration::from_secs(60);
+
+    #[tokio::test]
+    async fn an_answer_in_time_is_the_outcome() {
+        let (tx, rx) = oneshot::channel();
+        assert!(tx.send(Ok(json!({"outcome": "declined"}))).is_ok());
+        let settled = settle(rx, LONG, LONG, || unreachable!("nothing to withdraw")).await;
+        assert!(matches!(settled, Settled::Answered(Ok(v)) if v["outcome"] == "declined"));
+    }
+
+    #[tokio::test]
+    async fn a_request_still_waiting_at_the_end_is_unanswered() {
+        let (_tx, rx) = oneshot::channel();
+        let settled = settle(rx, Duration::from_millis(1), LONG, || true).await;
+        assert!(matches!(settled, Settled::Unanswered), "{settled:?}");
+    }
+
+    /// The wait ends while the person's approval creates the task: the call reports the
+    /// approval, not "unanswered" (nothing created), which would be false.
+    #[tokio::test]
+    async fn a_wait_that_ends_during_an_approval_reports_the_approval() {
+        let (tx, rx) = oneshot::channel();
+        let (ended, wait_ended) = oneshot::channel::<()>();
+        let approving = tokio::spawn(async move {
+            // Answers only once the wait is over.
+            let _ = wait_ended.await;
+            let _ = tx.send(Ok(json!({"outcome": "approved"})));
+        });
+        let settled = settle(rx, Duration::from_millis(1), LONG, move || {
+            let _ = ended.send(());
+            false
+        })
+        .await;
+        assert!(
+            matches!(settled, Settled::Answered(Ok(ref v)) if v["outcome"] == "approved"),
+            "{settled:?}"
+        );
+        assert!(approving.await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_never_comes_back_is_lost() {
+        let (tx, rx) = oneshot::channel::<crate::error::AppResult<serde_json::Value>>();
+        drop(tx);
+        let settled = settle(rx, LONG, LONG, || unreachable!()).await;
+        assert!(matches!(settled, Settled::Lost), "{settled:?}");
+        let (_tx, rx) = oneshot::channel();
+        let settled = settle(
+            rx,
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+            || false,
+        )
+        .await;
+        assert!(matches!(settled, Settled::Lost), "{settled:?}");
     }
 }

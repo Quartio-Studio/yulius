@@ -8,11 +8,13 @@ use std::time::Duration;
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
+use yulius_app::auth::AuthContext;
 use yulius_app::context::App;
 use yulius_app::coordination::{Channel, ProjectCaller};
 use yulius_app::error::AppResult;
 use yulius_app::model::TaskOrigin;
-use yulius_app::ports::store::TaskStore;
+use yulius_app::ports::store::{AuditStore, TaskStore, UserStore};
+use yulius_contracts::events::UiEvent;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 
 use crate::support::{
@@ -336,7 +338,7 @@ async fn what_cannot_be_asked_is_refused_without_asking() -> TestResult {
     let caller = superagent("s1", &w.alice_id, "alice")?;
     for (args, says) in [
         (json!({"sandbox": "studio", "prompt": "x"}), "task_create"),
-        (json!({"sandbox": "docs", "prompt": "x"}), ""),
+        (json!({"sandbox": "docs", "prompt": "x"}), "not found"),
         (json!({"sandbox": "secret", "prompt": "x"}), "not found"),
         (json!({"sandbox": "nowhere", "prompt": "x"}), "not found"),
         (json!({"sandbox": "website", "prompt": "  "}), "prompt"),
@@ -430,5 +432,107 @@ async fn approval_rechecks_access_to_the_target() -> TestResult {
     assert!(!refused.status.is_success(), "{:?}", refused.body);
     assert!(call_.await?.is_err());
     assert_eq!(task_count(&w, "s2").await?, 0);
+    Ok(())
+}
+
+/// The answers `superagent.cross_task` audited about `sandbox`, oldest first (XSR-009).
+async fn audited(w: &World, sandbox: &str) -> Result<Vec<Value>, Error> {
+    let mut rows =
+        w.h.store
+            .audit_details(sandbox, "superagent.cross_task", 20)
+            .await?
+            .iter()
+            .map(|d| serde_json::from_str(d))
+            .collect::<Result<Vec<Value>, _>>()?;
+    rows.reverse();
+    Ok(rows)
+}
+
+/// XSR-009: every way a request ends is audited on the target, with the source and the
+/// caller and never the prompt; XSR-007: its announcements reach its person only.
+#[tokio::test]
+async fn answers_are_audited_without_the_prompt_and_announced_to_the_person_only() -> TestResult {
+    let w = world(60_000).await?;
+    let mut events = w.h.app.events.subscribe();
+    let secret_words = "Rotate the payment keys";
+    let approved = ask(&w, json!({"sandbox": "website", "prompt": secret_words}))?;
+    let id = waiting(&w, 1).await?[0]["id"]
+        .as_str()
+        .ok_or("id")?
+        .to_owned();
+    assert_eq!(
+        answer(&w, &w.alice, "s1", &id, true).await?.status,
+        StatusCode::OK
+    );
+    approved.await??;
+    let declined = ask(&w, json!({"sandbox": "website", "prompt": secret_words}))?;
+    let id = waiting(&w, 1).await?[0]["id"]
+        .as_str()
+        .ok_or("id")?
+        .to_owned();
+    assert_eq!(
+        answer(&w, &w.alice, "s1", &id, false).await?.status,
+        StatusCode::OK
+    );
+    declined.await??;
+
+    let rows = audited(&w, "s2").await?;
+    let outcomes: Vec<&str> = rows.iter().filter_map(|r| r["outcome"].as_str()).collect();
+    assert_eq!(outcomes, ["approved", "declined"], "{rows:?}");
+    for row in &rows {
+        assert_eq!(row["from_sandbox"], "s1", "{row}");
+        assert_eq!(row["via"], "cockpit", "{row}");
+        assert!(!row.to_string().contains(secret_words), "{row}");
+    }
+
+    let mut announced = 0;
+    while let Ok(envelope) = events.try_recv() {
+        if let UiEvent::SuperagentRequests { sandbox_id } = &envelope.event {
+            assert_eq!(sandbox_id, "s1");
+            assert_eq!(envelope.user.as_ref(), Some(&w.alice_id), "to alice only");
+            announced += 1;
+        }
+    }
+    assert!(announced >= 4, "asked and answered, twice: {announced}");
+    Ok(())
+}
+
+/// An unanswered request is audited `expired` on the target.
+#[tokio::test]
+async fn an_unanswered_request_is_audited_as_expired() -> TestResult {
+    let w = world(300).await?;
+    ask(&w, json!({"sandbox": "website", "prompt": "Rewrite it"}))?.await??;
+    let rows = audited(&w, "s2").await?;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["outcome"], "expired");
+    Ok(())
+}
+
+/// Review finding: an approval whose page went away mid-way (its request cancelled after the
+/// request was taken) still creates the task and tells the waiting call.
+#[tokio::test]
+async fn an_approval_whose_page_went_away_still_reaches_the_call() -> TestResult {
+    let w = world(60_000).await?;
+    let call_ = ask(&w, json!({"sandbox": "website", "prompt": "Rewrite it"}))?;
+    let id = waiting(&w, 1).await?[0]["id"]
+        .as_str()
+        .ok_or("id")?
+        .to_owned();
+    let alice = w.h.store.user(&w.alice_id).await?.ok_or("alice")?;
+    let ctx = AuthContext {
+        user: alice,
+        csrf_token: Some("csrf".into()),
+        session_hash: None,
+        token: None,
+    };
+    // Polled once (the request is taken), then dropped, as a cancelled HTTP request is.
+    let _ = tokio::time::timeout(
+        Duration::ZERO,
+        w.h.app.superagent_request_answer(&ctx, "s1", &id, true),
+    )
+    .await;
+    let outcome = tokio::time::timeout(WAIT, call_).await???;
+    assert_eq!(outcome["outcome"], "approved", "{outcome}");
+    assert_eq!(task_count(&w, "s2").await?, 1);
     Ok(())
 }
