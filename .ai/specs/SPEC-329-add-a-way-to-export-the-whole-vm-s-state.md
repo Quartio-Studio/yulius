@@ -183,7 +183,7 @@ Confirmed against `dev` at 84b45934.
 - [x] Freeze guard: the service frozen during the export, thawed or kept frozen after, refusals
 - [x] `yulius instance export` streams to stdout with progress
 - [x] Safe extraction: no link followed, owners remapped, xattrs, hard links, checksum checked
-- [x] `yulius instance import` prepares the host, checks disk and version, installs the unit
+- [x] `yulius instance import` prepares the host, checks disk and version, makes the service user and its ids
 - [x] Docs: operations guide, architecture, ADR, product summary
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Every gate green, docs and the changes log updated
@@ -288,7 +288,8 @@ Head b1cccd89 (merged with `origin/dev` at 056e061c).
   (High: the manifest chose where root writes; Medium: signals blocked by a stalled write, the
   update helper starting under the freeze; Lows: btrfs inodes, marker through a link, hard
   links to files not in the copy, oversized pax headers at plan time, messages, umask recipe,
-  spec wording); round 2 approve with two Low races and a nit (hard-link digests); round 3 one
+  spec wording); round 2 approve with two Lows (a signal racing the `--move` end, exit 1 instead
+  of 2 on a signal during a refused freeze) and a nit (hard-link digests); round 3 one
   Medium (a signal right after the export took its end); round 4 approve on b1cccd89, no
   findings left. All findings were own code and fixed test-first; none pre-existing.
 - Security scan (`yulius security-scan`, beside the gate): **not run**, exit 2: Vidoc answered
