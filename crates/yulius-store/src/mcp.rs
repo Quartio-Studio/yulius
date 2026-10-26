@@ -229,7 +229,6 @@ impl McpStore for SqliteStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yulius_app::ports::store_ext::McpStore as _;
 
     fn server(id: &str, sandbox: Option<&str>, owner: Option<&str>) -> AppResult<McpServerRecord> {
         Ok(McpServerRecord {
