@@ -59,8 +59,8 @@ it, instead of a `>` prompt box full of `<task-notification>` markup (`<task-id>
 ## Plan
 
 - [x] Spec and issue for the raw wake-up prompt
-- [ ] Regression test: a wake-up reads as the TUI prints it
-- [ ] Transcript prints a wake-up as one notification line
+- [x] Regression test: a wake-up reads as the TUI prints it
+- [x] Transcript prints a wake-up as one notification line
 - [ ] Independent review answered
 - [ ] Gates green, docs and changes entry, delivered
 
@@ -86,3 +86,10 @@ it, instead of a `>` prompt box full of `<task-notification>` markup (`<task-id>
   the defect is how the page prints it, so the page parses it. Reversible.
 - **What the line says.** Claude Code's own `<summary>` (`Agent "…" finished`, `Background
   command "…" completed`), as the TUI's line names it; the result folds, as tool results do.
+- **Review round 1** (request changes, all own code, fixed test-first): `ss-notice` was already
+  the page header's class (inline-flex, centred) and threw the line off the gutter and the opened
+  result beside it, so the line's class and the entry's role are `ss-wake`; a result ends at the
+  `</result>` followed by `<usage>`, the closing tag or the cut (Claude Code's order), skipping
+  quoted pairs and a quoted close; a cut result says "Cut here" inside its fold; the Plan was
+  kept in step. New assertions: the `⏺` mark's x equals a neighbouring Claude line's, the opened
+  result sits under its line, and two quoting results parse whole.
