@@ -12,6 +12,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   branch and tag the task's owner can read, `branch` picks the one checked out, and a branch the
   repository lacks is answered with its branch list instead of a person's action
   ([ADR-0223](decisions/0223-a-reference-copy-carries-every-branch-and-tag-its-owner-can-read.md)).
+- A background task's wake-up reads as one line in a watched task and on the Sessions page
+  (SPEC-328, task #312, fixes #913). When background work ended, Claude Code's
+  `<task-notification>` record was printed as the person's typed prompt, with its time and all
+  its markup (task id, output file, usage). It now prints as the TUI does: `⏺ Agent "…" finished`,
+  its result folded under the line.
 - A Needs you request now reads as What happened, Problem and To do (SPEC-327, task #311). The
   attention bar showed "Needs you: <action> · <why>" as one paragraph, where the to-do was the
   hardest part to find. `needs_you` takes `happened`, `problem`, `action` and `decision`; the bar

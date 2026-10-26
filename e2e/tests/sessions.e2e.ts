@@ -220,6 +220,77 @@ test('a slash command, its output, a ! command and an interruption read as the T
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// #913 (SPEC-328): a watcher saw Claude Code's wake-up as a typed prompt full of
+// `<task-notification>` markup. The TUI prints one line naming what ended.
+test('a background task’s wake-up parses to what ended, also when cut or several (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/sessions'));
+  const parsed = await browser.evaluate(async () => {
+    const url = '/assets/pages/sessions.js';
+    const { notificationsOf } = await import(url);
+    return {
+      full: notificationsOf('<task-notification>\n<task-id>a1</task-id>\n<output-file>/tmp/a1.output</output-file>\n<status>completed</status>\n<summary>Agent "Review" finished</summary>\n<note>interim</note>\n<result>Approve.\nNo findings.</result>\n<usage><tool_uses>3</tool_uses></usage>\n</task-notification>'),
+      bare: notificationsOf('<task-notification>\n<task-id>b1</task-id>\n<status>failed</status>\n</task-notification>'),
+      empty: notificationsOf('<task-notification><task-id>c1</task-id></task-notification>'),
+      cut: notificationsOf('<task-notification>\n<task-id>a1</task-id>\n<summary>Agent "Review" finished</summary>\n<result>A long result the server cut'),
+      cutClose: notificationsOf('<task-notification><summary>Monitor "ci" stream ended</summary><result>done</res'),
+      two: notificationsOf('<task-notification><summary>Background command "npm test" completed (exit code 0)</summary></task-notification>\n<task-notification><summary>Agent "Review" finished</summary><result>ok</result></task-notification>\nAnd then this.'),
+      // Not notifications: a typed prompt, and the tag mentioned in prose.
+      // Review round 1: a result may quote its own closing tag, or a whole notification.
+      quotesClose: notificationsOf('<task-notification><summary>Agent "Review" finished</summary><result>Fix: close </result> early</result>\n<usage><tool_uses>1</tool_uses></usage>\n</task-notification>'),
+      quotesNotice: notificationsOf('<task-notification><summary>Agent "Review" finished</summary><result>It printed <task-notification><result>x</result>\n<usage>u</usage>\n</task-notification> raw.</result>\n<usage>u</usage>\n</task-notification>'),
+      // Review round 2: a result that names an opening tag alone ends at its own close.
+      proseOpen: notificationsOf('<task-notification><summary>Agent "A" finished</summary><result>The parser now reads the <result> tag.</result>\n<usage>u</usage>\n</task-notification>\n<task-notification><summary>Agent "B" finished</summary><result>ok</result></task-notification>'),
+      prompt: notificationsOf('Fix the login test.'),
+      mention: notificationsOf('Why does <task-notification> show up raw?'),
+    };
+  });
+  expect(parsed.full).toEqual({ notices: [{ summary: 'Agent "Review" finished', result: 'Approve.\nNo findings.' }], rest: '' });
+  expect(parsed.bare).toEqual({ notices: [{ summary: 'Background task failed', result: '' }], rest: '' });
+  expect(parsed.empty).toEqual({ notices: [{ summary: 'Background task ended', result: '' }], rest: '' });
+  expect(parsed.cut).toEqual({ notices: [{ summary: 'Agent "Review" finished', result: 'A long result the server cut' }], rest: '' });
+  expect(parsed.cutClose).toEqual({ notices: [{ summary: 'Monitor "ci" stream ended', result: 'done' }], rest: '' });
+  expect(parsed.two).toEqual({ notices: [{ summary: 'Background command "npm test" completed (exit code 0)', result: '' }, { summary: 'Agent "Review" finished', result: 'ok' }], rest: 'And then this.' });
+  expect(parsed.quotesClose).toEqual({ notices: [{ summary: 'Agent "Review" finished', result: 'Fix: close </result> early' }], rest: '' });
+  expect(parsed.quotesNotice).toEqual({ notices: [{ summary: 'Agent "Review" finished', result: 'It printed <task-notification><result>x</result>\n<usage>u</usage>\n</task-notification> raw.' }], rest: '' });
+  expect(parsed.proseOpen).toEqual({ notices: [{ summary: 'Agent "A" finished', result: 'The parser now reads the <result> tag.' }, { summary: 'Agent "B" finished', result: 'ok' }], rest: '' });
+  expect(parsed.prompt).toBeNull();
+  expect(parsed.mention).toBeNull();
+});
+
+test('a background task’s wake-up reads as one line naming what ended, not as a prompt', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/sessions/ses_task_4'));
+  const transcript = screen.getByRole('list', 'Transcript');
+  const wake = '.ss-tui .ss-entries > li:has-text(\'Agent "Review" finished\')';
+  await expect(browser.locator(wake)).toHaveCount(1);
+  await expect(browser.locator(wake)).toContainText(/⏺\s*Agent "Review" finished/);
+  // Not the person's prompt: no prompt box, no "Prompt" label, no time.
+  await expect(browser.locator(`${wake} .ss-prompt`)).toHaveCount(0);
+  await expect(browser.locator(`${wake} > .sr-only`)).toHaveText('Background task');
+  await expect(browser.locator(`${wake} .ss-when`)).toHaveCount(0);
+  for (const tag of ['<task-notification>', '<task-id>', '<output-file>', '<usage>', 'subagent_tokens', 'stopped with background work']) {
+    await expect(transcript).not.toContainText(tag);
+  }
+  // Its result opens from the line, as Claude Code's own fold.
+  const result = browser.locator(`${wake} .ss-result`);
+  await expect(result).toBeHidden();
+  await browser.locator(`${wake} summary`).click();
+  await expect(result).toBeVisible();
+  await expect(result).toContainText(/⎿\s*The gate is still running, so I'll wait for it to finish\./);
+  // Review round 1: the line sits in the gutter as Claude's lines do, the result under it.
+  const box = (selector: string) => browser.evaluate((s) => { const r = document.querySelector(s)!.getBoundingClientRect(); return { left: r.left, top: r.top, bottom: r.bottom }; }, selector);
+  const mark = await box('.ss-tui .ss-entries > li[data-line="14"] summary .ss-mark');
+  const say = await box('.ss-tui .ss-entries > li[data-line="5"] .ss-mark');
+  expect(mark.left).toBe(say.left);
+  expect((await box('.ss-tui .ss-entries > li[data-line="14"] .ss-result')).top).toBeGreaterThanOrEqual((await box('.ss-tui .ss-entries > li[data-line="14"] summary')).bottom);
+  // A wake-up the server cut says so inside its fold, where the cut result is.
+  const cut = '.ss-tui .ss-entries > li[data-line="15"]';
+  await expect(browser.locator(`${cut} details .ss-cut`)).toBeHidden();
+  await browser.locator(`${cut} summary`).click();
+  await expect(browser.locator(`${cut} details .ss-cut`)).toHaveText('Cut here: the message is longer.');
+  await expect(browser.locator(`${cut} .ss-result`)).toContainText('CI passed on the first');
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
 // #347 (SPEC-090): the TUI does not print `isMeta` context. A long note (a skill's body) folds to one
 // faint line that opens on demand; short notes people act on (the Stop hook's goal) stay as written.
 test('a long injected note folds to one line, a short one stays readable (unit, in the page)', async ({ app, browser }) => {
@@ -783,7 +854,8 @@ test('a context the server cut says so when opened and reads its size as at leas
   // A whole context keeps its plain size (SPEC-090).
   await app.open(mock('/s/studio/sessions/ses_task_4'));
   await expect(browser.locator(`${note} > summary`)).toHaveText(/⎿\s*Context added \(1\.6 KiB\)$/);
-  await expect(browser.locator('.ss-tui .ss-cut')).toHaveCount(0);
+  // Only the cut wake-up (SPEC-328) is cut in this session.
+  await expect(browser.locator('.ss-tui li:not(.ss-wake) .ss-cut')).toHaveCount(0);
 });
 
 // #363: a block is a region when it scrolls as laid out, not by an estimate made for a wide page.
