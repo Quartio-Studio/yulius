@@ -1,6 +1,5 @@
 use std::fs;
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
-use std::sync::atomic::AtomicBool;
 
 use super::*;
 use crate::instance::archive::{Item, Reader, Writer};
@@ -106,10 +105,16 @@ fn an_exported_tree_installs_as_it_was() -> TestResult {
         XattrFlags::empty(),
     )
     .is_ok();
-    let stop = AtomicBool::new(false);
-    let p = plan(s, &stop)?;
+    let p = plan(s)?;
     let mut bytes = Vec::new();
-    send(s, &p, &Manifest::default(), &mut bytes, &stop, &mut |_| {})?;
+    send(
+        s,
+        &p,
+        &Manifest::default(),
+        &mut bytes,
+        &mut |_| {},
+        &mut || Ok(()),
+    )?;
 
     let dst = tempfile::tempdir()?;
     let report = install(&bytes, dst.path(), same_ids())?;
@@ -311,4 +316,28 @@ fn ids_move_by_service_and_range_offset() {
     assert_eq!(map.uid(0), None);
     assert_eq!(map.gid(997), Some(1002));
     assert_eq!(map.gid(100_001), Some(400_001));
+}
+
+#[test]
+fn a_hard_link_to_a_file_already_there_is_refused() -> TestResult {
+    let dst = tempfile::tempdir()?;
+    fs::write(dst.path().join("old"), b"not from the copy")?;
+    let bytes = archive(&[
+        (entry("data", Kind::Dir), b""),
+        (
+            entry(
+                "data/h",
+                Kind::HardLink {
+                    target: b"data/old".to_vec(),
+                },
+            ),
+            b"",
+        ),
+    ])?;
+    let err = install(&bytes, dst.path(), same_ids())
+        .err()
+        .ok_or("expected an error")?;
+    assert!(err.to_string().contains("not in the copy"), "{err}");
+    assert_eq!(fs::metadata(dst.path().join("old"))?.nlink(), 1);
+    Ok(())
 }

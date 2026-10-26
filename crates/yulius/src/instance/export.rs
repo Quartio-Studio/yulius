@@ -2,16 +2,21 @@
 //! stream the archive to stdout, thaw (or keep frozen for a move).
 
 use std::fs::File;
-use std::io::{self, BufWriter, IsTerminal as _, Read, Write};
+use std::io::{self, BufWriter, IsTerminal as _, Write};
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
+
+use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+use signal_hook::iterator::Signals;
 
 use sha2::{Digest as _, Sha256};
 
-use super::archive::{Entry, Kind, Writer, ending_len, headers, padded, plain_file_len};
+use super::archive::{
+    Entry, Kind, Writer, check_entry, ending_len, headers, padded, plain_file_len,
+};
 use super::freeze::{self, Freeze};
 use super::walk::{self, Skipped};
 use super::{IdRange, MANIFEST, MANIFEST_LEN, Manifest, Progress, REFUSED, Service};
@@ -43,22 +48,16 @@ pub struct Plan {
     pub fingerprint: [u8; 32],
 }
 
-fn interrupted() -> io::Error {
-    io::Error::new(io::ErrorKind::Interrupted, "interrupted")
-}
-
 /// Walks `root` once and computes the archive's exact length.
 ///
 /// # Errors
-/// A directory or file that cannot be read, or `stop` set.
-pub fn plan(root: &Path, stop: &AtomicBool) -> io::Result<Plan> {
+/// A directory or file that cannot be read, or an entry the reader would refuse.
+pub fn plan(root: &Path) -> io::Result<Plan> {
     let mut entries = 0u64;
     let mut bytes = 0u64;
     let mut fingerprint = Sha256::new();
     let skipped = walk::walk(root, &mut |e, _| {
-        if stop.load(Ordering::Relaxed) {
-            return Err(interrupted());
-        }
+        check_entry(e)?;
         let h = headers(e);
         fingerprint.update(&h);
         entries += 1;
@@ -73,33 +72,20 @@ pub fn plan(root: &Path, stop: &AtomicBool) -> io::Result<Plan> {
     })
 }
 
-/// A file read that stops when `stop` is set.
-struct Stoppable<'a> {
-    file: File,
-    stop: &'a AtomicBool,
-}
-
-impl Read for Stoppable<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.stop.load(Ordering::Relaxed) {
-            return Err(interrupted());
-        }
-        self.file.read(buf)
-    }
-}
-
 /// Streams the archive of `root` to `out`: `manifest` (with `plan`'s totals) first, then the
-/// entries, then the checksum; `tick` gets the bytes written so far.
+/// entries, then the checksum; `tick` gets the bytes written so far, and `before_end` may
+/// still refuse the copy before its checksum is written (the reader then sees an incomplete
+/// copy).
 ///
 /// # Errors
-/// A read or write error, `stop` set, or the directory no longer matching `plan`.
+/// A read or write error, the directory no longer matching `plan`, or `before_end`'s error.
 pub fn send(
     root: &Path,
     plan: &Plan,
     manifest: &Manifest,
     out: impl Write,
-    stop: &AtomicBool,
     tick: &mut dyn FnMut(u64),
+    before_end: &mut dyn FnMut() -> io::Result<()>,
 ) -> io::Result<u64> {
     let mut manifest = manifest.clone();
     manifest.total_bytes = plan.total;
@@ -119,20 +105,16 @@ pub fn send(
     let limit = plan.total - ending_len();
     let mut fingerprint = Sha256::new();
     walk::walk(root, &mut |e, disk| {
-        if stop.load(Ordering::Relaxed) {
-            return Err(interrupted());
-        }
         fingerprint.update(headers(e));
         if w.written() + e.archived_len() > limit {
             return Err(drifted());
         }
         if let Kind::File { .. } = e.kind {
-            let file = File::options()
+            let mut file = File::options()
                 .read(true)
                 .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
                 .open(disk)?;
-            let mut data = Stoppable { file, stop };
-            w.entry(e, Some(&mut data), &mut *tick)
+            w.entry(e, Some(&mut file), &mut *tick)
         } else {
             w.entry(e, None, &mut *tick)
         }
@@ -142,6 +124,7 @@ pub fn send(
         // No trailer: the reader sees an incomplete copy.
         return Err(drifted());
     }
+    before_end()?;
     w.finish()
 }
 
@@ -225,25 +208,45 @@ pub fn main(opts: &ExportOptions) -> ExitCode {
         Ok(m) => m,
         Err(e) => return refused(&e),
     };
-    let stop = Arc::new(AtomicBool::new(false));
-    for signal in [
-        signal_hook::consts::SIGINT,
-        signal_hook::consts::SIGTERM,
-        signal_hook::consts::SIGHUP,
-    ] {
-        if let Err(e) = signal_hook::flag::register(signal, Arc::clone(&stop)) {
-            return refused(&format!("cannot watch signals: {e}"));
+    // Signals are answered on their own thread, so a thaw happens even while the export is
+    // blocked writing to a stalled pipe (EXP-001).
+    let state = Arc::new(AtomicU8::new(freeze::ARMING));
+    let mut signals = match Signals::new([SIGINT, SIGTERM, SIGHUP]) {
+        Ok(signals) => signals,
+        Err(e) => return refused(&format!("cannot watch signals: {e}")),
+    };
+    let (watched, unit) = (Arc::clone(&state), opts.service.clone());
+    std::thread::spawn(move || {
+        if let Some(signal) = signals.forever().next() {
+            eprintln!(
+                "\nyulius instance export: stopped by signal {signal}; the copy is incomplete"
+            );
+            if let Some(why) = freeze::on_signal(&watched, &mut freeze::System, &unit) {
+                eprintln!("yulius instance export: {why}");
+            }
+            std::process::exit(1);
         }
-    }
-    let held = match freeze::freeze(
+    });
+    let mut held = match freeze::freeze(
         Box::new(freeze::System),
         &opts.service,
         &opts.update_service,
     ) {
         Ok(held) => held,
-        Err(why) => return refused(&why),
+        Err(why) => {
+            state.store(freeze::LEAVE, Ordering::SeqCst);
+            return refused(&why);
+        }
     };
-    let result = run(&data_dir, &manifest, &held, &stop);
+    let ours = if held.ours() {
+        freeze::THAW
+    } else {
+        freeze::LEAVE
+    };
+    state.store(ours, Ordering::SeqCst);
+    let result = run(&data_dir, &manifest, &mut held);
+    // From here the export thaws (or keeps the freeze for a move) itself.
+    state.store(freeze::LEAVE, Ordering::SeqCst);
     match (result, opts.move_out) {
         (Ok(()), true) => match held.keep_for_move() {
             Ok(()) => {
@@ -277,25 +280,9 @@ pub fn main(opts: &ExportOptions) -> ExitCode {
     }
 }
 
-fn run(
-    data_dir: &Path,
-    manifest: &Manifest,
-    held: &Freeze,
-    stop: &AtomicBool,
-) -> Result<(), String> {
-    let thaw_hint = if held.ours() {
-        format!(
-            " If this command is killed, thaw it with `sudo systemctl thaw {}`.",
-            manifest.service.unit
-        )
-    } else {
-        String::new()
-    };
-    eprintln!(
-        "Frozen {}: every Yulius process is paused until the export ends.{thaw_hint}",
-        manifest.service.unit
-    );
-    let plan = plan(data_dir, stop).map_err(|e| format!("planning failed: {e}"))?;
+fn run(data_dir: &Path, manifest: &Manifest, held: &mut Freeze) -> Result<(), String> {
+    eprintln!("{}", held.describe());
+    let plan = plan(data_dir).map_err(|e| format!("planning failed: {e}"))?;
     eprintln!(
         "Exporting {} ({} entries) of {}.",
         yulius_import::human_bytes(plan.total),
@@ -314,9 +301,14 @@ fn run(
     }
     let mut progress = Progress::new("Exported", plan.total);
     let out = BufWriter::with_capacity(1 << 20, io::stdout().lock());
-    let sent = send(data_dir, &plan, manifest, out, stop, &mut |done| {
-        progress.tick(done);
-    });
+    let sent = send(
+        data_dir,
+        &plan,
+        manifest,
+        out,
+        &mut |done| progress.tick(done),
+        &mut || held.helper_idle().map_err(io::Error::other),
+    );
     progress.end();
     let sent = sent.map_err(|e| {
         if e.kind() == io::ErrorKind::BrokenPipe {

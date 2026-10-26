@@ -241,3 +241,11 @@ fn gnu_tar_lists_it() -> TestResult {
     assert!(listing.contains("yulius-export.sha256"), "{listing}");
     Ok(())
 }
+
+#[test]
+fn an_entry_the_reader_would_refuse_is_refused_when_planned() {
+    let mut e = entry(b"data/f", Kind::File { size: 1 });
+    assert!(check_entry(&e).is_ok());
+    e.xattrs = vec![(b"user.big".to_vec(), vec![b'x'; (MAX_PAX + 1) as usize])];
+    assert!(check_entry(&e).is_err());
+}

@@ -2,9 +2,11 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
-type TestResult = Result<(), Box<dyn std::error::Error>>;
+use std::sync::atomic::AtomicU8;
 
 use super::*;
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const UNIT: &str = "yulius.service";
 const HELPER: &str = "yulius-update.service";
@@ -18,15 +20,14 @@ struct Fake {
     shows: Rc<RefCell<VecDeque<String>>>,
     files: HashMap<String, String>,
     codes: HashMap<String, i32>,
-    helper: String,
+    /// `is-active` answers for the update helper; the last one repeats.
+    helper: Rc<RefCell<VecDeque<String>>>,
 }
 
 impl Fake {
     fn new(shows: &[(&str, &str)]) -> Self {
-        let fake = Self {
-            helper: "inactive".into(),
-            ..Self::default()
-        };
+        let fake = Self::default();
+        fake.helper.borrow_mut().push_back("inactive".into());
         for (active, freezer) in shows {
             fake.shows.borrow_mut().push_back(format!(
                 "LoadState=loaded\nActiveState={active}\nFreezerState={freezer}\nControlGroup={CGROUP}\n"
@@ -60,7 +61,15 @@ impl Host for Fake {
                 };
                 Ok((0, out))
             }
-            "is-active" => Ok((3, format!("{}\n", self.helper))),
+            "is-active" => {
+                let mut answers = self.helper.borrow_mut();
+                let out = if answers.len() > 1 {
+                    answers.pop_front().unwrap_or_default()
+                } else {
+                    answers.front().cloned().unwrap_or_default()
+                };
+                Ok((3, format!("{out}\n")))
+            }
             _ => Ok((code, String::new())),
         }
     }
@@ -173,8 +182,8 @@ fn a_sibling_cgroup_with_the_same_prefix_is_not_inside() -> TestResult {
 
 #[test]
 fn a_running_update_is_refused() -> TestResult {
-    let mut fake = Fake::new(&[("active", "running")]);
-    fake.helper = "activating".into();
+    let fake = Fake::new(&[("active", "running")]);
+    *fake.helper.borrow_mut() = VecDeque::from(["activating".to_owned()]);
     let err = run(&fake).err().ok_or("expected an error")?;
     assert!(err.contains("an update is running"), "{err}");
     assert!(fake.calls().is_empty());
@@ -217,4 +226,55 @@ fn an_unknown_unit_is_refused() -> TestResult {
     let err = run(&fake).err().ok_or("expected an error")?;
     assert!(err.contains("no unit"), "{err}");
     Ok(())
+}
+
+#[test]
+fn an_update_that_started_during_the_freeze_thaws_and_refuses() -> TestResult {
+    let fake = Fake::new(&[("active", "running"), ("active", "frozen")]);
+    *fake.helper.borrow_mut() = VecDeque::from(["inactive".to_owned(), "activating".to_owned()]);
+    let err = run(&fake).err().ok_or("expected a refusal")?;
+    assert!(err.contains("an update is running"), "{err}");
+    assert_eq!(
+        fake.calls(),
+        ["freeze yulius.service", "thaw yulius.service"]
+    );
+    Ok(())
+}
+
+#[test]
+fn the_helper_is_checked_again_on_request() -> TestResult {
+    let fake = Fake::new(&[("active", "running"), ("active", "frozen")]);
+    let mut held = run(&fake)?;
+    held.helper_idle()?;
+    *fake.helper.borrow_mut() = VecDeque::from(["active".to_owned()]);
+    assert!(held.helper_idle().is_err());
+    Ok(())
+}
+
+#[test]
+fn a_signal_thaws_only_a_freeze_the_export_holds() {
+    let state = AtomicU8::new(THAW);
+    let mut fake = Fake::new(&[]);
+    assert_eq!(on_signal(&state, &mut fake, UNIT), None);
+    assert_eq!(fake.calls(), ["thaw yulius.service"]);
+
+    let mut fake = Fake::new(&[]);
+    state.store(LEAVE, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(on_signal(&state, &mut fake, UNIT), None);
+    assert!(fake.calls().is_empty());
+
+    // Still taking the freeze when the wait ends: no thaw that could come before the freeze.
+    let mut fake = Fake::new(&[]);
+    state.store(ARMING, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(on_signal(&state, &mut fake, UNIT), None);
+    assert!(fake.calls().is_empty());
+}
+
+#[test]
+fn a_failed_thaw_on_a_signal_says_to_run_it_by_hand() {
+    let state = AtomicU8::new(THAW);
+    let mut fake = Fake::new(&[]);
+    fake.codes.insert("thaw".into(), 1);
+    let why = on_signal(&state, &mut fake, UNIT).unwrap_or_default();
+    assert!(why.contains("run it by hand"), "{why}");
 }

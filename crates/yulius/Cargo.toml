@@ -61,7 +61,7 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true }
 rustix = { workspace = true }
-signal-hook = { workspace = true }
+signal-hook = { workspace = true, features = ["iterator"] }
 
 [dev-dependencies]
 yulius-app = { workspace = true, features = ["test-support"] }

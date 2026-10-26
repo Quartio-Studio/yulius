@@ -24,7 +24,7 @@ const MAX_OCTAL_7: u64 = 0o7_777_777;
 /// A pax header's own name.
 const PAX_NAME: &[u8] = b"././@PaxHeader";
 /// The largest pax header a reader accepts (extended attributes included).
-const MAX_PAX: u64 = 1 << 20;
+pub const MAX_PAX: u64 = 1 << 20;
 
 /// What an entry is.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,6 +164,23 @@ fn ustar(name: &[u8], prefix: &[u8], kind: u8, e: &Entry, size: u64, link: &[u8]
     octal(&mut h[148..155], sum);
     h[155] = b' ';
     h
+}
+
+/// Refuses an entry whose extended header the reader would refuse ([`MAX_PAX`]), so an export
+/// fails before its first byte rather than at the import.
+///
+/// # Errors
+/// The entry's extended attributes or names are too large.
+pub fn check_entry(e: &Entry) -> io::Result<()> {
+    let len = headers(e).len() as u64;
+    // A pax header is its own block plus its padded records, before the entry's block.
+    if len > 2 * BLOCK + MAX_PAX {
+        return Err(io::Error::other(format!(
+            "{}: its names and extended attributes take {len} bytes, more than an export carries",
+            String::from_utf8_lossy(&e.path)
+        )));
+    }
+    Ok(())
 }
 
 /// The header blocks of `e`: a pax header when needed, then its ustar header.

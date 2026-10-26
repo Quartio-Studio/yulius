@@ -3,8 +3,10 @@
 //! archive's or one already there, takes a write elsewhere; owners are remapped to this host's
 //! service user and its subordinate range, and nothing ends up owned by root or a foreign id.
 
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs::File;
+use std::hash::Hasher as _;
 use std::io::{self, Read, Write as _};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
@@ -65,6 +67,13 @@ pub struct Report {
     pub skipped_xattrs: u64,
 }
 
+/// A path's hash, the same in every run (std's SipHash with its fixed keys).
+fn path_hash(path: &[u8]) -> u64 {
+    let mut h = std::hash::DefaultHasher::new();
+    h.write(path);
+    h.finish()
+}
+
 /// Whether an extended attribute is restored (IMP-003): overlay layers' and users' own; the rest
 /// hold host ids or grant privileges.
 #[must_use]
@@ -107,6 +116,8 @@ pub struct Extractor {
     parent: Option<(Vec<Vec<u8>>, OwnedFd)>,
     /// Directories' times, set at the end (their entries change them).
     dirs: Vec<(Vec<u8>, i64)>,
+    /// Hashes of the regular files' paths written so far: a hard link must name one of them.
+    files: HashSet<u64>,
     report: Report,
 }
 
@@ -147,6 +158,7 @@ impl Extractor {
             chown,
             parent: None,
             dirs: Vec::new(),
+            files: HashSet::new(),
             report: Report::default(),
         })
     }
@@ -294,6 +306,7 @@ impl Extractor {
                     ));
                 }
                 file.flush()?;
+                self.files.insert(path_hash(&e.path));
                 let fd = OwnedFd::from(file);
                 self.finish_fd(&fd, e, true)
             }
@@ -315,6 +328,9 @@ impl Extractor {
                 Ok(())
             }
             Kind::HardLink { target } => {
+                if !self.files.contains(&path_hash(target)) {
+                    return Err(refuse(&e.path, "a hard link to a file not in the copy"));
+                }
                 let tcomps = components(target)?;
                 let Some((tlast, tparents)) = tcomps.split_last() else {
                     return Err(refuse(&e.path, "a hard link to the data directory"));

@@ -3,6 +3,7 @@
 //! directory is read, and the database's main file and WAL stand as after a power cut.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 /// How long systemd may take to report the unit frozen.
@@ -69,8 +70,11 @@ fn own_cgroup(host: &dyn Host) -> Option<String> {
 pub struct Freeze {
     host: Box<dyn Host>,
     unit: String,
+    update_unit: String,
     /// The export froze the unit (it was running and not frozen already).
     ours: bool,
+    /// The unit was stopped with nothing of it running.
+    stopped: bool,
 }
 
 impl std::fmt::Debug for Freeze {
@@ -108,17 +112,14 @@ pub fn freeze(mut host: Box<dyn Host>, unit: &str, update_unit: &str) -> Result<
              it over SSH on the host"
         ));
     }
-    let (_, helper) = host.systemctl(&["is-active", update_unit])?;
-    if matches!(helper.trim(), "active" | "activating" | "reloading") {
-        return Err(format!(
-            "an update is running ({update_unit}); export once it has finished"
-        ));
-    }
     let mut held = Freeze {
         host,
         unit: unit.to_owned(),
+        update_unit: update_unit.to_owned(),
         ours: false,
+        stopped: false,
     };
+    held.helper_idle()?;
     if !matches!(state.active.as_str(), "active" | "activating" | "reloading") {
         let events = Path::new("/sys/fs/cgroup")
             .join(state.cgroup.trim_start_matches('/'))
@@ -134,6 +135,7 @@ pub fn freeze(mut host: Box<dyn Host>, unit: &str, update_unit: &str) -> Result<
                  start it (`systemctl start {unit}`) so the export can freeze them"
             ));
         }
+        held.stopped = true;
         return Ok(held);
     }
     if state.freezer == "frozen" {
@@ -151,6 +153,12 @@ pub fn freeze(mut host: Box<dyn Host>, unit: &str, update_unit: &str) -> Result<
     let mut waited = Duration::ZERO;
     loop {
         if show(&mut *held.host, unit)?.freezer == "frozen" {
+            // An update request written just before the freeze may have started the helper,
+            // which would restart the unit under the export.
+            if let Err(why) = held.helper_idle() {
+                held.thaw_now();
+                return Err(why);
+            }
             return Ok(held);
         }
         if waited >= FREEZE_WAIT {
@@ -171,6 +179,37 @@ impl Freeze {
     #[must_use]
     pub fn ours(&self) -> bool {
         self.ours
+    }
+
+    /// What the export holds, for the operator.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let unit = &self.unit;
+        if self.ours {
+            format!(
+                "Frozen {unit}: every Yulius process is paused until the export ends. If this \
+                 command is killed with SIGKILL, thaw it with `sudo systemctl thaw {unit}`."
+            )
+        } else if self.stopped {
+            format!("{unit} is stopped and nothing of it runs; nothing was frozen.")
+        } else {
+            format!("{unit} was frozen before the export; it stays frozen after it.")
+        }
+    }
+
+    /// Refuses while the update helper runs: it would stop and start the unit.
+    ///
+    /// # Errors
+    /// The helper is active, or `systemctl` did not run.
+    pub fn helper_idle(&mut self) -> Result<(), String> {
+        let (_, state) = self.host.systemctl(&["is-active", &self.update_unit])?;
+        if matches!(state.trim(), "active" | "activating" | "reloading") {
+            return Err(format!(
+                "an update is running ({}); export once it has finished",
+                self.update_unit
+            ));
+        }
+        Ok(())
     }
 
     fn thaw_now(&mut self) -> Option<String> {
@@ -221,6 +260,37 @@ impl Drop for Freeze {
         if let Some(why) = self.thaw_now() {
             eprintln!("yulius instance export: {why}");
         }
+    }
+}
+
+/// [`on_signal`]: the freeze is being taken.
+pub const ARMING: u8 = 0;
+/// [`on_signal`]: the export froze the unit and has not finished.
+pub const THAW: u8 = 1;
+/// [`on_signal`]: nothing to thaw (not frozen by the export, or the export has finished).
+pub const LEAVE: u8 = 2;
+
+/// What a SIGINT, SIGTERM or SIGHUP does during an export, on its own thread so it works while
+/// the export is blocked writing to a stalled pipe: waits (bounded) while the freeze is being
+/// taken, so a thaw never comes before it, then thaws the unit if `state` says the export froze
+/// it. Returns why a thaw failed.
+pub fn on_signal(state: &AtomicU8, host: &mut dyn Host, unit: &str) -> Option<String> {
+    let mut waited = Duration::ZERO;
+    while state.load(Ordering::SeqCst) == ARMING && waited < FREEZE_WAIT + FREEZE_WAIT {
+        host.sleep(POLL);
+        waited += POLL;
+    }
+    if state.load(Ordering::SeqCst) != THAW {
+        return None;
+    }
+    match host.systemctl(&["thaw", unit]) {
+        Ok((0, _)) => None,
+        Ok((code, _)) => Some(format!(
+            "`systemctl thaw {unit}` failed (exit {code}); run it by hand"
+        )),
+        Err(e) => Some(format!(
+            "`systemctl thaw {unit}` did not run ({e}); run it by hand"
+        )),
     }
 }
 

@@ -1,5 +1,4 @@
 use std::fs;
-use std::sync::atomic::AtomicBool;
 
 use super::*;
 use crate::instance::archive::{Entry, Kind, Writer};
@@ -35,24 +34,24 @@ fn exported(target: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     fs::create_dir_all(src.path().join("sandboxes/sb/home"))?;
     fs::write(src.path().join("yulius.db"), vec![9u8; 3000])?;
     fs::write(src.path().join("sandboxes/sb/home/.bashrc"), b"echo\n")?;
-    let stop = AtomicBool::new(false);
-    let p = plan(src.path(), &stop)?;
+    let p = plan(src.path())?;
     let mut out = Vec::new();
     send(
         src.path(),
         &p,
         &manifest_for(target),
         &mut out,
-        &stop,
         &mut |_| {},
+        &mut || Ok(()),
     )?;
     Ok(out)
 }
 
-fn run(bytes: &[u8], given: Option<&Path>) -> Result<(Manifest, Report), Failure> {
+fn run(bytes: &[u8], target: &Path) -> Result<(Manifest, Report), Failure> {
     install(
         bytes,
-        given,
+        target,
+        None,
         &mut |_, _| Ok(ids()),
         crate::instance::is_root(),
         &mut |_, _| {},
@@ -64,7 +63,7 @@ fn a_copy_installs_into_a_new_data_directory() -> TestResult {
     let host = tempfile::tempdir()?;
     let target = host.path().join("yulius");
     let bytes = exported(&target)?;
-    let (m, report) = run(&bytes, None).map_err(|f| format!("{f:?}"))?;
+    let (m, report) = run(&bytes, &target).map_err(|f| format!("{f:?}"))?;
     assert_eq!(m.total_bytes, bytes.len() as u64);
     assert_eq!(report.entries, m.entries);
     assert_eq!(fs::read(target.join("yulius.db"))?, vec![9u8; 3000]);
@@ -82,12 +81,12 @@ fn the_data_directory_must_be_the_exported_one() -> TestResult {
     let target = host.path().join("yulius");
     let bytes = exported(&target)?;
     let other = host.path().join("elsewhere");
-    let Err(Failure::Refused(why)) = run(&bytes, Some(&other)) else {
+    let Err(Failure::Refused(why)) = run(&bytes, &other) else {
         return Err("expected a refusal".into());
     };
-    assert!(why.contains("absolute"), "{why}");
+    assert!(why.contains("exported from"), "{why}");
     assert!(!target.exists() && !other.exists());
-    assert!(run(&bytes, Some(&target)).is_ok());
+    assert!(run(&bytes, &target).is_ok());
     Ok(())
 }
 
@@ -99,7 +98,7 @@ fn an_existing_instance_is_never_overwritten() -> TestResult {
     for name in ["yulius.db", "sandboxes"] {
         fs::create_dir_all(&target)?;
         fs::write(target.join(name), b"live")?;
-        let Err(Failure::Refused(why)) = run(&bytes, None) else {
+        let Err(Failure::Refused(why)) = run(&bytes, &target) else {
             return Err(format!("{name}: expected a refusal").into());
         };
         assert!(why.contains("already holds an instance"), "{why}");
@@ -114,12 +113,12 @@ fn a_cut_stream_fails_and_blocks_the_next_import_until_removed() -> TestResult {
     let host = tempfile::tempdir()?;
     let target = host.path().join("yulius");
     let bytes = exported(&target)?;
-    let Err(Failure::Failed(why)) = run(&bytes[..bytes.len() - 2048], None) else {
+    let Err(Failure::Failed(why)) = run(&bytes[..bytes.len() - 2048], &target) else {
         return Err("expected a failure".into());
     };
     assert!(why.contains("incomplete copy"), "{why}");
     assert!(target.join(INCOMPLETE).exists());
-    let Err(Failure::Refused(why)) = run(&bytes, None) else {
+    let Err(Failure::Refused(why)) = run(&bytes, &target) else {
         return Err("expected a refusal".into());
     };
     assert!(why.contains("did not finish"), "{why}");
@@ -137,7 +136,7 @@ fn a_damaged_copy_fails() -> TestResult {
         .ok_or("no database entry")?
         + 600;
     bytes[at] ^= 1;
-    let Err(Failure::Failed(why)) = run(&bytes, None) else {
+    let Err(Failure::Failed(why)) = run(&bytes, &target) else {
         return Err("expected a failure".into());
     };
     assert!(why.contains("damaged"), "{why}");
@@ -180,7 +179,7 @@ fn a_length_other_than_the_manifests_fails() -> TestResult {
     let target = host.path().join("yulius");
     let mut m = manifest_for(&target);
     m.total_bytes = 1;
-    let Err(Failure::Failed(why)) = run(&crafted(&m)?, None) else {
+    let Err(Failure::Failed(why)) = run(&crafted(&m)?, &target) else {
         return Err("expected a failure".into());
     };
     assert!(why.contains("its manifest says 1"), "{why}");
@@ -198,15 +197,12 @@ fn what_cannot_work_is_refused_before_anything_is_written() -> TestResult {
         (|m| m.format = 2, "format 2"),
         (|m| m.schema = u32::MAX, "install a Yulius at least as new"),
         (|m| m.total_bytes = u64::MAX, "is free"),
-        (
-            |m| m.data_dir = "relative".into(),
-            "no absolute data directory",
-        ),
+        (|m| m.data_dir = "relative".into(), "exported from"),
     ];
     for (change, says) in cases {
         let mut m = manifest_for(&target);
         change(&mut m);
-        let Err(Failure::Refused(why)) = run(&crafted(&m)?, None) else {
+        let Err(Failure::Refused(why)) = run(&crafted(&m)?, &target) else {
             return Err(format!("{says}: expected a refusal").into());
         };
         assert!(why.contains(says), "{why}");
@@ -222,6 +218,7 @@ fn a_refused_host_preparation_writes_nothing() -> TestResult {
     let bytes = exported(&target)?;
     let result = install(
         bytes.as_slice(),
+        &target,
         None,
         &mut |_, _| Err("no ids".into()),
         false,
@@ -247,9 +244,92 @@ fn a_tar_that_is_not_an_export_is_refused() -> TestResult {
     };
     w.entry(&e, None, |_| {})?;
     w.finish()?;
-    let Err(Failure::Refused(why)) = run(&out, None) else {
+    let Err(Failure::Refused(why)) = run(&out, Path::new("/var/lib/yulius")) else {
         return Err("expected a refusal".into());
     };
     assert!(why.contains("not a Yulius export"), "{why}");
+    Ok(())
+}
+
+#[test]
+fn a_path_with_dot_dot_is_refused() -> TestResult {
+    let host = tempfile::tempdir()?;
+    let target = host.path().join("x/../yulius");
+    let bytes = exported(&target)?;
+    let Err(Failure::Refused(why)) = run(&bytes, &target) else {
+        return Err("expected a refusal".into());
+    };
+    assert!(why.contains("not a plain absolute path"), "{why}");
+    assert!(!host.path().join("yulius").exists());
+    Ok(())
+}
+
+/// A copy whose manifest names someone's home must not reach it: the target holds files.
+#[test]
+fn a_directory_that_holds_files_is_never_a_target() -> TestResult {
+    let host = tempfile::tempdir()?;
+    let target = host.path().join("home");
+    fs::create_dir_all(target.join(".ssh"))?;
+    fs::write(target.join(".ssh/authorized_keys"), b"mine")?;
+    let bytes = exported(&target)?;
+    let Err(Failure::Refused(why)) = run(&bytes, &target) else {
+        return Err("expected a refusal".into());
+    };
+    assert!(why.contains("only into a new or empty"), "{why}");
+    assert_eq!(fs::read(target.join(".ssh/authorized_keys"))?, b"mine");
+    Ok(())
+}
+
+#[test]
+fn skeleton_dotfiles_and_lost_found_may_be_there() -> TestResult {
+    let host = tempfile::tempdir()?;
+    let target = host.path().join("yulius");
+    fs::create_dir_all(target.join("lost+found"))?;
+    fs::write(target.join(".bashrc"), b"skel")?;
+    let bytes = exported(&target)?;
+    if crate::instance::is_root() {
+        // Root owns what the test made; give it to the copy's service user (the test's own,
+        // which is root: refused as a fresh disk would be).
+        let Err(Failure::Refused(why)) = run(&bytes, &target) else {
+            return Err("expected a refusal".into());
+        };
+        assert!(why.contains("belongs to root"), "{why}");
+        return Ok(());
+    }
+    run(&bytes, &target).map_err(|f| format!("{f:?}"))?;
+    Ok(())
+}
+
+#[test]
+fn a_target_of_another_user_is_refused() -> TestResult {
+    if !crate::instance::is_root() {
+        eprintln!("skipped: needs root to give the directory away");
+        return Ok(());
+    }
+    let host = tempfile::tempdir()?;
+    let target = host.path().join("yulius");
+    fs::create_dir_all(&target)?;
+    std::os::unix::fs::chown(&target, Some(65_534), Some(65_534))?;
+    let bytes = exported(&target)?;
+    let Err(Failure::Refused(why)) = run(&bytes, &target) else {
+        return Err("expected a refusal".into());
+    };
+    assert!(why.contains("not to the copy's service user"), "{why}");
+    Ok(())
+}
+
+#[test]
+fn a_link_at_the_marker_is_refused_and_not_followed() -> TestResult {
+    let host = tempfile::tempdir()?;
+    let target = host.path().join("yulius");
+    fs::create_dir_all(&target)?;
+    let elsewhere = host.path().join("planted");
+    std::os::unix::fs::symlink(&elsewhere, target.join(INCOMPLETE))?;
+    let bytes = exported(&target)?;
+    let Err(Failure::Refused(why)) = run(&bytes, &target) else {
+        return Err("expected a refusal".into());
+    };
+    assert!(why.contains("did not finish"), "{why}");
+    assert!(!elsewhere.exists());
     Ok(())
 }

@@ -311,9 +311,14 @@ enum InstanceAction {
     Import {
         /// The export; standard input when absent or `-`.
         file: Option<PathBuf>,
-        /// Data directory (must be the exported one, which is the default).
-        #[arg(long = "data-dir", visible_alias = "data")]
-        data_dir: Option<PathBuf>,
+        /// Data directory; it must be the one the copy was exported from.
+        #[arg(
+            long = "data-dir",
+            visible_alias = "data",
+            env = "YULIUS_DATA",
+            default_value = "/var/lib/yulius"
+        )]
+        data_dir: PathBuf,
         /// The service user to make when the data directory does not exist (default: the
         /// exported one's name).
         #[arg(long)]
