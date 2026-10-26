@@ -537,15 +537,6 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     // A key means the person stays in the terminal; the button's own keys open it.
     el.addEventListener('keydown', (event) => { if (!topOfferEl.contains(event.target)) hideTopOffer(); }, true);
   }
-  // A screen with no text yet (a task that has not run) has nothing earlier to offer.
-  const screenBlank = () => {
-    const buffer = term.buffer.active;
-    for (let y = 0; y < term.rows; y++) {
-      const line = buffer.getLine(buffer.viewportY + y);
-      if (line && line.translateToString(true).trim()) return false;
-    }
-    return true;
-  };
   const noticeTop = (event) => {
     if (!topOfferEl || event.ctrlKey || !event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
     if (event.deltaY > 0) {
@@ -555,7 +546,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       hideTopOffer();
       return;
     }
-    if (screenBlank() || (topOffer.when && !topOffer.when())) return;
+    // A screen with no text yet (a task that has not run) has nothing earlier to offer.
+    if (screenEmpty() || (topOffer.when && !topOffer.when())) return;
     const buffer = term.buffer.active;
     if (buffer.type === 'normal' && !programHasMouse()) {
       if (buffer.viewportY === 0) showTopOffer(null);

@@ -71,7 +71,8 @@ SPEC-310 fixes.
 
   A turn that moved the screen does not count. If the screen moves after the check showed the offer
   (a program slower than the check), the offer goes. A blank screen, and a task that never started,
-  offer nothing. Neither do other terminals (Shells, sign-in terminals).
+  offer nothing. So does a scrollback whose first screenful is blank, at its top (ADR-0220
+  Consequences). Neither do other terminals (Shells, sign-in terminals).
 - **HIS-002 The way on is offered.** Reaching the top shows a button over the top of the task's
   terminal, below its banner, its connection notice, and the attention bar or held card:
   "Earlier messages: show the whole session". It hides after 8 s, on a wheel turn down, on a key
@@ -100,7 +101,7 @@ SPEC-310 fixes.
 - [x] ADR, docs and changes record the history view
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Old runs on the classic renderer offer the whole session
-- [ ] Final head verified: review, gate and full e2e suite
+- [x] Final head verified: review, gate and full e2e suite
 - [ ] Merged into dev on green CI
 
 ## Acceptance criteria
@@ -187,6 +188,25 @@ SPEC-310 fixes.
   - Test steps hide the offer with a key before a "next turn offers" check.
   - `deltaY` 0 is no turn.
   - ADR-0220 states the cost of reading page by page.
+- **Review round 3** (fresh session, at b219974a): APPROVE with 2 minors and 3 nits, all own code.
+  The tests at 1e52704c failed at b219974a, for the right reasons:
+  - a reply sent while offline left the History view open over the terminal's notice;
+  - the blank-scrollback case got no offer at its top.
+
+  At b007e901, the terminal, watching, reply and queued-messages files passed 79 of 79. Answers:
+  - a reply closes the History view before it is sent;
+  - a blank-screen test was added, and the never-ran test waits for the screen's text (it
+    exercises `when`);
+  - queue Dismiss is tested;
+  - the ResizeObserver is used without a `typeof` check, and writes only a changed value.
+
+  The blank first screenful nit was not shipped: the mock could not build that state (xterm kept no
+  blank first screenful), so its scan stayed untested and was removed. ADR-0220 records the limit.
+- **Verification** (fresh session, at b007e901): APPROVE with 2 nits. `screenBlank` duplicated
+  `screenEmpty`, and is now replaced by it. This Evidence entry and the HIS-001 limit answer the
+  other.
+- **e2e.** The full suite at b007e901: 66 files passed, 1 skipped; 726 tests passed, 1 skipped.
+  After the `screenEmpty` change, `tests/terminal.e2e.ts` was run again (see Gate).
 - **Security.** `yulius security-scan` at fe124b11: exit 2, not run. Vidoc answered HTTP 429: the
   instance key has used its 50,000,000 tokens. This is unrun, not passed; Yulius CI's `security`
   job repeats it.
