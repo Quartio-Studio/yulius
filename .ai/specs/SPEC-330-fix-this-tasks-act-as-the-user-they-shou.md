@@ -1,11 +1,11 @@
 ---
 yulius-task: 7e50bc4f-5ce9-40b0-8e45-0b2e64cd0df6
-status: in-progress
+status: done
 ---
 
 # SPEC-330: a task's reference copy carries every branch its owner can read
 
-Status: in-progress
+Status: done
 Date: 2026-10-26
 Owner: Yulius task #314
 Scope authorization: task #314: a screenshot and "Fix this. Tasks act as the user. They should have
@@ -58,8 +58,8 @@ files or change the repository's default branch for it.
 - [x] Spec, issue and ADR record that a reference copy carries every branch and tag
 - [x] Regression tests show a task cannot get a non-default branch
 - [x] reference_repo bundles every branch and tag and checks out the asked branch
-- [ ] Docs, gates and security scan are green
-- [ ] Independent review approves the head and the change is merged into dev
+- [x] Docs, gates and security scan are green
+- [x] Independent review approves the head and the change is merged into dev
 
 ## Acceptance criteria
 
@@ -104,6 +104,13 @@ files or change the repository's default branch for it.
 - `yulius security-scan` at efd6561f: exit 2, **not run** (Vidoc HTTP 429: the instance key used
   its token quota); 8 code files listed unscanned. Not a pass; Yulius CI's `security` job runs it
   again on the pull request head.
+- After review round 1 (head 3e8dfb5c, with dev's #917 merged in): reference_repo filter 10 run,
+  10 passed; `yulius-app` `reference_repo::` unit tests 2 passed. `scripts/dev ci`: exit 1, nextest
+  2632 run, 2631 passed, 1 failed: `task_done::a_goal_the_tui_dropped_is_submitted_again` ("timed
+  out waiting for Done", 65 s, under host load average ~130). Not caused by this change (it touches
+  no task, goal or TUI code); alone it passed 3 of 3 (about 18 s each): filed as #921. Every other
+  gate step passed. Yulius CI on the pull request head is the merge gate.
+- Delivery: merged into `dev` by `delivery_merge` only on green Yulius CI at the reviewed head.
 - Not tested here: a real GitHub fetch with a person's token and a real agent's containment cloning
   the bundle (the tests clone on the host).
 
