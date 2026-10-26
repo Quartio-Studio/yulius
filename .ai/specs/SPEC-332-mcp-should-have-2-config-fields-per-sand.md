@@ -172,6 +172,10 @@ every agent of the instance, and either setting can be changed later with one cl
   for low host memory (the 4 counted as failed were the ones running when the signal came, all
   `SIGTERM`). The affected suites (45 integration tests, the new unit tests) pass on the final
   head; Yulius CI runs the whole gate on the pull request.
+- Yulius CI (merge train #922 + #926, run `896af64c`) failed the docs step: two public doc
+  comments linked to private functions (`placement_for_update`, `effective_mcp`). They are now
+  plain code spans; `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features
+  --no-deps` passes.
 - e2e: the full suite on `37ef19bc` passed 724 tests (1 skipped, opt-in); `mcp.e2e.ts`,
   `agent-panel.e2e.ts` and `places.e2e.ts` passed again (53 tests) after the last UI change.
 - Security scan: `yulius security-scan` exit 2, **not run**: Vidoc answered HTTP 429, the key

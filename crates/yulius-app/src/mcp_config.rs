@@ -665,7 +665,7 @@ impl App {
 
     /// `PUT /api/mcp/{id}`. Omitted `env`/`headers` keep the stored secrets; a given map
     /// replaces all values of that map (an empty map clears it). `scope` and `audience` move the
-    /// server ([`Self::placement_for_update`]).
+    /// server (`placement_for_update`).
     ///
     /// # Errors
     /// Access, validation and duplicate-name errors.
@@ -961,7 +961,7 @@ impl App {
         Ok(held && self.deps.store.live_attempt(&task.id).await?.is_some())
     }
 
-    /// Configured MCP servers for runs of `holder` in `sandbox` ([`Self::effective_mcp`]) with
+    /// Configured MCP servers for runs of `holder` in `sandbox` (`effective_mcp`) with
     /// opened secrets. Every run gets them, whichever subscription it runs on (MCP-004). HTTP servers
     /// forward an `Authorization: Bearer` header as the bearer token; other headers cannot be
     /// passed to the harnesses yet and are skipped with a warning. `${secret:NAME}` values are
