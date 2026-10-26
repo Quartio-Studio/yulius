@@ -4,6 +4,16 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-26
+
+- The reply e2e check "a reply field that closes while typing keeps the keys out of the terminal"
+  now fails when the attention bar's keys reach the terminal (SPEC-323, task #308, fixes #524). It
+  read the session right after typing, before a leaked key had arrived, and a leaked Enter emptied
+  the session as if nothing had been typed: with the bar's keys forwarded to the terminal it still
+  passed. It now types a marker behind the keys through the page's own terminal socket, which
+  delivers in order, and checks the session holds only the marker, before and after the Enter,
+  with no `> x` line in the terminal.
+
 ## 2026-10-25
 
 - A task view no longer goes back to an older owner, status or request when its read of the task

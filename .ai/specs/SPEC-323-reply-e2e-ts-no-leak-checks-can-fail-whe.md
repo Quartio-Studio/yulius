@@ -28,8 +28,10 @@ keys out of the terminal" fail when the keys typed on the attention bar reach th
   `termsocket` `sendInput` → `MockSocket.send`, which delivers it to the session one task later
   (`setTimeout(…, 0)`). The reads ran right after `keyboard.type` / `press` with no wait, so a leak
   on its way was not there yet.
-- **Why it was missed.** No mutation of the bar was run against the check: the earlier `'lo 2'`
-  read is what caught the original defect.
+- **Why it was missed.** No mutation of the bar was run against the check. Run now, it shows the
+  `'lo 2'` read was weak too: with the bar's letters and Enter forwarded to the terminal the old
+  test still passed, as the letters had not arrived when it read and the leaked Enter then
+  submitted them, leaving `input` empty again (Evidence).
 - The other no-leak reads (`Escape closes…`, `Send` with empty text) follow a positive wait
   (Reply focused, field hidden or visible) and leave the session empty for the steps after them;
   they are unchanged.
@@ -76,3 +78,19 @@ keys out of the terminal" fail when the keys typed on the attention bar reach th
   `xy`. A leaked Enter would leave `y` and a `> x` line.
 - **Bounded by the socket.** A leak delayed inside the page before it is sent (a timer of its own)
   is not ordered by the barrier; no such path exists (xterm sends on the key event).
+
+## Evidence
+
+Commands from the worktree, `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run tests/reply.e2e.ts`.
+Mutations: a throwaway `keydown` listener on the bar (`taskview.js`, after `const attention`) that
+sends the bar's own keys with `terminal.sendKeys`, either Enter only (`\r`) or every letter and
+Enter; reverted with `git checkout -q -- crates` after each run (the test was committed first).
+
+| Test | Product | Result |
+| --- | --- | --- |
+| old (dev 91785a67) | unchanged | 6 passed |
+| old | Enter forwarded | 6 passed: the leak went unseen |
+| old | letters and Enter forwarded | 6 passed: the leak went unseen, `'lo 2'` included |
+| new (f094a9ef) | unchanged | 6 passed |
+| new | Enter forwarded | 1 failed: `expected "y" to be "xy"` (`reply.e2e.ts:158`) |
+| new | letters and Enter forwarded | 1 failed: `expected "lo 2x" to be "x"` (`reply.e2e.ts:152`) |
