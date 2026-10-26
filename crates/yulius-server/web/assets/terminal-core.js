@@ -522,8 +522,12 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   }, true);
   term.onBinary((data) => send(data));
 
+  // A box that is not shown (a closed panel, another tool in front) has no size: the fit addon reads
+  // its `100%` as 100 px there and would size the terminal's session 10×5 (#918).
+  const shown = () => fitBox.clientWidth > 0 && fitBox.clientHeight > 0;
+
   function proposed() {
-    if (!opened) return null;
+    if (!opened || !shown()) return null;
     try {
       const d = fit.proposeDimensions();
       if (d && Number.isFinite(d.cols) && Number.isFinite(d.rows) && d.cols > 2 && d.rows > 1) {
@@ -535,6 +539,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
 
   /** The grid this view's box holds at the font given (the fit addon's measure), unbounded. */
   function room() {
+    if (!shown()) return null;
     try {
       const d = fit.proposeDimensions();
       return d && Number.isFinite(d.cols) && Number.isFinite(d.rows) && d.cols > 0 && d.rows > 0 ? d : null;
