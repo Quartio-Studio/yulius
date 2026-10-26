@@ -4,6 +4,13 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-26
+
+- An update cancelled at its 30-minute bound says how many tasks were still in a turn, however
+  many there were (SPEC-319, task #304, fixes #533). The message counted the instance page's list,
+  which shows at most 20 tasks and leaves out runs still being frozen; it now counts the tasks not
+  paused, as readiness does.
+
 ## 2026-10-25
 
 - A task view no longer goes back to an older owner, status or request when its read of the task
