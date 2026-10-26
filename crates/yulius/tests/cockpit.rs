@@ -1543,7 +1543,8 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             .ok_or("carol's cockpit token")?;
     assert_ne!(token, carols, "one token per Cockpit");
 
-    // Exactly the management and vault tools (MGT-006, SPEC-186 SAV-002, SAV-003).
+    // Exactly the management and vault tools (MGT-006, SPEC-186 SAV-002, SAV-003), and the
+    // person's other sandboxes (SPEC-335).
     let listed = mcp(&f, &token, "tools/list", json!({})).await?;
     let mut names: Vec<String> = listed["result"]["tools"]
         .as_array()
@@ -1561,6 +1562,8 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "automation_template_enable",
             "automation_update",
             "automations_list",
+            "sandbox_task_create",
+            "sandboxes_list",
             "secret_copy_to_env",
             "secret_create_from_file",
             "secret_request_hosts",
