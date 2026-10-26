@@ -47,6 +47,16 @@ pub struct ReviewChanges {
     pub truncated: bool,
 }
 
+/// What a reference copy's bundle carries (SPEC-330): every branch with its commit, sorted by
+/// name, and the number of tags.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReferenceBundle {
+    /// `(branch, commit)` pairs, sorted by branch name.
+    pub branches: Vec<(String, String)>,
+    /// How many tags the bundle carries.
+    pub tags: usize,
+}
+
 /// A branch tip (CI and hygiene, SPEC-001 DLV-006/007).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BranchInfo {
@@ -363,18 +373,18 @@ pub trait GitPort: Send + Sync {
         let _ = (repo, source);
         unsupported("fetching a playground's origin")
     }
-    /// Fetches `branch` of `url` with `token` into a new bare repository at `work` (which must
-    /// not exist) and writes a bundle of that branch at `bundle`; returns the branch's commit
-    /// (a reference copy for a task, SPEC-267).
-    async fn bundle_branch(
+    /// Fetches every branch and tag of `url` with `token` into a new bare repository at `work`
+    /// (which must not exist) whose `HEAD` is `default_branch`, and writes a bundle of `HEAD`,
+    /// every branch and every tag at `bundle` (a reference copy for a task, SPEC-267, SPEC-330).
+    async fn bundle_repository(
         &self,
         url: &str,
-        branch: &str,
+        default_branch: &str,
         work: &Path,
         bundle: &Path,
         token: &Secret,
-    ) -> AppResult<String> {
-        let _ = (url, branch, work, bundle, token);
+    ) -> AppResult<ReferenceBundle> {
+        let _ = (url, default_branch, work, bundle, token);
         unsupported("fetching another repository")
     }
     /// Copies every branch and tag of the repository at `source` into the bare repository

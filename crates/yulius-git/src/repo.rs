@@ -90,11 +90,10 @@ impl Git {
         Ok(())
     }
 
-    /// Fetches `branch` of the remote `url` into `repo`'s `refs/heads/<branch>`, forced, without
-    /// tags or submodules (a reference copy's fetch, SPEC-267).
-    pub fn fetch_branch(&self, repo: &Path, url: &str, branch: &str) -> Result<(), GitError> {
+    /// Fetches every branch and tag of the remote `url` into `repo` under the same names, forced,
+    /// without submodules (a reference copy's fetch, SPEC-330).
+    pub fn fetch_branches_and_tags(&self, repo: &Path, url: &str) -> Result<(), GitError> {
         validate_remote_url(url)?;
-        validate_branch_name(branch)?;
         self.run_ok(
             Invocation::new(self, "fetch", Some(repo))
                 .args([
@@ -104,11 +103,42 @@ impl Git {
                     "--no-tags",
                     "--",
                     url,
+                    "+refs/heads/*:refs/heads/*",
+                    "+refs/tags/*:refs/tags/*",
                 ])
-                .arg(format!("+refs/heads/{branch}:refs/heads/{branch}"))
                 .timeout(self.network_timeout),
         )?;
         Ok(())
+    }
+
+    /// Every branch of `repo` as `(name, commit)` pairs sorted by name, whatever the name (unlike
+    /// [`Git::local_branches`], which skips names Yulius would not create): what a bundle of
+    /// `--branches` carries (SPEC-330).
+    pub fn every_branch(&self, repo: &Path) -> Result<Vec<(String, String)>, GitError> {
+        self.refs_under(repo, "refs/heads/")
+    }
+
+    /// Every tag of `repo` as `(name, object id)` pairs sorted by name (SPEC-330).
+    pub fn every_tag(&self, repo: &Path) -> Result<Vec<(String, String)>, GitError> {
+        self.refs_under(repo, "refs/tags/")
+    }
+
+    fn refs_under(&self, repo: &Path, prefix: &str) -> Result<Vec<(String, String)>, GitError> {
+        let output = self.run_ok(
+            Invocation::new(self, "for-each-ref", Some(repo))
+                .args(["for-each-ref", "--format=%(objectname)%00%(refname)"])
+                .arg(prefix),
+        )?;
+        let mut refs: Vec<(String, String)> = output
+            .stdout_text()
+            .lines()
+            .filter_map(|line| {
+                let (sha, name) = line.split_once('\0')?;
+                Some((name.strip_prefix(prefix)?.to_owned(), sha.to_owned()))
+            })
+            .collect();
+        refs.sort();
+        Ok(refs)
     }
 
     /// Copies every branch and tag of the repository at the absolute `source` into `repo` under
