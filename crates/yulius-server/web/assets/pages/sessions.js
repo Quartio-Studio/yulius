@@ -17,7 +17,7 @@ const KIND_OPTIONS = [
   { value: 'task', label: 'Tasks', icon: 'terminal' },
   { value: 'imported', label: 'Imported', icon: 'upload' },
 ];
-const ROLE_LABEL = { user: 'Prompt', assistant: 'Claude', tool: 'Tool', summary: 'Summary', system: 'System' };
+const ROLE_LABEL = { user: 'Prompt', assistant: 'Claude', tool: 'Tool', notice: 'Background task', summary: 'Summary', system: 'System' };
 const PAGE = 200;
 
 const sessionsPath = (sandbox) => `/s/${encodeURIComponent(sandbox.slug)}/sessions`;
@@ -336,6 +336,60 @@ export function metaLines(text) {
     : line)).filter((line) => line.text);
 }
 
+// Claude Code wakes an idle session when its background work ends with a user record of
+// `<task-notification>` blocks (SPEC-079); the TUI prints one line naming what ended (SPEC-328).
+const NOTICE_OPEN = '<task-notification>';
+const NOTICE_CLOSE = '</task-notification>';
+
+/** The text of the first `<tag>` in `body`; one the server cut short runs to the end. */
+function noticeTag(body, tag) {
+  const open = `<${tag}>`;
+  const start = body.indexOf(open);
+  if (start < 0) return '';
+  const close = `</${tag}>`;
+  const end = body.indexOf(close, start + open.length);
+  return (end < 0 ? withoutCutClose(body.slice(start + open.length), close) : body.slice(start + open.length, end)).trim();
+}
+
+/**
+ * A wake-up's notifications: `{ notices: [{ summary, result }], rest }`, or null when `text` does
+ * not start with one (a prompt, or the tag mentioned in prose). The summary is Claude Code's
+ * (`Agent "…" finished`), else "Background task" and its status; the other tags (ids, output file,
+ * note, usage) are not printed. Only the text before `<result>` is read for them: a result is
+ * the agent's own words. `rest` is text after the last notification.
+ */
+export function notificationsOf(text) {
+  let rest = String(text || '').trim();
+  if (!rest.startsWith(NOTICE_OPEN)) return null;
+  const notices = [];
+  while (rest.startsWith(NOTICE_OPEN)) {
+    // A result may quote the closing tag: this notification ends after its own result.
+    const closeAt = rest.indexOf(NOTICE_CLOSE);
+    const resultAt = rest.indexOf('<result>');
+    const ownResult = resultAt >= 0 && (closeAt < 0 || resultAt < closeAt);
+    const resultEnd = ownResult ? rest.indexOf('</result>', resultAt) : -1;
+    const end = !ownResult ? closeAt : resultEnd < 0 ? -1 : rest.indexOf(NOTICE_CLOSE, resultEnd);
+    const body = end < 0 ? withoutCutClose(rest.slice(NOTICE_OPEN.length), NOTICE_CLOSE) : rest.slice(NOTICE_OPEN.length, end);
+    rest = end < 0 ? '' : rest.slice(end + NOTICE_CLOSE.length).trimStart();
+    const at = body.indexOf('<result>');
+    const head = at < 0 ? body : body.slice(0, at);
+    const status = noticeTag(head, 'status');
+    notices.push({
+      summary: noticeTag(head, 'summary') || `Background task ${status || 'ended'}`,
+      result: at < 0 ? '' : noticeTag(body.slice(at), 'result'),
+    });
+  }
+  return { notices, rest: rest.trim() };
+}
+
+const parsedNotices = new WeakMap(); // text block → its notifications (or null), parsed once
+
+/** `notificationsOf` of a user text block. */
+function noticesOf(item) {
+  if (!parsedNotices.has(item)) parsedNotices.set(item, notificationsOf(item.text));
+  return parsedNotices.get(item);
+}
+
 // A note longer than this is context the TUI does not print (a skill's body, hook context): folded
 // (SPEC-090). Notes people act on, such as the Stop hook's goal and feedback, are at most 4 lines.
 const NOTE_FOLD_LINES = 8;
@@ -396,9 +450,22 @@ function toolCall(item, result) {
     result && result.truncated ? cutNote('result') : null);
 }
 
+/** A wake-up as the TUI prints it: `⏺ Agent "…" finished`, its result folded under it (SPEC-328). */
+function noticeLines(parsed, item) {
+  const line = (notice) => tuiLine('⏺', h('span', { class: 'ss-dim' }, notice.summary), { kind: 'dim' });
+  return h('div', { class: 'ss-block' },
+    parsed.notices.map((notice) => (notice.result
+      ? h('details', { class: 'ss-fold ss-notice' }, h('summary', null, line(notice)),
+        outLines(linesOf(notice.result), 'ss-result', scroller(notice.result, `Result of ${notice.summary}`)))
+      : h('div', { class: 'ss-notice' }, line(notice)))),
+    parsed.rest ? h('div', { class: 'ss-meta ss-dim' }, parsed.rest) : null,
+    item.truncated ? cutNote('message') : null);
+}
+
 function block(item, results, role, line) {
   switch (item.type) {
     case 'text':
+      if ((role === 'user' || role === 'notice') && noticesOf(item)) return noticeLines(noticesOf(item), item);
       return h('div', { class: 'ss-block' },
         role === 'user' ? tuiLine('>', richText(item.text), { kind: 'prompt', className: 'ss-prompt', block: true })
           : role === 'summary' ? tuiLine('※', richText(item.text), { kind: 'dim', block: true })
@@ -603,7 +670,9 @@ export function transcriptEntries({ target = null } = {}) {
   const regionNames = new Set(); // a name used again (a command run twice) names its line, then a count
 
   function entry(item) {
-    const role = item.role === 'user' && item.blocks.every((b) => b.type === 'tool_result' || b.type === 'meta') ? 'tool' : item.role;
+    const role = item.role !== 'user' ? item.role
+      : item.blocks.every((b) => b.type === 'tool_result' || b.type === 'meta') ? 'tool'
+        : item.blocks.every((b) => b.type === 'text' && noticesOf(b)) ? 'notice' : 'user';
     const shown = item.blocks.map((b) => block(b, results, role, item.line)).filter(Boolean);
     if (!shown.length) return null;
     const typed = item.blocks.some((b) => b.type === 'meta' && metaOf(b).some((line) => line.kind === 'command' || line.kind === 'shell'));
