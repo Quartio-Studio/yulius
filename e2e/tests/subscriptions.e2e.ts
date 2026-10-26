@@ -181,6 +181,9 @@ const sectionHeads = (browser: Browser) => browser.evaluate(() => {
       // A part split over two lines has two rects; the lines are the distinct tops.
       splitParts: parts.filter((p) => p.getClientRects().length > 1).map((p) => p.textContent),
       lines: parts.length ? new Set(parts.map((p) => Math.round(p.getBoundingClientRect().top))).size : text?.getClientRects().length ?? 0,
+      // How far each line ends short of the summary's right edge (its last part's right end).
+      lineGaps: [...Map.groupBy(parts, (p) => Math.round(p.getBoundingClientRect().top)).values()]
+        .map((line) => text!.getBoundingClientRect().right - Math.max(...line.map((p) => p.getBoundingClientRect().right))),
     };
   });
 });
@@ -202,6 +205,8 @@ test('at phone width every Status section head fits the panel and shows its whol
   expect(subscriptions.summary).toBe('4 ready · 1 at the limit · 1 need attention');
   expect(subscriptions.lines).toBeGreaterThan(1);
   expect(subscriptions.splitParts).toEqual([]);
+  // Each line ends at the summary's right edge, under the one before (right-aligned).
+  for (const gap of subscriptions.lineGaps) expect(Math.abs(gap)).toBeLessThanOrEqual(1);
 
   // SSF-003
   expect(await axeViolations(browser)).toEqual([]);

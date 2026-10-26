@@ -371,9 +371,11 @@ function statTile(iconName, name, value, percent, detail) {
  * text or its parts, joined with " · ": a narrow panel wraps it between parts, never inside one (#549).
  */
 function statusSection(key, iconName, title, summary, body, openByDefault) {
-  const parts = [summary].flat().flatMap((part, i) => [i ? ' · ' : null, h('span', { class: 'status-summary-part' }, part)]);
+  const parts = [summary].flat();
+  // Each part carries its own " ·", so a line breaks only after a dot and ends at the right edge.
+  const shown = parts.flatMap((part, i) => [i ? ' ' : null, h('span', { class: 'status-summary-part' }, i < parts.length - 1 ? `${part} ·` : part)]);
   return rememberOpen(h('details', { class: 'status-section status-fold' },
-    h('summary', null, icon('right', { size: 12 }), icon(iconName, { size: 15 }), h('h2', null, title), h('span', { class: 'status-summary-text' }, parts)),
+    h('summary', null, icon('right', { size: 12 }), icon(iconName, { size: 15 }), h('h2', null, title), h('span', { class: 'status-summary-text' }, shown)),
     h('div', { class: 'status-fold-body' }, body)), key, openByDefault);
 }
 
