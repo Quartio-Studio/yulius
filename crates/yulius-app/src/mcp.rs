@@ -495,7 +495,17 @@ impl App {
         token: &str,
         request: RpcRequest,
     ) -> Option<RpcResponse> {
-        let id = request.id.clone()?;
+        let Some(id) = request.id.clone() else {
+            // A Superagent's client cancelled a call that waits for its person (SPEC-335).
+            if request.method == "notifications/cancelled"
+                && token.starts_with(COCKPIT_TOKEN_PREFIX)
+                && let Some(rpc_id) = request.params.get("requestId")
+                && let Ok(caller) = self.cockpit_caller(token).await
+            {
+                self.cancel_cross_request(&caller, rpc_id).await;
+            }
+            return None;
+        };
         let caller = if token.starts_with(COCKPIT_TOKEN_PREFIX) {
             self.cockpit_caller(token).await.map(McpCaller::Cockpit)
         } else {
@@ -538,7 +548,7 @@ impl App {
                 McpCaller::Agent(_) => tool_descriptors(),
                 McpCaller::Cockpit(_) => cockpit_tool_descriptors(),
             }})),
-            "tools/call" => Ok(self.mcp_call(&caller, &request.params).await),
+            "tools/call" => Ok(self.mcp_call(&caller, &id, &request.params).await),
             other => {
                 return Some(RpcResponse::err(
                     id,
@@ -553,7 +563,12 @@ impl App {
         })
     }
 
-    async fn mcp_call(self: &Arc<Self>, caller: &McpCaller, params: &Value) -> Value {
+    async fn mcp_call(
+        self: &Arc<Self>,
+        caller: &McpCaller,
+        rpc_id: &Value,
+        params: &Value,
+    ) -> Value {
         let name = params.get("name").and_then(Value::as_str).unwrap_or("");
         let args = params
             .get("arguments")
@@ -613,7 +628,8 @@ impl App {
                     self.tool_sandboxes_list(caller).await
                 }
                 McpCaller::Cockpit(caller) if name == "sandbox_task_create" => {
-                    self.tool_sandbox_task_create(caller, &args).await
+                    let call = crate::cross_sandbox::call_key(caller, rpc_id);
+                    self.cross_task_request(caller, &args, call).await
                 }
                 McpCaller::Cockpit(_) if name == "secret_verify" => {
                     self.tool_secret_verify(&project, &args).await

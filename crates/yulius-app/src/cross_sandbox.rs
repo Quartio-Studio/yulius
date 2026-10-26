@@ -77,7 +77,17 @@ struct Waiting {
     actor: String,
     detail: Value,
     ends_at: Timestamp,
+    /// The MCP call that waits for it (its Superagent's shell and JSON-RPC id), which a
+    /// `notifications/cancelled` names.
+    call: Option<String>,
     answer: oneshot::Sender<AppResult<Value>>,
+}
+
+/// The key of a Superagent's MCP call: its shell (from its caller's audit detail) and its
+/// JSON-RPC id, as sent (`7` and `"7"` are two calls).
+pub(crate) fn call_key(caller: &ProjectCaller, rpc_id: &Value) -> Option<String> {
+    let shell = caller.detail.get("shell").and_then(Value::as_str)?;
+    Some(format!("{shell}#{rpc_id}"))
 }
 
 /// The waiting requests by id (bounded by [`MAX_WAITING`] per person and sandbox).
@@ -162,6 +172,17 @@ impl App {
         caller: &ProjectCaller,
         args: &Value,
     ) -> AppResult<Value> {
+        self.cross_task_request(caller, args, None).await
+    }
+
+    /// [`App::tool_sandbox_task_create`] for the MCP call `call` ([`call_key`]), which its
+    /// client's `notifications/cancelled` ends ([`App::cancel_cross_request`]).
+    pub(crate) async fn cross_task_request(
+        &self,
+        caller: &ProjectCaller,
+        args: &Value,
+        call: Option<String>,
+    ) -> AppResult<Value> {
         if caller.channel != Channel::Superagent || caller.task.is_some() {
             return Err(AppError::Forbidden(
                 "only a Superagent asks for this".into(),
@@ -218,6 +239,7 @@ impl App {
                     ends_at: self
                         .now()
                         .plus_millis(i64::try_from(wait.as_millis()).unwrap_or(i64::MAX)),
+                    call,
                     answer: tx,
                 },
             );
@@ -349,6 +371,35 @@ impl App {
         // The call may have ended meanwhile; the person still gets the answer.
         let _ = request.answer.send(answer.clone());
         answer
+    }
+
+    /// A Superagent's client cancelled the MCP call `rpc_id` (Esc in Claude Code, a client
+    /// timeout): its request ends at once and the call answers `cancelled` (XSR-004).
+    pub(crate) async fn cancel_cross_request(&self, caller: &ProjectCaller, rpc_id: &Value) {
+        let Some(key) = call_key(caller, rpc_id) else {
+            return;
+        };
+        let request = {
+            let mut waiting = self.cross_requests.lock();
+            let id = waiting
+                .iter()
+                .find(|(_, w)| {
+                    w.call.as_deref() == Some(key.as_str())
+                        && w.user == caller.user
+                        && w.source == caller.sandbox
+                })
+                .map(|(id, _)| id.clone());
+            id.and_then(|id| waiting.remove(&id))
+        };
+        let Some(request) = request else {
+            return;
+        };
+        self.announce_cross_requests(&request.user, &request.source);
+        self.audit_cross(caller, &request.target, "cancelled").await;
+        let _ = request.answer.send(Ok(json!({
+            "outcome": "cancelled",
+            "note": "The call was cancelled: nothing was created.",
+        })));
     }
 
     fn announce_cross_requests(&self, user: &UserId, source: &SandboxId) {
