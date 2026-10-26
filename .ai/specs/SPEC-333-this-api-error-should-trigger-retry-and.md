@@ -1,11 +1,11 @@
 ---
 yulius-task: c2b9111b-bb6b-4716-bf0a-f9894beeab70
-status: in-progress
+status: done
 ---
 
 # SPEC-333: An API error Claude Code retries keeps the task Working; spent retries need you
 
-Status: in-progress
+Status: done
 Date: 2026-10-26
 Owner: task #317
 Scope authorization: task #317 ("this api error should trigger retry, and then needs you status
@@ -69,7 +69,7 @@ themselves.
 - [x] Spent or refused retries put the task in Needs you, also after a restart
 - [x] Docs, ADR and changes entry true to the fix
 - [x] Independent review answered: round-1 findings fixed test-first, round 2 approved
-- [ ] Gates green and merged on green
+- [x] Gates green and merged on green
 
 ## Acceptance criteria
 
@@ -104,3 +104,33 @@ themselves.
 
 - [ADR-0225](../../docs/decisions/0225-claude-code-owns-the-goal-retry-after-an-api-error.md):
   Yulius follows Claude Code's goal retry instead of retrying itself.
+
+## Evidence
+
+- **Reproduction.** The real records come from Claude Code 2.1.292's bundle and from transcripts on
+  this host (task #116: error, `Goal still active … (1/3)`, `turn_duration`; task #4: the check-in
+  prompt about 1 min later). On the tests-only commit `23690b3b` the fake-agent replay read
+  `[Working, Waiting, Working, Waiting, Working, Done]` (expected `[Working, Done]`), and spent
+  retries never read NeedsAttention. Issue #927.
+- **Fix.** Both tests pass with the fix. The restart tests fail with the replay block removed
+  ("seen [Working, Waiting, Working, Done]", "timed out waiting for Needs you") and pass with it.
+  The review round-1 tests (goal cleared while armed, spent goal-check retries, the replay keeping
+  Claude Code's words) failed before their fixes and pass at `e1c10632`.
+- **Suites.** `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^task_done::/)'`:
+  62 passed. Unit tests: `finish::` (20 passed) and
+  `claude::tests::goal_retry_notices_are_observed` passed.
+- **Gate.** `scripts/dev ci` at `e1c10632` (with this commit's docs edits in the tree) exited 0:
+  2641 tests run, 2641 passed, 16 skipped. The first run, at `31b5db86`, failed on clippy
+  (`if_same_then_else` in the parser), which was fixed in `e1c10632`.
+- **Security scan.** `scripts/dev security` exited 2: not run, because Vidoc is out of quota for
+  this key (HTTP 429, "This API key has used its 50,000,000 tokens"). That is unrun, not passed.
+- **Independent review** (a fresh session, read only):
+  - Round 1 approved `31b5db86` with four own-code minors and nits. Each was fixed test-first in
+    `e1c10632`, except two nits it accepted: the fake's fixed "1 min" delay, and no test of a task
+    an older binary had already settled.
+  - Round 2 approved `e1c10632`. Its remaining docs nits went into `9519d05d`.
+- **Not tested.**
+  - A real Claude Code session losing its connection: the fake agent replays the recorded shapes.
+  - The real 1, 5 and 15 minute delays: the tests use 1–15 s.
+  - A goal cleared while a retry is armed, replayed after a restart: covered by the fold unit test
+    only.
