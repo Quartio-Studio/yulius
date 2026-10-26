@@ -1,11 +1,11 @@
 ---
 yulius-task: 2c4d04f3-a7fc-4b6e-bb9c-078fe1a8c70b
-status: in-progress
+status: done
 ---
 
 # SPEC-325: Files up to 1 GB can be uploaded, so an agent can analyse a screen recording
 
-Status: in-progress
+Status: done
 Date: 2026-10-26
 Owner: Yulius task #309
 Scope authorization: task #309 (`/goal`): "fix that I can upload videos up to 1gb, because I want
@@ -73,8 +73,8 @@ their computer.
 - [x] An upload that would fill the data disk is refused before its bytes are read
 - [x] Large non-image attachments download straight to disk from the prompt views
 - [x] Proxy examples, upgrade note and ADR-0219 allow 1 GiB uploads; video analysis checked in a sandbox
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -116,3 +116,47 @@ their computer.
 - **Link download, not a longer timeout.** A longer timeout would still hold the whole file in
   browser memory; the endpoint already streams with `Content-Disposition`, so the browser's
   download manager can take it with its own progress.
+
+## Evidence
+
+- **Tests first** (each failed before its change, then passed):
+  `serve::tests::the_default_upload_limit_is_one_gibibyte` (left 25, right 1024);
+  `uploads::an_upload_that_would_fill_the_data_disk_is_refused_before_it_starts` (201 for the
+  6 GB upload; later "9.3 GB free" instead of the room before 95 %);
+  `uploads::tests::sizes_read_like_the_setting` ("1024 MB" for 1 GiB);
+  `task_prompt::a_downloaded_file_keeps_its_non_ascii_name` (`filename="attachment"`);
+  e2e `original-prompt` "shows the original prompt…" and `queued-messages` "the request shows its
+  files…" (no link download), "a file removed after the list was shown…" (no toast), `filedrop`
+  "sizes from a gibibyte read in GB" (`["1024 MB","1536 MB",…]`).
+  `task_prompt::a_head_request_says_whether_an_attached_file_is_there_without_sending_it` pins
+  the HEAD contract the web UI relies on (axum already answered it).
+- **1 GiB through the server** (a throwaway integration test, not committed: a streamed 1 GiB
+  body, declared, default limit): 201 in 21.6 s, size 1073741824; 1 GiB + 1 byte: 422 "the file
+  is larger than the upload limit of 1024 MB" (now "1 GB").
+- **Video for the agent** (in this sandbox, as an agent would): `ffmpeg` (`/usr/bin/ffmpeg`)
+  made a 6 s test recording with text burnt in, `ffmpeg -i rec.mp4 -vf fps=1 frames/f%02d.png`
+  gave 6 frames, and reading `f04.png` showed "ERROR 500 at checkout t= 00:00:03.467".
+- **Gate** `python3 scripts/bootstrap.py` then `scripts/dev ci` at be804ac8: exit 0, 2626 tests
+  passed, 16 skipped. The later commit (65f92673) changes only an e2e test and `docs/api.md`.
+- **e2e** full suite `npx e2e run` at be804ac8: exit 0, 717 passed, 1 skipped (67 files);
+  `tests/original-prompt.e2e.ts` at 65f92673 five times: 9/9 each.
+- **Security** `yulius security-scan` at bac1b6c1: not run, exit 2 (Vidoc HTTP 429, the key used
+  its 50,000,000 tokens): unrun, not passed (ADR-0133, ADR-0157); CI's `security` job is the live
+  scan.
+- **Review** (fresh session, `om-code-review`, read-only): round 1 at bac1b6c1 REQUEST CHANGES:
+  1 major (a non-ASCII name downloaded as "attachment"), 4 minor (the 404 toast in the prompt
+  dialog, the refusal naming all free space, the "nothing created" checks unable to fail on
+  ordering, AC-3 not proving no read), 4 nits; all own code, fixed test-first (587711a1,
+  632c6bef, a11f6717). Round 2 at be804ac8 REQUEST CHANGES: 1 major, own code (the read-count
+  assertion raced the mock's latency), fixed in 65f92673 with `expect.poll`.
+  Round 3 at 65f92673 APPROVE (one nit left as accepted: the rounding above).
+  Not changed, accepted by the reviewer: JS and Rust round sizes differently (cosmetic; limits are
+  exact multiples); `attach_server_file` (reference bundles, pre-existing) passes no declared
+  size, so the disk guard does not apply to that server-made file, which has its own bound.
+- **Instance proxy:** this instance's Caddy caps bodies at 32 MB (`/etc/caddy/Caddyfile`); a
+  person was asked (`needs_you`) to raise it to 1100 MB and answered "done". From inside the
+  sandbox `/etc` is an overlay that still showed 32 MB, so the change was not verified here.
+- **Not tested:** a real 1 GB upload through the public proxy and a browser; how Claude Code
+  treats an `@`-mention of a video in a prompt (a paid agent run), though the path reaches the
+  agent as any attachment's does and `ffmpeg` is there; the browser's own download of the link
+  (the mock stands in for it in e2e; the header and HEAD are tested on the server).
