@@ -836,7 +836,12 @@ impl Transcript {
 
     /// A notice Claude Code prints in the session (`system`, `informational`).
     fn notice(&mut self, content: &str, level: &str) -> io::Result<()> {
-        let uuid = format!("fake-{}-{}-notice-{}", self.session_id, self.turns, now_ms());
+        let uuid = format!(
+            "fake-{}-{}-notice-{}",
+            self.session_id,
+            self.turns,
+            now_ms()
+        );
         let mut notice = self.claude_envelope("system", &uuid, &rfc3339(now_ms()));
         notice["subtype"] = json!("informational");
         notice["content"] = json!(content);

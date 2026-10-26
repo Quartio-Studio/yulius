@@ -3336,6 +3336,91 @@ fn spent_goal_retries_put_the_task_in_needs_you() -> TestResult {
     Ok(())
 }
 
+/// SPEC-333 AER-001/AER-002 after a restart: Yulius is down from the goal turn's API error until
+/// the transcript holds `marker` (and the record that closes that turn). The new server replays
+/// the transcript and checks the task with `check`.
+fn a_restart_after_an_api_error(
+    api_errors: u32,
+    retry_ms: u64,
+    marker: &'static str,
+    check: impl AsyncFnOnce(&Arc<App>, &TaskId) -> TestResult,
+) -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let agent = FakeAgentOptions {
+        transcript: true,
+        hooks: true,
+        goal_api_errors: Some(api_errors),
+        goal_retry_ms: Some(retry_ms),
+        ..FakeAgentOptions::default()
+    };
+    let first = runtime()?;
+    let (port, id) = first.block_on(async {
+        let (app, port) = start(&data, &fake, agent.clone(), 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+        wait_for("the API error", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "API ERROR")
+        })
+        .await?;
+        Ok::<_, BoxError>((port, id))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let store = SqliteStore::open(&data.join("yulius.db"))?;
+        let record = TaskStore::task(&store, &id).await?.ok_or("task")?;
+        let worktree = PathBuf::from(record.worktree_path.ok_or("no worktree")?);
+        let attempt = TaskStore::live_attempt(&store, &id)
+            .await?
+            .ok_or("attempt")?;
+        let session = attempt.provider_session_id.ok_or("session")?;
+        let adapter = HarnessAdapter::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius")), "x");
+        let home = data.join("sandboxes").join("s-done").join("home");
+        let transcript = adapter.claude_transcript(&home, &worktree, &session);
+        wait_for(marker, Duration::from_secs(60), || async {
+            std::fs::read_to_string(&transcript).is_ok_and(|t| {
+                t.rsplit_once(marker)
+                    .is_some_and(|(_, after)| after.contains("turn_duration"))
+            })
+        })
+        .await?;
+        drop(store);
+        let (app, _) = start(&data, &fake, agent, port).await?;
+        app.reconcile().await?;
+        check(&app, &id).await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A retry Claude Code armed while Yulius was down: the replay leaves the task Working, and the
+/// retry makes it Done.
+#[test]
+fn a_restart_while_claude_code_retries_keeps_the_task_working() -> TestResult {
+    a_restart_after_an_api_error(1, 15_000, "retrying in", async |app, id| {
+        let seen = activities_until(app, id, Activity::Done, Duration::from_secs(60)).await?;
+        assert_eq!(seen, vec![Some(Activity::Working), Some(Activity::Done)]);
+        Ok(())
+    })
+}
+
+/// Claude Code spent its retries while Yulius was down: the replay puts the task in Needs you.
+#[test]
+fn a_restart_after_spent_goal_retries_puts_the_task_in_needs_you() -> TestResult {
+    a_restart_after_an_api_error(4, 1_000, "automatic retries", async |app, id| {
+        wait_for("Needs you", Duration::from_secs(20), || async {
+            activity(app, id).await == Some(Activity::NeedsAttention)
+        })
+        .await?;
+        let summary = app.task_summary(&task(app, id).await?).await?;
+        assert!(summary.needs_you.is_some(), "an open request");
+        Ok(())
+    })
+}
+
 /// TSK-014 recovery: a restart replays the transcripts of reattached runs. A Done task stays Done
 /// (a replayed prompt used to put it back to Working), and a goal achieved while Yulius was down
 /// (its Stop hook unanswered) makes that task Done.

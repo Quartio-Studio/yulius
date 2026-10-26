@@ -80,6 +80,32 @@ const USAGE_LIMIT_API_ERROR: &str = "usage_limit_reached";
 /// too long", its `PROMPT_TOO_LONG` constant), the API's error (`errorDetails`) or its code.
 const PROMPT_TOO_LONG_MARKS: [&str; 2] = ["prompt is too long", "prompt_too_long"];
 
+/// The separator of the parts of Claude Code's goal notices (` · `).
+const NOTICE_SEPARATOR: &str = " \u{b7} ";
+
+/// How Claude Code 2.1.292's notice begins when it armed a goal retry after a turn an error
+/// ended: `Goal still active · <cause> · retrying in <n> min (<k>/3) · send a message to retry now`.
+const GOAL_RETRY_ARMED: &str = "Goal still active \u{b7} ";
+
+/// How its notice begins when the retries are spent: `Goal paused after 3 automatic retries ·
+/// <cause> · send a message to continue`.
+const GOAL_RETRIES_SPENT: &str = "Goal paused after ";
+
+/// How its notice begins when it paused the goal at once.
+const GOAL_PAUSED: &str = "Goal paused \u{b7} ";
+
+/// The causes of the goal pauses Claude Code 2.1.292 makes at once on an API error it does not
+/// retry. A hook's stop, a goal check's timeout and a usage limit are not among them: Yulius's
+/// own hooks, the evaluator and its limit pause (SPEC-072) own those.
+const API_PAUSE_CAUSES: [&str; 3] = [
+    "the API rejected the last request",
+    "the last turn could not finish",
+    "the request was rate limited",
+];
+
+/// Longest goal notice kept, in bytes.
+const GOAL_NOTICE_BYTES: usize = 300;
+
 /// What Claude Code reports when a compaction fails.
 const COMPACT_ERROR_TEXT: &str = "Error during compaction";
 
@@ -187,6 +213,9 @@ fn observe_system(record: &Map<String, Value>) -> Vec<Observed> {
     if bool_of(record, "isSidechain") {
         return Vec::new();
     }
+    if let Some(retry) = str_of(record, "content").and_then(goal_retry) {
+        return vec![retry];
+    }
     match str_of(record, "subtype") {
         Some("turn_duration") => vec![Observed::TurnEnded {
             background_agents: u64_of(record, "pendingBackgroundAgentCount")
@@ -200,6 +229,28 @@ fn observe_system(record: &Map<String, Value>) -> Vec<Observed> {
         }
         _ => Vec::new(),
     }
+}
+
+/// Claude Code's goal notice after a turn an error ended (SPEC-333): a retry it armed, retries
+/// it spent, or a pause on an API error it does not retry.
+fn goal_retry(content: &str) -> Option<Observed> {
+    let mut parts = content.split(NOTICE_SEPARATOR);
+    let head = parts.next()?;
+    let cause = parts.next()?;
+    let armed = if content.starts_with(GOAL_RETRY_ARMED) {
+        parts.next()?.starts_with("retrying in ")
+    } else if head.starts_with(GOAL_RETRIES_SPENT) && head.ends_with(" automatic retries") {
+        false
+    } else if content.starts_with(GOAL_PAUSED) && API_PAUSE_CAUSES.contains(&cause) {
+        false
+    } else {
+        return None;
+    };
+    let notice = format!("{head}{NOTICE_SEPARATOR}{cause}");
+    Some(Observed::GoalRetry {
+        armed,
+        notice: shorten(&notice, GOAL_NOTICE_BYTES),
+    })
 }
 
 /// A user record that carries a failed compaction's error output, not a prompt.
@@ -1157,6 +1208,67 @@ mod tests {
         // Another API error is still nothing (or a limit).
         let other = r#"{"type":"assistant","isApiErrorMessage":true,"error":"invalid_request","message":{"model":"<synthetic>","content":[{"type":"text","text":"Credit balance is too low"}]}}"#;
         assert_eq!(observe_line(other), Vec::<Observed>::new());
+    }
+
+    /// Claude Code 2.1.292's goal notices after a turn an API error ended (SPEC-333): the retry it
+    /// armed (task #116's line), the retries it spent, and a pause on an error it does not retry.
+    #[test]
+    fn goal_retry_notices_are_observed() {
+        let notice = |content: &str| {
+            serde_json::json!({"parentUuid": "d", "isSidechain": false, "type": "system",
+                "subtype": "informational", "content": content, "isMeta": false,
+                "timestamp": "2026-10-15T00:13:09.188Z", "uuid": "a", "level": "notice"})
+            .to_string()
+        };
+        let armed = r#"{"parentUuid":"da289e3d","isSidechain":false,"type":"system","subtype":"informational","content":"Goal still active · the API was unavailable or the connection dropped · retrying in 1 min (1/3) · send a message to retry now","isMeta":false,"timestamp":"2026-10-15T00:13:09.188Z","uuid":"afbe5ffe","level":"notice","sessionId":"ff9d70a5","version":"2.1.292"}"#;
+        assert_eq!(
+            observe_line(armed),
+            vec![Observed::GoalRetry {
+                armed: true,
+                notice: "Goal still active · the API was unavailable or the connection dropped"
+                    .into(),
+            }]
+        );
+        assert_eq!(
+            observe_line(&notice(
+                "Goal paused after 3 automatic retries · the API was unavailable or the connection dropped · send a message to continue"
+            )),
+            vec![Observed::GoalRetry {
+                armed: false,
+                notice: "Goal paused after 3 automatic retries · the API was unavailable or the connection dropped".into(),
+            }]
+        );
+        for paused in [
+            "Goal paused · the API rejected the last request · send a message to continue, or run /goal clear",
+            "Goal paused · the last turn could not finish · send a message to continue",
+            "Goal paused · the request was rate limited · send a message to retry",
+        ] {
+            assert!(
+                matches!(
+                    observe_line(&notice(paused)).as_slice(),
+                    [Observed::GoalRetry { armed: false, .. }]
+                ),
+                "{paused}"
+            );
+        }
+        // Pauses Yulius's own paths own, and other notices, are nothing.
+        for other in [
+            "Goal paused · a hook ended the turn · send a message to continue",
+            "Goal paused · the goal check timed out · send a message to continue",
+            "Goal paused · usage limit reached · continues automatically when it resets",
+            "Goal paused · usage limit reached · send a message after it resets to continue",
+            "Goal still active · the API was unavailable or the connection dropped",
+            "Compacted while idle, before the prompt cache expired",
+        ] {
+            assert_eq!(
+                observe_line(&notice(other)),
+                Vec::<Observed>::new(),
+                "{other}"
+            );
+        }
+        // A sub-agent's notice is its own.
+        let sidechain = armed.replace(r#""isSidechain":false"#, r#""isSidechain":true"#);
+        assert_eq!(observe_line(&sidechain), Vec::<Observed>::new());
     }
 
     /// A compaction's boundary record and the error a failed `/compact` reports.
