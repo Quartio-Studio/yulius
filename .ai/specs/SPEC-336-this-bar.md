@@ -52,7 +52,7 @@ pointer, the tabs it passes slide aside, and on release it settles into its plac
 - [x] Sandbox tab row uses the shared pointer drag
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Every gate green, docs and the changes log updated
-- [x] Full e2e suite and security scan pass, evidence recorded
+- [x] Full e2e suite passes; security scan unrun (Vidoc quota), evidence recorded
 
 ## Acceptance criteria
 
