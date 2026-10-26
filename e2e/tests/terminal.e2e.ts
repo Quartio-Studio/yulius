@@ -16,6 +16,8 @@ type Monaco = { editor: { getEditors(): { getPosition(): { lineNumber: number; c
 const rows = (browser: Browser) => browser.locator('.taskview .xterm-rows');
 /** The terminal row that shows `text` (in the task view, or in `scope`). */
 const row = (browser: Browser, text: string, scope = '.taskview') => browser.locator(`${scope} .xterm-rows > div`).filter({ hasText: text }).first();
+/** How long a wheel turn up waits for the program's answer before it counts as the top (terminal-core.js). */
+const TOP_SETTLE_MS = 400;
 /** Lets a pointer move settle (xterm asks its link providers when the pointer rests). */
 const settle = (ms = 500) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
@@ -641,8 +643,14 @@ test('a wheel turn past the top offers the whole session from its first message 
   await expect.poll(shown, { message: 'the program scrolled' }).not.toBe(before);
   await settle(1000);
   await expect(offer).toBeHidden();
-  // Past the program's top the screen stays as it was: the way on to the whole session shows (HIS-002).
+  // Up to the program's top: the screen stops moving.
   for (let turn = 0; turn < 3; turn++) await wheelUp(200);
+  await expect(rows(browser)).toHaveText(/Welcome to Claude/);
+  let last = '';
+  await expect.poll(async () => { const now = await shown(); const still = now === last; last = now; await settle(300); return still; }, { message: 'the screen stopped moving' }).toBe(true);
+  // A turn past it leaves the screen as it was: the way on to the whole session shows (HIS-002).
+  await settle(TOP_SETTLE_MS);
+  await wheelUp(3);
   await expect(offer).toBeVisible();
   await expect(offer).toHaveText(/Earlier messages: show the whole session/);
   await offer.click();
@@ -661,8 +669,18 @@ test('a wheel turn past the top offers the whole session from its first message 
   await expect(history).toBeHidden();
   await expect(rows(browser)).toBeVisible();
 
-  // Escape in the view goes back as well.
-  for (let turn = 0; turn < 2; turn++) await wheelUp(200);
+  // A turn back down hides the way on; Escape in the view goes back as well.
+  await wheelUp(3);
+  await expect(offer).toBeVisible();
+  await browser.evaluate(({ x, y }) => {
+    document.elementFromPoint(x, y)!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, deltaY: 40 }));
+  }, point!);
+  await expect(offer).toBeHidden();
+  // That turn scrolled the program down: the turn back up moves it and offers nothing; the next one does.
+  await wheelUp(200);
+  await settle(TOP_SETTLE_MS + 600);
+  await expect(offer).toBeHidden();
+  await wheelUp(3);
   await offer.click();
   await expect(history).toBeVisible();
   await browser.keyboard.press('Escape');

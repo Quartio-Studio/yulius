@@ -58,6 +58,8 @@ const INPUT_CHUNK = 8192;
 const REVEAL_LIMIT_MS = 5000;
 /** A program's clipboard write (OSC 52) counts only this soon after this viewer's key or click. */
 const PROGRAM_COPY_MS = 5000;
+/** A wheel turn up that left the screen's upper half unchanged this long reached the program's top. */
+const TOP_SETTLE_MS = 400;
 
 /**
  * Whether the person is typing in a text field outside `root` that is not a terminal's own input
@@ -99,12 +101,14 @@ function keyboardOnPage() {
  *   onReady()                  the terminal is shown (its first screen is drawn)
  *   onConnection(status)       the socket's status (connecting|open|reconnecting|failed|closed)
  *   onFatal(message)           the server refused this terminal for good (not_found, unauthenticated)
+ *   onTop()                    a wheel turn up reached the top: the program's screen did not move, or
+ *                              xterm's own scrollback is at its first line (SPEC-326 HIS-001)
  *   fileLinks                  optional {list(dir) → Promise<[{name, kind}]>, roots() → [absolute
  *                              folder paths], open({path, line, col}, event)}: paths of existing
  *                              files in the terminal's folder become links (termlinks.js)
  * Call start() after the element is in the document; destroy() when done.
  */
-export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, onFatal, fontSize, fileLinks = null, followServerSize = false }) {
+export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, onFatal, onTop = null, fontSize, fileLinks = null, followServerSize = false }) {
   const banner = h('div', { class: 'term-banner', hidden: true, role: 'status' });
   const noticeEl = h('div', { class: 'term-notice', hidden: true, role: 'status', 'aria-live': 'polite' });
   // Connection trouble floats over the terminal: it never changes the terminal's size.
@@ -483,8 +487,51 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // encoding at the pointer's cell; the fraction of a row left carries on in the same direction.
   const rowEvents = new WeakSet();
   let wheelRows = 0;
+  // Claude Code shows a session only from its last compaction, and a screen without scrollback
+  // has nothing above it: a turn up that moves nothing reached the top (SPEC-326 HIS-001). xterm
+  // scrolls a normal buffer itself, so its first line is the top. Elsewhere the program moves the
+  // screen (wheel reports, or arrow keys on the alternate screen): a turn after which the upper half
+  // stays as it was did not move it. The lower half holds the spinner and the prompt, which change
+  // while the agent works. Turns closer than TOP_SETTLE_MS are one gesture, compared with the
+  // screen at its start and at its last turn: the program's answer to a turn arrives a round trip
+  // later, so the last turn's screen may still be moving towards the top.
+  let topCheck = null;
+  let gestureStart = null;
+  const upperHalf = () => {
+    const buffer = term.buffer.active;
+    const lines = [];
+    for (let y = 0; y < Math.ceil(term.rows / 2); y++) {
+      const line = buffer.getLine(buffer.viewportY + y);
+      lines.push(line ? line.translateToString(true) : '');
+    }
+    return lines.join('\n');
+  };
+  const noticeTop = (event) => {
+    if (!onTop || event.ctrlKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+    if (!(event.deltaY < 0)) {
+      // A turn back down ends the gesture: what it shows is not the top.
+      clearTimeout(topCheck);
+      topCheck = null;
+      return;
+    }
+    const buffer = term.buffer.active;
+    if (buffer.type === 'normal' && !programHasMouse()) {
+      if (buffer.viewportY === 0) onTop();
+      return;
+    }
+    const before = upperHalf();
+    if (topCheck === null) gestureStart = before;
+    clearTimeout(topCheck);
+    topCheck = setTimeout(() => {
+      topCheck = null;
+      const now = upperHalf();
+      if (!destroyed && (now === before || now === gestureStart)) onTop();
+    }, TOP_SETTLE_MS);
+  };
   host.addEventListener('wheel', (event) => {
-    if (rowEvents.has(event) || !programHasMouse()) return;
+    if (rowEvents.has(event)) return;
+    noticeTop(event);
+    if (!programHasMouse()) return;
     if (event.ctrlKey || !event.deltaY) {
       event.stopPropagation();
       return;
@@ -871,6 +918,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       clearTimeout(revealTimer);
       clearTimeout(presenceTimer);
       clearTimeout(clickTimer);
+      clearTimeout(topCheck);
       window.removeEventListener('focus', onWindowFocus);
       window.removeEventListener('blur', updatePresence);
       document.removeEventListener('visibilitychange', updatePresence);

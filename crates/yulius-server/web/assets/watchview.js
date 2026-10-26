@@ -3,6 +3,8 @@
 // prints it (SPEC-075), in the live terminal's colours, as the session writes. Reads
 // GET /api/tasks/{tid}/transcript: the tail first, then from `end` about every 1.5 s while the task
 // is live and the page is shown, answered without a read while the transcript's size is unchanged.
+// With `whole`, it is the History view of a person's own task (SPEC-326): the whole session from
+// its first line, because Claude Code shows a session only from its last compaction.
 
 import { enc } from './api.js';
 import { h, icon, setChildren, loadError } from './dom.js';
@@ -14,6 +16,8 @@ import { transcriptEntries } from './pages/sessions.js';
 export const WATCH_POLL_MS = 1500;
 /** Entries a watcher starts with: the tail of the session. */
 const TAIL = 200;
+/** Entries per read of the whole session (HIS-003; the server's most). */
+const WHOLE_PAGE = 500;
 /** How close to the bottom (px) still counts as reading the latest lines. */
 const FOLLOW_SLACK = 32;
 /** The frames of Claude Code's spinner, there and back; `styles.css` steps through 12. */
@@ -35,9 +39,10 @@ export function workingFor(ms) {
  * Returns {el, start(), update(), destroy()}; `el.dataset.reading` says whether it reads on
  * (`live`), waits for the page to be shown (`paused`) or has read an ended task (`ended`).
  * `timer` (the reads) and `ticker` (the Working line's clock) stand in for setTimeout and
- * clearTimeout in tests, and `now` for Date.now.
+ * clearTimeout in tests, and `now` for Date.now. `whole` reads the session from its first line
+ * instead of its tail, and `onBack()` (Escape, or the button where the prompt box was) leaves it.
  */
-export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessionPath, timer: clock = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) }, ticker = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) }, now = () => Date.now() }) {
+export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessionPath, whole = false, onBack = null, timer: clock = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) }, ticker = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) }, now = () => Date.now() }) {
   const transcript = transcriptEntries();
   const earlier = h('p', { class: 'watch-earlier ss-dim small', hidden: true });
   const empty = h('div', { class: 'watch-empty', role: 'status', hidden: true });
@@ -47,12 +52,20 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
   const working = h('div', { class: 'watch-working ss-line', hidden: true }, spinner, h('span', { class: 'ss-line-body' }, h('span', { class: 'watch-working-text' }, 'Working…'), time));
   const lockedText = h('span', { class: 'ss-line-body' });
   // Where the TUI's prompt box was: who types, and that this person watches (not a control).
-  const locked = h('div', { class: 'ss-locked' }, h('span', { class: 'ss-mark ss-mark-prompt', 'aria-hidden': 'true' }, '>'), lockedText, icon('lock', { size: 14 }));
+  const back = whole ? h('button', { type: 'button', class: 'btn btn-sm watch-back', onClick: () => onBack && onBack() }, 'Back to the terminal') : icon('lock', { size: 14 });
+  const locked = h('div', { class: 'ss-locked' }, h('span', { class: 'ss-mark ss-mark-prompt', 'aria-hidden': 'true' }, '>'), lockedText, back);
   const tui = h('div', { class: 'ss-tui ss-live' }, earlier, transcript.el, empty, working, locked);
-  const scroller = h('div', { class: 'watch-scroll', tabindex: 0, role: 'region', 'aria-label': 'Live transcript' }, tui);
+  const scroller = h('div', { class: 'watch-scroll', tabindex: 0, role: 'region', 'aria-label': whole ? 'Whole session' : 'Live transcript' }, tui);
+  if (whole) {
+    scroller.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape' || !onBack) return;
+      event.preventDefault();
+      onBack();
+    });
+  }
   // Jumping down hides the button: the keyboard stays in the transcript, not on the page.
   const jump = h('button', { type: 'button', class: 'btn btn-sm watch-jump', hidden: true, onClick: () => { toBottom(); scroller.focus({ preventScroll: true }); } }, icon('down', { size: 14 }), 'New messages');
-  const el = h('div', { class: 'watch', dataset: { reading: 'live' } }, scroller, jump);
+  const el = h('div', { class: ['watch', whole && 'history'], dataset: { reading: 'live' } }, scroller, jump);
 
   let alive = true;
   let started = false;
@@ -91,7 +104,8 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
     const current = task();
     const who = owner();
     const live = isLive(current.status);
-    lockedText.textContent = live ? `@${who} is at the keyboard · you are watching` : `@${who} owns this task · you are watching`;
+    lockedText.textContent = whole ? 'The whole session, from its first message. Read-only.'
+      : live ? `@${who} is at the keyboard · you are watching` : `@${who} owns this task · you are watching`;
     working.hidden = !(current.status === 'running' && current.activity === 'working');
     showTime();
     if (failed) return; // the box says why the first read failed, with Try again
@@ -149,12 +163,12 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
     clock.clear(timer);
     timer = null;
     if (!alive || reading) return;
-    // The tail first, and again for a session that had none; then on from where the last read ended.
-    // `seen` lets the server answer an unchanged transcript without reading it; after a full page
-    // the rest is read whatever the size (null).
+    // The tail (the whole session: its first line) first, and again for a session that had none;
+    // then on from where the last read ended. `seen` lets the server answer an unchanged transcript
+    // without reading it; after a full page the rest is read whatever the size (null).
     const query = seen.loaded && seen.session
       ? `from=${seen.end}&session=${encodeURIComponent(seen.session)}${seen.bytes === null ? '' : `&seen=${seen.bytes}`}`
-      : `limit=${TAIL}`;
+      : whole ? `from=0&limit=${WHOLE_PAGE}` : `limit=${TAIL}`;
     reading = new AbortController();
     let page = null;
     try {
@@ -177,7 +191,8 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
         failed = false;
         empty.hidden = true;
       }
-      // Another session (a continue started one), or this one rewritten shorter: from its tail.
+      // Another session (a continue started one), or this one rewritten shorter: from its tail (or
+      // its first line).
       if (seen.loaded && seen.session && (page.session_id !== seen.session || page.end < seen.end)) {
         transcript.clear();
         seen = { session: null, end: 0, bytes: 0, loaded: false };
