@@ -11,6 +11,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   and sent a 10×5 resize. The Superagent and Shell terminals follow the last resize, so a tab
   still showing the Superagent got Claude Code in ten columns, and what it wrote while hidden
   stayed wrapped. A terminal that is not shown now measures nothing and sends no size.
+- A background task's wake-up reads as one line in a watched task and on the Sessions page
+  (SPEC-328, task #312, fixes #913). When background work ended, Claude Code's
+  `<task-notification>` record was printed as the person's typed prompt, with its time and all
+  its markup (task id, output file, usage). It now prints as the TUI does: `⏺ Agent "…" finished`,
+  its result folded under the line.
 - A Needs you request now reads as What happened, Problem and To do (SPEC-327, task #311). The
   attention bar showed "Needs you: <action> · <why>" as one paragraph, where the to-do was the
   hardest part to find. `needs_you` takes `happened`, `problem`, `action` and `decision`; the bar
