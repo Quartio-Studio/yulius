@@ -320,16 +320,25 @@ impl App {
     ) {
         use crate::supervisor::RunStart;
         // A launch under way reads the task's owner anew and settles its servers itself.
-        match self.deps.store.task(task).await {
+        let record = match self.deps.store.task(task).await {
             Ok(Some(record))
                 if matches!(
                     record.status,
                     TaskStatus::Running | TaskStatus::WaitingCapacity
-                ) => {}
+                ) =>
+            {
+                record
+            }
             Ok(_) => return,
             Err(err) => {
-                tracing::warn!(task = %task, error = %err, "task unreadable for the hand-over restart")
+                tracing::warn!(task = %task, error = %err, "task unreadable for the hand-over restart");
+                return;
             }
+        };
+        // One restart per hand-over: the hand-over and the launch's tail may both get here.
+        let holder = crate::vault::Holder::of_task(&record);
+        if !claim_restart(&self.runtime(task).personal_mcp_of, holder.person()) {
+            return;
         }
         let start = if self.runtime(task).at_limit.load(Ordering::SeqCst) {
             RunStart::AfterLimit
@@ -381,5 +390,54 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         self.task_summary(&task).await
+    }
+}
+
+/// Claims the restart of a run that holds `held`'s personal MCP servers for a task now held by
+/// `holder`: true once, for the first caller, when they differ (the record is cleared; the
+/// restarted run records its own); false when nothing is held, it is the holder's, or another
+/// caller claimed it.
+fn claim_restart(
+    held: &std::sync::Mutex<Option<yulius_domain::ids::UserId>>,
+    holder: Option<&yulius_domain::ids::UserId>,
+) -> bool {
+    let Ok(mut held) = held.lock() else {
+        return false;
+    };
+    match held.as_ref() {
+        Some(owner) if Some(owner) != holder => {
+            *held = None;
+            true
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use yulius_domain::ids::UserId;
+
+    use super::claim_restart;
+
+    /// Review of SPEC-332 (round 4): the hand-over and the launch's tail may both ask to restart
+    /// the same run; only the first does, so the second never stops the run the first resumes.
+    #[test]
+    fn a_hand_over_restarts_a_run_once() -> Result<(), Box<dyn std::error::Error>> {
+        let (alice, bob) = (UserId::parse("u-alice")?, UserId::parse("u-bob")?);
+        let held = Mutex::new(Some(alice.clone()));
+        assert!(!claim_restart(&held, Some(&alice)), "still the holder's");
+        assert!(claim_restart(&held, Some(&bob)));
+        assert!(!claim_restart(&held, Some(&bob)), "claimed already");
+        assert!(
+            !claim_restart(&Mutex::new(None), Some(&bob)),
+            "nothing held"
+        );
+        assert!(
+            claim_restart(&Mutex::new(Some(alice)), None),
+            "an automation's task holds nobody"
+        );
+        Ok(())
     }
 }

@@ -1534,14 +1534,16 @@ impl App {
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
         // Control passed during the launch, after this run took its owner's personal MCP servers
-        // and before a hand-over could see it live: it resumes for the new owner (SPEC-332).
+        // and before a hand-over could see it live: it resumes for the new owner (SPEC-332). The
+        // owner is read after the status changed, so no hand-over falls between the two checks.
         let held = runtime
             .personal_mcp_of
             .lock()
             .ok()
             .and_then(|held| held.clone());
+        let owner_now = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
         if held
-            .is_some_and(|owner| crate::vault::Holder::of_task(&current).person() != Some(&owner))
+            .is_some_and(|owner| crate::vault::Holder::of_task(&owner_now).person() != Some(&owner))
         {
             let app = Arc::clone(self);
             let (task_id, account) = (task.id.clone(), Some(account.id.clone()));
