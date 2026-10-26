@@ -1,11 +1,11 @@
 ---
 yulius-task: b30c147b-ba4a-46d2-a5ec-328e37ebe201
-status: in-progress
+status: done
 ---
 
 # SPEC-324: Status panel section summaries fit the panel at phone width
 
-Status: in-progress
+Status: done
 Date: 2026-10-26
 Owner: Yulius task #305
 Scope authorization: task #305 (`/goal`), fixes #549. Amends the Status panel of UI-007
@@ -50,9 +50,9 @@ limit · 1 need attention" is no longer cut off at "…1 need attentio".
 - [x] Spec SPEC-324 written and valid
 - [x] Regression e2e: Status section heads fit at 360 px (fails on dev)
 - [x] Section summaries wrap inside the panel
-- [ ] Docs, changes entry and gates green
-- [ ] Independent review answered
-- [ ] Merged into dev on green CI
+- [x] Docs, changes entry and gates green
+- [x] Independent review answered
+- [x] Evidence recorded and final head approved
 
 ## Acceptance criteria
 
@@ -82,3 +82,33 @@ limit · 1 need attention" is no longer cut off at "…1 need attentio".
   (the hint in #549): it hides the most important part on exactly the devices that hit it.
 - **No `title` on the summary.** Nothing is hidden any more, so a tooltip would only repeat the
   visible text.
+
+## Evidence
+
+- **Regression test first** (21b7bcca, tests only, on dev 91785a67):
+  `npx e2e run tests/subscriptions.e2e.ts --grep '#549'`: the phone test failed, "Subscriptions
+  head: expected ["status-section status-fold","summary"] to equal []" (AC-1); the desktop
+  guard passed (AC-3, the head unchanged at 1440 px). After the fix (caf9cb8e) both pass.
+- **Mutation checks** (each run, then reverted): no `text-align: right` fails the phone test
+  (line gap 63.8 px); the separator outside the parts fails it (3 px); `nowrap` on every part,
+  a lone one included, fails it (the squeezed Sandboxes summary stays one line); a lone summary
+  wrapped at desktop fails the desktop test ("Sandboxes summary lines: expected 2 to be 1").
+- **Screenshot** at 360×780 (mock, Status open): "4 ready · 1 at the limit ·" / "1 need
+  attention", right-aligned, inside the panel.
+- **Gate** `python3 scripts/bootstrap.py` then `scripts/dev ci`: exit 0, 2619 of 2619 tests passed,
+  16 skipped (started at 96666210; the later commits change only the web assets, the e2e test and
+  this spec).
+- **e2e** full suite `npx e2e run` at a03179b5: exit 0, 714 passed, 1 skipped (67 files); the
+  axe check of the open Status panel at 360 px has no violations (AC-1, SSF-003).
+- **Security** `yulius security-scan` at a03179b5: not run, exit 2 (Vidoc HTTP 429, the key used
+  its 50,000,000 tokens): unrun, not passed (ADR-0133, ADR-0157); CI's `security` job is the live
+  scan.
+- **Review** (fresh session, `om-code-review`, read-only): round 1 at 96666210 REQUEST CHANGES:
+  1 minor (right alignment untested) and 3 nits (a loose " ·" at a line's start or end, a lone
+  summary unable to wrap, the Plan ticks), all own code, all fixed (4345f1a9, 00aae7c0). Round 2
+  at 00aae7c0 REQUEST CHANGES: 2 minor, own code (a wrapped lone summary counted as one line; the
+  lone-summary wrap untested), fixed in a03179b5. Round 3 at a03179b5 APPROVE, with 1 optional nit:
+  `min-width: 0` on the summary has no effect in any tested case; kept as a defensive default
+  for a single word wider than the free space.
+- **Not tested:** real phones' fonts and widths other than 360 and 1440 px (the reviewer also
+  looked at 320, 400 and 480 px: from 400 px the summary is one line).
