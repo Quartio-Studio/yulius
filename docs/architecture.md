@@ -1433,8 +1433,12 @@ GitHub owner (an earlier version to port from, a shared library), an agent calls
 ([ADR-0197](decisions/0197-tasks-read-other-repositories-of-their-owner-through-a-bundle.md),
 [SPEC-267](../.ai/specs/SPEC-267-i-got-this-such-things-should-usually-ha.md)):
 `App::tool_reference_repo` checks with the task owner's user token that they can read it
-(`repo_access`), and `GitPort::bundle_branch` fetches its default branch with that token into a
-fresh bare repository under `<data>/tmp` and writes a bundle of it. `App::attach_server_file`
+(`repo_access`), and `GitPort::bundle_repository` fetches every branch and tag with that token
+into a fresh bare repository under `<data>/tmp` and writes a bundle of `HEAD` (the default branch),
+every branch and every tag; the agent's optional `branch` is the one its clone checks out, and a
+branch the repository lacks is invalid with the branch list
+([ADR-0223](decisions/0223-a-reference-copy-carries-every-branch-and-tag-its-owner-can-read.md),
+[SPEC-330](../.ai/specs/SPEC-330-fix-this-tasks-act-as-the-user-they-shou.md)). `App::attach_server_file`
 streams the bundle into the task's attachments through the upload path's handles (ADR-0174), the
 fetch folder is removed, and the agent clones the bundle itself into
 `<sandbox>/reference/<owner>/<name>`, outside every worktree. Git never runs on the host in a folder
@@ -1444,9 +1448,9 @@ repository, a playground, a disabled or unsigned owner and no read access are re
 
 ```mermaid
 flowchart LR
-  AG["agent"] -->|"reference_repo owner/name"| APP["Yulius"]
+  AG["agent"] -->|"reference_repo owner/name, branch?"| APP["Yulius"]
   APP -->|"repo_access, owner's token"| GH["GitHub"]
-  APP -->|"bundle_branch, owner's token"| TMP["data/tmp/reference-*: bare fetch + bundle"]
+  APP -->|"bundle_repository, owner's token"| TMP["data/tmp/reference-*: every branch and tag + bundle"]
   TMP -->|"attach_server_file (handles)"| ATT["sandbox attachments/tasks/task"]
   AG -->|"git clone bundle"| REF["sandbox reference/owner/name"]
   ATT --> REF
