@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-26
 
+- An MCP server is now for every sandbox or this one, and for the whole team or only you
+  (SPEC-332, task #316). A personal server is seen and changed only by you and attached only to
+  your own tasks and your Superagent, never to a teammate's task, an automation's task, CI or CD,
+  so a server holding your own credential (say a founder admin MCP) no longer goes to every
+  agent. The editor starts on Every sandbox + Whole team (This sandbox for non-administrators),
+  `claude mcp add --scope user` pastes as Only me, both settings change after adding, and the
+  list marks personal servers "Only you". A hand-over resumes a live run holding the previous
+  owner's server without it, and MCP servers' secret values (team and personal) are now redacted
+  like agent secrets. Per name the most specific server wins
+  ([ADR-0224](decisions/0224-an-mcp-server-is-for-every-sandbox-or-one-and-for-the-team-or-its-owner.md)).
 - A whole instance can be copied to another VM or a file and installed there (SPEC-329,
   ADR-0222, task #313): `sudo yulius instance export | ssh root@new-vm yulius instance import`.
   The export freezes `yulius.service` (server, agents, terminals, CI, Docker) so nothing drifts,

@@ -1,13 +1,16 @@
 //! MCP servers attached to agent runs (SPEC-001 MCP-001..003, AC-MCP-1/2).
 //!
-//! Servers are configured once per instance (instance administrators) or per sandbox (write
-//! access) and attached to every Claude Code run of the sandbox; the Yulius tool server
-//! itself is always attached by the harness adapter, so the name `yulius` is reserved. Secrets
-//! (stdio environment, HTTP headers) are sealed with the instance key, never returned (only
-//! their names), and opened only to build a run's attachments. Names are unique per scope
-//! case-insensitively with `-` and `_` treated alike (they become environment variable names);
-//! a sandbox server overrides an instance server of the same name, also when disabled, which
-//! turns the instance server off for that sandbox.
+//! A server is for every sandbox (`instance`) or one sandbox, and for the team or one person
+//! (SPEC-332, ADR-0224). Team servers are configured by instance administrators (every sandbox)
+//! or a sandbox's writers and attached to every Claude Code run of their scope; a personal
+//! server is its owner's alone: listed, changed and tested only by them, and attached only to
+//! runs they hold ([`Holder`]: their tasks and their Superagent, never an automation's task).
+//! The Yulius tool server itself is always attached by the harness adapter, so the name `yulius`
+//! is reserved. Secrets (stdio environment, HTTP headers) are sealed with the instance key, never
+//! returned (only their names), and opened only to build a run's attachments. Names are unique
+//! per scope (sandbox and owner) case-insensitively with `-` and `_` treated alike (they become
+//! environment variable names). Per name the most specific server wins, also when disabled:
+//! this sandbox's personal, its team, every sandbox's personal, then its team server.
 //!
 //! The attachments are built for every run, whichever subscription it runs on (MCP-004): the
 //! harness port writes them into the run's own MCP configuration, never into a per-account
@@ -23,7 +26,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use yulius_contracts::api::mcp::{McpServerInput, McpServerView, McpTestResult};
-use yulius_domain::ids::SandboxId;
+use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::permission::Action;
 use yulius_domain::time::Timestamp;
 
@@ -32,6 +35,7 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, Sealed};
 use crate::ports::harness::McpAttachment;
+use crate::vault::Holder;
 
 /// Reserved server name (the Yulius tool server).
 pub const RESERVED_NAME: &str = "yulius";
@@ -155,6 +159,8 @@ pub struct McpServerRecord {
     pub created_at: Timestamp,
     /// Where it came from.
     pub origin: McpOrigin,
+    /// Its person (`None` = the team's): only their runs get it (SPEC-332).
+    pub owner_id: Option<UserId>,
 }
 
 impl McpServerRecord {
@@ -166,6 +172,43 @@ impl McpServerRecord {
         } else {
             "instance"
         }
+    }
+
+    /// `team` or `personal`.
+    #[must_use]
+    pub fn audience(&self) -> &'static str {
+        if self.owner_id.is_some() {
+            "personal"
+        } else {
+            "team"
+        }
+    }
+
+    /// Precedence among servers of one name, higher wins (MSC-005): reach first, then personal.
+    fn rank(&self) -> u8 {
+        u8::from(self.sandbox_id.is_some()) * 2 + u8::from(self.owner_id.is_some())
+    }
+}
+
+/// Parses `scope`: `true` for every sandbox (`instance`), `false` for one (`sandbox` or empty).
+fn every_sandbox(scope: &str) -> AppResult<bool> {
+    match scope {
+        "instance" => Ok(true),
+        "sandbox" | "" => Ok(false),
+        _ => Err(AppError::Invalid(
+            "scope must be instance or sandbox".into(),
+        )),
+    }
+}
+
+/// Parses `audience`: `true` for `personal`, `false` for `team`.
+fn personal(audience: &str) -> AppResult<bool> {
+    match audience {
+        "personal" => Ok(true),
+        "team" | "" => Ok(false),
+        _ => Err(AppError::Invalid(
+            "audience must be team or personal".into(),
+        )),
     }
 }
 
@@ -423,10 +466,36 @@ impl App {
                 .collect(),
             enabled: record.enabled,
             origin: record.origin.as_str().to_owned(),
+            audience: record.audience().to_owned(),
         })
     }
 
-    /// `GET /api/sandboxes/{sid}/mcp`: sandbox servers plus inherited instance servers.
+    /// May `ctx`'s person put a server where `sandbox_id` (`None`: every sandbox) and `owned`
+    /// say, coming from `from` (MSC-003)? Personal: anyone who may work there; every sandbox's
+    /// team: instance administrators; one sandbox's team: its writers.
+    async fn require_placement(
+        &self,
+        ctx: &AuthContext,
+        from: &SandboxId,
+        sandbox_id: Option<&SandboxId>,
+        owned: bool,
+    ) -> AppResult<()> {
+        match (sandbox_id, owned) {
+            (Some(sid), true) => self.require(&ctx.user, sid, Action::Work).await.map(drop),
+            (None, true) => self.require(&ctx.user, from, Action::Work).await.map(drop),
+            (Some(sid), false) => self
+                .require(&ctx.user, sid, Action::Configure)
+                .await
+                .map(drop),
+            (None, false) => {
+                self.require(&ctx.user, from, Action::View).await?;
+                self.require_instance_admin(ctx)
+            }
+        }
+    }
+
+    /// `GET /api/sandboxes/{sid}/mcp`: the team servers of the sandbox and the instance, and the
+    /// caller's own personal servers of both.
     ///
     /// # Errors
     /// `NotFound` without access.
@@ -439,15 +508,15 @@ impl App {
         self.require(&ctx.user, &sid, Action::View).await?;
         self.deps
             .store
-            .mcp_servers(&sid)
+            .mcp_servers(&sid, Some(&ctx.user.id))
             .await?
             .iter()
             .map(|s| self.mcp_view(s))
             .collect()
     }
 
-    /// `POST /api/sandboxes/{sid}/mcp`; `scope: "instance"` creates an instance server
-    /// (instance administrators only).
+    /// `POST /api/sandboxes/{sid}/mcp`; `scope: "instance"` creates a server for every sandbox,
+    /// `audience: "personal"` one for the caller alone (MSC-001..003).
     ///
     /// # Errors
     /// Access, validation, duplicate-name and capacity errors.
@@ -458,22 +527,13 @@ impl App {
         input: &McpServerInput,
     ) -> AppResult<McpServerView> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
-        let instance = match input.scope.as_deref().unwrap_or("sandbox") {
-            "instance" => true,
-            "sandbox" | "" => false,
-            _ => {
-                return Err(AppError::Invalid(
-                    "scope must be instance or sandbox".into(),
-                ));
-            }
-        };
-        if instance {
-            self.require(&ctx.user, &sid, Action::View).await?;
-            self.require_instance_admin(ctx)?;
-        } else {
-            self.require(&ctx.user, &sid, Action::Configure).await?;
-        }
-        let record = self.new_mcp_record((!instance).then_some(sid), input, McpOrigin::Person)?;
+        let instance = every_sandbox(input.scope.as_deref().unwrap_or("sandbox"))?;
+        let owned = personal(input.audience.as_deref().unwrap_or("team"))?;
+        let target = (!instance).then(|| sid.clone());
+        self.require_placement(ctx, &sid, target.as_ref(), owned)
+            .await?;
+        let mut record = self.new_mcp_record(target, input, McpOrigin::Person)?;
+        record.owner_id = owned.then(|| ctx.user.id.clone());
         self.deps
             .store
             .insert_mcp_server(&record, MAX_SERVERS_PER_SCOPE)
@@ -485,6 +545,8 @@ impl App {
                 )),
                 other => other,
             })?;
+        // Redaction covers the new values (SPEC-332).
+        self.bump_vault_generation();
         self.audit_mcp(ctx, "mcp.created", &record).await?;
         self.mcp_view(&record)
     }
@@ -511,6 +573,7 @@ impl App {
             enabled: input.enabled.unwrap_or(true),
             created_at: self.now(),
             origin,
+            owner_id: None,
         })
     }
 
@@ -521,17 +584,88 @@ impl App {
             .mcp_server(id)
             .await?
             .ok_or(AppError::NotFound)?;
-        match &record.sandbox_id {
-            Some(sid) => {
+        match (&record.owner_id, &record.sandbox_id) {
+            // Another person's server does not exist for the caller, administrators included.
+            (Some(owner), _) if *owner != ctx.user.id => return Err(AppError::NotFound),
+            (Some(_), Some(sid)) => {
+                self.require(&ctx.user, sid, Action::Work).await?;
+            }
+            (Some(_), None) => {}
+            (None, Some(sid)) => {
                 self.require(&ctx.user, sid, Action::Configure).await?;
             }
-            None => self.require_instance_admin(ctx)?,
+            (None, None) => self.require_instance_admin(ctx)?,
         }
         Ok(record)
     }
 
+    /// Where an update puts `current` (MSC-006): omitted `scope`/`audience` keep it; moving into
+    /// one sandbox from every sandbox takes `sandbox`; making it personal makes the caller its
+    /// owner. A move needs the right to manage the server there.
+    async fn placement_for_update(
+        &self,
+        ctx: &AuthContext,
+        current: &McpServerRecord,
+        input: &McpServerInput,
+    ) -> AppResult<(Option<SandboxId>, Option<UserId>)> {
+        let instance = match input.scope.as_deref() {
+            Some(scope) => every_sandbox(scope)?,
+            None => current.sandbox_id.is_none(),
+        };
+        let owned = match input.audience.as_deref() {
+            Some(audience) => personal(audience)?,
+            None => current.owner_id.is_some(),
+        };
+        let named = input
+            .sandbox
+            .as_deref()
+            .map(|s| SandboxId::parse(s).map_err(|_| AppError::NotFound))
+            .transpose()?;
+        // `sandbox` only says where a server for every sandbox goes; a sandbox's server stays in
+        // its sandbox (a `.mcp.json` import is never carried to another repository's tasks).
+        let sandbox_id = match (instance, &current.sandbox_id, named) {
+            (true, _, _) => None,
+            (false, Some(sid), _) => Some(sid.clone()),
+            (false, None, Some(sid)) => Some(sid),
+            (false, None, None) => {
+                return Err(AppError::Invalid(
+                    "name the sandbox (`sandbox`) to keep a server for every sandbox to one".into(),
+                ));
+            }
+        };
+        let owner_id = owned.then(|| {
+            current
+                .owner_id
+                .clone()
+                .unwrap_or_else(|| ctx.user.id.clone())
+        });
+        if sandbox_id != current.sandbox_id || owner_id != current.owner_id {
+            let from = sandbox_id
+                .clone()
+                .or_else(|| current.sandbox_id.clone())
+                .or_else(|| {
+                    input
+                        .sandbox
+                        .as_deref()
+                        .and_then(|s| SandboxId::parse(s).ok())
+                });
+            match from {
+                Some(from) => {
+                    self.require_placement(ctx, &from, sandbox_id.as_ref(), owned)
+                        .await?;
+                }
+                // From one person's every-sandbox server to every sandbox's team server: only an
+                // administrator; staying personal needs nothing more than owning it.
+                None if !owned => self.require_instance_admin(ctx)?,
+                None => {}
+            }
+        }
+        Ok((sandbox_id, owner_id))
+    }
+
     /// `PUT /api/mcp/{id}`. Omitted `env`/`headers` keep the stored secrets; a given map
-    /// replaces all values of that map (an empty map clears it). The scope cannot change.
+    /// replaces all values of that map (an empty map clears it). `scope` and `audience` move the
+    /// server (`placement_for_update`).
     ///
     /// # Errors
     /// Access, validation and duplicate-name errors.
@@ -543,6 +677,7 @@ impl App {
     ) -> AppResult<McpServerView> {
         let current = self.mcp_for_change(ctx, id).await?;
         let fields = validate(input)?;
+        let (sandbox_id, owner_id) = self.placement_for_update(ctx, &current, input).await?;
         let taken_over =
             current.origin == McpOrigin::McpJson && takes_over(&current, &fields, input);
         let env = match &input.env {
@@ -570,23 +705,26 @@ impl App {
             env,
             headers,
             enabled: input.enabled.unwrap_or(current.enabled),
+            sandbox_id,
+            owner_id,
             ..current
         };
-        let updated =
-            self.deps
-                .store
-                .update_mcp_server(&record)
-                .await
-                .map_err(|err| match err {
-                    AppError::Conflict(_) => AppError::Conflict(format!(
-                        "an MCP server named {} already exists in this scope",
-                        record.name
-                    )),
-                    other => other,
-                })?;
+        let updated = self
+            .deps
+            .store
+            .update_mcp_server(&record, MAX_SERVERS_PER_SCOPE)
+            .await
+            .map_err(|err| match err {
+                AppError::Conflict(_) => AppError::Conflict(format!(
+                    "an MCP server named {} already exists in this scope",
+                    record.name
+                )),
+                other => other,
+            })?;
         if !updated {
             return Err(AppError::NotFound);
         }
+        self.bump_vault_generation();
         self.audit_mcp(ctx, "mcp.updated", &record).await?;
         self.mcp_view(&record)
     }
@@ -600,6 +738,7 @@ impl App {
         if !self.deps.store.delete_mcp_server(&record.id).await? {
             return Err(AppError::NotFound);
         }
+        self.bump_vault_generation();
         self.audit_mcp(ctx, "mcp.deleted", &record).await
     }
 
@@ -720,29 +859,137 @@ impl App {
             .await
     }
 
-    /// Configured MCP servers for runs in `sandbox`: enabled instance and sandbox servers with
-    /// opened secrets, one per name (a sandbox server overrides an instance server of the same
-    /// name). Every run gets them, whichever subscription it runs on (MCP-004). HTTP servers
+    /// The servers a run of `holder` in `sandbox` gets: one per name, the most specific (MSC-005),
+    /// enabled; personal ones only when they are `holder`'s own.
+    async fn effective_mcp(
+        &self,
+        sandbox: &SandboxId,
+        holder: Holder<'_>,
+    ) -> AppResult<Vec<McpServerRecord>> {
+        let mut servers: Vec<McpServerRecord> = self
+            .deps
+            .store
+            .mcp_servers(sandbox, holder.person())
+            .await?
+            .into_iter()
+            .filter(|s| s.owner_id.is_none() || s.owner_id.as_ref() == holder.person())
+            .collect();
+        servers.sort_by_key(McpServerRecord::rank);
+        let mut effective: BTreeMap<String, McpServerRecord> = BTreeMap::new();
+        for server in servers {
+            effective.insert(name_key(&server.name), server);
+        }
+        Ok(effective
+            .into_iter()
+            .filter(|(key, s)| s.enabled && key != RESERVED_NAME)
+            .map(|(_, s)| s)
+            .collect())
+    }
+
+    /// The secret values of the MCP servers that can reach runs of `sandbox` (`holder: None`:
+    /// every run, so every person's personal servers too), labelled `SERVER.KEY`, for redaction
+    /// (SPEC-332): literal values only (a `${secret:NAME}` reference is an agent secret, covered
+    /// as such), and none too short to recognise or ordinary text (`info`, `production`).
+    ///
+    /// # Errors
+    /// Store or decryption failures.
+    pub(crate) async fn mcp_secret_values(
+        &self,
+        sandbox: &SandboxId,
+        holder: Option<Holder<'_>>,
+    ) -> AppResult<Vec<(String, String)>> {
+        let servers = match holder {
+            None => self.deps.store.mcp_servers_reaching(sandbox).await?,
+            Some(holder) => {
+                self.deps
+                    .store
+                    .mcp_servers(sandbox, holder.person())
+                    .await?
+            }
+        };
+        let mut out = Vec::new();
+        for server in &servers {
+            let mut values = self.open_secrets(server.env.as_ref())?;
+            for (key, value) in self.open_secrets(server.headers.as_ref())? {
+                let token = bearer_of(&BTreeMap::from([(key.clone(), value.clone())])).0;
+                values.insert(key, token.unwrap_or(value));
+            }
+            for (key, value) in values {
+                let secret = !value.contains("${secret:")
+                    && value.chars().count() >= yulius_domain::vault::MIN_AGENT_VALUE_CHARS
+                    && yulius_domain::vault::ordinary_text(&value).is_none();
+                if secret {
+                    out.push((format!("{}.{key}", server.name), value));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether runs of `task` get one of its owner's personal MCP servers (MSC-009).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn holds_personal_mcp(
+        &self,
+        task: &crate::model::TaskRecord,
+    ) -> AppResult<bool> {
+        Ok(self
+            .effective_mcp(&task.sandbox_id, Holder::of_task(task))
+            .await?
+            .iter()
+            .any(|s| s.owner_id.is_some()))
+    }
+
+    /// Whether the live run of `task` was started with a person's personal MCP servers (MSC-009).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn live_run_holds_personal_mcp(
+        &self,
+        task: &crate::model::TaskRecord,
+    ) -> AppResult<bool> {
+        // Never creates a runtime: a task without one has no run.
+        let Some(runtime) = self.existing_runtime(&task.id) else {
+            return Ok(false);
+        };
+        let held = runtime
+            .personal_mcp_of
+            .lock()
+            .map(|held| held.is_some())
+            .unwrap_or(true);
+        Ok(held && self.deps.store.live_attempt(&task.id).await?.is_some())
+    }
+
+    /// Configured MCP servers for runs of `holder` in `sandbox` (`effective_mcp`) with
+    /// opened secrets. Every run gets them, whichever subscription it runs on (MCP-004). HTTP servers
     /// forward an `Authorization: Bearer` header as the bearer token; other headers cannot be
     /// passed to the harnesses yet and are skipped with a warning. `${secret:NAME}` values are
     /// resolved through [`App::resolve_secret_ref`]; one that does not resolve is left out.
     ///
     /// # Errors
     /// Store, crypto or secret-resolution failures.
-    pub async fn mcp_attachments(&self, sandbox: &SandboxRecord) -> AppResult<Vec<McpAttachment>> {
-        let servers = self.deps.store.mcp_servers(&sandbox.id).await?;
-        let mut effective: BTreeMap<String, &McpServerRecord> = BTreeMap::new();
-        for server in servers.iter().filter(|s| s.sandbox_id.is_none()) {
-            effective.insert(name_key(&server.name), server);
-        }
-        for server in servers.iter().filter(|s| s.sandbox_id.is_some()) {
-            effective.insert(name_key(&server.name), server);
-        }
+    pub async fn mcp_attachments(
+        &self,
+        sandbox: &SandboxRecord,
+        holder: Holder<'_>,
+    ) -> AppResult<Vec<McpAttachment>> {
+        Ok(self.mcp_launch(sandbox, holder).await?.0)
+    }
+
+    /// [`Self::mcp_attachments`] and whether one of them is a personal server, from one read.
+    ///
+    /// # Errors
+    /// Store, crypto or secret-resolution failures.
+    pub(crate) async fn mcp_launch(
+        &self,
+        sandbox: &SandboxRecord,
+        holder: Holder<'_>,
+    ) -> AppResult<(Vec<McpAttachment>, bool)> {
+        let servers = self.effective_mcp(&sandbox.id, holder).await?;
+        let personal = servers.iter().any(|s| s.owner_id.is_some());
         let mut out = Vec::new();
-        for (key, server) in effective {
-            if !server.enabled || key == RESERVED_NAME {
-                continue;
-            }
+        for server in servers {
             match server.transport {
                 McpTransport::Stdio => {
                     let mut env = Vec::new();
@@ -781,7 +1028,7 @@ impl App {
                 }
             }
         }
-        Ok(out)
+        Ok((out, personal))
     }
 }
 
@@ -800,6 +1047,8 @@ mod tests {
             headers: None,
             enabled: None,
             scope: None,
+            audience: None,
+            sandbox: None,
         }
     }
 
@@ -880,6 +1129,7 @@ mod tests {
             enabled: true,
             created_at: Timestamp(1),
             origin: McpOrigin::McpJson,
+            owner_id: None,
         }
     }
 

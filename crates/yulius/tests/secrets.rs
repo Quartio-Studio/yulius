@@ -2219,7 +2219,10 @@ async fn mcp_secret_references_resolve_to_agent_secrets() -> TestResult {
             .sandbox(&yulius_domain::ids::SandboxId::parse("s1")?)
             .await?
             .ok_or("sandbox")?;
-    let attachments = w.h.app.mcp_attachments(&sandbox).await?;
+    let attachments =
+        w.h.app
+            .mcp_attachments(&sandbox, yulius_app::vault::Holder::Nobody)
+            .await?;
     let env = attachments
         .iter()
         .find_map(|a| match a {
