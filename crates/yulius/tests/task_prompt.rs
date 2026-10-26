@@ -240,6 +240,22 @@ async fn a_head_request_says_whether_an_attached_file_is_there_without_sending_i
     Ok(())
 }
 
+/// SPEC-325 review: the browser downloads the link itself, and a `Content-Disposition` filename
+/// wins over the page's `download` name, so a name an upload keeps (non-ASCII letters) is sent
+/// as `filename*` (RFC 6266), with an ASCII fallback, not as "attachment".
+#[tokio::test]
+async fn a_downloaded_file_keeps_its_non_ascii_name() -> TestResult {
+    let (h, drafts, [alice, _, _]) = seeded(|d| format!("Look\n@{d}/błąd-ekranu.mp4")).await?;
+    std::fs::write(drafts.join("błąd-ekranu.mp4"), b"mp4")?;
+    let (status, headers, _) = get_raw(&h, "/api/tasks/t1/prompt/attachments/0", &alice).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers[header::CONTENT_DISPOSITION],
+        "attachment; filename=\"b__d-ekranu.mp4\"; filename*=UTF-8''b%C5%82%C4%85d-ekranu.mp4"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn only_the_tasks_own_attachment_folders_are_served_never_through_a_link() -> TestResult {
     let (h, drafts, [alice, ..]) = seeded(|d| {
