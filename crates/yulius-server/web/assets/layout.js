@@ -111,7 +111,12 @@ export function createTabRow(ctx) {
   const drag = createTabDrag(tabs, {
     selector: '.tab[data-id]',
     keyOf: (tab) => tab.dataset.id,
-    commit: (order) => { ctx.store.setSandboxOrder(order); return [...tabs.querySelectorAll('.tab[data-id]')]; },
+    commit: (order) => {
+      // A drag back to where it started pins no order: sandboxes added later keep the server's.
+      if (order.join() === ctx.store.state.sandboxes.map((sb) => sb.id).join()) renderTabs();
+      else ctx.store.setSandboxOrder(order);
+      return [...tabs.querySelectorAll('.tab[data-id]')];
+    },
     cancelled: () => { if (tabsStale) renderTabs(); },
   });
 
