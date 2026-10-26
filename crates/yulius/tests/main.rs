@@ -22,6 +22,7 @@ mod cd;
 mod claude_gate;
 mod cli;
 mod cockpit;
+mod cross_sandbox;
 mod context_full;
 mod delivery;
 mod disk;

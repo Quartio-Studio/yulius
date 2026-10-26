@@ -68,6 +68,10 @@ pub struct AppConfig {
     /// reads input, before the task is flagged (the sum of the typed goal's submit waits,
     /// SPEC-117 ONE-001). Tests shorten it.
     pub launch_goal_ms: u64,
+    /// How long the Superagent's request to start a task in another sandbox waits for its
+    /// person's answer ([`crate::cross_sandbox::CROSS_REQUEST_WAIT`], SPEC-335 XSR-003). Tests
+    /// shorten it.
+    pub cross_request_wait_ms: u64,
     /// Extra host paths visible read-only inside containment (for example agent CLI install
     /// directories outside `/usr` and `/opt`).
     pub contained_readonly: Vec<PathBuf>,
@@ -131,6 +135,10 @@ impl AppConfig {
             trust_answer_ms: u64::try_from(crate::supervisor::TRUST_ANSWER_TIMEOUT.as_millis())
                 .unwrap_or(300_000),
             launch_goal_ms: crate::supervisor::launch_goal_bound_ms(),
+            cross_request_wait_ms: u64::try_from(
+                crate::cross_sandbox::CROSS_REQUEST_WAIT.as_millis(),
+            )
+            .unwrap_or(240_000),
             agent_cpus: None,
             contained_readonly: Vec::new(),
             allowed_origins: Vec::new(),
@@ -241,6 +249,9 @@ pub struct App {
     pub(crate) observed_pulls: crate::sandboxes::ObservedPulls,
     /// Tasks created by tools in the last hour, per project (SPEC-037 MGT-003).
     pub(crate) tool_tasks: crate::manage::ToolTaskWindow,
+    /// The Superagents' requests to start tasks in other sandboxes, waiting for their person
+    /// (SPEC-335).
+    pub(crate) cross_requests: crate::cross_sandbox::CrossRequests,
     /// What each queued task a supertask holds waits for, as last published (SPEC-071).
     pub(crate) supertask_holds: crate::supertask::Holds,
     /// The last Docker smoke test started from Settings → Instance (SPEC-203 HST-015).
@@ -294,6 +305,7 @@ impl App {
             isolation: OnceLock::new(),
             observed_pulls: crate::sandboxes::ObservedPulls::default(),
             tool_tasks: crate::manage::ToolTaskWindow::default(),
+            cross_requests: crate::cross_sandbox::CrossRequests::default(),
             supertask_holds: crate::supertask::Holds::default(),
             docker_smoke: crate::sandbox_docker::SmokeState::default(),
             leftovers: crate::leftovers::LeftoverState::default(),

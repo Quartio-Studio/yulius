@@ -1,5 +1,6 @@
 //! Sandbox shells: `GET`/`POST /api/sandboxes/{sid}/shells`, `PATCH`/`DELETE
-//! /api/sandboxes/{sid}/shells/{id}`, the Cockpit `POST /api/sandboxes/{sid}/cockpit` and
+//! /api/sandboxes/{sid}/shells/{id}`, the Cockpit `POST /api/sandboxes/{sid}/cockpit`, its
+//! requests `/api/sandboxes/{sid}/superagent/requests` (SPEC-335) and
 //! `WS /api/shells/{id}/terminal` (docs/api.md; SPEC-001 UI-015, UI-016, AC-UI-7; SPEC-021).
 //! The WebSocket speaks the task terminal protocol.
 
@@ -82,6 +83,39 @@ pub async fn cockpit(
     Path(sid): Path<String>,
 ) -> ApiResult<Json<Shell>> {
     Ok(Json(dto(app.cockpit_open(&ctx, &sid).await?)))
+}
+
+/// `GET /api/sandboxes/{sid}/superagent/requests`: the caller's own requests of their
+/// Superagent in `sid` that wait for their answer (SPEC-335 XSR-005).
+pub async fn superagent_requests(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+) -> ApiResult<Json<Vec<serde_json::Value>>> {
+    Ok(Json(app.superagent_requests(&ctx, &sid)))
+}
+
+/// The person's answer to one request.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestAnswer {
+    approve: bool,
+}
+
+/// `POST /api/sandboxes/{sid}/superagent/requests/{id}` `{"approve": bool}`: the person approves
+/// or declines one request, from a browser session only (SPEC-335 XSR-006).
+pub async fn superagent_request_answer(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path((sid, id)): Path<(String, String)>,
+    body: Bytes,
+) -> ApiResult<Json<serde_json::Value>> {
+    let answer: RequestAnswer = serde_json::from_slice(&body)
+        .map_err(|err| AppError::Invalid(format!("invalid request body: {err}")))?;
+    Ok(Json(
+        app.superagent_request_answer(&ctx, &sid, &id, answer.approve)
+            .await?,
+    ))
 }
 
 pub async fn rename(
