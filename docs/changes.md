@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-26
 
+- The Superagent can start a task in another of its person's sandboxes, once the person approves
+  that one request (SPEC-335, ADR-0227, task #319). `sandboxes_list` names where it may ask;
+  `sandbox_task_create` puts the request above the Superagent's session, with the target, the
+  whole prompt and its start options, and waits up to 4 minutes for **Create task** or
+  **Decline**. Only the person's click in the web UI answers: every API token is refused, and a
+  dropped call, a restart or no answer leaves nothing to approve later. Approval creates the task
+  in the target exactly as shown, with the person's access checked there.
 - A whole instance can be copied to another VM or a file and installed there (SPEC-329,
   ADR-0222, task #313): `sudo yulius instance export | ssh root@new-vm yulius instance import`.
   The export freezes `yulius.service` (server, agents, terminals, CI, Docker) so nothing drifts,

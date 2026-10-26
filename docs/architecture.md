@@ -976,6 +976,40 @@ message is typed (`TaskRuntime::typing_message`); audited `task.messaged`
 ([SPEC-230](../.ai/specs/SPEC-230-superagent-should-be-able-to-prompt-task.md),
 [decision 0178](decisions/0178-the-superagent-messages-tasks-by-queueing-or-typing.md)).
 
+Only the Superagent reaches its person's other sandboxes, and only through them
+([SPEC-335](../.ai/specs/SPEC-335-superagents-should-be-able-to-talk-to-ot.md),
+[decision 0227](decisions/0227-the-superagent-starts-tasks-in-other-sandboxes-only-on-its-persons-approval.md),
+`cross_sandbox.rs`). `sandboxes_list` names the other live sandboxes the person can work in.
+`sandbox_task_create` records a request in `App::cross_requests` (in memory, at most 3 per person
+and source sandbox) and waits for the person's answer, at most `CROSS_REQUEST_WAIT` (4 minutes,
+below Node's 300 s headers timeout). A guard removes the request however the call ends, so a
+dropped call, a timeout or a restart leaves nothing to approve. The panel reads the person's own
+requests, announced by `superagent.requests` to that person only. An answer needs a browser
+session (`AuthContext::is_browser`): no API token approves, so an agent holding one cannot answer
+its own request. Approval runs `tool_task_create` with a `ProjectCaller` for the target, exactly
+as shown, and its result goes to the waiting call; audited `superagent.cross_task`.
+
+```mermaid
+sequenceDiagram
+  participant S as Superagent (sandbox A)
+  participant Y as Yulius (cross_requests)
+  participant P as Person (A's Superagent panel)
+  participant B as Sandbox B
+  S->>Y: sandbox_task_create {sandbox: B, prompt}
+  Y-->>P: superagent.requests (to that person only)
+  P->>Y: GET …/superagent/requests (full prompt, options)
+  alt Create task (browser session)
+    P->>Y: POST …/requests/{id} {approve: true}
+    Y->>B: task_create as the person (access rechecked)
+    Y-->>S: approved + task
+  else Decline
+    P->>Y: POST …/requests/{id} {approve: false}
+    Y-->>S: declined, nothing created
+  else 4 minutes, or the call dropped
+    Y-->>S: unanswered, request gone
+  end
+```
+
 A repository's `.mcp.json` would make Claude Code ask about each of its servers when the
 Superagent starts. Before every task run and Superagent start, `App::import_project_mcp` adds
 the file's servers that the sandbox lacks to its MCP servers, so task runs get them like any
