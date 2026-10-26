@@ -13,8 +13,9 @@ request (`Fixes #524`). Create no new GitHub issue; comment progress and leftove
 
 ## Goal
 
-The no-leak checks of `e2e/tests/reply.e2e.ts` "a reply field that closes while typing keeps the
-keys out of the terminal" fail when the keys typed on the attention bar reach the task terminal.
+Every no-leak check of `e2e/tests/reply.e2e.ts` fails when the keys reach the task terminal: the
+case "a reply field that closes while typing keeps the keys out of the terminal" (keys typed on the
+attention bar), and Escape, Cancel and an empty Send in the reply field.
 
 ## Context
 
@@ -30,27 +31,27 @@ keys out of the terminal" fail when the keys typed on the attention bar reach th
   on its way was not there yet.
 - **Why it was missed.** No mutation of the bar was run against the check. Run now, it shows the
   `'lo 2'` read was weak too: with the bar's letters and Enter forwarded to the terminal the old
-  test still passed, as the letters had not arrived when it read and the leaked Enter then
-  submitted them, leaving `input` empty again (Evidence).
-- The other no-leak reads (`Escape closes…`, `Send` with empty text) follow a positive wait
-  (Reply focused, field hidden or visible) and leave the session empty for the steps after them;
-  they are unchanged.
+  test could still pass (it raced: 3 of 5 runs passed), as the letters had not always arrived when
+  it read and the leaked Enter then submitted them, leaving `input` empty again (Evidence).
+- **The same blindness in three more reads (review round 1).** After Escape, after Cancel and
+  after an empty Send the tests read `input === ''` on an empty session, where a leaked Enter
+  changes nothing either; a mutation sending `\r` on an empty Send passed all six tests.
 
 ## Requirements
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| NLK-001 | Before the Enter the test seeds the session's input with `x`; after it the session still holds the seed and the terminal shows no `> x` line. | `reply.e2e.ts` |
+| NLK-001 | Before the keys each no-leak check seeds the session's input with `x`; after them the session still holds the seed and the terminal shows no `> x` line (closing field, Escape, Cancel, empty Send). | `reply.e2e.ts` `nothingReached` |
 | NLK-002 | Each no-leak read in that case first waits on positive conditions: the bar holds the keyboard, the hidden field still holds `Hal`, and the session has received a marker typed through the page's own terminal socket after the keys (the socket delivers in order, so a leaked key arrives before it). | `reply.e2e.ts` |
-| NLK-003 | A mutation that forwards the bar's keys (letters, or Enter alone) to the terminal fails the test. | Evidence |
+| NLK-003 | A mutation that forwards the bar's keys (letters, or Enter alone) to the terminal fails the test, and so does an Enter sent on Escape, on Cancel or on an empty Send, or the field's letters forwarded. | Evidence |
 | NLK-004 | Test-only change: no product code changes. | diff |
 
 ## Plan
 
 - [x] Spec SPEC-323 with the cause of both weak checks
-- [ ] Mutation that forwards the bar's keys shown to pass the current test
-- [ ] No-leak checks seed the session and wait behind the keys
-- [ ] Mutations make the new checks fail, recorded in Evidence
+- [x] Mutation that forwards the bar's keys shown to pass the current test
+- [x] No-leak checks seed the session and wait behind the keys
+- [x] Mutations make the new checks fail, recorded in Evidence
 - [ ] Independent review answered and gates green
 - [ ] Merged into dev on green CI with a closing summary
 
@@ -77,7 +78,11 @@ keys out of the terminal" fail when the keys typed on the attention bar reach th
 - **After the Enter a second marker (`y`) is sent the same way;** the session must then hold
   `xy`. A leaked Enter would leave `y` and a `> x` line.
 - **Bounded by the socket.** A leak delayed inside the page before it is sent (a timer of its own)
-  is not ordered by the barrier; no such path exists (xterm sends on the key event).
+  is not ordered by the barrier. xterm sends on the key event; the one timer on the way,
+  `typeAndSubmit`'s Enter 60 ms after its text, always follows a text sent at once, which the
+  marker catches.
+- **The empty Send's test clears the marker** (two backspaces through the same socket, waiting for
+  an empty session) so its next step still sends exactly `> Go on`.
 
 ## Evidence
 
@@ -90,7 +95,19 @@ Enter; reverted with `git checkout -q -- crates` after each run (the test was co
 | --- | --- | --- |
 | old (dev 91785a67) | unchanged | 6 passed |
 | old | Enter forwarded | 6 passed: the leak went unseen |
-| old | letters and Enter forwarded | 6 passed: the leak went unseen, `'lo 2'` included |
+| old | letters and Enter forwarded | 6 passed here; the reviewer saw it fail 2 of 4 (`"lo 2"`): a race |
 | new (f094a9ef) | unchanged | 6 passed |
 | new | Enter forwarded | 1 failed: `expected "y" to be "xy"` (`reply.e2e.ts:158`) |
 | new | letters and Enter forwarded | 1 failed: `expected "lo 2x" to be "x"` (`reply.e2e.ts:152`) |
+
+Review round 1 (all six reads covered, 85866c56):
+
+| Test | Product | Result |
+| --- | --- | --- |
+| new (85866c56) | unchanged | 6 passed |
+| new | Enter sent on Escape | 1 failed: Escape, `expected "y" to be "xy"` |
+| new | Enter sent on Cancel | 1 failed: Escape (its Cancel), `expected "z" to be "xyz"` |
+| new | Enter sent on an empty Send | 1 failed: Send sends, the field closed (the leaked Enter sent the seed `x` as a prompt, so the task stopped waiting); without the seed this mutation passed all six |
+| new | the field's letters forwarded | 2 failed: `expected "xNot yety" to be "xy"`, `expected "Halx" to be "x"` |
+| new | the bar's Enter forwarded | 1 failed: `expected "y" to be "xy"` |
+| new | the bar's letters and Enter forwarded | 1 failed: `expected "lo 2x" to be "x"` |

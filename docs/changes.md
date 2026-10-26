@@ -6,13 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-26
 
-- The reply e2e check "a reply field that closes while typing keeps the keys out of the terminal"
-  now fails when the attention bar's keys reach the terminal (SPEC-323, task #308, fixes #524). It
-  read the session right after typing, before a leaked key had arrived, and a leaked Enter emptied
-  the session as if nothing had been typed: with the bar's keys forwarded to the terminal it still
-  passed. It now types a marker behind the keys through the page's own terminal socket, which
-  delivers in order, and checks the session holds only the marker, before and after the Enter,
-  with no `> x` line in the terminal.
+- The reply e2e no-leak checks now fail when keys reach the terminal (SPEC-323, task #308, fixes
+  #524). They read the session right after the keys, before a leaked key had arrived, and on an
+  empty session, which a leaked Enter leaves empty: with the attention bar's keys forwarded to the
+  terminal the closing-field case could still pass, and an Enter sent on an empty Send passed
+  every case. Each check (closing field, Escape, Cancel, empty Send) now seeds the session, types a
+  marker behind the keys through the page's own terminal socket, which delivers in order, and
+  checks the session holds exactly both, with no `> x` line in the terminal.
 
 ## 2026-10-25
 
