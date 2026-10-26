@@ -193,6 +193,10 @@ export function mountTaskView(ctx, sandbox, task) {
       // The limit the sandbox was at: from the exit, else from the last run's record (a reload).
       exitMessage: (exit) => endedMessage(exit.status || current.status, exit.cause || lastLimitCause()),
       emptyMessage: () => emptyTerminalMessage(current),
+      // Claude Code shows a session only from its last compaction: past the terminal's top, the
+      // whole session is offered (SPEC-326).
+      // A task that never started has no session to show.
+      topOffer: { label: 'Earlier messages: show the whole session', open: () => openHistory(), when: () => !(detail && detail.started === false) },
       exitActions: (exit) => {
         const message = endedMessage(exit.status || current.status, exit.cause || lastLimitCause());
         const actions = [];
@@ -238,7 +242,8 @@ export function mountTaskView(ctx, sandbox, task) {
     if (Boolean(owner()) === Boolean(watch)) return;
     const previous = terminal;
     // The keyboard in the screen that goes moves to the one that comes (not to the page).
-    const focused = previous.el.contains(document.activeElement);
+    const focused = previous.el.contains(document.activeElement) || Boolean(history && history.el.contains(document.activeElement));
+    dropHistory();
     watch = owner() ? makeWatch() : null;
     terminal = watch ? watchingTerminal(watch) : makeTerminal();
     previous.el.replaceWith(terminal.el);
@@ -248,6 +253,43 @@ export function mountTaskView(ctx, sandbox, task) {
       terminal.start();
       if (focused || (!watch && !isPhone())) terminal.focus();
     }
+  }
+
+  // ---- the whole session (SPEC-326): Claude Code shows a session only from its last compaction,
+  // so a wheel turn that reaches the terminal's top offers (terminal-core.js) the session's
+  // transcript from its first line, in the terminal's place. The terminal stays connected
+  // underneath, hidden, until the person comes back to it.
+  let history = null;
+  function openHistory() {
+    if (watch || history) return;
+    history = createWatchView(ctx, {
+      taskId: task.id,
+      task: () => current,
+      owner,
+      emptyMessage: emptyTerminalMessage,
+      sessionPath: (docId) => `/s/${encodeURIComponent((ctx.store.sandboxById(sandbox.id) || sandbox).slug)}/sessions/${encodeURIComponent(docId)}`,
+      whole: true,
+      onBack: () => closeHistory(true),
+    });
+    terminal.el.hidden = true;
+    terminal.el.after(history.el);
+    history.start();
+    history.focus();
+  }
+  /** Removes the History view; true when there was one. */
+  function dropHistory() {
+    if (!history) return false;
+    const view = history;
+    history = null;
+    view.el.remove();
+    view.destroy();
+    return true;
+  }
+  function closeHistory(focus) {
+    if (!dropHistory()) return;
+    terminal.el.hidden = false;
+    terminal.refit();
+    if (focus) terminal.focus();
   }
 
   // ---- phone quick input
@@ -275,7 +317,12 @@ export function mountTaskView(ctx, sandbox, task) {
   // It takes the keyboard (tabindex -1) only from a reply field closed under someone typing.
   const attention = h('div', { class: 'attention-bar', role: 'status', tabindex: -1, hidden: true });
   // Where the user answers the agent: its terminal (the quick input on phones).
-  const focusReply = () => (isPhone() ? quickInput.focus() : terminal.focus());
+  // The whole session (SPEC-326) gives the terminal back first: the answer goes there.
+  const focusReply = () => {
+    closeHistory(false);
+    if (isPhone()) quickInput.focus();
+    else terminal.focus();
+  };
   // A text answer (Needs you, waiting for your reply) is written in a field in the bar and typed
   // into the session (SPEC-156): focusing the terminal alone showed nothing, as Claude Code draws
   // its own cursor. Phones have the quick input for it. The field stays in the bar (hidden when not
@@ -297,6 +344,8 @@ export function mountTaskView(ctx, sandbox, task) {
     if (!replying) return; // a closed (hidden) field never sends
     const text = replyInput.value.trim();
     if (!text) { replyInput.focus(); return; }
+    // The answer is for the terminal, sent or not: why it was not shows there (SPEC-326).
+    closeHistory(false);
     if (!typeAndSubmit(text)) return;
     replyInput.value = '';
     replying = false;
@@ -517,6 +566,7 @@ export function mountTaskView(ctx, sandbox, task) {
     queueBox.setValue('');
     queueError.textContent = '';
     renderQueue();
+    closeHistory(false);
     if (!isPhone()) terminal.focus();
   } }, 'Dismiss');
   // The request's files (SPEC-168): each a placeholder where it sits, `Image N` for an image (N
@@ -676,6 +726,18 @@ export function mountTaskView(ctx, sandbox, task) {
   });
   attentionSize.observe(attention);
   destroyers.push(() => attentionSize.disconnect());
+  // The way on past the terminal's top (terminal-core.js) sits below the cards floating over it
+  // (SPEC-326 HIS-002), however tall they are.
+  let overlayBottom = null;
+  const overlays = new ResizeObserver(() => {
+    const bottom = [attention, held].reduce((most, card) => (card.hidden ? most : Math.max(most, card.offsetTop + card.offsetHeight)), 0);
+    if (bottom === overlayBottom) return;
+    overlayBottom = bottom;
+    termArea.style.setProperty('--term-overlay-bottom', `${bottom}px`);
+  });
+  overlays.observe(attention);
+  overlays.observe(held);
+  destroyers.push(() => overlays.disconnect());
   const el = h('div', { class: 'taskview' }, heading, strip, termArea, quickbar);
 
   function renderStrip() {
@@ -838,6 +900,7 @@ export function mountTaskView(ctx, sandbox, task) {
       renderStrip();
       if (current.status !== previousStatus) terminal.refreshEmpty();
       if (watch) watch.update();
+      if (history) history.update();
       if (current.status !== previousStatus) loadDelivery(); // a finished task may now be ready for a pull request
       else renderDelivery();
       // A continued task gets a new attempt: reconnect if the socket had ended.
@@ -857,6 +920,7 @@ export function mountTaskView(ctx, sandbox, task) {
       alive = false;
       reads.abort();
       destroyers.forEach((off) => off());
+      dropHistory();
       terminal.destroy();
     },
   };
