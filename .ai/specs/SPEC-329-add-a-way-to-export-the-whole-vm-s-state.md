@@ -1,11 +1,11 @@
 ---
 yulius-task: 7ebbad1e-501f-45e7-b961-19cf7c7850ac
-status: in-progress
+status: done
 ---
 
 # SPEC-329: Export the whole instance as one stream and install it on another VM
 
-Status: draft
+Status: done
 Date: 2026-10-26
 Owner: task #313
 Scope authorization: task #313: "Add a way to export the whole VM's state. On exporting,
@@ -177,16 +177,16 @@ Confirmed against `dev` at 84b45934.
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] Exact-size streaming archive: pax tar writer with manifest and checksum trailer
-- [ ] Data directory plan: walk with exclusions, hard links, xattrs and an exact total
-- [ ] Freeze guard: the service frozen during the export, thawed or kept frozen after, refusals
-- [ ] `yulius instance export` streams to stdout with progress
-- [ ] Safe extraction: no link followed, owners remapped, xattrs, hard links, checksum checked
-- [ ] `yulius instance import` prepares the host, checks disk and version, installs the unit
-- [ ] Docs: operations guide, architecture, ADR, product summary
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Read the product context and related work, then write and validate the spec
+- [x] Exact-size streaming archive: pax tar writer with manifest and checksum trailer
+- [x] Data directory plan: walk with exclusions, hard links, xattrs and an exact total
+- [x] Freeze guard: the service frozen during the export, thawed or kept frozen after, refusals
+- [x] `yulius instance export` streams to stdout with progress
+- [x] Safe extraction: no link followed, owners remapped, xattrs, hard links, checksum checked
+- [x] `yulius instance import` prepares the host, checks disk and version, installs the unit
+- [x] Docs: operations guide, architecture, ADR, product summary
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -254,3 +254,49 @@ Confirmed against `dev` at 84b45934.
   later, because the request asks for the whole state.
 - assumed (reversible): a Settings → Instance card is not part of this change: the work is root
   CLI on both hosts and the operations guide documents it.
+
+## Evidence
+
+Head b1cccd89 (merged with `origin/dev` at 056e061c).
+
+- `scripts/dev ci`: exit 0. Repository contracts, Python tests, `cargo check`, `fmt --check`,
+  clippy `-D warnings` on Linux and for `aarch64-apple-darwin`, `cargo nextest`: 2696 tests run,
+  2696 passed (16 skipped), doctests, `cargo deny`, `cargo shear`, `cargo doc`.
+- The feature's own tests (`instance::` and `host_setup::`, 97, all passing, run as root):
+  - AC-1: `archive::tests` (written length equals the plan for files, links, hard links, long
+    and non-ASCII paths, large ids, binary attributes, negative times; GNU `tar -tvf` and the
+    `tar` crate read it). `export::tests` checks the stream against the announced total.
+  - AC-2: `walk::tests` (system/, runtime/, update/, yulius.db-shm, FIFO and socket left out).
+  - AC-3: `freeze::tests` (freeze then thaw, thaw on drop, `--move` disables, a unit that never
+    freezes is thawed and refused, inside-the-unit, a running or newly started update helper,
+    a stopped unit with processes, signals: thaw only a held freeze, claim of the end).
+  - AC-4: `extract::tests::an_exported_tree_installs_as_it_was`, the import round trip.
+  - AC-5: `extract::tests` (paths, links of the copy and already there, hard links outside
+    the copy, foreign owners lose setuid, only user/overlay attributes).
+  - AC-6: `import::tests` (cut, damaged, wrong length, schema, format, free space, an
+    existing or non-empty target, another owner, `..`, a marker or link at the marker,
+    another data directory than the exported one).
+  - Mutation checks: each test added for a review finding fails with its fix removed.
+- Binary smoke (debug build, root in a sandbox, a stand-in `systemctl` on PATH): `yulius
+  instance export --data-dir <tree> > copy.tar` called `show`, `is-active`, `freeze`, `show`,
+  `thaw` in that order; the file was 3,015,168 bytes, the manifest's `total_bytes`; GNU tar
+  listed it without `system/`. `yulius instance import --user ubuntu < copy.tar` into the
+  exported path made the directory for the existing `ubuntu`, remapped owners, printed the next
+  steps; a second import was refused (exit 2); a cut copy failed (exit 1) and left the
+  incomplete marker. `/etc/passwd` and `/etc/subuid` were unchanged.
+- Independent review (fresh session, `om-code-review`), four rounds: round 1 request changes
+  (High: the manifest chose where root writes; Medium: signals blocked by a stalled write, the
+  update helper starting under the freeze; Lows: btrfs inodes, marker through a link, hard
+  links to files not in the copy, oversized pax headers at plan time, messages, umask recipe,
+  spec wording); round 2 approve with two Low races and a nit (hard-link digests); round 3 one
+  Medium (a signal right after the export took its end); round 4 approve on b1cccd89, no
+  findings left. All findings were own code and fixed test-first; none pre-existing.
+- Security scan (`yulius security-scan`, beside the gate): **not run**, exit 2: Vidoc answered
+  HTTP 429 "This API key has used its 50,000,000 tokens" (the instance key's quota). The PR's CI
+  `security` job is the live scan.
+- Not tested: a real `systemctl freeze` of `yulius.service` with live agents, a real two-VM
+  move over `ssh`, a terabyte-scale copy, and a restore of `trusted.overlay.*` and whiteouts into
+  real overlay layers followed by a sandbox start on the new host (no systemd or second VM in
+  the sandbox). The freeze is tested through its command runner; extraction ran as root in the
+  sandbox (ownership, setuid) but not with overlay mounts.
+
