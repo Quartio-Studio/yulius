@@ -1,11 +1,11 @@
 ---
 yulius-task: 9af62d42-2393-4696-9155-3a5289c48ec0
-status: in-progress
+status: done
 ---
 
 # SPEC-319: The update's 30-minute cancel message counts every task still in a turn
 
-Status: in-progress
+Status: done
 Date: 2026-10-26
 Owner: Yulius task #304
 Scope authorization: task #304 (`/goal`), fixes #533. Amends the cancel message of
@@ -43,14 +43,15 @@ installing, however many there are.
 - [x] Spec SPEC-319 written and validated
 - [x] Failing regression test: 21 tasks in a turn at the bound
 - [x] Cancel message counts total - paused
-- [ ] Gates green, docs/changes.md entry, spec evidence
-- [ ] Independent review approved
+- [x] Gates green, docs/changes.md entry, spec evidence
+- [x] Independent review approved
 - [ ] Merged into dev on green CI
 
 ## Acceptance criteria
 
 - With 21 tasks in a turn (and one idle) at the bound, the run is cancelled with "21 task(s) were
   still in a turn after 30 minutes; nothing was installed." while the page lists 20 of them.
+- A run still being frozen at the bound (not confirmed, within its 5 passes) is counted.
 - The existing bounded-pause test asserts the exact count ("1 task(s)": one of its two tasks is
   idle at its prompt and counts as paused).
 
@@ -59,8 +60,9 @@ installing, however many there are.
 - Integration (`crates/yulius/tests/self_update.rs`):
   `the_cancel_message_counts_every_task_still_in_a_turn` seeds 21 working tasks and one idle task,
   passes the bound and checks the full count in the run's error and that `waiting` shows 20;
-  `pausing_is_bounded_and_updates_can_be_cancelled` asserts the exact message. The new test fails
-  before the fix with "20 task(s)".
+  `the_cancel_message_counts_a_run_still_being_frozen` reaches the bound while a run is still being
+  frozen and expects "1 task(s)"; `pausing_is_bounded_and_updates_can_be_cancelled` asserts the
+  exact message. Before the fix the new tests read "20 task(s)" and "0 task(s)".
 - Gates: `scripts/dev ci` and `scripts/dev security`.
 
 ## Decisions
@@ -69,3 +71,21 @@ installing, however many there are.
   frozen at the bound is not paused, so it held the update back and belongs in the count, even
   though the page's list leaves it out. Raising `MAX_WAITING_SHOWN` or counting `waiting` without
   the cap was rejected: the list is a display bound and would still miss runs being frozen.
+
+## Evidence
+
+- Red: at 3168f583 (test only) `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+  test(/^self_update::the_cancel_message/)'` failed with "20 task(s) were still in a turn…"; the
+  frozen-run test, run against dev's `updates.rs`, failed with "0 task(s)". Green with the fix:
+  `self_update::` 21 tests passed.
+- `scripts/dev ci` at 3d67c511: green (2620 tests passed, 16 skipped; fmt, clippy, macOS, deps,
+  doctests). The first run at b459d913 failed one unrelated test,
+  `leftovers::kept_files_of_a_removed_sandbox_are_listed_and_deleted_on_request` (`kept[0].bytes`
+  still null under load); it passed 5/5 alone and in the rerun. Not touched by this change; noted
+  on #533 (this task creates no issues).
+- `yulius security-scan` at 3d67c511: **not run** (exit 2): Vidoc's key is out of quota (HTTP 429,
+  "used its 50,000,000 tokens"); `updates.rs` and `self_update.rs` were not scanned.
+- Independent review (fresh session, om-code-review) of 91785a67..3d67c511: approve; its own-code
+  findings were answered here (the frozen-run test, this Evidence, SPEC-160's back-link). Its
+  pre-existing finding, a bound cancel on the pass that first finds every task paused ("0
+  task(s)"), is outside this change and noted on #533.
