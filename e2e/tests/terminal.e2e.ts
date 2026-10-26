@@ -871,7 +871,8 @@ test('the way on sits below a held card over the terminal (#911)', async ({ app,
 
 test('a task that never ran offers no earlier messages (#911)', async ({ app, browser }) => {
   await app.open(mock('/s/product/t/7'));
-  await expect(browser.locator('.taskview .xterm-screen')).toBeVisible();
+  // The mock draws a screen even for a waiting task: the task's state alone holds the offer back.
+  await expect(rows(browser)).toHaveText(/Welcome to Claude/);
   const point = await browser.evaluate(() => {
     const box = document.querySelector('.taskview .xterm-screen')!.getBoundingClientRect();
     return { x: box.left + 40, y: box.top + 20 };
@@ -879,6 +880,49 @@ test('a task that never ran offers no earlier messages (#911)', async ({ app, br
   await turn(browser, point, -120);
   await settle(TOP_SETTLE_MS + 600);
   expect(await offerShown(browser), 'nothing to offer before a session').toBe(false);
+});
+
+test('a blank screen offers nothing (#911)', async ({ app, browser }) => {
+  const point = await classicTask12(app, browser);
+  // The program cleared the screen and its scrollback: nothing earlier to show here.
+  await browser.evaluate(() => (window as unknown as HistoryMock).__yuliusMock.sessions.get('tsk_studio_12')!.broadcast('\x1b[r\x1b[2J\x1b[3J\x1b[H'));
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .xterm-rows')!.textContent!.trim())).toBe('');
+  await turn(browser, point, -120);
+  await settle(TOP_SETTLE_MS + 600);
+  expect(await offerShown(browser), 'a blank screen offers nothing').toBe(false);
+});
+
+test('a reply that could not be sent shows why in the terminal, not behind the whole session (#911)', async ({ app, browser, screen }) => {
+  const point = await classicTask12(app, browser);
+  await openClassicHistory(browser, point);
+  await touchTask(browser, 'sb_studio', 12, { activity: 'waiting', needs_you: null, background_shells: 0 });
+  await expect(browser.locator('.attention-bar')).toHaveText(/waiting for your reply/);
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { goOffline(): void } }).__yuliusMock.goOffline());
+  await screen.getByRole('button', 'Reply').click();
+  await screen.getByRole('textbox', 'Reply to the agent').fill('Go on');
+  await screen.getByRole('button', 'Send').click();
+  await expect(history(browser)).toBeHidden();
+  await expect(browser.locator('.taskview .term-notice')).toHaveText('Not connected — input was not sent');
+});
+
+test('dismissing a queued message kept after the start leaves the whole session for the terminal (#911)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product/t/7'));
+  const card = screen.getByRole('region', 'Queued messages');
+  await card.getByRole('textbox', 'Message for the agent').click();
+  await browser.keyboard.type('Only for paid invoices, please.');
+  await touchTask(browser, 'sb_product', 7, { status: 'running', started: true });
+  await expect(card).toContainText('The task has started: copy your message into its session.');
+  await expect(rows(browser)).toHaveText(/Welcome to Claude/);
+  const point = await browser.evaluate(() => {
+    const box = document.querySelector('.taskview .xterm-screen')!.getBoundingClientRect();
+    return { x: box.left + 40, y: box.top + 20 };
+  });
+  await expect.poll(async () => { await turn(browser, point, -120); await settle(TOP_SETTLE_MS + 200); return offerShown(browser); }, { message: 'the started task offers its session' }).toBe(true);
+  await offer(browser).click();
+  await expect(history(browser)).toBeVisible();
+  await browser.locator('.queue-compose > button:has-text("Dismiss")').click();
+  await expect(history(browser)).toBeHidden();
+  await expect(rows(browser)).toBeVisible();
 });
 
 test('mouse use while disconnected says nothing; typed input still warns', async ({ app, browser }) => {
