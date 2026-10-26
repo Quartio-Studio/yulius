@@ -1050,10 +1050,10 @@ fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
         assert_eq!(
             audited,
             [
-                ("yulius".to_owned(), "apify (sandbox, stdio)".to_owned()),
+                ("yulius".to_owned(), "apify (sandbox, team, stdio)".to_owned()),
                 (
                     "yulius".to_owned(),
-                    "pipedream-gmail (sandbox, http)".to_owned()
+                    "pipedream-gmail (sandbox, team, http)".to_owned()
                 ),
             ]
         );
