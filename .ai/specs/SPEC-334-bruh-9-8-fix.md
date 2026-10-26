@@ -101,7 +101,9 @@ the count passes the limit.
   out double counting. The mock reproduced the tile ("7 / 4" with `sessionlimit=4`).
 - Red: `npx e2e run tests/subscriptions.e2e.ts --grep "Sessions tile"` at 23cdc4fe (test only,
   dev's `layout.js`): `expected "7 / 4" to be "4 / 4"`. Green at 67ee61f3: the file's 17 tests pass.
-- Screenshot of the mock's Machine tiles (dark theme): "4 / 4 +3", "3 over the limit · 1 queued".
+- Screenshot of the mock's Machine tiles at 67ee61f3 (dark theme, before review round 1 split the
+  detail): "4 / 4 +3", "3 over the limit · 1 queued". The final tile's two detail lines are
+  asserted by the e2e test, not by a new screenshot.
 - Review round 1 (fresh session, head 92d8b019): request changes. One major (own code: the
   explanation named resumed Done tasks only; a restart with a lower limit also keeps runs over
   it), two minor (queued line untested; the detail cut off at phone width) and three nits (unknown
@@ -115,7 +117,11 @@ the count passes the limit.
 - `yulius security-scan`: not run, exit 2. Vidoc answered HTTP 429: the key has used its
   50,000,000 tokens. The 3 changed code files were not scanned.
 - `scripts/dev ci` (after `python3 scripts/bootstrap.py`), started at 92d8b019: exit 0, nextest
-  2633 passed, 16 skipped. Later commits change only JS, CSS, the e2e test, the mock and docs.
+  2633 passed, 16 skipped. My later commits change only `layout.js`, `mock.js`, the e2e test and
+  docs. The Rust merged from dev (#923) is covered by Yulius CI on the PR head, not by this run.
+- The whole e2e suite was not run locally (load average about 130 on 12 cores). Only
+  `subscriptions.e2e.ts` and `quality.e2e.ts` were run locally; the whole suite is left to Yulius
+  CI's e2e job on the PR head.
   `python3 scripts/check_repository.py` at the final tree: passed.
 - Not tested: the real server over its limit. The tile reads the same `/api/status` fields as
   before, so it was verified in the mock only.
