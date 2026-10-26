@@ -366,10 +366,14 @@ function statTile(iconName, name, value, percent, detail) {
     h('div', { class: 'stat-detail' }, detail || ' '));
 }
 
-/** A collapsible status section whose open state survives the panel's refresh. */
+/**
+ * A collapsible status section whose open state survives the panel's refresh. `summary` is one
+ * text or its parts, joined with " · ": a narrow panel wraps it between parts, never inside one (#549).
+ */
 function statusSection(key, iconName, title, summary, body, openByDefault) {
+  const parts = [summary].flat().flatMap((part, i) => [i ? ' · ' : null, h('span', { class: 'status-summary-part' }, part)]);
   return rememberOpen(h('details', { class: 'status-section status-fold' },
-    h('summary', null, icon('right', { size: 12 }), icon(iconName, { size: 15 }), h('h2', null, title), h('span', { class: 'status-summary-text' }, summary)),
+    h('summary', null, icon('right', { size: 12 }), icon(iconName, { size: 15 }), h('h2', null, title), h('span', { class: 'status-summary-text' }, parts)),
     h('div', { class: 'status-fold-body' }, body)), key, openByDefault);
 }
 
@@ -417,7 +421,7 @@ export function renderStatus(data) {
 
   const ready = accounts.filter((a) => a.status === 'ok').length;
   const limited = accounts.filter((a) => a.status === 'limited').length;
-  const accountSummary = [`${ready} ready`, limited ? `${limited} at the limit` : null, troubled.length ? `${troubled.length} need attention` : null].filter(Boolean).join(' · ');
+  const accountSummary = [`${ready} ready`, limited ? `${limited} at the limit` : null, troubled.length ? `${troubled.length} need attention` : null].filter(Boolean);
 
   return [
     h('div', { class: ['status-health', `health-${health.tone}`] }, icon(health.icon, { size: 16 }), h('span', null, health.text)),
