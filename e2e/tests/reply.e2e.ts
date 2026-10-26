@@ -14,6 +14,22 @@ const taskTerminal = (browser: Browser) => browser.locator('.taskview-term .xter
 const typedIntoTask = (browser: Browser) =>
   browser.evaluate(() => (window as unknown as { __yuliusMock: { sessions: Map<string, { input: string }> } }).__yuliusMock.sessions.get('tsk_studio_12')?.input ?? '');
 
+/**
+ * Types `text` into task #12's session through the page's own terminal socket and waits until the
+ * session has it. The socket delivers in order, so a key the page sent the terminal before it (a
+ * leak, which arrives a task later) has arrived by then. Answers what the session holds as typed.
+ */
+const typeBehind = async (browser: Browser, text: string) => {
+  await browser.evaluate((data) => {
+    const session = (window as unknown as { __yuliusMock: { sessions: Map<string, { viewers: Set<{ send(data: string): void }> }> } }).__yuliusMock.sessions.get('tsk_studio_12');
+    const [socket] = session ? [...session.viewers] : [];
+    if (!socket) throw new Error('task #12 has no terminal socket');
+    socket.send(JSON.stringify({ type: 'input', data }));
+  }, text);
+  await expect.poll(() => typedIntoTask(browser)).toMatch(new RegExp(`${text}$`));
+  return typedIntoTask(browser);
+};
+
 /** The focused element's accessible name and the caret, JSON-safe. */
 const focused = (browser: Browser) => browser.evaluate(() => {
   const active = document.activeElement as HTMLInputElement | null;
@@ -124,14 +140,24 @@ test('a reply field that closes while typing keeps the keys out of the terminal'
   await touchTask(browser, 'sb_studio', 12, { activity: 'needs_attention' });
   const field = screen.getByRole('textbox', 'Reply to the agent');
   await expect(field).toBeHidden();
-  // The keyboard rests on the bar, which does nothing with keys.
-  await expect.poll(() => browser.evaluate(() => document.activeElement?.classList.contains('attention-bar') ?? false)).toBe(true);
+  // The keyboard rests on the bar, which does nothing with keys (#524: each check below waits on
+  // what shows the keys were handled, and on a marker typed behind them, before it reads).
+  const barHasKeyboard = () => browser.evaluate(() => document.activeElement?.classList.contains('attention-bar') ?? false);
+  const hiddenWords = () => browser.evaluate(() => document.querySelector<HTMLInputElement>('.attention-reply input')?.value ?? null);
+  await expect.poll(barHasKeyboard).toBe(true);
   await browser.keyboard.type('lo 2');
-  expect(await typedIntoTask(browser)).toBe('');
-  // Enter (which would approve a menu) sends nothing either; the words wait, hidden, for the next Reply.
+  await expect.poll(barHasKeyboard).toBe(true);
+  await expect.poll(hiddenWords).toBe('Hal');
+  // The session holds only the marker `x`, typed after the keys: none of them reached it.
+  expect(await typeBehind(browser, 'x')).toBe('x');
+  // Enter (which would approve a menu) sends nothing either: the session still holds `x` (an
+  // Enter would have sent it as `> x`), and the words wait, hidden, for the next Reply.
   await browser.keyboard.press('Enter');
-  expect(await browser.evaluate(() => document.querySelector<HTMLInputElement>('.attention-reply input')?.value ?? null)).toBe('Hal');
-  expect(await typedIntoTask(browser)).toBe('');
+  await expect.poll(barHasKeyboard).toBe(true);
+  await expect.poll(hiddenWords).toBe('Hal');
+  expect(await typeBehind(browser, 'y')).toBe('xy');
+  await expect(taskTerminal(browser)).toContainText('❯ xy');
+  await expect(taskTerminal(browser)).not.toContainText('> x');
 });
 
 test('Reply on a phone focuses the quick input; no field opens', async ({ app, browser, screen }) => {
