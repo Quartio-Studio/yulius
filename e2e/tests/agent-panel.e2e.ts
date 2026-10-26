@@ -308,11 +308,12 @@ test('a hidden Superagent or Shell terminal keeps its session’s size', async (
   await browser.setViewport({ width: 1400, height: 900 });
   await app.open(mock('/s/studio/agent'));
   await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
-  /** The mock session's size (what the page last sent), of the Superagent or the Shell's terminal. */
+  /** The mock session's size (what the page last sent), of the Superagent or the Shell's terminal;
+   * null until the page has sent one (the session's starting size is the mock's, #924). */
   const size = (cockpit: boolean) => browser.evaluate((agent) => {
-    type Shells = { __yuliusMock: { shells: Map<string, { cockpit?: boolean; session?: { cols: number; rows: number } }> } };
+    type Shells = { __yuliusMock: { shells: Map<string, { cockpit?: boolean; session?: { cols: number; rows: number; sized?: boolean } }> } };
     const shell = [...(window as unknown as Shells).__yuliusMock.shells.values()].find((s) => Boolean(s.cockpit) === agent && s.session);
-    return shell && shell.session ? `${shell.session.cols}x${shell.session.rows}` : null;
+    return shell && shell.session && shell.session.sized ? `${shell.session.cols}x${shell.session.rows}` : null;
   }, cockpit);
   // The terminal reacts to its box in the frame after the change is observed: two frames and a spare.
   const settle = () => browser.evaluate(() => new Promise<boolean>((done) => { requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => done(true)))); }));

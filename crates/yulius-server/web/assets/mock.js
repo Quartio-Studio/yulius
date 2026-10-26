@@ -4722,6 +4722,9 @@ class ShellSession {
     this.viewers = new Set();
     this.cols = 100;
     this.rows = 30;
+    // Whether a viewer has said its size (its hello or a resize): until then cols × rows is only
+    // this mock's start, which tests must not take for the page's (#924).
+    this.sized = false;
     const cwd = shell.task_id ? `~/sandbox/worktrees/${shell.task_id}` : '~/sandbox';
     // Like bash with Yulius's PROMPT_COMMAND: the working directory as OSC 7 before each prompt.
     this.prompt = `\x1b]7;file://sandbox${shell.folder || ''}\x1b\\${c(114, `you@${slug}`)}:${c(39, cwd)}$ `;
@@ -4750,11 +4753,11 @@ class ShellSession {
       const hold = window.__yuliusHoldShell;
       if (hold && !this.released) { hold.then(() => { this.released = true; this.receive(ws, data); }); return; }
       this.viewers.add(ws);
-      if (msg.cols && msg.rows) { this.cols = msg.cols; this.rows = msg.rows; }
+      if (msg.cols && msg.rows) { this.cols = msg.cols; this.rows = msg.rows; this.sized = true; }
       ws.push(JSON.stringify({ type: 'state', attempt_seq: null, harness: null, cols: this.cols, rows: this.rows, can_write: true, controller: true, status: 'running' }));
       ws.push(terminalFrame(2, this.seq, `${E}2J${E}H${this.screen}`));
     } else if (msg.type === 'resize') {
-      if (msg.cols && msg.rows) { this.cols = msg.cols; this.rows = msg.rows; }
+      if (msg.cols && msg.rows) { this.cols = msg.cols; this.rows = msg.rows; this.sized = true; }
     } else if (msg.type === 'input') {
       for (const ch of String(msg.data || '')) {
         if (ch === '\r') this.run();
