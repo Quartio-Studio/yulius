@@ -253,21 +253,55 @@ fn the_helper_is_checked_again_on_request() -> TestResult {
 
 #[test]
 fn a_signal_thaws_only_a_freeze_the_export_holds() {
+    use std::sync::atomic::Ordering::SeqCst;
     let state = AtomicU8::new(THAW);
     let mut fake = Fake::new(&[]);
-    assert_eq!(on_signal(&state, &mut fake, UNIT), None);
+    assert_eq!(on_signal(&state, &mut fake, UNIT), Signal::Exit(None));
     assert_eq!(fake.calls(), ["thaw yulius.service"]);
+    assert_eq!(
+        state.load(SeqCst),
+        CLAIMED,
+        "the export can no longer keep it for a move"
+    );
 
     let mut fake = Fake::new(&[]);
-    state.store(LEAVE, std::sync::atomic::Ordering::SeqCst);
-    assert_eq!(on_signal(&state, &mut fake, UNIT), None);
+    state.store(LEAVE, SeqCst);
+    assert_eq!(on_signal(&state, &mut fake, UNIT), Signal::Exit(None));
     assert!(fake.calls().is_empty());
 
     // Still taking the freeze when the wait ends: no thaw that could come before the freeze.
     let mut fake = Fake::new(&[]);
-    state.store(ARMING, std::sync::atomic::Ordering::SeqCst);
-    assert_eq!(on_signal(&state, &mut fake, UNIT), None);
+    state.store(ARMING, SeqCst);
+    assert_eq!(on_signal(&state, &mut fake, UNIT), Signal::Exit(None));
     assert!(fake.calls().is_empty());
+}
+
+#[test]
+fn a_signal_during_a_refused_freeze_leaves_the_exit_to_the_refusal() {
+    let state = AtomicU8::new(REFUSED);
+    let mut fake = Fake::new(&[]);
+    assert_eq!(on_signal(&state, &mut fake, UNIT), Signal::LeaveToMain);
+    assert!(fake.calls().is_empty());
+}
+
+#[test]
+fn the_export_and_a_signal_never_both_own_the_end() {
+    use std::sync::atomic::Ordering::SeqCst;
+    // The export claims first: a later signal finds nothing to thaw.
+    let state = AtomicU8::new(THAW);
+    assert!(claim_end(&state));
+    let mut fake = Fake::new(&[]);
+    assert_eq!(on_signal(&state, &mut fake, UNIT), Signal::Exit(None));
+    assert!(fake.calls().is_empty());
+    // The signal claims first: the export must not report a move or a thaw of its own.
+    let state = AtomicU8::new(THAW);
+    let mut fake = Fake::new(&[]);
+    let _ = on_signal(&state, &mut fake, UNIT);
+    assert!(!claim_end(&state));
+    // Not the export's freeze: the export ends it as it is.
+    let state = AtomicU8::new(LEAVE);
+    assert!(claim_end(&state));
+    assert_eq!(state.load(SeqCst), LEAVE);
 }
 
 #[test]
@@ -275,6 +309,8 @@ fn a_failed_thaw_on_a_signal_says_to_run_it_by_hand() {
     let state = AtomicU8::new(THAW);
     let mut fake = Fake::new(&[]);
     fake.codes.insert("thaw".into(), 1);
-    let why = on_signal(&state, &mut fake, UNIT).unwrap_or_default();
+    let Signal::Exit(Some(why)) = on_signal(&state, &mut fake, UNIT) else {
+        panic!("expected a failed thaw");
+    };
     assert!(why.contains("run it by hand"), "{why}");
 }

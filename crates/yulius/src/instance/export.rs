@@ -221,10 +221,15 @@ pub fn main(opts: &ExportOptions) -> ExitCode {
             eprintln!(
                 "\nyulius instance export: stopped by signal {signal}; the copy is incomplete"
             );
-            if let Some(why) = freeze::on_signal(&watched, &mut freeze::System, &unit) {
-                eprintln!("yulius instance export: {why}");
+            match freeze::on_signal(&watched, &mut freeze::System, &unit) {
+                freeze::Signal::LeaveToMain => {}
+                freeze::Signal::Exit(why) => {
+                    if let Some(why) = why {
+                        eprintln!("yulius instance export: {why}");
+                    }
+                    std::process::exit(1);
+                }
             }
-            std::process::exit(1);
         }
     });
     let mut held = match freeze::freeze(
@@ -234,7 +239,7 @@ pub fn main(opts: &ExportOptions) -> ExitCode {
     ) {
         Ok(held) => held,
         Err(why) => {
-            state.store(freeze::LEAVE, Ordering::SeqCst);
+            state.store(freeze::REFUSED, Ordering::SeqCst);
             return refused(&why);
         }
     };
@@ -245,8 +250,13 @@ pub fn main(opts: &ExportOptions) -> ExitCode {
     };
     state.store(ours, Ordering::SeqCst);
     let result = run(&data_dir, &manifest, &mut held);
-    // From here the export thaws (or keeps the freeze for a move) itself.
-    state.store(freeze::LEAVE, Ordering::SeqCst);
+    // From here the export thaws (or keeps the freeze for a move) itself, unless a signal took
+    // the end first: then that thread thaws and exits, and nothing here may report a move.
+    if !freeze::claim_end(&state) {
+        loop {
+            std::thread::park();
+        }
+    }
     match (result, opts.move_out) {
         (Ok(()), true) => match held.keep_for_move() {
             Ok(()) => {

@@ -6,11 +6,12 @@
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs::File;
-use std::hash::Hasher as _;
 use std::io::{self, Read, Write as _};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
+
+use sha2::{Digest as _, Sha256};
 
 use rustix::fs::{
     AtFlags, CWD, FileType, Gid, Mode, OFlags, RawMode, Timespec, Timestamps, Uid, XattrFlags,
@@ -88,11 +89,12 @@ fn whiteout(_: &OwnedFd, name: &OsStr, _: u32) -> io::Result<()> {
     )))
 }
 
-/// A path's hash, the same in every run (std's SipHash with its fixed keys).
-fn path_hash(path: &[u8]) -> u64 {
-    let mut h = std::hash::DefaultHasher::new();
-    h.write(path);
-    h.finish()
+/// A path's digest: the first 128 bits of its SHA-256, so two paths of one copy never share it.
+fn path_hash(path: &[u8]) -> [u8; 16] {
+    let digest = Sha256::digest(path);
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&digest[..16]);
+    out
 }
 
 /// Whether an extended attribute is restored (IMP-003): overlay layers' and users' own; the rest
@@ -137,8 +139,8 @@ pub struct Extractor {
     parent: Option<(Vec<Vec<u8>>, OwnedFd)>,
     /// Directories' times, set at the end (their entries change them).
     dirs: Vec<(Vec<u8>, i64)>,
-    /// Hashes of the regular files' paths written so far: a hard link must name one of them.
-    files: HashSet<u64>,
+    /// Digests of the regular files' paths written so far: a hard link must name one of them.
+    files: HashSet<[u8; 16]>,
     report: Report,
 }
 

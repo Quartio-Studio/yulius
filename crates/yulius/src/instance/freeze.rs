@@ -267,23 +267,42 @@ impl Drop for Freeze {
 pub const ARMING: u8 = 0;
 /// [`on_signal`]: the export froze the unit and has not finished.
 pub const THAW: u8 = 1;
-/// [`on_signal`]: nothing to thaw (not frozen by the export, or the export has finished).
+/// [`on_signal`]: nothing to thaw (not frozen by the export, or the export ends it itself).
 pub const LEAVE: u8 = 2;
+/// [`on_signal`]: the freeze was refused; the refusal ends the command (exit 2).
+pub const REFUSED: u8 = 3;
+/// [`on_signal`]: a signal took the end: it thaws and exits, the export must not.
+pub const CLAIMED: u8 = 4;
+
+/// What the signal thread does after [`on_signal`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum Signal {
+    /// Exit with 1, saying why a thaw failed when it did.
+    Exit(Option<String>),
+    /// Do nothing: the refusal of the freeze ends the command.
+    LeaveToMain,
+}
 
 /// What a SIGINT, SIGTERM or SIGHUP does during an export, on its own thread so it works while
 /// the export is blocked writing to a stalled pipe: waits (bounded) while the freeze is being
-/// taken, so a thaw never comes before it, then thaws the unit if `state` says the export froze
-/// it. Returns why a thaw failed.
-pub fn on_signal(state: &AtomicU8, host: &mut dyn Host, unit: &str) -> Option<String> {
+/// taken, so a thaw never comes before it, then, if the export froze the unit and has not
+/// claimed its end ([`claim_end`]), claims it and thaws.
+pub fn on_signal(state: &AtomicU8, host: &mut dyn Host, unit: &str) -> Signal {
     let mut waited = Duration::ZERO;
     while state.load(Ordering::SeqCst) == ARMING && waited < FREEZE_WAIT + FREEZE_WAIT {
         host.sleep(POLL);
         waited += POLL;
     }
-    if state.load(Ordering::SeqCst) != THAW {
-        return None;
+    if state.load(Ordering::SeqCst) == REFUSED {
+        return Signal::LeaveToMain;
     }
-    match host.systemctl(&["thaw", unit]) {
+    if state
+        .compare_exchange(THAW, CLAIMED, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Signal::Exit(None);
+    }
+    Signal::Exit(match host.systemctl(&["thaw", unit]) {
         Ok((0, _)) => None,
         Ok((code, _)) => Some(format!(
             "`systemctl thaw {unit}` failed (exit {code}); run it by hand"
@@ -291,6 +310,15 @@ pub fn on_signal(state: &AtomicU8, host: &mut dyn Host, unit: &str) -> Option<St
         Err(e) => Some(format!(
             "`systemctl thaw {unit}` did not run ({e}); run it by hand"
         )),
+    })
+}
+
+/// The export takes its own end (a thaw, or keeping the freeze for a move); `false` when a
+/// signal already took it, so the export must leave the end (and the exit) to the signal.
+pub fn claim_end(state: &AtomicU8) -> bool {
+    match state.compare_exchange(THAW, LEAVE, Ordering::SeqCst, Ordering::SeqCst) {
+        Ok(_) => true,
+        Err(now) => now != CLAIMED,
     }
 }
 
