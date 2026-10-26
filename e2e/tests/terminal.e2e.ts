@@ -840,7 +840,7 @@ test('the attention bar’s Reply leaves the whole session for the terminal (#91
   // The agent asks in the terminal: Reply puts the keyboard there, so the terminal shows again.
   await openClassicHistory(browser, point);
   await touchTask(browser, 'sb_studio', 12, { activity: 'needs_attention', needs_you: { action: 'Add a ruleset', why: 'agents can push to main', at: new Date().toISOString() } });
-  await expect(browser.locator('.attention-bar')).toHaveText(/Needs you: Add a ruleset/);
+  await expect(browser.locator('.attention-bar')).toHaveText(/Needs you[\s\S]*To do[\s\S]*Add a ruleset/);
   await screen.getByRole('button', 'Reply').click();
   await expect(history(browser)).toBeHidden();
   await expect.poll(() => browser.evaluate(() => Boolean(document.activeElement && document.activeElement.closest('.taskview .xterm'))), { message: 'the keyboard is in the terminal' }).toBe(true);

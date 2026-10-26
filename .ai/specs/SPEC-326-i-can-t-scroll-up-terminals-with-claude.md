@@ -216,7 +216,11 @@ SPEC-310 fixes.
   passed, 16 skipped. The six e2e files both sides touched (terminal, watching, reply,
   queued-messages, filedrop, original-prompt) passed 100 of 100. Merging #914 conflicted in
   `taskview.js`, where both add a ResizeObserver on the attention bar. Both were kept, and both are
-  disconnected through `destroyers`. The results for that head are below.
+  disconnected through `destroyers`. At 68b1d7cb: `scripts/dev ci` exit 0, 2628 tests run, 2628
+  passed, 16 skipped. The full e2e suite: 727 passed, 4 failed, 1 skipped. One failure was this
+  change's test: #914 reworded the attention bar ("Needs you To do …"), so its text check follows
+  `reply.e2e.ts`'s. The other three (pause, sessions, subscriptions) timed out waiting for an element,
+  at a load average of 123, in views this change does not touch. The four files then passed 72 of 72.
 - **Not tested.**
   - The fix was not tried on the live instance or on the person's old tasks. The sandbox browser
     cannot open Yulius, and other projects' runs are not reachable from here. Old runs were
