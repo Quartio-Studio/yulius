@@ -108,8 +108,9 @@ pub struct ServeArgs {
     #[arg(long, env = "YULIUS_PREVIEW_DOMAIN")]
     pub preview_domain: Option<String>,
     /// Largest file one upload may carry, in MiB (files dropped onto the editor or a terminal,
-    /// SPEC-001 EDT-006, UI-048). The reverse proxy's body limit must allow it.
-    #[arg(long, env = "YULIUS_UPLOAD_MAX_MB", default_value_t = 25,
+    /// SPEC-001 EDT-006, UI-048; 1 GiB by default for screen recordings, SPEC-325). The reverse
+    /// proxy's body limit must allow it.
+    #[arg(long, env = "YULIUS_UPLOAD_MAX_MB", default_value_t = 1024,
           value_parser = clap::value_parser!(u64).range(1..=1024))]
     pub upload_max_mb: u64,
     /// File holding the TypeSafe Jev API key (owner-only, mode 0600) for task intake: split
@@ -636,6 +637,39 @@ fn no_delay(tcp: &mut TcpStream) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::{CommandFactory, Parser};
+
+    #[derive(Parser)]
+    struct Serve {
+        #[command(flatten)]
+        args: ServeArgs,
+    }
+
+    /// SPEC-325 UPL-001: a 1 GB screen recording uploads on a default instance. Read from the
+    /// argument's definition, not by parsing: parsing reads the environment (`YULIUS_CI` and
+    /// the rest), which a CI job sets.
+    #[test]
+    fn the_default_upload_limit_is_one_gibibyte() -> Result<(), Box<dyn std::error::Error>> {
+        let command = Serve::command();
+        let arg = command
+            .get_arguments()
+            .find(|arg| arg.get_id() == "upload_max_mb")
+            .ok_or("no upload_max_mb argument")?;
+        assert_eq!(arg.get_default_values(), ["1024"]);
+        assert_eq!(
+            yulius_app::uploads::DEFAULT_UPLOAD_MAX_BYTES,
+            1024 * 1024 * 1024
+        );
+        // Only this argument, given a value: no other argument and no environment is read.
+        let only = |value: &str| {
+            clap::Command::new("serve")
+                .arg(arg.clone())
+                .try_get_matches_from(["serve", "--upload-max-mb", value])
+        };
+        assert!(only("1024").is_ok());
+        assert!(only("1025").is_err());
+        Ok(())
+    }
 
     #[tokio::test]
     async fn accepted_connections_send_small_writes_at_once()

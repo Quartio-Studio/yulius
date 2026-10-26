@@ -316,3 +316,14 @@ test('an image opened from the tray fits the window and zooms to its actual size
   await screen.getByRole('button', 'Actual size').press('Enter');
   await expect.poll(size).toEqual(fitted);
 });
+
+// SPEC-325: the limit is 1 GiB by default, so sizes read in GB from there (unit, in the page).
+test('sizes from a gibibyte read in GB, as the server words the limit (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/git', '&ambient=0'));
+  const sizes = await browser.evaluate(async () => {
+    const url = '/assets/filedrop.js';
+    const { formatSize } = await import(url);
+    return [1024 ** 3, 1.5 * 1024 ** 3, 12 * 1024 ** 3, 1023 * 1024 ** 2, 3.4 * 1024 ** 2].map((n) => formatSize(n));
+  });
+  expect(sizes).toEqual(['1 GB', '1.5 GB', '12 GB', '1023 MB', '3.4 MB']);
+});

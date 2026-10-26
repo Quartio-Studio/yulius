@@ -152,7 +152,8 @@ watching, steering and unblocking.
   image opens large (fitted or at its actual size), and sits in the text as a one-line
   placeholder (`Image 1`) at the caret. The placeholder moves and deletes like a character, or is
   placed from the tray, and the agent gets the file at that place (a file left without one comes
-  after the text).
+  after the text). A file can be up to 1 GB by default, so a screen recording of a bug fits: the
+  agent extracts frames from it with `ffmpeg` and looks at them (SPEC-325).
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
   A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git

@@ -537,12 +537,19 @@ export function mountTaskView(ctx, sandbox, task) {
     const name = path.split('/').pop();
     const key = `${index}\n${path}`;
     if (requestReads.has(key)) return;
+    const fileUrl = `/api/tasks/${enc(current.id)}/prompt/attachments/${index}`;
     let url = requestUrls.get(key);
     if (!url) {
       requestReads.add(key);
       try {
-        // An attached file can be as large as an upload: longer than a JSON read.
-        const blob = await ctx.api.get(`/api/tasks/${enc(current.id)}/prompt/attachments/${index}`, { as: 'blob', signal: reads.signal, timeoutMs: 120000 });
+        // Another file can be as large as an upload (1 GiB, a screen recording: SPEC-325): the
+        // browser downloads it from its link.
+        if (!image) {
+          await ctx.api.download(fileUrl, name, { signal: reads.signal });
+          return;
+        }
+        // An image can be as large too: longer than a JSON read.
+        const blob = await ctx.api.get(fileUrl, { as: 'blob', signal: reads.signal, timeoutMs: 120000 });
         if (!alive) return;
         url = URL.createObjectURL(blob);
         requestUrls.set(key, url);
@@ -556,8 +563,7 @@ export function mountTaskView(ctx, sandbox, task) {
         requestReads.delete(key);
       }
     }
-    if (image) openAttachment({ name }, { image: url });
-    else h('a', { href: url, download: name }).click();
+    openAttachment({ name }, { image: url });
   }
   function drawRequest(text) {
     const { parts, paths } = parsePrompt(text);
