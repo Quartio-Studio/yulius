@@ -1,11 +1,11 @@
 ---
 yulius-task: f12d4e48-a870-4c48-9b93-5bf2962da845
-status: in-progress
+status: done
 ---
 
 # SPEC-334: The Sessions tile says why it is over the limit, not "9 / 8"
 
-Status: in-progress
+Status: done
 Date: 2026-10-26
 Owner: Yulius task #318
 Scope authorization: task #318 (`/goal`, "Bruh 9/8? Fix" with a screenshot of the status panel),
@@ -60,7 +60,7 @@ the count passes the limit.
 - [x] Spec and issue for the over-the-limit Sessions tile
 - [x] Regression e2e test showing the tile over its limit
 - [x] Sessions tile shows the limit full plus the overshoot, explained
-- [ ] Docs, independent review and delivery
+- [x] Docs, independent review and delivery
 
 ## Acceptance criteria
 
@@ -93,3 +93,29 @@ the count passes the limit.
   (review round 1 nit); axe reports nothing, and the duplicate is accepted over a visible
   paragraph in a tile that fits a phone.
 - No server change: the status view already counts as the start door does.
+
+## Evidence
+
+- Root cause read in code: `status.rs` sends `working_attempts().len()`, the start door's count;
+  `start_run_if` and `drain_queue_now` refuse starts at `live >= limit`; `one_live_attempt` rules
+  out double counting. The mock reproduced the tile ("7 / 4" with `sessionlimit=4`).
+- Red: `npx e2e run tests/subscriptions.e2e.ts --grep "Sessions tile"` at 23cdc4fe (test only,
+  dev's `layout.js`): `expected "7 / 4" to be "4 / 4"`. Green at 67ee61f3: the file's 17 tests pass.
+- Screenshot of the mock's Machine tiles (dark theme): "4 / 4 +3", "3 over the limit · 1 queued".
+- Review round 1 (fresh session, head 92d8b019): request changes. One major (own code: the
+  explanation named resumed Done tasks only; a restart with a lower limit also keeps runs over
+  it), two minor (queued line untested; the detail cut off at phone width) and three nits (unknown
+  count lost its detail; title and hidden text both read; spec Evidence). All answered: test at
+  a7a3e3e4 red (`expected ["3 over the limit · 6 queued"] to equal ["3 over the limit","6 queued"]`),
+  fix at 7ce1f412 green (`subscriptions.e2e.ts` + `quality.e2e.ts`: 38 passed); the duplicate
+  reading is accepted in Decisions.
+- Review round 2 (head 7ce1f412): approve. Two nits left: the 360 px clip check was not seen to fail
+  on its own (the detail-lines check fails first on the old code), and `sessionqueue` raises only
+  the Status panel's count in the mock (documented in `web/README.md`).
+- `yulius security-scan`: not run, exit 2. Vidoc answered HTTP 429: the key has used its
+  50,000,000 tokens. The 3 changed code files were not scanned.
+- `scripts/dev ci` (after `python3 scripts/bootstrap.py`), started at 92d8b019: exit 0, nextest
+  2633 passed, 16 skipped. Later commits change only JS, CSS, the e2e test, the mock and docs.
+  `python3 scripts/check_repository.py` at the final tree: passed.
+- Not tested: the real server over its limit. The tile reads the same `/api/status` fields as
+  before, so it was verified in the mock only.
