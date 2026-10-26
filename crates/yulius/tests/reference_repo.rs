@@ -167,6 +167,135 @@ async fn a_task_gets_a_bundle_of_another_repository_of_its_owner() -> TestResult
     Ok(())
 }
 
+/// Gives `acme/lib` a `dev` branch with a commit of its own and a tag `v1` on `main`; returns
+/// `dev`'s commit.
+fn add_dev_and_tag(w: &World, lib: &Path) -> Result<String, BoxError> {
+    let seed = w.scratch.path().join("seed/acme/lib");
+    git(&seed, &["tag", "v1"])?;
+    git(&seed, &["checkout", "--quiet", "-b", "dev"])?;
+    std::fs::write(seed.join("model.rs"), "pub struct Model;\n")?;
+    git(&seed, &["add", "model.rs"])?;
+    git(&seed, &["commit", "--quiet", "-m", "model on dev"])?;
+    git(
+        &seed,
+        &[
+            "push",
+            "--quiet",
+            &lib.to_string_lossy(),
+            "dev:dev",
+            "refs/tags/v1:refs/tags/v1",
+        ],
+    )?;
+    Ok(git(lib, &["rev-parse", "refs/heads/dev"])?
+        .trim()
+        .to_owned())
+}
+
+/// SPEC-330 AC1, AC2 (#915): the task's owner can read every branch, so the task gets every
+/// branch and tag: it asks for `dev` and clones `dev`, and the default copy also carries `dev`
+/// and the tags.
+#[tokio::test]
+async fn a_task_gets_every_branch_and_tag_its_owner_can_read() -> TestResult {
+    let (w, _alice, lib) = world().await?;
+    let dev = add_dev_and_tag(&w, &lib)?;
+    let main = git(&lib, &["rev-parse", "refs/heads/main"])?
+        .trim()
+        .to_owned();
+
+    let asked = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib", "branch": "dev"}),
+    )
+    .await?;
+    assert_ne!(asked["isError"], true, "{asked}");
+    let record = support::tool_text(&asked);
+    assert_eq!(record["branch"], "dev", "{record}");
+    assert_eq!(record["commit"], dev.as_str(), "{record}");
+    assert_eq!(record["default_branch"], "main", "{record}");
+    let clone = clone_bundle(&record, w.scratch.path())?;
+    assert_eq!(
+        std::fs::read_to_string(clone.join("model.rs"))?,
+        "pub struct Model;\n"
+    );
+
+    let default = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib"}),
+    )
+    .await?;
+    assert_ne!(default["isError"], true, "{default}");
+    let record = support::tool_text(&default);
+    assert_eq!(record["branch"], "main", "{record}");
+    assert_eq!(record["commit"], main.as_str(), "{record}");
+    assert_eq!(
+        record["branches"],
+        json!([{"name": "dev", "commit": dev}, {"name": "main", "commit": main}]),
+        "{record}"
+    );
+    assert_eq!(record["branch_count"], 2, "{record}");
+    assert_eq!(record["tag_count"], 1, "{record}");
+    let message = record["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("origin/dev") || message.contains("checkout"),
+        "{record}"
+    );
+    let clone = clone_bundle(&record, w.scratch.path())?;
+    assert!(!clone.join("model.rs").exists());
+    assert_eq!(git(&clone, &["rev-parse", "origin/dev"])?.trim(), dev);
+    assert_eq!(git(&clone, &["rev-parse", "v1^{commit}"])?.trim(), main);
+    assert_eq!(attachments(&w), ["acme-lib.bundle"]);
+    assert_eq!(tmp_entries(&w), 0);
+    Ok(())
+}
+
+/// SPEC-330 AC3: a branch the repository lacks is the agent's own mistake: invalid, naming the
+/// branches, with no person to ask and nothing left behind; a branch Git could read as an option
+/// is refused before anything is fetched.
+#[tokio::test]
+async fn a_branch_the_repository_lacks_is_invalid_and_names_the_branches() -> TestResult {
+    let (w, _alice, lib) = world().await?;
+    add_dev_and_tag(&w, &lib)?;
+    let missing = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib", "branch": "nope"}),
+    )
+    .await?;
+    assert_eq!(missing["isError"], true, "{missing}");
+    let text = support::tool_text(&missing).to_string();
+    assert!(
+        text.contains("nope") && text.contains("dev") && text.contains("main"),
+        "{text}"
+    );
+    assert!(!text.contains("needs_you"), "{text}");
+    assert!(attachments(&w).is_empty(), "{:?}", attachments(&w));
+    assert_eq!(tmp_entries(&w), 0);
+
+    let fetches = w.git.calls().len();
+    for bad in ["-x", "a:b", "main..x", ""] {
+        let invalid = support::mcp_tool(
+            &w.h,
+            "tok-ref",
+            "reference_repo",
+            json!({"repo": "acme/lib", "branch": bad}),
+        )
+        .await?;
+        assert_eq!(invalid["isError"], true, "{bad}: {invalid}");
+    }
+    assert_eq!(
+        w.git.calls().len(),
+        fetches,
+        "nothing fetched: {:?}",
+        w.git.calls()
+    );
+    Ok(())
+}
+
 /// AC3: another owner's repository, the sandbox's own, one the owner cannot read and a disabled
 /// owner are refused and sent to `needs_you`; a malformed name is invalid; nothing is written.
 #[tokio::test]
