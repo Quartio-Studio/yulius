@@ -46,6 +46,39 @@ const QUICK_KEYS = [
   ['Enter', '\r'],
 ];
 
+/** Text with its `backticked` parts as code: commands and names stand out from the words. An
+ * unpaired backtick stays a backtick. */
+function withCode(text) {
+  const parts = text.split('`');
+  if (parts.length % 2 === 0) parts.splice(-2, 2, `${parts.at(-2)}\`${parts.at(-1)}`);
+  return parts.map((part, i) => (i % 2 ? part && h('code', null, part) : part)).filter(Boolean);
+}
+
+/**
+ * An agent's request to a person (`needs_you`, SPEC-327): a heading, then What happened, Problem
+ * and To do (Decide for a decision) as a labelled list, each part only when given, the to-do last.
+ */
+function needsYouText(asked) {
+  const parts = [
+    ['What happened', asked.happened],
+    ['Problem', asked.problem],
+    [asked.decision ? 'Decide' : 'To do', asked.action],
+  ].filter(([, text]) => text);
+  // The list scrolls when long (a phone), its to-do held in view at its foot (`fitNeedsYou`).
+  return h('div', { class: 'attention-text needs-you-text' },
+    h('strong', { class: 'needs-you-head' }, asked.decision ? 'Needs your decision' : 'Needs you'),
+    h('dl', { class: 'needs-you-parts' }, parts.map(([label, text], i) =>
+      h('div', { class: i === parts.length - 1 ? 'needs-you-todo' : null }, h('dt', null, label), h('dd', null, withCode(text))))));
+}
+
+/** A request's list that scrolls takes the keyboard, so what scrolls is read without a pointer. */
+function fitNeedsYou(bar) {
+  const list = bar.querySelector('.needs-you-parts');
+  if (!list) return;
+  if (list.scrollHeight > list.clientHeight) list.tabIndex = 0;
+  else if (list !== document.activeElement) list.removeAttribute('tabindex');
+}
+
 function readOnlyText(sandbox) {
   return sandbox && sandbox.access === 'read' ? 'Read-only (GitHub: read)' : 'Read-only';
 }
@@ -283,6 +316,7 @@ export function mountTaskView(ctx, sandbox, task) {
     const pr = ctx.store.pullsOf(current.sandbox_id).get(current.id);
     const info = taskInfo(current, ctx.store.state.actionRequests, pr);
     let content = null;
+    let asksPerson = false; // the bar shows a `needs_you` request
     let textAnswer = false; // the bar asks for an answer written in its reply field
     const access = (ctx.store.sandboxById(sandbox.id) || sandbox).access;
     const can = taskActions(current, access, pr, me());
@@ -340,13 +374,15 @@ export function mountTaskView(ctx, sandbox, task) {
     } else if (info.held) {
       content = null; // the held-prompt card says it
     } else if (info.needsYou) {
-      // The agent asked a person to act (`needs_you`, SPEC-134): what, why, and where.
+      // The agent asked a person to act (`needs_you`, SPEC-134): what happened, the problem, what to
+      // do, and where (SPEC-327).
       const asked = info.needsYou;
       // The request stays while the agent asks something in the terminal (a permission menu): text
       // typed there would pick the menu's options unseen, so Reply goes to the terminal then.
       const asksInTerminal = current.activity === 'needs_attention';
       textAnswer = !owner() && !asksInTerminal;
-      content = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'Needs you: '), asked.action, asked.why ? ` · ${asked.why}` : ''),
+      asksPerson = true;
+      content = [icon('st-attention', { size: 16 }), needsYouText(asked),
         asked.link ? h('a', { class: 'btn btn-sm', href: asked.link, target: asked.link.startsWith(location.origin) ? null : '_blank', rel: 'noopener' }, 'Open') : null,
         owner() ? null : asksInTerminal ? h('button', { type: 'button', class: 'btn btn-sm', onClick: focusReply }, 'Reply') : replying ? null : replyButton];
     } else if (info.request) {
@@ -366,6 +402,8 @@ export function mountTaskView(ctx, sandbox, task) {
       textAnswer = !owner();
     }
     attention.hidden = !content && !control;
+    // A request's buttons go under it when the bar is too narrow for both (SPEC-327 review).
+    attention.classList.toggle('needs-you', asksPerson);
     attention.classList.toggle('waiting', !control && !info.request && current.activity === 'waiting' && info.group === 'needs');
     attention.classList.toggle('stacked', Boolean(control && content));
     // A waiting task's start chip and buttons go below its words (SPEC-126).
@@ -378,6 +416,11 @@ export function mountTaskView(ctx, sandbox, task) {
     // A control kept across rebuilds (Reply) keeps the keyboard: taking it out of the page drops
     // the focus to the body, on every task update (#506).
     const kept = !typing && attention.contains(document.activeElement) ? document.activeElement : null;
+    // A request's list is rebuilt on every task update while the agent works on: it keeps where it
+    // was scrolled and the keyboard (SPEC-327 review).
+    const oldList = attention.querySelector('.needs-you-parts');
+    const listScroll = oldList ? oldList.scrollTop : 0;
+    const listFocused = Boolean(oldList) && oldList === kept;
     // Everything but the reply field is rebuilt; the field stays last.
     for (const child of [...attention.childNodes]) if (child !== replyForm) child.remove();
     attention.insertBefore(append(document.createDocumentFragment(), control && content
@@ -386,6 +429,12 @@ export function mountTaskView(ctx, sandbox, task) {
     if (replyForm.parentNode !== attention) attention.append(replyForm);
     replyForm.hidden = !replying;
     if (kept && kept.isConnected && document.activeElement !== kept) kept.focus({ preventScroll: true });
+    const list = attention.querySelector('.needs-you-parts');
+    if (list) {
+      fitNeedsYou(attention);
+      list.scrollTop = listScroll;
+      if (listFocused && list.tabIndex === 0) list.focus({ preventScroll: true });
+    }
     // A field closed under someone typing (or Escape) leaves the keyboard on the bar, which does
     // nothing with keys: never the terminal, where a permission menu may have opened.
     if (typing && !replying) attention.focus({ preventScroll: true });
@@ -620,6 +669,13 @@ export function mountTaskView(ctx, sandbox, task) {
 
   // Watching, the control card sits above the transcript in the flow (SPEC-179 WAT-005).
   const termArea = h('div', { class: ['taskview-term', watch && 'watching'] }, terminal.el, attention, held, queueSlot);
+  // The terminal's corner notices start below the attention bar, however tall it is (SPEC-327).
+  const attentionSize = new ResizeObserver(() => {
+    termArea.style.setProperty('--attention-h', `${attention.offsetHeight}px`);
+    fitNeedsYou(attention);
+  });
+  attentionSize.observe(attention);
+  destroyers.push(() => attentionSize.disconnect());
   const el = h('div', { class: 'taskview' }, heading, strip, termArea, quickbar);
 
   function renderStrip() {

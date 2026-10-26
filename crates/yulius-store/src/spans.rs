@@ -382,7 +382,9 @@ mod tests {
             .await?;
         let request = NeedsYouRecord {
             action: "Add DEV_HOST".into(),
-            why: Some("deploy".into()),
+            happened: None,
+            problem: Some("deploy".into()),
+            decision: false,
             link: None,
             at: 800,
         };

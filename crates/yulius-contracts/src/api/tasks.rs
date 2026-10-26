@@ -205,11 +205,17 @@ pub struct ChainLink {
 /// What a task's agent asked a person to do (SPEC-134 CDT-004, `needs_you`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NeedsYouView {
-    /// What to do, one line.
+    /// What to do, or what to decide when `decision`, one line.
     pub action: String,
-    /// Why it is needed.
+    /// What happened (SPEC-327).
     #[serde(default)]
-    pub why: Option<String>,
+    pub happened: Option<String>,
+    /// What is wrong or blocked because of it.
+    #[serde(default)]
+    pub problem: Option<String>,
+    /// The person chooses rather than does: read "Decide" instead of "To do".
+    #[serde(default)]
+    pub decision: bool,
     /// Where to do it (a Yulius page).
     #[serde(default)]
     pub link: Option<String>,
