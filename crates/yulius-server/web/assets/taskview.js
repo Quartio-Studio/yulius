@@ -46,6 +46,27 @@ const QUICK_KEYS = [
   ['Enter', '\r'],
 ];
 
+/** Text with its `backticked` parts as code: commands and names stand out from the words. */
+function withCode(text) {
+  return text.split('`').map((part, i) => (i % 2 ? h('code', null, part) : part)).filter((part) => part !== '');
+}
+
+/**
+ * An agent's request to a person (`needs_you`, SPEC-327): a heading, then What happened, Problem
+ * and To do (Decide for a decision) as a labelled list, each part only when given, the to-do last.
+ */
+function needsYouText(asked) {
+  const parts = [
+    ['What happened', asked.happened],
+    ['Problem', asked.problem],
+    [asked.decision ? 'Decide' : 'To do', asked.action],
+  ].filter(([, text]) => text);
+  return h('span', { class: 'attention-text' },
+    h('strong', { class: 'needs-you-head' }, asked.decision ? 'Needs your decision' : 'Needs you'),
+    h('dl', { class: 'needs-you-parts' }, parts.map(([label, text], i) =>
+      h('div', { class: i === parts.length - 1 ? 'needs-you-todo' : null }, h('dt', null, label), h('dd', null, withCode(text))))));
+}
+
 function readOnlyText(sandbox) {
   return sandbox && sandbox.access === 'read' ? 'Read-only (GitHub: read)' : 'Read-only';
 }
@@ -340,13 +361,14 @@ export function mountTaskView(ctx, sandbox, task) {
     } else if (info.held) {
       content = null; // the held-prompt card says it
     } else if (info.needsYou) {
-      // The agent asked a person to act (`needs_you`, SPEC-134): what, why, and where.
+      // The agent asked a person to act (`needs_you`, SPEC-134): what happened, the problem, what to
+      // do, and where (SPEC-327).
       const asked = info.needsYou;
       // The request stays while the agent asks something in the terminal (a permission menu): text
       // typed there would pick the menu's options unseen, so Reply goes to the terminal then.
       const asksInTerminal = current.activity === 'needs_attention';
       textAnswer = !owner() && !asksInTerminal;
-      content = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'Needs you: '), asked.action, asked.why ? ` · ${asked.why}` : ''),
+      content = [icon('st-attention', { size: 16 }), needsYouText(asked),
         asked.link ? h('a', { class: 'btn btn-sm', href: asked.link, target: asked.link.startsWith(location.origin) ? null : '_blank', rel: 'noopener' }, 'Open') : null,
         owner() ? null : asksInTerminal ? h('button', { type: 'button', class: 'btn btn-sm', onClick: focusReply }, 'Reply') : replying ? null : replyButton];
     } else if (info.request) {

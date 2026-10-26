@@ -1127,6 +1127,17 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 /* The icon (16px) and the gap (12px) share the first row with the words. */
 .attention-bar.wrap .attention-text { flex-basis: calc(100% - 28px); }
 .attention-row { display: flex; align-items: center; gap: 12px; }
+/* A request to a person (SPEC-327): a heading over What happened, Problem and To do; a label sits
+   beside its text, or above it when the bar is too narrow for both. The to-do is the strongest. */
+.attention-bar:has(.needs-you-parts) { align-items: flex-start; }
+.attention-bar:has(.needs-you-parts) > .icon { margin-top: 2px; }
+.needs-you-head { display: block; margin-bottom: 4px; }
+.needs-you-parts { display: flex; flex-direction: column; gap: 4px; margin: 0; }
+.needs-you-parts > div { display: flex; flex-wrap: wrap; column-gap: 12px; }
+.needs-you-parts dt { flex: 0 0 7.5em; color: var(--text-2); }
+.needs-you-parts dd { flex: 1 1 14em; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.needs-you-todo { padding-top: 4px; border-top: 1px solid var(--border-strong); }
+.needs-you-todo dt, .needs-you-todo dd { font-weight: 600; color: inherit; }
 /* A reply being written (SPEC-156): the words on the first row, the field and its buttons below. */
 .attention-bar.replying { flex-wrap: wrap; row-gap: 8px; }
 .attention-bar.replying .attention-text { flex-basis: calc(100% - 28px); }

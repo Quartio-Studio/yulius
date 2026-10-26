@@ -657,18 +657,61 @@ test('a promoting production names the branch and the commit it promotes', async
 type Touching = Window & { __yuliusMock: { touchTask(sandbox: string, number: number, changes: object): void } };
 
 // SPEC-134 CDT-004 (ADR-0111): an agent asks a person explicitly with needs_you; the task reads
-// "Needs you: <action>" with the link, until the request is gone.
-test('a needs_you request puts the task in Needs you with what to do', async ({ app, browser, screen }) => {
+// "Needs you" with the link, until the request is gone. SPEC-327: the request reads as What
+// happened, Problem and To do, each part labelled, the to-do last.
+const neededParts = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => browser.evaluate(() =>
+  [...document.querySelectorAll('.attention-bar .needs-you-parts > div')].map((row) => [
+    row.querySelector('dt')?.textContent || '', row.querySelector('dd')?.textContent || '']));
+
+test('a needs_you request reads What happened, Problem and To do', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 360, height: 780 });
   await app.open(mock('/s/studio/t/12'));
   await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {
-    needs_you: { action: 'Add DEV_SSH_KEY on the Secrets page', why: 'the dev deploy reaches the VM over SSH', link: `${location.origin}/#/s/studio/secrets?section=agents`, at: new Date().toISOString() },
+    needs_you: {
+      happened: 'The dev deploy reaches the VM over SSH',
+      problem: 'No DEV_SSH_KEY secret exists, so the deploy cannot log in',
+      action: 'Add `DEV_SSH_KEY` on the Secrets page',
+      decision: false,
+      link: `${location.origin}/#/s/studio/secrets?section=agents`,
+      at: new Date().toISOString(),
+    },
   }));
   const bar = browser.locator('.attention-bar');
-  await expect(bar).toHaveText(/Needs you: Add DEV_SSH_KEY on the Secrets page · the dev deploy reaches the VM over SSH/);
+  await expect(browser.locator('.attention-bar .needs-you-head')).toHaveText('Needs you');
+  expect(await neededParts(browser)).toEqual([
+    ['What happened', 'The dev deploy reaches the VM over SSH'],
+    ['Problem', 'No DEV_SSH_KEY secret exists, so the deploy cannot log in'],
+    ['To do', 'Add DEV_SSH_KEY on the Secrets page'],
+  ]);
+  await expect(browser.locator('.attention-bar .needs-you-parts code')).toHaveText('DEV_SSH_KEY');
   await expect(bar.getByRole('link', 'Open')).toBeVisible();
   await expect(browser.locator('.task-row', { hasText: 'Needs you' }).first()).toBeVisible();
+  // The sidebar's label is plain text: no backticks around the code.
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.task-row a[title]')]
+    .some((a) => a.getAttribute('title')?.includes('Needs you: Add DEV_SSH_KEY on the Secrets page: No DEV_SSH_KEY secret exists')))).toBe(true);
+  expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
   expect(await axeViolations(browser)).toEqual([]);
 
   await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, { needs_you: null }));
-  await expect(bar).not.toHaveText(/Needs you: Add DEV_SSH_KEY/);
+  await expect(browser.locator('.attention-bar .needs-you-head')).toHaveCount(0);
+});
+
+test('a needs_you decision reads Decide, and an action alone only To do', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {
+    needs_you: { problem: 'The free plan has 2 runners', action: 'Choose the paid plan or the free one', decision: true, at: new Date().toISOString() },
+  }));
+  await expect(browser.locator('.attention-bar .needs-you-head')).toHaveText('Needs your decision');
+  expect(await neededParts(browser)).toEqual([
+    ['Problem', 'The free plan has 2 runners'],
+    ['Decide', 'Choose the paid plan or the free one'],
+  ]);
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.task-row a[title]')]
+    .some((a) => a.getAttribute('title')?.includes('Needs your decision: Choose the paid plan or the free one: The free plan has 2 runners')))).toBe(true);
+
+  await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {
+    needs_you: { action: 'Deploy production on the CD page', decision: false, at: new Date().toISOString() },
+  }));
+  await expect(browser.locator('.attention-bar .needs-you-head')).toHaveText('Needs you');
+  expect(await neededParts(browser)).toEqual([['To do', 'Deploy production on the CD page']]);
 });
