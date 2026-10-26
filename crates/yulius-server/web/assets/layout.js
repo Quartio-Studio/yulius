@@ -357,31 +357,33 @@ function rememberOpen(details, key, openByDefault) {
   return details;
 }
 
-/** One machine tile: icon and name, a big value, a bar and a detail line. */
+/** One machine tile: icon and name, a big value, a bar and a detail line (or several). */
 function statTile(iconName, name, value, percent, detail, why = null) {
   return h('div', { class: ['stat-tile', `stat-${toneOf(percent)}`], title: why },
     h('div', { class: 'stat-head' }, icon(iconName, { size: 15 }), h('span', null, name)),
     h('div', { class: 'tile-value' }, value),
     usageBar(percent, name),
-    h('div', { class: 'stat-detail' }, detail || ' '),
+    [detail || ' '].flat().map((line) => h('div', { class: 'stat-detail' }, line)),
     why ? h('span', { class: 'sr-only' }, why) : null);
 }
 
 /**
- * The Sessions tile. A Done task's idle session holds no slot, and one that works again counts
- * again without passing the start door, so the count can pass the limit for a while (SES-101).
- * Then the tile shows the limit full and marks the overshoot instead of "9 / 8" (SPEC-334).
+ * The Sessions tile. The count can pass the limit for a while: a Done task's idle session holds no
+ * slot, and one that works again counts again without passing the start door (SES-101); a restart
+ * with a lower limit keeps the runs it finds. Then the tile shows the limit full and marks the
+ * overshoot instead of "9 / 8" (SPEC-334).
  */
 function sessionsTile({ live, limit, queued }) {
-  if (!Number.isFinite(live)) return statTile('terminal', 'Sessions', '—', null, null);
   const queue = queued ? `${queued} queued` : null;
+  if (!Number.isFinite(live)) return statTile('terminal', 'Sessions', '—', null, queue || 'agent sessions running');
   if (!(limit > 0) || live <= limit) {
     return statTile('terminal', 'Sessions', `${live}${limit ? ` / ${limit}` : ''}`, pct(live, limit), queue || 'agent sessions running');
   }
   const over = live - limit;
-  const why = `${over} Done ${over === 1 ? 'task is' : 'tasks are'} working again, beyond the limit of ${limit} sessions. Queued tasks start once fewer than ${limit} run.`;
+  const why = `${over} ${over === 1 ? 'session' : 'sessions'} more than the limit of ${limit}: a Done task that works again counts again, and runs started before a restart with a lower limit keep running. Queued tasks start once fewer than ${limit} run.`;
+  // One line each, so a phone's narrow tile cuts neither off.
   return statTile('terminal', 'Sessions', [`${limit} / ${limit}`, h('span', { class: 'tile-over' }, `+${over}`)], 100,
-    [`${over} over the limit`, queue].filter(Boolean).join(' · '), why);
+    [`${over} over the limit`, queue].filter(Boolean), why);
 }
 
 /**

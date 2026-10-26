@@ -281,7 +281,8 @@ now walks through its phases in about six seconds) or `update=fail` (the same, r
 sign-in request from studio's browser 5 s after the start, nor its toast), `ambient=0` (no ambient
 activity at all: neither that request, which also moves #10 into "Needs you", nor studio's tasks
 changing by themselves, #8 starting after about 12 s; a test that hovers a sidebar row needs it), `sessionlimit=<n>` (the session limit the Status panel
-shows, default 8; studio runs 7 tasks with `ambient=0`), `fail=<path>` (GET
+shows, default 8; studio runs 7 tasks with `ambient=0`), `sessionqueue=<n>` (that many more queued tasks in
+the Status panel's count), `fail=<path>` (GET
 requests of that exact API path answer 500, to see a view say what failed to load), `hold=<path>` (GET
 requests of that path wait until `__yuliusMock.release()`, to see a view while it loads; `hold=frames` holds
 the browser panel's picture) or `failpost=<path>`
