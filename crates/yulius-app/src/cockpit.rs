@@ -716,8 +716,11 @@ impl App {
         // Yulius attaches the repository's `.mcp.json` servers; Claude Code rejects them here
         // instead of asking the person (SPEC-095 PMC-001, PMC-004).
         let project_mcp_servers = self.import_project_mcp(record).await;
-        // The sandbox's MCP servers as a task run gets them, the file's included (SPEC-147).
-        let mcp = self.mcp_attachments(record).await?;
+        // The sandbox's MCP servers as its person's task run gets them, the file's included
+        // (SPEC-147, SPEC-332).
+        let mcp = self
+            .mcp_attachments(record, crate::vault::Holder::Person(&user.id))
+            .await?;
         let bearer = runtime.cockpit_token(self.deps.crypto.as_ref());
         let mut plan = self.deps.harness.plan_cockpit(&CockpitLaunch {
             cwd: folder.clone(),

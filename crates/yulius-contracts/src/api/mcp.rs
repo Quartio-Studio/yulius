@@ -9,8 +9,11 @@ use serde::{Deserialize, Serialize};
 pub struct McpServerView {
     /// Id.
     pub id: String,
-    /// `instance` or `sandbox`.
+    /// `instance` (every sandbox) or `sandbox` (this sandbox).
     pub scope: String,
+    /// `team` (every run of its scope) or `personal` (only its owner's runs, SPEC-332); listed
+    /// only to its owner.
+    pub audience: String,
     /// Name (also the tool namespace).
     pub name: String,
     /// `stdio` or `http`.
@@ -58,10 +61,17 @@ pub struct McpServerInput {
     /// Enabled (create: default true; update: default unchanged).
     #[serde(default)]
     pub enabled: Option<bool>,
-    /// `instance` or `sandbox` (create only; default `sandbox`; instance needs an instance
-    /// administrator).
+    /// `instance` (every sandbox) or `sandbox` (create: default `sandbox`; update: default
+    /// unchanged). A team server for every sandbox needs an instance administrator.
     #[serde(default)]
     pub scope: Option<String>,
+    /// `team` or `personal` (create: default `team`; update: default unchanged). Making a server
+    /// personal makes the caller its owner (SPEC-332).
+    #[serde(default)]
+    pub audience: Option<String>,
+    /// Update only: the sandbox a server moved from `instance` to `sandbox` scope belongs to.
+    #[serde(default)]
+    pub sandbox: Option<String>,
 }
 
 /// `POST /api/mcp/{id}/test`.
