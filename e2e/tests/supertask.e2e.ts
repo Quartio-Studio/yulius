@@ -9,7 +9,9 @@ failOnPageErrors();
 // like the server (`held_by`).
 
 test('Supertask is a start choice; the supertask and a task after it say what they wait for (AC-SUP-6)', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
+  // `ambient=0`: the texts name the studio's working tasks, and the mock's ambient activity starts
+  // #8 about 12 s after the page opened, which a slow machine reaches before them (#506).
+  await app.open(mock('/s/studio', '&ambient=0'));
   await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
   await screen.getByRole('button', /Run after: Start now/).click();
   const item = screen.getByRole('menuitemradio', /^Supertask/);

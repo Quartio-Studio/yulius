@@ -4,8 +4,99 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-26
+
+- The reply e2e no-leak checks now fail when keys reach the terminal (SPEC-323, task #308, fixes
+  #524). They read the session right after the keys, before a leaked key had arrived, and on an
+  empty session, which a leaked Enter leaves empty: with the attention bar's keys forwarded to the
+  terminal the closing-field case could still pass, and an Enter sent on an empty Send passed
+  every case. Each check (closing field, Escape, Cancel, empty Send) now seeds the session, types a
+  marker behind the keys through the page's own terminal socket, which delivers in order, and
+  checks the session holds exactly both, with no `> x` line in the terminal.
+- An update cancelled at its 30-minute bound says how many tasks were still in a turn, however
+  many there were (SPEC-319, task #304, fixes #533). The message counted the instance page's list,
+  which shows at most 20 tasks and leaves out runs still being frozen; it now counts the tasks not
+  paused, as readiness does.
+- At phone width the Status panel's section summaries wrap inside the panel instead of running
+  past it (SPEC-324, task #305, fixes #549): at 360 px "Subscriptions 4 ready · 1 at the limit ·
+  1 need attention" was cut off at "…1 need attentio". A summary longer than the room beside its
+  title now wraps between its parts, right-aligned, so every part, the one that needs a person
+  included, stays readable on a phone, where a truncated text's tooltip cannot be reached.
+- A CI run or deploy view no longer draws a light frame around its content when it opens (SPEC-321,
+  task #306, fixes #777). Opening a run moves the keyboard to its view by script (SPEC-238); the
+  view's `:focus` rule cancelled only the outline, while the global focus ring is a box-shadow,
+  which now goes too. Controls in the view keep their ring from the keyboard.
+- A message typed into a running task through the remote MCP now reads "Message from alice
+  (through their own agent):" instead of naming the Superagent, which was not used (SPEC-322,
+  task #307, fixes #789). The tool's caller names its channel (task agent, Superagent, remote
+  MCP) where it is authenticated, and the label is taken from it; the Superagent's label is
+  unchanged.
+
 ## 2026-10-25
 
+- A task view no longer goes back to an older owner, status or request when its read of the task
+  arrives after a newer change (SPEC-312, task #298, fixes #506). The server could answer the read,
+  then announce a hand-over that reached the page first, both dated the same second; the read's
+  answer then put the older summary back until the next change. The view now counts the changes it
+  hears, and a read during which one arrived leaves the summary as that change set it. The attention
+  bar also keeps the keyboard on Reply when the task changes: each rebuild took the button out of
+  the page and dropped the focus (reply's "Escape closes…" under load). The e2e checks #506 lists
+  wait on what they need under load:
+  `touchTask` waits until the page hears live updates (a change announced before was lost:
+  ownership, reply), and the supertask's texts run without the mock's ambient activity, which
+  started #8 before a slow run reached them. Editor presence was already fixed by #523 and the
+  ownership text by #572.
+- A turn that starts while Yulius publishes an idle task keeps its "working …" time (SPEC-315,
+  task #301, fixes #895). The publish read the task and its times, decided to end (or start) the
+  idle task's working stretch, and then wrote it unconditionally: when a prompt made the task
+  Working in between, its stretch was cleared and the sidebar's clock started over at the next
+  change. The write now applies only while the task is still running with the activity and times
+  it read.
+- A production-stage deploy refused for a secret agents use names the deploying environment's
+  own table: "… in [cd.platform] secrets of yulius.toml …" for `[cd.platform]`, `[cd.prod]` for
+  production (SPEC-314, task #300, fixes #788). It always said `[cd.prod]`, which predates named
+  environments. The web mock now answers the server's whole sentence.
+- `yulius onboard` and the onboarding status name both ways to start onboarding (SPEC-313, task
+  #299, fixes #790). A `pending` sandbox reads "● waiting to start: Start onboarding on the sandbox
+  page, or `yulius project onboard` with an operate token", its pending item names
+  `onboarding_start` too, and a `yulius login` token's refusal points to the operate token
+  instead of "the CLI only uploads". The messages predated ADR-0188.
+- On 6.13+ kernels a session that dies because `yulius.service` reached its own task limit
+  (`TasksMax=`) says the sandbox hit its process limit, as on 6.8 (SPEC-316, task #302, fixes #823).
+  Those kernels count such a refused fork only in the service's group, which the limit counters did
+  not read; they now add it, as they do for the sandboxes' common limit. Limits of slices above the
+  service are not counted (ADR-0201, amended).
+- Every Claude Code run Yulius starts draws full screen again, so its terminal scrolls up
+  (SPEC-310, task #296, fixes #898). Tasks of a project share one Claude config dir, and each
+  contained run is pid 2 in its own PID namespace. Claude Code's full-screen boot canary
+  therefore took a sibling task's start for a failed one of its own, and after two it turned full
+  screen off for the project. In the classic renderer, a viewer who opened the task had no
+  scrollback and the wheel nothing to scroll. Task runs and the Superagent (the Cockpit) now set
+  `CLAUDE_CODE_NO_FLICKER=1` (ADR-0218).
+- "working 1h 20m" no longer restarts when a background shell's end wakes the agent (SPEC-309,
+  task #295, fixes #894). Yulius's shell probe could see a `yulius wait` shell gone a moment
+  before Claude Code woke the agent; the idle task's working stretch ended and the woken turn
+  started a new one, so a task working for hours read "working 37m". A turn the task goes on with
+  by itself from the state its stretch ended in (Claude Code's wake-up, work after a stop, newly
+  found background work) now continues that stretch; a typed prompt still starts a new one.
+- Toasts in a dialog no longer cover its Close (SPEC-305, task #291, fixes #640). The toast region
+  moves into an open dialog, and below 768 px it is pinned at the top right, where the dialog's
+  Close is. Toasts raised at a wider size ended up there when the window narrowed, and nothing moved
+  them: the check that moves them to the other edge only protected the focused control. That check
+  now also keeps the dialog's Close clear (the focused control still comes first). It runs again
+  when the window is resized, and it moves the toasts only to an edge that covers less. This fixes
+  the flaky axe `target-size` failure of the Team secrets test "a failed copy shows no check…",
+  which the mock's sign-in request toast set off on slow runs.
+- `yulius-ptyhost::supervision shutdown_escalates_past_ignored_signals_and_reaps_descendants`
+  reads the descendant's pid only from a finished `CHILD <pid>` row (SPEC-307, task #293, fixes
+  #647). The tty sends a line's text before the `\r\n` it makes of its `\n`; when the test typed
+  `ping` in between, its echo joined the row (`CHILD 1234ping`) and the pid failed to parse.
+- A file refused by the Queued messages box because its task started keeps its notice until the
+  person dismisses the card (SPEC-306, task #292, fixes #559). "The task has started: the file was
+  not added." went to the upload status, which the kept-card check does not see, so pasted into an
+  otherwise empty box it vanished with the card on the task's next update (`starting` →
+  `running`). It now goes to the card's error line, as other refusals do, and the upload status of
+  a refused batch says "Nothing was added." instead of "Added …".
 - A production secret's Edit dialog offers no hosts the server refuses (SPEC-308, task #294,
   fixes #622). It offered the Hosts input on every secret, so a person who added a host to a
   production secret got a 409 on Save. Now its Hosts field has no input and says the secret is

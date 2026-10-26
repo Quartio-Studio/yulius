@@ -692,10 +692,14 @@ function workingSince(task) {
   return idle && task.background_shells == null ? task.working_since ?? null : null;
 }
 
-/** Task change: `task.updated` only; sandbox counters are not pushed (clients refetch). */
+/**
+ * Task change: `task.updated` only; sandbox counters are not pushed (clients refetch). It is dated
+ * now, or `changes.updated_at`: the server dates to the second, so a change and a read answered
+ * just before it may carry the same time (#506).
+ */
 function touch(db, task, changes = {}) {
   const [status, activity] = [task.status, task.activity];
-  Object.assign(task, changes, { updated_at: new Date().toISOString() });
+  Object.assign(task, changes, { updated_at: changes.updated_at || new Date().toISOString() });
   // Out of `closed` it starts: it has had a run from then on, as on the server (SPEC-153).
   if (task.status !== 'closed') Object.assign(task, { neverRan: false, awaitsStart: false });
   if (task.status !== status || task.activity !== activity) task.state_since = task.updated_at;
@@ -1963,7 +1967,10 @@ route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, async ({ db, p, body }) =>
   if (env.state !== 'ready') fail(409, 'conflict', `CD ${env.label} is ${env.state === 'empty' ? 'empty' : 'not defined'}`);
   const used = env.secrets.filter((s) => s.state === 'agents_use').map((s) => s.name);
   const it = used.length === 1 ? 'it' : 'them';
-  if (used.length) fail(409, 'conflict', `nothing ran: agents use ${used.join(', ')} (copies into .env files or hosts the proxy sends ${it} to), so production deploys never get ${it} and nobody can allow ${it} for them. Production names a separate secret of its own in [cd.${name}] secrets of yulius.toml`);
+  // The server names the others waiting for a person in the same refusal (SPEC-237 CAU-002).
+  const others = env.secrets.filter((s) => s.state === 'not_allowed').map((s) => s.name);
+  const also = others.length ? `. Also, a person who manages ${others.join(', ')} allows ${others.length === 1 ? 'it' : 'them'} for production deploys` : '';
+  if (used.length) fail(409, 'conflict', `nothing ran: agents use ${used.join(', ')} (copies into .env files or hosts the proxy sends ${it} to), so production deploys never get ${it} and nobody can allow ${it} for them. Production names a separate secret of its own in [cd.${name}] secrets of yulius.toml, added on the Secrets page (${ORIGIN}/s/${encodeURIComponent(sandbox.slug)}/secrets?section=agents); or a person first revokes the .env copies and hosts of ${used.join(', ')}${also}`);
   if (env.secrets.some((s) => s.state !== 'ready')) fail(409, 'conflict', `nothing ran: a person who manages ${env.secrets.filter((s) => s.state !== 'ready').map((s) => s.name).join(', ')} allows using it outside the proxy on the Secrets page`);
   if (cd.runs.some((r) => r.environment === name && progressCd(r, db.cdRunMs).state === 'running')) fail(409, 'conflict', `a deploy to ${env.label} is running`);
   db.nextId += 1;

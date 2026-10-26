@@ -361,8 +361,9 @@ second segment in the working colour. Older servers omit it (read 0).
 `updated_at` is the last change of anything (title, owner, archive, status …). `state_since` is
 the last change of the task's **status or activity** (setting the same value again does not move
 it); `working_since` is the start of its working stretch: it starts when the task starts working,
-goes on through idle turns while background work wakes it and through subscription switches, and
-is null while the task waits for a person, is queued or has ended (SPEC-087). The UI shows, per
+goes on through idle turns while background work wakes it (also when Yulius saw that work end a
+moment before the wake, SPEC-309) and through subscription switches, and is null while the task
+waits for a person, is queued or has ended (SPEC-087). The UI shows, per
 group, "working 1h 20m" from `working_since` and "waiting 12m", "queued 2h", "done 3h ago" from
 `state_since`.
 
@@ -806,7 +807,8 @@ since. `confirm_ms` (optional, production) is how long the person kept the confi
 page measured it; up to an hour it is recorded as the run's confirmation wait (SPEC-137). A production secret (`cd_prod`) is exclusive: allowing it is refused while it has `.env`
 copies allowed or proxy hosts, and it then refuses both (`conflict`); dev deploys never get it. For
 production, such a secret (agents use it) has the state `agents_use`: production never gets it, a
-run naming it is refused, and production names a separate secret instead (SPEC-237).
+run naming it is refused, and production names a separate secret instead, in the deploying
+environment's own `[cd.<name>]` secrets, which the refusal names (SPEC-237, SPEC-314).
 
 Refusals: `forbidden` for production below administrator access, `invalid` for what cannot name an
 environment or a production deploy without the slug typed exactly, `conflict` for an empty or
@@ -962,7 +964,7 @@ write access; every changing call is audited with the caller (`task:<n>` or `coc
 | Tool | Same as | Notes |
 | --- | --- | --- |
 | `task_create` | New task | origin `agent`; at most 20 per project and rolling hour |
-| `task_message` (the Cockpit and the remote MCP, never task agents; SPEC-230, SPEC-247) | `POST /api/tasks/{tid}/queued-messages`, or typing into the task's terminal | `{task_id \| number, text}` → `{"task","delivered":"queued"\|"sent","note"}`; queued into a task that never started, typed into a `running` one as one bracketed paste `Message from <login> (through their Superagent):` + Enter; refused before Claude Code's session started there, while a person typed there in the last minute, while its folder-trust dialog shows, while the first message or another message is typed, and in every other state; 403 for anyone but the owner on a task holding its owner's personal secrets (SPEC-245); a sent message ends the task's `needs_you`; control characters but LF and tab removed, at most 64 KiB; audited `task.messaged` without the text |
+| `task_message` (the Cockpit and the remote MCP, never task agents; SPEC-230, SPEC-247) | `POST /api/tasks/{tid}/queued-messages`, or typing into the task's terminal | `{task_id \| number, text}` → `{"task","delivered":"queued"\|"sent","note"}`; queued into a task that never started, typed into a `running` one as one bracketed paste `Message from <login> (through their Superagent):` from the Cockpit, `Message from <login> (through their own agent):` from the remote MCP (SPEC-322), + Enter; refused before Claude Code's session started there, while a person typed there in the last minute, while its folder-trust dialog shows, while the first message or another message is typed, and in every other state; 403 for anyone but the owner on a task holding its owner's personal secrets (SPEC-245); a sent message ends the task's `needs_you`; control characters but LF and tab removed, at most 64 KiB; audited `task.messaged` without the text |
 | `task_stop`, `task_archive` (`archived`: false restores), `task_delete` | `POST /api/tasks/{tid}/stop`, `…/archive` (`…/restore`), `DELETE /api/tasks/{tid}` | by `task_id` or `number`; never the caller's own task; audited `task.stopped`, `task.archived`/`task.unarchived`, `task.deleted` |
 | `automation_create`, `automation_update` | `POST …/automations`, `PUT /api/automations/{id}` | `created_via: agent` |
 | `automation_delete`, `automation_run_now` | `DELETE /api/automations/{id}`, `POST /api/automations/{id}/run` | audited `automation.deleted`, `automation.run_now` |

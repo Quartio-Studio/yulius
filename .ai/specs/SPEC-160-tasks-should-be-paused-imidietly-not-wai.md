@@ -13,6 +13,8 @@ Scope authorization: the request of task #151, with a screenshot of the instance
 should be paused imidietly, not waiting for something to finish, but the agent should never notice
 that. Like tokens should just stopped streaming and they should get resumed after the update".
 It changes how OPS-008 (SPEC-001) pauses tasks; the rest of OPS-006..OPS-009 stays.
+Amended by [SPEC-319](SPEC-319-the-update-s-30-minute-cancel-message-co.md): the 30-minute cancel
+message counts every task not paused, not the "Still in a turn" list.
 
 ## Goal
 

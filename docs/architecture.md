@@ -72,8 +72,10 @@ task or memory limit says so in the task
 ([SPEC-268](../.ai/specs/SPEC-268-parallel-tasks-in-one-sandbox-crash-clau.md),
 [decision 0198](decisions/0198-sandbox-task-limits-are-sized-from-the-host-and-leave-sessions-a-reserve.md)).
 All sandboxes together stop at three quarters of the service's limit (`sandboxes/pids.max`), so
-the server keeps a quarter however many are busy; a hit there counts as the sandbox's
+the server keeps a quarter however many are busy; a hit there or at the service's own limit
+counts as the sandbox's, one above the service does not
 ([SPEC-272](../.ai/specs/SPEC-272-all-sandboxes-together-keep-the-server-a.md),
+[SPEC-316](../.ai/specs/SPEC-316-limit-counters-count-forks-refused-at-th.md),
 [decision 0201](decisions/0201-all-sandboxes-share-a-task-limit-below-the-services.md)).
 
 ```mermaid
@@ -681,7 +683,13 @@ for task runs and the Superagent alike, adds `"outputStyle": "Concise"` to the c
 `settings.json` when it names no style, so sessions answer in Claude Code's Concise style while
 `/output-style` and a repository's committed style still win
 ([SPEC-210](../.ai/specs/SPEC-210-https-code-claude-com-docs-en-output-sty.md),
-[decision 0166](decisions/0166-sessions-default-to-the-concise-output-style.md)). If a trust prompt
+[decision 0166](decisions/0166-sessions-default-to-the-concise-output-style.md)). Task runs and the
+Superagent (the Cockpit) start Claude Code with `CLAUDE_CODE_NO_FLICKER=1`, so it always draws
+full screen with mouse reporting, which the web terminal's wheel and late viewers need. Without it,
+Claude Code's boot canary in the shared config dir took a sibling task's start (every contained run
+is pid 2) for a failed one of its own and turned full screen off for the project
+([SPEC-310](../.ai/specs/SPEC-310-i-can-t-scroll-up-fix.md),
+[decision 0218](decisions/0218-claude-code-runs-always-draw-full-screen.md)). If a trust prompt
 still shows before SessionStart, Yulius types nothing into it and says so, and the keys a person
 answers it with are no draft. A goal launched as the prompt runs once the prompt is answered, a
 typed one follows once it is gone, and a prompt left unanswered for 5 minutes flags the task
@@ -941,8 +949,9 @@ It manages the project through the Yulius MCP server
 ([SPEC-037](../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md),
 [decision 0029](decisions/0029-cockpit-manages-through-mcp.md)). Its bearer (`ck_…`) is derived
 from the shell's persisted host token, and it is served the management tools (tasks,
-automations, workflows, sessions), `task_message` and the vault tools (below). Those tools act for a person (`ProjectCaller`): the Cockpit's
-owner, or a task's owner when a task's agent calls them. `task_create` takes the same path as
+automations, workflows, sessions), `task_message` and the vault tools (below). Those tools act for a person (`ProjectCaller`, which names its
+`Channel`: task agent, Superagent or remote MCP): the Cockpit's owner, the remote MCP token's
+person, or a task's owner when a task's agent calls them. `task_create` takes the same path as
 New task; `task_stop`, `task_archive`, `task_delete`, `automation_delete`, `automation_run_now`
 and `automation_template_enable` call the UI's own functions with that person and the caller as
 the audit actor, never on the caller's own task
@@ -951,7 +960,8 @@ the audit actor, never on the caller's own task
 `task_message`, the Superagent's and the remote MCP's (never a task agent's), passes on what its person says to a task
 (`App::tool_task_message`, `task_message.rs`): a task that never started gets it in its request
 through `App::queue_task_message` (SPEC-052); a running one gets it through `App::send_input` as
-one bracketed paste labelled with the person, then a separate Enter, refused before Claude Code's
+one bracketed paste labelled with the person and the caller's channel ("through their
+Superagent", or "through their own agent" for the remote MCP; SPEC-322), then a separate Enter, refused before Claude Code's
 session started (SessionStart, whose `session-started` marker in the run folder `reconcile`
 reads for a reattached run, or half the goal-ready timeout after the spawn, `spawned_ms`),
 while a person typed

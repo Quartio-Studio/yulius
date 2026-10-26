@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -9,7 +9,7 @@ failOnPageErrors();
 // mock answers like the server (`PUT /api/tasks/{tid}/start`). It signs in as mkarp.
 
 type MockTask = { id: string; sandbox_id: string; number: number; status: string; start_at?: string | null; supertask?: boolean; afterLink?: { number: number; rule: string | null } | null };
-type Mocked = { __yuliusMock: { tasks: MockTask[]; touchTask: (sid: string, n: number, c: object) => void } };
+type Mocked = { __yuliusMock: { tasks: MockTask[] } };
 const mockTask = (n: number) => (window as unknown as Mocked).__yuliusMock.tasks.find((t) => t.sandbox_id === 'sb_studio' && t.number === n);
 const openedNumber = () => Number(location.hash.match(/\/t\/(\d+)$/)?.[1]);
 
@@ -90,7 +90,7 @@ test('a chained task changes to When I decide; someone else sees no start chip (
   expect(await browser.evaluate(mockTask, number)).toMatchObject({ status: 'prepared', afterLink: null });
 
   // Handed to someone else: read-only, no chip.
-  await browser.evaluate((n) => (window as unknown as Mocked).__yuliusMock.touchTask('sb_studio', n, { owner: { login: 'anna-q' } }), number);
+  await touchTask(browser, 'sb_studio', number, { owner: { login: 'anna-q' } });
   await expect(screen.getByText("You are watching @anna-q's task.")).toBeVisible();
   await expect(bar.getByRole('button', /^Starts:/)).toHaveCount(0);
 });

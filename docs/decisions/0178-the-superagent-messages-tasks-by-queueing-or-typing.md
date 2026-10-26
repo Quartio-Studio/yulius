@@ -3,8 +3,11 @@
 ## Status
 
 Accepted. Specified in [SPEC-230](../../.ai/specs/SPEC-230-superagent-should-be-able-to-prompt-task.md);
-task #216. Amends SPEC-037 MGT-006 (one more Superagent tool) and extends SPEC-052 (queued
-messages) to the Superagent.
+task #216. Amended by [SPEC-322](../../.ai/specs/SPEC-322-a-remote-mcp-task-message-names-the-chan.md)
+(#789): the same tool served by the remote MCP (SPEC-247) labels its message
+`Message from <login> (through their own agent):`; the Superagent's label is unchanged.
+Amends SPEC-037 MGT-006 (one more Superagent tool) and extends SPEC-052 (queued messages) to the
+Superagent.
 
 ## Context
 

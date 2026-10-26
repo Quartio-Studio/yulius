@@ -53,6 +53,12 @@ pub struct FakeAgentOptions {
     /// With `goal_met_on_wake_ms`: the woken turn's Stop hook never reaches Yulius
     /// (`--wake-stop-lost`).
     pub wake_stop_lost: bool,
+    /// With `goal_met_on_wake_ms`: the woken turn's prompt hook never reaches Yulius
+    /// (`--wake-prompt-lost`).
+    pub wake_prompt_lost: bool,
+    /// With `goal_background`: Claude Code wakes the session this many milliseconds after the
+    /// shell exits, as it notices the end only when it polls (`--wake-delay-ms`).
+    pub wake_delay_ms: Option<u64>,
     /// After the goal turn's stop the agent works on for this many milliseconds with no new prompt
     /// (`--goal-continue-ms`): with `goal_continue_verdict` the goal evaluator says "not met"
     /// (`--goal-continue-verdict`), otherwise another Stop hook continued the turn.
@@ -206,6 +212,12 @@ impl HarnessPort for FakeAgentHarness {
         }
         if self.options.wake_stop_lost {
             argv.push("--wake-stop-lost".into());
+        }
+        if self.options.wake_prompt_lost {
+            argv.push("--wake-prompt-lost".into());
+        }
+        if let Some(ms) = self.options.wake_delay_ms {
+            argv.extend(["--wake-delay-ms".into(), ms.to_string()]);
         }
         if let Some(ms) = self.options.goal_continue_ms {
             argv.extend(["--goal-continue-ms".into(), ms.to_string()]);

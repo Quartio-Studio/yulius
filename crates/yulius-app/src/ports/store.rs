@@ -331,6 +331,15 @@ pub trait TaskStore: Send + Sync {
     /// Records the start of `task`'s working stretch, or its end with `None` (SPEC-087
     /// TIM-002). The task's other times stay.
     async fn set_working_since(&self, task: &TaskId, since: Option<Timestamp>) -> AppResult<()>;
+    /// Records the start or end of `task`'s working stretch like [`TaskStore::set_working_since`],
+    /// only while the running task still reads `from`: that activity (or none) and those times
+    /// (SPEC-315 FWS-001); whether it did.
+    async fn set_working_since_from(
+        &self,
+        task: &TaskId,
+        from: (Option<Activity>, TaskTimes),
+        since: Option<Timestamp>,
+    ) -> AppResult<bool>;
     /// A person's pause of `task` (SPEC-191 PER-001), if any.
     async fn person_pause(&self, task: &TaskId) -> AppResult<Option<PersonPause>>;
     /// Records `by`'s pause of `task`'s run `attempt` unless a pause is recorded; returns the
