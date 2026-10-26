@@ -95,7 +95,7 @@ every agent of the instance, and either setting can be changed later with one cl
 - [x] Review round 1: wiring tests, hand-over restart, MCP value redaction, move permissions
 - [x] Review round 2: live-run refusal tested, hand-over fails closed, one launch read
 - [x] Independent review in a fresh session, findings fixed test-first
-- [x] Gates, security scan and e2e green, delivered on green CI
+- [x] Local gates and e2e green up to the nextest run cut off for low host memory; security scan not run (Vidoc quota); the full gate runs in Yulius CI before the merge
 
 ## Acceptance criteria
 
@@ -137,6 +137,15 @@ every agent of the instance, and either setting can be changed later with one cl
   out of scope; the server's own sealed values are the person's credential.
 - Personal limits whose runs get the server; it is not a containment boundary between tasks sharing
   one sandbox's file system and user (ADR-0224 Consequences).
+- Review nits declined (round 5, marked optional by the reviewer):
+  - `claim_restart` clears `personal_mcp_of` before the old run ends. The window is the few store
+    calls before `switch_with` marks the task Switching, after which `task_message` refuses. In
+    that window another person's message could only be typed into a run that is being ended.
+    Keeping a separate claim flag for those milliseconds is not worth the extra state.
+  - A store error while reading the task in `restart_for_new_owner` returns without restarting or
+    stopping the run. The stop it would fall back to (`stop_task_now`) uses the same store, so it
+    fails the same way. A database that cannot read a task fails the whole hand-over path, not
+    only this branch.
 
 ## Evidence
 
@@ -168,8 +177,8 @@ every agent of the instance, and either setting can be changed later with one cl
 - Security scan: `yulius security-scan` exit 2, **not run**: Vidoc answered HTTP 429, the key
   has used its 50,000,000 tokens; nothing was scanned (unrun, not passed).
 - Independent review: 5 rounds in a fresh read-only session (`om-code-review`); approved at
-  `579a5731`. Three optional nits were left at the round limit; two are filed as #925, and the
-  third follows the existing pattern after a spawn.
+  `579a5731`. Three optional nits were declined with reasons (see Decisions): two are behaviour
+  windows a few store calls long, and the third follows the existing pattern after a spawn.
 - Not tested here: a real Claude Code run against a real personal MCP server (the fake agent and
   the harness configuration stand in), and the Quartio admin MCP itself, which needs its owner's
   files and keys.
