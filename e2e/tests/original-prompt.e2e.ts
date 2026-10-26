@@ -33,11 +33,12 @@ test('the task menu shows the original prompt with its attached files', async ({
   await files.getByRole('button', 'Download notes.txt').click();
   await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { downloads?: string[][] } }).__yuliusMock.downloads ?? []))
     .toEqual([['/api/tasks/tsk_studio_12/prompt/attachments/1', 'notes.txt']]);
-  // Asked once with HEAD, and read only by that download (the mock's stand-in for the browser).
-  expect(await browser.evaluate(() => {
+  // Asked once with HEAD, and read only by that download (the mock's stand-in for the browser,
+  // whose read lands after the mock's latency: polled).
+  await expect.poll(() => browser.evaluate(() => {
     const m = (window as unknown as { __yuliusMock: { sent?: Record<string, number>; promptFileReads?: Record<string, number> } }).__yuliusMock;
     return [m.sent?.['HEAD /api/tasks/tsk_studio_12/prompt/attachments/1'] ?? 0, m.promptFileReads?.['tsk_studio_12/1'] ?? 0];
-  })).toEqual([1, 1]);
+  }), { timeout: 5000 }).toEqual([1, 1]);
 
   await files.getByRole('button', 'Open Image 1, checkout-error.png').click();
   const preview = screen.getByRole('dialog', 'checkout-error.png');
