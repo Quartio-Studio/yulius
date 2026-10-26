@@ -3886,7 +3886,7 @@ impl App {
                         // Claude Code continued past its limit while Yulius was down.
                         self.cut_turn_continued(&task_id, facts.last_turn_at).await;
                     }
-                    self.apply_transcript_facts(&task_id, facts).await;
+                    self.apply_transcript_facts(&task_id, facts.clone()).await;
                     // A session left full while Yulius was down is recovered now (CTX-007).
                     if facts.context_full {
                         self.context_full_replayed(&task_id, &attempt).await;

@@ -19,7 +19,8 @@
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
 //!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--compact-hangs]
 //!            [--prompt TEXT] [--limit-continues-ms MS [--limit-continues-answer-only]]
-//!            [--idle-compact-ms MS] [--trust-prompt] [--goal-api-errors N [--goal-retry-ms MS]]
+//!            [--idle-compact-ms MS] [--trust-prompt] [--goal-api-errors N [--goal-retry-ms MS]
+//!            [--goal-check-errors] [--goal-cleared-on-retry]]
 //! ```
 //!
 //! Modes:
@@ -88,7 +89,10 @@
 //! ("Connection lost mid-response", no Stop hook), N turns in all, like Claude Code 2.1.292: its
 //! retry notice, the closed turn (`RETRY ARMED`), its goal check-in prompt `--goal-retry-ms`
 //! (default 2000) later (`RETRYING`); the retry after the N-th error achieves the goal, and after
-//! three failed retries it prints `Goal paused after 3 automatic retries` (`GOAL PAUSED`).
+//! three failed retries it prints `Goal paused after 3 automatic retries` (`GOAL PAUSED`). With
+//! `--goal-check-errors` each failed turn instead ends cleanly, runs its Stop hook and the goal
+//! check fails ("the goal check could not complete"); with `--goal-cleared-on-retry` the goal is
+//! cleared (`/goal clear`) while the first retry is armed, so no check-in comes (`GOAL CLEARED`).
 //!
 //! `--hooks YULIUS_EXE` runs Claude Code's hooks as configured by Yulius:
 //! `YULIUS_EXE hook claude UserPromptSubmit` before and `… Stop` after each turn, with the hook
@@ -172,6 +176,9 @@ const API_ERROR_TEXT: &str =
 /// Claude Code 2.1.292's words for an API error it retries a goal turn after.
 const RETRY_CAUSE: &str = "the API was unavailable or the connection dropped";
 
+/// Its words for a goal check that failed, which it retries too.
+const CHECK_CAUSE: &str = "the goal check could not complete";
+
 /// How many times Claude Code 2.1.292 retries a goal turn an API error ended.
 const GOAL_RETRIES: u32 = 3;
 const MAX_HOOK_OUTPUT: u64 = 1024 * 1024;
@@ -223,6 +230,8 @@ struct Options {
     goal_continue_dies: bool,
     goal_api_errors: u32,
     goal_retry_ms: u64,
+    goal_check_errors: bool,
+    goal_cleared_on_retry: bool,
     goal_delay_ms: u64,
     goal_met_on_wake_ms: Option<u64>,
     wake_stop_lost: bool,
@@ -275,6 +284,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         goal_continue_dies: false,
         goal_api_errors: 0,
         goal_retry_ms: 2_000,
+        goal_check_errors: false,
+        goal_cleared_on_retry: false,
         goal_delay_ms: 0,
         goal_met_on_wake_ms: None,
         wake_stop_lost: false,
@@ -369,6 +380,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             }
             "--goal-continue-dies" => options.goal_continue_dies = true,
             "--goal-api-errors" => options.goal_api_errors = parse_number(&flag, args.next())?,
+            "--goal-check-errors" => options.goal_check_errors = true,
+            "--goal-cleared-on-retry" => options.goal_cleared_on_retry = true,
             "--goal-retry-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.goal_retry_ms = ms.min(MAX_GOAL_DELAY_MS);
@@ -1619,6 +1632,12 @@ fn goal_api_errors(
         }
         Ok(())
     };
+    let cause = if options.goal_check_errors {
+        CHECK_CAUSE
+    } else {
+        RETRY_CAUSE
+    };
+    let mut prompt = line.to_owned();
     write(&|t| {
         t.begin(line)?;
         t.tool_use()
@@ -1627,14 +1646,22 @@ fn goal_api_errors(
     loop {
         // The agent works a moment before the connection drops, as a real turn does.
         std::thread::sleep(Duration::from_millis(1_000));
-        write(&|t| t.connection_lost())?;
+        if options.goal_check_errors {
+            // The turn ends cleanly and its Stop hooks run; the goal evaluator fails.
+            write(&|t| t.answer(&prompt, "Done for now."))?;
+            if let Some(hooks) = hooks {
+                hooks.stop()?;
+            }
+        } else {
+            write(&|t| t.connection_lost())?;
+        }
         failed += 1;
         say("API ERROR")?;
         if failed > GOAL_RETRIES {
             write(&|t| {
                 t.notice(
                     &format!(
-                        "Goal paused after {GOAL_RETRIES} automatic retries \u{b7} {RETRY_CAUSE} \u{b7} send a message to continue"
+                        "Goal paused after {GOAL_RETRIES} automatic retries \u{b7} {cause} \u{b7} send a message to continue"
                     ),
                     "warning",
                 )?;
@@ -1645,16 +1672,24 @@ fn goal_api_errors(
         write(&|t| {
             t.notice(
                 &format!(
-                    "Goal still active \u{b7} {RETRY_CAUSE} \u{b7} retrying in 1 min ({failed}/{GOAL_RETRIES}) \u{b7} send a message to retry now"
+                    "Goal still active \u{b7} {cause} \u{b7} retrying in 1 min ({failed}/{GOAL_RETRIES}) \u{b7} send a message to retry now"
                 ),
                 "notice",
             )?;
             t.turn_duration(9_000)
         })?;
         say("RETRY ARMED")?;
+        if options.goal_cleared_on_retry {
+            // The person clears the goal: Claude Code drops its check-in silently.
+            write(&|t| {
+                t.goal_status(json!({"type": "goal_status", "met": true, "sentinel": true,
+                    "condition": condition}))
+            })?;
+            return say("GOAL CLEARED");
+        }
         std::thread::sleep(Duration::from_millis(options.goal_retry_ms));
-        let prompt = format!(
-            "<task-notification>\n<summary>Goal check-in: continuing after the last turn ended early</summary>\n</task-notification>\n<system-reminder>\nGoal check-in: \u{ab}{condition}\u{bb} is still active. The last turn ended before the goal could be evaluated: {RETRY_CAUSE}. Continue toward the goal.\n</system-reminder>"
+        prompt = format!(
+            "<task-notification>\n<summary>Goal check-in: continuing after the last turn ended early</summary>\n</task-notification>\n<system-reminder>\nGoal check-in: \u{ab}{condition}\u{bb} is still active. The last turn ended before the goal could be evaluated: {cause}. Continue toward the goal.\n</system-reminder>"
         );
         say("RETRYING")?;
         if failed >= options.goal_api_errors {

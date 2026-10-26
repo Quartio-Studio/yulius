@@ -3289,11 +3289,12 @@ fn a_goal_turn_claude_code_retries_after_an_api_error_stays_working() -> TestRes
     Ok(())
 }
 
-/// SPEC-333 AER-002: the goal turn and Claude Code's three retries all die on an API error, and
-/// Claude Code gives up ("Goal paused after 3 automatic retries"). The task is in Needs you, with a
-/// request that says what happened and to send a message; it read Working while the retries ran.
-#[test]
-fn spent_goal_retries_put_the_task_in_needs_you() -> TestResult {
+/// SPEC-333 AER-002: the goal turn and Claude Code's three retries all fail, and Claude Code gives
+/// up ("Goal paused after 3 automatic retries · <cause>"). The task is in Needs you, with a request
+/// that says what happened and to send a message, and stays there once the record that closes the
+/// turn is read; it read Working while the retries ran. With `check_errors` each turn ended cleanly
+/// and its goal check failed (its Stop hook ran, so a verdict was pending).
+fn spent_goal_retries_put_the_task_in_needs_you(check_errors: bool, cause: &str) -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
@@ -3303,12 +3304,13 @@ fn spent_goal_retries_put_the_task_in_needs_you() -> TestResult {
             hooks: true,
             goal_api_errors: Some(4),
             goal_retry_ms: Some(1_500),
+            goal_check_errors: check_errors,
             ..FakeAgentOptions::default()
         };
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
-        wait_for("the API error", Duration::from_secs(90), || {
+        wait_for("the first failure", Duration::from_secs(90), || {
             screen_contains(&app, &id, "API ERROR")
         })
         .await?;
@@ -3320,16 +3322,73 @@ fn spent_goal_retries_put_the_task_in_needs_you() -> TestResult {
             vec![Some(Activity::Working), Some(Activity::NeedsAttention)],
             "Working while Claude Code retried, then Needs you"
         );
+        // The record that closes the turn was written with the notice: two more rounds read it.
+        let runtime = app.runtime(&id);
+        let rounds = runtime.transcript_rounds();
+        wait_for(
+            "the turn's record read",
+            Duration::from_secs(20),
+            || async { runtime.transcript_rounds() >= rounds + 2 },
+        )
+        .await?;
+        assert_eq!(
+            activity(&app, &id).await,
+            Some(Activity::NeedsAttention),
+            "the turn's record leaves Needs you"
+        );
         let summary = app.task_summary(&task(&app, &id).await?).await?;
         let request = summary.needs_you.ok_or("no Needs you request")?;
         assert!(
             request
                 .happened
                 .as_deref()
-                .is_some_and(|h| h.contains("the API was unavailable or the connection dropped")),
+                .is_some_and(|h| h.contains(cause)),
             "{request:?}"
         );
         assert!(request.action.contains("message"), "{request:?}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn spent_goal_retries_after_api_errors_put_the_task_in_needs_you() -> TestResult {
+    spent_goal_retries_put_the_task_in_needs_you(
+        false,
+        "the API was unavailable or the connection dropped",
+    )
+}
+
+#[test]
+fn spent_goal_check_retries_put_the_task_in_needs_you() -> TestResult {
+    spent_goal_retries_put_the_task_in_needs_you(true, "the goal check could not complete")
+}
+
+/// The person clears the goal (`/goal clear`) while Claude Code's retry is armed: no check-in
+/// comes, and the task waits for them instead of reading Working for good.
+#[test]
+fn a_goal_cleared_while_a_retry_is_armed_leaves_the_task_waiting() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_api_errors: Some(2),
+            goal_cleared_on_retry: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+        wait_for("the goal cleared", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "GOAL CLEARED")
+        })
+        .await?;
+        let seen = activities_until(&app, &id, Activity::Waiting, Duration::from_secs(20)).await?;
+        assert_eq!(seen.last(), Some(&Some(Activity::Waiting)));
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -3416,7 +3475,14 @@ fn a_restart_after_spent_goal_retries_puts_the_task_in_needs_you() -> TestResult
         })
         .await?;
         let summary = app.task_summary(&task(app, id).await?).await?;
-        assert!(summary.needs_you.is_some(), "an open request");
+        let request = summary.needs_you.ok_or("no Needs you request")?;
+        assert!(
+            request.happened.as_deref().is_some_and(|h| {
+                h.contains("Goal paused after 3 automatic retries")
+                    && h.contains("the API was unavailable or the connection dropped")
+            }),
+            "the replay keeps Claude Code's words: {request:?}"
+        );
         Ok(())
     })
 }

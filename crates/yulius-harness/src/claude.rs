@@ -213,7 +213,9 @@ fn observe_system(record: &Map<String, Value>) -> Vec<Observed> {
     if bool_of(record, "isSidechain") {
         return Vec::new();
     }
-    if let Some(retry) = str_of(record, "content").and_then(goal_retry) {
+    if str_of(record, "subtype") == Some("informational")
+        && let Some(retry) = str_of(record, "content").and_then(goal_retry)
+    {
         return vec![retry];
     }
     match str_of(record, "subtype") {
@@ -237,15 +239,14 @@ fn goal_retry(content: &str) -> Option<Observed> {
     let mut parts = content.split(NOTICE_SEPARATOR);
     let head = parts.next()?;
     let cause = parts.next()?;
-    let armed = if content.starts_with(GOAL_RETRY_ARMED) {
-        parts.next()?.starts_with("retrying in ")
-    } else if head.starts_with(GOAL_RETRIES_SPENT) && head.ends_with(" automatic retries") {
-        false
-    } else if content.starts_with(GOAL_PAUSED) && API_PAUSE_CAUSES.contains(&cause) {
-        false
+    let armed = content.starts_with(GOAL_RETRY_ARMED);
+    if armed {
+        parts.next()?.starts_with("retrying in ").then_some(())?;
     } else {
-        return None;
-    };
+        let spent = head.starts_with(GOAL_RETRIES_SPENT) && head.ends_with(" automatic retries");
+        let paused = content.starts_with(GOAL_PAUSED) && API_PAUSE_CAUSES.contains(&cause);
+        (spent || paused).then_some(())?;
+    }
     let notice = format!("{head}{NOTICE_SEPARATOR}{cause}");
     Some(Observed::GoalRetry {
         armed,
@@ -1255,6 +1256,7 @@ mod tests {
         for other in [
             "Goal paused · a hook ended the turn · send a message to continue",
             "Goal paused · the goal check timed out · send a message to continue",
+            "Goal paused · goal checks kept finding it unmet this turn · send a message to continue",
             "Goal paused · usage limit reached · continues automatically when it resets",
             "Goal paused · usage limit reached · send a message after it resets to continue",
             "Goal still active · the API was unavailable or the connection dropped",
@@ -1266,6 +1268,20 @@ mod tests {
                 "{other}"
             );
         }
+        // A failed goal check is retried too: the task goes on by itself.
+        assert!(matches!(
+            observe_line(&notice(
+                "Goal still active · the goal check could not complete · retrying in 5 min (2/3) · send a message to retry now"
+            ))
+            .as_slice(),
+            [Observed::GoalRetry { armed: true, .. }]
+        ));
+        // Only Claude Code's notices (`informational`), not another record quoting the words.
+        let other_subtype = armed.replace(
+            r#""subtype":"informational""#,
+            r#""subtype":"local_command""#,
+        );
+        assert_eq!(observe_line(&other_subtype), Vec::<Observed>::new());
         // A sub-agent's notice is its own.
         let sidechain = armed.replace(r#""isSidechain":false"#, r#""isSidechain":true"#);
         assert_eq!(observe_line(&sidechain), Vec::<Observed>::new());

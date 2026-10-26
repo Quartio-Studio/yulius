@@ -51,8 +51,17 @@ pub const SHELL_PROBE_MS: i64 = 5_000;
 /// Longest a shell probe may take before its result counts as unknown.
 pub const SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Claude Code's last goal notice after a turn an error ended (SPEC-333).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GoalRetryFact {
+    /// It armed a retry that has not started a turn yet.
+    Armed,
+    /// It stopped retrying; its notice.
+    Stopped(String),
+}
+
 /// The final state of the transcript lines read so far.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TranscriptFacts {
     /// `Some(true)` while a turn is open, `Some(false)` once the last turn ended, `None` before
     /// any turn was seen.
@@ -76,10 +85,9 @@ pub struct TranscriptFacts {
     /// Claude Code recorded a goal in this session (any outcome): a launch `/goal` was taken
     /// (SPEC-146 GWR-003).
     pub goal_recorded: bool,
-    /// The last word after a turn an error ended is Claude Code's goal notice (SPEC-333): `true`
-    /// while the retry it armed has not started a turn yet, `false` when it stopped retrying and
-    /// no prompt came since; `None` otherwise.
-    pub goal_retry: Option<bool>,
+    /// The last word after a turn an error ended is Claude Code's goal notice (SPEC-333), until a
+    /// prompt, agent work or an interrupt; an armed retry also ends with the goal.
+    pub goal_retry: Option<GoalRetryFact>,
 }
 
 impl TranscriptFacts {
@@ -119,7 +127,13 @@ impl TranscriptFacts {
                 self.turn_open = Some(false);
                 self.goal_retry = None;
             }
-            Observation::GoalRetry { armed, .. } => self.goal_retry = Some(*armed),
+            Observation::GoalRetry { armed, notice } => {
+                self.goal_retry = Some(if *armed {
+                    GoalRetryFact::Armed
+                } else {
+                    GoalRetryFact::Stopped(notice.clone())
+                });
+            }
             // The API rejected the prompt: the turn is over, without a Stop hook (#213).
             Observation::ContextFull => {
                 self.turn_open = Some(false);
@@ -127,6 +141,10 @@ impl TranscriptFacts {
             }
             Observation::Compacted => self.context_full = false,
             Observation::Goal(outcome) => {
+                // Claude Code drops an armed check-in once the goal ended.
+                if !goal_stays_open(*outcome) && self.goal_retry == Some(GoalRetryFact::Armed) {
+                    self.goal_retry = None;
+                }
                 self.goal_recorded = true;
                 self.goal_open = goal_stays_open(*outcome);
                 self.fold_goal(*outcome);
@@ -677,6 +695,10 @@ impl App {
 
     /// Claude Code recorded the session goal's state.
     pub(crate) async fn goal_observed(self: &Arc<Self>, task_id: &TaskId, outcome: GoalOutcome) {
+        if !goal_stays_open(outcome) {
+            self.goal_ended_during_retry(task_id, outcome == GoalOutcome::Met)
+                .await;
+        }
         let runtime = self.runtime(task_id);
         runtime
             .goal_open
@@ -736,12 +758,13 @@ impl App {
         if task.status != TaskStatus::Running {
             return;
         }
-        runtime
-            .goal_retry_armed
-            .store(facts.goal_retry == Some(true), Ordering::SeqCst);
-        match facts.goal_retry {
+        runtime.goal_retry_armed.store(
+            facts.goal_retry == Some(GoalRetryFact::Armed),
+            Ordering::SeqCst,
+        );
+        match &facts.goal_retry {
             // Claude Code retries the closed turn by itself: a Working task stays Working.
-            Some(true) if facts.turn_open == Some(false) => {
+            Some(GoalRetryFact::Armed) if facts.turn_open == Some(false) => {
                 if task.activity == Some(Activity::Waiting)
                     && let Err(err) = self.set_task_activity(&task, Activity::Working).await
                 {
@@ -750,15 +773,13 @@ impl App {
                 return;
             }
             // It stopped retrying while Yulius was down: the task needs a person (once).
-            Some(false) if task.activity != Some(Activity::NeedsAttention) => {
-                self.goal_retries_spent(
-                    &task,
-                    "Claude Code stopped retrying the goal after an API error",
-                )
-                .await;
+            Some(GoalRetryFact::Stopped(notice))
+                if task.activity != Some(Activity::NeedsAttention) =>
+            {
+                self.goal_retries_spent(&task, notice).await;
                 return;
             }
-            Some(false) => return,
+            Some(GoalRetryFact::Stopped(_)) => return,
             _ => {}
         }
         match facts.turn_open {
@@ -1191,23 +1212,40 @@ mod tests {
     fn retry(armed: bool) -> Observation {
         Observation::GoalRetry {
             armed,
-            notice: "Goal still active · the API was unavailable or the connection dropped".into(),
+            notice: "Goal paused after 3 automatic retries · the API was unavailable".into(),
         }
     }
 
     /// SPEC-333: a replay keeps the retry Claude Code armed over the record that closes the error
-    /// turn, and its spent retries, until a prompt, agent work or an interrupt comes after them.
+    /// turn, and its spent retries with Claude Code's words, until a prompt, agent work or an
+    /// interrupt comes after them; an armed retry also ends with the goal.
     #[test]
     fn a_replay_keeps_the_last_goal_retry_notice_until_the_next_turn() {
         let armed = reduce(&[PROMPT, retry(true), ENDED]);
         assert_eq!(
             (armed.turn_open, armed.goal_retry),
-            (Some(false), Some(true))
+            (Some(false), Some(GoalRetryFact::Armed))
         );
         assert_eq!(
             reduce(&[PROMPT, retry(false), ENDED]).goal_retry,
-            Some(false)
+            Some(GoalRetryFact::Stopped(
+                "Goal paused after 3 automatic retries · the API was unavailable".into()
+            ))
         );
+        for ended in [GoalOutcome::Cleared, GoalOutcome::Met, GoalOutcome::Failed] {
+            let facts = reduce(&[PROMPT, retry(true), ENDED, Observation::Goal(ended)]);
+            assert_eq!(facts.goal_retry, None, "{ended:?}");
+            // Spent retries stay: the request is the person's.
+            let facts = reduce(&[PROMPT, retry(false), ENDED, Observation::Goal(ended)]);
+            assert!(facts.goal_retry.is_some(), "{ended:?}");
+        }
+        let still = reduce(&[
+            PROMPT,
+            retry(true),
+            ENDED,
+            Observation::Goal(GoalOutcome::NotMet),
+        ]);
+        assert_eq!(still.goal_retry, Some(GoalRetryFact::Armed));
         let wake = Observation::UserTurn {
             at: Some(Timestamp(2)),
             wake: true,
