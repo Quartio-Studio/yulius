@@ -619,6 +619,7 @@ async fn only_its_owner_messages_a_task_holding_personal_secrets() -> TestResult
                 sandbox: SandboxId::parse("s1")?,
                 user: UserId::parse(user)?,
                 task: None,
+                channel: yulius_app::coordination::Channel::Superagent,
                 actor: format!("cockpit:{login}"),
                 detail: json!({"via": "cockpit", "shell": "sh-test"}),
             })

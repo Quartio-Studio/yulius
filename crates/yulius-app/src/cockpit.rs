@@ -34,7 +34,7 @@ use yulius_domain::usage::ModelFamily;
 
 use crate::auth::AuthContext;
 use crate::context::App;
-use crate::coordination::ProjectCaller;
+use crate::coordination::{Channel, ProjectCaller};
 use crate::error::{AppError, AppResult};
 use crate::model::{AccountRecord, SandboxRecord, UserRecord};
 use crate::ports::harness::{CockpitLaunch, Observation, TranscriptWatch, WatchFrom};
@@ -241,6 +241,7 @@ impl App {
             sandbox: cockpit.sandbox().clone(),
             user: user.id,
             task: None,
+            channel: Channel::Superagent,
             actor: format!("cockpit:{login}"),
             detail: json!({"via": "cockpit", "shell": cockpit.id()}),
         })

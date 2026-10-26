@@ -1,12 +1,12 @@
-//! Messages to tasks (SPEC-230, ADR-0178): a person's Superagent tells a task what the person
-//! said, with `task_message`.
+//! Messages to tasks (SPEC-230, ADR-0178): a person's Superagent, or their own agent through the
+//! remote MCP (SPEC-247), tells a task what the person said, with `task_message`.
 //!
 //! Contract:
 //! - a task that has not started takes the message into its request, as the task view's queued
 //!   message of the Superagent's person (SPEC-052, TMS-002);
 //! - a running task gets it typed into its session as one bracketed paste, labelled with the
-//!   person, then a separate Enter; Claude Code queues a message submitted while the agent works
-//!   (TMS-003). Control characters other than line breaks and tabs never reach the TUI;
+//!   person and the channel it came through (SPEC-322), then a separate Enter; Claude Code
+//!   queues a message submitted while the agent works (TMS-003). Control characters other than line breaks and tabs never reach the TUI;
 //! - nothing is typed before Claude Code's session started (its SessionStart hook, also read
 //!   from the run's marker after a restart, or the goal typist's fallback for a CLI without it),
 //!   while it asks a person whether to trust the folder, while a person typed in the last minute (their
@@ -24,7 +24,7 @@ use yulius_contracts::api::tasks::QueueMessage;
 use yulius_domain::task::TaskStatus;
 
 use crate::context::App;
-use crate::coordination::ProjectCaller;
+use crate::coordination::{Channel, ProjectCaller};
 use crate::error::{AppError, AppResult};
 use crate::lifecycle::MAX_PROMPT_BYTES;
 use crate::manage::tool_detail;
@@ -50,13 +50,23 @@ pub fn clean_message(text: &str) -> String {
         .to_owned()
 }
 
-/// The bytes typed for a (cleaned) message from `login`: one bracketed paste of its label and
-/// text. Enter is sent separately.
+/// How the label names the channel a message came through (SPEC-322).
+fn through(channel: Channel) -> &'static str {
+    match channel {
+        Channel::Superagent => "their Superagent",
+        Channel::Remote => "their own agent",
+        // Never served `task_message` (TMS-001); named for completeness.
+        Channel::Task => "their task's agent",
+    }
+}
+
+/// The bytes typed for a (cleaned) message from `login` sent through `channel`: one bracketed
+/// paste of its label and text. Enter is sent separately.
 #[must_use]
-pub fn message_paste(login: &str, text: &str) -> Vec<u8> {
+pub fn message_paste(login: &str, channel: Channel, text: &str) -> Vec<u8> {
     let login = clean_message(login);
-    format!("\x1b[200~Message from {login} (through their Superagent):\n\n{text}\x1b[201~")
-        .into_bytes()
+    let through = through(channel);
+    format!("\x1b[200~Message from {login} (through {through}):\n\n{text}\x1b[201~").into_bytes()
 }
 
 /// Clears a run's "a message is being typed" mark when the typing ends, even if the call is
@@ -113,7 +123,8 @@ impl App {
         }
         let delivered = if task.status == TaskStatus::Running {
             let login = self.login_of(&caller.user).await;
-            self.type_task_message(&task, &login, &text).await?;
+            self.type_task_message(&task, &login, caller.channel, &text)
+                .await?;
             "sent"
         } else if !self.task_started(&task).await? {
             self.queue_task_message(&ctx, task.id.as_str(), &QueueMessage { text })
@@ -166,7 +177,13 @@ impl App {
     }
 
     /// Types a cleaned message into the running task's session (TMS-003, TMS-004, TMS-006).
-    async fn type_task_message(&self, task: &TaskRecord, login: &str, text: &str) -> AppResult<()> {
+    async fn type_task_message(
+        &self,
+        task: &TaskRecord,
+        login: &str,
+        channel: Channel,
+        text: &str,
+    ) -> AppResult<()> {
         let runtime = self.existing_runtime(&task.id).ok_or_else(|| {
             AppError::Conflict(format!("task #{} has no live session", task.number))
         })?;
@@ -213,7 +230,7 @@ impl App {
             )));
         }
         let _typing = Typing(&runtime.typing_message);
-        self.send_input(&task.id, &message_paste(login, text))
+        self.send_input(&task.id, &message_paste(login, channel, text))
             .await?;
         tokio::time::sleep(SUBMIT_DELAY).await;
         // The text is in the prompt box but not sent: said, so a retry does not send it twice.
@@ -225,7 +242,8 @@ impl App {
                 err.public_message()
             ))
         })?;
-        // The person spoke to the task through their Superagent: what it asked them is answered.
+        // The person spoke to the task (through their Superagent or their own agent): what it
+        // asked them is answered.
         self.end_needs_you(&task.id).await;
         Ok(())
     }
@@ -246,6 +264,7 @@ fn not_now_advice(status: TaskStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{clean_message, message_paste};
+    use crate::coordination::Channel;
 
     #[test]
     fn escape_sequences_and_control_characters_never_reach_the_session() {
@@ -258,12 +277,20 @@ mod tests {
 
     #[test]
     fn a_message_is_one_labelled_bracketed_paste() {
-        let paste =
-            String::from_utf8(message_paste("ali\x1bce", "Go on.\nThanks")).unwrap_or_default();
+        let paste = |channel| {
+            String::from_utf8(message_paste("ali\x1bce", channel, "Go on.\nThanks"))
+                .unwrap_or_default()
+        };
+        let superagent = paste(Channel::Superagent);
         assert_eq!(
-            paste,
+            superagent,
             "\x1b[200~Message from alice (through their Superagent):\n\nGo on.\nThanks\x1b[201~"
         );
-        assert_eq!(paste.matches('\x1b').count(), 2);
+        assert_eq!(superagent.matches('\x1b').count(), 2);
+        // SPEC-322: the remote MCP is the person's own agent, not their Superagent.
+        assert_eq!(
+            paste(Channel::Remote),
+            "\x1b[200~Message from alice (through their own agent):\n\nGo on.\nThanks\x1b[201~"
+        );
     }
 }

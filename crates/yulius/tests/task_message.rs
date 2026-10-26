@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use yulius_app::auth::{AuthContext, TokenGrant};
 use yulius_app::context::App;
-use yulius_app::coordination::ProjectCaller;
+use yulius_app::coordination::{Channel, ProjectCaller};
 use yulius_app::error::AppError;
 use yulius_app::needs_you::NeedsYouRecord;
 use yulius_app::ports::store::{TaskStore, UserStore};
@@ -39,6 +39,7 @@ fn superagent(sandbox: &SandboxId, user: &UserId, login: &str) -> ProjectCaller 
         sandbox: sandbox.clone(),
         user: user.clone(),
         task: None,
+        channel: Channel::Superagent,
         actor: format!("cockpit:{login}"),
         detail: json!({"via": "cockpit", "shell": "sh-test"}),
     }

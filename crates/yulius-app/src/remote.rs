@@ -30,7 +30,7 @@ use yulius_domain::permission::{Action, TokenScope};
 
 use crate::auth::{AuthContext, count_client_attempt};
 use crate::context::App;
-use crate::coordination::ProjectCaller;
+use crate::coordination::{Channel, ProjectCaller};
 use crate::error::{AppError, AppResult};
 use crate::manage::TaskChange;
 use crate::mcp::{STRUCTURED_META, cockpit_tool_descriptors};
@@ -617,6 +617,7 @@ impl App {
                     sandbox: sandbox.id.clone(),
                     user: caller.ctx.user.id.clone(),
                     task: None,
+                    channel: Channel::Remote,
                     actor: caller.actor(),
                     detail: json!({"via": "remote", "token": caller.token_id}),
                 };
