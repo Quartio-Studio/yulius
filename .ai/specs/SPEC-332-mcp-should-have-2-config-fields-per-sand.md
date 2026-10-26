@@ -73,8 +73,11 @@ every agent of the instance, and either setting can be changed later with one cl
   but the owner is refused for a task whose runs get its owner's personal MCP server: another
   person's message would steer an agent holding their credential; the check covers what the live
   run was started with too. A live run keeps its MCP configuration, so a hand-over (SPEC-070) of a
-  task whose live run holds the previous owner's personal server resumes it (same conversation)
-  with the new owner's servers.
+  task whose live run holds the previous owner's personal server resumes it with the new owner's
+  servers: the same conversation on the same subscription with nothing typed (past a usage limit,
+  or afresh for a first message never taken, as a manual switch), and stops it when it cannot be
+  restarted. While such a task is being launched (Starting, Switching) control does not pass
+  (409): its run's servers are not settled yet.
 - **MSC-010 Redaction.** The literal secret values of every MCP server that can reach a sandbox's
   runs (the team's and every person's personal ones; at least 8 characters, not ordinary text such
   as `info`) join the project's redaction with the agent secrets: terminals, transcripts, MCP
