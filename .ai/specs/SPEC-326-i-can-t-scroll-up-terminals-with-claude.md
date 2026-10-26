@@ -98,7 +98,9 @@ SPEC-310 fixes.
 - [x] A History view reads a task's session from its first line
 - [x] Reaching the top of a task terminal offers the whole session
 - [x] ADR, docs and changes record the history view
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Old runs on the classic renderer offer the whole session
+- [ ] Final head verified: review, gate and full e2e suite
 - [ ] Merged into dev on green CI
 
 ## Acceptance criteria
