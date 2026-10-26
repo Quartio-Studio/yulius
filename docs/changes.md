@@ -13,6 +13,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   meanwhile. The tile now shows the limit full with the overshoot marked, "8 / 8 +1", then
   "1 over the limit" and "6 queued", and says why on hover
   ([ADR-0226](decisions/0226-the-sessions-tile-shows-the-overshoot-of-resumed-done-tasks.md)).
+- A whole instance can be copied to another VM or a file and installed there (SPEC-329,
+  ADR-0222, task #313): `sudo yulius instance export | ssh root@new-vm yulius instance import`.
+  The export freezes `yulius.service` (server, agents, terminals, CI, Docker) so nothing drifts,
+  prints the exact size before the first byte, streams an uncompressed tar of exactly that length
+  to standard output without writing on the VM's disk, and thaws the service after (`--move`
+  keeps it frozen and disabled). The import refuses an existing instance, a newer schema or too
+  little disk before writing, makes the service user and its ids, remaps owners, never follows a
+  link of the copy, and checks the SHA-256 trailer; `yulius host setup` then starts the new VM.
 - A task reading another repository of its owner now gets every branch and tag, not only the
   default branch (SPEC-330, task #314, #915). A task that needed Quartio v2's `dev` asked a person
   to paste files, because `reference_repo` fetched `main` alone. The bundle now carries every

@@ -317,8 +317,22 @@ test('a hidden Superagent or Shell terminal keeps its session’s size', async (
   }, cockpit);
   // The terminal reacts to its box in the frame after the change is observed: two frames and a spare.
   const settle = () => browser.evaluate(() => new Promise<boolean>((done) => { requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => done(true)))); }));
+  // The page's size, not the mock session's 100×30 from before the terminal's hello reached it
+  // (under load the hello lands after a first look; #923's CI run).
+  const greeted = (cockpit: boolean) => browser.evaluate((agent) => {
+    type Shells = { __yuliusMock: { shells: Map<string, { cockpit?: boolean; session?: { viewers: Set<unknown> } }> } };
+    const shell = [...(window as unknown as Shells).__yuliusMock.shells.values()].find((s) => Boolean(s.cockpit) === agent && s.session);
+    return Boolean(shell && shell.session && shell.session.viewers.size > 0);
+  }, cockpit);
   const fitted = async (cockpit: boolean) => {
+    await expect.poll(() => greeted(cockpit)).toBe(true);
     await expect.poll(async () => Number(((await size(cockpit)) || '0x0').split('x')[0])).toBeGreaterThan(20);
+    // A fit after the hello sends a resize: the size counts once it holds across settled frames.
+    await expect.poll(async () => {
+      const before = await size(cockpit);
+      await settle();
+      return before === (await size(cockpit));
+    }).toBe(true);
     return size(cockpit);
   };
   const shown = await fitted(true);

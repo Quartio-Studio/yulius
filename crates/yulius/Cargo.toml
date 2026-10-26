@@ -55,6 +55,13 @@ reqwest = { workspace = true }
 sysinfo = { workspace = true }
 base64 = { workspace = true }
 nix = { workspace = true }
+# `yulius instance export|import` (SPEC-329): the archive's checksum, the manifest, extraction
+# through directory handles and extended attributes, a thaw on SIGINT/SIGTERM/SIGHUP.
+sha2 = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+rustix = { workspace = true }
+signal-hook = { workspace = true, features = ["iterator"] }
 
 [dev-dependencies]
 yulius-app = { workspace = true, features = ["test-support"] }
