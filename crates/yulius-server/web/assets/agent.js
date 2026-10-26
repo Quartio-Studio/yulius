@@ -5,7 +5,7 @@
 // to delete it: /clear starts over inside it.
 
 import { enc } from './api.js';
-import { h, icon, setChildren, emptyState, loadError, skeleton } from './dom.js';
+import { h, icon, setChildren, emptyState, loadError, skeleton, toast, errorToast } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { allows } from './status.js';
 import { href } from './router.js';
@@ -23,7 +23,8 @@ export function createAgentView(ctx, sandbox) {
     h('span', { class: 'banner-text' },
       h('strong', null, 'For quick work'), ': setting up automations, asking a quick question. Anything more complex, such as writing code, belongs in a task, not here', newTask ? [': ', newTask, '.'] : '.'));
   const body = h('div', { class: 'agent-term' });
-  const el = h('div', { class: 'agent' }, notice, body);
+  const requests = createRequests(ctx, sandbox);
+  const el = h('div', { class: 'agent' }, notice, requests.el, body);
   let terminal = null;
   let alive = true;
   let opening = false;
@@ -150,7 +151,107 @@ export function createAgentView(ctx, sandbox) {
     hide() { shown = false; },
     destroy() {
       alive = false;
+      requests.destroy();
       drop();
+    },
+  };
+}
+
+/** Start options a request shows, in the composer's words. */
+const OPTION_LABELS = {
+  workflow: (v) => `Workflow: ${v}`,
+  mode: (v) => `Mode: ${v}`,
+  after_task: (v) => `After #${v}`,
+  start_rule: (v) => `When ${v}`,
+  supertask: (v) => (v ? 'Supertask: runs alone' : null),
+  prepared: (v) => (v ? 'Prepared: waits for Start now' : null),
+  start_at: (v) => `Starts at ${v}`,
+  model: (v) => `Model: ${v}`,
+  effort: (v) => `Effort: ${v}`,
+};
+
+/**
+ * SPEC-335 XSR-008: what the person's Superagent asks to start in another sandbox, above its
+ * session. Nothing reaches that sandbox until the person presses Create task; each request is
+ * answered once, and goes when the Superagent's call ends.
+ */
+function createRequests(ctx, sandbox) {
+  const el = h('div', { class: 'agent-requests', hidden: true });
+  const path = `/api/sandboxes/${enc(sandbox.id)}/superagent/requests`;
+  let alive = true;
+  let reading = null;
+  let again = false;
+  const busy = new Set();
+
+  async function load() {
+    if (!allows(sandbox.access, 'write')) return;
+    // One read at a time; a change announced during it brings one more.
+    if (reading) { again = true; return; }
+    reading = ctx.api.get(path).then(render, () => { /* the next event or resync reads again */ });
+    try { await reading; } finally {
+      reading = null;
+      if (again && alive) { again = false; load(); }
+    }
+  }
+
+  function render(list) {
+    if (!alive) return;
+    const items = Array.isArray(list) ? list : [];
+    el.hidden = items.length === 0;
+    setChildren(el, items.map(card));
+  }
+
+  function card(request) {
+    const target = request.sandbox || {};
+    const options = Object.entries(request.options || {})
+      .map(([key, value]) => (OPTION_LABELS[key] ? OPTION_LABELS[key](value) : null))
+      .filter(Boolean);
+    const heading = `Your Superagent asks to start a task in ${target.slug}`;
+    const pending = busy.has(request.id);
+    const answer = (approve) => respond(request, approve);
+    return h('section', { class: 'agent-request banner banner-warn small', role: 'group', 'aria-label': heading },
+      h('div', { class: 'agent-request-head' }, icon('spark', { size: 16 }),
+        h('strong', null, 'Your Superagent asks to start a task in ', h('span', { class: 'agent-request-target' }, target.slug)),
+        target.repository ? h('span', { class: 'muted' }, ` (${target.repository})`) : null),
+      request.title ? h('div', { class: 'agent-request-title' }, request.title) : null,
+      h('pre', { class: 'agent-request-prompt', tabindex: '0', 'aria-label': 'Prompt' }, request.prompt || ''),
+      options.length ? h('ul', { class: 'agent-request-options', 'aria-label': 'Start options' }, options.map((o) => h('li', null, o))) : null,
+      h('div', { class: 'agent-request-actions' },
+        h('button', { type: 'button', class: 'btn btn-sm btn-primary', disabled: pending, onClick: () => answer(true) }, 'Create task'),
+        h('button', { type: 'button', class: 'btn btn-sm', disabled: pending, onClick: () => answer(false) }, 'Decline')));
+  }
+
+  async function respond(request, approve) {
+    if (busy.has(request.id)) return;
+    busy.add(request.id);
+    const slug = request.sandbox && request.sandbox.slug;
+    try {
+      const answer = await ctx.api.post(`${path}/${enc(request.id)}`, { approve });
+      if (approve && answer && answer.task) {
+        const to = `/s/${encodeURIComponent(answer.sandbox || slug)}/t/${answer.task.number}`;
+        toast(`Created #${answer.task.number} in ${answer.sandbox || slug}.`, { kind: 'ok', action: { label: 'Open', run: () => ctx.navigate(to) } });
+      } else if (!approve) {
+        toast('Declined: nothing was created.', { kind: 'info' });
+      }
+    } catch (err) {
+      errorToast(err, approve ? `Couldn’t create the task in ${slug}` : 'Couldn’t decline');
+    } finally {
+      busy.delete(request.id);
+      load();
+    }
+  }
+
+  const offs = [
+    ctx.store.on('superagent-requests', (event) => { if (event && event.sandbox_id === sandbox.id) load(); }),
+    ctx.store.on('resync', () => load()),
+  ];
+  load();
+
+  return {
+    el,
+    destroy() {
+      alive = false;
+      for (const off of offs) if (typeof off === 'function') off();
     },
   };
 }

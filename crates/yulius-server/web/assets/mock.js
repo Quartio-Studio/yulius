@@ -2952,6 +2952,35 @@ route('POST', `/api/sandboxes/${ID}/cockpit`, async ({ db, p }) => {
   }
   return shellDto(shell);
 });
+// What the person's Superagent asks them to approve (SPEC-335): a test asks with
+// `__yuliusMock.askSuperagent('sb_studio', { sandbox: 'product', prompt, title, options })`; an
+// approval creates the task in that sandbox, as the server's `task_create` would.
+const superagentRequests = (db, sid) => (db.superagentRequests || []).filter((r) => r.source === sid);
+route('GET', `/api/sandboxes/${ID}/superagent/requests`, ({ db, p }) => superagentRequests(db, p[0]).map((r) => clone(r.view)));
+route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, ({ db, p, body }) => {
+  const request = superagentRequests(db, p[0]).find((r) => r.view.id === p[1]);
+  if (!request) fail(404, 'not_found', 'not found');
+  db.superagentRequests = db.superagentRequests.filter((r) => r !== request);
+  emit(db, { type: 'superagent.requests', sandbox_id: p[0] });
+  if (!body.approve) return { outcome: 'declined' };
+  const target = db.sandboxes.find((s) => s.id === request.view.sandbox.id);
+  if (!target || !['write', 'admin'].includes(target.access)) fail(404, 'not_found', 'not found');
+  const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === target.id).map((t) => t.number)) + 1;
+  const title = request.view.title || request.view.prompt.split('\n')[0].slice(0, 60);
+  const id = `tsk_${target.id.slice(3)}_${number}`;
+  const prepared = request.view.options.prepared === true;
+  const task = {
+    id, sandbox_id: target.id, number, title, harness: 'claude', status: prepared ? 'prepared' : 'queued', activity: null,
+    branch: `feat/${number}-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)}`,
+    origin: 'agent', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    archived: false, account_label: null, stepsList: [], model: 'claude-opus-4', effort: 'default', prompt: request.view.prompt,
+    delivery: null, mode: request.view.options.mode || 'goal', auto: null, supertask: false,
+  };
+  db.tasks.push(task);
+  recount(db);
+  emit(db, { type: 'task.updated', task: summary(task) });
+  return { outcome: 'approved', sandbox: target.slug, task: { task_id: id, number, title, status: task.status } };
+});
 route('PATCH', `/api/sandboxes/${ID}/shells/${ID}`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   const shell = db.shells.get(p[1]);
@@ -5382,6 +5411,23 @@ export function createMockTransport(params) {
   };
   db.heartbeatMs = params.has('heartbeat') ? Number(params.get('heartbeat')) : 20000;
   db.heartbeats = 0; // beats sent, so a test can silence the stream right after one
+  // The person's Superagent in `source` asks to start a task in another sandbox (SPEC-335).
+  db.askSuperagent = (source, { sandbox, prompt, title = null, options = {} }) => {
+    const target = db.sandboxes.find((s) => s.slug === sandbox);
+    db.nextId += 1;
+    const view = {
+      id: `xr_${db.nextId}`, sandbox: { id: target.id, slug: target.slug, repository: `${target.repo.owner}/${target.repo.name}` },
+      title, prompt, options, ends_at: new Date(Date.now() + 4 * MIN).toISOString(),
+    };
+    db.superagentRequests = [...(db.superagentRequests || []), { source, view }];
+    emit(db, { type: 'superagent.requests', sandbox_id: source });
+    return view.id;
+  };
+  // The Superagent's call ended (it was interrupted, or nobody answered): its request goes.
+  db.endSuperagentRequest = (source, id) => {
+    db.superagentRequests = (db.superagentRequests || []).filter((r) => r.view.id !== id);
+    emit(db, { type: 'superagent.requests', sandbox_id: source });
+  };
   // The machine rebooted: every Cockpit's process is gone, its viewers lose the connection.
   db.rebootCockpits = () => {
     for (const shell of [...db.shells.values()]) {
