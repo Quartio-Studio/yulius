@@ -851,7 +851,8 @@ test('a context the server cut says so when opened and reads its size as at leas
   // A whole context keeps its plain size (SPEC-090).
   await app.open(mock('/s/studio/sessions/ses_task_4'));
   await expect(browser.locator(`${note} > summary`)).toHaveText(/⎿\s*Context added \(1\.6 KiB\)$/);
-  await expect(browser.locator('.ss-tui .ss-cut')).toHaveCount(0);
+  // Only the cut wake-up (SPEC-328) is cut in this session.
+  await expect(browser.locator('.ss-tui li:not(.ss-wake) .ss-cut')).toHaveCount(0);
 });
 
 // #363: a block is a region when it scrolls as laid out, not by an estimate made for a wide page.
