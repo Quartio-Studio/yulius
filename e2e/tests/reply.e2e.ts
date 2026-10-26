@@ -14,20 +14,34 @@ const taskTerminal = (browser: Browser) => browser.locator('.taskview-term .xter
 const typedIntoTask = (browser: Browser) =>
   browser.evaluate(() => (window as unknown as { __yuliusMock: { sessions: Map<string, { input: string }> } }).__yuliusMock.sessions.get('tsk_studio_12')?.input ?? '');
 
+/** Sends `data` to task #12's session as typed input, through a terminal socket of the page. */
+const sendBehind = (browser: Browser, data: string) => browser.evaluate((input) => {
+  const session = (window as unknown as { __yuliusMock: { sessions: Map<string, { viewers: Set<{ send(data: string): void }> }> } }).__yuliusMock.sessions.get('tsk_studio_12');
+  const [socket] = session ? [...session.viewers] : [];
+  if (!socket) throw new Error('task #12 has no terminal socket');
+  socket.send(JSON.stringify({ type: 'input', data: input }));
+}, data);
+
 /**
- * Types `text` into task #12's session through the page's own terminal socket and waits until the
- * session has it. The socket delivers in order, so a key the page sent the terminal before it (a
- * leak, which arrives a task later) has arrived by then. Answers what the session holds as typed.
+ * Types `text` into task #12's session behind the keys sent so far and waits until the session has
+ * it. The page's sockets deliver in order (each a task later), so a key the page sent the terminal
+ * before it (a leak) has arrived by then. Answers what the session holds as typed.
  */
 const typeBehind = async (browser: Browser, text: string) => {
-  await browser.evaluate((data) => {
-    const session = (window as unknown as { __yuliusMock: { sessions: Map<string, { viewers: Set<{ send(data: string): void }> }> } }).__yuliusMock.sessions.get('tsk_studio_12');
-    const [socket] = session ? [...session.viewers] : [];
-    if (!socket) throw new Error('task #12 has no terminal socket');
-    socket.send(JSON.stringify({ type: 'input', data }));
-  }, text);
-  await expect.poll(() => typedIntoTask(browser)).toMatch(new RegExp(`${text}$`));
+  await sendBehind(browser, text);
+  await expect.poll(async () => (await typedIntoTask(browser)).endsWith(text)).toBe(true);
   return typedIntoTask(browser);
+};
+
+/**
+ * No key reached task #12's session since it held `seed` (#524): with `marker` typed behind the
+ * keys it holds exactly both, and its terminal shows no `> …` line of the seed (a leaked Enter
+ * sends what the session holds and empties it).
+ */
+const nothingReached = async (browser: Browser, seed: string, marker: string) => {
+  expect(await typeBehind(browser, marker)).toBe(`${seed}${marker}`);
+  await expect(taskTerminal(browser)).toContainText(`❯ ${seed}${marker}`);
+  await expect(taskTerminal(browser)).not.toContainText(`> ${seed}`);
 };
 
 /** The focused element's accessible name and the caret, JSON-safe. */
@@ -75,12 +89,13 @@ test('Escape closes the reply field and sends nothing', async ({ app, browser, s
   await screen.getByRole('button', 'Reply').click();
   const field = screen.getByRole('textbox', 'Reply to the agent');
   await expect.poll(() => focused(browser)).toEqual({ label: 'Reply to the agent', caret: 0 });
+  expect(await typeBehind(browser, 'x')).toBe('x');
   await browser.keyboard.type('Not yet');
   await browser.keyboard.press('Escape');
   await expect(field).toBeHidden();
   await expect(screen.getByRole('button', 'Reply')).toBeVisible();
   await expect.poll(() => browser.evaluate(() => document.activeElement?.textContent ?? null)).toBe('Reply');
-  expect(await typedIntoTask(browser)).toBe('');
+  await nothingReached(browser, 'x', 'y');
   // The bar is rebuilt on a task update (the mock's ambient activity touches #12 every 16 s): the
   // keyboard stays on Reply (#506, seen under load).
   await touchTask(browser, 'sb_studio', 12, { title: 'Checkout API v2' });
@@ -92,7 +107,7 @@ test('Escape closes the reply field and sends nothing', async ({ app, browser, s
   await expect(field).toHaveValue('Not yet');
   await screen.getByRole('button', 'Cancel').click();
   await expect(field).toBeHidden();
-  expect(await typedIntoTask(browser)).toBe('');
+  await nothingReached(browser, 'xy', 'z');
 });
 
 test('Reply on a task waiting for your reply opens the same field; Send sends', async ({ app, browser, screen }) => {
@@ -104,10 +119,14 @@ test('Reply on a task waiting for your reply opens the same field; Send sends', 
   await screen.getByRole('button', 'Reply').click();
   const field = screen.getByRole('textbox', 'Reply to the agent');
   await expect(field).toBeVisible();
-  // Empty text sends nothing and keeps the field open.
+  // Empty text sends nothing and keeps the field open, with the keyboard in it.
+  expect(await typeBehind(browser, 'x')).toBe('x');
   await screen.getByRole('button', 'Send').click();
   await expect(field).toBeVisible();
-  expect(await typedIntoTask(browser)).toBe('');
+  await expect.poll(() => focused(browser)).toEqual({ label: 'Reply to the agent', caret: 0 });
+  await nothingReached(browser, 'x', 'y');
+  await sendBehind(browser, '\x7f\x7f');
+  await expect.poll(() => typedIntoTask(browser)).toBe('');
   await field.fill('Go on');
   await screen.getByRole('button', 'Send').click();
   await expect(taskTerminal(browser)).toHaveText(/> Go on/);
@@ -155,9 +174,7 @@ test('a reply field that closes while typing keeps the keys out of the terminal'
   await browser.keyboard.press('Enter');
   await expect.poll(barHasKeyboard).toBe(true);
   await expect.poll(hiddenWords).toBe('Hal');
-  expect(await typeBehind(browser, 'y')).toBe('xy');
-  await expect(taskTerminal(browser)).toContainText('❯ xy');
-  await expect(taskTerminal(browser)).not.toContainText('> x');
+  await nothingReached(browser, 'x', 'y');
 });
 
 test('Reply on a phone focuses the quick input; no field opens', async ({ app, browser, screen }) => {
