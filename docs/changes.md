@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-26
 
+- A background task's wake-up reads as one line in a watched task and on the Sessions page
+  (SPEC-328, task #312, fixes #913). When background work ended, Claude Code's
+  `<task-notification>` record was printed as the person's typed prompt, with its time and all
+  its markup (task id, output file, usage). It now prints as the TUI does: `⏺ Agent "…" finished`,
+  its result folded under the line.
 - Files up to 1 GB can be uploaded by default, so a screen recording of a bug can be given to a
   task (SPEC-325, ADR-0219, task #309). The agent extracts frames from the video with `ffmpeg`
   and looks at them. The limit was 25 MB (`YULIUS_UPLOAD_MAX_MB`, which still sets it). An upload
