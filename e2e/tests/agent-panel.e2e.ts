@@ -346,8 +346,31 @@ test('a hidden Superagent or Shell terminal keeps its session’s size', async (
   await expect.poll(() => size(true)).toBe(shown);
 
   // Another tool in front hides the Superagent; the Superagent back in front hides the Shell's.
+  // #924: the Shell's session exists at the mock's starting size before the page's hello says its
+  // own; held there, the reference must still be the size the page gives.
+  await browser.evaluate(() => {
+    const w = window as unknown as { __yuliusHoldShell?: Promise<void>; __releaseShell?: () => void };
+    w.__yuliusHoldShell = new Promise<void>((done) => { w.__releaseShell = done; });
+    return true;
+  });
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Shell').click();
-  const shell = await fitted(false);
+  await expect.poll(() => browser.evaluate(() => {
+    type Shells = { __yuliusMock: { shells: Map<string, { cockpit?: boolean; session?: object }> } };
+    return [...(window as unknown as Shells).__yuliusMock.shells.values()].some((s) => !s.cockpit && s.session);
+  })).toBe(true);
+  const fitting = fitted(false);
+  const early = await Promise.race([
+    fitting.then(() => 'fitted'),
+    (async () => { for (let i = 0; i < 5; i += 1) await settle(); return 'waiting'; })(),
+  ]);
+  expect(early).toBe('waiting');
+  await browser.evaluate(() => {
+    const w = window as unknown as { __yuliusHoldShell?: Promise<void>; __releaseShell?: () => void };
+    delete w.__yuliusHoldShell;
+    if (w.__releaseShell) w.__releaseShell();
+    return true;
+  });
+  const shell = await fitting;
   await settle();
   expect(await size(true)).toBe(shown);
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent').click();
