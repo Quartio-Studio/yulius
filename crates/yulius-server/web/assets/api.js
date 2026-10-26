@@ -82,15 +82,33 @@ export const enc = (value) => encodeURIComponent(String(value));
  * successful answer is returned as a `Blob` (a file), not parsed. `download(path, name)` hands a
  * file to the browser's own download (SPEC-325): one as large as an upload (1 GiB) is never read
  * into the page; a HEAD first, so a file gone from the server rejects (404) like a read.
+ * A write refused as `csrf_invalid` (another tab signed in again, so the browser's session and its
+ * token changed) asks `onCsrfStale()` for the session's current token and is sent again once with
+ * it; `onCsrfStale` answers null to retry nothing (SPEC-337 CSR-002). Concurrent refusals share
+ * one call.
  */
-export function createApi(transport, { onUnauthenticated } = {}) {
+export function createApi(transport, { onUnauthenticated, onCsrfStale } = {}) {
   let csrf = null;
+  let rereading = null;
 
-  async function request(method, path, body, { allow401 = false, timeoutMs = REQUEST_TIMEOUT_MS, signal = null, onProgress = null, keepalive = false, as = null } = {}) {
+  /** The session's current token, asked once for every refusal waiting on it; null for none. */
+  function rereadCsrf() {
+    if (!rereading) {
+      rereading = Promise.resolve()
+        .then(() => onCsrfStale())
+        .then((token) => { if (token) csrf = token; return token || null; }, () => null)
+        .finally(() => { rereading = null; });
+    }
+    return rereading;
+  }
+
+  async function request(method, path, body, options = {}, retried = false) {
+    const { allow401 = false, timeoutMs = REQUEST_TIMEOUT_MS, signal = null, onProgress = null, keepalive = false, as = null } = options;
     const headers = { Accept: 'application/json' };
     const init = { method, headers, credentials: 'same-origin', cache: 'no-store' };
     // Outlives the page (a save as it hides); browsers bound such bodies to 64 KiB in all.
     if (keepalive) init.keepalive = true;
+    const sentCsrf = csrf;
     if (method !== 'GET') {
       if (csrf) headers['X-Yulius-CSRF'] = csrf;
       if (body instanceof Blob) {
@@ -142,6 +160,11 @@ export function createApi(transport, { onUnauthenticated } = {}) {
       // Extra fields beside `error` (for example `reauth` with a `reauth_required` refusal).
       if (data && typeof data === 'object') error.body = data;
       if (response.status === 401 && !allow401 && onUnauthenticated) onUnauthenticated(error);
+      if (error.code === 'csrf_invalid' && !retried && onCsrfStale && !(signal && signal.aborted)) {
+        // Another refusal may have read the new token meanwhile: use it without asking again.
+        const token = csrf && csrf !== sentCsrf ? csrf : await rereadCsrf();
+        if (token && !(signal && signal.aborted)) return request(method, path, body, options, true);
+      }
       throw error;
     }
     return data;

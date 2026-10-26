@@ -21,7 +21,7 @@ impl From<AppError> for ApiError {
 pub fn status_for(err: &AppError) -> StatusCode {
     match err {
         AppError::Unauthenticated => StatusCode::UNAUTHORIZED,
-        AppError::Forbidden(_) => StatusCode::FORBIDDEN,
+        AppError::Forbidden(_) | AppError::CsrfInvalid => StatusCode::FORBIDDEN,
         AppError::NotFound => StatusCode::NOT_FOUND,
         AppError::Conflict(_) | AppError::AccountRequired(_) => StatusCode::CONFLICT,
         AppError::Invalid(_) => StatusCode::UNPROCESSABLE_ENTITY,
