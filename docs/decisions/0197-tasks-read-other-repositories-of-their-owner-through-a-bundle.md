@@ -7,6 +7,8 @@ task #253, fixes #803. Amends SPEC-001 PRJ-002 ("Checking out another repository
 is not supported"); keeps [ADR-0114](0114-agents-hold-a-token-github-refuses-on-production.md)'s
 agent token and follows [ADR-0129](0129-onboarding-agents-protect-production-as-the-onboarding-person.md)'s
 pattern of a tool acting as the task's owner.
+Amended by [ADR-0223](0223-a-reference-copy-carries-every-branch-and-tag-its-owner-can-read.md):
+the bundle carries every branch and tag, not only the default branch.
 
 ## Context
 
