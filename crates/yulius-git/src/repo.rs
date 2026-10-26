@@ -111,19 +111,34 @@ impl Git {
         Ok(())
     }
 
-    /// The tag names of `repo` (without `refs/tags/`), sorted.
-    pub fn tag_names(&self, repo: &Path) -> Result<Vec<String>, GitError> {
-        let output = self.run_ok(Invocation::new(self, "for-each-ref", Some(repo)).args([
-            "for-each-ref",
-            "--format=%(refname:strip=2)",
-            "refs/tags/",
-        ]))?;
-        Ok(output
+    /// Every branch of `repo` as `(name, commit)` pairs sorted by name, whatever the name (unlike
+    /// [`Git::local_branches`], which skips names Yulius would not create): what a bundle of
+    /// `--branches` carries (SPEC-330).
+    pub fn every_branch(&self, repo: &Path) -> Result<Vec<(String, String)>, GitError> {
+        self.refs_under(repo, "refs/heads/")
+    }
+
+    /// Every tag of `repo` as `(name, object id)` pairs sorted by name (SPEC-330).
+    pub fn every_tag(&self, repo: &Path) -> Result<Vec<(String, String)>, GitError> {
+        self.refs_under(repo, "refs/tags/")
+    }
+
+    fn refs_under(&self, repo: &Path, prefix: &str) -> Result<Vec<(String, String)>, GitError> {
+        let output = self.run_ok(
+            Invocation::new(self, "for-each-ref", Some(repo))
+                .args(["for-each-ref", "--format=%(objectname)%00%(refname)"])
+                .arg(prefix),
+        )?;
+        let mut refs: Vec<(String, String)> = output
             .stdout_text()
             .lines()
-            .filter(|line| !line.is_empty())
-            .map(str::to_owned)
-            .collect())
+            .filter_map(|line| {
+                let (sha, name) = line.split_once('\0')?;
+                Some((name.strip_prefix(prefix)?.to_owned(), sha.to_owned()))
+            })
+            .collect();
+        refs.sort();
+        Ok(refs)
     }
 
     /// Copies every branch and tag of the repository at the absolute `source` into `repo` under

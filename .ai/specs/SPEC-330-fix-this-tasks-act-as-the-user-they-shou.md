@@ -47,8 +47,9 @@ files or change the repository's default branch for it.
   `Invalid`, names the repository's branches, places no bundle and asks no person.
 - **REF-103** The answer names the checked-out branch and its commit (as before), the default
   branch, the number of branches and tags it carries, and the branches with their commits (at most
-  100 listed); its message says how to clone it, check out another branch of the copy, and update
-  an earlier copy with every branch and tag.
+  100 listed); `clone_command` and `update_command` are the shell commands, every word quoted, to
+  clone it and to update an earlier copy with every branch and tag (forced, so a re-pointed tag
+  updates); its message gives them and how to check out another branch of the copy.
 - **REF-104** The tool's description, ADR-0223 (amending ADR-0197), SPEC-267's pointer,
   `docs/architecture.md` and `docs/product.md` say the copy carries every branch and tag.
 
@@ -105,3 +106,24 @@ files or change the repository's default branch for it.
   again on the pull request head.
 - Not tested here: a real GitHub fetch with a person's token and a real agent's containment cloning
   the bundle (the tests clone on the host).
+
+### Review round 1 (head 76458d82: request changes)
+
+- Medium, own: the update command's `--tags` refuses a re-pointed tag (exit 1, silent under
+  `--quiet`). Fixed test-first (f78ec0b4 failing, then the fix): forced
+  `'+refs/tags/*:refs/tags/*'`; `the_answered_commands_clone_and_update_a_copy` runs the answered
+  `clone_command` and `update_command` through `sh` after a branch moved, `v1` was re-pointed and
+  `v2` added.
+- Low, own: the message assertion tested only the word "checkout". Replaced by running the
+  commands (above) and checking the message carries them.
+- Low, own: `local_branches` skipped names Yulius would not create, so counts could miss bundled
+  branches. Fixed test-first: `Git::every_branch`/`every_tag` list every ref; the adapter test has a
+  301-byte branch name.
+- Low, own (accepted): a misspelled `branch` costs one fetch; bounded by the two concurrent fetches
+  and recorded in ADR-0223's consequences.
+- Low, pre-existing, now also `branch`: names unquoted in the answered commands. Fixed here
+  (`sh_quote`, unit test; the integration test clones a branch named `odd$(touch${IFS}pwned)'q`
+  and checks nothing ran).
+- Low, pre-existing: the 1 GiB cap is checked after the fetch lands on the server's disk: #920
+  (present since SPEC-267; ADR-0223's consequences now say so).
+- Nit: the ADR index entry for 0197 now says ADR-0223 widened it.

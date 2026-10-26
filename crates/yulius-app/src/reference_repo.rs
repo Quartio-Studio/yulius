@@ -281,6 +281,19 @@ impl App {
             .take(MAX_LISTED_BRANCHES)
             .map(|(name, commit)| json!({"name": name, "commit": commit}))
             .collect();
+        let (copy, from) = (sh_quote(&clone_into), sh_quote(&bundle));
+        let clone_command = format!(
+            "git clone --quiet --branch {} {from} {copy}",
+            sh_quote(&branch)
+        );
+        // Forced refspecs: a re-pointed tag updates instead of failing the fetch (`--tags` never
+        // moves an existing tag).
+        let update_command = format!(
+            "git -C {copy} fetch --quiet --prune {from} '+refs/heads/*:refs/remotes/origin/*' \
+             '+refs/tags/*:refs/tags/*' && git -C {copy} checkout --quiet -B {} {}",
+            sh_quote(&branch),
+            sh_quote(&format!("origin/{branch}"))
+        );
         Ok(json!({
             "repo": repo,
             "branch": branch,
@@ -292,19 +305,18 @@ impl App {
             "bundle": bundle,
             "bytes": size,
             "clone_into": clone_into,
+            "clone_command": clone_command,
+            "update_command": update_command,
             "acted_as": login,
             "message": format!(
                 "Fetched {repo} as {login}: all {branch_count} branches and {tag_count} tags; \
                  `{branch}` is at {commit} (default branch `{default_branch}`). Read-only \
-                 reference: clone it outside your worktree with `git clone --quiet --branch \
-                 {branch} {bundle} {clone_into}`; every other branch is in the copy as \
-                 origin/<name> (`git -C {clone_into} checkout <name>`). Update an earlier copy \
-                 with `git -C {clone_into} fetch --quiet --prune --tags {bundle} \
-                 '+refs/heads/*:refs/remotes/origin/*'` and `git -C {clone_into} checkout --quiet \
-                 -B {branch} origin/{branch}`. Then remove the bundle with `yulius remove \
-                 {bundle}` (calling this tool again replaces it). Never commit its files into \
-                 this repository beyond what you port, and never push from it. If you asked a \
-                 person for access with needs_you, call needs_you with resolved: true.",
+                 reference: clone it outside your worktree with `{clone_command}`; every other \
+                 branch is in the copy as origin/<name> (`git -C {copy} checkout <name>`). Update \
+                 an earlier copy instead with `{update_command}`. Then remove the bundle with \
+                 `yulius remove {from}` (calling this tool again replaces it). Never commit its \
+                 files into this repository beyond what you port, and never push from it. If you \
+                 asked a person for access with needs_you, call needs_you with resolved: true.",
             ),
         }))
     }
@@ -424,6 +436,12 @@ impl App {
     }
 }
 
+/// `text` as one POSIX shell word: branch names may hold `$`, `(` or `'`, and an agent pastes the
+/// answered commands into its shell.
+fn sh_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
 /// A branch the repository lacks: the agent's own mistake, so it is told the branches and no
 /// person is asked.
 fn missing_branch(repo: &str, branch: &str, carried: &ReferenceBundle) -> AppError {
@@ -456,6 +474,13 @@ async fn file_size(path: &Path) -> AppResult<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shell_word_keeps_quotes_and_expansions_literal() {
+        assert_eq!(sh_quote("dev"), "'dev'");
+        assert_eq!(sh_quote("a'b"), r"'a'\''b'");
+        assert_eq!(sh_quote("$(x)"), "'$(x)'");
+    }
 
     #[test]
     fn only_an_owner_and_a_name_are_a_repository() {

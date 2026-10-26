@@ -185,13 +185,8 @@ impl GitPort for GitAdapter {
             plain.init(&work, &default_branch, true)?;
             git.fetch_branches_and_tags(&work, &url)?;
             plain.create_full_bundle(&work, &bundle)?;
-            let mut branches: Vec<(String, String)> = plain
-                .local_branches(&work)?
-                .into_iter()
-                .map(|tip| (tip.name, tip.sha))
-                .collect();
-            branches.sort();
-            let tags = plain.tag_names(&work)?.len();
+            let branches = plain.every_branch(&work)?;
+            let tags = plain.every_tag(&work)?.len();
             Ok(ReferenceBundle { branches, tags })
         })
         .await
