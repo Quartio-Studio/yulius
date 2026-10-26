@@ -609,6 +609,7 @@ body.resizing iframe, body.resizing canvas { pointer-events: none; }
 .stat-warn .stat-head .icon { color: var(--warn); }
 .stat-danger .stat-head .icon { color: var(--danger); }
 .tile-value { font-size: var(--fs-xl); font-weight: 600; line-height: var(--lh-lg); font-variant-numeric: tabular-nums; }
+.tile-over { margin-left: 6px; color: var(--danger); font-size: var(--fs); font-weight: 600; }
 .stat-unknown .tile-value { color: var(--muted); font-size: var(--fs); line-height: var(--lh); font-weight: 500; }
 .stat-detail { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .status-facts { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }

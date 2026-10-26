@@ -3228,6 +3228,265 @@ fn a_continued_turn_that_dies_without_a_stop_leaves_the_task_waiting() -> TestRe
     Ok(())
 }
 
+/// The task's activities, each change once, until it reads `target` (bounded by `timeout`).
+async fn activities_until(
+    app: &App,
+    id: &TaskId,
+    target: Activity,
+    timeout: Duration,
+) -> Result<Vec<Option<Activity>>, BoxError> {
+    let deadline = Instant::now() + timeout;
+    let mut seen = Vec::new();
+    while Instant::now() < deadline {
+        let now = activity(app, id).await;
+        if seen.last() != Some(&now) {
+            seen.push(now);
+        }
+        if now == Some(target) {
+            return Ok(seen);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(format!("timed out waiting for {target:?}; seen {seen:?}").into())
+}
+
+/// SPEC-333 AER-001 (task #33's "Connection lost mid-response"): an API error ends the goal turn
+/// and Claude Code retries it by itself. The task reads Working from the error to the retry that
+/// achieves the goal, never "Your turn": nobody has to type `continue`.
+#[test]
+fn a_goal_turn_claude_code_retries_after_an_api_error_stays_working() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_api_errors: Some(2),
+            goal_retry_ms: Some(3_000),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+        wait_for("the API error", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "API ERROR")
+        })
+        .await?;
+        let seen = activities_until(&app, &id, Activity::Done, Duration::from_secs(60)).await?;
+        assert!(
+            screen_contains(&app, &id, "RETRY DONE").await,
+            "the goal was achieved by a retry"
+        );
+        assert_eq!(
+            seen,
+            vec![Some(Activity::Working), Some(Activity::Done)],
+            "Working from the error to the retry's Done"
+        );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-333 AER-002: the goal turn and Claude Code's three retries all fail, and Claude Code gives
+/// up ("Goal paused after 3 automatic retries · <cause>"). The task is in Needs you, with a request
+/// that says what happened and to send a message, and stays there once the record that closes the
+/// turn is read; it read Working while the retries ran. With `check_errors` each turn ended cleanly
+/// and its goal check failed (its Stop hook ran, so a verdict was pending).
+fn spent_goal_retries_put_the_task_in_needs_you(check_errors: bool, cause: &str) -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_api_errors: Some(4),
+            goal_retry_ms: Some(1_500),
+            goal_check_errors: check_errors,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+        wait_for("the first failure", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "API ERROR")
+        })
+        .await?;
+        let seen =
+            activities_until(&app, &id, Activity::NeedsAttention, Duration::from_secs(60)).await?;
+        assert!(screen_contains(&app, &id, "GOAL PAUSED").await);
+        assert_eq!(
+            seen,
+            vec![Some(Activity::Working), Some(Activity::NeedsAttention)],
+            "Working while Claude Code retried, then Needs you"
+        );
+        // The record that closes the turn was written with the notice: two more rounds read it.
+        let runtime = app.runtime(&id);
+        let rounds = runtime.transcript_rounds();
+        wait_for(
+            "the turn's record read",
+            Duration::from_secs(20),
+            || async { runtime.transcript_rounds() >= rounds + 2 },
+        )
+        .await?;
+        assert_eq!(
+            activity(&app, &id).await,
+            Some(Activity::NeedsAttention),
+            "the turn's record leaves Needs you"
+        );
+        let summary = app.task_summary(&task(&app, &id).await?).await?;
+        let request = summary.needs_you.ok_or("no Needs you request")?;
+        assert!(
+            request
+                .happened
+                .as_deref()
+                .is_some_and(|h| h.contains(cause)),
+            "{request:?}"
+        );
+        assert!(request.action.contains("message"), "{request:?}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn spent_goal_retries_after_api_errors_put_the_task_in_needs_you() -> TestResult {
+    spent_goal_retries_put_the_task_in_needs_you(
+        false,
+        "the API was unavailable or the connection dropped",
+    )
+}
+
+#[test]
+fn spent_goal_check_retries_put_the_task_in_needs_you() -> TestResult {
+    spent_goal_retries_put_the_task_in_needs_you(true, "the goal check could not complete")
+}
+
+/// The person clears the goal (`/goal clear`) while Claude Code's retry is armed: no check-in
+/// comes, and the task waits for them instead of reading Working for good.
+#[test]
+fn a_goal_cleared_while_a_retry_is_armed_leaves_the_task_waiting() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_api_errors: Some(2),
+            goal_cleared_on_retry: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+        wait_for("the goal cleared", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "GOAL CLEARED")
+        })
+        .await?;
+        let seen = activities_until(&app, &id, Activity::Waiting, Duration::from_secs(20)).await?;
+        assert_eq!(seen.last(), Some(&Some(Activity::Waiting)));
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-333 AER-001/AER-002 after a restart: Yulius is down from the goal turn's API error until
+/// the transcript holds `marker` (and the record that closes that turn). The new server replays
+/// the transcript and checks the task with `check`.
+fn a_restart_after_an_api_error(
+    api_errors: u32,
+    retry_ms: u64,
+    marker: &'static str,
+    check: impl AsyncFnOnce(&Arc<App>, &TaskId) -> TestResult,
+) -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let agent = FakeAgentOptions {
+        transcript: true,
+        hooks: true,
+        goal_api_errors: Some(api_errors),
+        goal_retry_ms: Some(retry_ms),
+        ..FakeAgentOptions::default()
+    };
+    let first = runtime()?;
+    let (port, id) = first.block_on(async {
+        let (app, port) = start(&data, &fake, agent.clone(), 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+        wait_for("the API error", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "API ERROR")
+        })
+        .await?;
+        Ok::<_, BoxError>((port, id))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let store = SqliteStore::open(&data.join("yulius.db"))?;
+        let record = TaskStore::task(&store, &id).await?.ok_or("task")?;
+        let worktree = PathBuf::from(record.worktree_path.ok_or("no worktree")?);
+        let attempt = TaskStore::live_attempt(&store, &id)
+            .await?
+            .ok_or("attempt")?;
+        let session = attempt.provider_session_id.ok_or("session")?;
+        let adapter = HarnessAdapter::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius")), "x");
+        let home = data.join("sandboxes").join("s-done").join("home");
+        let transcript = adapter.claude_transcript(&home, &worktree, &session);
+        wait_for(marker, Duration::from_secs(60), || async {
+            std::fs::read_to_string(&transcript).is_ok_and(|t| {
+                t.rsplit_once(marker)
+                    .is_some_and(|(_, after)| after.contains("turn_duration"))
+            })
+        })
+        .await?;
+        drop(store);
+        let (app, _) = start(&data, &fake, agent, port).await?;
+        app.reconcile().await?;
+        check(&app, &id).await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A retry Claude Code armed while Yulius was down: the replay leaves the task Working, and the
+/// retry makes it Done.
+#[test]
+fn a_restart_while_claude_code_retries_keeps_the_task_working() -> TestResult {
+    a_restart_after_an_api_error(1, 15_000, "retrying in", async |app, id| {
+        let seen = activities_until(app, id, Activity::Done, Duration::from_secs(60)).await?;
+        assert_eq!(seen, vec![Some(Activity::Working), Some(Activity::Done)]);
+        Ok(())
+    })
+}
+
+/// Claude Code spent its retries while Yulius was down: the replay puts the task in Needs you.
+#[test]
+fn a_restart_after_spent_goal_retries_puts_the_task_in_needs_you() -> TestResult {
+    a_restart_after_an_api_error(4, 1_000, "automatic retries", async |app, id| {
+        wait_for("Needs you", Duration::from_secs(20), || async {
+            activity(app, id).await == Some(Activity::NeedsAttention)
+        })
+        .await?;
+        let summary = app.task_summary(&task(app, id).await?).await?;
+        let request = summary.needs_you.ok_or("no Needs you request")?;
+        assert!(
+            request.happened.as_deref().is_some_and(|h| {
+                h.contains("Goal paused after 3 automatic retries")
+                    && h.contains("the API was unavailable or the connection dropped")
+            }),
+            "the replay keeps Claude Code's words: {request:?}"
+        );
+        Ok(())
+    })
+}
+
 /// TSK-014 recovery: a restart replays the transcripts of reattached runs. A Done task stays Done
 /// (a replayed prompt used to put it back to Working), and a goal achieved while Yulius was down
 /// (its Stop hook unanswered) makes that task Done.

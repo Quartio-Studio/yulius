@@ -187,6 +187,14 @@ pub enum Observation {
         /// Claude Code's task id.
         id: String,
     },
+    /// Claude Code's goal mode answered a turn an error ended (SPEC-333): it armed a retry, or it
+    /// stopped (retries spent, or an API error it does not retry).
+    GoalRetry {
+        /// A retry is armed: Claude Code continues the goal by itself.
+        armed: bool,
+        /// What Claude Code said (its notice without the closing advice).
+        notice: String,
+    },
     /// The API rejected the prompt as too long: the session's context is full (#213).
     ContextFull,
     /// Claude Code compacted the conversation.
