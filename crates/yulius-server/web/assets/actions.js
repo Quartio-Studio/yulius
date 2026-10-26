@@ -587,7 +587,10 @@ export function openPromptDialog(ctx, task) {
         try {
           await ctx.api.download(fileUrl(index), file.name, { signal: controller.signal });
         } catch (error) {
-          if (error.code !== 'aborted') errorToast(error, `Couldn’t download ${file.name}`);
+          if (error.code === 'aborted') return;
+          // Removed since the list was read (drafts go after a week).
+          if (error.status === 404) toast(`${file.name} is not on the server.`, { kind: 'warn' });
+          else errorToast(error, `Couldn’t download ${file.name}`);
         }
       };
       return h(tag, { class: ['prompt-file', inline && 'inline'] }, h('button', { type: 'button', class: 'btn btn-ghost btn-sm', 'aria-label': `Download ${file.name}`, onClick: download },

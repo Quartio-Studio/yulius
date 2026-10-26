@@ -58,7 +58,10 @@ export function realTransport() {
       const link = document.createElement('a');
       link.href = url;
       link.download = name;
+      link.hidden = true;
+      document.body.append(link);
       link.click();
+      link.remove();
     },
     openSocket(path) {
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -153,6 +156,8 @@ export function createApi(transport, { onUnauthenticated } = {}) {
     del: (path, options) => request('DELETE', path, undefined, options),
     download: async (path, name, options) => {
       await request('HEAD', path, undefined, options);
+      // A view closed while the HEAD was on its way starts no download.
+      if (options && options.signal && options.signal.aborted) throw new ApiError(0, 'aborted', 'Cancelled.');
       transport.download(path, name);
     },
     setCsrf(token) { csrf = token || null; },

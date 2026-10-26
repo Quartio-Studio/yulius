@@ -1481,8 +1481,8 @@ route('GET', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
 route('HEAD', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   const path = promptParts(task).paths[Number(p[1])];
-  if (!path || !promptFileServed(task, path)) fail(404, 'not_found', 'not found');
-  return new Response(null, { status: 200 });
+  // A HEAD answer has no body, as the server's (axum drops it).
+  return new Response(null, { status: path && promptFileServed(task, path) ? 200 : 404 });
 });
 route('POST', `/api/tasks/${ID}/stop`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
@@ -5265,6 +5265,8 @@ export function createMockTransport(params) {
   // Tests change a task as the server would announce it (`touchTask('sb_studio', 12, {…})`).
   // The GitHub App was created in the other tab (SPEC-283): the connection now reads configured.
   db.finishGithubApp = () => { db.me.instance.github_configured = true; };
+  // An attached file removed from the server after the page listed it (`removePromptFile(path)`).
+  db.removePromptFile = (path) => { MOCK_GONE.add(path); };
   db.finishOnboarding = (slug) => finishOnboarding(db, db.sandboxes.find((s) => s.slug === slug));
   // Someone else presses Start onboarding (another person or tab): the approval, without its hold.
   db.startOnboarding = (slug) => {
@@ -5471,7 +5473,7 @@ export function createMockTransport(params) {
         link.download = name;
         link.click();
         setTimeout(() => URL.revokeObjectURL(href), 1000);
-      });
+      }).catch(() => {}); // offline: the browser's download would fail on its own
     },
     openSocket: (path) => openSocket(db, path),
   };
