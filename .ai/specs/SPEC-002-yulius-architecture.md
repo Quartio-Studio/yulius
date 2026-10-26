@@ -1601,7 +1601,7 @@ Schema version 1 (tables; columns abbreviated):
 | `automations` | id, sandbox_id, name, cron, timezone, prompt, workflow_id, harness, enabled, created_by, created_via (ui/agent), supertask, after_task_id, start_rule (SPEC-078, schema version 19) |
 | `automation_runs` | automation_id, scheduled_for (unique pair), state, task_id, error |
 | `skills` | id, scope (instance/sandbox/repo), name, source, enabled, digest |
-| `mcp_servers` | id, scope, sandbox_id, name, transport, command/url, args (json), env (enc json), headers (enc json), enabled |
+| `mcp_servers` | id, sandbox_id (NULL: every sandbox), owner_id (NULL: the team; SPEC-332), name, transport, command/url, args (json), env (enc json), headers (enc json), enabled, origin |
 | `metrics` | attempt_id, input_tokens, output_tokens, cache_read, cache_write, model, turns, tool_calls, active_ms (nullable = unknown) |
 | `metrics_recounts` | attempt_id (PK), task_id, outcome (recomputed/no_transcript/no_lines/live/gone; NULL = queued), before (json: the figures when queued, NULL = no row), after (json), done_at: runs recorded before SPEC-087, recounted once from their transcripts (SPEC-091, schema version 23) |
 | `feedback` | task_id, user_id, verdict, comment, at |
