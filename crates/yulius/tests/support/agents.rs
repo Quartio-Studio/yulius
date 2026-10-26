@@ -68,6 +68,11 @@ pub struct FakeAgentOptions {
     /// With the verdict: the continued turn dies (an API error) and closes with no Stop hook
     /// (`--goal-continue-dies`).
     pub goal_continue_dies: bool,
+    /// The goal turn and the goal retries Claude Code makes after it die on an API error, this
+    /// many turns in all (`--goal-api-errors`); more than three spends the retries.
+    pub goal_api_errors: Option<u32>,
+    /// Milliseconds before each goal retry (`--goal-retry-ms`).
+    pub goal_retry_ms: Option<u64>,
     /// Delay the goal turn by this many milliseconds (`--goal-delay-ms`).
     pub goal_delay_ms: Option<u64>,
     /// The idle session compacts itself this many milliseconds after the goal turn, like Claude
@@ -227,6 +232,12 @@ impl HarnessPort for FakeAgentHarness {
         }
         if self.options.goal_continue_dies {
             argv.push("--goal-continue-dies".into());
+        }
+        if let Some(n) = self.options.goal_api_errors {
+            argv.extend(["--goal-api-errors".into(), n.to_string()]);
+        }
+        if let Some(ms) = self.options.goal_retry_ms {
+            argv.extend(["--goal-retry-ms".into(), ms.to_string()]);
         }
         if let Some(ms) = self.options.goal_delay_ms {
             argv.extend(["--goal-delay-ms".into(), ms.to_string()]);

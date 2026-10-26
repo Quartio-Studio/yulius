@@ -19,7 +19,7 @@
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
 //!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--compact-hangs]
 //!            [--prompt TEXT] [--limit-continues-ms MS [--limit-continues-answer-only]]
-//!            [--idle-compact-ms MS] [--trust-prompt]
+//!            [--idle-compact-ms MS] [--trust-prompt] [--goal-api-errors N [--goal-retry-ms MS]]
 //! ```
 //!
 //! Modes:
@@ -84,6 +84,11 @@
 //! user record it continues from (`isCompactSummary`), the files it reads again, its
 //! `SessionStart` hook (`source: compact`) and its notice, then it prints `COMPACTED WHILE IDLE`.
 //! No turn runs.
+//! `--goal-api-errors N` ends the goal turn, and the goal retries after it, on an API error
+//! ("Connection lost mid-response", no Stop hook), N turns in all, like Claude Code 2.1.292: its
+//! retry notice, the closed turn (`RETRY ARMED`), its goal check-in prompt `--goal-retry-ms`
+//! (default 2000) later (`RETRYING`); the retry after the N-th error achieves the goal, and after
+//! three failed retries it prints `Goal paused after 3 automatic retries` (`GOAL PAUSED`).
 //!
 //! `--hooks YULIUS_EXE` runs Claude Code's hooks as configured by Yulius:
 //! `YULIUS_EXE hook claude UserPromptSubmit` before and `… Stop` after each turn, with the hook
@@ -159,6 +164,16 @@ const MAX_FLOOD_BYTES: u64 = 1 << 30;
 const MAX_SLEEP_SECONDS: u64 = 3600;
 const MAX_LATER_MS: u64 = 60_000;
 const MAX_GOAL_DELAY_MS: u64 = 60_000;
+
+/// The text of Claude Code 2.1.292's error record when the connection drops mid-response.
+const API_ERROR_TEXT: &str =
+    "API Error: Connection lost mid-response. The response above may be incomplete.";
+
+/// Claude Code 2.1.292's words for an API error it retries a goal turn after.
+const RETRY_CAUSE: &str = "the API was unavailable or the connection dropped";
+
+/// How many times Claude Code 2.1.292 retries a goal turn an API error ended.
+const GOAL_RETRIES: u32 = 3;
 const MAX_HOOK_OUTPUT: u64 = 1024 * 1024;
 const MAX_WORK_MS: u64 = 60_000;
 /// Two Ctrl+C at the prompt within this time exit (Claude Code's "Press Ctrl-C again to exit").
@@ -206,6 +221,8 @@ struct Options {
     goal_continue_ms: Option<u64>,
     goal_continue_verdict: bool,
     goal_continue_dies: bool,
+    goal_api_errors: u32,
+    goal_retry_ms: u64,
     goal_delay_ms: u64,
     goal_met_on_wake_ms: Option<u64>,
     wake_stop_lost: bool,
@@ -256,6 +273,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         goal_continue_ms: None,
         goal_continue_verdict: false,
         goal_continue_dies: false,
+        goal_api_errors: 0,
+        goal_retry_ms: 2_000,
         goal_delay_ms: 0,
         goal_met_on_wake_ms: None,
         wake_stop_lost: false,
@@ -349,6 +368,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 options.idle_compact_ms = Some(ms.min(MAX_GOAL_DELAY_MS));
             }
             "--goal-continue-dies" => options.goal_continue_dies = true,
+            "--goal-api-errors" => options.goal_api_errors = parse_number(&flag, args.next())?,
+            "--goal-retry-ms" => {
+                let ms: u64 = parse_number(&flag, args.next())?;
+                options.goal_retry_ms = ms.min(MAX_GOAL_DELAY_MS);
+            }
             "--goal-met-on-wake-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.goal_met_on_wake_ms = Some(ms.min(MAX_GOAL_DELAY_MS));
@@ -785,6 +809,51 @@ impl Transcript {
         });
         self.last_uuid = Some(uuid);
         self.append(&[record])
+    }
+
+    /// The record of an API error that ended the turn mid-response, shaped like Claude Code
+    /// 2.1.292's (task #116's transcript): no Stop hook follows it.
+    fn connection_lost(&mut self) -> io::Result<()> {
+        let n = self.turns;
+        let uuid = format!("fake-{}-{n}-api-error", self.session_id);
+        let mut record = self.claude_envelope("assistant", &uuid, &rfc3339(now_ms()));
+        record["isApiErrorMessage"] = json!(true);
+        record["error"] = json!("server_error");
+        record["truncatedAfterOutput"] = json!(true);
+        record["message"] = json!({
+            "id": format!("msg_fake_api_error_{n}"),
+            "type": "message",
+            "role": "assistant",
+            "model": "<synthetic>",
+            "content": [{"type": "text", "text": API_ERROR_TEXT}],
+            "stop_reason": "stop_sequence",
+            "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0, "output_tokens": 0}
+        });
+        self.last_uuid = Some(uuid);
+        self.append(&[record])
+    }
+
+    /// A notice Claude Code prints in the session (`system`, `informational`).
+    fn notice(&mut self, content: &str, level: &str) -> io::Result<()> {
+        let uuid = format!("fake-{}-{}-notice-{}", self.session_id, self.turns, now_ms());
+        let mut notice = self.claude_envelope("system", &uuid, &rfc3339(now_ms()));
+        notice["subtype"] = json!("informational");
+        notice["content"] = json!(content);
+        notice["isMeta"] = json!(false);
+        notice["level"] = json!(level);
+        self.last_uuid = Some(uuid);
+        self.append(&[notice])
+    }
+
+    /// The record that closes a turn no Stop hook ended (an API error): `turn_duration` alone.
+    fn turn_duration(&mut self, duration_ms: u64) -> io::Result<()> {
+        let uuid = format!("fake-{}-{}-duration", self.session_id, self.turns);
+        let mut duration = self.claude_envelope("system", &uuid, &rfc3339(now_ms()));
+        duration["subtype"] = json!("turn_duration");
+        duration["durationMs"] = json!(duration_ms);
+        self.last_uuid = Some(uuid);
+        self.append(&[duration])
     }
 
     /// The line Claude Code 2.1.292 writes when `/compact` is typed, before it compacts: the
@@ -1391,6 +1460,9 @@ fn goal_turn(
     if let Some(hooks) = hooks {
         hooks.prompt(line);
     }
+    if options.goal_api_errors > 0 {
+        return goal_api_errors(options, line, &condition, transcript, hooks);
+    }
     if let Some(seconds) = options.goal_background {
         let verdict = options.goal_met_on_wake_ms.map(|after_ms| WakeVerdict {
             condition: condition.clone(),
@@ -1519,6 +1591,85 @@ fn goal_turn(
         compact_when_idle(ms, transcript.cloned(), hooks.cloned());
     }
     say("✓ Goal achieved")
+}
+
+/// The goal turn and the retries after it die on an API error, `--goal-api-errors N` turns in
+/// all, like Claude Code 2.1.292 with an active goal: no Stop hook runs; it prints `Goal still
+/// active · … · retrying in 1 min (k/3)`, closes the turn and, `--goal-retry-ms` later, wakes the
+/// session with its goal check-in prompt (`RETRYING`). The retry after the N-th error achieves
+/// the goal; when the third retry dies too it prints `Goal paused after 3 automatic retries` and
+/// gives up (`GOAL PAUSED`).
+fn goal_api_errors(
+    options: &Options,
+    line: &str,
+    condition: &str,
+    transcript: Option<&Arc<Mutex<Transcript>>>,
+    hooks: Option<&Hooks>,
+) -> io::Result<()> {
+    let write = |f: &dyn Fn(&mut Transcript) -> io::Result<()>| -> io::Result<()> {
+        if let Some(transcript) = transcript
+            && let Ok(mut t) = transcript.lock()
+        {
+            f(&mut t)?;
+        }
+        Ok(())
+    };
+    write(&|t| {
+        t.begin(line)?;
+        t.tool_use()
+    })?;
+    let mut failed = 0;
+    loop {
+        // The agent works a moment before the connection drops, as a real turn does.
+        std::thread::sleep(Duration::from_millis(1_000));
+        write(&|t| t.connection_lost())?;
+        failed += 1;
+        say("API ERROR")?;
+        if failed > GOAL_RETRIES {
+            write(&|t| {
+                t.notice(
+                    &format!(
+                        "Goal paused after {GOAL_RETRIES} automatic retries \u{b7} {RETRY_CAUSE} \u{b7} send a message to continue"
+                    ),
+                    "warning",
+                )?;
+                t.turn_duration(9_000)
+            })?;
+            return say("GOAL PAUSED");
+        }
+        write(&|t| {
+            t.notice(
+                &format!(
+                    "Goal still active \u{b7} {RETRY_CAUSE} \u{b7} retrying in 1 min ({failed}/{GOAL_RETRIES}) \u{b7} send a message to retry now"
+                ),
+                "notice",
+            )?;
+            t.turn_duration(9_000)
+        })?;
+        say("RETRY ARMED")?;
+        std::thread::sleep(Duration::from_millis(options.goal_retry_ms));
+        let prompt = format!(
+            "<task-notification>\n<summary>Goal check-in: continuing after the last turn ended early</summary>\n</task-notification>\n<system-reminder>\nGoal check-in: \u{ab}{condition}\u{bb} is still active. The last turn ended before the goal could be evaluated: {RETRY_CAUSE}. Continue toward the goal.\n</system-reminder>"
+        );
+        say("RETRYING")?;
+        if failed >= options.goal_api_errors {
+            let verdict = WakeVerdict {
+                condition: condition.to_owned(),
+                after_ms: 200,
+                stop_lost: false,
+                prompt_lost: false,
+            };
+            wake_with(&prompt, "RETRY DONE", Some(&verdict), transcript, hooks);
+            return Ok(());
+        }
+        if let Some(hooks) = hooks {
+            hooks.prompt(&prompt);
+        }
+        write(&|t| {
+            t.begin(&prompt)?;
+            t.tool_use()
+        })?;
+    }
 }
 
 /// The idle session compacts itself after `ms`, like Claude Code 2.1.292 before its prompt cache
