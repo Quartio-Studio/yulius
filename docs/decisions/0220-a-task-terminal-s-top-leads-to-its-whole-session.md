@@ -66,6 +66,9 @@ A wheel turn up that reaches the top of a task's terminal offers the whole sessi
   screen was still moving. The next turn offers it.
 - The offer needs a wheel or a trackpad. A touch screen's swipe is no wheel turn, so phones are
   not offered it.
+- A blank screen offers nothing, because a task that has not run has nothing to show. A scrollback
+  whose first screenful is blank therefore offers nothing at its top either. Claude Code starts
+  with its banner, so its sessions do not begin that way.
 - A program that ignores the wheel (a dialog, a pager without mouse support) also gets the offer.
   The offer is harmless and goes away by itself.
 - The whole transcript is read up front, at most 500 entries or 2 MiB of text per request. A

@@ -311,11 +311,12 @@ export function mountTaskView(ctx, sandbox, task) {
     if (!replying) return; // a closed (hidden) field never sends
     const text = replyInput.value.trim();
     if (!text) { replyInput.focus(); return; }
+    // The answer is for the terminal, sent or not: why it was not shows there (SPEC-326).
+    closeHistory(false);
     if (!typeAndSubmit(text)) return;
     replyInput.value = '';
     replying = false;
     renderAttention();
-    closeHistory(false);
     terminal.focus();
   };
   replyInput.addEventListener('keydown', (event) => {
@@ -665,15 +666,15 @@ export function mountTaskView(ctx, sandbox, task) {
   const termArea = h('div', { class: ['taskview-term', watch && 'watching'] }, terminal.el, attention, held, queueSlot);
   // The way on past the terminal's top (terminal-core.js) sits below the cards floating over it
   // (SPEC-326 HIS-002), however tall they are.
-  const placeOverlays = () => {
+  let overlayBottom = null;
+  const overlays = new ResizeObserver(() => {
     const bottom = [attention, held].reduce((most, card) => (card.hidden ? most : Math.max(most, card.offsetTop + card.offsetHeight)), 0);
+    if (bottom === overlayBottom) return;
+    overlayBottom = bottom;
     termArea.style.setProperty('--term-overlay-bottom', `${bottom}px`);
-  };
-  const overlays = typeof ResizeObserver === 'function' ? new ResizeObserver(placeOverlays) : null;
-  if (overlays) {
-    overlays.observe(attention);
-    overlays.observe(held);
-  }
+  });
+  overlays.observe(attention);
+  overlays.observe(held);
   const el = h('div', { class: 'taskview' }, heading, strip, termArea, quickbar);
 
   function renderStrip() {
@@ -857,7 +858,7 @@ export function mountTaskView(ctx, sandbox, task) {
       reads.abort();
       destroyers.forEach((off) => off());
       dropHistory();
-      if (overlays) overlays.disconnect();
+      overlays.disconnect();
       terminal.destroy();
     },
   };
