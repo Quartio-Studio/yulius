@@ -5,7 +5,9 @@
 //! Contract:
 //! - one file per request, streamed through a bounded buffer and never held in memory: at most
 //!   `AppConfig::upload_max_bytes` (a declared length above it is refused before any byte is
-//!   read, and the received bytes are counted); at most [`MAX_CONCURRENT_UPLOADS`] uploads at once
+//!   read, and the received bytes are counted); a declared length that would bring the data disk
+//!   to its critical level (SPEC-276) is refused the same way (SPEC-325); at most
+//!   [`MAX_CONCURRENT_UPLOADS`] uploads at once
 //!   (`Capacity` beyond); the interface layer fails a body that sends nothing for
 //!   [`UPLOAD_IDLE`];
 //! - the bytes go to a temporary file (`.yulius-upload-<random>`, created exclusively, 0644) in
@@ -56,6 +58,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use yulius_contracts::api::files::UploadedFile;
 use yulius_domain::ids::{SandboxId, TaskId};
+use yulius_domain::sweep::Level;
 
 use crate::auth::{AuthContext, hex_token};
 use crate::context::App;
@@ -518,13 +521,24 @@ impl App {
             .unwrap_or_else(|| "superadmin".into())
     }
 
-    fn check_declared(&self, declared: Option<u64>) -> AppResult<()> {
-        match declared {
-            Some(len) if len > self.config.upload_max_bytes => {
-                Err(too_large(self.config.upload_max_bytes))
-            }
-            _ => Ok(()),
+    /// Refuses a declared length above the limit, or one that would bring the data disk to its
+    /// critical level (SPEC-325 UPL-002; an unknown disk refuses nothing).
+    async fn check_declared(&self, declared: Option<u64>) -> AppResult<()> {
+        let Some(len) = declared else {
+            return Ok(());
+        };
+        if len > self.config.upload_max_bytes {
+            return Err(too_large(self.config.upload_max_bytes));
         }
+        if let Some((total, used)) = self.data_disk().await
+            && Level::of(used.saturating_add(len), total) == Level::Critical
+        {
+            return Err(AppError::Invalid(format!(
+                "the server's disk has no room for this file ({} free)",
+                human_size(total.saturating_sub(used))
+            )));
+        }
+        Ok(())
     }
 
     pub(crate) fn upload_slot(&self) -> AppResult<OwnedSemaphorePermit> {
@@ -605,7 +619,7 @@ impl App {
             return Err(AppError::Invalid("a file path is required".into()));
         }
         check_components(&target.relative)?;
-        self.check_declared(declared)?;
+        self.check_declared(declared).await?;
         let parts: Vec<&str> = target.relative.split('/').collect();
         let (name, dirs) = parts
             .split_last()
@@ -826,7 +840,7 @@ impl App {
         name: &str,
         (declared, replaces): (Option<u64>, bool),
     ) -> AppResult<Upload> {
-        self.check_declared(declared)?;
+        self.check_declared(declared).await?;
         let name = attachment_name(name);
         let slot = self.upload_slot()?;
         let sandbox_dir = std::fs::canonicalize(self.sandbox_dir(sandbox))
