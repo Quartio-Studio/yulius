@@ -12,6 +12,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   branch and tag the task's owner can read, `branch` picks the one checked out, and a branch the
   repository lacks is answered with its branch list instead of a person's action
   ([ADR-0223](decisions/0223-a-reference-copy-carries-every-branch-and-tag-its-owner-can-read.md)).
+- Scrolling a task's terminal past its top now leads to the session's first message (SPEC-326,
+  task #310, fixes #911). Claude Code shows a session only from its last compaction, also after
+  every resume, so a compacted task could not be scrolled back further. A wheel turn up that no
+  longer moves the terminal now offers "Earlier messages: show the whole session". It opens the
+  task's transcript, read from its first line and live, in the terminal's place. Back to the
+  terminal, or Escape, returns to the terminal, which stayed connected. Old tasks benefit most.
+  Their runs started before Claude Code was made to draw full screen (SPEC-310), and kept its
+  classic renderer through the updates that froze and thawed them. A viewer who opened one got only
+  its visible screen; the first turn up now offers the whole session.
 - A hidden terminal no longer squeezes its session to 10×5 (SPEC-331, task #315, fixes #918).
   Closing the panel or putting another tool in front measured the hidden box's `100%` as 100 px
   and sent a 10×5 resize. The Superagent and Shell terminals follow the last resize, so a tab

@@ -4352,6 +4352,10 @@ class TermSession {
       if (Number.isFinite(otherRows) && otherRows >= 8) this.rows = Math.min(200, otherRows);
     }
     this.viewerSize = null;
+    // ?classic=1: a run started before Claude Code was made to draw full screen (SPEC-310), still on
+    // its classic renderer after the updates that froze and thawed it: the main screen without
+    // mouse reporting, and a viewer gets only the visible screen (SPEC-326).
+    this.classic = params.get('classic') === '1';
     this.script = SCRIPT_CLAUDE;
     this.scriptIndex = 0;
     this.timer = null;
@@ -4438,8 +4442,9 @@ class TermSession {
     while (visible.length < bottom) visible.unshift(''); // bottom-align like a scrolled TUI
     const f = this.footer();
     // Like Claude Code 2.1.292: full screen (alternate buffer) with mouse reporting, so the wheel
-    // scrolls the transcript inside the app (#34).
-    let out = `${E}?1049h${E}?1000h${E}?1006h${E}?25l${E}2J${E}r${E}H`;
+    // scrolls the transcript inside the app (#34). An old run (`?classic=1`, every session of the
+    // page) draws the main screen without mouse reporting.
+    let out = this.classic ? `${E}?1049l${E}?1000l${E}?1006l${E}?25l${E}2J${E}r${E}H` : `${E}?1049h${E}?1000h${E}?1006h${E}?25l${E}2J${E}r${E}H`;
     out += visible.join('\r\n');
     out += `${E}1;${bottom}r`;
     out += `${E}${bottom + 1};1H${f.sep}${E}${bottom + 2};1H${E}2K${f.prompt}${E}${bottom + 3};1H${f.sep}${E}${bottom + 4};1H${E}2K${f.status}${E}${bottom + 5};1H${E}2K${f.mode}`;

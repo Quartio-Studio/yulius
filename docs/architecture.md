@@ -689,7 +689,12 @@ full screen with mouse reporting, which the web terminal's wheel and late viewer
 Claude Code's boot canary in the shared config dir took a sibling task's start (every contained run
 is pid 2) for a failed one of its own and turned full screen off for the project
 ([SPEC-310](../.ai/specs/SPEC-310-i-can-t-scroll-up-fix.md),
-[decision 0218](decisions/0218-claude-code-runs-always-draw-full-screen.md)). If a trust prompt
+[decision 0218](decisions/0218-claude-code-runs-always-draw-full-screen.md)). Claude Code shows a
+session only from its last compaction, so a wheel turn that reaches the top of a task's terminal
+offers the History view: the task's live transcript (`GET /api/tasks/{tid}/transcript`) read from
+line 0, in the terminal's place, while the terminal stays connected underneath
+([SPEC-326](../.ai/specs/SPEC-326-i-can-t-scroll-up-terminals-with-claude.md),
+[decision 0220](decisions/0220-a-task-terminal-s-top-leads-to-its-whole-session.md)). If a trust prompt
 still shows before SessionStart, Yulius types nothing into it and says so, and the keys a person
 answers it with are no draft. A goal launched as the prompt runs once the prompt is answered, a
 typed one follows once it is gone, and a prompt left unanswered for 5 minutes flags the task
