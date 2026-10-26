@@ -71,7 +71,7 @@ SPEC-310 fixes.
 
   A turn that moved the screen does not count. If the screen moves after the check showed the offer
   (a program slower than the check), the offer goes. A blank screen, and a task that never started,
-  offer nothing. So does a scrollback whose first screenful is blank, at its top (ADR-0220
+  offer nothing. Nor does a scrollback whose first screenful is blank, at its top (ADR-0220
   Consequences). Neither do other terminals (Shells, sign-in terminals).
 - **HIS-002 The way on is offered.** Reaching the top shows a button over the top of the task's
   terminal, below its banner, its connection notice, and the attention bar or held card:
@@ -212,6 +212,11 @@ SPEC-310 fixes.
 - **Security.** `yulius security-scan` at fe124b11: exit 2, not run. Vidoc answered HTTP 429: the
   instance key has used its 50,000,000 tokens. This is unrun, not passed; Yulius CI's `security`
   job repeats it.
+- **After dev merges.** At df08b599 (dev with #912): `scripts/dev ci` exit 0, 2626 tests run, 2626
+  passed, 16 skipped. The six e2e files both sides touched (terminal, watching, reply,
+  queued-messages, filedrop, original-prompt) passed 100 of 100. Merging #914 conflicted in
+  `taskview.js`, where both add a ResizeObserver on the attention bar. Both were kept, and both are
+  disconnected through `destroyers`. The results for that head are below.
 - **Not tested.**
   - The fix was not tried on the live instance or on the person's old tasks. The sandbox browser
     cannot open Yulius, and other projects' runs are not reachable from here. Old runs were

@@ -15,6 +15,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Their runs started before Claude Code was made to draw full screen (SPEC-310), and kept its
   classic renderer through the updates that froze and thawed them. A viewer who opened one got only
   its visible screen; the first turn up now offers the whole session.
+- A Needs you request now reads as What happened, Problem and To do (SPEC-327, task #311). The
+  attention bar showed "Needs you: <action> · <why>" as one paragraph, where the to-do was the
+  hardest part to find. `needs_you` takes `happened`, `problem`, `action` and `decision`; the bar
+  shows "Needs you" (or "Needs your decision") over a labelled list with the to-do last and bold,
+  backticked commands as code, and the sidebar and notifications say "Needs your decision" for a
+  choice. `why` still works as the problem's older name, and requests stored with it read as the
+  problem ([ADR-0221](decisions/0221-a-needs-you-request-reads-what-happened-problem-to-do.md)).
 - Files up to 1 GB can be uploaded by default, so a screen recording of a bug can be given to a
   task (SPEC-325, ADR-0219, task #309). The agent extracts frames from the video with `ffmpeg`
   and looks at them. The limit was 25 MB (`YULIUS_UPLOAD_MAX_MB`, which still sets it). An upload

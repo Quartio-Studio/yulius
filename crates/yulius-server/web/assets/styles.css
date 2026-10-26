@@ -1116,7 +1116,7 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .attention-bar { position: absolute; top: 8px; right: 16px; z-index: var(--z-float); display: flex; align-items: center; gap: 12px; max-width: min(560px, calc(100% - 32px)); padding: 8px 8px 8px 12px; border: 1px solid var(--border-strong); border-left: 3px solid var(--warn); border-radius: var(--radius); background: var(--warn-soft-solid); color: var(--warn-fg-strong); font-size: var(--fs-sm); line-height: var(--lh-sm); box-shadow: var(--shadow); }
 .attention-bar[hidden] { display: none; }
 /* Below the attention bar, the terminal's own notices. */
-.taskview-term:has(.attention-bar:not([hidden])) .term-corner { top: 64px; }
+.taskview-term:has(.attention-bar:not([hidden])) .term-corner { top: calc(var(--attention-h, 48px) + 16px); }
 .attention-bar.waiting { border-left-color: var(--info); background: var(--info-soft-solid); color: var(--info-fg-strong); }
 .attention-bar .icon { flex: none; }
 .attention-text { flex: 1; min-width: 0; }
@@ -1127,6 +1127,23 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 /* The icon (16px) and the gap (12px) share the first row with the words. */
 .attention-bar.wrap .attention-text { flex-basis: calc(100% - 28px); }
 .attention-row { display: flex; align-items: center; gap: 12px; }
+/* A request to a person (SPEC-327): a heading over What happened, Problem and To do; a label sits
+   beside its text, or above it when the bar is too narrow for both. The to-do is the strongest. */
+.attention-bar.needs-you { flex-wrap: wrap; align-items: flex-start; row-gap: 8px; }
+.attention-bar.needs-you .needs-you-text { flex: 1 1 18em; }
+/* The bar's own colour (warn, or info while the agent waits) reaches the held to-do. */
+.attention-row:has(> .needs-you-text), .needs-you-text, .needs-you-parts { background: inherit; }
+:is(.attention-bar, .attention-row):has(> .needs-you-text) { align-items: flex-start; }
+:is(.attention-bar, .attention-row):has(> .needs-you-text) > .icon { margin-top: 2px; }
+.needs-you-head { display: block; margin-bottom: 4px; }
+/* Long context scrolls inside the list; the to-do stays at its foot, in view. */
+.needs-you-parts { display: flex; flex-direction: column; gap: 4px; margin: 0; max-height: min(20em, 45vh); overflow-y: auto; overscroll-behavior: contain; border-radius: var(--radius-sm); }
+.needs-you-parts:focus-visible { box-shadow: var(--focus); outline: none; }
+.needs-you-parts > div { display: flex; flex-wrap: wrap; column-gap: 12px; }
+.needs-you-parts dt { flex: 0 0 7.5em; color: var(--text-2); }
+.needs-you-parts dd { flex: 1 1 14em; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.needs-you-todo { position: sticky; bottom: 0; margin-top: auto; padding-top: 4px; border-top: 1px solid var(--border-strong); background: inherit; }
+.needs-you-todo dt, .needs-you-todo dd { font-weight: 600; color: inherit; }
 /* A reply being written (SPEC-156): the words on the first row, the field and its buttons below. */
 .attention-bar.replying { flex-wrap: wrap; row-gap: 8px; }
 .attention-bar.replying .attention-text { flex-basis: calc(100% - 28px); }

@@ -1,5 +1,6 @@
-//! Agents ask a person to act (SPEC-134 CDT-004, ADR-0111): `needs_you {action, why?, link?}`
-//! records one open request per task. While it is open the task is in the sidebar's Needs you
+//! Agents ask a person to act (SPEC-134 CDT-004, ADR-0111):
+//! `needs_you {happened?, problem?, action, decision?, link?}` records one open request per task,
+//! read as What happened, Problem and To do (or Decide) (SPEC-327, ADR-0221). While it is open the task is in the sidebar's Needs you
 //! group ("Needs you: `<action>`") whatever the agent does meanwhile. It ends when a prompt is typed
 //! into the task (a person answered, or did it and said so) or the agent calls
 //! `needs_you {resolved: true}`.
@@ -17,17 +18,25 @@ use crate::error::{AppError, AppResult};
 
 /// Longest `action`, in characters.
 pub const MAX_ACTION_CHARS: usize = 200;
-/// Longest `why`, in characters.
-pub const MAX_WHY_CHARS: usize = 500;
+/// Longest `happened`, in characters.
+pub const MAX_HAPPENED_CHARS: usize = 300;
+/// Longest `problem`, in characters.
+pub const MAX_PROBLEM_CHARS: usize = 500;
 
 /// One open request (stored as JSON in `tasks.needs_you`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NeedsYouRecord {
-    /// What to do.
+    /// What to do, or what to decide when `decision`.
     pub action: String,
-    /// Why.
+    /// What happened.
     #[serde(default)]
-    pub why: Option<String>,
+    pub happened: Option<String>,
+    /// What is wrong or blocked because of it (`why` in rows written before SPEC-327).
+    #[serde(default, alias = "why")]
+    pub problem: Option<String>,
+    /// The person chooses rather than does.
+    #[serde(default)]
+    pub decision: bool,
     /// Where (a Yulius page).
     #[serde(default)]
     pub link: Option<String>,
@@ -41,10 +50,36 @@ impl NeedsYouRecord {
     pub fn view(&self) -> NeedsYouView {
         NeedsYouView {
             action: self.action.clone(),
-            why: self.why.clone(),
+            happened: self.happened.clone(),
+            problem: self.problem.clone(),
+            decision: self.decision,
             link: self.link.clone(),
             at: rfc3339(Timestamp(self.at)),
         }
+    }
+
+    /// The request as text for the agent to print in its session: a heading, then What
+    /// happened, Problem and To do (or Decide), each on its own line when given.
+    #[must_use]
+    pub fn printed(&self) -> String {
+        let mut text = String::from(if self.decision {
+            "Needs your decision"
+        } else {
+            "Needs you"
+        });
+        for (label, part) in [
+            ("What happened", self.happened.as_deref()),
+            ("Problem", self.problem.as_deref()),
+            (
+                if self.decision { "Decide" } else { "To do" },
+                Some(self.action.as_str()),
+            ),
+        ] {
+            if let Some(part) = part {
+                text.push_str(&format!("\n{label}: {part}"));
+            }
+        }
+        text
     }
 }
 
@@ -54,7 +89,14 @@ struct Args {
     #[serde(default)]
     action: Option<String>,
     #[serde(default)]
+    happened: Option<String>,
+    #[serde(default)]
+    problem: Option<String>,
+    /// The older name of `problem` (agents started before SPEC-327 keep the old schema).
+    #[serde(default)]
     why: Option<String>,
+    #[serde(default)]
+    decision: bool,
     #[serde(default)]
     link: Option<String>,
     #[serde(default)]
@@ -112,18 +154,28 @@ impl App {
         .ok_or_else(|| {
             AppError::Invalid("say what the person should do in action (one line)".into())
         })?;
-        let why = line(
-            args.why.as_deref().unwrap_or_default(),
-            MAX_WHY_CHARS,
-            "why",
+        let happened = line(
+            args.happened.as_deref().unwrap_or_default(),
+            MAX_HAPPENED_CHARS,
+            "happened",
         )?;
+        let problem = match (args.problem.as_deref(), args.why.as_deref()) {
+            (Some(_), Some(_)) => {
+                return Err(AppError::Invalid(
+                    "give the problem once, in problem (why is its older name)".into(),
+                ));
+            }
+            (Some(text), None) => line(text, MAX_PROBLEM_CHARS, "problem")?,
+            (None, Some(text)) => line(text, MAX_PROBLEM_CHARS, "why")?,
+            (None, None) => None,
+        };
         let link = match line(args.link.as_deref().unwrap_or_default(), 2_000, "link")? {
             None => None,
             Some(link) => {
                 let base = self.config.public_url.trim_end_matches('/');
                 if link != base && !link.starts_with(&format!("{base}/")) {
                     return Err(AppError::Invalid(format!(
-                        "link must be a page of this Yulius ({base}/…); describe other places in why"
+                        "link must be a page of this Yulius ({base}/…); describe other places in action or problem"
                     )));
                 }
                 Some(link)
@@ -131,7 +183,9 @@ impl App {
         };
         let record = NeedsYouRecord {
             action: action.clone(),
-            why,
+            happened,
+            problem,
+            decision: args.decision,
             link: link.clone(),
             at: self.now().0,
         };
@@ -144,8 +198,9 @@ impl App {
         self.needs_you_audit(ctx, "task.needs_you", &action).await;
         Ok(json!({
             "asked": action,
+            "print": record.printed(),
             "link": link,
-            "next": "People see \"Needs you\" on this task. Print the request (and the link) in the session so whoever opens it knows what to do; go on with other work. It closes when someone writes to this task, or call needs_you with resolved: true once you see it done.",
+            "next": "People see \"Needs you\" on this task. Print the request (print, and the link) in the session as it is so whoever opens it knows what to do; go on with other work. It closes when someone writes to this task, or call needs_you with resolved: true once you see it done.",
         }))
     }
 
@@ -208,5 +263,19 @@ mod tests {
         );
         assert_eq!(line("   ", 200, "action").ok().flatten(), None);
         assert!(line(&"a".repeat(201), 200, "action").is_err());
+    }
+
+    #[test]
+    fn a_row_stored_with_why_reads_it_as_the_problem() -> Result<(), serde_json::Error> {
+        let record: NeedsYouRecord =
+            serde_json::from_str(r#"{"action":"Add DEV_SSH_KEY","why":"SSH needs it","at":1}"#)?;
+        assert_eq!(record.problem.as_deref(), Some("SSH needs it"));
+        assert_eq!(record.happened, None);
+        assert!(!record.decision);
+        assert_eq!(
+            record.printed(),
+            "Needs you\nProblem: SSH needs it\nTo do: Add DEV_SSH_KEY"
+        );
+        Ok(())
     }
 }
