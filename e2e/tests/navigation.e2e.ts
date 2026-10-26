@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, touchTask } from './support.ts';
+import { axeViolations, eventsConnected, failOnPageErrors, mock, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -187,16 +187,7 @@ test('the sandbox tabs show a grip and say they can be clicked or dragged', asyn
   await browser.mouse.move(product.x + product.width / 2, product.y + product.height / 2);
   await expect.poll(async () => { const now = await gripColour('product'); return now.grip === now.tab; }).toBe(true);
 
-  // Dragging a tab by its grip onto another still reorders the row (synthetic drag events: they
-  // prove a drag from the grip reaches the tab's listeners).
-  await browser.evaluate(() => {
-    const tab = (n: string) => [...document.querySelectorAll<HTMLElement>('.tabrow-tabs .tab')].find((t) => t.querySelector('.tab-name')?.textContent === n)!;
-    const data = new DataTransfer();
-    tab('sandbox-3').querySelector('.tab-grip')!.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: data }));
-    tab('studio').dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: data }));
-    tab('studio').dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: data }));
-  });
-  await expect.poll(() => browser.evaluate(() => [...document.querySelectorAll('.tabrow-tabs .tab-name')].map((n) => n.textContent))).toEqual(['sandbox-3', 'studio', 'product']);
+  // Dragging is the Notes tabs' pointer drag (SPEC-336): the next test.
 
   // TAB-003: without a fine pointer (mouse, pen) the grip is not shown, as on the Notes tabs.
   const coarse = await browser.evaluate(() => {
@@ -211,6 +202,82 @@ test('the sandbox tabs show a grip and say they can be clicked or dragged', asyn
     return found.join('\n');
   });
   expect(coarse).toMatch(/\.tab-grip \{ display: none; \}/);
+});
+
+// Task #320 (SPEC-336, #929): "this bar should be as smooth as this bar": the sandbox tabs drag as
+// the Notes tabs do (tabdrag.js), not with the browser's own drag and drop.
+test('a sandbox tab follows the pointer, the others slide aside, and it settles where it is let go', async ({ app, browser, screen }) => {
+  // `ambient=0`: no ambient regroup moves the tabs under a still pointer.
+  await app.open(mock('/s/studio', '&ambient=0'));
+  const row = screen.getByRole('navigation', 'Sandboxes');
+  await expect(row.getByRole('link', /^sandbox-3\b/)).toBeVisible();
+  await eventsConnected(browser);
+  const names = () => browser.evaluate(() => [...document.querySelectorAll('.tabrow-tabs .tab-name')].map((n) => n.textContent));
+  // How far each tab is moved, by name ('home' for All sandboxes): 0 when it is not.
+  const shifts = () => browser.evaluate(() => Object.fromEntries([...document.querySelectorAll<HTMLElement>('.tabrow-tabs .tab')].map((tab) => [
+    tab.querySelector('.tab-name')?.textContent ?? 'home', Number(/translateX\((-?[\d.]+)px\)/.exec(tab.style.transform)?.[1] ?? 0),
+  ])));
+  const hash = () => browser.evaluate(() => location.hash);
+  const start = await hash();
+  expect(await names()).toEqual(['studio', 'product', 'sandbox-3']);
+
+  // SMO-001: the browser's own link drag never starts (no ghost image).
+  expect(await browser.evaluate(() => [...document.querySelectorAll<HTMLElement>('.tabrow-tabs .tab[data-id]')].map((tab) => tab.draggable))).toEqual([false, false, false]);
+
+  // Pressed on sandbox-3 and moved over studio: it follows the pointer, studio and product slide right.
+  const third = await row.getByRole('link', /^sandbox-3\b/).boundingBox();
+  const first = await row.getByRole('link', /^studio\b/).boundingBox();
+  if (!third || !first) throw new Error('tabs not laid out');
+  const y = third.y + third.height / 2;
+  await browser.mouse.move(third.x + third.width / 2, y);
+  await browser.mouse.down();
+  for (const x of [third.x + third.width / 2 - 10, first.x + first.width, first.x + 4]) await browser.mouse.move(x, y);
+  const moving = await shifts();
+  expect(moving.home).toBe(0);
+  expect(moving['sandbox-3']).toBeCloseTo(first.x + 4 - (third.x + third.width / 2), 0);
+  expect(moving.studio).toBeGreaterThan(0);
+  expect(moving.product).toBeGreaterThan(0);
+  await expect(row).toHaveClass(/reordering/);
+
+  // SMO-004: an update while the tab is held does not redraw the row under the pointer. The mock
+  // delivers a pushed event on a zero timeout, so a later zero timeout runs once it was handled.
+  const held = await browser.evaluate(async () => {
+    type Mock = { __yuliusMock: { sandboxes: { id: string, counts: Record<string, number> }[], eventSockets: Set<{ push: (data: string) => void }> } };
+    const db = (window as unknown as Mock).__yuliusMock;
+    const pressed = document.querySelector('.tabrow-tabs .tab.dragging');
+    const studio = { ...db.sandboxes.find((s) => s.id === 'sb_studio')!, counts: { running: 2, needs_attention: 0, queued: 0 } };
+    for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'sandbox.updated', sandbox: studio }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return { same: Boolean(pressed?.isConnected), counted: Boolean(document.querySelector('.tabrow-tabs .tab-running')) };
+  });
+  expect(held).toEqual({ same: true, counted: false });
+
+  // SMO-002: let go, it takes its place, nothing opens, and the row settles back to no transforms.
+  await browser.mouse.up();
+  expect(await names()).toEqual(['sandbox-3', 'studio', 'product']);
+  await expect(row.getByRole('link', /^studio,\s*2 working/)).toBeVisible();
+  await expect.poll(async () => Object.values(await shifts()).every((x) => x === 0)).toBe(true);
+  expect(await hash()).toBe(start);
+
+  // SMO-003: Escape puts a dragged tab back and its release opens nothing.
+  const product = await row.getByRole('link', /^product\b/).boundingBox();
+  if (!product) throw new Error('tabs not laid out');
+  await browser.mouse.move(product.x + product.width / 2, y);
+  await browser.mouse.down();
+  for (const x of [product.x + product.width / 2 - 10, first.x + 4]) await browser.mouse.move(x, y);
+  expect((await shifts()).product).toBeLessThan(0);
+  await browser.keyboard.press('Escape');
+  await browser.mouse.move(product.x + product.width / 2, y);
+  await browser.mouse.up();
+  expect(await names()).toEqual(['sandbox-3', 'studio', 'product']);
+  expect(Object.values(await shifts()).every((x) => x === 0)).toBe(true);
+  expect(await hash()).toBe(start);
+
+  // A plain click still opens the sandbox; the order is kept after a reload.
+  await row.getByRole('link', /^product\b/).click();
+  await expect(browser).toHaveURL(/#\/s\/product/);
+  await browser.reload();
+  await expect.poll(names).toEqual(['sandbox-3', 'studio', 'product']);
 });
 
 // Task #108 (SPEC-122): "We need tasks id somewhere here and not only PRs id because we use them
