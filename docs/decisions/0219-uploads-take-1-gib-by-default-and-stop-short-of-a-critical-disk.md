@@ -24,12 +24,14 @@ total timeout. A 1 GiB file would need 1 GiB of page memory and a link of about 
 - `YULIUS_UPLOAD_MAX_MB` defaults to 1024 (1 GiB), its highest value. The web UI uses the same
   fallback, and sizes from 1 GiB read in GB ("1 GB").
 - An upload whose declared length would bring the data disk to its critical level (95 % used,
-  SPEC-276) is refused before anything is created. It is a 422 that names the free space, like a
-  file over the limit, so the web UI shows it and does not retry it as it retries a 429. When the
+  SPEC-276) is refused before anything is created. It is a 422 that says how much can still be
+  added before that level, like a file over the limit, so the web UI shows it and does not retry it as it retries a 429. When the
   disk size is unknown, nothing is refused.
 - A non-image attachment opened from the original prompt or a queued request is downloaded by the
   browser from its link (`Content-Disposition: attachment`, already sent), after a HEAD request
-  that turns a deleted file into the usual "not on the server" message.
+  that turns a deleted file into the usual "not on the server" message. The header names a
+  non-ASCII file as `filename*` (RFC 6266) with an ASCII fallback, since a header name wins over
+  the page's `download` name.
 - The documented proxies allow 1100 MB bodies (1 GiB with room for the request). An upgrade note
   tells operators to raise an existing proxy's limit, which a merge cannot change.
 

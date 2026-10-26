@@ -50,13 +50,18 @@ their computer.
 - UPL-001: The default upload limit is 1 GiB (`YULIUS_UPLOAD_MAX_MB` default 1024; its range
   stays 1 to 1024). The web UI's fallback when `/api/me` names no limit is the same.
 - UPL-002: An upload whose declared length would bring the data disk to its critical level
-  (SPEC-276: 95 % used) is refused before any byte is read and before any file is created, as
+  (SPEC-276: 95 % used) is refused before any byte is read and before any folder or file is
+  created, saying how much can still be added before that level, as
   `Invalid` (422, "the server's disk has no room for this file", like a file over the limit, so
   the web UI shows it and does not retry it as it retries `Capacity`); an unknown disk size
   refuses nothing. A full disk during the write stays `Capacity` as before.
 - UPL-003: A non-image attachment opened from the original prompt or a queued request card
   downloads through the browser's own download (a link to the attachment endpoint, which already
-  sends `Content-Disposition: attachment`), not as an in-memory `Blob` with a total timeout.
+  sends `Content-Disposition: attachment`), not as an in-memory `Blob` with a total timeout. A
+  HEAD first, so a file removed since the list was read says "not on the server"; a non-ASCII
+  name is sent as `filename*` (RFC 6266) with an ASCII fallback, so the saved file keeps it.
+- UPL-005: Sizes from 1 GiB read in GB ("1 GB", "1.5 GB") in the server's messages and the web
+  UI, so the default limit does not read "1024 MB".
 - UPL-004: The operations guide's proxy examples (Caddy, nginx) allow 1 GiB bodies with margin
   (1100 MB), and an upgrade note says to raise an existing proxy's limit; product, API and spec
   documents name the new default.
@@ -64,10 +69,10 @@ their computer.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Uploads up to 1 GiB are accepted by default
-- [ ] An upload that would fill the data disk is refused before its bytes are read
-- [ ] Large non-image attachments download straight to disk from the prompt views
-- [ ] Proxy examples, upgrade note and ADR-0219 allow 1 GiB uploads; video analysis checked in a sandbox
+- [x] Uploads up to 1 GiB are accepted by default
+- [x] An upload that would fill the data disk is refused before its bytes are read
+- [x] Large non-image attachments download straight to disk from the prompt views
+- [x] Proxy examples, upgrade note and ADR-0219 allow 1 GiB uploads; video analysis checked in a sandbox
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -80,7 +85,9 @@ their computer.
   accepted and a declared 6 GB one is refused with 422 before any file is created; an
   unknown disk accepts both (integration test, `SettableSystem`).
 - AC-3 (UPL-003): the original-prompt dialog's "Download notes.txt" starts a link download of
-  `/api/tasks/<id>/prompt/attachments/<n>` without an API read of the file (e2e).
+  `/api/tasks/<id>/prompt/attachments/<n>` after one HEAD, without an API read of the file; a
+  file removed meanwhile toasts "not on the server" and downloads nothing (e2e); `błąd-ekranu.mp4`
+  is served with `filename*=UTF-8''b%C5%82%C4%85d-ekranu.mp4` (integration test).
 - AC-4 (UPL-004): the docs name 1 GiB and 1100 MB; `rg "25 MiB|32 ?MB|32m"` finds no stale
   upload limit outside history (ADRs, older specs, the changes log).
 
