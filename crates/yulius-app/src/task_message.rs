@@ -99,11 +99,14 @@ impl App {
         if caller.task.as_ref().is_some_and(|own| own.id == task.id) {
             return Err(AppError::Forbidden("a task cannot message itself".into()));
         }
-        // A task holding its owner's personal secrets is directed by its owner alone (SPEC-245):
-        // another person's message would steer an agent holding their credential.
-        if caller.user != task.owner && self.holds_personal_secrets(&task).await? {
+        // A task holding its owner's personal secrets or MCP servers is directed by its owner
+        // alone (SPEC-245, SPEC-332): another person's message would steer an agent holding
+        // their credential.
+        if caller.user != task.owner
+            && (self.holds_personal_secrets(&task).await? || self.holds_personal_mcp(&task).await?)
+        {
             return Err(AppError::Forbidden(format!(
-                "task #{} holds @{}'s personal secrets, so only they message it",
+                "task #{} holds @{}'s personal secrets or MCP servers, so only they message it",
                 task.number,
                 self.login_of(&task.owner).await
             )));

@@ -1329,7 +1329,9 @@ impl App {
             model: task.model.clone(),
             effort: task.effort.clone(),
             contained: self.config.contained,
-            mcp: self.mcp_attachments(&sandbox).await?,
+            mcp: self
+                .mcp_attachments(&sandbox, crate::vault::Holder::of_task(&task))
+                .await?,
             credential,
         })?;
         if let Some(session_id) = &stepped_back {

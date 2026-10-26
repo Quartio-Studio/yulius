@@ -67,6 +67,10 @@ every agent of the instance, and either setting can be changed later with one cl
   selects Whole team. Other pastes leave the settings as they are.
 - **MSC-008 Lifecycle.** Removing a user removes their personal servers. `.mcp.json` imports stay
   team servers of their sandbox and ignore personal names when deciding what is new.
+- **MSC-009 Directed by its owner.** As for personal secrets (SPEC-245), `task_message` from anyone
+  but the owner is refused for a task whose runs get its owner's personal MCP server: another
+  person's message would steer an agent holding their credential. A live run keeps the servers it
+  started with; after a hand-over (SPEC-070) the task's next run gets the new owner's.
 
 ## Plan
 

@@ -465,7 +465,10 @@ async fn mcp_secrets_are_write_only_sealed_and_attached_with_overrides() -> Test
             .sandbox(&SandboxId::parse("s1")?)
             .await?
             .ok_or("sandbox")?;
-    let attachments = w.h.app.mcp_attachments(&sandbox).await?;
+    let attachments =
+        w.h.app
+            .mcp_attachments(&sandbox, yulius_app::vault::Holder::Nobody)
+            .await?;
     assert_eq!(attachments.len(), 2);
     assert!(attachments.contains(&McpAttachment::Http {
         name: "quartio".into(),
@@ -495,7 +498,10 @@ async fn mcp_secrets_are_write_only_sealed_and_attached_with_overrides() -> Test
         &w.alice,
     )
     .await?;
-    let attachments = w.h.app.mcp_attachments(&sandbox).await?;
+    let attachments =
+        w.h.app
+            .mcp_attachments(&sandbox, yulius_app::vault::Holder::Nobody)
+            .await?;
     assert_eq!(attachments.len(), 1);
 
     // An explicit empty map clears the secrets.
@@ -643,7 +649,10 @@ async fn mcp_secret_references_resolve_through_the_vault_hook() -> TestResult {
             .await?
             .ok_or("sandbox")?;
     assert_eq!(w.h.app.resolve_secret_ref(&sandbox, "apify").await?, None);
-    let attachments = w.h.app.mcp_attachments(&sandbox).await?;
+    let attachments =
+        w.h.app
+            .mcp_attachments(&sandbox, yulius_app::vault::Holder::Nobody)
+            .await?;
     assert!(attachments.contains(&McpAttachment::Stdio {
         name: "apify".into(),
         command: "npx".into(),

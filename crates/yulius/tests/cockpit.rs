@@ -778,7 +778,7 @@ async fn a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking()
         .collect();
     rejected.sort_unstable();
     assert_eq!(rejected, ["apify", "legacy", "pipedream-gmail", "supabase"]);
-    let stored = f.h.store.mcp_servers(&sid()).await?;
+    let stored = f.h.store.mcp_servers(&sid(), None).await?;
     let mut names: Vec<(&str, &str)> = stored
         .iter()
         .map(|s| (s.name.as_str(), s.transport.as_str()))
@@ -811,7 +811,7 @@ async fn a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking()
     let config = PathBuf::from(printed(&screen, "config")?);
     let settings: Value = serde_json::from_slice(&std::fs::read(config.join("launch-settings"))?)?;
     assert!(settings["disabledMcpjsonServers"].is_null(), "{settings}");
-    assert_eq!(f.h.store.mcp_servers(&sid()).await?.len(), 3);
+    assert_eq!(f.h.store.mcp_servers(&sid(), None).await?.len(), 3);
     Ok(())
 }
 

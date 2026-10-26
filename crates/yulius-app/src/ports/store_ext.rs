@@ -107,20 +107,30 @@ pub trait SkillStore: Send + Sync {
 /// [`crate::mcp_config::name_key`].
 #[async_trait]
 pub trait McpStore: Send + Sync {
-    /// Instance servers plus those of `sandbox`, instance first, then by name.
-    async fn mcp_servers(&self, sandbox: &SandboxId) -> AppResult<Vec<McpServerRecord>>;
+    /// The team servers of the instance and of `sandbox`, plus `person`'s personal servers of
+    /// both (SPEC-332); instance first, then by name.
+    async fn mcp_servers(
+        &self,
+        sandbox: &SandboxId,
+        person: Option<&yulius_domain::ids::UserId>,
+    ) -> AppResult<Vec<McpServerRecord>>;
     /// Server by id.
     async fn mcp_server(&self, id: &str) -> AppResult<Option<McpServerRecord>>;
-    /// Inserts a server; `Conflict` on a duplicate name in its scope, `Capacity` when the scope
-    /// already holds `max_per_scope`.
+    /// Inserts a server; `Conflict` on a duplicate name in its scope (sandbox and owner),
+    /// `Capacity` when the scope already holds `max_per_scope`.
     async fn insert_mcp_server(
         &self,
         server: &McpServerRecord,
         max_per_scope: u32,
     ) -> AppResult<()>;
-    /// Replaces a server's fields (scope is fixed); `Conflict` on a duplicate name, `false`
+    /// Replaces a server's fields, its scope included; `Conflict` on a duplicate name in its
+    /// scope, `Capacity` when it moves into a scope that already holds `max_per_scope`, `false`
     /// when absent.
-    async fn update_mcp_server(&self, server: &McpServerRecord) -> AppResult<bool>;
+    async fn update_mcp_server(
+        &self,
+        server: &McpServerRecord,
+        max_per_scope: u32,
+    ) -> AppResult<bool>;
     /// Deletes a server; `false` when absent.
     async fn delete_mcp_server(&self, id: &str) -> AppResult<bool>;
 }

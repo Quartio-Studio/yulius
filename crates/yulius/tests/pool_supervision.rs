@@ -584,6 +584,8 @@ fn mcp_input(name: &str, transport: &str) -> McpServerInput {
         headers: None,
         enabled: None,
         scope: None,
+        audience: None,
+        sandbox: None,
     }
 }
 
@@ -1007,7 +1009,11 @@ fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
             "{shown}"
         );
         let record = app.deps.store.sandbox(&sandbox).await?.ok_or("sandbox")?;
-        let attached = format!("{:?}", app.mcp_attachments(&record).await?);
+        let attached = format!(
+            "{:?}",
+            app.mcp_attachments(&record, yulius_app::vault::Holder::Nobody)
+                .await?
+        );
         assert!(!attached.contains(APIFY_TOKEN), "{attached}");
         assert!(
             attached.contains(&format!("(\"APIFY_TOKEN\", \"{PLACEHOLDER}\")")),
@@ -1021,7 +1027,7 @@ fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
             shown.contains("ENV YULIUS_MCP_LINEAR_LINEAR_KEY=unset"),
             "{shown}"
         );
-        let stored = app.deps.store.mcp_servers(&sandbox).await?;
+        let stored = app.deps.store.mcp_servers(&sandbox, None).await?;
         let mut listed: Vec<(&str, bool)> = stored
             .iter()
             .map(|s| (s.name.as_str(), s.enabled))
