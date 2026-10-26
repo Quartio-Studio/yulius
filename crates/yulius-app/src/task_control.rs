@@ -313,12 +313,24 @@ impl App {
     /// does but with nothing typed: past a usage limit, afresh for a first message never taken,
     /// else the same conversation. A run that cannot be restarted is stopped, so the previous
     /// owner's credential never stays with the new owner (fail closed).
-    async fn restart_for_new_owner(
+    pub(crate) async fn restart_for_new_owner(
         self: &Arc<Self>,
         task: &yulius_domain::ids::TaskId,
         account: Option<yulius_domain::ids::AccountId>,
     ) {
         use crate::supervisor::RunStart;
+        // A launch under way reads the task's owner anew and settles its servers itself.
+        match self.deps.store.task(task).await {
+            Ok(Some(record))
+                if matches!(
+                    record.status,
+                    TaskStatus::Running | TaskStatus::WaitingCapacity
+                ) => {}
+            Ok(_) => return,
+            Err(err) => {
+                tracing::warn!(task = %task, error = %err, "task unreadable for the hand-over restart")
+            }
+        }
         let start = if self.runtime(task).at_limit.load(Ordering::SeqCst) {
             RunStart::AfterLimit
         } else if self.held_opening(task).await {

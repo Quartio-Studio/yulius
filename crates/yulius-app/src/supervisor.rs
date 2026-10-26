@@ -1533,6 +1533,20 @@ impl App {
         self.attach_run(&task.id, &attempt, &host_token).await?;
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
+        // Control passed during the launch, after this run took its owner's personal MCP servers
+        // and before a hand-over could see it live: it resumes for the new owner (SPEC-332).
+        let held = runtime
+            .personal_mcp_of
+            .lock()
+            .ok()
+            .and_then(|held| held.clone());
+        if held
+            .is_some_and(|owner| crate::vault::Holder::of_task(&current).person() != Some(&owner))
+        {
+            let app = Arc::clone(self);
+            let (task_id, account) = (task.id.clone(), Some(account.id.clone()));
+            tokio::spawn(async move { app.restart_for_new_owner(&task_id, account).await });
+        }
         if goal_in_prompt {
             // Nothing to type: the goal is watched until Claude Code records it.
             self.spawn_goal_watch(&task.id, &attempt_id, &run_dir);
@@ -3198,7 +3212,7 @@ impl App {
                 // agent is idle, so it is terminated without an interrupt that could start or
                 // cancel anything. A person's switch interrupts first, so the transcript keeps
                 // the interrupted turn.
-                if reason != "manual" {
+                if !interrupts_first(reason) {
                     let _ = run
                         .writer
                         .signal(crate::ports::session::RunSignal::Terminate)
@@ -4133,8 +4147,26 @@ fn make_home(sandbox_dir: &Path) -> AppResult<()> {
         })
 }
 
+/// Whether a switch for `reason` interrupts the turn before ending the run: a person's switch
+/// and a hand-over may come mid-turn (SPEC-332), automatic switches come while the agent is idle.
+fn interrupts_first(reason: &str) -> bool {
+    matches!(reason, "manual" | "handover")
+}
+
 #[cfg(test)]
 mod tests {
+    /// Review of SPEC-332 (round 3): a person's switch and a hand-over may come mid-turn, so they
+    /// interrupt the turn first (the transcript keeps it); automatic switches, made while the agent
+    /// is idle, terminate without an interrupt.
+    #[test]
+    fn a_hand_over_interrupts_like_a_persons_switch() {
+        assert!(super::interrupts_first("manual"));
+        assert!(super::interrupts_first("handover"));
+        for reason in ["rotation", "limit", "context_full", "proactive"] {
+            assert!(!super::interrupts_first(reason), "{reason}");
+        }
+    }
+
     /// #661: a `home` link fails the start, dangling (nothing is made where it points) or to a
     /// host folder (which is not taken as the home); a missing home is made, an existing one
     /// kept (SPEC-266 STB-004).

@@ -860,18 +860,9 @@ fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
             .await?;
 
         let id = new_task(&app, &sandbox, &admin, "Mine").await?;
+        // Running, not only spawned: control waits while a launch settles its servers.
         wait_for("the run", Duration::from_secs(30), || {
-            let app = app.clone();
-            let id = id.clone();
-            async move {
-                app.deps
-                    .store
-                    .live_attempt(&id)
-                    .await
-                    .ok()
-                    .flatten()
-                    .is_some()
-            }
+            has_status(&app, &id, TaskStatus::Running)
         })
         .await?;
         let first = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
@@ -959,6 +950,99 @@ fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
         let launch = std::fs::read_to_string(Path::new(&second.run_dir).join("fake-launch.txt"))?;
         assert!(launch.contains("prompt: None"), "nothing typed: {launch}");
         stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// Review of SPEC-332 (round 3): a hand-over whose restart of a run holding the previous owner's
+/// personal MCP server is refused stops that run (fail closed); control still passes.
+#[test]
+fn a_hand_over_stops_a_run_holding_personal_mcp_servers_it_cannot_restart() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let github = Arc::new(FakeGitHub::default());
+        github.set_perm("bob", "acme/pool", support::perms("write"));
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with_github(
+            &data,
+            &fake,
+            Arc::new(ScriptedUsage::default()),
+            agent,
+            github,
+        )?;
+        let (sandbox, admin) = seed(&app, &data, &["a-first"]).await?;
+        let bob = UserRecord {
+            id: UserId::parse("u-bob")?,
+            github_login: Some("bob".into()),
+            display_name: "Bob".into(),
+            is_superadmin: false,
+            is_instance_admin: false,
+            ..app.deps.store.user(&admin).await?.ok_or("admin")?
+        };
+        app.deps.store.insert_user(&bob).await?;
+        app.deps
+            .store
+            .save_github_token(
+                &yulius_app::model::GitHubTokenRecord {
+                    user_id: bob.id.clone(),
+                    access: app.deps.crypto.seal(b"token-bob")?,
+                    refresh: None,
+                    expires_at: None,
+                    refresh_expires_at: None,
+                },
+                app.now(),
+            )
+            .await?;
+        let ctx = |user: UserRecord| AuthContext {
+            user,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let admin_ctx = ctx(app.deps.store.user(&admin).await?.ok_or("admin")?);
+        let mut fleet = mcp_input("fleet", "http");
+        fleet.scope = Some("instance".into());
+        fleet.audience = Some("personal".into());
+        app.create_mcp_server(&admin_ctx, sandbox.as_str(), &fleet)
+            .await?;
+        let id = new_task(&app, &sandbox, &admin, "Mine").await?;
+        // Running, not only spawned: control waits while a launch settles its servers.
+        wait_for("the run", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::Running)
+        })
+        .await?;
+        // The next start is refused: the sandbox repository and the worktree are not there.
+        let repo = data.join("sandboxes").join(sandbox.as_str()).join("repo");
+        std::fs::rename(repo.join(".git"), repo.join("git-away"))?;
+        let worktree = task(&app, &id).await?.worktree_path.ok_or("worktree")?;
+        let worktree = Path::new(&worktree);
+        std::fs::rename(worktree.join(".git"), worktree.join("git-away"))?;
+        app.request_task_control(&ctx(bob.clone()), id.as_str())
+            .await?;
+        app.accept_task_control(&admin_ctx, id.as_str()).await?;
+        wait_for("the stopped run", Duration::from_secs(60), || async {
+            app.deps
+                .store
+                .live_attempt(&id)
+                .await
+                .ok()
+                .flatten()
+                .is_none()
+                && !task(&app, &id)
+                    .await
+                    .map(|t| t.status.is_live())
+                    .unwrap_or(true)
+        })
+        .await?;
+        assert_eq!(task(&app, &id).await?.owner, bob.id);
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1, "no new run");
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
