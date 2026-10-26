@@ -287,21 +287,24 @@ fn a_signal_during_a_refused_freeze_leaves_the_exit_to_the_refusal() {
 #[test]
 fn the_export_and_a_signal_never_both_own_the_end() {
     use std::sync::atomic::Ordering::SeqCst;
-    // The export claims first: a later signal finds nothing to thaw.
+    // The export claims first: a later signal leaves the thaw (and the exit) to it, so the
+    // process cannot end before the export's own `systemctl thaw` or `disable` runs.
     let state = AtomicU8::new(THAW);
     assert!(claim_end(&state));
     let mut fake = Fake::new(&[]);
-    assert_eq!(on_signal(&state, &mut fake, UNIT), Signal::Exit(None));
+    assert_eq!(on_signal(&state, &mut fake, UNIT), Signal::LeaveToMain);
     assert!(fake.calls().is_empty());
     // The signal claims first: the export must not report a move or a thaw of its own.
     let state = AtomicU8::new(THAW);
     let mut fake = Fake::new(&[]);
     let _ = on_signal(&state, &mut fake, UNIT);
     assert!(!claim_end(&state));
-    // Not the export's freeze: the export ends it as it is.
+    // Not the export's freeze: the export still ends it itself once it claimed the end.
     let state = AtomicU8::new(LEAVE);
     assert!(claim_end(&state));
-    assert_eq!(state.load(SeqCst), LEAVE);
+    assert_eq!(state.load(SeqCst), ENDING);
+    let mut fake = Fake::new(&[]);
+    assert_eq!(on_signal(&state, &mut fake, UNIT), Signal::LeaveToMain);
 }
 
 #[test]

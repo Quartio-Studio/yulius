@@ -273,6 +273,8 @@ pub const LEAVE: u8 = 2;
 pub const REFUSED: u8 = 3;
 /// [`on_signal`]: a signal took the end: it thaws and exits, the export must not.
 pub const CLAIMED: u8 = 4;
+/// [`on_signal`]: the export took its end (a thaw, a release or a move): it exits itself.
+pub const ENDING: u8 = 5;
 
 /// What the signal thread does after [`on_signal`].
 #[derive(Debug, PartialEq, Eq)]
@@ -293,14 +295,15 @@ pub fn on_signal(state: &AtomicU8, host: &mut dyn Host, unit: &str) -> Signal {
         host.sleep(POLL);
         waited += POLL;
     }
-    if state.load(Ordering::SeqCst) == REFUSED {
+    if matches!(state.load(Ordering::SeqCst), REFUSED | ENDING) {
         return Signal::LeaveToMain;
     }
-    if state
-        .compare_exchange(THAW, CLAIMED, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return Signal::Exit(None);
+    match state.compare_exchange(THAW, CLAIMED, Ordering::SeqCst, Ordering::SeqCst) {
+        Ok(_) => {}
+        // The export took its end meanwhile: its own thaw, release or disable must run.
+        Err(ENDING) => return Signal::LeaveToMain,
+        // Not the export's freeze, and the export may be blocked writing: just stop.
+        Err(_) => return Signal::Exit(None),
     }
     Signal::Exit(match host.systemctl(&["thaw", unit]) {
         Ok((0, _)) => None,
@@ -313,13 +316,16 @@ pub fn on_signal(state: &AtomicU8, host: &mut dyn Host, unit: &str) -> Signal {
     })
 }
 
-/// The export takes its own end (a thaw, or keeping the freeze for a move); `false` when a
-/// signal already took it, so the export must leave the end (and the exit) to the signal.
+/// The export takes its own end (a thaw, or keeping the freeze for a move): from then on a
+/// signal leaves the exit to it, so the process never ends before that `systemctl` runs.
+/// `false` when a signal already took it: the export must leave the end (and the exit) to the
+/// signal.
 pub fn claim_end(state: &AtomicU8) -> bool {
-    match state.compare_exchange(THAW, LEAVE, Ordering::SeqCst, Ordering::SeqCst) {
-        Ok(_) => true,
-        Err(now) => now != CLAIMED,
-    }
+    state
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |now| {
+            (now != CLAIMED).then_some(ENDING)
+        })
+        .is_ok()
 }
 
 /// The real host.
