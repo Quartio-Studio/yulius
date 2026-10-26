@@ -41,7 +41,7 @@ installing, however many there are.
 ## Plan
 
 - [x] Spec SPEC-319 written and validated
-- [ ] Failing regression test: 21 tasks in a turn at the bound
+- [x] Failing regression test: 21 tasks in a turn at the bound
 - [ ] Cancel message counts total - paused
 - [ ] Gates green, docs/changes.md entry, spec evidence
 - [ ] Independent review approved
