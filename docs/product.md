@@ -100,7 +100,8 @@ watching, steering and unblocking.
   can do the same for their task's owner, except to their own task. Told "tell #5 it may use the
   DO budget", the Superagent passes the message on (task agents cannot): a task that has not
   started gets it in its request, a running one gets it typed into its session as "Message from
-  alice (through their Superagent)", unless someone typed there in the last minute or the task
+  alice (through their Superagent)" (or "(through their own agent)" when the person's own agent
+  sends it through the remote MCP, SPEC-322), unless someone typed there in the last minute or the task
   still asks a person whether to trust its folder (SPEC-230). When a usage limit cuts its
   turn, it moves to a subscription with capacity and goes on with the turn, as a task does; the
   panel follows it. It has the project's MCP servers, as a task does, and an agent secret one of
