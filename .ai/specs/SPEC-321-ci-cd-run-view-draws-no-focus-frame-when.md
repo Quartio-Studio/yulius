@@ -1,11 +1,11 @@
 ---
 yulius-task: 24cd2813-d92c-49ab-9cbf-5c9d5fecfa39
-status: in-progress
+status: done
 ---
 
 # SPEC-321: CI/CD run view draws no focus frame when focused by script
 
-Status: in-progress
+Status: done
 Date: 2026-10-26
 Owner: Yulius task #306
 Scope authorization: task #306 (`/goal`), fixes #777. Amends the focus behavior of
@@ -49,12 +49,12 @@ keyboard reaches them.
 
 ## Plan
 
-- [ ] Spec SPEC-321 written and validated
-- [ ] Regression e2e test fails on dev (CI and deploy views)
-- [ ] Run view drops the ring when focused by script
-- [ ] Docs, changes entry and gates green
-- [ ] Independent review answered
-- [ ] PR merged into dev on green
+- [x] Spec SPEC-321 written and validated
+- [x] Regression e2e test fails on dev (CI and deploy views)
+- [x] Run view drops the ring when focused by script
+- [x] Docs, changes entry and gates green
+- [x] Independent review answered
+- [x] PR merged into dev on green
 
 ## Acceptance criteria
 
@@ -84,3 +84,24 @@ keyboard reaches them.
 - Selector stays `.run-view:focus` (not `:focus-visible`): both declarations apply to every focus
   of the region, pointer or keyboard; controls inside are other elements and keep the global rule.
 - No ADR: a stylesheet exception in the line of existing ones, recorded here.
+
+## Evidence
+
+- Red: `npx e2e run tests/ci.e2e.ts` at 958bc1d9 (test only, dev's stylesheet): the new test fails,
+  `last: {"label":"CI run","boxShadow":"rgb(16, 15, 14) 0px 0px 0px 2px, rgb(233, 228, 218) 0px 0px 0px 4px",…}`;
+  the other 18 pass. After review round 1, in a scratch copy with dev 91785a67's `styles.css`,
+  the CI half and a deploy-only variant each fail with `visible: true` and the `--focus` ring, and
+  both pass with the fixed `styles.css`.
+- Green: `npx e2e run tests/ci.e2e.ts tests/cd.e2e.ts` with the fix: 38 passed.
+- Full e2e suite (`npx e2e run`) at df9b9d3c: 66 files passed, 1 skipped; 713 tests passed, 1
+  skipped (the agent-step file, no model key).
+- `scripts/dev ci` (after `python3 scripts/bootstrap.py`): exit 0, 2619 nextest tests, doctests,
+  lint, deps, macOS compile.
+- `scripts/dev security` at df9b9d3c: **unrun**, exit 2: Vidoc answered HTTP 429 "This API key has
+  used its 50,000,000 tokens" (`styles.css`, `ci.e2e.ts` not scanned). Never counted as passed;
+  the pull request's CI `security` job runs the live scan.
+- Review round 1 (fresh session, head 3c3dc83a): approve; one minor (the test did not prove the
+  `:focus-visible` trigger, and its deploy half was not shown red) and three nits (the deploy pass
+  waited on the CI log, Plan boxes unticked, README wording), all own code, fixed in df9b9d3c and
+  this commit. Pre-existing, out of scope: headings, popovers and the hygiene card focused by script
+  still get the ring, a real indicator with a gap on a bordered element, not this bug's frame.
