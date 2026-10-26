@@ -1,11 +1,11 @@
 ---
 yulius-task: cf4b899b-eff5-476a-8b19-a95aee7ead50
-status: in-progress
+status: done
 ---
 
 # SPEC-326: Scrolling past the top of a task's terminal opens its whole session
 
-Status: in-progress
+Status: done
 Date: 2026-10-26
 Owner: task #310
 Scope authorization: task #310: "I can't scroll up terminals with claude. For every task I want to
@@ -102,7 +102,7 @@ SPEC-310 fixes.
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Old runs on the classic renderer offer the whole session
 - [x] Final head verified: review, gate and full e2e suite
-- [ ] Merged into dev on green CI
+- [x] Merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -206,7 +206,18 @@ SPEC-310 fixes.
   `screenEmpty`, and is now replaced by it. This Evidence entry and the HIS-001 limit answer the
   other.
 - **e2e.** The full suite at b007e901: 66 files passed, 1 skipped; 726 tests passed, 1 skipped.
-  After the `screenEmpty` change, `tests/terminal.e2e.ts` was run again (see Gate).
+  After the `screenEmpty` change (ef23664b), `tests/terminal.e2e.ts` passed 27 of 27.
+- **Gate.** `scripts/dev ci` at ef23664b: exit 0, 2622 tests run, 2622 passed, 16 skipped. It also
+  passed at b219974a with the same counts. The commits after ef23664b change only prose.
 - **Security.** `yulius security-scan` at fe124b11: exit 2, not run. Vidoc answered HTTP 429: the
   instance key has used its 50,000,000 tokens. This is unrun, not passed; Yulius CI's `security`
   job repeats it.
+- **Not tested.**
+  - The fix was not tried on the live instance or on the person's old tasks. The sandbox browser
+    cannot open Yulius, and other projects' runs are not reachable from here. Old runs were
+    reproduced with the mock's classic renderer (`?classic=1`).
+  - The pre-compaction cut-off was shown with the real Claude Code 2.1.292 in a PTY. The e2e tests
+    drive the mock agent.
+  - Real wheels and trackpads were not used: the tests dispatch wheel events, plus the browser's
+    own wheel for xterm's scrollback.
+  - Phones: a swipe is no wheel turn, so a phone is not offered the whole session (ADR-0220).

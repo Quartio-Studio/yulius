@@ -11,7 +11,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   every resume, so a compacted task could not be scrolled back further. A wheel turn up that no
   longer moves the terminal now offers "Earlier messages: show the whole session". It opens the
   task's transcript, read from its first line and live, in the terminal's place. Back to the
-  terminal, or Escape, returns to the terminal, which stayed connected.
+  terminal, or Escape, returns to the terminal, which stayed connected. Old tasks benefit most.
+  Their runs started before Claude Code was made to draw full screen (SPEC-310), and kept its
+  classic renderer through the updates that froze and thawed them. A viewer who opened one got only
+  its visible screen; the first turn up now offers the whole session.
 - The reply e2e no-leak checks now fail when keys reach the terminal (SPEC-323, task #308, fixes
   #524). They read the session right after the keys, before a leaked key had arrived, and on an
   empty session, which a leaked Enter leaves empty: with the attention bar's keys forwarded to the
