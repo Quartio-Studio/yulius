@@ -15,6 +15,7 @@ use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::error::{AppError, AppResult};
 use crate::model::Secret;
+use crate::ports::git::ReferenceBundle;
 use crate::ports::github::RepoAccess;
 use crate::projects::{blocking, clone_url, valid_owner, valid_repo_name};
 
@@ -26,6 +27,8 @@ pub const MAX_CONCURRENT_FETCHES: usize = 2;
 const STALE_FETCH: Duration = Duration::from_secs(2 * 3600);
 /// Name prefix of the fetch folders in `<data>/tmp`.
 const SCRATCH_PREFIX: &str = "reference-";
+/// Branches an answer lists by name (the bundle carries all of them).
+pub const MAX_LISTED_BRANCHES: usize = 100;
 
 /// `owner/name` of a `repo` argument, or `None` when it is not one.
 #[must_use]
@@ -39,12 +42,25 @@ struct Fetch {
     repo: String,
     url: String,
     file: String,
-    branch: String,
+    /// GitHub's default branch: the bundle's `HEAD`.
+    default_branch: String,
+    /// The branch the agent asked for, if any (else the default branch).
+    wanted: Option<String>,
     login: String,
     token: Secret,
     sandbox: SandboxId,
     task: TaskId,
     actor: String,
+}
+
+/// What a fetch placed among the task's attachments.
+struct Fetched {
+    /// The branch the clone command checks out, and its commit.
+    branch: String,
+    commit: String,
+    size: u64,
+    bundle: String,
+    carried: ReferenceBundle,
 }
 
 /// A refusal that says only now to ask a person.
@@ -88,12 +104,14 @@ fn remove_scratch(dir: &Path) {
 }
 
 impl App {
-    /// `reference_repo {repo}`: fetches the default branch of another repository of the
-    /// sandbox's owner as the task's owner and places a bundle of it among the task's
-    /// attachments (SPEC-267 REF-001..004).
+    /// `reference_repo {repo, branch?}`: fetches every branch and tag of another repository of
+    /// the sandbox's owner as the task's owner and places a bundle of them among the task's
+    /// attachments; `branch` (default: the default branch) is the one the clone checks out
+    /// (SPEC-267 REF-001..004, SPEC-330).
     ///
     /// # Errors
-    /// `Invalid` for a malformed `repo`; `Conflict` (naming `needs_you`) for another owner, the
+    /// `Invalid` for a malformed `repo` or `branch`, and for a `branch` the repository lacks;
+    /// `Conflict` (naming `needs_you`) for another owner, the
     /// sandbox's own repository, a playground, an owner who is gone, disabled, without GitHub or
     /// without read access, and a bundle too large; Git and store failures.
     pub(crate) async fn tool_reference_repo(
@@ -106,6 +124,17 @@ impl App {
             AppError::Invalid("repo must be a GitHub repository as owner/name".into())
         })?;
         let repo = format!("{owner}/{name}");
+        let wanted = match args.get("branch") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(branch)) if self.deps.git.valid_branch(branch) => {
+                Some(branch.clone())
+            }
+            Some(_) => {
+                return Err(AppError::Invalid(
+                    "branch must be a branch name of the repository, e.g. dev".into(),
+                ));
+            }
+        };
         let sandbox = self
             .deps
             .store
@@ -200,7 +229,8 @@ impl App {
             repo: repo.clone(),
             url: clone_url(&found.owner, &found.name),
             file: format!("{owner}-{name}.bundle"),
-            branch: found.default_branch,
+            default_branch: found.default_branch,
+            wanted,
             login,
             token,
             sandbox: sandbox.id.clone(),
@@ -209,22 +239,34 @@ impl App {
         };
         // To its end even when the agent's request goes away (ADR-0053's detached start): the
         // fetch keeps its slot, the folder is always removed, and a placed bundle is audited.
-        let (branch, login) = (fetch.branch.clone(), fetch.login.clone());
+        let (default_branch, login) = (fetch.default_branch.clone(), fetch.login.clone());
         let app = Arc::clone(self);
-        let (commit, size, bundle) = Self::run_detached(async move {
+        let fetched = Self::run_detached(async move {
             let _slot = slot;
             let fetched = app.fetch_reference(&fetch).await?;
             app.audit_reference(
                 &fetch,
                 &format!(
-                    "{}@{} ({}) as {}",
-                    fetch.repo, fetched.0, fetch.branch, fetch.login
+                    "{}@{} ({}; {} branches, {} tags) as {}",
+                    fetch.repo,
+                    fetched.commit,
+                    fetched.branch,
+                    fetched.carried.branches.len(),
+                    fetched.carried.tags,
+                    fetch.login
                 ),
             )
             .await;
             Ok(fetched)
         })
         .await?;
+        let Fetched {
+            branch,
+            commit,
+            size,
+            bundle,
+            carried,
+        } = fetched;
         let clone_into = self
             .sandbox_dir_absolute(&sandbox.id)
             .join("reference")
@@ -232,30 +274,45 @@ impl App {
             .join(name)
             .to_string_lossy()
             .into_owned();
+        let (branch_count, tag_count) = (carried.branches.len(), carried.tags);
+        let branches: Vec<Value> = carried
+            .branches
+            .iter()
+            .take(MAX_LISTED_BRANCHES)
+            .map(|(name, commit)| json!({"name": name, "commit": commit}))
+            .collect();
         Ok(json!({
             "repo": repo,
             "branch": branch,
             "commit": commit,
+            "default_branch": default_branch,
+            "branches": branches,
+            "branch_count": branch_count,
+            "tag_count": tag_count,
             "bundle": bundle,
             "bytes": size,
             "clone_into": clone_into,
             "acted_as": login,
             "message": format!(
-                "Fetched {repo} `{branch}` at {commit} as {login}. Read-only reference: clone it \
-                 outside your worktree with `git clone --quiet --branch {branch} {bundle} \
-                 {clone_into}`, or update an earlier copy with `git -C {clone_into} pull --ff-only \
-                 {bundle} {branch}`, then remove the bundle with `yulius remove {bundle}` (calling \
-                 this tool again replaces it). Never commit its files into this repository beyond \
-                 what you port, and never push from it. If you asked a person for access with \
-                 needs_you, call needs_you with resolved: true.",
+                "Fetched {repo} as {login}: all {branch_count} branches and {tag_count} tags; \
+                 `{branch}` is at {commit} (default branch `{default_branch}`). Read-only \
+                 reference: clone it outside your worktree with `git clone --quiet --branch \
+                 {branch} {bundle} {clone_into}`; every other branch is in the copy as \
+                 origin/<name> (`git -C {clone_into} checkout <name>`). Update an earlier copy \
+                 with `git -C {clone_into} fetch --quiet --prune --tags {bundle} \
+                 '+refs/heads/*:refs/remotes/origin/*'` and `git -C {clone_into} checkout --quiet \
+                 -B {branch} origin/{branch}`. Then remove the bundle with `yulius remove \
+                 {bundle}` (calling this tool again replaces it). Never commit its files into \
+                 this repository beyond what you port, and never push from it. If you asked a \
+                 person for access with needs_you, call needs_you with resolved: true.",
             ),
         }))
     }
 
     /// Sweeps fetch folders older than [`STALE_FETCH`] (a restart in the middle of a fetch),
-    /// then fetches into a fresh folder, bundles and attaches; the folder is removed whatever
-    /// happens.
-    async fn fetch_reference(&self, fetch: &Fetch) -> AppResult<(String, u64, String)> {
+    /// then fetches every branch and tag into a fresh folder, bundles them and attaches the
+    /// bundle when it has the wanted branch; the folder is removed whatever happens.
+    async fn fetch_reference(&self, fetch: &Fetch) -> AppResult<Fetched> {
         let tmp = self.config.data_dir.join("tmp");
         let swept = tmp.clone();
         blocking(move || {
@@ -266,10 +323,16 @@ impl App {
         let scratch = self.reference_scratch(&tmp).await?;
         let fetched = async {
             let (work, bundle) = (scratch.join("repo.git"), scratch.join("repo.bundle"));
-            let commit = self
+            let carried = self
                 .deps
                 .git
-                .bundle_branch(&fetch.url, &fetch.branch, &work, &bundle, &fetch.token)
+                .bundle_repository(
+                    &fetch.url,
+                    &fetch.default_branch,
+                    &work,
+                    &bundle,
+                    &fetch.token,
+                )
                 .await
                 .map_err(|err| {
                     refused(
@@ -277,14 +340,26 @@ impl App {
                         format!("Fetching {} as {} failed ({err}).", fetch.repo, fetch.login),
                     )
                 })?;
+            let branch = fetch
+                .wanted
+                .clone()
+                .unwrap_or_else(|| fetch.default_branch.clone());
+            let Some(commit) = carried
+                .branches
+                .iter()
+                .find(|(name, _)| *name == branch)
+                .map(|(_, commit)| commit.clone())
+            else {
+                return Err(missing_branch(&fetch.repo, &branch, &carried));
+            };
             let size = file_size(&bundle).await?;
             if size > MAX_REFERENCE_BYTES {
                 return Err(refused(
                     &fetch.repo,
                     format!(
-                        "{}'s `{}` bundles to {size} bytes, above the {MAX_REFERENCE_BYTES} bytes \
-                         a task gets.",
-                        fetch.repo, fetch.branch
+                        "{} bundles to {size} bytes, above the {MAX_REFERENCE_BYTES} bytes a \
+                         task gets.",
+                        fetch.repo
                     ),
                 ));
             }
@@ -297,7 +372,13 @@ impl App {
                     fetch.actor.clone(),
                 )
                 .await?;
-            Ok((commit, size, placed.path))
+            Ok(Fetched {
+                branch,
+                commit,
+                size,
+                bundle: placed.path,
+                carried,
+            })
         }
         .await;
         let removed = scratch.clone();
@@ -341,6 +422,28 @@ impl App {
             tracing::warn!(error = %err, task = %fetch.task, "reference_repo audit failed");
         }
     }
+}
+
+/// A branch the repository lacks: the agent's own mistake, so it is told the branches and no
+/// person is asked.
+fn missing_branch(repo: &str, branch: &str, carried: &ReferenceBundle) -> AppError {
+    let names: Vec<&str> = carried
+        .branches
+        .iter()
+        .take(MAX_LISTED_BRANCHES)
+        .map(|(name, _)| name.as_str())
+        .collect();
+    let more = carried.branches.len().saturating_sub(names.len());
+    let more = if more > 0 {
+        format!(" and {more} more")
+    } else {
+        String::new()
+    };
+    AppError::Invalid(format!(
+        "{repo} has no branch `{branch}`. Its branches: {}{more}. Call reference_repo again \
+         with one of them, or without branch for the default branch.",
+        names.join(", ")
+    ))
 }
 
 async fn file_size(path: &Path) -> AppResult<u64> {

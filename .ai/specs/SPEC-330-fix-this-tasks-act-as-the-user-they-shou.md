@@ -56,7 +56,7 @@ files or change the repository's default branch for it.
 
 - [x] Spec, issue and ADR record that a reference copy carries every branch and tag
 - [x] Regression tests show a task cannot get a non-default branch
-- [ ] reference_repo bundles every branch and tag and checks out the asked branch
+- [x] reference_repo bundles every branch and tag and checks out the asked branch
 - [ ] Docs, gates and security scan are green
 - [ ] Independent review approves the head and the change is merged into dev
 

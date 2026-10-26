@@ -90,11 +90,10 @@ impl Git {
         Ok(())
     }
 
-    /// Fetches `branch` of the remote `url` into `repo`'s `refs/heads/<branch>`, forced, without
-    /// tags or submodules (a reference copy's fetch, SPEC-267).
-    pub fn fetch_branch(&self, repo: &Path, url: &str, branch: &str) -> Result<(), GitError> {
+    /// Fetches every branch and tag of the remote `url` into `repo` under the same names, forced,
+    /// without submodules (a reference copy's fetch, SPEC-330).
+    pub fn fetch_branches_and_tags(&self, repo: &Path, url: &str) -> Result<(), GitError> {
         validate_remote_url(url)?;
-        validate_branch_name(branch)?;
         self.run_ok(
             Invocation::new(self, "fetch", Some(repo))
                 .args([
@@ -104,11 +103,27 @@ impl Git {
                     "--no-tags",
                     "--",
                     url,
+                    "+refs/heads/*:refs/heads/*",
+                    "+refs/tags/*:refs/tags/*",
                 ])
-                .arg(format!("+refs/heads/{branch}:refs/heads/{branch}"))
                 .timeout(self.network_timeout),
         )?;
         Ok(())
+    }
+
+    /// The tag names of `repo` (without `refs/tags/`), sorted.
+    pub fn tag_names(&self, repo: &Path) -> Result<Vec<String>, GitError> {
+        let output = self.run_ok(Invocation::new(self, "for-each-ref", Some(repo)).args([
+            "for-each-ref",
+            "--format=%(refname:strip=2)",
+            "refs/tags/",
+        ]))?;
+        Ok(output
+            .stdout_text()
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect())
     }
 
     /// Copies every branch and tag of the repository at the absolute `source` into `repo` under

@@ -546,22 +546,25 @@ async fn an_old_fetch_folder_is_swept() -> TestResult {
     Ok(())
 }
 
-/// The real Git adapter: `bundle_branch` fetches one branch with its history into a new bare
-/// repository and writes a bundle that clones to it; a branch Git could take as an option or a
-/// refspec is refused before Git runs.
+/// SPEC-330 AC4, the real Git adapter: `bundle_repository` fetches every branch and tag with
+/// their history into a new bare repository and writes a bundle of `HEAD` (the default branch),
+/// every branch and every tag; a default branch Git could take as an option is refused before Git
+/// runs.
 #[tokio::test]
-async fn the_git_adapter_bundles_one_branch() -> TestResult {
+async fn the_git_adapter_bundles_every_branch_and_tag() -> TestResult {
     use yulius_app::ports::git::GitPort as _;
     let w = World::new("org").await?;
     let lib = w.remote("acme", "lib", &[("README.md", "# Lib\n")], &["other"])?;
+    let dev = add_dev_and_tag(&w, &lib)?;
+    let main = git(&lib, &["rev-parse", "main"])?.trim().to_owned();
     let adapter = yulius::wiring::git::GitAdapter::new("git")
         .with_github_base(&w.scratch.path().join("remotes"));
     let token = yulius_app::model::Secret("token-alice".into());
     let out = w.scratch.path().join("out");
     std::fs::create_dir_all(&out)?;
     let (work, bundle) = (out.join("repo.git"), out.join("repo.bundle"));
-    let commit = adapter
-        .bundle_branch(
+    let carried = adapter
+        .bundle_repository(
             "https://github.com/acme/lib.git",
             "main",
             &work,
@@ -569,30 +572,44 @@ async fn the_git_adapter_bundles_one_branch() -> TestResult {
             &token,
         )
         .await?;
-    assert_eq!(commit, git(&lib, &["rev-parse", "main"])?.trim());
-    let heads = git(&out, &["bundle", "list-heads", &bundle.to_string_lossy()])?;
     assert_eq!(
-        heads.trim(),
-        format!("{commit} refs/heads/main"),
-        "only the branch"
+        carried.branches,
+        [
+            ("dev".to_owned(), dev.clone()),
+            ("main".to_owned(), main.clone()),
+            ("other".to_owned(), main.clone()),
+        ]
     );
+    assert_eq!(carried.tags, 1);
+    let heads = git(&out, &["bundle", "list-heads", &bundle.to_string_lossy()])?;
+    let mut heads: Vec<&str> = heads.lines().collect();
+    heads.sort_unstable();
+    let tag = git(&lib, &["rev-parse", "refs/tags/v1"])?;
+    let mut wanted = [
+        format!("{dev} refs/heads/dev"),
+        format!("{main} HEAD"),
+        format!("{main} refs/heads/main"),
+        format!("{main} refs/heads/other"),
+        format!("{} refs/tags/v1", tag.trim()),
+    ];
+    wanted.sort_unstable();
+    assert_eq!(heads, wanted, "HEAD, every branch and the tag");
     let clone = out.join("clone");
     git(
         &out,
         &[
             "clone",
             "--quiet",
-            "--branch",
-            "main",
             &bundle.to_string_lossy(),
             &clone.to_string_lossy(),
         ],
     )?;
     assert_eq!(std::fs::read_to_string(clone.join("README.md"))?, "# Lib\n");
+    assert_eq!(git(&clone, &["rev-parse", "origin/dev"])?.trim(), dev);
     for bad in ["-x", "a:b", "main..x"] {
         let fresh = out.join(format!("bad-{}", bad.len()));
         let refused = adapter
-            .bundle_branch(
+            .bundle_repository(
                 "https://github.com/acme/lib.git",
                 bad,
                 &fresh,

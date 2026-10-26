@@ -316,9 +316,10 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "reference_repo".into(),
-            description: "Read another GitHub repository of this project's owner (an earlier version to port from, a shared library, a product's source) that your own Git and gh cannot (they reach only this repository): Yulius fetches its default branch as this task's owner, when GitHub says that person can read it, and places a Git bundle of it among this task's attachments; clone it outside your worktree into <sandbox>/reference/<owner>/<name> as the answer says, and call it again for a fresh copy. Read-only: port what you need, never push from it. Use it before asking a person for access; only when it is refused (another owner, no read access) ask with needs_you.".into(),
+            description: "Read another GitHub repository of this project's owner (an earlier version to port from, a shared library, a product's source) that your own Git and gh cannot (they reach only this repository): Yulius fetches every branch and tag of it as this task's owner, when GitHub says that person can read it, and places a Git bundle of them among this task's attachments; clone it outside your worktree into <sandbox>/reference/<owner>/<name> as the answer says (branch picks the one checked out; the others are in the copy as origin/<name>), and call it again for a fresh copy. Read-only: port what you need, never push from it. Use it before asking a person for access; only when it is refused (another owner, no read access) ask with needs_you.".into(),
             input_schema: schema(json!({
-                "repo": {"type": "string", "description": "The repository as owner/name, e.g. Quartio-Studio/product"}
+                "repo": {"type": "string", "description": "The repository as owner/name, e.g. Quartio-Studio/product"},
+                "branch": {"type": "string", "description": "The branch to check out, e.g. dev (default: the repository's default branch); every branch and tag is in the bundle either way"}
             }), &["repo"]),
         },
         ToolDescriptor {
