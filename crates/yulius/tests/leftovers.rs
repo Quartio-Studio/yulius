@@ -1626,12 +1626,11 @@ async fn a_view_read_while_a_scan_ends_shows_the_kept_sizes_of_its_items() -> Bo
         .ok_or("items")?
         .iter()
         .find(|i| i["kind"] == "removed-sandbox")
-        .cloned();
+        .cloned()
+        .ok_or("the scan lists the removed sandbox")?;
+    assert!(item["bytes"].as_u64().is_some(), "{view}");
     let kept = view["kept"].as_array().ok_or("kept")?;
     assert_eq!(kept.len(), 1, "{view}");
-    match item {
-        Some(item) => assert_eq!(kept[0]["bytes"], item["bytes"], "{view}"),
-        None => assert!(kept[0]["bytes"].is_null(), "{view}"),
-    }
+    assert_eq!(kept[0]["bytes"], item["bytes"], "{view}");
     Ok(())
 }
