@@ -58,7 +58,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use yulius_contracts::api::files::UploadedFile;
 use yulius_domain::ids::{SandboxId, TaskId};
-use yulius_domain::sweep::Level;
+use yulius_domain::sweep::{CRITICAL_PERCENT, Level};
 
 use crate::auth::{AuthContext, hex_token};
 use crate::context::App;
@@ -538,9 +538,13 @@ impl App {
         if let Some((total, used)) = self.data_disk().await
             && Level::of(used.saturating_add(len), total) == Level::Critical
         {
+            // What can still be added before the critical level, not all the free space.
+            let room = u128::from(total) * u128::from(CRITICAL_PERCENT) / 100;
+            let room = u64::try_from(room).unwrap_or(u64::MAX).saturating_sub(used);
             return Err(AppError::Invalid(format!(
-                "the server's disk has no room for this file ({} free)",
-                human_size(total.saturating_sub(used))
+                "the server's disk has no room for this file: only {} can be added before \
+                 it is {CRITICAL_PERCENT} % full",
+                human_size(room)
             )));
         }
         Ok(())

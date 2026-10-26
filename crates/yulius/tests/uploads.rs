@@ -1227,10 +1227,21 @@ async fn an_upload_that_would_fill_the_data_disk_is_refused_before_it_starts() -
     .await?;
     assert_eq!(fits.status, StatusCode::CREATED, "{:?}", fits.body);
 
-    // 96 of 100 GB afterwards: refused, in the editor and as an attachment, nothing created.
-    for (method, url, folder) in [
-        (Method::PUT, format!("{editor}c.mp4"), &repo),
-        (Method::POST, format!("{draft}c.mp4"), &drafts),
+    // 96 of 100 GB afterwards: refused, in the editor and as an attachment, before any folder or
+    // file is created (a new folder path, a task with no attachments folder yet).
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Running, None).await?;
+    for (method, url, absent) in [
+        (
+            Method::PUT,
+            format!("{editor}new/dir/c.mp4"),
+            repo.join("new"),
+        ),
+        (Method::POST, format!("{draft}c.mp4"), drafts.join("c.mp4")),
+        (
+            Method::POST,
+            "/api/tasks/t1/attachments?name=c.mp4".to_owned(),
+            data.join("sandboxes/s1/attachments/tasks"),
+        ),
     ] {
         let refused = upload_declaring(&h, method, &url, (b"mp4", 6 * GB), &alice).await?;
         assert_eq!(
@@ -1239,19 +1250,16 @@ async fn an_upload_that_would_fill_the_data_disk_is_refused_before_it_starts() -
             "{url}: {:?}",
             refused.body
         );
+        // What can still be added before 95 %: 5 GB (4.6 in binary units), not all 10 GB free.
         let message = refused.body["error"]["message"]
             .as_str()
             .unwrap_or_default();
         assert!(
-            message.contains("no room for this file"),
+            message.contains("no room for this file") && message.contains("4.6 GB"),
             "{url}: {message}"
         );
-        assert!(!folder.join("c.mp4").exists(), "{url}");
-        assert!(
-            leftovers(folder).is_empty(),
-            "{url}: {:?}",
-            leftovers(folder)
-        );
+        assert!(!absent.exists(), "{url}: {absent:?}");
     }
+    assert!(leftovers(&data).is_empty(), "{:?}", leftovers(&data));
     Ok(())
 }
