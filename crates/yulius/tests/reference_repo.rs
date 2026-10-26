@@ -167,6 +167,283 @@ async fn a_task_gets_a_bundle_of_another_repository_of_its_owner() -> TestResult
     Ok(())
 }
 
+/// Gives `acme/lib` a `dev` branch with a commit of its own and a tag `v1` on `main`; returns
+/// `dev`'s commit.
+fn add_dev_and_tag(w: &World, lib: &Path) -> Result<String, BoxError> {
+    let seed = w.scratch.path().join("seed/acme/lib");
+    git(&seed, &["tag", "v1"])?;
+    git(&seed, &["checkout", "--quiet", "-b", "dev"])?;
+    std::fs::write(seed.join("model.rs"), "pub struct Model;\n")?;
+    git(&seed, &["add", "model.rs"])?;
+    git(&seed, &["commit", "--quiet", "-m", "model on dev"])?;
+    git(
+        &seed,
+        &[
+            "push",
+            "--quiet",
+            &lib.to_string_lossy(),
+            "dev:dev",
+            "refs/tags/v1:refs/tags/v1",
+        ],
+    )?;
+    Ok(git(lib, &["rev-parse", "refs/heads/dev"])?
+        .trim()
+        .to_owned())
+}
+
+/// SPEC-330 AC1, AC2 (#915): the task's owner can read every branch, so the task gets every
+/// branch and tag: it asks for `dev` and clones `dev`, and the default copy also carries `dev`
+/// and the tags.
+#[tokio::test]
+async fn a_task_gets_every_branch_and_tag_its_owner_can_read() -> TestResult {
+    let (w, _alice, lib) = world().await?;
+    let dev = add_dev_and_tag(&w, &lib)?;
+    let main = git(&lib, &["rev-parse", "refs/heads/main"])?
+        .trim()
+        .to_owned();
+
+    let asked = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib", "branch": "dev"}),
+    )
+    .await?;
+    assert_ne!(asked["isError"], true, "{asked}");
+    let record = support::tool_text(&asked);
+    assert_eq!(record["branch"], "dev", "{record}");
+    assert_eq!(record["commit"], dev.as_str(), "{record}");
+    assert_eq!(record["default_branch"], "main", "{record}");
+    let clone = clone_bundle(&record, w.scratch.path())?;
+    assert_eq!(
+        std::fs::read_to_string(clone.join("model.rs"))?,
+        "pub struct Model;\n"
+    );
+
+    let default = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib"}),
+    )
+    .await?;
+    assert_ne!(default["isError"], true, "{default}");
+    let record = support::tool_text(&default);
+    assert_eq!(record["branch"], "main", "{record}");
+    assert_eq!(record["commit"], main.as_str(), "{record}");
+    assert_eq!(
+        record["branches"],
+        json!([{"name": "dev", "commit": dev}, {"name": "main", "commit": main}]),
+        "{record}"
+    );
+    assert_eq!(record["branch_count"], 2, "{record}");
+    assert_eq!(record["tag_count"], 1, "{record}");
+    let message = record["message"].as_str().unwrap_or_default();
+    for command in ["clone_command", "update_command"] {
+        let text = record[command].as_str().ok_or(command)?;
+        assert!(message.contains(text), "{command}: {record}");
+    }
+    let clone = clone_bundle(&record, w.scratch.path())?;
+    assert!(!clone.join("model.rs").exists());
+    assert_eq!(git(&clone, &["rev-parse", "origin/dev"])?.trim(), dev);
+    assert_eq!(git(&clone, &["rev-parse", "v1^{commit}"])?.trim(), main);
+    assert_eq!(attachments(&w), ["acme-lib.bundle"]);
+    assert_eq!(tmp_entries(&w), 0);
+    Ok(())
+}
+
+/// Runs a command the tool answered through `sh`, as an agent pasting it would; `Err` with its
+/// output when it fails.
+fn run_answered(record: &Value, command: &str, cwd: &Path) -> Result<(), BoxError> {
+    let text = record[command].as_str().ok_or(command)?;
+    let out = std::process::Command::new("sh")
+        .args(["-c", text])
+        .current_dir(cwd)
+        .output()?;
+    if !out.status.success() {
+        return Err(format!(
+            "{command} `{text}` failed: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// SPEC-330 REF-103 (review round 1): the answered commands work as given: clone a branch whose
+/// name the shell would expand, then update that copy after the branch moved, a tag was re-pointed
+/// and another was added.
+#[tokio::test]
+async fn the_answered_commands_clone_and_update_a_copy() -> TestResult {
+    let (w, _alice, lib) = world().await?;
+    let dev = add_dev_and_tag(&w, &lib)?;
+    let seed = w.scratch.path().join("seed/acme/lib");
+    let odd = "odd$(touch${IFS}pwned)'q";
+    git(&seed, &["branch", odd, "dev"])?;
+    git(
+        &seed,
+        &[
+            "push",
+            "--quiet",
+            &lib.to_string_lossy(),
+            &format!("refs/heads/{odd}:refs/heads/{odd}"),
+        ],
+    )?;
+    let first = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib", "branch": odd}),
+    )
+    .await?;
+    assert_ne!(first["isError"], true, "{first}");
+    let record = support::tool_text(&first);
+    let copy = PathBuf::from(record["clone_into"].as_str().ok_or("clone_into")?);
+    std::fs::create_dir_all(copy.parent().ok_or("parent")?)?;
+    run_answered(&record, "clone_command", w.scratch.path())?;
+    assert_eq!(git(&copy, &["rev-parse", "HEAD"])?.trim(), dev);
+    assert!(
+        !w.scratch.path().join("pwned").exists() && !copy.join("pwned").exists(),
+        "the branch name is not run"
+    );
+
+    // The owner's repository moves on: the branch gets a commit, v1 is re-pointed, v2 is new.
+    git(&seed, &["checkout", "--quiet", odd])?;
+    std::fs::write(seed.join("model.rs"), "pub struct Model2;\n")?;
+    git(&seed, &["commit", "--quiet", "-am", "model 2"])?;
+    git(&seed, &["tag", "-f", "v1", "dev"])?;
+    git(&seed, &["tag", "v2"])?;
+    git(
+        &seed,
+        &[
+            "push",
+            "--quiet",
+            "--force",
+            &lib.to_string_lossy(),
+            &format!("refs/heads/{odd}:refs/heads/{odd}"),
+            "refs/tags/v1:refs/tags/v1",
+            "refs/tags/v2:refs/tags/v2",
+        ],
+    )?;
+    let moved = git(&lib, &["rev-parse", &format!("refs/heads/{odd}")])?;
+    let second = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib", "branch": odd}),
+    )
+    .await?;
+    assert_ne!(second["isError"], true, "{second}");
+    let record = support::tool_text(&second);
+    run_answered(&record, "update_command", w.scratch.path())?;
+    assert_eq!(git(&copy, &["rev-parse", "HEAD"])?.trim(), moved.trim());
+    assert_eq!(git(&copy, &["rev-parse", "v1^{commit}"])?.trim(), dev);
+    assert_eq!(
+        git(&copy, &["rev-parse", "v2^{commit}"])?.trim(),
+        moved.trim()
+    );
+    assert_eq!(
+        std::fs::read_to_string(copy.join("model.rs"))?,
+        "pub struct Model2;\n"
+    );
+    assert!(
+        !w.scratch.path().join("pwned").exists() && !copy.join("pwned").exists(),
+        "the branch name is not run by the update either"
+    );
+    Ok(())
+}
+
+/// SPEC-330 REF-103 (review round 2): an answer lists at most 100 branches by name and counts
+/// them all; a missing branch's error says how many it left out.
+#[tokio::test]
+async fn an_answer_lists_at_most_a_hundred_branches_and_counts_them_all() -> TestResult {
+    let (w, _alice, lib) = world().await?;
+    let main = git(&lib, &["rev-parse", "refs/heads/main"])?
+        .trim()
+        .to_owned();
+    for n in 0..101 {
+        git(&lib, &["update-ref", &format!("refs/heads/b{n:03}"), &main])?;
+    }
+    let done = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib"}),
+    )
+    .await?;
+    assert_ne!(done["isError"], true, "{done}");
+    let record = support::tool_text(&done);
+    assert_eq!(record["branch_count"], 102, "{record}");
+    let listed = record["branches"].as_array().ok_or("branches")?;
+    assert_eq!(listed.len(), 100);
+    assert_eq!(listed[0]["name"], "b000");
+    assert!(
+        listed.iter().all(|b| b["name"] != "main"),
+        "main is the 102nd"
+    );
+
+    let missing = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib", "branch": "nope"}),
+    )
+    .await?;
+    assert_eq!(missing["isError"], true, "{missing}");
+    let text = support::tool_text(&missing).to_string();
+    assert!(
+        text.contains("b099") && text.contains("and 2 more"),
+        "{text}"
+    );
+    assert!(!text.contains("b100"), "{text}");
+    Ok(())
+}
+
+/// SPEC-330 AC3: a branch the repository lacks is the agent's own mistake: invalid, naming the
+/// branches, with no person to ask and nothing left behind; a branch Git could read as an option
+/// is refused before anything is fetched.
+#[tokio::test]
+async fn a_branch_the_repository_lacks_is_invalid_and_names_the_branches() -> TestResult {
+    let (w, _alice, lib) = world().await?;
+    add_dev_and_tag(&w, &lib)?;
+    let missing = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib", "branch": "nope"}),
+    )
+    .await?;
+    assert_eq!(missing["isError"], true, "{missing}");
+    let text = support::tool_text(&missing).to_string();
+    assert!(
+        text.contains("nope") && text.contains("dev") && text.contains("main"),
+        "{text}"
+    );
+    assert!(!text.contains("needs_you"), "{text}");
+    assert!(attachments(&w).is_empty(), "{:?}", attachments(&w));
+    assert_eq!(tmp_entries(&w), 0);
+
+    let fetches = w.git.calls().len();
+    for bad in ["-x", "a:b", "main..x", ""] {
+        let invalid = support::mcp_tool(
+            &w.h,
+            "tok-ref",
+            "reference_repo",
+            json!({"repo": "acme/lib", "branch": bad}),
+        )
+        .await?;
+        assert_eq!(invalid["isError"], true, "{bad}: {invalid}");
+    }
+    assert_eq!(
+        w.git.calls().len(),
+        fetches,
+        "nothing fetched: {:?}",
+        w.git.calls()
+    );
+    Ok(())
+}
+
 /// AC3: another owner's repository, the sandbox's own, one the owner cannot read and a disabled
 /// owner are refused and sent to `needs_you`; a malformed name is invalid; nothing is written.
 #[tokio::test]
@@ -417,22 +694,28 @@ async fn an_old_fetch_folder_is_swept() -> TestResult {
     Ok(())
 }
 
-/// The real Git adapter: `bundle_branch` fetches one branch with its history into a new bare
-/// repository and writes a bundle that clones to it; a branch Git could take as an option or a
-/// refspec is refused before Git runs.
+/// SPEC-330 AC4, the real Git adapter: `bundle_repository` fetches every branch and tag with
+/// their history into a new bare repository and writes a bundle of `HEAD` (the default branch),
+/// every branch and every tag; a default branch Git could take as an option is refused before Git
+/// runs.
 #[tokio::test]
-async fn the_git_adapter_bundles_one_branch() -> TestResult {
+async fn the_git_adapter_bundles_every_branch_and_tag() -> TestResult {
     use yulius_app::ports::git::GitPort as _;
     let w = World::new("org").await?;
     let lib = w.remote("acme", "lib", &[("README.md", "# Lib\n")], &["other"])?;
+    let dev = add_dev_and_tag(&w, &lib)?;
+    let main = git(&lib, &["rev-parse", "main"])?.trim().to_owned();
+    // Longer than Yulius's own branch names may be, but Git's: still in the bundle, so counted.
+    let long = format!("{}x", "long/".repeat(60));
+    git(&lib, &["update-ref", &format!("refs/heads/{long}"), &main])?;
     let adapter = yulius::wiring::git::GitAdapter::new("git")
         .with_github_base(&w.scratch.path().join("remotes"));
     let token = yulius_app::model::Secret("token-alice".into());
     let out = w.scratch.path().join("out");
     std::fs::create_dir_all(&out)?;
     let (work, bundle) = (out.join("repo.git"), out.join("repo.bundle"));
-    let commit = adapter
-        .bundle_branch(
+    let carried = adapter
+        .bundle_repository(
             "https://github.com/acme/lib.git",
             "main",
             &work,
@@ -440,30 +723,46 @@ async fn the_git_adapter_bundles_one_branch() -> TestResult {
             &token,
         )
         .await?;
-    assert_eq!(commit, git(&lib, &["rev-parse", "main"])?.trim());
-    let heads = git(&out, &["bundle", "list-heads", &bundle.to_string_lossy()])?;
     assert_eq!(
-        heads.trim(),
-        format!("{commit} refs/heads/main"),
-        "only the branch"
+        carried.branches,
+        [
+            ("dev".to_owned(), dev.clone()),
+            (long.clone(), main.clone()),
+            ("main".to_owned(), main.clone()),
+            ("other".to_owned(), main.clone()),
+        ]
     );
+    assert_eq!(carried.tags, 1);
+    let heads = git(&out, &["bundle", "list-heads", &bundle.to_string_lossy()])?;
+    let mut heads: Vec<&str> = heads.lines().collect();
+    heads.sort_unstable();
+    let tag = git(&lib, &["rev-parse", "refs/tags/v1"])?;
+    let mut wanted = [
+        format!("{dev} refs/heads/dev"),
+        format!("{main} HEAD"),
+        format!("{main} refs/heads/main"),
+        format!("{main} refs/heads/other"),
+        format!("{main} refs/heads/{long}"),
+        format!("{} refs/tags/v1", tag.trim()),
+    ];
+    wanted.sort_unstable();
+    assert_eq!(heads, wanted, "HEAD, every branch and the tag");
     let clone = out.join("clone");
     git(
         &out,
         &[
             "clone",
             "--quiet",
-            "--branch",
-            "main",
             &bundle.to_string_lossy(),
             &clone.to_string_lossy(),
         ],
     )?;
     assert_eq!(std::fs::read_to_string(clone.join("README.md"))?, "# Lib\n");
+    assert_eq!(git(&clone, &["rev-parse", "origin/dev"])?.trim(), dev);
     for bad in ["-x", "a:b", "main..x"] {
         let fresh = out.join(format!("bad-{}", bad.len()));
         let refused = adapter
-            .bundle_branch(
+            .bundle_repository(
                 "https://github.com/acme/lib.git",
                 bad,
                 &fresh,

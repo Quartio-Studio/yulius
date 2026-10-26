@@ -8,6 +8,9 @@ status: done
 Status: done
 Date: 2026-10-22
 Owner: Yulius task #253
+Amended by [SPEC-330](SPEC-330-fix-this-tasks-act-as-the-user-they-shou.md) (ADR-0223): the
+bundle carries every branch and tag, not only the default branch, and `branch` picks the one checked
+out.
 Scope authorization: task #253: two screenshots and "i got this, such things should usually happen
 on onboarding … and it turned out i didn't need to do it at all, fix". Fixes #803. Screenshot 1: a
 task of Quartio-Studio/quartio-v2 shows "Needs you: Give the Yulius GitHub app read access to
