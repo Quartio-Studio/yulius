@@ -164,6 +164,60 @@ test('at phone width the Status panel and the Dashboard keep both percents and d
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+/** Each Status section head: its widths, its summary's text and the line each summary part starts on. */
+const sectionHeads = (browser: Browser) => browser.evaluate(() => {
+  const panel = document.querySelector('.status-pop')!.getBoundingClientRect();
+  return [...document.querySelectorAll('.status-pop .status-section')].map((section) => {
+    const head = section.querySelector(':scope > summary');
+    const text = head?.querySelector('.status-summary-text');
+    const parts = [...(text?.querySelectorAll('.status-summary-part') ?? [])];
+    return {
+      title: section.querySelector('h2')?.textContent ?? null,
+      wider: [section, head, text].filter((el): el is Element => Boolean(el))
+        .filter((el) => el.scrollWidth > el.clientWidth).map((el) => el.className || el.localName),
+      textRight: text ? text.getBoundingClientRect().right : null,
+      panelRight: panel.right,
+      summary: text?.textContent ?? null,
+      // A part split over two lines has two rects; the lines are the distinct tops.
+      splitParts: parts.filter((p) => p.getClientRects().length > 1).map((p) => p.textContent),
+      lines: parts.length ? new Set(parts.map((p) => Math.round(p.getBoundingClientRect().top))).size : text?.getClientRects().length ?? 0,
+    };
+  });
+});
+
+test('at phone width every Status section head fits the panel and shows its whole summary (#549)', async ({ app, browser }) => {
+  await browser.setViewport({ width: 360, height: 780 });
+  await app.open(mock('/s/studio/git'));
+  await browser.locator('.btn-status').click();
+  await expect(browser.locator('.status-pop .account-fold').first()).toBeVisible();
+  const heads = await sectionHeads(browser);
+  expect(heads.map((h) => h.title)).toEqual(['Machine', 'Sandboxes', 'Subscriptions']);
+  // SSF-001: nothing in a head is wider than it is shown, and no summary ends past the panel.
+  for (const head of heads) {
+    expect(head.wider, `${head.title} head`).toEqual([]);
+    if (head.textRight !== null) expect(head.textRight, `${head.title} summary's right edge`).toBeLessThanOrEqual(head.panelRight);
+  }
+  // SSF-002: the longest summary wraps between its parts, every word shown.
+  const subscriptions = heads.find((h) => h.title === 'Subscriptions')!;
+  expect(subscriptions.summary).toBe('4 ready · 1 at the limit · 1 need attention');
+  expect(subscriptions.lines).toBeGreaterThan(1);
+  expect(subscriptions.splitParts).toEqual([]);
+
+  // SSF-003
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('at desktop width a Status section summary stays on one line beside its title (#549)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/git'));
+  await browser.locator('.btn-status').click();
+  await expect(browser.locator('.status-pop .account-fold').first()).toBeVisible();
+  // SSF-004
+  for (const head of (await sectionHeads(browser)).filter((h) => h.summary !== null)) {
+    expect(head.wider, `${head.title} head`).toEqual([]);
+    expect(head.lines, `${head.title} summary lines`).toBe(1);
+  }
+});
+
 // ---- Claude's sign-in confirms itself (SPEC-243)
 
 type MockLogins = {
