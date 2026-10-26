@@ -55,8 +55,10 @@ in full and answered once, and a declined, unanswered or abandoned request creat
   it answers that the person declined and nothing was created. Unanswered, it answers that
   nobody answered and nothing was created, and the request is gone.
 - XSR-004: a request ends with the call: when the wait ends, the call is dropped (the client went
-  away, the Superagent was interrupted) or the server restarts, the request disappears and can no
-  longer be approved. At most 3 requests wait per person and source sandbox; a fourth is refused.
+  away), the Superagent's client cancels it (`notifications/cancelled` with its JSON-RPC id, as
+  Claude Code sends on Esc while it may keep the HTTP request open; the call answers
+  `cancelled`), or the server restarts, the request disappears and can no longer be approved. An
+  approval already taken is completed even if the person's page goes away meanwhile. At most 3 requests wait per person and source sandbox; a fourth is refused.
 - XSR-005: `GET /api/sandboxes/{sid}/superagent/requests` lists the caller's own waiting requests
   of their Superagent in `sid` (target sandbox, title, the full prompt, the start options, when
   it ends). Another person's requests are never listed.
@@ -71,11 +73,16 @@ in full and answered once, and a declined, unanswered or abandoned request creat
   person's event streams only; the event names nothing else.
 - XSR-008: the Superagent panel shows each waiting request above the terminal: "Your Superagent
   asks to start a task in <sandbox>", the title, the whole prompt (scrollable), the start options
-  that are set, and **Create task** / **Decline**. After an answer the card goes; an approval
+  that are set, and **Create task** / **Decline**. Characters a person cannot see (controls,
+  bidirectional and zero-width marks) show as `⟨U+XXXX⟩`, and runs of two or more empty lines as
+  `[N empty lines]`, so a prompt cannot hide or reorder words. Create task takes a click only once
+  the whole prompt was in view (it fits, or was scrolled to its end; until then a hint says so),
+  both buttons only 600 ms after the card appeared (a click aimed at the terminal it pushed down)
+  and neither while an answer is on its way. After an answer the card goes; an approval
   says which task was created with a link to it; a refused approval says why. It refetches on the
   event and on a resync.
-- XSR-009: answers are audited: `superagent.cross_task` with `approved`, `declined` or
-  `expired`, the source and target sandbox, never the prompt.
+- XSR-009: answers are audited: `superagent.cross_task` with `approved`, `failed`, `declined`,
+  `cancelled` or `expired`, the source and target sandbox, never the prompt.
 - XSR-010: the Superagent's MCP instructions say to find the sandbox with `sandboxes_list`, ask
   with `sandbox_task_create`, tell the person the request waits in the panel above, and never
   retry a declined request unless the person asks.
@@ -83,11 +90,12 @@ in full and answered once, and a declined, unanswered or abandoned request creat
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The Superagent lists the other sandboxes its person can start work in
-- [ ] sandbox_task_create waits for the person's answer and creates the task only on approval
-- [ ] Only the person, in a browser session, approves or declines a request through the API
-- [ ] The Superagent panel shows each request with Create task and Decline
-- [ ] Instructions, ADR, architecture and product docs describe cross-sandbox requests
+- [x] The Superagent lists the other sandboxes its person can start work in
+- [x] sandbox_task_create waits for the person's answer and creates the task only on approval
+- [x] Only the person, in a browser session, approves or declines a request through the API
+- [x] The Superagent panel shows each request with Create task and Decline
+- [x] Instructions, ADR, architecture and product docs describe cross-sandbox requests
+- [x] Current dev merged and the gate's style, format and allowlist failures fixed
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

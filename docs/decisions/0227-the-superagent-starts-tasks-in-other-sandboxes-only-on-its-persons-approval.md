@@ -28,7 +28,10 @@ action require their explicit acceptance.
 - **The server asks the person, every time.** A valid call records a request in memory and waits
   for the answer, at most 4 minutes (`CROSS_REQUEST_WAIT`), at most 3 waiting per person and
   source sandbox. The person's Superagent panel lists it above the session with the target, the
-  title, the whole prompt and the start options set, and **Create task** / **Decline**
+  title, the whole prompt and the start options set, and **Create task** / **Decline**. The
+  prompt shows invisible characters by their code and counts long runs of empty lines; Create
+  task takes a click only once the whole prompt was in view, and both buttons only 600 ms after
+  the card appeared
   (`GET`/`POST /api/sandboxes/{sid}/superagent/requests[/{id}]`, announced to that person only
   by `superagent.requests`).
 - **Only a person's click answers.** The answer needs a browser session (a cookie with CSRF,
@@ -40,12 +43,14 @@ action require their explicit acceptance.
   that moment, and a refusal is the answer of both the click and the waiting call. The prompt is
   not rewritten.
 - **A request lives as long as its call.** Answered, unanswered (the bound), dropped (the client
-  went away, the Superagent was interrupted) or lost with a server restart, it is gone and
-  cannot be approved later. A guard removes it whichever way the call ends; a timeout that races
+  went away), cancelled (`notifications/cancelled` naming the call's JSON-RPC id, which Claude
+  Code sends on Esc while it may keep the HTTP request open) or lost with a server restart, it is
+  gone and cannot be approved later. An approval, once taken, runs detached from the person's
+  HTTP request, so a page that goes away mid-way still lets the call learn the outcome. A guard removes it whichever way the call ends; a timeout that races
   an approval being created waits for that outcome (up to a minute) instead of saying
   "unanswered".
-- **Audited** `superagent.cross_task` on the target with `approved`, `failed`, `declined` or
-  `expired`, the source sandbox and the caller, never the prompt.
+- **Audited** `superagent.cross_task` on the target with `approved`, `failed`, `declined`,
+  `cancelled` or `expired`, the source sandbox and the caller, never the prompt.
 
 ## Alternatives
 
@@ -72,7 +77,8 @@ action require their explicit acceptance.
   in 4 minutes ends the request; the Superagent says nothing was created and asks again only when
   told.
 - An injected instruction can at most put a card in front of the person. It cannot create the
-  task, and it cannot fill the panel: at most 3 requests wait at once.
+  task, hide words of it below the fold or behind invisible characters, or catch a stray click,
+  and it cannot fill the panel: at most 3 requests wait at once.
 - Requests are in memory: a server restart (an update) ends the waiting calls with an error and
   their cards with them.
 - Running Superagents get the tools after the update by restarting once idle (the launch digest

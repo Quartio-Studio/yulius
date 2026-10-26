@@ -982,12 +982,15 @@ Only the Superagent reaches its person's other sandboxes, and only through them
 `cross_sandbox.rs`). `sandboxes_list` names the other live sandboxes the person can work in.
 `sandbox_task_create` records a request in `App::cross_requests` (in memory, at most 3 per person
 and source sandbox) and waits for the person's answer, at most `CROSS_REQUEST_WAIT` (4 minutes,
-below Node's 300 s headers timeout). A guard removes the request however the call ends, so a
-dropped call, a timeout or a restart leaves nothing to approve. The panel reads the person's own
+below Node's 300 s headers timeout). A guard removes the request however the call ends, and a
+Superagent's `notifications/cancelled` naming the call's JSON-RPC id (`call_key`: its shell and
+that id) ends it at once, so a dropped or cancelled call, a timeout or a restart leaves nothing
+to approve; `settle` waits for the outcome of an approval that the timeout raced. The panel reads the person's own
 requests, announced by `superagent.requests` to that person only. An answer needs a browser
 session (`AuthContext::is_browser`): no API token approves, so an agent holding one cannot answer
 its own request. Approval runs `tool_task_create` with a `ProjectCaller` for the target, exactly
-as shown, and its result goes to the waiting call; audited `superagent.cross_task`.
+as shown, in a task of its own (a cancelled page loses nothing), and its result goes to the
+waiting call; audited `superagent.cross_task`.
 
 ```mermaid
 sequenceDiagram
