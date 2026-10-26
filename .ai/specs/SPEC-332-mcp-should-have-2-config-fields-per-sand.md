@@ -86,10 +86,12 @@ every agent of the instance, and either setting can be changed later with one cl
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Personal MCP servers are stored with an owner, listed only to it and attached only to its runs
-- [ ] Scope and audience can be set on create and changed on update with the right permissions
-- [ ] The MCP editor shows Available in and For, defaults to every sandbox and the whole team, and reads --scope from a paste
-- [ ] Docs, ADR and changes entry describe the four combinations
+- [x] Personal MCP servers are stored with an owner, listed only to it and attached only to its runs
+- [x] Scope and audience can be set on create and changed on update with the right permissions
+- [x] The MCP editor shows Available in and For, defaults to every sandbox and the whole team, and reads --scope from a paste
+- [x] Docs, ADR and changes entry describe the four combinations
+- [x] Review round 1: wiring tests, hand-over restart, MCP value redaction, move permissions
+- [x] Review round 2: live-run refusal tested, hand-over fails closed, one launch read
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Gates, security scan and e2e green, delivered on green CI
 
