@@ -828,6 +828,26 @@ async fn a_run_that_never_settles_falls_back_to_its_turn_boundary() -> TestResul
     Ok(())
 }
 
+/// SPEC-319 (#533): a run still being frozen at the 30-minute bound is not paused: the cancel
+/// message counts it, though the page does not list it as still in a turn.
+#[tokio::test]
+async fn the_cancel_message_counts_a_run_still_being_frozen() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    two_tasks(&i).await?;
+    host.answer(RUN_WORKING, RunFreeze::Freezing);
+    built(&i).await?;
+    let _ = i.h.app.update_round().await;
+    advance(&i.h, 30 * 60_000 + 1);
+    let _ = i.h.app.update_round().await;
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "cancelled");
+    assert_eq!(
+        view["run"]["error"],
+        "1 task(s) were still in a turn after 30 minutes; nothing was installed."
+    );
+    Ok(())
+}
+
 /// AC-OPS-13 (review): a cancel that lands while a freeze pass runs never leaves a run frozen.
 #[tokio::test]
 async fn a_cancel_during_a_freeze_pass_leaves_nothing_frozen() -> TestResult {
