@@ -300,3 +300,46 @@ test('a Superagent whose move to another subscription failed says why and starts
   await screen.getByRole('button', 'Try again').click();
   await expect(terminal).toHaveText(/resumed your last conversation/);
 });
+
+// SPEC-331 (#918): a terminal that is not shown measured its box as 100 px (the hidden box's
+// `100%` read as pixels) and squeezed its session to 10×5. The Superagent then drew in ten columns
+// for a tab that still showed it, and everything it wrote while hidden stayed wrapped.
+test('a hidden Superagent or Shell terminal keeps its session’s size', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1400, height: 900 });
+  await app.open(mock('/s/studio/agent'));
+  await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
+  /** The mock session's size (what the page last sent), of the Superagent or the Shell's terminal. */
+  const size = (cockpit: boolean) => browser.evaluate((agent) => {
+    type Shells = { __yuliusMock: { shells: Map<string, { cockpit?: boolean; session?: { cols: number; rows: number } }> } };
+    const shell = [...(window as unknown as Shells).__yuliusMock.shells.values()].find((s) => Boolean(s.cockpit) === agent && s.session);
+    return shell && shell.session ? `${shell.session.cols}x${shell.session.rows}` : null;
+  }, cockpit);
+  // The terminal reacts to its box in the frame after the change is observed: two frames and a spare.
+  const settle = () => browser.evaluate(() => new Promise<boolean>((done) => { requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => done(true)))); }));
+  const fitted = async (cockpit: boolean) => {
+    await expect.poll(async () => Number(((await size(cockpit)) || '0x0').split('x')[0])).toBeGreaterThan(20);
+    return size(cockpit);
+  };
+  const shown = await fitted(true);
+
+  await screen.getByRole('button', 'Close panel').click();
+  await settle();
+  expect(await size(true)).toBe(shown);
+
+  // AC-2: shown again it still fits its box, larger and back.
+  await openSuperagent(browser, screen);
+  await screen.getByRole('button', 'Maximize panel').click();
+  await expect.poll(() => size(true)).not.toBe(shown);
+  await screen.getByRole('button', 'Restore panel size').click();
+  await expect.poll(() => size(true)).toBe(shown);
+
+  // Another tool in front hides the Superagent; the Superagent back in front hides the Shell's.
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Shell').click();
+  const shell = await fitted(false);
+  await settle();
+  expect(await size(true)).toBe(shown);
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent').click();
+  await settle();
+  expect(await size(false)).toBe(shell);
+  expect(await size(true)).toBe(shown);
+});
