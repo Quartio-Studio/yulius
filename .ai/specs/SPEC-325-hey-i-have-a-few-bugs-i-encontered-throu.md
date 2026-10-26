@@ -140,6 +140,11 @@ their computer.
   passed, 16 skipped. The later commit (65f92673) changes only an e2e test and `docs/api.md`.
 - **e2e** full suite `npx e2e run` at be804ac8: exit 0, 717 passed, 1 skipped (67 files);
   `tests/original-prompt.e2e.ts` at 65f92673 five times: 9/9 each.
+- **CI run 9e294546 at f35feb64 failed** (quality): the new
+  `serve::tests::the_default_upload_limit_is_one_gibibyte` parsed `ServeArgs`, which reads the
+  environment, and CI sets `YULIUS_CI=1` (not `on`/`off`). Reproduced with `YULIUS_CI=1`; the
+  test now reads the argument's default and checks the range on a one-argument command. It passes
+  with `YULIUS_CI=1 YULIUS_UPLOAD_MAX_MB=7` set and fails when the default is put back to 25.
 - **Security** `yulius security-scan` at bac1b6c1 and again at df1e55a8 (the delivered code): not
   run, exit 2 both times (Vidoc HTTP 429, the key used
   its 50,000,000 tokens): unrun, not passed (ADR-0133, ADR-0157); CI's `security` job is the live

@@ -637,7 +637,7 @@ fn no_delay(tcp: &mut TcpStream) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     #[derive(Parser)]
     struct Serve {
@@ -645,16 +645,29 @@ mod tests {
         args: ServeArgs,
     }
 
-    /// SPEC-325 UPL-001: a 1 GB screen recording uploads on a default instance.
+    /// SPEC-325 UPL-001: a 1 GB screen recording uploads on a default instance. Read from the
+    /// argument's definition, not by parsing: parsing reads the environment (`YULIUS_CI` and
+    /// the rest), which a CI job sets.
     #[test]
     fn the_default_upload_limit_is_one_gibibyte() -> Result<(), Box<dyn std::error::Error>> {
-        let parsed = Serve::try_parse_from(["serve"])?;
-        assert_eq!(parsed.args.upload_max_mb, 1024);
+        let command = Serve::command();
+        let arg = command
+            .get_arguments()
+            .find(|arg| arg.get_id() == "upload_max_mb")
+            .ok_or("no upload_max_mb argument")?;
+        assert_eq!(arg.get_default_values(), ["1024"]);
         assert_eq!(
             yulius_app::uploads::DEFAULT_UPLOAD_MAX_BYTES,
-            parsed.args.upload_max_mb * 1024 * 1024
+            1024 * 1024 * 1024
         );
-        assert!(Serve::try_parse_from(["serve", "--upload-max-mb", "1025"]).is_err());
+        // Only this argument, given a value: no other argument and no environment is read.
+        let only = |value: &str| {
+            clap::Command::new("serve")
+                .arg(arg.clone())
+                .try_get_matches_from(["serve", "--upload-max-mb", value])
+        };
+        assert!(only("1024").is_ok());
+        assert!(only("1025").is_err());
         Ok(())
     }
 
