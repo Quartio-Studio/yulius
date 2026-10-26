@@ -1,11 +1,11 @@
 ---
 yulius-task: f570e659-52d8-4b7a-b6af-58203338638b
-status: in-progress
+status: done
 ---
 
 # SPEC-328: A background task's wake-up reads as the TUI prints it, not as a raw prompt
 
-Status: in-progress
+Status: done
 Date: 2026-10-26
 Owner: Yulius task #312
 Scope authorization: task #312 (`/goal`), fixes #913. Amends the read-only transcript printing
@@ -61,8 +61,8 @@ it, instead of a `>` prompt box full of `<task-notification>` markup (`<task-id>
 - [x] Spec and issue for the raw wake-up prompt
 - [x] Regression test: a wake-up reads as the TUI prints it
 - [x] Transcript prints a wake-up as one notification line
-- [ ] Independent review answered
-- [ ] Gates green, docs and changes entry, delivered
+- [x] Independent review answered
+- [x] Gates green, docs and changes entry, delivered
 
 ## Acceptance criteria
 
@@ -93,3 +93,24 @@ it, instead of a `>` prompt box full of `<task-notification>` markup (`<task-id>
   quoted pairs and a quoted close; a cut result says "Cut here" inside its fold; the Plan was
   kept in step. New assertions: the `⏺` mark's x equals a neighbouring Claude line's, the opened
   result sits under its line, and two quoting results parse whole.
+- **Review round 2** (approve with one minor, own code, fixed test-first): a result naming a
+  lone `<result>` left the depth count unbalanced and swallowed the next notification; without a
+  balanced close, the first `</result>` that Claude Code's order follows ends it (unit case
+  `proseOpen`). Round 3 approved `2da70bff` with no findings.
+
+## Evidence
+
+- Regression tests fail on dev (`84b45934` web assets): `notificationsOf is not a function`, and
+  the wake-up entry read `Prompt > <task-notification> <task-id>a8f93b704fcd18284</task-id> …
+  9 h ago`. Round-1 assertions failed before their fix (`expected 524 to be 340`, a quoted
+  `</result>` read `Fix: close`), round 2's too (the result ran into notification B).
+- `npx e2e run tests/sessions.e2e.ts tests/watching.e2e.ts`: 52/52 passed at `6e7d0360`; at
+  `2da70bff` 51/52 under load average ~118, the failure being a 5 s `expect.poll` in the watching
+  test "someone else's task shows its live transcript…", which passed alone right after and in
+  both earlier full runs; it touches no wake-up record (the reviewer agreed).
+- `python3 scripts/bootstrap.py && scripts/dev ci`: exit 0, nextest 2626 tests passed, 16 skipped.
+- `scripts/dev security`: exit 2, not run: Vidoc is out of quota (HTTP 429), the 3 changed code
+  files were not scanned. The change adds no network, storage or HTML injection path: text goes
+  into text nodes through `h()`.
+- Not tested: a real Claude Code session's wake-up on the live instance (the mock carries the
+  record of the screenshot verbatim apart from ids and paths).
