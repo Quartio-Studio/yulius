@@ -1,11 +1,11 @@
 ---
 yulius-task: 507de216-9d57-4fc6-8cb9-ce4e9964d7da
-status: in-progress
+status: done
 ---
 
 # SPEC-336: the sandbox tabs drag as smoothly as the Notes tabs
 
-Status: in progress
+Status: implemented
 Date: 2026-10-26
 Owner: Yulius task #320, fixes #929
 Scope authorization: user request "this bar should be as smooth as this bar. Fix." with two
@@ -50,8 +50,9 @@ pointer, the tabs it passes slide aside, and on release it settles into its plac
 - [x] Spec and issue for the janky sandbox tab drag
 - [x] Failing e2e: sandbox tabs drag smoothly like the Notes tabs
 - [x] Sandbox tab row uses the shared pointer drag
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
+- [x] Full e2e suite and security scan pass, evidence recorded
 
 ## Acceptance criteria
 
@@ -85,3 +86,27 @@ pointer, the tabs it passes slide aside, and on release it settles into its plac
 
 Only the sandbox tab row used native drag; the workflow editor's step list also uses native drag,
 but it is a vertical list with its own drop rules and is not in this request.
+
+## Evidence
+
+- Root cause reproduced by a test: `npx e2e run tests/navigation.e2e.ts` on commit 995d9e1a
+  (test only) failed with `expected [true,true,true] to equal [false,false,false]` (the sandbox
+  tabs were natively `draggable`); after the fix (27282b58) it passed.
+- Review round 1 minor (a no-op drag pinned the order): test 6425a3fc failed with
+  `expected "[\"sb_studio\",\"sb_product\",\"sb_three\"]" to be null`; fix 8ea56e02 passes.
+- `npx e2e run tests/navigation.e2e.ts tests/editor.e2e.ts tests/notes.e2e.ts tests/places.e2e.ts`:
+  97 passed (the Notes and Editor drags are unchanged by the `selector` option).
+- `scripts/dev ci` on 83bc5ecb (after merging origin/dev): exit 0, repository contracts passed,
+  2716 tests run, 2716 passed, 16 skipped.
+- `npx e2e run` (whole suite) on 83bc5ecb: 66 files passed, 1 skipped; 738 tests passed, 1 skipped.
+- `scripts/dev security`: **not run** (exit 2): Vidoc answered HTTP 429 "This API key has used its
+  50,000,000 tokens"; the 5 code files listed were not scanned (unrun, never passed; ADR-0133,
+  ADR-0157). The pull request's CI `security` job is the live scan.
+- Independent review in a fresh session (om-code-review): round 1 request changes (only the gate
+  not yet run, plus minors: SMO-004 had no positive control, an AC claim had no test, plan boxes,
+  a no-op drag pinning the order), all fixed; round 2 approved 83bc5ecb on a green gate. Nits left
+  with reasons: the settle may start a few px off after `scrollIntoView` on an overflowing row
+  (inferred, not observed), `overflow-y: hidden` clips the dragged tab's shadow, and focus after a
+  reorder is restored by index (pre-existing).
+- Not tested: a real trackpad or pen by hand (the e2e drives Chromium's mouse); Firefox and Safari
+  (the e2e runs Chromium only).
