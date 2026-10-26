@@ -252,20 +252,20 @@ test('a background task’s wake-up parses to what ended, also when cut or sever
 test('a background task’s wake-up reads as one line naming what ended, not as a prompt', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/sessions/ses_task_4'));
   const transcript = screen.getByRole('list', 'Transcript');
-  const wake = browser.locator('.ss-tui .ss-entries > li').filter({ hasText: 'Agent "Review" finished' });
-  await expect(wake).toHaveCount(1);
-  await expect(wake).toContainText(/⏺\s*Agent "Review" finished/);
+  const wake = '.ss-tui .ss-entries > li:has-text(\'Agent "Review" finished\')';
+  await expect(browser.locator(wake)).toHaveCount(1);
+  await expect(browser.locator(wake)).toContainText(/⏺\s*Agent "Review" finished/);
   // Not the person's prompt: no prompt box, no "Prompt" label, no time.
-  await expect(wake.locator('.ss-prompt')).toHaveCount(0);
-  await expect(wake.locator('.sr-only').first()).toHaveText('Background task');
-  await expect(wake.locator('.ss-when')).toHaveCount(0);
+  await expect(browser.locator(`${wake} .ss-prompt`)).toHaveCount(0);
+  await expect(browser.locator(`${wake} > .sr-only`)).toHaveText('Background task');
+  await expect(browser.locator(`${wake} .ss-when`)).toHaveCount(0);
   for (const tag of ['<task-notification>', '<task-id>', '<output-file>', '<usage>', 'subagent_tokens', 'stopped with background work']) {
     await expect(transcript).not.toContainText(tag);
   }
   // Its result opens from the line, as Claude Code's own fold.
-  const result = wake.locator('.ss-result');
+  const result = browser.locator(`${wake} .ss-result`);
   await expect(result).toBeHidden();
-  await wake.locator('summary').click();
+  await browser.locator(`${wake} summary`).click();
   await expect(result).toBeVisible();
   await expect(result).toContainText(/⎿\s*The gate is still running, so I'll wait for it to finish\./);
   expect(await axeViolations(browser)).toEqual([]);
