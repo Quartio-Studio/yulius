@@ -36,12 +36,13 @@ const typeBehind = async (browser: Browser, text: string) => {
 /**
  * No key reached task #12's session since it held `seed` (#524): with `marker` typed behind the
  * keys it holds exactly both, and its terminal shows no `> …` line of the seed (a leaked Enter
- * sends what the session holds and empties it).
+ * sends what the session holds and empties it) and no interruption (a leaked Escape).
  */
 const nothingReached = async (browser: Browser, seed: string, marker: string) => {
   expect(await typeBehind(browser, marker)).toBe(`${seed}${marker}`);
   await expect(taskTerminal(browser)).toContainText(`❯ ${seed}${marker}`);
   await expect(taskTerminal(browser)).not.toContainText(`> ${seed}`);
+  await expect(taskTerminal(browser)).not.toContainText('(esc) interrupted');
 };
 
 /** The focused element's accessible name and the caret, JSON-safe. */
