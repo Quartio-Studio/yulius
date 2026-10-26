@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-26
 
+- A goal task whose turn an API error ended ("Connection lost mid-response") now reads Working
+  while Claude Code retries it, and Needs you when the retries fail (SPEC-333, task #317, fixes
+  #927). Claude Code retries a goal turn itself, after 1, 5 and 15 minutes, and says so in a notice.
+  Yulius read neither that notice nor the one saying the retries were spent. It settled the error
+  turn as "Your turn" (task #33 read "in review"), and the person typed `continue` themselves.
+  Spent retries, or a pause on an API error Claude Code does not retry, now open a Needs you
+  request with the cause. A restart's replay does the same
+  ([ADR-0225](decisions/0225-claude-code-owns-the-goal-retry-after-an-api-error.md)).
 - The status panel's Sessions tile no longer reads "9 / 8" (SPEC-334, task #318, fixes #928). A
   Done task holds no session slot, and one that works again (a follow-up typed into it, or its own
   background work) counts again without passing the start door, and a restart with a lower limit
