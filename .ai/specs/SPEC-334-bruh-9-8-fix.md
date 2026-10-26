@@ -20,7 +20,7 @@ sessions run beyond it, and says why and when the queue moves again.
 ## Context
 
 - **Symptom.** The screenshot's Machine section shows Sessions **9 / 8**, a full red bar and
-  "6 queued", at load 117 on 12 cores. The mock shows **11 / 8** (11 running mock tasks, limit 8).
+  "6 queued", at load 117 on 12 cores. The mock (7 running tasks with `ambient=0`) shows **7 / 4** with `?sessionlimit=4`.
 - **Code path.** `App::status` (`crates/yulius-app/src/status.rs`) sends `sessions.live` =
   `working_attempts().len()`: the live attempts minus those of Done tasks, which is what the start
   door counts (`sessions_in_use`, `crates/yulius-app/src/supervisor.rs`). `renderStatus`
@@ -58,16 +58,15 @@ sessions run beyond it, and says why and when the queue moves again.
 
 ## Acceptance criteria
 
-- AC-1 (OVL-001, OVL-002): in the mock (11 running tasks, limit 8) the status panel's Sessions
-  tile reads `8 / 8` and `+3`, its detail `3 over the limit · Q queued`, and its title names resumed
-  Done tasks and the limit. The test fails on dev e3487a8c.
-- AC-2 (OVL-003): with the mock's limit raised (`?sessionlimit=20`) the tile reads `11 / 20`, with
-  no `+` mark.
+- AC-1 (OVL-001, OVL-002): in the mock (7 running tasks, `?sessionlimit=4`) the status panel's
+  Sessions tile reads `4 / 4` and `+3`, its detail `3 over the limit · Q queued`, and its title
+  names resumed Done tasks and the limit. The test fails on dev e3487a8c's `layout.js`.
+- AC-2 (OVL-003): with the mock's limit at 20 the tile reads `7 / 20`, with no `+` mark.
 
 ## Test plan
 
 - e2e (`e2e/tests/subscriptions.e2e.ts`, next to the status panel's other tests): `the Sessions
-  tile shows the limit full and the overshoot, not 11 / 8` (AC-1, AC-2), written first and run
+  tile shows the limit full and the overshoot of resumed Done tasks, not 7 / 4` (AC-1, AC-2), written first and run
   against dev's `layout.js`. It waits on the panel's elements, never on sleeps. Also checks axe.
 - The whole e2e suite and `scripts/dev ci` before delivery.
 
@@ -78,6 +77,6 @@ sessions run beyond it, and says why and when the queue moves again.
   enforcing the limit for resumed Done tasks (would mean refusing or holding a person's keystrokes
   in a live terminal, or killing an agent mid-turn; SES-101 chose to let them run). Recorded as
   [ADR-0226](../../docs/decisions/0226-the-sessions-tile-shows-the-overshoot-of-resumed-done-tasks.md).
-- The mock takes `?sessionlimit=N` so a test can show the tile within its limit; the default stays
-  8, which keeps the mock over the limit like the screenshot.
+- The mock takes `?sessionlimit=N` (default 8) so a test sets the limit below or above its 7
+  running tasks.
 - No server change: the status view already counts as the start door does.
