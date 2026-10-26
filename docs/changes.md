@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-26
 
+- A Needs you request now reads as What happened, Problem and To do (SPEC-327, task #311). The
+  attention bar showed "Needs you: <action> · <why>" as one paragraph, where the to-do was the
+  hardest part to find. `needs_you` takes `happened`, `problem`, `action` and `decision`; the bar
+  shows "Needs you" (or "Needs your decision") over a labelled list with the to-do last and bold,
+  backticked commands as code, and the sidebar and notifications say "Needs your decision" for a
+  choice. `why` still works as the problem's older name, and requests stored with it read as the
+  problem ([ADR-0221](decisions/0221-a-needs-you-request-reads-what-happened-problem-to-do.md)).
 - The reply e2e no-leak checks now fail when keys reach the terminal (SPEC-323, task #308, fixes
   #524). They read the session right after the keys, before a leaked key had arrived, and on an
   empty session, which a leaked Enter leaves empty: with the attention bar's keys forwarded to the
