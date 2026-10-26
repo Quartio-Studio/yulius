@@ -2898,11 +2898,15 @@ route('PUT', `/api/mcp/${ID}`, ({ db, p, body }) => {
   if (body.headers) m.header_keys = Object.keys(body.headers);
   return mcpOut(m);
 });
-route('DELETE', `/api/mcp/${ID}`, ({ db, p }) => { db.mcp = db.mcp.filter((m) => m.id !== p[0]); return json(204); });
+route('DELETE', `/api/mcp/${ID}`, ({ db, p }) => {
+  if (!db.mcp.some((m) => m.id === p[0] && mcpMine(db, m))) fail(404, 'not_found', 'not found');
+  db.mcp = db.mcp.filter((m) => m.id !== p[0]);
+  return json(204);
+});
 route('POST', `/api/mcp/${ID}/test`, ({ db, p }) => {
   const m = db.mcp.find((x) => x.id === p[0]);
-  if (!m) fail(404, 'not_found', 'not found');
-  if (m.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator');
+  if (!m || !mcpMine(db, m)) fail(404, 'not_found', 'not found');
+  mcpPlace(db, m.scope, m.audience);
   // Tests see which servers were tested (`__yuliusMock.mcpTests`).
   (db.mcpTests ||= []).push(m.id);
   if (m.origin === 'mcp_json' && m.transport === 'stdio') return { ok: false, tools: [], error: 'this server came from the repository’s .mcp.json, which agents can write, so the Test does not run its command on the Yulius host; check the whole command line, change it and enter its environment again to test it' };

@@ -112,6 +112,17 @@ pub(crate) fn build_with(
     usage: Arc<ScriptedUsage>,
     agent: FakeAgentOptions,
 ) -> Result<Arc<App>, Box<dyn std::error::Error>> {
+    build_with_github(data, fake, usage, agent, Arc::new(FakeGitHub::default()))
+}
+
+/// [`build_with`] answering access from `github`.
+fn build_with_github(
+    data: &Path,
+    fake: &Path,
+    usage: Arc<ScriptedUsage>,
+    agent: FakeAgentOptions,
+    github: Arc<FakeGitHub>,
+) -> Result<Arc<App>, Box<dyn std::error::Error>> {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let store = SqliteStore::open(&data.join("yulius.db"))?;
     let mut config = AppConfig::new(
@@ -126,7 +137,7 @@ pub(crate) fn build_with(
         store: Arc::new(store),
         clock: Arc::new(SystemClock),
         crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
-        github: Arc::new(FakeGitHub::default()),
+        github,
         session_host: Arc::new(PtySessionHost::new(exe.clone())),
         harness: Arc::new(FakeAgentHarness::new(exe, fake.to_path_buf(), agent)),
         git: Arc::new(GitAdapter::new("git")),
@@ -766,6 +777,158 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
             }
         })
         .await?;
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// The server names in a run's own MCP configuration.
+fn run_servers(run_dir: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let (mcp, _, _) = run_mcp(run_dir)?;
+    let mut names: Vec<String> = mcp["mcpServers"]
+        .as_object()
+        .ok_or("mcpServers")?
+        .keys()
+        .cloned()
+        .collect();
+    names.sort_unstable();
+    Ok(names)
+}
+
+/// SPEC-332 MSC-004, MSC-009: a person's task run gets their personal MCP server, a task an
+/// automation of theirs started does not, and a hand-over restarts a live run holding the previous
+/// owner's personal server, resuming it with the new owner's servers.
+#[test]
+fn personal_mcp_servers_reach_only_their_holders_runs() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let github = Arc::new(FakeGitHub::default());
+        github.set_perm("bob", "acme/pool", support::perms("write"));
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with_github(
+            &data,
+            &fake,
+            Arc::new(ScriptedUsage::default()),
+            agent,
+            github,
+        )?;
+        let (sandbox, admin) = seed(&app, &data, &["a-first"]).await?;
+        let bob = UserRecord {
+            id: UserId::parse("u-bob")?,
+            github_login: Some("bob".into()),
+            display_name: "Bob".into(),
+            is_superadmin: false,
+            is_instance_admin: false,
+            ..app.deps.store.user(&admin).await?.ok_or("admin")?
+        };
+        app.deps.store.insert_user(&bob).await?;
+        app.deps
+            .store
+            .save_github_token(
+                &yulius_app::model::GitHubTokenRecord {
+                    user_id: bob.id.clone(),
+                    access: app.deps.crypto.seal(b"token-bob")?,
+                    refresh: None,
+                    expires_at: None,
+                    refresh_expires_at: None,
+                },
+                app.now(),
+            )
+            .await?;
+        let ctx = |user: UserRecord| AuthContext {
+            user,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        let admin_ctx = ctx(app.deps.store.user(&admin).await?.ok_or("admin")?);
+        let mut fleet = mcp_input("fleet", "http");
+        fleet.scope = Some("instance".into());
+        fleet.audience = Some("personal".into());
+        app.create_mcp_server(&admin_ctx, sandbox.as_str(), &fleet)
+            .await?;
+        app.create_mcp_server(&admin_ctx, sandbox.as_str(), &mcp_input("docs", "http"))
+            .await?;
+
+        let id = new_task(&app, &sandbox, &admin, "Mine").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move {
+                app.deps
+                    .store
+                    .live_attempt(&id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some()
+            }
+        })
+        .await?;
+        let first = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        assert_eq!(run_servers(&first.run_dir)?, ["docs", "fleet", "yulius"]);
+
+        let automated = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: admin.clone(),
+                prompt: "Nightly: answer with an echo".into(),
+                harness: Harness::ClaudeCode,
+                title: Some("Nightly".into()),
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Automation,
+                automation_run: None,
+                start: true,
+                mode: yulius_app::model::TaskMode::Prompt,
+                supertask: false,
+            })
+            .await?
+            .id;
+        wait_for("the automation's run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = automated.clone();
+            async move {
+                app.deps
+                    .store
+                    .live_attempt(&id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some()
+            }
+        })
+        .await?;
+        let nightly = app
+            .deps
+            .store
+            .live_attempt(&automated)
+            .await?
+            .ok_or("run")?;
+        assert_eq!(run_servers(&nightly.run_dir)?, ["docs", "yulius"]);
+        stop(&app, &automated).await?;
+
+        // Control passes to bob: the run holding the admin's server is resumed without it.
+        app.request_task_control(&ctx(bob.clone()), id.as_str())
+            .await?;
+        app.accept_task_control(&admin_ctx, id.as_str()).await?;
+        wait_for("the resumed run", Duration::from_secs(60), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        })
+        .await?;
+        let second = app.deps.store.attempts(&id).await?.remove(1);
+        assert_eq!(second.launch_kind, LaunchKind::Resume);
+        assert_eq!(run_servers(&second.run_dir)?, ["docs", "yulius"]);
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

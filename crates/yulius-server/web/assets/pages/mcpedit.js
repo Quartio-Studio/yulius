@@ -121,16 +121,18 @@ export function parseMcpPaste(text) {
     }
     const name = positional.find((p) => p.word)?.word;
     const after = positional.filter((p) => p !== positional.find((x) => x.word)).map((p) => p.cmd ?? p.word);
-    // Claude Code's user scope is the person's own; its project scope the team's (SPEC-332 MSC-007).
-    const audience = scope === 'user' ? 'personal' : scope === 'project' ? 'team' : undefined;
+    // Claude Code's user scope is the person's own everywhere, its local scope theirs in this
+    // project, its project scope the team's (SPEC-332 MSC-007).
+    const audience = scope === 'user' || scope === 'local' ? 'personal' : scope === 'project' ? 'team' : undefined;
+    const where = scope === 'local' ? 'sandbox' : undefined;
     if (transport === 'http' || transport === 'sse' || /^https?:\/\//.test(after[0] || '')) {
       const auth = Object.keys(headers).find((k) => k.toLowerCase() === 'authorization');
       const token = auth && /^Bearer\s+/i.test(headers[auth]) ? headers[auth].replace(/^Bearer\s+/i, '') : undefined;
       if (auth && token !== undefined) delete headers[auth];
-      return { name: name || guessName({ url: after[0] }), transport: 'http', url: after[0] || '', token, headers, audience };
+      return { name: name || guessName({ url: after[0] }), transport: 'http', url: after[0] || '', token, headers, audience, where };
     }
     const [command, ...args] = after;
-    return { name: name || guessName({ command, args }), transport: 'stdio', command: command || '', args, env, audience };
+    return { name: name || guessName({ command, args }), transport: 'stdio', command: command || '', args, env, audience, where };
   }
   if (/^https?:\/\/\S+$/.test(raw)) return { name: guessName({ url: raw }), transport: 'http', url: raw };
   const env = {};
@@ -181,6 +183,7 @@ export function mountMcpEditor(ctx, sandbox, id) {
   function fill(spec, from) {
     state.transport = spec.transport;
     if (spec.audience) { state.audience = spec.audience; if (!allowed(state.scope, state.audience)) state.scope = 'sandbox'; }
+    if (spec.where) state.scope = spec.where;
     if (spec.name) { state.name = spec.name; nameInput.value = spec.name; }
     if (spec.transport === 'http') {
       state.url = spec.url || '';

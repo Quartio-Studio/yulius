@@ -5,6 +5,7 @@
 //! request passes control at once. A hand-over moves the task's GitHub token, commit identity and
 //! authority to the new owner from its next call on, also in a run that goes on.
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use serde_json::json;
@@ -32,7 +33,7 @@ impl App {
     /// `NotFound`/`Forbidden` without write access to the project; `Conflict` for the owner, or
     /// while another person's request waits (naming them).
     pub async fn request_task_control(
-        &self,
+        self: &Arc<Self>,
         ctx: &AuthContext,
         id: &str,
     ) -> AppResult<TaskSummary> {
@@ -92,7 +93,11 @@ impl App {
     /// `Forbidden` for anyone but the owner; `Conflict` when no request waits, when the asker can
     /// no longer work in the project (their request is dropped), or when the task changed
     /// meanwhile.
-    pub async fn accept_task_control(&self, ctx: &AuthContext, id: &str) -> AppResult<TaskSummary> {
+    pub async fn accept_task_control(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        id: &str,
+    ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
         let store = &self.deps.store;
         let request = store
@@ -219,7 +224,7 @@ impl App {
     /// when the owner is absent. One conditional update, then the worktree's commit identity, the
     /// run's fingerprint file, the terminal notice, the audit entry and the published summary.
     async fn pass_task_control(
-        &self,
+        self: &Arc<Self>,
         task: &TaskRecord,
         to: &UserRecord,
         ctx: &AuthContext,
@@ -256,6 +261,27 @@ impl App {
         // The run's fallback fingerprints are the new owner's (SPEC-248 FUP-002).
         if let Err(err) = self.rewrite_run_fingerprints(&task.id).await {
             tracing::warn!(task = %task.id, error = %err, "run's fingerprint file not rewritten");
+        }
+        // A live run keeps the MCP configuration it started with: one holding the previous
+        // owner's personal servers resumes with the new owner's (SPEC-332 MSC-009).
+        let held = self
+            .runtime(&task.id)
+            .personal_mcp_of
+            .lock()
+            .ok()
+            .and_then(|held| held.clone());
+        if held.is_some_and(|owner| owner != to.id)
+            && self.deps.store.live_attempt(&task.id).await?.is_some()
+            && let Err(err) = self
+                .switch_task_now(
+                    &task.id,
+                    None,
+                    "handover",
+                    Some("Continue the task exactly where you left off.".into()),
+                )
+                .await
+        {
+            tracing::warn!(task = %task.id, error = %err, "run holding the previous owner's MCP servers not restarted");
         }
         let (from, to) = (
             self.login_of(&task.owner).await,

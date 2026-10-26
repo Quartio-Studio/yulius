@@ -103,7 +103,9 @@ impl App {
         // alone (SPEC-245, SPEC-332): another person's message would steer an agent holding
         // their credential.
         if caller.user != task.owner
-            && (self.holds_personal_secrets(&task).await? || self.holds_personal_mcp(&task).await?)
+            && (self.holds_personal_secrets(&task).await?
+                || self.holds_personal_mcp(&task).await?
+                || self.live_run_holds_personal_mcp(&task).await?)
         {
             return Err(AppError::Forbidden(format!(
                 "task #{} holds @{}'s personal secrets or MCP servers, so only they message it",

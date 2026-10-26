@@ -441,3 +441,126 @@ async fn scope_and_audience_follow_permissions_and_can_change() -> TestResult {
     assert_eq!(dup.status, StatusCode::CONFLICT);
     Ok(())
 }
+
+/// Review of SPEC-332: a server goes only where its person may manage it, `sandbox` moves a
+/// server only out of every sandbox, and another person's server cannot be converted.
+#[tokio::test]
+async fn a_server_goes_only_where_its_person_may_manage_it() -> TestResult {
+    let w = world().await?;
+    add_sandbox(&w.h, "s3", "docs-site", 20040).await?;
+    w.h.github
+        .set_perm("alice", "Quartio-Studio/docs-site", perms("read"));
+    let reader = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s3/mcp",
+        Some(server("own", "https://own.test", "instance", "personal")),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(
+        reader.status,
+        StatusCode::FORBIDDEN,
+        "a reader adds no personal server: {}",
+        reader.body
+    );
+
+    // Naming another sandbox does not move a sandbox's server there.
+    let team = create(
+        &w,
+        "s1",
+        server("docs", "https://docs.test", "sandbox", "team"),
+        &w.alice,
+    )
+    .await?;
+    let team_id = team["id"].as_str().ok_or("id")?;
+    let mut elsewhere = server("docs", "https://docs.test", "sandbox", "team");
+    elsewhere["sandbox"] = json!("s2");
+    let kept = call(
+        &w.h.router,
+        Method::PUT,
+        &format!("/api/mcp/{team_id}"),
+        Some(elsewhere),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(kept.status, StatusCode::OK, "{}", kept.body);
+    assert_eq!(names(&w, "s1", &w.bob).await?, ["docs"].map(String::from));
+    assert_eq!(names(&w, "s2", &w.bob).await?, Vec::<String>::new());
+
+    // An owner cannot take their server into a sandbox they may not work in.
+    let own = create(
+        &w,
+        "s1",
+        server("own", "https://own.test", "instance", "personal"),
+        &w.alice,
+    )
+    .await?;
+    let own_id = own["id"].as_str().ok_or("id")?;
+    let mut into_s3 = server("own", "https://own.test", "sandbox", "personal");
+    into_s3["sandbox"] = json!("s3");
+    let refused = call(
+        &w.h.router,
+        Method::PUT,
+        &format!("/api/mcp/{own_id}"),
+        Some(into_s3),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+
+    // An administrator cannot convert or move another person's server.
+    for body in [
+        server("own", "https://own.test", "instance", "team"),
+        server("own", "https://own.test", "sandbox", "personal"),
+    ] {
+        let mut body = body;
+        body["sandbox"] = json!("s1");
+        let hidden = call(
+            &w.h.router,
+            Method::PUT,
+            &format!("/api/mcp/{own_id}"),
+            Some(body),
+            &w.root,
+        )
+        .await?;
+        assert_eq!(hidden.status, StatusCode::NOT_FOUND, "{}", hidden.body);
+    }
+    Ok(())
+}
+
+/// Review of SPEC-332: the secret values of every MCP server that can reach a sandbox's runs, the
+/// team's and each person's, are redacted from the text Yulius shows of it, as agent secrets are;
+/// short and ordinary values are not.
+#[tokio::test]
+async fn mcp_secret_values_are_redacted_like_agent_secrets() -> TestResult {
+    const TEAM: &str = "apify-team-secret-0123456789";
+    const MINE: &str = "sk-alice-personal-9876543210";
+    let w = world().await?;
+    let s1 = SandboxId::parse("s1")?;
+    create(
+        &w,
+        "s1",
+        json!({"name": "apify", "transport": "stdio", "command": "npx",
+        "env": {"APIFY_TOKEN": TEAM, "APIFY_LOG": "info", "APIFY_MODE": "production"}}),
+        &w.bob,
+    )
+    .await?;
+    let text = format!("token {TEAM} and {MINE}; log info, mode production");
+    let before = w.h.app.redact_for_sandbox(&s1, &text).await;
+    assert!(!before.contains(TEAM), "{before}");
+    assert!(before.contains(MINE), "not configured yet: {before}");
+    create(
+        &w,
+        "s1",
+        json!({"name": "fleet", "transport": "http", "url": "https://fleet.test/mcp",
+        "scope": "instance", "audience": "personal",
+        "headers": {"Authorization": format!("Bearer {MINE}")}}),
+        &w.alice,
+    )
+    .await?;
+    let after = w.h.app.redact_for_sandbox(&s1, &text).await;
+    assert!(!after.contains(TEAM) && !after.contains(MINE), "{after}");
+    assert!(after.contains("log info, mode production"), "{after}");
+    Ok(())
+}

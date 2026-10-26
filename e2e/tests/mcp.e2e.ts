@@ -149,3 +149,16 @@ test('without administration a server starts on this sandbox and only me reaches
   await browser.locator('.seg label:has-text("Whole team")').click();
   await expect(screen.getByRole('radio', 'This sandbox')).toBeChecked();
 });
+
+// Claude Code's --scope local is private to you in that project: Only me in this sandbox.
+test('pasting claude mcp add --scope local picks Only me in this sandbox', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/mcp/new'));
+  const paste = screen.getByRole('textbox', 'Paste a server’s URL, command or JSON');
+  await paste.fill('claude mcp add --scope local --transport http notes https://notes.test/mcp');
+  await paste.press('Enter');
+  await expect(screen.getByRole('radio', 'Only me')).toBeChecked();
+  await expect(screen.getByRole('radio', 'This sandbox')).toBeChecked();
+  await paste.fill('claude mcp add --scope project --transport http docs https://docs.test/mcp');
+  await paste.press('Enter');
+  await expect(screen.getByRole('radio', 'Whole team')).toBeChecked();
+});

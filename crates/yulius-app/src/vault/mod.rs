@@ -470,6 +470,10 @@ impl App {
             }
             secrets.push((record.name.clone(), forms));
         }
+        // MCP servers' own secret values reach runs' environments too (SPEC-332).
+        for (label, value) in self.mcp_secret_values(sandbox, holder).await? {
+            secrets.push((label, needles(&value)));
+        }
         let matcher = Arc::new(PlainMatcher::new(secrets));
         if let Ok(mut cache) = self.vault.matchers.lock() {
             if cache.len() > 256 {

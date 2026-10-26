@@ -815,6 +815,59 @@ async fn a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking()
     Ok(())
 }
 
+/// SPEC-332 MSC-004: a person's Superagent gets their own personal MCP server and the team's;
+/// another person's Superagent gets only the team's.
+#[tokio::test]
+async fn a_superagent_gets_its_persons_personal_mcp_servers_only() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    for (body, who) in [
+        (
+            json!({"name": "fleet", "transport": "http", "url": "https://fleet.test/mcp",
+            "scope": "instance", "audience": "personal"}),
+            &f.alice,
+        ),
+        (
+            json!({"name": "docs", "transport": "http", "url": "https://docs.test/mcp"}),
+            &f.carol,
+        ),
+    ] {
+        let added = call(
+            &f.h.router,
+            Method::POST,
+            "/api/sandboxes/s1/mcp",
+            Some(body),
+            who,
+        )
+        .await?;
+        assert_eq!(added.status, StatusCode::CREATED, "{}", added.body);
+    }
+    for (who, expected) in [
+        (&f.alice, vec!["docs", "fleet", "yulius"]),
+        (&f.carol, vec!["docs", "yulius"]),
+    ] {
+        let opened = open_cockpit(&f, who).await?;
+        assert_eq!(opened.status, StatusCode::OK, "{:?}", opened.body);
+        let id = opened.body["id"].as_str().ok_or("id")?.to_owned();
+        let mut socket = attach(served.addr, &id, who).await?;
+        let mut screen = String::new();
+        read_until(&mut socket, &mut screen, "ready").await?;
+        let config = PathBuf::from(printed(&screen, "config")?);
+        let mcp_config: Value =
+            serde_json::from_slice(&std::fs::read(config.join("launch-mcp-config"))?)?;
+        let mut names: Vec<&str> = mcp_config["mcpServers"]
+            .as_object()
+            .ok_or("mcpServers")?
+            .keys()
+            .map(String::as_str)
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, expected);
+    }
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
 /// SPEC-218 MOR-001..003 (#654): agents write `.mcp.json`, so a server imported from it never
 /// has its command run on the host by the MCP Test, even when an instance administrator presses it
 /// on a contained instance. It stays refused through an enable toggle and through a command change

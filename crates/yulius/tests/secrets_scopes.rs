@@ -717,6 +717,12 @@ async fn only_its_owner_messages_a_task_holding_a_personal_mcp_server() -> TestR
             .tool_task_message(&caller("u-alice")?, &json!({"task_id": "t2", "text": "hi"}))
             .await;
     assert!(reached_session(&to_bob), "{to_bob:?}");
+    // Alice's automation's task holds nobody's personal server: bob may message it.
+    let to_automation =
+        w.h.app
+            .tool_task_message(&caller("u-bob")?, &json!({"task_id": "t3", "text": "hi"}))
+            .await;
+    assert!(reached_session(&to_automation), "{to_automation:?}");
     Ok(())
 }
 

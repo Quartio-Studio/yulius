@@ -114,6 +114,9 @@ pub trait McpStore: Send + Sync {
         sandbox: &SandboxId,
         person: Option<&yulius_domain::ids::UserId>,
     ) -> AppResult<Vec<McpServerRecord>>;
+    /// Every server that can reach a run of `sandbox`: the team servers of the instance and of
+    /// `sandbox` and every person's personal servers of both (what redaction covers).
+    async fn mcp_servers_reaching(&self, sandbox: &SandboxId) -> AppResult<Vec<McpServerRecord>>;
     /// Server by id.
     async fn mcp_server(&self, id: &str) -> AppResult<Option<McpServerRecord>>;
     /// Inserts a server; `Conflict` on a duplicate name in its scope (sandbox and owner),

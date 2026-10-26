@@ -117,6 +117,20 @@ impl McpStore for SqliteStore {
         .await
     }
 
+    async fn mcp_servers_reaching(&self, sandbox: &SandboxId) -> AppResult<Vec<McpServerRecord>> {
+        let sandbox = sandbox.as_str().to_owned();
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare(&format!(
+                    "SELECT {COLS} FROM mcp_servers WHERE sandbox_id IS NULL OR sandbox_id = ?1"
+                ))
+                .map_err(db)?;
+            let rows = stmt.query_map([sandbox], from_row).map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
     async fn mcp_server(&self, id: &str) -> AppResult<Option<McpServerRecord>> {
         let id = id.to_owned();
         self.call(move |c| {

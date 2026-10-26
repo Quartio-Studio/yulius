@@ -545,6 +545,8 @@ impl App {
                 )),
                 other => other,
             })?;
+        // Redaction covers the new values (SPEC-332).
+        self.bump_vault_generation();
         self.audit_mcp(ctx, "mcp.created", &record).await?;
         self.mcp_view(&record)
     }
@@ -619,10 +621,12 @@ impl App {
             .as_deref()
             .map(|s| SandboxId::parse(s).map_err(|_| AppError::NotFound))
             .transpose()?;
-        let sandbox_id = match (instance, named, &current.sandbox_id) {
+        // `sandbox` only says where a server for every sandbox goes; a sandbox's server stays in
+        // its sandbox (a `.mcp.json` import is never carried to another repository's tasks).
+        let sandbox_id = match (instance, &current.sandbox_id, named) {
             (true, _, _) => None,
-            (false, Some(sid), _) => Some(sid),
-            (false, None, Some(sid)) => Some(sid.clone()),
+            (false, Some(sid), _) => Some(sid.clone()),
+            (false, None, Some(sid)) => Some(sid),
             (false, None, None) => {
                 return Err(AppError::Invalid(
                     "name the sandbox (`sandbox`) to keep a server for every sandbox to one".into(),
@@ -720,6 +724,7 @@ impl App {
         if !updated {
             return Err(AppError::NotFound);
         }
+        self.bump_vault_generation();
         self.audit_mcp(ctx, "mcp.updated", &record).await?;
         self.mcp_view(&record)
     }
@@ -733,6 +738,7 @@ impl App {
         if !self.deps.store.delete_mcp_server(&record.id).await? {
             return Err(AppError::NotFound);
         }
+        self.bump_vault_generation();
         self.audit_mcp(ctx, "mcp.deleted", &record).await
     }
 
@@ -880,6 +886,46 @@ impl App {
             .collect())
     }
 
+    /// The secret values of the MCP servers that can reach runs of `sandbox` (`holder: None`:
+    /// every run, so every person's personal servers too), labelled `SERVER.KEY`, for redaction
+    /// (SPEC-332): literal values only (a `${secret:NAME}` reference is an agent secret, covered
+    /// as such), and none too short to recognise or ordinary text (`info`, `production`).
+    ///
+    /// # Errors
+    /// Store or decryption failures.
+    pub(crate) async fn mcp_secret_values(
+        &self,
+        sandbox: &SandboxId,
+        holder: Option<Holder<'_>>,
+    ) -> AppResult<Vec<(String, String)>> {
+        let servers = match holder {
+            None => self.deps.store.mcp_servers_reaching(sandbox).await?,
+            Some(holder) => {
+                self.deps
+                    .store
+                    .mcp_servers(sandbox, holder.person())
+                    .await?
+            }
+        };
+        let mut out = Vec::new();
+        for server in &servers {
+            let mut values = self.open_secrets(server.env.as_ref())?;
+            for (key, value) in self.open_secrets(server.headers.as_ref())? {
+                let token = bearer_of(&BTreeMap::from([(key.clone(), value.clone())])).0;
+                values.insert(key, token.unwrap_or(value));
+            }
+            for (key, value) in values {
+                let secret = !value.contains("${secret:")
+                    && value.chars().count() >= yulius_domain::vault::MIN_AGENT_VALUE_CHARS
+                    && yulius_domain::vault::ordinary_text(&value).is_none();
+                if secret {
+                    out.push((format!("{}.{key}", server.name), value));
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Whether runs of `task` get one of its owner's personal MCP servers (MSC-009).
     ///
     /// # Errors
@@ -893,6 +939,23 @@ impl App {
             .await?
             .iter()
             .any(|s| s.owner_id.is_some()))
+    }
+
+    /// Whether the live run of `task` was started with a person's personal MCP servers (MSC-009).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn live_run_holds_personal_mcp(
+        &self,
+        task: &crate::model::TaskRecord,
+    ) -> AppResult<bool> {
+        let held = self
+            .runtime(&task.id)
+            .personal_mcp_of
+            .lock()
+            .map(|held| held.is_some())
+            .unwrap_or(true);
+        Ok(held && self.deps.store.live_attempt(&task.id).await?.is_some())
     }
 
     /// Configured MCP servers for runs of `holder` in `sandbox` ([`Self::effective_mcp`]) with

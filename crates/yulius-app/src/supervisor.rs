@@ -143,6 +143,10 @@ pub struct TaskRuntime {
     pub(crate) typed_at_ms: AtomicI64,
     /// Who typed last.
     pub(crate) typed_by: Mutex<Option<yulius_domain::ids::UserId>>,
+    /// Whose personal MCP servers the current run was started with (SPEC-332 MSC-009): a live
+    /// run keeps its MCP configuration, so a hand-over restarts it, and only that person messages
+    /// it meanwhile.
+    pub(crate) personal_mcp_of: Mutex<Option<yulius_domain::ids::UserId>>,
     /// Claude Code recorded the session goal as achieved and no prompt came since (TSK-014).
     pub(crate) goal_achieved: AtomicBool,
     /// Claude Code recorded something about the goal since the `/goal` was typed: it was
@@ -332,6 +336,7 @@ impl TaskRuntime {
             auto_pr_head: Mutex::new(None),
             typed_at_ms: AtomicI64::new(0),
             typed_by: Mutex::new(None),
+            personal_mcp_of: Mutex::new(None),
             goal_achieved: AtomicBool::new(false),
             goal_submitted: AtomicBool::new(false),
             session_started: AtomicBool::new(false),
@@ -1320,6 +1325,10 @@ impl App {
         std::fs::create_dir_all(&run_dir).map_err(AppError::internal)?;
         // The repository's `.mcp.json` servers join the sandbox's first (SPEC-095 PMC-001).
         self.import_project_mcp(&sandbox).await;
+        let personal_mcp = self.holds_personal_mcp(&task).await?;
+        if let Ok(mut held) = self.runtime(&task.id).personal_mcp_of.lock() {
+            *held = personal_mcp.then(|| task.owner.clone());
+        }
         let plan = self.deps.harness.plan(&HarnessLaunch {
             harness,
             mode,
