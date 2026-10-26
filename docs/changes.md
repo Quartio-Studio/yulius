@@ -10,6 +10,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   many there were (SPEC-319, task #304, fixes #533). The message counted the instance page's list,
   which shows at most 20 tasks and leaves out runs still being frozen; it now counts the tasks not
   paused, as readiness does.
+- A message typed into a running task through the remote MCP now reads "Message from alice
+  (through their own agent):" instead of naming the Superagent, which was not used (SPEC-322,
+  task #307, fixes #789). The tool's caller names its channel (task agent, Superagent, remote
+  MCP) where it is authenticated, and the label is taken from it; the Superagent's label is
+  unchanged.
 
 ## 2026-10-25
 
