@@ -44,8 +44,8 @@ installing, however many there are.
 - [x] Failing regression test: 21 tasks in a turn at the bound
 - [x] Cancel message counts total - paused
 - [x] Gates green, docs/changes.md entry, spec evidence
-- [x] Independent review approved
-- [ ] Merged into dev on green CI
+- [x] Review round 1 findings answered
+- [x] Review round 2 approves the final head
 
 ## Acceptance criteria
 
