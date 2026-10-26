@@ -203,10 +203,15 @@ fn too_large(limit: u64) -> AppError {
     ))
 }
 
-/// `25 MB`, `512 KB`, `100 bytes` (binary units, as `YULIUS_UPLOAD_MAX_MB`).
+/// `1 GB`, `25 MB`, `512 KB`, `100 bytes` (binary units, as `YULIUS_UPLOAD_MAX_MB`).
 fn human_size(bytes: u64) -> String {
     const MIB: u64 = 1024 * 1024;
-    if bytes >= MIB && bytes.is_multiple_of(MIB) {
+    const GIB: u64 = 1024 * MIB;
+    if bytes >= GIB && bytes.is_multiple_of(GIB) {
+        format!("{} GB", bytes / GIB)
+    } else if bytes >= GIB {
+        format!("{}.{} GB", bytes / GIB, (bytes % GIB) * 10 / GIB)
+    } else if bytes >= MIB && bytes.is_multiple_of(MIB) {
         format!("{} MB", bytes / MIB)
     } else if bytes >= MIB {
         format!("{}.{} MB", bytes / MIB, (bytes % MIB) * 10 / MIB)
@@ -1065,6 +1070,11 @@ mod tests {
     #[test]
     fn sizes_read_like_the_setting() {
         assert_eq!(human_size(25 * 1024 * 1024), "25 MB");
+        // The default limit and a disk's free space (SPEC-325), not "1024 MB" or "9536.7 MB".
+        assert_eq!(human_size(1024 * 1024 * 1024), "1 GB");
+        assert_eq!(human_size(1536 * 1024 * 1024), "1.5 GB");
+        assert_eq!(human_size(10_000_000_000), "9.3 GB");
+        assert_eq!(human_size(1023 * 1024 * 1024), "1023 MB");
         assert_eq!(human_size(1536 * 1024), "1.5 MB");
         assert_eq!(human_size(2048), "2 KB");
         assert_eq!(human_size(10), "10 bytes");

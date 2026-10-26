@@ -2272,7 +2272,7 @@ route('POST', `/api/sandboxes/${ID}/files`, ({ db, p, body }) => {
 // replacing one unless asked), and terminal attachments with safe, unique names.
 const uploadTooLarge = (db, size) => {
   const limit = db.me.instance.upload_max_bytes;
-  if (size > limit) fail(422, 'invalid', `the file is larger than the upload limit of ${Math.round(limit / (1024 * 1024))} MB`);
+  if (size > limit) fail(422, 'invalid', `the file is larger than the upload limit of ${limit >= 1024 ** 3 && limit % 1024 ** 3 === 0 ? `${limit / 1024 ** 3} GB` : `${Math.round(limit / (1024 * 1024))} MB`}`);
 };
 route('PUT', `/api/sandboxes/${ID}/files/upload`, ({ db, p, query, body }) => {
   need(sandboxOf(db, p[0]), 'write');

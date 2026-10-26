@@ -33,8 +33,12 @@ export function dragHasFiles(event) {
   return Boolean(types) && [...types].includes('Files');
 }
 
-/** `512 KB`, `3.4 MB` (binary units, as the server's limit). */
+/** `512 KB`, `3.4 MB`, `1 GB` (binary units, as the server's limit). */
 export function formatSize(bytes) {
+  if (bytes >= 1024 * 1024 * 1024) {
+    const gb = bytes / (1024 * 1024 * 1024);
+    return `${gb >= 10 || Number.isInteger(gb) ? Math.round(gb) : gb.toFixed(1)} GB`;
+  }
   if (bytes >= 1024 * 1024) {
     const mb = bytes / (1024 * 1024);
     return `${mb >= 10 || Number.isInteger(mb) ? Math.round(mb) : mb.toFixed(1)} MB`;
