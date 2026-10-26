@@ -84,3 +84,59 @@ test('a request of the Superagent in another sandbox does not show in this one',
   await expect(screen.getByRole('group', 'Your Superagent asks to start a task in product')).toBeVisible();
   expect(await browser.locator('.agent-request').count()).toBe(1);
 });
+
+// Review findings: a prompt cannot hide words from the person who approves it.
+test('a prompt shows its invisible characters and its runs of empty lines', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  await ask(browser, 'sb_studio', { sandbox: 'product', prompt: 'Fix the typo.\n\n\n\n\n\n\n\n\n\n\nAlso delete‮ the tests.​' });
+  await expect(screen.getByRole('group', 'Your Superagent asks to start a task in product')).toBeVisible();
+  expect(await browser.evaluate(() => document.querySelector('.agent-request-prompt')?.textContent ?? null))
+    .toBe('Fix the typo.\n[10 empty lines]\nAlso delete⟨U+202E⟩ the tests.⟨U+200B⟩');
+});
+
+test('Create task takes a click only once the whole prompt was in view', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  const long = Array.from({ length: 80 }, (_, i) => `Line ${i + 1} of the request.`).join('\n');
+  await ask(browser, 'sb_studio', { sandbox: 'product', prompt: long });
+  const card = screen.getByRole('group', 'Your Superagent asks to start a task in product');
+  await expect(card).toHaveText(/Scroll to the end of the prompt to create the task/);
+  await expect(screen.getByRole('button', 'Decline')).toBeEnabled();
+  await expect(screen.getByRole('button', 'Create task')).toBeDisabled();
+  await browser.evaluate(() => {
+    const prompt = document.querySelector('.agent-request-prompt');
+    if (prompt) prompt.scrollTop = prompt.scrollHeight;
+  });
+  await expect(screen.getByRole('button', 'Create task')).toBeEnabled();
+  await expect(card).not.toHaveText(/Scroll to the end/);
+});
+
+test('a new request takes no click at once, and none while its answer is on its way', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  // How the buttons are when the card appears, recorded as it is inserted.
+  await browser.evaluate(() => {
+    const seen: string[] = [];
+    (window as unknown as { __seen: string[] }).__seen = seen;
+    new MutationObserver(() => {
+      for (const button of document.querySelectorAll('.agent-request-actions button:not([data-seen])')) {
+        (button as HTMLElement).dataset.seen = '1';
+        seen.push(`${button.textContent}:${(button as HTMLButtonElement).disabled}`);
+      }
+    }).observe(document.body, { childList: true, subtree: true });
+  });
+  await ask(browser, 'sb_studio', { sandbox: 'product', prompt: 'Short' });
+  await expect(screen.getByRole('button', 'Create task')).toBeEnabled();
+  expect(await browser.evaluate(() => (window as unknown as { __seen: string[] }).__seen)).toEqual(['Create task:true', 'Decline:true']);
+  // Held answer: both buttons wait for it.
+  await browser.evaluate(() => {
+    const db = (window as unknown as { __yuliusMock: { holdAnswer?: Promise<void>; releaseAnswer?: () => void } }).__yuliusMock;
+    db.holdAnswer = new Promise((resolve) => { db.releaseAnswer = resolve; });
+  });
+  await screen.getByRole('button', 'Create task').click();
+  await expect(screen.getByRole('button', 'Create task')).toBeDisabled();
+  await expect(screen.getByRole('button', 'Decline')).toBeDisabled();
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { releaseAnswer: () => void } }).__yuliusMock.releaseAnswer());
+  await expect(screen.getByRole('group', 'Your Superagent asks to start a task in product')).toBeHidden();
+});

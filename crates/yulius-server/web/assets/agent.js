@@ -170,10 +170,22 @@ const OPTION_LABELS = {
   effort: (v) => `Effort: ${v}`,
 };
 
+/** How long a new request's buttons wait before they take a click (one aimed at the terminal it pushed down). */
+const ARM_MS = 600;
+/** Characters a person cannot see that could hide or reorder a prompt's words: shown by their code. */
+const INVISIBLE = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/g;
+
+/** The prompt as a person can check it: invisible characters named, long runs of empty lines counted. */
+export function shownPrompt(text) {
+  const named = text.replace(/\r\n?/g, '\n').replace(INVISIBLE, (c) => `⟨U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}⟩`);
+  return named.replace(/\n(?:[ \t]*\n){2,}/g, (run) => `\n[${run.split('\n').length - 2} empty lines]\n`);
+}
+
 /**
  * SPEC-335 XSR-008: what the person's Superagent asks to start in another sandbox, above its
  * session. Nothing reaches that sandbox until the person presses Create task; each request is
- * answered once, and goes when the Superagent's call ends.
+ * answered once, and goes when the Superagent's call ends. Create task takes a click only once the
+ * whole prompt was in view (scrolled to its end) and the card has been there a moment.
  */
 function createRequests(ctx, sandbox) {
   const el = h('div', { class: 'agent-requests', hidden: true });
@@ -181,7 +193,7 @@ function createRequests(ctx, sandbox) {
   let alive = true;
   let reading = null;
   let again = false;
-  const busy = new Set();
+  const cards = new Map(); // request id → { el, destroy }
 
   async function load() {
     if (!allows(sandbox.access, 'write')) return;
@@ -194,51 +206,87 @@ function createRequests(ctx, sandbox) {
     }
   }
 
+  /** Cards come and go; one already shown stays as it is (its scroll and its armed buttons). */
   function render(list) {
     if (!alive) return;
     const items = Array.isArray(list) ? list : [];
-    el.hidden = items.length === 0;
-    setChildren(el, items.map(card));
+    const ids = new Set(items.map((r) => r.id));
+    for (const [id, shown] of cards) if (!ids.has(id)) { shown.destroy(); cards.delete(id); }
+    for (const request of items) {
+      if (cards.has(request.id)) continue;
+      const shown = card(request);
+      cards.set(request.id, shown);
+      el.append(shown.el);
+    }
+    el.hidden = cards.size === 0;
   }
 
   function card(request) {
     const target = request.sandbox || {};
+    const slug = target.slug;
     const options = Object.entries(request.options || {})
       .map(([key, value]) => (OPTION_LABELS[key] ? OPTION_LABELS[key](value) : null))
       .filter(Boolean);
-    const heading = `Your Superagent asks to start a task in ${target.slug}`;
-    const pending = busy.has(request.id);
-    const answer = (approve) => respond(request, approve);
-    return h('section', { class: 'agent-request banner banner-warn small', role: 'group', 'aria-label': heading },
-      h('div', { class: 'agent-request-head' }, icon('spark', { size: 16 }),
-        h('strong', null, 'Your Superagent asks to start a task in ', h('span', { class: 'agent-request-target' }, target.slug)),
-        target.repository ? h('span', { class: 'muted' }, ` (${target.repository})`) : null),
-      request.title ? h('div', { class: 'agent-request-title' }, request.title) : null,
-      h('pre', { class: 'agent-request-prompt', tabindex: '0', 'aria-label': 'Prompt' }, request.prompt || ''),
-      options.length ? h('ul', { class: 'agent-request-options', 'aria-label': 'Start options' }, options.map((o) => h('li', null, o))) : null,
-      h('div', { class: 'agent-request-actions' },
-        h('button', { type: 'button', class: 'btn btn-sm btn-primary', disabled: pending, onClick: () => answer(true) }, 'Create task'),
-        h('button', { type: 'button', class: 'btn btn-sm', disabled: pending, onClick: () => answer(false) }, 'Decline')));
-  }
+    const heading = `Your Superagent asks to start a task in ${slug}`;
+    const prompt = h('pre', { class: 'agent-request-prompt', tabindex: '0', 'aria-label': 'Prompt' }, shownPrompt(request.prompt || ''));
+    const hint = h('div', { class: 'agent-request-hint', hidden: true }, 'Scroll to the end of the prompt to create the task.');
+    const create = h('button', { type: 'button', class: 'btn btn-sm btn-primary', disabled: true, onClick: () => respond(true) }, 'Create task');
+    const decline = h('button', { type: 'button', class: 'btn btn-sm', disabled: true, onClick: () => respond(false) }, 'Decline');
+    let armed = false;
+    let read = false;
+    let sending = false;
+    const update = () => {
+      create.disabled = !armed || !read || sending;
+      decline.disabled = !armed || sending;
+      hint.hidden = read;
+    };
+    // The whole prompt was in view: it fits, or it was scrolled to its end. A hidden panel shows none of it.
+    const check = () => {
+      if (read || !prompt.isConnected || prompt.clientHeight === 0) return;
+      if (prompt.scrollTop + prompt.clientHeight >= prompt.scrollHeight - 2) { read = true; update(); }
+    };
+    prompt.addEventListener('scroll', check);
+    const resized = typeof ResizeObserver === 'function' ? new ResizeObserver(check) : null;
+    if (resized) resized.observe(prompt);
+    const timer = setTimeout(() => { armed = true; check(); update(); }, ARM_MS);
 
-  async function respond(request, approve) {
-    if (busy.has(request.id)) return;
-    busy.add(request.id);
-    const slug = request.sandbox && request.sandbox.slug;
-    try {
-      const answer = await ctx.api.post(`${path}/${enc(request.id)}`, { approve });
-      if (approve && answer && answer.task) {
-        const to = `/s/${encodeURIComponent(answer.sandbox || slug)}/t/${answer.task.number}`;
-        toast(`Created #${answer.task.number} in ${answer.sandbox || slug}.`, { kind: 'ok', action: { label: 'Open', run: () => ctx.navigate(to) } });
-      } else if (!approve) {
-        toast('Declined: nothing was created.', { kind: 'info' });
+    async function respond(approve) {
+      if (sending) return;
+      sending = true;
+      update();
+      try {
+        const answer = await ctx.api.post(`${path}/${enc(request.id)}`, { approve });
+        if (approve && answer && answer.task) {
+          const to = `/s/${encodeURIComponent(answer.sandbox || slug)}/t/${answer.task.number}`;
+          toast(`Created #${answer.task.number} in ${answer.sandbox || slug}.`, { kind: 'ok', action: { label: 'Open', run: () => ctx.navigate(to) } });
+        } else if (!approve) {
+          toast('Declined: nothing was created.', { kind: 'info' });
+        }
+      } catch (err) {
+        errorToast(err, approve ? `Couldn’t create the task in ${slug}` : 'Couldn’t decline');
+      } finally {
+        sending = false;
+        update();
+        load();
       }
-    } catch (err) {
-      errorToast(err, approve ? `Couldn’t create the task in ${slug}` : 'Couldn’t decline');
-    } finally {
-      busy.delete(request.id);
-      load();
     }
+
+    return {
+      el: h('section', { class: 'agent-request banner banner-warn small', role: 'group', 'aria-label': heading },
+        h('div', { class: 'agent-request-head' }, icon('spark', { size: 16 }),
+          h('strong', null, 'Your Superagent asks to start a task in ', h('span', { class: 'agent-request-target' }, slug)),
+          target.repository ? h('span', { class: 'muted' }, ` (${target.repository})`) : null),
+        request.title ? h('div', { class: 'agent-request-title' }, request.title) : null,
+        prompt,
+        options.length ? h('ul', { class: 'agent-request-options', 'aria-label': 'Start options' }, options.map((o) => h('li', null, o))) : null,
+        hint,
+        h('div', { class: 'agent-request-actions' }, create, decline)),
+      destroy() {
+        clearTimeout(timer);
+        if (resized) resized.disconnect();
+        this.el.remove();
+      },
+    };
   }
 
   const offs = [
@@ -252,6 +300,8 @@ function createRequests(ctx, sandbox) {
     destroy() {
       alive = false;
       for (const off of offs) if (typeof off === 'function') off();
+      for (const shown of cards.values()) shown.destroy();
+      cards.clear();
     },
   };
 }

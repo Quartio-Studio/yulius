@@ -2973,7 +2973,9 @@ route('POST', `/api/sandboxes/${ID}/cockpit`, async ({ db, p }) => {
 // approval creates the task in that sandbox, as the server's `task_create` would.
 const superagentRequests = (db, sid) => (db.superagentRequests || []).filter((r) => r.source === sid);
 route('GET', `/api/sandboxes/${ID}/superagent/requests`, ({ db, p }) => superagentRequests(db, p[0]).map((r) => clone(r.view)));
-route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, ({ db, p, body }) => {
+route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, body }) => {
+  // A test can hold the answer (`__yuliusMock.holdAnswer = promise`) to look at the card meanwhile.
+  if (db.holdAnswer) await db.holdAnswer;
   const request = superagentRequests(db, p[0]).find((r) => r.view.id === p[1]);
   if (!request) fail(404, 'not_found', 'not found');
   db.superagentRequests = db.superagentRequests.filter((r) => r !== request);
