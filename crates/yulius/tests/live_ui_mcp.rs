@@ -207,7 +207,7 @@ async fn add_server_works_from_an_empty_mcp_page_and_reaches_runs() -> TestResul
         eval(&cdp, session, &click(".wf-head button", "Add server")).await?;
         // After Add the server opens and is tested at once (this command cannot start).
         until(&cdp, session, "the server page with its test", "/^\\/s\\/fixture\\/mcp\\/[^/]+$/.test(location.pathname) && !location.pathname.endsWith('/new') && document.querySelector('.mc-test-result') && /Couldn’t|Connected/.test(document.querySelector('.mc-test-result').textContent)", wait).await?;
-        let stored = h.app.mcp_attachments(&sandbox).await?;
+        let stored = h.app.mcp_attachments(&sandbox, yulius_app::vault::Holder::Nobody).await?;
         if stored
             != [McpAttachment::Stdio {
                 name: "linear".into(),
@@ -228,7 +228,7 @@ async fn add_server_works_from_an_empty_mcp_page_and_reaches_runs() -> TestResul
         eval(&cdp, session, &click(".wf-head button", "Save")).await?;
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            let now = h.app.mcp_attachments(&sandbox).await?;
+            let now = h.app.mcp_attachments(&sandbox, yulius_app::vault::Holder::Nobody).await?;
             if matches!(now.first(), Some(McpAttachment::Stdio { args, env, .. }) if args.len() == 2 && env.len() == 1) {
                 break;
             }
@@ -243,7 +243,7 @@ async fn add_server_works_from_an_empty_mcp_page_and_reaches_runs() -> TestResul
         until(&cdp, session, "the confirmation", "[...document.querySelectorAll('dialog[open] button')].some((b) => b.textContent.trim() === 'Remove')", wait).await?;
         eval(&cdp, session, &click("dialog[open] button", "Remove")).await?;
         until(&cdp, session, "the empty list again", "location.pathname === '/s/fixture/mcp' && document.querySelector('#main .empty-state')", wait).await?;
-        if !h.app.mcp_attachments(&sandbox).await?.is_empty() {
+        if !h.app.mcp_attachments(&sandbox, yulius_app::vault::Holder::Nobody).await?.is_empty() {
             return Err("the server was not removed".into());
         }
         let errors = eval(&cdp, session, "window.__errors").await?;

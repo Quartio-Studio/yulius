@@ -70,6 +70,9 @@ pub enum Point {
     /// viewer's; a stop that came while it launched has not asked it to end yet. The path is the
     /// task id.
     RunAttached,
+    /// The leftovers view (SPEC-329's CI, #923): the kept sandboxes' store rows were read; the
+    /// scan's state is not read yet. The path is the data directory.
+    LeftoversView,
 }
 
 #[cfg(feature = "test-support")]

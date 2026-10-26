@@ -143,6 +143,10 @@ pub struct TaskRuntime {
     pub(crate) typed_at_ms: AtomicI64,
     /// Who typed last.
     pub(crate) typed_by: Mutex<Option<yulius_domain::ids::UserId>>,
+    /// Whose personal MCP servers the current run was started with (SPEC-332 MSC-009): a live
+    /// run keeps its MCP configuration, so a hand-over restarts it, and only that person messages
+    /// it meanwhile.
+    pub(crate) personal_mcp_of: Mutex<Option<yulius_domain::ids::UserId>>,
     /// Claude Code recorded the session goal as achieved and no prompt came since (TSK-014).
     pub(crate) goal_achieved: AtomicBool,
     /// Claude Code recorded something about the goal since the `/goal` was typed: it was
@@ -335,6 +339,7 @@ impl TaskRuntime {
             auto_pr_head: Mutex::new(None),
             typed_at_ms: AtomicI64::new(0),
             typed_by: Mutex::new(None),
+            personal_mcp_of: Mutex::new(None),
             goal_achieved: AtomicBool::new(false),
             goal_submitted: AtomicBool::new(false),
             session_started: AtomicBool::new(false),
@@ -1324,6 +1329,13 @@ impl App {
         std::fs::create_dir_all(&run_dir).map_err(AppError::internal)?;
         // The repository's `.mcp.json` servers join the sandbox's first (SPEC-095 PMC-001).
         self.import_project_mcp(&sandbox).await;
+        // One read of the servers: what the run gets is what it is recorded to hold (MSC-009).
+        let (mcp, personal_mcp) = self
+            .mcp_launch(&sandbox, crate::vault::Holder::of_task(&task))
+            .await?;
+        if let Ok(mut held) = self.runtime(&task.id).personal_mcp_of.lock() {
+            *held = personal_mcp.then(|| task.owner.clone());
+        }
         let plan = self.deps.harness.plan(&HarnessLaunch {
             harness,
             mode,
@@ -1333,7 +1345,7 @@ impl App {
             model: task.model.clone(),
             effort: task.effort.clone(),
             contained: self.config.contained,
-            mcp: self.mcp_attachments(&sandbox).await?,
+            mcp,
             credential,
         })?;
         if let Some(session_id) = &stepped_back {
@@ -1525,6 +1537,22 @@ impl App {
         self.attach_run(&task.id, &attempt, &host_token).await?;
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
+        // Control passed during the launch, after this run took its owner's personal MCP servers
+        // and before a hand-over could see it live: it resumes for the new owner (SPEC-332). The
+        // owner is read after the status changed, so no hand-over falls between the two checks.
+        let held = runtime
+            .personal_mcp_of
+            .lock()
+            .ok()
+            .and_then(|held| held.clone());
+        let owner_now = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
+        if held
+            .is_some_and(|owner| crate::vault::Holder::of_task(&owner_now).person() != Some(&owner))
+        {
+            let app = Arc::clone(self);
+            let (task_id, account) = (task.id.clone(), Some(account.id.clone()));
+            tokio::spawn(async move { app.restart_for_new_owner(&task_id, account).await });
+        }
         if goal_in_prompt {
             // Nothing to type: the goal is watched until Claude Code records it.
             self.spawn_goal_watch(&task.id, &attempt_id, &run_dir);
@@ -3190,7 +3218,7 @@ impl App {
                 // agent is idle, so it is terminated without an interrupt that could start or
                 // cancel anything. A person's switch interrupts first, so the transcript keeps
                 // the interrupted turn.
-                if reason != "manual" {
+                if !interrupts_first(reason) {
                     let _ = run
                         .writer
                         .signal(crate::ports::session::RunSignal::Terminate)
@@ -4134,8 +4162,26 @@ fn make_home(sandbox_dir: &Path) -> AppResult<()> {
         })
 }
 
+/// Whether a switch for `reason` interrupts the turn before ending the run: a person's switch
+/// and a hand-over may come mid-turn (SPEC-332), automatic switches come while the agent is idle.
+fn interrupts_first(reason: &str) -> bool {
+    matches!(reason, "manual" | "handover")
+}
+
 #[cfg(test)]
 mod tests {
+    /// Review of SPEC-332 (round 3): a person's switch and a hand-over may come mid-turn, so they
+    /// interrupt the turn first (the transcript keeps it); automatic switches, made while the agent
+    /// is idle, terminate without an interrupt.
+    #[test]
+    fn a_hand_over_interrupts_like_a_persons_switch() {
+        assert!(super::interrupts_first("manual"));
+        assert!(super::interrupts_first("handover"));
+        for reason in ["rotation", "limit", "context_full", "proactive"] {
+            assert!(!super::interrupts_first(reason), "{reason}");
+        }
+    }
+
     /// #661: a `home` link fails the start, dangling (nothing is made where it points) or to a
     /// host folder (which is not taken as the home); a missing home is made, an existing one
     /// kept (SPEC-266 STB-004).

@@ -4693,3 +4693,127 @@ fn a_hand_over_during_a_launch_leaves_the_new_owners_fingerprints() -> TestResul
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// The server names in a run's own MCP configuration (`mcp.json` in its run directory).
+fn run_mcp_servers(run_dir: &str) -> Result<Vec<String>, BoxError> {
+    let mcp: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(Path::new(run_dir).join("mcp.json"))?)?;
+    let mut names: Vec<String> = mcp["mcpServers"]
+        .as_object()
+        .ok_or("mcpServers")?
+        .keys()
+        .cloned()
+        .collect();
+    names.sort_unstable();
+    Ok(names)
+}
+
+/// Review of SPEC-332 (round 3): control passing while a run is launched with its owner's
+/// personal MCP server — the run's configuration already made, its attempt not yet live — still
+/// leaves no run holding that server once it is live: the run resumes for the new owner.
+#[test]
+fn a_hand_over_during_a_launch_restarts_a_run_holding_personal_mcp_servers() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+        let host = Arc::new(HeldSpawn {
+            inner: PtySessionHost::new(exe),
+            reached: tokio::sync::watch::channel(false).0,
+            released: tokio::sync::watch::channel(false).0,
+        });
+        let agent = FakeAgentOptions {
+            transcript: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start_on(
+            &data,
+            &fake,
+            agent,
+            0,
+            Some(host.clone()),
+            None,
+            false,
+            None,
+        )
+        .await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let bob = UserId::parse("u-bob")?;
+        app.deps
+            .store
+            .insert_user(&UserRecord {
+                id: bob.clone(),
+                github_login: Some("bob".into()),
+                github_id: None,
+                display_name: "Bob".into(),
+                avatar_url: None,
+                is_superadmin: false,
+                is_instance_admin: false,
+                password_hash: None,
+                created_at: Timestamp(1),
+                disabled_at: None,
+            })
+            .await?;
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        };
+        app.create_mcp_server(
+            &ctx,
+            sandbox.as_str(),
+            &yulius_contracts::api::mcp::McpServerInput {
+                name: "fleet".into(),
+                transport: "http".into(),
+                command: None,
+                args: Vec::new(),
+                url: Some("https://fleet.test/mcp".into()),
+                env: None,
+                headers: None,
+                enabled: None,
+                scope: Some("instance".into()),
+                audience: Some("personal".into()),
+                sandbox: None,
+            },
+        )
+        .await?;
+        let launch = goal_task(&app, &sandbox, &user, "Hand over");
+        let hand_over = async {
+            let mut reached = host.reached.subscribe();
+            tokio::time::timeout(Duration::from_secs(60), reached.wait_for(|r| *r)).await??;
+            let attempt = app
+                .deps
+                .store
+                .live_attempts()
+                .await?
+                .pop()
+                .ok_or("no launching run")?;
+            // Control passes now: the launch already made the previous owner's configuration.
+            assert!(
+                app.deps
+                    .store
+                    .take_control(&attempt.task_id, &user, &bob, app.now())
+                    .await?
+            );
+            host.released.send_replace(true);
+            let id = attempt.task_id.clone();
+            wait_for("the resumed run", Duration::from_secs(60), || async {
+                let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+                attempts.len() == 2 && attempts[1].state == AttemptState::Live
+            })
+            .await?;
+            let attempts = app.deps.store.attempts(&id).await?;
+            assert_eq!(run_mcp_servers(&attempts[0].run_dir)?, ["fleet", "yulius"]);
+            assert_eq!(run_mcp_servers(&attempts[1].run_dir)?, ["yulius"]);
+            Ok::<_, BoxError>(id)
+        };
+        let (launched, handed) = tokio::join!(launch, hand_over);
+        let id = handed?;
+        assert_eq!(launched?, id);
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

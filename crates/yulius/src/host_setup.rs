@@ -477,6 +477,14 @@ impl<'a> Run<'a> {
         self.lines
     }
 
+    /// Only the service user and its subordinate ids, for `yulius instance import` (SPEC-329
+    /// IMP-002): the copy fills the data directory next, and the full setup follows it.
+    pub fn user_and_ids(mut self) -> Vec<HostLine> {
+        self.service_user();
+        self.subordinate_ids();
+        self.lines
+    }
+
     /// The server's unit file when the setup writes it.
     fn unit_file(&self) -> PathBuf {
         Path::new("/etc/systemd/system").join(&self.opts.service)

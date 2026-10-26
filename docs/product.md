@@ -73,6 +73,12 @@ watching, steering and unblocking.
   ids, base URLs, contact addresses) are shown in plain on the Secrets page's Variables tab and
   are in every task's environment. The laptop agent sets them with `yulius vars`, and the secrets
   import sends a `.env`'s plain values there instead of making them secrets.
+- **Move or copy the whole instance** (SPEC-329): `sudo yulius instance export | ssh root@new-vm
+  yulius instance import` pauses every Yulius process, announces the exact size, and streams the
+  whole instance (database, keys, sandboxes with uncommitted work and Claude sessions, installed
+  packages, Docker data) without writing anything on the old VM's disk; the new VM installs it as
+  it arrives, checks it, and `yulius host setup` starts it. `--move` keeps the old instance frozen
+  and disabled. A copy can also go to a file and be installed later.
 - **Playgrounds**: a team tries Yulius on its own code before it connects GitHub. On a fresh
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server
@@ -113,9 +119,13 @@ watching, steering and unblocking.
   file is the one in the vault, from the file's SHA-256 (SPEC-178, SPEC-186). After an update
   that gives it new tools, an open Superagent restarts by itself once it is idle and goes on with
   its conversation.
-- **MCP servers**: configured once for the instance or a sandbox (MCP page) and attached to every
-  task run on every subscription and to the Superagent, their secrets taken from the agent
-  secrets. A repository's
+- **MCP servers**: configured once on the MCP page with two settings, Available in (every sandbox
+  or this one) and For (the whole team or only me), and attached on every subscription. A team
+  server goes to every task run of its scope and to the Superagent; a personal one only to its
+  owner's own tasks and Superagent, never to a teammate's or an automation's task, and nobody else
+  sees it, so a server holding a person's own credential belongs there (SPEC-332). New servers
+  start on every sandbox and the whole team; both settings change later. Their secrets may come
+  from the agent secrets. A repository's
   `.mcp.json` servers join its sandbox's list by themselves, with `${VAR}` becoming the agent
   secret VAR's placeholder (the egress proxy swaps the value in on its bound hosts), and the
   Superagent never asks about them. They show "From .mcp.json", and since agents can write that

@@ -1015,7 +1015,34 @@ starts their command nor connects to their private address until a person change
 secret values reach a run in `YULIUS_MCP_<SERVER>_<VAR>` variables, never under the server's own
 variable name, which may hold an agent secret's placeholder.
 
-The Superagent gets the same servers as a task run of its sandbox (`App::mcp_attachments`), inline
+### MCP server scopes
+
+Since SPEC-332 ([decision 0224](decisions/0224-an-mcp-server-is-for-every-sandbox-or-one-and-for-the-team-or-its-owner.md))
+an MCP server is for every sandbox (`sandbox_id` NULL) or one, and for the team (`owner_id` NULL)
+or one person (removed with the user's row). `McpStore::mcp_servers(sandbox, person)` lists the
+team servers of both reaches and `person`'s own; `App::mcp_attachments(sandbox, holder)` keeps one
+per name by rank and attaches the enabled winners. The holder is ADR-0186's: a task's owner unless
+an automation started it (`Holder::of_task`), the Superagent's person, nobody for CI and CD. The
+MCP API answers 404 for another person's server, administrators included, and `task_message` from
+anyone but the owner refuses a task holding its owner's personal server (or whose live run, per
+`TaskRuntime::personal_mcp_of`, was started with one); a hand-over resumes such a run with the new
+owner's servers. `App::mcp_secret_values` adds the servers' literal secret values to
+`App::matcher_for`, so redaction covers them with the agent secrets (MCP changes bump the vault
+generation).
+
+```mermaid
+flowchart LR
+  S["mcp_servers(sandbox, holder's person): team servers + own personal"] --> R{"per name, highest rank wins"}
+  R -->|"3"| SP["this sandbox, personal"]
+  R -->|"2"| ST["this sandbox, team"]
+  R -->|"1"| GP["every sandbox, personal"]
+  R -->|"0"| GT["every sandbox, team"]
+  SP & ST & GP & GT --> E{"winner enabled?"}
+  E -->|"yes"| A["attached to the run"]
+  E -->|"no"| X["name off for this holder"]
+```
+
+The Superagent gets the same servers as its person's task run of its sandbox (`App::mcp_attachments`), inline
 in its `--mcp-config` next to `yulius`, their values in its secret environment, and the task runs'
 redaction of agent secrets: `CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec` for its Bash commands,
 hooks and stdio servers, and the `PostToolUse` hook, its only hook; its screen is redacted on the
@@ -2138,6 +2165,44 @@ stateDiagram-v2
 
 The UI's event stream (`WS /api/events`) beats every 20 s; the page replaces a stream silent for
 50 s, so a connection that died without a close is noticed and the lists resync (SPEC-191).
+
+## Instance export and import
+
+`yulius instance export` and `yulius instance import` (SPEC-329, ADR-0222, module
+`crates/yulius/src/instance/`) copy a whole instance to another host. Both run as root on the host,
+outside Yulius. The export freezes the whole `yulius.service` unit with systemd's freezer (the
+cgroup v2 `cgroup.freeze` of the unit, above every run's own freeze of ADR-0131), so the server and
+everything it started stop at once and the data directory is read-only while it is read. A first
+walk of the data directory plans the archive's exact length and a fingerprint of its headers; the
+second streams an uncompressed pax tar to stdout (`archive.rs`): the manifest with the total first,
+`data/…` in bytewise order, a SHA-256 trailer last. The import reads it with the same module, checks
+the manifest, makes the service user and its subordinate ids with `host setup`'s items, extracts
+through `O_NOFOLLOW` directory handles (`extract.rs`) with the ids remapped, and checks the
+trailer. Nothing is staged on either disk; a pipe through `ssh` is the transport.
+
+```mermaid
+sequenceDiagram
+  participant O as Operator (root, SSH)
+  participant E as yulius instance export
+  participant D as systemd
+  participant F as Old data directory
+  participant I as yulius instance import (new VM)
+  participant N as New data directory
+  O->>E: sudo yulius instance export | ssh root@new yulius instance import
+  E->>D: systemctl freeze yulius.service (wait for frozen)
+  E->>F: walk 1: exact length + header fingerprint
+  E->>I: manifest (total_bytes) first
+  I->>I: check format, schema, free space, no instance; make user and ids
+  loop every entry
+    E->>F: walk 2: read
+    E->>I: header + data
+    I->>N: create through O_NOFOLLOW handles, owners remapped
+  end
+  E->>I: SHA-256 trailer
+  I->>I: compare checksum and length, remove the incomplete marker
+  E->>D: systemctl thaw (or --move: stay frozen, disable)
+  O->>I: then yulius host setup on the new VM
+```
 
 ## Agent primitives
 

@@ -1350,3 +1350,18 @@ fn a_file_that_cannot_be_written_is_named_once() {
         format!("cannot write {DOCKER_SOURCE}: Read-only file system (os error 30)")
     );
 }
+
+/// `yulius instance import` (SPEC-329 IMP-002) makes only the service user and its ids, before
+/// the copy fills the data directory; packages, units and the base come with the setup after.
+#[test]
+fn an_import_makes_only_the_user_and_its_ids() {
+    let mut fake = Fake::fresh();
+    let lines = Run::new(&mut fake, Mode::Setup, options(), &mut |_| {}).user_and_ids();
+    let names: Vec<&str> = lines.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["service user", "subordinate ids"], "{lines:#?}");
+    assert!(passed(&lines), "{lines:#?}");
+    assert!(fake.ran("useradd"), "{:#?}", fake.log);
+    assert!(fake.ran("usermod"), "{:#?}", fake.log);
+    assert!(!fake.ran("apt-get"), "{:#?}", fake.log);
+    assert!(!fake.ran("systemctl"), "{:#?}", fake.log);
+}

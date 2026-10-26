@@ -375,7 +375,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 
 | ID | Requirement | Source | Class | Acceptance |
 | --- | --- | --- | --- | --- |
-| MCP-001 | MCP servers are attached once in Yulius and automatically available to every Claude Code session. | T 17:06–17:21, T 32:28–32:55, WA 13:11, P(7) | E | AC-MCP-1 |
+| MCP-001 | MCP servers are attached once in Yulius and automatically available to every Claude Code session they are for: a server is for every sandbox or one, and for the whole team or only its owner, whose own runs alone get a personal one; new servers default to every sandbox and the whole team (task #316, SPEC-332). | T 17:06–17:21, T 32:28–32:55, WA 13:11, P(7), task #316 | E | AC-MCP-1 |
 | MCP-002 | Examples to support: Quartio MCP (product and customer knowledge), Apify MCP (e.g., scraping X), any other MCP. | T 17:21, T 32:39 | X (any MCP must work) | AC-MCP-1 |
 | MCP-003 | MCP secrets are stored encrypted and never shown back; the Yulius tool server is always attached. A secret value may instead be a reference to an agent secret, `${secret:NAME}`, resolved when a run starts by the agent-secrets vault (left out of the run while nothing resolves it). | —, F 2026-10-10 | A | AC-MCP-2 |
 | MCP-004 | MCP servers configured in Yulius reach every run on every subscription: each run gets its own MCP configuration (never a per-account Claude home), so a switch of subscription — by native resume or by hand — keeps them, a server added meanwhile reaches the next run, and a harness added later gets the same list. | F 2026-10-10 ("should work on every subscription (and harness after we add more)") | E | AC-MCP-3 |

@@ -110,6 +110,8 @@ fn server_input(
         headers: None,
         enabled: Some(true),
         scope: Some("sandbox".into()),
+        audience: None,
+        sandbox: None,
     };
     match transport {
         "stdio" => {
@@ -280,7 +282,7 @@ impl App {
                 return Vec::new();
             }
         };
-        let existing: HashSet<String> = match self.deps.store.mcp_servers(&sandbox.id).await {
+        let existing: HashSet<String> = match self.deps.store.mcp_servers(&sandbox.id, None).await {
             Ok(servers) => servers.iter().map(|s| name_key(&s.name)).collect(),
             Err(err) => {
                 tracing::warn!(error = %err, sandbox = %sandbox.id, "MCP servers unreadable; .mcp.json servers are not imported");
@@ -334,9 +336,10 @@ impl App {
 /// `name (scope, transport)`, as the MCP audit entries say it.
 pub(super) fn mcp_detail(record: &McpServerRecord) -> String {
     format!(
-        "{} ({}, {})",
+        "{} ({}, {}, {})",
         record.name,
         record.scope(),
+        record.audience(),
         record.transport.as_str()
     )
 }
