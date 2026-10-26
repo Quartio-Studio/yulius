@@ -356,6 +356,29 @@ flowchart LR
   DB -->|"label + email (administrators)"| V["Subscriptions page, Status, Dashboard, Task details, analytics"]
 ```
 
+## Goal retries after an API error
+
+An API error ends a turn with no Stop hook. With a goal active, Claude Code retries the turn
+itself and says so in a notice; Yulius follows it and types nothing
+([SPEC-333](../.ai/specs/SPEC-333-this-api-error-should-trigger-retry-and.md),
+[decision 0225](decisions/0225-claude-code-owns-the-goal-retry-after-an-api-error.md), #927). The
+harness reads the notices as `GoalRetry { armed, notice }`. An armed retry keeps the task Working
+over the record that closes the turn, which otherwise settles it as Your turn
+([decision 0212](decisions/0212-a-turn-whose-stop-yulius-never-answered-settles-at-its-record.md)).
+Spent retries, or a pause on an API error, put it in Needs you with a request. A restart's replay
+folds the last notice the same way.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Working
+    Working --> Retrying: API error + "Goal still active · … retrying in n min (k/3)"
+    Retrying --> Working: the goal check-in prompt (or a person's)
+    Retrying --> NeedsYou: "Goal paused after 3 automatic retries"
+    Working --> NeedsYou: "Goal paused · the API rejected the last request" (no retry)
+    NeedsYou --> Working: a person sends a message
+    note right of Retrying: reads Working; the turn record does not settle it
+```
+
 ## Full context
 
 A session whose context is full gets "Prompt is too long" for every prompt, and no Stop hook ends
