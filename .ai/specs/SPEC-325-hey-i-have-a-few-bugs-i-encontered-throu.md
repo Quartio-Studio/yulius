@@ -140,13 +140,15 @@ their computer.
   passed, 16 skipped. The later commit (65f92673) changes only an e2e test and `docs/api.md`.
 - **e2e** full suite `npx e2e run` at be804ac8: exit 0, 717 passed, 1 skipped (67 files);
   `tests/original-prompt.e2e.ts` at 65f92673 five times: 9/9 each.
-- **Security** `yulius security-scan` at bac1b6c1: not run, exit 2 (Vidoc HTTP 429, the key used
+- **Security** `yulius security-scan` at bac1b6c1 and again at df1e55a8 (the delivered code): not
+  run, exit 2 both times (Vidoc HTTP 429, the key used
   its 50,000,000 tokens): unrun, not passed (ADR-0133, ADR-0157); CI's `security` job is the live
   scan.
 - **Review** (fresh session, `om-code-review`, read-only): round 1 at bac1b6c1 REQUEST CHANGES:
   1 major (a non-ASCII name downloaded as "attachment"), 4 minor (the 404 toast in the prompt
   dialog, the refusal naming all free space, the "nothing created" checks unable to fail on
-  ordering, AC-3 not proving no read), 4 nits; all own code, fixed test-first (587711a1,
+  ordering, AC-3 not proving no read), 6 nits; all own code except the pre-existing
+  `attach_server_file` below; the minors and 3 nits fixed test-first (587711a1,
   632c6bef, a11f6717). Round 2 at be804ac8 REQUEST CHANGES: 1 major, own code (the read-count
   assertion raced the mock's latency), fixed in 65f92673 with `expect.poll`.
   Round 3 at 65f92673 APPROVE (one nit left as accepted: the rounding above).
