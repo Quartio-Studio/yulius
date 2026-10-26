@@ -53,7 +53,10 @@ A wheel turn up that reaches the top of a task's terminal offers the whole sessi
 ## Consequences
 
 - From every task's terminal, the person reaches the session's first message, compacted, resumed or
-  not. The same applies to read-only viewers and to programs other than Claude Code.
+  not. The same applies to read-only viewers and to programs other than Claude Code. It also
+  applies to old runs: they were started before ADR-0218 and kept the classic renderer through the
+  updates that froze and thawed them, and their viewers get only the visible screen. For those
+  runs the first turn up offers it.
 - The view shows the task's latest Claude Code session. Sessions the task had before (a `/clear`, or
   a continue in a fresh session) stay in Sessions.
 - A gesture that ends within one round trip of reaching the top may offer nothing, because the

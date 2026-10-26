@@ -41,6 +41,12 @@ SPEC-310 fixes.
   are common: in this project, tasks from the last two days have 1 to 6 each. Yulius resumes
   sessions after every update and usage limit, and a resumed session shows nothing before its last
   compaction.
+- **Old tasks (reported during the task).** The person confirmed: "scrolling works for a new task
+  but not for old ones". Runs survive updates frozen and thawed (SPEC-160 OPS-010), not restarted.
+  So a Claude Code started before SPEC-310 (2026-10-25) still runs the classic main-screen renderer
+  its boot canary chose, without `CLAUDE_CODE_NO_FLICKER`. It has no mouse reporting, and a viewer
+  who opens the task gets only the visible screen: nothing above it to scroll. Old tasks also
+  compacted more often than new ones.
 - **Same cause elsewhere.** A viewer whose terminal shows a screen without scrollback cannot scroll
   up at all. This happens when the program draws the alternate screen without mouse reporting, or
   after a reload of a classic-renderer screen (the hub's model keeps no scrollback, SPEC-310). A
@@ -103,6 +109,9 @@ SPEC-310 fixes.
 - `e2e/tests/terminal.e2e.ts`, "a wheel turn past the top offers the whole session from its first
   message (#911)": the acceptance criteria above, over the mock's task terminal. It fails on `dev`
   because there is no button.
+- `e2e/tests/terminal.e2e.ts`, "an old run on the classic renderer, with nothing above its screen,
+  offers the whole session at once (#911)": the mock draws the main screen without mouse
+  reporting (`?classic=1`). The first wheel turn up shows the offer and sends no wheel report.
 - The existing wheel, read-only and watching tests keep passing (HIS-004).
 
 ## Decisions
@@ -139,6 +148,9 @@ SPEC-310 fixes.
   `.taskview .term-history-offer`: "observed: no node". The program had scrolled first, so the
   failure is the missing offer. With the fix (6a771a8b), `tests/terminal.e2e.ts` and
   `tests/watching.e2e.ts` passed: 42 of 42.
+- **Old runs.** At 9c9a93cd, with `terminal-core.js`, `taskview.js` and `watchview.js` taken from
+  `origin/dev`, both #911 tests failed (2 failed, 16 passed). With the fix, `tests/terminal.e2e.ts`
+  passed 18 of 18.
 - **Security.** `yulius security-scan` at fe124b11: exit 2, not run. Vidoc answered HTTP 429: the
   instance key has used its 50,000,000 tokens. This is unrun, not passed; Yulius CI's `security`
   job repeats it.
