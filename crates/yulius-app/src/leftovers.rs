@@ -1675,8 +1675,12 @@ impl App {
         let disk = tokio::task::spawn_blocking(move || probe.snapshot(&dir))
             .await
             .unwrap_or_default();
-        let kept = self.kept_sandboxes().await;
+        let removed = self.removed_rows().await;
+        crate::race::reached(crate::race::Point::LeftoversView, &self.config.data_dir);
+        // One look at the scan's state: the kept sandboxes' sizes are those of the items, job and
+        // totals shown beside them.
         self.with_leftovers(|inner| {
+            let kept = kept_views(removed, &inner.items);
             let deletable = inner.items.iter().filter(|i| i.kind.deletable());
             let total_bytes = deletable.clone().filter_map(|i| i.bytes).sum();
             let safe_bytes = deletable
@@ -1699,18 +1703,10 @@ impl App {
         })
     }
 
-    /// The removed sandboxes whose files are still on the server (RDA-012): each with the size its
-    /// "everything of the removed sandbox" item had at the last scan (`None` before one).
-    async fn kept_sandboxes(&self) -> Vec<KeptSandboxView> {
-        let sizes: std::collections::HashMap<SandboxId, Option<u64>> =
-            self.with_leftovers(|inner| {
-                inner
-                    .items
-                    .iter()
-                    .filter(|i| i.kind == Kind::RemovedSandbox)
-                    .filter_map(|i| Some((i.sandbox.clone()?, i.bytes)))
-                    .collect()
-            });
+    /// The removed sandboxes' rows (RDA-012), each with whether its directory is still there and
+    /// whether a purge is pending: the store's part of the kept sandboxes, read before the view's
+    /// one look at the scan's state ([`kept_views`]).
+    async fn removed_rows(&self) -> Vec<RemovedRow> {
         let removed = self
             .deps
             .store
@@ -1720,13 +1716,12 @@ impl App {
         let pending = self.deps.store.pending_purges().await.unwrap_or_default();
         removed
             .into_iter()
-            .filter(|s| sizes.contains_key(&s.id) || exists(&self.sandbox_dir(&s.id)))
-            .map(|s| KeptSandboxView {
-                id: s.id.to_string(),
-                slug: s.slug.clone(),
-                removed_at: s.removed_at.map(rfc3339),
-                bytes: sizes.get(&s.id).copied().flatten(),
-                purge_requested: pending.contains(&s.id),
+            .map(|s| RemovedRow {
+                there: exists(&self.sandbox_dir(&s.id)),
+                pending: pending.contains(&s.id),
+                id: s.id,
+                slug: s.slug,
+                removed_at: s.removed_at,
             })
             .collect()
     }
@@ -1859,6 +1854,39 @@ fn task_state(task: &crate::model::TaskRecord) -> String {
         (TaskStatus::Failed(_), _) => "failed".into(),
         _ => "idle for 4 hours".into(),
     }
+}
+
+/// A removed sandbox as the store and the disk know it, for [`kept_views`].
+struct RemovedRow {
+    id: SandboxId,
+    slug: String,
+    removed_at: Option<Timestamp>,
+    /// Its directory is still there.
+    there: bool,
+    /// A purge was asked for.
+    pending: bool,
+}
+
+/// The kept sandboxes (RDA-012): each removed sandbox the last scan listed or whose directory
+/// is there, with the size its "everything of the removed sandbox" item has in `items` (`None`
+/// before a scan measured it).
+fn kept_views(removed: Vec<RemovedRow>, items: &[Leftover]) -> Vec<KeptSandboxView> {
+    let sizes: std::collections::HashMap<&SandboxId, Option<u64>> = items
+        .iter()
+        .filter(|i| i.kind == Kind::RemovedSandbox)
+        .filter_map(|i| Some((i.sandbox.as_ref()?, i.bytes)))
+        .collect();
+    removed
+        .into_iter()
+        .filter(|s| sizes.contains_key(&s.id) || s.there)
+        .map(|s| KeptSandboxView {
+            bytes: sizes.get(&s.id).copied().flatten(),
+            id: s.id.to_string(),
+            slug: s.slug,
+            removed_at: s.removed_at.map(rfc3339),
+            purge_requested: s.pending,
+        })
+        .collect()
 }
 
 #[cfg(test)]
