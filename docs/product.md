@@ -266,7 +266,9 @@ watching, steering and unblocking.
   (SPEC-181).
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit
   the window and filter as people type when they are long; the start menu shows five tasks at a
-  time and says how many more it scrolls to. Messages are
+  time and says how many more it scrolls to. Scrolling a task's terminal past its top offers the
+  whole session from its first message, which Claude Code no longer shows after a compaction
+  (SPEC-326). Messages are
   withdrawn for now (SPEC-028): agents learn about checks, delivery and armed merges from
   `yulius wait`, `ci_status` and `delivery_status`. An agent removes the files its task created
   with `yulius remove` instead of asking a person when Claude Code stops an `rm` (SPEC-192).

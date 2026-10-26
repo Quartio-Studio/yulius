@@ -2657,6 +2657,15 @@ button.task-group-head:hover { color: var(--text); }
 .watch-working-time { color: var(--session-dim); }
 @keyframes working-sweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
 .watch-jump { position: absolute; bottom: 16px; left: 50%; z-index: var(--z-float); transform: translateX(-50%); box-shadow: var(--shadow); }
+/* The whole session (SPEC-326): offered over the top of the terminal when a wheel turn reached it,
+   left by the button where the prompt box was. */
+.term-history-offer { position: absolute; top: max(calc(var(--term-banner-h, 0px) + 12px), calc(var(--term-overlay-bottom, 0px) + 8px)); left: 50%; z-index: var(--z-float); transform: translateX(-50%); max-width: calc(100% - 32px); box-shadow: var(--shadow); }
+/* Below the connection notice too; the task view measures the attention bar and held card above
+   it (--term-overlay-bottom, taskview.js). */
+.term:has(> .term-conn:not([hidden])) > .term-history-offer { top: max(calc(var(--term-banner-h, 0px) + 52px), calc(var(--term-overlay-bottom, 0px) + 8px)); }
+.watch.history .ss-locked { cursor: default; }
+.watch.history .ss-locked > .ss-line-body { flex: 1; min-width: 0; }
+.watch-back { flex: none; font-family: var(--font); }
 @media (prefers-reduced-motion: reduce) {
   .watch-working-text { animation: none; color: var(--session-dim); background: none; }
   .watch-spinner-frames { animation: none; transform: translateY(calc(-100% * 4 / 12)); } /* ✻ */
