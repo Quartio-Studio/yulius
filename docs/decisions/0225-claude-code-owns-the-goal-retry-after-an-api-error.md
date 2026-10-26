@@ -14,25 +14,31 @@ with a pull request). With a goal active, Claude Code 2.1.292 retries the turn i
 `Goal still active · <cause> · retrying in <n> min (<k>/3) · send a message to retry now` and
 delivers a "Goal check-in" prompt 1, 5 and 15 minutes later (+0–20 %). After three failed retries
 it writes `Goal paused after 3 automatic retries · <cause> · send a message to continue` and
-stops. An error it does not retry pauses the goal at once (`Goal paused · the API rejected the last
+stops. It retries a turn whose goal check failed ("the goal check could not complete") the same
+way, after Yulius's Stop hook ran. An error it does not retry pauses the goal at once (`Goal paused · the API rejected the last
 request`, `· the last turn could not finish`, `· the request was rate limited`). Every Yulius task
 runs under `/goal`. Task #33's person saw "in review" while the retry was armed and typed
 `continue` themselves.
 
 ## Decision
 
-- The harness reads these notices as `GoalRetry { armed, notice }`. Pauses that other paths own
-  are not read as `GoalRetry`: a hook's stop (Yulius's own hooks), a goal check's timeout and a
-  usage limit (SPEC-072).
+- The harness reads these notices (`system` records of subtype `informational`) as
+  `GoalRetry { armed, notice }`. Pauses that other paths own are not read as `GoalRetry`: a hook's
+  stop (Yulius's own hooks), a goal check's timeout, goal checks that kept finding the goal unmet,
+  and a usage limit (SPEC-072).
+- A notice also ends the wait for a goal verdict: no verdict comes for that turn.
 - While a retry is armed, the record that closes the turn leaves the task Working. A task that
   read Waiting goes back to Working. The retry's prompt, a person's prompt, agent work or an
-  interrupt ends the armed state, and so does a new run.
+  interrupt ends the armed state, and so does a new run. A goal cleared, achieved or failed ends
+  it too: Claude Code drops its check-in without a word, so the closed turn settles then (Your turn,
+  or Done).
 - Spent retries, or a pause on an API error, put the task in Needs you. Its activity is
   NeedsAttention, and Yulius opens a request when none is open: What happened (Claude Code's
   notice), Problem (nothing goes on by itself), To do (send the task a message). A typed prompt
   ends it, as every request ends.
-- The replay after a restart folds the last notice (`TranscriptFacts::goal_retry`) and applies
-  the same rules.
+- Spent retries end the turn: the record that closes it leaves Needs you as it is.
+- The replay after a restart folds the last notice (`TranscriptFacts::goal_retry`, with Claude
+  Code's words) and applies the same rules.
 - Yulius types nothing itself.
 
 ## Alternatives

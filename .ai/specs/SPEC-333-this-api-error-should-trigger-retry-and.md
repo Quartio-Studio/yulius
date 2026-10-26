@@ -63,12 +63,13 @@ themselves.
 ## Plan
 
 - [x] Root cause and spec of the error-ended goal turn
-- [ ] Fake agent replays the API error and Claude Code's goal retries
-- [ ] Failing regression tests: a retried turn reads Working, spent retries read Needs you
-- [ ] A turn whose retry Claude Code armed stays Working
-- [ ] Spent or refused retries put the task in Needs you, also after a restart
-- [ ] Docs, ADR and changes entry true to the fix
-- [ ] Independent review answered, gates green, merged on green
+- [x] Fake agent replays the API error and Claude Code's goal retries
+- [x] Failing regression tests: a retried turn reads Working, spent retries read Needs you
+- [x] A turn whose retry Claude Code armed stays Working
+- [x] Spent or refused retries put the task in Needs you, also after a restart
+- [x] Docs, ADR and changes entry true to the fix
+- [x] Independent review answered: round-1 findings fixed test-first, round 2 approved
+- [ ] Gates green and merged on green
 
 ## Acceptance criteria
 
@@ -84,11 +85,22 @@ themselves.
 - `finish` unit tests: `TranscriptFacts` keeps an armed retry over the turn record and drops it
   at the next prompt or agent work; a spent retry is folded as pending Needs you.
 - Integration tests in `crates/yulius/tests/task_done.rs` with the fake agent
-  (`--goal-api-errors N`, `--goal-retry-ms MS`): N = 2 fails the goal turn and its first retry,
-  the second retry achieves the goal; the task never reads Waiting from the error to Done.
-  N = 4 spends the three retries; the task reads NeedsAttention with an open request.
+  (`--goal-api-errors N`, `--goal-retry-ms MS`, `--goal-check-errors`, `--goal-cleared-on-retry`):
+  - N = 2 fails the goal turn and its first retry, and the second retry achieves the goal. The
+    task never reads Waiting from the error to Done.
+  - N = 4 spends the three retries. The task reads NeedsAttention with an open request and keeps
+    it once the turn's record is read. This is tested for API errors and for failed goal checks,
+    whose Stop hook ran.
+  - A goal cleared while a retry is armed leaves the task Waiting, not Working for good.
+  - Yulius restarts while a retry is armed (the task stays Working, then Done) and after the
+    retries were spent (Needs you, with Claude Code's words).
 
 ## Decisions
+
+- A goal cleared, achieved or failed while a retry is armed ends it, and the closed turn settles.
+  Claude Code drops its check-in silently (found in review round 1).
+- A failed goal check ("the goal check could not complete") is retried by Claude Code the same
+  way and handled the same: any goal notice ends the wait for a verdict.
 
 - [ADR-0225](../../docs/decisions/0225-claude-code-owns-the-goal-retry-after-an-api-error.md):
   Yulius follows Claude Code's goal retry instead of retrying itself.

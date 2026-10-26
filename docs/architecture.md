@@ -365,8 +365,10 @@ itself and says so in a notice; Yulius follows it and types nothing
 harness reads the notices as `GoalRetry { armed, notice }`. An armed retry keeps the task Working
 over the record that closes the turn, which otherwise settles it as Your turn
 ([decision 0212](decisions/0212-a-turn-whose-stop-yulius-never-answered-settles-at-its-record.md)).
-Spent retries, or a pause on an API error, put it in Needs you with a request. A restart's replay
-folds the last notice the same way.
+A failed goal check is retried the same way, and a notice ends the wait for a goal verdict. A goal
+cleared, achieved or failed while a retry is armed settles the closed turn, since no check-in
+comes. Spent retries, or a pause on an API error, end the turn and put the task in Needs you with a
+request. A restart's replay folds the last notice the same way.
 
 ```mermaid
 stateDiagram-v2
@@ -375,6 +377,7 @@ stateDiagram-v2
     Retrying --> Working: the goal check-in prompt (or a person's)
     Retrying --> NeedsYou: "Goal paused after 3 automatic retries"
     Working --> NeedsYou: "Goal paused · the API rejected the last request" (no retry)
+    Retrying --> Waiting: /goal clear (no check-in comes)
     NeedsYou --> Working: a person sends a message
     note right of Retrying: reads Working; the turn record does not settle it
 ```
