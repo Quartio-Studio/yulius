@@ -41,8 +41,8 @@ attention bar), and Escape, Cancel and an empty Send in the reply field.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| NLK-001 | Before the keys each no-leak check seeds the session's input with `x`; after them the session still holds the seed and the terminal shows no `> x` line (closing field, Escape, Cancel, empty Send). | `reply.e2e.ts` `nothingReached` |
-| NLK-002 | Each no-leak read in that case first waits on positive conditions: the bar holds the keyboard, the hidden field still holds `Hal`, and the session has received a marker typed through the page's own terminal socket after the keys (the socket delivers in order, so a leaked key arrives before it). | `reply.e2e.ts` |
+| NLK-001 | Before the keys each no-leak check seeds the session's input with `x`; after them the session still holds the seed and the terminal shows no `> x` line and no `(esc) interrupted` (closing field, Escape, Cancel, empty Send). | `reply.e2e.ts` `nothingReached` |
+| NLK-002 | Each no-leak read first waits on positive conditions: what shows the keys were handled (the bar holds the keyboard and the hidden field still holds `Hal`; Reply focused after Escape; the field hidden after Cancel; the field focused again after an empty Send), then the session has received a marker typed through a terminal socket of the page after the keys (the socket delivers in order, so a leaked key arrives before it). | `reply.e2e.ts` `typeBehind` |
 | NLK-003 | A mutation that forwards the bar's keys (letters, or Enter alone) to the terminal fails the test, and so does an Enter sent on Escape, on Cancel or on an empty Send, or the field's letters forwarded. | Evidence |
 | NLK-004 | Test-only change: no product code changes. | diff |
 
@@ -83,6 +83,9 @@ attention bar), and Escape, Cancel and an empty Send in the reply field.
   marker catches.
 - **The empty Send's test clears the marker** (two backspaces through the same socket, waiting for
   an empty session) so its next step still sends exactly `> Go on`.
+- **A leaked Escape is seen by its line (review round 2).** The mock draws a raw Escape as
+  `(esc) interrupted` and keeps the typed input, so the check also looks for that line, after the
+  wait for the marker's echo (screen updates arrive in order).
 
 ## Evidence
 
@@ -111,3 +114,7 @@ Review round 1 (all six reads covered, 85866c56):
 | new | the field's letters forwarded | 2 failed: `expected "xNot yety" to be "xy"`, `expected "Halx" to be "x"` |
 | new | the bar's Enter forwarded | 1 failed: `expected "y" to be "xy"` |
 | new | the bar's letters and Enter forwarded | 1 failed: `expected "lo 2x" to be "x"` |
+
+Review round 2 (fe424f10): unchanged product 6 passed; the field's Escape also sent to the
+terminal (`terminal.sendKeys('\x1b')`), which passed at 12fc18b8, now fails the Escape test
+(`expect.not.toContainText failed`, `reply.e2e.ts:45`).
