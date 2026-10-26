@@ -448,6 +448,11 @@ impl<R: Read> Reader<R> {
         Ok(n)
     }
 
+    /// The current file's data as a reader.
+    pub fn data_reader(&mut self) -> EntryData<'_, R> {
+        EntryData(self)
+    }
+
     /// The next entry; the rest of the previous one is skipped.
     ///
     /// # Errors
@@ -551,6 +556,15 @@ impl<R: Read> Reader<R> {
             return Err(bad("something follows its checksum"));
         }
         Ok(())
+    }
+}
+
+/// The current entry's data, from [`Reader::data_reader`].
+pub struct EntryData<'a, R: Read>(&'a mut Reader<R>);
+
+impl<R: Read> Read for EntryData<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.0.data(buf)
     }
 }
 

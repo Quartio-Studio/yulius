@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod archive;
 pub mod export;
+pub mod extract;
 pub mod freeze;
 pub mod walk;
 
