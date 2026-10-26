@@ -305,6 +305,20 @@ enum InstanceAction {
         #[arg(long = "move")]
         move_out: bool,
     },
+    /// Install an export on this host: makes the service user and its ids, extracts the copy
+    /// into the exported data directory as it arrives and checks it; never overwrites an
+    /// instance. Then run `yulius host setup`.
+    Import {
+        /// The export; standard input when absent or `-`.
+        file: Option<PathBuf>,
+        /// Data directory (must be the exported one, which is the default).
+        #[arg(long = "data-dir", visible_alias = "data")]
+        data_dir: Option<PathBuf>,
+        /// The service user to make when the data directory does not exist (default: the
+        /// exported one's name).
+        #[arg(long)]
+        user: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -722,6 +736,18 @@ fn main() -> ExitCode {
             service,
             update_service,
             move_out,
+        }),
+        Command::Instance {
+            action:
+                InstanceAction::Import {
+                    file,
+                    data_dir,
+                    user,
+                },
+        } => yulius::instance::import::main(&yulius::instance::import::ImportOptions {
+            file,
+            data_dir,
+            user,
         }),
         Command::Version => {
             let commit = env!("YULIUS_BUILD_COMMIT");

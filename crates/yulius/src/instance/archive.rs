@@ -412,7 +412,10 @@ impl<R: Read> Reader<R> {
     fn take(&mut self, buf: &mut [u8]) -> io::Result<()> {
         self.input.read_exact(buf).map_err(|e| {
             if e.kind() == io::ErrorKind::UnexpectedEof {
-                bad("the stream ended early (an incomplete copy)")
+                io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "the stream ended early (an incomplete copy)",
+                )
             } else {
                 e
             }
