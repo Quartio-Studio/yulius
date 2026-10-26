@@ -55,8 +55,8 @@ reports no size, so it never squeezes its session; showing it again still fits i
 ## Plan
 
 - [x] Spec SPEC-331 written and validated
-- [ ] Regression e2e test fails on dev: hiding the Superagent or a Shell terminal sends no resize
-- [ ] A hidden terminal measures nothing and reports no size
+- [x] Regression e2e test fails on dev: hiding the Superagent or a Shell terminal sends no resize
+- [x] A hidden terminal measures nothing and reports no size
 - [ ] Docs, changes entry and gates green
 - [ ] Independent review answered
 - [ ] PR merged into dev on green

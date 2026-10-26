@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-26
 
+- A hidden terminal no longer squeezes its session to 10×5 (SPEC-331, task #315, fixes #918).
+  Closing the panel or putting another tool in front measured the hidden box's `100%` as 100 px
+  and sent a 10×5 resize. The Superagent and Shell terminals follow the last resize, so a tab
+  still showing the Superagent got Claude Code in ten columns, and what it wrote while hidden
+  stayed wrapped. A terminal that is not shown now measures nothing and sends no size.
 - A Needs you request now reads as What happened, Problem and To do (SPEC-327, task #311). The
   attention bar showed "Needs you: <action> · <why>" as one paragraph, where the to-do was the
   hardest part to find. `needs_you` takes `happened`, `problem`, `action` and `decision`; the bar
