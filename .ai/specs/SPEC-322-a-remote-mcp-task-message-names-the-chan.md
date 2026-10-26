@@ -1,11 +1,11 @@
 ---
 yulius-task: 06524c84-a27d-49ae-8bfd-6558cbdd3b25
-status: in-progress
+status: done
 ---
 
 # SPEC-322: A remote MCP task_message names the channel it came through
 
-Status: in-progress
+Status: done
 Date: 2026-10-26
 Owner: Yulius task #307
 Scope authorization: task #307 (`/goal`), fixes #789. Amends
@@ -53,10 +53,10 @@ instead of naming the Superagent, which was not used. The Superagent's label sta
 ## Plan
 
 - [x] Spec records the remote label and the channel it is read from
-- [ ] A remote MCP message to a running task names the person's own agent
-- [ ] Docs state both labels
-- [ ] Independent review findings answered
-- [ ] Gates green and evidence recorded
+- [x] A remote MCP message to a running task names the person's own agent
+- [x] Docs state both labels
+- [x] Independent review findings answered
+- [x] Gates green and evidence recorded
 
 ## Acceptance criteria
 
@@ -92,3 +92,25 @@ instead of naming the Superagent, which was not used. The Superagent's label sta
 - **Task agents get a label too.** They are never served `task_message` (TMS-001), but the
   `Task` channel needs a wording for `message_paste` to stay total: `their task's agent`. No ADR:
   the choice is local to this tool and recorded here and in ADR-0178's amendment note.
+
+## Evidence
+
+- Regression test first: `a_remote_message_names_the_persons_own_agent` (commit 4b12b4f8) failed
+  on the unfixed code with the task's screen showing
+  `ECHO: Message from admin (through their Superagent):` after a `sent` remote `tools/call`.
+- After the fix: `cargo nextest run -p yulius-app task_message` (2 passed) and
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^task_message::/) |
+  test(/^secrets_scopes::/) | test(/^remote_mcp::/))'`: 57 passed, including the Superagent's
+  `a_running_task_gets_the_message_typed_into_its_session` (AC-2).
+- `scripts/dev ci` at e15d6d23: exit 0; nextest 2620 passed, 16 skipped; clippy, fmt, docs,
+  doctests, deps and macOS targets green. (The first run at 3582e38d failed clippy on an unused
+  `UserStore` import in the new test; fixed in e15d6d23.)
+- `scripts/dev security`: exit 2, not run: Vidoc answered HTTP 429 (the key used its
+  50,000,000 tokens); the 6 changed code files were not scanned. Unrun, not passed; Yulius CI's
+  `security` job runs it again on the pull request head.
+- Independent review (fresh session, `om-code-review`) of 91785a67..3582e38d: APPROVE, no
+  blocker or major; its minor findings (the ADR index line and `docs/architecture.md` did not
+  name the remote label or channel; `task` doc said `None` only for a Cockpit; wrapping; "four
+  places") are fixed in e15d6d23.
+- Not tested: a real laptop agent over HTTP against a live instance; the test calls
+  `App::remote_mcp_handle` in process, which is the same handler `POST /mcp` uses.
