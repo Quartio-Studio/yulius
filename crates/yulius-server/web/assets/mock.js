@@ -135,7 +135,7 @@ function seed(params) {
         is_superadmin: role === 'superadmin', is_instance_admin: role !== 'member', github_linked: linked,
       },
       csrf_token: 'mock-csrf-token',
-      instance: { owner_login: 'Quartio-Studio', owner_kind: 'org', public_url: ORIGIN, github_configured: params.get('github') !== '0', contained: params.get('contained') !== '0', upload_max_bytes: 25 * 1024 * 1024 },
+      instance: { owner_login: 'Quartio-Studio', owner_kind: 'org', public_url: ORIGIN, github_configured: params.get('github') !== '0', contained: params.get('contained') !== '0', upload_max_bytes: 1024 * 1024 * 1024 },
     },
     sandboxes: [],
     tasks: [],

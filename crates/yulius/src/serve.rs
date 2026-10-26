@@ -108,8 +108,9 @@ pub struct ServeArgs {
     #[arg(long, env = "YULIUS_PREVIEW_DOMAIN")]
     pub preview_domain: Option<String>,
     /// Largest file one upload may carry, in MiB (files dropped onto the editor or a terminal,
-    /// SPEC-001 EDT-006, UI-048). The reverse proxy's body limit must allow it.
-    #[arg(long, env = "YULIUS_UPLOAD_MAX_MB", default_value_t = 25,
+    /// SPEC-001 EDT-006, UI-048; 1 GiB by default for screen recordings, SPEC-325). The reverse
+    /// proxy's body limit must allow it.
+    #[arg(long, env = "YULIUS_UPLOAD_MAX_MB", default_value_t = 1024,
           value_parser = clap::value_parser!(u64).range(1..=1024))]
     pub upload_max_mb: u64,
     /// File holding the TypeSafe Jev API key (owner-only, mode 0600) for task intake: split
@@ -636,6 +637,26 @@ fn no_delay(tcp: &mut TcpStream) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Serve {
+        #[command(flatten)]
+        args: ServeArgs,
+    }
+
+    /// SPEC-325 UPL-001: a 1 GB screen recording uploads on a default instance.
+    #[test]
+    fn the_default_upload_limit_is_one_gibibyte() -> Result<(), Box<dyn std::error::Error>> {
+        let parsed = Serve::try_parse_from(["serve"])?;
+        assert_eq!(parsed.args.upload_max_mb, 1024);
+        assert_eq!(
+            yulius_app::uploads::DEFAULT_UPLOAD_MAX_BYTES,
+            parsed.args.upload_max_mb * 1024 * 1024
+        );
+        assert!(Serve::try_parse_from(["serve", "--upload-max-mb", "1025"]).is_err());
+        Ok(())
+    }
 
     #[tokio::test]
     async fn accepted_connections_send_small_writes_at_once()

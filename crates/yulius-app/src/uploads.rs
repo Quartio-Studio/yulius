@@ -65,8 +65,8 @@ use crate::files::{
     real_path, relative_components, remove_tree,
 };
 
-/// Default largest upload (25 MiB; `YULIUS_UPLOAD_MAX_MB`).
-pub const DEFAULT_UPLOAD_MAX_BYTES: u64 = 25 * 1024 * 1024;
+/// Default largest upload (1 GiB, a screen recording: SPEC-325; `YULIUS_UPLOAD_MAX_MB`).
+pub const DEFAULT_UPLOAD_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 /// Uploads in progress at once on this instance.
 pub const MAX_CONCURRENT_UPLOADS: usize = 8;
 /// Agent states sent, restored, saved or downloaded at once (SPEC-271 OPS-008).

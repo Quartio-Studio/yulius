@@ -11,7 +11,7 @@ import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, openModal } from './dom.js';
 
 /** The server's limit when it does not say (`/api/me` → `instance.upload_max_bytes`). */
-const DEFAULT_LIMIT = 25 * 1024 * 1024;
+const DEFAULT_LIMIT = 1024 * 1024 * 1024;
 /** Files one drop may add to the editor (a folder's files count). */
 const MAX_EDITOR_FILES = 1000;
 /** Files one drop may hand to a terminal. */
