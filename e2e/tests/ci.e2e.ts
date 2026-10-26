@@ -228,17 +228,21 @@ test('a run view focused by script draws no frame; its controls keep their ring'
   const focusStyle = () => browser.evaluate(() => {
     const el = document.activeElement as HTMLElement | null;
     const style = el ? getComputedStyle(el) : null;
-    return { label: el?.getAttribute('aria-label') ?? el?.textContent?.trim() ?? null, boxShadow: style?.boxShadow ?? null, outline: style?.outlineStyle ?? null };
+    // `visible`: the global ring's trigger is there, so `none` proves the rule, not a pointer focus.
+    return { label: el?.getAttribute('aria-label') ?? el?.textContent?.trim() ?? null, visible: el?.matches(':focus-visible') ?? null, boxShadow: style?.boxShadow ?? null, outline: style?.outlineStyle ?? null };
   });
-  for (const [path, name] of [['/s/studio/ci?run=ci_s2', 'CI run'], ['/s/studio/cd?run=cd_s2', 'Deploy']]) {
+  const views = [{ path: '/s/studio/ci?run=ci_s2', name: 'CI run', log: /1 failed/ },
+    { path: '/s/studio/cd?run=cd_s2', name: 'Deploy', log: /\[secret:DEV_HOST\]/ }];
+  for (const { path, name, log } of views) {
     await app.open(mock(path));
-    await expect(browser.locator('.run-output')).not.toHaveText('');
-    await expect.poll(focusStyle).toEqual({ label: name, boxShadow: 'none', outline: 'none' });
+    await expect(browser.locator('.run-output')).toHaveText(log);
+    await expect.poll(focusStyle).toEqual({ label: name, visible: true, boxShadow: 'none', outline: 'none' });
     expect(await axeViolations(browser)).toEqual([]);
     // From the view, Tab reaches "All runs", which shows the ring.
     await browser.keyboard.press('Tab');
     await expect(screen.getByRole('region', name).getByRole('link', 'All runs')).toBeFocused();
     const link = await focusStyle();
+    expect(link.visible).toBe(true);
     expect(link.boxShadow).not.toBe('none');
     expect(link.boxShadow).toMatch(/rgb/);
   }
