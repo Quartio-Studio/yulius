@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-26
 
+- Scrolling a task's terminal past its top now leads to the session's first message (SPEC-326,
+  task #310, fixes #911). Claude Code shows a session only from its last compaction, also after
+  every resume, so a compacted task could not be scrolled back further. A wheel turn up that no
+  longer moves the terminal now offers "Earlier messages: show the whole session". It opens the
+  task's transcript, read from its first line and live, in the terminal's place. Back to the
+  terminal, or Escape, returns to the terminal, which stayed connected.
 - The reply e2e no-leak checks now fail when keys reach the terminal (SPEC-323, task #308, fixes
   #524). They read the session right after the keys, before a leaked key had arrived, and on an
   empty session, which a leaked Enter leaves empty: with the attention bar's keys forwarded to the
