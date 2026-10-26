@@ -292,6 +292,13 @@ Head b1cccd89 (merged with `origin/dev` at 056e061c).
   of 2 on a signal during a refused freeze) and a nit (hard-link digests); round 3 one
   Medium (a signal right after the export took its end); round 4 approve on b1cccd89, no
   findings left. All findings were own code and fixed test-first; none pre-existing.
+- PR #923's first CI run (f04234e5) failed one e2e test that came in with the `dev` merge,
+  `agent-panel.e2e.ts` "a hidden Superagent or Shell terminal keeps its session's size"
+  (SPEC-331): its `fitted` took the mock Shell session's 100×30 from before the page's hello
+  reached it, so under load the later check compared the page's 50×39 with it. Reproduced by
+  holding the Shell's hello (`__yuliusHoldShell`) until after `fitted` ("expected 50x39 to be
+  100x30", the CI message); fixed in the test by waiting for the hello first; the file passes
+  with a 1 s hold and without it. Outside this feature; fixed here because it blocked the merge.
 - Security scan (`yulius security-scan`, beside the gate): **not run**, exit 2: Vidoc answered
   HTTP 429 "This API key has used its 50,000,000 tokens" (the instance key's quota). The PR's CI
   `security` job is the live scan.
