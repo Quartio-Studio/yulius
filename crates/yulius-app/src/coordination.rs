@@ -68,7 +68,7 @@ pub struct ProjectCaller {
     pub sandbox: SandboxId,
     /// The person on whose authority it acts.
     pub user: UserId,
-    /// The caller's own task; `None` for a Cockpit.
+    /// The caller's own task; `None` for a Cockpit or the remote MCP.
     pub task: Option<TaskRecord>,
     /// The channel it calls through.
     pub channel: Channel,

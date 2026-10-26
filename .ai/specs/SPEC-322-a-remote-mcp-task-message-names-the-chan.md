@@ -33,7 +33,7 @@ instead of naming the Superagent, which was not used. The Superagent's label sta
 - **Why tests missed it.** The remote MCP test (`remote_mcp.rs`,
   `a_repository_is_onboarded_end_to_end_from_a_laptop`) only reaches a task that has not started
   (`queued`); the typed label is tested only with a Superagent caller.
-- **Callers.** `ProjectCaller` is built in four places: a task's agent (`AgentContext::caller`),
+- **Callers.** `ProjectCaller` is built in three places: a task's agent (`AgentContext::caller`),
   a person's Cockpit, which is their Superagent (`cockpit_caller`), and the remote MCP
   (`remote_call`). Task agents are never served `task_message` (TMS-001).
 

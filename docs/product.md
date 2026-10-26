@@ -101,8 +101,8 @@ watching, steering and unblocking.
   DO budget", the Superagent passes the message on (task agents cannot): a task that has not
   started gets it in its request, a running one gets it typed into its session as "Message from
   alice (through their Superagent)" (or "(through their own agent)" when the person's own agent
-  sends it through the remote MCP, SPEC-322), unless someone typed there in the last minute or the task
-  still asks a person whether to trust its folder (SPEC-230). When a usage limit cuts its
+  sends it through the remote MCP, SPEC-322), unless someone typed there in the last minute or
+  the task still asks a person whether to trust its folder (SPEC-230). When a usage limit cuts its
   turn, it moves to a subscription with capacity and goes on with the turn, as a task does; the
   panel follows it. It has the project's MCP servers, as a task does, and an agent secret one of
   them or a command prints shows there as `[secret:NAME]` (SPEC-147). It uses the agent vault as

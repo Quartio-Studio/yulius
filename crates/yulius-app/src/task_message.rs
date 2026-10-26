@@ -6,7 +6,8 @@
 //!   message of the Superagent's person (SPEC-052, TMS-002);
 //! - a running task gets it typed into its session as one bracketed paste, labelled with the
 //!   person and the channel it came through (SPEC-322), then a separate Enter; Claude Code
-//!   queues a message submitted while the agent works (TMS-003). Control characters other than line breaks and tabs never reach the TUI;
+//!   queues a message submitted while the agent works (TMS-003). Control characters other than
+//!   line breaks and tabs never reach the TUI;
 //! - nothing is typed before Claude Code's session started (its SessionStart hook, also read
 //!   from the run's marker after a restart, or the goal typist's fallback for a CLI without it),
 //!   while it asks a person whether to trust the folder, while a person typed in the last minute (their

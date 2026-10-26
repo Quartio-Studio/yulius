@@ -12,7 +12,7 @@ use yulius_app::context::App;
 use yulius_app::coordination::{Channel, ProjectCaller};
 use yulius_app::error::AppError;
 use yulius_app::needs_you::NeedsYouRecord;
-use yulius_app::ports::store::{TaskStore, UserStore};
+use yulius_app::ports::store::TaskStore;
 use yulius_app::remote::RemoteCaller;
 use yulius_contracts::mcp::RpcRequest;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
