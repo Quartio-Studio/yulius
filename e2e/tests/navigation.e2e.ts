@@ -224,11 +224,35 @@ test('a sandbox tab follows the pointer, the others slide aside, and it settles 
   // SMO-001: the browser's own link drag never starts (no ghost image).
   expect(await browser.evaluate(() => [...document.querySelectorAll<HTMLElement>('.tabrow-tabs .tab[data-id]')].map((tab) => tab.draggable))).toEqual([false, false, false]);
 
-  // Pressed on sandbox-3 and moved over studio: it follows the pointer, studio and product slide right.
+  // A drag that ends where it started reorders nothing and pins no order (sandboxes added later
+  // keep the server's order).
   const third = await row.getByRole('link', /^sandbox-3\b/).boundingBox();
   const first = await row.getByRole('link', /^studio\b/).boundingBox();
   if (!third || !first) throw new Error('tabs not laid out');
   const y = third.y + third.height / 2;
+  await browser.mouse.move(first.x + first.width / 2, y);
+  await browser.mouse.down();
+  for (const x of [first.x + first.width / 2 + 12, first.x + first.width / 2]) await browser.mouse.move(x, y);
+  await browser.mouse.up();
+  expect(await names()).toEqual(['studio', 'product', 'sandbox-3']);
+  expect(await browser.evaluate(() => localStorage.getItem('yulius.sandboxOrder'))).toBeNull();
+  expect(await hash()).toBe(start);
+
+  // A sandbox renamed on the server while a tab is pressed (SMO-004). The mock delivers a pushed
+  // event on a zero timeout, so a later zero timeout runs once the page handled it; the page's
+  // title (not held) shows the store has it.
+  const rename = (id: string, name: string) => browser.evaluate(async ([sandboxId, newName]) => {
+    type Mock = { __yuliusMock: { sandboxes: { id: string, name: string }[], eventSockets: Set<{ push: (data: string) => void }> } };
+    const db = (window as unknown as Mock).__yuliusMock;
+    const pressed = document.querySelector('.tabrow-tabs .tab.dragging, .tabrow-tabs .tab:active');
+    const sandbox = db.sandboxes.find((s) => s.id === sandboxId)!;
+    sandbox.name = newName;
+    for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'sandbox.updated', sandbox }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return { same: Boolean(pressed?.isConnected), drawn: [...document.querySelectorAll('.tabrow-tabs .tab-name')].some((n) => n.textContent === newName) };
+  }, [id, name] as const);
+
+  // Pressed on sandbox-3 and moved over studio: it follows the pointer, studio and product slide right.
   await browser.mouse.move(third.x + third.width / 2, y);
   await browser.mouse.down();
   for (const x of [third.x + third.width / 2 - 10, first.x + first.width, first.x + 4]) await browser.mouse.move(x, y);
@@ -239,22 +263,14 @@ test('a sandbox tab follows the pointer, the others slide aside, and it settles 
   expect(moving.product).toBeGreaterThan(0);
   expect(await browser.evaluate(() => document.querySelector('.tabrow-tabs')!.classList.contains('reordering'))).toBe(true);
 
-  // SMO-004: an update while the tab is held does not redraw the row under the pointer. The mock
-  // delivers a pushed event on a zero timeout, so a later zero timeout runs once it was handled.
-  const held = await browser.evaluate(async () => {
-    type Mock = { __yuliusMock: { sandboxes: { id: string, counts: Record<string, number> }[], eventSockets: Set<{ push: (data: string) => void }> } };
-    const db = (window as unknown as Mock).__yuliusMock;
-    const pressed = document.querySelector('.tabrow-tabs .tab.dragging');
-    const studio = { ...db.sandboxes.find((s) => s.id === 'sb_studio')!, counts: { running: 7, needs_attention: 0, queued: 0 } };
-    for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'sandbox.updated', sandbox: studio }));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    return { same: Boolean(pressed?.isConnected), counted: [...document.querySelectorAll('.tabrow-tabs .tab-running')].some((count) => count.textContent === '7') };
-  });
-  expect(held).toEqual({ same: true, counted: false });
+  // SMO-004: the update does not redraw the row under the pointer...
+  expect(await rename('sb_studio', 'studio-renamed')).toEqual({ same: true, drawn: false });
+  expect(await browser.evaluate(() => document.title)).toContain('studio-renamed');
 
-  // SMO-002: let go, it takes its place, nothing opens, and the row settles back to no transforms.
+  // SMO-002: ...let go, it takes its place, the update is drawn, nothing opens, and the row
+  // settles back to no transforms.
   await browser.mouse.up();
-  expect(await names()).toEqual(['sandbox-3', 'studio', 'product']);
+  expect(await names()).toEqual(['sandbox-3', 'studio-renamed', 'product']);
   await expect.poll(async () => Object.values(await shifts()).every((x) => x === 0)).toBe(true);
   expect(await hash()).toBe(start);
 
@@ -268,15 +284,35 @@ test('a sandbox tab follows the pointer, the others slide aside, and it settles 
   await browser.keyboard.press('Escape');
   await browser.mouse.move(product.x + product.width / 2, y);
   await browser.mouse.up();
-  expect(await names()).toEqual(['sandbox-3', 'studio', 'product']);
+  expect(await names()).toEqual(['sandbox-3', 'studio-renamed', 'product']);
   expect(Object.values(await shifts()).every((x) => x === 0)).toBe(true);
   expect(await hash()).toBe(start);
 
+  // SMO-004 for a press that ends without a drag (the browser cancels it): the update held
+  // meanwhile is drawn then.
+  await browser.evaluate(() => window.addEventListener('pointerdown', (event) => { (window as unknown as { e2ePointer: number }).e2ePointer = event.pointerId; }, { once: true, capture: true }));
+  await browser.mouse.move(product.x + product.width / 2, y);
+  await browser.mouse.down();
+  expect((await rename('sb_product', 'product-renamed')).drawn).toBe(false);
+  await browser.evaluate(() => window.dispatchEvent(new PointerEvent('pointercancel', { pointerId: (window as unknown as { e2ePointer: number }).e2ePointer })));
+  await expect.poll(names).toEqual(['sandbox-3', 'studio-renamed', 'product-renamed']);
+  await browser.mouse.up();
+
+  // The context menu moves a tab without dragging (WCAG 2.5.7).
+  await browser.evaluate(() => {
+    const tab = [...document.querySelectorAll<HTMLElement>('.tabrow-tabs .tab')].find((t) => t.querySelector('.tab-name')?.textContent === 'sandbox-3')!;
+    const box = tab.getBoundingClientRect();
+    tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: box.left + 8, clientY: box.bottom }));
+  });
+  await expect(screen.getByRole('menuitem', 'Move left')).toHaveAttribute('aria-disabled', 'true');
+  await screen.getByRole('menuitem', 'Move right').click();
+  expect(await names()).toEqual(['studio-renamed', 'sandbox-3', 'product-renamed']);
+
   // A plain click still opens the sandbox; the order is kept after a reload.
-  await row.getByRole('link', /^product\b/).click();
+  await row.getByRole('link', /^product-renamed\b/).click();
   await expect(browser).toHaveURL(/#\/s\/product/);
   await browser.reload();
-  await expect.poll(names).toEqual(['sandbox-3', 'studio', 'product']);
+  await expect.poll(async () => (await names()).map((name) => name?.replace('-renamed', ''))).toEqual(['studio', 'sandbox-3', 'product']);
 });
 
 // Task #108 (SPEC-122): "We need tasks id somewhere here and not only PRs id because we use them
