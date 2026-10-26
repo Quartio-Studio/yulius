@@ -164,8 +164,16 @@ test('at phone width the Status panel and the Dashboard keep both percents and d
   expect(await axeViolations(browser)).toEqual([]);
 });
 
-/** Each Status section head: its widths, its summary's text and the line each summary part starts on. */
-const sectionHeads = (browser: Browser) => browser.evaluate(() => {
+/**
+ * Each Status section head: its widths, its summary's text and its lines. `narrow` first squeezes
+ * the summary of that section to 60 px, in the same script, so no refresh of the panel comes between.
+ */
+const sectionHeads = (browser: Browser, narrow: string | null = null) => browser.evaluate((narrow) => {
+  if (narrow) {
+    const squeezed = [...document.querySelectorAll<HTMLElement>('.status-pop .status-section')]
+      .find((section) => section.querySelector('h2')?.textContent === narrow)!.querySelector<HTMLElement>('.status-summary-text')!;
+    squeezed.style.maxWidth = '60px';
+  }
   const panel = document.querySelector('.status-pop')!.getBoundingClientRect();
   return [...document.querySelectorAll('.status-pop .status-section')].map((section) => {
     const head = section.querySelector(':scope > summary');
@@ -178,15 +186,15 @@ const sectionHeads = (browser: Browser) => browser.evaluate(() => {
       textRight: text ? text.getBoundingClientRect().right : null,
       panelRight: panel.right,
       summary: text?.textContent ?? null,
-      // A part split over two lines has two rects; the lines are the distinct tops.
+      // A part split over two lines has two rects; the lines are the distinct tops of all rects.
       splitParts: parts.filter((p) => p.getClientRects().length > 1).map((p) => p.textContent),
-      lines: parts.length ? new Set(parts.map((p) => Math.round(p.getBoundingClientRect().top))).size : text?.getClientRects().length ?? 0,
+      lines: new Set(parts.flatMap((p) => [...p.getClientRects()].map((r) => Math.round(r.top)))).size,
       // How far each line ends short of the summary's right edge (its last part's right end).
       lineGaps: [...Map.groupBy(parts, (p) => Math.round(p.getBoundingClientRect().top)).values()]
         .map((line) => text!.getBoundingClientRect().right - Math.max(...line.map((p) => p.getBoundingClientRect().right))),
     };
   });
-});
+}, narrow);
 
 test('at phone width every Status section head fits the panel and shows its whole summary (#549)', async ({ app, browser }) => {
   await browser.setViewport({ width: 360, height: 780 });
@@ -210,6 +218,11 @@ test('at phone width every Status section head fits the panel and shows its whol
 
   // SSF-003
   expect(await axeViolations(browser)).toEqual([]);
+
+  // SSF-002: a summary of one text, squeezed, wraps between its words instead of spilling.
+  const sandboxes = (await sectionHeads(browser, 'Sandboxes')).find((h) => h.title === 'Sandboxes')!;
+  expect(sandboxes.lines).toBeGreaterThan(1);
+  expect(sandboxes.wider).toEqual([]);
 });
 
 test('at desktop width a Status section summary stays on one line beside its title (#549)', async ({ app, browser }) => {
