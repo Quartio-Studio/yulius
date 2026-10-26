@@ -670,15 +670,7 @@ async fn the_cancel_message_counts_every_task_still_in_a_turn() -> TestResult {
     let alice = i.h.store.user_by_login("alice").await?.ok_or("alice")?.id;
     for n in 0..20 {
         let id = format!("t-busy-{n:02}");
-        let task = seed_task(
-            &i.h,
-            &id,
-            "s1",
-            alice.as_str(),
-            TaskStatus::Running,
-            None,
-        )
-        .await?;
+        let task = seed_task(&i.h, &id, "s1", alice.as_str(), TaskStatus::Running, None).await?;
         seed_live_attempt_at(
             &i.h,
             &id,
