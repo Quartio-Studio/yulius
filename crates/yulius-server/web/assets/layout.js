@@ -357,13 +357,33 @@ function rememberOpen(details, key, openByDefault) {
   return details;
 }
 
-/** One machine tile: icon and name, a big value, a bar and a detail line. */
-function statTile(iconName, name, value, percent, detail) {
-  return h('div', { class: ['stat-tile', `stat-${toneOf(percent)}`] },
+/** One machine tile: icon and name, a big value, a bar and a detail line (or several). */
+function statTile(iconName, name, value, percent, detail, why = null) {
+  return h('div', { class: ['stat-tile', `stat-${toneOf(percent)}`], title: why },
     h('div', { class: 'stat-head' }, icon(iconName, { size: 15 }), h('span', null, name)),
     h('div', { class: 'tile-value' }, value),
     usageBar(percent, name),
-    h('div', { class: 'stat-detail' }, detail || ' '));
+    [detail || ' '].flat().map((line) => h('div', { class: 'stat-detail' }, line)),
+    why ? h('span', { class: 'sr-only' }, why) : null);
+}
+
+/**
+ * The Sessions tile. The count can pass the limit for a while: a Done task's idle session holds no
+ * slot, and one that works again counts again without passing the start door (SES-101); a restart
+ * with a lower limit keeps the runs it finds. Then the tile shows the limit full and marks the
+ * overshoot instead of "9 / 8" (SPEC-334).
+ */
+function sessionsTile({ live, limit, queued }) {
+  const queue = queued ? `${queued} queued` : null;
+  if (!Number.isFinite(live)) return statTile('terminal', 'Sessions', '—', null, queue || 'agent sessions running');
+  if (!(limit > 0) || live <= limit) {
+    return statTile('terminal', 'Sessions', `${live}${limit ? ` / ${limit}` : ''}`, pct(live, limit), queue || 'agent sessions running');
+  }
+  const over = live - limit;
+  const why = `${over} ${over === 1 ? 'session' : 'sessions'} more than the limit of ${limit}: a Done task that works again counts again, and runs started before a restart with a lower limit keep running. Queued tasks start once fewer than ${limit} run.`;
+  // One line each, so a phone's narrow tile cuts neither off.
+  return statTile('terminal', 'Sessions', [`${limit} / ${limit}`, h('span', { class: 'tile-over' }, `+${over}`)], 100,
+    [`${over} over the limit`, queue].filter(Boolean), why);
 }
 
 /**
@@ -390,7 +410,6 @@ export function renderStatus(data) {
   const memPct = pct(vm.memory_used_bytes, vm.memory_total_bytes);
   const diskPct = pct(vm.disk_used_bytes, vm.disk_total_bytes);
   const sessions = data.sessions || {};
-  const sessionsPct = Number.isFinite(sessions.live) && sessions.limit ? pct(sessions.live, sessions.limit) : null;
   const sandboxes = Array.isArray(data.sandboxes) ? data.sandboxes : [];
   const accounts = Array.isArray(data.accounts) ? data.accounts : [];
   const load = Array.isArray(vm.load) ? vm.load.map((v) => Number(v).toFixed(2)) : Number.isFinite(vm.load_1m) ? [Number(vm.load_1m).toFixed(2)] : null;
@@ -433,7 +452,7 @@ export function renderStatus(data) {
         statTile('cpu', 'CPU', percentText(vm.cpu_percent), vm.cpu_percent, vm.cpu_count ? `${vm.cpu_count} cores` : null),
         statTile('memory', 'Memory', percentText(memPct), memPct, vm.memory_total_bytes ? `${bytes(vm.memory_used_bytes)} of ${bytes(vm.memory_total_bytes)}` : null),
         statTile('disk', 'Disk', diskPct === null ? '—' : percentText(diskPct), diskPct, vm.disk_total_bytes ? `${bytes(vm.disk_used_bytes)} of ${bytes(vm.disk_total_bytes)}` : null),
-        statTile('terminal', 'Sessions', Number.isFinite(sessions.live) ? `${sessions.live}${sessions.limit ? ` / ${sessions.limit}` : ''}` : '—', sessionsPct, sessions.queued ? `${sessions.queued} queued` : 'agent sessions running')),
+        sessionsTile(sessions)),
       h('div', { class: 'status-facts' }, facts)),
     sandboxes.length ? statusSection('sandboxes', 'folder', 'Sandboxes', `${liveTotal} running in ${busy} of ${sandboxes.length}`, h('div', { class: 'status-rows' }, sandboxRows), false) : null,
     statusSection('accounts', 'user', 'Subscriptions', accounts.length ? accountSummary : 'none yet',
