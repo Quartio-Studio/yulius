@@ -989,7 +989,34 @@ starts their command nor connects to their private address until a person change
 secret values reach a run in `YULIUS_MCP_<SERVER>_<VAR>` variables, never under the server's own
 variable name, which may hold an agent secret's placeholder.
 
-The Superagent gets the same servers as a task run of its sandbox (`App::mcp_attachments`), inline
+### MCP server scopes
+
+Since SPEC-332 ([decision 0224](decisions/0224-an-mcp-server-is-for-every-sandbox-or-one-and-for-the-team-or-its-owner.md))
+an MCP server is for every sandbox (`sandbox_id` NULL) or one, and for the team (`owner_id` NULL)
+or one person (removed with the user's row). `McpStore::mcp_servers(sandbox, person)` lists the
+team servers of both reaches and `person`'s own; `App::mcp_attachments(sandbox, holder)` keeps one
+per name by rank and attaches the enabled winners. The holder is ADR-0186's: a task's owner unless
+an automation started it (`Holder::of_task`), the Superagent's person, nobody for CI and CD. The
+MCP API answers 404 for another person's server, administrators included, and `task_message` from
+anyone but the owner refuses a task holding its owner's personal server (or whose live run, per
+`TaskRuntime::personal_mcp_of`, was started with one); a hand-over resumes such a run with the new
+owner's servers. `App::mcp_secret_values` adds the servers' literal secret values to
+`App::matcher_for`, so redaction covers them with the agent secrets (MCP changes bump the vault
+generation).
+
+```mermaid
+flowchart LR
+  S["mcp_servers(sandbox, holder's person): team servers + own personal"] --> R{"per name, highest rank wins"}
+  R -->|"3"| SP["this sandbox, personal"]
+  R -->|"2"| ST["this sandbox, team"]
+  R -->|"1"| GP["every sandbox, personal"]
+  R -->|"0"| GT["every sandbox, team"]
+  SP & ST & GP & GT --> E{"winner enabled?"}
+  E -->|"yes"| A["attached to the run"]
+  E -->|"no"| X["name off for this holder"]
+```
+
+The Superagent gets the same servers as its person's task run of its sandbox (`App::mcp_attachments`), inline
 in its `--mcp-config` next to `yulius`, their values in its secret environment, and the task runs'
 redaction of agent secrets: `CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec` for its Bash commands,
 hooks and stdio servers, and the `PostToolUse` hook, its only hook; its screen is redacted on the

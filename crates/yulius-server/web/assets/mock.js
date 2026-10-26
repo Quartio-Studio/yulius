@@ -304,8 +304,8 @@ function seed(params) {
     { id: 'aut_3', sandbox: 'sb_studio', name: 'Work through open issues', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null, harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: null },
   ];
   db.mcp = [
-    { id: 'mcp_quartio', sandbox: null, scope: 'instance', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true, origin: 'person' },
-    { id: 'mcp_apify', sandbox: 'sb_studio', scope: 'sandbox', name: 'apify', transport: 'stdio', command: 'npx', args: ['-y', '@apify/actors-mcp-server'], url: null, env_keys: ['APIFY_TOKEN'], header_keys: [], enabled: true, origin: 'person' },
+    { id: 'mcp_quartio', sandbox: null, scope: 'instance', audience: 'team', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true, origin: 'person' },
+    { id: 'mcp_apify', sandbox: 'sb_studio', scope: 'sandbox', audience: 'team', name: 'apify', transport: 'stdio', command: 'npx', args: ['-y', '@apify/actors-mcp-server'], url: null, env_keys: ['APIFY_TOKEN'], header_keys: [], enabled: true, origin: 'person' },
   ];
   // AdminUser (the superadmin is not listed).
   db.users = [
@@ -2851,21 +2851,34 @@ route('DELETE', `/api/sandboxes/${ID}/variables/${ID}`, ({ db, p }) => {
   return json(204);
 });
 
-route('GET', `/api/sandboxes/${ID}/mcp`, ({ db, p }) => db.mcp.filter((m) => m.scope === 'instance' || m.sandbox === p[0]).map(({ sandbox: _s, ...m }) => m));
+// A personal server exists only for its owner (SPEC-332); every sandbox for the team is an
+// administrator's, the rest anyone's who may write here.
+const mcpOut = ({ sandbox: _s, owner: _o, ...m }) => ({ audience: 'team', ...m });
+const mcpMine = (db, m) => !m.owner || m.owner === db.me.user.id;
+const mcpPlace = (db, scope, audience) => { if (scope === 'instance' && audience !== 'personal' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator'); };
+route('GET', `/api/sandboxes/${ID}/mcp`, ({ db, p }) => db.mcp.filter((m) => (m.scope === 'instance' || m.sandbox === p[0]) && mcpMine(db, m)).map(mcpOut));
 route('POST', `/api/sandboxes/${ID}/mcp`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(body.name || '') || body.name.toLowerCase() === 'yulius') fail(422, 'invalid', 'invalid or reserved server name');
-  if (body.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator');
+  mcpPlace(db, body.scope, body.audience);
   db.nextId += 1;
-  const m = { id: `mcp_${db.nextId}`, sandbox: p[0], scope: body.scope === 'instance' ? 'instance' : 'sandbox', name: body.name, transport: body.transport, command: body.command || null, args: body.args || [], url: body.url || null, env_keys: Object.keys(body.env || {}), header_keys: Object.keys(body.headers || {}), enabled: body.enabled !== false, origin: 'person' };
+  const personal = body.audience === 'personal';
+  const m = { id: `mcp_${db.nextId}`, sandbox: p[0], scope: body.scope === 'instance' ? 'instance' : 'sandbox', audience: personal ? 'personal' : 'team', owner: personal ? db.me.user.id : null, name: body.name, transport: body.transport, command: body.command || null, args: body.args || [], url: body.url || null, env_keys: Object.keys(body.env || {}), header_keys: Object.keys(body.headers || {}), enabled: body.enabled !== false, origin: 'person' };
   db.mcp.push(m);
-  const { sandbox: _s, ...out } = m;
-  return json(201, out);
+  return json(201, mcpOut(m));
 });
 route('PUT', `/api/mcp/${ID}`, ({ db, p, body }) => {
   const m = db.mcp.find((x) => x.id === p[0]);
-  if (!m) fail(404, 'not_found', 'not found');
-  if (m.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator');
+  if (!m || !mcpMine(db, m)) fail(404, 'not_found', 'not found');
+  mcpPlace(db, m.scope, m.audience);
+  // Scope and audience move the server (MSC-006); making it personal makes the caller its owner.
+  if (body.scope || body.audience) {
+    const scope = body.scope || m.scope;
+    const audience = body.audience || m.audience || 'team';
+    mcpPlace(db, scope, audience);
+    if (scope === 'sandbox' && m.scope === 'instance') m.sandbox = body.sandbox || fail(422, 'invalid', 'name the sandbox');
+    Object.assign(m, { scope, audience, owner: audience === 'personal' ? m.owner || db.me.user.id : null });
+  }
   // A .mcp.json server becomes a person's when what it runs changes (SPEC-218 MOR-003): a stdio
   // command or arguments with its environment replaced, or an HTTP URL.
   if (m.origin === 'mcp_json') {
@@ -2883,14 +2896,17 @@ route('PUT', `/api/mcp/${ID}`, ({ db, p, body }) => {
   // Secrets are write-only: an omitted map keeps the stored values, a given map replaces them.
   if (body.env) m.env_keys = Object.keys(body.env);
   if (body.headers) m.header_keys = Object.keys(body.headers);
-  const { sandbox: _s, ...out } = m;
-  return out;
+  return mcpOut(m);
 });
-route('DELETE', `/api/mcp/${ID}`, ({ db, p }) => { db.mcp = db.mcp.filter((m) => m.id !== p[0]); return json(204); });
+route('DELETE', `/api/mcp/${ID}`, ({ db, p }) => {
+  if (!db.mcp.some((m) => m.id === p[0] && mcpMine(db, m))) fail(404, 'not_found', 'not found');
+  db.mcp = db.mcp.filter((m) => m.id !== p[0]);
+  return json(204);
+});
 route('POST', `/api/mcp/${ID}/test`, ({ db, p }) => {
   const m = db.mcp.find((x) => x.id === p[0]);
-  if (!m) fail(404, 'not_found', 'not found');
-  if (m.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator');
+  if (!m || !mcpMine(db, m)) fail(404, 'not_found', 'not found');
+  mcpPlace(db, m.scope, m.audience);
   // Tests see which servers were tested (`__yuliusMock.mcpTests`).
   (db.mcpTests ||= []).push(m.id);
   if (m.origin === 'mcp_json' && m.transport === 'stdio') return { ok: false, tools: [], error: 'this server came from the repository’s .mcp.json, which agents can write, so the Test does not run its command on the Yulius host; check the whole command line, change it and enter its environment again to test it' };
