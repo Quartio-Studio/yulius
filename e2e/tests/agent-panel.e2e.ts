@@ -326,6 +326,12 @@ test('a hidden Superagent or Shell terminal keeps its session’s size', async (
   const fitted = async (cockpit: boolean) => {
     await expect.poll(() => greeted(cockpit)).toBe(true);
     await expect.poll(async () => Number(((await size(cockpit)) || '0x0').split('x')[0])).toBeGreaterThan(20);
+    // A fit after the hello sends a resize: the size counts once it holds across settled frames.
+    await expect.poll(async () => {
+      const before = await size(cockpit);
+      await settle();
+      return before === (await size(cockpit));
+    }).toBe(true);
     return size(cockpit);
   };
   const shown = await fitted(true);
