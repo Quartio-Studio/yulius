@@ -14,6 +14,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   keeps it frozen and disabled). The import refuses an existing instance, a newer schema or too
   little disk before writing, makes the service user and its ids, remaps owners, never follows a
   link of the copy, and checks the SHA-256 trailer; `yulius host setup` then starts the new VM.
+- A hidden terminal no longer squeezes its session to 10×5 (SPEC-331, task #315, fixes #918).
+  Closing the panel or putting another tool in front measured the hidden box's `100%` as 100 px
+  and sent a 10×5 resize. The Superagent and Shell terminals follow the last resize, so a tab
+  still showing the Superagent got Claude Code in ten columns, and what it wrote while hidden
+  stayed wrapped. A terminal that is not shown now measures nothing and sends no size.
 - A background task's wake-up reads as one line in a watched task and on the Sessions page
   (SPEC-328, task #312, fixes #913). When background work ended, Claude Code's
   `<task-notification>` record was printed as the person's typed prompt, with its time and all
