@@ -221,6 +221,33 @@ test('a run’s summary keeps its content off the edges of its card', async ({ a
   }
 });
 
+// SPEC-321 (#777): the view opening a run takes the keyboard by script (SPEC-238); the global
+// :focus-visible ring (a box-shadow) then framed all of it, touching its content. The region draws
+// no ring; the controls in it keep theirs.
+test('a run view focused by script draws no frame; its controls keep their ring', async ({ app, browser, screen }) => {
+  const focusStyle = () => browser.evaluate(() => {
+    const el = document.activeElement as HTMLElement | null;
+    const style = el ? getComputedStyle(el) : null;
+    // `visible`: the global ring's trigger is there, so `none` proves the rule, not a pointer focus.
+    return { label: el?.getAttribute('aria-label') ?? el?.textContent?.trim() ?? null, visible: el?.matches(':focus-visible') ?? null, boxShadow: style?.boxShadow ?? null, outline: style?.outlineStyle ?? null };
+  });
+  const views = [{ path: '/s/studio/ci?run=ci_s2', name: 'CI run', log: /1 failed/ },
+    { path: '/s/studio/cd?run=cd_s2', name: 'Deploy', log: /\[secret:DEV_HOST\]/ }];
+  for (const { path, name, log } of views) {
+    await app.open(mock(path));
+    await expect(browser.locator('.run-output')).toHaveText(log);
+    await expect.poll(focusStyle).toEqual({ label: name, visible: true, boxShadow: 'none', outline: 'none' });
+    expect(await axeViolations(browser)).toEqual([]);
+    // From the view, Tab reaches "All runs", which shows the ring.
+    await browser.keyboard.press('Tab');
+    await expect(screen.getByRole('region', name).getByRole('link', 'All runs')).toBeFocused();
+    const link = await focusStyle();
+    expect(link.visible).toBe(true);
+    expect(link.boxShadow).not.toBe('none');
+    expect(link.boxShadow).toMatch(/rgb/);
+  }
+});
+
 // SPEC-269: Yulius removes the safe leftovers itself every 6 hours; Clean up does it now, shows
 // at once that it runs, and the card then says what was removed and what was kept.
 type HeldCleanup = Window & { __yuliusMock: { holdHygieneCleanup?: Promise<void>; failHygieneCleanup?: string }; __releaseCleanup?: () => void };

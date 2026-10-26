@@ -2868,7 +2868,9 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 /* A run's view in the CI/CD page (SPEC-238): "All runs" at the start, the run under it. */
 .run-view { min-width: 0; }
 .run-back { align-self: flex-start; }
-.run-view:focus { outline: none; }
+/* Focused by script only, so the keyboard goes with the run: no ring around the whole view (the
+   global :focus-visible draws it as a box-shadow), while the controls in it keep theirs (#777). */
+.run-view:focus { outline: none; box-shadow: none; }
 /* Focus scrolled into view lands below the sticky summary, never under it (WCAG 2.4.11). */
 .page:has(.run-summary) { scroll-padding-top: 96px; }
 /* On a phone its head and facts wrap onto more lines. */

@@ -11,6 +11,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   1 need attention" was cut off at "…1 need attentio". A summary longer than the room beside its
   title now wraps between its parts, right-aligned, so every part, the one that needs a person
   included, stays readable on a phone, where a truncated text's tooltip cannot be reached.
+- A CI run or deploy view no longer draws a light frame around its content when it opens (SPEC-321,
+  task #306, fixes #777). Opening a run moves the keyboard to its view by script (SPEC-238); the
+  view's `:focus` rule cancelled only the outline, while the global focus ring is a box-shadow,
+  which now goes too. Controls in the view keep their ring from the keyboard.
+- A message typed into a running task through the remote MCP now reads "Message from alice
+  (through their own agent):" instead of naming the Superagent, which was not used (SPEC-322,
+  task #307, fixes #789). The tool's caller names its channel (task agent, Superagent, remote
+  MCP) where it is authenticated, and the label is taken from it; the Superagent's label is
+  unchanged.
 
 ## 2026-10-25
 
