@@ -162,7 +162,8 @@ export function mountTaskView(ctx, sandbox, task) {
       emptyMessage: () => emptyTerminalMessage(current),
       // Claude Code shows a session only from its last compaction: past the terminal's top, the
       // whole session is offered (SPEC-326).
-      topOffer: { label: 'Earlier messages: show the whole session', open: () => openHistory() },
+      // A task that never started has no session to show.
+      topOffer: { label: 'Earlier messages: show the whole session', open: () => openHistory(), when: () => !(detail && detail.started === false) },
       exitActions: (exit) => {
         const message = endedMessage(exit.status || current.status, exit.cause || lastLimitCause());
         const actions = [];
@@ -283,7 +284,12 @@ export function mountTaskView(ctx, sandbox, task) {
   // It takes the keyboard (tabindex -1) only from a reply field closed under someone typing.
   const attention = h('div', { class: 'attention-bar', role: 'status', tabindex: -1, hidden: true });
   // Where the user answers the agent: its terminal (the quick input on phones).
-  const focusReply = () => (isPhone() ? quickInput.focus() : terminal.focus());
+  // The whole session (SPEC-326) gives the terminal back first: the answer goes there.
+  const focusReply = () => {
+    closeHistory(false);
+    if (isPhone()) quickInput.focus();
+    else terminal.focus();
+  };
   // A text answer (Needs you, waiting for your reply) is written in a field in the bar and typed
   // into the session (SPEC-156): focusing the terminal alone showed nothing, as Claude Code draws
   // its own cursor. Phones have the quick input for it. The field stays in the bar (hidden when not
@@ -309,6 +315,7 @@ export function mountTaskView(ctx, sandbox, task) {
     replyInput.value = '';
     replying = false;
     renderAttention();
+    closeHistory(false);
     terminal.focus();
   };
   replyInput.addEventListener('keydown', (event) => {
@@ -509,6 +516,7 @@ export function mountTaskView(ctx, sandbox, task) {
     queueBox.setValue('');
     queueError.textContent = '';
     renderQueue();
+    closeHistory(false);
     if (!isPhone()) terminal.focus();
   } }, 'Dismiss');
   // The request's files (SPEC-168): each a placeholder where it sits, `Image N` for an image (N
@@ -655,6 +663,17 @@ export function mountTaskView(ctx, sandbox, task) {
 
   // Watching, the control card sits above the transcript in the flow (SPEC-179 WAT-005).
   const termArea = h('div', { class: ['taskview-term', watch && 'watching'] }, terminal.el, attention, held, queueSlot);
+  // The way on past the terminal's top (terminal-core.js) sits below the cards floating over it
+  // (SPEC-326 HIS-002), however tall they are.
+  const placeOverlays = () => {
+    const bottom = [attention, held].reduce((most, card) => (card.hidden ? most : Math.max(most, card.offsetTop + card.offsetHeight)), 0);
+    termArea.style.setProperty('--term-overlay-bottom', `${bottom}px`);
+  };
+  const overlays = typeof ResizeObserver === 'function' ? new ResizeObserver(placeOverlays) : null;
+  if (overlays) {
+    overlays.observe(attention);
+    overlays.observe(held);
+  }
   const el = h('div', { class: 'taskview' }, heading, strip, termArea, quickbar);
 
   function renderStrip() {
@@ -838,6 +857,7 @@ export function mountTaskView(ctx, sandbox, task) {
       reads.abort();
       destroyers.forEach((off) => off());
       dropHistory();
+      if (overlays) overlays.disconnect();
       terminal.destroy();
     },
   };

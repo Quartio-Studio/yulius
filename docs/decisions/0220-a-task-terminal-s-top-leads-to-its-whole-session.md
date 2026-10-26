@@ -69,4 +69,9 @@ A wheel turn up that reaches the top of a task's terminal offers the whole sessi
 - A program that ignores the wheel (a dialog, a pager without mouse support) also gets the offer.
   The offer is harmless and goes away by itself.
 - The whole transcript is read up front, at most 500 entries or 2 MiB of text per request. A
-  multi-megabyte session takes a few requests before its first message is there.
+  multi-megabyte session takes a few requests before its first message is there. Each page is read
+  from the transcript's start, because `read_page` scans earlier lines for the dotenv redaction.
+  An 11.7 MB session read as about 12 pages therefore scans about 140 MB on the server, once per
+  opening. A byte-offset cursor would remove that if it matters.
+- Answers to the agent (the attention bar's Reply, a reply it sends, a queued message's Dismiss)
+  close the History view first, because they go into the terminal.

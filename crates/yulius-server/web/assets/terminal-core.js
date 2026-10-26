@@ -103,10 +103,10 @@ function keyboardOnPage() {
  *   onReady()                  the terminal is shown (its first screen is drawn)
  *   onConnection(status)       the socket's status (connecting|open|reconnecting|failed|closed)
  *   onFatal(message)           the server refused this terminal for good (not_found, unauthenticated)
- *   topOffer                   optional {label, open()}: a button with `label` over the top of the
- *                              terminal when a wheel turn up reached it (the program's screen did not
- *                              move, or xterm's own scrollback is at its first line); `open()` on a
- *                              click (SPEC-326)
+ *   topOffer                   optional {label, open(), when()}: a button with `label` over the top
+ *                              of the terminal when a wheel turn up reached it (the program's screen
+ *                              did not move, or xterm's own scrollback is at its first line) and
+ *                              `when()` allows it; `open()` on a click (SPEC-326)
  *   fileLinks                  optional {list(dir) → Promise<[{name, kind}]>, roots() → [absolute
  *                              folder paths], open({path, line, col}, event)}: paths of existing
  *                              files in the terminal's folder become links (termlinks.js)
@@ -537,15 +537,25 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     // A key means the person stays in the terminal; the button's own keys open it.
     el.addEventListener('keydown', (event) => { if (!topOfferEl.contains(event.target)) hideTopOffer(); }, true);
   }
+  // A screen with no text yet (a task that has not run) has nothing earlier to offer.
+  const screenBlank = () => {
+    const buffer = term.buffer.active;
+    for (let y = 0; y < term.rows; y++) {
+      const line = buffer.getLine(buffer.viewportY + y);
+      if (line && line.translateToString(true).trim()) return false;
+    }
+    return true;
+  };
   const noticeTop = (event) => {
-    if (!topOfferEl || event.ctrlKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
-    if (!(event.deltaY < 0)) {
+    if (!topOfferEl || event.ctrlKey || !event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+    if (event.deltaY > 0) {
       // A turn back down ends the gesture: what it shows is not the top.
       clearTimeout(topCheck);
       topCheck = null;
       hideTopOffer();
       return;
     }
+    if (screenBlank() || (topOffer.when && !topOffer.when())) return;
     const buffer = term.buffer.active;
     if (buffer.type === 'normal' && !programHasMouse()) {
       if (buffer.viewportY === 0) showTopOffer(null);

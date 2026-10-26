@@ -70,8 +70,8 @@ SPEC-310 fixes.
     start and at its last turn.
 
   A turn that moved the screen does not count. If the screen moves after the check showed the offer
-  (a program slower than the check), the offer goes. Other terminals (Shells, sign-in terminals)
-  offer nothing.
+  (a program slower than the check), the offer goes. A blank screen, and a task that never started,
+  offer nothing. Neither do other terminals (Shells, sign-in terminals).
 - **HIS-002 The way on is offered.** Reaching the top shows a button over the top of the task's
   terminal, below its banner, its connection notice, and the attention bar or held card:
   "Earlier messages: show the whole session". It hides after 8 s, on a wheel turn down, on a key
@@ -85,7 +85,8 @@ SPEC-310 fixes.
   - A new session (a continue that started another) is read again from line 0.
   - The view says what it is: "The whole session, from its first message. Read-only." It has a
     "Back to the terminal" button. Escape anywhere in the view goes back too, and the keyboard
-    returns to the terminal.
+    returns to the terminal. So do the attention bar's Reply, a reply it sends and a queued
+    message's Dismiss, because each answer goes into the terminal.
 - **HIS-004 Unchanged.** The wheel's reports to the program (SPEC-280), the selection keys, and the
   watchers' view of someone else's task (SPEC-179) all work as before. So does a terminal without a
   task.
@@ -156,6 +157,34 @@ SPEC-310 fixes.
 - **Old runs.** At 9c9a93cd, with `terminal-core.js`, `taskview.js` and `watchview.js` taken from
   `origin/dev`, both #911 tests failed (2 failed, 16 passed). With the fix, `tests/terminal.e2e.ts`
   passed 18 of 18.
+- **Review round 1** (fresh session, at 9c9a93cd): APPROVE with 6 minors, 3 nits and test gaps, all
+  own code. The tests at feffccd7 failed at 6db5da8c for the reasons the review named:
+  - the late program: "no offer while the program scrolls", true;
+  - Space on the offer: History never opened;
+  - the second page: `from=500&session=b1f0-12` without `limit=500`.
+
+  The scrollback test only covered a gap. With the fixes at c8adfd3d, the terminal, watching and
+  reply files passed 46 of 46. Answers:
+  1. the late program takes the offer back (`onWriteParsed`);
+  2. the button's own keys open it;
+  3. pages are 500 entries;
+  4. HIS-001 reworded;
+  5. the offer lives in the terminal view, below its banner and connection notice;
+  6. the down-turn step waits for the screen;
+  7. focus, connection, paging, session change and scrollback are tested;
+  8. Escape anywhere in the view goes back, and focus follows a control change.
+- **Review round 2** (fresh session, at c8adfd3d): REQUEST CHANGES for one major. The attention
+  bar's Reply focused the hidden terminal while the whole session showed. Also 2 minors: the offer
+  sat under a tall held card, and a task that never ran was offered its session. 4 nits. The
+  tests added after it failed at c8adfd3d (History still visible after Reply; button top 129 px
+  over a card ending at 225 px; offer shown for product #7). With the fixes, the terminal,
+  watching, reply and queued-messages files passed 76 of 76. Answers:
+  - Reply, Send and Dismiss close the History view first.
+  - The task view measures the floating cards (`--term-overlay-bottom`).
+  - A blank screen, or a task that never started, offers nothing.
+  - Test steps hide the offer with a key before a "next turn offers" check.
+  - `deltaY` 0 is no turn.
+  - ADR-0220 states the cost of reading page by page.
 - **Security.** `yulius security-scan` at fe124b11: exit 2, not run. Vidoc answered HTTP 429: the
   instance key has used its 50,000,000 tokens. This is unrun, not passed; Yulius CI's `security`
   job repeats it.
