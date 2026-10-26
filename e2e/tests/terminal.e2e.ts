@@ -688,6 +688,27 @@ test('a wheel turn past the top offers the whole session from its first message 
   await expect(rows(browser)).toBeVisible();
 });
 
+test('an old run on the classic renderer, with nothing above its screen, offers the whole session at once (#911)', async ({ app, browser, screen }) => {
+  // Started before SPEC-310, the run kept Claude Code's main-screen renderer through the updates
+  // that froze and thawed it: no mouse reporting, and only the visible screen reaches a viewer.
+  await app.open(mock('/s/studio/t/12', '&classic=1'));
+  await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
+  await holdStill(browser);
+  const point = await spot(browser, 'Searched for 2 patterns');
+  expect(point, 'the group is on the screen').not.toBeNull();
+  const sent = await recordInput(browser);
+  // xterm scrolls the main screen itself and is at its first line: the first turn up is the top.
+  await browser.evaluate(({ x, y }) => {
+    document.elementFromPoint(x, y)!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, deltaY: -120 }));
+  }, point!);
+  const offer = browser.locator('.taskview .term-history-offer');
+  await expect(offer).toBeVisible();
+  expect((await sent()).join('').includes('\x1b[<'), 'no wheel report reaches a program without the mouse').toBe(false);
+  await offer.click();
+  await expect(browser.locator('.taskview .watch.history')).toBeVisible();
+  await expect(screen.getByText('Add Stripe checkout to the cart page. Use the test keys from .env.')).toBeVisible();
+});
+
 test('mouse use while disconnected says nothing; typed input still warns', async ({ app, browser }) => {
   await app.open(mock('/s/studio/t/12'));
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);

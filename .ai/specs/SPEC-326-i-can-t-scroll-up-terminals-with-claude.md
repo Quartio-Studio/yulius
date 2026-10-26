@@ -82,10 +82,10 @@ SPEC-310 fixes.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] A History view reads a task's session from its first line
-- [ ] Reaching the top of a task terminal offers the whole session
-- [ ] ADR, docs and changes record the history view
+- [x] Write the fix spec and the regression test that fails
+- [x] A History view reads a task's session from its first line
+- [x] Reaching the top of a task terminal offers the whole session
+- [x] ADR, docs and changes record the history view
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Merged into dev on green CI
 
@@ -129,4 +129,16 @@ SPEC-310 fixes.
 
 ## Evidence
 
-(Filled at the end.)
+- **Reproduction.** The PTY runs in Context used a copy of this sandbox's config dir and the
+  instance's Claude Code 2.1.292 (`pexpect` and `pyte`, 100×30 and 120×40). A fresh session with
+  `! seq 1 2000`: 3,400 wheel-up reports reached "⎿ 1". The same session resumed did too. A resumed
+  8 MB task transcript reached its first message, and ctrl+Home jumped there. A resumed 11.7 MB
+  task transcript with one compaction stopped at "❯ /compact · Compacted"; ctrl+o, then ctrl+Home
+  and `g`, stopped at "Compact summary".
+- **Regression test first.** `npx e2e run tests/terminal.e2e.ts` at 71d21bf0 (test only) failed:
+  `.taskview .term-history-offer`: "observed: no node". The program had scrolled first, so the
+  failure is the missing offer. With the fix (6a771a8b), `tests/terminal.e2e.ts` and
+  `tests/watching.e2e.ts` passed: 42 of 42.
+- **Security.** `yulius security-scan` at fe124b11: exit 2, not run. Vidoc answered HTTP 429: the
+  instance key has used its 50,000,000 tokens. This is unrun, not passed; Yulius CI's `security`
+  job repeats it.
