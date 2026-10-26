@@ -1,11 +1,11 @@
 ---
 yulius-task: 384125eb-6392-4239-8993-8e19b004e1c4
-status: in-progress
+status: done
 ---
 
 # SPEC-331: A hidden terminal resizes its session to 10×5
 
-Status: in-progress
+Status: done
 Date: 2026-10-26
 Owner: Yulius task #315
 Scope authorization: task #315 (`/goal`, "it buggs sometimes. Fix" with a screenshot of the
@@ -62,8 +62,8 @@ fits it to its box and sends that size again.
 - [x] A hidden terminal measures nothing and reports no size
 - [x] Docs and changes entry updated
 - [x] Independent review answered
-- [ ] Local gate (scripts/dev ci) green
-- [ ] PR merged into dev on green
+- [x] Local gate (scripts/dev ci) green
+- [x] PR merged into dev on green
 
 ## Acceptance criteria
 
@@ -100,3 +100,32 @@ fits it to its box and sends that size again.
 - Known limit, not changed: `hello` must carry a size, so a view that (re)connects while hidden
   still connects with its current grid (HTS-003). Avoiding that needs a protocol change.
 - No ADR: a measurement guard inside an existing component, recorded here.
+
+## Evidence
+
+- Reproduced (mock, Playwright probe logging the frames sent to the mock sessions): opening the
+  Superagent sent 50×37, closing the panel sent `resize 10x5`, the Shell tool in front sent 10×5
+  for the Superagent, and the Superagent back in front sent 10×5 for the Shell.
+- Red: `npx e2e run tests/agent-panel.e2e.ts` at f4d1ea7d (test only, dev's `terminal-core.js`):
+  `expected "10x5" to be "50x37"` right after Close panel; 25 others pass.
+- Green: the same file at 6499449f: 26 passed.
+- Review round 1 (fresh session, head ee6ea736): request changes. One major (own code: a terminal
+  shown again no longer sent its size, so a session another window resized stayed so), one minor
+  (the spec's Goal overstated the fix) and one nit (`ownSize()` switched fonts before the check).
+  All three fixed: the test step at aaf1e6f3 was red (`agent-panel.e2e.ts:346`, poll timed out),
+  and a88d5cae made it pass (26 passed). Round 2 (head a88d5cae): approve.
+- `terminal.e2e.ts`, `terminals.e2e.ts`, `layout.e2e.ts` and `phone.e2e.ts` at load average
+  about 120 on 12 cores: a different task-terminal test timed out on each run (`a read-only viewer
+  cannot paste`, `another viewer's size fills this box…`, `file paths in the task terminal open
+  the editor…`). Dev's `terminal-core.js` failed in the same file under the same load (`another
+  viewer's size fills this box…`), so this is load flakiness (#510 tracks it), not this change.
+  The pull request's CI e2e job runs the whole suite.
+- `scripts/dev ci` (after `python3 scripts/bootstrap.py`) at ee6ea736: exit 0, nextest 2628 passed,
+  16 skipped, plus doctests, lint, deps and the macOS compile. The later commits change only
+  `terminal-core.js`, the e2e test and the spec.
+- `yulius security-scan` at a88d5cae: **unrun**, exit 2, Vidoc HTTP 429 "This API key has used its
+  50,000,000 tokens" (`terminal-core.js` and `agent-panel.e2e.ts` not scanned). It is not counted
+  as passed; the pull request's CI `security` job runs the scan.
+- Not tested: two real browsers on one live Superagent (the mock stands in for the other window by
+  setting the session's size), and task terminals' mirroring with a hidden view. They use the same
+  guard and have no test of their own.
