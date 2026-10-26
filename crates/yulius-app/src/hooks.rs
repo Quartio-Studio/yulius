@@ -661,6 +661,8 @@ impl App {
         }
         let runtime = self.runtime(&ctx.task.id);
         runtime.resumed_turn.store(false, Ordering::SeqCst);
+        // The retry's prompt (or a person's) starts the turn an armed retry waited for.
+        runtime.goal_retry_armed.store(false, Ordering::SeqCst);
         runtime.turn_began_ms.store(self.now().0, Ordering::SeqCst);
         // Claude Code's own wake-up goes on with the stretch; a typed prompt starts a new one.
         let stretch = if crate::finish::is_typed_prompt(input.prompt.as_deref()) {

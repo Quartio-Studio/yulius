@@ -207,6 +207,9 @@ pub struct TaskRuntime {
     /// The task was made Working again by the goal verdict or by work after a stop, not by a
     /// prompt: when the turn closes without any Stop hook (an error ended it) it is idle again.
     pub(crate) resumed_turn: AtomicBool,
+    /// Claude Code armed a goal retry after the turn an error ended (SPEC-333 AER-001): the turn
+    /// that closes stays Working until the retry's prompt, or a person's, starts the next one.
+    pub(crate) goal_retry_armed: AtomicBool,
     /// When Yulius last answered a Stop hook of this run, whatever it decided (ms, 0 = never).
     /// A turn that began later and closes had no Stop Yulius answered: its hook failed open
     /// (SPEC-290 GDW-001).
@@ -362,6 +365,7 @@ impl TaskRuntime {
             attention_lock: tokio::sync::Mutex::new(()),
             turn_record_ms: AtomicI64::new(0),
             resumed_turn: AtomicBool::new(false),
+            goal_retry_armed: AtomicBool::new(false),
             launches: Mutex::new(std::collections::BTreeMap::new()),
             ended_stretch: Mutex::new(None),
             goal_open: AtomicBool::new(false),
@@ -3744,6 +3748,8 @@ impl App {
         runtime.notice_attention_ms.store(0, Ordering::SeqCst);
         runtime.turn_record_ms.store(0, Ordering::SeqCst);
         runtime.resumed_turn.store(false, Ordering::SeqCst);
+        // A retry armed in the old session is that process's: a new one does not make it.
+        runtime.goal_retry_armed.store(false, Ordering::SeqCst);
         runtime.stop_answered_ms.store(0, Ordering::SeqCst);
         runtime.turn_began_ms.store(0, Ordering::SeqCst);
         runtime.turn_record_at_ms.store(0, Ordering::SeqCst);
@@ -3908,7 +3914,7 @@ impl App {
                         // Claude Code continued past its limit while Yulius was down.
                         self.cut_turn_continued(&task_id, facts.last_turn_at).await;
                     }
-                    self.apply_transcript_facts(&task_id, facts).await;
+                    self.apply_transcript_facts(&task_id, facts.clone()).await;
                     // A session left full while Yulius was down is recovered now (CTX-007).
                     if facts.context_full {
                         self.context_full_replayed(&task_id, &attempt).await;
@@ -3962,6 +3968,8 @@ impl App {
                 tokio::spawn(async move { app.rotate(&tid, account, Trigger::LimitReached).await });
             }
             Observation::UserTurn { at, wake } => {
+                // The retry's prompt (or a person's) starts the turn an armed retry waited for.
+                runtime.goal_retry_armed.store(false, Ordering::SeqCst);
                 // A new prompt: an achieved goal no longer makes the task done (TSK-014). Claude
                 // Code's own wake-ups (background work ended) keep it, as the prompt hook does.
                 if !wake {
@@ -4018,6 +4026,7 @@ impl App {
             }
             Observation::TurnInterrupted { at } => {
                 // Esc or Ctrl+C stopped the turn: no Stop hook runs, the agent waits for input.
+                runtime.goal_retry_armed.store(false, Ordering::SeqCst);
                 runtime.end_turn(self.now());
                 self.turn_interrupted(task_id, at).await;
             }
@@ -4031,6 +4040,7 @@ impl App {
                 self.turn_record_seen(task_id, at).await;
             }
             Observation::AgentWork { at } => {
+                runtime.goal_retry_armed.store(false, Ordering::SeqCst);
                 self.context_replied(task_id, &attempt.id);
                 // A usage limit ends the turn, so a `limit` pause is open only between turns (or
                 // after a limit replayed at a restart, which may find a turn open).
@@ -4039,6 +4049,9 @@ impl App {
                 }
                 runtime.at_limit.store(false, Ordering::SeqCst);
                 self.agent_worked(task_id, at).await;
+            }
+            Observation::GoalRetry { armed, notice } => {
+                self.goal_retry_observed(task_id, armed, &notice).await;
             }
             Observation::ContextFull => self.context_full_observed(task_id, attempt).await,
             Observation::Compacted => self.compacted_observed(task_id).await,

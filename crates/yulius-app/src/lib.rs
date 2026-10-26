@@ -32,6 +32,7 @@ pub mod events;
 pub mod files;
 pub mod finish;
 pub mod github_admin;
+pub mod goal_retry;
 pub mod hooks;
 pub mod hub;
 pub mod identity;
