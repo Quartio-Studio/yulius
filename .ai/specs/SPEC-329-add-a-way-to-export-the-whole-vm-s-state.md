@@ -188,6 +188,7 @@ Confirmed against `dev` at 84b45934.
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Every gate green, docs and the changes log updated
 - [x] The merge-blocking e2e race (hidden terminal size) reproduced and fixed
+- [x] The merge-blocking leftovers view race (kept sizes) reproduced and fixed
 
 ## Acceptance criteria
 
@@ -300,6 +301,14 @@ Head b1cccd89 (merged with `origin/dev` at 056e061c).
   holding the Shell's hello (`__yuliusHoldShell`) until after `fitted` ("expected 50x39 to be
   100x30", the CI message); fixed in the test by waiting for the hello first; the file passes
   with a 1 s hold and without it. Outside this feature; fixed here because it blocked the merge.
+- The next CI run (f83a7895) failed `leftovers::kept_files_of_a_removed_sandbox_are_listed_and_deleted_on_request`
+  (pre-existing, SPEC-276): `leftovers_overview` read the kept sandboxes' sizes before the
+  scan's job and items, so a view read while a scan ended showed `running: false` and measured
+  items beside `kept[].bytes: null`. Reproduced deterministically with a new race point
+  (`LeftoversView`) holding a view between its reads while a scan ends
+  (`leftovers::a_view_read_while_a_scan_ends_shows_the_kept_sizes_of_its_items`, failing with the
+  CI's null against 196608); fixed by reading the store first and building `kept` inside the one
+  look at the scan's state (`kept_views`). All 25 leftovers integration tests pass.
 - Security scan (`yulius security-scan`, beside the gate): **not run**, exit 2: Vidoc answered
   HTTP 429 "This API key has used its 50,000,000 tokens" (the instance key's quota). The PR's CI
   `security` job is the live scan.

@@ -1584,3 +1584,54 @@ async fn a_cache_whose_task_works_again_is_kept() -> BoxResult<()> {
     assert!(worktree.join("target/debug/blob").exists());
     Ok(())
 }
+
+/// A view read while a scan ends shows one state: the kept sandbox's size is the one its item
+/// has in the same view, never a size from before the scan beside the scan's items (PR #923's
+/// CI: `kept` was read before the job and the items, and a scan ended in between).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_view_read_while_a_scan_ends_shows_the_kept_sizes_of_its_items() -> BoxResult<()> {
+    let w = world().await?;
+    let admin = setup_superadmin_creds(&w.h).await?;
+    configure_github_app(&w.h).await?;
+    w.sandbox("old").await?;
+    w.remove("old").await?;
+    let (reached_tx, reached_rx) = std::sync::mpsc::channel::<()>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    yulius_app::race::on(yulius_app::race::Point::LeftoversView, &w.data, move || {
+        let _ = reached_tx.send(());
+        let _ = go_rx.recv_timeout(Duration::from_secs(60));
+    });
+    let (router, creds) = (w.h.router.clone(), admin.clone());
+    let held = tokio::spawn(async move {
+        call(&router, Method::GET, "/api/admin/leftovers", None, &creds)
+            .await
+            .map_err(|e| e.to_string())
+    });
+    tokio::task::spawn_blocking(move || reached_rx.recv_timeout(Duration::from_secs(60))).await??;
+    // The held view is between its two reads: a scan runs to its end now.
+    let r = call(
+        &w.h.router,
+        Method::POST,
+        "/api/admin/leftovers/scan",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    settled(&w.h, &admin).await?;
+    go_tx.send(())?;
+    let view = held.await??.body;
+    let item = view["items"]
+        .as_array()
+        .ok_or("items")?
+        .iter()
+        .find(|i| i["kind"] == "removed-sandbox")
+        .cloned();
+    let kept = view["kept"].as_array().ok_or("kept")?;
+    assert_eq!(kept.len(), 1, "{view}");
+    match item {
+        Some(item) => assert_eq!(kept[0]["bytes"], item["bytes"], "{view}"),
+        None => assert!(kept[0]["bytes"].is_null(), "{view}"),
+    }
+    Ok(())
+}
