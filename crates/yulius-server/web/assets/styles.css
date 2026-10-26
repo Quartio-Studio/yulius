@@ -611,7 +611,10 @@ body.resizing iframe, body.resizing canvas { pointer-events: none; }
 .status-fold > summary > .icon:first-child { color: var(--muted); transition: transform var(--duration-fast) var(--ease); }
 .status-fold[open] > summary > .icon:first-child { transform: rotate(90deg); }
 .status-fold > summary h2 { flex: none; }
-.status-summary-text { margin-left: auto; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); white-space: nowrap; }
+/* A summary longer than the room beside its title wraps between its parts, right-aligned (#549). */
+.status-summary-text { margin-left: auto; min-width: 0; text-align: right; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
+/* A lone summary (no parts) may still wrap between its words rather than spill past its box. */
+.status-summary-part:not(:only-child) { white-space: nowrap; }
 .status-fold-body { padding-top: 12px; }
 .status-rows { display: flex; flex-direction: column; }
 .status-row { display: flex; align-items: center; gap: 8px; height: var(--control-lg); padding: 0 2px; border-top: 1px solid var(--border); }
@@ -2865,7 +2868,9 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 /* A run's view in the CI/CD page (SPEC-238): "All runs" at the start, the run under it. */
 .run-view { min-width: 0; }
 .run-back { align-self: flex-start; }
-.run-view:focus { outline: none; }
+/* Focused by script only, so the keyboard goes with the run: no ring around the whole view (the
+   global :focus-visible draws it as a box-shadow), while the controls in it keep theirs (#777). */
+.run-view:focus { outline: none; box-shadow: none; }
 /* Focus scrolled into view lands below the sticky summary, never under it (WCAG 2.4.11). */
 .page:has(.run-summary) { scroll-padding-top: 96px; }
 /* On a phone its head and facts wrap onto more lines. */

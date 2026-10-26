@@ -1205,9 +1205,10 @@ impl App {
                         self.publish_update(Some(RunState::Installing.phase()));
                     }
                 } else if age > DRAIN_MAX_MS {
+                    // Counted as readiness is: `waiting` is the page's capped list (#533).
                     let message = format!(
                         "{} task(s) were still in a turn after 30 minutes; nothing was installed.",
-                        progress.waiting.len()
+                        progress.total.saturating_sub(progress.paused)
                     );
                     self.cancel_run(&run, &message).await;
                 }
