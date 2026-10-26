@@ -332,6 +332,18 @@ test('a hidden Superagent or Shell terminal keeps its session’s size', async (
   await expect.poll(() => size(true)).not.toBe(shown);
   await screen.getByRole('button', 'Restore panel size').click();
   await expect.poll(() => size(true)).toBe(shown);
+  // Review round 1: another window of the same Superagent (a phone) set its size meanwhile; shown
+  // again here, it takes this window's size back, as before.
+  await browser.evaluate(() => {
+    type Shells = { __yuliusMock: { shells: Map<string, { cockpit?: boolean; session?: { cols: number; rows: number } }> } };
+    const shell = [...(window as unknown as Shells).__yuliusMock.shells.values()].find((s) => s.cockpit && s.session);
+    if (shell && shell.session) { shell.session.cols = 30; shell.session.rows = 20; }
+    return true;
+  });
+  await screen.getByRole('button', 'Close panel').click();
+  await settle();
+  await openSuperagent(browser, screen);
+  await expect.poll(() => size(true)).toBe(shown);
 
   // Another tool in front hides the Superagent; the Superagent back in front hides the Shell's.
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Shell').click();
