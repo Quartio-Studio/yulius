@@ -891,6 +891,86 @@ async fn agents_deploy_dev_ask_a_person_and_never_deploy_production() -> TestRes
     Ok(())
 }
 
+/// SPEC-327: a request reads What happened, Problem and To do (or Decide); `why` is the older
+/// name of `problem`, and the answer gives the agent the request to print in those parts.
+#[tokio::test]
+async fn a_needs_you_request_reads_what_happened_problem_and_to_do() -> TestResult {
+    use yulius_domain::task::TaskStatus;
+    let f = fixture(&full_cd()).await?;
+    support::seed_task(&f.h, "t1", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&f.h, "t1", TOKEN).await?;
+    let tool =
+        |name: &'static str, args: serde_json::Value| support::mcp_tool(&f.h, TOKEN, name, args);
+    let summary = || async {
+        let task = call(&f.h.router, Method::GET, "/api/tasks/t1", None, &f.alice).await?;
+        let body = if task.body["task"].is_object() {
+            task.body["task"].clone()
+        } else {
+            task.body
+        };
+        Ok::<_, Box<dyn std::error::Error>>(body["needs_you"].clone())
+    };
+
+    let asked = tool(
+        "needs_you",
+        json!({
+            "happened": "Task #309 raises the upload limit to 1 GiB",
+            "problem": "Caddy still caps request bodies at 32 MB",
+            "action": "Set `max_size 1100MB` in /etc/caddy/Caddyfile",
+        }),
+    )
+    .await?;
+    assert_eq!(asked["isError"], false, "{asked}");
+    let text = support::tool_text(&asked);
+    assert_eq!(
+        text["print"],
+        "Needs you\nWhat happened: Task #309 raises the upload limit to 1 GiB\nProblem: Caddy still caps request bodies at 32 MB\nTo do: Set `max_size 1100MB` in /etc/caddy/Caddyfile",
+        "{text}"
+    );
+    let view = summary().await?;
+    assert_eq!(
+        view["happened"], "Task #309 raises the upload limit to 1 GiB",
+        "{view}"
+    );
+    assert_eq!(
+        view["problem"], "Caddy still caps request bodies at 32 MB",
+        "{view}"
+    );
+    assert_eq!(view["decision"], false, "{view}");
+    assert!(view.get("why").is_none(), "{view}");
+
+    // A decision, asked by an agent that still knows the older `why`.
+    let decide = tool(
+        "needs_you",
+        json!({"action": "Choose the paid plan or the free one", "why": "the free plan has 2 runners", "decision": true}),
+    )
+    .await?;
+    assert_eq!(decide["isError"], false, "{decide}");
+    assert_eq!(
+        support::tool_text(&decide)["print"],
+        "Needs your decision\nProblem: the free plan has 2 runners\nDecide: Choose the paid plan or the free one"
+    );
+    let view = summary().await?;
+    assert_eq!(view["problem"], "the free plan has 2 runners", "{view}");
+    assert_eq!(view["decision"], true, "{view}");
+    assert!(view["happened"].is_null(), "{view}");
+
+    // Both names of the problem, or a too long account of what happened, are refused.
+    let both = tool(
+        "needs_you",
+        json!({"action": "x", "why": "a", "problem": "b"}),
+    )
+    .await?;
+    assert_eq!(both["isError"], true, "{both}");
+    let long = tool(
+        "needs_you",
+        json!({"action": "x", "happened": "a".repeat(301)}),
+    )
+    .await?;
+    assert_eq!(long["isError"], true, "{long}");
+    Ok(())
+}
+
 /// CDT-004: a prompt typed into the task ends its request: a person answered.
 #[tokio::test]
 async fn a_typed_prompt_ends_a_needs_you_request() -> TestResult {

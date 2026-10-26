@@ -101,7 +101,9 @@ fn a_running_task_gets_the_message_typed_into_its_session() -> TestResult {
         let (id, caller) = running(&app, &data).await?;
         let asked = NeedsYouRecord {
             action: "Approve spending on DigitalOcean".into(),
-            why: None,
+            happened: None,
+            problem: None,
+            decision: false,
             link: None,
             at: 1,
         };
@@ -156,7 +158,9 @@ fn a_remote_message_names_the_persons_own_agent() -> TestResult {
         let (id, superagent) = running(&app, &data).await?;
         let asked = NeedsYouRecord {
             action: "Approve spending on DigitalOcean".into(),
-            why: None,
+            happened: None,
+            problem: None,
+            decision: false,
             link: None,
             at: 1,
         };
