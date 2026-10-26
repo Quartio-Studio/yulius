@@ -11,7 +11,7 @@ import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, openModal } from './dom.js';
 
 /** The server's limit when it does not say (`/api/me` → `instance.upload_max_bytes`). */
-const DEFAULT_LIMIT = 25 * 1024 * 1024;
+const DEFAULT_LIMIT = 1024 * 1024 * 1024;
 /** Files one drop may add to the editor (a folder's files count). */
 const MAX_EDITOR_FILES = 1000;
 /** Files one drop may hand to a terminal. */
@@ -33,8 +33,12 @@ export function dragHasFiles(event) {
   return Boolean(types) && [...types].includes('Files');
 }
 
-/** `512 KB`, `3.4 MB` (binary units, as the server's limit). */
+/** `512 KB`, `3.4 MB`, `1 GB` (binary units, as the server's limit). */
 export function formatSize(bytes) {
+  if (bytes >= 1024 * 1024 * 1024) {
+    const gb = bytes / (1024 * 1024 * 1024);
+    return `${gb >= 10 || Number.isInteger(gb) ? Math.round(gb) : gb.toFixed(1)} GB`;
+  }
   if (bytes >= 1024 * 1024) {
     const mb = bytes / (1024 * 1024);
     return `${mb >= 10 || Number.isInteger(mb) ? Math.round(mb) : mb.toFixed(1)} MB`;

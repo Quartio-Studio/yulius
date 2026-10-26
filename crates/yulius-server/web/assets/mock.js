@@ -135,7 +135,7 @@ function seed(params) {
         is_superadmin: role === 'superadmin', is_instance_admin: role !== 'member', github_linked: linked,
       },
       csrf_token: 'mock-csrf-token',
-      instance: { owner_login: 'Quartio-Studio', owner_kind: 'org', public_url: ORIGIN, github_configured: params.get('github') !== '0', contained: params.get('contained') !== '0', upload_max_bytes: 25 * 1024 * 1024 },
+      instance: { owner_login: 'Quartio-Studio', owner_kind: 'org', public_url: ORIGIN, github_configured: params.get('github') !== '0', contained: params.get('contained') !== '0', upload_max_bytes: 1024 * 1024 * 1024 },
     },
     sandboxes: [],
     tasks: [],
@@ -1477,6 +1477,13 @@ route('GET', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
   if (/\.png$/i.test(path)) return new Response(Uint8Array.from(atob(MOCK_PNG), (c) => c.charCodeAt(0)), { status: 200, headers: { 'Content-Type': 'image/png' } });
   return new Response('Mock notes attached to the prompt.\n', { status: 200, headers: { 'Content-Type': 'application/octet-stream' } });
 });
+// Whether the file is there before the browser downloads it (SPEC-325); not counted as a read.
+route('HEAD', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  const path = promptParts(task).paths[Number(p[1])];
+  // A HEAD answer has no body, as the server's (axum drops it).
+  return new Response(null, { status: path && promptFileServed(task, path) ? 200 : 404 });
+});
 route('POST', `/api/tasks/${ID}/stop`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
@@ -2265,7 +2272,7 @@ route('POST', `/api/sandboxes/${ID}/files`, ({ db, p, body }) => {
 // replacing one unless asked), and terminal attachments with safe, unique names.
 const uploadTooLarge = (db, size) => {
   const limit = db.me.instance.upload_max_bytes;
-  if (size > limit) fail(422, 'invalid', `the file is larger than the upload limit of ${Math.round(limit / (1024 * 1024))} MB`);
+  if (size > limit) fail(422, 'invalid', `the file is larger than the upload limit of ${limit >= 1024 ** 3 && limit % 1024 ** 3 === 0 ? `${limit / 1024 ** 3} GB` : `${Math.round(limit / (1024 * 1024))} MB`}`);
 };
 route('PUT', `/api/sandboxes/${ID}/files/upload`, ({ db, p, query, body }) => {
   need(sandboxOf(db, p[0]), 'write');
@@ -5258,6 +5265,8 @@ export function createMockTransport(params) {
   // Tests change a task as the server would announce it (`touchTask('sb_studio', 12, {…})`).
   // The GitHub App was created in the other tab (SPEC-283): the connection now reads configured.
   db.finishGithubApp = () => { db.me.instance.github_configured = true; };
+  // An attached file removed from the server after the page listed it (`removePromptFile(path)`).
+  db.removePromptFile = (path) => { MOCK_GONE.add(path); };
   db.finishOnboarding = (slug) => finishOnboarding(db, db.sandboxes.find((s) => s.slug === slug));
   // Someone else presses Start onboarding (another person or tab): the approval, without its hold.
   db.startOnboarding = (slug) => {
@@ -5452,6 +5461,20 @@ export function createMockTransport(params) {
       };
       setTimeout(tick, 30);
     }),
+    // The browser's own download of a link (SPEC-325), as the real one: recorded in `downloads`
+    // ([path, name]), then the file is read and saved from a blob link.
+    download: (url, name) => {
+      db.downloads = db.downloads || [];
+      db.downloads.push([url, name]);
+      handleFetch(db, url).then((response) => response.blob()).then((blob) => {
+        const href = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = href;
+        link.download = name;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(href), 1000);
+      }).catch(() => {}); // offline: the browser's download would fail on its own
+    },
     openSocket: (path) => openSocket(db, path),
   };
 }

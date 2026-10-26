@@ -183,8 +183,9 @@ journalctl -u yulius -f
 Only the public listener (`YULIUS_BIND`) is proxied. The internal listener (`YULIUS_INTERNAL_BIND`)
 serves agents' MCP, hooks and Git credentials; it must stay on loopback and is never proxied.
 WebSockets are used for terminals, the event stream and the browser panel; import
-chunks are up to 8 MiB and a dropped file up to the upload limit (`YULIUS_UPLOAD_MAX_MB`, 25 MiB
-by default), so the proxy's body limit must be above it (32 MB below; raise both together). Let the proxy compress responses: Yulius serves its web UI uncompressed,
+chunks are up to 8 MiB and a dropped file up to the upload limit (`YULIUS_UPLOAD_MAX_MB`, 1 GiB
+by default, for screen recordings: ADR-0219), so the proxy's body limit must be above it (1100 MB
+below; change both together). Let the proxy compress responses: Yulius serves its web UI uncompressed,
 and compression cuts the first load from about 1 MB to about 300 KB (the editor's first open from
 4.6 MB to about 1.2 MB), which matters most on phones.
 
@@ -193,7 +194,7 @@ Caddy:
 ```caddyfile
 yulius.example.com {
     request_body {
-        max_size 32MB
+        max_size 1100MB
     }
     encode zstd gzip
     header Strict-Transport-Security "max-age=31536000"
@@ -208,7 +209,7 @@ server {
     listen 443 ssl http2;
     server_name yulius.example.com;
     # ssl_certificate / ssl_certificate_key ...
-    client_max_body_size 32m;
+    client_max_body_size 1100m;
     gzip on;
     gzip_min_length 1024;
     gzip_types text/css text/javascript application/javascript application/json image/svg+xml;
@@ -1093,8 +1094,9 @@ dropped or pasted onto a terminal are stored as attachments in
 `<data>/sandboxes/<sid>/attachments/{tasks,shells}/<id>/`, outside every worktree (never in
 `git status` or a pull request; the sandbox's processes can read and change them like its other
 files). They count towards the
-data directory's disk: at most 25 MiB each (`YULIUS_UPLOAD_MAX_MB`), 500 per task or terminal,
-8 uploads at once. A task's attachments go when the task is deleted, a terminal's when it ends
+data directory's disk: at most 1 GiB each (`YULIUS_UPLOAD_MAX_MB`), 500 per task or terminal,
+8 uploads at once; an upload that would bring the data disk to its critical level (95 % used) is
+refused before it starts (ADR-0219). A task's attachments go when the task is deleted, a terminal's when it ends
 (left-overs are removed at the next start); archiving a task keeps them. Uploads are audited
 (`audit_log`: `file.uploaded`, `attachment.uploaded`).
 
@@ -1338,6 +1340,11 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
 
 ### Notes for specific upgrades
 
+- Upgrading to 1 GiB uploads (SPEC-325, ADR-0219, 2026-10-26): the default upload limit is now
+  1 GiB. Raise the reverse proxy's request body limit to 1100 MB (§4: Caddy `max_size 1100MB`,
+  nginx `client_max_body_size 1100m`) and reload it, or files over the old proxy limit still fail
+  with 413 ("larger than the server accepts"). To keep the old limit, set
+  `YULIUS_UPLOAD_MAX_MB=25`. No migration.
 - Upgrading to named CD environments (SPEC-257, ADR-0195, 2026-10-21): migration 0041 gives each
   CD run its `stage`; runs of `dev` and `prod` keep theirs. `[cd.dev]` and `[cd.prod]` work as
   before; nothing to configure.

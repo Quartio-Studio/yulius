@@ -1158,3 +1158,108 @@ async fn old_drafts_are_never_pruned_through_a_swapped_folder() -> TestResult {
     assert_eq!(sent.status, StatusCode::FORBIDDEN, "{:?}", sent.body);
     Ok(())
 }
+
+/// Uploads `bytes` declaring `declared` bytes (a client announcing a large file).
+async fn upload_declaring(
+    h: &Harness,
+    method: Method,
+    path: &str,
+    (bytes, declared): (&[u8], u64),
+    creds: &Creds,
+) -> Result<Resp, Box<dyn std::error::Error>> {
+    support::send(
+        &h.router,
+        method,
+        path,
+        Body::from(bytes.to_vec()),
+        Some(usize::try_from(declared)?),
+        creds,
+    )
+    .await
+}
+
+/// SPEC-325 UPL-002: with files up to 1 GiB, a few uploads could fill the disk that also holds
+/// the database; one that would take it to the critical level (95 % used) is refused before
+/// anything is created, like a file over the limit (422, not retried as a 429 would be).
+#[tokio::test]
+async fn an_upload_that_would_fill_the_data_disk_is_refused_before_it_starts() -> TestResult {
+    const GB: u64 = 1_000_000_000;
+    let h = harness_configured(|c| c.upload_max_bytes = 10 * GB)?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    let repo = data.join("sandboxes/s1/repo");
+    std::fs::create_dir_all(&repo)?;
+    let drafts = data.join("sandboxes/s1/attachments/drafts/u-alice");
+    let editor = "/api/sandboxes/s1/files/upload?path=";
+    let draft = "/api/sandboxes/s1/attachments?name=";
+
+    // An unknown disk size refuses nothing.
+    let unknown = upload_declaring(
+        &h,
+        Method::PUT,
+        &format!("{editor}a.mp4"),
+        (b"mp4", 6 * GB),
+        &alice,
+    )
+    .await?;
+    assert_eq!(unknown.status, StatusCode::CREATED, "{:?}", unknown.body);
+
+    h.system.set_disk(100 * GB, 90 * GB);
+    // 92 of 100 GB afterwards: below the critical level.
+    let fits = upload_declaring(
+        &h,
+        Method::PUT,
+        &format!("{editor}b.mp4"),
+        (b"mp4", 2 * GB),
+        &alice,
+    )
+    .await?;
+    assert_eq!(fits.status, StatusCode::CREATED, "{:?}", fits.body);
+    let fits = upload_declaring(
+        &h,
+        Method::POST,
+        &format!("{draft}b.mp4"),
+        (b"mp4", 2 * GB),
+        &alice,
+    )
+    .await?;
+    assert_eq!(fits.status, StatusCode::CREATED, "{:?}", fits.body);
+
+    // 96 of 100 GB afterwards: refused, in the editor and as an attachment, before any folder or
+    // file is created (a new folder path, a task with no attachments folder yet).
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Running, None).await?;
+    for (method, url, absent) in [
+        (
+            Method::PUT,
+            format!("{editor}new/dir/c.mp4"),
+            repo.join("new"),
+        ),
+        (Method::POST, format!("{draft}c.mp4"), drafts.join("c.mp4")),
+        (
+            Method::POST,
+            "/api/tasks/t1/attachments?name=c.mp4".to_owned(),
+            data.join("sandboxes/s1/attachments/tasks"),
+        ),
+    ] {
+        let refused = upload_declaring(&h, method, &url, (b"mp4", 6 * GB), &alice).await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{url}: {:?}",
+            refused.body
+        );
+        // What can still be added before 95 %: 5 GB (4.6 in binary units), not all 10 GB free.
+        let message = refused.body["error"]["message"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            message.contains("no room for this file") && message.contains("4.6 GB"),
+            "{url}: {message}"
+        );
+        assert!(!absent.exists(), "{url}: {absent:?}");
+    }
+    assert!(leftovers(&data).is_empty(), "{:?}", leftovers(&data));
+    Ok(())
+}
