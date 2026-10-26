@@ -234,7 +234,8 @@ watching, steering and unblocking.
   (onboarding says when that ruleset is missing, and its agent adds it with `production_protect`
   as the person who started onboarding when they are a repository admin). A task that needs to read
   another repository of the same GitHub owner gets it with `reference_repo`, fetched as the task's
-  owner, instead of asking a person for access; onboarding fetches the repositories a project
+  owner with every branch and tag that person can read (SPEC-330), instead of asking a person for
+  access; onboarding fetches the repositories a project
   refers to first (SPEC-267). Agents build and improve CD through pull requests but
   cannot change what a deploy runs, and they ask a person with `needs_you` for what only a person
   can give (a machine's credentials). Onboarding finds how a project deploys today and writes it

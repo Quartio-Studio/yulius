@@ -9,12 +9,12 @@ use async_trait::async_trait;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::git::{
-    BranchInfo, CommitInfo, DiffStat, GitPort, MergeIntegration, ReviewChanges, SquashLanding,
-    SquashRequest, TrainBuild, TrainLanding, TrainStep, WorktreeInfo,
+    BranchInfo, CommitInfo, DiffStat, GitPort, MergeIntegration, ReferenceBundle, ReviewChanges,
+    SquashLanding, SquashRequest, TrainBuild, TrainLanding, TrainStep, WorktreeInfo,
 };
 use yulius_contracts::api::git::{ChangedFile, DiffHunk, DiffLine, TaskCommit};
 use yulius_git::{
-    Author, BundleSpec, FileDiff, FileStatus, Git, GitError, ImportRef, LineKind, WorktreeRemoval,
+    Author, FileDiff, FileStatus, Git, GitError, ImportRef, LineKind, WorktreeRemoval,
 };
 
 /// Git adapter.
@@ -170,23 +170,24 @@ impl GitPort for GitAdapter {
         blocking(move || git.fetch_branches_from(&repo, &source)).await
     }
 
-    async fn bundle_branch(
+    async fn bundle_repository(
         &self,
         url: &str,
-        branch: &str,
+        default_branch: &str,
         work: &Path,
         bundle: &Path,
         token: &Secret,
-    ) -> AppResult<String> {
+    ) -> AppResult<ReferenceBundle> {
         let (plain, git) = (self.git(), self.git_with_token(token));
-        let (url, branch) = (url.to_owned(), branch.to_owned());
+        let (url, default_branch) = (url.to_owned(), default_branch.to_owned());
         let (work, bundle) = (work.to_path_buf(), bundle.to_path_buf());
         blocking(move || {
-            let full = format!("refs/heads/{branch}");
-            plain.init(&work, &branch, true)?;
-            git.fetch_branch(&work, &url, &branch)?;
-            plain.create_bundle(&work, &bundle, &[BundleSpec::Include(full.clone())])?;
-            plain.rev_parse(&work, &full)
+            plain.init(&work, &default_branch, true)?;
+            git.fetch_branches_and_tags(&work, &url)?;
+            plain.create_full_bundle(&work, &bundle)?;
+            let branches = plain.every_branch(&work)?;
+            let tags = plain.every_tag(&work)?.len();
+            Ok(ReferenceBundle { branches, tags })
         })
         .await
     }

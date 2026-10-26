@@ -17,7 +17,7 @@ use tower::ServiceExt;
 use yulius_app::context::{App, AppConfig, Deps};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{GitHubTokenRecord, Secret, UserRecord, WebSessionRecord};
-use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort};
+use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort, ReferenceBundle};
 use yulius_app::ports::github::{
     BranchGuard, ChecksReport, GhIssue, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig,
     GitHubPort, NewIssue, NewPull, RepoAccess, RulesetRequest,
@@ -164,25 +164,24 @@ impl GitPort for LocalGit {
         Ok(())
     }
 
-    async fn bundle_branch(
+    async fn bundle_repository(
         &self,
         url: &str,
-        branch: &str,
+        default_branch: &str,
         work: &Path,
         bundle: &Path,
         token: &Secret,
-    ) -> AppResult<String> {
+    ) -> AppResult<ReferenceBundle> {
         let remote = self.remote(url)?;
         self.record(format!("bundle {url} token={}", token.expose()));
         let parent = work.parent().ok_or(AppError::NotFound)?;
-        let full = format!("refs/heads/{branch}");
         git(
             parent,
             &[
                 "init",
                 "--quiet",
                 "--bare",
-                &format!("--initial-branch={branch}"),
+                &format!("--initial-branch={default_branch}"),
                 &work.to_string_lossy(),
             ],
         )
@@ -194,7 +193,8 @@ impl GitPort for LocalGit {
                 "--quiet",
                 "--no-tags",
                 &remote.to_string_lossy(),
-                &format!("+{full}:{full}"),
+                "+refs/heads/*:refs/heads/*",
+                "+refs/tags/*:refs/tags/*",
             ],
         )
         .map_err(upstream)?;
@@ -205,14 +205,33 @@ impl GitPort for LocalGit {
                 "create",
                 "--quiet",
                 &bundle.to_string_lossy(),
-                &full,
+                "HEAD",
+                "--branches",
+                "--tags",
             ],
         )
         .map_err(upstream)?;
-        Ok(git(work, &["rev-parse", &full])
+        let listed = git(
+            work,
+            &[
+                "for-each-ref",
+                "--format=%(refname:strip=2) %(objectname)",
+                "refs/heads/",
+            ],
+        )
+        .map_err(upstream)?;
+        let mut branches: Vec<(String, String)> = listed
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .map(|(name, sha)| (name.to_owned(), sha.to_owned()))
+            .collect();
+        branches.sort();
+        let tags = git(work, &["tag", "--list"])
             .map_err(upstream)?
-            .trim()
-            .to_owned())
+            .lines()
+            .filter(|line| !line.is_empty())
+            .count();
+        Ok(ReferenceBundle { branches, tags })
     }
 
     /// As the real adapter: `origin/HEAD`, else the branch the clone's `HEAD` names (an empty
