@@ -4,3 +4,4 @@
 
 pub mod archive;
 pub mod walk;
+pub mod freeze;
