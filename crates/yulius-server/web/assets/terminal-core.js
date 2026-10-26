@@ -603,8 +603,12 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   }, true);
   term.onBinary((data) => send(data));
 
+  // A box that is not shown (a closed panel, another tool in front) has no size: the fit addon reads
+  // its `100%` as 100 px there and would size the terminal's session 10×5 (#918).
+  const shown = () => fitBox.clientWidth > 0 && fitBox.clientHeight > 0;
+
   function proposed() {
-    if (!opened) return null;
+    if (!opened || !shown()) return null;
     try {
       const d = fit.proposeDimensions();
       if (d && Number.isFinite(d.cols) && Number.isFinite(d.rows) && d.cols > 2 && d.rows > 1) {
@@ -616,6 +620,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
 
   /** The grid this view's box holds at the font given (the fit addon's measure), unbounded. */
   function room() {
+    if (!shown()) return null;
     try {
       const d = fit.proposeDimensions();
       return d && Number.isFinite(d.cols) && Number.isFinite(d.rows) && d.cols > 0 && d.rows > 0 ? d : null;
@@ -629,7 +634,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // xterm re-measures synchronously and draws once, on the next frame.
   let ownCache = null;
   function ownSize() {
-    if (!opened) return null;
+    if (!opened || !shown()) return null;
     const base = termSize();
     const key = `${fitBox.clientWidth}x${fitBox.clientHeight}|${base}|${term.options.fontFamily}`;
     if (ownCache && ownCache.key === key) return ownCache.size;
@@ -654,6 +659,9 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       if (state.cols && state.rows && (term.cols !== state.cols || term.rows !== state.rows)) term.resize(Math.max(2, state.cols), Math.max(1, state.rows));
       return;
     }
+    // Hidden, it says nothing; shown again it says its size again, whoever set one meanwhile (a
+    // shell follows the last resize).
+    if (opened && !shown()) lastSent = null;
     const own = ownSize();
     if (own && gotState && state.can_write && !exited && !sameSize(lastSent, own)) {
       if (socket.resize(own.cols, own.rows)) lastSent = own;

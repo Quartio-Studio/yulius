@@ -2596,7 +2596,7 @@ button.task-group-head:hover { color: var(--text); }
 .ss-input { margin-left: 3ch; color: var(--session-dim); }
 .ss-fold > summary { display: flex; flex-direction: column; gap: 2px; margin: 0 -1ch; padding: 0 1ch; border-radius: var(--radius-sm); cursor: pointer; list-style: none; }
 .ss-fold > summary::-webkit-details-marker { display: none; }
-.ss-fold > summary:hover .ss-call, :is(.ss-thinking, .ss-note) > summary:hover .ss-line-body { text-decoration: underline; text-decoration-color: var(--session-dim); text-underline-offset: 3px; }
+.ss-fold > summary:hover .ss-call, :is(.ss-thinking, .ss-note, .ss-wake) > summary:hover .ss-line-body { text-decoration: underline; text-decoration-color: var(--session-dim); text-underline-offset: 3px; }
 .ss-fold > summary:focus-visible { outline: none; box-shadow: var(--focus-inset); }
 .ss-fold > :not(summary) { margin: 4px 0 0 2ch; }
 .ss-thinking > summary .ss-line-body { color: var(--session-dim); font-style: italic; }
