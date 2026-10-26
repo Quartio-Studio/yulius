@@ -92,7 +92,11 @@ pub fn freeze(mut host: Box<dyn Host>, unit: &str, update_unit: &str) -> Result<
     if state.load != "loaded" {
         return Err(format!(
             "there is no unit {unit} ({}); name the server's unit with --service",
-            if state.load.is_empty() { "unknown" } else { &state.load }
+            if state.load.is_empty() {
+                "unknown"
+            } else {
+                &state.load
+            }
         ));
     }
     if !state.cgroup.is_empty()

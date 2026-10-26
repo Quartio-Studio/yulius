@@ -264,11 +264,47 @@ enum Command {
         #[command(subcommand)]
         action: HostAction,
     },
+    /// Copy the whole instance off this host, or install such a copy (run as root; SPEC-329).
+    ///
+    /// Straight to a new VM: `sudo yulius instance export | ssh root@new-vm yulius instance
+    /// import`. To a file and back: `ssh root@old-vm yulius instance export > copy.tar`, then
+    /// `ssh root@new-vm yulius instance import < copy.tar`.
+    Instance {
+        /// What to do.
+        #[command(subcommand)]
+        action: InstanceAction,
+    },
     /// Print build information.
     Version,
     /// Root helper: build or install the commit the server requested (yulius-update.service).
     #[command(name = "update-helper", hide = true)]
     UpdateHelper(Box<yulius::update_helper::HelperArgs>),
+}
+
+#[derive(Debug, Subcommand)]
+enum InstanceAction {
+    /// Freeze every Yulius process, then stream the whole data directory to standard output as
+    /// one tar of a size announced before the first byte; nothing is written on this host.
+    Export {
+        /// Data directory.
+        #[arg(
+            long = "data-dir",
+            visible_alias = "data",
+            env = "YULIUS_DATA",
+            default_value = "/var/lib/yulius"
+        )]
+        data_dir: PathBuf,
+        /// The server's systemd unit.
+        #[arg(long, default_value = "yulius.service")]
+        service: String,
+        /// The update helper's unit (no export while it runs).
+        #[arg(long, default_value = "yulius-update.service")]
+        update_service: String,
+        /// Moving to another host: after a successful export keep the instance frozen and
+        /// disable its unit, so it never runs beside the copy.
+        #[arg(long = "move")]
+        move_out: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -673,6 +709,20 @@ fn main() -> ExitCode {
             proxy_secret_file.as_deref(),
         ),
         Command::Host { action } => host(action),
+        Command::Instance {
+            action:
+                InstanceAction::Export {
+                    data_dir,
+                    service,
+                    update_service,
+                    move_out,
+                },
+        } => yulius::instance::export::main(&yulius::instance::export::ExportOptions {
+            data_dir,
+            service,
+            update_service,
+            move_out,
+        }),
         Command::Version => {
             let commit = env!("YULIUS_BUILD_COMMIT");
             if commit.is_empty() {

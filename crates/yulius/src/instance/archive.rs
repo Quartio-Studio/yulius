@@ -125,9 +125,9 @@ fn ustar_split(path: &[u8]) -> Option<(&[u8], &[u8])> {
     if path.len() <= 100 {
         return Some((&[], path));
     }
-    (0..path.len())
-        .filter(|&i| path[i] == b'/' && i <= 155 && path.len() - i - 1 <= 100 && i > 0)
-        .last()
+    (1..path.len())
+        .rev()
+        .find(|&i| path[i] == b'/' && i <= 155 && path.len() - i - 1 <= 100)
         .map(|i| (&path[..i], &path[i + 1..]))
 }
 
@@ -148,7 +148,10 @@ fn ustar(name: &[u8], prefix: &[u8], kind: u8, e: &Entry, size: u64, link: &[u8]
     octal(&mut h[108..116], u64::from(e.uid).min(MAX_OCTAL_7));
     octal(&mut h[116..124], u64::from(e.gid).min(MAX_OCTAL_7));
     octal(&mut h[124..136], size.min(MAX_OCTAL_11));
-    octal(&mut h[136..148], u64::try_from(e.mtime).unwrap_or(0).min(MAX_OCTAL_11));
+    octal(
+        &mut h[136..148],
+        u64::try_from(e.mtime).unwrap_or(0).min(MAX_OCTAL_11),
+    );
     h[156] = kind;
     h[157..157 + link.len().min(100)].copy_from_slice(&cut(link, 100));
     h[257..263].copy_from_slice(b"ustar\0");
@@ -296,7 +299,11 @@ impl<W: Write> Writer<W> {
         let trailer = trailer_entry();
         self.put(&headers(&trailer))?;
         self.put(content.as_bytes())?;
-        self.put(&vec![0; usize::try_from(padded(TRAILER_LEN) - TRAILER_LEN).unwrap_or(0)])?;
+        self.put(&vec![
+            0;
+            usize::try_from(padded(TRAILER_LEN) - TRAILER_LEN)
+                .unwrap_or(0)
+        ])?;
         self.put(&[0; 1024])?;
         self.out.flush()?;
         Ok(self.written)
@@ -343,19 +350,28 @@ fn number(field: &[u8]) -> io::Result<u64> {
     if text.is_empty() {
         return Ok(0);
     }
-    u64::from_str_radix(std::str::from_utf8(&text).map_err(|_| bad("a bad number"))?, 8)
-        .map_err(|_| bad("a bad number"))
+    u64::from_str_radix(
+        std::str::from_utf8(&text).map_err(|_| bad("a bad number"))?,
+        8,
+    )
+    .map_err(|_| bad("a bad number"))
 }
 
 fn bad(why: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, format!("not a Yulius export: {why}"))
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("not a Yulius export: {why}"),
+    )
 }
 
 fn nul_cut(field: &[u8]) -> &[u8] {
-    field.iter().position(|&b| b == 0).map_or(field, |i| &field[..i])
+    field
+        .iter()
+        .position(|&b| b == 0)
+        .map_or(field, |i| &field[..i])
 }
 
-/// What [`Reader::next`] found.
+/// What [`Reader::next_item`] found.
 #[derive(Debug)]
 pub enum Item {
     /// An entry; a file's data follows and must be read with [`Reader::data`].
@@ -436,7 +452,7 @@ impl<R: Read> Reader<R> {
     ///
     /// # Errors
     /// A read error, a malformed header, an unknown type, or a trailer that does not match.
-    pub fn next(&mut self) -> io::Result<Item> {
+    pub fn next_item(&mut self) -> io::Result<Item> {
         self.skip_rest()?;
         let mut pax: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
         loop {
@@ -503,9 +519,7 @@ impl<R: Read> Reader<R> {
                 b'0' | 0 => Kind::File { size },
                 b'2' => Kind::Symlink { target: link },
                 b'1' => Kind::HardLink { target: link },
-                b'3' if number(&h[329..337])? == 0 && number(&h[337..345])? == 0 => {
-                    Kind::Whiteout
-                }
+                b'3' if number(&h[329..337])? == 0 && number(&h[337..345])? == 0 => Kind::Whiteout,
                 other => {
                     return Err(bad(&format!("an entry of type {:?}", char::from(other))));
                 }

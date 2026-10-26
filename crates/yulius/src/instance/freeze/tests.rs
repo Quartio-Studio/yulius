@@ -2,6 +2,8 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
 use super::*;
 
 const UNIT: &str = "yulius.service";
@@ -47,11 +49,7 @@ impl Host for Fake {
     fn systemctl(&mut self, args: &[&str]) -> Result<(i32, String), String> {
         let call = args.join(" ");
         self.log.borrow_mut().push(call.clone());
-        let code = self
-            .codes
-            .get(args[0])
-            .copied()
-            .unwrap_or(0);
+        let code = self.codes.get(args[0]).copied().unwrap_or(0);
         match args[0] {
             "show" => {
                 let mut shows = self.shows.borrow_mut();
@@ -79,116 +77,144 @@ fn run(fake: &Fake) -> Result<Freeze, String> {
 }
 
 #[test]
-fn a_running_unit_is_frozen_and_thawed_on_release() {
-    let fake = Fake::new(&[("active", "running"), ("active", "freezing"), ("active", "frozen")]);
-    let held = run(&fake).unwrap();
+fn a_running_unit_is_frozen_and_thawed_on_release() -> TestResult {
+    let fake = Fake::new(&[
+        ("active", "running"),
+        ("active", "freezing"),
+        ("active", "frozen"),
+    ]);
+    let held = run(&fake)?;
     assert!(held.ours());
     assert_eq!(fake.calls(), ["freeze yulius.service"]);
-    held.release().unwrap();
-    assert_eq!(fake.calls(), ["freeze yulius.service", "thaw yulius.service"]);
+    held.release()?;
+    assert_eq!(
+        fake.calls(),
+        ["freeze yulius.service", "thaw yulius.service"]
+    );
+    Ok(())
 }
 
 #[test]
-fn a_dropped_freeze_thaws() {
+fn a_dropped_freeze_thaws() -> TestResult {
     let fake = Fake::new(&[("active", "running"), ("active", "frozen")]);
-    drop(run(&fake).unwrap());
-    assert_eq!(fake.calls(), ["freeze yulius.service", "thaw yulius.service"]);
+    drop(run(&fake)?);
+    assert_eq!(
+        fake.calls(),
+        ["freeze yulius.service", "thaw yulius.service"]
+    );
+    Ok(())
 }
 
 #[test]
-fn a_move_keeps_it_frozen_and_disables_it() {
+fn a_move_keeps_it_frozen_and_disables_it() -> TestResult {
     let fake = Fake::new(&[("active", "running"), ("active", "frozen")]);
-    run(&fake).unwrap().keep_for_move().unwrap();
-    assert_eq!(fake.calls(), ["freeze yulius.service", "disable yulius.service"]);
+    run(&fake)?.keep_for_move()?;
+    assert_eq!(
+        fake.calls(),
+        ["freeze yulius.service", "disable yulius.service"]
+    );
+    Ok(())
 }
 
 #[test]
-fn a_unit_frozen_before_stays_frozen() {
+fn a_unit_frozen_before_stays_frozen() -> TestResult {
     let fake = Fake::new(&[("active", "frozen")]);
-    let held = run(&fake).unwrap();
+    let held = run(&fake)?;
     assert!(!held.ours());
-    held.release().unwrap();
+    held.release()?;
     assert!(fake.calls().is_empty(), "{:?}", fake.calls());
+    Ok(())
 }
 
 #[test]
-fn a_unit_that_never_freezes_is_thawed_and_refused() {
+fn a_unit_that_never_freezes_is_thawed_and_refused() -> TestResult {
     let fake = Fake::new(&[("active", "running"), ("active", "freezing")]);
-    let err = run(&fake).unwrap_err();
+    let err = run(&fake).err().ok_or("expected an error")?;
     assert!(err.contains("did not freeze"), "{err}");
-    assert_eq!(fake.calls(), ["freeze yulius.service", "thaw yulius.service"]);
+    assert_eq!(
+        fake.calls(),
+        ["freeze yulius.service", "thaw yulius.service"]
+    );
+    Ok(())
 }
 
 #[test]
-fn a_failed_freeze_is_refused() {
+fn a_failed_freeze_is_refused() -> TestResult {
     let mut fake = Fake::new(&[("active", "running")]);
     fake.codes.insert("freeze".into(), 1);
-    let err = run(&fake).unwrap_err();
+    let err = run(&fake).err().ok_or("expected an error")?;
     assert!(err.contains("systemctl freeze"), "{err}");
+    Ok(())
 }
 
 #[test]
-fn an_export_inside_the_unit_is_refused_before_anything() {
+fn an_export_inside_the_unit_is_refused_before_anything() -> TestResult {
     let mut fake = Fake::new(&[("active", "running")]);
     fake.files.insert(
         "/proc/self/cgroup".into(),
         format!("0::{CGROUP}/sandboxes/sb/system\n"),
     );
-    let err = run(&fake).unwrap_err();
+    let err = run(&fake).err().ok_or("expected an error")?;
     assert!(err.contains("would freeze itself"), "{err}");
     assert!(fake.calls().is_empty());
+    Ok(())
 }
 
 #[test]
-fn a_sibling_cgroup_with_the_same_prefix_is_not_inside() {
+fn a_sibling_cgroup_with_the_same_prefix_is_not_inside() -> TestResult {
     let mut fake = Fake::new(&[("active", "running"), ("active", "frozen")]);
     fake.files.insert(
         "/proc/self/cgroup".into(),
         "0::/system.slice/yulius.service-other\n".into(),
     );
-    assert!(run(&fake).unwrap().ours());
+    assert!(run(&fake)?.ours());
+    Ok(())
 }
 
 #[test]
-fn a_running_update_is_refused() {
+fn a_running_update_is_refused() -> TestResult {
     let mut fake = Fake::new(&[("active", "running")]);
     fake.helper = "activating".into();
-    let err = run(&fake).unwrap_err();
+    let err = run(&fake).err().ok_or("expected an error")?;
     assert!(err.contains("an update is running"), "{err}");
     assert!(fake.calls().is_empty());
+    Ok(())
 }
 
 #[test]
-fn a_stopped_unit_with_processes_is_refused() {
+fn a_stopped_unit_with_processes_is_refused() -> TestResult {
     let mut fake = Fake::new(&[("inactive", "running")]);
     fake.files.insert(
         format!("/sys/fs/cgroup{CGROUP}/cgroup.events"),
         "populated 1\nfrozen 0\n".into(),
     );
-    let err = run(&fake).unwrap_err();
+    let err = run(&fake).err().ok_or("expected an error")?;
     assert!(err.contains("still run"), "{err}");
     assert!(fake.calls().is_empty());
+    Ok(())
 }
 
 #[test]
-fn a_stopped_unit_without_processes_needs_no_freeze() {
+fn a_stopped_unit_without_processes_needs_no_freeze() -> TestResult {
     let mut fake = Fake::new(&[("inactive", "running")]);
     fake.files.insert(
         format!("/sys/fs/cgroup{CGROUP}/cgroup.events"),
         "populated 0\nfrozen 0\n".into(),
     );
-    let held = run(&fake).unwrap();
+    let held = run(&fake)?;
     assert!(!held.ours());
     drop(held);
     assert!(fake.calls().is_empty());
+    Ok(())
 }
 
 #[test]
-fn an_unknown_unit_is_refused() {
+fn an_unknown_unit_is_refused() -> TestResult {
     let fake = Fake::new(&[]);
     fake.shows
         .borrow_mut()
         .push_back("LoadState=not-found\nActiveState=inactive\n".into());
-    let err = run(&fake).unwrap_err();
+    let err = run(&fake).err().ok_or("expected an error")?;
     assert!(err.contains("no unit"), "{err}");
+    Ok(())
 }

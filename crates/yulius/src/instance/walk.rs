@@ -133,7 +133,8 @@ pub fn xattrs(path: &Path) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
         match rustix::fs::llistxattr(path, &mut names[..]) {
             Ok(len) => break len,
             Err(rustix::io::Errno::RANGE) => {
-                let need = rustix::fs::llistxattr(path, &mut [0u8; 0][..]).map_err(io::Error::from)?;
+                let need =
+                    rustix::fs::llistxattr(path, &mut [0u8; 0][..]).map_err(io::Error::from)?;
                 names.resize(need.max(names.len() * 2), 0);
             }
             Err(rustix::io::Errno::NOTSUP) => return Ok(Vec::new()),
