@@ -42,10 +42,23 @@ pub struct TaskBranch {
     pub deletions: u32,
     /// Open PR.
     pub pr: Option<PullView>,
-    /// The task's worktree is no longer on disk, so its changes can't be read (SPEC-343); the
-    /// branch and pull request stay on GitHub. Absent (older servers) reads as false.
+    /// Whether the task's worktree is on disk, which its changes are read from (SPEC-343).
+    /// Absent (older servers) reads as `present`.
     #[serde(default)]
-    pub worktree_gone: bool,
+    pub worktree: WorktreeState,
+}
+
+/// Where a task's worktree is (SPEC-343): its changes can be read only while it is `present`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeState {
+    /// On disk.
+    #[default]
+    Present,
+    /// Not created yet: the task has its branch but has not started.
+    NotCreated,
+    /// Created and since removed; the branch and pull request stay on GitHub.
+    Gone,
 }
 
 /// Commit summary.
