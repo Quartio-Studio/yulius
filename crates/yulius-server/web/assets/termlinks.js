@@ -336,8 +336,10 @@ export function createFileLinkProvider(term, { context, checker, osc = null, ope
 
 /** Most rows one continued URL spans; a longer one is no link rather than a cut one. */
 const MAX_CONTINUED_ROWS = 32;
-/** Markers that Claude Code repeats on each row of a quote. */
-const QUOTE_BARS = new Set(['▎', '│', '┃']);
+/** Rows above a run looked at for the prompt it belongs to (promptGap). */
+const PROMPT_LOOKBACK = 64;
+/** The marker that Claude Code repeats on each row of a quote. */
+const QUOTE_BAR = '▎';
 /** The web-links addon's URL pattern (vendor/xterm/addon-web-links.mjs). */
 const WEB_URL_RE = /(https?|HTTPS?):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~[\]`()<>]/g;
 
@@ -392,7 +394,7 @@ function continuation(a, b, cols, gap) {
   const { start, marker } = textStart(a);
   // The next row's text starts in the same column: under blanks, or under the same quote bar.
   const lead = b.slice(0, start);
-  const under = lead.every((cell) => cell === ' ') || (QUOTE_BARS.has(marker) && lead.join('') === a.slice(0, start).join(''));
+  const under = lead.every((cell) => cell === ' ') || (marker === QUOTE_BAR && lead.join('') === a.slice(0, start).join(''));
   if (!under || start >= b.length || b[start] === ' ' || b[start] === '') return -1;
   let head = last;
   while (head > start && a[head - 1] !== ' ') head -= 1;
@@ -404,6 +406,24 @@ function continuation(a, b, cols, gap) {
   const next = b.slice(start, tail).join('');
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(next) && !/^[a-z]+$/i.test(a.slice(head, last + 1).join(''))) return -1;
   return start;
+}
+
+/**
+ * Blank columns a run starting at row `first` may leave at the right edge: 1 in Claude Code's
+ * prompt, whose rows all pad one, else 0. The prompt is found by walking up through blank rows and
+ * rows of indented text without a marker to the row that has one: `❯` is the prompt; an answer
+ * (`●`), a list item, a tool's output or text at the first column is not.
+ */
+function promptGap(grid, first) {
+  for (let row = first; row >= 0 && row >= first - PROMPT_LOOKBACK; row -= 1) {
+    const cells = grid[row];
+    if (!cells) return 0;
+    if (lastFilled(cells) < 0) continue; // a blank row
+    const { marker } = textStart(cells);
+    if (marker) return marker === '❯' ? 1 : 0;
+    if (skipBlanks(cells, 0) < 2) return 0;
+  }
+  return 0;
 }
 
 /** URLs in rows `first`…`last`, joined where each continuation row's text starts (`starts`), that cross a cut. */
@@ -442,7 +462,7 @@ export function findContinuedUrls(rows, cols) {
   const found = [];
   let first = 0;
   while (first < grid.length) {
-    const gap = grid[first] && textStart(grid[first]).marker === '❯' ? 1 : 0;
+    const gap = promptGap(grid, first);
     let last = first;
     const starts = [];
     for (;;) {
@@ -479,7 +499,7 @@ export function createContinuedUrlProvider(term, { open }) {
   return {
     provideLinks(y, callback) {
       const buffer = term.buffer.active;
-      const top = Math.max(0, y - 1 - MAX_CONTINUED_ROWS);
+      const top = Math.max(0, y - 1 - MAX_CONTINUED_ROWS - PROMPT_LOOKBACK);
       const bottom = Math.min(buffer.length - 1, y - 1 + MAX_CONTINUED_ROWS);
       const rows = [];
       for (let row = top; row <= bottom; row += 1) rows.push(lineCells(buffer.getLine(row)));

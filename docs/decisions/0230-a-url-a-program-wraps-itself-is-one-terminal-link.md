@@ -20,8 +20,8 @@ fragment, and the rest was plain text.
   where both match the first row, xterm keeps the provider registered first, so the link opens the
   whole URL. Every other URL is still the addon's.
 - A row continues into the next only if all of these hold:
-  - it ends in the last column, or in one of the last 2 when the run starts at the prompt (`❯`),
-    which pads one;
+  - it ends in the last column, or in one of the last 2 in the prompt, whose rows all pad one (a
+    row is the prompt's when walking up through blank and indented unmarked rows reaches `❯`);
   - the next row is not soft-wrapped;
   - the next row's text starts where the row's text starts: after one marker such as `❯`, `●`,
     `⏺`, `-`, `⎿` or `▎` and a list number (`1.`), under blanks or under a repeated quote bar;

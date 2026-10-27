@@ -4394,8 +4394,8 @@ const GROUP_CALLS = [
   `  ${dim('⎿')}  ${bold('Read')}(src/api/tax.rs)`,
 ];
 
-// A URL longer than a row (?wrapurl=1, SPEC-339): three rows of a 140-column terminal, ten of a
-// 40-column one.
+// A URL longer than a row (?wrapurl=1, SPEC-339): three rows of a 140-column terminal, eleven of
+// a 40-column one.
 const WRAPPED_LEAD = 'Sign in at ';
 const WRAPPED_URL = 'https://example.com/admin/connectors?tab=all&page=2&sort=name&filter=active&view=compact'
   + '&columns=name,owner,status,updated&return=%2Fadmin%2Fconnectors%2Fsettings%2Fsecurity%2Fsigning-keys'
@@ -4477,8 +4477,8 @@ class TermSession {
       if (this.wrapUrl) {
         // Claude Code lays out its rows itself: a URL longer than a row is cut at the right edge and
         // continued on the next rows at the text's indent, after cursor moves, not soft wraps
-        // (SPEC-339). Cut when drawn, for the session's width; ten rows, enough down to 40 columns
-        // (unused ones blank).
+        // (SPEC-339). Cut when drawn, for the session's width; twelve rows, enough down to 36
+        // columns (unused ones blank).
         const cut = (cols) => {
           const first = Math.max(1, cols - 2 - WRAPPED_LEAD.length);
           const rest = Math.max(1, cols - 2);
@@ -4486,7 +4486,7 @@ class TermSession {
           for (let at = first; at < WRAPPED_URL.length; at += rest) rows.push(`  ${c(39, WRAPPED_URL.slice(at, at + rest))}`);
           return rows;
         };
-        for (let i = 0; i < 10; i += 1) this.lines.push((cols) => cut(cols)[i] || '');
+        for (let i = 0; i < 12; i += 1) this.lines.push((cols) => cut(cols)[i] || '');
       }
       // File references in every form the terminal links to the editor (F 2026-10-10) — a bare
       // path, `path:line:col` in backticks, a name in parentheses, an absolute path with #L, an OSC 8
