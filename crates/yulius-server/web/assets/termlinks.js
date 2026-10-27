@@ -20,6 +20,9 @@
 //
 // The parsing and resolving functions are pure; createFileChecker needs only a list function;
 // trackOscFileLinks and createFileLinkProvider use xterm's public parser, buffer and link APIs.
+//
+// Web links are the web-links addon's, except a URL a program cut at the right edge and continued on
+// the next rows itself, which createContinuedUrlProvider links whole (SPEC-339, at the end).
 
 /** Longest wrapped line (rows) considered as one line of text. */
 const MAX_WRAPPED_ROWS = 8;
@@ -320,6 +323,154 @@ export function createFileLinkProvider(term, { context, checker, osc = null, ope
         }));
         callback(links.length ? links : undefined);
       });
+    },
+  };
+}
+
+// ---- web links a program wrapped itself (SPEC-339, ADR-0230)
+//
+// Claude Code lays out its rows itself: a URL longer than a row is cut at the right edge and
+// continued on the next row at the text's indent, after a cursor move. xterm joins only its own
+// soft wraps, so the web-links addon saw two lines and linked the first fragment. A row continues
+// into the next only as Claude Code continues it (WRL-001); anything less joins nothing.
+
+/** Columns a row cut at the right edge may leave blank there (Claude Code's prompt pads one). */
+const EDGE_GAP = 1;
+/** Most rows one continued URL spans. */
+const MAX_CONTINUED_ROWS = 8;
+/** The web-links addon's URL pattern (vendor/xterm/addon-web-links.mjs). */
+const WEB_URL_RE = /(https?|HTTPS?):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~[\]`()<>]/g;
+
+/** A row as one string per cell ('' for the second half of a wide character), or null. */
+const cellsOf = (row) => (row == null ? null : typeof row === 'string' ? [...row] : row);
+
+/** Index of the last non-blank cell, or -1. */
+function lastFilled(cells) {
+  let i = cells.length - 1;
+  while (i >= 0 && cells[i] === ' ') i -= 1;
+  return i;
+}
+
+/** Number of blank cells a row starts with. */
+function indentOf(cells) {
+  let i = 0;
+  while (i < cells.length && cells[i] === ' ') i += 1;
+  return i;
+}
+
+/** Where a row's text starts: after its indent and one marker (`❯`, `●`, `-`, `⎿`) and its spaces. */
+function textStart(cells) {
+  let i = indentOf(cells);
+  const marker = cells[i];
+  if (marker && marker !== ' ' && !/[\p{L}\p{N}_]/u.test(marker)) {
+    let after = i + 1;
+    if (cells[after] === '') after += 1; // a wide marker
+    if (cells[after] === ' ') i = indentOf(cells.slice(after)) + after;
+  }
+  return i;
+}
+
+/** The indent of row `b` when row `a` continues into it as a program cut it, else -1. */
+function continuation(a, b, cols) {
+  if (!a || !b) return -1;
+  const last = lastFilled(a);
+  if (last < cols - 1 - EDGE_GAP) return -1; // short of the right edge
+  const indent = indentOf(b);
+  if (indent >= b.length || b[indent] === '' || indent !== textStart(a)) return -1;
+  let head = last;
+  while (head > 0 && a[head - 1] !== ' ') head -= 1;
+  let tail = indent;
+  while (tail < b.length && b[tail] !== ' ') tail += 1;
+  // Only a word longer than a row is cut; a shorter one moves whole to the next row.
+  if (last + 1 - head + tail - indent <= cols - indent - EDGE_GAP) return -1;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(b.slice(indent, tail).join(''))) return -1; // a new URL
+  return indent;
+}
+
+/** URLs in rows `first`…`last`, joined at `indents`, that cross a cut. */
+function urlsAcross(grid, first, last, indents) {
+  let text = '';
+  const where = []; // per code unit of `text`: {row, col}
+  const cuts = []; // offsets in `text` where a continuation row starts
+  for (let row = first; row <= last; row += 1) {
+    const cells = grid[row];
+    if (row > first) cuts.push(text.length);
+    for (let col = row > first ? indents[row - first - 1] : 0; col <= lastFilled(cells); col += 1) {
+      for (let k = 0; k < cells[col].length; k += 1) where.push({ row, col });
+      text += cells[col];
+    }
+  }
+  const found = [];
+  for (const m of text.matchAll(WEB_URL_RE)) {
+    const start = m.index;
+    const end = start + m[0].length;
+    if (!cuts.some((cut) => cut > start && cut < end)) continue; // one row: the addon's
+    try { new URL(m[0]); } catch { continue; }
+    const tail = where[end - 1];
+    const wide = grid[tail.row][tail.col + 1] === '';
+    found.push({ url: m[0], start: { ...where[start] }, end: { row: tail.row, col: tail.col + (wide ? 1 : 0) } });
+  }
+  return found;
+}
+
+/**
+ * URLs a program continued on the next rows itself: [{url, start: {row, col}, end: {row, col}}]
+ * (0-based indexes into `rows`, end inclusive). `rows` are strings (one character per cell) or
+ * arrays of cells, null for a row xterm soft-wrapped; `cols` is the terminal's width.
+ */
+export function findContinuedUrls(rows, cols) {
+  const grid = rows.map(cellsOf);
+  const found = [];
+  let first = 0;
+  while (first < grid.length) {
+    let last = first;
+    const indents = [];
+    while (last + 1 < grid.length && last - first + 1 < MAX_CONTINUED_ROWS) {
+      const indent = continuation(grid[last], grid[last + 1], cols);
+      if (indent < 0) break;
+      indents.push(indent);
+      last += 1;
+    }
+    if (last > first) found.push(...urlsAcross(grid, first, last, indents));
+    first = last + 1;
+  }
+  return found;
+}
+
+/** A buffer line as cells, or null for a soft-wrapped continuation (or none). */
+function lineCells(line) {
+  if (!line || line.isWrapped) return null;
+  const cells = [];
+  for (let x = 0; x < line.length; x += 1) {
+    const cell = line.getCell(x);
+    if (!cell) break;
+    cells.push(cell.getWidth() === 0 ? '' : cell.getChars() || ' ');
+  }
+  return cells;
+}
+
+/**
+ * An xterm link provider for URLs a program continued on the next rows (findContinuedUrls);
+ * `open(url, event)` opens one. Register it before the web-links addon: where both link a URL's
+ * first row, xterm keeps the link of the provider registered first.
+ */
+export function createContinuedUrlProvider(term, { open }) {
+  return {
+    provideLinks(y, callback) {
+      const buffer = term.buffer.active;
+      const top = Math.max(0, y - 1 - MAX_CONTINUED_ROWS);
+      const bottom = Math.min(buffer.length - 1, y - 1 + MAX_CONTINUED_ROWS);
+      const rows = [];
+      for (let row = top; row <= bottom; row += 1) rows.push(lineCells(buffer.getLine(row)));
+      const links = findContinuedUrls(rows, term.cols)
+        .filter((l) => top + l.start.row <= y - 1 && top + l.end.row >= y - 1)
+        .map((l) => ({
+          range: { start: { x: l.start.col + 1, y: top + l.start.row + 1 }, end: { x: l.end.col + 1, y: top + l.end.row + 1 } },
+          text: l.url,
+          decorations: { underline: true, pointerCursor: true },
+          activate: (event) => open(l.url, event),
+        }));
+      callback(links.length ? links : undefined);
     },
   };
 }

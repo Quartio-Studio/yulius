@@ -4394,6 +4394,13 @@ const GROUP_CALLS = [
   `  ${dim('⎿')}  ${bold('Read')}(src/api/tax.rs)`,
 ];
 
+// A URL longer than a row (?wrapurl=1, SPEC-339): three rows of a 140-column terminal.
+const WRAPPED_LEAD = 'Sign in at ';
+const WRAPPED_URL = 'https://example.com/admin/connectors?tab=all&page=2&sort=name&filter=active&view=compact'
+  + '&columns=name,owner,status,updated&return=%2Fadmin%2Fconnectors%2Fsettings%2Fsecurity%2Fsigning-keys'
+  + '&hint=rotate-the-signing-key-before-the-next-deploy&after=%2Fadmin%2Fdeploys%2Fproduction%2Fchecklist'
+  + '&note=the-old-key-stays-valid-for-twenty-four-hours-after-the-rotation&state=done';
+
 /** Persistent fake PTY for one task: a scroll region above a native-looking footer. */
 class TermSession {
   constructor(db, task) {
@@ -4423,7 +4430,7 @@ class TermSession {
     // its classic renderer after the updates that froze and thawed it: the main screen without
     // mouse reporting, and a viewer gets only the visible screen (SPEC-326).
     this.classic = params.get('classic') === '1';
-    // ?wrapurl=1: a URL longer than a row, broken as Claude Code breaks it (SPEC-339, #940).
+    // ?wrapurl=1: a URL longer than a row, cut as Claude Code cuts it (SPEC-339, #940).
     this.wrapUrl = params.get('wrapurl') === '1';
     this.script = SCRIPT_CLAUDE;
     this.scriptIndex = 0;
@@ -4468,16 +4475,16 @@ class TermSession {
       this.scriptIndex = 6;
       if (this.wrapUrl) {
         // Claude Code lays out its rows itself: a URL longer than a row is cut at the right edge and
-        // continued on the next row at the text's indent, after a cursor move, not a soft wrap
-        // (SPEC-339). Cut for the width the session starts with, so the test fixes that width
-        // with ?othercols; above the file references, one of which is wider than 120 columns.
-        const url = 'https://example.com/admin/connectors?tab=all&page=2&sort=name&filter=active&view=compact&columns=name,owner,status,updated';
-        const lead = 'Sign in at ';
-        const cut = Math.max(1, this.cols - 2 - lead.length);
-        this.lines.push(
-          `${c(255, '⏺')} ${lead}${c(39, url.slice(0, cut))}`,
-          `  ${c(39, url.slice(cut))} to see the connectors.`,
-        );
+        // continued on the next rows at the text's indent, after cursor moves, not soft wraps
+        // (SPEC-339). Cut when drawn, for the session's width; four rows (unused ones blank).
+        const cut = (cols) => {
+          const first = Math.max(1, cols - 2 - WRAPPED_LEAD.length);
+          const rest = Math.max(1, cols - 2);
+          const rows = [`${c(255, '⏺')} ${WRAPPED_LEAD}${c(39, WRAPPED_URL.slice(0, first))}`];
+          for (let at = first; at < WRAPPED_URL.length; at += rest) rows.push(`  ${c(39, WRAPPED_URL.slice(at, at + rest))}`);
+          return rows;
+        };
+        for (let i = 0; i < 4; i += 1) this.lines.push((cols) => cut(cols)[i] || '');
       }
       // File references in every form the terminal links to the editor (F 2026-10-10) — a bare
       // path, `path:line:col` in backticks, a name in parentheses, an absolute path with #L, an OSC 8
@@ -4520,7 +4527,8 @@ class TermSession {
   snapshot() {
     const bottom = this.regionBottom();
     const end = this.lines.length - this.scroll;
-    const visible = this.lines.slice(Math.max(0, end - bottom), end);
+    // A line may be drawn for the width (a function of the columns).
+    const visible = this.lines.slice(Math.max(0, end - bottom), end).map((line) => (typeof line === 'function' ? line(this.cols) : line));
     while (visible.length < bottom) visible.unshift(''); // bottom-align like a scrolled TUI
     const f = this.footer();
     // Like Claude Code 2.1.292: full screen (alternate buffer) with mouse reporting, so the wheel

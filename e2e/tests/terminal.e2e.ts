@@ -311,20 +311,34 @@ async function recordOpened(browser: Browser): Promise<() => Promise<string[]>> 
   return () => browser.evaluate(() => (window as unknown as { __opened: string[] }).__opened);
 }
 
-test('a URL Claude Code wraps onto the next row opens whole from either row (#940)', async ({ app, browser }) => {
-  const whole = 'https://example.com/admin/connectors?tab=all&page=2&sort=name&filter=active&view=compact&columns=name,owner,status,updated';
-  // Another viewer fixes the grid at 120 columns, the width the mock cut its URL for (no other
-  // line of the mock wraps there). A press takes the size, and so the width, so each row is tried
-  // on a fresh page.
-  for (const part of ['status,updated', 'example.com/admin']) {
-    await app.open(mock('/s/studio/t/12', '&othercols=120&wrapurl=1'));
-    await expect(rows(browser)).toHaveText(/to see the connectors/);
-    await holdStill(browser);
-    const opened = await recordOpened(browser);
+test('a URL Claude Code wraps onto the next rows opens whole from any of them (#940)', async ({ app, browser }) => {
+  const whole = 'https://example.com/admin/connectors?tab=all&page=2&sort=name&filter=active&view=compact'
+    + '&columns=name,owner,status,updated&return=%2Fadmin%2Fconnectors%2Fsettings%2Fsecurity%2Fsigning-keys'
+    + '&hint=rotate-the-signing-key-before-the-next-deploy&after=%2Fadmin%2Fdeploys%2Fproduction%2Fchecklist'
+    + '&note=the-old-key-stays-valid-for-twenty-four-hours-after-the-rotation&state=done';
+  // The mock cuts the URL for the terminal's width, as Claude Code does: each row after the first
+  // is a part that only a joined link can open. A press is tried on the first row, a middle one
+  // and the last.
+  await app.open(mock('/s/studio/t/12', '&wrapurl=1'));
+  await expect(rows(browser)).toHaveText(/Sign in at/);
+  await holdStill(browser);
+  const parts = await browser.evaluate(() => {
+    const lines = [...document.querySelectorAll('.taskview .xterm-rows > div')].map((d) => (d.textContent || '').trim());
+    const first = lines.findIndex((l) => l.includes('Sign in at'));
+    const continued = [];
+    for (let i = first + 1; i < lines.length && lines[i].length && !lines[i].includes(' '); i += 1) continued.push(lines[i]);
+    return continued;
+  });
+  expect(parts.length, 'the URL continues on the next rows').toBeGreaterThanOrEqual(2);
+  expect(whole.endsWith(parts.join('')), 'the rows continue the URL').toBe(true);
+  const opened = await recordOpened(browser);
+  const presses = ['example.com/admin', parts[0].slice(0, 16), parts[parts.length - 1].slice(-12)];
+  for (const [i, part] of presses.entries()) {
     await hoverLink(browser, part);
     await press(browser);
-    await expect.poll(opened, { message: `a press on ${part} opens the whole URL` }).toEqual([whole]);
+    await expect.poll(opened, { message: `a press on ${part} opens the whole URL` }).toHaveLength(i + 1);
   }
+  expect(await opened()).toEqual(presses.map(() => whole));
 });
 
 test('Ctrl+C copies a selection and interrupts without one; paste types the clipboard', async ({ app, browser, screen }) => {
