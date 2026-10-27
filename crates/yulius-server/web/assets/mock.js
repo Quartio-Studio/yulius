@@ -146,14 +146,15 @@ function seed(params) {
     shells: new Map(), // id → {id, sandbox_id, name, task_id, created_at, session}
     // Instance updates and the Jev key (SPEC-002 ADR-18): `update=1` (main moved on), `update=fail`
     // (main moved on and its install is rolled back), `helper=0` (no update helper), `jev=config`,
-    // `deploying=1` (a deploy of studio's dev runs when the build is done: the update waits for it
-    // one step before it pauses tasks, SPEC-342).
+    // `deploying=1` (a CD run of studio's dev and an environment run of its dev-vm run when the build
+    // is done: the update waits for them one step before it pauses tasks, SPEC-342), `deploying=drain`
+    // (a deploy still runs while tasks pause: the install waits for it, no Continue without waiting).
     update: {
       current: '68b4f5f2c1d0e9a8b7c6d5e4f3a2b1c0d9e8f7a6',
       offer: ['1', 'fail'].includes(params.get('update')) ? '9c1e7d3b5a2f4e6d8c0b1a3f5e7d9c2b4a6f8e0d' : null,
       fail: params.get('update') === 'fail',
       helper: params.get('helper') !== '0',
-      deploying: params.get('deploying') === '1',
+      deploying: params.get('deploying'),
       checkedAt: ['1', 'fail'].includes(params.get('update')) ? iso(10 * MIN) : null,
       run: null,
     },
@@ -3637,14 +3638,14 @@ function runUpdate(db, id) {
   const live = () => db.update.run && db.update.run.id === id && UPDATE_STATES.includes(db.update.run.state);
   const steps = 4;
   // A running deploy holds the update one more step after its build (SPEC-342).
-  const wait = db.update.deploying ? UPDATE_STEP_MS : 0;
+  const wait = db.update.deploying === '1' ? UPDATE_STEP_MS : 0;
   if (wait) {
     later(() => {
       if (!live() || db.update.run.state !== 'building') return;
       Object.assign(db.update.run, {
         step: 'built', progress: { done: 340, total: 340 },
-        message: 'Built. Waiting for 1 deploy(s) to finish before pausing tasks; new deploys wait for the update.',
-        deploys: [{ sandbox: 'studio', environment: 'dev', kind: 'cd', run: 'cdr_waiting' }],
+        message: 'Built. Waiting for 2 deploy(s) to finish before pausing tasks; new deploys are refused until the update installed.',
+        deploys: [{ sandbox: 'studio', environment: 'dev', kind: 'cd', run: 'cdr_waiting' }, { sandbox: 'studio', environment: 'dev-vm', kind: 'environment', run: 'env_waiting' }],
       });
       emit(db, { type: 'update.updated', phase: 'building' });
     }, UPDATE_STEP_MS + 100);
@@ -3661,6 +3662,9 @@ function runUpdate(db, id) {
   later(() => {
     if (!live()) return;
     moveUpdate(db, 'pausing', { step: 'pausing', message: 'Pausing tasks: 2 of 3 paused.', tasks: { paused: 2, total: 3, waiting: [{ id: 'tsk_x', number: 4, title: 'Fix the flaky export test', sandbox: 'studio' }], deadline: new Date(Date.now() + 30 * MIN).toISOString() } });
+    if (db.update.deploying === 'drain') {
+      Object.assign(db.update.run, { message: 'Waiting for 1 deploy(s) to finish before restarting.', can_proceed: false, deploys: [{ sandbox: 'studio', environment: 'dev', kind: 'cd', run: 'cdr_late' }] });
+    }
   }, UPDATE_STEP_MS + 100 + wait);
   later(() => {
     if (!live()) return;
