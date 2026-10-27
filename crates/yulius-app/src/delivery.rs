@@ -334,7 +334,6 @@ pub fn vidoc_switched_on(sandbox: &SandboxRecord) -> bool {
         != Some(false)
 }
 
-/// A playground runs no CI scan, so it has no Vidoc switch (SPEC-338 VOF-001).
 /// Where `task`'s worktree is (SPEC-343): the Git overview says it, and the changes view reads
 /// only a `Present` one. A task gets its branch when created and its worktree when it starts.
 fn worktree_state(task: &TaskRecord) -> WorktreeState {
@@ -345,6 +344,7 @@ fn worktree_state(task: &TaskRecord) -> WorktreeState {
     }
 }
 
+/// A playground runs no CI scan, so it has no Vidoc switch (SPEC-338 VOF-001).
 fn playground_has_no_vidoc() -> AppError {
     invalid("a playground runs no Vidoc scan: it has no switch to turn".to_owned())
 }

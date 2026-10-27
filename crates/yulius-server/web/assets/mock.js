@@ -2207,7 +2207,7 @@ function taskCommits(task) {
 // and its worktree when it starts; a test removes one with `__yuliusMock.tasks[i].worktree = 'gone'`.
 function worktreeOf(task) {
   if (task.worktree) return task.worktree;
-  return task.status === 'chained' || task.status === 'prepared' ? 'not_created' : 'present';
+  return hasStarted(task) && !task.neverRan ? 'present' : 'not_created';
 }
 // Changes and commits are read from the worktree: refused, as the server does, without one.
 function noWorktree(task) {

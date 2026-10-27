@@ -66,7 +66,7 @@ only fail.
   worktree directory is removed, and a task with a branch never started, with the refusals.
 - e2e (`e2e/tests/git.e2e.ts`) against the mock (`ambient=0`): tasks marked `gone` and
   `not_created` render without a link and with their text; another card still links. The mock
-  derives `not_created` for chained and prepared tasks and refuses changes and commits like the
+  derives `not_created` for tasks that never ran (`hasStarted`, `neverRan`) and refuses changes and commits like the
   server.
 
 ## Decisions
