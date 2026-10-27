@@ -3881,8 +3881,8 @@ impl App {
             // LSS-001): a long goal turn that grew its Plan showed the old list's progress.
             if spec_synced.elapsed() >= SPEC_SYNC_INTERVAL {
                 spec_synced = std::time::Instant::now();
-                if let Ok(Some(current)) = self.deps.store.task(&task_id).await
-                    && let Err(err) = self.sync_steps_from_spec(&current).await
+                if let Ok(Some(fresh)) = self.deps.store.task(&task_id).await
+                    && let Err(err) = self.sync_steps_from_spec(&fresh).await
                 {
                     tracing::debug!(error = %err, task = %task_id, "step sync from the spec failed");
                 }

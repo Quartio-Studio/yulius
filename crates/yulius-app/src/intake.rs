@@ -711,10 +711,11 @@ impl App {
         // The skipped steps carry the change to the agent (their note says the user ruled them
         // out); no message is stored (SPEC-028 MSR-002).
         let note = format!(
-            "{} skipped; #{} runs after this task.",
+            "{}; #{} runs after this task.",
             match skipped {
-                1 => "1 step".to_owned(),
-                n => format!("{n} steps"),
+                0 => "No open step was left to skip (already finished)".to_owned(),
+                1 => "1 step skipped".to_owned(),
+                n => format!("{n} steps skipped"),
             },
             created.number
         );
