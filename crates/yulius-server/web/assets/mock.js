@@ -4250,6 +4250,7 @@ async function handleFetch(db, url, init = {}) {
     if (db.holdReads) await new Promise((resolve) => db.holdReads.push(resolve));
   }
   if (fileContent && init.method === 'PUT') {
+    db.saveRequests = (db.saveRequests || 0) + 1;
     db.savesOnTheirWay = (db.savesOnTheirWay || 0) + 1;
     try { return await handleFetchAfterLatency(db, url, init); } finally { db.savesOnTheirWay -= 1; }
   }

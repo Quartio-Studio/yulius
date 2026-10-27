@@ -284,11 +284,15 @@ export function createEditorView(ctx, sandbox, getTask) {
   folderOptions();
   folder.addEventListener('focus', () => { loadRoots(); });
   folder.addEventListener('change', async () => {
+    // Taken now: the list read again while the question is asked redraws the picker on `root`.
+    const wanted = folder.value;
     if (tabs.some((t) => t.dirty) && !(await confirmDialog({ title: 'Switch folder?', message: 'Unsaved changes in open files are discarded.', confirmLabel: 'Discard and switch', danger: true }))) {
       folder.value = root;
       return;
     }
-    root = folder.value;
+    if (destroyed || wanted === root) { folder.value = root; return; }
+    root = wanted;
+    folder.value = root;
     folder.title = folder.selectedOptions[0] ? folder.selectedOptions[0].textContent : '';
     closeAll();
     expanded.clear();
@@ -907,6 +911,11 @@ export function createEditorView(ctx, sandbox, getTask) {
 
   async function save(tab, overwrite = false) {
     if (tab.saving) return;
+    // Another person's worktree (SPEC-340 EWT-003): nothing is sent for the server to refuse.
+    if (!writable()) {
+      if (tab.dirty) toast(`${readOnlyText()}: your text in ${tab.path} is kept, unsaved.`, { kind: 'info' });
+      return;
+    }
     tab.saving = true;
     tab.look = (tab.look || 0) + 1; // a look in flight may predate this save
     tab.looking = false;

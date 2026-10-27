@@ -21,9 +21,11 @@ task's owner only (SPEC-070).
   open: the sandbox repository with the branch its `HEAD` names, then every task, active or
   archived, whose worktree is a directory on disk inside the sandbox directory, newest first, with
   its branch, number, title and whether the caller may change files there (its owner).
-- The branch of `repo/` is read from `.git/HEAD` on the host: `.git` must resolve inside the
-  sandbox directory and `HEAD` is opened with `O_NOFOLLOW | O_NONBLOCK` and read up to 1 KiB, so a
-  link or pipe planted by a contained shell names no branch and blocks nothing.
+- The branch of `repo/` is read from `.git/HEAD` on the host through handles (ADR-0174): `repo`
+  and `.git` are walked from the sandbox directory folder by folder with `O_NOFOLLOW`, and `HEAD`
+  is opened with `O_NOFOLLOW | O_NONBLOCK`, checked to be a regular file and read up to 1 KiB, off
+  the async workers. A link or pipe a contained shell plants, before the read or during it, names
+  no branch and blocks nothing; a `repo` replaced by a link is not listed.
 - The Editor's folder picker shows those folders named by branch ("Sandbox · dev",
   "#12 feat/12-…", "(read-only)" after another person's), reading the list each time the Editor
   comes to the front, when the picker gets focus and when the selected task changes; until it is
@@ -46,7 +48,9 @@ task's owner only (SPEC-070).
 
 ## Consequences
 
-- One more read per Editor show; the list is small (one entry per task with a worktree).
+- One more read each time the Editor comes to the front, the picker gets focus or the selected
+  task changes (one read at a time, one more after it when asked meanwhile); each costs a store
+  read of the sandbox's tasks and one `canonicalize` per task with a worktree path.
 - A task whose worktree is removed while it is open stays in the picker as the folder open now;
   its reads fail as before until the person picks another.
 - The Shell panel's "Folder for new terminals" picker still offers only the selected task; it can

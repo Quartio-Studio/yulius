@@ -55,6 +55,7 @@ worktree they may not change opens read-only and says why, instead of failing at
   now always stays in the list. Choosing an entry switches folders as today (unsaved changes are
   asked about, SPEC-166).
 - **EWT-003 Read-only folders.** In a folder whose entry is not `writable`, Monaco is read-only,
+  a save (Ctrl+S) sends nothing,
   the explorer offers no New file, New folder, Upload or Delete (a drop adds nothing and says
   why), and the status bar says
   "Read-only: Task #N is another person's" in place of the save state. A writable folder behaves

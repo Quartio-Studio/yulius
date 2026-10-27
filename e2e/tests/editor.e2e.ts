@@ -1262,3 +1262,68 @@ test('the folder picker keeps the sandbox and the selected task when the worktre
   await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { failedReads: number } }).__yuliusMock.failedReads)).toBeGreaterThan(0);
   expect(await folderOptions(browser)).toEqual(['Sandbox', 'Task #12 worktree']);
 });
+
+// Review of SPEC-340: in another person's worktree Ctrl+S sends nothing, the explorer's menu offers
+// nothing that writes, and a drop adds nothing and says why.
+type ReadOnlyMock = FolderMock & { __yuliusMock: { saveRequests?: number; uploads?: unknown }; __e2eDrop?: (selector: string, files: [string, string, string][]) => void };
+test('another person’s worktree saves nothing, offers no writing menu items and takes no drop', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await browser.evaluate(() => {
+    const task = (window as unknown as FolderMock).__yuliusMock.tasks.find((t) => t.sandbox_id === 'sb_studio' && t.number === 10);
+    if (task) task.owner = { login: 'anna-q' };
+    (window as unknown as ReadOnlyMock).__e2eDrop = (selector, files) => {
+      const data = new DataTransfer();
+      for (const [name, text, type] of files) data.items.add(new File([text], name, { type }));
+      const target = document.querySelector(selector) as Element;
+      for (const type of ['dragenter', 'dragover', 'drop']) target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, composed: true, dataTransfer: data }));
+    };
+  });
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await expect.poll(async () => (await folderOptions(browser)).some((o) => o === '#10 feat/aws-login-for-deploy (read-only)')).toBe(true);
+  await chooseFolder(browser, '#10 feat/aws-login-for-deploy (read-only)');
+  const tree = screen.getByRole('tree', 'Files');
+  await tree.getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
+  await screen.getByRole('textbox', 'Editor content').focus();
+  await browser.keyboard.press('Control+s');
+  await expect.poll(() => statusText(browser)).toContain('Read-only: Task #10 is another person’s');
+  expect(await browser.evaluate(() => (window as unknown as ReadOnlyMock).__yuliusMock.saveRequests ?? 0)).toBe(0);
+
+  // The explorer's menu on a folder: nothing that writes.
+  await browser.evaluate(() => document.querySelector('.ed-row[data-path="src"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 80, clientY: 120 })));
+  await expect(screen.getByRole('menuitem', 'Copy path')).toBeVisible();
+  await expect(screen.getByRole('menuitem', /^New file/)).toHaveCount(0);
+  await expect(screen.getByRole('menuitem', /^New folder/)).toHaveCount(0);
+  await expect(screen.getByRole('menuitem', /^Delete/)).toHaveCount(0);
+  await browser.keyboard.press('Escape');
+
+  // A drop on the explorer: nothing is sent, and it says why.
+  await browser.evaluate(() => (window as unknown as ReadOnlyMock).__e2eDrop!('.ed-row[data-path="src"]', [['notes.txt', 'hello\n', 'text/plain']]));
+  await expect(browser.locator('.ed-side')).toContainText('This folder is read-only: the task is another person’s.');
+  await expect(tree.getByRole('treeitem', 'notes.txt')).toHaveCount(0);
+});
+
+// Review of SPEC-340: the folder list arriving while "Switch folder?" is asked must not turn the
+// answer into a switch to the folder already open (the edits discarded, nothing switched).
+test('a folder chosen while the worktrees are read switches to it once the question is answered', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/files/roots'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
+  const content = screen.getByRole('textbox', 'Editor content');
+  await content.focus();
+  await browser.keyboard.type('unsaved ');
+  await expect(screen.getByRole('tab', /^README\.md\s*, modified/)).toBeVisible();
+  expect(await folderOptions(browser)).toEqual(['Sandbox', 'Task #12 worktree']);
+
+  await chooseFolder(browser, 'Task #12 worktree');
+  const dialog = screen.getByRole('dialog', /Switch folder/);
+  await expect(dialog).toBeVisible();
+  await browser.evaluate(() => (window as unknown as HeldMock).__yuliusMock.release());
+  await expect.poll(async () => (await folderOptions(browser))[0]).toBe('Sandbox · quartio');
+  await dialog.getByRole('button', 'Discard and switch').click();
+  await expect.poll(() => statusText(browser)).toBe('Task #12 worktree · feat/checkout-api');
+  expect(await browser.evaluate(() => (document.querySelector('select[aria-label="Folder"]') as HTMLSelectElement).value)).toMatch(/^task:/);
+});
