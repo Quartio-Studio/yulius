@@ -13,6 +13,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   **Decline**. Only the person's click in the web UI answers: every API token is refused, and a
   dropped call, a restart or no answer leaves nothing to approve later. Approval creates the task
   in the target exactly as shown, with the person's access checked there.
+- The sandbox tabs in the top row now drag as smoothly as the Notes tabs (SPEC-336, task #320,
+  fixes #929). They used the browser's own drag and drop: a ghost of the link, nothing moving
+  until the drop, then a jump. They now share `tabdrag.js` with the Notes and Editor tabs: the
+  tab follows the pointer, the others slide aside, it settles where it is let go, Escape puts it
+  back, and the release opens no sandbox.
 - A goal task whose turn an API error ended ("Connection lost mid-response") now reads Working
   while Claude Code retries it, and Needs you when the retries fail (SPEC-333, task #317, fixes
   #927). Claude Code retries a goal turn itself, after 1, 5 and 15 minutes, and says so in a notice.

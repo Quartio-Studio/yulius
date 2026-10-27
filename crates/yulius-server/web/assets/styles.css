@@ -307,12 +307,17 @@ p { margin: 0; }
 }
 .tab:hover { color: var(--text); text-decoration: none; background: var(--surface); }
 .tab.active { color: var(--text); border-bottom-color: var(--accent); background: var(--surface); }
-.tab.drag-over { box-shadow: inset 2px 0 0 var(--accent); }
+/* Dragging a sandbox tab (SPEC-336), as the Notes tabs: it follows the pointer, the others slide aside. */
+.tabrow-tabs.reordering { cursor: grabbing; user-select: none; }
+.tabrow-tabs.reordering .tab { transition: transform var(--duration-fast) var(--ease); }
+.tabrow-tabs .tab.dragging { z-index: var(--z-raised); transition: none; color: var(--text); background: var(--surface-2); box-shadow: var(--shadow); cursor: grabbing; }
+.tabrow-tabs .tab.settling { z-index: var(--z-raised); transition: transform var(--duration-fast) var(--ease); }
 /* The grip says a sandbox tab drags (SPEC-167, as the Notes tabs' in SPEC-136): faint at rest, the
    tab's colour when it is hovered or current, 8 px from the edge and 4 px from the name; hidden
    without a mouse or pen. */
 .tab-grip { display: inline-flex; flex: none; margin: 0 -2px 0 -4px; color: var(--text-faint); cursor: grab; }
-.tab:hover .tab-grip, .tab.active .tab-grip { color: currentColor; }
+.tab:hover .tab-grip, .tab.active .tab-grip, .tab.dragging .tab-grip { color: currentColor; }
+.tabrow-tabs.reordering .tab-grip { cursor: grabbing; }
 @media not (any-pointer: fine) {
   .tab-grip { display: none; }
 }
