@@ -205,7 +205,7 @@ pub struct TaskRuntime {
     pub(crate) attention_lock: tokio::sync::Mutex<()>,
     /// Held by each writer of the task's steps (the spec sync, `steps_set`, `step_update`, a
     /// person skipping steps) from its read to its write, so none writes back a status another
-    /// just changed (SPEC-341 LSS-002).
+    /// just changed (SPEC-341 LSS-002). Public for the integration tests that hold it.
     pub steps_lock: tokio::sync::Mutex<()>,
     /// When (ms) the record that closes a turn was last seen: the background agents it counts
     /// are known from then on (STA-001), which the chain and Done decisions wait for.

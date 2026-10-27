@@ -909,6 +909,10 @@ impl App {
         else {
             return Ok(false);
         };
+        // Locked before the spec is read: a sync that read an older spec never writes it over a
+        // newer one written meanwhile (SPEC-341 LSS-002).
+        let runtime = self.runtime(&task.id);
+        let _steps = runtime.steps_lock.lock().await;
         let (root, rel) = (PathBuf::from(worktree), spec_path.clone());
         let expected = task.id.clone();
         let plan = tokio::task::spawn_blocking(move || {
@@ -917,8 +921,6 @@ impl App {
         .await
         .map_err(AppError::internal)?;
         let Some(plan) = plan else { return Ok(false) };
-        let runtime = self.runtime(&task.id);
-        let _steps = runtime.steps_lock.lock().await;
         let items: Vec<_> = plan
             .into_iter()
             .filter(|item| item.depth == 0 && !item.text.trim().is_empty())

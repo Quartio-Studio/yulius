@@ -662,8 +662,6 @@ impl App {
         step_ids: &[String],
     ) -> AppResult<(Option<TaskRecord>, String)> {
         let store = &self.deps.store;
-        let runtime = self.runtime(&d.task.id);
-        let _steps = runtime.steps_lock.lock().await;
         let steps = store.steps(&d.task.id).await?;
         let mut chosen = Vec::new();
         for id in step_ids {
@@ -689,19 +687,32 @@ impl App {
             .await?;
         let now = self.now();
         let note_text = format!("Ruled out by the user: {}", short(&d.hold.prompt, 300));
+        // Under the steps lock, only around the writes (SPEC-341 LSS-002): the steps are read
+        // again, and a chosen step the agent or the spec finished meanwhile stays finished.
+        let runtime = self.runtime(&d.task.id);
+        let steps_lock = runtime.steps_lock.lock().await;
+        let current = store.steps(&d.task.id).await?;
+        let mut skipped = 0_usize;
         for step in &chosen {
-            store
-                .update_step(&step.id, "skipped", Some(&note_text), &d.actor, now)
-                .await?;
+            if current.iter().any(|c| {
+                c.id == step.id
+                    && !StepStatus::parse(&c.status).is_some_and(StepStatus::is_resolved)
+            }) {
+                store
+                    .update_step(&step.id, "skipped", Some(&note_text), &d.actor, now)
+                    .await?;
+                skipped += 1;
+            }
         }
-        if !chosen.is_empty() {
+        drop(steps_lock);
+        if skipped > 0 {
             self.publish_steps(d.task).await;
         }
         // The skipped steps carry the change to the agent (their note says the user ruled them
         // out); no message is stored (SPEC-028 MSR-002).
         let note = format!(
             "{} skipped; #{} runs after this task.",
-            match chosen.len() {
+            match skipped {
                 1 => "1 step".to_owned(),
                 n => format!("{n} steps"),
             },
