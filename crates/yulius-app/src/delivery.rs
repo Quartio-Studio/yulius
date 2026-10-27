@@ -1831,6 +1831,7 @@ impl App {
                     .iter()
                     .find(|p| p.head == branch)
                     .map(|p| pull_view(p, checks_of(p.number))),
+                worktree_gone: Self::worktree_of(&task).is_none(),
             };
             if cloned
                 && self
@@ -2346,17 +2347,21 @@ impl App {
     async fn review_target(&self, task: &TaskRecord) -> AppResult<(PathBuf, String, String)> {
         let sandbox = self.dlv_sandbox_of(task).await?;
         let integration = delivery_profile(&sandbox).integration_branch;
-        let worktree = task
-            .worktree_path
+        let worktree = Self::worktree_of(task).ok_or_else(|| {
+            AppError::Conflict(
+                "the task's worktree is gone; its branch and pull request are on GitHub".into(),
+            )
+        })?;
+        Ok((worktree, format!("origin/{integration}"), integration))
+    }
+
+    /// The task's worktree while it is on disk: what its changes are read from. The Git overview
+    /// says `worktree_gone` exactly when this is `None` (SPEC-343).
+    fn worktree_of(task: &TaskRecord) -> Option<PathBuf> {
+        task.worktree_path
             .as_deref()
             .map(PathBuf::from)
             .filter(|p| p.is_dir())
-            .ok_or_else(|| {
-                AppError::Conflict(
-                    "the task's worktree is gone; its branch and pull request are on GitHub".into(),
-                )
-            })?;
-        Ok((worktree, format!("origin/{integration}"), integration))
     }
 
     // ---------------------------------------------------------------- automatic delivery

@@ -2660,7 +2660,11 @@ async fn git_overview_says_when_a_tasks_worktree_is_gone() -> TestResult {
         .req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
         .await?;
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
-    assert_eq!(page.body["tasks"][0]["worktree_gone"], false, "{}", page.body);
+    assert_eq!(
+        page.body["tasks"][0]["worktree_gone"], false,
+        "{}",
+        page.body
+    );
 
     std::fs::remove_dir_all(&wt)?;
     let page = f

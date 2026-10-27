@@ -540,7 +540,7 @@ the agents' delivery workflow and other clients; no page of the web UI calls the
 
 ```json
 GitOverview = {"integration_branch","production_branch","default_branch",
-  "tasks":[{"task_id","title","branch","ahead","behind","files_changed","insertions","deletions","pr":PR|null}],
+  "tasks":[{"task_id","title","branch","ahead","behind","files_changed","insertions","deletions","pr":PR|null,"worktree_gone":bool}],
   "recent_commits":[{"sha","subject","author","at"}], "pulls":[PR], "notes":["…"],
   "checks_access":ChecksAccess|null}
 PR = {"number","url","title","state":"open|merged|closed","base","head",

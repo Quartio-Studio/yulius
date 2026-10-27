@@ -42,6 +42,10 @@ pub struct TaskBranch {
     pub deletions: u32,
     /// Open PR.
     pub pr: Option<PullView>,
+    /// The task's worktree is no longer on disk, so its changes can't be read (SPEC-343); the
+    /// branch and pull request stay on GitHub. Absent (older servers) reads as false.
+    #[serde(default)]
+    pub worktree_gone: bool,
 }
 
 /// Commit summary.
