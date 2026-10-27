@@ -6,10 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-27
 
-- A Git board card whose task's worktree is gone says "Worktree gone" and opens nothing (SPEC-343,
-  task #327, fixes #943). It used to open the task's changes, which could only answer "Couldn't
-  load the changes: the task's worktree is gone". The Git overview now reports `worktree_gone` per
-  task branch, from the same check that makes the changes view refuse.
+- A Git board card whose task has no worktree opens nothing and says why: "Worktree gone", or "No
+  worktree yet" for a task that has not started (SPEC-343, task #327, fixes #943). It used to open
+  the task's changes, which could only answer "Couldn't load the changes: the task's worktree is
+  gone", also for a queued task that never had one. The Git overview now reports each task
+  branch's `worktree` (present, not_created or gone) from the same check that makes the changes
+  view refuse, and that refusal says when a task has not started yet.
 - A long URL in a narrow terminal opens whole (SPEC-339, ADR-0230, task #323, fixes #940).
   Claude Code cuts a URL longer than a row at the right edge and continues it on the next row
   itself, so only the first part was a link and a click opened a truncated address. The URL is
