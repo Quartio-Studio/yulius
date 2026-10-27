@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-27
 
+- An update of Yulius no longer cuts a running deploy (SPEC-342, ADR-0232, task #326). A CD run or
+  delivery environment run still running when the new version is built finishes first (tasks keep
+  working meanwhile and the Instance page names the deploys), and new deploys are refused until
+  the update installed, so the restart never stops one halfway. Before, the restarted server ended
+  such a run as an error with its outcome unknown.
 - A long URL in a narrow terminal opens whole (SPEC-339, ADR-0230, task #323, fixes #940).
   Claude Code cuts a URL longer than a row at the right edge and continues it on the next row
   itself, so only the first part was a link and a click opened a truncated address. The URL is

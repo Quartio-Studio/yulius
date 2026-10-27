@@ -332,7 +332,9 @@ watching, steering and unblocking.
 - **Updates**: Yulius updates itself from `main` without losing running work. The superadmin
   starts an update from the Update button beside their account button in the sidebar (SPEC-133).
   Once the new version is built, every task is frozen at once, mid-turn, and thawed after the
-  restart; the agents don't notice (SPEC-160).
+  restart; the agents don't notice (SPEC-160). A deploy (CD or environment run) running when the
+  new version is built finishes first, and new deploys wait until the update installed, so an
+  update never cuts a deploy (SPEC-342).
 
 ## Principles
 
