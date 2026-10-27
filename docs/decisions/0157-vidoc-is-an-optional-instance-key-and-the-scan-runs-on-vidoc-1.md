@@ -14,6 +14,9 @@ from `HEAD`, and the file can also hold `exclude` and `[[ignore]]`.
 
 The skip rule of [ADR-0133](0133-a-ci-job-that-checked-nothing-ends-skipped.md) is kept.
 
+Amended by [ADR-0229](0229-a-person-switches-a-projects-vidoc-scans-off-in-yulius.md): a project a
+person switched off in Yulius gets neither the instance key nor a scan.
+
 ## Context
 
 The scan drove the Vidoc CLI `@vidocsecurity/cli` 0.1.25 against `https://api.vidoc.dev`. That API

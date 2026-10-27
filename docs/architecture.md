@@ -1369,6 +1369,14 @@ Vidoc is an optional instance service, like Jev
   (`GitHubPort::create_issue`, `set_issue_state`).
 - **Infra bootstrap.** The briefing and the onboarding prompt carry the scan only when the instance
   has a key (`briefing.rs` `security_scan`, `onboarding.rs` `security_setup`).
+- **The project switch** ([SPEC-338](../.ai/specs/SPEC-338-in-vidoc-related-problems-we-want-to-be.md),
+  [decision 0229](decisions/0229-a-person-switches-a-projects-vidoc-scans-off-in-yulius.md)).
+  `vidoc: false` in a sandbox's profile JSON (`delivery::vidoc_switched_on`, set by
+  `PATCH /api/sandboxes/{sid}` `{"vidoc": …}` from the Vidoc card or the Add sandbox dialog)
+  switches the project off: its agent runs (`base_env`) and CI jobs (`ci_job_env`) get
+  `YULIUS_VIDOC=off`, on which the scanner says "disabled" and sends nothing (in CI the skip
+  code); `applied_agent_secrets` leaves the instance key out, `ci_scans` adds no built-in job, and
+  the briefing and onboarding prompt say it is off (`VidocBriefing::Off`).
 
 ```mermaid
 flowchart LR
@@ -1382,6 +1390,7 @@ flowchart LR
   CI -->|"::yulius-finding lines: outside the change, at the run's end"| ISS["ci/findings.rs: file (other jobs passed), reopen, close"]
   ISS -->|"issues, once per fingerprint"| GH["GitHub issues"]
   APP -->|"key set: briefing and onboarding add the scan rule"| BOOT["infra bootstrap"]
+  SW["Project switch off: Vidoc card, Add sandbox dialog"] -.->|"no key, no built-in job, YULIUS_VIDOC=off: disabled"| AG
 ```
 
 ## CD (deployment)

@@ -215,7 +215,11 @@ watching, steering and unblocking.
   already scans. The code goes to
   Vidoc, but the key never reaches agents: the egress proxy adds it toward
   `model.vidocsecurity.com` only. With a key, infra bootstrap adds only the AGENTS.md rule to scan
-  before delivery, never a job of its own. Without one, the scan reports "not run".
+  before delivery, never a job of its own. Without one, the scan reports "not run". A person can
+  switch a project's scans off, for example while the key's quota is used up, on the Instance
+  page's Vidoc card or when adding the project ("Scan pull requests with Vidoc"); it then scans
+  nothing, its scan and CI job say "disabled" (Skipped), and its agents ask nobody about the key
+  (SPEC-338, ADR-0229).
 - **Pipeline (stages)**: every stage of tasks, CI runs and deployments is measured as it happens
   and kept 180 days (SPEC-137): a task's waits, states, steps (with their tokens), runs, pauses,
   pull request and merge waits; a CI run's queue (and why), jobs and the stages their output names

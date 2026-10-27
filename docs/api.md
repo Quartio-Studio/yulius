@@ -58,9 +58,12 @@ Me = {
   "csrf_token": "…",
   "instance": {"owner_login": "Quartio-Studio", "owner_kind": "org|user|null",
                "public_url": "https://yulius.quartio.ai", "github_configured": true,
-               "contained": true, "claude_connected": true}
+               "contained": true, "claude_connected": true, "vidoc": true}
 }
 ```
+
+`instance.vidoc`: whether the instance has a Vidoc key, so the Add sandbox dialog offers "Scan pull
+requests with Vidoc" (SPEC-338); never the key.
 
 `instance.claude_connected`: whether a Claude account is usable (signed in, `ok` or `limited`);
 while false the UI shows Connect Claude first and a person's start of an agent answers `409`
@@ -225,6 +228,9 @@ replaces the caller's copy). It never starts onboarding: a `pending` sandbox wai
 starts it (Start onboarding on the sandbox page, or `onboarding_start` with an `operate` token;
 SPEC-051, SPEC-247). Only Claude Code sessions are imported.
 
+`PATCH /api/sandboxes/{sid}` `{"vidoc": false|true}` switches the project's Vidoc scans off or on
+(SPEC-338, ADR-0229; `422` for a playground, audited `delivery.vidoc.update`); `profile.vidoc` is
+always a boolean in responses, and a `profile` update keeps the switch whatever it carries.
 `PATCH /api/sandboxes/{sid}` validates the profile (branch names, distinct branches, environment
 names, single-line commands ≤ 2000 bytes, `verify: command` needs a command, ≤ 8 environments) and
 relabels it: `preset` stays a named preset only while every setting equals that preset's
