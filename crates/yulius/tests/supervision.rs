@@ -1860,3 +1860,81 @@ fn a_queued_supertask_takes_the_next_slot_first() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// SPEC-341 LSS-001 (STP-004): a long goal turn grew its spec's Plan from 7 parts to 13 and the
+/// task kept showing 77 % for hours, because the steps followed the spec only at a session start
+/// or a turn end. A running task's steps follow its spec while the turn runs: no hook here.
+#[test]
+fn a_running_tasks_steps_follow_its_spec_without_a_turn_end() -> TestResult {
+    use yulius_app::ports::store::{TaskFieldUpdate, TaskStore};
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build(&data, &fake)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let id = new_task(&app, &sandbox, &user, "Big scope").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        let update = TaskFieldUpdate {
+            spec_path: Some("docs/specs/big.md".into()),
+            ..TaskFieldUpdate::default()
+        };
+        app.deps.store.update_task(&id, &update, app.now()).await?;
+        let worktree = PathBuf::from(task(&app, &id).await?.worktree_path.ok_or("worktree")?);
+        std::fs::create_dir_all(worktree.join("docs/specs"))?;
+        let spec = |items: &[(&str, bool)]| {
+            let plan: String = items
+                .iter()
+                .map(|(t, done)| format!("- [{}] {t}\n", if *done { "x" } else { " " }))
+                .collect();
+            format!(
+                "---\nyulius-task: {id}\nstatus: in-progress\n---\n# Big scope\n\n\
+                 ## Goal\n\nAll parts.\n\n## Context\n\nBig.\n\n## Requirements\n\n- All.\n\n\
+                 ## Plan\n\n{plan}\n## Acceptance criteria\n\nAll parts work.\n\n\
+                 ## Test plan\n\n```sh\ncargo test\n```\n\n## Decisions\n\n- None.\n"
+            )
+        };
+        let steps = || async {
+            app.deps
+                .store
+                .steps(&id)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| (s.title, s.status))
+                .collect::<Vec<_>>()
+        };
+        let pair = |t: &str, s: &str| (t.to_owned(), s.to_owned());
+        std::fs::write(
+            worktree.join("docs/specs/big.md"),
+            spec(&[("Part 1", true), ("Part 2", false)]),
+        )?;
+        wait_for("the first plan", Duration::from_secs(30), || async {
+            steps().await == [pair("Part 1", "done"), pair("Part 2", "pending")]
+        })
+        .await?;
+        // The turn goes on and the Plan grows: the steps follow, the finished one kept.
+        std::fs::write(
+            worktree.join("docs/specs/big.md"),
+            spec(&[("Part 1", true), ("Part 2", false), ("Part 3", false)]),
+        )?;
+        wait_for("the grown plan", Duration::from_secs(30), || async {
+            steps().await
+                == [
+                    pair("Part 1", "done"),
+                    pair("Part 2", "pending"),
+                    pair("Part 3", "pending"),
+                ]
+        })
+        .await?;
+        support::stop_tasks(&app, &[&id]).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
