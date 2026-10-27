@@ -11,6 +11,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   also when no task is selected; the status bar names the branch too. Another person's worktree
   opens read-only and says why instead of failing at the first save. The Editor never checks out
   a branch: each branch is reached through its worktree.
+- A Git board card whose task has no worktree opens nothing and says why: "Worktree gone", or "No
+  worktree yet" for a task that has not started (SPEC-343, task #327, fixes #943). It used to open
+  the task's changes, which could only answer "Couldn't load the changes: the task's worktree is
+  gone", also for a queued task that never had one. The Git overview now reports each task
+  branch's `worktree` (present, not_created or gone) from the same check that makes the changes
+  view refuse, and that refusal says when a task has not started yet.
 - A running task's progress counts its whole spec Plan, not only the steps listed before the
   Plan grew (SPEC-341, task #325, fixes #942). Steps followed the spec's Plan only when a turn
   ended, so a long goal turn that grew its Plan from 7 parts to 13 kept showing 77 % for hours.

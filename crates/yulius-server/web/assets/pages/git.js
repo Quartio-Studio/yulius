@@ -20,6 +20,8 @@ import { BRAND } from '../brand.js';
 const LIVE_LIMIT = 5;
 const ACTIVITY_LIMIT = 8;
 const CHECK_TEXT = { success: 'checks passed', failure: 'checks failing', pending: 'checks running', unknown: 'checks unknown' };
+// A task's worktree when it is not there (the overview's `worktree`, SPEC-343); `present` opens.
+const WORKTREE_TEXT = { not_created: 'No worktree yet', gone: 'Worktree gone' };
 const CHECK_ICON = { success: ['check', 'ok'], failure: ['x', 'danger'], pending: ['clock', 'warn'] };
 
 /** Environments of a profile, split by where they run. */
@@ -348,14 +350,17 @@ export function mountGitPage(ctx, sandbox) {
     const stuck = Boolean(pr && pr.state === 'open' && pr.checks === 'failure');
     const files = item.row.files_changed ? h('span', { class: 'dl-diffstat', title: item.row.branch || null },
       h('span', { class: 'muted' }, plural(item.row.files_changed, 'file')), ' ', h('span', { class: 'gt-add' }, `+${item.row.insertions ?? 0}`), ' ', h('span', { class: 'gt-del' }, `−${item.row.deletions ?? 0}`)) : null;
-    // The card opens the task's changes (diff, commits, branch); "Go to task" is there.
-    const review = item.task ? `/s/${encodeURIComponent(sandbox.slug)}/git/t/${item.task.number}` : null;
+    // The card opens the task's changes (diff, commits, branch); "Go to task" is there. Without its
+    // worktree (not created yet, or gone) there are no changes to read: the card says so (SPEC-343).
+    const noWorktree = item.task ? WORKTREE_TEXT[item.row.worktree] || null : null;
+    const review = item.task && !noWorktree ? `/s/${encodeURIComponent(sandbox.slug)}/git/t/${item.task.number}` : null;
     const title = review
       ? h('a', { class: 'dl-task dl-card-link', href: href(review), dataset: { route: review } }, h('span', { class: 'muted' }, `#${item.task.number} `), item.row.title)
-      : taskLink(item, false);
+      : noWorktree ? h('span', { class: 'dl-task' }, h('span', { class: 'muted' }, `#${item.task.number} `), item.row.title) : taskLink(item, false);
     return h('div', { class: ['dl-card-task', stuck && 'attention', review && 'clickable'] },
       h('div', { class: 'dl-card-title' }, title, stuck ? h('span', { class: 'dl-dot', title: 'Checks failing' }, h('span', { class: 'sr-only' }, 'Checks failing')) : null),
       h('div', { class: 'dl-card-line' }, line),
+      noWorktree ? h('div', { class: 'dl-card-line' }, noWorktree) : null,
       h('div', { class: 'dl-card-meta' }, prChip(pr), files,
         item.task && (item.column !== 'built' || (item.info && item.info.group === 'ended')) ? h('button', { type: 'button', class: 'link-btn xs dl-deliver', onClick: () => openDeliveryDialog(ctx, item.task) }, 'Details') : null));
   }
