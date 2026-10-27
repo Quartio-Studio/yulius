@@ -787,7 +787,7 @@ const claudeUsable = (db) => db.accounts.some((a) => a.status === 'ok' || a.stat
 const needClaude = (db) => {
   if (!claudeUsable(db)) fail(409, 'claude_account_required', 'Connect a Claude account first: no Claude account is connected, so no agent can start. An instance administrator connects one in Subscriptions (/admin/accounts).');
 };
-route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db) } }));
+route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db), vidoc: Boolean(db.vidoc.key || db.vidoc.config) } }));
 // Superadmin recovery (ACC-011): a code is set, three attempts left. A test can hold the answers
 // (`__yuliusMock.holdRecovery = promise`; `recoveryWaiting` counts the reads waiting there), so a
 // page that asked can be left before it answers (#581).
@@ -861,7 +861,12 @@ route('DELETE', `/api/me/tokens/${ID}`, ({ db, p }) => {
   return json(204);
 });
 
-route('GET', '/api/sandboxes', ({ db }) => db.sandboxes);
+/** A sandbox as the server shows it: `profile.vidoc` always a boolean (SPEC-338 VOF-001). */
+const shown = (sandbox) => {
+  if (sandbox && sandbox.profile) sandbox.profile.vidoc = sandbox.profile.vidoc !== false;
+  return sandbox;
+};
+route('GET', '/api/sandboxes', ({ db }) => db.sandboxes.map(shown));
 route('GET', '/api/github/repositories', ({ db }) => {
   if (!db.me.user.github_linked && !db.me.user.is_superadmin) fail(403, 'forbidden', 'sign in with GitHub to work with repositories');
   if (!db.me.instance.github_configured) fail(409, 'conflict', 'the GitHub App is not configured');
@@ -980,7 +985,8 @@ route('POST', '/api/sandboxes', ({ db, body }) => {
     id: `sb_${db.nextId}`, slug: repoName.toLowerCase(), name: repoName,
     repo: { owner: 'Quartio-Studio', name: repoName, url: `https://github.com/Quartio-Studio/${repoName}` },
     access: 'admin', default_branch: 'main',
-    profile: clone(PRESETS.standard),
+    // SPEC-338 VOF-004: added switched off when the person unchecked Vidoc.
+    profile: { ...clone(PRESETS.standard), vidoc: body.vidoc !== false },
     // An imported repository is onboarded; created projects start from a conforming template.
     // The real server starts a browser import's onboarding at once; the mock leaves it `pending`,
     // standing in for a repository added with `yulius onboard` (SPEC-051), so Start onboarding can
@@ -993,15 +999,21 @@ route('POST', '/api/sandboxes', ({ db, body }) => {
   resync(db);
   return json(201, sandbox);
 });
-route('GET', `/api/sandboxes/${ID}`, ({ db, p }) => sandboxOf(db, p[0]));
+route('GET', `/api/sandboxes/${ID}`, ({ db, p }) => shown(sandboxOf(db, p[0])));
 route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'admin');
+  // SPEC-338 VOF-001: the Vidoc switch is set on its own; a profile update keeps it.
+  if (body.vidoc !== undefined && body.vidoc !== null) {
+    if (sandbox.playground) fail(422, 'invalid', 'a playground runs no Vidoc scan: it has no switch to turn');
+    sandbox.profile = { ...sandbox.profile, vidoc: Boolean(body.vidoc) };
+  }
   if (body.profile) {
     validateProfile(body.profile);
-    sandbox.profile = relabel({ ...body.profile, environments: (body.profile.environments || []).map((e) => ({ ...e, command: e.command && e.command.trim() ? e.command : null })) });
+    const vidoc = sandbox.profile.vidoc !== false;
+    sandbox.profile = { ...relabel({ ...body.profile, environments: (body.profile.environments || []).map((e) => ({ ...e, command: e.command && e.command.trim() ? e.command : null })) }), vidoc };
   }
-  return sandbox;
+  return shown(sandbox);
 });
 /**
  * The server's two kinds of onboarding (onboarding.rs): `mobile-app` already follows the format, so
@@ -2968,6 +2980,41 @@ route('POST', `/api/sandboxes/${ID}/cockpit`, async ({ db, p }) => {
   }
   return shellDto(shell);
 });
+// What the person's Superagent asks them to approve (SPEC-335): a test asks with
+// `__yuliusMock.askSuperagent('sb_studio', { sandbox: 'product', prompt, title, options })`; an
+// approval creates the task in that sandbox, as the server's `task_create` would.
+const superagentRequests = (db, sid) => (db.superagentRequests || []).filter((r) => r.source === sid);
+// A test can hold the reads (`__yuliusMock.holdList = promise`): an answered card then stays on screen.
+route('GET', `/api/sandboxes/${ID}/superagent/requests`, async ({ db, p }) => {
+  if (db.holdList) { const held = db.holdList; await held; if (db.holdList === held) db.holdList = null; }
+  return superagentRequests(db, p[0]).map((r) => clone(r.view));
+});
+route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, body }) => {
+  // A test can hold the answer (`__yuliusMock.holdAnswer = promise`) to look at the card meanwhile.
+  if (db.holdAnswer) await db.holdAnswer;
+  const request = superagentRequests(db, p[0]).find((r) => r.view.id === p[1]);
+  if (!request) fail(404, 'not_found', 'not found');
+  db.superagentRequests = db.superagentRequests.filter((r) => r !== request);
+  emit(db, { type: 'superagent.requests', sandbox_id: p[0] });
+  if (!body.approve) return { outcome: 'declined' };
+  const target = db.sandboxes.find((s) => s.id === request.view.sandbox.id);
+  if (!target || !['write', 'admin'].includes(target.access)) fail(404, 'not_found', 'not found');
+  const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === target.id).map((t) => t.number)) + 1;
+  const title = request.view.title || request.view.prompt.split('\n')[0].slice(0, 60);
+  const id = `tsk_${target.id.slice(3)}_${number}`;
+  const prepared = request.view.options.prepared === true;
+  const task = {
+    id, sandbox_id: target.id, number, title, harness: 'claude', status: prepared ? 'prepared' : 'queued', activity: null,
+    branch: `feat/${number}-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)}`,
+    origin: 'agent', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    archived: false, account_label: null, stepsList: [], model: 'claude-opus-4', effort: 'default', prompt: request.view.prompt,
+    delivery: null, mode: request.view.options.mode || 'goal', auto: null, supertask: false,
+  };
+  db.tasks.push(task);
+  recount(db);
+  emit(db, { type: 'task.updated', task: summary(task) });
+  return { outcome: 'approved', sandbox: target.slug, task: { task_id: id, number, title, status: task.status } };
+});
 route('PATCH', `/api/sandboxes/${ID}/shells/${ID}`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   const shell = db.shells.get(p[1]);
@@ -4225,8 +4272,12 @@ async function handleFetchAfterLatency(db, url, init) {
     return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
   }
   const headers = init.headers || {};
-  if (method !== 'GET' && !PUBLIC.includes(u.pathname) && headers['X-Yulius-CSRF'] !== db.me.csrf_token) {
-    return json(403, { error: { code: 'forbidden', message: 'Missing or wrong CSRF token.' } });
+  // Like the server, a stale token has its own code (SPEC-337 CSR-001). A test changes the token
+  // under an open page (`__yuliusMock.me.csrf_token`), as another tab's sign-in does, or makes every
+  // token wrong (`refuseCsrf`); `csrfRefusals` counts the refusals.
+  if (method !== 'GET' && !PUBLIC.includes(u.pathname) && (db.refuseCsrf || headers['X-Yulius-CSRF'] !== db.me.csrf_token)) {
+    db.csrfRefusals = (db.csrfRefusals || 0) + 1;
+    return json(403, { error: { code: 'csrf_invalid', message: 'missing or invalid CSRF token' } });
   }
   for (const [m, re, handler] of R) {
     if (m !== method) continue;
@@ -5398,6 +5449,23 @@ export function createMockTransport(params) {
   };
   db.heartbeatMs = params.has('heartbeat') ? Number(params.get('heartbeat')) : 20000;
   db.heartbeats = 0; // beats sent, so a test can silence the stream right after one
+  // The person's Superagent in `source` asks to start a task in another sandbox (SPEC-335).
+  db.askSuperagent = (source, { sandbox, prompt, title = null, options = {} }) => {
+    const target = db.sandboxes.find((s) => s.slug === sandbox);
+    db.nextId += 1;
+    const view = {
+      id: `xr_${db.nextId}`, sandbox: { id: target.id, slug: target.slug, repository: `${target.repo.owner}/${target.repo.name}` },
+      title, prompt, options, ends_at: new Date(Date.now() + 4 * MIN).toISOString(),
+    };
+    db.superagentRequests = [...(db.superagentRequests || []), { source, view }];
+    emit(db, { type: 'superagent.requests', sandbox_id: source });
+    return view.id;
+  };
+  // The Superagent's call ended (it was interrupted, or nobody answered): its request goes.
+  db.endSuperagentRequest = (source, id) => {
+    db.superagentRequests = (db.superagentRequests || []).filter((r) => r.view.id !== id);
+    emit(db, { type: 'superagent.requests', sandbox_id: source });
+  };
   // The machine rebooted: every Cockpit's process is gone, its viewers lose the connection.
   db.rebootCockpits = () => {
     for (const shell of [...db.shells.values()]) {

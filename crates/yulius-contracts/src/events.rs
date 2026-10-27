@@ -160,6 +160,13 @@ pub enum UiEvent {
         /// The secret's sandbox, or `None` for a secret of every sandbox.
         sandbox_id: Option<String>,
     },
+    /// The requests a person's Superagent in a sandbox waits on them to answer changed (SPEC-335
+    /// XSR-007): its panel reads them again. Sent to that person only; it names nothing else.
+    #[serde(rename = "superagent.requests")]
+    SuperagentRequests {
+        /// The Superagent's sandbox.
+        sandbox_id: String,
+    },
     /// Events were lost; refetch.
     #[serde(rename = "resync")]
     Resync,

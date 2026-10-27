@@ -1002,6 +1002,43 @@ message is typed (`TaskRuntime::typing_message`); audited `task.messaged`
 ([SPEC-230](../.ai/specs/SPEC-230-superagent-should-be-able-to-prompt-task.md),
 [decision 0178](decisions/0178-the-superagent-messages-tasks-by-queueing-or-typing.md)).
 
+Only the Superagent reaches its person's other sandboxes, and only through them
+([SPEC-335](../.ai/specs/SPEC-335-superagents-should-be-able-to-talk-to-ot.md),
+[decision 0227](decisions/0227-the-superagent-starts-tasks-in-other-sandboxes-only-on-its-persons-approval.md),
+`cross_sandbox.rs`). `sandboxes_list` names the other live sandboxes the person can work in.
+`sandbox_task_create` records a request in `App::cross_requests` (in memory, at most 3 per person
+and source sandbox) and waits for the person's answer, at most `CROSS_REQUEST_WAIT` (4 minutes,
+below Node's 300 s headers timeout). A guard removes the request however the call ends, and a
+Superagent's `notifications/cancelled` naming the call's JSON-RPC id (`call_key`: its shell and
+that id) ends it at once, so a dropped or cancelled call, a timeout or a restart leaves nothing
+to approve; `settle` waits for the outcome of an approval that the timeout raced. The panel reads the person's own
+requests, announced by `superagent.requests` to that person only. An answer needs a browser
+session (`AuthContext::is_browser`): no API token approves, so an agent holding one cannot answer
+its own request. Approval runs `tool_task_create` with a `ProjectCaller` for the target, exactly
+as shown, in a task of its own (a cancelled page loses nothing), and its result goes to the
+waiting call; audited `superagent.cross_task`.
+
+```mermaid
+sequenceDiagram
+  participant S as Superagent (sandbox A)
+  participant Y as Yulius (cross_requests)
+  participant P as Person (A's Superagent panel)
+  participant B as Sandbox B
+  S->>Y: sandbox_task_create {sandbox: B, prompt}
+  Y-->>P: superagent.requests (to that person only)
+  P->>Y: GET …/superagent/requests (full prompt, options)
+  alt Create task (browser session)
+    P->>Y: POST …/requests/{id} {approve: true}
+    Y->>B: task_create as the person (access rechecked)
+    Y-->>S: approved + task
+  else Decline
+    P->>Y: POST …/requests/{id} {approve: false}
+    Y-->>S: declined, nothing created
+  else 4 minutes, or the call dropped
+    Y-->>S: unanswered, request gone
+  end
+```
+
 A repository's `.mcp.json` would make Claude Code ask about each of its servers when the
 Superagent starts. Before every task run and Superagent start, `App::import_project_mcp` adds
 the file's servers that the sandbox lacks to its MCP servers, so task runs get them like any
@@ -1332,6 +1369,16 @@ Vidoc is an optional instance service, like Jev
   (`GitHubPort::create_issue`, `set_issue_state`).
 - **Infra bootstrap.** The briefing and the onboarding prompt carry the scan only when the instance
   has a key (`briefing.rs` `security_scan`, `onboarding.rs` `security_setup`).
+- **The project switch** ([SPEC-338](../.ai/specs/SPEC-338-in-vidoc-related-problems-we-want-to-be.md),
+  [decision 0229](decisions/0229-a-person-switches-a-projects-vidoc-scans-off-in-yulius.md)).
+  `vidoc: false` in a sandbox's profile JSON (`delivery::vidoc_switched_on`, set by
+  `PATCH /api/sandboxes/{sid}` `{"vidoc": …}` from the Vidoc card or the Add sandbox dialog)
+  switches the project off (the Add sandbox dialog sends `"vidoc": false` with `POST
+  /api/sandboxes`, set before onboarding starts): its agent runs (`base_env`), terminals
+  (`shell_env`) and CI jobs (`ci_job_env`) get
+  `YULIUS_VIDOC=off`, on which the scanner says "disabled" and sends nothing (in CI the skip
+  code); `applied_agent_secrets` leaves the instance key out, `ci_scans` adds no built-in job, and
+  the briefing and onboarding prompt say it is off (`VidocBriefing::Off`).
 
 ```mermaid
 flowchart LR
@@ -1345,6 +1392,7 @@ flowchart LR
   CI -->|"::yulius-finding lines: outside the change, at the run's end"| ISS["ci/findings.rs: file (other jobs passed), reopen, close"]
   ISS -->|"issues, once per fingerprint"| GH["GitHub issues"]
   APP -->|"key set: briefing and onboarding add the scan rule"| BOOT["infra bootstrap"]
+  SW["Project switch off: Vidoc card, Add sandbox dialog"] -.->|"no key, no built-in job, YULIUS_VIDOC=off: disabled"| AG
 ```
 
 ## CD (deployment)

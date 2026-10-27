@@ -642,7 +642,16 @@ impl App {
     /// # Errors
     /// `Invalid` without `project`, `NotFound`.
     async fn remote_project(&self, args: &Value) -> AppResult<SandboxRecord> {
-        let reference = str_arg(args, "project")?;
+        self.sandbox_by_reference(str_arg(args, "project")?).await
+    }
+
+    /// The live sandbox `reference` names (owner/name, slug or id), before any access check
+    /// (the remote MCP's `project`, the Superagent's `sandbox_task_create`, SPEC-335).
+    ///
+    /// # Errors
+    /// `NotFound`.
+    pub(crate) async fn sandbox_by_reference(&self, reference: &str) -> AppResult<SandboxRecord> {
+        let reference = reference.trim();
         let store = &self.deps.store;
         let found = match reference.split_once('/') {
             Some((owner, name)) => store.sandbox_by_repo(owner.trim(), name.trim()).await?,
@@ -719,6 +728,7 @@ impl App {
                         ctx,
                         &CreateSandbox::Import {
                             repo: repo.to_owned(),
+                            vidoc: None,
                         },
                     )
                     .await?;

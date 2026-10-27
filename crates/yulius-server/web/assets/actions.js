@@ -739,6 +739,14 @@ export function openSandboxDialog(ctx, mode = 'import') {
   let templateValue = null;
   // Set once the dialog exists: a folder dropped in it becomes a playground and closes it.
   let closeDialog = () => {};
+  // SPEC-338 VOF-004: with an instance Vidoc key, a new project scans unless this is unchecked.
+  const vidocOffered = Boolean(me.instance && me.instance.vidoc);
+  const scanBox = h('input', { type: 'checkbox', checked: true, 'aria-describedby': 'sb-vidoc-hint' });
+  const vidocField = () => (vidocOffered
+    ? h('div', { class: 'field' },
+      h('label', { class: 'check' }, scanBox, h('span', null, 'Scan pull requests with Vidoc')),
+      h('p', { class: 'muted xs', id: 'sb-vidoc-hint' }, 'Agents and CI send each change to Vidoc’s security scan. Uncheck it to leave this project unscanned, for example while the Vidoc key’s quota is used up; an instance superadmin can switch it later in Settings → Instance.'))
+    : null);
 
   const updateSubmit = () => {
     if (!submitButton) return;
@@ -759,7 +767,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
   const renderImport = async () => {
     const search = h('input', { class: 'input', type: 'search', placeholder: 'Filter repositories…', 'aria-label': 'Filter repositories' });
     const list = h('div', { class: 'card list scroll-box' }, placeholder('Loading repositories…', 'loading', ['rows', 4]));
-    setChildren(content, search, list, h('p', { class: 'muted xs' }, `Importing needs admin or maintain permission on the repository, which must belong to the instance owner. ${BRAND.name} clones it and checks the documentation format; a sandbox that does not follow it gets a preparation task first.`));
+    setChildren(content, search, list, h('p', { class: 'muted xs' }, `Importing needs admin or maintain permission on the repository, which must belong to the instance owner. ${BRAND.name} clones it and checks the documentation format; a sandbox that does not follow it gets a preparation task first.`), vidocField());
     const draw = () => {
       if (!repos) return;
       const q = search.value.trim().toLowerCase();
@@ -834,6 +842,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
       field('Repository name', nameInput, 'Created under the instance’s GitHub owner.'), nameError,
       field('Description', descInput),
       templateList.el,
+      vidocField(),
       h('p', { class: 'muted xs' }, `Instance administrators only. ${BRAND.name} creates a private GitHub repository, pushes the template to main and dev, adds rulesets requiring pull requests and opens the new tab.`));
     await templateList.fill();
     nameInput.focus();
@@ -853,11 +862,14 @@ export function openSandboxDialog(ctx, mode = 'import') {
     actions: [
       { label: 'Cancel', value: false },
       { label: 'Import', kind: 'primary', ref: (b) => { submitButton = b; }, run: async () => {
+        // SPEC-338 VOF-004: the choice travels with the request, so the server switches the
+        // project off before its onboarding starts.
+        const vidoc = vidocOffered && !scanBox.checked ? { vidoc: false } : {};
         const payload = tabImport.checked
-          ? { mode: 'import', repo: selectedRepo }
+          ? { mode: 'import', repo: selectedRepo, ...vidoc }
           : tabPlayground.checked
             ? { mode: 'playground', name: nameInput.value.trim(), template: templateValue }
-            : { mode: 'create', name: nameInput.value.trim(), template: templateValue, description: descInput.value.trim() };
+            : { mode: 'create', name: nameInput.value.trim(), template: templateValue, description: descInput.value.trim(), ...vidoc };
         const sandbox = await ctx.api.post('/api/sandboxes', payload);
         ctx.store.upsertSandbox(sandbox);
         const preparing = sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing';

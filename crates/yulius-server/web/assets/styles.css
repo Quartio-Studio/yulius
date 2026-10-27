@@ -580,6 +580,18 @@ button.task-group-head:hover { color: var(--text); }
 .agent-note a { color: inherit; font-weight: 600; text-decoration: underline; }
 .agent-term { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
 .agent-msg { flex: 1; padding: 24px 16px; background: var(--surface); }
+/* SPEC-335: what the Superagent asks its person to approve, above its session. */
+/* The list scrolls within part of the panel: the session below keeps room to be read. */
+.agent-requests { flex: none; display: flex; flex-direction: column; gap: 8px; margin: 0 8px 8px; max-height: 60%; overflow-y: auto; }
+.agent-request { flex-direction: column; align-items: stretch; gap: 6px; overflow-wrap: anywhere; }
+.agent-request-head { display: flex; align-items: flex-start; gap: 6px; flex-wrap: wrap; }
+.agent-request-head .icon { margin-top: 2px; }
+.agent-request-title { font-weight: 600; }
+.agent-request-prompt { margin: 0; max-height: 12em; overflow: auto; white-space: pre-wrap; padding: 6px 8px; border-radius: var(--radius); background: var(--surface); color: var(--text); font: inherit; }
+.agent-request-options { margin: 0; padding-left: 20px; }
+.agent-request-end { display: block; height: 1px; }
+.agent-request-hint { font-weight: 600; }
+.agent-request-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 body.resizing { cursor: col-resize; user-select: none; }
 /* While a splitter is dragged, frames and canvases under the pointer never take its moves. */
 body.resizing iframe, body.resizing canvas { pointer-events: none; }
@@ -2752,6 +2764,12 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .jev-status { display: flex; align-items: center; gap: 8px; }
 .jev-status.jev-on .icon { color: var(--ok); }
 .jev-form { display: flex; flex-direction: column; gap: 8px; max-width: 520px; }
+/* The Vidoc card's projects, each with its switch (SPEC-338 VOF-005). */
+.vidoc-projects { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border); padding-top: 12px; }
+.vidoc-projects h3 { margin: 0; }
+.vidoc-project-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-width: 520px; }
+.vidoc-project { justify-content: space-between; gap: 12px; min-height: 32px; }
+.vidoc-project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .jev-test { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .jev-test-ok .icon { color: var(--ok); }
 .jev-test-warn .icon { color: var(--warn); }

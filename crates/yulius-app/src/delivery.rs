@@ -306,6 +306,7 @@ pub fn profile_to_contract(profile: &DeliveryProfile) -> Profile {
             })
             .collect(),
         gate: None,
+        vidoc: None,
     }
 }
 
@@ -316,6 +317,26 @@ pub fn profile_gate(sandbox: &SandboxRecord) -> Option<String> {
         .ok()
         .and_then(|profile| profile.gate)
         .and_then(|gate| yulius_domain::ci::validate_gate(&gate).ok())
+}
+
+/// Whether the sandbox's Vidoc security scans are on (SPEC-338 VOF-001): its stored profile's
+/// `vidoc` is not `false`. Read on its own, so a profile that is otherwise unreadable keeps it.
+#[must_use]
+pub fn vidoc_switched_on(sandbox: &SandboxRecord) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Switch {
+        #[serde(default)]
+        vidoc: Option<bool>,
+    }
+    serde_json::from_str::<Switch>(&sandbox.profile_json)
+        .ok()
+        .and_then(|switch| switch.vidoc)
+        != Some(false)
+}
+
+/// A playground runs no CI scan, so it has no Vidoc switch (SPEC-338 VOF-001).
+fn playground_has_no_vidoc() -> AppError {
+    invalid("a playground runs no Vidoc scan: it has no switch to turn".to_owned())
 }
 
 /// The sandbox's stored profile; an unreadable or invalid one falls back to `standard`.
@@ -1948,10 +1969,66 @@ impl App {
 
     // ---------------------------------------------------------------- profile
 
-    /// `PATCH /api/sandboxes/{sid}` (admin): validates and stores the delivery profile.
+    /// Sets the sandbox's Vidoc switch (SPEC-338 VOF-001) as `actor`: `vidoc` in its stored
+    /// profile JSON, the rest kept as it is, audited when it changes. Callers check permission;
+    /// a playground has no CI scan to turn. Profile writes are serialized, so a concurrent
+    /// profile update cannot undo it.
     ///
     /// # Errors
-    /// `Forbidden` below admin, `Invalid` profiles.
+    /// `Invalid` for a playground; store failures.
+    pub(crate) async fn write_vidoc_switch(
+        &self,
+        actor: &str,
+        sandbox: &SandboxId,
+        on: bool,
+    ) -> AppResult<()> {
+        let _writing = self.profile_writes.lock().await;
+        let sandbox = self
+            .deps
+            .store
+            .sandbox(sandbox)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        if sandbox.is_playground() {
+            return Err(playground_has_no_vidoc());
+        }
+        if vidoc_switched_on(&sandbox) == on {
+            return Ok(());
+        }
+        let mut stored = match serde_json::from_str::<Value>(&sandbox.profile_json) {
+            Ok(Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        if on {
+            stored.remove("vidoc");
+        } else {
+            stored.insert("vidoc".to_owned(), Value::Bool(false));
+        }
+        let json = serde_json::to_string(&stored).map_err(AppError::internal)?;
+        self.deps.store.set_profile(&sandbox.id, &json).await?;
+        self.vidoc_switched(actor, &sandbox, on).await;
+        Ok(())
+    }
+
+    /// After the switch changed: CI's gate and the virtual key are read again, and it is audited.
+    pub(crate) async fn vidoc_switched(&self, actor: &str, sandbox: &SandboxRecord, on: bool) {
+        self.ci_forget_gate(&sandbox.id);
+        // The instance key comes or goes as the sandbox's virtual agent secret.
+        self.bump_vault_generation();
+        self.dlv_audit(
+            actor,
+            "delivery.vidoc.update",
+            &sandbox.slug,
+            if on { "on" } else { "off" },
+        )
+        .await;
+    }
+
+    /// `PATCH /api/sandboxes/{sid}` (admin): validates and stores the delivery profile and the
+    /// Vidoc switch (SPEC-338 VOF-001) in one write, or changes nothing when either is refused.
+    ///
+    /// # Errors
+    /// `Forbidden` below admin, `Invalid` profiles, `Invalid` switch of a playground.
     pub async fn update_sandbox_profile(
         &self,
         ctx: &AuthContext,
@@ -1959,9 +2036,33 @@ impl App {
         req: &UpdateSandbox,
     ) -> AppResult<Sandbox> {
         let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
-        let (sandbox, level) = self.require(&ctx.user, &sid, Action::Administer).await?;
+        let (_, level) = self.require(&ctx.user, &sid, Action::Administer).await?;
+        let actor = Self::dlv_actor_login(&ctx.user);
+        let writing = self.profile_writes.lock().await;
+        // Read under the lock: a switch or profile saved meanwhile is kept.
+        let sandbox = self
+            .deps
+            .store
+            .sandbox(&sid)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        if req.vidoc.is_some() && sandbox.is_playground() {
+            return Err(playground_has_no_vidoc());
+        }
+        let was_on = vidoc_switched_on(&sandbox);
+        let on = req.vidoc.unwrap_or(was_on);
         let Some(requested) = &req.profile else {
-            return self.sandbox_view(&sandbox, level).await;
+            drop(writing);
+            if on != was_on {
+                self.write_vidoc_switch(&actor, &sid, on).await?;
+            }
+            let updated = self
+                .deps
+                .store
+                .sandbox(&sid)
+                .await?
+                .ok_or(AppError::NotFound)?;
+            return self.sandbox_view(&updated, level).await;
         };
         let before = delivery_profile(&sandbox);
         let profile = profile_from_contract(requested)?;
@@ -1984,11 +2085,18 @@ impl App {
         };
         let mut stored = profile_to_contract(&profile);
         stored.gate.clone_from(&gate);
+        // The switch is the stored one unless this request sets it: the profile editor does not
+        // carry it (VOF-001).
+        stored.vidoc = (!on).then_some(false);
         let json = serde_json::to_string(&stored).map_err(AppError::internal)?;
         self.deps.store.set_profile(&sid, &json).await?;
+        drop(writing);
         self.ci_forget_gate(&sid);
+        if on != was_on {
+            self.vidoc_switched(&actor, &sandbox, on).await;
+        }
         self.dlv_audit(
-            &Self::dlv_actor_login(&ctx.user),
+            &actor,
             "delivery.profile.update",
             &sandbox.slug,
             &format!(

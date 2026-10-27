@@ -14,13 +14,16 @@ It refines [SPEC-002 §7.7–§7.9](../.ai/specs/SPEC-002-yulius-architecture.md
   `__Host-yulius_session` when the public URL is HTTPS (host-only and
   `Secure`: no other host can plant or shadow it) and `yulius_session` over plain HTTP.
   State-changing requests from cookie sessions must send `X-Yulius-CSRF: <csrf_token>` from
-  `GET /api/me`. A cookie session is refused (403) for a request that announces an `Origin` other
+  `GET /api/me`; a missing or wrong one is refused with 403 `csrf_invalid`. The token belongs to
+  the session, so after a sign-in elsewhere in the browser, read it again from `GET /api/me`
+  (SPEC-337). A cookie session is refused (403) for a request that announces an `Origin` other
   than the public URL (or an allowlisted origin), or that the browser marks `Sec-Fetch-Site:
   same-site` or `cross-site`, unless it is a GET or HEAD navigation: a page on a live preview
   origin (same-site with Yulius) can never use the user's session.
 - WebSockets require a valid session and an `Origin` equal to the public URL.
 - Errors: HTTP status plus `{"error": {"code": "snake_case", "message": "human text"}}`. Codes:
-  `unauthenticated` (401), `forbidden` (403), `not_found` (404; also for invisible sandboxes),
+  `unauthenticated` (401), `forbidden` (403), `csrf_invalid` (403; a cookie session's write
+  without the session's CSRF token), `not_found` (404; also for invisible sandboxes),
   `conflict` (409; racing state changes), `claude_account_required` (409; a person's start of an
   agent with no usable Claude account, the message naming Subscriptions, `/admin/accounts`;
   SPEC-246), `invalid` (422), `capacity` (429), `upstream` (502,
@@ -55,9 +58,12 @@ Me = {
   "csrf_token": "…",
   "instance": {"owner_login": "Quartio-Studio", "owner_kind": "org|user|null",
                "public_url": "https://yulius.quartio.ai", "github_configured": true,
-               "contained": true, "claude_connected": true}
+               "contained": true, "claude_connected": true, "vidoc": true}
 }
 ```
+
+`instance.vidoc`: whether the instance has a Vidoc key, so the Add sandbox dialog offers "Scan pull
+requests with Vidoc" (SPEC-338); never the key.
 
 `instance.claude_connected`: whether a Claude account is usable (signed in, `ok` or `limited`);
 while false the UI shows Connect Claude first and a person's start of an agent answers `409`
@@ -222,6 +228,11 @@ replaces the caller's copy). It never starts onboarding: a `pending` sandbox wai
 starts it (Start onboarding on the sandbox page, or `onboarding_start` with an `operate` token;
 SPEC-051, SPEC-247). Only Claude Code sessions are imported.
 
+`PATCH /api/sandboxes/{sid}` `{"vidoc": false|true}` switches the project's Vidoc scans off or on
+(SPEC-338, ADR-0229; `422` for a playground, audited `delivery.vidoc.update`); `profile.vidoc` is
+always a boolean in responses, and a `profile` update keeps the switch whatever it carries.
+`POST /api/sandboxes` import and create take `"vidoc": false` to add the project switched off,
+before its onboarding starts.
 `PATCH /api/sandboxes/{sid}` validates the profile (branch names, distinct branches, environment
 names, single-line commands ≤ 2000 bytes, `verify: command` needs a command, ≤ 8 environments) and
 relabels it: `preset` stays a named preset only while every setting equals that preset's
@@ -967,6 +978,7 @@ write access; every changing call is audited with the caller (`task:<n>` or `coc
 | --- | --- | --- |
 | `task_create` | New task | origin `agent`; at most 20 per project and rolling hour |
 | `task_message` (the Cockpit and the remote MCP, never task agents; SPEC-230, SPEC-247) | `POST /api/tasks/{tid}/queued-messages`, or typing into the task's terminal | `{task_id \| number, text}` → `{"task","delivered":"queued"\|"sent","note"}`; queued into a task that never started, typed into a `running` one as one bracketed paste `Message from <login> (through their Superagent):` from the Cockpit, `Message from <login> (through their own agent):` from the remote MCP (SPEC-322), + Enter; refused before Claude Code's session started there, while a person typed there in the last minute, while its folder-trust dialog shows, while the first message or another message is typed, and in every other state; 403 for anyone but the owner on a task holding its owner's personal secrets (SPEC-245) or personal MCP servers, configured or in its live run (SPEC-332); a sent message ends the task's `needs_you`; control characters but LF and tab removed, at most 64 KiB; audited `task.messaged` without the text |
+| `sandboxes_list`, `sandbox_task_create` (the Cockpit only; SPEC-335, ADR-0227) | `GET`/`POST /api/sandboxes/{sid}/superagent/requests` | `sandboxes_list` → `{"sandboxes":[{"sandbox","repository","onboarding"}]}`: the other live sandboxes the person can work in (pre-allowed). `sandbox_task_create {sandbox, prompt, …task_create's arguments}` asks the person and waits at most 4 minutes (`CROSS_REQUEST_WAIT`): `{"outcome":"approved","sandbox","task"}`, `{"outcome":"declined"}` or `{"outcome":"unanswered"}`; refused at once for its own sandbox, one the person cannot work in (not found), unknown arguments, an empty prompt, a text holding a character a person cannot see (tag, bidirectional, zero-width, filler, variation selector, private use), and beyond 3 waiting per person and sandbox; a dropped call, or `notifications/cancelled` with the call's id, takes its request with it (`{"outcome":"cancelled"}`) |
 | `task_stop`, `task_archive` (`archived`: false restores), `task_delete` | `POST /api/tasks/{tid}/stop`, `…/archive` (`…/restore`), `DELETE /api/tasks/{tid}` | by `task_id` or `number`; never the caller's own task; audited `task.stopped`, `task.archived`/`task.unarchived`, `task.deleted` |
 | `automation_create`, `automation_update` | `POST …/automations`, `PUT /api/automations/{id}` | `created_via: agent` |
 | `automation_delete`, `automation_run_now` | `DELETE /api/automations/{id}`, `POST /api/automations/{id}/run` | audited `automation.deleted`, `automation.run_now` |
@@ -1199,10 +1211,23 @@ resolves to nothing, the run gets the server without that variable or token.
     `automations_list`, `automation_update`, `automation_delete`, `automation_run_now`,
     `automation_template_enable`, `workflows_list`, `sessions_search`, `session_read` and the vault
     tools `secrets_list`, `secret_verify`, `secret_copy_to_env`, `secret_request_hosts` and
-    `secret_create_from_file` (`COCKPIT_TOOLS`), acting
+    `secret_create_from_file`, and `sandboxes_list` and `sandbox_task_create` (SPEC-335)
+    (`COCKPIT_TOOLS`), acting
     for its owner (SPEC-066); on an uncontained server Claude Code asks the person before every
     tool that is not read-only, on a contained one it bypasses approvals (SPEC-208).
     A conversation it could not resume (an error exit within 10 s) is skipped next time.
+  - `GET /api/sandboxes/{sid}/superagent/requests` → 200 `[{"id","sandbox":{"id","slug",
+    "repository"},"title"|null,"prompt","options":{…the start options set},"ends_at"}]`: the
+    caller's own requests of their Superagent in `sid` to start a task in another sandbox, oldest
+    first, while its `sandbox_task_create` call waits (SPEC-335, ADR-0227); another person's are
+    never listed.
+  - `POST /api/sandboxes/{sid}/superagent/requests/{id}` `{"approve": true|false}` → 200: approved,
+    `{"outcome":"approved","sandbox":<slug>,"task":{…},"note"}` (the task created in the target as
+    `task_create` would, for the person); declined, `{"outcome":"declined","note"}`. A browser
+    session only (403 for every API token); 404 for another person's request or one no longer
+    waiting; on approval the refusals of `task_create` (write access rechecked). Audited
+    `superagent.cross_task` (`approved`, `failed`, `declined`; `expired` when nobody answered,
+    `cancelled` when the Superagent's client sent `notifications/cancelled` for the call).
     A usage limit Claude Code records in its conversation after it started is recorded on its
     subscription, and the Cockpit starts again on one with capacity, resuming the conversation
     stepped back over the limit with `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1` (SPEC-074). The old
@@ -1546,7 +1571,10 @@ it read `GET /api/sandboxes/{sid}/git` again; SPEC-108), `{"type":"secrets.updat
 (an agent asked for an agent secret's hosts or a `.env` copy or created one, or a global or
 personal secret was switched on or off for a project; to a project secret's viewers, or everyone,
 `null`, for a global or personal one; open Secrets pages read
-`GET /api/sandboxes/{sid}/agent-secrets` again; SPEC-209), `{"type":"resync"}`,
+`GET /api/sandboxes/{sid}/agent-secrets` again; SPEC-209), `{"type":"superagent.requests","sandbox_id"}`
+(the requests the person's Superagent in that sandbox waits on them to answer changed; to that
+person only; its panel reads `GET /api/sandboxes/{sid}/superagent/requests` again; SPEC-335),
+`{"type":"resync"}`,
 `{"type":"heartbeat"}` (every 20 s, `events_heartbeat_ms`: a page that hears nothing for 50 s, or
 for 1.5 beats when it is shown again or back online, takes the connection for dead and reconnects,
 which resyncs; SPEC-191).

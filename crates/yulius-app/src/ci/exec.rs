@@ -811,6 +811,10 @@ impl App {
         if let Some(value) = &job.matrix {
             env.push(("YULIUS_CI_MATRIX".to_owned(), value.clone()));
         }
+        // A project whose Vidoc scans a person switched off: its scan ends skipped (SPEC-338).
+        if !crate::delivery::vidoc_switched_on(sandbox) {
+            env.push(("YULIUS_VIDOC".to_owned(), "off".to_owned()));
+        }
         env.extend(budget_env(budget, &repository_templates(checkout)));
         env
     }

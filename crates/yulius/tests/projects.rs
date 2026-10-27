@@ -784,6 +784,110 @@ async fn stuck_onboarding_heals_at_server_start() -> TestResult {
     Ok(())
 }
 
+/// SPEC-338 VOF-004 (review round 1, major): a repository added in the browser with its Vidoc
+/// scans unchecked is switched off before its onboarding starts, even by an importer with GitHub
+/// `maintain` (no Yulius admin): the onboarding task's request says the scan is off.
+#[tokio::test]
+async fn an_import_with_vidoc_unchecked_onboards_switched_off() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, _) = w.user("alice", false).await?;
+    let alice = w.browser(&alice_user).await?;
+    w.remote(OWNER, "plain", &[("README.md", "# Plain\n")], &["dev"])?;
+    w.grant("alice", "plain", "maintain");
+    let imported = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes",
+        Some(json!({"mode": "import", "repo": "Quartio-Studio/plain", "vidoc": false})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(imported.status, StatusCode::CREATED, "{:?}", imported.body);
+    assert_eq!(imported.body["profile"]["vidoc"], false);
+    let sid = SandboxId::parse(text(&imported.body["id"]))?;
+    let record = w.h.store.sandbox(&sid).await?.ok_or("sandbox")?;
+    let task_id = record.onboarding_task_id.clone().ok_or("onboarding task")?;
+    let task = w.h.store.task(&task_id).await?.ok_or("task")?;
+    assert!(
+        task.prompt
+            .contains("Vidoc is turned off for this project in Yulius"),
+        "{}",
+        task.prompt
+    );
+    assert!(
+        !task.prompt.contains("security-scan --ci"),
+        "{}",
+        task.prompt
+    );
+
+    // Left as offered, a project scans.
+    w.remote(OWNER, "other", &[("README.md", "# Other\n")], &["dev"])?;
+    w.grant("alice", "other", "admin");
+    let other = import(&w, &alice, "Quartio-Studio/other").await?;
+    assert_eq!(other.body["profile"]["vidoc"], true, "{:?}", other.body);
+    Ok(())
+}
+
+/// SPEC-338 VOF-004 (review round 2): the switch is in the project's first record, not a second
+/// write after it: with every later profile write refused, an import and a create unchecked still
+/// add the project switched off, never a scanning one.
+#[tokio::test]
+async fn a_project_added_unchecked_is_switched_off_from_its_first_record() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, _) = w.user("alice", true).await?;
+    let alice = w.browser(&alice_user).await?;
+    w.h.store
+        .execute_for_tests(
+            "CREATE TRIGGER no_profile_write BEFORE UPDATE OF profile ON sandboxes \
+             BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        )
+        .await?;
+    w.remote(OWNER, "plain", &[("README.md", "# Plain\n")], &["dev"])?;
+    w.grant("alice", "plain", "admin");
+    let imported = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes",
+        Some(json!({"mode": "import", "repo": "Quartio-Studio/plain", "vidoc": false})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(imported.status, StatusCode::CREATED, "{:?}", imported.body);
+    assert_eq!(imported.body["profile"]["vidoc"], false);
+    w.grant("alice", "quiet", "admin");
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes",
+        Some(json!({"mode": "create", "name": "quiet", "template": "web", "vidoc": false})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    assert_eq!(created.body["profile"]["vidoc"], false);
+    Ok(())
+}
+
+/// SPEC-338 VOF-004: a repository created from a template with its Vidoc scans unchecked starts
+/// switched off.
+#[tokio::test]
+async fn a_repository_created_with_vidoc_unchecked_starts_switched_off() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, admin) = w.user("alice", true).await?;
+    w.grant("alice", "quiet-shop", "admin");
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes",
+        Some(json!({"mode": "create", "name": "quiet-shop", "template": "web", "vidoc": false})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    assert_eq!(created.body["profile"]["vidoc"], false);
+    Ok(())
+}
+
 #[tokio::test]
 async fn create_from_template_pushes_a_validating_scaffold_with_rulesets() -> TestResult {
     let w = World::new("org").await?;

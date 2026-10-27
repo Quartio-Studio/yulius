@@ -157,6 +157,12 @@ async fn password_login_rate_limit_and_csrf() -> TestResult {
     )
     .await?;
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    // Its own code, so the page can tell a stale token from other refusals (SPEC-337 CSR-001).
+    assert_eq!(refused.body["error"]["code"], "csrf_invalid");
+    assert_eq!(
+        refused.body["error"]["message"],
+        "missing or invalid CSRF token"
+    );
 
     for _ in 0..5 {
         let bad = call(
@@ -1524,5 +1530,61 @@ async fn the_superadmins_sockets_survive_the_visibility_recheck() -> TestResult 
         matches!(&later, Some(Ok(text)) if text.contains("t-later")),
         "the event stream still carries the sandbox: {later:?}"
     );
+    Ok(())
+}
+
+/// A sign-in in another tab replaces the browser's session cookie, and with it the CSRF token: an
+/// older page's token is refused with `csrf_invalid`, and `/api/me` gives the current one, which
+/// passes (SPEC-337 CSR-001, CSR-002; #933).
+#[tokio::test]
+async fn a_new_sign_in_refuses_the_old_csrf_token_and_me_gives_the_new_one() -> TestResult {
+    let h = harness()?;
+    let first = setup_superadmin(&h).await?;
+    let again = call(
+        &h.router,
+        Method::POST,
+        "/api/auth/password",
+        Some(json!({"password": "a very long secret"})),
+        &Creds::default(),
+    )
+    .await?;
+    assert_eq!(again.status, StatusCode::OK);
+    let cookie = session_from(&again.set_cookie);
+    assert_ne!(cookie, first.cookie);
+
+    // The new cookie with the page's old token: refused, with its own code.
+    let stale = Creds {
+        cookie: cookie.clone(),
+        ..first.clone()
+    };
+    let refused = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/users",
+        Some(json!({"github_login": "alice"})),
+        &stale,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(refused.body["error"]["code"], "csrf_invalid");
+
+    // `/api/me` (a read: no token needed) names the same user and the session's current token.
+    let me = call(&h.router, Method::GET, "/api/me", None, &stale).await?;
+    assert_eq!(me.status, StatusCode::OK);
+    let token = me.body["csrf_token"].as_str().ok_or("csrf_token")?;
+    assert_ne!(Some(token), first.csrf.as_deref());
+    let fresh = Creds {
+        csrf: Some(token.to_owned()),
+        ..stale
+    };
+    let added = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/users",
+        Some(json!({"github_login": "alice"})),
+        &fresh,
+    )
+    .await?;
+    assert!(added.status.is_success(), "{}", added.body);
     Ok(())
 }

@@ -2084,6 +2084,10 @@ impl App {
                 self.profile_of(sandbox).integration_branch,
             ),
         ];
+        // A project whose Vidoc scans a person switched off: the scan says "disabled" (SPEC-338).
+        if !crate::delivery::vidoc_switched_on(sandbox) {
+            env.push(("YULIUS_VIDOC".into(), "off".into()));
+        }
         // Parallel tasks share the sandbox: each plans for its budget (a third of the sandbox by
         // default), in YULIUS_CPUS and the repository's own variables (SPEC-082 RES-005). It
         // replaces the CARGO_BUILD_JOBS Yulius set for every repository (OOM kills of

@@ -393,3 +393,200 @@ test('a hidden Superagent or Shell terminal keeps its session’s size', async (
   expect(await size(false)).toBe(shell);
   expect(await size(true)).toBe(shown);
 });
+
+// SPEC-337 (#933): a sign-in in another tab gives the browser a new session and CSRF token; a page
+// open since then rereads its token on the first refusal instead of failing every write.
+type CsrfMock = { __yuliusMock: { me: { csrf_token: string; user: { id: string } }; refuseCsrf?: boolean; csrfRefusals?: number } };
+
+test('the Superagent starts after another tab signed in again (a new CSRF token)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  // Another tab's sign-in: the session, and its token, change under this page.
+  await browser.evaluate(() => { (window as unknown as CsrfMock).__yuliusMock.me.csrf_token = 'csrf-of-the-new-session'; return null; });
+
+  await openSuperagent(browser, screen);
+  await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
+  expect(await browser.locator('.agent .load-error').count()).toBe(0);
+  // One refusal, then the retry with the new token went through.
+  expect(await browser.evaluate(() => (window as unknown as CsrfMock).__yuliusMock.csrfRefusals ?? 0)).toBe(1);
+});
+
+test('a page reloads, retrying nothing, when another person signed in in another tab', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await browser.evaluate(() => {
+    const db = (window as unknown as CsrfMock).__yuliusMock;
+    db.me = { ...db.me, csrf_token: 'csrf-of-someone-else', user: { ...db.me.user, id: 'usr_2' } };
+    // The reload starts the mock afresh: what the old page sent is kept for the test as it goes.
+    window.addEventListener('pagehide', () => {
+      // Counted as sent, before the mock's latency: a retry on its way when the page goes counts too.
+      const cockpit = (db as unknown as { sent?: Record<string, number> }).sent?.['POST /api/sandboxes/sb_studio/cockpit'] ?? 0;
+      sessionStorage.setItem('csrf-test', JSON.stringify({ refusals: db.csrfRefusals ?? 0, cockpit }));
+    });
+    return null;
+  });
+
+  await openSuperagent(browser, screen);
+  // The page reloads and shows the person now signed in.
+  await expect.poll(() => browser.evaluate(() => sessionStorage.getItem('csrf-test')), { timeout: 15_000 }).not.toBeNull();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  // The write was sent once, refused, and not sent again as them.
+  expect(await browser.evaluate(() => JSON.parse(sessionStorage.getItem('csrf-test') ?? 'null'))).toEqual({ refusals: 1, cockpit: 1 });
+});
+
+test('a write refused again after its retry says so, once per attempt', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await browser.evaluate(() => { (window as unknown as CsrfMock).__yuliusMock.refuseCsrf = true; return null; });
+
+  await openSuperagent(browser, screen);
+  const error = browser.locator('.agent .load-error');
+  await expect(error).toHaveText(/Couldn’t start the Superagent: missing or invalid CSRF token/);
+  // The first try and its one retry; no loop.
+  expect(await browser.evaluate(() => (window as unknown as CsrfMock).__yuliusMock.csrfRefusals ?? 0)).toBe(2);
+
+  // Fixed meanwhile: Try again starts it.
+  await browser.evaluate(() => { (window as unknown as CsrfMock).__yuliusMock.refuseCsrf = false; return null; });
+  await screen.getByRole('button', 'Try again').click();
+  await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
+});
+
+// The API client's side of SPEC-337 (unit, in the page, with a stand-in transport): who asks for
+// the new token, how often, and when nothing is sent again.
+test('the API client rereads a stale CSRF token once for concurrent refusals and retries each write once (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/api.js';
+    const { createApi } = await import(url);
+    let server = 'new';
+    const sent: string[] = [];
+    let answerLate: (() => void) | null = null;
+    const late = new Promise<void>((resolve) => { answerLate = resolve; });
+    const transport = {
+      async fetch(path: string, init: { headers: Record<string, string> }) {
+        const token = init.headers['X-Yulius-CSRF'];
+        sent.push(`${path}:${token}`);
+        if (path === '/late' && token === 'old') await late;
+        const ok = token === server;
+        return new Response(JSON.stringify(ok ? { ok: path } : { error: { code: 'csrf_invalid', message: 'missing or invalid CSRF token' } }), { status: ok ? 200 : 403 });
+      },
+    };
+    let rereads = 0;
+    let giveToken: ((token: string) => void) | null = null;
+    const api = createApi(transport, { onCsrfStale: () => { rereads += 1; return new Promise((resolve) => { giveToken = resolve; }); } });
+    api.setCsrf('old');
+    // Two writes refused together wait on one reread; a third, answered after it, uses its token.
+    const writes = [api.post('/a'), api.post('/b'), api.post('/late')];
+    while (sent.filter((s) => s.endsWith(':old')).length < 3 || !giveToken) await new Promise((r) => setTimeout(r, 10));
+    giveToken!('new');
+    await Promise.all(writes.slice(0, 2));
+    answerLate!();
+    const answers = await Promise.all(writes);
+    // Refused again with the reread token: one retry, then the refusal.
+    server = 'newer';
+    const second = rereads;
+    const refused = api.post('/c').then(() => 'sent', (error: { code: string }) => error.code);
+    while (!giveToken || rereads === second) await new Promise((r) => setTimeout(r, 10));
+    giveToken!('still-wrong');
+    return { answers, rereads, refused: await refused, cSends: sent.filter((s) => s.startsWith('/c:')) };
+  });
+  expect(result.answers).toEqual([{ ok: '/a' }, { ok: '/b' }, { ok: '/late' }]);
+  expect(result.rereads).toBe(2);
+  expect(result.refused).toBe('csrf_invalid');
+  expect(result.cSends).toEqual(['/c:new', '/c:still-wrong']);
+});
+
+test('the API client retries nothing after the page signed in again meanwhile, nor a cancelled write (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/api.js';
+    const { createApi } = await import(url);
+    const sent: string[] = [];
+    let valid = 'none';
+    let thirdRead = false;
+    let answer: (() => void) | null = null;
+    const transport = {
+      async fetch(path: string, init: { headers: Record<string, string> }) {
+        const token = init.headers['X-Yulius-CSRF'];
+        sent.push(`${path}:${token}`);
+        if (path === '/held') await new Promise<void>((resolve) => { answer = resolve; });
+        const ok = token === valid;
+        if (path === '/third' && !ok) {
+          // Read by the client: once it is, the refusal is waiting on a reread.
+          const text = JSON.stringify({ error: { code: 'csrf_invalid', message: 'missing or invalid CSRF token' } });
+          return { ok: false, status: 403, text: async () => { thirdRead = true; return text; } };
+        }
+        return new Response(JSON.stringify(ok ? { ok: path } : { error: { code: 'csrf_invalid', message: 'missing or invalid CSRF token' } }), { status: ok ? 200 : 403 });
+      },
+    };
+    let rereads = 0;
+    let giveToken: ((token: string) => void) | null = null;
+    // Each reread is told whether it still serves the page's current sign-in (`isCurrent`).
+    const current: (() => boolean)[] = [];
+    const api = createApi(transport, { onCsrfStale: (isCurrent: () => boolean) => { rereads += 1; current.push(isCurrent); return new Promise((resolve) => { giveToken = resolve; }); } });
+    api.setCsrf('token-of-the-first-person');
+    // Sent as the first person; this page signs in as someone else before it is answered.
+    const held = api.post('/held').then(() => 'sent', (error: { code: string }) => error.code);
+    while (!answer) await new Promise((r) => setTimeout(r, 10));
+    api.setCsrf('token-of-the-second-person');
+    answer!();
+    const heldResult = await held;
+    const rereadsAfterHeld = rereads;
+
+    // A reread under way when the page signs in again leaves the new sign-in's token.
+    const during = api.post('/during').then(() => 'sent', (error: { code: string }) => error.code);
+    while (!giveToken) await new Promise((r) => setTimeout(r, 10));
+    api.setCsrf('token-of-a-third-sign-in');
+    giveToken!('reread-token');
+    const duringResult = await during;
+    valid = 'token-of-a-third-sign-in';
+    const after = await api.post('/after');
+    valid = 'none';
+
+    // A refusal after the page signed in again does not wait on a reread asked before it.
+    giveToken = null;
+    const rereadsBefore = rereads;
+    const before = api.post('/before').then(() => 'sent', (error: { code: string }) => error.code);
+    while (!giveToken) await new Promise((r) => setTimeout(r, 10));
+    const answerBefore = giveToken as (token: string) => void;
+    giveToken = null;
+    api.setCsrf('token-of-a-fourth-sign-in');
+    const afterSignIn = api.post('/after-sign-in').then((answer: unknown) => answer, (error: { code: string }) => error.code);
+    while (!giveToken) await new Promise((r) => setTimeout(r, 10));
+    const answerAfter = giveToken as (token: string) => void;
+    // The older reread no longer serves the page; the newer one does.
+    const stillCurrent = current.slice(-2).map((isCurrent) => isCurrent());
+    // The older reread answers first; a third refusal still waits on the newer one, not a new read.
+    answerBefore('reread-for-an-old-sign-in');
+    const beforeResult = await before;
+    const third = api.post('/third').then((answer: unknown) => answer, (error: { code: string }) => error.code);
+    while (!thirdRead) await new Promise((r) => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 0));
+    valid = 'reread-for-the-fourth';
+    answerAfter('reread-for-the-fourth');
+    const ownReread = { before: beforeResult, afterSignIn: await afterSignIn, third: await third, rereads: rereads - rereadsBefore, stillCurrent };
+    valid = 'none';
+
+    // Cancelled while the token is reread: cancelled at once, not refused, and not sent again, even
+    // while the reread has no answer yet.
+    giveToken = null;
+    const controller = new AbortController();
+    const cancelled = api.post('/cancelled', undefined, { signal: controller.signal }).then(() => 'sent', (error: { code: string }) => error.code);
+    while (!giveToken) await new Promise((r) => setTimeout(r, 10));
+    controller.abort();
+    const cancelledResult = await cancelled;
+    giveToken!('reread-for-the-fourth');
+    return { heldResult, rereadsAfterHeld, duringResult, after, ownReread, cancelled: cancelledResult, sent };
+  });
+  expect(result.heldResult).toBe('csrf_invalid');
+  expect(result.rereadsAfterHeld).toBe(0);
+  expect(result.duringResult).toBe('csrf_invalid');
+  expect(result.ownReread).toEqual({ before: 'csrf_invalid', afterSignIn: { ok: '/after-sign-in' }, third: { ok: '/third' }, rereads: 2, stillCurrent: [false, true] });
+  expect(result.cancelled).toBe('aborted');
+  expect(result.sent.filter((s: string) => s.startsWith('/held:'))).toEqual(['/held:token-of-the-first-person']);
+  expect(result.sent.filter((s: string) => s.startsWith('/during:'))).toEqual(['/during:token-of-the-second-person']);
+  // The page's own sign-in keeps its token: the reread answering after it is dropped.
+  expect(result.after).toEqual({ ok: '/after' });
+  expect(result.sent.filter((s: string) => s.startsWith('/after:'))).toEqual(['/after:token-of-a-third-sign-in']);
+  expect(result.sent.filter((s: string) => s.startsWith('/cancelled:'))).toEqual(['/cancelled:reread-for-the-fourth']);
+});

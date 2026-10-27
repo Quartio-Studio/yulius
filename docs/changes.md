@@ -4,6 +4,31 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-27
+
+- A project's Vidoc scans can be switched off in Yulius, for example while the key's quota is used
+  up, and on again (SPEC-338, ADR-0229, task #322). The Instance page's Vidoc card lists the
+  projects with a switch each, and the Add sandbox dialog offers "Scan pull requests with Vidoc"
+  when the instance has a key. A switched-off project scans nothing whatever key it has: its runs
+  and CI jobs get `YULIUS_VIDOC=off`, on which `yulius security-scan` says "disabled" (CI:
+  Skipped), the instance key is not applied, CI adds no built-in scan job, and the briefing tells
+  agents not to ask anyone about Vidoc's key or quota.
+- The Superagent can start a task in another of its person's sandboxes, once the person approves
+  that one request (SPEC-335, ADR-0227, task #319). `sandboxes_list` names where it may ask;
+  `sandbox_task_create` puts the request above the Superagent's session, with the target, the
+  whole prompt and its start options, and waits up to 4 minutes for **Create task** or
+  **Decline**. Only the person's click in the web UI answers: every API token is refused, and a
+  dropped call, a restart or no answer leaves nothing to approve later. Approval creates the task
+  in the target exactly as shown, with the person's access checked there.
+- A tab left open while the browser signed in again elsewhere no longer fails its writes with
+  "missing or invalid CSRF token" (SPEC-337, task #321, fixes #933). The Superagent showed it
+  first ("Couldn't start the Superagent"), since opening it is a write. Each sign-in (GitHub,
+  password, the Secrets page's identity confirmation) gives the browser a new session with a new
+  token, and older tabs kept the old one until a reload. The server now refuses a stale token as
+  `csrf_invalid`. The page then rereads `/api/me` and retries once with the current token when
+  the same person is signed in, or reloads when someone else is
+  ([ADR-0228](decisions/0228-a-page-rereads-its-csrf-token-when-the-session-changes.md)).
+
 ## 2026-10-26
 
 - The sandbox tabs in the top row now drag as smoothly as the Notes tabs (SPEC-336, task #320,

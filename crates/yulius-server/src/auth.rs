@@ -91,7 +91,7 @@ impl FromRequestParts<AppState> for Auth {
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("");
             if ctx.csrf_token.as_deref() != Some(sent) || sent.is_empty() {
-                return Err(AppError::Forbidden("missing or invalid CSRF token".into()).into());
+                return Err(AppError::CsrfInvalid.into());
             }
         }
         Ok(Self(ctx))

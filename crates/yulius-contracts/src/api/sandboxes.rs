@@ -105,6 +105,11 @@ pub struct Profile {
     /// Absent or null: the `[commands] gate` of `yulius.toml` on the integration branch, if any.
     #[serde(default)]
     pub gate: Option<String>,
+    /// Vidoc security scans for this project (SPEC-338 VOF-001): `false` turns them off, absent
+    /// or `true` leaves them on. Responses always carry a value; a profile update ignores it (set
+    /// it with [`UpdateSandbox::vidoc`]).
+    #[serde(default)]
+    pub vidoc: Option<bool>,
 }
 
 /// One environment step of a profile.
@@ -129,6 +134,10 @@ pub enum CreateSandbox {
     Import {
         /// `owner/name`.
         repo: String,
+        /// `false`: the project's Vidoc scans start switched off, before its onboarding (SPEC-338
+        /// VOF-004); absent: on.
+        #[serde(default)]
+        vidoc: Option<bool>,
     },
     /// Create a new repository from a template.
     Create {
@@ -139,6 +148,9 @@ pub enum CreateSandbox {
         /// Repository description.
         #[serde(default)]
         description: String,
+        /// `false`: the project's Vidoc scans start switched off (SPEC-338 VOF-004).
+        #[serde(default)]
+        vidoc: Option<bool>,
     },
     /// Start a playground from a template (SPEC-099): no GitHub, its Git stays on this server.
     Playground {
@@ -153,7 +165,11 @@ pub enum CreateSandbox {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateSandbox {
     /// New delivery profile.
+    #[serde(default)]
     pub profile: Option<Profile>,
+    /// Turns the project's Vidoc security scans on or off (SPEC-338 VOF-001); absent keeps them.
+    #[serde(default)]
+    pub vidoc: Option<bool>,
 }
 
 /// `GET /api/github/repositories` item.

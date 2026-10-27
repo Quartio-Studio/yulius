@@ -229,6 +229,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       case 'file.presence': emit('file-presence', event); break;
       case 'pulls.updated': pullsChanged(event.sandbox_id); break;
       case 'secrets.updated': emit('secrets', event); break;
+      case 'superagent.requests': emit('superagent-requests', event); break;
       case 'resync': emit('resync'); break;
       default: break;
     }
