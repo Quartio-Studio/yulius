@@ -40,7 +40,7 @@ use serde_json::{Value, json};
 use tokio::sync::watch;
 use yulius_contracts::api::git::{
     BlockedAction, ChecksAccess, CommitView, Delivery, EnvironmentRun, GitOverview, OpenPr,
-    PromoteResult, PullView, RunEnvironment, TaskBranch, TaskChanges, TaskCommit,
+    PromoteResult, PullView, RunEnvironment, TaskBranch, TaskChanges, TaskCommit, WorktreeState,
 };
 use yulius_contracts::api::sandboxes::{
     Environment as EnvironmentView, Profile, Sandbox, UpdateSandbox,
@@ -332,6 +332,16 @@ pub fn vidoc_switched_on(sandbox: &SandboxRecord) -> bool {
         .ok()
         .and_then(|switch| switch.vidoc)
         != Some(false)
+}
+
+/// Where `task`'s worktree is (SPEC-343): the Git overview says it, and the changes view reads
+/// only a `Present` one. A task gets its branch when created and its worktree when it starts.
+fn worktree_state(task: &TaskRecord) -> WorktreeState {
+    match task.worktree_path.as_deref() {
+        None => WorktreeState::NotCreated,
+        Some(path) if Path::new(path).is_dir() => WorktreeState::Present,
+        Some(_) => WorktreeState::Gone,
+    }
 }
 
 /// A playground runs no CI scan, so it has no Vidoc switch (SPEC-338 VOF-001).
@@ -1831,6 +1841,7 @@ impl App {
                     .iter()
                     .find(|p| p.head == branch)
                     .map(|p| pull_view(p, checks_of(p.number))),
+                worktree: worktree_state(&task),
             };
             if cloned
                 && self
@@ -2346,17 +2357,19 @@ impl App {
     async fn review_target(&self, task: &TaskRecord) -> AppResult<(PathBuf, String, String)> {
         let sandbox = self.dlv_sandbox_of(task).await?;
         let integration = delivery_profile(&sandbox).integration_branch;
-        let worktree = task
-            .worktree_path
-            .as_deref()
-            .map(PathBuf::from)
-            .filter(|p| p.is_dir())
-            .ok_or_else(|| {
-                AppError::Conflict(
-                    "the task's worktree is gone; its branch and pull request are on GitHub".into(),
-                )
-            })?;
-        Ok((worktree, format!("origin/{integration}"), integration))
+        match (worktree_state(task), task.worktree_path.as_deref()) {
+            (WorktreeState::Present, Some(worktree)) => Ok((
+                PathBuf::from(worktree),
+                format!("origin/{integration}"),
+                integration,
+            )),
+            (WorktreeState::Gone, _) => Err(AppError::Conflict(
+                "the task's worktree is gone; its branch and pull request are on GitHub".into(),
+            )),
+            _ => Err(AppError::Conflict(
+                "the task has not started yet, so it has no worktree to read changes from".into(),
+            )),
+        }
     }
 
     // ---------------------------------------------------------------- automatic delivery
