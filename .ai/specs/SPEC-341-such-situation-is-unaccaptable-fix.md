@@ -1,11 +1,11 @@
 ---
 yulius-task: aeaa0c10-8541-48a6-9523-070b4415c9c5
-status: in-progress
+status: done
 ---
 
 # SPEC-341: A running task's steps follow its spec while the turn runs
 
-Status: in-progress
+Status: done
 Date: 2026-10-27
 Owner: Yulius task #325
 Scope authorization: task #325 (`/goal`, with a screenshot of the Superagent explaining that a
@@ -55,8 +55,8 @@ mid-turn, the steps and the percentage follow within seconds, not at the next tu
 - [x] A regression test shows the steps lag a spec Plan edited mid-turn
 - [x] A running task's steps follow its spec within seconds, without lost step updates
 - [x] Docs, SPEC-001 and changes entry describe the live sync
-- [ ] Independent review in a fresh session, findings answered
-- [ ] Gates green, PR merged into dev on green CI
+- [x] Independent review in a fresh session, findings answered
+- [x] Gates green, PR merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -66,6 +66,8 @@ mid-turn, the steps and the percentage follow within seconds, not at the next tu
   `dev`.
 - A sync and a step update on the same task are serialized: the update's status is kept
   (`agent_hooks::the_spec_sync_waits_for_the_steps_lock_and_keeps_a_concurrent_update`).
+- A step the person skips that was finished while the skip waited for the lock stays finished, and
+  the answer says so (`intake::a_step_finished_while_the_skip_waits_stays_done`).
 - `steps_follow_the_spec_plan_checklist` and the step tool tests still pass.
 
 ## Test plan
@@ -89,3 +91,32 @@ scripts/dev security
   read outside the store. A `tokio::sync::Mutex` in the task's runtime serializes the in-process
   writers, and Yulius is one process per instance (SPEC-002).
 - No ADR: this extends the STP-004 sync's timing; it takes no new lasting decision.
+
+## Evidence
+
+- **Red on dev.** With `crates/yulius-app/src` and `agent_hooks.rs` from `79aafe7c`,
+  `supervision::a_running_tasks_steps_follow_its_spec_without_a_turn_end` failed: "timed out
+  waiting for the first plan" (30.6 s). With the sync's lock lines removed,
+  `agent_hooks::the_spec_sync_waits_for_the_steps_lock_and_keeps_a_concurrent_update` failed
+  ("the sync waits for the lock"). `intake::a_step_finished_while_the_skip_waits_stays_done`
+  failed before its fix, answering "0 steps skipped".
+- **Green.** `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^intake::/) |
+  test(/^agent_hooks::/) | test(/a_running_tasks_steps_follow/))'` ran 33 tests, all passed. The
+  step, skip and held-prompt tests ran 43, all passed.
+- **Gate.** `scripts/dev ci` at `57a80695` exited 0: fmt, lint, macOS compile and deps passed,
+  and nextest ran 2760 tests (2760 passed, 16 skipped), followed by doctests and docs.
+- **Security.** `yulius security-scan` exited 2, **unrun**: Vidoc is out of quota for this key
+  (HTTP 429, "used its 50,000,000 tokens"). The 8 changed code files were not scanned. This is
+  not a pass.
+- **Review.** Three fresh-session review rounds (`om-code-review`):
+  - Round 1 asked for changes: the lock test passed without the lock; a skip held the lock
+    across task creation; the spec was read before the lock; and the `steps_set` description
+    needed updating. All were fixed test-first.
+  - Round 2 approved, with two low findings that were fixed (the skip's zero answer and a
+    shadowed name).
+  - Round 3 approved `57a80695`. Its one nit, the zero answer's wording when a step was removed
+    rather than finished, is #944.
+  - The pre-existing turn-end nudge, which still says to use `steps_set` when a spec has a
+    Plan, is out of scope.
+- **Not tested.** The real incident (#942) happened in another project's long goal run, which
+  this sandbox cannot reach. The fix is shown on a fake-agent run whose turn never ends.
