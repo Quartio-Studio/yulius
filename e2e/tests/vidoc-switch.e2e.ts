@@ -92,3 +92,29 @@ test('the Vidoc card follows switches changed elsewhere, and a saved key offers 
   await screen.getByRole('button', 'Import repository').click();
   await expect(screen.getByRole('dialog', 'Add sandbox').getByRole('checkbox', 'Scan pull requests with Vidoc')).toBeChecked();
 });
+
+test('the Vidoc card stops listening once its page is gone, even with no event while shown', async ({ app, browser }) => {
+  // Review round 3 (unit, in the page): the listener of a card left without any sandbox event must
+  // not outlive it.
+  await app.open(mock('/admin/instance', '&vidoc=config'));
+  const result = await browser.evaluate(async () => {
+    type Projects = (ctx: unknown) => HTMLElement;
+    const { vidocProjects } = await import('/assets/instancekeys.js' as string) as { vidocProjects: Projects };
+    let listeners = 0;
+    let handler: (() => void) | null = null;
+    const ctx = {
+      store: {
+        state: { sandboxes: [{ id: 'a', name: 'alpha', profile: { vidoc: true } }] },
+        on: (_topic: string, fn: () => void) => { listeners += 1; handler = fn; return () => { listeners -= 1; }; },
+      },
+      api: {},
+    };
+    const box = vidocProjects(ctx);
+    document.body.append(box);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    box.remove();
+    (handler as unknown as () => void)();
+    return { listeners, drawn: box.querySelectorAll('input').length };
+  });
+  expect(result).toEqual({ listeners: 0, drawn: 1 });
+});

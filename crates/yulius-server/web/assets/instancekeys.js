@@ -76,11 +76,12 @@ async function setVidocScans(ctx, sandbox, on, { input = null } = {}) {
 }
 
 /**
- * The Vidoc card's projects, each with its switch (SPEC-338 VOF-005); playgrounds scan nothing. It
+ * The Vidoc card's projects, each with its switch (SPEC-338 VOF-005; exported for its in-page
+ * test); playgrounds scan nothing. It
  * follows the sandbox list: a project added or removed redraws it, and a switch changed elsewhere
  * (another tab, a live update) moves in place, so focus stays on the switch in hand.
  */
-function vidocProjects(ctx) {
+export function vidocProjects(ctx) {
   const box = h('div', { class: 'vidoc-projects', role: 'group', 'aria-labelledby': 'vidoc-projects-title' });
   const projects = () => (ctx.store.state.sandboxes || []).filter((sb) => !sb.playground);
   const isOn = (sb) => !sb.profile || sb.profile.vidoc !== false;
@@ -108,9 +109,11 @@ function vidocProjects(ctx) {
       })),
     ] : []);
   };
+  // On the page once its caller attached it (right after this returns); detached after that, it
+  // is gone with its page and stops listening, whether or not an event came meanwhile.
   let shown = false;
+  queueMicrotask(() => { if (box.isConnected) shown = true; });
   const off = ctx.store.on('sandboxes', () => {
-    // Gone with its page: nothing to keep current.
     if (box.isConnected) shown = true;
     else if (shown) { off(); return; }
     draw();
