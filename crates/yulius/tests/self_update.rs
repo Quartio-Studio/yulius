@@ -897,6 +897,10 @@ async fn a_cancel_during_a_freeze_pass_leaves_nothing_frozen() -> TestResult {
     assert!(host.frozen().is_empty(), "left frozen: {:?}", host.frozen());
     // The overtaken pass closed the deploy gate after the cancel opened it; the next round, with
     // no update open, opens it again (SPEC-342 DPU-007, review round 2).
+    assert!(
+        i.h.app.deploy_permit().is_err(),
+        "the overtaken pass closed it"
+    );
     let _ = i.h.app.update_round().await;
     assert!(i.h.app.deploy_permit().is_ok(), "deploys start again");
     Ok(())
@@ -1431,6 +1435,53 @@ async fn a_running_deploy_is_waited_for_before_tasks_pause() -> TestResult {
         i.helper.last().ok_or("install")?.action,
         HelperAction::Install
     );
+    Ok(())
+}
+
+/// SPEC-342 DPU-003: a delivery environment run running when the build is done is waited for as a
+/// CD run is.
+#[tokio::test]
+async fn a_running_environment_run_is_waited_for() -> TestResult {
+    use yulius_app::delivery::{EnvironmentRunKind, EnvironmentRunRecord, EnvironmentRunState};
+    use yulius_app::ports::store_ext::DeliveryStore as _;
+    let i = instance().await?;
+    two_tasks(&i).await?;
+    let alice = i.h.store.user_by_login("alice").await?.ok_or("alice")?.id;
+    i.h.store
+        .insert_environment_run(&EnvironmentRunRecord {
+            id: "env-running".into(),
+            sandbox_id: yulius_domain::ids::SandboxId::parse("s1")?,
+            environment: "dev-vm".into(),
+            kind: EnvironmentRunKind::Command,
+            requested_by: alice,
+            command: Some("true".into()),
+            commit: None,
+            state: EnvironmentRunState::Running,
+            output: String::new(),
+            exit_code: None,
+            started_at: i.h.app.now(),
+            ended_at: None,
+        })
+        .await?;
+    build_reported(&i).await?;
+    let _ = i.h.app.update_round().await;
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "building", "{view}");
+    assert_eq!(
+        view["run"]["deploys"],
+        json!([{"sandbox": "fixture", "environment": "dev-vm", "kind": "environment", "run": "env-running"}])
+    );
+    i.h.store
+        .finish_environment_run(
+            "env-running",
+            EnvironmentRunState::Succeeded,
+            "done\n",
+            Some(0),
+            i.h.app.now(),
+        )
+        .await?;
+    let _ = i.h.app.update_round().await;
+    assert_eq!(get(&i, &i.admin).await?["run"]["state"], "pausing");
     Ok(())
 }
 
