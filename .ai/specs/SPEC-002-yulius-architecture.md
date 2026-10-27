@@ -2162,9 +2162,10 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 - Public listener: HTTPS terminated by the reverse proxy; cookies HttpOnly, Secure, SameSite=Lax,
   the session cookie `__Host-` prefixed over HTTPS (ADR-14); CSRF header on state-changing
   requests, a wrong or missing one refused as 403 `csrf_invalid`, on which the page rereads its
-  session's token from `/api/me` and retries once (SPEC-337, ADR-0228); a cookie session refuses requests that announce another `Origin` or come from
-  another site per fetch metadata (navigations excepted); WebSocket Origin must equal the public
-  URL (or an allowlisted desktop origin); login rate limits per client (below); Argon2id for the
+  session's token from `/api/me` and retries once (SPEC-337, ADR-0228); a cookie session refuses
+  requests that announce another `Origin` or come from another site per fetch metadata
+  (navigations excepted); WebSocket Origin must equal the public URL (or an allowlisted desktop
+  origin); login rate limits per client (below); Argon2id for the
   superadmin password. Every response carries `X-Frame-Options: DENY`, `Content-Security-Policy:
   frame-ancestors 'none'` (nothing frames Yulius, not even Yulius), `X-Content-Type-Options:
   nosniff`, `Referrer-Policy: same-origin` and the process tag `X-Yulius` unless the route sets a

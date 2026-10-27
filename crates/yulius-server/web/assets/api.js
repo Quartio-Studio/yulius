@@ -85,18 +85,26 @@ export const enc = (value) => encodeURIComponent(String(value));
  * A write refused as `csrf_invalid` (another tab signed in again, so the browser's session and its
  * token changed) asks `onCsrfStale()` for the session's current token and is sent again once with
  * it; `onCsrfStale` answers null to retry nothing (SPEC-337 CSR-002). Concurrent refusals share
- * one call.
+ * one call. A write sent before the page's own sign-in (`setCsrf`) is never sent again: it was
+ * someone else's session.
  */
 export function createApi(transport, { onUnauthenticated, onCsrfStale } = {}) {
   let csrf = null;
+  // Counts the page's sign-ins (`setCsrf`): a write or a reread from before one is not retried.
+  let signIns = 0;
   let rereading = null;
 
   /** The session's current token, asked once for every refusal waiting on it; null for none. */
   function rereadCsrf() {
     if (!rereading) {
+      const asked = signIns;
       rereading = Promise.resolve()
         .then(() => onCsrfStale())
-        .then((token) => { if (token) csrf = token; return token || null; }, () => null)
+        .then((token) => {
+          if (!token || signIns !== asked) return null;
+          csrf = token;
+          return token;
+        }, () => null)
         .finally(() => { rereading = null; });
     }
     return rereading;
@@ -109,6 +117,7 @@ export function createApi(transport, { onUnauthenticated, onCsrfStale } = {}) {
     // Outlives the page (a save as it hides); browsers bound such bodies to 64 KiB in all.
     if (keepalive) init.keepalive = true;
     const sentCsrf = csrf;
+    const sentSignIns = signIns;
     if (method !== 'GET') {
       if (csrf) headers['X-Yulius-CSRF'] = csrf;
       if (body instanceof Blob) {
@@ -160,10 +169,11 @@ export function createApi(transport, { onUnauthenticated, onCsrfStale } = {}) {
       // Extra fields beside `error` (for example `reauth` with a `reauth_required` refusal).
       if (data && typeof data === 'object') error.body = data;
       if (response.status === 401 && !allow401 && onUnauthenticated) onUnauthenticated(error);
-      if (error.code === 'csrf_invalid' && !retried && onCsrfStale && !(signal && signal.aborted)) {
+      if (error.code === 'csrf_invalid' && !retried && onCsrfStale && signIns === sentSignIns && !(signal && signal.aborted)) {
         // Another refusal may have read the new token meanwhile: use it without asking again.
         const token = csrf && csrf !== sentCsrf ? csrf : await rereadCsrf();
-        if (token && !(signal && signal.aborted)) return request(method, path, body, options, true);
+        if (signal && signal.aborted) throw new ApiError(0, 'aborted', 'Cancelled.');
+        if (token && signIns === sentSignIns) return request(method, path, body, options, true);
       }
       throw error;
     }
@@ -183,6 +193,6 @@ export function createApi(transport, { onUnauthenticated, onCsrfStale } = {}) {
       if (options && options.signal && options.signal.aborted) throw new ApiError(0, 'aborted', 'Cancelled.');
       transport.download(path, name);
     },
-    setCsrf(token) { csrf = token || null; },
+    setCsrf(token) { csrf = token || null; signIns += 1; },
   };
 }
