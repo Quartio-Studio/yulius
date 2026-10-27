@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-27
 
+- The Editor opens any branch the sandbox has checked out (SPEC-340, ADR-0231, task #324). Its
+  folder picker lists the sandbox repository and every task's worktree, each named by its branch,
+  also when no task is selected; the status bar names the branch too. Another person's worktree
+  opens read-only and says why instead of failing at the first save. The Editor never checks out
+  a branch: each branch is reached through its worktree.
 - A Git board card whose task has no worktree opens nothing and says why: "Worktree gone", or "No
   worktree yet" for a task that has not started (SPEC-343, task #327, fixes #943). It used to open
   the task's changes, which could only answer "Couldn't load the changes: the task's worktree is

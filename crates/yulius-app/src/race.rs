@@ -73,6 +73,9 @@ pub enum Point {
     /// The leftovers view (SPEC-329's CI, #923): the kept sandboxes' store rows were read; the
     /// scan's state is not read yet. The path is the data directory.
     LeftoversView,
+    /// `files_roots` (SPEC-340): the sandbox repository was found; its `.git/HEAD` is not opened
+    /// yet. The path is the repository's.
+    RootsHead,
 }
 
 #[cfg(feature = "test-support")]

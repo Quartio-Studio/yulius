@@ -228,28 +228,75 @@ export function createEditorView(ctx, sandbox, getTask) {
   const expanded = new Map(); // dir path → entries | null (loading)
 
   const folder = h('select', { class: 'select select-sm', 'aria-label': 'Folder' });
-  // The sandbox, the selected task's worktree, and the folder open now (a terminal link can open
-  // another task's worktree).
-  function folderOptions() {
+  // The folders the server lists (SPEC-340 EWT-001): the sandbox and every task worktree on disk,
+  // each with its branch and whether this person may change it; null until read.
+  let roots = null;
+  let rootsReading = null;
+  let rootsAgain = false;
+  let destroyed = false;
+  const rootEntry = () => (roots ? roots.find((entry) => entry.root === root) : null) || null;
+  // Unknown (not read yet, or not listed): the server still refuses what it must.
+  const writable = () => { const entry = rootEntry(); return !entry || entry.writable; };
+  function rootLabel(entry) {
+    if (entry.root === 'sandbox') return entry.branch ? `Sandbox · ${entry.branch}` : 'Sandbox';
+    const name = `#${entry.task_number} ${entry.branch || entry.task_title || 'worktree'}`;
+    return entry.writable ? name : `${name} (read-only)`;
+  }
+  // Until the list is read (or when it cannot be): the sandbox, the selected task's worktree, and
+  // the folder open now (a terminal link can open another task's worktree).
+  function knownOptions() {
     const task = getTask();
     const options = [h('option', { value: 'sandbox' }, 'Sandbox')];
     if (task) options.push(h('option', { value: `task:${task.id}` }, `Task #${task.number} worktree`));
-    if (root.startsWith('task:') && (!task || root !== `task:${task.id}`)) {
-      const other = (ctx.store.tasksOf(sandbox.id) || []).find((t) => `task:${t.id}` === root);
-      options.push(h('option', { value: root }, other ? `Task #${other.number} worktree` : 'Task worktree'));
-    }
+    if (root.startsWith('task:') && (!task || root !== `task:${task.id}`)) options.push(openOption());
+    return options;
+  }
+  function openOption() {
+    const other = (ctx.store.tasksOf(sandbox.id) || []).find((t) => `task:${t.id}` === root);
+    return h('option', { value: root }, root === 'sandbox' ? 'Sandbox' : other ? `Task #${other.number} worktree` : 'Task worktree');
+  }
+  function folderOptions() {
+    const options = roots ? roots.map((entry) => h('option', { value: entry.root }, rootLabel(entry))) : knownOptions();
+    if (roots && !rootEntry()) options.push(openOption());
     setChildren(folder, options);
     folder.value = root;
+    folder.title = folder.selectedOptions[0] ? folder.selectedOptions[0].textContent : '';
+  }
+  /** Reads the folders again (one read at a time; one more after it when asked meanwhile). */
+  function loadRoots() {
+    if (rootsReading) { rootsAgain = true; return rootsReading; }
+    rootsReading = (async () => {
+      try {
+        const listed = await api.get(`/api/sandboxes/${sid}/files/roots`);
+        const next = listed && Array.isArray(listed.roots) ? listed.roots : null;
+        if (!destroyed && next && JSON.stringify(next) !== JSON.stringify(roots)) {
+          roots = next;
+          folderOptions();
+          applyAccess();
+        }
+      } catch { /* it keeps offering what it offers */ } finally {
+        rootsReading = null;
+        if (rootsAgain && !destroyed) { rootsAgain = false; loadRoots(); }
+      }
+    })();
+    return rootsReading;
   }
   folderOptions();
+  folder.addEventListener('focus', () => { loadRoots(); });
   folder.addEventListener('change', async () => {
+    // Taken now: the list read again while the question is asked redraws the picker on `root`.
+    const wanted = folder.value;
     if (tabs.some((t) => t.dirty) && !(await confirmDialog({ title: 'Switch folder?', message: 'Unsaved changes in open files are discarded.', confirmLabel: 'Discard and switch', danger: true }))) {
       folder.value = root;
       return;
     }
-    root = folder.value;
+    if (destroyed || wanted === root) { folder.value = root; return; }
+    root = wanted;
+    folder.value = root;
+    folder.title = folder.selectedOptions[0] ? folder.selectedOptions[0].textContent : '';
     closeAll();
     expanded.clear();
+    applyAccess();
     renderTree();
     loadDir('');
   });
@@ -287,9 +334,10 @@ export function createEditorView(ctx, sandbox, getTask) {
   wrapButton.addEventListener('keydown', wrapKeys);
   folder.addEventListener('keydown', wrapKeys);
   const status = h('div', { class: 'ed-status' });
+  const newButton = iconButton('plus', 'New file or folder', (event) => newEntryMenu(event.currentTarget, ''));
   const treeHead = h('div', { class: 'ed-tree-head' },
     h('span', { title: 'Explorer' }, 'Explorer'),
-    iconButton('plus', 'New file or folder', (event) => newEntryMenu(event.currentTarget, '')),
+    newButton,
     iconButton('refresh', 'Refresh', () => refreshTree()));
   const side = h('div', { class: 'ed-side' }, treeHead, tree);
   const edRoot = h('div', { class: 'ed-root' }, side, h('div', { class: 'ed-main' }, tabbar, h('div', { class: 'ed-stage' }, host, empty), status));
@@ -320,7 +368,20 @@ export function createEditorView(ctx, sandbox, getTask) {
 
   const query = (path) => `root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`;
   // Files dropped on the explorer or the editor, or picked with its upload button (EDT-006).
-  attachEditorDrop({ ctx, sandboxId: sandbox.id, tree, host, head: treeHead, getRoot: () => root, activePath: () => (active ? active.path : null), reveal: (dir) => loadDir(dir), refresh: () => refreshTree(), open: (path) => openFile(path) });
+  const drop = attachEditorDrop({ ctx, sandboxId: sandbox.id, tree, host, head: treeHead, getRoot: () => root, canWrite: writable, activePath: () => (active ? active.path : null), reveal: (dir) => loadDir(dir), refresh: () => refreshTree(), open: (path) => openFile(path) });
+
+  /**
+   * A folder this person may not change (another person's task worktree, SPEC-340 EWT-003): Monaco
+   * is read-only and the explorer offers nothing that writes.
+   */
+  function applyAccess() {
+    const can = writable();
+    newButton.hidden = !can;
+    drop.button.hidden = !can;
+    if (editor) editor.updateOptions({ readOnly: !can });
+    renderTree();
+    renderStatus();
+  }
 
   // ---------------------------------------------------------------- explorer
   async function loadDir(path) {
@@ -382,13 +443,14 @@ export function createEditorView(ctx, sandbox, getTask) {
         row.addEventListener('keydown', (event) => { if (event.key === 'Enter') activate(); });
         row.addEventListener('contextmenu', (event) => {
           event.preventDefault();
+          const can = writable();
           openMenu({ x: event.clientX, y: event.clientY }, [
-            isDir ? { label: 'New file…', onSelect: () => createEntry(entry.path, 'file') } : null,
-            isDir ? { label: 'New folder…', onSelect: () => createEntry(entry.path, 'dir') } : null,
+            isDir && can ? { label: 'New file…', onSelect: () => createEntry(entry.path, 'file') } : null,
+            isDir && can ? { label: 'New folder…', onSelect: () => createEntry(entry.path, 'dir') } : null,
             !isDir ? { label: 'Open', onSelect: () => openFile(entry.path) } : null,
             { label: 'Copy path', onSelect: () => navigator.clipboard && navigator.clipboard.writeText(entry.path) },
-            { separator: true },
-            { label: 'Delete…', danger: true, onSelect: () => deleteEntry(entry) },
+            can ? { separator: true } : null,
+            can ? { label: 'Delete…', danger: true, onSelect: () => deleteEntry(entry) } : null,
           ].filter(Boolean));
         });
         rows.push(row);
@@ -582,6 +644,7 @@ export function createEditorView(ctx, sandbox, getTask) {
       scrollBeyondLastLine: false,
       renderWhitespace: 'selection',
       wordWrap: wordWrap ? 'on' : 'off',
+      readOnly: !writable(),
       tabSize: 2,
       wordBasedSuggestions: 'allDocuments',
       quickSuggestions: { other: true, comments: false, strings: false },
@@ -674,6 +737,7 @@ export function createEditorView(ctx, sandbox, getTask) {
       folderOptions();
       closeAll();
       expanded.clear();
+      applyAccess();
       renderTree();
       loadDir('');
     }
@@ -847,6 +911,11 @@ export function createEditorView(ctx, sandbox, getTask) {
 
   async function save(tab, overwrite = false) {
     if (tab.saving) return;
+    // Another person's worktree (SPEC-340 EWT-003): nothing is sent for the server to refuse.
+    if (!writable()) {
+      if (tab.dirty) toast(`${readOnlyText()}: your text in ${tab.path} is kept, unsaved.`, { kind: 'info' });
+      return;
+    }
     tab.saving = true;
     tab.look = (tab.look || 0) + 1; // a look in flight may predate this save
     tab.looking = false;
@@ -955,12 +1024,25 @@ export function createEditorView(ctx, sandbox, getTask) {
     if (focused) (items.find((item) => item.dataset.path === focused) || items.find((item) => item.tabIndex === 0))?.focus();
   }
 
+  /** Why the folder is read-only, or null (SPEC-340 EWT-003). */
+  function readOnlyText() {
+    const entry = rootEntry();
+    return entry && !entry.writable ? `Read-only: Task #${entry.task_number} is another person’s` : null;
+  }
+  /** The folder open now with its branch (SPEC-340 EWT-004). */
+  function folderText() {
+    const entry = rootEntry();
+    const name = readOnlyText() || (root === 'sandbox' ? 'Sandbox repository' : entry ? `Task #${entry.task_number} worktree` : 'Task worktree');
+    return entry && entry.branch ? `${name} · ${entry.branch}` : name;
+  }
+
   function renderStatus() {
-    if (!active || !editor || !active.model) { setChildren(status, h('span', { class: 'muted' }, root === 'sandbox' ? 'Sandbox repository' : 'Task worktree')); return; }
+    if (!active || !editor || !active.model) { setChildren(status, h('span', { class: 'muted' }, folderText())); return; }
     const position = editor.getPosition();
+    const readOnly = readOnlyText();
     setChildren(status,
       h('span', null, active.path),
-      h('span', { class: 'muted' }, active.saving ? 'Saving…' : active.dirty ? 'Modified' : 'Saved'),
+      h('span', { class: 'muted' }, readOnly || (active.saving ? 'Saving…' : active.dirty ? 'Modified' : 'Saved')),
       active.dirty && active.diskSha ? h('span', { class: 'ed-disk-changed', title: 'Someone (or an agent) changed this file on disk. Saving asks whether to overwrite it or reload.' }, 'Changed on disk') : null,
       h('span', { class: 'muted' }, position ? `Ln ${position.lineNumber}, Col ${position.column}` : ''),
       h('span', { class: 'muted' }, active.model.getLanguageId()),
@@ -979,6 +1061,8 @@ export function createEditorView(ctx, sandbox, getTask) {
       // Back in front: what was written meanwhile shows at once, not at the next look.
       if (active && active.model && !suspended && !active.saving) refreshFromDisk(active);
       if (!started) { started = true; if (!(opts && opts.file && opts.file.root !== root)) loadDir(''); }
+      // Worktrees come and go with tasks: read them each time the Editor comes to the front.
+      loadRoots();
       if (editor) editor.layout();
       explorerSplitter.sync();
       if (opts && opts.file) openAt(opts.file);
@@ -987,7 +1071,7 @@ export function createEditorView(ctx, sandbox, getTask) {
       shown = false;
       syncPresence();
     },
-    taskChanged: folderOptions,
+    taskChanged() { folderOptions(); loadRoots(); },
     /** Open files with unsaved changes: the panel host never drops this view for its bound. */
     get unsaved() { return tabs.some((tab) => tab.dirty); },
     // Another sandbox in front (SPEC-113 KST-006): the Monaco models go, so this sandbox's files feed
@@ -1020,6 +1104,7 @@ export function createEditorView(ctx, sandbox, getTask) {
     // Called when the panel host drops this view (another sandbox): free Monaco's editor and
     // models, so other sandboxes' files neither leak nor feed suggestions.
     destroy() {
+      destroyed = true;
       tabDrag.cancel();
       for (const tab of tabs) tab.presence.destroy({ going: false });
       clearInterval(sweep);
