@@ -97,8 +97,9 @@ never as someone else.
 
 ## Evidence
 
-- Reproduced the cause in tests before the fix (commit b0dd7232): `http_auth::a_new_sign_in_refuses_the_old_csrf_token_and_me_gives_the_new_one`
-  failed with `left: "forbidden"`, `right: "csrf_invalid"`; the three new agent-panel e2e tests failed
+- Reproduced the cause in tests before the fix (commit b0dd7232):
+  `http_auth::a_new_sign_in_refuses_the_old_csrf_token_and_me_gives_the_new_one` failed with
+  `left: "forbidden"`, `right: "csrf_invalid"`; the three new agent-panel e2e tests failed
   (no terminal after the token changed, no reload, 1 refusal instead of 2).
 - Fix (6bb7c5d7): `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^http_auth::/)'`
   21/21 passed; `npx e2e run tests/agent-panel.e2e.ts` 29/29 passed.
@@ -116,6 +117,12 @@ never as someone else.
   its way could go uncounted. A refusal after the page's own sign-in could join an older reread.
   SPEC-002 had a short line. All fixed test-first in round 3. The extended unit test hung before
   the fix and passed after; agent-panel e2e passed 31/31.
+- Review round 3 (fresh session): approve at 7e0df0c8, with low findings in own code. The guard
+  that stops an older reread clearing a newer one was untested. A reread that the page's own
+  sign-in had outdated could still reload the page. Fixed test-first: `onCsrfStale(isCurrent)`,
+  and `currentCsrf` returns before deciding once `isCurrent()` is false. The test failed before
+  e04006f8. A mutation check that removed the guard made it fail too. agent-panel e2e passed
+  31/31.
 - `scripts/dev security`: **not run** (exit 2). Vidoc answered HTTP 429, "This API key has used its
   50,000,000 tokens". The 7 changed code files were not scanned, so this is unrun, not passed.
 - Not tested: a real browser with two tabs against `yulius serve`. The mock and the HTTP tests
