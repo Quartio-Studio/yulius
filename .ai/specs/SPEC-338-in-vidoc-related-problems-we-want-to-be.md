@@ -104,9 +104,12 @@ card (the admin panel).
 
 - Python unit tests of the scanner (`scripts/test_vidoc_scan.py`): disabled by env, locally and in
   CI mode, without a key and without Git.
-- Rust integration tests (`crates/yulius/tests/vidoc_key.rs` and the sandbox API tests): the PATCH
-  contract and permissions, the profile update keeping the switch, `ci_scans`, the applied secrets,
-  the agent and CI environment, the briefing and the onboarding prompt.
+- Rust integration tests: `crates/yulius/tests/vidoc_switch.rs` (the PATCH contract and
+  permissions, the profile update keeping the switch, a refused profile changing nothing, the
+  applied secrets, the briefing choice, `me.instance.vidoc`), `projects.rs` (import and create
+  with the box unchecked, switched off from the first record, before onboarding), `local_ci.rs`
+  (no built-in job, the own job Skipped), `pool_supervision.rs` (agent run environment) and
+  `shells.rs` (terminal environment).
 - Domain unit tests of the briefing's three security texts.
 - e2e (`e2e/`): the Instance card's project switches and the Add sandbox checkbox, on the mock.
 

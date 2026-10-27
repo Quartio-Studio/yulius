@@ -8,7 +8,7 @@ failOnPageErrors();
 // Instance page's Vidoc card (VOF-005), and the Add sandbox dialog offers it when the instance has
 // a Vidoc key (VOF-004).
 
-type Mocked = { __yuliusMock: { sandboxes: { slug: string; profile: { vidoc?: boolean } }[] } };
+type Mocked = { __yuliusMock: { sandboxes: { slug: string; profile: { vidoc?: boolean } }[]; resyncNow: () => void } };
 
 /** The mock's stored switch of the sandbox `slug` (`null`: not read through the API yet). */
 const switchOf = (browser: Browser, slug: string) => browser.evaluate((s: string) => {
@@ -67,4 +67,28 @@ test('a project imported as offered keeps scanning, and without a key nothing is
   dialog = screen.getByRole('dialog', 'Add sandbox');
   await expect(screen.getByRole('radio', /Quartio-Studio\/website/)).toBeVisible();
   await expect(dialog.getByRole('checkbox', 'Scan pull requests with Vidoc')).toHaveCount(0);
+});
+
+test('the Vidoc card follows switches changed elsewhere, and a saved key offers the box', async ({ app, browser, screen }) => {
+  // Review round 2: the card keeps up with the sandbox list without a reload.
+  await app.open(mock('/admin/instance', '&vidoc=config'));
+  const product = screen.getByRole('switch', 'Vidoc scans for product');
+  await expect(product).toBeChecked();
+  await browser.evaluate(() => {
+    const db = (window as unknown as Mocked).__yuliusMock;
+    db.sandboxes.find((sb) => sb.slug === 'product')!.profile.vidoc = false;
+    db.resyncNow();
+  });
+  await expect(product).not.toBeChecked();
+
+  // No key yet: nothing offered; once one is saved here, the Add sandbox dialog offers the box.
+  await app.open(mock('/admin/instance'));
+  await expect(screen.getByText(/No key: security scans are off/)).toBeVisible();
+  await browser.locator('#settings-vidoc').fill('vidoc-good-key-0003');
+  await screen.getByRole('region', 'Vidoc key').getByRole('button', 'Save').click();
+  await expect(screen.getByText(/vidoc-1 is available/)).toBeVisible();
+  // Home in the same page (no reload), where the dialog opens.
+  await browser.evaluate(() => { location.hash = '#/'; return null; });
+  await screen.getByRole('button', 'Import repository').click();
+  await expect(screen.getByRole('dialog', 'Add sandbox').getByRole('checkbox', 'Scan pull requests with Vidoc')).toBeChecked();
 });

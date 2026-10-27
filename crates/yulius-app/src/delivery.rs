@@ -2011,7 +2011,7 @@ impl App {
     }
 
     /// After the switch changed: CI's gate and the virtual key are read again, and it is audited.
-    async fn vidoc_switched(&self, actor: &str, sandbox: &SandboxRecord, on: bool) {
+    pub(crate) async fn vidoc_switched(&self, actor: &str, sandbox: &SandboxRecord, on: bool) {
         self.ci_forget_gate(&sandbox.id);
         // The instance key comes or goes as the sandbox's virtual agent secret.
         self.bump_vault_generation();

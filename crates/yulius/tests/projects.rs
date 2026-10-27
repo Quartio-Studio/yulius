@@ -828,6 +828,46 @@ async fn an_import_with_vidoc_unchecked_onboards_switched_off() -> TestResult {
     Ok(())
 }
 
+/// SPEC-338 VOF-004 (review round 2): the switch is in the project's first record, not a second
+/// write after it: with every later profile write refused, an import and a create unchecked still
+/// add the project switched off, never a scanning one.
+#[tokio::test]
+async fn a_project_added_unchecked_is_switched_off_from_its_first_record() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, _) = w.user("alice", true).await?;
+    let alice = w.browser(&alice_user).await?;
+    w.h.store
+        .execute_for_tests(
+            "CREATE TRIGGER no_profile_write BEFORE UPDATE OF profile ON sandboxes \
+             BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+        )
+        .await?;
+    w.remote(OWNER, "plain", &[("README.md", "# Plain\n")], &["dev"])?;
+    w.grant("alice", "plain", "admin");
+    let imported = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes",
+        Some(json!({"mode": "import", "repo": "Quartio-Studio/plain", "vidoc": false})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(imported.status, StatusCode::CREATED, "{:?}", imported.body);
+    assert_eq!(imported.body["profile"]["vidoc"], false);
+    w.grant("alice", "quiet", "admin");
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes",
+        Some(json!({"mode": "create", "name": "quiet", "template": "web", "vidoc": false})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    assert_eq!(created.body["profile"]["vidoc"], false);
+    Ok(())
+}
+
 /// SPEC-338 VOF-004: a repository created from a template with its Vidoc scans unchecked starts
 /// switched off.
 #[tokio::test]

@@ -43,6 +43,14 @@ const MAX_SLUG_ATTEMPTS: u32 = 20;
 /// Longest repository description passed to GitHub.
 const MAX_DESCRIPTION_CHARS: usize = 350;
 
+/// A new project's stored profile, switched off when the person unchecked Vidoc (SPEC-338
+/// VOF-004).
+fn new_profile_json(profile: &DeliveryProfile, vidoc: Option<bool>) -> AppResult<String> {
+    let mut stored = profile_view(profile);
+    stored.vidoc = (vidoc == Some(false)).then_some(false);
+    serde_json::to_string(&stored).map_err(AppError::internal)
+}
+
 /// Contracts view of a domain delivery profile.
 #[must_use]
 pub fn profile_view(profile: &DeliveryProfile) -> Profile {
@@ -440,9 +448,10 @@ impl App {
                 vidoc,
             } => {
                 let record = self
-                    .create_repository(ctx, name.trim(), template, description)
+                    .create_repository(ctx, name.trim(), template, description, *vidoc)
                     .await?;
-                self.start_switched(&ctx.user, record, *vidoc).await?
+                self.audit_new_switch(&ctx.user, &record, *vidoc).await;
+                record
             }
             CreateSandbox::Playground { name, template } => {
                 self.playground_from_template(&ctx.user, name, template)
@@ -456,27 +465,18 @@ impl App {
         self.sandbox_view(&record, level).await
     }
 
-    /// A new project's Vidoc switch as the person who added it chose (SPEC-338 VOF-004): adding it
-    /// is the right to choose; `None` and `Some(true)` leave it on.
-    ///
-    /// # Errors
-    /// Store failures.
-    async fn start_switched(
+    /// Audits a new project added with its Vidoc scans off (SPEC-338 VOF-004): the switch is in
+    /// its first record already ([`new_profile_json`]).
+    async fn audit_new_switch(
         &self,
         user: &UserRecord,
-        record: SandboxRecord,
+        record: &SandboxRecord,
         vidoc: Option<bool>,
-    ) -> AppResult<SandboxRecord> {
-        if vidoc != Some(false) {
-            return Ok(record);
+    ) {
+        if vidoc == Some(false) {
+            let actor = self.login_of(&user.id).await;
+            self.vidoc_switched(&actor, record, false).await;
         }
-        let actor = self.login_of(&user.id).await;
-        self.write_vidoc_switch(&actor, &record.id, false).await?;
-        self.deps
-            .store
-            .sandbox(&record.id)
-            .await?
-            .ok_or(AppError::NotFound)
     }
 
     /// Links an existing repository of the instance owner as a new sandbox (import mode,
@@ -505,9 +505,9 @@ impl App {
             )));
         }
         let repo = self.import_permission(user, owner, name).await?;
-        let record = self.link_repository(user, owner, name, repo).await?;
-        // Before its onboarding starts, which reads the switch (SPEC-338 VOF-004).
-        let record = self.start_switched(user, record, vidoc).await?;
+        // The switch is in its first record, before its onboarding reads it (SPEC-338 VOF-004).
+        let record = self.link_repository(user, owner, name, repo, vidoc).await?;
+        self.audit_new_switch(user, &record, vidoc).await;
         if start_preparation {
             let actor = self.login_of(&user.id).await;
             if let Err(err) = self.start_onboarding(&record.id, &actor).await {
@@ -595,6 +595,7 @@ impl App {
         owner: &str,
         name: &str,
         repo: GhRepo,
+        vidoc: Option<bool>,
     ) -> AppResult<SandboxRecord> {
         let store = &self.deps.store;
         let owner = if repo.owner.is_empty() {
@@ -641,8 +642,7 @@ impl App {
             repo_name: name.clone(),
             github_repo_id: (repo.id > 0).then_some(repo.id),
             default_branch,
-            profile_json: serde_json::to_string(&profile_view(&profile))
-                .map_err(AppError::internal)?,
+            profile_json: new_profile_json(&profile, vidoc)?,
             port_base: 0,
             port_count: PORT_RANGE_SIZE,
             onboarding_state: onboarding.to_owned(),
@@ -765,6 +765,7 @@ impl App {
         name: &str,
         template: &str,
         description: &str,
+        vidoc: Option<bool>,
     ) -> AppResult<SandboxRecord> {
         self.require_instance_admin(ctx)?;
         let template = TemplateKind::parse(template).ok_or_else(|| {
@@ -893,8 +894,7 @@ impl App {
             repo_name: repo_name.clone(),
             github_repo_id: (repo.id > 0).then_some(repo.id),
             default_branch: profile.production_branch.clone(),
-            profile_json: serde_json::to_string(&profile_view(&profile))
-                .map_err(AppError::internal)?,
+            profile_json: new_profile_json(&profile, vidoc)?,
             port_base: 0,
             port_count: PORT_RANGE_SIZE,
             onboarding_state: "not_needed".into(),
