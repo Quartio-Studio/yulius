@@ -1287,6 +1287,9 @@ test('another person’s worktree saves nothing, offers no writing menu items an
   await editorShown(browser);
   await screen.getByRole('textbox', 'Editor content').focus();
   await browser.keyboard.press('Control+s');
+  // A save would go out before the next file's read: once that file shows, none was sent.
+  await tree.getByRole('treeitem', 'AGENTS.md').click();
+  await expect(screen.getByRole('tab', /^AGENTS\.md/)).toHaveAttribute('aria-selected', 'true');
   await expect.poll(() => statusText(browser)).toContain('Read-only: Task #10 is another person’s');
   expect(await browser.evaluate(() => (window as unknown as ReadOnlyMock).__yuliusMock.saveRequests ?? 0)).toBe(0);
 
