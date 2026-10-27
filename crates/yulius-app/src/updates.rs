@@ -8,7 +8,8 @@
 //!
 //! **Update.** Nothing updates by itself. A superadmin confirms the offered commit, then one run
 //! moves through `building` (the root helper builds the commit; tasks keep working) →
-//! `draining` (every task's agent is frozen at once by the process host, mid-turn, SPEC-160; a
+//! `draining` (once no deploy runs: a deploy running when the build is done is waited for and
+//! new ones are refused until the install ended, SPEC-342; then every task's agent is frozen at once by the process host, mid-turn, SPEC-160; a
 //! run that cannot be frozen pauses at its turn boundary: the Stop and `UserPromptSubmit` hooks
 //! are held as for a capacity pause, ADR-17; new starts queue) → `installing` (the helper stops
 //! the service, backs up, installs, starts and checks the new build, rolling back on failure)
@@ -25,7 +26,7 @@ use std::time::Duration;
 use tokio::sync::Notify;
 use yulius_contracts::api::updates::{
     AvailableUpdate, BuildView, CommitView, PauseProgress, ProgressView, StartUpdate,
-    UpdateCheckView, UpdateRunView, UpdateView, WaitingTask,
+    UpdateCheckView, UpdateRunView, UpdateView, WaitingDeploy, WaitingTask,
 };
 use yulius_contracts::events::UiEvent;
 use yulius_contracts::update::{HelperAction, HelperRequest, HelperState, HelperStatus};
@@ -35,6 +36,7 @@ use yulius_domain::update::{self as policy, RunState};
 
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
+use crate::deploy_gate::{DEPLOY_REFUSED, DeployGate, DeployPermit};
 use crate::error::{AppError, AppResult};
 use crate::model::Secret;
 use crate::ports::session::RunFreeze;
@@ -68,8 +70,11 @@ const HELD_FRESH_MS: i64 = 15_000;
 pub const RESUME_STAGGER: Duration = Duration::from_secs(2);
 /// Commits listed in a view.
 const MAX_COMMITS_SHOWN: usize = 50;
-/// Tasks listed as still in a turn.
+/// Tasks listed as still in a turn, and deploys listed as still running.
 const MAX_WAITING_SHOWN: usize = 20;
+/// The wait for running deploys after the build lasts at most the CI job timeout (every deploy
+/// is killed at it) plus this (SPEC-342 DPU-004).
+const DEPLOY_WAIT_SLACK_MS: i64 = 5 * 60_000;
 /// Consecutive passes that must find every task at a pause point before installing.
 const READY_PASSES: u32 = 2;
 /// Passes a run may stay frozen without the kernel confirming it; then it is thawed and paused
@@ -175,6 +180,10 @@ pub struct UpdateState {
     next_check_ms: AtomicI64,
     wake: Notify,
     started: AtomicBool,
+    /// No deploy starts from the build's end until the install ended (SPEC-342).
+    deploys: DeployGate,
+    /// When this server first found the build done with a deploy running (ms; 0: not waiting).
+    deploys_waited_since: AtomicI64,
 }
 
 /// A task's run as the drain froze it (SPEC-160).
@@ -626,7 +635,11 @@ impl App {
             self.drive_update(services, run).await;
             return TICK;
         }
-        // No open run: nothing may stay held (a run ended while this server was down) or frozen.
+        // No open run: nothing may stay held (a run ended while this server was down) or frozen,
+        // and deploys may start.
+        if self.updates.deploys.is_closed() {
+            self.open_deploys();
+        }
         if self.update_holds_starts() {
             self.switch_hold(false).await;
             self.drain_queue().await;
@@ -1108,6 +1121,16 @@ impl App {
 
     async fn drive_update(self: &Arc<Self>, services: &UpdateServices, run: UpdateRunRecord) {
         self.reset_phase(&run);
+        // The building run closes the gate itself once built (SPEC-342 DPU-007).
+        match run.state {
+            RunState::Draining | RunState::Installing => {
+                self.updates.deploys.set_closed(true);
+            }
+            RunState::Resuming => {
+                self.updates.deploys.set_closed(false);
+            }
+            _ => {}
+        }
         if run.state.holds_tasks() {
             self.switch_hold(true).await;
         }
@@ -1129,6 +1152,13 @@ impl App {
                             self.publish_run(&run, &detail);
                         }
                         HelperState::Done => {
+                            // Deploys running now finish before anything pauses (SPEC-342).
+                            let in_flight = self.deploys_in_flight().await;
+                            if !matches!(in_flight, Ok((0, _))) {
+                                self.wait_for_deploys(&run, &in_flight).await;
+                                return;
+                            }
+                            self.updates.deploys_waited_since.store(0, Ordering::SeqCst);
                             if let Some(helper) = &services.helper {
                                 helper.clear_request();
                             }
@@ -1165,15 +1195,24 @@ impl App {
             RunState::Draining => {
                 self.freeze_pass(&run.id).await;
                 let progress = self.pause_progress().await;
-                let proceed = self.updates.proceed.load(Ordering::SeqCst);
-                let ready = proceed || progress.paused >= progress.total;
+                // A deploy is never cut, not even on "Continue without waiting" (DPU-005).
+                let in_flight = self.deploys_in_flight().await;
+                let deploys = match &in_flight {
+                    Ok((count, _)) => *count,
+                    Err(_) => 1,
+                };
+                let proceed = self.updates.proceed.load(Ordering::SeqCst) && deploys == 0;
+                let ready = deploys == 0 && (proceed || progress.paused >= progress.total);
                 let passes = if ready {
                     self.updates.ready_passes.fetch_add(1, Ordering::SeqCst) + 1
                 } else {
                     self.updates.ready_passes.store(0, Ordering::SeqCst);
                     0
                 };
-                self.publish_run(&run, &format!("{}/{}", progress.paused, progress.total));
+                self.publish_run(
+                    &run,
+                    &format!("{}/{}/{deploys}", progress.paused, progress.total),
+                );
                 if passes >= READY_PASSES || proceed {
                     let Some(helper) = services.helper.clone() else {
                         self.cancel_run(&run, "The update helper is gone.").await;
@@ -1206,10 +1245,18 @@ impl App {
                     }
                 } else if age > DRAIN_MAX_MS {
                     // Counted as readiness is: `waiting` is the page's capped list (#533).
-                    let message = format!(
-                        "{} task(s) were still in a turn after 30 minutes; nothing was installed.",
-                        progress.total.saturating_sub(progress.paused)
-                    );
+                    let message = if deploys > 0 {
+                        format!(
+                            "{deploys} deploy(s) were still running after 30 minutes; nothing \
+                             was installed."
+                        )
+                    } else {
+                        format!(
+                            "{} task(s) were still in a turn after 30 minutes; nothing was \
+                             installed.",
+                            progress.total.saturating_sub(progress.paused)
+                        )
+                    };
                     self.cancel_run(&run, &message).await;
                 }
             }
@@ -1284,6 +1331,7 @@ impl App {
             .move_run(run, RunState::Failed, None, Some(error))
             .await
         {
+            self.open_deploys();
             if let Some(helper) = self.update_services().and_then(|s| s.helper.as_ref()) {
                 helper.clear_request();
             }
@@ -1329,10 +1377,110 @@ impl App {
     /// Ends the hold: every task goes on (frozen runs are thawed), queued tasks start, paused
     /// capacity is re-evaluated.
     async fn end_update_hold(&self) {
+        self.open_deploys();
         self.thaw_frozen_runs().await;
         self.switch_hold(false).await;
         self.updates.proceed.store(false, Ordering::SeqCst);
         self.capacity_changed();
+    }
+
+    /// A permit to start a deploy (SPEC-342 DPU-001/002), held until its run is recorded as
+    /// running: refused from the end of an update's build until its install ended.
+    ///
+    /// # Errors
+    /// `Conflict` while an update is about to restart the server.
+    pub(crate) fn deploy_permit(&self) -> AppResult<DeployPermit<'_>> {
+        self.updates
+            .deploys
+            .permit()
+            .ok_or_else(|| AppError::Conflict(DEPLOY_REFUSED.into()))
+    }
+
+    fn open_deploys(&self) {
+        self.updates.deploys.set_closed(false);
+        self.updates.deploys_waited_since.store(0, Ordering::SeqCst);
+    }
+
+    /// Closes the deploy gate, then counts the deploys still running or starting and lists the
+    /// running ones (SPEC-342 DPU-002): closing first, nothing that passed the gate is missed.
+    async fn deploys_in_flight(&self) -> AppResult<(usize, Vec<WaitingDeploy>)> {
+        self.updates.deploys.set_closed(true);
+        self.listed_deploys().await
+    }
+
+    /// The deploys running or starting, and the running ones as the page lists them.
+    async fn listed_deploys(&self) -> AppResult<(usize, Vec<WaitingDeploy>)> {
+        let starting = self.updates.deploys.starting() as usize;
+        let store = &self.deps.store;
+        let mut runs: Vec<(yulius_domain::ids::SandboxId, String, &str, String)> = store
+            .running_cd_runs()
+            .await?
+            .into_iter()
+            .map(|r| (r.sandbox_id, r.environment, "cd", r.id))
+            .collect();
+        runs.extend(
+            store
+                .running_environment_runs()
+                .await?
+                .into_iter()
+                .map(|r| (r.sandbox_id, r.environment, "environment", r.id)),
+        );
+        let total = runs.len() + starting;
+        let mut shown = Vec::new();
+        for (sandbox, environment, kind, run) in runs.into_iter().take(MAX_WAITING_SHOWN) {
+            let sandbox = store
+                .sandbox(&sandbox)
+                .await
+                .ok()
+                .flatten()
+                .map_or_else(|| sandbox.to_string(), |s| s.slug);
+            shown.push(WaitingDeploy {
+                sandbox,
+                environment,
+                kind: kind.to_owned(),
+                run,
+            });
+        }
+        Ok((total, shown))
+    }
+
+    /// The build is done and deploys still run (or could not be read: counted as one): the run
+    /// stays `building`, tasks keep working, and past the bound the update is cancelled
+    /// (SPEC-342 DPU-003/004).
+    async fn wait_for_deploys(
+        &self,
+        run: &UpdateRunRecord,
+        in_flight: &AppResult<(usize, Vec<WaitingDeploy>)>,
+    ) {
+        let count = match in_flight {
+            Ok((count, _)) => *count,
+            Err(err) => {
+                tracing::warn!(error = %err, "could not read the running deploys");
+                1
+            }
+        };
+        let now = self.now().0;
+        let since = match self.updates.deploys_waited_since.compare_exchange(
+            0,
+            now,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(_) => now,
+            Err(since) => since,
+        };
+        self.publish_run(run, &format!("built:deploys:{count}"));
+        let bound = i64::try_from(self.config.ci.job_timeout.as_millis())
+            .unwrap_or(i64::MAX)
+            .saturating_add(DEPLOY_WAIT_SLACK_MS);
+        if now.saturating_sub(since) > bound {
+            let message = format!(
+                "{count} deploy(s) were still running {} minutes after the build; nothing was \
+                 installed.",
+                bound / 60_000
+            );
+            self.cancel_run(run, &message).await;
+        }
     }
 
     /// Releases the held tasks one by one, then ends the run with its outcome.
@@ -1565,6 +1713,21 @@ impl App {
             });
         let mut tasks = None;
         let mut message = step.as_deref().and_then(step_message).map(str::to_owned);
+        // The gate is closed once built: the deploys it waits for (SPEC-342 DPU-006).
+        let deploys = if self.updates.deploys.is_closed()
+            && matches!(run.state, RunState::Building | RunState::Draining)
+        {
+            self.listed_deploys().await.unwrap_or_default()
+        } else {
+            (0, Vec::new())
+        };
+        if run.state == RunState::Building && deploys.0 > 0 {
+            message = Some(format!(
+                "Built. Waiting for {} deploy(s) to finish before pausing tasks; new deploys \
+                 wait for the update.",
+                deploys.0
+            ));
+        }
         match run.state {
             RunState::Draining => {
                 let mut pause = self.pause_progress().await;
@@ -1612,6 +1775,7 @@ impl App {
             message,
             progress,
             tasks,
+            deploys: deploys.1,
             error: run.error.clone(),
             log_tail,
             docker,

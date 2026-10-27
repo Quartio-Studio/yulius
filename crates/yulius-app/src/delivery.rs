@@ -3817,6 +3817,8 @@ impl App {
                 env.name.clone(),
             )));
         }
+        // As a CD run: none starts while an update is about to restart the server (SPEC-342).
+        let _permit = self.deploy_permit()?;
         let action = DeliveryAction::RunEnvironment {
             name: env.name.clone(),
             confirmed: true,
