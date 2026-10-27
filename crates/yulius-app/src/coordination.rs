@@ -270,6 +270,8 @@ impl App {
                 rules::StepError::TooManySteps { count: items.len() }.to_string(),
             ));
         }
+        let runtime = self.runtime(&ctx.task.id);
+        let steps_lock = runtime.steps_lock.lock().await;
         let (existing, states) = self.step_states_of(&ctx.task.id).await?;
         let resolved = rules::validate_plan(&plan, &states, By::Agent)
             .map_err(|err| AppError::Invalid(err.to_string()))?;
@@ -298,6 +300,7 @@ impl App {
             .store
             .replace_steps(&ctx.task.id, &steps, &ctx.actor(), now)
             .await?;
+        drop(steps_lock);
         self.publish_steps(&ctx.task).await;
         self.tool_steps_get(ctx).await
     }
@@ -312,6 +315,8 @@ impl App {
         let status = str_arg(args, "status")?;
         let parsed = StepStatus::parse(status)
             .ok_or_else(|| AppError::Invalid(format!("status must be one of {STEP_STATUSES:?}")))?;
+        let runtime = self.runtime(&ctx.task.id);
+        let steps_lock = runtime.steps_lock.lock().await;
         let (steps, states) = self.step_states_of(&ctx.task.id).await?;
         let step = if let Some(id) = args.get("step_id").and_then(Value::as_str) {
             steps.iter().find(|s| s.id.as_str() == id)
@@ -338,6 +343,7 @@ impl App {
                 self.now(),
             )
             .await?;
+        drop(steps_lock);
         self.publish_steps(&ctx.task).await;
         let mut record = self.tool_steps_get(ctx).await?;
         // Which step changed, so the answer can say it (SPEC-086 TOL-002).
