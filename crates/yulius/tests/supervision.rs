@@ -1866,7 +1866,7 @@ fn a_queued_supertask_takes_the_next_slot_first() -> TestResult {
 /// or a turn end. A running task's steps follow its spec while the turn runs: no hook here.
 #[test]
 fn a_running_tasks_steps_follow_its_spec_without_a_turn_end() -> TestResult {
-    use yulius_app::ports::store::{TaskFieldUpdate, TaskStore};
+    use yulius_app::ports::store::TaskFieldUpdate;
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
     let data = dir.path().canonicalize()?;

@@ -970,18 +970,28 @@ async fn the_spec_sync_waits_for_the_steps_lock_and_keeps_a_concurrent_update() 
     // The Plan grows while a step tool holds the lock and starts "Implement API".
     std::fs::write(
         f.worktree.join("docs/specs/checkout.md"),
-        std::fs::read_to_string(f.worktree.join("docs/specs/checkout.md"))?
-            .replace("- [ ] Implement API\n", "- [ ] Implement API\n- [ ] Open PR\n"),
+        std::fs::read_to_string(f.worktree.join("docs/specs/checkout.md"))?.replace(
+            "- [ ] Implement API\n",
+            "- [ ] Implement API\n- [ ] Open PR\n",
+        ),
     )?;
     let runtime = f.h.app.runtime(&f.task);
     let held = runtime.steps_lock.lock().await;
     let app = f.h.app.clone();
     let sync_task = task.clone();
     let sync = tokio::spawn(async move { app.sync_steps_from_spec(&sync_task).await });
-    for _ in 0..20 {
-        tokio::task::yield_now().await;
+    // While the lock is held the sync writes nothing: without the lock it writes the grown Plan
+    // within milliseconds, so half a second of the old list shows it waits.
+    let held_until = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+    while tokio::time::Instant::now() < held_until {
+        assert_eq!(
+            store.steps(&f.task).await?.len(),
+            2,
+            "the sync waits for the lock"
+        );
+        assert!(!sync.is_finished(), "the sync waits for the steps lock");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert!(!sync.is_finished(), "the sync waits for the steps lock");
     store
         .update_step(&implement, "in_progress", None, "agent", Timestamp(6))
         .await?;
