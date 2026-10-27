@@ -360,7 +360,7 @@ impl App {
         let mut records = self.resolved_agent_secrets(sandbox, holder).await?;
         if self.vidoc_key().is_some()
             && !records.iter().any(|r| r.name == VIDOC_SECRET)
-            && self.vidoc_switched_on(sandbox).await?
+            && self.sandbox_vidoc_on(sandbox).await?
         {
             records.push(instance_vidoc_record());
         }
@@ -371,7 +371,7 @@ impl App {
     ///
     /// # Errors
     /// Store failures.
-    pub(crate) async fn vidoc_switched_on(&self, sandbox: &SandboxId) -> AppResult<bool> {
+    pub(crate) async fn sandbox_vidoc_on(&self, sandbox: &SandboxId) -> AppResult<bool> {
         Ok(self
             .deps
             .store

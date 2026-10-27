@@ -134,6 +134,10 @@ pub enum CreateSandbox {
     Import {
         /// `owner/name`.
         repo: String,
+        /// `false`: the project's Vidoc scans start switched off, before its onboarding (SPEC-338
+        /// VOF-004); absent: on.
+        #[serde(default)]
+        vidoc: Option<bool>,
     },
     /// Create a new repository from a template.
     Create {
@@ -144,6 +148,9 @@ pub enum CreateSandbox {
         /// Repository description.
         #[serde(default)]
         description: String,
+        /// `false`: the project's Vidoc scans start switched off (SPEC-338 VOF-004).
+        #[serde(default)]
+        vidoc: Option<bool>,
     },
     /// Start a playground from a template (SPEC-099): no GitHub, its Git stays on this server.
     Playground {

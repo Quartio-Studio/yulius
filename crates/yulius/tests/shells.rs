@@ -1203,3 +1203,25 @@ async fn a_live_shell_keeps_a_resting_task_s_build_artifacts() -> TestResult {
     assert!(!rlib.exists(), "no Shell: the resting task's artifacts go");
     Ok(())
 }
+
+/// SPEC-338 VOF-002 (review round 1): a terminal of a project whose Vidoc scans are switched off
+/// gets `YULIUS_VIDOC=off`, so a scan typed there says "disabled" too.
+#[tokio::test]
+async fn a_switched_off_projects_terminal_scans_nothing() -> TestResult {
+    let f = fixture().await?;
+    {
+        use yulius_app::ports::store::SandboxStore as _;
+        f.h.store
+            .set_profile(&SandboxId::parse("s1")?, r#"{"vidoc":false}"#)
+            .await?;
+    }
+    let served = serve(f.h.router.clone()).await?;
+    let created = create(&f, &f.writer, "s1", None).await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+    let mut socket = open_terminal(served.addr, &id, &f.writer).await?;
+    let mut screen = String::new();
+    input(&mut socket, "echo \"vidoc=[${YULIUS_VIDOC:-unset}]\"\r").await?;
+    read_until(&mut socket, &mut screen, "vidoc=[off]").await?;
+    Ok(())
+}

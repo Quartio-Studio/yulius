@@ -875,8 +875,8 @@ fn security_scan(input: &BriefingInput<'_>) -> String {
             return "## Security scan\n\nVidoc is turned off for this project in Yulius: \
                     `yulius security-scan` prints \"Security scan disabled\" and sends nothing, \
                     and CI runs no scan. Report it as disabled, never as passed, and do not ask \
-                    anyone about Vidoc's key or quota: a person turns it on again (Settings, \
-                    Instance).\n\n"
+                    anyone about Vidoc's key or quota: an instance superadmin switches it on \
+                    again (Settings, Instance, the Vidoc card).\n\n"
                 .to_owned();
         }
         VidocBriefing::On => {}

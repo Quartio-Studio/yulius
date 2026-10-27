@@ -405,7 +405,8 @@ impl App {
             .collect()
     }
 
-    /// `POST /api/sandboxes`: import an existing repository or create one from a template.
+    /// `POST /api/sandboxes`: import an existing repository or create one from a template, with
+    /// its Vidoc scans switched off when `vidoc` is `false` (SPEC-338 VOF-004).
     ///
     /// # Errors
     /// `Invalid` input or foreign repositories, `Forbidden` without the needed permission,
@@ -416,23 +417,32 @@ impl App {
         req: &CreateSandbox,
     ) -> AppResult<Sandbox> {
         let record = match req {
-            CreateSandbox::Import { repo } => {
+            CreateSandbox::Import { repo, vidoc } => {
                 let (owner, name) = repo
                     .trim()
                     .split_once('/')
                     .ok_or_else(|| AppError::Invalid("repo must be owner/name".into()))?;
                 // Adding it in the browser is the explicit action that starts onboarding; a token
                 // import (the CLI, a script) waits for Start onboarding (SPEC-051).
-                self.import_repository(&ctx.user, owner.trim(), name.trim(), ctx.is_browser())
-                    .await?
+                self.import_repository(
+                    &ctx.user,
+                    owner.trim(),
+                    name.trim(),
+                    ctx.is_browser(),
+                    *vidoc,
+                )
+                .await?
             }
             CreateSandbox::Create {
                 name,
                 template,
                 description,
+                vidoc,
             } => {
-                self.create_repository(ctx, name.trim(), template, description)
-                    .await?
+                let record = self
+                    .create_repository(ctx, name.trim(), template, description)
+                    .await?;
+                self.start_switched(&ctx.user, record, *vidoc).await?
             }
             CreateSandbox::Playground { name, template } => {
                 self.playground_from_template(&ctx.user, name, template)
@@ -444,6 +454,29 @@ impl App {
             .await
             .unwrap_or(AccessLevel::None);
         self.sandbox_view(&record, level).await
+    }
+
+    /// A new project's Vidoc switch as the person who added it chose (SPEC-338 VOF-004): adding it
+    /// is the right to choose; `None` and `Some(true)` leave it on.
+    ///
+    /// # Errors
+    /// Store failures.
+    async fn start_switched(
+        &self,
+        user: &UserRecord,
+        record: SandboxRecord,
+        vidoc: Option<bool>,
+    ) -> AppResult<SandboxRecord> {
+        if vidoc != Some(false) {
+            return Ok(record);
+        }
+        let actor = self.login_of(&user.id).await;
+        self.write_vidoc_switch(&actor, &record.id, false).await?;
+        self.deps
+            .store
+            .sandbox(&record.id)
+            .await?
+            .ok_or(AppError::NotFound)
     }
 
     /// Links an existing repository of the instance owner as a new sandbox (import mode,
@@ -462,6 +495,7 @@ impl App {
         owner: &str,
         name: &str,
         start_preparation: bool,
+        vidoc: Option<bool>,
     ) -> AppResult<SandboxRecord> {
         let store = &self.deps.store;
         if let Some(existing) = store.sandbox_by_repo(owner, name).await? {
@@ -472,6 +506,8 @@ impl App {
         }
         let repo = self.import_permission(user, owner, name).await?;
         let record = self.link_repository(user, owner, name, repo).await?;
+        // Before its onboarding starts, which reads the switch (SPEC-338 VOF-004).
+        let record = self.start_switched(user, record, vidoc).await?;
         if start_preparation {
             let actor = self.login_of(&user.id).await;
             if let Err(err) = self.start_onboarding(&record.id, &actor).await {

@@ -228,3 +228,22 @@ async fn me_says_whether_the_instance_has_a_vidoc_key() -> TestResult {
     assert!(!me.body.to_string().contains(KEY));
     Ok(())
 }
+
+/// VOF-001 (review round 1): a request whose profile is refused changes nothing, the switch
+/// included.
+#[tokio::test]
+async fn a_refused_profile_leaves_the_switch_as_it_was() -> TestResult {
+    let i = instance().await?;
+    let bad = json!({"preset": "standard", "integration_branch": "main", "production_branch": "main",
+        "merge": "squash", "promote": "merge_commit", "auto_promote": false, "environments": []});
+    let refused = switch(&i, json!({"vidoc": false, "profile": bad}), &i.alice).await?;
+    assert_eq!(
+        refused.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        refused.body
+    );
+    assert_eq!(shown(&i).await?, true, "the switch did not change");
+    assert!(audited(&i).await?.is_empty());
+    Ok(())
+}

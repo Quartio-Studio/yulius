@@ -231,6 +231,8 @@ SPEC-051, SPEC-247). Only Claude Code sessions are imported.
 `PATCH /api/sandboxes/{sid}` `{"vidoc": false|true}` switches the project's Vidoc scans off or on
 (SPEC-338, ADR-0229; `422` for a playground, audited `delivery.vidoc.update`); `profile.vidoc` is
 always a boolean in responses, and a `profile` update keeps the switch whatever it carries.
+`POST /api/sandboxes` import and create take `"vidoc": false` to add the project switched off,
+before its onboarding starts.
 `PATCH /api/sandboxes/{sid}` validates the profile (branch names, distinct branches, environment
 names, single-line commands ≤ 2000 bytes, `verify: command` needs a command, ≤ 8 environments) and
 relabels it: `preset` stays a named preset only while every setting equals that preset's

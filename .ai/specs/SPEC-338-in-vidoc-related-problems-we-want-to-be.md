@@ -56,7 +56,8 @@ card (the admin panel).
   keeps the stored value. A playground has no CI scan and refuses the switch. Each change is audited
   as `delivery.vidoc.update` with `on` or `off`.
 - **VOF-002 Off means nothing is scanned.** For a sandbox whose switch is off:
-  - agent runs and CI jobs get `YULIUS_VIDOC=off` in their environment;
+  - agent runs, terminals (and the Cockpit) and CI jobs get `YULIUS_VIDOC=off` in their
+    environment;
   - the scanner (`yulius security-scan`, `scripts/vidoc_scan.py`) with `YULIUS_VIDOC=off` prints
     `Security scan disabled: Vidoc is turned off for this project in Yulius; nothing was scanned.`
     and exits 0 before it reads a key or contacts Vidoc; with `--ci` it ends the job skipped
@@ -68,8 +69,10 @@ card (the admin panel).
   reports "disabled" (never a pass) and that nobody is to be asked about Vidoc's key or quota. The
   onboarding prompt of such a sandbox adds no scan rule and says why.
 - **VOF-004 Onboarding.** The "Add sandbox" dialog, when the instance has a Vidoc key
-  (`me.instance.vidoc`), offers "Scan pull requests with Vidoc" (checked); unchecked, the new
-  sandbox is switched off before anything else happens to it. A playground does not offer it.
+  (`me.instance.vidoc`), offers "Scan pull requests with Vidoc" (checked); unchecked, the create
+  request carries `"vidoc": false` (`POST /api/sandboxes`, import or create) and the server switches
+  the new sandbox off before its onboarding starts, for whoever may add it. A playground does not
+  offer it.
 - **VOF-005 Admin panel.** The Instance page's Vidoc card lists every project (not playgrounds)
   with its switch, so a superadmin turns one off or on there; the card says that a switched-off
   project scans nothing until it is turned on again.
@@ -88,7 +91,7 @@ card (the admin panel).
 ## Acceptance criteria
 
 - `PATCH /api/sandboxes/{sid}` `{"vidoc": false}` by an admin stores it, the view shows
-  `profile.vidoc: false`, a later profile update keeps it, a writer gets 403, a playground 400.
+  `profile.vidoc: false`, a later profile update keeps it, a writer gets 403, a playground 422.
 - `YULIUS_VIDOC=off python3 scripts/vidoc_scan.py` exits 0 and prints the disabled line without a
   key; with `--ci` and `YULIUS_CI_REF=pr/1` it exits `$YULIUS_CI_SKIP_CODE`.
 - A switched-off sandbox with an instance key: `ci_scans` is false (no built-in job), agent and CI

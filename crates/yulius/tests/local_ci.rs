@@ -3067,6 +3067,23 @@ async fn a_switched_off_project_scans_nothing_in_ci() -> TestResult {
         security.contains("[yulius] security scan skipped"),
         "{security}"
     );
+    // Skipped, never passed (review round 1).
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let run = overview["runs"]
+        .as_array()
+        .and_then(|runs| runs.iter().find(|r| r["sha"] == own.as_str()))
+        .ok_or("run")?;
+    let detail = f
+        .get(&format!(
+            "/api/sandboxes/s1/ci/runs/{}",
+            run["id"].as_str().ok_or("id")?
+        ))
+        .await?;
+    let job = detail["jobs"]
+        .as_array()
+        .and_then(|jobs| jobs.iter().find(|j| j["name"] == "security"))
+        .ok_or("security job")?;
+    assert_eq!(job["state"], "skipped", "{detail}");
     Ok(())
 }
 

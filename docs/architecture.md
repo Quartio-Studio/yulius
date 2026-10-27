@@ -1373,7 +1373,9 @@ Vidoc is an optional instance service, like Jev
   [decision 0229](decisions/0229-a-person-switches-a-projects-vidoc-scans-off-in-yulius.md)).
   `vidoc: false` in a sandbox's profile JSON (`delivery::vidoc_switched_on`, set by
   `PATCH /api/sandboxes/{sid}` `{"vidoc": …}` from the Vidoc card or the Add sandbox dialog)
-  switches the project off: its agent runs (`base_env`) and CI jobs (`ci_job_env`) get
+  switches the project off (the Add sandbox dialog sends `"vidoc": false` with `POST
+  /api/sandboxes`, set before onboarding starts): its agent runs (`base_env`), terminals
+  (`shell_env`) and CI jobs (`ci_job_env`) get
   `YULIUS_VIDOC=off`, on which the scanner says "disabled" and sends nothing (in CI the skip
   code); `applied_agent_secrets` leaves the instance key out, `ci_scans` adds no built-in job, and
   the briefing and onboarding prompt say it is off (`VidocBriefing::Off`).

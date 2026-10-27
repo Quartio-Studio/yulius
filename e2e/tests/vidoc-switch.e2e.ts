@@ -10,7 +10,7 @@ failOnPageErrors();
 
 type Mocked = { __yuliusMock: { sandboxes: { slug: string; profile: { vidoc?: boolean } }[] } };
 
-/** The mock's stored switch of the sandbox `slug`: `true`, `false` or `null` (never set). */
+/** The mock's stored switch of the sandbox `slug` (`null`: not read through the API yet). */
 const switchOf = (browser: Browser, slug: string) => browser.evaluate((s: string) => {
   const sandbox = (window as unknown as Mocked).__yuliusMock.sandboxes.find((sb) => sb.slug === s);
   return sandbox ? (sandbox.profile.vidoc ?? null) : 'missing';
@@ -29,7 +29,7 @@ test('the superadmin switches a project’s Vidoc scans off and on in the Vidoc 
   await expect(screen.getByText(/Vidoc scans are off for studio/)).toBeVisible();
   await expect(studio).not.toBeChecked();
   expect(await switchOf(browser, 'studio')).toBe(false);
-  expect(await switchOf(browser, 'product')).toBe(null);
+  expect(await switchOf(browser, 'product')).toBe(true);
 
   await studio.click();
   await expect(screen.getByText(/Vidoc scans are on for studio/)).toBeVisible();
@@ -60,7 +60,7 @@ test('a project imported as offered keeps scanning, and without a key nothing is
   await screen.getByRole('radio', /Quartio-Studio\/website/).check();
   await dialog.getByRole('button', 'Import').click();
   await expect(dialog).toBeHidden();
-  expect(await switchOf(browser, 'website')).toBe(null);
+  expect(await switchOf(browser, 'website')).toBe(true);
 
   await app.open(mock('/'));
   await screen.getByRole('button', 'Import repository').click();

@@ -14,7 +14,6 @@ import { openAttachment } from './filedrop.js';
 import { inlineCount } from './promptparts.js';
 import { FILE_MARK, FILE_MARK_END, placeFiles, withoutMarks } from './promptinput.js';
 import { folderDropZone } from './playground.js';
-import { setVidocScans } from './instancekeys.js';
 
 // ---------------------------------------------------------------- task menu
 
@@ -746,7 +745,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
   const vidocField = () => (vidocOffered
     ? h('div', { class: 'field' },
       h('label', { class: 'check' }, scanBox, h('span', null, 'Scan pull requests with Vidoc')),
-      h('p', { class: 'muted xs', id: 'sb-vidoc-hint' }, 'Agents and CI send each change to Vidoc’s security scan. Uncheck it to leave this project unscanned, for example while the Vidoc key’s quota is used up; switch it later in Settings → Instance.'))
+      h('p', { class: 'muted xs', id: 'sb-vidoc-hint' }, 'Agents and CI send each change to Vidoc’s security scan. Uncheck it to leave this project unscanned, for example while the Vidoc key’s quota is used up; an instance superadmin can switch it later in Settings → Instance.'))
     : null);
 
   const updateSubmit = () => {
@@ -863,17 +862,16 @@ export function openSandboxDialog(ctx, mode = 'import') {
     actions: [
       { label: 'Cancel', value: false },
       { label: 'Import', kind: 'primary', ref: (b) => { submitButton = b; }, run: async () => {
+        // SPEC-338 VOF-004: the choice travels with the request, so the server switches the
+        // project off before its onboarding starts.
+        const vidoc = vidocOffered && !scanBox.checked ? { vidoc: false } : {};
         const payload = tabImport.checked
-          ? { mode: 'import', repo: selectedRepo }
+          ? { mode: 'import', repo: selectedRepo, ...vidoc }
           : tabPlayground.checked
             ? { mode: 'playground', name: nameInput.value.trim(), template: templateValue }
-            : { mode: 'create', name: nameInput.value.trim(), template: templateValue, description: descInput.value.trim() };
-        let sandbox = await ctx.api.post('/api/sandboxes', payload);
+            : { mode: 'create', name: nameInput.value.trim(), template: templateValue, description: descInput.value.trim(), ...vidoc };
+        const sandbox = await ctx.api.post('/api/sandboxes', payload);
         ctx.store.upsertSandbox(sandbox);
-        // Before anything runs in it (its onboarding task starts later, SPEC-097).
-        if (vidocOffered && !tabPlayground.checked && !scanBox.checked) {
-          sandbox = (await setVidocScans(ctx, sandbox, false, { quiet: true })) || sandbox;
-        }
         const preparing = sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing';
         const verb = tabImport.checked ? 'Imported' : tabPlayground.checked ? 'Started the playground' : 'Created';
         toast(`${verb} ${sandbox.name}${preparing ? ' — it needs preparation before tasks can start' : ''}`, { kind: 'ok' });

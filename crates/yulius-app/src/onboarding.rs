@@ -183,8 +183,8 @@ pub fn security_setup(vidoc: VidocBriefing) -> &'static str {
         VidocBriefing::Off => {
             "Security scan: Vidoc is turned off for this project in Yulius, so \
          Yulius CI runs no security scan; add none, and say in your summary that the Vidoc scan \
-         was skipped (turned off for this project): once a person turns it on again (Settings, \
-         Instance), Yulius CI runs it by itself and a task following skill infra-bootstrap adds \
+         was skipped (turned off for this project): once an instance superadmin switches it on \
+         again (Settings, Instance, the Vidoc card), Yulius CI runs it by itself and a task following skill infra-bootstrap adds \
          the AGENTS.md rule."
         }
     }

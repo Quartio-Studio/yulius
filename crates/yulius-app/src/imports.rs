@@ -346,7 +346,10 @@ impl App {
                 let (record, _) = self.require(&ctx.user, &existing.id, Action::Work).await?;
                 Ok(record)
             }
-            None => self.import_repository(&ctx.user, owner, name, false).await,
+            None => {
+                self.import_repository(&ctx.user, owner, name, false, None)
+                    .await
+            }
         }
     }
 

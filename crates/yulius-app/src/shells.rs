@@ -545,6 +545,11 @@ impl App {
             // ignore it; a user's own PROMPT_COMMAND replaces it.
             ("PROMPT_COMMAND".into(), OSC7_PROMPT_COMMAND.into()),
         ]);
+        // A project whose Vidoc scans a person switched off: a scan here says "disabled" too
+        // (SPEC-338 VOF-002).
+        if !crate::delivery::vidoc_switched_on(sandbox) {
+            env.push(("YULIUS_VIDOC".into(), "off".into()));
+        }
         env.extend(self.agent_resource_env(cwd));
         env
     }
