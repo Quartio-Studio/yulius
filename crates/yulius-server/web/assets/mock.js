@@ -4394,6 +4394,14 @@ const GROUP_CALLS = [
   `  ${dim('⎿')}  ${bold('Read')}(src/api/tax.rs)`,
 ];
 
+// A URL longer than a row (?wrapurl=1, SPEC-339): three rows of a 140-column terminal, eleven of
+// a 40-column one.
+const WRAPPED_LEAD = 'Sign in at ';
+const WRAPPED_URL = 'https://example.com/admin/connectors?tab=all&page=2&sort=name&filter=active&view=compact'
+  + '&columns=name,owner,status,updated&return=%2Fadmin%2Fconnectors%2Fsettings%2Fsecurity%2Fsigning-keys'
+  + '&hint=rotate-the-signing-key-before-the-next-deploy&after=%2Fadmin%2Fdeploys%2Fproduction%2Fchecklist'
+  + '&note=the-old-key-stays-valid-for-twenty-four-hours-after-the-rotation&state=done';
+
 /** Persistent fake PTY for one task: a scroll region above a native-looking footer. */
 class TermSession {
   constructor(db, task) {
@@ -4423,6 +4431,8 @@ class TermSession {
     // its classic renderer after the updates that froze and thawed it: the main screen without
     // mouse reporting, and a viewer gets only the visible screen (SPEC-326).
     this.classic = params.get('classic') === '1';
+    // ?wrapurl=1: a URL longer than a row, cut as Claude Code cuts it (SPEC-339, #940).
+    this.wrapUrl = params.get('wrapurl') === '1';
     this.script = SCRIPT_CLAUDE;
     this.scriptIndex = 0;
     this.timer = null;
@@ -4464,6 +4474,20 @@ class TermSession {
       this.lines.push(GROUP_CLOSED);
       for (const line of this.script.slice(0, 6)) this.lines.push(line);
       this.scriptIndex = 6;
+      if (this.wrapUrl) {
+        // Claude Code lays out its rows itself: a URL longer than a row is cut at the right edge and
+        // continued on the next rows at the text's indent, after cursor moves, not soft wraps
+        // (SPEC-339). Cut when drawn, for the session's width; twelve rows, enough down to 36
+        // columns (unused ones blank).
+        const cut = (cols) => {
+          const first = Math.max(1, cols - 2 - WRAPPED_LEAD.length);
+          const rest = Math.max(1, cols - 2);
+          const rows = [`${c(255, '⏺')} ${WRAPPED_LEAD}${c(39, WRAPPED_URL.slice(0, first))}`];
+          for (let at = first; at < WRAPPED_URL.length; at += rest) rows.push(`  ${c(39, WRAPPED_URL.slice(at, at + rest))}`);
+          return rows;
+        };
+        for (let i = 0; i < 12; i += 1) this.lines.push((cols) => cut(cols)[i] || '');
+      }
       // File references in every form the terminal links to the editor (F 2026-10-10) — a bare
       // path, `path:line:col` in backticks, a name in parentheses, an absolute path with #L, an OSC 8
       // file:// hyperlink — and some it must not: a missing file, a path above the worktree, .git,
@@ -4502,10 +4526,15 @@ class TermSession {
     return Math.max(3, this.rows - 5);
   }
 
+  /** A transcript line as drawn: a line may be a function of the width (?wrapurl=1). */
+  drawn(line) {
+    return typeof line === 'function' ? line(this.cols) : line;
+  }
+
   snapshot() {
     const bottom = this.regionBottom();
     const end = this.lines.length - this.scroll;
-    const visible = this.lines.slice(Math.max(0, end - bottom), end);
+    const visible = this.lines.slice(Math.max(0, end - bottom), end).map((line) => this.drawn(line));
     while (visible.length < bottom) visible.unshift(''); // bottom-align like a scrolled TUI
     const f = this.footer();
     // Like Claude Code 2.1.292: full screen (alternate buffer) with mouse reporting, so the wheel
@@ -4651,7 +4680,7 @@ class TermSession {
     this.pressed = null;
     const bottom = this.regionBottom();
     if (!press || press[1] !== row || press[0] === col || row < 1 || row > bottom) return;
-    const line = this.lines[this.lines.length - this.scroll - bottom + row - 1];
+    const line = this.drawn(this.lines[this.lines.length - this.scroll - bottom + row - 1]);
     if (!line) return;
     const text = line.replace(/\x1b\[[0-9;]*m/g, '').slice(Math.min(press[0], col) - 1, Math.max(press[0], col)).trim();
     const bytes = new TextEncoder().encode(text);

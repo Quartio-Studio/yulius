@@ -35,7 +35,7 @@ import { TerminalSocket, isEndedStatus, CLOSE_REVOKED } from './termsocket.js';
 import { createMouseFilter } from './mousefilter.js';
 import { clipboardKeyAction, osc52Text } from './termkeys.js';
 import { isTyping } from './typing.js';
-import { createFileChecker, createFileLinkProvider, relativeCwd, trackOscFileLinks } from './termlinks.js';
+import { createContinuedUrlProvider, createFileChecker, createFileLinkProvider, relativeCwd, trackOscFileLinks } from './termlinks.js';
 import { h, icon, setChildren, openMenu, keepFocus } from './dom.js';
 import { terminalColors, onThemeChange, token, isPhone, px } from './theme.js';
 import { readJson } from './store.js';
@@ -170,6 +170,9 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
+  // A URL Claude Code cut at the right edge and continued on the next row is one link (SPEC-339):
+  // registered first, so its link wins over the addon's link to the first row alone.
+  term.registerLinkProvider(createContinuedUrlProvider(term, { open: (uri, event) => onLink && onLink(uri, event) }));
   term.loadAddon(new WebLinksAddon((event, uri) => onLink && onLink(uri, event)));
 
   let state = { can_write: false, controller: false, cols: null, rows: null, status: null };
