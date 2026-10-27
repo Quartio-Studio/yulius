@@ -2646,6 +2646,39 @@ async fn task_review_shows_changes_and_commits() -> TestResult {
     Ok(())
 }
 
+/// #943 (SPEC-343 WTG-001): the Git overview says when a task's worktree is gone, exactly when
+/// its changes can no longer be read, so the Git page does not offer them.
+#[tokio::test]
+async fn git_overview_says_when_a_tasks_worktree_is_gone() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+
+    let page = f
+        .req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
+        .await?;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert_eq!(page.body["tasks"][0]["worktree_gone"], false, "{}", page.body);
+
+    std::fs::remove_dir_all(&wt)?;
+    let page = f
+        .req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
+        .await?;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    let task = &page.body["tasks"][0];
+    assert_eq!(task["branch"], "feat/1-checkout-api");
+    assert_eq!(task["worktree_gone"], true, "{}", page.body);
+    // The branch is still listed with its facts; only the changes view is gone.
+    assert_eq!(task["files_changed"], 1);
+    let changes = f
+        .req(Method::GET, "/api/tasks/t1/changes", None, &f.rita)
+        .await?;
+    assert_eq!(changes.status, StatusCode::CONFLICT, "{}", changes.body);
+    Ok(())
+}
+
 /// #111 (`F 2026-10-10`): the GitHub App may not read every check source. What it can read
 /// counts; checks that can't be read never count as passed; the missing permission is said once,
 /// in plain words, with the App's permission page for instance administrators only; GitHub
