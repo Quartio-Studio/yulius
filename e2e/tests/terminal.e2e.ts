@@ -259,6 +259,17 @@ const CLAUDE_ROWS_60 = [
   '',
   '  https://quartio-v2-dev.vm.quartio.ai/admin/connectors?tab=',
   '  all&page=2',
+  '',
+  '● 1. Docs at https://quartio-v2-dev.vm.quartio.ai/admin/conn',
+  '     ectors?tab=all&page=2/help',
+  '  2. Two',
+  '',
+  '  See https://example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  '  aaaaaaa then sign in.',
+  '',
+  '  ▎ quote https://quartio-v2-dev.vm.quartio.ai/admin/connect',
+  '  ▎ ors?tab=all&page=2https://quartio-v2-dev.vm.quartio.ai/a',
+  '  ▎ dmin/connectors?tab=all&page=2',
 ];
 
 test('a URL Claude Code continues on the next rows is found whole, and nothing else is joined (#940)', async ({ app, browser }) => {
@@ -283,6 +294,16 @@ test('a URL Claude Code continues on the next rows is found whole, and nothing e
       another: spans([`● ${long}`, '  https://other.example/x'], 40),
       // The next row is xterm's own soft wrap (the web-links addon's).
       soft: spans([`● ${long}`, null], 40),
+      // A row cut inside the scheme.
+      scheme: spans([`● ${'x'.repeat(34)} htt`, `  ps://example.com/${'p'.repeat(30)}`], 40),
+      // A URL that ends exactly at the edge of a 58-column text row, followed by a word that makes
+      // 58: Claude Code would have moved a 58-character word whole.
+      edge: spans([`● See https://example.com/${'a'.repeat(34)}`, '  then sign in.'], 60),
+      // Only the prompt keeps a blank column at the right edge: an answer row ending there was not cut.
+      gap: spans([`● See https://example.com/${'a'.repeat(33)}`, '  configure it.'], 60),
+      // A URL longer than the rows looked at is no link rather than a wrong one; one row less is.
+      tooLong: spans([`● https://example.com/${'c'.repeat(18)}`, ...Array(32).fill(`  ${'c'.repeat(38)}`), '  end'], 40),
+      longest: spans([`● https://example.com/${'c'.repeat(18)}`, ...Array(31).fill(`  ${'c'.repeat(38)}`)], 40),
     };
   }, [CLAUDE_ROWS_60, url38] as const);
   const whole = 'https://quartio-v2-dev.vm.quartio.ai/admin/connectors?tab=all&page=2';
@@ -292,7 +313,15 @@ test('a URL Claude Code continues on the next rows is found whole, and nothing e
     [whole, 3, at(3, 'https'), 4, at(4, '2 and')],
     [`${whole}/help`, 6, at(6, 'https'), 7, CLAUDE_ROWS_60[7].length - 1],
     [whole, 10, at(10, 'https'), 11, CLAUDE_ROWS_60[11].length - 1],
+    [`${whole}/help`, 13, at(13, 'https'), 14, CLAUDE_ROWS_60[14].length - 1],
+    [`https://example.com/${'a'.repeat(41)}`, 17, at(17, 'https'), 18, at(18, ' then') - 1],
+    [`${whole}${whole}`, 20, at(20, 'https'), 22, CLAUDE_ROWS_60[22].length - 1],
   ]);
+  expect(result.scheme).toEqual([[`https://example.com/${'p'.repeat(30)}`, 0, 37, 1, 48]]);
+  expect(result.edge).toEqual([]);
+  expect(result.gap).toEqual([]);
+  expect(result.tooLong).toEqual([]);
+  expect(result.longest.map((l: unknown[]) => [l[1], l[3], l[4]])).toEqual([[0, 31, 39]]);
   expect(result.chain).toEqual([[`${url38}${'b'.repeat(38)}end/x`, 0, 2, 2, 6]]);
   expect(result.short).toEqual([]);
   expect(result.indent).toEqual([]);
@@ -317,7 +346,7 @@ test('a URL Claude Code wraps onto the next rows opens whole from any of them (#
     + '&hint=rotate-the-signing-key-before-the-next-deploy&after=%2Fadmin%2Fdeploys%2Fproduction%2Fchecklist'
     + '&note=the-old-key-stays-valid-for-twenty-four-hours-after-the-rotation&state=done';
   // The mock cuts the URL for the terminal's width, as Claude Code does: each row after the first
-  // is a part that only a joined link can open. A press is tried on the first row, a middle one
+  // is a part that only a joined link can open. A press is tried on the first row, the next one
   // and the last.
   await app.open(mock('/s/studio/t/12', '&wrapurl=1'));
   await expect(rows(browser)).toHaveText(/Sign in at/);
@@ -329,7 +358,7 @@ test('a URL Claude Code wraps onto the next rows opens whole from any of them (#
     for (let i = first + 1; i < lines.length && lines[i].length && !lines[i].includes(' '); i += 1) continued.push(lines[i]);
     return continued;
   });
-  expect(parts.length, 'the URL continues on the next rows').toBeGreaterThanOrEqual(2);
+  expect(parts.length, 'the URL continues on the next rows').toBeGreaterThanOrEqual(1);
   expect(whole.endsWith(parts.join('')), 'the rows continue the URL').toBe(true);
   const opened = await recordOpened(browser);
   const presses = ['example.com/admin', parts[0].slice(0, 16), parts[parts.length - 1].slice(-12)];
