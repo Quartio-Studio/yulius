@@ -25,7 +25,8 @@ use nix::sys::stat::{Mode, SFlag, fstatat, mkdirat};
 use nix::unistd::{UnlinkatFlags, unlinkat};
 
 use yulius_contracts::api::files::{
-    CreateEntry, DirListing, FileContent, FileEntry, FilePresence, FileWritten, WriteFile,
+    CreateEntry, DirListing, FileContent, FileEntry, FilePresence, FileRoot, FileRoots,
+    FileWritten, WriteFile,
 };
 use yulius_contracts::events::UiEvent;
 use yulius_domain::ids::{SandboxId, TaskId};
@@ -340,6 +341,35 @@ pub(crate) fn replace_in(
     written
 }
 
+/// Most bytes of `.git/HEAD` read: `ref: refs/heads/<branch>` fits well within it.
+const MAX_HEAD_BYTES: u64 = 1024;
+
+/// The branch `repo`'s `HEAD` names, if it names one. Its `.git` must stay inside `anchor` (a
+/// contained shell is root in its sandbox and could plant a link), and `HEAD` is opened without
+/// following a link or waiting on a pipe.
+fn checked_out_branch(anchor: &Path, repo: &Path) -> Option<String> {
+    use std::io::Read as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let git = std::fs::canonicalize(repo.join(".git")).ok()?;
+    if !git.starts_with(anchor) || !git.is_dir() {
+        return None;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
+        .open(git.join("HEAD"))
+        .ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(MAX_HEAD_BYTES).read_to_string(&mut text).ok()?;
+    text.trim()
+        .strip_prefix("ref: refs/heads/")
+        .filter(|branch| !branch.is_empty())
+        .map(str::to_owned)
+}
+
 /// A SHA-256 as the files API writes it: 64 lowercase hex digits.
 fn is_sha256_hex(sha: &str) -> bool {
     sha.len() == 64
@@ -386,6 +416,52 @@ impl App {
             ));
         }
         Ok(worktree)
+    }
+
+    /// The folders a write user of `sandbox` can open in the editor (SPEC-340 EWT-001): the
+    /// sandbox repository with the branch its `HEAD` names, then every task worktree that is on
+    /// disk inside the sandbox directory, newest task first, writable for the task's owner only.
+    ///
+    /// # Errors
+    /// Access errors (`Work` on the sandbox), store failures.
+    pub async fn files_roots(&self, ctx: &AuthContext, sandbox: &str) -> AppResult<FileRoots> {
+        let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
+        let (record, _) = self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        let mut tasks = self.deps.store.tasks(&record.id, false).await?;
+        tasks.extend(self.deps.store.tasks(&record.id, true).await?);
+        tasks.sort_by(|a, b| b.number.cmp(&a.number));
+        let mut roots = Vec::new();
+        let Ok(anchor) = std::fs::canonicalize(self.sandbox_dir(&record.id)) else {
+            return Ok(FileRoots { roots });
+        };
+        let repo = self.sandbox_repo(&record.id);
+        if repo.is_dir() {
+            roots.push(FileRoot {
+                root: "sandbox".into(),
+                branch: checked_out_branch(&anchor, &repo),
+                task_number: None,
+                task_title: None,
+                writable: true,
+            });
+        }
+        for task in tasks {
+            let Some(path) = task.worktree_path.as_deref() else {
+                continue;
+            };
+            // As `sandbox_worktree`: only a directory inside the sandbox is the task's folder.
+            match std::fs::canonicalize(path) {
+                Ok(worktree) if worktree.starts_with(&anchor) && worktree.is_dir() => {}
+                _ => continue,
+            }
+            roots.push(FileRoot {
+                root: format!("task:{}", task.id),
+                branch: task.branch.clone(),
+                task_number: Some(task.number),
+                task_title: Some(task.title.clone()),
+                writable: task.owner == ctx.user.id,
+            });
+        }
+        Ok(FileRoots { roots })
     }
 
     /// Resolves `root` and `path` for a write user of `sandbox`; to `write` into a task's

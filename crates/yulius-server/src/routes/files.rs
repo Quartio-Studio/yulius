@@ -6,7 +6,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use yulius_contracts::api::files::{
-    CreateEntry, DirListing, FileEntry, FilePresence, FileWritten, WriteFile,
+    CreateEntry, DirListing, FileEntry, FilePresence, FileRoots, FileWritten, WriteFile,
 };
 
 use crate::AppState;
@@ -34,6 +34,15 @@ pub async fn list(
         app.files_list(&ctx, &sid, q.root.as_deref(), &q.path)
             .await?,
     ))
+}
+
+/// The folders the editor can open, each with its branch (SPEC-340 EWT-001).
+pub async fn roots(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+) -> ApiResult<Json<FileRoots>> {
+    Ok(Json(app.files_roots(&ctx, &sid).await?))
 }
 
 pub async fn read(
