@@ -312,9 +312,22 @@ pub struct BriefingInput<'a> {
     pub isolated: bool,
     /// The isolated sandbox has a Docker engine of its own (SPEC-187, ADR-0151).
     pub docker: bool,
+    /// What the Vidoc scan is for this project (SPEC-195 VIB-001, SPEC-338 VOF-003).
+    pub vidoc: VidocBriefing,
+}
+
+/// What a project's agents are told about the Vidoc security scan.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VidocBriefing {
+    /// The instance has no Vidoc key: nothing is said (a project's own key still scans).
+    #[default]
+    Absent,
     /// The instance has a Vidoc key: `yulius security-scan` works here and infra bootstrap adds
     /// the scan (SPEC-195 VIB-001).
-    pub vidoc: bool,
+    On,
+    /// A person switched this project's Vidoc scans off in Yulius (SPEC-338 VOF-001): the scan
+    /// says "disabled" and nobody is asked about the key or its quota.
+    Off,
 }
 
 fn floor_boundary(text: &str, max: usize) -> usize {
@@ -854,10 +867,19 @@ fn containers(input: &BriefingInput<'_>) -> String {
 
 /// The security scan, when the instance has a Vidoc key (SPEC-195 VIB-001, SPEC-217 VDP-002):
 /// what it does and fails on, the agent's call on low findings, and that CI runs it built in;
-/// nothing without a key.
+/// nothing without a key; that it is off when a person switched it off (SPEC-338 VOF-003).
 fn security_scan(input: &BriefingInput<'_>) -> String {
-    if !input.vidoc {
-        return String::new();
+    match input.vidoc {
+        VidocBriefing::Absent => return String::new(),
+        VidocBriefing::Off => {
+            return "## Security scan\n\nVidoc is turned off for this project in Yulius: \
+                    `yulius security-scan` prints \"Security scan disabled\" and sends nothing, \
+                    and CI runs no scan. Report it as disabled, never as passed, and do not ask \
+                    anyone about Vidoc's key or quota: a person turns it on again (Settings, \
+                    Instance).\n\n"
+                .to_owned();
+        }
+        VidocBriefing::On => {}
     }
     "## Security scan\n\nThis instance has a Vidoc key: `yulius security-scan` sends the files your \
      branch changed (`--all`: the whole repository) to Vidoc's vidoc-1. It exits 1 on critical \
@@ -1349,7 +1371,7 @@ mod tests {
             playground: false,
             isolated: false,
             docker: false,
-            vidoc: false,
+            vidoc: VidocBriefing::Absent,
         })
     }
 
@@ -1692,7 +1714,7 @@ mod tests {
             &BriefingInput {
                 isolated: true,
                 docker: true,
-                vidoc: true,
+                vidoc: VidocBriefing::On,
                 ..input.clone()
             },
             DEFAULT_BUDGET_BYTES,
@@ -2103,7 +2125,7 @@ mod tests {
         let layout = DocsLayout::default();
         let with = build_briefing(
             &BriefingInput {
-                vidoc: true,
+                vidoc: VidocBriefing::On,
                 ..base(&profile, &layout)?
             },
             DEFAULT_BUDGET_BYTES,
@@ -2120,13 +2142,44 @@ mod tests {
             assert!(with.contains(present), "{present} not in {with}");
         }
         let section = security_scan(&BriefingInput {
-            vidoc: true,
+            vidoc: VidocBriefing::On,
             ..base(&profile, &layout)?
         });
         assert!(section.len() <= 480, "{} bytes: {section}", section.len());
         let without = build_briefing(&base(&profile, &layout)?, DEFAULT_BUDGET_BYTES);
         assert!(!without.contains("## Security scan"), "{without}");
         assert!(!without.contains("security-scan"), "{without}");
+        Ok(())
+    }
+
+    /// SPEC-338 VOF-003: a project whose Vidoc scans a person switched off is told so, that the
+    /// scan reports "disabled" (never a pass) and not to ask anyone about Vidoc's key or quota.
+    #[test]
+    fn a_switched_off_project_is_told_the_scan_is_disabled() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout::default();
+        let off = build_briefing(
+            &BriefingInput {
+                vidoc: VidocBriefing::Off,
+                ..base(&profile, &layout)?
+            },
+            DEFAULT_BUDGET_BYTES,
+        );
+        for present in [
+            "## Security scan",
+            "Vidoc is turned off for this project in Yulius",
+            "Security scan disabled",
+            "never as passed",
+            "do not ask anyone about Vidoc's key or quota",
+        ] {
+            assert!(off.contains(present), "{present} not in {off}");
+        }
+        assert!(!off.contains("exits 1 on critical"), "{off}");
+        let section = security_scan(&BriefingInput {
+            vidoc: VidocBriefing::Off,
+            ..base(&profile, &layout)?
+        });
+        assert!(section.len() <= 480, "{} bytes: {section}", section.len());
         Ok(())
     }
 

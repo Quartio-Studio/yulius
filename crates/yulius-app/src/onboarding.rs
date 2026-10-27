@@ -22,6 +22,7 @@ use std::sync::Arc;
 
 use yulius_contracts::api::sandboxes::{OnboardingPlan, Profile, Sandbox};
 use yulius_contracts::import::{OnboardingStatus, OnboardingTask};
+use yulius_domain::briefing::VidocBriefing;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::Action;
@@ -153,11 +154,13 @@ Only a credential or machine nobody gave: ask with needs_you and go on.";
 
 /// The security scan at onboarding (SPEC-195 VIB-002, SPEC-217 VDP-002), skill infra-bootstrap:
 /// with an instance Vidoc key, the rule to scan before delivery (Yulius CI runs the built-in
-/// `security` job by itself); without one, nothing, said in the summary.
+/// `security` job by itself); without one, or switched off for the project (SPEC-338 VOF-003),
+/// nothing, said in the summary.
 #[must_use]
-pub fn security_setup(vidoc: bool) -> &'static str {
-    if vidoc {
-        "Security scan, skill infra-bootstrap: this instance has a Vidoc key, so Yulius CI runs \
+pub fn security_setup(vidoc: VidocBriefing) -> &'static str {
+    match vidoc {
+        VidocBriefing::On => {
+            "Security scan, skill infra-bootstrap: this instance has a Vidoc key, so Yulius CI runs \
          Vidoc's vidoc-1 scan on every pull request as a built-in `security` job (`yulius \
          security-scan --ci`, granted `VIDOC_API_KEY`); add no job of your own. It fails on \
          critical or high findings in the files a pull request changed and on medium findings in \
@@ -170,11 +173,20 @@ pub fn security_setup(vidoc: bool) -> &'static str {
          reviewer agrees. Say in AGENTS.md that the scan \
          sends the changed code to Vidoc. Do not scan the existing code here: `yulius \
          security-scan --all` is a broad audit for its own task."
-    } else {
-        "Security scan: there is no Vidoc key on this instance, so Yulius CI runs no security \
+        }
+        VidocBriefing::Absent => {
+            "Security scan: there is no Vidoc key on this instance, so Yulius CI runs no security \
          scan; add none, and say in your summary that the Vidoc scan was skipped (no Vidoc key on \
          this instance): once a superadmin adds one in Settings, Instance, Yulius CI runs it by \
          itself and a task following skill infra-bootstrap adds the AGENTS.md rule."
+        }
+        VidocBriefing::Off => {
+            "Security scan: Vidoc is turned off for this project in Yulius, so \
+         Yulius CI runs no security scan; add none, and say in your summary that the Vidoc scan \
+         was skipped (turned off for this project): once a person turns it on again (Settings, \
+         Instance), Yulius CI runs it by itself and a task following skill infra-bootstrap adds \
+         the AGENTS.md rule."
+        }
     }
 }
 
@@ -571,7 +583,7 @@ impl App {
         } else {
             let mut prompt = onboarding_prompt(&repo, &profile, report);
             prompt.push_str("\n\n");
-            prompt.push_str(security_setup(self.vidoc_key().is_some()));
+            prompt.push_str(security_setup(self.vidoc_briefing(sandbox)));
             prompt
         };
         if let Some(warning) = self.production_branch_warning(sandbox).await {
@@ -1883,7 +1895,7 @@ mod tests {
     #[test]
     fn the_bootstrap_adds_the_security_scan_only_with_a_vidoc_key()
     -> Result<(), Box<dyn std::error::Error>> {
-        let with = security_setup(true);
+        let with = security_setup(VidocBriefing::On);
         for wording in [
             "this instance has a Vidoc key",
             "built-in `security` job (`yulius security-scan --ci`",
@@ -1896,12 +1908,20 @@ mod tests {
         ] {
             assert!(with.contains(wording), "{wording}");
         }
-        let without = security_setup(false);
+        let without = security_setup(VidocBriefing::Absent);
         assert!(
             without.contains("no Vidoc key on this instance"),
             "{without}"
         );
         assert!(!without.contains("security-scan --ci"), "{without}");
+        // SPEC-338 VOF-003: switched off for this project, it adds no scan rule and says why.
+        let off = security_setup(VidocBriefing::Off);
+        assert!(
+            off.contains("Vidoc is turned off for this project in Yulius"),
+            "{off}"
+        );
+        assert!(!off.contains("security-scan --ci"), "{off}");
+        assert!(!off.contains("Add the AGENTS.md rule"), "{off}");
         let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
         let skill = crate::skills::pack::PACKS
             .iter()

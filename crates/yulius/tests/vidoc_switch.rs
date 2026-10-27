@@ -79,7 +79,14 @@ async fn switch(
 }
 
 async fn shown(i: &Instance) -> Result<Value, Box<dyn std::error::Error>> {
-    let r = call(&i.h.router, Method::GET, "/api/sandboxes/s1", None, &i.alice).await?;
+    let r = call(
+        &i.h.router,
+        Method::GET,
+        "/api/sandboxes/s1",
+        None,
+        &i.alice,
+    )
+    .await?;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     Ok(r.body["profile"]["vidoc"].clone())
 }
@@ -126,9 +133,16 @@ async fn an_admin_turns_a_projects_vidoc_scans_off_and_on() -> TestResult {
     let on = switch(&i, json!({"vidoc": true}), &i.admin).await?;
     assert_eq!(on.status, StatusCode::OK, "{}", on.body);
     assert_eq!(shown(&i).await?, true);
-    assert_eq!(on.body["profile"]["require_checks"], false, "the profile stays");
+    assert_eq!(
+        on.body["profile"]["require_checks"], false,
+        "the profile stays"
+    );
 
-    assert_eq!(audited(&i).await?, ["superadmin on", "alice off"], "newest first");
+    assert_eq!(
+        audited(&i).await?,
+        ["superadmin on", "alice off"],
+        "newest first"
+    );
     Ok(())
 }
 
@@ -182,5 +196,23 @@ async fn a_switched_off_project_does_not_get_the_instance_key() -> TestResult {
     switch(&i, json!({"vidoc": true}), &i.alice).await?;
     let client = app.egress_client(TOKEN).await.ok_or("client")?;
     assert!(app.egress_intercepts(&client, VIDOC_HOST, 443).await);
+    Ok(())
+}
+
+/// VOF-003: the briefing and the onboarding prompt say "off" for a switched-off project, and "on"
+/// with the instance key once it is switched on again.
+#[tokio::test]
+async fn agents_are_told_when_a_project_is_switched_off() -> TestResult {
+    use yulius_domain::briefing::VidocBriefing;
+    let i = instance().await?;
+    let s1 = SandboxId::parse("s1")?;
+    let record = i.h.store.sandbox(&s1).await?.ok_or("s1")?;
+    assert_eq!(i.h.app.vidoc_briefing(&record), VidocBriefing::On);
+    switch(&i, json!({"vidoc": false}), &i.alice).await?;
+    let record = i.h.store.sandbox(&s1).await?.ok_or("s1")?;
+    assert_eq!(i.h.app.vidoc_briefing(&record), VidocBriefing::Off);
+    switch(&i, json!({"vidoc": true}), &i.alice).await?;
+    let record = i.h.store.sandbox(&s1).await?.ok_or("s1")?;
+    assert_eq!(i.h.app.vidoc_briefing(&record), VidocBriefing::On);
     Ok(())
 }
