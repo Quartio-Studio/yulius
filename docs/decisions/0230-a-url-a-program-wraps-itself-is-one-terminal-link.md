@@ -21,7 +21,8 @@ fragment, and the rest was plain text.
   whole URL. Every other URL is still the addon's.
 - A row continues into the next only if all of these hold:
   - it ends in the last column, or in one of the last 2 in the prompt, whose rows all pad one (a
-    row is the prompt's when walking up through blank and indented unmarked rows reaches `❯`);
+    row is the prompt's when walking up through blank and indented unmarked rows reaches `❯`, not a
+    menu's `❯ 1.`);
   - the next row is not soft-wrapped;
   - the next row's text starts where the row's text starts: after one marker such as `❯`, `●`,
     `⏺`, `-`, `⎿` or `▎` and a list number (`1.`), under blanks or under a repeated quote bar;
@@ -51,5 +52,8 @@ fragment, and the rest was plain text.
 - A URL that genuinely ends at the edge, followed by a word long enough that the two exceed the
   row, is joined: that screen looks the same as a longer URL cut there.
 - A URL longer than 32 rows is not linked at all, rather than linked to a cut address.
+- A shell whose prompt also draws `❯` (starship, pure) has the indented rows under it treated as
+  prompt rows: a URL there that ends one column short of the edge, followed by a long enough
+  word at the same indent, is joined. Shell output rarely starts indented.
 - If Claude Code changes its layout, the rules in `findContinuedUrls` and its e2e test, which
   replays recorded rows, change together.

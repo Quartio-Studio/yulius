@@ -361,8 +361,8 @@ function skipBlanks(cells, from) {
 }
 
 /**
- * Where a row's text starts, and its marker: after the indent, one marker (`❯`, `●`, `⏺`, `-`,
- * `⎿`, `▎`) and its spaces, then a list number (`1.`) and its spaces.
+ * Where a row's text starts, its marker and whether a list number follows: after the indent, one
+ * marker (`❯`, `●`, `⏺`, `-`, `⎿`, `▎`) and its spaces, then a list number (`1.`) and its spaces.
  */
 function textStart(cells) {
   let start = skipBlanks(cells, 0);
@@ -377,10 +377,9 @@ function textStart(cells) {
   }
   let digits = start;
   while (/^[0-9]$/.test(cells[digits] || '')) digits += 1;
-  if (digits > start && digits - start <= 3 && (cells[digits] === '.' || cells[digits] === ')') && cells[digits + 1] === ' ') {
-    start = skipBlanks(cells, digits + 1);
-  }
-  return { start, marker };
+  const numbered = digits > start && digits - start <= 3 && (cells[digits] === '.' || cells[digits] === ')') && cells[digits + 1] === ' ';
+  if (numbered) start = skipBlanks(cells, digits + 1);
+  return { start, marker, numbered };
 }
 
 /**
@@ -412,15 +411,15 @@ function continuation(a, b, cols, gap) {
  * Blank columns a run starting at row `first` may leave at the right edge: 1 in Claude Code's
  * prompt, whose rows all pad one, else 0. The prompt is found by walking up through blank rows and
  * rows of indented text without a marker to the row that has one: `❯` is the prompt; an answer
- * (`●`), a list item, a tool's output or text at the first column is not.
+ * (`●`), a menu's cursor (`❯ 1.`), another marker, or text at the first column is not.
  */
 function promptGap(grid, first) {
   for (let row = first; row >= 0 && row >= first - PROMPT_LOOKBACK; row -= 1) {
     const cells = grid[row];
     if (!cells) return 0;
     if (lastFilled(cells) < 0) continue; // a blank row
-    const { marker } = textStart(cells);
-    if (marker) return marker === '❯' ? 1 : 0;
+    const { marker, numbered } = textStart(cells);
+    if (marker) return marker === '❯' && !numbered ? 1 : 0;
     if (skipBlanks(cells, 0) < 2) return 0;
   }
   return 0;

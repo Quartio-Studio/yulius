@@ -51,8 +51,9 @@ of its rows shows the link, and a click opens the full URL instead of the first 
 - **WRL-001 Continued URL.** A row continues into the next one when all of these hold:
   - the row's last non-blank cell is in the last column, or in one of the last 2 columns in Claude
     Code's prompt, every row of which keeps one column of padding. A row belongs to the prompt
-    when walking up through blank rows and indented rows without a marker reaches a `❯` row;
-    an answer (`●`), list item, tool output or text at the first column stops the walk;
+    when walking up through blank rows and indented rows without a marker reaches a `❯` row
+    that is not a menu's cursor (`❯ 1.`). A row with another marker (`●`, `⏺`, `-`, `⎿`, `▎`,
+    …), a soft-wrapped row or text at the first column stops the walk with no padding;
   - the next row is not soft-wrapped;
   - the next row's text starts, with a non-blank character, in the column where the row's text
     starts. That column comes after leading spaces, one marker followed by a space (such as `❯`,
@@ -78,8 +79,8 @@ of its rows shows the link, and a click opens the full URL instead of the first 
 
 - [x] Reproduce the defect and find its root cause
 - [x] Spec and issue for URLs Claude Code wraps onto the next row
-- [ ] Failing regression tests: a wrapped URL is one link, opened whole
-- [ ] Terminal links a URL continued on the next rows as one link
+- [x] Failing regression tests: a wrapped URL is one link, opened whole
+- [x] Terminal links a URL continued on the next rows as one link
 - [ ] Independent review answered
 - [ ] Gates green, docs and changes entry, merged into dev
 
@@ -115,7 +116,10 @@ of its rows shows the link, and a click opens the full URL instead of the first 
   TUI's cursor moves.
 - **Strict joining rules over generous ones.** A wrong join opens a wrong address, while a missed
   join leaves today's behaviour. So every condition in WRL-001 must hold, and each one is taken
-  from Claude Code's measured layout. One case stays ambiguous: a URL that ends exactly at the
+  from Claude Code's measured layout. A shell prompt that also draws `❯` (starship, pure) makes
+  the indented rows under it count as prompt rows, so a URL there may end one column short of the
+  edge too; shell output rarely starts indented, and the word-length rule still applies. One case
+  stays ambiguous: a URL that ends exactly at the
   edge, followed by a word long enough that the two together exceed the row, looks the same as a
   longer URL cut there, and is joined. See
   [ADR-0230](../../docs/decisions/0230-a-url-a-program-wraps-itself-is-one-terminal-link.md).
