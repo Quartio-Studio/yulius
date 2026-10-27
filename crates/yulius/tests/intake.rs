@@ -24,7 +24,7 @@ use yulius_app::ports::intake::{ChoiceEvaluator, JevFailure, ProposerFailure, Sp
 use yulius_app::ports::store::{AccountStore, CoordinationStore, TaskStore};
 use yulius_app::ports::store_ext::DeliveryStore;
 use yulius_domain::harness::Provider;
-use yulius_domain::ids::{AccountId, StepId, TaskId, UserId};
+use yulius_domain::ids::{AccountId, SandboxId, StepId, TaskId, UserId};
 use yulius_domain::intake::{ChoiceAnswer, ChoiceQuestion, ProposedTask};
 use yulius_domain::task::{Activity, StopReason, TaskStatus};
 use yulius_domain::time::Timestamp;
@@ -896,6 +896,67 @@ async fn drops_scope_skips_the_chosen_steps_and_chains_the_new_direction() -> Te
     );
     // MSR-002 (SPEC-028): the skipped steps carry the change; no message is stored.
     assert!(i.h.store.task_messages(&task, 10).await?.is_empty());
+    Ok(())
+}
+
+/// SPEC-341 LSS-002: a step the person rules out is skipped under the task's steps lock. A step
+/// the agent finished while the skip waited stays done, and the answer says no open step was
+/// left instead of "0 steps skipped".
+#[tokio::test]
+async fn a_step_finished_while_the_skip_waits_stays_done() -> TestResult {
+    let h = harness_with(HarnessOptions {
+        configure: Some(Box::new(|c| c.max_live_sessions = 0)),
+        ..HarnessOptions::default()
+    })?;
+    let i = intake_with(h).await?;
+    let task = running_task(&i).await?;
+    i.h.app.record_typing(&task, &UserId::parse("u-alice")?);
+    let r = hook(&i.h, "drop the export, show the report as a chart instead").await?;
+    assert!(held(&r), "{:?}", r.body);
+    let hold = summary(&i, "t-run").await?["held_prompt"].clone();
+    let path = format!(
+        "/api/tasks/t-run/held-prompts/{}",
+        hold["id"].as_str().ok_or("id")?
+    );
+    let sandbox = SandboxId::parse("s1")?;
+    let before = i.h.store.tasks(&sandbox, false).await?.len();
+    let runtime = i.h.app.runtime(&task);
+    let held_lock = runtime.steps_lock.lock().await;
+    let agent = async {
+        // The new direction exists: the skip checked the step and now waits for the lock.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while i.h.store.tasks(&sandbox, false).await?.len() == before {
+            if std::time::Instant::now() > deadline {
+                return Err::<(), Box<dyn std::error::Error>>("no chained task".into());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let step = StepId::parse("st-2")?;
+        i.h.store
+            .update_step(&step, "done", None, "agent", i.h.app.now())
+            .await?;
+        drop(held_lock);
+        Ok(())
+    };
+    let (r, finished) = tokio::join!(
+        post(
+            &i,
+            &path,
+            json!({"action": "skip_after", "skip_step_ids": ["st-2"]}),
+        ),
+        agent
+    );
+    finished?;
+    let r = r?;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert!(
+        r.body["note"]
+            .as_str()
+            .is_some_and(|n| n.starts_with("No open step was left to skip")),
+        "{:?}",
+        r.body
+    );
+    assert_eq!(i.h.store.steps(&task).await?[1].status, "done");
     Ok(())
 }
 
