@@ -356,6 +356,32 @@ flowchart LR
   DB -->|"label + email (administrators)"| V["Subscriptions page, Status, Dashboard, Task details, analytics"]
 ```
 
+## Goal retries after an API error
+
+An API error ends a turn with no Stop hook. With a goal active, Claude Code retries the turn
+itself and says so in a notice; Yulius follows it and types nothing
+([SPEC-333](../.ai/specs/SPEC-333-this-api-error-should-trigger-retry-and.md),
+[decision 0225](decisions/0225-claude-code-owns-the-goal-retry-after-an-api-error.md), #927). The
+harness reads the notices as `GoalRetry { armed, notice }`. An armed retry keeps the task Working
+over the record that closes the turn, which otherwise settles it as Your turn
+([decision 0212](decisions/0212-a-turn-whose-stop-yulius-never-answered-settles-at-its-record.md)).
+A failed goal check is retried the same way, and a notice ends the wait for a goal verdict. A goal
+cleared, achieved or failed while a retry is armed settles the closed turn, since no check-in
+comes. Spent retries, or a pause on an API error, end the turn and put the task in Needs you with a
+request. A restart's replay folds the last notice the same way.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Working
+    Working --> Retrying: API error + "Goal still active · … retrying in n min (k/3)"
+    Retrying --> Working: the goal check-in prompt (or a person's)
+    Retrying --> NeedsYou: "Goal paused after 3 automatic retries"
+    Working --> NeedsYou: "Goal paused · the API rejected the last request" (no retry)
+    Retrying --> Waiting: /goal clear (no check-in comes)
+    NeedsYou --> Working: a person sends a message
+    note right of Retrying: reads Working; the turn record does not settle it
+```
+
 ## Full context
 
 A session whose context is full gets "Prompt is too long" for every prompt, and no Stop hook ends
@@ -689,7 +715,12 @@ full screen with mouse reporting, which the web terminal's wheel and late viewer
 Claude Code's boot canary in the shared config dir took a sibling task's start (every contained run
 is pid 2) for a failed one of its own and turned full screen off for the project
 ([SPEC-310](../.ai/specs/SPEC-310-i-can-t-scroll-up-fix.md),
-[decision 0218](decisions/0218-claude-code-runs-always-draw-full-screen.md)). If a trust prompt
+[decision 0218](decisions/0218-claude-code-runs-always-draw-full-screen.md)). Claude Code shows a
+session only from its last compaction, so a wheel turn that reaches the top of a task's terminal
+offers the History view: the task's live transcript (`GET /api/tasks/{tid}/transcript`) read from
+line 0, in the terminal's place, while the terminal stays connected underneath
+([SPEC-326](../.ai/specs/SPEC-326-i-can-t-scroll-up-terminals-with-claude.md),
+[decision 0220](decisions/0220-a-task-terminal-s-top-leads-to-its-whole-session.md)). If a trust prompt
 still shows before SessionStart, Yulius types nothing into it and says so, and the keys a person
 answers it with are no draft. A goal launched as the prompt runs once the prompt is answered, a
 typed one follows once it is gone, and a prompt left unanswered for 5 minutes flags the task
@@ -984,7 +1015,34 @@ starts their command nor connects to their private address until a person change
 secret values reach a run in `YULIUS_MCP_<SERVER>_<VAR>` variables, never under the server's own
 variable name, which may hold an agent secret's placeholder.
 
-The Superagent gets the same servers as a task run of its sandbox (`App::mcp_attachments`), inline
+### MCP server scopes
+
+Since SPEC-332 ([decision 0224](decisions/0224-an-mcp-server-is-for-every-sandbox-or-one-and-for-the-team-or-its-owner.md))
+an MCP server is for every sandbox (`sandbox_id` NULL) or one, and for the team (`owner_id` NULL)
+or one person (removed with the user's row). `McpStore::mcp_servers(sandbox, person)` lists the
+team servers of both reaches and `person`'s own; `App::mcp_attachments(sandbox, holder)` keeps one
+per name by rank and attaches the enabled winners. The holder is ADR-0186's: a task's owner unless
+an automation started it (`Holder::of_task`), the Superagent's person, nobody for CI and CD. The
+MCP API answers 404 for another person's server, administrators included, and `task_message` from
+anyone but the owner refuses a task holding its owner's personal server (or whose live run, per
+`TaskRuntime::personal_mcp_of`, was started with one); a hand-over resumes such a run with the new
+owner's servers. `App::mcp_secret_values` adds the servers' literal secret values to
+`App::matcher_for`, so redaction covers them with the agent secrets (MCP changes bump the vault
+generation).
+
+```mermaid
+flowchart LR
+  S["mcp_servers(sandbox, holder's person): team servers + own personal"] --> R{"per name, highest rank wins"}
+  R -->|"3"| SP["this sandbox, personal"]
+  R -->|"2"| ST["this sandbox, team"]
+  R -->|"1"| GP["every sandbox, personal"]
+  R -->|"0"| GT["every sandbox, team"]
+  SP & ST & GP & GT --> E{"winner enabled?"}
+  E -->|"yes"| A["attached to the run"]
+  E -->|"no"| X["name off for this holder"]
+```
+
+The Superagent gets the same servers as its person's task run of its sandbox (`App::mcp_attachments`), inline
 in its `--mcp-config` next to `yulius`, their values in its secret environment, and the task runs'
 redaction of agent secrets: `CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec` for its Bash commands,
 hooks and stdio servers, and the `PostToolUse` hook, its only hook; its screen is redacted on the
@@ -1319,7 +1377,8 @@ sandbox's Docker engine, production runs their production holder's (ADR-0208; th
 `<data>/cd/<sandbox>/runs`, which that engine binds), and both reach any Internet host over TCP
 (SSH included) through their holder's network. A run has no lane and no retry: a deploy is not assumed repeatable, so one left by a
 restart is recorded as an error. `needs_you` (table column `tasks.needs_you`) puts a task in Needs
-you until a person writes to it. `POST …/cd/{env}/deploy` answers only once the run is recorded,
+you until a person writes to it; its request (what happened, the problem, what to do or decide) is
+stored as JSON there ([ADR-0221](decisions/0221-a-needs-you-request-reads-what-happened-problem-to-do.md)). `POST …/cd/{env}/deploy` answers only once the run is recorded,
 after the checks and production's promotion (seconds to a minute), so the CD page opens the Deploy
 dialog as soon as the person confirms, saying what is being checked and promoted with the time so
 far, and turns it into the run's view when the answer comes, or shows the refusal in it
@@ -1400,8 +1459,12 @@ GitHub owner (an earlier version to port from, a shared library), an agent calls
 ([ADR-0197](decisions/0197-tasks-read-other-repositories-of-their-owner-through-a-bundle.md),
 [SPEC-267](../.ai/specs/SPEC-267-i-got-this-such-things-should-usually-ha.md)):
 `App::tool_reference_repo` checks with the task owner's user token that they can read it
-(`repo_access`), and `GitPort::bundle_branch` fetches its default branch with that token into a
-fresh bare repository under `<data>/tmp` and writes a bundle of it. `App::attach_server_file`
+(`repo_access`), and `GitPort::bundle_repository` fetches every branch and tag with that token
+into a fresh bare repository under `<data>/tmp` and writes a bundle of `HEAD` (the default branch),
+every branch and every tag; the agent's optional `branch` is the one its clone checks out, and a
+branch the repository lacks is invalid with the branch list
+([ADR-0223](decisions/0223-a-reference-copy-carries-every-branch-and-tag-its-owner-can-read.md),
+[SPEC-330](../.ai/specs/SPEC-330-fix-this-tasks-act-as-the-user-they-shou.md)). `App::attach_server_file`
 streams the bundle into the task's attachments through the upload path's handles (ADR-0174), the
 fetch folder is removed, and the agent clones the bundle itself into
 `<sandbox>/reference/<owner>/<name>`, outside every worktree. Git never runs on the host in a folder
@@ -1411,9 +1474,9 @@ repository, a playground, a disabled or unsigned owner and no read access are re
 
 ```mermaid
 flowchart LR
-  AG["agent"] -->|"reference_repo owner/name"| APP["Yulius"]
+  AG["agent"] -->|"reference_repo owner/name, branch?"| APP["Yulius"]
   APP -->|"repo_access, owner's token"| GH["GitHub"]
-  APP -->|"bundle_branch, owner's token"| TMP["data/tmp/reference-*: bare fetch + bundle"]
+  APP -->|"bundle_repository, owner's token"| TMP["data/tmp/reference-*: every branch and tag + bundle"]
   TMP -->|"attach_server_file (handles)"| ATT["sandbox attachments/tasks/task"]
   AG -->|"git clone bundle"| REF["sandbox reference/owner/name"]
   ATT --> REF
@@ -2102,6 +2165,44 @@ stateDiagram-v2
 
 The UI's event stream (`WS /api/events`) beats every 20 s; the page replaces a stream silent for
 50 s, so a connection that died without a close is noticed and the lists resync (SPEC-191).
+
+## Instance export and import
+
+`yulius instance export` and `yulius instance import` (SPEC-329, ADR-0222, module
+`crates/yulius/src/instance/`) copy a whole instance to another host. Both run as root on the host,
+outside Yulius. The export freezes the whole `yulius.service` unit with systemd's freezer (the
+cgroup v2 `cgroup.freeze` of the unit, above every run's own freeze of ADR-0131), so the server and
+everything it started stop at once and the data directory is read-only while it is read. A first
+walk of the data directory plans the archive's exact length and a fingerprint of its headers; the
+second streams an uncompressed pax tar to stdout (`archive.rs`): the manifest with the total first,
+`data/…` in bytewise order, a SHA-256 trailer last. The import reads it with the same module, checks
+the manifest, makes the service user and its subordinate ids with `host setup`'s items, extracts
+through `O_NOFOLLOW` directory handles (`extract.rs`) with the ids remapped, and checks the
+trailer. Nothing is staged on either disk; a pipe through `ssh` is the transport.
+
+```mermaid
+sequenceDiagram
+  participant O as Operator (root, SSH)
+  participant E as yulius instance export
+  participant D as systemd
+  participant F as Old data directory
+  participant I as yulius instance import (new VM)
+  participant N as New data directory
+  O->>E: sudo yulius instance export | ssh root@new yulius instance import
+  E->>D: systemctl freeze yulius.service (wait for frozen)
+  E->>F: walk 1: exact length + header fingerprint
+  E->>I: manifest (total_bytes) first
+  I->>I: check format, schema, free space, no instance; make user and ids
+  loop every entry
+    E->>F: walk 2: read
+    E->>I: header + data
+    I->>N: create through O_NOFOLLOW handles, owners remapped
+  end
+  E->>I: SHA-256 trailer
+  I->>I: compare checksum and length, remove the incomplete marker
+  E->>D: systemctl thaw (or --move: stay frozen, disable)
+  O->>I: then yulius host setup on the new VM
+```
 
 ## Agent primitives
 

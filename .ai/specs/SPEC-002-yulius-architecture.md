@@ -1601,7 +1601,7 @@ Schema version 1 (tables; columns abbreviated):
 | `automations` | id, sandbox_id, name, cron, timezone, prompt, workflow_id, harness, enabled, created_by, created_via (ui/agent), supertask, after_task_id, start_rule (SPEC-078, schema version 19) |
 | `automation_runs` | automation_id, scheduled_for (unique pair), state, task_id, error |
 | `skills` | id, scope (instance/sandbox/repo), name, source, enabled, digest |
-| `mcp_servers` | id, scope, sandbox_id, name, transport, command/url, args (json), env (enc json), headers (enc json), enabled |
+| `mcp_servers` | id, sandbox_id (NULL: every sandbox), owner_id (NULL: the team; SPEC-332), name, transport, command/url, args (json), env (enc json), headers (enc json), enabled, origin |
 | `metrics` | attempt_id, input_tokens, output_tokens, cache_read, cache_write, model, turns, tool_calls, active_ms (nullable = unknown) |
 | `metrics_recounts` | attempt_id (PK), task_id, outcome (recomputed/no_transcript/no_lines/live/gone; NULL = queued), before (json: the figures when queued, NULL = no row), after (json), done_at: runs recorded before SPEC-087, recounted once from their transcripts (SPEC-091, schema version 23) |
 | `feedback` | task_id, user_id, verdict, comment, at |
@@ -2099,7 +2099,7 @@ Dropped files (EDT-006, UI-048): `PUT /api/sandboxes/{id}/files/upload`, `POST
 /api/tasks/{id}/attachments`, `POST /api/sandboxes/{id}/shells/{id}/attachments`, one raw file
 per request, streamed to disk (`yulius_app::uploads`).
 All JSON bodies ≤ 1 MiB (imports use chunk endpoints ≤ 8 MiB per chunk; a dropped file is one
-raw body up to the upload limit, 25 MiB by default).
+raw body up to the upload limit, 1 GiB by default, ADR-0219).
 
 ### 7.10 Workflow catalog format (AUT-006)
 
@@ -2400,7 +2400,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Display input queue | 512 discrete commands (moves: one coalesced slot); 500 events/s per viewer (burst 1000, 100 kept for discrete input) | moves and wheel dropped silently; other input refused with an error |
 | Encoder start failures | 3 in a row (backoff 0.5–3 s) | video unavailable; viewers get JPEG frames |
 | Encoder tag (access unit) | 8 MiB | encoder restarted |
-| Upload (one file, EDT-006/UI-048) | 25 MiB (`YULIUS_UPLOAD_MAX_MB`, 1–1024) | 422 before or while reading |
+| Upload (one file, EDT-006/UI-048) | 1 GiB (`YULIUS_UPLOAD_MAX_MB`, 1–1024; ADR-0219), and short of a critical data disk | 422 before or while reading |
 | Uploads at once (instance) | 8 | 429; the UI retries 3 times with backoff |
 | Upload body idle | 60 s without a chunk | 422; temporary file removed |
 | Attachments per task or shell | 500 | 409 |

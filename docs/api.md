@@ -288,7 +288,7 @@ limited to the agent's sandbox.
 | POST | `/api/tasks/{tid}/queued-messages` | write | `{"text"}` → `{"request"}`; adds the message to the request of a task that has never started (`queued`, `chained`, `prepared` or `waiting_capacity`, no run, no provider session) under "**Added by {login} before the task started ({UTC time}):**", so the agent gets it when the task starts (SPEC-052 / SPEC-001 TSK-017, ADR-0035). 409 once the task has started (type into its session instead), or, rarely, when it changed between the check and the update (try again); 422 for an empty message or a request past 64 KiB; publishes `task.updated` |
 | GET | `/api/tasks/{tid}` | read | → `TaskDetail` |
 | GET | `/api/tasks/{tid}/prompt` | read | → `{"text","attachments":[{"name","image":bool,"available":bool}],"parts":[{"text"}\|{"attachment":n}]}`: the prompt the task started with, without its attached files (an inline `@'path'` mention or an `@path` line each), its attached files in order (SPEC-043), and `parts`, the prompt in order with each file where it sits (`n` indexes `attachments`; SPEC-124). `available` is false for a file that is gone (composer drafts are removed after a week) or not in the task's own attachment folders (a path mentioned by hand, another task's or user's file); at most 500 are checked |
-| GET | `/api/tasks/{tid}/prompt/attachments/{n}` | read | → the bytes of attachment `n` (from 0) of that list, only when the prompt names it directly in one of the task's own attachment folders (its creator's composer drafts, `attachments/drafts/<user>/`, or the task's own attachments, dropped on its terminal or queued with a message, `attachments/tasks/<task>/`), reached without a link, a regular file within the upload limit and, on Linux, opened at its real path as `/proc/self/fd` says (404 otherwise, also out of range or not a number; 429 when none of the 16 read slots frees within 30 s; uploads have their own bound). The body is streamed in chunks of at most 64 KiB with its `Content-Length`, holding its read slot; left unread for 60 s it gives the slot back and closes the file, and the response breaks off at the client's next read (SPEC-080, ADR-0064). An image (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) is served with its image type, any other file as `application/octet-stream` with `Content-Disposition: attachment`; the content security policy includes `sandbox` (ADR-0033) |
+| GET | `/api/tasks/{tid}/prompt/attachments/{n}` | read | → the bytes of attachment `n` (from 0) of that list, only when the prompt names it directly in one of the task's own attachment folders (its creator's composer drafts, `attachments/drafts/<user>/`, or the task's own attachments, dropped on its terminal or queued with a message, `attachments/tasks/<task>/`), reached without a link, a regular file within the upload limit and, on Linux, opened at its real path as `/proc/self/fd` says (404 otherwise, also out of range or not a number; 429 when none of the 16 read slots frees within 30 s; uploads have their own bound). The body is streamed in chunks of at most 64 KiB with its `Content-Length`, holding its read slot; left unread for 60 s it gives the slot back and closes the file, and the response breaks off at the client's next read (SPEC-080, ADR-0064). An image (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) is served with its image type, any other file as `application/octet-stream` with `Content-Disposition: attachment` (a non-ASCII name as `filename*`, RFC 6266, beside an ASCII `filename`); the content security policy includes `sandbox` (ADR-0033). `HEAD` answers the same without the body: the web UI asks it before the browser downloads another file from this link (ADR-0219) |
 | GET | `/api/tasks/{tid}/transcript?from=<line>&limit=N&seen=<bytes>&session=<id>` | read | → `TaskTranscript`: the task's latest Claude Code session as the people watching someone else's task read it (SPEC-179). Without `from` the tail: the last `limit` entries (≤ 500, default 200, about 2 MiB of text; `earlier` when entries were left out) and `doc_id`, the session's document; with `from` the entries from that line (`next` when the page is full). `end` is the line after the last complete line (a line still being written waits), `bytes` the transcript's size: a reader continues with `from=end&seen=bytes&session=session_id`, answered without reading the file while that session's size is unchanged. Redacted as session pages are. No session yet: `session_id` null, no entries |
 | POST | `/api/tasks/{tid}/pause` | write | → `TaskSummary`; its owner pauses a `running` task (SPEC-191, ADR-0154): its run is frozen, or held at its turn boundary when it cannot be (`pause.pending` until then); `pause: {"by":"person","user","since","pending"}`; pausing again changes nothing; 409 for any other state; audited `task.paused_by_person`; publishes `task.updated` |
 | POST | `/api/tasks/{tid}/resume` | write | → `TaskSummary`; ends a person's pause and thaws the run (while an update holds the task, the update thaws it); nothing for a task that is not paused; audited `task.resumed_by_person` |
@@ -299,7 +299,7 @@ limited to the agent's sandbox.
 | DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); a Done running task (TSK-014) is closed first and deleted once its run has ended; the close and its wait take at most ~25 s (SPEC-039); 409 while any other task runs (at once, also for a task that turned switching meanwhile), if a Done task's session is still closing then, or if its session could not be ended (its processes survived termination; SPEC-065) |
 | POST | `/api/tasks/{tid}/control-request` | write | → `TaskSummary`; asks the task's owner for control (SPEC-070, ADR-0060): it would act on GitHub as you. One request waits per task: 409 for the owner and while another person's request waits (naming them); asking again changes nothing. With the owner disabled, deleted or without write access, control passes at once (`owner` is you), whatever request waits; a waiting asker who can no longer work gives way (their request dropped, `task.control_dropped`). Audited `task.control_requested` |
 | DELETE | `/api/tasks/{tid}/control-request` | read (asker) · write (owner) | → `TaskSummary`; the asker withdraws (`task.control_withdrawn`) or the owner declines (`task.control_declined`); 409 when no request waits, 403 for anyone else |
-| POST | `/api/tasks/{tid}/control-request/accept` | write (owner) | → `TaskSummary` with the asker as `owner`; the task acts on GitHub as them from its next call, its worktree commits as them, its terminal says so, audited `task.control_passed`; 409 when no request waits, or when the asker can no longer work in the project (the request is dropped) |
+| POST | `/api/tasks/{tid}/control-request/accept` | write (owner) | → `TaskSummary` with the asker as `owner`; the task acts on GitHub as them from its next call, its worktree commits as them, its terminal says so, audited `task.control_passed`; 409 when no request waits, when the asker can no longer work in the project (the request is dropped), or while a task holding the owner's personal MCP servers is starting or switching (SPEC-332); a live run holding them resumes for the new owner (same conversation and subscription, nothing typed), or stops if it cannot |
 | POST | `/api/tasks/{tid}/feedback` | read | `{"verdict":"correct|incorrect","comment"}` → 204 |
 | GET | `/api/archived-tasks` | read | → `[TaskSummary]` across visible sandboxes |
 | WS | `/api/tasks/{tid}/terminal` | read (input: write, owner) | terminal protocol below |
@@ -329,7 +329,7 @@ TaskSummary = {
   "start_at": "2026-10-15T09:00:00Z|null",
   "after": ChainLink|null, "next": [ChainLink],
   "held_prompt": {"id","class":"new_scope|drops_scope|redirect","excerpt","percent","typed_by|null","created_at"}|null,
-  "needs_you": {"action","why|null","link|null","at"}|null,   // SPEC-134: what the agent asked a person (`needs_you`)
+  "needs_you": {"action","happened|null","problem|null","decision","link|null","at"}|null,   // SPEC-134, SPEC-327: what the agent asked a person (`needs_you`)
   "background_shells": "0|1|…|null",
   "auto": {"mode":"jev|default|null","workflow":"jev|default|null","workflow_name":"Feature|null"}|null
 }
@@ -905,9 +905,9 @@ read-only in the UI.
 | GET | `/api/automations/{id}/runs` | read | `[AutomationRun]`, newest first (at most 100) |
 | GET | `/api/sandboxes/{sid}/automation-templates` | read | `[AutomationTemplate]`, the ready-made automations (SPEC-042) |
 | POST | `/api/sandboxes/{sid}/automation-templates/{id}/enable` | write | creates the automation from the template, enabled → 201 `Automation`; when the sandbox already has an automation of that name, enables it unchanged → 200 `Automation`; unknown template → 404 |
-| GET/POST | `/api/sandboxes/{sid}/mcp` | read/write | `McpServer` (sandbox + inherited instance servers); POST body `McpServerInput` → 201 |
-| PUT/DELETE | `/api/mcp/{id}` | write (instance: admin) | PUT `McpServerInput` → `McpServer`; DELETE → 204 |
-| POST | `/api/mcp/{id}/test` | write (instance: admin) | `{"ok","tools":["…"],"error"}`; HTTP ≤ 5 s, stdio ≤ 10 s then the process group is killed. On a contained instance stdio tests need an instance admin (they run outside the containment). A server with `origin` `mcp_json` is refused (`ok: false`, the reason in `error`, nothing started) for stdio, and for HTTP on a private or loopback address (SPEC-218). |
+| GET/POST | `/api/sandboxes/{sid}/mcp` | read/write (personal: work) | `McpServer` (the sandbox's and the instance's team servers and the caller's own personal ones, SPEC-332); POST body `McpServerInput` → 201; every sandbox + team needs an instance admin (403), personal needs work access |
+| PUT/DELETE | `/api/mcp/{id}` | write (instance team: admin; personal: its owner, else 404) | PUT `McpServerInput` → `McpServer`, `scope`/`audience` move it (with the right to manage it there; to `sandbox` from `instance` it takes `sandbox`, else 422); DELETE → 204 |
+| POST | `/api/mcp/{id}/test` | write (instance team: admin; personal: its owner) | `{"ok","tools":["…"],"error"}`; HTTP ≤ 5 s, stdio ≤ 10 s then the process group is killed. On a contained instance stdio tests need an instance admin (they run outside the containment). A server with `origin` `mcp_json` is refused (`ok: false`, the reason in `error`, nothing started) for stdio, and for HTTP on a private or loopback address (SPEC-218). |
 
 ```json
 Workflow = {"id","name","description","steps":["Write the spec","Implement","Test"],
@@ -923,12 +923,14 @@ AutomationTemplate = {"id":"docs-up-to-date","name","description","cron","utc_of
                       "workflow_id|null","automation_id|null"}
 AutomationRun = {"scheduled_for","state":"scheduled|task_created|skipped_previous_active|skipped_disabled|failed",
                  "task_id|null","error|null"}
-McpServer = {"id","scope":"instance|sandbox","name","transport":"stdio|http","command|null",
+McpServer = {"id","scope":"instance|sandbox","audience":"team|personal","name","transport":"stdio|http","command|null",
              "args":[],"url|null","env_keys":["APIFY_TOKEN"],"header_keys":[],"enabled":true,
              "origin":"person|mcp_json"}   // mcp_json: imported from .mcp.json until a PUT changes
                                            // what it runs (stdio command/args + env, or HTTP url)
 McpServerInput = {"name","transport","command?","args?","url?","env?":{"KEY":"value"},
-                  "headers?":{"Name":"value"},"enabled?":bool,"scope?":"sandbox|instance"}
+                  "headers?":{"Name":"value"},"enabled?":bool,"scope?":"sandbox|instance",
+                  "audience?":"team|personal","sandbox?":"sid"}   // create: sandbox + team by
+                  // default; update: unchanged when omitted, `sandbox` only to move into one
 ```
 
 The list starts with the **default workflows** (AUT-006): one per file of `catalog/workflows/`
@@ -964,7 +966,7 @@ write access; every changing call is audited with the caller (`task:<n>` or `coc
 | Tool | Same as | Notes |
 | --- | --- | --- |
 | `task_create` | New task | origin `agent`; at most 20 per project and rolling hour |
-| `task_message` (the Cockpit and the remote MCP, never task agents; SPEC-230, SPEC-247) | `POST /api/tasks/{tid}/queued-messages`, or typing into the task's terminal | `{task_id \| number, text}` → `{"task","delivered":"queued"\|"sent","note"}`; queued into a task that never started, typed into a `running` one as one bracketed paste `Message from <login> (through their Superagent):` from the Cockpit, `Message from <login> (through their own agent):` from the remote MCP (SPEC-322), + Enter; refused before Claude Code's session started there, while a person typed there in the last minute, while its folder-trust dialog shows, while the first message or another message is typed, and in every other state; 403 for anyone but the owner on a task holding its owner's personal secrets (SPEC-245); a sent message ends the task's `needs_you`; control characters but LF and tab removed, at most 64 KiB; audited `task.messaged` without the text |
+| `task_message` (the Cockpit and the remote MCP, never task agents; SPEC-230, SPEC-247) | `POST /api/tasks/{tid}/queued-messages`, or typing into the task's terminal | `{task_id \| number, text}` → `{"task","delivered":"queued"\|"sent","note"}`; queued into a task that never started, typed into a `running` one as one bracketed paste `Message from <login> (through their Superagent):` from the Cockpit, `Message from <login> (through their own agent):` from the remote MCP (SPEC-322), + Enter; refused before Claude Code's session started there, while a person typed there in the last minute, while its folder-trust dialog shows, while the first message or another message is typed, and in every other state; 403 for anyone but the owner on a task holding its owner's personal secrets (SPEC-245) or personal MCP servers, configured or in its live run (SPEC-332); a sent message ends the task's `needs_you`; control characters but LF and tab removed, at most 64 KiB; audited `task.messaged` without the text |
 | `task_stop`, `task_archive` (`archived`: false restores), `task_delete` | `POST /api/tasks/{tid}/stop`, `…/archive` (`…/restore`), `DELETE /api/tasks/{tid}` | by `task_id` or `number`; never the caller's own task; audited `task.stopped`, `task.archived`/`task.unarchived`, `task.deleted` |
 | `automation_create`, `automation_update` | `POST …/automations`, `PUT /api/automations/{id}` | `created_via: agent` |
 | `automation_delete`, `automation_run_now` | `DELETE /api/automations/{id}`, `POST /api/automations/{id}/run` | audited `automation.deleted`, `automation.run_now` |
@@ -973,9 +975,12 @@ write access; every changing call is audited with the caller (`task:<n>` or `coc
 
 MCP secrets are write-only: responses only list key names. On update, an omitted `env`/`headers`
 keeps the stored values; a given map replaces all values of that map (`{}` clears it). Names are
-1–64 letters, digits, `-` or `_`, unique per scope ignoring case and `-`/`_`; `yulius` is reserved
-for the always-attached Yulius tool server. A sandbox server overrides an instance server of the
-same name for that sandbox (also when disabled). Agent runs receive HTTP secrets only as an
+1–64 letters, digits, `-` or `_`, unique per scope (sandbox and owner) ignoring case and `-`/`_`;
+`yulius` is reserved for the always-attached Yulius tool server. A personal server reaches only runs
+its owner holds: their tasks (not an automation's) and their Superagent. Per name the most
+specific server wins, also when disabled: this sandbox's personal, its team, every sandbox's
+personal, then every sandbox's team server (SPEC-332). Literal secret values of 8+ characters that
+are not ordinary text are redacted from the project's terminals, transcripts and MCP results. Agent runs receive HTTP secrets only as an
 `Authorization: Bearer` token; other headers are used by the test endpoint but not yet passed to
 Claude Code.
 
@@ -1119,9 +1124,11 @@ resolves to nothing, the run gets the server without that variable or token.
   write access; 429 past 20 updates a second per person and file (the notepads' limiter) or past
   64 files and notepads a person is busy in at once.
 - Dropped files (EDT-006, UI-048). One file per request, the raw bytes as the body (`Content-Type`
-  is not interpreted), streamed to disk; at most the upload limit (`YULIUS_UPLOAD_MAX_MB`, 25 MiB by
+  is not interpreted), streamed to disk; at most the upload limit (`YULIUS_UPLOAD_MAX_MB`, 1 GiB by
   default; `GET /api/me` → `instance.upload_max_bytes`): a larger `Content-Length` is 422 before
-  the body is read, a body that grows past it is 422 as it arrives. At most 8 uploads run at once
+  the body is read, a body that grows past it is 422 as it arrives. A `Content-Length` that would
+  bring the data disk to its critical level (95 % used) is 422 too, before anything is created
+  (ADR-0219). At most 8 uploads run at once
   on the instance (429 `capacity`, retry); a body that sends nothing for 60 s fails (422). The
   file is written to a temporary file next to its destination, synced, then linked or renamed
   into place, so readers see the whole file or none; an unfinished upload leaves nothing.

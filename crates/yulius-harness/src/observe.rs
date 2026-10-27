@@ -126,6 +126,16 @@ pub enum Observed {
         /// Claude Code's task id.
         id: String,
     },
+    /// Claude Code's goal mode answered a turn an error ended (SPEC-333): it retries the turn
+    /// itself (`Goal still active · <cause> · retrying in 1 min (1/3) · …`), or it stopped: the
+    /// retries are spent (`Goal paused after 3 automatic retries · <cause> · …`) or the API error
+    /// is one it does not retry (`Goal paused · the API rejected the last request · …`).
+    GoalRetry {
+        /// A retry is armed: Claude Code continues the goal by itself.
+        armed: bool,
+        /// What Claude Code said, without its closing advice ("send a message to …").
+        notice: String,
+    },
     /// The API rejected the session's prompt as too long: its context is full, and every later
     /// prompt gets the same answer until it is compacted (#213). No Stop hook ends such a turn.
     ContextFull,

@@ -300,3 +300,96 @@ test('a Superagent whose move to another subscription failed says why and starts
   await screen.getByRole('button', 'Try again').click();
   await expect(terminal).toHaveText(/resumed your last conversation/);
 });
+
+// SPEC-331 (#918): a terminal that is not shown measured its box as 100 px (the hidden box's
+// `100%` read as pixels) and squeezed its session to 10×5. The Superagent then drew in ten columns
+// for a tab that still showed it, and everything it wrote while hidden stayed wrapped.
+test('a hidden Superagent or Shell terminal keeps its session’s size', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1400, height: 900 });
+  await app.open(mock('/s/studio/agent'));
+  await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
+  /** The mock session's size (what the page last sent), of the Superagent or the Shell's terminal;
+   * null until the page has sent one (the session's starting size is the mock's, #924). */
+  const size = (cockpit: boolean) => browser.evaluate((agent) => {
+    type Shells = { __yuliusMock: { shells: Map<string, { cockpit?: boolean; session?: { cols: number; rows: number; sized?: boolean } }> } };
+    const shell = [...(window as unknown as Shells).__yuliusMock.shells.values()].find((s) => Boolean(s.cockpit) === agent && s.session);
+    return shell && shell.session && shell.session.sized ? `${shell.session.cols}x${shell.session.rows}` : null;
+  }, cockpit);
+  // The terminal reacts to its box in the frame after the change is observed: two frames and a spare.
+  const settle = () => browser.evaluate(() => new Promise<boolean>((done) => { requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(() => done(true)))); }));
+  // The page's size, not the mock session's 100×30 from before the terminal's hello reached it
+  // (under load the hello lands after a first look; #923's CI run).
+  const greeted = (cockpit: boolean) => browser.evaluate((agent) => {
+    type Shells = { __yuliusMock: { shells: Map<string, { cockpit?: boolean; session?: { viewers: Set<unknown> } }> } };
+    const shell = [...(window as unknown as Shells).__yuliusMock.shells.values()].find((s) => Boolean(s.cockpit) === agent && s.session);
+    return Boolean(shell && shell.session && shell.session.viewers.size > 0);
+  }, cockpit);
+  const fitted = async (cockpit: boolean) => {
+    await expect.poll(() => greeted(cockpit)).toBe(true);
+    await expect.poll(async () => Number(((await size(cockpit)) || '0x0').split('x')[0])).toBeGreaterThan(20);
+    // A fit after the hello sends a resize: the size counts once it holds across settled frames.
+    await expect.poll(async () => {
+      const before = await size(cockpit);
+      await settle();
+      return before === (await size(cockpit));
+    }).toBe(true);
+    return size(cockpit);
+  };
+  const shown = await fitted(true);
+
+  await screen.getByRole('button', 'Close panel').click();
+  await settle();
+  expect(await size(true)).toBe(shown);
+
+  // AC-2: shown again it still fits its box, larger and back.
+  await openSuperagent(browser, screen);
+  await screen.getByRole('button', 'Maximize panel').click();
+  await expect.poll(() => size(true)).not.toBe(shown);
+  await screen.getByRole('button', 'Restore panel size').click();
+  await expect.poll(() => size(true)).toBe(shown);
+  // Review round 1: another window of the same Superagent (a phone) set its size meanwhile; shown
+  // again here, it takes this window's size back, as before.
+  await browser.evaluate(() => {
+    type Shells = { __yuliusMock: { shells: Map<string, { cockpit?: boolean; session?: { cols: number; rows: number } }> } };
+    const shell = [...(window as unknown as Shells).__yuliusMock.shells.values()].find((s) => s.cockpit && s.session);
+    if (shell && shell.session) { shell.session.cols = 30; shell.session.rows = 20; }
+    return true;
+  });
+  await screen.getByRole('button', 'Close panel').click();
+  await settle();
+  await openSuperagent(browser, screen);
+  await expect.poll(() => size(true)).toBe(shown);
+
+  // Another tool in front hides the Superagent; the Superagent back in front hides the Shell's.
+  // #924: the Shell's session exists at the mock's starting size before the page's hello says its
+  // own; held there, the reference must still be the size the page gives.
+  await browser.evaluate(() => {
+    const w = window as unknown as { __yuliusHoldShell?: Promise<void>; __releaseShell?: () => void };
+    w.__yuliusHoldShell = new Promise<void>((done) => { w.__releaseShell = done; });
+    return true;
+  });
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Shell').click();
+  await expect.poll(() => browser.evaluate(() => {
+    type Shells = { __yuliusMock: { shells: Map<string, { cockpit?: boolean; session?: object }> } };
+    return [...(window as unknown as Shells).__yuliusMock.shells.values()].some((s) => !s.cockpit && s.session);
+  })).toBe(true);
+  const fitting = fitted(false);
+  const early = await Promise.race([
+    fitting.then(() => 'fitted'),
+    (async () => { for (let i = 0; i < 5; i += 1) await settle(); return 'waiting'; })(),
+  ]);
+  expect(early).toBe('waiting');
+  await browser.evaluate(() => {
+    const w = window as unknown as { __yuliusHoldShell?: Promise<void>; __releaseShell?: () => void };
+    delete w.__yuliusHoldShell;
+    if (w.__releaseShell) w.__releaseShell();
+    return true;
+  });
+  const shell = await fitting;
+  await settle();
+  expect(await size(true)).toBe(shown);
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent').click();
+  await settle();
+  expect(await size(false)).toBe(shell);
+  expect(await size(true)).toBe(shown);
+});

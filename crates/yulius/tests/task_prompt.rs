@@ -136,7 +136,17 @@ async fn get_raw(
     path: &str,
     creds: &Creds,
 ) -> Result<(StatusCode, HeaderMap, Vec<u8>), Box<dyn std::error::Error>> {
-    let mut req = Request::builder().method(Method::GET).uri(path);
+    request_raw(h, Method::GET, path, creds).await
+}
+
+/// Sends a bodiless `method` request for `path` as `creds`: the status, headers and body.
+async fn request_raw(
+    h: &Harness,
+    method: Method,
+    path: &str,
+    creds: &Creds,
+) -> Result<(StatusCode, HeaderMap, Vec<u8>), Box<dyn std::error::Error>> {
+    let mut req = Request::builder().method(method).uri(path);
     if let Some(cookie) = &creds.cookie {
         req = req.header(header::COOKIE, support::cookie_header(cookie));
     }
@@ -205,6 +215,44 @@ async fn an_attached_file_is_served_only_from_the_attachments_folder() -> TestRe
         .map(|a| a["available"] == true)
         .collect();
     assert_eq!(available, [true, true, false, false, false, false, false]);
+    Ok(())
+}
+
+/// SPEC-325 UPL-003: the web UI asks with HEAD whether a file is there, then lets the browser
+/// download it from its link: HEAD answers like GET, without the file.
+#[tokio::test]
+async fn a_head_request_says_whether_an_attached_file_is_there_without_sending_it() -> TestResult {
+    let (h, _drafts, [alice, _, carol]) =
+        seeded(|d| format!("Look\n@{d}/notes.txt\n@{d}/gone.mp4")).await?;
+    let url = |n: usize| format!("/api/tasks/t1/prompt/attachments/{n}");
+    let (status, headers, body) = request_raw(&h, Method::HEAD, &url(0), &alice).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_empty(), "{body:?}");
+    assert_eq!(headers[header::CONTENT_LENGTH], "25");
+    assert_eq!(
+        headers[header::CONTENT_DISPOSITION],
+        "attachment; filename=\"notes.txt\""
+    );
+    let (status, _, _) = request_raw(&h, Method::HEAD, &url(1), &alice).await?;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = request_raw(&h, Method::HEAD, &url(0), &carol).await?;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    Ok(())
+}
+
+/// SPEC-325 review: the browser downloads the link itself, and a `Content-Disposition` filename
+/// wins over the page's `download` name, so a name an upload keeps (non-ASCII letters) is sent
+/// as `filename*` (RFC 6266), with an ASCII fallback, not as "attachment".
+#[tokio::test]
+async fn a_downloaded_file_keeps_its_non_ascii_name() -> TestResult {
+    let (h, drafts, [alice, _, _]) = seeded(|d| format!("Look\n@{d}/błąd-ekranu.mp4")).await?;
+    std::fs::write(drafts.join("błąd-ekranu.mp4"), b"mp4")?;
+    let (status, headers, _) = get_raw(&h, "/api/tasks/t1/prompt/attachments/0", &alice).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers[header::CONTENT_DISPOSITION],
+        "attachment; filename=\"b__d-ekranu.mp4\"; filename*=UTF-8''b%C5%82%C4%85d-ekranu.mp4"
+    );
     Ok(())
 }
 

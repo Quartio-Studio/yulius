@@ -58,6 +58,10 @@ const INPUT_CHUNK = 8192;
 const REVEAL_LIMIT_MS = 5000;
 /** A program's clipboard write (OSC 52) counts only this soon after this viewer's key or click. */
 const PROGRAM_COPY_MS = 5000;
+/** A wheel turn up that left the screen's upper half unchanged this long reached the program's top. */
+const TOP_SETTLE_MS = 400;
+/** How long the way on past the top shows (SPEC-326 HIS-002). */
+const TOP_OFFER_MS = 8000;
 
 /**
  * Whether the person is typing in a text field outside `root` that is not a terminal's own input
@@ -99,12 +103,16 @@ function keyboardOnPage() {
  *   onReady()                  the terminal is shown (its first screen is drawn)
  *   onConnection(status)       the socket's status (connecting|open|reconnecting|failed|closed)
  *   onFatal(message)           the server refused this terminal for good (not_found, unauthenticated)
+ *   topOffer                   optional {label, open(), when()}: a button with `label` over the top
+ *                              of the terminal when a wheel turn up reached it (the program's screen
+ *                              did not move, or xterm's own scrollback is at its first line) and
+ *                              `when()` allows it; `open()` on a click (SPEC-326)
  *   fileLinks                  optional {list(dir) → Promise<[{name, kind}]>, roots() → [absolute
  *                              folder paths], open({path, line, col}, event)}: paths of existing
  *                              files in the terminal's folder become links (termlinks.js)
  * Call start() after the element is in the document; destroy() when done.
  */
-export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, onFatal, fontSize, fileLinks = null, followServerSize = false }) {
+export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, onFatal, topOffer = null, fontSize, fileLinks = null, followServerSize = false }) {
   const banner = h('div', { class: 'term-banner', hidden: true, role: 'status' });
   const noticeEl = h('div', { class: 'term-notice', hidden: true, role: 'status', 'aria-live': 'polite' });
   // Connection trouble floats over the terminal: it never changes the terminal's size.
@@ -118,7 +126,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // Another viewer sets the size: a small, opaque chip in the corner (never a row that resizes the terminal).
   const sizeChip = h('span', { class: 'term-size-chip', hidden: true, role: 'status', title: 'Another viewer is using this terminal, so it shows their size, scaled to your window. Click in the terminal or type to use your own size.' }, 'Sized by another viewer');
   const corner = h('div', { class: 'term-corner' }, noticeEl, sizeChip);
-  const el = h('div', { class: 'term', 'aria-busy': 'true' }, banner, connEl, corner, host, skeleton, emptyEl);
+  // The way on past the terminal's top (SPEC-326): over the top, below the banner, out of the way of
+  // the keyboard and the size.
+  const topOfferEl = topOffer ? h('button', { type: 'button', class: 'btn btn-sm term-history-offer', hidden: true, onClick: () => { hideTopOffer(); topOffer.open(); } }, icon('up', { size: 14 }), topOffer.label) : null;
+  const el = h('div', { class: 'term', 'aria-busy': 'true' }, banner, connEl, topOfferEl, corner, host, skeleton, emptyEl);
   // The program's mouse reporting reaches xterm only for a viewer who can write (SPEC-098 MSE-004).
   const mouse = createMouseFilter();
 
@@ -483,8 +494,78 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // encoding at the pointer's cell; the fraction of a row left carries on in the same direction.
   const rowEvents = new WeakSet();
   let wheelRows = 0;
+  // Claude Code shows a session only from its last compaction, and a screen without scrollback
+  // has nothing above it: a turn up that moves nothing reached the top (SPEC-326 HIS-001). xterm
+  // scrolls a normal buffer itself, so its first line is the top. Elsewhere the program moves the
+  // screen (wheel reports, or arrow keys on the alternate screen): a turn after which the upper half
+  // stays as it was did not move it. The lower half holds the spinner and the prompt, which change
+  // while the agent works. Turns closer than TOP_SETTLE_MS are one gesture, compared with the
+  // screen at its start and at its last turn: the program's answer to a turn arrives a round trip
+  // later, so the last turn's screen may still be moving towards the top.
+  let topCheck = null;
+  let gestureStart = null;
+  let topOfferTimer = null;
+  // The upper half when the screen check showed the offer: a program that answers later than the
+  // check (a slow link) moves it after all, and that turn was no top (HIS-001).
+  let topOfferScreen = null;
+  const upperHalf = () => {
+    const buffer = term.buffer.active;
+    const lines = [];
+    for (let y = 0; y < Math.ceil(term.rows / 2); y++) {
+      const line = buffer.getLine(buffer.viewportY + y);
+      lines.push(line ? line.translateToString(true) : '');
+    }
+    return lines.join('\n');
+  };
+  function showTopOffer(screen) {
+    topOfferEl.hidden = false;
+    topOfferScreen = screen;
+    clearTimeout(topOfferTimer);
+    topOfferTimer = setTimeout(hideTopOffer, TOP_OFFER_MS);
+  }
+  function hideTopOffer() {
+    if (!topOfferEl) return;
+    clearTimeout(topOfferTimer);
+    topOfferTimer = null;
+    topOfferScreen = null;
+    topOfferEl.hidden = true;
+  }
+  if (topOfferEl) {
+    term.onWriteParsed(() => {
+      if (topOfferScreen !== null && upperHalf() !== topOfferScreen) hideTopOffer();
+    });
+    // A key means the person stays in the terminal; the button's own keys open it.
+    el.addEventListener('keydown', (event) => { if (!topOfferEl.contains(event.target)) hideTopOffer(); }, true);
+  }
+  const noticeTop = (event) => {
+    if (!topOfferEl || event.ctrlKey || !event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+    if (event.deltaY > 0) {
+      // A turn back down ends the gesture: what it shows is not the top.
+      clearTimeout(topCheck);
+      topCheck = null;
+      hideTopOffer();
+      return;
+    }
+    // A screen with no text yet (a task that has not run) has nothing earlier to offer.
+    if (screenEmpty() || (topOffer.when && !topOffer.when())) return;
+    const buffer = term.buffer.active;
+    if (buffer.type === 'normal' && !programHasMouse()) {
+      if (buffer.viewportY === 0) showTopOffer(null);
+      return;
+    }
+    const before = upperHalf();
+    if (topCheck === null) gestureStart = before;
+    clearTimeout(topCheck);
+    topCheck = setTimeout(() => {
+      topCheck = null;
+      const now = upperHalf();
+      if (!destroyed && (now === before || now === gestureStart)) showTopOffer(now);
+    }, TOP_SETTLE_MS);
+  };
   host.addEventListener('wheel', (event) => {
-    if (rowEvents.has(event) || !programHasMouse()) return;
+    if (rowEvents.has(event)) return;
+    noticeTop(event);
+    if (!programHasMouse()) return;
     if (event.ctrlKey || !event.deltaY) {
       event.stopPropagation();
       return;
@@ -522,8 +603,12 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   }, true);
   term.onBinary((data) => send(data));
 
+  // A box that is not shown (a closed panel, another tool in front) has no size: the fit addon reads
+  // its `100%` as 100 px there and would size the terminal's session 10×5 (#918).
+  const shown = () => fitBox.clientWidth > 0 && fitBox.clientHeight > 0;
+
   function proposed() {
-    if (!opened) return null;
+    if (!opened || !shown()) return null;
     try {
       const d = fit.proposeDimensions();
       if (d && Number.isFinite(d.cols) && Number.isFinite(d.rows) && d.cols > 2 && d.rows > 1) {
@@ -535,6 +620,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
 
   /** The grid this view's box holds at the font given (the fit addon's measure), unbounded. */
   function room() {
+    if (!shown()) return null;
     try {
       const d = fit.proposeDimensions();
       return d && Number.isFinite(d.cols) && Number.isFinite(d.rows) && d.cols > 0 && d.rows > 0 ? d : null;
@@ -548,7 +634,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // xterm re-measures synchronously and draws once, on the next frame.
   let ownCache = null;
   function ownSize() {
-    if (!opened) return null;
+    if (!opened || !shown()) return null;
     const base = termSize();
     const key = `${fitBox.clientWidth}x${fitBox.clientHeight}|${base}|${term.options.fontFamily}`;
     if (ownCache && ownCache.key === key) return ownCache.size;
@@ -573,6 +659,9 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       if (state.cols && state.rows && (term.cols !== state.cols || term.rows !== state.rows)) term.resize(Math.max(2, state.cols), Math.max(1, state.rows));
       return;
     }
+    // Hidden, it says nothing; shown again it says its size again, whoever set one meanwhile (a
+    // shell follows the last resize).
+    if (opened && !shown()) lastSent = null;
     const own = ownSize();
     if (own && gotState && state.can_write && !exited && !sameSize(lastSent, own)) {
       if (socket.resize(own.cols, own.rows)) lastSent = own;
@@ -871,6 +960,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       clearTimeout(revealTimer);
       clearTimeout(presenceTimer);
       clearTimeout(clickTimer);
+      clearTimeout(topCheck);
+      clearTimeout(topOfferTimer);
       window.removeEventListener('focus', onWindowFocus);
       window.removeEventListener('blur', updatePresence);
       document.removeEventListener('visibilitychange', updatePresence);

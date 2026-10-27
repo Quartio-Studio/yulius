@@ -46,6 +46,39 @@ const QUICK_KEYS = [
   ['Enter', '\r'],
 ];
 
+/** Text with its `backticked` parts as code: commands and names stand out from the words. An
+ * unpaired backtick stays a backtick. */
+function withCode(text) {
+  const parts = text.split('`');
+  if (parts.length % 2 === 0) parts.splice(-2, 2, `${parts.at(-2)}\`${parts.at(-1)}`);
+  return parts.map((part, i) => (i % 2 ? part && h('code', null, part) : part)).filter(Boolean);
+}
+
+/**
+ * An agent's request to a person (`needs_you`, SPEC-327): a heading, then What happened, Problem
+ * and To do (Decide for a decision) as a labelled list, each part only when given, the to-do last.
+ */
+function needsYouText(asked) {
+  const parts = [
+    ['What happened', asked.happened],
+    ['Problem', asked.problem],
+    [asked.decision ? 'Decide' : 'To do', asked.action],
+  ].filter(([, text]) => text);
+  // The list scrolls when long (a phone), its to-do held in view at its foot (`fitNeedsYou`).
+  return h('div', { class: 'attention-text needs-you-text' },
+    h('strong', { class: 'needs-you-head' }, asked.decision ? 'Needs your decision' : 'Needs you'),
+    h('dl', { class: 'needs-you-parts' }, parts.map(([label, text], i) =>
+      h('div', { class: i === parts.length - 1 ? 'needs-you-todo' : null }, h('dt', null, label), h('dd', null, withCode(text))))));
+}
+
+/** A request's list that scrolls takes the keyboard, so what scrolls is read without a pointer. */
+function fitNeedsYou(bar) {
+  const list = bar.querySelector('.needs-you-parts');
+  if (!list) return;
+  if (list.scrollHeight > list.clientHeight) list.tabIndex = 0;
+  else if (list !== document.activeElement) list.removeAttribute('tabindex');
+}
+
 function readOnlyText(sandbox) {
   return sandbox && sandbox.access === 'read' ? 'Read-only (GitHub: read)' : 'Read-only';
 }
@@ -160,6 +193,10 @@ export function mountTaskView(ctx, sandbox, task) {
       // The limit the sandbox was at: from the exit, else from the last run's record (a reload).
       exitMessage: (exit) => endedMessage(exit.status || current.status, exit.cause || lastLimitCause()),
       emptyMessage: () => emptyTerminalMessage(current),
+      // Claude Code shows a session only from its last compaction: past the terminal's top, the
+      // whole session is offered (SPEC-326).
+      // A task that never started has no session to show.
+      topOffer: { label: 'Earlier messages: show the whole session', open: () => openHistory(), when: () => !(detail && detail.started === false) },
       exitActions: (exit) => {
         const message = endedMessage(exit.status || current.status, exit.cause || lastLimitCause());
         const actions = [];
@@ -205,7 +242,8 @@ export function mountTaskView(ctx, sandbox, task) {
     if (Boolean(owner()) === Boolean(watch)) return;
     const previous = terminal;
     // The keyboard in the screen that goes moves to the one that comes (not to the page).
-    const focused = previous.el.contains(document.activeElement);
+    const focused = previous.el.contains(document.activeElement) || Boolean(history && history.el.contains(document.activeElement));
+    dropHistory();
     watch = owner() ? makeWatch() : null;
     terminal = watch ? watchingTerminal(watch) : makeTerminal();
     previous.el.replaceWith(terminal.el);
@@ -215,6 +253,43 @@ export function mountTaskView(ctx, sandbox, task) {
       terminal.start();
       if (focused || (!watch && !isPhone())) terminal.focus();
     }
+  }
+
+  // ---- the whole session (SPEC-326): Claude Code shows a session only from its last compaction,
+  // so a wheel turn that reaches the terminal's top offers (terminal-core.js) the session's
+  // transcript from its first line, in the terminal's place. The terminal stays connected
+  // underneath, hidden, until the person comes back to it.
+  let history = null;
+  function openHistory() {
+    if (watch || history) return;
+    history = createWatchView(ctx, {
+      taskId: task.id,
+      task: () => current,
+      owner,
+      emptyMessage: emptyTerminalMessage,
+      sessionPath: (docId) => `/s/${encodeURIComponent((ctx.store.sandboxById(sandbox.id) || sandbox).slug)}/sessions/${encodeURIComponent(docId)}`,
+      whole: true,
+      onBack: () => closeHistory(true),
+    });
+    terminal.el.hidden = true;
+    terminal.el.after(history.el);
+    history.start();
+    history.focus();
+  }
+  /** Removes the History view; true when there was one. */
+  function dropHistory() {
+    if (!history) return false;
+    const view = history;
+    history = null;
+    view.el.remove();
+    view.destroy();
+    return true;
+  }
+  function closeHistory(focus) {
+    if (!dropHistory()) return;
+    terminal.el.hidden = false;
+    terminal.refit();
+    if (focus) terminal.focus();
   }
 
   // ---- phone quick input
@@ -242,7 +317,12 @@ export function mountTaskView(ctx, sandbox, task) {
   // It takes the keyboard (tabindex -1) only from a reply field closed under someone typing.
   const attention = h('div', { class: 'attention-bar', role: 'status', tabindex: -1, hidden: true });
   // Where the user answers the agent: its terminal (the quick input on phones).
-  const focusReply = () => (isPhone() ? quickInput.focus() : terminal.focus());
+  // The whole session (SPEC-326) gives the terminal back first: the answer goes there.
+  const focusReply = () => {
+    closeHistory(false);
+    if (isPhone()) quickInput.focus();
+    else terminal.focus();
+  };
   // A text answer (Needs you, waiting for your reply) is written in a field in the bar and typed
   // into the session (SPEC-156): focusing the terminal alone showed nothing, as Claude Code draws
   // its own cursor. Phones have the quick input for it. The field stays in the bar (hidden when not
@@ -264,6 +344,8 @@ export function mountTaskView(ctx, sandbox, task) {
     if (!replying) return; // a closed (hidden) field never sends
     const text = replyInput.value.trim();
     if (!text) { replyInput.focus(); return; }
+    // The answer is for the terminal, sent or not: why it was not shows there (SPEC-326).
+    closeHistory(false);
     if (!typeAndSubmit(text)) return;
     replyInput.value = '';
     replying = false;
@@ -283,6 +365,7 @@ export function mountTaskView(ctx, sandbox, task) {
     const pr = ctx.store.pullsOf(current.sandbox_id).get(current.id);
     const info = taskInfo(current, ctx.store.state.actionRequests, pr);
     let content = null;
+    let asksPerson = false; // the bar shows a `needs_you` request
     let textAnswer = false; // the bar asks for an answer written in its reply field
     const access = (ctx.store.sandboxById(sandbox.id) || sandbox).access;
     const can = taskActions(current, access, pr, me());
@@ -340,13 +423,15 @@ export function mountTaskView(ctx, sandbox, task) {
     } else if (info.held) {
       content = null; // the held-prompt card says it
     } else if (info.needsYou) {
-      // The agent asked a person to act (`needs_you`, SPEC-134): what, why, and where.
+      // The agent asked a person to act (`needs_you`, SPEC-134): what happened, the problem, what to
+      // do, and where (SPEC-327).
       const asked = info.needsYou;
       // The request stays while the agent asks something in the terminal (a permission menu): text
       // typed there would pick the menu's options unseen, so Reply goes to the terminal then.
       const asksInTerminal = current.activity === 'needs_attention';
       textAnswer = !owner() && !asksInTerminal;
-      content = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'Needs you: '), asked.action, asked.why ? ` · ${asked.why}` : ''),
+      asksPerson = true;
+      content = [icon('st-attention', { size: 16 }), needsYouText(asked),
         asked.link ? h('a', { class: 'btn btn-sm', href: asked.link, target: asked.link.startsWith(location.origin) ? null : '_blank', rel: 'noopener' }, 'Open') : null,
         owner() ? null : asksInTerminal ? h('button', { type: 'button', class: 'btn btn-sm', onClick: focusReply }, 'Reply') : replying ? null : replyButton];
     } else if (info.request) {
@@ -366,6 +451,8 @@ export function mountTaskView(ctx, sandbox, task) {
       textAnswer = !owner();
     }
     attention.hidden = !content && !control;
+    // A request's buttons go under it when the bar is too narrow for both (SPEC-327 review).
+    attention.classList.toggle('needs-you', asksPerson);
     attention.classList.toggle('waiting', !control && !info.request && current.activity === 'waiting' && info.group === 'needs');
     attention.classList.toggle('stacked', Boolean(control && content));
     // A waiting task's start chip and buttons go below its words (SPEC-126).
@@ -378,6 +465,11 @@ export function mountTaskView(ctx, sandbox, task) {
     // A control kept across rebuilds (Reply) keeps the keyboard: taking it out of the page drops
     // the focus to the body, on every task update (#506).
     const kept = !typing && attention.contains(document.activeElement) ? document.activeElement : null;
+    // A request's list is rebuilt on every task update while the agent works on: it keeps where it
+    // was scrolled and the keyboard (SPEC-327 review).
+    const oldList = attention.querySelector('.needs-you-parts');
+    const listScroll = oldList ? oldList.scrollTop : 0;
+    const listFocused = Boolean(oldList) && oldList === kept;
     // Everything but the reply field is rebuilt; the field stays last.
     for (const child of [...attention.childNodes]) if (child !== replyForm) child.remove();
     attention.insertBefore(append(document.createDocumentFragment(), control && content
@@ -386,6 +478,12 @@ export function mountTaskView(ctx, sandbox, task) {
     if (replyForm.parentNode !== attention) attention.append(replyForm);
     replyForm.hidden = !replying;
     if (kept && kept.isConnected && document.activeElement !== kept) kept.focus({ preventScroll: true });
+    const list = attention.querySelector('.needs-you-parts');
+    if (list) {
+      fitNeedsYou(attention);
+      list.scrollTop = listScroll;
+      if (listFocused && list.tabIndex === 0) list.focus({ preventScroll: true });
+    }
     // A field closed under someone typing (or Escape) leaves the keyboard on the bar, which does
     // nothing with keys: never the terminal, where a permission menu may have opened.
     if (typing && !replying) attention.focus({ preventScroll: true });
@@ -468,6 +566,7 @@ export function mountTaskView(ctx, sandbox, task) {
     queueBox.setValue('');
     queueError.textContent = '';
     renderQueue();
+    closeHistory(false);
     if (!isPhone()) terminal.focus();
   } }, 'Dismiss');
   // The request's files (SPEC-168): each a placeholder where it sits, `Image N` for an image (N
@@ -487,12 +586,19 @@ export function mountTaskView(ctx, sandbox, task) {
     const name = path.split('/').pop();
     const key = `${index}\n${path}`;
     if (requestReads.has(key)) return;
+    const fileUrl = `/api/tasks/${enc(current.id)}/prompt/attachments/${index}`;
     let url = requestUrls.get(key);
     if (!url) {
       requestReads.add(key);
       try {
-        // An attached file can be as large as an upload: longer than a JSON read.
-        const blob = await ctx.api.get(`/api/tasks/${enc(current.id)}/prompt/attachments/${index}`, { as: 'blob', signal: reads.signal, timeoutMs: 120000 });
+        // Another file can be as large as an upload (1 GiB, a screen recording: SPEC-325): the
+        // browser downloads it from its link.
+        if (!image) {
+          await ctx.api.download(fileUrl, name, { signal: reads.signal });
+          return;
+        }
+        // An image can be as large too: longer than a JSON read.
+        const blob = await ctx.api.get(fileUrl, { as: 'blob', signal: reads.signal, timeoutMs: 120000 });
         if (!alive) return;
         url = URL.createObjectURL(blob);
         requestUrls.set(key, url);
@@ -506,8 +612,7 @@ export function mountTaskView(ctx, sandbox, task) {
         requestReads.delete(key);
       }
     }
-    if (image) openAttachment({ name }, { image: url });
-    else h('a', { href: url, download: name }).click();
+    openAttachment({ name }, { image: url });
   }
   function drawRequest(text) {
     const { parts, paths } = parsePrompt(text);
@@ -614,6 +719,25 @@ export function mountTaskView(ctx, sandbox, task) {
 
   // Watching, the control card sits above the transcript in the flow (SPEC-179 WAT-005).
   const termArea = h('div', { class: ['taskview-term', watch && 'watching'] }, terminal.el, attention, held, queueSlot);
+  // The terminal's corner notices start below the attention bar, however tall it is (SPEC-327).
+  const attentionSize = new ResizeObserver(() => {
+    termArea.style.setProperty('--attention-h', `${attention.offsetHeight}px`);
+    fitNeedsYou(attention);
+  });
+  attentionSize.observe(attention);
+  destroyers.push(() => attentionSize.disconnect());
+  // The way on past the terminal's top (terminal-core.js) sits below the cards floating over it
+  // (SPEC-326 HIS-002), however tall they are.
+  let overlayBottom = null;
+  const overlays = new ResizeObserver(() => {
+    const bottom = [attention, held].reduce((most, card) => (card.hidden ? most : Math.max(most, card.offsetTop + card.offsetHeight)), 0);
+    if (bottom === overlayBottom) return;
+    overlayBottom = bottom;
+    termArea.style.setProperty('--term-overlay-bottom', `${bottom}px`);
+  });
+  overlays.observe(attention);
+  overlays.observe(held);
+  destroyers.push(() => overlays.disconnect());
   const el = h('div', { class: 'taskview' }, heading, strip, termArea, quickbar);
 
   function renderStrip() {
@@ -776,6 +900,7 @@ export function mountTaskView(ctx, sandbox, task) {
       renderStrip();
       if (current.status !== previousStatus) terminal.refreshEmpty();
       if (watch) watch.update();
+      if (history) history.update();
       if (current.status !== previousStatus) loadDelivery(); // a finished task may now be ready for a pull request
       else renderDelivery();
       // A continued task gets a new attempt: reconnect if the socket had ended.
@@ -795,6 +920,7 @@ export function mountTaskView(ctx, sandbox, task) {
       alive = false;
       reads.abort();
       destroyers.forEach((off) => off());
+      dropHistory();
       terminal.destroy();
     },
   };

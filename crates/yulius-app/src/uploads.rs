@@ -5,7 +5,9 @@
 //! Contract:
 //! - one file per request, streamed through a bounded buffer and never held in memory: at most
 //!   `AppConfig::upload_max_bytes` (a declared length above it is refused before any byte is
-//!   read, and the received bytes are counted); at most [`MAX_CONCURRENT_UPLOADS`] uploads at once
+//!   read, and the received bytes are counted); a declared length that would bring the data disk
+//!   to its critical level (SPEC-276) is refused the same way (SPEC-325); at most
+//!   [`MAX_CONCURRENT_UPLOADS`] uploads at once
 //!   (`Capacity` beyond); the interface layer fails a body that sends nothing for
 //!   [`UPLOAD_IDLE`];
 //! - the bytes go to a temporary file (`.yulius-upload-<random>`, created exclusively, 0644) in
@@ -56,6 +58,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use yulius_contracts::api::files::UploadedFile;
 use yulius_domain::ids::{SandboxId, TaskId};
+use yulius_domain::sweep::{CRITICAL_PERCENT, Level};
 
 use crate::auth::{AuthContext, hex_token};
 use crate::context::App;
@@ -65,8 +68,8 @@ use crate::files::{
     real_path, relative_components, remove_tree,
 };
 
-/// Default largest upload (25 MiB; `YULIUS_UPLOAD_MAX_MB`).
-pub const DEFAULT_UPLOAD_MAX_BYTES: u64 = 25 * 1024 * 1024;
+/// Default largest upload (1 GiB, a screen recording: SPEC-325; `YULIUS_UPLOAD_MAX_MB`).
+pub const DEFAULT_UPLOAD_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 /// Uploads in progress at once on this instance.
 pub const MAX_CONCURRENT_UPLOADS: usize = 8;
 /// Agent states sent, restored, saved or downloaded at once (SPEC-271 OPS-008).
@@ -200,10 +203,15 @@ fn too_large(limit: u64) -> AppError {
     ))
 }
 
-/// `25 MB`, `512 KB`, `100 bytes` (binary units, as `YULIUS_UPLOAD_MAX_MB`).
+/// `1 GB`, `25 MB`, `512 KB`, `100 bytes` (binary units, as `YULIUS_UPLOAD_MAX_MB`).
 fn human_size(bytes: u64) -> String {
     const MIB: u64 = 1024 * 1024;
-    if bytes >= MIB && bytes.is_multiple_of(MIB) {
+    const GIB: u64 = 1024 * MIB;
+    if bytes >= GIB && bytes.is_multiple_of(GIB) {
+        format!("{} GB", bytes / GIB)
+    } else if bytes >= GIB {
+        format!("{}.{} GB", bytes / GIB, (bytes % GIB) * 10 / GIB)
+    } else if bytes >= MIB && bytes.is_multiple_of(MIB) {
         format!("{} MB", bytes / MIB)
     } else if bytes >= MIB {
         format!("{}.{} MB", bytes / MIB, (bytes % MIB) * 10 / MIB)
@@ -518,13 +526,28 @@ impl App {
             .unwrap_or_else(|| "superadmin".into())
     }
 
-    fn check_declared(&self, declared: Option<u64>) -> AppResult<()> {
-        match declared {
-            Some(len) if len > self.config.upload_max_bytes => {
-                Err(too_large(self.config.upload_max_bytes))
-            }
-            _ => Ok(()),
+    /// Refuses a declared length above the limit, or one that would bring the data disk to its
+    /// critical level (SPEC-325 UPL-002; an unknown disk refuses nothing).
+    async fn check_declared(&self, declared: Option<u64>) -> AppResult<()> {
+        let Some(len) = declared else {
+            return Ok(());
+        };
+        if len > self.config.upload_max_bytes {
+            return Err(too_large(self.config.upload_max_bytes));
         }
+        if let Some((total, used)) = self.data_disk().await
+            && Level::of(used.saturating_add(len), total) == Level::Critical
+        {
+            // What can still be added before the critical level, not all the free space.
+            let room = u128::from(total) * u128::from(CRITICAL_PERCENT) / 100;
+            let room = u64::try_from(room).unwrap_or(u64::MAX).saturating_sub(used);
+            return Err(AppError::Invalid(format!(
+                "the server's disk has no room for this file: only {} can be added before \
+                 it is {CRITICAL_PERCENT} % full",
+                human_size(room)
+            )));
+        }
+        Ok(())
     }
 
     pub(crate) fn upload_slot(&self) -> AppResult<OwnedSemaphorePermit> {
@@ -605,7 +628,7 @@ impl App {
             return Err(AppError::Invalid("a file path is required".into()));
         }
         check_components(&target.relative)?;
-        self.check_declared(declared)?;
+        self.check_declared(declared).await?;
         let parts: Vec<&str> = target.relative.split('/').collect();
         let (name, dirs) = parts
             .split_last()
@@ -826,7 +849,7 @@ impl App {
         name: &str,
         (declared, replaces): (Option<u64>, bool),
     ) -> AppResult<Upload> {
-        self.check_declared(declared)?;
+        self.check_declared(declared).await?;
         let name = attachment_name(name);
         let slot = self.upload_slot()?;
         let sandbox_dir = std::fs::canonicalize(self.sandbox_dir(sandbox))
@@ -1051,6 +1074,11 @@ mod tests {
     #[test]
     fn sizes_read_like_the_setting() {
         assert_eq!(human_size(25 * 1024 * 1024), "25 MB");
+        // The default limit and a disk's free space (SPEC-325), not "1024 MB" or "9536.7 MB".
+        assert_eq!(human_size(1024 * 1024 * 1024), "1 GB");
+        assert_eq!(human_size(1536 * 1024 * 1024), "1.5 GB");
+        assert_eq!(human_size(10_000_000_000), "9.3 GB");
+        assert_eq!(human_size(1023 * 1024 * 1024), "1023 MB");
         assert_eq!(human_size(1536 * 1024), "1.5 MB");
         assert_eq!(human_size(2048), "2 KB");
         assert_eq!(human_size(10), "10 bytes");

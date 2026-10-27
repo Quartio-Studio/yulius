@@ -85,20 +85,39 @@ pub async fn prompt_attachment(
             header::CONTENT_TYPE,
             HeaderValue::from_static("application/octet-stream"),
         );
-        // Safe names only (an upload's are already); anything else is a generic name.
-        let name = if name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
-        {
-            name.as_str()
-        } else {
-            "attachment"
-        };
-        if let Ok(value) = HeaderValue::from_str(&format!("attachment; filename=\"{name}\"")) {
+        if let Ok(value) = HeaderValue::from_str(&content_disposition(&name)) {
             headers.insert(header::CONTENT_DISPOSITION, value);
         }
     }
     Ok(response)
+}
+
+/// `attachment; filename="…"` naming the file, plus `filename*` (RFC 6266, RFC 8187) when the
+/// name is not plain ASCII: the browser downloads the link itself and this name wins over the
+/// page's (SPEC-325). The plain name keeps only safe characters (others become `_`).
+fn content_disposition(name: &str) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+');
+    let plain: String = name
+        .chars()
+        .map(|c| if safe(c) { c } else { '_' })
+        .collect();
+    let plain = if plain.is_empty() {
+        "attachment".into()
+    } else {
+        plain
+    };
+    if name.chars().all(safe) {
+        return format!("attachment; filename=\"{plain}\"");
+    }
+    let mut encoded = String::new();
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric() || b"!#$&+-.^_`|~".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    format!("attachment; filename=\"{plain}\"; filename*=UTF-8''{encoded}")
 }
 
 pub async fn archive(

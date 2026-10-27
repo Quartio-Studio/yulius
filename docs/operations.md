@@ -183,8 +183,9 @@ journalctl -u yulius -f
 Only the public listener (`YULIUS_BIND`) is proxied. The internal listener (`YULIUS_INTERNAL_BIND`)
 serves agents' MCP, hooks and Git credentials; it must stay on loopback and is never proxied.
 WebSockets are used for terminals, the event stream and the browser panel; import
-chunks are up to 8 MiB and a dropped file up to the upload limit (`YULIUS_UPLOAD_MAX_MB`, 25 MiB
-by default), so the proxy's body limit must be above it (32 MB below; raise both together). Let the proxy compress responses: Yulius serves its web UI uncompressed,
+chunks are up to 8 MiB and a dropped file up to the upload limit (`YULIUS_UPLOAD_MAX_MB`, 1 GiB
+by default, for screen recordings: ADR-0219), so the proxy's body limit must be above it (1100 MB
+below; change both together). Let the proxy compress responses: Yulius serves its web UI uncompressed,
 and compression cuts the first load from about 1 MB to about 300 KB (the editor's first open from
 4.6 MB to about 1.2 MB), which matters most on phones.
 
@@ -193,7 +194,7 @@ Caddy:
 ```caddyfile
 yulius.example.com {
     request_body {
-        max_size 32MB
+        max_size 1100MB
     }
     encode zstd gzip
     header Strict-Transport-Security "max-age=31536000"
@@ -208,7 +209,7 @@ server {
     listen 443 ssl http2;
     server_name yulius.example.com;
     # ssl_certificate / ssl_certificate_key ...
-    client_max_body_size 32m;
+    client_max_body_size 1100m;
     gzip on;
     gzip_min_length 1024;
     gzip_types text/css text/javascript application/javascript application/json image/svg+xml;
@@ -1093,8 +1094,9 @@ dropped or pasted onto a terminal are stored as attachments in
 `<data>/sandboxes/<sid>/attachments/{tasks,shells}/<id>/`, outside every worktree (never in
 `git status` or a pull request; the sandbox's processes can read and change them like its other
 files). They count towards the
-data directory's disk: at most 25 MiB each (`YULIUS_UPLOAD_MAX_MB`), 500 per task or terminal,
-8 uploads at once. A task's attachments go when the task is deleted, a terminal's when it ends
+data directory's disk: at most 1 GiB each (`YULIUS_UPLOAD_MAX_MB`), 500 per task or terminal,
+8 uploads at once; an upload that would bring the data disk to its critical level (95 % used) is
+refused before it starts (ADR-0219). A task's attachments go when the task is deleted, a terminal's when it ends
 (left-overs are removed at the next start); archiving a task keeps them. Uploads are audited
 (`audit_log`: `file.uploaded`, `attachment.uploaded`).
 
@@ -1109,7 +1111,63 @@ sudo -u yulius yulius backup --data-dir /var/lib/yulius /var/backups/yulius-$(da
 wanted, `sandboxes/` (clones and worktrees can be re-created from GitHub, uncommitted work cannot).
 Restore: stop the service, put the database copy at `yulius.db`, restore `master.key`, start.
 The database copy holds the secrets vault and the egress CA key as ciphertext only; keep
-`master.key` apart from database backups (whoever has both can read every secret).
+`master.key` apart from database backups (whoever has both can read every secret). For a copy of
+everything, files included, see the next section.
+
+### Copy or move the whole instance
+
+`yulius instance export` and `yulius instance import` (SPEC-329, ADR-0222) copy everything: the
+database, `master.key`, every sandbox (clones, worktrees with uncommitted work, homes with the
+Claude sessions), installed packages and Docker images and volumes (`sysroots/`), transcripts and
+runs. Both run as root.
+
+```sh
+# straight from the old VM to a new one; nothing is written on the old VM's disk
+sudo yulius instance export --move | ssh root@new-vm yulius instance import
+# or from a laptop, between two VMs
+ssh root@old-vm yulius instance export --move | ssh root@new-vm yulius instance import
+# or keep a copy (as sensitive as the server, hence umask 077) and install it later
+(umask 077; ssh root@old-vm yulius instance export > yulius-$(date +%F).tar)
+ssh root@new-vm yulius instance import < yulius-2026-10-26.tar
+# then, on the new VM
+sudo yulius host setup --public-url https://yulius.example.com
+```
+
+**Export.** It freezes `yulius.service` (`systemctl freeze`): the server, every agent, terminal,
+browser, CI job, deploy and sandbox Docker engine pause, so nothing changes while it reads. The web
+UI does not answer during the export. It then prints the exact size ("Exporting 123.4 GiB
+(1,234,567 entries)"), streams an uncompressed tar of that exact length to standard output
+(refused when standard output is a terminal), shows progress on stderr and thaws the service
+(also when it fails, the reader goes away or it gets Ctrl-C, SIGTERM or SIGHUP, even while it
+waits on a stalled connection). If it is killed
+with SIGKILL, thaw by hand: `sudo systemctl thaw yulius.service`. `--move` keeps the old instance
+frozen and disables its unit after a successful export, so it never runs beside the new one (both
+would run the same agents against the same repositories); undo with `sudo systemctl thaw
+yulius.service && sudo systemctl enable yulius.service`. Left out, because the new host makes its
+own: `system/` (the sandbox base), `runtime/`, `update/`, `yulius.db-shm`, sockets and FIFOs. It is
+refused (exit 2, nothing frozen) while the update helper runs (checked again once frozen and
+before the copy's checksum), from a Yulius terminal (it would freeze itself), and while the
+service is stopped but its agents still run (start it first).
+`--service` and `--update-service` name other units. The copy is uncompressed so its size is known
+first; pipe it through `zstd` yourself if the link is slow.
+
+**Import.** On the new VM with the same or a newer `yulius` installed (§2, before `host setup`):
+it reads the manifest first and refuses (exit 2, nothing written) a copy of a newer database
+schema, a copy exported from another path than `--data-dir` (default `/var/lib/yulius`, as
+`YULIUS_DATA`; Git worktrees and the database hold absolute paths, and the copy never chooses
+where it goes), a data directory that exists and holds anything but `lost+found` and dotfiles,
+belongs to another user or to root (a new disk: it prints the `useradd` and `chown` to run), and
+too little free space or inodes. A subordinate id range smaller than the exported one is refused
+after the service user is made, before anything of the copy is written. It makes the service user and its subordinate ids (as
+`host setup` does), extracts as the stream arrives, remaps the old service's ids and subordinate
+range to the new ones, and checks the copy's SHA-256 and length. A file of another owner (root
+included) becomes the service user's, without setuid. File capabilities and ACLs are not restored
+(it says how many). A cut or damaged stream fails (exit 1) and leaves the data directory marked
+incomplete: remove it (`sudo rm -rf /var/lib/yulius`) and import again. Then run `host setup`
+with the public URL the import prints (it writes the unit, builds the sandbox base for this host,
+checks Docker and starts Yulius), copy other `Environment=` lines you changed in the old unit,
+and point the reverse proxy and DNS at the new VM. Tasks that were running come back as after a
+reboot.
 
 ### Leftovers: what is kept, what is cleaned and when
 
@@ -1338,6 +1396,11 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
 
 ### Notes for specific upgrades
 
+- Upgrading to 1 GiB uploads (SPEC-325, ADR-0219, 2026-10-26): the default upload limit is now
+  1 GiB. Raise the reverse proxy's request body limit to 1100 MB (§4: Caddy `max_size 1100MB`,
+  nginx `client_max_body_size 1100m`) and reload it, or files over the old proxy limit still fail
+  with 413 ("larger than the server accepts"). To keep the old limit, set
+  `YULIUS_UPLOAD_MAX_MB=25`. No migration.
 - Upgrading to named CD environments (SPEC-257, ADR-0195, 2026-10-21): migration 0041 gives each
   CD run its `stage`; runs of `dev` and `prod` keep theirs. `[cd.dev]` and `[cd.prod]` work as
   before; nothing to configure.

@@ -52,7 +52,7 @@ const focused = (browser: Browser) => browser.evaluate(() => {
 });
 
 const askRuleset = (browser: Browser) => touchTask(browser, 'sb_studio', 12, {
-  needs_you: { action: 'Add a ruleset', why: 'agents can push to main', at: new Date().toISOString() },
+  needs_you: { action: 'Add a ruleset', problem: 'agents can push to main', decision: false, at: new Date().toISOString() },
 });
 
 test('Reply on Needs you opens a field whose text the agent gets', async ({ app, browser, screen }) => {
@@ -60,7 +60,7 @@ test('Reply on Needs you opens a field whose text the agent gets', async ({ app,
   await terminalShown(browser);
   await askRuleset(browser);
   const bar = browser.locator('.attention-bar');
-  await expect(bar).toHaveText(/Needs you: Add a ruleset/);
+  await expect(bar).toHaveText(/Needs you[\s\S]*To do[\s\S]*Add a ruleset/);
 
   await screen.getByRole('button', 'Reply').click();
   const field = screen.getByRole('textbox', 'Reply to the agent');
@@ -71,9 +71,9 @@ test('Reply on Needs you opens a field whose text the agent gets', async ({ app,
   // The bar is rebuilt on every task update: the text, the keyboard and the caret stay.
   await browser.keyboard.type('Ruleset added');
   await touchTask(browser, 'sb_studio', 12, {
-    needs_you: { action: 'Add a ruleset on main', why: 'agents can push to main', at: new Date().toISOString() },
+    needs_you: { action: 'Add a ruleset on main', problem: 'agents can push to main', decision: false, at: new Date().toISOString() },
   });
-  await expect(browser.locator('.attention-bar')).toHaveText(/Needs you: Add a ruleset on main/);
+  await expect(browser.locator('.attention-bar')).toHaveText(/Needs you[\s\S]*To do[\s\S]*Add a ruleset on main/);
   await expect.poll(() => focused(browser)).toEqual({ label: 'Reply to the agent', caret: 13 });
   await expect(field).toHaveValue('Ruleset added');
 
@@ -142,7 +142,7 @@ test('Reply on Needs you while the agent asks in the terminal focuses the termin
   await terminalShown(browser);
   await askRuleset(browser);
   await touchTask(browser, 'sb_studio', 12, { activity: 'needs_attention' });
-  await expect(browser.locator('.attention-bar')).toHaveText(/Needs you: Add a ruleset/);
+  await expect(browser.locator('.attention-bar')).toHaveText(/Needs you[\s\S]*To do[\s\S]*Add a ruleset/);
   await screen.getByRole('button', 'Reply').click();
   await expect.poll(() => focused(browser)).toEqual({ label: 'Terminal input', caret: 0 });
   await expect(screen.getByRole('textbox', 'Reply to the agent')).toBeHidden();

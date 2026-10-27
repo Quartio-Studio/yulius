@@ -135,7 +135,7 @@ function seed(params) {
         is_superadmin: role === 'superadmin', is_instance_admin: role !== 'member', github_linked: linked,
       },
       csrf_token: 'mock-csrf-token',
-      instance: { owner_login: 'Quartio-Studio', owner_kind: 'org', public_url: ORIGIN, github_configured: params.get('github') !== '0', contained: params.get('contained') !== '0', upload_max_bytes: 25 * 1024 * 1024 },
+      instance: { owner_login: 'Quartio-Studio', owner_kind: 'org', public_url: ORIGIN, github_configured: params.get('github') !== '0', contained: params.get('contained') !== '0', upload_max_bytes: 1024 * 1024 * 1024 },
     },
     sandboxes: [],
     tasks: [],
@@ -304,8 +304,8 @@ function seed(params) {
     { id: 'aut_3', sandbox: 'sb_studio', name: 'Work through open issues', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null, harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: null },
   ];
   db.mcp = [
-    { id: 'mcp_quartio', sandbox: null, scope: 'instance', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true, origin: 'person' },
-    { id: 'mcp_apify', sandbox: 'sb_studio', scope: 'sandbox', name: 'apify', transport: 'stdio', command: 'npx', args: ['-y', '@apify/actors-mcp-server'], url: null, env_keys: ['APIFY_TOKEN'], header_keys: [], enabled: true, origin: 'person' },
+    { id: 'mcp_quartio', sandbox: null, scope: 'instance', audience: 'team', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true, origin: 'person' },
+    { id: 'mcp_apify', sandbox: 'sb_studio', scope: 'sandbox', audience: 'team', name: 'apify', transport: 'stdio', command: 'npx', args: ['-y', '@apify/actors-mcp-server'], url: null, env_keys: ['APIFY_TOKEN'], header_keys: [], enabled: true, origin: 'person' },
   ];
   // AdminUser (the superadmin is not listed).
   db.users = [
@@ -1477,6 +1477,13 @@ route('GET', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
   if (/\.png$/i.test(path)) return new Response(Uint8Array.from(atob(MOCK_PNG), (c) => c.charCodeAt(0)), { status: 200, headers: { 'Content-Type': 'image/png' } });
   return new Response('Mock notes attached to the prompt.\n', { status: 200, headers: { 'Content-Type': 'application/octet-stream' } });
 });
+// Whether the file is there before the browser downloads it (SPEC-325); not counted as a read.
+route('HEAD', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  const path = promptParts(task).paths[Number(p[1])];
+  // A HEAD answer has no body, as the server's (axum drops it).
+  return new Response(null, { status: path && promptFileServed(task, path) ? 200 : 404 });
+});
 route('POST', `/api/tasks/${ID}/stop`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
@@ -2265,7 +2272,7 @@ route('POST', `/api/sandboxes/${ID}/files`, ({ db, p, body }) => {
 // replacing one unless asked), and terminal attachments with safe, unique names.
 const uploadTooLarge = (db, size) => {
   const limit = db.me.instance.upload_max_bytes;
-  if (size > limit) fail(422, 'invalid', `the file is larger than the upload limit of ${Math.round(limit / (1024 * 1024))} MB`);
+  if (size > limit) fail(422, 'invalid', `the file is larger than the upload limit of ${limit >= 1024 ** 3 && limit % 1024 ** 3 === 0 ? `${limit / 1024 ** 3} GB` : `${Math.round(limit / (1024 * 1024))} MB`}`);
 };
 route('PUT', `/api/sandboxes/${ID}/files/upload`, ({ db, p, query, body }) => {
   need(sandboxOf(db, p[0]), 'write');
@@ -2844,21 +2851,34 @@ route('DELETE', `/api/sandboxes/${ID}/variables/${ID}`, ({ db, p }) => {
   return json(204);
 });
 
-route('GET', `/api/sandboxes/${ID}/mcp`, ({ db, p }) => db.mcp.filter((m) => m.scope === 'instance' || m.sandbox === p[0]).map(({ sandbox: _s, ...m }) => m));
+// A personal server exists only for its owner (SPEC-332); every sandbox for the team is an
+// administrator's, the rest anyone's who may write here.
+const mcpOut = ({ sandbox: _s, owner: _o, ...m }) => ({ audience: 'team', ...m });
+const mcpMine = (db, m) => !m.owner || m.owner === db.me.user.id;
+const mcpPlace = (db, scope, audience) => { if (scope === 'instance' && audience !== 'personal' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator'); };
+route('GET', `/api/sandboxes/${ID}/mcp`, ({ db, p }) => db.mcp.filter((m) => (m.scope === 'instance' || m.sandbox === p[0]) && mcpMine(db, m)).map(mcpOut));
 route('POST', `/api/sandboxes/${ID}/mcp`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(body.name || '') || body.name.toLowerCase() === 'yulius') fail(422, 'invalid', 'invalid or reserved server name');
-  if (body.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator');
+  mcpPlace(db, body.scope, body.audience);
   db.nextId += 1;
-  const m = { id: `mcp_${db.nextId}`, sandbox: p[0], scope: body.scope === 'instance' ? 'instance' : 'sandbox', name: body.name, transport: body.transport, command: body.command || null, args: body.args || [], url: body.url || null, env_keys: Object.keys(body.env || {}), header_keys: Object.keys(body.headers || {}), enabled: body.enabled !== false, origin: 'person' };
+  const personal = body.audience === 'personal';
+  const m = { id: `mcp_${db.nextId}`, sandbox: p[0], scope: body.scope === 'instance' ? 'instance' : 'sandbox', audience: personal ? 'personal' : 'team', owner: personal ? db.me.user.id : null, name: body.name, transport: body.transport, command: body.command || null, args: body.args || [], url: body.url || null, env_keys: Object.keys(body.env || {}), header_keys: Object.keys(body.headers || {}), enabled: body.enabled !== false, origin: 'person' };
   db.mcp.push(m);
-  const { sandbox: _s, ...out } = m;
-  return json(201, out);
+  return json(201, mcpOut(m));
 });
 route('PUT', `/api/mcp/${ID}`, ({ db, p, body }) => {
   const m = db.mcp.find((x) => x.id === p[0]);
-  if (!m) fail(404, 'not_found', 'not found');
-  if (m.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator');
+  if (!m || !mcpMine(db, m)) fail(404, 'not_found', 'not found');
+  mcpPlace(db, m.scope, m.audience);
+  // Scope and audience move the server (MSC-006); making it personal makes the caller its owner.
+  if (body.scope || body.audience) {
+    const scope = body.scope || m.scope;
+    const audience = body.audience || m.audience || 'team';
+    mcpPlace(db, scope, audience);
+    if (scope === 'sandbox' && m.scope === 'instance') m.sandbox = body.sandbox || fail(422, 'invalid', 'name the sandbox');
+    Object.assign(m, { scope, audience, owner: audience === 'personal' ? m.owner || db.me.user.id : null });
+  }
   // A .mcp.json server becomes a person's when what it runs changes (SPEC-218 MOR-003): a stdio
   // command or arguments with its environment replaced, or an HTTP URL.
   if (m.origin === 'mcp_json') {
@@ -2876,14 +2896,17 @@ route('PUT', `/api/mcp/${ID}`, ({ db, p, body }) => {
   // Secrets are write-only: an omitted map keeps the stored values, a given map replaces them.
   if (body.env) m.env_keys = Object.keys(body.env);
   if (body.headers) m.header_keys = Object.keys(body.headers);
-  const { sandbox: _s, ...out } = m;
-  return out;
+  return mcpOut(m);
 });
-route('DELETE', `/api/mcp/${ID}`, ({ db, p }) => { db.mcp = db.mcp.filter((m) => m.id !== p[0]); return json(204); });
+route('DELETE', `/api/mcp/${ID}`, ({ db, p }) => {
+  if (!db.mcp.some((m) => m.id === p[0] && mcpMine(db, m))) fail(404, 'not_found', 'not found');
+  db.mcp = db.mcp.filter((m) => m.id !== p[0]);
+  return json(204);
+});
 route('POST', `/api/mcp/${ID}/test`, ({ db, p }) => {
   const m = db.mcp.find((x) => x.id === p[0]);
-  if (!m) fail(404, 'not_found', 'not found');
-  if (m.scope === 'instance' && !db.me.user.is_instance_admin) fail(403, 'forbidden', 'instance servers need an instance administrator');
+  if (!m || !mcpMine(db, m)) fail(404, 'not_found', 'not found');
+  mcpPlace(db, m.scope, m.audience);
   // Tests see which servers were tested (`__yuliusMock.mcpTests`).
   (db.mcpTests ||= []).push(m.id);
   if (m.origin === 'mcp_json' && m.transport === 'stdio') return { ok: false, tools: [], error: 'this server came from the repository’s .mcp.json, which agents can write, so the Test does not run its command on the Yulius host; check the whole command line, change it and enter its environment again to test it' };
@@ -3508,7 +3531,7 @@ route('GET', '/api/status', ({ db }) => {
   return {
     // Disk total unknown on purpose: unknown metrics are null, never zero.
     vm: { cpu_percent: 22 + Math.sin(wobble) * 9, cpu_count: 8, memory_used_bytes: 9.4 * 2 ** 30, memory_total_bytes: 16 * 2 ** 30, disk_used_bytes: 141 * 2 ** 30, disk_total_bytes: null, load: [1.21, 0.97, 0.74], load_1m: 1.21, uptime_s: 9 * 86400 + 3600 * 4 },
-    sessions: { live: db.tasks.filter((t) => t.status === 'running').length, limit: 8, queued: db.tasks.filter((t) => t.status === 'queued').length },
+    sessions: { live: db.tasks.filter((t) => t.status === 'running').length, limit: db.sessionLimit, queued: db.tasks.filter((t) => t.status === 'queued').length + db.sessionQueue },
     // Tasks with a live process (TaskStatus::is_live), not the cards' "working" count (#170).
     sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: db.tasks.filter((t) => t.sandbox_id === s.id && !t.archived && ['starting', 'running', 'switching', 'stopping'].includes(t.status)).length })),
     accounts: db.accounts.map((a) => (admin
@@ -3982,6 +4005,10 @@ function sessionDocs(db) {
     entry(12, 'user', [result('w9', 'File created successfully at: src/webhooks/fixtures.ts')]),
     // A skill's body, loaded as context (SPEC-090): the TUI does not print it.
     entry(13, 'user', [meta(['Base directory for this skill: /home/dev/.claude/skills/retry-policy', '', '# Retry policy — back-off for fulfilment', '─'.repeat(40), '', ...Array.from({ length: 36 }, (_, i) => `- Rule ${i + 1}: back off before attempt ${i + 2}.`)].join('\n'))]),
+    // Claude Code woke the idle session when its background reviewer stopped (#913): no prompt.
+    entry(14, 'user', [text('<task-notification>\n<task-id>a8f93b704fcd18284</task-id>\n<tool-use-id>toolu_01R2gWiaRe77</tool-use-id>\n<output-file>/tmp/claude-0/s/tasks/a8f93b704fcd18284.output</output-file>\n<status>completed</status>\n<summary>Agent "Review" finished</summary>\n<note>This agent stopped with background work of its own still running.</note>\n<result>The gate is still running, so I\'ll wait for it to finish.</result>\n<usage><subagent_tokens>79955</subagent_tokens><tool_uses>26</tool_uses><duration_ms>146878</duration_ms></usage>\n</task-notification>')], { at: iso(9 * HOUR - 17 * MIN) }),
+    // A wake-up the server cut inside its result (review round 1 of SPEC-328).
+    entry(15, 'user', [{ type: 'text', text: '<task-notification>\n<task-id>m1</task-id>\n<status>completed</status>\n<summary>Monitor "ci" stream ended</summary>\n<result>CI passed on the first', truncated: true }]),
   ];
   const task = (id, number) => db.tasks.find((t) => t.id === id && t.number === number);
   const docs = [];
@@ -4341,6 +4368,10 @@ class TermSession {
       if (Number.isFinite(otherRows) && otherRows >= 8) this.rows = Math.min(200, otherRows);
     }
     this.viewerSize = null;
+    // ?classic=1: a run started before Claude Code was made to draw full screen (SPEC-310), still on
+    // its classic renderer after the updates that froze and thawed it: the main screen without
+    // mouse reporting, and a viewer gets only the visible screen (SPEC-326).
+    this.classic = params.get('classic') === '1';
     this.script = SCRIPT_CLAUDE;
     this.scriptIndex = 0;
     this.timer = null;
@@ -4427,8 +4458,9 @@ class TermSession {
     while (visible.length < bottom) visible.unshift(''); // bottom-align like a scrolled TUI
     const f = this.footer();
     // Like Claude Code 2.1.292: full screen (alternate buffer) with mouse reporting, so the wheel
-    // scrolls the transcript inside the app (#34).
-    let out = `${E}?1049h${E}?1000h${E}?1006h${E}?25l${E}2J${E}r${E}H`;
+    // scrolls the transcript inside the app (#34). An old run (`?classic=1`, every session of the
+    // page) draws the main screen without mouse reporting.
+    let out = this.classic ? `${E}?1049l${E}?1000l${E}?1006l${E}?25l${E}2J${E}r${E}H` : `${E}?1049h${E}?1000h${E}?1006h${E}?25l${E}2J${E}r${E}H`;
     out += visible.join('\r\n');
     out += `${E}1;${bottom}r`;
     out += `${E}${bottom + 1};1H${f.sep}${E}${bottom + 2};1H${E}2K${f.prompt}${E}${bottom + 3};1H${f.sep}${E}${bottom + 4};1H${E}2K${f.status}${E}${bottom + 5};1H${E}2K${f.mode}`;
@@ -4711,6 +4743,9 @@ class ShellSession {
     this.viewers = new Set();
     this.cols = 100;
     this.rows = 30;
+    // Whether a viewer has said its size (its hello or a resize): until then cols × rows is only
+    // this mock's start, which tests must not take for the page's (#924).
+    this.sized = false;
     const cwd = shell.task_id ? `~/sandbox/worktrees/${shell.task_id}` : '~/sandbox';
     // Like bash with Yulius's PROMPT_COMMAND: the working directory as OSC 7 before each prompt.
     this.prompt = `\x1b]7;file://sandbox${shell.folder || ''}\x1b\\${c(114, `you@${slug}`)}:${c(39, cwd)}$ `;
@@ -4739,11 +4774,11 @@ class ShellSession {
       const hold = window.__yuliusHoldShell;
       if (hold && !this.released) { hold.then(() => { this.released = true; this.receive(ws, data); }); return; }
       this.viewers.add(ws);
-      if (msg.cols && msg.rows) { this.cols = msg.cols; this.rows = msg.rows; }
+      if (msg.cols && msg.rows) { this.cols = msg.cols; this.rows = msg.rows; this.sized = true; }
       ws.push(JSON.stringify({ type: 'state', attempt_seq: null, harness: null, cols: this.cols, rows: this.rows, can_write: true, controller: true, status: 'running' }));
       ws.push(terminalFrame(2, this.seq, `${E}2J${E}H${this.screen}`));
     } else if (msg.type === 'resize') {
-      if (msg.cols && msg.rows) { this.cols = msg.cols; this.rows = msg.rows; }
+      if (msg.cols && msg.rows) { this.cols = msg.cols; this.rows = msg.rows; this.sized = true; }
     } else if (msg.type === 'input') {
       for (const ch of String(msg.data || '')) {
         if (ch === '\r') this.run();
@@ -5258,6 +5293,8 @@ export function createMockTransport(params) {
   // Tests change a task as the server would announce it (`touchTask('sb_studio', 12, {…})`).
   // The GitHub App was created in the other tab (SPEC-283): the connection now reads configured.
   db.finishGithubApp = () => { db.me.instance.github_configured = true; };
+  // An attached file removed from the server after the page listed it (`removePromptFile(path)`).
+  db.removePromptFile = (path) => { MOCK_GONE.add(path); };
   db.finishOnboarding = (slug) => finishOnboarding(db, db.sandboxes.find((s) => s.slug === slug));
   // Someone else presses Start onboarding (another person or tab): the approval, without its hold.
   db.startOnboarding = (slug) => {
@@ -5418,6 +5455,10 @@ export function createMockTransport(params) {
   db.noBrowserAsk = params.get('browserask') === '0';
   // `ambient=0`: no ambient activity at all (startAmbient): no task changes by themselves.
   db.noAmbient = params.get('ambient') === '0';
+  // `sessionlimit=<n>`: the instance's session limit in the Status panel (default 8, SPEC-334).
+  db.sessionLimit = params.has('sessionlimit') ? Number(params.get('sessionlimit')) : 8;
+  // `sessionqueue=<n>`: that many more queued tasks in the Status panel's count (SPEC-334).
+  db.sessionQueue = Number(params.get('sessionqueue')) || 0;
   notesOf(db);
   return {
     kind: 'mock',
@@ -5452,6 +5493,20 @@ export function createMockTransport(params) {
       };
       setTimeout(tick, 30);
     }),
+    // The browser's own download of a link (SPEC-325), as the real one: recorded in `downloads`
+    // ([path, name]), then the file is read and saved from a blob link.
+    download: (url, name) => {
+      db.downloads = db.downloads || [];
+      db.downloads.push([url, name]);
+      handleFetch(db, url).then((response) => response.blob()).then((blob) => {
+        const href = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = href;
+        link.download = name;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(href), 1000);
+      }).catch(() => {}); // offline: the browser's download would fail on its own
+    },
     openSocket: (path) => openSocket(db, path),
   };
 }

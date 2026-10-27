@@ -45,6 +45,13 @@ use yulius_app::error::{AppError, AppResult};
 /// Bound of pending database jobs.
 const QUEUE_BOUND: usize = 1024;
 
+/// The newest schema version this build opens (its number of migrations): an instance export
+/// records it so that an older build refuses the copy (SPEC-329).
+#[must_use]
+pub fn schema_version() -> u32 {
+    u32::try_from(MIGRATIONS.len()).unwrap_or(u32::MAX)
+}
+
 /// Ordered migrations; index + 1 is the schema version stored in `PRAGMA user_version`.
 const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0001_initial.sql"),
@@ -105,6 +112,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0042_agent_states.sql"),
     // Schema version 43 (SPEC-275).
     include_str!("migrations/0043_project_variables.sql"),
+    // Schema version 44 (SPEC-332).
+    include_str!("migrations/0044_mcp_server_owner.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;

@@ -17,7 +17,7 @@ const KIND_OPTIONS = [
   { value: 'task', label: 'Tasks', icon: 'terminal' },
   { value: 'imported', label: 'Imported', icon: 'upload' },
 ];
-const ROLE_LABEL = { user: 'Prompt', assistant: 'Claude', tool: 'Tool', summary: 'Summary', system: 'System' };
+const ROLE_LABEL = { user: 'Prompt', assistant: 'Claude', tool: 'Tool', wake: 'Background task', summary: 'Summary', system: 'System' };
 const PAGE = 200;
 
 const sessionsPath = (sandbox) => `/s/${encodeURIComponent(sandbox.slug)}/sessions`;
@@ -336,6 +336,85 @@ export function metaLines(text) {
     : line)).filter((line) => line.text);
 }
 
+// Claude Code wakes an idle session when its background work ends with a user record of
+// `<task-notification>` blocks (SPEC-079); the TUI prints one line naming what ended (SPEC-328).
+const NOTICE_OPEN = '<task-notification>';
+const NOTICE_CLOSE = '</task-notification>';
+
+/** The text of the first `<tag>` in `body`; one the server cut short runs to the end. */
+function noticeTag(body, tag) {
+  const open = `<${tag}>`;
+  const start = body.indexOf(open);
+  if (start < 0) return '';
+  const close = `</${tag}>`;
+  const end = body.indexOf(close, start + open.length);
+  return (end < 0 ? withoutCutClose(body.slice(start + open.length), close) : body.slice(start + open.length, end)).trim();
+}
+
+// What follows a result's own `</result>` in Claude Code's order: its usage, the closing tag, or the cut.
+const RESULT_TAIL = /^\s*(?:<usage>|<\/task-notification>|$)/;
+
+/**
+ * Where the result opened at `from` ends: the `</result>` that closes it, skipping quoted pairs
+ * and a quoted close (one not followed by what follows a result); -1 when the server cut it.
+ * Without such a close, a `<result>` named alone in the text left it unbalanced: the first close
+ * followed by what follows a result ends it.
+ */
+function resultClose(text, from) {
+  const tags = /<\/?result>/g;
+  const ends = (tag) => RESULT_TAIL.test(text.slice(tag.index + tag[0].length));
+  tags.lastIndex = from;
+  let depth = 1;
+  for (let tag = tags.exec(text); tag; tag = tags.exec(text)) {
+    depth += tag[0] === '<result>' ? 1 : -1;
+    if (depth > 0) continue;
+    if (ends(tag)) return tag.index;
+    depth = 1;
+  }
+  const closes = /<\/result>/g;
+  closes.lastIndex = from;
+  for (let tag = closes.exec(text); tag; tag = closes.exec(text)) if (ends(tag)) return tag.index;
+  return -1;
+}
+
+/**
+ * A wake-up's notifications: `{ notices: [{ summary, result }], rest }`, or null when `text` does
+ * not start with one (a prompt, or the tag mentioned in prose). The summary is Claude Code's
+ * (`Agent "…" finished`), else "Background task" and its status; the other tags (ids, output file,
+ * note, usage) are not printed. Only the text before `<result>` is read for them: a result is
+ * the agent's own words, which may quote these tags. `rest` is text after the last notification.
+ */
+export function notificationsOf(text) {
+  let rest = String(text || '').trim();
+  if (!rest.startsWith(NOTICE_OPEN)) return null;
+  const notices = [];
+  while (rest.startsWith(NOTICE_OPEN)) {
+    const closeAt = rest.indexOf(NOTICE_CLOSE);
+    const resultAt = rest.indexOf('<result>');
+    // A `<result>` past the first close is the next notification's.
+    const own = resultAt >= 0 && (closeAt < 0 || resultAt < closeAt);
+    const from = resultAt + '<result>'.length;
+    const resultEnd = own ? resultClose(rest, from) : -1;
+    const end = !own ? closeAt : resultEnd < 0 ? -1 : rest.indexOf(NOTICE_CLOSE, resultEnd);
+    const head = own ? rest.slice(0, resultAt) : end < 0 ? rest : rest.slice(0, end);
+    const status = noticeTag(head, 'status');
+    notices.push({
+      summary: noticeTag(head, 'summary') || `Background task ${status || 'ended'}`,
+      result: (!own ? '' : resultEnd < 0 ? withoutCutClose(withoutCutClose(rest.slice(from), NOTICE_CLOSE), '</result>') : rest.slice(from, resultEnd)).trim(),
+    });
+    rest = end < 0 ? '' : rest.slice(end + NOTICE_CLOSE.length).trimStart();
+  }
+  return { notices, rest: rest.trim() };
+}
+
+const parsedNotices = new WeakMap(); // text block → its notifications (or null), parsed once
+
+/** `notificationsOf` of a user text block. */
+function noticesOf(item) {
+  if (!parsedNotices.has(item)) parsedNotices.set(item, notificationsOf(item.text));
+  return parsedNotices.get(item);
+}
+
 // A note longer than this is context the TUI does not print (a skill's body, hook context): folded
 // (SPEC-090). Notes people act on, such as the Stop hook's goal and feedback, are at most 4 lines.
 const NOTE_FOLD_LINES = 8;
@@ -396,9 +475,26 @@ function toolCall(item, result) {
     result && result.truncated ? cutNote('result') : null);
 }
 
+/** A wake-up as the TUI prints it: `⏺ Agent "…" finished`, its result folded under it (SPEC-328). */
+function noticeLines(parsed, item) {
+  const line = (notice) => tuiLine('⏺', h('span', { class: 'ss-dim' }, notice.summary), { kind: 'dim' });
+  // A cut text ends in its last part: the result folded there, or the text after.
+  const last = parsed.notices[parsed.notices.length - 1];
+  const cutInFold = item.truncated && !parsed.rest && Boolean(last.result);
+  return h('div', { class: 'ss-block' },
+    parsed.notices.map((notice) => (notice.result
+      ? h('details', { class: 'ss-fold ss-wake' }, h('summary', null, line(notice)),
+        outLines(linesOf(notice.result), 'ss-result', scroller(notice.result, `Result of ${notice.summary}`)),
+        cutInFold && notice === last ? cutNote('message') : null)
+      : h('div', { class: 'ss-wake' }, line(notice)))),
+    parsed.rest ? h('div', { class: 'ss-meta ss-dim' }, parsed.rest) : null,
+    item.truncated && !cutInFold ? cutNote('message') : null);
+}
+
 function block(item, results, role, line) {
   switch (item.type) {
     case 'text':
+      if ((role === 'user' || role === 'wake') && noticesOf(item)) return noticeLines(noticesOf(item), item);
       return h('div', { class: 'ss-block' },
         role === 'user' ? tuiLine('>', richText(item.text), { kind: 'prompt', className: 'ss-prompt', block: true })
           : role === 'summary' ? tuiLine('※', richText(item.text), { kind: 'dim', block: true })
@@ -603,7 +699,9 @@ export function transcriptEntries({ target = null } = {}) {
   const regionNames = new Set(); // a name used again (a command run twice) names its line, then a count
 
   function entry(item) {
-    const role = item.role === 'user' && item.blocks.every((b) => b.type === 'tool_result' || b.type === 'meta') ? 'tool' : item.role;
+    const role = item.role !== 'user' ? item.role
+      : item.blocks.every((b) => b.type === 'tool_result' || b.type === 'meta') ? 'tool'
+        : item.blocks.every((b) => b.type === 'text' && noticesOf(b)) ? 'wake' : 'user';
     const shown = item.blocks.map((b) => block(b, results, role, item.line)).filter(Boolean);
     if (!shown.length) return null;
     const typed = item.blocks.some((b) => b.type === 'meta' && metaOf(b).some((line) => line.kind === 'command' || line.kind === 'shell'));

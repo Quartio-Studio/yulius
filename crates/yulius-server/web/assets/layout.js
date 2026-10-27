@@ -15,6 +15,7 @@ import { NEW_TASK_KEYS, NEW_TASK_ARIA, HOME_KEYS, HOME_ARIA } from './shortcuts.
 import { createSplitter, layoutPrefs } from './splitter.js';
 import { isPhone } from './theme.js';
 import { INSTANCE_ROUTE } from './updates.js';
+import { createTabDrag } from './tabdrag.js';
 
 /** Whether this instance has its GitHub App (a playground can move to GitHub then, SPEC-176). */
 function githubConnected(ctx) {
@@ -104,9 +105,25 @@ export function createTabRow(ctx) {
 
   let currentSlug = null;
   let home = false;
-  let dragId = null;
+  let tabsStale = false; // a redraw held back while a tab is pressed
+  // Dragging a sandbox tab along the row, as the Notes tabs (tabdrag.js, SPEC-336); "All sandboxes"
+  // (no `data-id`) stays first.
+  const drag = createTabDrag(tabs, {
+    selector: '.tab[data-id]',
+    keyOf: (tab) => tab.dataset.id,
+    commit: (order) => {
+      // A drag back to where it started pins no order: sandboxes added later keep the server's.
+      if (order.join() === ctx.store.state.sandboxes.map((sb) => sb.id).join()) renderTabs();
+      else ctx.store.setSandboxOrder(order);
+      return [...tabs.querySelectorAll('.tab[data-id]')];
+    },
+    cancelled: () => { if (tabsStale) renderTabs(); },
+  });
 
   function renderTabs() {
+    // Counts refresh often: the row is not redrawn under a pressed tab, but once it is let go.
+    if (drag.dragging) { tabsStale = true; return; }
+    tabsStale = false;
     const sandboxes = ctx.store.state.sandboxes;
     // Home first (UI-045): every sandbox at a glance, also reached with the logo and ⌘⇧H.
     const homeTab = h('a', {
@@ -125,7 +142,8 @@ export function createTabRow(ctx) {
         href: href(`/s/${encodeURIComponent(sandbox.slug)}`),
         // Back to the screen left in that sandbox (SPEC-113); its own tab opens the composer.
         dataset: { route: `/s/${encodeURIComponent(sandbox.slug)}`, restore: 'sandbox', id: sandbox.id },
-        draggable: 'true',
+        // The pointer drag moves it (tabdrag.js), never the browser's own link drag.
+        draggable: 'false',
         title: `${sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name} · ${sandbox.access} access\n${DRAG_TAB_HINT}`,
         'aria-current': sandbox.slug === currentSlug ? 'page' : null,
       },
@@ -157,19 +175,9 @@ export function createTabRow(ctx) {
           { label: `Remove from ${BRAND.name}…`, danger: true, disabled: !allows(sandbox.access, 'admin'), title: allows(sandbox.access, 'admin') ? null : 'Requires repository admin', onSelect: () => confirmRemoveSandbox(ctx, sandbox) },
         ]);
       });
-      a.addEventListener('dragstart', (event) => { dragId = sandbox.id; event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', sandbox.id); });
-      a.addEventListener('dragover', (event) => { if (dragId && dragId !== sandbox.id) { event.preventDefault(); a.classList.add('drag-over'); } });
-      a.addEventListener('dragleave', () => a.classList.remove('drag-over'));
-      a.addEventListener('drop', (event) => {
-        event.preventDefault();
-        a.classList.remove('drag-over');
-        if (!dragId || dragId === sandbox.id) return;
-        const ids = ctx.store.state.sandboxes.map((s) => s.id).filter((id) => id !== dragId);
-        ids.splice(ids.indexOf(sandbox.id), 0, dragId);
-        dragId = null;
-        ctx.store.setSandboxOrder(ids);
-      });
-      a.addEventListener('dragend', () => { dragId = null; });
+      a.addEventListener('pointerdown', (event) => drag.press(event, a));
+      // The click that ends a drag opens nothing (the router skips a prevented click).
+      a.addEventListener('click', (event) => { if (drag.clickConsumed()) event.preventDefault(); });
       return a;
     });
     keepFocus(tabs, () => setChildren(tabs, homeTab, anchors)); // counts refresh often; focus stays
@@ -203,7 +211,7 @@ export function createTabRow(ctx) {
   return {
     el,
     /** Sign-out: unsubscribe and close the Status panel. */
-    destroy() { offs.forEach((off) => off()); statusPanel.close(); },
+    destroy() { offs.forEach((off) => off()); drag.cancel(); statusPanel.close(); },
     /** The sandbox in view (its tab is current), or the home screen (`{home: true}`). */
     update(slug, { home: onHome = false } = {}) {
       currentSlug = slug;
@@ -357,13 +365,33 @@ function rememberOpen(details, key, openByDefault) {
   return details;
 }
 
-/** One machine tile: icon and name, a big value, a bar and a detail line. */
-function statTile(iconName, name, value, percent, detail) {
-  return h('div', { class: ['stat-tile', `stat-${toneOf(percent)}`] },
+/** One machine tile: icon and name, a big value, a bar and a detail line (or several). */
+function statTile(iconName, name, value, percent, detail, why = null) {
+  return h('div', { class: ['stat-tile', `stat-${toneOf(percent)}`], title: why },
     h('div', { class: 'stat-head' }, icon(iconName, { size: 15 }), h('span', null, name)),
     h('div', { class: 'tile-value' }, value),
     usageBar(percent, name),
-    h('div', { class: 'stat-detail' }, detail || ' '));
+    [detail || ' '].flat().map((line) => h('div', { class: 'stat-detail' }, line)),
+    why ? h('span', { class: 'sr-only' }, why) : null);
+}
+
+/**
+ * The Sessions tile. The count can pass the limit for a while: a Done task's idle session holds no
+ * slot, and one that works again counts again without passing the start door (SES-101); a restart
+ * with a lower limit keeps the runs it finds. Then the tile shows the limit full and marks the
+ * overshoot instead of "9 / 8" (SPEC-334).
+ */
+function sessionsTile({ live, limit, queued }) {
+  const queue = queued ? `${queued} queued` : null;
+  if (!Number.isFinite(live)) return statTile('terminal', 'Sessions', '—', null, queue || 'agent sessions running');
+  if (!(limit > 0) || live <= limit) {
+    return statTile('terminal', 'Sessions', `${live}${limit ? ` / ${limit}` : ''}`, pct(live, limit), queue || 'agent sessions running');
+  }
+  const over = live - limit;
+  const why = `${over} ${over === 1 ? 'session' : 'sessions'} more than the limit of ${limit}: a Done task that works again counts again, and runs started before a restart with a lower limit keep running. Queued tasks start once fewer than ${limit} run.`;
+  // One line each, so a phone's narrow tile cuts neither off.
+  return statTile('terminal', 'Sessions', [`${limit} / ${limit}`, h('span', { class: 'tile-over' }, `+${over}`)], 100,
+    [`${over} over the limit`, queue].filter(Boolean), why);
 }
 
 /**
@@ -390,7 +418,6 @@ export function renderStatus(data) {
   const memPct = pct(vm.memory_used_bytes, vm.memory_total_bytes);
   const diskPct = pct(vm.disk_used_bytes, vm.disk_total_bytes);
   const sessions = data.sessions || {};
-  const sessionsPct = Number.isFinite(sessions.live) && sessions.limit ? pct(sessions.live, sessions.limit) : null;
   const sandboxes = Array.isArray(data.sandboxes) ? data.sandboxes : [];
   const accounts = Array.isArray(data.accounts) ? data.accounts : [];
   const load = Array.isArray(vm.load) ? vm.load.map((v) => Number(v).toFixed(2)) : Number.isFinite(vm.load_1m) ? [Number(vm.load_1m).toFixed(2)] : null;
@@ -433,7 +460,7 @@ export function renderStatus(data) {
         statTile('cpu', 'CPU', percentText(vm.cpu_percent), vm.cpu_percent, vm.cpu_count ? `${vm.cpu_count} cores` : null),
         statTile('memory', 'Memory', percentText(memPct), memPct, vm.memory_total_bytes ? `${bytes(vm.memory_used_bytes)} of ${bytes(vm.memory_total_bytes)}` : null),
         statTile('disk', 'Disk', diskPct === null ? '—' : percentText(diskPct), diskPct, vm.disk_total_bytes ? `${bytes(vm.disk_used_bytes)} of ${bytes(vm.disk_total_bytes)}` : null),
-        statTile('terminal', 'Sessions', Number.isFinite(sessions.live) ? `${sessions.live}${sessions.limit ? ` / ${sessions.limit}` : ''}` : '—', sessionsPct, sessions.queued ? `${sessions.queued} queued` : 'agent sessions running')),
+        sessionsTile(sessions)),
       h('div', { class: 'status-facts' }, facts)),
     sandboxes.length ? statusSection('sandboxes', 'folder', 'Sandboxes', `${liveTotal} running in ${busy} of ${sandboxes.length}`, h('div', { class: 'status-rows' }, sandboxRows), false) : null,
     statusSection('accounts', 'user', 'Subscriptions', accounts.length ? accountSummary : 'none yet',

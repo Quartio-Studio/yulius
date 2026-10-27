@@ -1,4 +1,5 @@
-// MCP page (MCP-001..003): sandbox servers plus inherited instance servers; test from the list.
+// MCP page (MCP-001..003): sandbox servers plus inherited instance servers, the team's and the
+// person's own (SPEC-332); test from the list.
 // Adding and editing happen on the server's page (mcpedit.js, UI-038). Secrets are write-only:
 // the UI shows key names only and never reads values back.
 
@@ -34,14 +35,14 @@ export function mountMcpPage(ctx, sandbox, route) {
     options: [{ value: '', label: 'All' }, { value: 'sandbox', label: 'This sandbox', icon: 'folder' }, { value: 'instance', label: 'Every sandbox', icon: 'globe' }] });
   const frame = pageFrame({
     title: 'MCP',
-    sub: 'attached once, available to every Claude Code session on every subscription',
+    sub: 'attached once, for the whole team or only you, on every subscription',
     actions: [createButton('Add server', add, { disabled: !write, title: write ? null : 'Requires write access' })],
   });
   const host = h('div');
   frame.body.append(h('div', { class: 'toolbar' }, scopeFilter.el, h('span', { class: 'muted small' }, `The ${BRAND.name} tool server is always attached and not listed here.`)), host);
   let servers = [];
 
-  const canManage = (server) => write && (server.scope !== 'instance' || instanceAdmin);
+  const canManage = (server) => write && (server.scope !== 'instance' || instanceAdmin || server.audience === 'personal');
   // Tests follow the write rule; stdio tests run outside the containment, so a contained
   // instance lets only instance administrators run them.
   const contained = Boolean(ctx.store.state.me && ctx.store.state.me.instance && ctx.store.state.me.instance.contained);
@@ -79,6 +80,7 @@ export function mountMcpPage(ctx, sandbox, route) {
         title: server.name,
         badges: [
           server.scope === 'instance' ? iconBadge('globe', 'Every sandbox', 'violet', 'Attached in every sandbox of this instance') : iconBadge('folder', 'This sandbox', '', 'Attached to this sandbox only'),
+          server.audience === 'personal' ? iconBadge('user', 'Only you', 'ok', 'Only your own tasks and your Superagent get it; nobody else sees it') : null,
           iconBadge(server.transport === 'http' ? 'globe' : 'terminal', server.transport === 'http' ? 'HTTP' : 'Local command', '', server.transport === 'http' ? 'Remote server over HTTP' : 'Local command over stdio'),
           imported(server) ? iconBadge('download', 'From .mcp.json', 'warn', 'Added from the repository’s .mcp.json, which agents can write') : null,
         ].filter(Boolean),

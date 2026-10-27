@@ -299,10 +299,12 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "needs_you".into(),
-            description: "Ask a person to do something only a person can (add a credential to the vault on the Secrets page, allow a secret, deploy production, decide on a paid plan): the task shows \"Needs you: <action>\" and people are notified, until a person writes to the task or you call it again with resolved: true (for example once cd_status shows the secret). Say exactly what to do and where; go on with other work meanwhile. Not for questions you can decide yourself, and not for reading another repository of this project's owner: reference_repo fetches it without a person.".into(),
+            description: "Ask a person to do something only a person can (add a credential to the vault on the Secrets page, allow a secret, deploy production, decide on a paid plan): the task shows \"Needs you: <action>\" and people are notified, until a person writes to the task or you call it again with resolved: true (for example once cd_status shows the secret). It reads as What happened, Problem and To do (Decide with decision: true): give each part in its own field, short and plain, and say exactly what to do and where in action; go on with other work meanwhile. Not for questions you can decide yourself, and not for reading another repository of this project's owner: reference_repo fetches it without a person.".into(),
             input_schema: schema(json!({
-                "action": {"type": "string", "description": "What the person should do, imperative, one line (at most 200 characters), e.g. 'Add DEV_SSH_KEY on the Secrets page'"},
-                "why": {"type": "string", "description": "Why it is needed (at most 500 characters)"},
+                "happened": {"type": "string", "description": "What happened, one or two sentences (at most 300 characters), e.g. 'The dev deploy script reaches the VM over SSH'"},
+                "problem": {"type": "string", "description": "What is wrong or blocked because of it (at most 500 characters), e.g. 'No DEV_SSH_KEY secret exists, so the deploy cannot log in'"},
+                "action": {"type": "string", "description": "To do: what the person should do (or decide, with decision: true), imperative, one line (at most 200 characters), e.g. 'Add DEV_SSH_KEY on the Secrets page'"},
+                "decision": {"type": "boolean", "description": "true: the person chooses (name the options in action) rather than does something"},
                 "link": {"type": "string", "description": "Where to do it: a Yulius page URL"},
                 "resolved": {"type": "boolean", "description": "true: your request is done (no action needed)"}
             }), &[]),
@@ -314,9 +316,10 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "reference_repo".into(),
-            description: "Read another GitHub repository of this project's owner (an earlier version to port from, a shared library, a product's source) that your own Git and gh cannot (they reach only this repository): Yulius fetches its default branch as this task's owner, when GitHub says that person can read it, and places a Git bundle of it among this task's attachments; clone it outside your worktree into <sandbox>/reference/<owner>/<name> as the answer says, and call it again for a fresh copy. Read-only: port what you need, never push from it. Use it before asking a person for access; only when it is refused (another owner, no read access) ask with needs_you.".into(),
+            description: "Read another GitHub repository of this project's owner (an earlier version to port from, a shared library, a product's source) that your own Git and gh cannot (they reach only this repository): Yulius fetches every branch and tag of it as this task's owner, when GitHub says that person can read it, and places a Git bundle of them among this task's attachments; clone it outside your worktree into <sandbox>/reference/<owner>/<name> as the answer says (branch picks the one checked out; the others are in the copy as origin/<name>), and call it again for a fresh copy. Read-only: port what you need, never push from it. Use it before asking a person for access; only when it is refused (another owner, no read access) ask with needs_you.".into(),
             input_schema: schema(json!({
-                "repo": {"type": "string", "description": "The repository as owner/name, e.g. Quartio-Studio/product"}
+                "repo": {"type": "string", "description": "The repository as owner/name, e.g. Quartio-Studio/product"},
+                "branch": {"type": "string", "description": "The branch to check out, e.g. dev (default: the repository's default branch); every branch and tag is in the bundle either way"}
             }), &["repo"]),
         },
         ToolDescriptor {

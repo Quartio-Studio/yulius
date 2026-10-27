@@ -657,18 +657,157 @@ test('a promoting production names the branch and the commit it promotes', async
 type Touching = Window & { __yuliusMock: { touchTask(sandbox: string, number: number, changes: object): void } };
 
 // SPEC-134 CDT-004 (ADR-0111): an agent asks a person explicitly with needs_you; the task reads
-// "Needs you: <action>" with the link, until the request is gone.
-test('a needs_you request puts the task in Needs you with what to do', async ({ app, browser, screen }) => {
+// "Needs you" with the link, until the request is gone. SPEC-327: the request reads as What
+// happened, Problem and To do, each part labelled, the to-do last.
+const neededParts = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => browser.evaluate(() =>
+  [...document.querySelectorAll('.attention-bar .needs-you-parts > div')].map((row) => [
+    row.querySelector('dt')?.textContent || '', row.querySelector('dd')?.textContent || '']));
+
+test('a needs_you request reads What happened, Problem and To do', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 360, height: 780 });
   await app.open(mock('/s/studio/t/12'));
   await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {
-    needs_you: { action: 'Add DEV_SSH_KEY on the Secrets page', why: 'the dev deploy reaches the VM over SSH', link: `${location.origin}/#/s/studio/secrets?section=agents`, at: new Date().toISOString() },
+    needs_you: {
+      happened: 'The dev deploy reaches the VM over SSH',
+      problem: 'No DEV_SSH_KEY secret exists, so the deploy cannot log in',
+      action: 'Add `DEV_SSH_KEY` on the Secrets page',
+      decision: false,
+      link: `${location.origin}/#/s/studio/secrets?section=agents`,
+      at: new Date().toISOString(),
+    },
   }));
   const bar = browser.locator('.attention-bar');
-  await expect(bar).toHaveText(/Needs you: Add DEV_SSH_KEY on the Secrets page · the dev deploy reaches the VM over SSH/);
+  await expect(browser.locator('.attention-bar .needs-you-head')).toHaveText('Needs you');
+  expect(await neededParts(browser)).toEqual([
+    ['What happened', 'The dev deploy reaches the VM over SSH'],
+    ['Problem', 'No DEV_SSH_KEY secret exists, so the deploy cannot log in'],
+    ['To do', 'Add DEV_SSH_KEY on the Secrets page'],
+  ]);
+  await expect(browser.locator('.attention-bar .needs-you-parts code')).toHaveText('DEV_SSH_KEY');
   await expect(bar.getByRole('link', 'Open')).toBeVisible();
   await expect(browser.locator('.task-row', { hasText: 'Needs you' }).first()).toBeVisible();
+  // The sidebar's label is plain text: no backticks around the code.
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.task-row a[title]')]
+    .some((a) => a.getAttribute('title')?.includes('Needs you: Add DEV_SSH_KEY on the Secrets page: No DEV_SSH_KEY secret exists')))).toBe(true);
+  expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
   expect(await axeViolations(browser)).toEqual([]);
 
   await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, { needs_you: null }));
-  await expect(bar).not.toHaveText(/Needs you: Add DEV_SSH_KEY/);
+  await expect(browser.locator('.attention-bar .needs-you-head')).toHaveCount(0);
+});
+
+// Review: the longest request a phone shows keeps its to-do and its buttons in view, the
+// terminal's corner notices start below the bar, and an unpaired backtick stays a backtick.
+test('the longest needs_you request keeps its to-do and buttons in view on a phone', async ({ app, browser }) => {
+  await browser.setViewport({ width: 360, height: 780 });
+  await app.open(mock('/s/studio/t/12'));
+  await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {
+    needs_you: {
+      happened: `Happened ${'word '.repeat(58)}`.slice(0, 300),
+      problem: `Problem ${'word '.repeat(98)}`.slice(0, 500),
+      action: `Run \`sudo systemctl reload caddy\` then the \`other step ${'x'.repeat(140)}`.slice(0, 200),
+      decision: false,
+      link: `${location.origin}/#/s/studio/secrets?section=agents`,
+      at: new Date().toISOString(),
+    },
+  }));
+  await expect(browser.locator('.attention-bar .needs-you-todo')).toBeVisible();
+  await expect(browser.locator('.taskview-term .term-corner')).toHaveCount(1);
+  const placed = await browser.evaluate(() => {
+    const inView = (el: Element | null) => {
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      return r.top >= 0 && r.bottom <= window.innerHeight && r.left >= 0 && r.right <= window.innerWidth;
+    };
+    const bar = document.querySelector('.attention-bar');
+    const todo = document.querySelector('.attention-bar .needs-you-todo');
+    const corner = document.querySelector('.taskview-term .term-corner');
+    // The to-do is drawn where it is, not under the scrolled context above it.
+    const r = todo!.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + 4, r.top + r.height / 2);
+    return {
+      todo: inView(todo),
+      todoOnTop: Boolean(hit && todo!.contains(hit)),
+      buttons: [...(bar?.querySelectorAll('a.btn, button.btn') || [])].filter((b) => b.checkVisibility()).map((b) => inView(b)),
+      cornerBelowBar: corner ? corner.getBoundingClientRect().top >= bar!.getBoundingClientRect().bottom : null,
+      code: [...document.querySelectorAll('.attention-bar .needs-you-todo code')].map((c) => c.textContent),
+      todoText: todo!.querySelector('dd')?.textContent?.slice(0, 50),
+    };
+  });
+  expect(placed).toEqual({
+    todo: true,
+    todoOnTop: true,
+    buttons: [true, true],
+    cornerBelowBar: true,
+    code: ['sudo systemctl reload caddy'],
+    todoText: 'Run sudo systemctl reload caddy then the `other st',
+  });
+  expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(360);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+// Review round 2: a long list keeps where it was scrolled and its keyboard across task updates,
+// its to-do hides what scrolls under it in a stacked bar too, and only a list that scrolls is a
+// tab stop.
+test('a scrolled needs_you list survives task updates and its to-do stays opaque', async ({ app, browser }) => {
+  await browser.setViewport({ width: 360, height: 780 });
+  await app.open(mock('/s/studio/t/12'));
+  const long = {
+    happened: `Happened ${'word '.repeat(58)}`.slice(0, 300),
+    problem: `Problem ${'word '.repeat(98)}`.slice(0, 500),
+    action: 'Add DEV_SSH_KEY on the Secrets page',
+    decision: false,
+    at: new Date().toISOString(),
+  };
+  await browser.evaluate((needs) => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {
+    needs_you: needs, controlRequest: { by: { login: 'anna-q' }, at: new Date().toISOString() },
+  }), long);
+  await expect(browser.locator('.attention-bar.stacked .needs-you-todo')).toBeVisible();
+  const colours = await browser.evaluate(() => ({
+    own: getComputedStyle(document.querySelector('.attention-bar .needs-you-todo')!).backgroundColor,
+    bar: getComputedStyle(document.querySelector('.attention-bar')!).backgroundColor,
+  }));
+  expect(colours.own).toBe(colours.bar);
+
+  const list = '.attention-bar .needs-you-parts';
+  expect(await browser.evaluate((sel) => {
+    const el = document.querySelector(sel) as HTMLElement;
+    el.focus();
+    el.scrollTop = 40;
+    return [el.getAttribute('tabindex'), el.scrollTop];
+  }, list)).toEqual(['0', 40]);
+  await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, { title: 'Checkout API, renamed' }));
+  await expect(browser.locator('.taskview')).toContainText('Checkout API, renamed');
+  expect(await browser.evaluate((sel) => {
+    const el = document.querySelector(sel) as HTMLElement;
+    return { scrollTop: el.scrollTop, focused: document.activeElement === el };
+  }, list)).toEqual({ scrollTop: 40, focused: true });
+
+  // A short request does not scroll: no tab stop.
+  await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {
+    needs_you: { action: 'Deploy production on the CD page', decision: false, at: new Date().toISOString() }, controlRequest: null,
+  }));
+  await expect(browser.locator('.attention-bar .needs-you-todo')).toHaveText(/Deploy production/);
+  expect(await browser.evaluate((sel) => document.querySelector(sel)!.hasAttribute('tabindex'), list)).toBe(false);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('a needs_you decision reads Decide, and an action alone only To do', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {
+    needs_you: { problem: 'The free plan has 2 runners', action: 'Choose the paid plan or the free one', decision: true, at: new Date().toISOString() },
+  }));
+  await expect(browser.locator('.attention-bar .needs-you-head')).toHaveText('Needs your decision');
+  expect(await neededParts(browser)).toEqual([
+    ['Problem', 'The free plan has 2 runners'],
+    ['Decide', 'Choose the paid plan or the free one'],
+  ]);
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.task-row a[title]')]
+    .some((a) => a.getAttribute('title')?.includes('Needs your decision: Choose the paid plan or the free one: The free plan has 2 runners')))).toBe(true);
+
+  await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {
+    needs_you: { action: 'Deploy production on the CD page', decision: false, at: new Date().toISOString() },
+  }));
+  await expect(browser.locator('.attention-bar .needs-you-head')).toHaveText('Needs you');
+  expect(await neededParts(browser)).toEqual([['To do', 'Deploy production on the CD page']]);
 });

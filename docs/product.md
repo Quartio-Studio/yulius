@@ -73,6 +73,12 @@ watching, steering and unblocking.
   ids, base URLs, contact addresses) are shown in plain on the Secrets page's Variables tab and
   are in every task's environment. The laptop agent sets them with `yulius vars`, and the secrets
   import sends a `.env`'s plain values there instead of making them secrets.
+- **Move or copy the whole instance** (SPEC-329): `sudo yulius instance export | ssh root@new-vm
+  yulius instance import` pauses every Yulius process, announces the exact size, and streams the
+  whole instance (database, keys, sandboxes with uncommitted work and Claude sessions, installed
+  packages, Docker data) without writing anything on the old VM's disk; the new VM installs it as
+  it arrives, checks it, and `yulius host setup` starts it. `--move` keeps the old instance frozen
+  and disabled. A copy can also go to a file and be installed later.
 - **Playgrounds**: a team tries Yulius on its own code before it connects GitHub. On a fresh
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server
@@ -113,9 +119,13 @@ watching, steering and unblocking.
   file is the one in the vault, from the file's SHA-256 (SPEC-178, SPEC-186). After an update
   that gives it new tools, an open Superagent restarts by itself once it is idle and goes on with
   its conversation.
-- **MCP servers**: configured once for the instance or a sandbox (MCP page) and attached to every
-  task run on every subscription and to the Superagent, their secrets taken from the agent
-  secrets. A repository's
+- **MCP servers**: configured once on the MCP page with two settings, Available in (every sandbox
+  or this one) and For (the whole team or only me), and attached on every subscription. A team
+  server goes to every task run of its scope and to the Superagent; a personal one only to its
+  owner's own tasks and Superagent, never to a teammate's or an automation's task, and nobody else
+  sees it, so a server holding a person's own credential belongs there (SPEC-332). New servers
+  start on every sandbox and the whole team; both settings change later. Their secrets may come
+  from the agent secrets. A repository's
   `.mcp.json` servers join its sandbox's list by themselves, with `${VAR}` becoming the agent
   secret VAR's placeholder (the egress proxy swaps the value in on its bound hosts), and the
   Superagent never asks about them. They show "From .mcp.json", and since agents can write that
@@ -152,7 +162,8 @@ watching, steering and unblocking.
   image opens large (fitted or at its actual size), and sits in the text as a one-line
   placeholder (`Image 1`) at the caret. The placeholder moves and deletes like a character, or is
   placed from the tray, and the agent gets the file at that place (a file left without one comes
-  after the text).
+  after the text). A file can be up to 1 GB by default, so a screen recording of a bug fits: the
+  agent extracts frames from it with `ffmpeg` and looks at them (SPEC-325).
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
   A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git
@@ -227,7 +238,8 @@ watching, steering and unblocking.
   (onboarding says when that ruleset is missing, and its agent adds it with `production_protect`
   as the person who started onboarding when they are a repository admin). A task that needs to read
   another repository of the same GitHub owner gets it with `reference_repo`, fetched as the task's
-  owner, instead of asking a person for access; onboarding fetches the repositories a project
+  owner with every branch and tag that person can read (SPEC-330), instead of asking a person for
+  access; onboarding fetches the repositories a project
   refers to first (SPEC-267). Agents build and improve CD through pull requests but
   cannot change what a deploy runs, and they ask a person with `needs_you` for what only a person
   can give (a machine's credentials). Onboarding finds how a project deploys today and writes it
@@ -261,7 +273,9 @@ watching, steering and unblocking.
   (SPEC-181).
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit
   the window and filter as people type when they are long; the start menu shows five tasks at a
-  time and says how many more it scrolls to. Messages are
+  time and says how many more it scrolls to. Scrolling a task's terminal past its top offers the
+  whole session from its first message, which Claude Code no longer shows after a compaction
+  (SPEC-326). Messages are
   withdrawn for now (SPEC-028): agents learn about checks, delivery and armed merges from
   `yulius wait`, `ci_status` and `delivery_status`. An agent removes the files its task created
   with `yulius remove` instead of asking a person when Claude Code stops an `rm` (SPEC-192).

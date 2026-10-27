@@ -5,11 +5,13 @@
 //! request passes control at once. A hand-over moves the task's GitHub token, commit identity and
 //! authority to the new owner from its next call on, also in a run that goes on.
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use serde_json::json;
 use yulius_contracts::api::tasks::TaskSummary;
 use yulius_domain::permission::Action;
+use yulius_domain::task::TaskStatus;
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -32,7 +34,7 @@ impl App {
     /// `NotFound`/`Forbidden` without write access to the project; `Conflict` for the owner, or
     /// while another person's request waits (naming them).
     pub async fn request_task_control(
-        &self,
+        self: &Arc<Self>,
         ctx: &AuthContext,
         id: &str,
     ) -> AppResult<TaskSummary> {
@@ -92,7 +94,11 @@ impl App {
     /// `Forbidden` for anyone but the owner; `Conflict` when no request waits, when the asker can
     /// no longer work in the project (their request is dropped), or when the task changed
     /// meanwhile.
-    pub async fn accept_task_control(&self, ctx: &AuthContext, id: &str) -> AppResult<TaskSummary> {
+    pub async fn accept_task_control(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        id: &str,
+    ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
         let store = &self.deps.store;
         let request = store
@@ -219,13 +225,24 @@ impl App {
     /// when the owner is absent. One conditional update, then the worktree's commit identity, the
     /// run's fingerprint file, the terminal notice, the audit entry and the published summary.
     async fn pass_task_control(
-        &self,
+        self: &Arc<Self>,
         task: &TaskRecord,
         to: &UserRecord,
         ctx: &AuthContext,
         how: Handover,
     ) -> AppResult<()> {
         let store = &self.deps.store;
+        // A launch settles which personal MCP servers its run holds only when it is spawned: a
+        // hand-over then could not restart it for the new owner (SPEC-332 MSC-009).
+        if matches!(task.status, TaskStatus::Starting | TaskStatus::Switching)
+            && self.holds_personal_mcp(task).await?
+        {
+            return Err(AppError::Conflict(format!(
+                "task #{} is starting with @{}'s personal MCP servers; ask again once it runs",
+                task.number,
+                self.login_of(&task.owner).await
+            )));
+        }
         let now = self.now();
         let passed = match how {
             Handover::Requested => {
@@ -257,6 +274,20 @@ impl App {
         if let Err(err) = self.rewrite_run_fingerprints(&task.id).await {
             tracing::warn!(task = %task.id, error = %err, "run's fingerprint file not rewritten");
         }
+        // A live run keeps the MCP configuration it started with: one holding the previous
+        // owner's personal servers resumes with the new owner's (SPEC-332 MSC-009).
+        let held = self.existing_runtime(&task.id).and_then(|runtime| {
+            runtime
+                .personal_mcp_of
+                .lock()
+                .ok()
+                .and_then(|held| held.clone())
+        });
+        if held.is_some_and(|owner| owner != to.id)
+            && let Some(live) = self.deps.store.live_attempt(&task.id).await?
+        {
+            self.restart_for_new_owner(&task.id, live.account_id).await;
+        }
         let (from, to) = (
             self.login_of(&task.owner).await,
             self.login_of(&to.id).await,
@@ -276,6 +307,52 @@ impl App {
         .await;
         self.publish_task(&task.id).await;
         Ok(())
+    }
+
+    /// Resumes a task's live run for its new owner on the same subscription, as a manual switch
+    /// does but with nothing typed: past a usage limit, afresh for a first message never taken,
+    /// else the same conversation. A run that cannot be restarted is stopped, so the previous
+    /// owner's credential never stays with the new owner (fail closed).
+    pub(crate) async fn restart_for_new_owner(
+        self: &Arc<Self>,
+        task: &yulius_domain::ids::TaskId,
+        account: Option<yulius_domain::ids::AccountId>,
+    ) {
+        use crate::supervisor::RunStart;
+        // A launch under way reads the task's owner anew and settles its servers itself.
+        let record = match self.deps.store.task(task).await {
+            Ok(Some(record))
+                if matches!(
+                    record.status,
+                    TaskStatus::Running | TaskStatus::WaitingCapacity
+                ) =>
+            {
+                record
+            }
+            Ok(_) => return,
+            Err(err) => {
+                tracing::warn!(task = %task, error = %err, "task unreadable for the hand-over restart");
+                return;
+            }
+        };
+        // One restart per hand-over: the hand-over and the launch's tail may both get here.
+        let holder = crate::vault::Holder::of_task(&record);
+        if !claim_restart(&self.runtime(task).personal_mcp_of, holder.person()) {
+            return;
+        }
+        let start = if self.runtime(task).at_limit.load(Ordering::SeqCst) {
+            RunStart::AfterLimit
+        } else if self.held_opening(task).await {
+            RunStart::Fresh { prompt: None }
+        } else {
+            RunStart::Resume { prompt: None }
+        };
+        if let Err(err) = self.switch_with(task, account, "handover", start).await {
+            tracing::warn!(task = %task, error = %err, "run holding the previous owner's MCP servers not restarted; stopping it");
+            if let Err(err) = self.stop_task_now(task).await {
+                tracing::error!(task = %task, error = %err, "run holding the previous owner's MCP servers not stopped");
+            }
+        }
     }
 
     /// Audits a control change of `task` by `ctx`'s person; a failed write is logged, as the
@@ -313,5 +390,54 @@ impl App {
             .await?
             .ok_or(AppError::NotFound)?;
         self.task_summary(&task).await
+    }
+}
+
+/// Claims the restart of a run that holds `held`'s personal MCP servers for a task now held by
+/// `holder`: true once, for the first caller, when they differ (the record is cleared; the
+/// restarted run records its own); false when nothing is held, it is the holder's, or another
+/// caller claimed it.
+fn claim_restart(
+    held: &std::sync::Mutex<Option<yulius_domain::ids::UserId>>,
+    holder: Option<&yulius_domain::ids::UserId>,
+) -> bool {
+    let Ok(mut held) = held.lock() else {
+        return false;
+    };
+    match held.as_ref() {
+        Some(owner) if Some(owner) != holder => {
+            *held = None;
+            true
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use yulius_domain::ids::UserId;
+
+    use super::claim_restart;
+
+    /// Review of SPEC-332 (round 4): the hand-over and the launch's tail may both ask to restart
+    /// the same run; only the first does, so the second never stops the run the first resumes.
+    #[test]
+    fn a_hand_over_restarts_a_run_once() -> Result<(), Box<dyn std::error::Error>> {
+        let (alice, bob) = (UserId::parse("u-alice")?, UserId::parse("u-bob")?);
+        let held = Mutex::new(Some(alice.clone()));
+        assert!(!claim_restart(&held, Some(&alice)), "still the holder's");
+        assert!(claim_restart(&held, Some(&bob)));
+        assert!(!claim_restart(&held, Some(&bob)), "claimed already");
+        assert!(
+            !claim_restart(&Mutex::new(None), Some(&bob)),
+            "nothing held"
+        );
+        assert!(
+            claim_restart(&Mutex::new(Some(alice)), None),
+            "an automation's task holds nobody"
+        );
+        Ok(())
     }
 }

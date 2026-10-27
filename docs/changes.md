@@ -6,6 +6,82 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-26
 
+- The sandbox tabs in the top row now drag as smoothly as the Notes tabs (SPEC-336, task #320,
+  fixes #929). They used the browser's own drag and drop: a ghost of the link, nothing moving
+  until the drop, then a jump. They now share `tabdrag.js` with the Notes and Editor tabs: the
+  tab follows the pointer, the others slide aside, it settles where it is let go, Escape puts it
+  back, and the release opens no sandbox.
+- A goal task whose turn an API error ended ("Connection lost mid-response") now reads Working
+  while Claude Code retries it, and Needs you when the retries fail (SPEC-333, task #317, fixes
+  #927). Claude Code retries a goal turn itself, after 1, 5 and 15 minutes, and says so in a notice.
+  Yulius read neither that notice nor the one saying the retries were spent. It settled the error
+  turn as "Your turn" (task #33 read "in review"), and the person typed `continue` themselves.
+  Spent retries, or a pause on an API error Claude Code does not retry, now open a Needs you
+  request with the cause. A restart's replay does the same
+  ([ADR-0225](decisions/0225-claude-code-owns-the-goal-retry-after-an-api-error.md)).
+- The status panel's Sessions tile no longer reads "9 / 8" (SPEC-334, task #318, fixes #928). A
+  Done task holds no session slot, and one that works again (a follow-up typed into it, or its own
+  background work) counts again without passing the start door, and a restart with a lower limit
+  keeps its runs, so the count can pass the limit until those turns end. No queued task starts
+  meanwhile. The tile now shows the limit full with the overshoot marked, "8 / 8 +1", then
+  "1 over the limit" and "6 queued", and says why on hover
+  ([ADR-0226](decisions/0226-the-sessions-tile-shows-the-overshoot-of-resumed-done-tasks.md)).
+- An MCP server is now for every sandbox or this one, and for the whole team or only you
+  (SPEC-332, task #316). A personal server is seen and changed only by you and attached only to
+  your own tasks and your Superagent, never to a teammate's task, an automation's task, CI or CD,
+  so a server holding your own credential (say a founder admin MCP) no longer goes to every
+  agent. The editor starts on Every sandbox + Whole team (This sandbox for non-administrators),
+  `claude mcp add --scope user` pastes as Only me, both settings change after adding, and the
+  list marks personal servers "Only you". A hand-over resumes a live run holding the previous
+  owner's server without it, and MCP servers' secret values (team and personal) are now redacted
+  like agent secrets. Per name the most specific server wins
+  ([ADR-0224](decisions/0224-an-mcp-server-is-for-every-sandbox-or-one-and-for-the-team-or-its-owner.md)).
+- A whole instance can be copied to another VM or a file and installed there (SPEC-329,
+  ADR-0222, task #313): `sudo yulius instance export | ssh root@new-vm yulius instance import`.
+  The export freezes `yulius.service` (server, agents, terminals, CI, Docker) so nothing drifts,
+  prints the exact size before the first byte, streams an uncompressed tar of exactly that length
+  to standard output without writing on the VM's disk, and thaws the service after (`--move`
+  keeps it frozen and disabled). The import refuses an existing instance, a newer schema or too
+  little disk before writing, makes the service user and its ids, remaps owners, never follows a
+  link of the copy, and checks the SHA-256 trailer; `yulius host setup` then starts the new VM.
+- A task reading another repository of its owner now gets every branch and tag, not only the
+  default branch (SPEC-330, task #314, #915). A task that needed Quartio v2's `dev` asked a person
+  to paste files, because `reference_repo` fetched `main` alone. The bundle now carries every
+  branch and tag the task's owner can read, `branch` picks the one checked out, and a branch the
+  repository lacks is answered with its branch list instead of a person's action
+  ([ADR-0223](decisions/0223-a-reference-copy-carries-every-branch-and-tag-its-owner-can-read.md)).
+- Scrolling a task's terminal past its top now leads to the session's first message (SPEC-326,
+  task #310, fixes #911). Claude Code shows a session only from its last compaction, also after
+  every resume, so a compacted task could not be scrolled back further. A wheel turn up that no
+  longer moves the terminal now offers "Earlier messages: show the whole session". It opens the
+  task's transcript, read from its first line and live, in the terminal's place. Back to the
+  terminal, or Escape, returns to the terminal, which stayed connected. Old tasks benefit most.
+  Their runs started before Claude Code was made to draw full screen (SPEC-310), and kept its
+  classic renderer through the updates that froze and thawed them. A viewer who opened one got only
+  its visible screen; the first turn up now offers the whole session.
+- A hidden terminal no longer squeezes its session to 10×5 (SPEC-331, task #315, fixes #918).
+  Closing the panel or putting another tool in front measured the hidden box's `100%` as 100 px
+  and sent a 10×5 resize. The Superagent and Shell terminals follow the last resize, so a tab
+  still showing the Superagent got Claude Code in ten columns, and what it wrote while hidden
+  stayed wrapped. A terminal that is not shown now measures nothing and sends no size.
+- A background task's wake-up reads as one line in a watched task and on the Sessions page
+  (SPEC-328, task #312, fixes #913). When background work ended, Claude Code's
+  `<task-notification>` record was printed as the person's typed prompt, with its time and all
+  its markup (task id, output file, usage). It now prints as the TUI does: `⏺ Agent "…" finished`,
+  its result folded under the line.
+- A Needs you request now reads as What happened, Problem and To do (SPEC-327, task #311). The
+  attention bar showed "Needs you: <action> · <why>" as one paragraph, where the to-do was the
+  hardest part to find. `needs_you` takes `happened`, `problem`, `action` and `decision`; the bar
+  shows "Needs you" (or "Needs your decision") over a labelled list with the to-do last and bold,
+  backticked commands as code, and the sidebar and notifications say "Needs your decision" for a
+  choice. `why` still works as the problem's older name, and requests stored with it read as the
+  problem ([ADR-0221](decisions/0221-a-needs-you-request-reads-what-happened-problem-to-do.md)).
+- Files up to 1 GB can be uploaded by default, so a screen recording of a bug can be given to a
+  task (SPEC-325, ADR-0219, task #309). The agent extracts frames from the video with `ffmpeg`
+  and looks at them. The limit was 25 MB (`YULIUS_UPLOAD_MAX_MB`, which still sets it). An upload
+  that would bring the data disk to 95 % used is refused before it starts. A large file attached
+  to a prompt now downloads from its link instead of being read into the page. Operators must
+  raise the reverse proxy's body limit to 1100 MB (operations guide, §4 and the upgrade notes).
 - The reply e2e no-leak checks now fail when keys reach the terminal (SPEC-323, task #308, fixes
   #524). They read the session right after the keys, before a leaked key had arrived, and on an
   empty session, which a leaked Enter leaves empty: with the attention bar's keys forwarded to the

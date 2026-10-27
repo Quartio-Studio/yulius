@@ -143,6 +143,10 @@ pub struct TaskRuntime {
     pub(crate) typed_at_ms: AtomicI64,
     /// Who typed last.
     pub(crate) typed_by: Mutex<Option<yulius_domain::ids::UserId>>,
+    /// Whose personal MCP servers the current run was started with (SPEC-332 MSC-009): a live
+    /// run keeps its MCP configuration, so a hand-over restarts it, and only that person messages
+    /// it meanwhile.
+    pub(crate) personal_mcp_of: Mutex<Option<yulius_domain::ids::UserId>>,
     /// Claude Code recorded the session goal as achieved and no prompt came since (TSK-014).
     pub(crate) goal_achieved: AtomicBool,
     /// Claude Code recorded something about the goal since the `/goal` was typed: it was
@@ -203,6 +207,9 @@ pub struct TaskRuntime {
     /// The task was made Working again by the goal verdict or by work after a stop, not by a
     /// prompt: when the turn closes without any Stop hook (an error ended it) it is idle again.
     pub(crate) resumed_turn: AtomicBool,
+    /// Claude Code armed a goal retry after the turn an error ended (SPEC-333 AER-001): the turn
+    /// that closes stays Working until the retry's prompt, or a person's, starts the next one.
+    pub(crate) goal_retry_armed: AtomicBool,
     /// When Yulius last answered a Stop hook of this run, whatever it decided (ms, 0 = never).
     /// A turn that began later and closes had no Stop Yulius answered: its hook failed open
     /// (SPEC-290 GDW-001).
@@ -332,6 +339,7 @@ impl TaskRuntime {
             auto_pr_head: Mutex::new(None),
             typed_at_ms: AtomicI64::new(0),
             typed_by: Mutex::new(None),
+            personal_mcp_of: Mutex::new(None),
             goal_achieved: AtomicBool::new(false),
             goal_submitted: AtomicBool::new(false),
             session_started: AtomicBool::new(false),
@@ -357,6 +365,7 @@ impl TaskRuntime {
             attention_lock: tokio::sync::Mutex::new(()),
             turn_record_ms: AtomicI64::new(0),
             resumed_turn: AtomicBool::new(false),
+            goal_retry_armed: AtomicBool::new(false),
             launches: Mutex::new(std::collections::BTreeMap::new()),
             ended_stretch: Mutex::new(None),
             goal_open: AtomicBool::new(false),
@@ -1320,6 +1329,13 @@ impl App {
         std::fs::create_dir_all(&run_dir).map_err(AppError::internal)?;
         // The repository's `.mcp.json` servers join the sandbox's first (SPEC-095 PMC-001).
         self.import_project_mcp(&sandbox).await;
+        // One read of the servers: what the run gets is what it is recorded to hold (MSC-009).
+        let (mcp, personal_mcp) = self
+            .mcp_launch(&sandbox, crate::vault::Holder::of_task(&task))
+            .await?;
+        if let Ok(mut held) = self.runtime(&task.id).personal_mcp_of.lock() {
+            *held = personal_mcp.then(|| task.owner.clone());
+        }
         let plan = self.deps.harness.plan(&HarnessLaunch {
             harness,
             mode,
@@ -1329,7 +1345,7 @@ impl App {
             model: task.model.clone(),
             effort: task.effort.clone(),
             contained: self.config.contained,
-            mcp: self.mcp_attachments(&sandbox).await?,
+            mcp,
             credential,
         })?;
         if let Some(session_id) = &stepped_back {
@@ -1521,6 +1537,22 @@ impl App {
         self.attach_run(&task.id, &attempt, &host_token).await?;
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
+        // Control passed during the launch, after this run took its owner's personal MCP servers
+        // and before a hand-over could see it live: it resumes for the new owner (SPEC-332). The
+        // owner is read after the status changed, so no hand-over falls between the two checks.
+        let held = runtime
+            .personal_mcp_of
+            .lock()
+            .ok()
+            .and_then(|held| held.clone());
+        let owner_now = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
+        if held
+            .is_some_and(|owner| crate::vault::Holder::of_task(&owner_now).person() != Some(&owner))
+        {
+            let app = Arc::clone(self);
+            let (task_id, account) = (task.id.clone(), Some(account.id.clone()));
+            tokio::spawn(async move { app.restart_for_new_owner(&task_id, account).await });
+        }
         if goal_in_prompt {
             // Nothing to type: the goal is watched until Claude Code records it.
             self.spawn_goal_watch(&task.id, &attempt_id, &run_dir);
@@ -3186,7 +3218,7 @@ impl App {
                 // agent is idle, so it is terminated without an interrupt that could start or
                 // cancel anything. A person's switch interrupts first, so the transcript keeps
                 // the interrupted turn.
-                if reason != "manual" {
+                if !interrupts_first(reason) {
                     let _ = run
                         .writer
                         .signal(crate::ports::session::RunSignal::Terminate)
@@ -3716,6 +3748,8 @@ impl App {
         runtime.notice_attention_ms.store(0, Ordering::SeqCst);
         runtime.turn_record_ms.store(0, Ordering::SeqCst);
         runtime.resumed_turn.store(false, Ordering::SeqCst);
+        // A retry armed in the old session is that process's: a new one does not make it.
+        runtime.goal_retry_armed.store(false, Ordering::SeqCst);
         runtime.stop_answered_ms.store(0, Ordering::SeqCst);
         runtime.turn_began_ms.store(0, Ordering::SeqCst);
         runtime.turn_record_at_ms.store(0, Ordering::SeqCst);
@@ -3880,7 +3914,7 @@ impl App {
                         // Claude Code continued past its limit while Yulius was down.
                         self.cut_turn_continued(&task_id, facts.last_turn_at).await;
                     }
-                    self.apply_transcript_facts(&task_id, facts).await;
+                    self.apply_transcript_facts(&task_id, facts.clone()).await;
                     // A session left full while Yulius was down is recovered now (CTX-007).
                     if facts.context_full {
                         self.context_full_replayed(&task_id, &attempt).await;
@@ -3934,6 +3968,8 @@ impl App {
                 tokio::spawn(async move { app.rotate(&tid, account, Trigger::LimitReached).await });
             }
             Observation::UserTurn { at, wake } => {
+                // The retry's prompt (or a person's) starts the turn an armed retry waited for.
+                runtime.goal_retry_armed.store(false, Ordering::SeqCst);
                 // A new prompt: an achieved goal no longer makes the task done (TSK-014). Claude
                 // Code's own wake-ups (background work ended) keep it, as the prompt hook does.
                 if !wake {
@@ -3990,6 +4026,7 @@ impl App {
             }
             Observation::TurnInterrupted { at } => {
                 // Esc or Ctrl+C stopped the turn: no Stop hook runs, the agent waits for input.
+                runtime.goal_retry_armed.store(false, Ordering::SeqCst);
                 runtime.end_turn(self.now());
                 self.turn_interrupted(task_id, at).await;
             }
@@ -4003,6 +4040,7 @@ impl App {
                 self.turn_record_seen(task_id, at).await;
             }
             Observation::AgentWork { at } => {
+                runtime.goal_retry_armed.store(false, Ordering::SeqCst);
                 self.context_replied(task_id, &attempt.id);
                 // A usage limit ends the turn, so a `limit` pause is open only between turns (or
                 // after a limit replayed at a restart, which may find a turn open).
@@ -4011,6 +4049,9 @@ impl App {
                 }
                 runtime.at_limit.store(false, Ordering::SeqCst);
                 self.agent_worked(task_id, at).await;
+            }
+            Observation::GoalRetry { armed, notice } => {
+                self.goal_retry_observed(task_id, armed, &notice).await;
             }
             Observation::ContextFull => self.context_full_observed(task_id, attempt).await,
             Observation::Compacted => self.compacted_observed(task_id).await,
@@ -4121,8 +4162,26 @@ fn make_home(sandbox_dir: &Path) -> AppResult<()> {
         })
 }
 
+/// Whether a switch for `reason` interrupts the turn before ending the run: a person's switch
+/// and a hand-over may come mid-turn (SPEC-332), automatic switches come while the agent is idle.
+fn interrupts_first(reason: &str) -> bool {
+    matches!(reason, "manual" | "handover")
+}
+
 #[cfg(test)]
 mod tests {
+    /// Review of SPEC-332 (round 3): a person's switch and a hand-over may come mid-turn, so they
+    /// interrupt the turn first (the transcript keeps it); automatic switches, made while the agent
+    /// is idle, terminate without an interrupt.
+    #[test]
+    fn a_hand_over_interrupts_like_a_persons_switch() {
+        assert!(super::interrupts_first("manual"));
+        assert!(super::interrupts_first("handover"));
+        for reason in ["rotation", "limit", "context_full", "proactive"] {
+            assert!(!super::interrupts_first(reason), "{reason}");
+        }
+    }
+
     /// #661: a `home` link fails the start, dangling (nothing is made where it points) or to a
     /// host folder (which is not taken as the home); a missing home is made, an existing one
     /// kept (SPEC-266 STB-004).
