@@ -434,7 +434,7 @@ impl App {
         let (record, _) = self.require(&ctx.user, &sandbox_id, Action::Work).await?;
         let mut tasks = self.deps.store.tasks(&record.id, false).await?;
         tasks.extend(self.deps.store.tasks(&record.id, true).await?);
-        tasks.sort_by(|a, b| b.number.cmp(&a.number));
+        tasks.sort_by_key(|task| std::cmp::Reverse(task.number));
         let sandbox_dir = self.sandbox_dir(&record.id);
         let user = ctx.user.id.clone();
         // Disk only from here: off the async workers, as the reads of `file_read`.
