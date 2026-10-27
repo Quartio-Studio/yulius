@@ -23,7 +23,9 @@ deploy from starting while the update paused tasks or installed, either.
   closes a deploy gate and reads the CD and environment runs recorded as running. While any runs
   (or is starting), the run stays `building`: tasks keep working, nothing is frozen or held, and
   the instance page lists the deploys ("Built. Waiting for N deploy(s) to finish before pausing
-  tasks; new deploys wait for the update."). The first pass that finds none moves to `draining`.
+  tasks; new deploys are refused until the update installed."; a CD run links to its project's
+  CI/CD page, an environment run to its Git page). The first pass that finds none moves to
+  `draining`.
 - **Refuse new deploys until the install ended.** `cd_start` and `dlv_start_environment_run` take a
   permit from the gate before they do anything (no promotion, no audit entry, no run record) and
   hold it until their run is recorded as running. Closed, the gate refuses with "nothing ran: Yulius
@@ -33,12 +35,15 @@ deploy from starting while the update paused tasks or installed, either.
 - **No race.** The gate and its count of starting deploys are one mutex: the update closes it and
   then reads the store, so a deploy that passed the gate before the close is either counted as
   starting or already recorded.
-- **Bounded by the job timeout.** Every deploy is killed at the CI job timeout, so the wait is
-  bounded by it; past the job timeout plus 5 minutes (from when this server first saw the build
-  done with a deploy running) the update is cancelled ("N deploy(s) were still running T minutes
+- **Bounded by the longest deploy.** A CD run waits up to the CI job timeout for its agent states
+  and deploys for up to the job timeout; an environment run prepares for up to 35 minutes and runs
+  for up to the job timeout. Past max(2 × job timeout, job timeout + 35 min) + 5 min (70 minutes
+  by default), counted per update run from when this server first saw its build done with a
+  deploy running, the update is cancelled ("N deploy(s) were still running T minutes
   after the build; nothing was installed."). A person can cancel the update while it waits.
 - **Defensive drain.** While `draining`, a running or starting deploy keeps the install from being
-  requested, also after "Continue without waiting" (which skips waiting for tasks, never deploys).
+  requested, also after "Continue without waiting" (which skips waiting for tasks, never deploys);
+  the page then says "Waiting for N deploy(s) to finish before restarting." and offers no Continue.
 
 ## Alternatives
 
@@ -50,13 +55,17 @@ deploy from starting while the update paused tasks or installed, either.
   the job timeout, undoing ADR-0131's short pause.
 - **Queue new deploys and run them after the update.** The deploy would run with what was chosen
   before an update its requester did not see; a refusal runs nothing and says when to retry.
-- **A fixed 30-minute bound** like the task drain: a legitimate deploy near the 30-minute default
-  job timeout (or a longer configured one) would cancel the update.
+- **A fixed 30-minute bound** like the task drain, or the job timeout alone: a legitimate deploy
+  (one that first waited for an agent state, or an environment run's preparation) would cancel
+  the update.
 
 ## Consequences
 
 - A deploy running at an update finishes as it would have (passed, failed, timed out) and saves its
-  agent states; the update installs after it. The update can take up to the job timeout longer.
+  agent states; the update installs after it. The update can take up to the bound longer.
+- A CD run recorded as running with no executor (a request dropped between its record and its
+  start) is waited for until the bound, then the update is cancelled; a person ends it with
+  Cancel on the CI/CD page (pre-existing, #948).
 - Deploys asked for from the build's end until the install ended are refused, by people and by
   agents (`cd_deploy` returns the refusal); agents retry later.
 - The gate is in memory: a server that restarts mid-update reopens it and closes it again on its
