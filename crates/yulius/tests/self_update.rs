@@ -445,6 +445,10 @@ async fn the_hold_survives_the_restart_and_tasks_resume_staggered() -> TestResul
     let _ = i.h.app.update_round().await;
     let install = i.helper.last().ok_or("install")?;
     assert_eq!(install.action, HelperAction::Install);
+    assert!(
+        i.h.app.deploy_permit().is_err(),
+        "no deploy starts while it installs (SPEC-342)"
+    );
     i.helper
         .report(&install, HelperState::Running, "stopping", None);
 
@@ -460,6 +464,10 @@ async fn the_hold_survives_the_restart_and_tasks_resume_staggered() -> TestResul
         .report(&install, HelperState::Running, "checking", None);
     let _ = restarted.update_round().await;
     assert_eq!(hook(&internal, WORKING, "Stop").await?.0, 202);
+    assert!(
+        restarted.deploy_permit().is_err(),
+        "a server restarted mid-install closes the gate on its first pass (SPEC-342 DPU-007)"
+    );
 
     // The helper's check passed: the tasks are released one by one.
     i.helper
@@ -468,6 +476,7 @@ async fn the_hold_survives_the_restart_and_tasks_resume_staggered() -> TestResul
     let _ = restarted.update_round().await;
     let (code, _, _) = hook(&internal, WORKING, "Stop").await?;
     assert_eq!(code, 200, "the held turn goes on");
+    assert!(restarted.deploy_permit().is_ok(), "deploys start again");
     // (Without subscriptions the pool itself holds a new prompt, with its own Retry-After.)
     let (_, retry_after, _) = hook(&internal, IDLE, "UserPromptSubmit").await?;
     assert_ne!(
@@ -886,6 +895,10 @@ async fn a_cancel_during_a_freeze_pass_leaves_nothing_frozen() -> TestResult {
     }
     // Thawed by the cancel itself, before any later round's backstop.
     assert!(host.frozen().is_empty(), "left frozen: {:?}", host.frozen());
+    // The overtaken pass closed the deploy gate after the cancel opened it; the next round, with
+    // no update open, opens it again (SPEC-342 DPU-007, review round 2).
+    let _ = i.h.app.update_round().await;
+    assert!(i.h.app.deploy_permit().is_ok(), "deploys start again");
     Ok(())
 }
 
