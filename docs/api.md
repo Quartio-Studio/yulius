@@ -1113,6 +1113,11 @@ resolves to nothing, the run gets the server without that variable or token.
 - Built-in editor (write; EDT-001..004). `root` is `sandbox` (default, the repository) or
   `task:<task id>` (that task's worktree); `path` is relative (normal components only; `.git`
   is refused, 403; a path leading outside the folder, also through symbolic links, is 403).
+  `GET /api/sandboxes/{sid}/files/roots` → `{"roots":[{"root","branch","task_number",
+  "task_title","writable"}]}` (SPEC-340): the folders the editor can open, the sandbox repository
+  first (`branch` from its `HEAD`, `null` when detached or unreadable), then every task, active or
+  archived, whose worktree is on disk inside the sandbox, newest first; `writable` is false in
+  another person's task worktree (its saves answer 403, SPEC-070).
   `GET /api/sandboxes/{sid}/files?root&path` → `{"path","entries":[{"name","path",
   "kind":"file|dir|symlink","size"}],"truncated"}` (directories first; `.git` hidden; at most
   2000 entries). `GET /api/sandboxes/{sid}/files/content?root&path&known?` → `{"path","content":

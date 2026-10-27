@@ -50,12 +50,13 @@ worktree they may not change opens read-only and says why, instead of failing at
 - **EWT-002 Picker.** The Editor's folder picker lists those entries, each named by its branch:
   "Sandbox · `<branch>`" and "#`<number>` `<branch>`" (the title when the task has no branch), with
   "(read-only)" after one the person may not change; its tooltip names the folder open now in full.
-  It is read when the Editor is first shown, when the picker gets focus and when the selected task
-  changes; while unread or after a failed read it offers what it offers today, and the folder open
+  It is read each time the Editor comes to the front, when the picker gets focus and when the
+  selected task changes; while unread or after a failed read it offers what it offers today, and the folder open
   now always stays in the list. Choosing an entry switches folders as today (unsaved changes are
   asked about, SPEC-166).
 - **EWT-003 Read-only folders.** In a folder whose entry is not `writable`, Monaco is read-only,
-  the explorer offers no New file, New folder or Delete, and the status bar says
+  the explorer offers no New file, New folder, Upload or Delete (a drop adds nothing and says
+  why), and the status bar says
   "Read-only: Task #N is another person's" in place of the save state. A writable folder behaves
   as today.
 - **EWT-004 Status bar.** With no file open the status bar names the folder with its branch
