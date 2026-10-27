@@ -270,6 +270,15 @@ const CLAUDE_ROWS_60 = [
   '  ▎ quote https://quartio-v2-dev.vm.quartio.ai/admin/connect',
   '  ▎ ors?tab=all&page=2https://quartio-v2-dev.vm.quartio.ai/a',
   '  ▎ dmin/connectors?tab=all&page=2',
+  '',
+  // Every row of the prompt keeps one blank column at the right edge, not only its first.
+  '❯ The connectors page in the admin panel shows an error',
+  '  when I open it. Where is login and pass for https://quart',
+  '  io-v2-dev.vm.quartio.ai/admin/connectors?tab=all&page=2',
+  '',
+  '  check this too',
+  '  https://quartio-v2-dev.vm.quartio.ai/admin/connectors?tab',
+  '  =all&page=2',
 ];
 
 test('a URL Claude Code continues on the next rows is found whole, and nothing else is joined (#940)', async ({ app, browser }) => {
@@ -301,8 +310,10 @@ test('a URL Claude Code continues on the next rows is found whole, and nothing e
       edge: spans([`● See https://example.com/${'a'.repeat(34)}`, '  then sign in.'], 60),
       // Only the prompt keeps a blank column at the right edge: an answer row ending there was not cut.
       gap: spans([`● See https://example.com/${'a'.repeat(33)}`, '  configure it.'], 60),
+      // Nor a later row of an answer.
+      laterGap: spans(['● Intro.', `  See https://example.com/${'a'.repeat(33)}`, '  configure it.'], 60),
       // A URL longer than the rows looked at is no link rather than a wrong one; one row less is.
-      tooLong: spans([`● https://example.com/${'c'.repeat(18)}`, ...Array(32).fill(`  ${'c'.repeat(38)}`), '  end'], 40),
+      tooLong: spans([`● https://example.com/${'c'.repeat(18)}`, ...Array(31).fill(`  ${'c'.repeat(38)}`), '  end'], 40),
       longest: spans([`● https://example.com/${'c'.repeat(18)}`, ...Array(31).fill(`  ${'c'.repeat(38)}`)], 40),
     };
   }, [CLAUDE_ROWS_60, url38] as const);
@@ -316,10 +327,13 @@ test('a URL Claude Code continues on the next rows is found whole, and nothing e
     [`${whole}/help`, 13, at(13, 'https'), 14, CLAUDE_ROWS_60[14].length - 1],
     [`https://example.com/${'a'.repeat(41)}`, 17, at(17, 'https'), 18, at(18, ' then') - 1],
     [`${whole}${whole}`, 20, at(20, 'https'), 22, CLAUDE_ROWS_60[22].length - 1],
+    [whole, 25, at(25, 'https'), 26, CLAUDE_ROWS_60[26].length - 1],
+    [whole, 29, at(29, 'https'), 30, CLAUDE_ROWS_60[30].length - 1],
   ]);
   expect(result.scheme).toEqual([[`https://example.com/${'p'.repeat(30)}`, 0, 37, 1, 48]]);
   expect(result.edge).toEqual([]);
   expect(result.gap).toEqual([]);
+  expect(result.laterGap).toEqual([]);
   expect(result.tooLong).toEqual([]);
   expect(result.longest.map((l: unknown[]) => [l[1], l[3], l[4]])).toEqual([[0, 31, 39]]);
   expect(result.chain).toEqual([[`${url38}${'b'.repeat(38)}end/x`, 0, 2, 2, 6]]);
