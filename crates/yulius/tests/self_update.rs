@@ -1309,7 +1309,13 @@ async fn new_deploys_are_refused_while_the_update_installs() -> TestResult {
     let i = instance().await?;
     two_tasks(&i).await?;
     deploying_project(&i).await?;
-    let open = post(&i, "/api/sandboxes/s1/cd/dev/deploy", Some(json!({})), &i.member).await?;
+    let open = post(
+        &i,
+        "/api/sandboxes/s1/cd/dev/deploy",
+        Some(json!({})),
+        &i.member,
+    )
+    .await?;
     assert!(
         !open.body.to_string().contains(UPDATING),
         "no update yet: {}",
@@ -1317,7 +1323,13 @@ async fn new_deploys_are_refused_while_the_update_installs() -> TestResult {
     );
     built(&i).await?;
     assert_eq!(get(&i, &i.admin).await?["run"]["state"], "pausing");
-    let cd = post(&i, "/api/sandboxes/s1/cd/dev/deploy", Some(json!({})), &i.member).await?;
+    let cd = post(
+        &i,
+        "/api/sandboxes/s1/cd/dev/deploy",
+        Some(json!({})),
+        &i.member,
+    )
+    .await?;
     assert_eq!(cd.status, StatusCode::CONFLICT, "{}", cd.body);
     assert!(cd.body.to_string().contains(UPDATING), "{}", cd.body);
     let env = post(
@@ -1336,7 +1348,13 @@ async fn new_deploys_are_refused_while_the_update_installs() -> TestResult {
     );
     let r = post(&i, "/api/admin/update/cancel", None, &i.admin).await?;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
-    let after = post(&i, "/api/sandboxes/s1/cd/dev/deploy", Some(json!({})), &i.member).await?;
+    let after = post(
+        &i,
+        "/api/sandboxes/s1/cd/dev/deploy",
+        Some(json!({})),
+        &i.member,
+    )
+    .await?;
     assert!(
         !after.body.to_string().contains(UPDATING),
         "the cancel opened the gate: {}",
@@ -1375,7 +1393,13 @@ async fn a_running_deploy_is_waited_for_before_tasks_pause() -> TestResult {
         200,
         "no turn boundary is held"
     );
-    let cd = post(&i, "/api/sandboxes/s1/cd/dev/deploy", Some(json!({})), &i.member).await?;
+    let cd = post(
+        &i,
+        "/api/sandboxes/s1/cd/dev/deploy",
+        Some(json!({})),
+        &i.member,
+    )
+    .await?;
     assert!(cd.body.to_string().contains(UPDATING), "{}", cd.body);
     assert_eq!(
         i.helper.last().ok_or("request")?.action,
@@ -1435,7 +1459,10 @@ async fn a_deploy_running_while_draining_holds_the_install() -> TestResult {
     let view = get(&i, &i.admin).await?;
     assert_eq!(view["run"]["state"], "pausing", "{view}");
     assert_eq!(view["run"]["deploys"][0]["run"], "late");
-    assert_eq!(i.helper.last().ok_or("request")?.action, HelperAction::Build);
+    assert_eq!(
+        i.helper.last().ok_or("request")?.action,
+        HelperAction::Build
+    );
     deploy_ends(&i, "late").await?;
     let _ = i.h.app.update_round().await;
     assert_eq!(
