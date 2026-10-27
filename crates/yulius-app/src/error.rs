@@ -9,6 +9,10 @@ pub enum AppError {
     /// Authenticated but not allowed.
     #[error("{0}")]
     Forbidden(String),
+    /// A cookie session's write without the session's CSRF token. Its own code tells a page that
+    /// its token is stale (another tab signed in again) and can be read again (SPEC-337 CSR-001).
+    #[error("missing or invalid CSRF token")]
+    CsrfInvalid,
     /// Missing or invisible object.
     #[error("not found")]
     NotFound,
@@ -40,6 +44,7 @@ impl AppError {
         match self {
             Self::Unauthenticated => "unauthenticated",
             Self::Forbidden(_) => "forbidden",
+            Self::CsrfInvalid => "csrf_invalid",
             Self::NotFound => "not_found",
             Self::Conflict(_) => "conflict",
             Self::Invalid(_) => "invalid",

@@ -14,13 +14,16 @@ It refines [SPEC-002 §7.7–§7.9](../.ai/specs/SPEC-002-yulius-architecture.md
   `__Host-yulius_session` when the public URL is HTTPS (host-only and
   `Secure`: no other host can plant or shadow it) and `yulius_session` over plain HTTP.
   State-changing requests from cookie sessions must send `X-Yulius-CSRF: <csrf_token>` from
-  `GET /api/me`. A cookie session is refused (403) for a request that announces an `Origin` other
+  `GET /api/me`; a missing or wrong one is refused with 403 `csrf_invalid`. The token belongs to
+  the session, so after a sign-in elsewhere in the browser, read it again from `GET /api/me`
+  (SPEC-337). A cookie session is refused (403) for a request that announces an `Origin` other
   than the public URL (or an allowlisted origin), or that the browser marks `Sec-Fetch-Site:
   same-site` or `cross-site`, unless it is a GET or HEAD navigation: a page on a live preview
   origin (same-site with Yulius) can never use the user's session.
 - WebSockets require a valid session and an `Origin` equal to the public URL.
 - Errors: HTTP status plus `{"error": {"code": "snake_case", "message": "human text"}}`. Codes:
-  `unauthenticated` (401), `forbidden` (403), `not_found` (404; also for invisible sandboxes),
+  `unauthenticated` (401), `forbidden` (403), `csrf_invalid` (403; a cookie session's write
+  without the session's CSRF token), `not_found` (404; also for invisible sandboxes),
   `conflict` (409; racing state changes), `claude_account_required` (409; a person's start of an
   agent with no usable Claude account, the message naming Subscriptions, `/admin/accounts`;
   SPEC-246), `invalid` (422), `capacity` (429), `upstream` (502,
