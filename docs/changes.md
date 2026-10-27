@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-27
 
+- The Superagent can start a task in another of its person's sandboxes, once the person approves
+  that one request (SPEC-335, ADR-0227, task #319). `sandboxes_list` names where it may ask;
+  `sandbox_task_create` puts the request above the Superagent's session, with the target, the
+  whole prompt and its start options, and waits up to 4 minutes for **Create task** or
+  **Decline**. Only the person's click in the web UI answers: every API token is refused, and a
+  dropped call, a restart or no answer leaves nothing to approve later. Approval creates the task
+  in the target exactly as shown, with the person's access checked there.
 - A tab left open while the browser signed in again elsewhere no longer fails its writes with
   "missing or invalid CSRF token" (SPEC-337, task #321, fixes #933). The Superagent showed it
   first ("Couldn't start the Superagent"), since opening it is a write. Each sign-in (GitHub,
@@ -17,13 +24,6 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-26
 
-- The Superagent can start a task in another of its person's sandboxes, once the person approves
-  that one request (SPEC-335, ADR-0227, task #319). `sandboxes_list` names where it may ask;
-  `sandbox_task_create` puts the request above the Superagent's session, with the target, the
-  whole prompt and its start options, and waits up to 4 minutes for **Create task** or
-  **Decline**. Only the person's click in the web UI answers: every API token is refused, and a
-  dropped call, a restart or no answer leaves nothing to approve later. Approval creates the task
-  in the target exactly as shown, with the person's access checked there.
 - The sandbox tabs in the top row now drag as smoothly as the Notes tabs (SPEC-336, task #320,
   fixes #929). They used the browser's own drag and drop: a ghost of the link, nothing moving
   until the drop, then a jump. They now share `tabdrag.js` with the Notes and Editor tabs: the

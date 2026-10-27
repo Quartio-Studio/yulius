@@ -1,11 +1,11 @@
 ---
 yulius-task: e8f48332-16c1-47db-a0d7-77469c08b52b
-status: in-progress
+status: done
 ---
 
 # SPEC-335: The Superagent starts tasks in other sandboxes once its person approves each
 
-Status: in-progress
+Status: done
 Date: 2026-10-26
 Owner: Yulius task #319
 Scope authorization: task #319 (`/goal`): "Superagents should be able to talk to other sandboxes
@@ -106,8 +106,8 @@ in full and answered once, and a declined, unanswered or abandoned request creat
 - [x] Review round 1 fixed: cancellation, detached approval, race tests, card guards
 - [x] Review round 2 fixed: invisible characters refused on the server and named in the card
 - [x] Review rounds 3 and 4 fixed: the list scrolls, read means the prompt's end was on screen, moved cards arm again
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -151,3 +151,51 @@ in full and answered once, and a declined, unanswered or abandoned request creat
   the sandbox could hold) are refused.
 - **Only task creation crosses.** Messaging, stopping or reading other sandboxes' tasks stays in
   their own Superagent; a later task can add them behind the same approval.
+
+## Evidence
+
+All at `be25ecd1` (the branch with `origin/dev` merged), on 2026-10-27:
+
+- `scripts/dev ci`: exit 0. Repository contracts, format, lint, macOS targets, deps and docs all
+  pass; `cargo nextest run --workspace --profile ci` ran 2744 tests, 2744 passed, 16 skipped.
+- `cd e2e && npx e2e run`: 67 files passed, 1 skipped (`agent.e2e.ts` needs a model); 754 tests
+  passed, 1 skipped.
+- New tests:
+  - `crates/yulius/tests/cross_sandbox.rs`, 13 tests: listing, approval, decline, unanswered and
+    dropped requests, the browser-only rule, other people, refusals made without asking, the bound
+    of 3, the access recheck, audit rows and event scoping, an approval whose page went away, and
+    invisible characters.
+  - `cockpit::a_cancelled_cross_sandbox_request_ends_at_once`: through the real `/mcp` and
+    `notifications/cancelled`.
+  - The `cross_sandbox::tests` unit tests of `settle()`, among them a timeout that races an
+    approval.
+  - The `mcp.rs` tests of which tools each agent is served, and the read-only allowlist (`manage_tools`,
+    `yulius-harness` launch).
+  - `e2e/tests/superagent-requests.e2e.ts`, 10 tests.
+- Each guard was shown to matter by a mutation that made its test fail: without the browser-only
+  check, without the cancellation, without the detached approval, and with the panel's card
+  removed. Each e2e test of a review fix also ran against the code before that fix and failed
+  there.
+- Independent review in fresh sessions, 5 rounds. All findings were in this change's own code, and
+  each was fixed test-first:
+  - Round 1: Esc's `notifications/cancelled` left the request approvable; a prompt could hide text
+    below the fold or behind bidi characters; a new card could take a stray click; test gaps; an
+    approval POST cancelled midway lost its outcome.
+  - Round 2: tag characters, variation selectors and fillers passed the UI; titles and options
+    were shown raw; the list clipped prompts.
+  - Round 3: three cards pushed the session out of the panel; lines that only look blank were not
+    counted; the server's format character list was incomplete.
+  - Round 4: a double-click could approve the card that moved up; an assertion raced the arming;
+    an answered card took a second click.
+  - Round 5: **APPROVE** at `be25ecd1`. Its nits are left as they are: the IntersectionObserver
+    fallback fails open, but every supported browser has the observer; and a destroyed panel can
+    send one last ignored read.
+- A dropped call (the client's connection closed) is not audited, because the guard that removes
+  its request runs in `Drop`, where nothing can be awaited. XSR-009 lists only the audited
+  outcomes.
+- Not run: `yulius security-scan` (Vidoc vidoc-1) exited 2, unrun: the instance key is out of
+  quota (HTTP 429, "This API key has used its 50,000,000 tokens"). This is not a pass; Yulius CI's
+  `security` job decides on the pull request.
+- Not tested against a live Claude Code: that Esc sends `notifications/cancelled` while it keeps
+  the HTTP request open (the reviewer's reading of the MCP SDK). Both paths are covered: the
+  dropped call by `a_dropped_call_takes_its_request_with_it`, the notification by the `cockpit` test.
