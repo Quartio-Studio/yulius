@@ -61,12 +61,14 @@ before the server restarts, and no deploy starts between then and the restart.
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] New deploys are refused while an update pauses tasks or installs
-- [ ] The update waits after its build for running deploys before pausing tasks
-- [ ] The instance page names the deploys the update waits for
-- [ ] ADR-0232, architecture, product and operations docs say deploys survive updates
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Read the product context and related work, then write and validate the spec
+- [x] New deploys are refused while an update pauses tasks or installs
+- [x] The update waits after its build for running deploys before pausing tasks
+- [x] The instance page names the deploys the update waits for
+- [x] ADR-0232, architecture, product and operations docs say deploys survive updates
+- [x] Review round 1 findings fixed test-first
+- [x] Review round 2 findings fixed test-first
+- [ ] Review round 3 approves the final head
 - [ ] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
@@ -117,4 +119,52 @@ before the server restarts, and no deploy starts between then and the restart.
 
 ## Evidence
 
-(filled at the end)
+- **Red, then green.** At 2ee7148f, with dev's `updates.rs`, `cd.rs`, `delivery.rs` and the
+  contracts checked out, the four new `self_update::` tests failed: the update moved to
+  `draining`/installed and the deploy started. With the change, all 25 passed. The e2e test
+  failed on dev's `instance.js` (no deploy link) and passed with the change. The round-1 e2e
+  pausing test failed on the round-0 page and passes now.
+- **Mutations caught.** Removing `+ starting` in `listed_deploys` fails
+  `a_starting_deploy_is_waited_for` (M2). Removing the unconditional `open_deploys()` with no open
+  run fails `a_cancel_during_a_freeze_pass_leaves_nothing_frozen` (round 2). Removing
+  `| RunState::Installing` from the close fails
+  `the_hold_survives_the_restart_and_tasks_resume_staggered` (round 2, DPU-007).
+- **Unit.** `deploy_gate::tests`: the permit's starting count, the closed gate, and the wait keyed
+  to its run (H1).
+- **Gate.** `scripts/dev ci` at f6de33ea: green (2762 tests passed, 16 skipped; fmt, clippy on
+  Linux and macOS, deny, shear, doc, doctests). At 00c6f2c7 (round 1 fixes merged with dev):
+  green (2767 passed, 16 skipped). The first run at bf17cda2 failed only `cargo fmt --check`,
+  which was fixed at f6de33ea.
+- **e2e.** `npx e2e run tests/update.e2e.ts`: 20 passed (mock: `deploying=1`, `deploying=drain`).
+- **Security scan.** `yulius security-scan` at bf17cda2: **not run** (exit 2). Vidoc's key is out
+  of quota (HTTP 429, "used its 50,000,000 tokens"). The 9 code files of the change were not
+  scanned. This is unrun, not passed; Yulius CI's `security` job reruns it on the pull request
+  head.
+- **Not tested.**
+  - The store-error messages (L3): the fake store cannot be made to fail these reads.
+  - A real update on a host (helper, systemd restart): the flow is covered with the fake helper
+    and a restarted `App` on the same database.
+- **Review round 1** (fresh session, om-code-review, f6de33ea): request changes. Every finding
+  was in own code and is answered here:
+  - **H1, a stale wait start after a cancel race:** the wait is keyed to its run in
+    `DeployWait`, and the gate opens while the run builds and whenever no update is open.
+  - **M1, bound too short:** the bound is now max(2 × job timeout, job timeout + 35 min) + 5 min.
+  - **M2, the update side untested:** `a_starting_deploy_is_waited_for`.
+  - **L1, the pausing view:** it names the deploy and offers no Continue.
+  - **L2, links:** each links by kind.
+  - **L3, store errors:** the messages say a read failed.
+  - **L4, wording:** "refused", not "wait".
+  - **Nits:** fixed.
+  - **L5, an orphaned CD record:** pre-existing, filed as #948.
+- **Review round 2** (00c6f2c7): request changes.
+  - **Medium, the H1 re-open untested:** the cancel-during-freeze test now asserts the gate
+    reopens, and the restart test asserts the gate is closed mid-install and open after.
+  - **Low 1, environment-run orphans:** pre-existing, filed as #952; ADR consequence corrected.
+  - **Low 2, time outside the job timeout:** said in the ADR as a safe backstop; the slack is
+    unchanged.
+  - **Low 3, the restart path:** tested; store errors are not, see above.
+  - **Nits:** operations wording fixed. Two nits are left as they are:
+    - a deploy counted twice for the moment between its record and its permit's drop. It is
+      transient, and safe since it only waits longer.
+    - the sandbox id used as a link when its record vanished mid-update. A project removed
+      during a deploy is rare, and the link then 404s harmlessly.

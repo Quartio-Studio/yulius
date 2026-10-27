@@ -63,9 +63,15 @@ deploy from starting while the update paused tasks or installed, either.
 
 - A deploy running at an update finishes as it would have (passed, failed, timed out) and saves its
   agent states; the update installs after it. The update can take up to the bound longer.
-- A CD run recorded as running with no executor (a request dropped between its record and its
-  start) is waited for until the bound, then the update is cancelled; a person ends it with
-  Cancel on the CI/CD page (pre-existing, #948).
+- A CD run or environment run recorded as running with no executor (a request dropped between its
+  record and its start) is waited for until the bound, then the update is cancelled; a person ends
+  a CD run with Cancel on the CI/CD page, an environment run only expires once its lost-run limit
+  passed and it is read (pre-existing, #948 and #952).
+- What a deploy does outside the job timeout (a production promotion and the checks before its
+  run is recorded, writing its files, restoring and saving agent states, joining its
+  containment) is covered only by the 5 minutes of slack: with a long job timeout and a slow
+  promotion the update can be cancelled behind a legitimate deploy. That is safe (nothing is
+  cut, the update is started again); the bound is a backstop, not a promise.
 - Deploys asked for from the build's end until the install ended are refused, by people and by
   agents (`cd_deploy` returns the refusal); agents retry later.
 - The gate is in memory: a server that restarts mid-update reopens it and closes it again on its
