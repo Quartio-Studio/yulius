@@ -1,11 +1,11 @@
 ---
 yulius-task: 965a22fe-d39c-4c33-9837-bead6d8dbdee
-status: in-progress
+status: done
 ---
 
 # SPEC-340: The editor's folder picker lists every worktree, named by its branch
 
-Status: in-progress
+Status: done
 Date: 2026-10-27
 Owner: Yulius task #324
 Scope authorization: task #324 (`/goal`, with a screenshot of the Editor panel whose folder picker
@@ -67,13 +67,13 @@ worktree they may not change opens read-only and says why, instead of failing at
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] The files API lists the sandbox's worktrees with their branches and who may change them
-- [ ] The Editor's folder picker lists every worktree by branch and switches between them
-- [ ] A worktree the person may not change opens read-only and says why
-- [ ] ADR, architecture, product and API docs describe the worktree picker
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Read the product context and related work, then write and validate the spec
+- [x] The files API lists the sandbox's worktrees with their branches and who may change them
+- [x] The Editor's folder picker lists every worktree by branch and switches between them
+- [x] A worktree the person may not change opens read-only and says why
+- [x] ADR, architecture, product and API docs describe the worktree picker
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -106,4 +106,30 @@ worktree they may not change opens read-only and says why, instead of failing at
 
 ## Evidence
 
-(Filled when done.)
+- `scripts/dev ci` at 1bf02425: exit 0 (repository contracts, fmt, Clippy for Linux and
+  `aarch64-apple-darwin`, nextest 2761 passed / 16 skipped, doctests, `cargo deny` and
+  `cargo shear`). The run before it failed on Clippy `unnecessary_sort_by` in `files_roots`, fixed
+  in 1bf02425.
+- Rust (`crates/yulius/tests/files.rs`, 17 tests pass): `the_folder_list_names_every_worktree_by_branch`
+  (order, branches, `writable` per person, archived worktree listed, no worktree / removed /
+  outside-the-sandbox not listed, detached `HEAD`, 403 for read access; failed with 404 before the
+  route), `..._reads_no_branch_through_a_planted_link` (linked `HEAD`, linked `.git`, linked
+  `repo`; mutation: without the containment check it failed),
+  `..._reads_no_branch_through_a_git_folder_swapped_after_the_check` (race point `RootsHead`;
+  failed with the other folder's branch before the handle walk), `..._is_not_held_by_a_pipe_planted_as_head`
+  (mutation: without `O_NONBLOCK` it hangs until nextest's timeout).
+- e2e (`e2e/tests/editor.e2e.ts`, `filedrop.e2e.ts`, `places.e2e.ts`: 68 passed): the picker
+  without a selected task, switching by branch, the read-only worktree (no WCAG violations), Ctrl+S
+  sending nothing, the read-only menu and drop, a folder chosen while the list is read, and a
+  failed list read keeping today's options; each new test failed before its change. Full suite
+  (`npx e2e run` at 1bf02425): 767 passed, 1 skipped, 68 files passed.
+- Looked at in the Yulius browser on the mock: the picker reads "Sandbox · quartio" and the status
+  bar "Sandbox repository · quartio".
+- Independent review (fresh session, read-only): round 1 request changes (1 major: `HEAD` read
+  redirectable after the check, ADR-0174; 4 minor: switch discarded edits on a list re-read,
+  Ctrl+S saved in a read-only folder, missing tests, blocking disk calls; 2 nits), all own code,
+  all fixed test-first; round 2 approve with one test nit, fixed; round 3 approve.
+- `yulius security-scan`: **not run** (exit 2): the Vidoc key is out of quota (HTTP 429, "used its
+  50,000,000 tokens"); 8 changed files unscanned. Unrun, not passed.
+- Not tested: the native `<select>` list as drawn by the browser (only its options and value are
+  asserted), and a real server with real Git worktrees beyond the integration test's fixtures.
