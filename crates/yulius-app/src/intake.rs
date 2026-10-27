@@ -662,6 +662,8 @@ impl App {
         step_ids: &[String],
     ) -> AppResult<(Option<TaskRecord>, String)> {
         let store = &self.deps.store;
+        let runtime = self.runtime(&d.task.id);
+        let _steps = runtime.steps_lock.lock().await;
         let steps = store.steps(&d.task.id).await?;
         let mut chosen = Vec::new();
         for id in step_ids {

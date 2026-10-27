@@ -51,6 +51,8 @@ const SESSION_WINDOW_MINUTES: u32 = 5 * 60;
 pub const DEFAULT_SIZE: (u16, u16) = (120, 40);
 /// Transcript poll interval.
 pub const WATCH_INTERVAL_MS: u64 = 1_000;
+/// How often a live run's steps are synced from its spec's Plan (SPEC-341 LSS-001).
+const SPEC_SYNC_INTERVAL: Duration = Duration::from_secs(5);
 /// Reattach attempts after an unexpected host disconnect.
 pub const REATTACH_ATTEMPTS: u32 = 3;
 /// How long a closed run may take to be recorded as ended after the close escalation (SPEC-039).
@@ -201,6 +203,10 @@ pub struct TaskRuntime {
     /// Held while a `needs_attention` flag is raised, or a secret request's flag is marked or
     /// ended, so that none of them reads a state another is changing (SPEC-213).
     pub(crate) attention_lock: tokio::sync::Mutex<()>,
+    /// Held by each writer of the task's steps (the spec sync, `steps_set`, `step_update`, a
+    /// person skipping steps) from its read to its write, so none writes back a status another
+    /// just changed (SPEC-341 LSS-002).
+    pub steps_lock: tokio::sync::Mutex<()>,
     /// When (ms) the record that closes a turn was last seen: the background agents it counts
     /// are known from then on (STA-001), which the chain and Done decisions wait for.
     pub(crate) turn_record_ms: AtomicI64,
@@ -363,6 +369,7 @@ impl TaskRuntime {
             notice_attention_ms: AtomicI64::new(0),
             secret_wait_at: AtomicI64::new(0),
             attention_lock: tokio::sync::Mutex::new(()),
+            steps_lock: tokio::sync::Mutex::new(()),
             turn_record_ms: AtomicI64::new(0),
             resumed_turn: AtomicBool::new(false),
             goal_retry_armed: AtomicBool::new(false),
@@ -3794,6 +3801,7 @@ impl App {
         let mut session_id = attempt.provider_session_id.clone();
         let mut watch = None;
         let mut last_drift_check = Timestamp(0);
+        let mut spec_synced = std::time::Instant::now();
         let mut saved: Option<UsageSnapshot> = None;
         let mut saved_at = Timestamp(0);
         // After a restart, the transcript the reattached run already wrote is history until the
@@ -3868,6 +3876,16 @@ impl App {
                 replay &= watch.is_none();
                 facts = TranscriptFacts::default();
                 replayed_limit = None;
+            }
+            // The steps follow the spec's Plan while a turn runs, not only at its end (SPEC-341
+            // LSS-001): a long goal turn that grew its Plan showed the old list's progress.
+            if spec_synced.elapsed() >= SPEC_SYNC_INTERVAL {
+                spec_synced = std::time::Instant::now();
+                if let Ok(Some(current)) = self.deps.store.task(&task_id).await
+                    && let Err(err) = self.sync_steps_from_spec(&current).await
+                {
+                    tracing::debug!(error = %err, task = %task_id, "step sync from the spec failed");
+                }
             }
             // Background shells of an idle task, at most every SHELL_PROBE_MS (TSK-014).
             if now.millis_since(probed_at) >= SHELL_PROBE_MS {

@@ -898,7 +898,8 @@ impl App {
     /// order; checked items are `done`; unchecked items keep the status and effort of the
     /// existing step with the same title (agents may mark them `in_progress` before ticking the
     /// box), so unticking never reopens a finished step; new items start `pending`. Writes only
-    /// on change. Returns whether the steps changed.
+    /// on change. Returns whether the steps changed. It runs at a session start, at a turn end and
+    /// every few seconds of a live run (SPEC-341 LSS-001), under the task's steps lock.
     ///
     /// # Errors
     /// Store failures.
@@ -916,6 +917,8 @@ impl App {
         .await
         .map_err(AppError::internal)?;
         let Some(plan) = plan else { return Ok(false) };
+        let runtime = self.runtime(&task.id);
+        let _steps = runtime.steps_lock.lock().await;
         let items: Vec<_> = plan
             .into_iter()
             .filter(|item| item.depth == 0 && !item.text.trim().is_empty())
