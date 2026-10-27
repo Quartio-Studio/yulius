@@ -503,6 +503,7 @@ test('the API client retries nothing after the page signed in again meanwhile, n
     const { createApi } = await import(url);
     const sent: string[] = [];
     let valid = 'none';
+    let thirdRead = false;
     let answer: (() => void) | null = null;
     const transport = {
       async fetch(path: string, init: { headers: Record<string, string> }) {
@@ -510,12 +511,19 @@ test('the API client retries nothing after the page signed in again meanwhile, n
         sent.push(`${path}:${token}`);
         if (path === '/held') await new Promise<void>((resolve) => { answer = resolve; });
         const ok = token === valid;
+        if (path === '/third' && !ok) {
+          // Read by the client: once it is, the refusal is waiting on a reread.
+          const text = JSON.stringify({ error: { code: 'csrf_invalid', message: 'missing or invalid CSRF token' } });
+          return { ok: false, status: 403, text: async () => { thirdRead = true; return text; } };
+        }
         return new Response(JSON.stringify(ok ? { ok: path } : { error: { code: 'csrf_invalid', message: 'missing or invalid CSRF token' } }), { status: ok ? 200 : 403 });
       },
     };
     let rereads = 0;
     let giveToken: ((token: string) => void) | null = null;
-    const api = createApi(transport, { onCsrfStale: () => { rereads += 1; return new Promise((resolve) => { giveToken = resolve; }); } });
+    // Each reread is told whether it still serves the page's current sign-in (`isCurrent`).
+    const current: (() => boolean)[] = [];
+    const api = createApi(transport, { onCsrfStale: (isCurrent: () => boolean) => { rereads += 1; current.push(isCurrent); return new Promise((resolve) => { giveToken = resolve; }); } });
     api.setCsrf('token-of-the-first-person');
     // Sent as the first person; this page signs in as someone else before it is answered.
     const held = api.post('/held').then(() => 'sent', (error: { code: string }) => error.code);
@@ -545,10 +553,18 @@ test('the API client retries nothing after the page signed in again meanwhile, n
     api.setCsrf('token-of-a-fourth-sign-in');
     const afterSignIn = api.post('/after-sign-in').then((answer: unknown) => answer, (error: { code: string }) => error.code);
     while (!giveToken) await new Promise((r) => setTimeout(r, 10));
-    valid = 'reread-for-the-fourth';
-    giveToken!('reread-for-the-fourth');
+    const answerAfter = giveToken as (token: string) => void;
+    // The older reread no longer serves the page; the newer one does.
+    const stillCurrent = current.slice(-2).map((isCurrent) => isCurrent());
+    // The older reread answers first; a third refusal still waits on the newer one, not a new read.
     answerBefore('reread-for-an-old-sign-in');
-    const ownReread = { before: await before, afterSignIn: await afterSignIn, rereads: rereads - rereadsBefore };
+    const beforeResult = await before;
+    const third = api.post('/third').then((answer: unknown) => answer, (error: { code: string }) => error.code);
+    while (!thirdRead) await new Promise((r) => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 0));
+    valid = 'reread-for-the-fourth';
+    answerAfter('reread-for-the-fourth');
+    const ownReread = { before: beforeResult, afterSignIn: await afterSignIn, third: await third, rereads: rereads - rereadsBefore, stillCurrent };
     valid = 'none';
 
     // Cancelled while the token is reread: cancelled at once, not refused, and not sent again, even
@@ -565,7 +581,7 @@ test('the API client retries nothing after the page signed in again meanwhile, n
   expect(result.heldResult).toBe('csrf_invalid');
   expect(result.rereadsAfterHeld).toBe(0);
   expect(result.duringResult).toBe('csrf_invalid');
-  expect(result.ownReread).toEqual({ before: 'csrf_invalid', afterSignIn: { ok: '/after-sign-in' }, rereads: 2 });
+  expect(result.ownReread).toEqual({ before: 'csrf_invalid', afterSignIn: { ok: '/after-sign-in' }, third: { ok: '/third' }, rereads: 2, stillCurrent: [false, true] });
   expect(result.cancelled).toBe('aborted');
   expect(result.sent.filter((s: string) => s.startsWith('/held:'))).toEqual(['/held:token-of-the-first-person']);
   expect(result.sent.filter((s: string) => s.startsWith('/during:'))).toEqual(['/during:token-of-the-second-person']);
