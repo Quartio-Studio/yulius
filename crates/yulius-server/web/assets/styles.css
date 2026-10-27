@@ -2764,6 +2764,12 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .jev-status { display: flex; align-items: center; gap: 8px; }
 .jev-status.jev-on .icon { color: var(--ok); }
 .jev-form { display: flex; flex-direction: column; gap: 8px; max-width: 520px; }
+/* The Vidoc card's projects, each with its switch (SPEC-338 VOF-005). */
+.vidoc-projects { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border); padding-top: 12px; }
+.vidoc-projects h3 { margin: 0; }
+.vidoc-project-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-width: 520px; }
+.vidoc-project { justify-content: space-between; gap: 12px; min-height: 32px; }
+.vidoc-project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .jev-test { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .jev-test-ok .icon { color: var(--ok); }
 .jev-test-warn .icon { color: var(--warn); }

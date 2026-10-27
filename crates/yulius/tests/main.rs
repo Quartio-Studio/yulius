@@ -94,3 +94,4 @@ mod update_supervision;
 mod uploads;
 mod variables;
 mod vidoc_key;
+mod vidoc_switch;

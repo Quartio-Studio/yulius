@@ -787,7 +787,7 @@ const claudeUsable = (db) => db.accounts.some((a) => a.status === 'ok' || a.stat
 const needClaude = (db) => {
   if (!claudeUsable(db)) fail(409, 'claude_account_required', 'Connect a Claude account first: no Claude account is connected, so no agent can start. An instance administrator connects one in Subscriptions (/admin/accounts).');
 };
-route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db) } }));
+route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db), vidoc: Boolean(db.vidoc.key || db.vidoc.config) } }));
 // Superadmin recovery (ACC-011): a code is set, three attempts left. A test can hold the answers
 // (`__yuliusMock.holdRecovery = promise`; `recoveryWaiting` counts the reads waiting there), so a
 // page that asked can be left before it answers (#581).
@@ -861,7 +861,12 @@ route('DELETE', `/api/me/tokens/${ID}`, ({ db, p }) => {
   return json(204);
 });
 
-route('GET', '/api/sandboxes', ({ db }) => db.sandboxes);
+/** A sandbox as the server shows it: `profile.vidoc` always a boolean (SPEC-338 VOF-001). */
+const shown = (sandbox) => {
+  if (sandbox && sandbox.profile) sandbox.profile.vidoc = sandbox.profile.vidoc !== false;
+  return sandbox;
+};
+route('GET', '/api/sandboxes', ({ db }) => db.sandboxes.map(shown));
 route('GET', '/api/github/repositories', ({ db }) => {
   if (!db.me.user.github_linked && !db.me.user.is_superadmin) fail(403, 'forbidden', 'sign in with GitHub to work with repositories');
   if (!db.me.instance.github_configured) fail(409, 'conflict', 'the GitHub App is not configured');
@@ -980,7 +985,8 @@ route('POST', '/api/sandboxes', ({ db, body }) => {
     id: `sb_${db.nextId}`, slug: repoName.toLowerCase(), name: repoName,
     repo: { owner: 'Quartio-Studio', name: repoName, url: `https://github.com/Quartio-Studio/${repoName}` },
     access: 'admin', default_branch: 'main',
-    profile: clone(PRESETS.standard),
+    // SPEC-338 VOF-004: added switched off when the person unchecked Vidoc.
+    profile: { ...clone(PRESETS.standard), vidoc: body.vidoc !== false },
     // An imported repository is onboarded; created projects start from a conforming template.
     // The real server starts a browser import's onboarding at once; the mock leaves it `pending`,
     // standing in for a repository added with `yulius onboard` (SPEC-051), so Start onboarding can
@@ -993,15 +999,21 @@ route('POST', '/api/sandboxes', ({ db, body }) => {
   resync(db);
   return json(201, sandbox);
 });
-route('GET', `/api/sandboxes/${ID}`, ({ db, p }) => sandboxOf(db, p[0]));
+route('GET', `/api/sandboxes/${ID}`, ({ db, p }) => shown(sandboxOf(db, p[0])));
 route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'admin');
+  // SPEC-338 VOF-001: the Vidoc switch is set on its own; a profile update keeps it.
+  if (body.vidoc !== undefined && body.vidoc !== null) {
+    if (sandbox.playground) fail(422, 'invalid', 'a playground runs no Vidoc scan: it has no switch to turn');
+    sandbox.profile = { ...sandbox.profile, vidoc: Boolean(body.vidoc) };
+  }
   if (body.profile) {
     validateProfile(body.profile);
-    sandbox.profile = relabel({ ...body.profile, environments: (body.profile.environments || []).map((e) => ({ ...e, command: e.command && e.command.trim() ? e.command : null })) });
+    const vidoc = sandbox.profile.vidoc !== false;
+    sandbox.profile = { ...relabel({ ...body.profile, environments: (body.profile.environments || []).map((e) => ({ ...e, command: e.command && e.command.trim() ? e.command : null })) }), vidoc };
   }
-  return sandbox;
+  return shown(sandbox);
 });
 /**
  * The server's two kinds of onboarding (onboarding.rs): `mobile-app` already follows the format, so

@@ -237,6 +237,9 @@ pub struct App {
     pub(crate) intake: OnceLock<crate::intake::IntakeServices>,
     /// The instance Vidoc key (SPEC-195); unset means Vidoc is off.
     pub(crate) vidoc: OnceLock<crate::vidoc_key::VidocServices>,
+    /// Serializes writes of sandbox profiles, so the Vidoc switch and a profile update never undo
+    /// each other (SPEC-338 VOF-001).
+    pub(crate) profile_writes: tokio::sync::Mutex<()>,
     /// Instance updates: checks of `main` and the update run (SPEC-002 ADR-18).
     pub(crate) updates: crate::updates::UpdateState,
     /// Secrets vault runtime state (SPEC-002 ADR-20).
@@ -299,6 +302,7 @@ impl App {
             attachment_reads: crate::task_prompt::AttachmentReads::default(),
             intake: OnceLock::new(),
             vidoc: OnceLock::new(),
+            profile_writes: tokio::sync::Mutex::new(()),
             updates: crate::updates::UpdateState::default(),
             vault: crate::vault::VaultState::default(),
             ci: crate::ci::CiState::default(),

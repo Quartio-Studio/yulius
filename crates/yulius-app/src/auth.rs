@@ -490,6 +490,7 @@ impl App {
                 contained: self.config.contained,
                 upload_max_bytes: self.config.upload_max_bytes,
                 claude_connected: self.claude_connected().await?,
+                vidoc: self.vidoc_key().is_some(),
             },
         })
     }

@@ -1,9 +1,11 @@
 // The instance's service keys, Jev (SPEC-001 ADM-001, ADM-002) and Vidoc (SPEC-195 VDK-003,
 // VDK-004): optional steps of the setup wizard and cards on the instance page where a superadmin
 // sets, replaces, tests and removes them. A key goes to the server once and never comes back: the
-// API answers with its state only.
+// API answers with its state only. The Vidoc card also switches each project's scans off or on
+// (SPEC-338 VOF-005).
 
-import { h, icon, field, setChildren, toast, errorToast, confirmDialog, skeleton } from './dom.js';
+import { enc } from './api.js';
+import { h, icon, field, setChildren, toast, errorToast, confirmDialog, skeleton, toggle } from './dom.js';
 import { relLong } from './format.js';
 import { BRAND } from './brand.js';
 
@@ -51,6 +53,73 @@ export function keyExplanation(service) {
 
 function keyInput(service, id) {
   return h('input', { class: 'input mono', type: 'password', id, autocomplete: 'off', spellcheck: 'false', placeholder: SERVICES[service].placeholder, 'aria-describedby': `${id}-hint` });
+}
+
+/**
+ * Turns `sandbox`'s Vidoc scans on or off (SPEC-338 VOF-001). Answers the updated sandbox, or null
+ * after saying why it failed; a switch `input` goes back then.
+ */
+async function setVidocScans(ctx, sandbox, on, { input = null } = {}) {
+  if (input) input.disabled = true;
+  try {
+    const updated = await ctx.api.patch(`/api/sandboxes/${enc(sandbox.id)}`, { vidoc: on });
+    ctx.store.upsertSandbox(updated);
+    toast(on ? `Vidoc scans are on for ${sandbox.name}.` : `Vidoc scans are off for ${sandbox.name}: it scans nothing until you switch them on.`, { kind: 'ok' });
+    return updated;
+  } catch (error) {
+    if (input) input.checked = !on;
+    errorToast(error, 'Couldn’t change the Vidoc scans');
+    return null;
+  } finally {
+    if (input) input.disabled = false;
+  }
+}
+
+/**
+ * The Vidoc card's projects, each with its switch (SPEC-338 VOF-005; exported for its in-page
+ * test); playgrounds scan nothing. It
+ * follows the sandbox list: a project added or removed redraws it, and a switch changed elsewhere
+ * (another tab, a live update) moves in place, so focus stays on the switch in hand.
+ */
+export function vidocProjects(ctx) {
+  const box = h('div', { class: 'vidoc-projects', role: 'group', 'aria-labelledby': 'vidoc-projects-title' });
+  const projects = () => (ctx.store.state.sandboxes || []).filter((sb) => !sb.playground);
+  const isOn = (sb) => !sb.profile || sb.profile.vidoc !== false;
+  let drawn = '';
+  let inputs = new Map();
+  const draw = () => {
+    const list = projects();
+    const shape = list.map((sb) => `${sb.id}\u0000${sb.name}`).join('\u0001');
+    if (shape === drawn) {
+      for (const sb of list) {
+        const input = inputs.get(sb.id);
+        if (input && !input.disabled) input.checked = isOn(sb);
+      }
+      return;
+    }
+    drawn = shape;
+    inputs = new Map();
+    setChildren(box, list.length ? [
+      h('h3', { class: 'small', id: 'vidoc-projects-title' }, 'Projects'),
+      h('p', { class: 'muted xs' }, 'A project switched off scans nothing: its agents and CI report the scan as disabled, and nobody is asked about the key or its quota, until you switch it on again. Use it while the key’s quota is used up.'),
+      h('ul', { class: 'vidoc-project-list' }, list.map((sb) => {
+        const control = toggle({ checked: isOn(sb), label: `Vidoc scans for ${sb.name}`, onChange: (on, input) => setVidocScans(ctx, sb, on, { input }) });
+        inputs.set(sb.id, control.querySelector('input'));
+        return h('li', { class: 'row vidoc-project' }, h('span', { class: 'vidoc-project-name' }, sb.name), control);
+      })),
+    ] : []);
+  };
+  // On the page once its caller attached it (right after this returns); detached after that, it
+  // is gone with its page and stops listening, whether or not an event came meanwhile.
+  let shown = false;
+  queueMicrotask(() => { if (box.isConnected) shown = true; });
+  const off = ctx.store.on('sandboxes', () => {
+    if (box.isConnected) shown = true;
+    else if (shown) { off(); return; }
+    draw();
+  });
+  draw();
+  return box;
 }
 
 /** The result of a test request, in words, with its tone. */
@@ -132,6 +201,8 @@ export function keySettingsCard(ctx, service) {
       setChildren(body, h('div', { class: 'banner banner-danger', role: 'alert' }, icon('warn'), h('span', { class: 'banner-text' }, `Couldn’t load the ${s.name} key: ${error.message}`)));
       return;
     }
+    // Left while it loaded: nothing to draw, and nothing to keep current (SPEC-338, #937).
+    if (!card.isConnected) return;
     render();
   }
 
@@ -143,6 +214,9 @@ export function keySettingsCard(ctx, service) {
   }
 
   function render() {
+    // The Add sandbox dialog offers the switch while the instance has a key (SPEC-338 VOF-004).
+    const me = ctx.store.state.me;
+    if (service === 'vidoc' && me && me.instance) me.instance.vidoc = Boolean(state.configured);
     const input = keyInput(service, `settings-${service}`);
     const save = h('button', { type: 'submit', class: 'btn btn-primary btn-sm', disabled: true }, state.source === 'settings' ? 'Replace' : 'Save');
     input.addEventListener('input', () => { save.disabled = !input.value.trim(); });
@@ -183,7 +257,8 @@ export function keySettingsCard(ctx, service) {
       h('div', { class: 'row' }, testButton, adopt, remove),
       result,
       form,
-      h('p', { class: 'muted xs', id: `settings-${service}-hint` }, 'Stored encrypted on this server and never shown again.'));
+      h('p', { class: 'muted xs', id: `settings-${service}-hint` }, 'Stored encrypted on this server and never shown again.'),
+      service === 'vidoc' ? vidocProjects(ctx) : null);
   }
 
   async function test() {

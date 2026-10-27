@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-27
 
+- A project's Vidoc scans can be switched off in Yulius, for example while the key's quota is used
+  up, and on again (SPEC-338, ADR-0229, task #322). The Instance page's Vidoc card lists the
+  projects with a switch each, and the Add sandbox dialog offers "Scan pull requests with Vidoc"
+  when the instance has a key. A switched-off project scans nothing whatever key it has: its runs
+  and CI jobs get `YULIUS_VIDOC=off`, on which `yulius security-scan` says "disabled" (CI:
+  Skipped), the instance key is not applied, CI adds no built-in scan job, and the briefing tells
+  agents not to ask anyone about Vidoc's key or quota.
 - The Superagent can start a task in another of its person's sandboxes, once the person approves
   that one request (SPEC-335, ADR-0227, task #319). `sandboxes_list` names where it may ask;
   `sandbox_task_create` puts the request above the Superagent's session, with the target, the

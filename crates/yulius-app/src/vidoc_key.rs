@@ -11,6 +11,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use yulius_contracts::api::updates::{VidocKeyView, VidocTestResult};
+use yulius_domain::briefing::VidocBriefing;
 use yulius_domain::time::Timestamp;
 
 use crate::auth::{AuthContext, rfc3339};
@@ -115,6 +116,19 @@ impl App {
         let services = self.vidoc.get()?;
         let slot = services.active.read().ok()?;
         slot.as_ref().map(|(_, source)| *source)
+    }
+
+    /// What `sandbox`'s agents are told about the Vidoc scan: off when a person switched its scans
+    /// off (SPEC-338 VOF-003), whatever key it has; else on with the instance key.
+    #[must_use]
+    pub fn vidoc_briefing(&self, sandbox: &crate::model::SandboxRecord) -> VidocBriefing {
+        if !crate::delivery::vidoc_switched_on(sandbox) {
+            VidocBriefing::Off
+        } else if self.vidoc_key().is_some() {
+            VidocBriefing::On
+        } else {
+            VidocBriefing::Absent
+        }
     }
 
     /// The instance key in use (VDK-005: for the egress proxy only), if any.

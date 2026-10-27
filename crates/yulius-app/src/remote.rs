@@ -728,6 +728,7 @@ impl App {
                         ctx,
                         &CreateSandbox::Import {
                             repo: repo.to_owned(),
+                            vidoc: None,
                         },
                     )
                     .await?;

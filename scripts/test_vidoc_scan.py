@@ -487,6 +487,29 @@ class Config(Scanning):
         self.assertIn("Security scan disabled", output)
         self.assertEqual(server.requests, [])
 
+    def test_yulius_turns_the_scan_off_for_a_project(self):
+        # SPEC-338 VOF-002: Yulius sets YULIUS_VIDOC=off for a switched-off project; nothing is
+        # read or sent, not even without a key, and it never reads as a pass.
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": PLANTED})
+        for env in ({"YULIUS_VIDOC": "off"}, {"YULIUS_VIDOC": "off", "VIDOC_API_KEY": ""}):
+            with self.subTest(env=env):
+                server = self.fake()
+                code, output = self.run_scan(repo, server, env=env)
+                self.assertEqual(code, 0, output)
+                self.assertIn("Security scan disabled: Vidoc is turned off for this project in "
+                              "Yulius; nothing was scanned.", output)
+                self.assertEqual(server.requests, [])
+        code, output = self.run_scan(repo, self.fake(), "--all", env={"YULIUS_VIDOC": "off"})
+        self.assertEqual(code, 0, output)
+        self.assertIn("turned off for this project", output)
+
+    def test_only_off_turns_it_off(self):
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": PLANTED})
+        for value in ("", "on", "OFF "):
+            with self.subTest(value=value):
+                code, output = self.run_scan(repo, self.fake(), env={"YULIUS_VIDOC": value})
+                self.assertEqual(code, 1, output)
+
     def test_an_uncommitted_switch_does_not_count(self):
         repo = Repo(self, {"a.py": CLEAN}, {"b.py": PLANTED})
         write(repo.root, {".config/vidoc.toml": "enabled = false\n"})
@@ -660,6 +683,18 @@ class CiMode(Scanning):
                                              env={"YULIUS_CI_REF": "pr/7", "YULIUS_CI_SKIP_CODE": "78"})
                 self.assertEqual(code, 78, output)
                 self.assertIn("[yulius] security scan skipped", output)
+
+    def test_a_switched_off_project_ends_skipped(self):
+        # SPEC-338 VOF-002: the job checked nothing, so it ends skipped (ADR-0133), never passed.
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": PLANTED})
+        server = self.fake()
+        code, output = self.run_scan(repo, server, "--ci",
+                                     env={"YULIUS_CI_REF": "pr/7", "YULIUS_CI_SKIP_CODE": "78",
+                                          "YULIUS_VIDOC": "off"})
+        self.assertEqual(code, 78, output)
+        self.assertIn("turned off for this project", output)
+        self.assertIn("[yulius] security scan skipped", output)
+        self.assertEqual(server.requests, [])
 
     def test_other_heads_are_not_scanned(self):
         repo = Repo(self, {"a.py": CLEAN}, {"b.py": PLANTED})

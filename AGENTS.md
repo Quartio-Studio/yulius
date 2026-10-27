@@ -105,7 +105,10 @@ findings fail the check without cancelling the other jobs, a scan that could not
 is unrun, not passed, and an incomplete one ends **error** ("incomplete: …"), which blocks the merge
 until a rerun passes. `enabled` in `.config/vidoc.toml` turns the scan on (as committed) or off
 ([ADR-0107](docs/decisions/0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md)); a disabled
-scan exits 0 saying so and is reported as disabled, not passed. Other projects run the same scanner
+scan exits 0 saying so and is reported as disabled, not passed. A person can also switch a project's
+scans off in Yulius (Instance page, Vidoc card; [ADR-0229](docs/decisions/0229-a-person-switches-a-projects-vidoc-scans-off-in-yulius.md)):
+runs then get `YULIUS_VIDOC=off`, the scan exits 0 as disabled (CI: skipped), and nobody is asked
+about the key or its quota. Other projects run the same scanner
 as `yulius security-scan`.
 
 Web UI changes: also run the end-to-end suite, `cd e2e && npm ci --ignore-scripts && npx e2e run`
