@@ -3000,6 +3000,76 @@ async fn every_project_with_a_vidoc_key_runs_the_built_in_security_job() -> Test
     Ok(())
 }
 
+/// SPEC-338 VOF-002: a project whose Vidoc switch is off gets no built-in security job even with
+/// the instance's key and its own, and its own scanning job says "disabled" and ends skipped, never passed.
+#[tokio::test]
+async fn a_switched_off_project_scans_nothing_in_ci() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo plain\"\n".to_owned()
+    })
+    .await?;
+    f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
+        Arc::new(AnyVidoc),
+        Ok(Some(yulius_app::model::Secret(
+            "vidoc-instance-key-0123456789".into(),
+        ))),
+    ));
+    f.h.app.load_vidoc_key().await;
+    // The project's own key too: the switch, not the key, decides.
+    let created = f
+        .post(
+            "/api/sandboxes/s1/agent-secrets",
+            Some(serde_json::json!({
+                "name": "VIDOC_API_KEY",
+                "hosts": ["model.vidocsecurity.com"],
+                "value": "vidoc-own-key-0123456789",
+            })),
+        )
+        .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    {
+        use yulius_app::ports::store::SandboxStore as _;
+        f.h.store
+            .set_profile(&f.sandbox.id, r#"{"vidoc":false}"#)
+            .await?;
+    }
+    let sandbox = {
+        use yulius_app::ports::store::SandboxStore as _;
+        f.h.store.sandbox(&f.sandbox.id).await?.ok_or("sandbox")?
+    };
+    let sha = f.push_feature("notes.txt", Some("two\n"))?;
+    f.h.app.ci_sync_sandbox(&sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &sha).await?;
+    assert_eq!(
+        outputs.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+        ["plain"],
+        "switched off: no built-in scan"
+    );
+
+    // Its own job runs the scanner, which stops at once.
+    let own = f.push_feature(
+        "yulius.toml",
+        Some(
+            "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo plain\"\n\n\
+             [[ci.jobs]]\nname = \"security\"\ncommand = \"yulius security-scan --ci\"\n",
+        ),
+    )?;
+    f.h.app.ci_sync_sandbox(&sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &own).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(
+        security.contains("Vidoc is turned off for this project in Yulius"),
+        "{security}"
+    );
+    assert!(
+        security.contains("[yulius] security scan skipped"),
+        "{security}"
+    );
+    Ok(())
+}
+
 /// SPEC-217 VDP-001 (the branch's own CI scan, medium): a pull request tested with its own jobs
 /// keeps the built-in security job; its own job named `security` does not stand in for it.
 #[tokio::test]

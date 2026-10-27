@@ -24,7 +24,8 @@ touch, one at its place (`function`, `line` within 10 lines) or that Vidoc, told
 each chunk's files, answers as that accepted risk (SPEC-273). An answer cut at max_tokens splits
 its chunk in half, at most 3 times.
 
-Exit codes: 0 passed (or disabled by `enabled = false`, which it says), 1 failed (an open critical
+Exit codes: 0 passed (or disabled by `enabled = false`, or by `YULIUS_VIDOC=off`, which Yulius
+sets for a project switched off (SPEC-338); it says so), 1 failed (an open critical
 or high finding, an open medium finding in the change, a refused request), 2 not run (no key, the
 key refused, out of quota, no base, a malformed config, past the byte budget), 3 incomplete (files
 left unscanned by an outage, timeouts, unreadable or cut answers, the deadline: infrastructure,
@@ -948,6 +949,12 @@ def arguments(argv):
 
 
 def run(args, env, root, sleep, out):
+    # SPEC-338 VOF-002: Yulius sets it for a project a person switched off (Settings, Instance, or
+    # the Add sandbox dialog); checked first, so nothing is read or sent.
+    if env.get("YULIUS_VIDOC") == "off":
+        print("Security scan disabled: Vidoc is turned off for this project in Yulius; nothing "
+              "was scanned.", file=out)
+        return NOTHING_CHECKED
     if tomllib is None:
         raise Usage(f"the scan needs Python 3.11 or later, not {sys.version.split()[0]} "
                     "(YULIUS_PYTHON names another interpreter for yulius security-scan)")
