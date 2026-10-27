@@ -173,11 +173,14 @@ const OPTION_LABELS = {
 /** How long a new request's buttons wait before they take a click (one aimed at the terminal it pushed down). */
 const ARM_MS = 600;
 /** Characters a person cannot see that could hide or reorder a prompt's words: shown by their code. */
-const INVISIBLE = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]/g;
+const INVISIBLE = /(?![\n\t])[\p{Cc}\p{Cf}\p{Co}\p{Cn}\u{034F}\u{115F}\u{1160}\u{17B4}\u{17B5}\u{180B}-\u{180F}\u{3164}\u{FFA0}\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}]/gu;
+
+/** A request's text as a person can check it: invisible characters named by their code (the server refuses them too). */
+const shownText = (text) => String(text).replace(/\r\n?/g, '\n').replace(INVISIBLE, (c) => `⟨U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}⟩`);
 
 /** The prompt as a person can check it: invisible characters named, long runs of empty lines counted. */
 export function shownPrompt(text) {
-  const named = text.replace(/\r\n?/g, '\n').replace(INVISIBLE, (c) => `⟨U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}⟩`);
+  const named = shownText(text);
   return named.replace(/\n(?:[ \t]*\n){2,}/g, (run) => `\n[${run.split('\n').length - 2} empty lines]\n`);
 }
 
@@ -225,7 +228,7 @@ function createRequests(ctx, sandbox) {
     const target = request.sandbox || {};
     const slug = target.slug;
     const options = Object.entries(request.options || {})
-      .map(([key, value]) => (OPTION_LABELS[key] ? OPTION_LABELS[key](value) : null))
+      .map(([key, value]) => (OPTION_LABELS[key] ? OPTION_LABELS[key](typeof value === 'string' ? shownText(value) : value) : null))
       .filter(Boolean);
     const heading = `Your Superagent asks to start a task in ${slug}`;
     const prompt = h('pre', { class: 'agent-request-prompt', tabindex: '0', 'aria-label': 'Prompt' }, shownPrompt(request.prompt || ''));
@@ -276,7 +279,7 @@ function createRequests(ctx, sandbox) {
         h('div', { class: 'agent-request-head' }, icon('spark', { size: 16 }),
           h('strong', null, 'Your Superagent asks to start a task in ', h('span', { class: 'agent-request-target' }, slug)),
           target.repository ? h('span', { class: 'muted' }, ` (${target.repository})`) : null),
-        request.title ? h('div', { class: 'agent-request-title' }, request.title) : null,
+        request.title ? h('div', { class: 'agent-request-title' }, shownText(request.title)) : null,
         prompt,
         options.length ? h('ul', { class: 'agent-request-options', 'aria-label': 'Start options' }, options.map((o) => h('li', null, o))) : null,
         hint,

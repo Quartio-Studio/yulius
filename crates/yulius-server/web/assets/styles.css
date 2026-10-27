@@ -576,7 +576,7 @@ button.task-group-head:hover { color: var(--text); }
 .agent-term { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
 .agent-msg { flex: 1; padding: 24px 16px; background: var(--surface); }
 /* SPEC-335: what the Superagent asks its person to approve, above its session. */
-.agent-requests { flex: none; display: flex; flex-direction: column; gap: 8px; margin: 0 8px 8px; max-height: 50%; overflow-y: auto; }
+.agent-requests { flex: none; display: flex; flex-direction: column; gap: 8px; margin: 0 8px 8px; }
 .agent-request { flex-direction: column; align-items: stretch; gap: 6px; overflow-wrap: anywhere; }
 .agent-request-head { display: flex; align-items: flex-start; gap: 6px; flex-wrap: wrap; }
 .agent-request-head .icon { margin-top: 2px; }

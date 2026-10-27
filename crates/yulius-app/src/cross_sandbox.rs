@@ -33,7 +33,8 @@ pub const CROSS_REQUEST_WAIT: Duration = Duration::from_secs(240);
 /// Requests that wait at once per person and Superagent sandbox (XSR-004).
 pub const MAX_WAITING: usize = 3;
 /// How long a waiting call still waits once its person answered (the task is being created).
-const ANSWER_GRACE: Duration = Duration::from_secs(60);
+/// Short enough that the wait and the grace stay below those 300 s.
+const ANSWER_GRACE: Duration = Duration::from_secs(50);
 
 /// What `sandbox_task_create` takes: the target and `task_create`'s arguments.
 #[derive(Deserialize)]
@@ -116,6 +117,41 @@ impl Drop for Ends<'_> {
             self.app.announce_cross_requests(&self.user, &self.source);
         }
     }
+}
+
+/// Whether a person reading a request could not see `c`, or would see the text around it
+/// reordered: control characters but line breaks and tabs, format characters (bidirectional
+/// marks and overrides, zero-width ones, the soft hyphen), Unicode tag characters (which carry
+/// hidden ASCII), variation selectors, fillers that draw as blanks, private-use and noncharacters.
+fn unseen(c: char) -> bool {
+    if matches!(c, '\n' | '\t' | '\r') {
+        return false;
+    }
+    matches!(u32::from(c),
+        0x0000..=0x001F | 0x007F..=0x009F | 0x00AD | 0x034F | 0x061C | 0x115F | 0x1160
+        | 0x17B4 | 0x17B5 | 0x180B..=0x180F | 0x200B..=0x200F | 0x202A..=0x202E
+        | 0x2060..=0x206F | 0x3164 | 0xE000..=0xF8FF | 0xFDD0..=0xFDEF | 0xFE00..=0xFE0F
+        | 0xFEFF | 0xFFA0 | 0xFFF0..=0xFFFB | 0x1BCA0..=0x1BCA3 | 0x1D173..=0x1D17A
+        | 0xE0000..=0xE0FFF | 0xF0000..=0x10FFFF)
+        || (u32::from(c) & 0xFFFE) == 0xFFFE
+}
+
+/// Refuses a request whose texts hold characters the person who approves it cannot see
+/// (SPEC-335 XSR-008): what they read is all that reaches the task.
+fn check_visible(args: &Value) -> AppResult<()> {
+    let Some(map) = args.as_object() else {
+        return Ok(());
+    };
+    for (key, value) in map {
+        let Some(text) = value.as_str() else { continue };
+        if let Some(c) = text.chars().find(|c| unseen(*c)) {
+            return Err(AppError::Invalid(format!(
+                "`{key}` holds U+{:04X}, a character the person cannot see: write it without invisible or direction characters",
+                u32::from(c)
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// How a waiting call ends.
@@ -225,6 +261,7 @@ impl App {
         if parsed.prompt.trim().is_empty() {
             return Err(AppError::Invalid("the prompt is empty".into()));
         }
+        check_visible(args)?;
         if parsed.prompt.len() > MAX_PROMPT_BYTES {
             return Err(AppError::Invalid(format!(
                 "the prompt is longer than {MAX_PROMPT_BYTES} bytes"
