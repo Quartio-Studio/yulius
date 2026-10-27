@@ -312,6 +312,8 @@ test('a URL Claude Code continues on the next rows is found whole, and nothing e
       gap: spans([`● See https://example.com/${'a'.repeat(33)}`, '  configure it.'], 60),
       // Nor a later row of an answer.
       laterGap: spans(['● Intro.', `  See https://example.com/${'a'.repeat(33)}`, '  configure it.'], 60),
+      // Nor a row under a menu's cursor (`❯ 1.`), which is not the prompt.
+      menu: spans(['❯ 1. Option', `  See https://example.com/${'a'.repeat(33)}`, '  configure it.'], 60),
       // A URL longer than the rows looked at is no link rather than a wrong one; one row less is.
       tooLong: spans([`● https://example.com/${'c'.repeat(18)}`, ...Array(31).fill(`  ${'c'.repeat(38)}`), '  end'], 40),
       longest: spans([`● https://example.com/${'c'.repeat(18)}`, ...Array(31).fill(`  ${'c'.repeat(38)}`)], 40),
@@ -334,6 +336,7 @@ test('a URL Claude Code continues on the next rows is found whole, and nothing e
   expect(result.edge).toEqual([]);
   expect(result.gap).toEqual([]);
   expect(result.laterGap).toEqual([]);
+  expect(result.menu).toEqual([]);
   expect(result.tooLong).toEqual([]);
   expect(result.longest.map((l: unknown[]) => [l[1], l[3], l[4]])).toEqual([[0, 31, 39]]);
   expect(result.chain).toEqual([[`${url38}${'b'.repeat(38)}end/x`, 0, 2, 2, 6]]);
