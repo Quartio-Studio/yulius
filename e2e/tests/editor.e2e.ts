@@ -1191,3 +1191,74 @@ test('no look at the disk starts while an Overwrite after a conflict saves', asy
   expect(during).toBe(0);
   expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
 });
+
+// SPEC-340: the folder picker offers the sandbox and every task worktree, each named by its branch,
+// also with no task selected; one owned by another person opens read-only.
+type FolderMock = Window & { __yuliusMock: { tasks: { number: number; sandbox_id: string; owner?: { login: string } }[] } };
+const folderOptions = (browser: Browser) => browser.evaluate(() => [...(document.querySelector('select[aria-label="Folder"]') as HTMLSelectElement).options].map((o) => o.textContent));
+const chooseFolder = (browser: Browser, label: string) => browser.evaluate((wanted) => {
+  const select = document.querySelector('select[aria-label="Folder"]') as HTMLSelectElement;
+  const option = [...select.options].find((o) => o.textContent === wanted);
+  if (!option) throw new Error(`no folder ${wanted}`);
+  select.value = option.value;
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+}, label);
+const statusText = (browser: Browser) => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? '');
+
+test('the folder picker lists every worktree by its branch, with no task selected', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await expect(screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md')).toBeVisible();
+
+  // The sandbox first, then the task worktrees newest first; a queued task has none yet.
+  await expect.poll(async () => (await folderOptions(browser)).slice(0, 4)).toEqual([
+    'Sandbox · quartio', '#14 feat/start-the-preview-server', '#13 feat/improve-the-code', '#12 feat/checkout-api',
+  ]);
+  const options = await folderOptions(browser);
+  expect(options.some((o) => o?.startsWith('#8 '))).toBe(false);
+  expect(await statusText(browser)).toBe('Sandbox repository · quartio');
+
+  await chooseFolder(browser, '#13 feat/improve-the-code');
+  await expect.poll(() => statusText(browser)).toBe('Task #13 worktree · feat/improve-the-code');
+  await expect(screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md')).toBeVisible();
+  expect(await browser.evaluate(() => (document.querySelector('select[aria-label="Folder"]') as HTMLSelectElement).title)).toBe('#13 feat/improve-the-code');
+});
+
+test('a worktree another person owns opens read-only and says why', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await browser.evaluate(() => {
+    const task = (window as unknown as FolderMock).__yuliusMock.tasks.find((t) => t.sandbox_id === 'sb_studio' && t.number === 10);
+    if (task) task.owner = { login: 'anna-q' };
+  });
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await expect.poll(async () => (await folderOptions(browser)).find((o) => o?.startsWith('#10 '))).toBe('#10 feat/aws-login-for-deploy (read-only)');
+  await chooseFolder(browser, '#10 feat/aws-login-for-deploy (read-only)');
+  await expect.poll(() => statusText(browser)).toBe('Read-only: Task #10 is another person’s · feat/aws-login-for-deploy');
+  await expect(screen.getByRole('button', 'New file or folder')).toHaveCount(0);
+  await expect(screen.getByRole('button', 'Upload files')).toHaveCount(0);
+
+  const tree = screen.getByRole('tree', 'Files');
+  await tree.getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
+  expect(await browser.evaluate(() => (window as unknown as { monaco: { editor: { getEditors(): { getOption(id: number): boolean }[]; EditorOption: { readOnly: number } } } }).monaco.editor.getEditors()[0].getOption((window as unknown as { monaco: { editor: { EditorOption: { readOnly: number } } } }).monaco.editor.EditorOption.readOnly))).toBe(true);
+  await expect.poll(() => statusText(browser)).toContain('Read-only: Task #10 is another person’s');
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Back in a folder they may change, the editor writes again.
+  await chooseFolder(browser, '#12 feat/checkout-api');
+  await tree.getByRole('treeitem', 'README.md').click();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { monaco: { editor: { getEditors(): { getOption(id: number): boolean }[]; EditorOption: { readOnly: number } } } }).monaco.editor.getEditors()[0].getOption((window as unknown as { monaco: { editor: { EditorOption: { readOnly: number } } } }).monaco.editor.EditorOption.readOnly))).toBe(false);
+  await expect(screen.getByRole('button', 'New file or folder')).toHaveCount(1);
+  await expect(screen.getByRole('button', 'Upload files')).toHaveCount(1);
+});
+
+test('the folder picker keeps the sandbox and the selected task when the worktrees cannot be read', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&fail=/api/sandboxes/sb_studio/files/roots'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await expect(screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md')).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { failedReads: number } }).__yuliusMock.failedReads)).toBeGreaterThan(0);
+  expect(await folderOptions(browser)).toEqual(['Sandbox', 'Task #12 worktree']);
+});

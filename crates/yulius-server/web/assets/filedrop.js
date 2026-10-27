@@ -305,7 +305,7 @@ function looksLikeText(file) {
  *   reveal(dir)        lists `dir` (expanded) again; refresh() lists every expanded folder again
  *   open(path)         opens a file in a tab
  */
-export function attachEditorDrop({ ctx, sandboxId, tree, host, head, getRoot, activePath, reveal, refresh, open }) {
+export function attachEditorDrop({ ctx, sandboxId, tree, host, head, getRoot, canWrite = () => true, activePath, reveal, refresh, open }) {
   const api = ctx.api;
   const side = tree.closest('.ed-side') || tree.parentElement;
   const stage = host.closest('.ed-stage') || host.parentElement;
@@ -407,6 +407,13 @@ export function attachEditorDrop({ ctx, sandboxId, tree, host, head, getRoot, ac
   }
 
   const enqueue = (carried, dir, options) => {
+    // Another person's task worktree (SPEC-340 EWT-003): nothing is sent for the server to refuse.
+    if (!canWrite()) {
+      status.begin(`Adding to ${where(dir)}…`);
+      status.error('This folder is read-only: the task is another person’s.');
+      status.end('Nothing was added.');
+      return;
+    }
     queue = queue.then(() => run(carried, dir, options)).catch((error) => {
       status.error(failure(error));
       status.end('The upload stopped.');
