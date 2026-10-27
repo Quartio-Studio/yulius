@@ -243,6 +243,90 @@ test('file references are found in every form and resolved inside the folder onl
   expect(result.cwd).toEqual(['src', '', null]);
 });
 
+// Claude Code 2.1.292 at 60 columns (`claude --resume` of a synthetic session, rendered by a
+// terminal emulator; SPEC-339): it cuts a URL longer than a row at the right edge and continues it
+// on the next row at the text's indent, with a cursor move, never a soft wrap.
+const CLAUDE_ROWS_60 = [
+  '❯ where is login and pass for https://quartio-v2-dev.vm.qua ',
+  '  rtio.ai/admin/connectors?tab=all&page=2                   ',
+  '',
+  '● Open https://quartio-v2-dev.vm.quartio.ai/admin/connectors',
+  '  ?tab=all&page=2 and sign in.',
+  '',
+  '  - Docs at https://quartio-v2-dev.vm.quartio.ai/admin/conne',
+  '    ctors?tab=all&page=2/help',
+  '  - Short https://example.com/a',
+  '',
+  '  https://quartio-v2-dev.vm.quartio.ai/admin/connectors?tab=',
+  '  all&page=2',
+];
+
+test('a URL Claude Code continues on the next rows is found whole, and nothing else is joined (#940)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const url38 = `https://example.com/${'a'.repeat(18)}`; // 38 characters: with "● " a full 40-column row
+  const result = await browser.evaluate(async ([claude, long]) => {
+    const url = '/assets/termlinks.js';
+    const { findContinuedUrls } = await import(url);
+    type Found = { url: string; start: { row: number; col: number }; end: { row: number; col: number } };
+    const spans = (rows: (string | null)[], cols: number) => findContinuedUrls(rows, cols).map((l: Found) => [l.url, l.start.row, l.start.col, l.end.row, l.end.col]);
+    return {
+      claude: spans(claude, 60),
+      // Three rows: a row that is all URL continues too.
+      chain: spans([`● ${long}`, `  ${'b'.repeat(38)}`, '  end/x and more'], 40),
+      // The row ends short of the right edge.
+      short: spans(['● see https://example.com/abc', '  def'], 40),
+      // The next row is indented elsewhere.
+      indent: spans([`● ${long}`, '    more/path'], 40),
+      // The word across the break fits a row: Claude Code would have moved it whole.
+      fits: spans([`● ${'x'.repeat(19)} https://ex.co/abc`, '  sign in.'], 40),
+      // The next row starts another URL.
+      another: spans([`● ${long}`, '  https://other.example/x'], 40),
+      // The next row is xterm's own soft wrap (the web-links addon's).
+      soft: spans([`● ${long}`, null], 40),
+    };
+  }, [CLAUDE_ROWS_60, url38] as const);
+  const whole = 'https://quartio-v2-dev.vm.quartio.ai/admin/connectors?tab=all&page=2';
+  const at = (row: number, text: string) => CLAUDE_ROWS_60[row].indexOf(text);
+  expect(result.claude).toEqual([
+    [whole, 0, at(0, 'https'), 1, at(1, '2 ')],
+    [whole, 3, at(3, 'https'), 4, at(4, '2 and')],
+    [`${whole}/help`, 6, at(6, 'https'), 7, CLAUDE_ROWS_60[7].length - 1],
+    [whole, 10, at(10, 'https'), 11, CLAUDE_ROWS_60[11].length - 1],
+  ]);
+  expect(result.chain).toEqual([[`${url38}${'b'.repeat(38)}end/x`, 0, 2, 2, 6]]);
+  expect(result.short).toEqual([]);
+  expect(result.indent).toEqual([]);
+  expect(result.fits).toEqual([]);
+  expect(result.another).toEqual([]);
+  expect(result.soft).toEqual([]);
+});
+
+/** Records the URLs the page opens in a new tab (window.open) from now on; the returned function reads them. */
+async function recordOpened(browser: Browser): Promise<() => Promise<string[]>> {
+  await browser.evaluate(() => {
+    const page = window as unknown as { __opened: string[]; open: (url: string) => null };
+    page.__opened = [];
+    page.open = (url) => { page.__opened.push(String(url)); return null; };
+  });
+  return () => browser.evaluate(() => (window as unknown as { __opened: string[] }).__opened);
+}
+
+test('a URL Claude Code wraps onto the next row opens whole from either row (#940)', async ({ app, browser }) => {
+  const whole = 'https://example.com/admin/connectors?tab=all&page=2&sort=name&filter=active&view=compact&columns=name,owner,status,updated';
+  // Another viewer fixes the grid at 120 columns, the width the mock cut its URL for (no other
+  // line of the mock wraps there). A press takes the size, and so the width, so each row is tried
+  // on a fresh page.
+  for (const part of ['status,updated', 'example.com/admin']) {
+    await app.open(mock('/s/studio/t/12', '&othercols=120&wrapurl=1'));
+    await expect(rows(browser)).toHaveText(/to see the connectors/);
+    await holdStill(browser);
+    const opened = await recordOpened(browser);
+    await hoverLink(browser, part);
+    await press(browser);
+    await expect.poll(opened, { message: `a press on ${part} opens the whole URL` }).toEqual([whole]);
+  }
+});
+
 test('Ctrl+C copies a selection and interrupts without one; paste types the clipboard', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await expect(rows(browser)).toHaveText(/Read 142 lines/);

@@ -4423,6 +4423,8 @@ class TermSession {
     // its classic renderer after the updates that froze and thawed it: the main screen without
     // mouse reporting, and a viewer gets only the visible screen (SPEC-326).
     this.classic = params.get('classic') === '1';
+    // ?wrapurl=1: a URL longer than a row, broken as Claude Code breaks it (SPEC-339, #940).
+    this.wrapUrl = params.get('wrapurl') === '1';
     this.script = SCRIPT_CLAUDE;
     this.scriptIndex = 0;
     this.timer = null;
@@ -4464,6 +4466,19 @@ class TermSession {
       this.lines.push(GROUP_CLOSED);
       for (const line of this.script.slice(0, 6)) this.lines.push(line);
       this.scriptIndex = 6;
+      if (this.wrapUrl) {
+        // Claude Code lays out its rows itself: a URL longer than a row is cut at the right edge and
+        // continued on the next row at the text's indent, after a cursor move, not a soft wrap
+        // (SPEC-339). Cut for the width the session starts with, so the test fixes that width
+        // with ?othercols; above the file references, one of which is wider than 120 columns.
+        const url = 'https://example.com/admin/connectors?tab=all&page=2&sort=name&filter=active&view=compact&columns=name,owner,status,updated';
+        const lead = 'Sign in at ';
+        const cut = Math.max(1, this.cols - 2 - lead.length);
+        this.lines.push(
+          `${c(255, '⏺')} ${lead}${c(39, url.slice(0, cut))}`,
+          `  ${c(39, url.slice(cut))} to see the connectors.`,
+        );
+      }
       // File references in every form the terminal links to the editor (F 2026-10-10) — a bare
       // path, `path:line:col` in backticks, a name in parentheses, an absolute path with #L, an OSC 8
       // file:// hyperlink — and some it must not: a missing file, a path above the worktree, .git,
