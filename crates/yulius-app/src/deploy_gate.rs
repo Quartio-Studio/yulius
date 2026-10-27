@@ -64,6 +64,31 @@ impl DeployGate {
     }
 }
 
+/// When an update first found its build done with a deploy running, per update run: a wait
+/// recorded for another run (one cancelled while a pass was reading the store) never counts
+/// against this one (SPEC-342 DPU-004, review H1).
+#[derive(Debug, Default)]
+pub struct DeployWait(Mutex<Option<(String, i64)>>);
+
+impl DeployWait {
+    /// When `run` started waiting: `now` on its first call, or after the wait of another run.
+    pub fn since(&self, run: &str, now: i64) -> i64 {
+        let mut wait = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        match wait.as_ref() {
+            Some((waiting, since)) if waiting == run => *since,
+            _ => {
+                *wait = Some((run.to_owned(), now));
+                now
+            }
+        }
+    }
+
+    /// Forgets the wait.
+    pub fn reset(&self) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+}
+
 impl Drop for DeployPermit<'_> {
     fn drop(&mut self) {
         let mut gate = self.0.lock();
@@ -73,7 +98,7 @@ impl Drop for DeployPermit<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::DeployGate;
+    use super::{DeployGate, DeployWait};
 
     #[test]
     fn a_permit_counts_as_starting_until_dropped_and_none_is_given_once_closed() {
@@ -87,5 +112,15 @@ mod tests {
         assert_eq!(gate.set_closed(true), 0);
         assert_eq!(gate.set_closed(false), 0);
         assert!(gate.permit().is_some(), "open again");
+    }
+
+    #[test]
+    fn a_wait_counts_from_its_own_runs_first_pass() {
+        let wait = DeployWait::default();
+        assert_eq!(wait.since("a", 10), 10);
+        assert_eq!(wait.since("a", 50), 10, "the same run keeps its start");
+        assert_eq!(wait.since("b", 90), 90, "another run's wait never counts");
+        wait.reset();
+        assert_eq!(wait.since("b", 120), 120);
     }
 }

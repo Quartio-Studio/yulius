@@ -1380,7 +1380,8 @@ async fn a_running_deploy_is_waited_for_before_tasks_pause() -> TestResult {
     assert_eq!(view["run"]["state"], "building", "{view}");
     assert_eq!(
         view["run"]["message"],
-        "Built. Waiting for 1 deploy(s) to finish before pausing tasks; new deploys wait for the update."
+        "Built. Waiting for 1 deploy(s) to finish before pausing tasks; new deploys are refused \
+         until the update installed."
     );
     assert_eq!(
         view["run"]["deploys"],
@@ -1420,16 +1421,18 @@ async fn a_running_deploy_is_waited_for_before_tasks_pause() -> TestResult {
     Ok(())
 }
 
-/// SPEC-342 DPU-004: a deploy still running past the job timeout and 5 minutes cancels the
-/// update; the gate opens again.
+/// SPEC-342 DPU-004: the longest a deploy can legitimately last (an agent-state wait and its
+/// deploy, each up to the 30-minute job timeout; an environment run's 35-minute preparation) and
+/// 5 minutes is waited for; a deploy still running past it cancels the update and opens the gate.
 #[tokio::test]
 async fn a_deploy_past_the_bound_cancels_the_update() -> TestResult {
     let i = instance().await?;
     two_tasks(&i).await?;
+    deploying_project(&i).await?;
     running_deploy(&i, "stuck").await?;
     build_reported(&i).await?;
     let _ = i.h.app.update_round().await;
-    advance(&i.h, 35 * 60_000);
+    advance(&i.h, 70 * 60_000);
     let _ = i.h.app.update_round().await;
     assert_eq!(get(&i, &i.admin).await?["run"]["state"], "building");
     advance(&i.h, 1);
@@ -1438,8 +1441,39 @@ async fn a_deploy_past_the_bound_cancels_the_update() -> TestResult {
     assert_eq!(view["run"]["state"], "cancelled", "{view}");
     assert_eq!(
         view["run"]["error"],
-        "1 deploy(s) were still running 35 minutes after the build; nothing was installed."
+        "1 deploy(s) were still running 70 minutes after the build; nothing was installed."
     );
+    let cd = post(
+        &i,
+        "/api/sandboxes/s1/cd/dev/deploy",
+        Some(json!({})),
+        &i.member,
+    )
+    .await?;
+    assert!(!cd.body.to_string().contains(UPDATING), "{}", cd.body);
+    Ok(())
+}
+
+/// SPEC-342 DPU-002: a deploy past the gate and not recorded yet (it holds its permit) keeps the
+/// update waiting; once it is gone, tasks pause.
+#[tokio::test]
+async fn a_starting_deploy_is_waited_for() -> TestResult {
+    let i = instance().await?;
+    two_tasks(&i).await?;
+    let permit = i.h.app.deploy_permit()?;
+    build_reported(&i).await?;
+    let _ = i.h.app.update_round().await;
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "building", "{view}");
+    assert_eq!(
+        view["run"]["message"],
+        "Built. Waiting for 1 deploy(s) to finish before pausing tasks; new deploys are refused \
+         until the update installed."
+    );
+    assert_eq!(view["run"]["deploys"], json!([]), "nothing recorded yet");
+    drop(permit);
+    let _ = i.h.app.update_round().await;
+    assert_eq!(get(&i, &i.admin).await?["run"]["state"], "pausing");
     Ok(())
 }
 
@@ -1459,6 +1493,11 @@ async fn a_deploy_running_while_draining_holds_the_install() -> TestResult {
     let view = get(&i, &i.admin).await?;
     assert_eq!(view["run"]["state"], "pausing", "{view}");
     assert_eq!(view["run"]["deploys"][0]["run"], "late");
+    assert_eq!(
+        view["run"]["message"],
+        "Waiting for 1 deploy(s) to finish before restarting."
+    );
+    assert_eq!(view["run"]["can_proceed"], false, "nothing to skip");
     assert_eq!(
         i.helper.last().ok_or("request")?.action,
         HelperAction::Build
