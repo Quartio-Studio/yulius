@@ -306,6 +306,7 @@ pub fn profile_to_contract(profile: &DeliveryProfile) -> Profile {
             })
             .collect(),
         gate: None,
+        vidoc: None,
     }
 }
 
@@ -316,6 +317,21 @@ pub fn profile_gate(sandbox: &SandboxRecord) -> Option<String> {
         .ok()
         .and_then(|profile| profile.gate)
         .and_then(|gate| yulius_domain::ci::validate_gate(&gate).ok())
+}
+
+/// Whether the sandbox's Vidoc security scans are on (SPEC-338 VOF-001): its stored profile's
+/// `vidoc` is not `false`. Read on its own, so a profile that is otherwise unreadable keeps it.
+#[must_use]
+pub fn vidoc_switched_on(sandbox: &SandboxRecord) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Switch {
+        #[serde(default)]
+        vidoc: Option<bool>,
+    }
+    serde_json::from_str::<Switch>(&sandbox.profile_json)
+        .ok()
+        .and_then(|switch| switch.vidoc)
+        != Some(false)
 }
 
 /// The sandbox's stored profile; an unreadable or invalid one falls back to `standard`.
@@ -1948,6 +1964,50 @@ impl App {
 
     // ---------------------------------------------------------------- profile
 
+    /// Turns the sandbox's Vidoc security scans on or off (SPEC-338 VOF-001): `vidoc` in its
+    /// stored profile JSON, the rest of which is kept as it is; audited when it changes. A
+    /// playground has no CI scan to turn.
+    ///
+    /// # Errors
+    /// `Invalid` for a playground; store failures.
+    async fn set_vidoc_switch(
+        &self,
+        ctx: &AuthContext,
+        sandbox: &SandboxRecord,
+        on: bool,
+    ) -> AppResult<()> {
+        if sandbox.is_playground() {
+            return Err(invalid(
+                "a playground runs no Vidoc scan: it has no switch to turn".to_owned(),
+            ));
+        }
+        if vidoc_switched_on(sandbox) == on {
+            return Ok(());
+        }
+        let mut stored = match serde_json::from_str::<serde_json::Value>(&sandbox.profile_json) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        if on {
+            stored.remove("vidoc");
+        } else {
+            stored.insert("vidoc".to_owned(), serde_json::Value::Bool(false));
+        }
+        let json = serde_json::to_string(&stored).map_err(AppError::internal)?;
+        self.deps.store.set_profile(&sandbox.id, &json).await?;
+        self.ci_forget_gate(&sandbox.id);
+        // The instance key comes or goes as the sandbox's virtual agent secret.
+        self.bump_vault_generation();
+        self.dlv_audit(
+            &Self::dlv_actor_login(&ctx.user),
+            "delivery.vidoc.update",
+            &sandbox.slug,
+            if on { "on" } else { "off" },
+        )
+        .await;
+        Ok(())
+    }
+
     /// `PATCH /api/sandboxes/{sid}` (admin): validates and stores the delivery profile.
     ///
     /// # Errors
@@ -1960,9 +2020,25 @@ impl App {
     ) -> AppResult<Sandbox> {
         let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
         let (sandbox, level) = self.require(&ctx.user, &sid, Action::Administer).await?;
+        if let Some(on) = req.vidoc {
+            self.set_vidoc_switch(ctx, &sandbox, on).await?;
+        }
         let Some(requested) = &req.profile else {
-            return self.sandbox_view(&sandbox, level).await;
+            let updated = self
+                .deps
+                .store
+                .sandbox(&sid)
+                .await?
+                .ok_or(AppError::NotFound)?;
+            return self.sandbox_view(&updated, level).await;
         };
+        // Read again: the switch above may have changed it.
+        let sandbox = self
+            .deps
+            .store
+            .sandbox(&sid)
+            .await?
+            .ok_or(AppError::NotFound)?;
         let before = delivery_profile(&sandbox);
         let profile = profile_from_contract(requested)?;
         // A playground's maker may be anyone signed in, and commands run on the server: a
@@ -1984,6 +2060,8 @@ impl App {
         };
         let mut stored = profile_to_contract(&profile);
         stored.gate.clone_from(&gate);
+        // The switch is set on its own (VOF-001): the profile editor does not carry it.
+        stored.vidoc = (!vidoc_switched_on(&sandbox)).then_some(false);
         let json = serde_json::to_string(&stored).map_err(AppError::internal)?;
         self.deps.store.set_profile(&sid, &json).await?;
         self.ci_forget_gate(&sid);

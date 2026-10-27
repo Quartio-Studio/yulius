@@ -64,6 +64,10 @@ impl App {
                 TaskGroup::Done | TaskGroup::Ended => {}
             }
         }
+        let mut profile: yulius_contracts::api::sandboxes::Profile =
+            serde_json::from_str(&record.profile_json).unwrap_or_else(|_| standard_profile());
+        // Always a value (SPEC-338 VOF-001), read on its own like the scans read it.
+        profile.vidoc = Some(crate::delivery::vidoc_switched_on(record));
         Ok(Sandbox {
             id: record.id.to_string(),
             slug: record.slug.clone(),
@@ -83,8 +87,7 @@ impl App {
             playground: record.is_playground(),
             access: access.as_str().to_owned(),
             default_branch: record.default_branch.clone(),
-            profile: serde_json::from_str(&record.profile_json)
-                .unwrap_or_else(|_| standard_profile()),
+            profile,
             onboarding: record.onboarding_state.clone(),
             port_base: record.port_base,
             port_count: record.port_count,

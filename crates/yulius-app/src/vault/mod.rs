@@ -345,8 +345,9 @@ impl App {
     }
 
     /// The agent secrets an agent run, the Superagent or a granted CI job uses through the egress
-    /// proxy: [`Self::resolved_agent_secrets`] and, when the instance has a Vidoc key and none of
-    /// them is a `VIDOC_API_KEY`, the instance key as that virtual secret (SPEC-195 VDK-005).
+    /// proxy: [`Self::resolved_agent_secrets`] and, when the instance has a Vidoc key, none of
+    /// them is a `VIDOC_API_KEY` and the sandbox's Vidoc switch is on, the instance key as that
+    /// virtual secret (SPEC-195 VDK-005, SPEC-338 VOF-002).
     /// Never for MCP references, `.env` copies or browser filling, which would hand out its value.
     ///
     /// # Errors
@@ -357,10 +358,26 @@ impl App {
         holder: Holder<'_>,
     ) -> AppResult<Vec<VaultSecretRecord>> {
         let mut records = self.resolved_agent_secrets(sandbox, holder).await?;
-        if self.vidoc_key().is_some() && !records.iter().any(|r| r.name == VIDOC_SECRET) {
+        if self.vidoc_key().is_some()
+            && !records.iter().any(|r| r.name == VIDOC_SECRET)
+            && self.vidoc_switched_on(sandbox).await?
+        {
             records.push(instance_vidoc_record());
         }
         Ok(records)
+    }
+
+    /// Whether `sandbox`'s Vidoc scans are on (SPEC-338 VOF-001); a sandbox that is gone is off.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn vidoc_switched_on(&self, sandbox: &SandboxId) -> AppResult<bool> {
+        Ok(self
+            .deps
+            .store
+            .sandbox(sandbox)
+            .await?
+            .is_some_and(|record| crate::delivery::vidoc_switched_on(&record)))
     }
 
     /// Whether runs of `task` get a personal secret (its owner's, switched on for its project).
