@@ -348,14 +348,17 @@ export function mountGitPage(ctx, sandbox) {
     const stuck = Boolean(pr && pr.state === 'open' && pr.checks === 'failure');
     const files = item.row.files_changed ? h('span', { class: 'dl-diffstat', title: item.row.branch || null },
       h('span', { class: 'muted' }, plural(item.row.files_changed, 'file')), ' ', h('span', { class: 'gt-add' }, `+${item.row.insertions ?? 0}`), ' ', h('span', { class: 'gt-del' }, `−${item.row.deletions ?? 0}`)) : null;
-    // The card opens the task's changes (diff, commits, branch); "Go to task" is there.
-    const review = item.task ? `/s/${encodeURIComponent(sandbox.slug)}/git/t/${item.task.number}` : null;
+    // The card opens the task's changes (diff, commits, branch); "Go to task" is there. With its
+    // worktree gone there are no changes to read: the card only says so (SPEC-343).
+    const gone = Boolean(item.task && item.row.worktree_gone);
+    const review = item.task && !gone ? `/s/${encodeURIComponent(sandbox.slug)}/git/t/${item.task.number}` : null;
     const title = review
       ? h('a', { class: 'dl-task dl-card-link', href: href(review), dataset: { route: review } }, h('span', { class: 'muted' }, `#${item.task.number} `), item.row.title)
-      : taskLink(item, false);
+      : gone ? h('span', { class: 'dl-task' }, h('span', { class: 'muted' }, `#${item.task.number} `), item.row.title) : taskLink(item, false);
     return h('div', { class: ['dl-card-task', stuck && 'attention', review && 'clickable'] },
       h('div', { class: 'dl-card-title' }, title, stuck ? h('span', { class: 'dl-dot', title: 'Checks failing' }, h('span', { class: 'sr-only' }, 'Checks failing')) : null),
       h('div', { class: 'dl-card-line' }, line),
+      gone ? h('div', { class: 'dl-card-line muted', title: 'Its branch and pull request are on GitHub' }, 'Worktree gone') : null,
       h('div', { class: 'dl-card-meta' }, prChip(pr), files,
         item.task && (item.column !== 'built' || (item.info && item.info.group === 'ended')) ? h('button', { type: 'button', class: 'link-btn xs dl-deliver', onClick: () => openDeliveryDialog(ctx, item.task) }, 'Details') : null));
   }
