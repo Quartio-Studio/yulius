@@ -1,11 +1,11 @@
 ---
 yulius-task: 8aaaccbb-3262-4079-8467-1cf266019307
-status: in-progress
+status: done
 ---
 
 # SPEC-339: A URL Claude Code wraps onto the next row is one terminal link
 
-Status: in-progress
+Status: done
 Date: 2026-10-27
 Owner: Yulius task #323
 Scope authorization: task #323 (`/goal`, with a screenshot of a squeezed task terminal: Claude
@@ -52,7 +52,7 @@ of its rows shows the link, and a click opens the full URL instead of the first 
   - the row's last non-blank cell is in the last column, or in one of the last 2 columns in Claude
     Code's prompt, every row of which keeps one column of padding. A row belongs to the prompt
     when walking up through blank rows and indented rows without a marker reaches a `❯` row
-    that is not a menu's cursor (`❯ 1.`). A row with another marker (`●`, `⏺`, `-`, `⎿`, `▎`,
+    that is not a menu's cursor (`❯ 1.`; so a prompt typed as `1. …` gets no padding either). A row with another marker (`●`, `⏺`, `-`, `⎿`, `▎`,
     …), a soft-wrapped row or text at the first column stops the walk with no padding;
   - the next row is not soft-wrapped;
   - the next row's text starts, with a non-blank character, in the column where the row's text
@@ -81,8 +81,8 @@ of its rows shows the link, and a click opens the full URL instead of the first 
 - [x] Spec and issue for URLs Claude Code wraps onto the next row
 - [x] Failing regression tests: a wrapped URL is one link, opened whole
 - [x] Terminal links a URL continued on the next rows as one link
-- [ ] Independent review answered
-- [ ] Gates green, docs and changes entry, merged into dev
+- [x] Independent review answered
+- [x] Gates green, docs and changes entry, merged into dev
 
 ## Acceptance criteria
 
@@ -116,7 +116,8 @@ of its rows shows the link, and a click opens the full URL instead of the first 
   TUI's cursor moves.
 - **Strict joining rules over generous ones.** A wrong join opens a wrong address, while a missed
   join leaves today's behaviour. So every condition in WRL-001 must hold, and each one is taken
-  from Claude Code's measured layout. A shell prompt that also draws `❯` (starship, pure) makes
+  from Claude Code's measured layout. A shell prompt (starship, pure) or a menu cursor without a
+  number that also draws `❯` makes
   the indented rows under it count as prompt rows, so a URL there may end one column short of the
   edge too; shell output rarely starts indented, and the word-length rule still applies. One case
   stays ambiguous: a URL that ends exactly at the
@@ -126,3 +127,34 @@ of its rows shows the link, and a click opens the full URL instead of the first 
 - **One range over all rows.** The link covers every cell from its first character to its last, so
   hovering any row underlines the whole URL, as xterm does for soft-wrapped links. The indent cells
   of a continuation row fall inside the range, which is a cosmetic cost.
+
+## Evidence
+
+- **Reproduction:** real Claude Code 2.1.292, `claude --resume` of a synthetic session in a 60- and
+  80-column PTY, rendered with pyte. The raw output places rows with `\r` and `CSI B` and has no
+  OSC 8, and the URL rows are as recorded in Context. Issue #940.
+- **Test first:** commit `0edf91a3` added both #940 tests. They failed on the old code
+  (`findContinuedUrls is not a function`; the continuation row `status,updated` "is a link:
+  expected false to be true"). Each review round added its cases before its fix (`16639f6f`,
+  `ebd627a2`, `65dfcbe3`), and each failed first.
+- **Mutation check:** with the provider's registration removed from `terminal-core.js`, the
+  browser test fails at the continuation row. The round-3 reviewer also reverted the prompt walk,
+  and the pure test lost exactly the two later-prompt rows.
+- `npx e2e run tests/terminal.e2e.ts`: 29 passed, also at the final head.
+- `npx e2e run` (full suite, at `42a4492d`, which differs from the final code only by the menu
+  rule): 68 files passed and 1 skipped; 762 tests passed and 1 skipped.
+- `scripts/dev ci` (at `cda32aae`; the later commits touch only web assets, e2e tests and docs):
+  exit 0, nextest 2757 tests run, 2757 passed, 16 skipped. `scripts/dev check` at the final tree:
+  exit 0.
+- `yulius security-scan`: **not run** (exit 2). Vidoc's key is out of quota (HTTP 429, "used its
+  50,000,000 tokens"), and the 3 changed code files were not scanned. This is unrun, not passed.
+- **Independent review:** three rounds in fresh read-only sessions (`om-code-review`).
+  - Round 1, REQUEST CHANGES: the row limit cut long URLs; an off-by-one in the word check; the
+    padding column was allowed on every row; the test depended on width; numbered items and
+    cuts inside the scheme were missed. All fixed test-first.
+  - Round 2, REQUEST CHANGES: later prompt rows were not joined. Fixed with the walk up to the
+    marker, using the reviewer's recorded rows.
+  - Round 3, APPROVE with two minors: a menu's `❯ 1.` cursor, and the spec's wording. Both
+    fixed; the delta was approved at `1a65556b`. Its two wording nits are applied in the commit
+    that adds this section.
+  - Every finding was own code; none was pre-existing.

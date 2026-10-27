@@ -52,8 +52,10 @@ fragment, and the rest was plain text.
 - A URL that genuinely ends at the edge, followed by a word long enough that the two exceed the
   row, is joined: that screen looks the same as a longer URL cut there.
 - A URL longer than 32 rows is not linked at all, rather than linked to a cut address.
-- A shell whose prompt also draws `❯` (starship, pure) has the indented rows under it treated as
-  prompt rows: a URL there that ends one column short of the edge, followed by a long enough
-  word at the same indent, is joined. Shell output rarely starts indented.
+- A shell prompt (starship, pure) or a menu cursor that draws `❯` without a list number has the
+  indented rows under it treated as prompt rows: a URL there that ends one column short of the
+  edge, followed by a long enough word at the same indent, is joined. Such rows rarely start
+  indented. Conversely, a prompt that starts with a list number (`❯ 1. fix …`) gets no padding
+  column, so a URL cut on its later rows is linked only up to the cut, as before.
 - If Claude Code changes its layout, the rules in `findContinuedUrls` and its e2e test, which
   replays recorded rows, change together.
