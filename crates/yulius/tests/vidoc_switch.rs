@@ -216,3 +216,15 @@ async fn agents_are_told_when_a_project_is_switched_off() -> TestResult {
     assert_eq!(i.h.app.vidoc_briefing(&record), VidocBriefing::On);
     Ok(())
 }
+
+/// VOF-004: the web UI learns whether the instance has a Vidoc key (the Add sandbox dialog offers
+/// the switch only then), never the key.
+#[tokio::test]
+async fn me_says_whether_the_instance_has_a_vidoc_key() -> TestResult {
+    let i = instance().await?;
+    let me = call(&i.h.router, Method::GET, "/api/me", None, &i.bob).await?;
+    assert_eq!(me.status, StatusCode::OK, "{}", me.body);
+    assert_eq!(me.body["instance"]["vidoc"], true, "{}", me.body);
+    assert!(!me.body.to_string().contains(KEY));
+    Ok(())
+}

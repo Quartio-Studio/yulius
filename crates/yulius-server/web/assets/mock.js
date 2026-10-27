@@ -787,7 +787,7 @@ const claudeUsable = (db) => db.accounts.some((a) => a.status === 'ok' || a.stat
 const needClaude = (db) => {
   if (!claudeUsable(db)) fail(409, 'claude_account_required', 'Connect a Claude account first: no Claude account is connected, so no agent can start. An instance administrator connects one in Subscriptions (/admin/accounts).');
 };
-route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db) } }));
+route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db), vidoc: Boolean(db.vidoc.key || db.vidoc.config) } }));
 // Superadmin recovery (ACC-011): a code is set, three attempts left. A test can hold the answers
 // (`__yuliusMock.holdRecovery = promise`; `recoveryWaiting` counts the reads waiting there), so a
 // page that asked can be left before it answers (#581).
@@ -997,9 +997,15 @@ route('GET', `/api/sandboxes/${ID}`, ({ db, p }) => sandboxOf(db, p[0]));
 route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'admin');
+  // SPEC-338 VOF-001: the Vidoc switch is set on its own; a profile update keeps it.
+  if (body.vidoc !== undefined && body.vidoc !== null) {
+    if (sandbox.playground) fail(422, 'invalid', 'a playground runs no Vidoc scan: it has no switch to turn');
+    sandbox.profile = { ...sandbox.profile, vidoc: Boolean(body.vidoc) };
+  }
   if (body.profile) {
     validateProfile(body.profile);
-    sandbox.profile = relabel({ ...body.profile, environments: (body.profile.environments || []).map((e) => ({ ...e, command: e.command && e.command.trim() ? e.command : null })) });
+    const vidoc = sandbox.profile.vidoc !== false;
+    sandbox.profile = { ...relabel({ ...body.profile, environments: (body.profile.environments || []).map((e) => ({ ...e, command: e.command && e.command.trim() ? e.command : null })) }), vidoc };
   }
   return sandbox;
 });

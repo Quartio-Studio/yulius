@@ -78,6 +78,9 @@ pub struct InstanceInfo {
     /// Whether a Claude account is usable, so agents can start (SPEC-246 CLA-001).
     #[serde(default)]
     pub claude_connected: bool,
+    /// Whether the instance has a Vidoc key, so new projects scan by default (SPEC-338 VOF-004).
+    #[serde(default)]
+    pub vidoc: bool,
 }
 
 /// `POST /api/device/start` response.

@@ -1,9 +1,11 @@
 // The instance's service keys, Jev (SPEC-001 ADM-001, ADM-002) and Vidoc (SPEC-195 VDK-003,
 // VDK-004): optional steps of the setup wizard and cards on the instance page where a superadmin
 // sets, replaces, tests and removes them. A key goes to the server once and never comes back: the
-// API answers with its state only.
+// API answers with its state only. The Vidoc card also switches each project's scans off or on
+// (SPEC-338 VOF-005).
 
-import { h, icon, field, setChildren, toast, errorToast, confirmDialog, skeleton } from './dom.js';
+import { enc } from './api.js';
+import { h, icon, field, setChildren, toast, errorToast, confirmDialog, skeleton, toggle } from './dom.js';
 import { relLong } from './format.js';
 import { BRAND } from './brand.js';
 
@@ -51,6 +53,38 @@ export function keyExplanation(service) {
 
 function keyInput(service, id) {
   return h('input', { class: 'input mono', type: 'password', id, autocomplete: 'off', spellcheck: 'false', placeholder: SERVICES[service].placeholder, 'aria-describedby': `${id}-hint` });
+}
+
+/**
+ * Turns `sandbox`'s Vidoc scans on or off (SPEC-338 VOF-001). Answers the updated sandbox, or null
+ * after saying why it failed; a switch `input` goes back then. `quiet` skips the success toast.
+ */
+export async function setVidocScans(ctx, sandbox, on, { input = null, quiet = false } = {}) {
+  if (input) input.disabled = true;
+  try {
+    const updated = await ctx.api.patch(`/api/sandboxes/${enc(sandbox.id)}`, { vidoc: on });
+    ctx.store.upsertSandbox(updated);
+    if (!quiet) toast(on ? `Vidoc scans are on for ${sandbox.name}.` : `Vidoc scans are off for ${sandbox.name}: it scans nothing until you switch them on.`, { kind: 'ok' });
+    return updated;
+  } catch (error) {
+    if (input) input.checked = !on;
+    errorToast(error, 'Couldn’t change the Vidoc scans');
+    return null;
+  } finally {
+    if (input) input.disabled = false;
+  }
+}
+
+/** The Vidoc card's projects, each with its switch (SPEC-338 VOF-005); playgrounds scan nothing. */
+function vidocProjects(ctx) {
+  const projects = (ctx.store.state.sandboxes || []).filter((sb) => !sb.playground);
+  if (!projects.length) return null;
+  return h('div', { class: 'vidoc-projects', role: 'group', 'aria-labelledby': 'vidoc-projects-title' },
+    h('h3', { class: 'small', id: 'vidoc-projects-title' }, 'Projects'),
+    h('p', { class: 'muted xs' }, 'A project switched off scans nothing: its agents and CI report the scan as disabled, and nobody is asked about the key or its quota, until you switch it on again. Use it while the key’s quota is used up.'),
+    h('ul', { class: 'vidoc-project-list' }, projects.map((sb) => h('li', { class: 'row vidoc-project' },
+      h('span', { class: 'vidoc-project-name' }, sb.name),
+      toggle({ checked: !sb.profile || sb.profile.vidoc !== false, label: `Vidoc scans for ${sb.name}`, onChange: (on, input) => setVidocScans(ctx, sb, on, { input }) })))));
 }
 
 /** The result of a test request, in words, with its tone. */
@@ -183,7 +217,8 @@ export function keySettingsCard(ctx, service) {
       h('div', { class: 'row' }, testButton, adopt, remove),
       result,
       form,
-      h('p', { class: 'muted xs', id: `settings-${service}-hint` }, 'Stored encrypted on this server and never shown again.'));
+      h('p', { class: 'muted xs', id: `settings-${service}-hint` }, 'Stored encrypted on this server and never shown again.'),
+      service === 'vidoc' ? vidocProjects(ctx) : null);
   }
 
   async function test() {
