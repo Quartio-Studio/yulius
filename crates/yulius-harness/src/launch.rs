@@ -680,7 +680,7 @@ pub const IS_SANDBOX_ENV: (&str, &str) = ("IS_SANDBOX", "1");
 pub const COCKPIT_TOKEN_ENV: &str = "YULIUS_COCKPIT_TOKEN";
 /// The Yulius tools a Cockpit may call without asking: they only read (`secret_verify` writes
 /// nothing but its audit entry; SPEC-178 VAU-003).
-pub const COCKPIT_READ_ONLY_TOOLS: [&str; 8] = [
+pub const COCKPIT_READ_ONLY_TOOLS: [&str; 9] = [
     "tasks_list",
     "task_get",
     "automations_list",
@@ -689,6 +689,7 @@ pub const COCKPIT_READ_ONLY_TOOLS: [&str; 8] = [
     "session_read",
     "secrets_list",
     "secret_verify",
+    "sandboxes_list",
 ];
 
 /// Builds the launch plan of a Cockpit: `claude [--resume <id>] [--mcp-config <yulius and the

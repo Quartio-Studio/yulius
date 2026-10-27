@@ -5,7 +5,7 @@
 // to delete it: /clear starts over inside it.
 
 import { enc } from './api.js';
-import { h, icon, setChildren, emptyState, loadError, skeleton } from './dom.js';
+import { h, icon, setChildren, emptyState, loadError, skeleton, toast, errorToast } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { allows } from './status.js';
 import { href } from './router.js';
@@ -23,7 +23,8 @@ export function createAgentView(ctx, sandbox) {
     h('span', { class: 'banner-text' },
       h('strong', null, 'For quick work'), ': setting up automations, asking a quick question. Anything more complex, such as writing code, belongs in a task, not here', newTask ? [': ', newTask, '.'] : '.'));
   const body = h('div', { class: 'agent-term' });
-  const el = h('div', { class: 'agent' }, notice, body);
+  const requests = createRequests(ctx, sandbox);
+  const el = h('div', { class: 'agent' }, notice, requests.el, body);
   let terminal = null;
   let alive = true;
   let opening = false;
@@ -150,7 +151,178 @@ export function createAgentView(ctx, sandbox) {
     hide() { shown = false; },
     destroy() {
       alive = false;
+      requests.destroy();
       drop();
+    },
+  };
+}
+
+/** Start options a request shows, in the composer's words. */
+const OPTION_LABELS = {
+  workflow: (v) => `Workflow: ${v}`,
+  mode: (v) => `Mode: ${v}`,
+  after_task: (v) => `After #${v}`,
+  start_rule: (v) => `When ${v}`,
+  supertask: (v) => (v ? 'Supertask: runs alone' : null),
+  prepared: (v) => (v ? 'Prepared: waits for Start now' : null),
+  start_at: (v) => `Starts at ${v}`,
+  model: (v) => `Model: ${v}`,
+  effort: (v) => `Effort: ${v}`,
+};
+
+/** How long a new request's buttons wait before they take a click (one aimed at the terminal it pushed down). */
+const ARM_MS = 600;
+/** Characters a person cannot see that could hide or reorder a prompt's words: shown by their code. */
+const INVISIBLE = /(?![\n\t])[\p{Cc}\p{Cf}\p{Co}\p{Cn}\u{034F}\u{115F}\u{1160}\u{17B4}\u{17B5}\u{180B}-\u{180F}\u{3164}\u{FFA0}\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}]/gu;
+
+/** A request's text as a person can check it: invisible characters named by their code (the server refuses them too). */
+const shownText = (text) => String(text).replace(/\r\n?|[\u{2028}\u{2029}]/gu, '\n').replace(INVISIBLE, (c) => `⟨U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}⟩`);
+
+/** The prompt as a person can check it: invisible characters named, long runs of empty lines counted. */
+export function shownPrompt(text) {
+  const named = shownText(text);
+  // A line of only spaces of any kind (no-break, ideographic, braille blank…) is empty too.
+  return named.replace(/\n(?:(?:[^\S\n]|\u{2800})*\n){2,}/gu, (run) => `\n[${run.split('\n').length - 2} empty lines]\n`);
+}
+
+/**
+ * SPEC-335 XSR-008: what the person's Superagent asks to start in another sandbox, above its
+ * session. Nothing reaches that sandbox until the person presses Create task; each request is
+ * answered once, and goes when the Superagent's call ends. Create task takes a click only once the
+ * whole prompt was in view (scrolled to its end) and the card has been there a moment.
+ */
+function createRequests(ctx, sandbox) {
+  const el = h('div', { class: 'agent-requests', hidden: true });
+  const path = `/api/sandboxes/${enc(sandbox.id)}/superagent/requests`;
+  let alive = true;
+  let reading = null;
+  let again = false;
+  const cards = new Map(); // request id → { el, destroy }
+
+  async function load() {
+    if (!allows(sandbox.access, 'write')) return;
+    // One read at a time; a change announced during it brings one more.
+    if (reading) { again = true; return; }
+    reading = ctx.api.get(path).then(render, () => { /* the next event or resync reads again */ });
+    try { await reading; } finally {
+      reading = null;
+      if (again && alive) { again = false; load(); }
+    }
+  }
+
+  /**
+   * Cards come and go; one already shown keeps its scroll. When one goes, the others move up under
+   * the pointer, so their buttons arm again first: a double-click answers one request, not the next.
+   */
+  function render(list) {
+    if (!alive) return;
+    const items = Array.isArray(list) ? list : [];
+    const ids = new Set(items.map((r) => r.id));
+    const gone = [...cards.keys()].filter((id) => !ids.has(id));
+    if (gone.length) for (const [id, shown] of cards) if (ids.has(id)) shown.rearm();
+    for (const id of gone) { cards.get(id).destroy(); cards.delete(id); }
+    for (const request of items) {
+      if (cards.has(request.id)) continue;
+      const shown = card(request);
+      cards.set(request.id, shown);
+      el.append(shown.el);
+    }
+    el.hidden = cards.size === 0;
+  }
+
+  function card(request) {
+    const target = request.sandbox || {};
+    const slug = target.slug;
+    const options = Object.entries(request.options || {})
+      .map(([key, value]) => (OPTION_LABELS[key] ? OPTION_LABELS[key](typeof value === 'string' ? shownText(value) : value) : null))
+      .filter(Boolean);
+    const heading = `Your Superagent asks to start a task in ${slug}`;
+    // The prompt's last line: once it was on screen (not clipped by the prompt box, the list or the window), it was all read.
+    const end = h('span', { class: 'agent-request-end', 'aria-hidden': 'true' });
+    const prompt = h('pre', { class: 'agent-request-prompt', tabindex: '0', 'aria-label': 'Prompt' }, shownPrompt(request.prompt || ''), end);
+    const hint = h('div', { class: 'agent-request-hint', hidden: true }, 'Scroll to the end of the prompt to create the task.');
+    const create = h('button', { type: 'button', class: 'btn btn-sm btn-primary', disabled: true, onClick: () => respond(true) }, 'Create task');
+    const decline = h('button', { type: 'button', class: 'btn btn-sm', disabled: true, onClick: () => respond(false) }, 'Decline');
+    let armed = false;
+    let read = false;
+    let sending = false;
+    // Answered: the card only waits to go; it takes no second click.
+    let done = false;
+    const update = () => {
+      create.disabled = !armed || !read || sending || done;
+      decline.disabled = !armed || sending || done;
+      hint.hidden = read;
+    };
+    // The whole prompt was in view: its end was on screen. A hidden panel shows none of it.
+    const seen = typeof IntersectionObserver === 'function'
+      ? new IntersectionObserver((entries) => {
+        if (!read && entries.some((entry) => entry.isIntersecting)) { read = true; update(); }
+      })
+      : null;
+    if (seen) seen.observe(end);
+    let timer = null;
+    const arm = () => {
+      clearTimeout(timer);
+      armed = false;
+      update();
+      timer = setTimeout(() => { armed = true; if (!seen) read = true; update(); }, ARM_MS);
+    };
+    arm();
+
+    async function respond(approve) {
+      if (sending) return;
+      sending = true;
+      update();
+      try {
+        const answer = await ctx.api.post(`${path}/${enc(request.id)}`, { approve });
+        done = true;
+        if (approve && answer && answer.task) {
+          const to = `/s/${encodeURIComponent(answer.sandbox || slug)}/t/${answer.task.number}`;
+          toast(`Created #${answer.task.number} in ${answer.sandbox || slug}.`, { kind: 'ok', action: { label: 'Open', run: () => ctx.navigate(to) } });
+        } else if (!approve) {
+          toast('Declined: nothing was created.', { kind: 'info' });
+        }
+      } catch (err) {
+        errorToast(err, approve ? `Couldn’t create the task in ${slug}` : 'Couldn’t decline');
+      } finally {
+        sending = false;
+        update();
+        load();
+      }
+    }
+
+    return {
+      el: h('section', { class: 'agent-request banner banner-warn small', role: 'group', 'aria-label': heading },
+        h('div', { class: 'agent-request-head' }, icon('spark', { size: 16 }),
+          h('strong', null, 'Your Superagent asks to start a task in ', h('span', { class: 'agent-request-target' }, slug)),
+          target.repository ? h('span', { class: 'muted' }, ` (${target.repository})`) : null),
+        request.title ? h('div', { class: 'agent-request-title' }, shownText(request.title)) : null,
+        prompt,
+        options.length ? h('ul', { class: 'agent-request-options', 'aria-label': 'Start options' }, options.map((o) => h('li', null, o))) : null,
+        hint,
+        h('div', { class: 'agent-request-actions' }, create, decline)),
+      rearm: arm,
+      destroy() {
+        clearTimeout(timer);
+        if (seen) seen.disconnect();
+        this.el.remove();
+      },
+    };
+  }
+
+  const offs = [
+    ctx.store.on('superagent-requests', (event) => { if (event && event.sandbox_id === sandbox.id) load(); }),
+    ctx.store.on('resync', () => load()),
+  ];
+  load();
+
+  return {
+    el,
+    destroy() {
+      alive = false;
+      for (const off of offs) if (typeof off === 'function') off();
+      for (const shown of cards.values()) shown.destroy();
+      cards.clear();
     },
   };
 }

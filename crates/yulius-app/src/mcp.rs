@@ -26,8 +26,9 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 /// The tools a Cockpit is served: managing the project's tasks and automations (SPEC-037
 /// MGT-006, SPEC-066 MGT-012) and using its agent vault as a task's agent does, but the project
 /// browser it has not (SPEC-178, SPEC-186 SAV-002..004, ADR-0150), and messaging tasks for its
-/// person (SPEC-230, ADR-0178). Everything else belongs to a task.
-pub const COCKPIT_TOOLS: [&str; 21] = [
+/// person (SPEC-230, ADR-0178), and asking its person to start a task in another of their
+/// sandboxes (SPEC-335, ADR-0227). Everything else belongs to a task.
+pub const COCKPIT_TOOLS: [&str; 23] = [
     "tasks_list",
     "task_get",
     "task_create",
@@ -49,10 +50,12 @@ pub const COCKPIT_TOOLS: [&str; 21] = [
     "secret_copy_to_env",
     "secret_request_hosts",
     "secret_create_from_file",
+    "sandboxes_list",
+    "sandbox_task_create",
 ];
 
 /// The Superagent's MCP instructions (SPEC-037, SPEC-186 SAV-007).
-pub(crate) const COCKPIT_INSTRUCTIONS: &str = "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. This session uses the project's agent secrets as a task's agent does, never seeing a value: requests to a secret's bound hosts get it from Yulius' proxy ($NAME holds its placeholder), secret_copy_to_env puts allowed ones into this repository's git-ignored .env, secret_request_hosts asks a person to bind hosts, secret_verify tells whether a value the person holds is one of them, from its SHA-256, and secret_create_from_file stores a secret that is in a file (a key in ~/.ssh, one you generated) as a new agent secret without anyone seeing it, so never ask the person to paste a key you can reach; secrets_list names them and says how. When the person wants a task told something (\"tell #5 it may use the DO budget\"), send it with task_message: a task that has not started gets it in its request, a running one in its session; pass on what the person said, labelled as theirs, and nothing they did not ask for. task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation, task_message tells a task something: do these only when the person asks, naming the task or automation.";
+pub(crate) const COCKPIT_INSTRUCTIONS: &str = "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. This session uses the project's agent secrets as a task's agent does, never seeing a value: requests to a secret's bound hosts get it from Yulius' proxy ($NAME holds its placeholder), secret_copy_to_env puts allowed ones into this repository's git-ignored .env, secret_request_hosts asks a person to bind hosts, secret_verify tells whether a value the person holds is one of them, from its SHA-256, and secret_create_from_file stores a secret that is in a file (a key in ~/.ssh, one you generated) as a new agent secret without anyone seeing it, so never ask the person to paste a key you can reach; secrets_list names them and says how. When the person wants a task told something (\"tell #5 it may use the DO budget\"), send it with task_message: a task that has not started gets it in its request, a running one in its session; pass on what the person said, labelled as theirs, and nothing they did not ask for. When the person wants work done in another of their sandboxes (another repository), find it with sandboxes_list and ask with sandbox_task_create: the person approves or declines each request on the panel above this session, and the call waits for their answer (a few minutes at most), so tell them it waits there; never ask again for a declined request unless they ask. task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation, task_message tells a task something: do these only when the person asks, naming the task or automation.";
 
 /// Who calls the MCP server.
 enum McpCaller {
@@ -84,9 +87,33 @@ pub fn cockpit_tool_descriptors() -> Vec<ToolDescriptor> {
 /// Tools only a Cockpit is served: `secret_verify` (SPEC-178, ADR-0144), whose input is, on a
 /// match, the value's SHA-256 (the Superagent's conversation is its person's own; a task's
 /// transcript is read by every member who can view the project), and `task_message` (SPEC-230,
-/// ADR-0178): a person speaks to their tasks, tasks do not prompt each other.
+/// ADR-0178): a person speaks to their tasks, tasks do not prompt each other; and the other
+/// sandboxes of its person (SPEC-335, ADR-0227), which only the person lets it reach.
 fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
     vec![
+        ToolDescriptor {
+            name: "sandboxes_list".into(),
+            description: "List the person's other sandboxes (projects) you may ask to start a task in: those they can work in, besides this one, with the slug sandbox_task_create takes, the repository and the onboarding state.".into(),
+            input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "sandbox_task_create".into(),
+            description: "Ask the person to start a task in another of their sandboxes (from sandboxes_list), when they want work done in another repository. It takes task_create's arguments plus sandbox; after_task and start_rule name that sandbox's tasks. Nothing is created until the person approves this one request on the panel above your session, where they read it in full: tell them it waits there. The call waits for their answer, a few minutes at most, and answers outcome approved (with the task), declined or unanswered (nothing created). Never ask again for a declined request unless they ask. At most 3 wait at once. Audited.".into(),
+            input_schema: schema(json!({
+                "sandbox": {"type": "string", "description": "The sandbox's slug (or owner/name) from sandboxes_list; not this one"},
+                "prompt": {"type": "string", "description": "The request for the new task, complete (what, why, where, done when)"},
+                "title": {"type": "string", "description": "Short title (derived from the prompt when absent)"},
+                "workflow": {"type": "string", "description": "Workflow id or name of that sandbox, or \"auto\""},
+                "mode": {"type": "string", "enum": ["goal", "prompt", "auto"]},
+                "after_task": {"type": "integer", "description": "That sandbox's task number to wait for"},
+                "start_rule": {"type": "string", "description": "Start rule over that sandbox's tasks, e.g. \"#12 done\""},
+                "supertask": {"type": "boolean", "description": "Run alone in that sandbox; only when the person asks"},
+                "prepared": {"type": "boolean", "description": "Prepare it without starting"},
+                "start_at": {"type": "string", "description": "Prepare it and start it at this RFC 3339 time"},
+                "model": {"type": "string"},
+                "effort": {"type": "string"}
+            }), &["sandbox", "prompt"]),
+        },
         ToolDescriptor {
             name: "task_message".into(),
             description: "Send a task of this project a message from the person you work for, when they ask (\"tell #5 it may use the DO budget\"). A task that has not started yet (queued, chained, prepared, waiting) gets it added to its request, which its agent reads when it starts; a running task gets it typed into its session, labelled as the person's, and its agent reads it as soon as it can, even mid-turn. Refused, with the reason, when the task cannot take it now: a person typed into its terminal in the last minute, Claude Code asks a person whether to trust its folder, it is starting, paused or switching, or it ended (then continue it, or create a new task). Answers delivered: queued or sent. Audited.".into(),
@@ -468,7 +495,17 @@ impl App {
         token: &str,
         request: RpcRequest,
     ) -> Option<RpcResponse> {
-        let id = request.id.clone()?;
+        let Some(id) = request.id.clone() else {
+            // A Superagent's client cancelled a call that waits for its person (SPEC-335).
+            if request.method == "notifications/cancelled"
+                && token.starts_with(COCKPIT_TOKEN_PREFIX)
+                && let Some(rpc_id) = request.params.get("requestId")
+                && let Ok(caller) = self.cockpit_caller(token).await
+            {
+                self.cancel_cross_request(&caller, rpc_id).await;
+            }
+            return None;
+        };
         let caller = if token.starts_with(COCKPIT_TOKEN_PREFIX) {
             self.cockpit_caller(token).await.map(McpCaller::Cockpit)
         } else {
@@ -511,7 +548,7 @@ impl App {
                 McpCaller::Agent(_) => tool_descriptors(),
                 McpCaller::Cockpit(_) => cockpit_tool_descriptors(),
             }})),
-            "tools/call" => Ok(self.mcp_call(&caller, &request.params).await),
+            "tools/call" => Ok(self.mcp_call(&caller, &id, &request.params).await),
             other => {
                 return Some(RpcResponse::err(
                     id,
@@ -526,7 +563,12 @@ impl App {
         })
     }
 
-    async fn mcp_call(self: &Arc<Self>, caller: &McpCaller, params: &Value) -> Value {
+    async fn mcp_call(
+        self: &Arc<Self>,
+        caller: &McpCaller,
+        rpc_id: &Value,
+        params: &Value,
+    ) -> Value {
         let name = params.get("name").and_then(Value::as_str).unwrap_or("");
         let args = params
             .get("arguments")
@@ -581,6 +623,13 @@ impl App {
             _ => match caller {
                 McpCaller::Cockpit(caller) if name == "task_message" => {
                     self.tool_task_message(caller, &args).await
+                }
+                McpCaller::Cockpit(caller) if name == "sandboxes_list" => {
+                    self.tool_sandboxes_list(caller).await
+                }
+                McpCaller::Cockpit(caller) if name == "sandbox_task_create" => {
+                    let call = crate::cross_sandbox::call_key(caller, rpc_id);
+                    self.cross_task_request(caller, &args, call).await
                 }
                 McpCaller::Cockpit(_) if name == "secret_verify" => {
                     self.tool_secret_verify(&project, &args).await
@@ -787,6 +836,27 @@ mod tests {
         assert_eq!(served.len(), COCKPIT_TOOLS.len());
         for name in COCKPIT_TOOLS {
             assert!(served.iter().any(|s| s == name), "`{name}` is not served");
+        }
+    }
+
+    /// SPEC-335 AC-XSR-5: only the Superagent reaches other sandboxes; a task's agent is served
+    /// neither tool.
+    #[test]
+    fn only_the_superagent_is_served_the_other_sandboxes() {
+        let task_tools: Vec<String> = tool_descriptors().into_iter().map(|t| t.name).collect();
+        let superagent: Vec<String> = cockpit_tool_descriptors()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        for name in ["sandboxes_list", "sandbox_task_create"] {
+            assert!(
+                !task_tools.iter().any(|t| t == name),
+                "a task gets `{name}`"
+            );
+            assert!(
+                superagent.iter().any(|t| t == name),
+                "`{name}` is not served"
+            );
         }
     }
 

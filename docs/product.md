@@ -116,7 +116,12 @@ watching, steering and unblocking.
   bound hosts carry it (`.mcp.json` servers with placeholders work too); it copies allowed secrets
   into the repository's git-ignored `.env` and asks for hosts, each asked under the person's name
   ("alice's Superagent") for a person to allow; and it tells whether a key the person holds in a
-  file is the one in the vault, from the file's SHA-256 (SPEC-178, SPEC-186). After an update
+  file is the one in the vault, from the file's SHA-256 (SPEC-178, SPEC-186). Asked for work in
+  another of the person's sandboxes ("make a task in the website repo for that"), it asks the
+  person: the request shows above its session with the target, the whole prompt and its start
+  options, and nothing reaches that sandbox until the person presses Create task there; Decline,
+  no answer in 4 minutes or interrupting the Superagent creates nothing, and no API token can
+  approve (SPEC-335). After an update
   that gives it new tools, an open Superagent restarts by itself once it is idle and goes on with
   its conversation.
 - **MCP servers**: configured once on the MCP page with two settings, Available in (every sandbox

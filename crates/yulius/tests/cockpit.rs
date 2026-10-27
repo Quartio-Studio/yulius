@@ -1596,7 +1596,8 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             .ok_or("carol's cockpit token")?;
     assert_ne!(token, carols, "one token per Cockpit");
 
-    // Exactly the management and vault tools (MGT-006, SPEC-186 SAV-002, SAV-003).
+    // Exactly the management and vault tools (MGT-006, SPEC-186 SAV-002, SAV-003), and the
+    // person's other sandboxes (SPEC-335).
     let listed = mcp(&f, &token, "tools/list", json!({})).await?;
     let mut names: Vec<String> = listed["result"]["tools"]
         .as_array()
@@ -1614,6 +1615,8 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "automation_template_enable",
             "automation_update",
             "automations_list",
+            "sandbox_task_create",
+            "sandboxes_list",
             "secret_copy_to_env",
             "secret_create_from_file",
             "secret_request_hosts",
@@ -1771,6 +1774,108 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
     f.h.app.end_all_shells().await;
     let ended = mcp(&f, &token, "tools/list", json!({})).await?;
     assert_eq!(ended["error"]["code"], -32001, "{ended}");
+    Ok(())
+}
+
+/// Requests alice's Superagent in `s1` waits on her to answer (SPEC-335).
+async fn waiting_requests(f: &Fixture) -> Result<usize, Box<dyn std::error::Error>> {
+    let resp = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/superagent/requests",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(resp.status, StatusCode::OK, "{:?}", resp.body);
+    Ok(resp.body.as_array().map_or(0, Vec::len))
+}
+
+/// SPEC-335 XSR-004: interrupting the Superagent (Claude Code sends `notifications/cancelled`
+/// and may keep the HTTP request open) ends its request to start a task in another sandbox:
+/// the card goes, a late approval finds nothing, and the call answers at once.
+#[tokio::test]
+async fn a_cancelled_cross_sandbox_request_ends_at_once() -> TestResult {
+    let f = fixture().await?;
+    seed_sandbox(&f.h, "s2", "website", "u-alice").await?;
+    f.h.github.set_perm("alice", "acme/website", perms("write"));
+    cockpit_id(&f, &f.alice).await?;
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&alice, &sid())
+            .ok_or("alice's cockpit token")?;
+    let internal = f.h.internal.clone();
+    let bearer = Creds {
+        bearer: Some(token.clone()),
+        ..Creds::default()
+    };
+    let asking = {
+        let bearer = bearer.clone();
+        tokio::spawn(async move {
+            call(
+                &internal,
+                Method::POST,
+                "/mcp",
+                Some(
+                    json!({"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {
+                    "name": "sandbox_task_create",
+                    "arguments": {"sandbox": "website", "prompt": "Rewrite the README"}}}),
+                ),
+                &bearer,
+            )
+            .await
+            .map(|resp| resp.body)
+            .map_err(|err| err.to_string())
+        })
+    };
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while waiting_requests(&f).await? != 1 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the request never waited"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // Another id cancels nothing.
+    for request_id in [json!(8), json!("7")] {
+        let other = call(
+            &f.h.internal,
+            Method::POST,
+            "/mcp",
+            Some(json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": request_id}})),
+            &bearer,
+        )
+        .await?;
+        assert_eq!(other.status, StatusCode::ACCEPTED);
+    }
+    assert_eq!(waiting_requests(&f).await?, 1);
+    let cancelled = call(
+        &f.h.internal,
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 7, "reason": "user interrupted"}})),
+        &bearer,
+    )
+    .await?;
+    assert_eq!(cancelled.status, StatusCode::ACCEPTED);
+    assert_eq!(
+        waiting_requests(&f).await?,
+        0,
+        "the cancelled request is gone"
+    );
+    let answered = tokio::time::timeout(WAIT, asking).await???;
+    let text = answered["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or("");
+    assert!(text.contains("cancelled"), "{answered}");
+    use yulius_app::ports::store::TaskStore;
+    assert!(
+        f.h.store
+            .tasks(&yulius_domain::ids::SandboxId::parse("s2")?, false)
+            .await?
+            .is_empty()
+    );
     Ok(())
 }
 

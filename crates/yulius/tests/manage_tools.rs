@@ -580,6 +580,7 @@ fn the_cockpit_asks_before_every_changing_tool() {
         "automation_template_enable",
         "secret_create_from_file",
         "task_message",
+        "sandbox_task_create",
     ] {
         assert!(
             yulius_app::mcp::COCKPIT_TOOLS.contains(&tool),
