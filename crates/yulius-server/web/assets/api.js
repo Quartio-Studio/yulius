@@ -83,8 +83,9 @@ export const enc = (value) => encodeURIComponent(String(value));
  * file to the browser's own download (SPEC-325): one as large as an upload (1 GiB) is never read
  * into the page; a HEAD first, so a file gone from the server rejects (404) like a read.
  * A write refused as `csrf_invalid` (another tab signed in again, so the browser's session and its
- * token changed) asks `onCsrfStale()` for the session's current token and is sent again once with
- * it; `onCsrfStale` answers null to retry nothing (SPEC-337 CSR-002). Concurrent refusals share
+ * token changed) asks `onCsrfStale(isCurrent)` for the session's current token and is sent again
+ * once with it; `onCsrfStale` answers null to retry nothing (SPEC-337 CSR-002), and `isCurrent()`
+ * turns false once the page signs in again (`setCsrf`), when the answer no longer counts. Concurrent refusals share
  * one call. A write sent before the page's own sign-in (`setCsrf`) is never sent again: it was
  * someone else's session.
  */
@@ -103,7 +104,7 @@ export function createApi(transport, { onUnauthenticated, onCsrfStale } = {}) {
     if (!rereading || rereadingFor !== signIns) {
       const asked = signIns;
       const reread = Promise.resolve()
-        .then(() => onCsrfStale())
+        .then(() => onCsrfStale(() => signIns === asked))
         .then((token) => {
           if (!token || signIns !== asked) return null;
           csrf = token;

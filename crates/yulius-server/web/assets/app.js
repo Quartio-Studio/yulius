@@ -74,7 +74,7 @@ const ADMIN_PAGES = {
 
 function createApp(root, transport) {
   let expiredHandled = false;
-  const api = createApi(transport, { onUnauthenticated: () => sessionExpired(), onCsrfStale: () => currentCsrf() });
+  const api = createApi(transport, { onUnauthenticated: () => sessionExpired(), onCsrfStale: (isCurrent) => currentCsrf(isCurrent) });
   const store = createStore(api, { pullGapMs: transport.pullGapMs, clock: transport.pullClock });
   let shell = null;
   let centerView = null;
@@ -193,11 +193,13 @@ function createApp(root, transport) {
    * A write was refused with a stale CSRF token: the browser signed in again in another tab, so its
    * session changed (SPEC-337). The same person: their session's token, and the write is sent again.
    * Someone else: the page reloads as them and retries nothing. Signed out: the usual handling (401).
+   * A page that signed in again by itself meanwhile (`isCurrent()` false) does neither.
    */
-  async function currentCsrf() {
+  async function currentCsrf(isCurrent) {
     const signedInAs = store.state.me && store.state.me.user && store.state.me.user.id;
     if (!signedInAs) return null;
     const me = await api.get('/api/me');
+    if (!isCurrent()) return null;
     if (!me || !me.user || me.user.id !== signedInAs) {
       window.location.reload();
       return null;
