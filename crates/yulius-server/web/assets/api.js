@@ -93,21 +93,37 @@ export function createApi(transport, { onUnauthenticated, onCsrfStale } = {}) {
   // Counts the page's sign-ins (`setCsrf`): a write or a reread from before one is not retried.
   let signIns = 0;
   let rereading = null;
+  let rereadingFor = -1;
 
-  /** The session's current token, asked once for every refusal waiting on it; null for none. */
+  /**
+   * The session's current token, asked once for every refusal of the same sign-in waiting on it;
+   * null for none. Never rejects.
+   */
   function rereadCsrf() {
-    if (!rereading) {
+    if (!rereading || rereadingFor !== signIns) {
       const asked = signIns;
-      rereading = Promise.resolve()
+      const reread = Promise.resolve()
         .then(() => onCsrfStale())
         .then((token) => {
           if (!token || signIns !== asked) return null;
           csrf = token;
           return token;
         }, () => null)
-        .finally(() => { rereading = null; });
+        .finally(() => { if (rereading === reread) rereading = null; });
+      rereading = reread;
+      rereadingFor = asked;
     }
     return rereading;
+  }
+
+  /** `promise`'s answer, or null as soon as `signal` aborts. */
+  function unlessCancelled(promise, signal) {
+    if (!signal) return promise;
+    return new Promise((resolve) => {
+      const cancel = () => resolve(null);
+      signal.addEventListener('abort', cancel, { once: true });
+      promise.then((value) => { signal.removeEventListener('abort', cancel); resolve(value); });
+    });
   }
 
   async function request(method, path, body, options = {}, retried = false) {
@@ -171,7 +187,7 @@ export function createApi(transport, { onUnauthenticated, onCsrfStale } = {}) {
       if (response.status === 401 && !allow401 && onUnauthenticated) onUnauthenticated(error);
       if (error.code === 'csrf_invalid' && !retried && onCsrfStale && signIns === sentSignIns && !(signal && signal.aborted)) {
         // Another refusal may have read the new token meanwhile: use it without asking again.
-        const token = csrf && csrf !== sentCsrf ? csrf : await rereadCsrf();
+        const token = csrf && csrf !== sentCsrf ? csrf : await unlessCancelled(rereadCsrf(), signal);
         if (signal && signal.aborted) throw new ApiError(0, 'aborted', 'Cancelled.');
         if (token && signIns === sentSignIns) return request(method, path, body, options, true);
       }

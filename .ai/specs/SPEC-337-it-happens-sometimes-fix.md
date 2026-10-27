@@ -51,8 +51,9 @@ never as someone else.
   the person now signed in. If it answers 401, the usual "signed out" handling runs.
 - CSR-004: A request refused again after the retry, or refused before any sign-in, fails as before
   (no loop). A write sent before the page's own sign-in (`setCsrf`), or a reread answering after
-  one, retries nothing: it was another session's. A write cancelled during the reread rejects as
-  `aborted`. Bearer-token clients are unchanged.
+  one, retries nothing: it was another session's, and a refusal after that sign-in asks for its
+  own reread. A write cancelled during the reread rejects as `aborted` at once, without waiting
+  for the reread. Bearer-token clients are unchanged.
 
 ## Plan
 
@@ -110,6 +111,11 @@ never as someone else.
   lacked the code. Nits: SPEC-002 line wrap, this spec's Evidence. All fixed. The new unit test for
   the page's own sign-in and the cancel failed (hung on a retry) before da50cd04. After it,
   agent-panel e2e passed 31/31.
+- Review round 2 (fresh session): approve at 6ad49664, with low findings in own code. A cancel
+  waited for the reread. The reload test counted writes after the mock's latency, so a retry on
+  its way could go uncounted. A refusal after the page's own sign-in could join an older reread.
+  SPEC-002 had a short line. All fixed test-first in round 3. The extended unit test hung before
+  the fix and passed after; agent-panel e2e passed 31/31.
 - `scripts/dev security`: **not run** (exit 2). Vidoc answered HTTP 429, "This API key has used its
   50,000,000 tokens". The 7 changed code files were not scanned, so this is unrun, not passed.
 - Not tested: a real browser with two tabs against `yulius serve`. The mock and the HTTP tests
