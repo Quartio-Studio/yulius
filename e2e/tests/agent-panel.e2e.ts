@@ -419,7 +419,8 @@ test('a page reloads, retrying nothing, when another person signed in in another
     db.me = { ...db.me, csrf_token: 'csrf-of-someone-else', user: { ...db.me.user, id: 'usr_2' } };
     // The reload starts the mock afresh: what the old page sent is kept for the test as it goes.
     window.addEventListener('pagehide', () => {
-      const cockpit = ((db as unknown as { writes?: string[] }).writes ?? []).filter((path) => path.endsWith('/cockpit')).length;
+      // Counted as sent, before the mock's latency: a retry on its way when the page goes counts too.
+      const cockpit = (db as unknown as { sent?: Record<string, number> }).sent?.['POST /api/sandboxes/sb_studio/cockpit'] ?? 0;
       sessionStorage.setItem('csrf-test', JSON.stringify({ refusals: db.csrfRefusals ?? 0, cockpit }));
     });
     return null;
@@ -429,8 +430,8 @@ test('a page reloads, retrying nothing, when another person signed in in another
   // The page reloads and shows the person now signed in.
   await expect.poll(() => browser.evaluate(() => sessionStorage.getItem('csrf-test')), { timeout: 15_000 }).not.toBeNull();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
-  // The write was refused once and not sent again as them.
-  expect(await browser.evaluate(() => JSON.parse(sessionStorage.getItem('csrf-test') ?? 'null'))).toEqual({ refusals: 1, cockpit: 0 });
+  // The write was sent once, refused, and not sent again as them.
+  expect(await browser.evaluate(() => JSON.parse(sessionStorage.getItem('csrf-test') ?? 'null'))).toEqual({ refusals: 1, cockpit: 1 });
 });
 
 test('a write refused again after its retry says so, once per attempt', async ({ app, browser, screen }) => {
@@ -534,23 +535,42 @@ test('the API client retries nothing after the page signed in again meanwhile, n
     const after = await api.post('/after');
     valid = 'none';
 
-    // Cancelled while the token is reread: cancelled, not refused, and not sent again.
+    // A refusal after the page signed in again does not wait on a reread asked before it.
+    giveToken = null;
+    const rereadsBefore = rereads;
+    const before = api.post('/before').then(() => 'sent', (error: { code: string }) => error.code);
+    while (!giveToken) await new Promise((r) => setTimeout(r, 10));
+    const answerBefore = giveToken as (token: string) => void;
+    giveToken = null;
+    api.setCsrf('token-of-a-fourth-sign-in');
+    const afterSignIn = api.post('/after-sign-in').then((answer: unknown) => answer, (error: { code: string }) => error.code);
+    while (!giveToken) await new Promise((r) => setTimeout(r, 10));
+    valid = 'reread-for-the-fourth';
+    giveToken!('reread-for-the-fourth');
+    answerBefore('reread-for-an-old-sign-in');
+    const ownReread = { before: await before, afterSignIn: await afterSignIn, rereads: rereads - rereadsBefore };
+    valid = 'none';
+
+    // Cancelled while the token is reread: cancelled at once, not refused, and not sent again, even
+    // while the reread has no answer yet.
     giveToken = null;
     const controller = new AbortController();
     const cancelled = api.post('/cancelled', undefined, { signal: controller.signal }).then(() => 'sent', (error: { code: string }) => error.code);
     while (!giveToken) await new Promise((r) => setTimeout(r, 10));
     controller.abort();
-    giveToken!('token-of-a-third-sign-in');
-    return { heldResult, rereadsAfterHeld, duringResult, after, cancelled: await cancelled, sent };
+    const cancelledResult = await cancelled;
+    giveToken!('reread-for-the-fourth');
+    return { heldResult, rereadsAfterHeld, duringResult, after, ownReread, cancelled: cancelledResult, sent };
   });
   expect(result.heldResult).toBe('csrf_invalid');
   expect(result.rereadsAfterHeld).toBe(0);
   expect(result.duringResult).toBe('csrf_invalid');
+  expect(result.ownReread).toEqual({ before: 'csrf_invalid', afterSignIn: { ok: '/after-sign-in' }, rereads: 2 });
   expect(result.cancelled).toBe('aborted');
   expect(result.sent.filter((s: string) => s.startsWith('/held:'))).toEqual(['/held:token-of-the-first-person']);
   expect(result.sent.filter((s: string) => s.startsWith('/during:'))).toEqual(['/during:token-of-the-second-person']);
   // The page's own sign-in keeps its token: the reread answering after it is dropped.
   expect(result.after).toEqual({ ok: '/after' });
   expect(result.sent.filter((s: string) => s.startsWith('/after:'))).toEqual(['/after:token-of-a-third-sign-in']);
-  expect(result.sent.filter((s: string) => s.startsWith('/cancelled:'))).toEqual(['/cancelled:token-of-a-third-sign-in']);
+  expect(result.sent.filter((s: string) => s.startsWith('/cancelled:'))).toEqual(['/cancelled:reread-for-the-fourth']);
 });
