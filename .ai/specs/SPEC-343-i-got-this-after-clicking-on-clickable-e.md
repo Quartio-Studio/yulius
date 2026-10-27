@@ -1,0 +1,106 @@
+---
+yulius-task: 0c8636eb-8928-44b3-890b-4dcae9f6c701
+status: done
+---
+
+# SPEC-343: a Git board card without a worktree says why and opens nothing
+
+Status: done
+Date: 2026-10-27
+Owner: Yulius task #327
+Scope authorization: task #327: a screenshot of the task changes view of quartio-v2 #36 showing
+"Couldn't load the changes: the task's worktree is gone; its branch and pull request are on
+GitHub" and "i got this after clicking on clickable element. element shouldnt be clickable but just
+say that it's gone". Fixes #943.
+
+## Goal
+
+On the Git page, a task card whose worktree is not on disk is not a link and says why ("Worktree
+gone", or "No worktree yet" for a task not started), instead of opening a changes view that can
+only fail.
+
+## Context
+
+- Symptom: the card in "Where every task is" (`git.js` `card()`) links to `/s/<slug>/git/t/<N>`;
+  there `GET /api/tasks/{tid}/changes` answers 409 from `App::review_target` when the task's
+  `worktree_path` is unset or not a directory.
+- Root cause: `GET /api/sandboxes/{sid}/git` (`TaskBranch`) lists every task with a branch but does
+  not say whether its worktree exists, so the page links every card that has a task. A task gets
+  its branch when created (`lifecycle.rs`) and its worktree only when it starts (`supervisor.rs`),
+  so every queued, chained or prepared task is such a card, and so is a task whose worktree was
+  removed. The screenshot's #36 is a task queued after #35 for 17 hours: most likely never
+  started, so even the refusal's "worktree is gone" was wrong for it. No test covered either case.
+- What else the cause could break: the task overview's "Review changes" button and Changes tile
+  link the same way; they are not the Git board and were there before, so they are #945.
+
+## Requirements
+
+- **WTG-001** `TaskBranch` carries `worktree`: `present` (on disk), `not_created` (no worktree
+  recorded: the task has not started) or `gone` (recorded, no longer a directory). The changes and
+  commits reads refuse (409) exactly when it is not `present`, saying "the task has not started
+  yet, so it has no worktree to read changes from" or "the task's worktree is gone; its branch and
+  pull request are on GitHub". Older clients ignore it; a missing field reads as `present`.
+- **WTG-002** The Git board renders a card whose `worktree` is not `present` without a link to the
+  changes view (title as plain text, card not marked clickable), with the line "Worktree gone" or
+  "No worktree yet" after the stage line; its pull request chip and Details stay.
+- **WTG-003** A card whose worktree exists still opens the changes view.
+
+## Plan
+
+- [x] Reproduce the defect and find its root cause
+- [x] The Git overview says when a task's worktree is gone (test-first)
+- [x] The Git board card of a gone worktree is plain text saying so (e2e test-first)
+- [x] Independent review approved (3 rounds) and docs updated
+- [x] Gates green with evidence in the spec
+
+## Acceptance criteria
+
+- The Git overview of a task whose worktree was removed has `worktree: "gone"`; of a task not
+  started, `"not_created"` (and its changes refusal does not say "gone"); otherwise `"present"`.
+- On the Git page, those cards have no link and read "Worktree gone" / "No worktree yet"; other
+  cards still link to `/git/t/<N>`.
+
+## Test plan
+
+- Rust integration test (`crates/yulius/tests/delivery.rs`,
+  `git_overview_says_whether_a_tasks_worktree_is_there`): a started task before and after its
+  worktree directory is removed, and a task with a branch never started, with the refusals.
+- e2e (`e2e/tests/git.e2e.ts`) against the mock (`ambient=0`): tasks marked `gone` and
+  `not_created` render without a link and with their text; another card still links. The mock
+  derives `not_created` for tasks that never ran (`hasStarted`, `neverRan`) and refuses changes
+  and commits like the server.
+
+## Decisions
+
+- The server, not the page, decides "gone", from the same check as `review_target`, so the page
+  never offers what the server will refuse. A per-card request to probe the changes was rejected
+  (one read per card, and it races the cleanup anyway).
+- Three states, not a `worktree_gone` flag (review round 1): a task not started has no worktree
+  either, and calling it "gone" is wrong. A typed `WorktreeState` enum (snake_case) with `present`
+  as its default keeps an older server's rows linkable. The state comes from the recorded path
+  alone: `worktree_path` is set when the task starts and never cleared, so unset means never
+  created.
+- The title is plain text, not a link to the task: the person asked for it not to be clickable;
+  the sidebar and "Details" still reach the task.
+
+## Evidence
+
+- Red first: `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+  test(git_overview_says_whether)'` failed before the fix (the unstarted task read
+  `worktree_gone: true`, the first version's flag); `npx e2e run tests/git.e2e.ts` failed before
+  each card fix (no "Worktree gone" card), the second time with `git.js` reverted to the old card.
+- After: the 53 `delivery::` tests pass; `scripts/dev ci` exit 0 (2758 tests passed, 16 skipped;
+  fmt, lint, macOS targets, deps, docs).
+- `npx e2e run` (full suite, web change): 762 passed, 1 skipped, 1 failed:
+  `watching.e2e.ts > following survives "Working…" hiding…` timed out in `terminalShown` on task
+  #12's view, which reads none of the routes this change touches; the file alone passed 25/25
+  right after. Filed as #949 (flaky under a full run), outside this change.
+- `scripts/dev security`: exit 2, **not run**: Vidoc answered HTTP 429 (the key used its
+  50,000,000 tokens); 5 changed files unscanned. Not passed.
+- Independent review in a fresh session: round 1 requested changes (a task not started read
+  "gone": fixed with three states; mock fidelity, `ambient=0`, tooltip-only text, plan, api.md
+  `/commits` 409: fixed; the task overview's links: pre-existing, #945); round 2 approved with two
+  own-code nits (misplaced doc comment, mock `hasStarted`): fixed; round 3 approved 3ca362fb (one
+  nit: this file's long line, rewrapped here).
+- Not tested: the real instance's Git page against a removed worktree in a browser (covered by
+  the Rust test on the API and the mock e2e on the card).

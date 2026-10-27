@@ -528,8 +528,8 @@ the agents' delivery workflow and other clients; no page of the web UI calls the
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/git` | read | → `GitOverview` |
 | GET | `/api/tasks/{tid}/delivery` | read | → `Delivery` |
-| GET | `/api/tasks/{tid}/changes` | read | → `TaskChanges`: the task worktree (committed, uncommitted and untracked work; symlinks listed, never followed) against the merge base with `origin/<integration>`; 409 when the worktree is gone |
-| GET | `/api/tasks/{tid}/commits` | read | → `[TaskCommit]`: the task branch's commits not on the integration branch, newest first (at most 100) |
+| GET | `/api/tasks/{tid}/changes` | read | → `TaskChanges`: the task worktree (committed, uncommitted and untracked work; symlinks listed, never followed) against the merge base with `origin/<integration>`; 409 when the task has not started (no worktree yet) or its worktree is gone (the Git overview's `worktree`) |
+| GET | `/api/tasks/{tid}/commits` | read | → `[TaskCommit]`: the task branch's commits not on the integration branch, newest first (at most 100); 409 as for `/changes` |
 | POST | `/api/tasks/{tid}/delivery/pr` | write | `{"title?","body?"}` (body optional) → `Delivery` (refused without a valid spec or with uncommitted changes); opened with the caller's GitHub account, the superadmin's by the App |
 | POST | `/api/tasks/{tid}/delivery/merge` | write | → `Delivery` (requires the domain gates: open PR at the checked head, valid spec, no open steps, checks per profile); acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity. In a playground: squashes the task branch onto its integration branch in the playground's own `origin` (valid spec where required, steps resolved, a clean worktree, commits to deliver; 409 naming the files on a conflict), no GitHub identity needed (SPEC-099), once Yulius CI passed on the head merged into the integration branch: 409 while that run goes (it never arms) or when it failed (SPEC-163) |
 | POST | `/api/sandboxes/{sid}/delivery/promote` | write | → `{"result":"promoted|pr_opened","sha"}`; acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity |
@@ -540,7 +540,8 @@ the agents' delivery workflow and other clients; no page of the web UI calls the
 
 ```json
 GitOverview = {"integration_branch","production_branch","default_branch",
-  "tasks":[{"task_id","title","branch","ahead","behind","files_changed","insertions","deletions","pr":PR|null}],
+  "tasks":[{"task_id","title","branch","ahead","behind","files_changed","insertions","deletions","pr":PR|null,
+    "worktree":"present|not_created|gone"}],
   "recent_commits":[{"sha","subject","author","at"}], "pulls":[PR], "notes":["…"],
   "checks_access":ChecksAccess|null}
 PR = {"number","url","title","state":"open|merged|closed","base","head",
