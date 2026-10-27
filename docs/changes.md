@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-27
 
+- An update of Yulius no longer cuts a running deploy (SPEC-342, ADR-0232, task #326). A CD run or
+  delivery environment run still running when the new version is built finishes first (tasks keep
+  working meanwhile and the Instance page names the deploys), and new deploys are refused until
+  the update installed, so the restart never stops one halfway. Before, the restarted server ended
+  such a run as an error with its outcome unknown.
 - The Editor opens any branch the sandbox has checked out (SPEC-340, ADR-0231, task #324). Its
   folder picker lists the sandbox repository and every task's worktree, each named by its branch,
   also when no task is selected; the status bar names the branch too. Another person's worktree

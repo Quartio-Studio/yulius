@@ -82,6 +82,19 @@ pub struct WaitingTask {
     pub sandbox: String,
 }
 
+/// A deploy the update waits for before it pauses tasks (SPEC-342).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitingDeploy {
+    /// Project (sandbox) slug, for a link to its CI/CD page.
+    pub sandbox: String,
+    /// Environment.
+    pub environment: String,
+    /// `cd` (a CD run) or `environment` (a delivery environment run).
+    pub kind: String,
+    /// Run id.
+    pub run: String,
+}
+
 /// How far pausing the tasks got.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PauseProgress {
@@ -118,6 +131,10 @@ pub struct UpdateRunView {
     pub progress: Option<ProgressView>,
     /// While pausing: how many tasks are paused.
     pub tasks: Option<PauseProgress>,
+    /// Deploys still running that the update waits for before it pauses tasks and restarts (at
+    /// most 20; SPEC-342).
+    #[serde(default)]
+    pub deploys: Vec<WaitingDeploy>,
     /// Why it failed or was rolled back.
     pub error: Option<String>,
     /// The last lines of the helper's output when it failed (no credentials).

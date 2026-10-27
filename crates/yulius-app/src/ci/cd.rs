@@ -25,8 +25,9 @@
 //!   real values of the secrets its table names that a person allowed for that environment (dev:
 //!   outside the proxy, ADR-0105; production: for production deploys, an allowance of its own);
 //! - stored output is redacted of every agent secret of the sandbox;
-//! - one running run per environment; a run left running by a restart has its process host
-//!   terminated and is recorded as `error`, never run again by itself;
+//! - one running run per environment; an update waits for running runs before it restarts the
+//!   server and refuses new ones until it installed (SPEC-342); a run left running by another
+//!   restart has its process host terminated and is recorded as `error`, never run again by itself;
 //! - every run is audited before it starts (no audit entry, no run), and its end; refused
 //!   production deploys are audited too.
 
@@ -634,6 +635,9 @@ impl App {
             .await;
             return Err(refusal(&refused));
         }
+        // Nothing starts while an update is about to restart the server; held until the run is
+        // recorded, so the update sees it (SPEC-342 DPU-001/002).
+        let _permit = self.deploy_permit()?;
         // What the checks resolve the stage to: a production-stage refusal is audited, as
         // production's always was; a dev-stage failure is not a refused production deploy.
         let mut resolved = fixed;

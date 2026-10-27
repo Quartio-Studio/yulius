@@ -69,7 +69,7 @@ use runner::{CommandEnd, OutputRing};
 
 /// What preparing a run may take before its command starts: the fetch (Git's 30-minute network
 /// limit), the token, the files and the containment.
-const PREPARE_ALLOWANCE: Duration = Duration::from_secs(35 * 60);
+pub(crate) const PREPARE_ALLOWANCE: Duration = Duration::from_secs(35 * 60);
 /// Output kept per environment run (the tail).
 pub const ENVIRONMENT_OUTPUT_BYTES: usize = 1 << 20;
 /// Largest spec file read.
@@ -3830,6 +3830,8 @@ impl App {
                 env.name.clone(),
             )));
         }
+        // As a CD run: none starts while an update is about to restart the server (SPEC-342).
+        let _permit = self.deploy_permit()?;
         let action = DeliveryAction::RunEnvironment {
             name: env.name.clone(),
             confirmed: true,

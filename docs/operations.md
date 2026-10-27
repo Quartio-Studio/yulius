@@ -1257,6 +1257,13 @@ commits. Nothing updates by itself: a superadmin chooses **Update now** and conf
 1. **Build** (tasks keep working): the root helper fetches `main`, checks that the commit is on it
    and not older than the commit it installed last, and runs `cargo build --release --locked -p
    yulius` with `YULIUS_BUILD_COMMIT` set. Several minutes; the page shows the progress.
+   Once built, a deploy (a CD run or a delivery environment run) still running is waited for
+   before anything pauses: the page says "Built. Waiting for N deploy(s) to finish before pausing
+   tasks" and links each one. From then until the install ended, new deploys are refused ("nothing
+   ran: Yulius is being updated; …"), also an agent's `cd_deploy`. A deploy still running past the
+   longest a deploy can last (twice the CI job timeout or the job timeout plus 35 minutes of
+   preparation, whichever is longer, plus 5 minutes: 70 minutes by default) cancels the update
+   (SPEC-342). A crash or a manual restart still ends a running deploy as `error`.
 2. **Pause tasks**: every task's agent is frozen at once with the cgroup v2 freezer (its process
    tree moves into `…/sandboxes/<sandbox>/agents/run-<attempt>` and that group is frozen; the
    ptyhost, shells and browsers keep running) and new starts queue. The agents are told nothing.

@@ -40,6 +40,17 @@ function progressBar(progress, label) {
     h('span', { class: 'muted xs update-count' }, total ? `${done} of ${total}` : ''));
 }
 
+/** The deploys an update waits for, each linking where its run shows: CI/CD for a CD run, Git for
+ * a delivery environment run (SPEC-342). */
+function deploysLine(deploys) {
+  return h('div', { class: 'muted xs' }, 'Deploys still running: ', deploys.map((d, n) => {
+    const environment = d.kind === 'environment';
+    const route = `/s/${encodeURIComponent(d.sandbox)}/${environment ? 'git' : 'ci'}`;
+    return h('span', null, n ? ', ' : '',
+      h('a', { href: route, dataset: { route } }, `${d.sandbox} · ${d.environment} (${environment ? 'environment run' : 'CD'})`));
+  }));
+}
+
 /** The stepper of a running update. */
 function stepper(run) {
   const index = STEPS.findIndex(([state]) => state === run.state);
@@ -58,6 +69,10 @@ function stepper(run) {
           : null,
         // Only a task that could not be frozen waits for its turn to end (SPEC-160 OPS-011).
         t.deadline && t.waiting.length ? h('div', { class: 'muted xs' }, `If a task is still in a turn at ${dateTime(t.deadline)}, the update is cancelled and nothing changes.`) : null);
+    }
+    // Deploys running when the build is done finish before tasks pause and the restart (SPEC-342).
+    if (status === 'current' && (state === 'building' || state === 'pausing') && run.deploys && run.deploys.length) {
+      extra = h('div', { class: 'stack-sm' }, extra, deploysLine(run.deploys));
     }
     return h('li', { class: ['update-step', `update-step-${status}`], 'aria-current': status === 'current' ? 'step' : null },
       h('span', { class: 'update-step-mark', 'aria-hidden': 'true' }, status === 'done' ? icon('check', { size: 12 }) : status === 'current' ? h('span', { class: 'spinner' }) : String(i + 1)),

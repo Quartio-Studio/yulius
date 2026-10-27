@@ -145,12 +145,16 @@ function seed(params) {
     browsers: new Map(),
     shells: new Map(), // id → {id, sandbox_id, name, task_id, created_at, session}
     // Instance updates and the Jev key (SPEC-002 ADR-18): `update=1` (main moved on), `update=fail`
-    // (main moved on and its install is rolled back), `helper=0` (no update helper), `jev=config`.
+    // (main moved on and its install is rolled back), `helper=0` (no update helper), `jev=config`,
+    // `deploying=1` (a CD run of studio's dev and an environment run of its dev-vm run when the build
+    // is done: the update waits for them one step before it pauses tasks, SPEC-342), `deploying=drain`
+    // (a deploy still runs while tasks pause: the install waits for it, no Continue without waiting).
     update: {
       current: '68b4f5f2c1d0e9a8b7c6d5e4f3a2b1c0d9e8f7a6',
       offer: ['1', 'fail'].includes(params.get('update')) ? '9c1e7d3b5a2f4e6d8c0b1a3f5e7d9c2b4a6f8e0d' : null,
       fail: params.get('update') === 'fail',
       helper: params.get('helper') !== '0',
+      deploying: params.get('deploying'),
       checkedAt: ['1', 'fail'].includes(params.get('update')) ? iso(10 * MIN) : null,
       run: null,
     },
@@ -3654,7 +3658,7 @@ function updateView(db) {
 function moveUpdate(db, state, patch = {}) {
   const run = db.update.run;
   if (!run) return;
-  Object.assign(run, { state, state_since: new Date().toISOString(), progress: null, tasks: null, step: null }, patch);
+  Object.assign(run, { state, state_since: new Date().toISOString(), progress: null, tasks: null, deploys: [], step: null }, patch);
   run.can_cancel = state === 'building' || state === 'pausing';
   run.can_proceed = state === 'pausing';
   if (!UPDATE_STATES.includes(state)) run.finished_at = new Date().toISOString();
@@ -3665,6 +3669,19 @@ function moveUpdate(db, state, patch = {}) {
 function runUpdate(db, id) {
   const live = () => db.update.run && db.update.run.id === id && UPDATE_STATES.includes(db.update.run.state);
   const steps = 4;
+  // A running deploy holds the update one more step after its build (SPEC-342).
+  const wait = db.update.deploying === '1' ? UPDATE_STEP_MS : 0;
+  if (wait) {
+    later(() => {
+      if (!live() || db.update.run.state !== 'building') return;
+      Object.assign(db.update.run, {
+        step: 'built', progress: { done: 340, total: 340 },
+        message: 'Built. Waiting for 2 deploy(s) to finish before pausing tasks; new deploys are refused until the update installed.',
+        deploys: [{ sandbox: 'studio', environment: 'dev', kind: 'cd', run: 'cdr_waiting' }, { sandbox: 'studio', environment: 'dev-vm', kind: 'environment', run: 'env_waiting' }],
+      });
+      emit(db, { type: 'update.updated', phase: 'building' });
+    }, UPDATE_STEP_MS + 100);
+  }
   for (let i = 1; i <= steps; i += 1) {
     later(() => {
       if (!live() || db.update.run.state !== 'building') return;
@@ -3677,16 +3694,19 @@ function runUpdate(db, id) {
   later(() => {
     if (!live()) return;
     moveUpdate(db, 'pausing', { step: 'pausing', message: 'Pausing tasks: 2 of 3 paused.', tasks: { paused: 2, total: 3, waiting: [{ id: 'tsk_x', number: 4, title: 'Fix the flaky export test', sandbox: 'studio' }], deadline: new Date(Date.now() + 30 * MIN).toISOString() } });
-  }, UPDATE_STEP_MS + 100);
+    if (db.update.deploying === 'drain') {
+      Object.assign(db.update.run, { message: 'Waiting for 1 deploy(s) to finish before restarting.', can_proceed: false, deploys: [{ sandbox: 'studio', environment: 'dev', kind: 'cd', run: 'cdr_late' }] });
+    }
+  }, UPDATE_STEP_MS + 100 + wait);
   later(() => {
     if (!live()) return;
     moveUpdate(db, 'restarting', { step: 'installing', message: 'Installing the new version.' });
-  }, UPDATE_STEP_MS * 2);
+  }, UPDATE_STEP_MS * 2 + wait);
   later(() => {
     if (!live()) return;
     if (!db.update.fail) db.update.current = db.update.run.target.commit;
     moveUpdate(db, 'resuming', { step: 'resuming', message: 'Resuming tasks: 1 of 3.', progress: { done: 1, total: 3 } });
-  }, UPDATE_STEP_MS * 3);
+  }, UPDATE_STEP_MS * 3 + wait);
   later(() => {
     if (!live()) return;
     if (db.update.fail) {
@@ -3702,7 +3722,7 @@ function runUpdate(db, id) {
       if (db.docker.mode === 'kept') db.docker.hostCheck = docker;
       moveUpdate(db, 'succeeded', { message: `Updated to ${short7(db.update.current)}.`, docker });
     }
-  }, UPDATE_STEP_MS * 4);
+  }, UPDATE_STEP_MS * 4 + wait);
 }
 
 // `__yuliusMock.holdUpdateReads = true`: each read answers what it saw when it arrived, once
@@ -3735,7 +3755,7 @@ route('POST', '/api/admin/update', ({ db, body }) => {
   u.run = {
     id: `upd_${db.nextId}`, target: { commit: u.offer, short: short7(u.offer) }, from: { commit: u.current, short: short7(u.current) },
     summary: updateView(db).available.summary, state: 'building', step: 'fetching', message: 'Fetching the new version from GitHub.',
-    progress: null, tasks: null, error: null, log_tail: [], requested_by: db.me.user.login, started_at: now, state_since: now, finished_at: null, can_cancel: true, can_proceed: false,
+    progress: null, tasks: null, deploys: [], error: null, log_tail: [], requested_by: db.me.user.login, started_at: now, state_since: now, finished_at: null, can_cancel: true, can_proceed: false,
   };
   emit(db, { type: 'update.updated', phase: 'building' });
   runUpdate(db, u.run.id);

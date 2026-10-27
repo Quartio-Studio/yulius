@@ -39,6 +39,37 @@ test('an update on offer is announced to the superadmin and runs to the end', as
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// SPEC-342 DPU-006: a deploy running when the build is done is waited for, named under the Build
+// step with a link to its project's CI/CD page (an environment run's: Git), before tasks pause.
+test('an update waits for a running deploy before it pauses tasks and names it', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance', '&update=1&deploying=1'));
+  await screen.getByRole('button', 'Update now…').click();
+  await screen.getByRole('dialog', /to 9c1e7d3\?$/).getByRole('button', 'Update to 9c1e7d3').click();
+  await expect.poll(() => browser.evaluate(() => document.body.innerText), { timeout: 5000 })
+    .toMatch(/Built\. Waiting for 2 deploy\(s\) to finish before pausing tasks; new deploys are refused until the update installed\./);
+  const cd = screen.getByRole('link', 'studio · dev (CD)');
+  await expect(cd).toBeVisible();
+  await expect(cd).toHaveAttribute('href', '/s/studio/ci');
+  await expect(screen.getByRole('link', 'studio · dev-vm (environment run)')).toHaveAttribute('href', '/s/studio/git');
+  expect(await axeViolations(browser)).toEqual([]);
+  await expect.poll(() => browser.evaluate(() => document.body.innerText), { timeout: 5000 }).toMatch(/Pausing tasks: 2 of 3 paused\./);
+  expect(await browser.evaluate(() => document.body.innerText)).not.toMatch(/Deploys still running/);
+});
+
+// SPEC-342 DPU-005: a deploy still running while tasks pause holds the restart; the pausing step
+// names it and offers no Continue without waiting.
+test('a deploy running while tasks pause is named and holds the restart', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance', '&update=1&deploying=drain'));
+  await screen.getByRole('button', 'Update now…').click();
+  await screen.getByRole('dialog', /to 9c1e7d3\?$/).getByRole('button', 'Update to 9c1e7d3').click();
+  await expect.poll(() => browser.evaluate(() => document.body.innerText), { timeout: 5000 })
+    .toMatch(/Waiting for 1 deploy\(s\) to finish before restarting\./);
+  await expect(screen.getByRole('link', 'studio · dev (CD)')).toBeVisible();
+  await expect(screen.getByText('Still in a turn:', { exact: false })).toBeVisible();
+  await expect(screen.getByRole('button', 'Continue without waiting')).toBeHidden();
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
 // The superadmin's Update button beside the account button (SPEC-133, task #121).
 const footButton = (browser: Browser, name: string | RegExp) => browser.locator('.sidebar-foot').getByRole('button', name);
 
