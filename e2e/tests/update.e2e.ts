@@ -39,6 +39,22 @@ test('an update on offer is announced to the superadmin and runs to the end', as
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// SPEC-342 DPU-006: a deploy running when the build is done is waited for, named under the Build
+// step with a link to its project's CI/CD page, before tasks pause.
+test('an update waits for a running deploy before it pauses tasks and names it', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance', '&update=1&deploying=1'));
+  await screen.getByRole('button', 'Update now…').click();
+  await screen.getByRole('dialog', /to 9c1e7d3\?$/).getByRole('button', 'Update to 9c1e7d3').click();
+  await expect.poll(() => browser.evaluate(() => document.body.innerText), { timeout: 5000 })
+    .toMatch(/Built\. Waiting for 1 deploy\(s\) to finish before pausing tasks; new deploys wait for the update\./);
+  const link = screen.getByRole('link', 'studio · dev');
+  await expect(link).toBeVisible();
+  await expect(link).toHaveAttribute('href', '/s/studio/ci');
+  expect(await axeViolations(browser)).toEqual([]);
+  await expect.poll(() => browser.evaluate(() => document.body.innerText), { timeout: 5000 }).toMatch(/Pausing tasks: 2 of 3 paused\./);
+  expect(await browser.evaluate(() => document.body.innerText)).not.toMatch(/Deploys still running/);
+});
+
 // The superadmin's Update button beside the account button (SPEC-133, task #121).
 const footButton = (browser: Browser, name: string | RegExp) => browser.locator('.sidebar-foot').getByRole('button', name);
 

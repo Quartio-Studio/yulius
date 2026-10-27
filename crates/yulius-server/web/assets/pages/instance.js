@@ -47,6 +47,12 @@ function stepper(run) {
     const status = i < index ? 'done' : i === index ? 'current' : 'next';
     let extra = null;
     if (status === 'current' && state === 'building') extra = progressBar(run.progress, 'Build progress');
+    // Deploys running when the build is done finish before tasks pause (SPEC-342 DPU-006).
+    if (status === 'current' && (state === 'building' || state === 'pausing') && run.deploys && run.deploys.length) {
+      extra = h('div', { class: 'stack-sm' }, extra,
+        h('div', { class: 'muted xs' }, 'Deploys still running: ', run.deploys.map((d, n) => h('span', null, n ? ', ' : '',
+          h('a', { href: `/s/${encodeURIComponent(d.sandbox)}/ci`, dataset: { route: `/s/${encodeURIComponent(d.sandbox)}/ci` } }, `${d.sandbox} · ${d.environment}`)))));
+    }
     if (status === 'current' && state === 'resuming') extra = progressBar(run.progress, 'Tasks resumed');
     if (status === 'current' && state === 'pausing' && run.tasks) {
       const t = run.tasks;
