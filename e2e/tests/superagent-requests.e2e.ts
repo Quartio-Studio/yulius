@@ -167,7 +167,10 @@ test('three waiting requests keep the session in view and each is reached by scr
   const first = browser.locator('.agent-request:has-text("Request 1") button:has-text("Create task")');
   const third = browser.locator('.agent-request:has-text("Request 3") button:has-text("Create task")');
   await expect(first).toBeEnabled();
-  // The third card is below the list's fold: its prompt was not on screen yet.
+  // The third card is armed (its Decline takes clicks) but below the list's fold: its prompt was
+  // not on screen yet, so Create task waits and says why.
+  await expect(browser.locator('.agent-request:has-text("Request 3") button:has-text("Decline")')).toBeEnabled();
+  await expect(browser.locator('.agent-request:has-text("Request 3") .agent-request-hint')).toBeVisible();
   await expect(third).toBeDisabled();
   await browser.evaluate(() => document.querySelector('.agent-request:last-child .agent-request-actions')?.scrollIntoView({ block: 'end' }));
   await expect(third).toBeEnabled();
@@ -183,4 +186,49 @@ test('lines that only look blank are counted as empty lines', async ({ app, brow
   await expect(screen.getByRole('group', 'Your Superagent asks to start a task in product')).toBeVisible();
   expect(await browser.evaluate(() => document.querySelector('.agent-request-prompt')?.textContent ?? null))
     .toBe('Fix the typo.\n[4 empty lines]\nHidden\n[2 empty lines]\nbelow');
+});
+
+// Review round 4: a double-click on Create task approves one request, never the one that moves
+// into its place, and an answered card takes no second click while it goes.
+test('a card that moves up when another goes takes no click at once', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  await ask(browser, 'sb_studio', { sandbox: 'product', title: 'One', prompt: 'Same shape' });
+  await ask(browser, 'sb_studio', { sandbox: 'product', title: 'Two', prompt: 'Same shape' });
+  const second = browser.locator('.agent-request:has-text("Two") button:has-text("Create task")');
+  await expect(second).toBeEnabled();
+  // How the second card's Create task is the moment the first card goes.
+  await browser.evaluate(() => {
+    const w = window as unknown as { __whenGone: string[] };
+    w.__whenGone = [];
+    const list = document.querySelector('.agent-requests');
+    if (!list) return;
+    new MutationObserver((changes) => {
+      if (!changes.some((c) => c.removedNodes.length)) return;
+      const left = list.querySelector('.agent-request:last-child .agent-request-actions .btn-primary') as HTMLButtonElement | null;
+      w.__whenGone.push(`${left?.closest('.agent-request')?.textContent?.includes('Two') ?? false}:${left?.disabled ?? null}`);
+    }).observe(list, { childList: true });
+  });
+  await browser.locator('.agent-request:has-text("One") button:has-text("Create task")').click();
+  await expect.poll(() => browser.locator('.agent-request').count()).toBe(1);
+  expect(await browser.evaluate(() => (window as unknown as { __whenGone: string[] }).__whenGone[0] ?? null)).toBe('true:true');
+  await expect(second).toBeEnabled();
+});
+
+test('an answered card takes no second click while it goes', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  await ask(browser, 'sb_studio', { sandbox: 'product', prompt: 'Short' });
+  await expect(screen.getByRole('button', 'Create task')).toBeEnabled();
+  // The list's next read is held, so the answered card stays on screen.
+  await browser.evaluate(() => {
+    const db = (window as unknown as { __yuliusMock: { holdList?: Promise<void>; releaseList?: () => void } }).__yuliusMock;
+    db.holdList = new Promise((resolve) => { db.releaseList = resolve; });
+  });
+  await screen.getByRole('button', 'Create task').click();
+  await expect(browser.locator('.toast:has-text("in product")')).toBeVisible();
+  await expect(screen.getByRole('button', 'Create task')).toBeDisabled();
+  await expect(screen.getByRole('button', 'Decline')).toBeDisabled();
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { releaseList: () => void } }).__yuliusMock.releaseList());
+  await expect(browser.locator('.agent-request')).toBeHidden();
 });

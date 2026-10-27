@@ -83,8 +83,9 @@ in full and answered once, and a declined, unanswered or abandoned request creat
   the end of the prompt was on screen (not clipped by the prompt box, the list, which scrolls
   within at most 60 % of the panel so the session keeps room, or the window; until then a hint
   says so),
-  both buttons only 600 ms after the card appeared (a click aimed at the terminal it pushed down)
-  and neither while an answer is on its way. After an answer the card goes; an approval
+  both buttons only 600 ms after the card appeared or moved up because another card went (a
+  click aimed at the terminal it pushed down, or the second click of a double-click), and neither
+  while an answer is on its way or after it succeeded. After an answer the card goes; an approval
   says which task was created with a link to it; a refused approval says why. It refetches on the
   event and on a resync.
 - XSR-009: answers are audited: `superagent.cross_task` with `approved`, `failed`, `declined`,
@@ -104,6 +105,7 @@ in full and answered once, and a declined, unanswered or abandoned request creat
 - [x] Current dev merged and the gate's style, format and allowlist failures fixed
 - [x] Review round 1 fixed: cancellation, detached approval, race tests, card guards
 - [x] Review round 2 fixed: invisible characters refused on the server and named in the card
+- [x] Review rounds 3 and 4 fixed: the list scrolls, read means the prompt's end was on screen, moved cards arm again
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

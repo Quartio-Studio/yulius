@@ -210,12 +210,17 @@ function createRequests(ctx, sandbox) {
     }
   }
 
-  /** Cards come and go; one already shown stays as it is (its scroll and its armed buttons). */
+  /**
+   * Cards come and go; one already shown keeps its scroll. When one goes, the others move up under
+   * the pointer, so their buttons arm again first: a double-click answers one request, not the next.
+   */
   function render(list) {
     if (!alive) return;
     const items = Array.isArray(list) ? list : [];
     const ids = new Set(items.map((r) => r.id));
-    for (const [id, shown] of cards) if (!ids.has(id)) { shown.destroy(); cards.delete(id); }
+    const gone = [...cards.keys()].filter((id) => !ids.has(id));
+    if (gone.length) for (const [id, shown] of cards) if (ids.has(id)) shown.rearm();
+    for (const id of gone) { cards.get(id).destroy(); cards.delete(id); }
     for (const request of items) {
       if (cards.has(request.id)) continue;
       const shown = card(request);
@@ -241,9 +246,11 @@ function createRequests(ctx, sandbox) {
     let armed = false;
     let read = false;
     let sending = false;
+    // Answered: the card only waits to go; it takes no second click.
+    let done = false;
     const update = () => {
-      create.disabled = !armed || !read || sending;
-      decline.disabled = !armed || sending;
+      create.disabled = !armed || !read || sending || done;
+      decline.disabled = !armed || sending || done;
       hint.hidden = read;
     };
     // The whole prompt was in view: its end was on screen. A hidden panel shows none of it.
@@ -253,7 +260,14 @@ function createRequests(ctx, sandbox) {
       })
       : null;
     if (seen) seen.observe(end);
-    const timer = setTimeout(() => { armed = true; if (!seen) read = true; update(); }, ARM_MS);
+    let timer = null;
+    const arm = () => {
+      clearTimeout(timer);
+      armed = false;
+      update();
+      timer = setTimeout(() => { armed = true; if (!seen) read = true; update(); }, ARM_MS);
+    };
+    arm();
 
     async function respond(approve) {
       if (sending) return;
@@ -261,6 +275,7 @@ function createRequests(ctx, sandbox) {
       update();
       try {
         const answer = await ctx.api.post(`${path}/${enc(request.id)}`, { approve });
+        done = true;
         if (approve && answer && answer.task) {
           const to = `/s/${encodeURIComponent(answer.sandbox || slug)}/t/${answer.task.number}`;
           toast(`Created #${answer.task.number} in ${answer.sandbox || slug}.`, { kind: 'ok', action: { label: 'Open', run: () => ctx.navigate(to) } });
@@ -286,6 +301,7 @@ function createRequests(ctx, sandbox) {
         options.length ? h('ul', { class: 'agent-request-options', 'aria-label': 'Start options' }, options.map((o) => h('li', null, o))) : null,
         hint,
         h('div', { class: 'agent-request-actions' }, create, decline)),
+      rearm: arm,
       destroy() {
         clearTimeout(timer);
         if (seen) seen.disconnect();

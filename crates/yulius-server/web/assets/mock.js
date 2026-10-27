@@ -2972,7 +2972,11 @@ route('POST', `/api/sandboxes/${ID}/cockpit`, async ({ db, p }) => {
 // `__yuliusMock.askSuperagent('sb_studio', { sandbox: 'product', prompt, title, options })`; an
 // approval creates the task in that sandbox, as the server's `task_create` would.
 const superagentRequests = (db, sid) => (db.superagentRequests || []).filter((r) => r.source === sid);
-route('GET', `/api/sandboxes/${ID}/superagent/requests`, ({ db, p }) => superagentRequests(db, p[0]).map((r) => clone(r.view)));
+// A test can hold the reads (`__yuliusMock.holdList = promise`): an answered card then stays on screen.
+route('GET', `/api/sandboxes/${ID}/superagent/requests`, async ({ db, p }) => {
+  if (db.holdList) { const held = db.holdList; await held; if (db.holdList === held) db.holdList = null; }
+  return superagentRequests(db, p[0]).map((r) => clone(r.view));
+});
 route('POST', `/api/sandboxes/${ID}/superagent/requests/${ID}`, async ({ db, p, body }) => {
   // A test can hold the answer (`__yuliusMock.holdAnswer = promise`) to look at the card meanwhile.
   if (db.holdAnswer) await db.holdAnswer;
