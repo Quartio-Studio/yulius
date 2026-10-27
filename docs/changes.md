@@ -4,6 +4,17 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-27
+
+- A tab left open while the browser signed in again elsewhere no longer fails its writes with
+  "missing or invalid CSRF token" (SPEC-337, task #321, fixes #933). The Superagent showed it
+  first ("Couldn't start the Superagent"), since opening it is a write. Each sign-in (GitHub,
+  password, the Secrets page's identity confirmation) gives the browser a new session with a new
+  token, and older tabs kept the old one until a reload. The server now refuses a stale token as
+  `csrf_invalid`. The page then rereads `/api/me` and retries once with the current token when
+  the same person is signed in, or reloads when someone else is
+  ([ADR-0228](decisions/0228-a-page-rereads-its-csrf-token-when-the-session-changes.md)).
+
 ## 2026-10-26
 
 - The sandbox tabs in the top row now drag as smoothly as the Notes tabs (SPEC-336, task #320,

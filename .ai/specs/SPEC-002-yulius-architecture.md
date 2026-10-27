@@ -2161,13 +2161,15 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
   Linux. Host mode provides no containment and is labelled in the UI and logs (SEC-001).
 - Public listener: HTTPS terminated by the reverse proxy; cookies HttpOnly, Secure, SameSite=Lax,
   the session cookie `__Host-` prefixed over HTTPS (ADR-14); CSRF header on state-changing
-  requests; a cookie session refuses requests that announce another `Origin` or come from
-  another site per fetch metadata (navigations excepted); WebSocket Origin must equal the public
-  URL (or an allowlisted desktop origin); login rate limits per client (below); Argon2id for the
-  superadmin password. Every response carries `X-Frame-Options: DENY`, `Content-Security-Policy:
-  frame-ancestors 'none'` (nothing frames Yulius, not even Yulius), `X-Content-Type-Options:
-  nosniff`, `Referrer-Policy: same-origin` and the process tag `X-Yulius` unless the route sets a
-  stricter policy (#56, ADR-14); HSTS is set by the TLS proxy.
+  requests, a wrong or missing one refused as 403 `csrf_invalid`, on which the page rereads its
+  session's token from `/api/me` and retries once (SPEC-337, ADR-0228); a cookie session refuses
+  requests that announce another `Origin` or come from another site per fetch metadata
+  (navigations excepted); WebSocket Origin must equal the public URL (or an allowlisted desktop
+  origin); login rate limits per client (below); Argon2id for the superadmin password. Every
+  response carries `X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors 'none'`
+  (nothing frames Yulius, not even Yulius), `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: same-origin` and the process tag `X-Yulius` unless the route sets a stricter
+  policy (#56, ADR-14); HSTS is set by the TLS proxy.
 - Client address (ACC-013, #88; `yulius_server::client`): password sign-in allows 5 attempts per
   minute per client key. The key is the TCP peer, except that a request carrying exactly one
   `X-Yulius-Proxy-Secret` equal (constant time, `subtle`) to the secret of

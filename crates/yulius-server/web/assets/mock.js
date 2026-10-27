@@ -4225,8 +4225,12 @@ async function handleFetchAfterLatency(db, url, init) {
     return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
   }
   const headers = init.headers || {};
-  if (method !== 'GET' && !PUBLIC.includes(u.pathname) && headers['X-Yulius-CSRF'] !== db.me.csrf_token) {
-    return json(403, { error: { code: 'forbidden', message: 'Missing or wrong CSRF token.' } });
+  // Like the server, a stale token has its own code (SPEC-337 CSR-001). A test changes the token
+  // under an open page (`__yuliusMock.me.csrf_token`), as another tab's sign-in does, or makes every
+  // token wrong (`refuseCsrf`); `csrfRefusals` counts the refusals.
+  if (method !== 'GET' && !PUBLIC.includes(u.pathname) && (db.refuseCsrf || headers['X-Yulius-CSRF'] !== db.me.csrf_token)) {
+    db.csrfRefusals = (db.csrfRefusals || 0) + 1;
+    return json(403, { error: { code: 'csrf_invalid', message: 'missing or invalid CSRF token' } });
   }
   for (const [m, re, handler] of R) {
     if (m !== method) continue;
