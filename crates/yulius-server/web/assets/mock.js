@@ -1606,7 +1606,7 @@ route('GET', `/api/sandboxes/${ID}/git`, async ({ db, p }) => {
   const pull = pullOf;
   const overview = {
     integration_branch: sandbox.profile.integration_branch, production_branch: sandbox.profile.production_branch, default_branch: sandbox.default_branch,
-    tasks: tasks.map((t) => ({ task_id: t.id, title: t.title, branch: t.branch, ahead: (t.number * 3) % 11 + 1, behind: t.number % 3, files_changed: (t.number * 7) % 23 + 1, insertions: (t.number * 131) % 900 + 12, deletions: (t.number * 37) % 200, pr: pull(t) })),
+    tasks: tasks.map((t) => ({ task_id: t.id, title: t.title, branch: t.branch, ahead: (t.number * 3) % 11 + 1, behind: t.number % 3, files_changed: (t.number * 7) % 23 + 1, insertions: (t.number * 131) % 900 + 12, deletions: (t.number * 37) % 200, pr: pull(t), worktree_gone: Boolean(t.worktree_gone) })),
     recent_commits: [
       { sha: '9f3c2a17b0e4d5c6a7b8c9d0e1f2a3b4c5d6e7f8', subject: 'feat(checkout): cart totals with tax rules', author: 'task #12 (claude)', at: iso(25 * MIN) },
       { sha: '4b1d9e0c7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d', subject: 'docs: restructure architecture section', author: 'task #5 (claude)', at: iso(5 * HOUR) },
@@ -2203,7 +2203,13 @@ function taskCommits(task) {
     subject: subjects[i % subjects.length], author: `task #${n} (claude)`, at: iso((i * 37 + 5) * MIN), files: (i * 3) % 7 + 1, insertions: (i * 41 + n) % 160 + 3, deletions: (i * 13 + n) % 40,
   }));
 }
-route('GET', `/api/tasks/${ID}/changes`, ({ db, p }) => { const task = taskOf(db, p[0]); return task.branch ? taskChanges(db, task) : json(404, { error: { code: 'not_found', message: 'This task has no branch yet.' } }); });
+// A test removes a task's worktree with `__yuliusMock.tasks[i].worktree_gone = true` (SPEC-343).
+route('GET', `/api/tasks/${ID}/changes`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  if (!task.branch) return json(404, { error: { code: 'not_found', message: 'This task has no branch yet.' } });
+  if (task.worktree_gone) return json(409, { error: { code: 'conflict', message: 'the task\u2019s worktree is gone; its branch and pull request are on GitHub' } });
+  return taskChanges(db, task);
+});
 route('GET', `/api/tasks/${ID}/commits`, ({ db, p }) => { const task = taskOf(db, p[0]); return task.branch ? taskCommits(task) : []; });
 route('GET', `/api/sandboxes/${ID}/skills`, ({ db, p }) => { sandboxOf(db, p[0]); return skillCatalog(db, p[0]); });
 route('GET', `/api/sandboxes/${ID}/skills/${ID}`, ({ db, p }) => {
