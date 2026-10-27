@@ -1,11 +1,11 @@
 ---
 yulius-task: efbe86b7-7ba9-41de-a251-2a3ca03480eb
-status: in-progress
+status: done
 ---
 
 # SPEC-338: Vidoc scans can be turned off per project, at onboarding and in the admin panel
 
-Status: in-progress
+Status: done
 Date: 2026-10-27
 Owner: Yulius task #322
 Scope authorization: task #322 (`/goal`, with a screenshot of a "Needs your decision" card: CI's
@@ -79,14 +79,14 @@ card (the admin panel).
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] Per-project Vidoc switch stored in the profile and changed through the sandbox API
-- [ ] The scanner stops as disabled under YULIUS_VIDOC=off, set for switched-off sandboxes
-- [ ] CI, the virtual key, the briefing and the onboarding prompt follow the switch
-- [ ] The Add sandbox dialog and the Instance page's Vidoc card manage the switch
-- [ ] ADR, architecture, AGENTS.md and product docs describe the switch
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Read the product context and related work, then write and validate the spec
+- [x] Per-project Vidoc switch stored in the profile and changed through the sandbox API
+- [x] The scanner stops as disabled under YULIUS_VIDOC=off, set for switched-off sandboxes
+- [x] CI, the virtual key, the briefing and the onboarding prompt follow the switch
+- [x] The Add sandbox dialog and the Instance page's Vidoc card manage the switch
+- [x] ADR, architecture, AGENTS.md and product docs describe the switch
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -133,3 +133,40 @@ card (the admin panel).
 - **Not an instance-wide pause.** Removing the instance key already stops every project that
   relies on it; the per-project switch also covers projects with their own key, which was the
   screenshot's case.
+
+## Evidence
+
+All at `4c2edbed` (the head the review approved), on 2026-10-27:
+
+- `scripts/dev ci`: exit 0. Repository contracts, the Python unit tests (`scripts/test_*.py`,
+  with 3 new scanner tests), `cargo check`, `fmt --check`, `clippy -D warnings` (Linux and
+  `aarch64-apple-darwin`), `cargo nextest run --profile ci` 2757 passed, 16 skipped, doctests,
+  `cargo deny`, `cargo shear`, `cargo doc`.
+- `cd e2e && npx e2e run`: 759 passed, 1 skipped (69 files), including
+  `vidoc-switch.e2e.ts` (5 tests).
+- Test first: every new behavior test was seen failing without its change, either before the
+  change or by a mutation run afterwards. That covers the PATCH switch, the virtual key, CI's
+  built-in job with the project's own key, the agent run environment, the terminal environment,
+  the import or create switched off before onboarding, and switched off from the first record (a
+  SQLite trigger refusing later profile writes answered 409 before the fix). It also covers the
+  Vidoc card's listener (`{listeners: 1}` before the fix) and the scanner's `YULIUS_VIDOC=off`
+  (4 failures before the change).
+- Independent review in fresh sessions, three rounds:
+  - Round 1 asked for changes. The major finding was that a browser import switched Vidoc off
+    only after onboarding had started. The minors were a refused profile still changing the
+    switch, a concurrent save undoing it, terminals lacking the variable, and copy for
+    non-superadmins.
+  - Round 2 approved, with a minor: the switch was a second write after the record existed.
+  - Round 3 approved, with a minor: the card's listener outlived its page. Its fix was approved
+    at `4c2edbed`.
+  - All own-code findings were fixed test-first in this change. The serialized profile writes
+    (round 1, minor 3) cannot be shown deterministically; the reviewer checked that both writers
+    of `set_profile` read and write under `App::profile_writes`.
+  - The last nit is #937, a listener left when the Instance page is left while the key loads,
+    cosmetic, at the round limit.
+- `yulius security-scan`: **not run**, exit 2. Vidoc answered HTTP 429: "This API key has used its
+  50,000,000 tokens", the very case this change lets a person switch off. The 23 changed code files
+  were not scanned, and this is not a pass. No `[[ignore]]` entry was added.
+- Not tested: a real Vidoc scan of a switched-on project after this change (no quota), and a
+  production instance (the change is merged into `dev` only).
+
