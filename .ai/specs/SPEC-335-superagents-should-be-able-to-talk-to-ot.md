@@ -75,7 +75,10 @@ in full and answered once, and a declined, unanswered or abandoned request creat
   asks to start a task in <sandbox>", the title, the whole prompt (scrollable), the start options
   that are set, and **Create task** / **Decline**. Characters a person cannot see (controls,
   bidirectional and zero-width marks) show as `⟨U+XXXX⟩`, and runs of two or more empty lines as
-  `[N empty lines]`, so a prompt cannot hide or reorder words. Create task takes a click only once
+  `[N empty lines]`, so a prompt cannot hide or reorder words; the server already refuses a
+  request whose texts (prompt, title, options) hold such characters (Unicode tag characters,
+  bidirectional and zero-width marks, blank fillers, variation selectors, private use), so what
+  the person reads is all that reaches the task. Create task takes a click only once
   the whole prompt was in view (it fits, or was scrolled to its end; until then a hint says so),
   both buttons only 600 ms after the card appeared (a click aimed at the terminal it pushed down)
   and neither while an answer is on its way. After an answer the card goes; an approval

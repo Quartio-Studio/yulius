@@ -28,8 +28,11 @@ action require their explicit acceptance.
 - **The server asks the person, every time.** A valid call records a request in memory and waits
   for the answer, at most 4 minutes (`CROSS_REQUEST_WAIT`), at most 3 waiting per person and
   source sandbox. The person's Superagent panel lists it above the session with the target, the
-  title, the whole prompt and the start options set, and **Create task** / **Decline**. The
-  prompt shows invisible characters by their code and counts long runs of empty lines; Create
+  title, the whole prompt and the start options set, and **Create task** / **Decline**. A
+  request whose texts hold characters a person cannot see (Unicode tag characters, which carry
+  hidden ASCII, bidirectional and zero-width marks, blank fillers, variation selectors, private
+  use) is refused before anyone is asked, so emoji with a variation selector are refused too. The
+  card shows any such character by its code and counts long runs of empty lines; Create
   task takes a click only once the whole prompt was in view, and both buttons only 600 ms after
   the card appeared
   (`GET`/`POST /api/sandboxes/{sid}/superagent/requests[/{id}]`, announced to that person only
