@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-27
 
+- A long URL in a narrow terminal opens whole (SPEC-339, ADR-0230, task #323, fixes #940).
+  Claude Code cuts a URL longer than a row at the right edge and continues it on the next row
+  itself, so only the first part was a link and a click opened a truncated address. The URL is
+  now one link across its rows, from any of them; a row is joined to the next only as Claude
+  Code continues it, so text that merely follows a URL stays plain.
 - A project's Vidoc scans can be switched off in Yulius, for example while the key's quota is used
   up, and on again (SPEC-338, ADR-0229, task #322). The Instance page's Vidoc card lists the
   projects with a switch each, and the Add sandbox dialog offers "Scan pull requests with Vidoc"
