@@ -49,24 +49,27 @@ of its rows shows the link, and a click opens the full URL instead of the first 
 ## Requirements
 
 - **WRL-001 Continued URL.** A row continues into the next one when all of these hold:
-  - the row's last non-blank cell is in the last 2 columns, since Claude Code's prompt row keeps one
-    column of padding;
+  - the row's last non-blank cell is in the last column, or in one of the last 2 columns when
+    the run of rows starts at Claude Code's prompt (`❯`), whose rows keep one column of padding;
   - the next row is not soft-wrapped;
-  - the next row starts, after its indent, with a non-blank character, and its indent equals the
-    column where the row's text starts (after leading spaces and one marker such as `❯`, `●`,
-    `⏺`, `-` or `⎿` followed by a space);
-  - the word that spans the break is longer than a row can hold from that indent. Claude Code
-    splits only words that do not fit; a shorter word moves whole to the next row;
-  - the next row does not start a new URL (`scheme://`).
+  - the next row's text starts, with a non-blank character, in the column where the row's text
+    starts. That column comes after leading spaces, one marker followed by a space (such as `❯`,
+    `●`, `⏺`, `-`, `⎿` or `▎`) and a list number (`1.`) followed by a space. The cells before
+    it are blank, or repeat a quote bar (`▎`), as Claude Code repeats it on each row of a quote;
+  - the word that spans the break is longer than the row's text (from that column to its last
+    cell). Claude Code splits only words that do not fit; a shorter word moves whole to the next
+    row;
+  - the next row does not start a new URL (`scheme://`), unless the cut fell inside the scheme
+    (`htt|ps://`).
 
   A URL (the web-links addon's pattern) that crosses at least one such break is a single link over
   all of its rows, and activating it opens the joined URL.
 - **WRL-002 Unchanged elsewhere.** URLs that fit on one row, soft-wrapped URLs and file links work
-  as before. Text that follows a URL ending short of the right edge, or that starts with a
-  different indent, is never joined onto it.
-- **WRL-003 Bounded.** A link spans at most 8 rows. The provider reads only the rows around the
-  pointer's row (a window of 8 above and 8 below), only when xterm asks (the pointer rests), never
-  per output chunk.
+  as before. Text after a URL is never joined onto it when the URL ends short of the right edge,
+  when the text starts at a different indent, or when the URL and the word together fit a row.
+- **WRL-003 Bounded.** A link spans at most 32 rows. A longer run of continued rows is no link at
+  all, rather than a link to a cut address. The provider reads only the rows around the pointer's
+  row (32 above and 32 below), only when xterm asks (the pointer rests), never per output chunk.
 
 ## Plan
 
@@ -79,20 +82,23 @@ of its rows shows the link, and a click opens the full URL instead of the first 
 
 ## Acceptance criteria
 
-- The rows Claude Code printed above (prompt, answer text, list item, code) give one link each,
-  to the whole URL (`findContinuedUrls`, e2e).
-- In the mock task terminal, hovering the continuation row of a wrapped URL shows a link, and a
-  press there opens the whole URL (e2e).
-- No join for a row that ends short of the edge, a different indent, a word that fits a row, or a
-  next row that starts a new URL (e2e, pure function).
+- The rows Claude Code printed (prompt, answer text, list item, numbered item, quote, code, a word
+  cut mid-row) give one link each, to the whole URL (`findContinuedUrls`, e2e).
+- In the mock task terminal, a press on the first row of a wrapped URL, on the next row, or on the
+  last row opens the whole URL (e2e).
+- No join for a row that ends short of the edge, a different indent, a word that fits the row
+  (also exactly at the boundary), an answer row ending one column short of the edge, a next row
+  that starts a new URL, or a run longer than 32 rows (e2e, pure function).
 - The existing terminal link e2e tests still pass.
 
 ## Test plan
 
-- `e2e/tests/terminal.e2e.ts`: a pure-function test of `findContinuedUrls` on the recorded Claude
-  Code rows and on the negative cases. Then a browser test in the mock: the task terminal at 70
-  columns (`?othercols=70`, so the grid does not follow the window) shows a URL wrapped as Claude
-  Code wraps it. The test hovers its continuation row and presses, with `window.open` recorded.
+- `e2e/tests/terminal.e2e.ts`: a pure-function test of `findContinuedUrls`. It replays rows
+  recorded from Claude Code 2.1.292 at 60 columns, including the prompt, answer text, a list item,
+  a numbered item, a quote and code, and checks the negative and limit cases. A browser test in
+  the mock (`?wrapurl=1`) cuts a 370-character URL for the terminal's width when drawn, as Claude
+  Code does, and presses the first row, the next one and the last, with `window.open` recorded.
+  Without the provider, the press on the continuation row finds no link (mutation checked).
 - Full e2e suite and `scripts/dev ci` (the web assets are embedded in the server).
 
 ## Decisions
@@ -105,7 +111,9 @@ of its rows shows the link, and a click opens the full URL instead of the first 
   TUI's cursor moves.
 - **Strict joining rules over generous ones.** A wrong join opens a wrong address, while a missed
   join leaves today's behaviour. So every condition in WRL-001 must hold, and each one is taken
-  from Claude Code's measured layout. See
+  from Claude Code's measured layout. One case stays ambiguous: a URL that ends exactly at the
+  edge, followed by a word long enough that the two together exceed the row, looks the same as a
+  longer URL cut there, and is joined. See
   [ADR-0230](../../docs/decisions/0230-a-url-a-program-wraps-itself-is-one-terminal-link.md).
 - **One range over all rows.** The link covers every cell from its first character to its last, so
   hovering any row underlines the whole URL, as xterm does for soft-wrapped links. The indent cells

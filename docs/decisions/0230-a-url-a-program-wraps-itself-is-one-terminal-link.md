@@ -20,14 +20,15 @@ fragment, and the rest was plain text.
   where both match the first row, xterm keeps the provider registered first, so the link opens the
   whole URL. Every other URL is still the addon's.
 - A row continues into the next only if all of these hold:
-  - it ends in the last 2 columns;
+  - it ends in the last column, or in one of the last 2 when the run starts at the prompt (`❯`),
+    which pads one;
   - the next row is not soft-wrapped;
-  - the next row is indented to where the row's text starts, after one marker such as `❯`, `●`
-    or `-`;
-  - the word that spans the break is longer than a row holds from that indent;
-  - the next row does not start a new `scheme://`.
+  - the next row's text starts where the row's text starts: after one marker such as `❯`, `●`,
+    `⏺`, `-`, `⎿` or `▎` and a list number (`1.`), under blanks or under a repeated quote bar;
+  - the word that spans the break is longer than the row's text;
+  - the next row does not start a new `scheme://`, unless the cut fell inside the scheme.
 
-  Each rule matches Claude Code 2.1.292's measured layout.
+  Each rule matches Claude Code 2.1.292's measured layout. A run longer than 32 rows is no link.
 - The link is one range from the URL's first cell to its last, across rows, and it opens through
   the terminal's usual `onLink`.
 
@@ -47,5 +48,8 @@ fragment, and the rest was plain text.
 - A program that wraps differently (another indent, a wider right margin) keeps today's
   behaviour: its URL is linked only up to the break.
 - The underline of a joined link also covers the indent cells of its continuation rows.
+- A URL that genuinely ends at the edge, followed by a word long enough that the two exceed the
+  row, is joined: that screen looks the same as a longer URL cut there.
+- A URL longer than 32 rows is not linked at all, rather than linked to a cut address.
 - If Claude Code changes its layout, the rules in `findContinuedUrls` and its e2e test, which
   replays recorded rows, change together.

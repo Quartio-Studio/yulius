@@ -329,15 +329,15 @@ export function createFileLinkProvider(term, { context, checker, osc = null, ope
 
 // ---- web links a program wrapped itself (SPEC-339, ADR-0230)
 //
-// Claude Code lays out its rows itself: a URL longer than a row is cut at the right edge and
-// continued on the next row at the text's indent, after a cursor move. xterm joins only its own
-// soft wraps, so the web-links addon saw two lines and linked the first fragment. A row continues
-// into the next only as Claude Code continues it (WRL-001); anything less joins nothing.
+// Claude Code lays out its rows itself: a word longer than a row (a URL) is cut at the right edge
+// and continued on the next row where the text starts, after a cursor move. xterm joins only its
+// own soft wraps, so the web-links addon saw two lines and linked the first fragment. A row
+// continues into the next only as Claude Code continues it (WRL-001); anything less joins nothing.
 
-/** Columns a row cut at the right edge may leave blank there (Claude Code's prompt pads one). */
-const EDGE_GAP = 1;
-/** Most rows one continued URL spans. */
-const MAX_CONTINUED_ROWS = 8;
+/** Most rows one continued URL spans; a longer one is no link rather than a cut one. */
+const MAX_CONTINUED_ROWS = 32;
+/** Markers that Claude Code repeats on each row of a quote. */
+const QUOTE_BARS = new Set(['▎', '│', '┃']);
 /** The web-links addon's URL pattern (vendor/xterm/addon-web-links.mjs). */
 const WEB_URL_RE = /(https?|HTTPS?):[/]{2}[^\s"'!*(){}|\\^<>`]*[^\s"':,.!?{}|\\^~[\]`()<>]/g;
 
@@ -351,51 +351,70 @@ function lastFilled(cells) {
   return i;
 }
 
-/** Number of blank cells a row starts with. */
-function indentOf(cells) {
-  let i = 0;
+/** Index of the first non-blank cell at or after `from`. */
+function skipBlanks(cells, from) {
+  let i = from;
   while (i < cells.length && cells[i] === ' ') i += 1;
   return i;
 }
 
-/** Where a row's text starts: after its indent and one marker (`❯`, `●`, `-`, `⎿`) and its spaces. */
+/**
+ * Where a row's text starts, and its marker: after the indent, one marker (`❯`, `●`, `⏺`, `-`,
+ * `⎿`, `▎`) and its spaces, then a list number (`1.`) and its spaces.
+ */
 function textStart(cells) {
-  let i = indentOf(cells);
-  const marker = cells[i];
-  if (marker && marker !== ' ' && !/[\p{L}\p{N}_]/u.test(marker)) {
-    let after = i + 1;
-    if (cells[after] === '') after += 1; // a wide marker
-    if (cells[after] === ' ') i = indentOf(cells.slice(after)) + after;
+  let start = skipBlanks(cells, 0);
+  let marker = null;
+  const first = cells[start];
+  if (first && first !== ' ' && !/[\p{L}\p{N}_]/u.test(first)) {
+    const after = cells[start + 1] === '' ? start + 2 : start + 1; // a wide marker
+    if (cells[after] === ' ') {
+      marker = first;
+      start = skipBlanks(cells, after);
+    }
   }
-  return i;
+  let digits = start;
+  while (/^[0-9]$/.test(cells[digits] || '')) digits += 1;
+  if (digits > start && digits - start <= 3 && (cells[digits] === '.' || cells[digits] === ')') && cells[digits + 1] === ' ') {
+    start = skipBlanks(cells, digits + 1);
+  }
+  return { start, marker };
 }
 
-/** The indent of row `b` when row `a` continues into it as a program cut it, else -1. */
-function continuation(a, b, cols) {
+/**
+ * Where row `b`'s text starts when row `a` continues into it as Claude Code cut it, else -1.
+ * `gap`: blank columns `a` may leave at the right edge (the prompt's row pads one).
+ */
+function continuation(a, b, cols, gap) {
   if (!a || !b) return -1;
   const last = lastFilled(a);
-  if (last < cols - 1 - EDGE_GAP) return -1; // short of the right edge
-  const indent = indentOf(b);
-  if (indent >= b.length || b[indent] === '' || indent !== textStart(a)) return -1;
+  if (last < cols - 1 - gap) return -1; // short of the right edge
+  const { start, marker } = textStart(a);
+  // The next row's text starts in the same column: under blanks, or under the same quote bar.
+  const lead = b.slice(0, start);
+  const under = lead.every((cell) => cell === ' ') || (QUOTE_BARS.has(marker) && lead.join('') === a.slice(0, start).join(''));
+  if (!under || start >= b.length || b[start] === ' ' || b[start] === '') return -1;
   let head = last;
-  while (head > 0 && a[head - 1] !== ' ') head -= 1;
-  let tail = indent;
+  while (head > start && a[head - 1] !== ' ') head -= 1;
+  let tail = start;
   while (tail < b.length && b[tail] !== ' ') tail += 1;
-  // Only a word longer than a row is cut; a shorter one moves whole to the next row.
-  if (last + 1 - head + tail - indent <= cols - indent - EDGE_GAP) return -1;
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(b.slice(indent, tail).join(''))) return -1; // a new URL
-  return indent;
+  // Only a word longer than the row's text is cut; a shorter one moves whole to the next row.
+  if (last + 1 - head + tail - start <= last + 1 - start) return -1;
+  // The next row starting a URL is a new one, unless the cut fell inside the scheme (`htt|ps://`).
+  const next = b.slice(start, tail).join('');
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(next) && !/^[a-z]+$/i.test(a.slice(head, last + 1).join(''))) return -1;
+  return start;
 }
 
-/** URLs in rows `first`…`last`, joined at `indents`, that cross a cut. */
-function urlsAcross(grid, first, last, indents) {
+/** URLs in rows `first`…`last`, joined where each continuation row's text starts (`starts`), that cross a cut. */
+function urlsAcross(grid, first, last, starts) {
   let text = '';
   const where = []; // per code unit of `text`: {row, col}
   const cuts = []; // offsets in `text` where a continuation row starts
   for (let row = first; row <= last; row += 1) {
     const cells = grid[row];
     if (row > first) cuts.push(text.length);
-    for (let col = row > first ? indents[row - first - 1] : 0; col <= lastFilled(cells); col += 1) {
+    for (let col = row > first ? starts[row - first - 1] : 0; col <= lastFilled(cells); col += 1) {
       for (let k = 0; k < cells[col].length; k += 1) where.push({ row, col });
       text += cells[col];
     }
@@ -423,15 +442,16 @@ export function findContinuedUrls(rows, cols) {
   const found = [];
   let first = 0;
   while (first < grid.length) {
+    const gap = grid[first] && textStart(grid[first]).marker === '❯' ? 1 : 0;
     let last = first;
-    const indents = [];
-    while (last + 1 < grid.length && last - first + 1 < MAX_CONTINUED_ROWS) {
-      const indent = continuation(grid[last], grid[last + 1], cols);
-      if (indent < 0) break;
-      indents.push(indent);
+    const starts = [];
+    for (;;) {
+      const start = last + 1 < grid.length ? continuation(grid[last], grid[last + 1], cols, gap) : -1;
+      if (start < 0) break;
+      starts.push(start);
       last += 1;
     }
-    if (last > first) found.push(...urlsAcross(grid, first, last, indents));
+    if (last > first && last - first < MAX_CONTINUED_ROWS) found.push(...urlsAcross(grid, first, last, starts));
     first = last + 1;
   }
   return found;
@@ -441,8 +461,9 @@ export function findContinuedUrls(rows, cols) {
 function lineCells(line) {
   if (!line || line.isWrapped) return null;
   const cells = [];
+  let cell;
   for (let x = 0; x < line.length; x += 1) {
-    const cell = line.getCell(x);
+    cell = line.getCell(x, cell);
     if (!cell) break;
     cells.push(cell.getWidth() === 0 ? '' : cell.getChars() || ' ');
   }
