@@ -344,30 +344,35 @@ pub(crate) fn replace_in(
 /// Most bytes of `.git/HEAD` read: `ref: refs/heads/<branch>` fits well within it.
 const MAX_HEAD_BYTES: u64 = 1024;
 
-/// The branch `repo`'s `HEAD` names, if it names one. Its `.git` must stay inside `anchor` (a
-/// contained shell is root in its sandbox and could plant a link), and `HEAD` is opened without
-/// following a link or waiting on a pipe.
-fn checked_out_branch(anchor: &Path, repo: &Path) -> Option<String> {
+/// The sandbox repository's branch, as its `HEAD` names it: `None` when `HEAD` is detached or
+/// unreadable, and `Err` when there is no repository folder. Walked from `anchor` (the sandbox
+/// directory) folder by folder with `O_NOFOLLOW` and `HEAD` opened without following a link or
+/// waiting on a pipe, so a contained shell (root in its sandbox) that swaps `repo` or `.git` for
+/// a link, at any moment, steers nothing outside the sandbox (ADR-0174).
+fn checked_out_branch(anchor: &Path) -> Result<Option<String>, Errno> {
     use std::io::Read as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let git = std::fs::canonicalize(repo.join(".git")).ok()?;
-    if !git.starts_with(anchor) || !git.is_dir() {
-        return None;
-    }
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
-        .open(git.join("HEAD"))
-        .ok()?;
-    if !file.metadata().ok()?.is_file() {
-        return None;
+    let repo = open_dirs_below(anchor, &[OsStr::new("repo")], false)?;
+    crate::race::reached(crate::race::Point::RootsHead, &anchor.join("repo"));
+    let Ok(git) = open_dir_at(&repo, OsStr::new(".git"), false) else {
+        return Ok(None);
+    };
+    let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+    let Ok(head) = openat(&git, "HEAD", flags, Mode::empty()) else {
+        return Ok(None);
+    };
+    let file = std::fs::File::from(head);
+    if !file.metadata().is_ok_and(|meta| meta.is_file()) {
+        return Ok(None);
     }
     let mut text = String::new();
-    file.take(MAX_HEAD_BYTES).read_to_string(&mut text).ok()?;
-    text.trim()
+    if file.take(MAX_HEAD_BYTES).read_to_string(&mut text).is_err() {
+        return Ok(None);
+    }
+    Ok(text
+        .trim()
         .strip_prefix("ref: refs/heads/")
         .filter(|branch| !branch.is_empty())
-        .map(str::to_owned)
+        .map(str::to_owned))
 }
 
 /// A SHA-256 as the files API writes it: 64 lowercase hex digits.
@@ -430,37 +435,44 @@ impl App {
         let mut tasks = self.deps.store.tasks(&record.id, false).await?;
         tasks.extend(self.deps.store.tasks(&record.id, true).await?);
         tasks.sort_by(|a, b| b.number.cmp(&a.number));
-        let mut roots = Vec::new();
-        let Ok(anchor) = std::fs::canonicalize(self.sandbox_dir(&record.id)) else {
-            return Ok(FileRoots { roots });
-        };
-        let repo = self.sandbox_repo(&record.id);
-        if repo.is_dir() {
-            roots.push(FileRoot {
-                root: "sandbox".into(),
-                branch: checked_out_branch(&anchor, &repo),
-                task_number: None,
-                task_title: None,
-                writable: true,
-            });
-        }
-        for task in tasks {
-            let Some(path) = task.worktree_path.as_deref() else {
-                continue;
+        let sandbox_dir = self.sandbox_dir(&record.id);
+        let user = ctx.user.id.clone();
+        // Disk only from here: off the async workers, as the reads of `file_read`.
+        let roots = tokio::task::spawn_blocking(move || {
+            let mut roots = Vec::new();
+            let Ok(anchor) = std::fs::canonicalize(sandbox_dir) else {
+                return roots;
             };
-            // As `sandbox_worktree`: only a directory inside the sandbox is the task's folder.
-            match std::fs::canonicalize(path) {
-                Ok(worktree) if worktree.starts_with(&anchor) && worktree.is_dir() => {}
-                _ => continue,
+            if let Ok(branch) = checked_out_branch(&anchor) {
+                roots.push(FileRoot {
+                    root: "sandbox".into(),
+                    branch,
+                    task_number: None,
+                    task_title: None,
+                    writable: true,
+                });
             }
-            roots.push(FileRoot {
-                root: format!("task:{}", task.id),
-                branch: task.branch.clone(),
-                task_number: Some(task.number),
-                task_title: Some(task.title.clone()),
-                writable: task.owner == ctx.user.id,
-            });
-        }
+            for task in tasks {
+                let Some(path) = task.worktree_path.as_deref() else {
+                    continue;
+                };
+                // As `sandbox_worktree`: only a directory inside the sandbox is the task's folder.
+                match std::fs::canonicalize(path) {
+                    Ok(worktree) if worktree.starts_with(&anchor) && worktree.is_dir() => {}
+                    _ => continue,
+                }
+                roots.push(FileRoot {
+                    root: format!("task:{}", task.id),
+                    writable: task.owner == user,
+                    branch: task.branch,
+                    task_number: Some(task.number),
+                    task_title: Some(task.title),
+                });
+            }
+            roots
+        })
+        .await
+        .map_err(AppError::internal)?;
         Ok(FileRoots { roots })
     }
 

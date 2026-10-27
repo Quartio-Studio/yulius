@@ -1204,5 +1204,96 @@ async fn the_folder_list_reads_no_branch_through_a_planted_link() -> TestResult 
         "{:?}",
         linked_git.body
     );
+
+    // The repository folder itself a link: no sandbox folder to offer (its requests are 403).
+    std::fs::remove_file(repo.join(".git"))?;
+    std::fs::rename(&repo, data.join("repo.aside"))?;
+    std::os::unix::fs::symlink(&outside, &repo)?;
+    let linked_repo = call(
+        &h.router,
+        Method::GET,
+        "/api/sandboxes/s1/files/roots",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(linked_repo.status, StatusCode::OK, "{:?}", linked_repo.body);
+    assert_eq!(linked_repo.body, json!({"roots": []}));
+    Ok(())
+}
+
+/// SPEC-340 review: `.git` swapped for a link to another folder after the repository was found
+/// still names no branch from there (ADR-0174: the handle, not the path, is read).
+#[tokio::test]
+async fn the_folder_list_reads_no_branch_through_a_git_folder_swapped_after_the_check() -> TestResult
+{
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    let repo = data.join("sandboxes/s1/repo");
+    std::fs::create_dir_all(repo.join(".git"))?;
+    std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/dev\n")?;
+    let outside = data.join("other-sandbox-git");
+    std::fs::create_dir_all(&outside)?;
+    std::fs::write(outside.join("HEAD"), "ref: refs/heads/secret\n")?;
+    let (git, target) = (repo.join(".git"), outside.clone());
+    yulius_app::race::on(yulius_app::race::Point::RootsHead, &repo, move || {
+        swap_for_link(&git, &target).ok();
+    });
+    let listed = call(
+        &h.router,
+        Method::GET,
+        "/api/sandboxes/s1/files/roots",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(listed.status, StatusCode::OK, "{:?}", listed.body);
+    assert!(
+        !listed.body.to_string().contains("secret"),
+        "a branch outside the sandbox was read: {:?}",
+        listed.body
+    );
+    assert!(
+        listed.body["roots"][0]["branch"].is_null(),
+        "{:?}",
+        listed.body
+    );
+    Ok(())
+}
+
+/// SPEC-340 review: a pipe planted as `HEAD` blocks nothing; the list answers without a branch.
+#[tokio::test]
+async fn the_folder_list_is_not_held_by_a_pipe_planted_as_head() -> TestResult {
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let repo = h.app.config.data_dir.join("sandboxes/s1/repo");
+    std::fs::create_dir_all(repo.join(".git"))?;
+    nix::unistd::mkfifo(
+        &repo.join(".git/HEAD"),
+        nix::sys::stat::Mode::from_bits_truncate(0o600),
+    )?;
+    let listed = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        call(
+            &h.router,
+            Method::GET,
+            "/api/sandboxes/s1/files/roots",
+            None,
+            &alice,
+        ),
+    )
+    .await
+    .map_err(|_| "the list waited on the pipe")??;
+    assert_eq!(listed.status, StatusCode::OK, "{:?}", listed.body);
+    assert!(
+        listed.body["roots"][0]["branch"].is_null(),
+        "{:?}",
+        listed.body
+    );
     Ok(())
 }
