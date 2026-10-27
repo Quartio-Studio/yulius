@@ -1191,3 +1191,142 @@ test('no look at the disk starts while an Overwrite after a conflict saves', asy
   expect(during).toBe(0);
   expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
 });
+
+// SPEC-340: the folder picker offers the sandbox and every task worktree, each named by its branch,
+// also with no task selected; one owned by another person opens read-only.
+type FolderMock = Window & { __yuliusMock: { tasks: { number: number; sandbox_id: string; owner?: { login: string } }[] } };
+const folderOptions = (browser: Browser) => browser.evaluate(() => [...(document.querySelector('select[aria-label="Folder"]') as HTMLSelectElement).options].map((o) => o.textContent));
+const chooseFolder = (browser: Browser, label: string) => browser.evaluate((wanted) => {
+  const select = document.querySelector('select[aria-label="Folder"]') as HTMLSelectElement;
+  const option = [...select.options].find((o) => o.textContent === wanted);
+  if (!option) throw new Error(`no folder ${wanted}`);
+  select.value = option.value;
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+}, label);
+const statusText = (browser: Browser) => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? '');
+
+test('the folder picker lists every worktree by its branch, with no task selected', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await expect(screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md')).toBeVisible();
+
+  // The sandbox first, then the task worktrees newest first; a queued task has none yet.
+  await expect.poll(async () => (await folderOptions(browser)).slice(0, 4)).toEqual([
+    'Sandbox · quartio', '#14 feat/start-the-preview-server', '#13 feat/improve-the-code', '#12 feat/checkout-api',
+  ]);
+  const options = await folderOptions(browser);
+  expect(options.some((o) => o?.startsWith('#8 '))).toBe(false);
+  expect(await statusText(browser)).toBe('Sandbox repository · quartio');
+
+  await chooseFolder(browser, '#13 feat/improve-the-code');
+  await expect.poll(() => statusText(browser)).toBe('Task #13 worktree · feat/improve-the-code');
+  await expect(screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md')).toBeVisible();
+  expect(await browser.evaluate(() => (document.querySelector('select[aria-label="Folder"]') as HTMLSelectElement).title)).toBe('#13 feat/improve-the-code');
+});
+
+test('a worktree another person owns opens read-only and says why', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await browser.evaluate(() => {
+    const task = (window as unknown as FolderMock).__yuliusMock.tasks.find((t) => t.sandbox_id === 'sb_studio' && t.number === 10);
+    if (task) task.owner = { login: 'anna-q' };
+  });
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await expect.poll(async () => (await folderOptions(browser)).find((o) => o?.startsWith('#10 '))).toBe('#10 feat/aws-login-for-deploy (read-only)');
+  await chooseFolder(browser, '#10 feat/aws-login-for-deploy (read-only)');
+  await expect.poll(() => statusText(browser)).toBe('Read-only: Task #10 is another person’s · feat/aws-login-for-deploy');
+  await expect(screen.getByRole('button', 'New file or folder')).toHaveCount(0);
+  await expect(screen.getByRole('button', 'Upload files')).toHaveCount(0);
+
+  const tree = screen.getByRole('tree', 'Files');
+  await tree.getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
+  expect(await browser.evaluate(() => (window as unknown as { monaco: { editor: { getEditors(): { getOption(id: number): boolean }[]; EditorOption: { readOnly: number } } } }).monaco.editor.getEditors()[0].getOption((window as unknown as { monaco: { editor: { EditorOption: { readOnly: number } } } }).monaco.editor.EditorOption.readOnly))).toBe(true);
+  await expect.poll(() => statusText(browser)).toContain('Read-only: Task #10 is another person’s');
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Back in a folder they may change, the editor writes again.
+  await chooseFolder(browser, '#12 feat/checkout-api');
+  await tree.getByRole('treeitem', 'README.md').click();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { monaco: { editor: { getEditors(): { getOption(id: number): boolean }[]; EditorOption: { readOnly: number } } } }).monaco.editor.getEditors()[0].getOption((window as unknown as { monaco: { editor: { EditorOption: { readOnly: number } } } }).monaco.editor.EditorOption.readOnly))).toBe(false);
+  await expect(screen.getByRole('button', 'New file or folder')).toHaveCount(1);
+  await expect(screen.getByRole('button', 'Upload files')).toHaveCount(1);
+});
+
+test('the folder picker keeps the sandbox and the selected task when the worktrees cannot be read', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&fail=/api/sandboxes/sb_studio/files/roots'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await expect(screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md')).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { failedReads: number } }).__yuliusMock.failedReads)).toBeGreaterThan(0);
+  expect(await folderOptions(browser)).toEqual(['Sandbox', 'Task #12 worktree']);
+});
+
+// Review of SPEC-340: in another person's worktree Ctrl+S sends nothing, the explorer's menu offers
+// nothing that writes, and a drop adds nothing and says why.
+type ReadOnlyMock = FolderMock & { __yuliusMock: { saveRequests?: number; uploads?: unknown }; __e2eDrop?: (selector: string, files: [string, string, string][]) => void };
+test('another person’s worktree saves nothing, offers no writing menu items and takes no drop', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await browser.evaluate(() => {
+    const task = (window as unknown as FolderMock).__yuliusMock.tasks.find((t) => t.sandbox_id === 'sb_studio' && t.number === 10);
+    if (task) task.owner = { login: 'anna-q' };
+    (window as unknown as ReadOnlyMock).__e2eDrop = (selector, files) => {
+      const data = new DataTransfer();
+      for (const [name, text, type] of files) data.items.add(new File([text], name, { type }));
+      const target = document.querySelector(selector) as Element;
+      for (const type of ['dragenter', 'dragover', 'drop']) target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, composed: true, dataTransfer: data }));
+    };
+  });
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await expect.poll(async () => (await folderOptions(browser)).some((o) => o === '#10 feat/aws-login-for-deploy (read-only)')).toBe(true);
+  await chooseFolder(browser, '#10 feat/aws-login-for-deploy (read-only)');
+  const tree = screen.getByRole('tree', 'Files');
+  await tree.getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
+  await screen.getByRole('textbox', 'Editor content').focus();
+  await browser.keyboard.press('Control+s');
+  // A save would go out before the next file's read: once that file shows, none was sent.
+  await tree.getByRole('treeitem', 'AGENTS.md').click();
+  await expect(screen.getByRole('tab', /^AGENTS\.md/)).toHaveAttribute('aria-selected', 'true');
+  await expect.poll(() => statusText(browser)).toContain('Read-only: Task #10 is another person’s');
+  expect(await browser.evaluate(() => (window as unknown as ReadOnlyMock).__yuliusMock.saveRequests ?? 0)).toBe(0);
+
+  // The explorer's menu on a folder: nothing that writes.
+  await browser.evaluate(() => document.querySelector('.ed-row[data-path="src"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 80, clientY: 120 })));
+  await expect(screen.getByRole('menuitem', 'Copy path')).toBeVisible();
+  await expect(screen.getByRole('menuitem', /^New file/)).toHaveCount(0);
+  await expect(screen.getByRole('menuitem', /^New folder/)).toHaveCount(0);
+  await expect(screen.getByRole('menuitem', /^Delete/)).toHaveCount(0);
+  await browser.keyboard.press('Escape');
+
+  // A drop on the explorer: nothing is sent, and it says why.
+  await browser.evaluate(() => (window as unknown as ReadOnlyMock).__e2eDrop!('.ed-row[data-path="src"]', [['notes.txt', 'hello\n', 'text/plain']]));
+  await expect(browser.locator('.ed-side')).toContainText('This folder is read-only: the task is another person’s.');
+  await expect(tree.getByRole('treeitem', 'notes.txt')).toHaveCount(0);
+});
+
+// Review of SPEC-340: the folder list arriving while "Switch folder?" is asked must not turn the
+// answer into a switch to the folder already open (the edits discarded, nothing switched).
+test('a folder chosen while the worktrees are read switches to it once the question is answered', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/files/roots'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
+  const content = screen.getByRole('textbox', 'Editor content');
+  await content.focus();
+  await browser.keyboard.type('unsaved ');
+  await expect(screen.getByRole('tab', /^README\.md\s*, modified/)).toBeVisible();
+  expect(await folderOptions(browser)).toEqual(['Sandbox', 'Task #12 worktree']);
+
+  await chooseFolder(browser, 'Task #12 worktree');
+  const dialog = screen.getByRole('dialog', /Switch folder/);
+  await expect(dialog).toBeVisible();
+  await browser.evaluate(() => (window as unknown as HeldMock).__yuliusMock.release());
+  await expect.poll(async () => (await folderOptions(browser))[0]).toBe('Sandbox · quartio');
+  await dialog.getByRole('button', 'Discard and switch').click();
+  await expect.poll(() => statusText(browser)).toBe('Task #12 worktree · feat/checkout-api');
+  expect(await browser.evaluate(() => (document.querySelector('select[aria-label="Folder"]') as HTMLSelectElement).value)).toMatch(/^task:/);
+});

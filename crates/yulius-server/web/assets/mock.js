@@ -2265,6 +2265,21 @@ route('GET', `/api/sandboxes/${ID}/files`, ({ db, p, query }) => {
   const list = [...entries.values()].sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'dir' ? -1 : 1));
   return { path: dir, entries: list, truncated: false };
 });
+// The folders the editor opens (SPEC-340 EWT-001): the sandbox repository on its integration
+// branch, then each task with a worktree, newest first; a task has one from its start until it is
+// closed. A task's worktree is its owner's to change (SPEC-070).
+const NO_WORKTREE = new Set(['queued', 'prepared', 'chained', 'closed']);
+route('GET', `/api/sandboxes/${ID}/files/roots`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'write');
+  const tasks = db.tasks.filter((t) => t.sandbox_id === sandbox.id && t.branch && !NO_WORKTREE.has(t.status)).sort((a, b) => b.number - a.number);
+  return {
+    roots: [
+      { root: 'sandbox', branch: (sandbox.profile && sandbox.profile.integration_branch) || sandbox.default_branch, task_number: null, task_title: null, writable: true },
+      ...tasks.map((t) => ({ root: `task:${t.id}`, branch: t.branch, task_number: t.number, task_title: t.title, writable: ownerOf(t).login === db.me.user.login })),
+    ],
+  };
+});
 route('GET', `/api/sandboxes/${ID}/files/content`, ({ db, p, query }) => {
   sandboxOf(db, p[0]);
   const tree = repoTree(db, p[0], query.get('root') || 'sandbox');
@@ -4272,6 +4287,7 @@ async function handleFetch(db, url, init = {}) {
     if (db.holdReads) await new Promise((resolve) => db.holdReads.push(resolve));
   }
   if (fileContent && init.method === 'PUT') {
+    db.saveRequests = (db.saveRequests || 0) + 1;
     db.savesOnTheirWay = (db.savesOnTheirWay || 0) + 1;
     try { return await handleFetchAfterLatency(db, url, init); } finally { db.savesOnTheirWay -= 1; }
   }
