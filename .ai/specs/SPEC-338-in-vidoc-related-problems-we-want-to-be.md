@@ -136,21 +136,24 @@ card (the admin panel).
 
 ## Evidence
 
-All at `4c2edbed` (the head the review approved), on 2026-10-27:
+On 2026-10-27, at `4c2edbed` unless said otherwise (the last code change after it, `instancekeys.js`
+only, is covered by the e2e line):
 
 - `scripts/dev ci`: exit 0. Repository contracts, the Python unit tests (`scripts/test_*.py`,
   with 3 new scanner tests), `cargo check`, `fmt --check`, `clippy -D warnings` (Linux and
   `aarch64-apple-darwin`), `cargo nextest run --profile ci` 2757 passed, 16 skipped, doctests,
   `cargo deny`, `cargo shear`, `cargo doc`.
 - `cd e2e && npx e2e run`: 759 passed, 1 skipped (69 files), including
-  `vidoc-switch.e2e.ts` (5 tests).
+  `vidoc-switch.e2e.ts`. At the final head, `vidoc-switch.e2e.ts` (6 tests) and `update.e2e.ts`:
+  24 passed, and `python3 scripts/check_repository.py` passed.
 - Test first: every new behavior test was seen failing without its change, either before the
   change or by a mutation run afterwards. That covers the PATCH switch, the virtual key, CI's
   built-in job with the project's own key, the agent run environment, the terminal environment,
   the import or create switched off before onboarding, and switched off from the first record (a
   SQLite trigger refusing later profile writes answered 409 before the fix). It also covers the
-  Vidoc card's listener (`{listeners: 1}` before the fix) and the scanner's `YULIUS_VIDOC=off`
-  (4 failures before the change).
+  Vidoc card's listener, both after its page is left and when it is left while the key loads
+  (1 listener left before each fix), and the scanner's `YULIUS_VIDOC=off` (4 failures before the
+  change).
 - Independent review in fresh sessions, three rounds:
   - Round 1 asked for changes. The major finding was that a browser import switched Vidoc off
     only after onboarding had started. The minors were a refused profile still changing the
@@ -162,8 +165,9 @@ All at `4c2edbed` (the head the review approved), on 2026-10-27:
   - All own-code findings were fixed test-first in this change. The serialized profile writes
     (round 1, minor 3) cannot be shown deterministically; the reviewer checked that both writers
     of `set_profile` read and write under `App::profile_writes`.
-  - The last nit is #937, a listener left when the Instance page is left while the key loads,
-    cosmetic, at the round limit.
+  - The round-3 follow-up asked to fix, not defer, a listener left when the Instance page is left
+    while the key loads (#937). It is fixed here: `load()` draws nothing for a card that is gone.
+    The one remaining nit is cosmetic: a 117-character string line in `briefing.rs`, left as is.
 - `yulius security-scan`: **not run**, exit 2. Vidoc answered HTTP 429: "This API key has used its
   50,000,000 tokens", the very case this change lets a person switch off. The 23 changed code files
   were not scanned, and this is not a pass. No `[[ignore]]` entry was added.

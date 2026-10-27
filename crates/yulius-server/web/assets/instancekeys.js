@@ -201,6 +201,8 @@ export function keySettingsCard(ctx, service) {
       setChildren(body, h('div', { class: 'banner banner-danger', role: 'alert' }, icon('warn'), h('span', { class: 'banner-text' }, `Couldn’t load the ${s.name} key: ${error.message}`)));
       return;
     }
+    // Left while it loaded: nothing to draw, and nothing to keep current (SPEC-338, #937).
+    if (!card.isConnected) return;
     render();
   }
 

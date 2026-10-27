@@ -118,3 +118,28 @@ test('the Vidoc card stops listening once its page is gone, even with no event w
   });
   expect(result).toEqual({ listeners: 0, drawn: 1 });
 });
+
+test('a Vidoc card left before its key loaded never starts listening', async ({ app, browser }) => {
+  // Review round 3, follow-up (unit, in the page): the page is left while the key's state loads.
+  await app.open(mock('/admin/instance', '&vidoc=config'));
+  const listeners = await browser.evaluate(async () => {
+    type Card = (ctx: unknown, service: string) => HTMLElement;
+    const { keySettingsCard } = await import('/assets/instancekeys.js' as string) as { keySettingsCard: Card };
+    let count = 0;
+    let loaded: (value: unknown) => void = () => {};
+    const ctx = {
+      store: {
+        state: { me: null, sandboxes: [{ id: 'a', name: 'alpha', profile: { vidoc: true } }] },
+        on: () => { count += 1; return () => { count -= 1; }; },
+      },
+      api: { get: () => new Promise((resolve) => { loaded = resolve; }) },
+    };
+    const card = keySettingsCard(ctx, 'vidoc');
+    document.body.append(card);
+    card.remove();
+    loaded({ configured: true, source: 'config', set_at: null, set_by: null, config_present: true, config_error: null });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return count;
+  });
+  expect(listeners).toBe(0);
+});
