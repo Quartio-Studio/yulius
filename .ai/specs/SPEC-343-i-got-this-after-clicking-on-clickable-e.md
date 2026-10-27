@@ -1,11 +1,11 @@
 ---
 yulius-task: 0c8636eb-8928-44b3-890b-4dcae9f6c701
-status: in-progress
+status: done
 ---
 
 # SPEC-343: a Git board card without a worktree says why and opens nothing
 
-Status: in-progress
+Status: done
 Date: 2026-10-27
 Owner: Yulius task #327
 Scope authorization: task #327: a screenshot of the task changes view of quartio-v2 #36 showing
@@ -50,7 +50,8 @@ only fail.
 - [x] Reproduce the defect and find its root cause
 - [x] The Git overview says when a task's worktree is gone (test-first)
 - [x] The Git board card of a gone worktree is plain text saying so (e2e test-first)
-- [ ] Independent review answered, gates green, docs updated
+- [x] Independent review approved (3 rounds) and docs updated
+- [x] Gates green with evidence in the spec
 
 ## Acceptance criteria
 
@@ -66,8 +67,8 @@ only fail.
   worktree directory is removed, and a task with a branch never started, with the refusals.
 - e2e (`e2e/tests/git.e2e.ts`) against the mock (`ambient=0`): tasks marked `gone` and
   `not_created` render without a link and with their text; another card still links. The mock
-  derives `not_created` for tasks that never ran (`hasStarted`, `neverRan`) and refuses changes and commits like the
-  server.
+  derives `not_created` for tasks that never ran (`hasStarted`, `neverRan`) and refuses changes
+  and commits like the server.
 
 ## Decisions
 
@@ -81,3 +82,25 @@ only fail.
   created.
 - The title is plain text, not a link to the task: the person asked for it not to be clickable;
   the sidebar and "Details" still reach the task.
+
+## Evidence
+
+- Red first: `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+  test(git_overview_says_whether)'` failed before the fix (the unstarted task read
+  `worktree_gone: true`, the first version's flag); `npx e2e run tests/git.e2e.ts` failed before
+  each card fix (no "Worktree gone" card), the second time with `git.js` reverted to the old card.
+- After: the 53 `delivery::` tests pass; `scripts/dev ci` exit 0 (2758 tests passed, 16 skipped;
+  fmt, lint, macOS targets, deps, docs).
+- `npx e2e run` (full suite, web change): 762 passed, 1 skipped, 1 failed:
+  `watching.e2e.ts > following survives "Working…" hiding…` timed out in `terminalShown` on task
+  #12's view, which reads none of the routes this change touches; the file alone passed 25/25
+  right after. Filed as #949 (flaky under a full run), outside this change.
+- `scripts/dev security`: exit 2, **not run**: Vidoc answered HTTP 429 (the key used its
+  50,000,000 tokens); 5 changed files unscanned. Not passed.
+- Independent review in a fresh session: round 1 requested changes (a task not started read
+  "gone": fixed with three states; mock fidelity, `ambient=0`, tooltip-only text, plan, api.md
+  `/commits` 409: fixed; the task overview's links: pre-existing, #945); round 2 approved with two
+  own-code nits (misplaced doc comment, mock `hasStarted`): fixed; round 3 approved 3ca362fb (one
+  nit: this file's long line, rewrapped here).
+- Not tested: the real instance's Git page against a removed worktree in a browser (covered by
+  the Rust test on the API and the mock e2e on the card).
