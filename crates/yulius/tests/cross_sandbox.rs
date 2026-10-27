@@ -379,6 +379,13 @@ async fn text_with_characters_nobody_sees_is_refused_without_asking() -> TestRes
         json!({"sandbox": "website", "prompt": "Fix\u{FE0F}the typo"}),
         json!({"sandbox": "website", "prompt": "Fix\u{E000}the typo"}),
         json!({"sandbox": "website", "prompt": "Fix\u{7}the typo"}),
+        json!({"sandbox": "website", "prompt": "Fix\u{600}the typo"}),
+        json!({"sandbox": "website", "prompt": "Fix\u{6DD}the typo"}),
+        json!({"sandbox": "website", "prompt": "Fix\u{70F}the typo"}),
+        json!({"sandbox": "website", "prompt": "Fix\u{890}the typo"}),
+        json!({"sandbox": "website", "prompt": "Fix\u{8E2}the typo"}),
+        json!({"sandbox": "website", "prompt": "Fix\u{110BD}the typo"}),
+        json!({"sandbox": "website", "prompt": "Fix\u{13430}the typo"}),
         json!({"sandbox": "website", "prompt": "Fix it", "title": "Typo\u{202E}fix"}),
         json!({"sandbox": "website", "prompt": "Fix it", "start_rule": "#1\u{200D} done"}),
     ] {

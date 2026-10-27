@@ -33,7 +33,8 @@ action require their explicit acceptance.
   hidden ASCII, bidirectional and zero-width marks, blank fillers, variation selectors, private
   use) is refused before anyone is asked, so emoji with a variation selector are refused too. The
   card shows any such character by its code and counts long runs of empty lines; Create
-  task takes a click only once the whole prompt was in view, and both buttons only 600 ms after
+  task takes a click only once the prompt's end was on screen (an intersection observer, so
+  neither the prompt box, the scrolling list nor the window hides the rest), and both buttons only 600 ms after
   the card appeared
   (`GET`/`POST /api/sandboxes/{sid}/superagent/requests[/{id}]`, announced to that person only
   by `superagent.requests`).

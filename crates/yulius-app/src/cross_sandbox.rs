@@ -121,14 +121,17 @@ impl Drop for Ends<'_> {
 
 /// Whether a person reading a request could not see `c`, or would see the text around it
 /// reordered: control characters but line breaks and tabs, format characters (bidirectional
-/// marks and overrides, zero-width ones, the soft hyphen), Unicode tag characters (which carry
+/// marks and overrides, zero-width ones, the soft hyphen, the Arabic, Syriac, Kaithi and
+/// Egyptian format characters), Unicode tag characters (which carry
 /// hidden ASCII), variation selectors, fillers that draw as blanks, private-use and noncharacters.
 fn unseen(c: char) -> bool {
     if matches!(c, '\n' | '\t' | '\r') {
         return false;
     }
     matches!(u32::from(c),
-        0x0000..=0x001F | 0x007F..=0x009F | 0x00AD | 0x034F | 0x061C | 0x115F | 0x1160
+        0x0000..=0x001F | 0x007F..=0x009F | 0x00AD | 0x034F | 0x0600..=0x0605 | 0x061C
+        | 0x06DD | 0x070F | 0x0890 | 0x0891 | 0x08E2 | 0x115F | 0x1160 | 0x110BD | 0x110CD
+        | 0x13430..=0x1343F
         | 0x17B4 | 0x17B5 | 0x180B..=0x180F | 0x200B..=0x200F | 0x202A..=0x202E
         | 0x2060..=0x206F | 0x3164 | 0xE000..=0xF8FF | 0xFDD0..=0xFDEF | 0xFE00..=0xFE0F
         | 0xFEFF | 0xFFA0 | 0xFFF0..=0xFFFB | 0x1BCA0..=0x1BCA3 | 0x1D173..=0x1D17A

@@ -176,12 +176,13 @@ const ARM_MS = 600;
 const INVISIBLE = /(?![\n\t])[\p{Cc}\p{Cf}\p{Co}\p{Cn}\u{034F}\u{115F}\u{1160}\u{17B4}\u{17B5}\u{180B}-\u{180F}\u{3164}\u{FFA0}\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}]/gu;
 
 /** A request's text as a person can check it: invisible characters named by their code (the server refuses them too). */
-const shownText = (text) => String(text).replace(/\r\n?/g, '\n').replace(INVISIBLE, (c) => `⟨U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}⟩`);
+const shownText = (text) => String(text).replace(/\r\n?|[\u{2028}\u{2029}]/gu, '\n').replace(INVISIBLE, (c) => `⟨U+${c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}⟩`);
 
 /** The prompt as a person can check it: invisible characters named, long runs of empty lines counted. */
 export function shownPrompt(text) {
   const named = shownText(text);
-  return named.replace(/\n(?:[ \t]*\n){2,}/g, (run) => `\n[${run.split('\n').length - 2} empty lines]\n`);
+  // A line of only spaces of any kind (no-break, ideographic, braille blank…) is empty too.
+  return named.replace(/\n(?:(?:[^\S\n]|\u{2800})*\n){2,}/gu, (run) => `\n[${run.split('\n').length - 2} empty lines]\n`);
 }
 
 /**
@@ -231,7 +232,9 @@ function createRequests(ctx, sandbox) {
       .map(([key, value]) => (OPTION_LABELS[key] ? OPTION_LABELS[key](typeof value === 'string' ? shownText(value) : value) : null))
       .filter(Boolean);
     const heading = `Your Superagent asks to start a task in ${slug}`;
-    const prompt = h('pre', { class: 'agent-request-prompt', tabindex: '0', 'aria-label': 'Prompt' }, shownPrompt(request.prompt || ''));
+    // The prompt's last line: once it was on screen (not clipped by the prompt box, the list or the window), it was all read.
+    const end = h('span', { class: 'agent-request-end', 'aria-hidden': 'true' });
+    const prompt = h('pre', { class: 'agent-request-prompt', tabindex: '0', 'aria-label': 'Prompt' }, shownPrompt(request.prompt || ''), end);
     const hint = h('div', { class: 'agent-request-hint', hidden: true }, 'Scroll to the end of the prompt to create the task.');
     const create = h('button', { type: 'button', class: 'btn btn-sm btn-primary', disabled: true, onClick: () => respond(true) }, 'Create task');
     const decline = h('button', { type: 'button', class: 'btn btn-sm', disabled: true, onClick: () => respond(false) }, 'Decline');
@@ -243,15 +246,14 @@ function createRequests(ctx, sandbox) {
       decline.disabled = !armed || sending;
       hint.hidden = read;
     };
-    // The whole prompt was in view: it fits, or it was scrolled to its end. A hidden panel shows none of it.
-    const check = () => {
-      if (read || !prompt.isConnected || prompt.clientHeight === 0) return;
-      if (prompt.scrollTop + prompt.clientHeight >= prompt.scrollHeight - 2) { read = true; update(); }
-    };
-    prompt.addEventListener('scroll', check);
-    const resized = typeof ResizeObserver === 'function' ? new ResizeObserver(check) : null;
-    if (resized) resized.observe(prompt);
-    const timer = setTimeout(() => { armed = true; check(); update(); }, ARM_MS);
+    // The whole prompt was in view: its end was on screen. A hidden panel shows none of it.
+    const seen = typeof IntersectionObserver === 'function'
+      ? new IntersectionObserver((entries) => {
+        if (!read && entries.some((entry) => entry.isIntersecting)) { read = true; update(); }
+      })
+      : null;
+    if (seen) seen.observe(end);
+    const timer = setTimeout(() => { armed = true; if (!seen) read = true; update(); }, ARM_MS);
 
     async function respond(approve) {
       if (sending) return;
@@ -286,7 +288,7 @@ function createRequests(ctx, sandbox) {
         h('div', { class: 'agent-request-actions' }, create, decline)),
       destroy() {
         clearTimeout(timer);
-        if (resized) resized.disconnect();
+        if (seen) seen.disconnect();
         this.el.remove();
       },
     };

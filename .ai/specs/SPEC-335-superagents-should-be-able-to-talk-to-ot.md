@@ -74,12 +74,15 @@ in full and answered once, and a declined, unanswered or abandoned request creat
 - XSR-008: the Superagent panel shows each waiting request above the terminal: "Your Superagent
   asks to start a task in <sandbox>", the title, the whole prompt (scrollable), the start options
   that are set, and **Create task** / **Decline**. Characters a person cannot see (controls,
-  bidirectional and zero-width marks) show as `⟨U+XXXX⟩`, and runs of two or more empty lines as
+  bidirectional and zero-width marks) show as `⟨U+XXXX⟩`, and runs of two or more empty lines (lines
+  of only spaces of any kind, line and paragraph separators counted as line breaks) as
   `[N empty lines]`, so a prompt cannot hide or reorder words; the server already refuses a
   request whose texts (prompt, title, options) hold such characters (Unicode tag characters,
   bidirectional and zero-width marks, blank fillers, variation selectors, private use), so what
   the person reads is all that reaches the task. Create task takes a click only once
-  the whole prompt was in view (it fits, or was scrolled to its end; until then a hint says so),
+  the end of the prompt was on screen (not clipped by the prompt box, the list, which scrolls
+  within at most 60 % of the panel so the session keeps room, or the window; until then a hint
+  says so),
   both buttons only 600 ms after the card appeared (a click aimed at the terminal it pushed down)
   and neither while an answer is on its way. After an answer the card goes; an approval
   says which task was created with a link to it; a refused approval says why. It refetches on the
@@ -99,6 +102,8 @@ in full and answered once, and a declined, unanswered or abandoned request creat
 - [x] The Superagent panel shows each request with Create task and Decline
 - [x] Instructions, ADR, architecture and product docs describe cross-sandbox requests
 - [x] Current dev merged and the gate's style, format and allowlist failures fixed
+- [x] Review round 1 fixed: cancellation, detached approval, race tests, card guards
+- [x] Review round 2 fixed: invisible characters refused on the server and named in the card
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

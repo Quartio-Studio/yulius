@@ -150,3 +150,37 @@ test('a new request takes no click at once, and none while its answer is on its 
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { releaseAnswer: () => void } }).__yuliusMock.releaseAnswer());
   await expect(screen.getByRole('group', 'Your Superagent asks to start a task in product')).toBeHidden();
 });
+
+// Review round 3: three waiting requests leave the session in view, and each card is reached by
+// scrolling the list; Create task counts a prompt as read only once its end was on screen.
+test('three waiting requests keep the session in view and each is reached by scrolling', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  const prompt = Array.from({ length: 6 }, (_, i) => `Step ${i + 1} of the change.`).join('\n');
+  for (const n of [1, 2, 3]) {
+    await ask(browser, 'sb_studio', { sandbox: 'product', title: `Request ${n}`, prompt, options: { workflow: 'Feature', mode: 'goal' } });
+  }
+  await expect.poll(() => browser.locator('.agent-request').count()).toBe(3);
+  // The session keeps room to be read and typed into.
+  expect(await browser.evaluate(() => (document.querySelector('.panel-view:not([hidden]) .agent-term') as HTMLElement | null)?.clientHeight ?? 0))
+    .toBeGreaterThan(150);
+  const first = browser.locator('.agent-request:has-text("Request 1") button:has-text("Create task")');
+  const third = browser.locator('.agent-request:has-text("Request 3") button:has-text("Create task")');
+  await expect(first).toBeEnabled();
+  // The third card is below the list's fold: its prompt was not on screen yet.
+  await expect(third).toBeDisabled();
+  await browser.evaluate(() => document.querySelector('.agent-request:last-child .agent-request-actions')?.scrollIntoView({ block: 'end' }));
+  await expect(third).toBeEnabled();
+  await third.click();
+  await expect.poll(() => browser.locator('.agent-request').count()).toBe(2);
+});
+
+test('lines that only look blank are counted as empty lines', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  const blank = '\n\u{00A0}\n\u{3000}\n\u{2800}\n \u{2007}\n';
+  await ask(browser, 'sb_studio', { sandbox: 'product', prompt: `Fix the typo.${blank}Hidden\u{2028}\u{2028}\u{2028}below` });
+  await expect(screen.getByRole('group', 'Your Superagent asks to start a task in product')).toBeVisible();
+  expect(await browser.evaluate(() => document.querySelector('.agent-request-prompt')?.textContent ?? null))
+    .toBe('Fix the typo.\n[4 empty lines]\nHidden\n[2 empty lines]\nbelow');
+});
