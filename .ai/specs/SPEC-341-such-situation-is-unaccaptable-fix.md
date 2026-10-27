@@ -52,9 +52,9 @@ mid-turn, the steps and the percentage follow within seconds, not at the next tu
 ## Plan
 
 - [x] Root cause found, issue filed and spec SPEC-341 written
-- [ ] A regression test shows the steps lag a spec Plan edited mid-turn
-- [ ] A running task's steps follow its spec within seconds, without lost step updates
-- [ ] Docs, SPEC-001 and changes entry describe the live sync
+- [x] A regression test shows the steps lag a spec Plan edited mid-turn
+- [x] A running task's steps follow its spec within seconds, without lost step updates
+- [x] Docs, SPEC-001 and changes entry describe the live sync
 - [ ] Independent review in a fresh session, findings answered
 - [ ] Gates green, PR merged into dev on green CI
 
@@ -65,7 +65,7 @@ mid-turn, the steps and the percentage follow within seconds, not at the next tu
   (`supervision::a_running_tasks_steps_follow_its_spec_without_a_turn_end`). The test fails on
   `dev`.
 - A sync and a step update on the same task are serialized: the update's status is kept
-  (`agent_hooks` test of LSS-002).
+  (`agent_hooks::the_spec_sync_waits_for_the_steps_lock_and_keeps_a_concurrent_update`).
 - `steps_follow_the_spec_plan_checklist` and the step tool tests still pass.
 
 ## Test plan
