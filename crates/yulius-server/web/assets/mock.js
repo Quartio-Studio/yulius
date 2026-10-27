@@ -4227,11 +4227,13 @@ async function handleFetchAfterLatency(db, url, init) {
   const headers = init.headers || {};
   // Like the server, a stale token has its own code (SPEC-337 CSR-001). A test changes the token
   // under an open page (`__yuliusMock.me.csrf_token`), as another tab's sign-in does, or makes every
-  // token wrong (`refuseCsrf`); `csrfRefusals` counts the refusals.
+  // token wrong (`refuseCsrf`); `csrfRefusals` counts the refusals and `writes` lists the paths of
+  // the writes let through.
   if (method !== 'GET' && !PUBLIC.includes(u.pathname) && (db.refuseCsrf || headers['X-Yulius-CSRF'] !== db.me.csrf_token)) {
     db.csrfRefusals = (db.csrfRefusals || 0) + 1;
     return json(403, { error: { code: 'csrf_invalid', message: 'missing or invalid CSRF token' } });
   }
+  if (method !== 'GET') (db.writes ||= []).push(u.pathname);
   for (const [m, re, handler] of R) {
     if (m !== method) continue;
     const match = u.pathname.match(re);

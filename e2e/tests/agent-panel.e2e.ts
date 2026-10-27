@@ -417,15 +417,20 @@ test('a page reloads, retrying nothing, when another person signed in in another
   await browser.evaluate(() => {
     const db = (window as unknown as CsrfMock).__yuliusMock;
     db.me = { ...db.me, csrf_token: 'csrf-of-someone-else', user: { ...db.me.user, id: 'usr_2' } };
-    (window as unknown as { __beforeReload?: boolean }).__beforeReload = true;
+    // The reload starts the mock afresh: what the old page sent is kept for the test as it goes.
+    window.addEventListener('pagehide', () => {
+      const cockpit = ((db as unknown as { writes?: string[] }).writes ?? []).filter((path) => path.endsWith('/cockpit')).length;
+      sessionStorage.setItem('csrf-test', JSON.stringify({ refusals: db.csrfRefusals ?? 0, cockpit }));
+    });
     return null;
   });
 
   await openSuperagent(browser, screen);
-  // The page reloads (its marker is gone) and shows the person now signed in; the write was not
-  // sent again as them.
-  await expect.poll(() => browser.evaluate(() => (window as unknown as { __beforeReload?: boolean }).__beforeReload ?? null), { timeout: 15_000 }).toBeNull();
+  // The page reloads and shows the person now signed in.
+  await expect.poll(() => browser.evaluate(() => sessionStorage.getItem('csrf-test')), { timeout: 15_000 }).not.toBeNull();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  // The write was refused once and not sent again as them.
+  expect(await browser.evaluate(() => JSON.parse(sessionStorage.getItem('csrf-test') ?? 'null'))).toEqual({ refusals: 1, cockpit: 0 });
 });
 
 test('a write refused again after its retry says so, once per attempt', async ({ app, browser, screen }) => {
@@ -443,4 +448,109 @@ test('a write refused again after its retry says so, once per attempt', async ({
   await browser.evaluate(() => { (window as unknown as CsrfMock).__yuliusMock.refuseCsrf = false; return null; });
   await screen.getByRole('button', 'Try again').click();
   await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
+});
+
+// The API client's side of SPEC-337 (unit, in the page, with a stand-in transport): who asks for
+// the new token, how often, and when nothing is sent again.
+test('the API client rereads a stale CSRF token once for concurrent refusals and retries each write once (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/api.js';
+    const { createApi } = await import(url);
+    let server = 'new';
+    const sent: string[] = [];
+    let answerLate: (() => void) | null = null;
+    const late = new Promise<void>((resolve) => { answerLate = resolve; });
+    const transport = {
+      async fetch(path: string, init: { headers: Record<string, string> }) {
+        const token = init.headers['X-Yulius-CSRF'];
+        sent.push(`${path}:${token}`);
+        if (path === '/late' && token === 'old') await late;
+        const ok = token === server;
+        return new Response(JSON.stringify(ok ? { ok: path } : { error: { code: 'csrf_invalid', message: 'missing or invalid CSRF token' } }), { status: ok ? 200 : 403 });
+      },
+    };
+    let rereads = 0;
+    let giveToken: ((token: string) => void) | null = null;
+    const api = createApi(transport, { onCsrfStale: () => { rereads += 1; return new Promise((resolve) => { giveToken = resolve; }); } });
+    api.setCsrf('old');
+    // Two writes refused together wait on one reread; a third, answered after it, uses its token.
+    const writes = [api.post('/a'), api.post('/b'), api.post('/late')];
+    while (sent.filter((s) => s.endsWith(':old')).length < 3 || !giveToken) await new Promise((r) => setTimeout(r, 10));
+    giveToken!('new');
+    await Promise.all(writes.slice(0, 2));
+    answerLate!();
+    const answers = await Promise.all(writes);
+    // Refused again with the reread token: one retry, then the refusal.
+    server = 'newer';
+    const second = rereads;
+    const refused = api.post('/c').then(() => 'sent', (error: { code: string }) => error.code);
+    while (!giveToken || rereads === second) await new Promise((r) => setTimeout(r, 10));
+    giveToken!('still-wrong');
+    return { answers, rereads, refused: await refused, cSends: sent.filter((s) => s.startsWith('/c:')) };
+  });
+  expect(result.answers).toEqual([{ ok: '/a' }, { ok: '/b' }, { ok: '/late' }]);
+  expect(result.rereads).toBe(2);
+  expect(result.refused).toBe('csrf_invalid');
+  expect(result.cSends).toEqual(['/c:new', '/c:still-wrong']);
+});
+
+test('the API client retries nothing after the page signed in again meanwhile, nor a cancelled write (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/api.js';
+    const { createApi } = await import(url);
+    const sent: string[] = [];
+    let valid = 'none';
+    let answer: (() => void) | null = null;
+    const transport = {
+      async fetch(path: string, init: { headers: Record<string, string> }) {
+        const token = init.headers['X-Yulius-CSRF'];
+        sent.push(`${path}:${token}`);
+        if (path === '/held') await new Promise<void>((resolve) => { answer = resolve; });
+        const ok = token === valid;
+        return new Response(JSON.stringify(ok ? { ok: path } : { error: { code: 'csrf_invalid', message: 'missing or invalid CSRF token' } }), { status: ok ? 200 : 403 });
+      },
+    };
+    let rereads = 0;
+    let giveToken: ((token: string) => void) | null = null;
+    const api = createApi(transport, { onCsrfStale: () => { rereads += 1; return new Promise((resolve) => { giveToken = resolve; }); } });
+    api.setCsrf('token-of-the-first-person');
+    // Sent as the first person; this page signs in as someone else before it is answered.
+    const held = api.post('/held').then(() => 'sent', (error: { code: string }) => error.code);
+    while (!answer) await new Promise((r) => setTimeout(r, 10));
+    api.setCsrf('token-of-the-second-person');
+    answer!();
+    const heldResult = await held;
+    const rereadsAfterHeld = rereads;
+
+    // A reread under way when the page signs in again leaves the new sign-in's token.
+    const during = api.post('/during').then(() => 'sent', (error: { code: string }) => error.code);
+    while (!giveToken) await new Promise((r) => setTimeout(r, 10));
+    api.setCsrf('token-of-a-third-sign-in');
+    giveToken!('reread-token');
+    const duringResult = await during;
+    valid = 'token-of-a-third-sign-in';
+    const after = await api.post('/after');
+    valid = 'none';
+
+    // Cancelled while the token is reread: cancelled, not refused, and not sent again.
+    giveToken = null;
+    const controller = new AbortController();
+    const cancelled = api.post('/cancelled', undefined, { signal: controller.signal }).then(() => 'sent', (error: { code: string }) => error.code);
+    while (!giveToken) await new Promise((r) => setTimeout(r, 10));
+    controller.abort();
+    giveToken!('token-of-a-third-sign-in');
+    return { heldResult, rereadsAfterHeld, duringResult, after, cancelled: await cancelled, sent };
+  });
+  expect(result.heldResult).toBe('csrf_invalid');
+  expect(result.rereadsAfterHeld).toBe(0);
+  expect(result.duringResult).toBe('csrf_invalid');
+  expect(result.cancelled).toBe('aborted');
+  expect(result.sent.filter((s: string) => s.startsWith('/held:'))).toEqual(['/held:token-of-the-first-person']);
+  expect(result.sent.filter((s: string) => s.startsWith('/during:'))).toEqual(['/during:token-of-the-second-person']);
+  // The page's own sign-in keeps its token: the reread answering after it is dropped.
+  expect(result.after).toEqual({ ok: '/after' });
+  expect(result.sent.filter((s: string) => s.startsWith('/after:'))).toEqual(['/after:token-of-a-third-sign-in']);
+  expect(result.sent.filter((s: string) => s.startsWith('/cancelled:'))).toEqual(['/cancelled:token-of-a-third-sign-in']);
 });
