@@ -107,10 +107,11 @@ test('pull request chips read "PR #N" wherever they show', async ({ app, browser
 });
 
 // Task #327 (SPEC-343, #943): "i got this after clicking on clickable element. element shouldnt be
-// clickable but just say that it's gone": a card whose task's worktree is gone opened a changes view
-// that could only say "Couldn't load the changes: the task's worktree is gone".
-test('a board card whose worktree is gone says so and opens nothing', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/git'));
+// clickable but just say that it's gone": a card whose task has no worktree opened a changes view
+// that could only say "Couldn't load the changes: the task's worktree is gone". A task not started
+// yet has none either (review round 1): it says so, not that it is gone.
+test('a board card without a worktree says why and opens nothing', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/git', '&ambient=0'));
   await expect(screen.getByRole('heading', /^Where every task is/)).toBeVisible();
   await expect(browser.locator('.dl-card-link').first()).toBeVisible();
   const cards = () => browser.evaluate(() => [...document.querySelectorAll('.dl-card-task')].map((card) => ({
@@ -119,24 +120,28 @@ test('a board card whose worktree is gone says so and opens nothing', async ({ a
     clickable: card.classList.contains('clickable'),
     text: (card.textContent ?? '').replace(/\s+/g, ' '),
   })));
-  const before = await cards();
-  const [gone, kept] = before.filter((c) => c.link);
+  const [gone, unstarted, kept] = (await cards()).filter((c) => c.link);
   expect(gone.link).toMatch(new RegExp(`/git/t/${gone.number}$`));
   expect(kept).toBeTruthy();
 
-  // The worktree is removed on the server; the page reads the overview again.
-  await browser.evaluate((n: number) => {
-    const task = (window as any).__yuliusMock.tasks.find((t: any) => t.sandbox_id === 'sb_studio' && t.number === n);
-    task.worktree_gone = true;
-  }, gone.number);
+  // One task's worktree is removed and another's not created yet; the page reads the overview again.
+  await browser.evaluate(([g, u]: number[]) => {
+    const task = (n: number) => (window as any).__yuliusMock.tasks.find((t: any) => t.sandbox_id === 'sb_studio' && t.number === n);
+    task(g).worktree = 'gone';
+    task(u).worktree = 'not_created';
+  }, [gone.number, unstarted.number]);
   await screen.getByRole('button', 'Refresh').click();
   await expect(browser.locator('.dl-card-task:has-text("Worktree gone")')).toBeVisible();
 
   const after = await cards();
-  const card = after.find((c) => c.number === gone.number);
-  expect(card).toMatchObject({ link: null, clickable: false });
-  expect(card?.text).toContain('Worktree gone');
-  // Only that card: the others still open their changes.
+  const goneCard = after.find((c) => c.number === gone.number);
+  expect(goneCard).toMatchObject({ link: null, clickable: false });
+  expect(goneCard?.text).toContain('Worktree gone');
+  const unstartedCard = after.find((c) => c.number === unstarted.number);
+  expect(unstartedCard).toMatchObject({ link: null, clickable: false });
+  expect(unstartedCard?.text).toContain('No worktree yet');
+  expect(unstartedCard?.text).not.toContain('gone');
+  // Only those cards: the others still open their changes.
   expect(after.find((c) => c.number === kept.number)).toMatchObject({ link: kept.link, clickable: true });
   expect(after.filter((c) => c.text.includes('Worktree gone')).length).toBe(1);
   expect(await axeViolations(browser)).toEqual([]);
