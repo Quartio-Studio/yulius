@@ -941,6 +941,80 @@ async fn steps_follow_the_spec_plan_checklist() -> TestResult {
     Ok(())
 }
 
+/// SPEC-341 LSS-002: the spec sync now also runs while a turn goes on, next to the agent's step
+/// tools. It waits for the task's steps lock and reads the steps only then, so a status changed
+/// while it waited is kept, never written back to the one before.
+#[tokio::test]
+async fn the_spec_sync_waits_for_the_steps_lock_and_keeps_a_concurrent_update() -> TestResult {
+    use yulius_app::ports::store::TaskFieldUpdate;
+    let f = fixture().await?;
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    std::fs::write(
+        f.worktree.join("docs/specs/checkout.md"),
+        "---\nyulius-task: t-main\nstatus: in-progress\n---\n# Checkout API\n\n\
+         ## Goal\n\nCustomers can pay.\n\n## Context\n\nNo checkout yet.\n\n\
+         ## Requirements\n\n- Card payments.\n\n## Plan\n\n- [x] Write spec\n- [ ] Implement API\n\n\
+         ## Acceptance Criteria\n\nA test order succeeds.\n\n## Test plan\n\n```sh\ncargo test\n```\n\n\
+         ## Decisions\n\n- Hosted payment page.\n",
+    )?;
+    let store = &f.h.app.deps.store;
+    let update = TaskFieldUpdate {
+        spec_path: Some("docs/specs/checkout.md".into()),
+        ..TaskFieldUpdate::default()
+    };
+    store.update_task(&f.task, &update, Timestamp(5)).await?;
+    let task = store.task(&f.task).await?.ok_or("task")?;
+    assert!(f.h.app.sync_steps_from_spec(&task).await?);
+    let implement = store.steps(&f.task).await?[1].id.clone();
+
+    // The Plan grows while a step tool holds the lock and starts "Implement API".
+    std::fs::write(
+        f.worktree.join("docs/specs/checkout.md"),
+        std::fs::read_to_string(f.worktree.join("docs/specs/checkout.md"))?.replace(
+            "- [ ] Implement API\n",
+            "- [ ] Implement API\n- [ ] Open PR\n",
+        ),
+    )?;
+    let runtime = f.h.app.runtime(&f.task);
+    let held = runtime.steps_lock.lock().await;
+    let app = f.h.app.clone();
+    let sync_task = task.clone();
+    let sync = tokio::spawn(async move { app.sync_steps_from_spec(&sync_task).await });
+    // While the lock is held the sync writes nothing: without the lock it writes the grown Plan
+    // within milliseconds, so half a second of the old list shows it waits.
+    let held_until = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+    while tokio::time::Instant::now() < held_until {
+        assert_eq!(
+            store.steps(&f.task).await?.len(),
+            2,
+            "the sync waits for the lock"
+        );
+        assert!(!sync.is_finished(), "the sync waits for the steps lock");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    store
+        .update_step(&implement, "in_progress", None, "agent", Timestamp(6))
+        .await?;
+    drop(held);
+    assert!(sync.await??, "the grown Plan is synced");
+    let view: Vec<(String, String)> = store
+        .steps(&f.task)
+        .await?
+        .into_iter()
+        .map(|s| (s.title, s.status))
+        .collect();
+    assert_eq!(
+        view,
+        [
+            ("Write spec".to_owned(), "done".to_owned()),
+            ("Implement API".to_owned(), "in_progress".to_owned()),
+            ("Open PR".to_owned(), "pending".to_owned()),
+        ],
+        "the update made while the sync waited is kept"
+    );
+    Ok(())
+}
+
 /// F 2026-10-11: an agent renamed its spec (SPEC-005 → SPEC-006 to avoid a clash) and the Stop
 /// gate kept demanding the old registered path, which the agent cannot change. The gate follows
 /// the spec by its frontmatter and registers the new path.

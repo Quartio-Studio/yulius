@@ -12,6 +12,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   gone", also for a queued task that never had one. The Git overview now reports each task
   branch's `worktree` (present, not_created or gone) from the same check that makes the changes
   view refuse, and that refusal says when a task has not started yet.
+- A running task's progress counts its whole spec Plan, not only the steps listed before the
+  Plan grew (SPEC-341, task #325, fixes #942). Steps followed the spec's Plan only when a turn
+  ended, so a long goal turn that grew its Plan from 7 parts to 13 kept showing 77 % for hours.
+  Yulius now re-reads a live run's spec every 5 seconds. The step tools, a person skipping steps
+  and that sync take one per-task lock, so none of them overwrites another's change.
 - A long URL in a narrow terminal opens whole (SPEC-339, ADR-0230, task #323, fixes #940).
   Claude Code cuts a URL longer than a row at the right edge and continues it on the next row
   itself, so only the first part was a link and a click opened a truncated address. The URL is

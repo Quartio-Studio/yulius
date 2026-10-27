@@ -898,7 +898,8 @@ impl App {
     /// order; checked items are `done`; unchecked items keep the status and effort of the
     /// existing step with the same title (agents may mark them `in_progress` before ticking the
     /// box), so unticking never reopens a finished step; new items start `pending`. Writes only
-    /// on change. Returns whether the steps changed.
+    /// on change. Returns whether the steps changed. It runs at a session start, at a turn end and
+    /// every few seconds of a live run (SPEC-341 LSS-001), under the task's steps lock.
     ///
     /// # Errors
     /// Store failures.
@@ -908,6 +909,10 @@ impl App {
         else {
             return Ok(false);
         };
+        // Locked before the spec is read: a sync that read an older spec never writes it over a
+        // newer one written meanwhile (SPEC-341 LSS-002).
+        let runtime = self.runtime(&task.id);
+        let _steps = runtime.steps_lock.lock().await;
         let (root, rel) = (PathBuf::from(worktree), spec_path.clone());
         let expected = task.id.clone();
         let plan = tokio::task::spawn_blocking(move || {
