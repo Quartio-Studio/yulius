@@ -1,11 +1,11 @@
 ---
 yulius-task: c3f3ebdf-5ce6-4e7e-9db7-b34e4a893503
-status: in-progress
+status: done
 ---
 
 # SPEC-342: A deploy is never cut by an update of Yulius
 
-Status: in-progress
+Status: done
 Date: 2026-10-27
 Owner: Yulius task #326
 Scope authorization: task #326 (`/goal`): "make sure deployment doesnt break while yulius itself is
@@ -68,8 +68,8 @@ before the server restarts, and no deploy starts between then and the restart.
 - [x] ADR-0232, architecture, product and operations docs say deploys survive updates
 - [x] Review round 1 findings fixed test-first
 - [x] Review round 2 findings fixed test-first
-- [ ] Review round 3 approves the final head
-- [ ] Every gate green, docs and the changes log updated
+- [x] Review round 3 approves the final head
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -168,3 +168,11 @@ before the server restarts, and no deploy starts between then and the restart.
       transient, and safe since it only waits longer.
     - the sandbox id used as a link when its record vanished mid-update. A project removed
       during a deploy is rare, and the link then 404s harmlessly.
+- **Review round 3** (fee4c158): **approve**. Its low and nits were own code and are fixed at
+  5f044e96:
+  - **Low, environment runs untested on the server:** `a_running_environment_run_is_waited_for`.
+    Filtering environment runs out of the wait fails it.
+  - **Nits:** the cancel test first asserts that the overtaken pass closed the gate; the ADR index
+    order; the operations reflow.
+  The reviewer confirmed this test-and-docs delta (see the pull request).
+- **Final gate.** `scripts/dev ci` on the final head; result in the pull request.
