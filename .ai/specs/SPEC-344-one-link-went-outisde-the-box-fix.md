@@ -47,7 +47,8 @@ inside its card at any width, and shows its whole text.
 
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
+- [x] Fix the cause until the regression test passes
+- [ ] Every gate green: repository check, e2e suite and scripts/dev ci
 - [ ] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria

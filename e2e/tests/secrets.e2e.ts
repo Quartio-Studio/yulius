@@ -274,6 +274,12 @@ test('a long bound or requested host wraps inside its card', async ({ app, brows
     if (width === 390) expect(wrapped.length).toBeGreaterThan(0);
     expect(wrapped.filter((chip) => chip.iconTop > 5 || chip.radius > 12)).toEqual([]);
   }
+  // Badges outside a chip row (titles, notes) stay one nowrap 18 px line.
+  const others = await browser.evaluate(() => [...document.querySelectorAll('.item-card .badge')]
+    .filter((badge) => !badge.parentElement!.classList.contains('chips'))
+    .map((badge) => `${badge.getBoundingClientRect().height} ${getComputedStyle(badge).whiteSpace}`));
+  expect(others.length).toBeGreaterThan(0);
+  expect(others.filter((badge) => badge !== '18 nowrap')).toEqual([]);
   expect(await browser.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(await axeViolations(browser)).toEqual([]);
 });
