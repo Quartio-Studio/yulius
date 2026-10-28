@@ -304,7 +304,7 @@
   --font-display: "Tenor Sans", "Instrument Sans", system-ui, sans-serif; /* titles and the wordmark: a brand display face may go here */
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
   --fs-xs: 11px;  --lh-xs: 16px;   /* captions: badges, counters, kbd, timestamps */
-  --fs-sm: 12px;  --lh-sm: 18px;   /* secondary lines, hints, meta */
+  --fs-sm: 12px;  --lh-sm: 18px;   /* secondary lines, hints, meta; the 18 px line of a chip that may wrap */
   --fs: 14px;     --lh: 20px;      /* body: the UI default */
   --fs-md: 15px;  --lh-md: 22px;   /* prose and item titles: the prompt, card and server names */
   --fs-lg: 17px;  --lh-lg: 24px;   /* section, panel and modal titles */
@@ -322,7 +322,7 @@
   --radius-xs: 4px;      /* text marks: drawn selections and a teammate's name tag (SPEC-112) */
   --radius-sm: 6px;      /* small: kbd, tiny tiles, menu items, nav and list rows */
   --radius: 8px;         /* controls: buttons, inputs, segments, banners, inline boxes */
-  --radius-lg: 12px;     /* containers: cards, tables, menus, popovers, toasts, modals, tiles */
+  --radius-lg: 12px;     /* containers: cards, tables, menus, popovers, toasts, modals, tiles; chips that may wrap (an 18 px one clamps it to a pill) */
   --radius-xl: 20px;     /* the composer and the sign-in card */
   --radius-full: 999px;  /* pills: badges, chips, counters, switches, progress bars */
 
