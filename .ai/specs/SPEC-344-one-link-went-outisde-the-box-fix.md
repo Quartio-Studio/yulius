@@ -38,10 +38,10 @@ inside its card at any width, and shows its whole text.
   text wraps onto more lines inside the chip and breaks anywhere, since a host name has no spaces.
 - **HCW-002 Whole text.** The chip shows its whole text: no ellipsis. A person allows a requested
   host by reading it (SPEC-121), so it must not be cut.
-- **HCW-004 A wrapped chip is a box.** A chip on more lines is a rounded rectangle (radius 9 px,
-  the pill of one 18 px line) with its icon on the first line, not an oval with a centred icon.
 - **HCW-003 Unchanged elsewhere.** A chip that fits stays one line at 18 px. Badges outside
   `.chips` are unchanged.
+- **HCW-004 A wrapped chip is a box.** A chip on more lines is a rounded rectangle (radius 9 px,
+  the pill of one 18 px line) with its icon on the first line, not an oval with a centred icon.
 
 ## Plan
 
