@@ -40,8 +40,8 @@ inside its card at any width, and shows its whole text.
   host by reading it (SPEC-121), so it must not be cut.
 - **HCW-003 Unchanged elsewhere.** A chip that fits stays one line at 18 px. Badges outside
   `.chips` are unchanged.
-- **HCW-004 A wrapped chip is a box.** A chip on more lines is a rounded rectangle (radius 9 px,
-  the pill of one 18 px line) with its icon on the first line, not an oval with a centred icon.
+- **HCW-004 A wrapped chip is a box.** A chip on more lines is a rounded rectangle (`--radius-lg`,
+  12 px, which one 18 px line clamps to the same pill) with its icon on the first line, not an oval with a centred icon.
 
 ## Plan
 
@@ -56,7 +56,7 @@ inside its card at any width, and shows its whole text.
   `.item-main` and shows its whole text (`scrollWidth <= clientWidth`) at 1440 and 390 px. The page
   has no horizontal overflow and no WCAG violations.
 - A chip that fits is 18 px high; a wrapped one (a long wildcard request) has a corner radius of at
-  most 9 px and its icon within 5 px of its top.
+  most 12 px and its icon within 5 px of its top.
 
 ## Test plan
 

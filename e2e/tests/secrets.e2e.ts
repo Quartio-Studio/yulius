@@ -272,7 +272,7 @@ test('a long bound or requested host wraps inside its card', async ({ app, brows
     expect(chips.find((chip) => chip.text === 'api.vidoc.test')!.height).toBe(18);
     const wrapped = chips.filter((chip) => chip.height > 18);
     if (width === 390) expect(wrapped.length).toBeGreaterThan(0);
-    expect(wrapped.filter((chip) => chip.iconTop > 5 || chip.radius > 9)).toEqual([]);
+    expect(wrapped.filter((chip) => chip.iconTop > 5 || chip.radius > 12)).toEqual([]);
   }
   expect(await browser.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(await axeViolations(browser)).toEqual([]);
