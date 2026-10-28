@@ -261,10 +261,12 @@ test('a long bound or requested host wraps inside its card', async ({ app, brows
     const chips = await browser.evaluate(() => [...document.querySelectorAll('.item-card .chips .badge')].map((chip) => {
       const main = chip.closest('.item-main')!.getBoundingClientRect();
       const box = chip.getBoundingClientRect();
-      return { text: chip.textContent, inside: box.left >= main.left && box.right <= main.right + 0.5, whole: chip.scrollWidth <= chip.clientWidth };
+      return { text: chip.textContent, inside: box.left >= main.left && box.right <= main.right + 0.5, whole: chip.scrollWidth <= chip.clientWidth, height: box.height };
     }));
     expect(chips.filter((chip) => chip.text!.includes('amazonaws.com')).length).toBe(3);
     expect(chips.filter((chip) => !chip.inside || !chip.whole)).toEqual([]);
+    // A chip that fits stays one 18 px line.
+    expect(chips.find((chip) => chip.text === 'api.vidoc.test')!.height).toBe(18);
   }
   expect(await browser.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(await axeViolations(browser)).toEqual([]);

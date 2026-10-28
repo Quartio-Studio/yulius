@@ -4,6 +4,12 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-28
+
+- A long host on a Secrets card wraps inside its chip instead of running past the card's edge
+  (SPEC-344, task #328, fixes #956). Bound and requested hosts and an MCP server's secret keys
+  show whole, on more lines when the card is narrow; short chips look as before.
+
 ## 2026-10-27
 
 - An update of Yulius no longer cuts a running deploy (SPEC-342, ADR-0232, task #326). A CD run or
