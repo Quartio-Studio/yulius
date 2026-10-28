@@ -242,6 +242,34 @@ test('a person allows the hosts an agent asked for', async ({ app, browser, scre
   await expect(dialog.getByText('More options')).toBeHidden();
 });
 
+// Task #328 (SPEC-344): "one link went outisde the box". A host chip wider than its card ran past
+// the card's edge: a chip wraps inside the card instead, showing the whole host.
+test('a long bound or requested host wraps inside its card', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents'));
+  await expect(screen.getByText('STRIPE_KEY')).toBeVisible();
+  const long = 'a-long-subdomain-of-the-runtime.bedrock-runtime.us-east-1.amazonaws.com';
+  await browser.evaluate((host: string) => {
+    const mocked = (window as any).__yuliusMock;
+    mocked.vault.agent.find((s: any) => s.name === 'STRIPE_KEY').hosts = ['bedrock-mantle.us-east-1.api.aws', 'bedrock-runtime.us-east-1.amazonaws.com', host];
+    mocked.askHosts('OLD_DEPLOY_KEY', [host], '#120');
+  }, long);
+  await expect(browser.locator('.item-card:has-text("OLD_DEPLOY_KEY")').getByText('Task #120 asks to send it to')).toBeVisible();
+  await expect(browser.locator('.item-card:has-text("STRIPE_KEY")').getByText(long)).toBeVisible();
+
+  for (const width of [1440, 390]) {
+    await browser.setViewport({ width, height: 844 });
+    const chips = await browser.evaluate(() => [...document.querySelectorAll('.item-card .chips .badge')].map((chip) => {
+      const main = chip.closest('.item-main')!.getBoundingClientRect();
+      const box = chip.getBoundingClientRect();
+      return { text: chip.textContent, inside: box.left >= main.left && box.right <= main.right + 0.5, whole: chip.scrollWidth <= chip.clientWidth };
+    }));
+    expect(chips.filter((chip) => chip.text!.includes('amazonaws.com')).length).toBe(3);
+    expect(chips.filter((chip) => !chip.inside || !chip.whole)).toEqual([]);
+  }
+  expect(await browser.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
 type Asking = { __yuliusMock: { askHosts(name: string, hosts: string[], by: string, announce?: boolean): void; announceSecrets(sandboxId: string | null): void; goOffline(): void; goOnline(): void; request(method: string, path: string, body?: object): Promise<number>; asked: Record<string, number>; sent?: Record<string, number>; heldWaiting: number; release(): void }; pageKept?: boolean; drawnAllow?: { settling: boolean; focused: boolean } | null };
 
 const LIST = '/api/sandboxes/sb_studio/agent-secrets';
