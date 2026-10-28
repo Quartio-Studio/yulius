@@ -2055,7 +2055,9 @@ a.dl-task:hover { text-decoration: underline; }
 .run-output { min-height: 160px; max-height: 50vh; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 /* A host wider than the card wraps inside its chip, whole (SPEC-344): a person reads it to allow it. */
-.chips > .badge { max-width: 100%; height: auto; padding-block: 1px; white-space: normal; overflow-wrap: anywhere; line-height: var(--lh-xs); }
+.chips > .badge { max-width: 100%; height: auto; align-items: flex-start; padding-block: 1px; border-radius: 9px; white-space: normal; overflow-wrap: anywhere; line-height: var(--lh-xs); }
+/* On more lines it is a rounded box (9px is the pill of one 18 px line) with the icon on the first line. */
+.chips > .badge > .icon { margin-block: 2.5px; }
 .kv-rows { display: flex; flex-direction: column; gap: 6px; }
 .kv-row { display: grid; grid-template-columns: 1fr 1.4fr auto; gap: 6px; }
 

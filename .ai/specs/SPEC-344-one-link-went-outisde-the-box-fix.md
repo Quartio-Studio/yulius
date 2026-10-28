@@ -38,6 +38,8 @@ inside its card at any width, and shows its whole text.
   text wraps onto more lines inside the chip and breaks anywhere, since a host name has no spaces.
 - **HCW-002 Whole text.** The chip shows its whole text: no ellipsis. A person allows a requested
   host by reading it (SPEC-121), so it must not be cut.
+- **HCW-004 A wrapped chip is a box.** A chip on more lines is a rounded rectangle (radius 9 px,
+  the pill of one 18 px line) with its icon on the first line, not an oval with a centred icon.
 - **HCW-003 Unchanged elsewhere.** A chip that fits stays one line at 18 px. Badges outside
   `.chips` are unchanged.
 
@@ -53,6 +55,8 @@ inside its card at any width, and shows its whole text.
 - With long bound and requested hosts on agent secret cards, every `.chips` badge lies inside its
   `.item-main` and shows its whole text (`scrollWidth <= clientWidth`) at 1440 and 390 px. The page
   has no horizontal overflow and no WCAG violations.
+- A chip that fits is 18 px high; a wrapped one (a long wildcard request) has a corner radius of at
+  most 9 px and its icon within 5 px of its top.
 
 ## Test plan
 

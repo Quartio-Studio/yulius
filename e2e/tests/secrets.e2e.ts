@@ -251,7 +251,8 @@ test('a long bound or requested host wraps inside its card', async ({ app, brows
   await browser.evaluate((host: string) => {
     const mocked = (window as any).__yuliusMock;
     mocked.vault.agent.find((s: any) => s.name === 'STRIPE_KEY').hosts = ['bedrock-mantle.us-east-1.api.aws', 'bedrock-runtime.us-east-1.amazonaws.com', host];
-    mocked.askHosts('OLD_DEPLOY_KEY', [host], '#120');
+    // A wildcard reads "(any subdomain of …)" too: several lines on a phone.
+    mocked.askHosts('OLD_DEPLOY_KEY', [`*.${host}`], '#120');
   }, long);
   await expect(browser.locator('.item-card:has-text("OLD_DEPLOY_KEY")').getByText('Task #120 asks to send it to')).toBeVisible();
   await expect(browser.locator('.item-card:has-text("STRIPE_KEY")').getByText(long)).toBeVisible();
@@ -261,12 +262,17 @@ test('a long bound or requested host wraps inside its card', async ({ app, brows
     const chips = await browser.evaluate(() => [...document.querySelectorAll('.item-card .chips .badge')].map((chip) => {
       const main = chip.closest('.item-main')!.getBoundingClientRect();
       const box = chip.getBoundingClientRect();
-      return { text: chip.textContent, inside: box.left >= main.left && box.right <= main.right + 0.5, whole: chip.scrollWidth <= chip.clientWidth, height: box.height };
+      return { text: chip.textContent, inside: box.left >= main.left && box.right <= main.right + 0.5, whole: chip.scrollWidth <= chip.clientWidth, height: box.height,
+        // A chip on more lines is a rounded box with its icon on the first line, not an oval.
+        iconTop: chip.querySelector('svg')!.getBoundingClientRect().top - box.top, radius: parseFloat(getComputedStyle(chip).borderTopLeftRadius) };
     }));
     expect(chips.filter((chip) => chip.text!.includes('amazonaws.com')).length).toBe(3);
     expect(chips.filter((chip) => !chip.inside || !chip.whole)).toEqual([]);
     // A chip that fits stays one 18 px line.
     expect(chips.find((chip) => chip.text === 'api.vidoc.test')!.height).toBe(18);
+    const wrapped = chips.filter((chip) => chip.height > 18);
+    if (width === 390) expect(wrapped.length).toBeGreaterThan(0);
+    expect(wrapped.filter((chip) => chip.iconTop > 5 || chip.radius > 9)).toEqual([]);
   }
   expect(await browser.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(await axeViolations(browser)).toEqual([]);
