@@ -1,11 +1,11 @@
 ---
 yulius-task: 6b7279b3-e2a7-4fde-83c8-3c6316d78a70
-status: in-progress
+status: done
 ---
 
 # SPEC-344: A long host chip wraps inside its card
 
-Status: in-progress
+Status: done
 Date: 2026-10-28
 Owner: Yulius task #328
 Scope authorization: task #328 (`/goal`, with a screenshot of the `AWS_BEARER_TOKEN_BEDROCK`
@@ -48,8 +48,8 @@ inside its card at any width, and shows its whole text.
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
 - [x] Fix the cause until the regression test passes
-- [ ] Every gate green: repository check, e2e suite and scripts/dev ci
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green: repository check, e2e suite and scripts/dev ci
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -72,3 +72,27 @@ inside its card at any width, and shows its whole text.
   hosts wider than the card.
 - **Scoped to `.chips > .badge`.** Every chip list with free-form text uses `.chips`. Other badges
   are fixed short labels in rows that rely on `nowrap`, so `.badge` itself stays as it is.
+
+## Evidence
+
+- Regression test `secrets.e2e.ts` "a long bound or requested host wraps inside its card": failed
+  on `dev`'s CSS (commit f564befa: the long chips `inside: false` at 390 px), passes with the fix.
+  The round-1 shape check failed before its fix (`radius: 999`, `iconTop: 11.5`) and passes after.
+- `npx e2e run` (whole suite, after the first fix): 770 passed, 1 skipped (agent step, no model
+  key), 1 failed: "a new agent secret lets agents set it up…", the toast-over-"Add team secret"
+  flake tracked by #954 (filed 2026-10-27, before this change; it passed 3 of 3 runs alone).
+- With the final CSS: `secrets.e2e.ts`, `mcp.e2e.ts`, `responsive.e2e.ts`, `phone.e2e.ts`: 63 of 63
+  passed; the regression test passed again after the review's nits.
+- `scripts/dev ci`: exit 0 (2773 tests passed, 16 skipped; repository check incl. UI design
+  tokens). Its first run caught `padding-block: 1px` off the spacing scale; the rule now uses
+  `--lh-sm`, `--radius-lg` and a 4 px icon margin.
+- `yulius security-scan`: not run, exit 2 (Vidoc HTTP 429, the key used its 50,000,000 tokens). The
+  PR's CI `security` job is the live scan.
+- Seen in the shared browser (mock, 1280 px): short chips one line as before; a long wildcard host
+  wraps inside the card as a rounded box with its globe on the first line.
+- Independent review, round 1 (1ed4c24d): approve, one minor (wrapped chip drawn as an oval, icon
+  centred), fixed test-first. Round 2 (52efe5bc): approve, nits fixed (a guard that badges outside
+  chips stay one line; token comments name the chip use); the MCP chips share the rule and pass
+  `mcp.e2e.ts`, with no long-key case of their own.
+- Not tested: a real narrow tool panel beside the page (the 390 px viewport stands for it), and
+  browsers other than Chromium.
