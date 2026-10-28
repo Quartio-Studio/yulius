@@ -145,12 +145,16 @@ function seed(params) {
     browsers: new Map(),
     shells: new Map(), // id → {id, sandbox_id, name, task_id, created_at, session}
     // Instance updates and the Jev key (SPEC-002 ADR-18): `update=1` (main moved on), `update=fail`
-    // (main moved on and its install is rolled back), `helper=0` (no update helper), `jev=config`.
+    // (main moved on and its install is rolled back), `helper=0` (no update helper), `jev=config`,
+    // `deploying=1` (a CD run of studio's dev and an environment run of its dev-vm run when the build
+    // is done: the update waits for them one step before it pauses tasks, SPEC-342), `deploying=drain`
+    // (a deploy still runs while tasks pause: the install waits for it, no Continue without waiting).
     update: {
       current: '68b4f5f2c1d0e9a8b7c6d5e4f3a2b1c0d9e8f7a6',
       offer: ['1', 'fail'].includes(params.get('update')) ? '9c1e7d3b5a2f4e6d8c0b1a3f5e7d9c2b4a6f8e0d' : null,
       fail: params.get('update') === 'fail',
       helper: params.get('helper') !== '0',
+      deploying: params.get('deploying'),
       checkedAt: ['1', 'fail'].includes(params.get('update')) ? iso(10 * MIN) : null,
       run: null,
     },
@@ -1606,7 +1610,7 @@ route('GET', `/api/sandboxes/${ID}/git`, async ({ db, p }) => {
   const pull = pullOf;
   const overview = {
     integration_branch: sandbox.profile.integration_branch, production_branch: sandbox.profile.production_branch, default_branch: sandbox.default_branch,
-    tasks: tasks.map((t) => ({ task_id: t.id, title: t.title, branch: t.branch, ahead: (t.number * 3) % 11 + 1, behind: t.number % 3, files_changed: (t.number * 7) % 23 + 1, insertions: (t.number * 131) % 900 + 12, deletions: (t.number * 37) % 200, pr: pull(t) })),
+    tasks: tasks.map((t) => ({ task_id: t.id, title: t.title, branch: t.branch, ahead: (t.number * 3) % 11 + 1, behind: t.number % 3, files_changed: (t.number * 7) % 23 + 1, insertions: (t.number * 131) % 900 + 12, deletions: (t.number * 37) % 200, pr: pull(t), worktree: worktreeOf(t) })),
     recent_commits: [
       { sha: '9f3c2a17b0e4d5c6a7b8c9d0e1f2a3b4c5d6e7f8', subject: 'feat(checkout): cart totals with tax rules', author: 'task #12 (claude)', at: iso(25 * MIN) },
       { sha: '4b1d9e0c7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d', subject: 'docs: restructure architecture section', author: 'task #5 (claude)', at: iso(5 * HOUR) },
@@ -2203,8 +2207,25 @@ function taskCommits(task) {
     subject: subjects[i % subjects.length], author: `task #${n} (claude)`, at: iso((i * 37 + 5) * MIN), files: (i * 3) % 7 + 1, insertions: (i * 41 + n) % 160 + 3, deletions: (i * 13 + n) % 40,
   }));
 }
-route('GET', `/api/tasks/${ID}/changes`, ({ db, p }) => { const task = taskOf(db, p[0]); return task.branch ? taskChanges(db, task) : json(404, { error: { code: 'not_found', message: 'This task has no branch yet.' } }); });
-route('GET', `/api/tasks/${ID}/commits`, ({ db, p }) => { const task = taskOf(db, p[0]); return task.branch ? taskCommits(task) : []; });
+// Where a task's worktree is, as the server says it (SPEC-343): a task gets its branch when created
+// and its worktree when it starts; a test removes one with `__yuliusMock.tasks[i].worktree = 'gone'`.
+function worktreeOf(task) {
+  if (task.worktree) return task.worktree;
+  return hasStarted(task) && !task.neverRan ? 'present' : 'not_created';
+}
+// Changes and commits are read from the worktree: refused, as the server does, without one.
+function noWorktree(task) {
+  const state = worktreeOf(task);
+  if (state === 'gone') return json(409, { error: { code: 'conflict', message: "the task's worktree is gone; its branch and pull request are on GitHub" } });
+  if (state === 'not_created') return json(409, { error: { code: 'conflict', message: 'the task has not started yet, so it has no worktree to read changes from' } });
+  return null;
+}
+route('GET', `/api/tasks/${ID}/changes`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  if (!task.branch) return json(404, { error: { code: 'not_found', message: 'This task has no branch yet.' } });
+  return noWorktree(task) || taskChanges(db, task);
+});
+route('GET', `/api/tasks/${ID}/commits`, ({ db, p }) => { const task = taskOf(db, p[0]); return task.branch ? noWorktree(task) || taskCommits(task) : []; });
 route('GET', `/api/sandboxes/${ID}/skills`, ({ db, p }) => { sandboxOf(db, p[0]); return skillCatalog(db, p[0]); });
 route('GET', `/api/sandboxes/${ID}/skills/${ID}`, ({ db, p }) => {
   const skill = skillCatalog(db, p[0]).find((s) => s.name === p[1]);
@@ -2243,6 +2264,21 @@ route('GET', `/api/sandboxes/${ID}/files`, ({ db, p, query }) => {
   }
   const list = [...entries.values()].sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'dir' ? -1 : 1));
   return { path: dir, entries: list, truncated: false };
+});
+// The folders the editor opens (SPEC-340 EWT-001): the sandbox repository on its integration
+// branch, then each task with a worktree, newest first; a task has one from its start until it is
+// closed. A task's worktree is its owner's to change (SPEC-070).
+const NO_WORKTREE = new Set(['queued', 'prepared', 'chained', 'closed']);
+route('GET', `/api/sandboxes/${ID}/files/roots`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'write');
+  const tasks = db.tasks.filter((t) => t.sandbox_id === sandbox.id && t.branch && !NO_WORKTREE.has(t.status)).sort((a, b) => b.number - a.number);
+  return {
+    roots: [
+      { root: 'sandbox', branch: (sandbox.profile && sandbox.profile.integration_branch) || sandbox.default_branch, task_number: null, task_title: null, writable: true },
+      ...tasks.map((t) => ({ root: `task:${t.id}`, branch: t.branch, task_number: t.number, task_title: t.title, writable: ownerOf(t).login === db.me.user.login })),
+    ],
+  };
 });
 route('GET', `/api/sandboxes/${ID}/files/content`, ({ db, p, query }) => {
   sandboxOf(db, p[0]);
@@ -3622,7 +3658,7 @@ function updateView(db) {
 function moveUpdate(db, state, patch = {}) {
   const run = db.update.run;
   if (!run) return;
-  Object.assign(run, { state, state_since: new Date().toISOString(), progress: null, tasks: null, step: null }, patch);
+  Object.assign(run, { state, state_since: new Date().toISOString(), progress: null, tasks: null, deploys: [], step: null }, patch);
   run.can_cancel = state === 'building' || state === 'pausing';
   run.can_proceed = state === 'pausing';
   if (!UPDATE_STATES.includes(state)) run.finished_at = new Date().toISOString();
@@ -3633,6 +3669,19 @@ function moveUpdate(db, state, patch = {}) {
 function runUpdate(db, id) {
   const live = () => db.update.run && db.update.run.id === id && UPDATE_STATES.includes(db.update.run.state);
   const steps = 4;
+  // A running deploy holds the update one more step after its build (SPEC-342).
+  const wait = db.update.deploying === '1' ? UPDATE_STEP_MS : 0;
+  if (wait) {
+    later(() => {
+      if (!live() || db.update.run.state !== 'building') return;
+      Object.assign(db.update.run, {
+        step: 'built', progress: { done: 340, total: 340 },
+        message: 'Built. Waiting for 2 deploy(s) to finish before pausing tasks; new deploys are refused until the update installed.',
+        deploys: [{ sandbox: 'studio', environment: 'dev', kind: 'cd', run: 'cdr_waiting' }, { sandbox: 'studio', environment: 'dev-vm', kind: 'environment', run: 'env_waiting' }],
+      });
+      emit(db, { type: 'update.updated', phase: 'building' });
+    }, UPDATE_STEP_MS + 100);
+  }
   for (let i = 1; i <= steps; i += 1) {
     later(() => {
       if (!live() || db.update.run.state !== 'building') return;
@@ -3645,16 +3694,19 @@ function runUpdate(db, id) {
   later(() => {
     if (!live()) return;
     moveUpdate(db, 'pausing', { step: 'pausing', message: 'Pausing tasks: 2 of 3 paused.', tasks: { paused: 2, total: 3, waiting: [{ id: 'tsk_x', number: 4, title: 'Fix the flaky export test', sandbox: 'studio' }], deadline: new Date(Date.now() + 30 * MIN).toISOString() } });
-  }, UPDATE_STEP_MS + 100);
+    if (db.update.deploying === 'drain') {
+      Object.assign(db.update.run, { message: 'Waiting for 1 deploy(s) to finish before restarting.', can_proceed: false, deploys: [{ sandbox: 'studio', environment: 'dev', kind: 'cd', run: 'cdr_late' }] });
+    }
+  }, UPDATE_STEP_MS + 100 + wait);
   later(() => {
     if (!live()) return;
     moveUpdate(db, 'restarting', { step: 'installing', message: 'Installing the new version.' });
-  }, UPDATE_STEP_MS * 2);
+  }, UPDATE_STEP_MS * 2 + wait);
   later(() => {
     if (!live()) return;
     if (!db.update.fail) db.update.current = db.update.run.target.commit;
     moveUpdate(db, 'resuming', { step: 'resuming', message: 'Resuming tasks: 1 of 3.', progress: { done: 1, total: 3 } });
-  }, UPDATE_STEP_MS * 3);
+  }, UPDATE_STEP_MS * 3 + wait);
   later(() => {
     if (!live()) return;
     if (db.update.fail) {
@@ -3670,7 +3722,7 @@ function runUpdate(db, id) {
       if (db.docker.mode === 'kept') db.docker.hostCheck = docker;
       moveUpdate(db, 'succeeded', { message: `Updated to ${short7(db.update.current)}.`, docker });
     }
-  }, UPDATE_STEP_MS * 4);
+  }, UPDATE_STEP_MS * 4 + wait);
 }
 
 // `__yuliusMock.holdUpdateReads = true`: each read answers what it saw when it arrived, once
@@ -3703,7 +3755,7 @@ route('POST', '/api/admin/update', ({ db, body }) => {
   u.run = {
     id: `upd_${db.nextId}`, target: { commit: u.offer, short: short7(u.offer) }, from: { commit: u.current, short: short7(u.current) },
     summary: updateView(db).available.summary, state: 'building', step: 'fetching', message: 'Fetching the new version from GitHub.',
-    progress: null, tasks: null, error: null, log_tail: [], requested_by: db.me.user.login, started_at: now, state_since: now, finished_at: null, can_cancel: true, can_proceed: false,
+    progress: null, tasks: null, deploys: [], error: null, log_tail: [], requested_by: db.me.user.login, started_at: now, state_since: now, finished_at: null, can_cancel: true, can_proceed: false,
   };
   emit(db, { type: 'update.updated', phase: 'building' });
   runUpdate(db, u.run.id);
@@ -4235,6 +4287,7 @@ async function handleFetch(db, url, init = {}) {
     if (db.holdReads) await new Promise((resolve) => db.holdReads.push(resolve));
   }
   if (fileContent && init.method === 'PUT') {
+    db.saveRequests = (db.saveRequests || 0) + 1;
     db.savesOnTheirWay = (db.savesOnTheirWay || 0) + 1;
     try { return await handleFetchAfterLatency(db, url, init); } finally { db.savesOnTheirWay -= 1; }
   }

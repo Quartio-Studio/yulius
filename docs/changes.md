@@ -6,6 +6,27 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-27
 
+- An update of Yulius no longer cuts a running deploy (SPEC-342, ADR-0232, task #326). A CD run or
+  delivery environment run still running when the new version is built finishes first (tasks keep
+  working meanwhile and the Instance page names the deploys), and new deploys are refused until
+  the update installed, so the restart never stops one halfway. Before, the restarted server ended
+  such a run as an error with its outcome unknown.
+- The Editor opens any branch the sandbox has checked out (SPEC-340, ADR-0231, task #324). Its
+  folder picker lists the sandbox repository and every task's worktree, each named by its branch,
+  also when no task is selected; the status bar names the branch too. Another person's worktree
+  opens read-only and says why instead of failing at the first save. The Editor never checks out
+  a branch: each branch is reached through its worktree.
+- A Git board card whose task has no worktree opens nothing and says why: "Worktree gone", or "No
+  worktree yet" for a task that has not started (SPEC-343, task #327, fixes #943). It used to open
+  the task's changes, which could only answer "Couldn't load the changes: the task's worktree is
+  gone", also for a queued task that never had one. The Git overview now reports each task
+  branch's `worktree` (present, not_created or gone) from the same check that makes the changes
+  view refuse, and that refusal says when a task has not started yet.
+- A running task's progress counts its whole spec Plan, not only the steps listed before the
+  Plan grew (SPEC-341, task #325, fixes #942). Steps followed the spec's Plan only when a turn
+  ended, so a long goal turn that grew its Plan from 7 parts to 13 kept showing 77 % for hours.
+  Yulius now re-reads a live run's spec every 5 seconds. The step tools, a person skipping steps
+  and that sync take one per-task lock, so none of them overwrites another's change.
 - A long URL in a narrow terminal opens whole (SPEC-339, ADR-0230, task #323, fixes #940).
   Claude Code cuts a URL longer than a row at the right edge and continues it on the next row
   itself, so only the first part was a link and a click opened a truncated address. The URL is

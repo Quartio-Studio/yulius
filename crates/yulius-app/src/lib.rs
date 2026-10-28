@@ -25,6 +25,7 @@ pub mod coordination;
 mod creation_refusals;
 pub mod cross_sandbox;
 pub mod delivery;
+pub mod deploy_gate;
 pub mod discipline;
 pub mod disk;
 mod empty_repo;

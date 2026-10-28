@@ -279,7 +279,9 @@ watching, steering and unblocking.
   caret, name and selection in their Notes colour (awareness only: unsaved text stays each
   person's own), and its tabs go in any order. The file in front follows the disk: what
   teammates, agents and shells write shows within about 2 s while the person has not edited it
-  (SPEC-181).
+  (SPEC-181). Its folder picker opens any branch the sandbox has checked out, named by its branch:
+  the sandbox repository or any task's worktree, also with no task selected; another person's
+  worktree opens read-only and says why (SPEC-340).
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit
   the window and filter as people type when they are long; the start menu shows five tasks at a
   time and says how many more it scrolls to. Scrolling a task's terminal past its top offers the
@@ -332,7 +334,9 @@ watching, steering and unblocking.
 - **Updates**: Yulius updates itself from `main` without losing running work. The superadmin
   starts an update from the Update button beside their account button in the sidebar (SPEC-133).
   Once the new version is built, every task is frozen at once, mid-turn, and thawed after the
-  restart; the agents don't notice (SPEC-160).
+  restart; the agents don't notice (SPEC-160). A deploy (CD or environment run) running when the
+  new version is built finishes first, and new deploys are refused until the update installed, so an
+  update never cuts a deploy (SPEC-342).
 
 ## Principles
 

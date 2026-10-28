@@ -1032,3 +1032,268 @@ async fn a_file_on_the_way_is_not_a_folder_to_create_in_or_delete_from() -> Test
     assert_eq!(std::fs::read_to_string(repo.join("docs/a.txt"))?, "x");
     Ok(())
 }
+
+/// SPEC-340 EWT-001: the folders the editor can open, each with its branch: the sandbox
+/// repository first, then every task worktree on disk, newest first, writable for its owner only.
+#[tokio::test]
+async fn the_folder_list_names_every_worktree_by_branch() -> TestResult {
+    use yulius_app::ports::store::{TaskFieldUpdate, TaskStore as _};
+    use yulius_domain::ids::TaskId;
+
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    let bob = seed_github_user(&h, "u-bob", "bob").await?;
+    let carol = seed_github_user(&h, "u-carol", "carol").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    h.github.set_perm("bob", "acme/fixture", perms("write"));
+    h.github.set_perm("carol", "acme/fixture", perms("read"));
+    let data = h.app.config.data_dir.clone();
+    let repo = data.join("sandboxes/s1/repo");
+    std::fs::create_dir_all(repo.join(".git"))?;
+    std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/dev\n")?;
+    let worktrees = data.join("sandboxes/s1/worktrees");
+    for dir in ["t1", "t2"] {
+        std::fs::create_dir_all(worktrees.join(dir))?;
+    }
+    let outside = data.join("elsewhere");
+    std::fs::create_dir_all(&outside)?;
+    let first = seed_task(
+        &h,
+        "t1",
+        "s1",
+        "u-alice",
+        TaskStatus::Running,
+        Some(&worktrees.join("t1")),
+    )
+    .await?;
+    let second = seed_task(
+        &h,
+        "t2",
+        "s1",
+        "u-bob",
+        TaskStatus::Running,
+        Some(&worktrees.join("t2")),
+    )
+    .await?;
+    // Archived, its worktree still on disk: still a branch to open.
+    h.store
+        .update_task(
+            &TaskId::parse("t2")?,
+            &TaskFieldUpdate {
+                archived_at: Some(Some(h.app.now())),
+                ..TaskFieldUpdate::default()
+            },
+            h.app.now(),
+        )
+        .await?;
+    // No worktree yet, a removed one, and one leading outside the sandbox: none is listed.
+    seed_task(&h, "t3", "s1", "u-alice", TaskStatus::Queued, None).await?;
+    seed_task(
+        &h,
+        "t4",
+        "s1",
+        "u-alice",
+        TaskStatus::Running,
+        Some(&worktrees.join("t4")),
+    )
+    .await?;
+    seed_task(
+        &h,
+        "t5",
+        "s1",
+        "u-alice",
+        TaskStatus::Running,
+        Some(&outside),
+    )
+    .await?;
+
+    for (who, writable) in [(&alice, [true, false]), (&bob, [false, true])] {
+        let listed = call(
+            &h.router,
+            Method::GET,
+            "/api/sandboxes/s1/files/roots",
+            None,
+            who,
+        )
+        .await?;
+        assert_eq!(listed.status, StatusCode::OK, "{:?}", listed.body);
+        assert_eq!(
+            listed.body,
+            json!({"roots": [
+                {"root": "sandbox", "branch": "dev", "task_number": null, "task_title": null, "writable": true},
+                {"root": "task:t2", "branch": "feat/t2", "task_number": second.number, "task_title": "task t2", "writable": writable[1]},
+                {"root": "task:t1", "branch": "feat/t1", "task_number": first.number, "task_title": "task t1", "writable": writable[0]},
+            ]})
+        );
+    }
+
+    // A detached HEAD has no branch.
+    std::fs::write(
+        repo.join(".git/HEAD"),
+        "0123456789abcdef0123456789abcdef01234567\n",
+    )?;
+    let detached = call(
+        &h.router,
+        Method::GET,
+        "/api/sandboxes/s1/files/roots",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(detached.body["roots"][0]["root"], "sandbox");
+    assert!(detached.body["roots"][0]["branch"].is_null());
+
+    // Read access is not enough, as for the other file requests.
+    let refused = call(
+        &h.router,
+        Method::GET,
+        "/api/sandboxes/s1/files/roots",
+        None,
+        &carol,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    Ok(())
+}
+
+/// SPEC-340 EWT-001: a `HEAD` or `.git` replaced by a link (a contained shell is root in its
+/// sandbox) names no branch: the server reads nothing outside the sandbox for it.
+#[tokio::test]
+async fn the_folder_list_reads_no_branch_through_a_planted_link() -> TestResult {
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    let repo = data.join("sandboxes/s1/repo");
+    let outside = data.join("elsewhere");
+    std::fs::create_dir_all(repo.join(".git"))?;
+    std::fs::create_dir_all(&outside)?;
+    std::fs::write(outside.join("HEAD"), "ref: refs/heads/secret\n")?;
+
+    std::os::unix::fs::symlink(outside.join("HEAD"), repo.join(".git/HEAD"))?;
+    let linked_head = call(
+        &h.router,
+        Method::GET,
+        "/api/sandboxes/s1/files/roots",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(linked_head.status, StatusCode::OK, "{:?}", linked_head.body);
+    assert!(
+        linked_head.body["roots"][0]["branch"].is_null(),
+        "{:?}",
+        linked_head.body
+    );
+
+    std::fs::remove_dir_all(repo.join(".git"))?;
+    std::os::unix::fs::symlink(&outside, repo.join(".git"))?;
+    let linked_git = call(
+        &h.router,
+        Method::GET,
+        "/api/sandboxes/s1/files/roots",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(linked_git.body["roots"][0]["root"], "sandbox");
+    assert!(
+        linked_git.body["roots"][0]["branch"].is_null(),
+        "{:?}",
+        linked_git.body
+    );
+
+    // The repository folder itself a link: no sandbox folder to offer (its requests are 403).
+    std::fs::remove_file(repo.join(".git"))?;
+    std::fs::rename(&repo, data.join("repo.aside"))?;
+    std::os::unix::fs::symlink(&outside, &repo)?;
+    let linked_repo = call(
+        &h.router,
+        Method::GET,
+        "/api/sandboxes/s1/files/roots",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(linked_repo.status, StatusCode::OK, "{:?}", linked_repo.body);
+    assert_eq!(linked_repo.body, json!({"roots": []}));
+    Ok(())
+}
+
+/// SPEC-340 review: `.git` swapped for a link to another folder after the repository was found
+/// still names no branch from there (ADR-0174: the handle, not the path, is read).
+#[tokio::test]
+async fn the_folder_list_reads_no_branch_through_a_git_folder_swapped_after_the_check() -> TestResult
+{
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    let repo = data.join("sandboxes/s1/repo");
+    std::fs::create_dir_all(repo.join(".git"))?;
+    std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/dev\n")?;
+    let outside = data.join("other-sandbox-git");
+    std::fs::create_dir_all(&outside)?;
+    std::fs::write(outside.join("HEAD"), "ref: refs/heads/secret\n")?;
+    let (git, target) = (repo.join(".git"), outside.clone());
+    yulius_app::race::on(yulius_app::race::Point::RootsHead, &repo, move || {
+        swap_for_link(&git, &target).ok();
+    });
+    let listed = call(
+        &h.router,
+        Method::GET,
+        "/api/sandboxes/s1/files/roots",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(listed.status, StatusCode::OK, "{:?}", listed.body);
+    assert!(
+        !listed.body.to_string().contains("secret"),
+        "a branch outside the sandbox was read: {:?}",
+        listed.body
+    );
+    assert!(
+        listed.body["roots"][0]["branch"].is_null(),
+        "{:?}",
+        listed.body
+    );
+    Ok(())
+}
+
+/// SPEC-340 review: a pipe planted as `HEAD` blocks nothing; the list answers without a branch.
+#[tokio::test]
+async fn the_folder_list_is_not_held_by_a_pipe_planted_as_head() -> TestResult {
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let repo = h.app.config.data_dir.join("sandboxes/s1/repo");
+    std::fs::create_dir_all(repo.join(".git"))?;
+    nix::unistd::mkfifo(
+        &repo.join(".git/HEAD"),
+        nix::sys::stat::Mode::from_bits_truncate(0o600),
+    )?;
+    let listed = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        call(
+            &h.router,
+            Method::GET,
+            "/api/sandboxes/s1/files/roots",
+            None,
+            &alice,
+        ),
+    )
+    .await
+    .map_err(|_| "the list waited on the pipe")??;
+    assert_eq!(listed.status, StatusCode::OK, "{:?}", listed.body);
+    assert!(
+        listed.body["roots"][0]["branch"].is_null(),
+        "{:?}",
+        listed.body
+    );
+    Ok(())
+}

@@ -106,6 +106,29 @@ pub struct UploadedFile {
     pub replaced: bool,
 }
 
+/// One folder the editor can open (SPEC-340 EWT-001).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileRoot {
+    /// `sandbox` or `task:<task id>`, the `root` of the other file requests.
+    pub root: String,
+    /// The branch checked out there; `None` for a detached or unreadable `HEAD`.
+    pub branch: Option<String>,
+    /// The task's number, for a task worktree.
+    pub task_number: Option<u32>,
+    /// The task's title, for a task worktree.
+    pub task_title: Option<String>,
+    /// The caller may change files there (a task's worktree is its owner's, SPEC-070).
+    pub writable: bool,
+}
+
+/// `GET /api/sandboxes/{sid}/files/roots`: the sandbox repository, then every task worktree on
+/// disk, newest task first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileRoots {
+    /// The folders.
+    pub roots: Vec<FileRoot>,
+}
+
 /// `PUT /api/sandboxes/{sid}/files/presence` body (SPEC-127 EDT-008): the caller's selection in
 /// the file's text as saved at `sha256`, or `null` when they left the file. Relayed to the
 /// sandbox's writers as `file.presence` and stored nowhere.

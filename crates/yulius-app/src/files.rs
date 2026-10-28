@@ -25,7 +25,8 @@ use nix::sys::stat::{Mode, SFlag, fstatat, mkdirat};
 use nix::unistd::{UnlinkatFlags, unlinkat};
 
 use yulius_contracts::api::files::{
-    CreateEntry, DirListing, FileContent, FileEntry, FilePresence, FileWritten, WriteFile,
+    CreateEntry, DirListing, FileContent, FileEntry, FilePresence, FileRoot, FileRoots,
+    FileWritten, WriteFile,
 };
 use yulius_contracts::events::UiEvent;
 use yulius_domain::ids::{SandboxId, TaskId};
@@ -340,6 +341,40 @@ pub(crate) fn replace_in(
     written
 }
 
+/// Most bytes of `.git/HEAD` read: `ref: refs/heads/<branch>` fits well within it.
+const MAX_HEAD_BYTES: u64 = 1024;
+
+/// The sandbox repository's branch, as its `HEAD` names it: `None` when `HEAD` is detached or
+/// unreadable, and `Err` when there is no repository folder. Walked from `anchor` (the sandbox
+/// directory) folder by folder with `O_NOFOLLOW` and `HEAD` opened without following a link or
+/// waiting on a pipe, so a contained shell (root in its sandbox) that swaps `repo` or `.git` for
+/// a link, at any moment, steers nothing outside the sandbox (ADR-0174).
+fn checked_out_branch(anchor: &Path) -> Result<Option<String>, Errno> {
+    use std::io::Read as _;
+    let repo = open_dirs_below(anchor, &[OsStr::new("repo")], false)?;
+    crate::race::reached(crate::race::Point::RootsHead, &anchor.join("repo"));
+    let Ok(git) = open_dir_at(&repo, OsStr::new(".git"), false) else {
+        return Ok(None);
+    };
+    let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+    let Ok(head) = openat(&git, "HEAD", flags, Mode::empty()) else {
+        return Ok(None);
+    };
+    let file = std::fs::File::from(head);
+    if !file.metadata().is_ok_and(|meta| meta.is_file()) {
+        return Ok(None);
+    }
+    let mut text = String::new();
+    if file.take(MAX_HEAD_BYTES).read_to_string(&mut text).is_err() {
+        return Ok(None);
+    }
+    Ok(text
+        .trim()
+        .strip_prefix("ref: refs/heads/")
+        .filter(|branch| !branch.is_empty())
+        .map(str::to_owned))
+}
+
 /// A SHA-256 as the files API writes it: 64 lowercase hex digits.
 fn is_sha256_hex(sha: &str) -> bool {
     sha.len() == 64
@@ -386,6 +421,59 @@ impl App {
             ));
         }
         Ok(worktree)
+    }
+
+    /// The folders a write user of `sandbox` can open in the editor (SPEC-340 EWT-001): the
+    /// sandbox repository with the branch its `HEAD` names, then every task worktree that is on
+    /// disk inside the sandbox directory, newest task first, writable for the task's owner only.
+    ///
+    /// # Errors
+    /// Access errors (`Work` on the sandbox), store failures.
+    pub async fn files_roots(&self, ctx: &AuthContext, sandbox: &str) -> AppResult<FileRoots> {
+        let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
+        let (record, _) = self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        let mut tasks = self.deps.store.tasks(&record.id, false).await?;
+        tasks.extend(self.deps.store.tasks(&record.id, true).await?);
+        tasks.sort_by_key(|task| std::cmp::Reverse(task.number));
+        let sandbox_dir = self.sandbox_dir(&record.id);
+        let user = ctx.user.id.clone();
+        // Disk only from here: off the async workers, as the reads of `file_read`.
+        let roots = tokio::task::spawn_blocking(move || {
+            let mut roots = Vec::new();
+            let Ok(anchor) = std::fs::canonicalize(sandbox_dir) else {
+                return roots;
+            };
+            if let Ok(branch) = checked_out_branch(&anchor) {
+                roots.push(FileRoot {
+                    root: "sandbox".into(),
+                    branch,
+                    task_number: None,
+                    task_title: None,
+                    writable: true,
+                });
+            }
+            for task in tasks {
+                let Some(path) = task.worktree_path.as_deref() else {
+                    continue;
+                };
+                // As `sandbox_worktree`: only a directory inside the sandbox is the task's folder.
+                match std::fs::canonicalize(path) {
+                    Ok(worktree) if worktree.starts_with(&anchor) && worktree.is_dir() => {}
+                    _ => continue,
+                }
+                roots.push(FileRoot {
+                    root: format!("task:{}", task.id),
+                    writable: task.owner == user,
+                    branch: task.branch,
+                    task_number: Some(task.number),
+                    task_title: Some(task.title),
+                });
+            }
+            roots
+        })
+        .await
+        .map_err(AppError::internal)?;
+        Ok(FileRoots { roots })
     }
 
     /// Resolves `root` and `path` for a write user of `sandbox`; to `write` into a task's

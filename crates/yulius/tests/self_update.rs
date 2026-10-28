@@ -445,6 +445,10 @@ async fn the_hold_survives_the_restart_and_tasks_resume_staggered() -> TestResul
     let _ = i.h.app.update_round().await;
     let install = i.helper.last().ok_or("install")?;
     assert_eq!(install.action, HelperAction::Install);
+    assert!(
+        i.h.app.deploy_permit().is_err(),
+        "no deploy starts while it installs (SPEC-342)"
+    );
     i.helper
         .report(&install, HelperState::Running, "stopping", None);
 
@@ -460,6 +464,10 @@ async fn the_hold_survives_the_restart_and_tasks_resume_staggered() -> TestResul
         .report(&install, HelperState::Running, "checking", None);
     let _ = restarted.update_round().await;
     assert_eq!(hook(&internal, WORKING, "Stop").await?.0, 202);
+    assert!(
+        restarted.deploy_permit().is_err(),
+        "a server restarted mid-install closes the gate on its first pass (SPEC-342 DPU-007)"
+    );
 
     // The helper's check passed: the tasks are released one by one.
     i.helper
@@ -468,6 +476,7 @@ async fn the_hold_survives_the_restart_and_tasks_resume_staggered() -> TestResul
     let _ = restarted.update_round().await;
     let (code, _, _) = hook(&internal, WORKING, "Stop").await?;
     assert_eq!(code, 200, "the held turn goes on");
+    assert!(restarted.deploy_permit().is_ok(), "deploys start again");
     // (Without subscriptions the pool itself holds a new prompt, with its own Retry-After.)
     let (_, retry_after, _) = hook(&internal, IDLE, "UserPromptSubmit").await?;
     assert_ne!(
@@ -886,6 +895,14 @@ async fn a_cancel_during_a_freeze_pass_leaves_nothing_frozen() -> TestResult {
     }
     // Thawed by the cancel itself, before any later round's backstop.
     assert!(host.frozen().is_empty(), "left frozen: {:?}", host.frozen());
+    // The overtaken pass closed the deploy gate after the cancel opened it; the next round, with
+    // no update open, opens it again (SPEC-342 DPU-007, review round 2).
+    assert!(
+        i.h.app.deploy_permit().is_err(),
+        "the overtaken pass closed it"
+    );
+    let _ = i.h.app.update_round().await;
+    assert!(i.h.app.deploy_permit().is_ok(), "deploys start again");
     Ok(())
 }
 
@@ -1201,5 +1218,359 @@ async fn a_stop_does_not_wait_for_a_freeze_pass() -> TestResult {
     round.await?;
     let r = stopped.map_err(|_| "the stop waited for the freeze pass")??;
     assert!(r.status.is_success(), "{} {}", r.status, r.body);
+    Ok(())
+}
+
+const UPDATING: &str = "nothing ran: Yulius is being updated";
+
+/// A project `s1` alice may push to, whose delivery profile has an environment with a command.
+async fn deploying_project(i: &Instance) -> Result<(), Box<dyn std::error::Error>> {
+    use yulius_app::ports::store::SandboxStore as _;
+    i.h.github.set_perm(
+        "alice",
+        "acme/fixture",
+        yulius_domain::permission::GitHubPermissions {
+            admin: false,
+            maintain: false,
+            push: true,
+            triage: false,
+            pull: true,
+        },
+    );
+    let profile = json!({
+        "preset": "product", "integration_branch": "dev", "production_branch": "main",
+        "merge": "merge", "promote": "fast_forward", "auto_promote": false,
+        "environments": [
+            {"name": "dev-vm", "after": "integration", "verify": "command", "command": "true"}
+        ]
+    });
+    i.h.store
+        .set_profile(
+            &yulius_domain::ids::SandboxId::parse("s1")?,
+            &profile.to_string(),
+        )
+        .await?;
+    Ok(())
+}
+
+/// A CD run of `s1`'s dev recorded as running (its executor elsewhere).
+async fn running_deploy(i: &Instance, id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use yulius_app::ci::cd::CdRunRecord;
+    use yulius_app::ports::store_ext::CdStore as _;
+    i.h.store
+        .insert_cd_run(&CdRunRecord {
+            id: id.into(),
+            sandbox_id: yulius_domain::ids::SandboxId::parse("s1")?,
+            environment: "dev".into(),
+            stage: yulius_domain::cd::CdStage::Dev,
+            branch: "dev".into(),
+            sha: "0123456789abcdef0123456789abcdef01234567".into(),
+            state: yulius_domain::ci::RunState::Running,
+            reason: None,
+            requested_by: "alice".into(),
+            task_id: None,
+            deploy: Some("sh scripts/cd/deploy.sh dev".into()),
+            verify: None,
+            note: None,
+            output: String::new(),
+            exit_code: None,
+            started_at: i.h.app.now(),
+            ended_at: None,
+        })
+        .await?;
+    Ok(())
+}
+
+/// Ends the seeded CD run `id` as passed.
+async fn deploy_ends(i: &Instance, id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use yulius_app::ci::cd::CdRunEnd;
+    use yulius_app::ports::store_ext::CdStore as _;
+    i.h.store
+        .finish_cd_run(
+            id,
+            &CdRunEnd {
+                state: yulius_domain::ci::RunState::Passed,
+                reason: None,
+                exit_code: Some(0),
+                output: "[yulius] done\n".into(),
+                ended_at: i.h.app.now(),
+                usage: None,
+            },
+        )
+        .await?;
+    Ok(())
+}
+
+/// Starts the update to NEW and reports its build done, without driving it further.
+async fn build_reported(i: &Instance) -> Result<(), Box<dyn std::error::Error>> {
+    post(i, "/api/admin/update/check", None, &i.admin).await?;
+    let r = post(
+        i,
+        "/api/admin/update",
+        Some(json!({"commit": NEW, "confirm": true})),
+        &i.admin,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.body);
+    let build = i.helper.last().ok_or("no build request")?;
+    i.helper.report(&build, HelperState::Done, "built", None);
+    Ok(())
+}
+
+/// SPEC-342 DPU-001/DPU-007: once the build is done no deploy starts until the update ended:
+/// a person's CD deploy and an environment command run are refused before anything ran; the
+/// cancel opens the gate again.
+#[tokio::test]
+async fn new_deploys_are_refused_while_the_update_installs() -> TestResult {
+    use yulius_app::ports::store_ext::{CdStore as _, DeliveryStore as _};
+    let i = instance().await?;
+    two_tasks(&i).await?;
+    deploying_project(&i).await?;
+    let open = post(
+        &i,
+        "/api/sandboxes/s1/cd/dev/deploy",
+        Some(json!({})),
+        &i.member,
+    )
+    .await?;
+    assert!(
+        !open.body.to_string().contains(UPDATING),
+        "no update yet: {}",
+        open.body
+    );
+    built(&i).await?;
+    assert_eq!(get(&i, &i.admin).await?["run"]["state"], "pausing");
+    let cd = post(
+        &i,
+        "/api/sandboxes/s1/cd/dev/deploy",
+        Some(json!({})),
+        &i.member,
+    )
+    .await?;
+    assert_eq!(cd.status, StatusCode::CONFLICT, "{}", cd.body);
+    assert!(cd.body.to_string().contains(UPDATING), "{}", cd.body);
+    let env = post(
+        &i,
+        "/api/sandboxes/s1/delivery/environments/dev-vm/runs",
+        Some(json!({"confirm": true})),
+        &i.member,
+    )
+    .await?;
+    assert_eq!(env.status, StatusCode::CONFLICT, "{}", env.body);
+    assert!(env.body.to_string().contains(UPDATING), "{}", env.body);
+    assert!(i.h.store.running_cd_runs().await?.is_empty(), "no CD run");
+    assert!(
+        i.h.store.running_environment_runs().await?.is_empty(),
+        "no environment run"
+    );
+    let r = post(&i, "/api/admin/update/cancel", None, &i.admin).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let after = post(
+        &i,
+        "/api/sandboxes/s1/cd/dev/deploy",
+        Some(json!({})),
+        &i.member,
+    )
+    .await?;
+    assert!(
+        !after.body.to_string().contains(UPDATING),
+        "the cancel opened the gate: {}",
+        after.body
+    );
+    Ok(())
+}
+
+/// SPEC-342 DPU-003/DPU-006: a deploy running when the build is done keeps the update building
+/// (nothing frozen, nothing held, no install) and is listed; once it ended, tasks pause and the
+/// install follows.
+#[tokio::test]
+async fn a_running_deploy_is_waited_for_before_tasks_pause() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    two_tasks(&i).await?;
+    deploying_project(&i).await?;
+    running_deploy(&i, "deploying").await?;
+    build_reported(&i).await?;
+    for _ in 0..3 {
+        let _ = i.h.app.update_round().await;
+    }
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "building", "{view}");
+    assert_eq!(
+        view["run"]["message"],
+        "Built. Waiting for 1 deploy(s) to finish before pausing tasks; new deploys are refused \
+         until the update installed."
+    );
+    assert_eq!(
+        view["run"]["deploys"],
+        json!([{"sandbox": "fixture", "environment": "dev", "kind": "cd", "run": "deploying"}])
+    );
+    assert_eq!(view["run"]["can_proceed"], false);
+    assert!(host.frozen().is_empty(), "no task is frozen");
+    assert_eq!(
+        hook(&i.h.internal, WORKING, "Stop").await?.0,
+        200,
+        "no turn boundary is held"
+    );
+    let cd = post(
+        &i,
+        "/api/sandboxes/s1/cd/dev/deploy",
+        Some(json!({})),
+        &i.member,
+    )
+    .await?;
+    assert!(cd.body.to_string().contains(UPDATING), "{}", cd.body);
+    assert_eq!(
+        i.helper.last().ok_or("request")?.action,
+        HelperAction::Build,
+        "no install request"
+    );
+    deploy_ends(&i, "deploying").await?;
+    let _ = i.h.app.update_round().await;
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "pausing", "{view}");
+    assert_eq!(view["run"]["deploys"], json!([]));
+    let _ = i.h.app.update_round().await;
+    let _ = i.h.app.update_round().await;
+    assert_eq!(
+        i.helper.last().ok_or("install")?.action,
+        HelperAction::Install
+    );
+    Ok(())
+}
+
+/// SPEC-342 DPU-003: a delivery environment run running when the build is done is waited for as a
+/// CD run is.
+#[tokio::test]
+async fn a_running_environment_run_is_waited_for() -> TestResult {
+    use yulius_app::delivery::{EnvironmentRunKind, EnvironmentRunRecord, EnvironmentRunState};
+    use yulius_app::ports::store_ext::DeliveryStore as _;
+    let i = instance().await?;
+    two_tasks(&i).await?;
+    let alice = i.h.store.user_by_login("alice").await?.ok_or("alice")?.id;
+    i.h.store
+        .insert_environment_run(&EnvironmentRunRecord {
+            id: "env-running".into(),
+            sandbox_id: yulius_domain::ids::SandboxId::parse("s1")?,
+            environment: "dev-vm".into(),
+            kind: EnvironmentRunKind::Command,
+            requested_by: alice,
+            command: Some("true".into()),
+            commit: None,
+            state: EnvironmentRunState::Running,
+            output: String::new(),
+            exit_code: None,
+            started_at: i.h.app.now(),
+            ended_at: None,
+        })
+        .await?;
+    build_reported(&i).await?;
+    let _ = i.h.app.update_round().await;
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "building", "{view}");
+    assert_eq!(
+        view["run"]["deploys"],
+        json!([{"sandbox": "fixture", "environment": "dev-vm", "kind": "environment", "run": "env-running"}])
+    );
+    i.h.store
+        .finish_environment_run(
+            "env-running",
+            EnvironmentRunState::Succeeded,
+            "done\n",
+            Some(0),
+            i.h.app.now(),
+        )
+        .await?;
+    let _ = i.h.app.update_round().await;
+    assert_eq!(get(&i, &i.admin).await?["run"]["state"], "pausing");
+    Ok(())
+}
+
+/// SPEC-342 DPU-004: the longest a deploy can legitimately last (an agent-state wait and its
+/// deploy, each up to the 30-minute job timeout; an environment run's 35-minute preparation) and
+/// 5 minutes is waited for; a deploy still running past it cancels the update and opens the gate.
+#[tokio::test]
+async fn a_deploy_past_the_bound_cancels_the_update() -> TestResult {
+    let i = instance().await?;
+    two_tasks(&i).await?;
+    deploying_project(&i).await?;
+    running_deploy(&i, "stuck").await?;
+    build_reported(&i).await?;
+    let _ = i.h.app.update_round().await;
+    advance(&i.h, 70 * 60_000);
+    let _ = i.h.app.update_round().await;
+    assert_eq!(get(&i, &i.admin).await?["run"]["state"], "building");
+    advance(&i.h, 1);
+    let _ = i.h.app.update_round().await;
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "cancelled", "{view}");
+    assert_eq!(
+        view["run"]["error"],
+        "1 deploy(s) were still running 70 minutes after the build; nothing was installed."
+    );
+    let cd = post(
+        &i,
+        "/api/sandboxes/s1/cd/dev/deploy",
+        Some(json!({})),
+        &i.member,
+    )
+    .await?;
+    assert!(!cd.body.to_string().contains(UPDATING), "{}", cd.body);
+    Ok(())
+}
+
+/// SPEC-342 DPU-002: a deploy past the gate and not recorded yet (it holds its permit) keeps the
+/// update waiting; once it is gone, tasks pause.
+#[tokio::test]
+async fn a_starting_deploy_is_waited_for() -> TestResult {
+    let i = instance().await?;
+    two_tasks(&i).await?;
+    let permit = i.h.app.deploy_permit()?;
+    build_reported(&i).await?;
+    let _ = i.h.app.update_round().await;
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "building", "{view}");
+    assert_eq!(
+        view["run"]["message"],
+        "Built. Waiting for 1 deploy(s) to finish before pausing tasks; new deploys are refused \
+         until the update installed."
+    );
+    assert_eq!(view["run"]["deploys"], json!([]), "nothing recorded yet");
+    drop(permit);
+    let _ = i.h.app.update_round().await;
+    assert_eq!(get(&i, &i.admin).await?["run"]["state"], "pausing");
+    Ok(())
+}
+
+/// SPEC-342 DPU-005: a deploy running while the update pauses tasks (a server restarted mid-drain)
+/// keeps the install from being requested, even after "Continue without waiting".
+#[tokio::test]
+async fn a_deploy_running_while_draining_holds_the_install() -> TestResult {
+    let i = instance().await?;
+    two_tasks(&i).await?;
+    built(&i).await?;
+    running_deploy(&i, "late").await?;
+    let r = post(&i, "/api/admin/update/proceed", None, &i.admin).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    for _ in 0..3 {
+        let _ = i.h.app.update_round().await;
+    }
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "pausing", "{view}");
+    assert_eq!(view["run"]["deploys"][0]["run"], "late");
+    assert_eq!(
+        view["run"]["message"],
+        "Waiting for 1 deploy(s) to finish before restarting."
+    );
+    assert_eq!(view["run"]["can_proceed"], false, "nothing to skip");
+    assert_eq!(
+        i.helper.last().ok_or("request")?.action,
+        HelperAction::Build
+    );
+    deploy_ends(&i, "late").await?;
+    let _ = i.h.app.update_round().await;
+    assert_eq!(
+        i.helper.last().ok_or("install")?.action,
+        HelperAction::Install
+    );
     Ok(())
 }

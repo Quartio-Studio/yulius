@@ -14,7 +14,9 @@ should be paused imidietly, not waiting for something to finish, but the agent s
 that. Like tokens should just stopped streaming and they should get resumed after the update".
 It changes how OPS-008 (SPEC-001) pauses tasks; the rest of OPS-006..OPS-009 stays.
 Amended by [SPEC-319](SPEC-319-the-update-s-30-minute-cancel-message-co.md): the 30-minute cancel
-message counts every task not paused, not the "Still in a turn" list.
+message counts every task not paused, not the "Still in a turn" list. Extended by
+[SPEC-342](SPEC-342-make-sure-deployment-doesnt-break-while.md): a deploy running when the build is
+done is waited for before tasks freeze, and new deploys are refused until the install ended.
 
 ## Goal
 

@@ -2103,6 +2103,25 @@ sequenceDiagram
     Note over B: an update with a lower seq from that tab, arriving later, is dropped
 ```
 
+The Editor's folder picker reaches every branch through its worktree
+([SPEC-340](../.ai/specs/SPEC-340-in-editor-we-want-be-able-to-change-bran.md),
+[decision 0231](decisions/0231-the-editor-reaches-a-branch-through-its-worktree.md)):
+`App::files_roots` lists the sandbox repository with the branch its `.git/HEAD` names (walked
+from the sandbox directory through `O_NOFOLLOW` handles, as in the section on host access above)
+and each task worktree still on disk, with whether the caller owns it. The Editor reads the list
+whenever it comes to the front, its picker gets focus or the selected task changes, names each
+folder by its branch, and opens another person's worktree read-only (no save is sent, the explorer
+offers nothing that writes, a drop adds nothing); it never checks out a branch.
+
+```mermaid
+flowchart LR
+    E[Editor folder picker<br/>editorview.js] -->|GET files/roots| R[App::files_roots]
+    R --> H[repo/.git/HEAD<br/>handles, O_NOFOLLOW]
+    R --> T[(tasks: worktree_path,<br/>branch, owner)]
+    R -->|roots: root, branch,<br/>task_number, writable| E
+    E -->|root=task:id<br/>files, content| F[App::file_target<br/>owner-only writes]
+```
+
 The Editor shows the same presence for files
 ([SPEC-127](../.ai/specs/SPEC-127-the-editor-gets-the-notepad-s-smooth-sel.md),
 [decision 0103](decisions/0103-editor-presence-mirrors-monaco-and-reaches-writers-only.md)): the
@@ -2178,6 +2197,13 @@ agent stops mid-turn with nothing to notice while its ptyhost keeps serving. The
 restarts the service; the new server releases and thaws the tasks one by one. A run that cannot be
 frozen (no delegated cgroup) pauses at its turn boundary through the hook hold instead.
 
+Deploys are not frozen: a restart would end them (their process host outlives it, their executor
+does not). When the build is done the server closes the deploy gate (`deploy_gate.rs`): `cd_start`
+and `dlv_start_environment_run` hold a permit until their run is recorded and are refused while
+it is closed; the update stays `building` while a CD or environment run is running or starting,
+and pauses tasks only once none is (SPEC-342, ADR-0232). The gate opens when the update resumes,
+is cancelled or fails.
+
 ```mermaid
 sequenceDiagram
   participant S as Server (updates.rs)
@@ -2186,6 +2212,7 @@ sequenceDiagram
   participant R as Root helper
   S->>R: build request (tasks keep working)
   R-->>S: built
+  S->>S: close the deploy gate; wait until no CD or environment run runs (tasks keep working)
   S->>H: freeze(run) for every live task
   H->>K: mkdir run-<attempt>, cgroup.freeze=1, move agent tree
   K-->>H: cgroup.events frozen 1

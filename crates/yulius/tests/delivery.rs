@@ -818,6 +818,30 @@ impl Fixture {
                 &format!("origin/{base}"),
             ],
         )?;
+        self.insert_task(
+            id,
+            title,
+            branch,
+            Some(worktree.to_string_lossy().into_owned()),
+            creator,
+        )
+        .await?;
+        Ok(worktree)
+    }
+
+    /// A task given its branch at creation that has not started: no worktree yet (SPEC-343).
+    async fn add_unstarted_task(&self, id: &str, title: &str, branch: &str) -> BoxResult<()> {
+        self.insert_task(id, title, branch, None, "u-bob").await
+    }
+
+    async fn insert_task(
+        &self,
+        id: &str,
+        title: &str,
+        branch: &str,
+        worktree_path: Option<String>,
+        creator: &str,
+    ) -> BoxResult<()> {
         self.h
             .store
             .insert_task(&TaskRecord {
@@ -833,7 +857,7 @@ impl Fixture {
                 status: TaskStatus::Closed,
                 activity: None,
                 branch: Some(branch.into()),
-                worktree_path: Some(worktree.to_string_lossy().into_owned()),
+                worktree_path,
                 spec_path: None,
                 origin: TaskOrigin::Ui,
                 automation_run: None,
@@ -850,7 +874,7 @@ impl Fixture {
                 supertask: false,
             })
             .await?;
-        Ok(worktree)
+        Ok(())
     }
 
     async fn req(
@@ -2643,6 +2667,82 @@ async fn task_review_shows_changes_and_commits() -> TestResult {
         )
         .await?;
     assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+    Ok(())
+}
+
+/// #943 (SPEC-343 WTG-001): the Git overview says whether each task's worktree is on disk,
+/// was never created (a task not started yet) or is gone, exactly as its changes can or cannot
+/// be read, so the Git page offers them only while they can be.
+#[tokio::test]
+async fn git_overview_says_whether_a_tasks_worktree_is_there() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    f.add_unstarted_task("t2", "Queued work", "feat/2-queued-work")
+        .await?;
+    let worktree_of = |body: &Value, id: &str| {
+        body["tasks"]
+            .as_array()
+            .and_then(|tasks| tasks.iter().find(|t| t["task_id"] == id))
+            .map(|t| t["worktree"].clone())
+    };
+
+    let page = f
+        .req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
+        .await?;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert_eq!(
+        worktree_of(&page.body, "t1"),
+        Some(json!("present")),
+        "{}",
+        page.body
+    );
+    assert_eq!(
+        worktree_of(&page.body, "t2"),
+        Some(json!("not_created")),
+        "{}",
+        page.body
+    );
+    // A task that has not started says so, not that its worktree is gone.
+    let changes = f
+        .req(Method::GET, "/api/tasks/t2/changes", None, &f.rita)
+        .await?;
+    assert_eq!(changes.status, StatusCode::CONFLICT, "{}", changes.body);
+    assert!(
+        !changes.body.to_string().contains("gone"),
+        "{}",
+        changes.body
+    );
+
+    std::fs::remove_dir_all(&wt)?;
+    let page = f
+        .req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
+        .await?;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert_eq!(
+        worktree_of(&page.body, "t1"),
+        Some(json!("gone")),
+        "{}",
+        page.body
+    );
+    // The branch is still listed with its facts; only its changes can't be read.
+    let task = &page.body["tasks"]
+        .as_array()
+        .and_then(|tasks| tasks.iter().find(|t| t["task_id"] == "t1").cloned())
+        .ok_or("t1")?;
+    assert_eq!(task["branch"], "feat/1-checkout-api");
+    assert_eq!(task["files_changed"], 1);
+    let changes = f
+        .req(Method::GET, "/api/tasks/t1/changes", None, &f.rita)
+        .await?;
+    assert_eq!(changes.status, StatusCode::CONFLICT, "{}", changes.body);
+    assert!(
+        changes.body.to_string().contains("worktree is gone"),
+        "{}",
+        changes.body
+    );
     Ok(())
 }
 
