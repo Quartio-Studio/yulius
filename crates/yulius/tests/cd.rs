@@ -607,6 +607,37 @@ async fn a_run_left_by_a_restart_is_an_error() -> TestResult {
     Ok(())
 }
 
+/// SPEC-347 DCR-001/002 (#948): a deploy whose request is dropped as soon as its run is recorded
+/// still runs its deploy and verify, never staying `running` with nothing executing it. The
+/// store answers in order on one thread, so a run seen there is one whose request has not passed
+/// its insert's answer yet; each poll of the request passes at most one store call.
+#[tokio::test]
+async fn a_deploy_whose_request_is_dropped_after_its_record_still_runs() -> TestResult {
+    let f = fixture(&full_cd()).await?;
+    f.allow_secret().await?;
+    let mut request = Box::pin(f.deploy(&f.alice, "dev", None));
+    let id = loop {
+        if let std::task::Poll::Ready(answer) = futures::poll!(request.as_mut()) {
+            let answer = answer?;
+            assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+            break answer.body["run_id"].as_str().ok_or("id")?.to_owned();
+        }
+        if let Some(run) = f.h.store.running_cd_runs().await?.into_iter().next() {
+            drop(request);
+            break run.id;
+        }
+    };
+    let run = f.ended(&id).await?;
+    assert_eq!(run["state"], "passed", "{run}");
+    let output = run["output"].as_str().unwrap_or_default();
+    assert!(output.contains("verified"), "{output}");
+    assert!(
+        f.h.app.deploy_permit().is_ok(),
+        "deploys still start afterwards"
+    );
+    Ok(())
+}
+
 /// AC4 (CDA-002): production is a person's with administrator access who typed the project's
 /// slug; the deploy promotes the integration branch (the promotion pull request, merged at once
 /// when its checks passed) and runs the scripts at the new production head.
