@@ -43,7 +43,7 @@ the environment as "already running" until a restart.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | DCR-001 | The section of a CD start from its record (`insert_cd_run`) to the spawn of its execution runs as a task spawned by the request and awaited by it (`App::run_detached`): a dropped request leaves the run executing, or ended as `error` when its audit entry could not be written, never `running` without an executor. | `cd.rs` `a_deploy_whose_request_is_dropped_after_its_record_still_runs` |
-| DCR-002 | The deploy permit (SPEC-342 DPU-002) moves into that task and is held until the run is recorded and started or refused, so an update never misses a deploy whose request was dropped. `DeployPermit` owns its gate (no borrow). | same test (the permit count is back to 0 after the run started); `deploy_gate.rs` unit test |
+| DCR-002 | The deploy permit (SPEC-342 DPU-002) moves into that task and is held until the run is recorded and started or refused, so an update never misses a deploy whose request was dropped. `DeployPermit` owns its gate (no borrow). | same test (`App::deploys_starting` is 0 after the run ended); `deploy_gate.rs` `a_permit_moved_into_a_task_counts_until_the_task_drops_it` |
 | DCR-003 | What a deploy answers, refuses and records is unchanged for a request that is not dropped. | the existing `cd.rs` and `self_update.rs` tests |
 
 ## Plan
@@ -86,3 +86,23 @@ the environment as "already running" until a restart.
 
 `dlv_start_environment_run` takes the same permit; with it owned, its section from the run's
 insert to its spawn can run in `App::run_detached` the same way.
+
+## Review
+
+Independent review in a fresh session of `5e91e3c0..c1310fe6`: APPROVE, no critical, high or
+medium finding. Answers:
+
+1. Low, own: the test's comment claimed a run seen in the store means the request had not passed
+   its insert's answer; both go through `spawn_blocking`, so the request can be one store call
+   further. Reworded: it is dropped at most one store call past its insert, with at least two
+   (spans, audit) left before the spawn, so the test still always catches the gap. Fixed.
+2. Low, own: `deploy_permit().is_ok()` did not prove the permit was let go. The test now asserts
+   `App::deploys_starting() == 0` (new accessor for tests and diagnostics). Fixed.
+3. Low, pre-existing: a Cancel between the run's insert and its cancel channel's registration
+   records it `cancelled` while the start goes on to run it. The window is the same before and
+   after this change; reported on #948 (this task creates no issues).
+4. Low, pre-existing: a production promotion made in the request, then a dropped request, leaves
+   a promotion with no run. Nothing stays `running`, so it is outside #948; reported on #948.
+5. Nit, own: ADR-0233's wording of #952 and of a panic. Fixed.
+6. Nit, own: a panic after the insert would leave the run `running` (as before; no such path
+   panics). Stated in ADR-0233's consequences.

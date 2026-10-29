@@ -608,9 +608,10 @@ async fn a_run_left_by_a_restart_is_an_error() -> TestResult {
 }
 
 /// SPEC-347 DCR-001/002 (#948): a deploy whose request is dropped as soon as its run is recorded
-/// still runs its deploy and verify, never staying `running` with nothing executing it. The
-/// store answers in order on one thread, so a run seen there is one whose request has not passed
-/// its insert's answer yet; each poll of the request passes at most one store call.
+/// still runs its deploy and verify, never staying `running` with nothing executing it, and its
+/// permit is let go. Each poll of the request passes at most one store call and the test reads the
+/// store between polls, so the request is dropped at most one store call past its insert, while
+/// at least two (its spans, its audit entry) remain before its execution's spawn.
 #[tokio::test]
 async fn a_deploy_whose_request_is_dropped_after_its_record_still_runs() -> TestResult {
     let f = fixture(&full_cd()).await?;
@@ -631,10 +632,7 @@ async fn a_deploy_whose_request_is_dropped_after_its_record_still_runs() -> Test
     assert_eq!(run["state"], "passed", "{run}");
     let output = run["output"].as_str().unwrap_or_default();
     assert!(output.contains("verified"), "{output}");
-    assert!(
-        f.h.app.deploy_permit().is_ok(),
-        "deploys still start afterwards"
-    );
+    assert_eq!(f.h.app.deploys_starting(), 0, "no permit is left behind");
     Ok(())
 }
 

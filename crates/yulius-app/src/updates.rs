@@ -1404,6 +1404,12 @@ impl App {
             .ok_or_else(|| AppError::Conflict(DEPLOY_REFUSED.into()))
     }
 
+    /// How many deploys hold a permit and are not recorded yet (tests, diagnostics).
+    #[must_use]
+    pub fn deploys_starting(&self) -> u32 {
+        self.updates.deploys.starting()
+    }
+
     fn open_deploys(&self) {
         self.updates.deploys.set_closed(false);
         self.updates.deploys_wait.reset();

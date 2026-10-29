@@ -26,7 +26,8 @@ a job on the database thread, so a drop while awaiting the insert's answer alrea
 - The checks, the promotion and every refusal stay in the request, as before.
 - `DeployPermit` owns its share of the gate (an `Arc`), so the permit moves into the detached
   section and is still held until the run is recorded and started (SPEC-342 DPU-002).
-- Delivery environment runs (`dlv_start_environment_run`, #952) apply the same two pieces.
+- Delivery environment runs (`dlv_start_environment_run`) have the same gap; #952, a later task,
+  applies the same two pieces there.
 
 ## Alternatives
 
@@ -41,6 +42,8 @@ a job on the database thread, so a drop while awaiting the insert's answer alrea
 
 - A deploy reaches its executor whatever its client does; a server shutdown is different (the
   next server's recovery ends a run it recorded as `error`, as before).
-- One more spawned task per deploy; a panic in it answers 500 (it already ended the request).
+- One more spawned task per deploy. A panic in it reaches the request as a 500 instead of a
+  dropped connection; a run it had recorded stays `running` until start-up recovery, as before
+  (no code path in that section panics).
 - Tests drop a deploy request by polling it by hand until its run is in the store
   (`tests/cd.rs`).
