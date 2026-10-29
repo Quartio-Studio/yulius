@@ -1397,7 +1397,7 @@ impl App {
     ///
     /// # Errors
     /// `Conflict` while an update is about to restart the server.
-    pub fn deploy_permit(&self) -> AppResult<DeployPermit<'_>> {
+    pub fn deploy_permit(&self) -> AppResult<DeployPermit> {
         self.updates
             .deploys
             .permit()

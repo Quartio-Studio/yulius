@@ -5,9 +5,11 @@
 //! A deploy takes a [`DeployPermit`] before it does anything and keeps it until its run is
 //! recorded as running (or it was refused). The update closes the gate and then reads the
 //! deploys recorded as running: every deploy that passed the gate before the close is either
-//! still counted as starting or already recorded, so it is never missed.
+//! still counted as starting or already recorded, so it is never missed. A permit owns its share
+//! of the gate, so it moves into the task that records the run when that runs detached from its
+//! request (SPEC-347, ADR-0233).
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// The refusal of a deploy while the gate is closed.
 pub const DEPLOY_REFUSED: &str = "nothing ran: Yulius is being updated; deploy again once the \
@@ -21,27 +23,31 @@ struct Gate {
 
 /// Whether deploys may start, and how many are starting (owned by the update state).
 #[derive(Debug, Default)]
-pub struct DeployGate(Mutex<Gate>);
+pub struct DeployGate(Arc<Mutex<Gate>>);
 
 /// A deploy that passed the gate and is not recorded yet: counted as starting until dropped.
 #[derive(Debug)]
 #[must_use = "a deploy is counted as starting only while its permit is held"]
-pub struct DeployPermit<'a>(&'a DeployGate);
+pub struct DeployPermit(Arc<Mutex<Gate>>);
+
+fn lock(gate: &Mutex<Gate>) -> MutexGuard<'_, Gate> {
+    // A panic under this lock leaves two plain fields consistent.
+    gate.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 impl DeployGate {
     fn lock(&self) -> MutexGuard<'_, Gate> {
-        // A panic under this lock leaves two plain fields consistent.
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        lock(&self.0)
     }
 
     /// A permit to start a deploy, or `None` while the gate is closed.
-    pub fn permit(&self) -> Option<DeployPermit<'_>> {
+    pub fn permit(&self) -> Option<DeployPermit> {
         let mut gate = self.lock();
         if gate.closed {
             return None;
         }
         gate.starting = gate.starting.saturating_add(1);
-        Some(DeployPermit(self))
+        Some(DeployPermit(Arc::clone(&self.0)))
     }
 
     /// Closes (`true`) or opens the gate; returns how many deploys are starting.
@@ -89,9 +95,9 @@ impl DeployWait {
     }
 }
 
-impl Drop for DeployPermit<'_> {
+impl Drop for DeployPermit {
     fn drop(&mut self) {
-        let mut gate = self.0.lock();
+        let mut gate = lock(&self.0);
         gate.starting = gate.starting.saturating_sub(1);
     }
 }
@@ -112,6 +118,21 @@ mod tests {
         assert_eq!(gate.set_closed(true), 0);
         assert_eq!(gate.set_closed(false), 0);
         assert!(gate.permit().is_some(), "open again");
+    }
+
+    #[tokio::test]
+    async fn a_permit_moved_into_a_task_counts_until_the_task_drops_it() {
+        let gate = DeployGate::default();
+        let permit = gate.permit();
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let _held = permit;
+            let _ = released.await;
+        });
+        assert_eq!(gate.starting(), 1, "the task holds it");
+        let _ = release.send(());
+        assert!(task.await.is_ok());
+        assert_eq!(gate.starting(), 0, "dropped with the task");
     }
 
     #[test]
