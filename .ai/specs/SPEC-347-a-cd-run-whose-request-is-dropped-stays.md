@@ -48,10 +48,10 @@ the environment as "already running" until a restart.
 
 ## Plan
 
-- [ ] Spec SPEC-347 written and validated
-- [ ] Regression test drops a deploy request after its run is recorded
-- [ ] CD start runs detached from its request with an owned deploy permit
-- [ ] Decision, architecture and changes documented
+- [x] Spec SPEC-347 written and validated
+- [x] Regression test drops a deploy request after its run is recorded
+- [x] CD start runs detached from its request with an owned deploy permit
+- [x] Decision, architecture and changes documented
 - [ ] Gates green and independent review answered
 - [ ] Pull request merged into dev on green
 

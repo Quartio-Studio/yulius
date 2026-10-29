@@ -4,6 +4,13 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-30
+
+- A deploy whose client goes away while it starts still runs (SPEC-347, ADR-0233, task #331,
+  fixes #948). Before, a CD run could stay "running" with nothing running it until a restart:
+  its environment was refused as already running and an update waited for it until its bound and
+  then cancelled.
+
 ## 2026-10-28
 
 - A long host on a Secrets card wraps inside its chip instead of running past the card's edge
