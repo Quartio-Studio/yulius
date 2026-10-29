@@ -19,14 +19,16 @@ use support::{
     seed_github_user, seed_live_attempt, seed_sandbox, seed_task,
 };
 use yulius_app::intake::IntakeServices;
-use yulius_app::model::{AccountRecord, AccountStatus, Secret, StepRecord};
+use yulius_app::model::{
+    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, Secret, StepRecord,
+};
 use yulius_app::ports::intake::{ChoiceEvaluator, JevFailure, ProposerFailure, SplitProposer};
 use yulius_app::ports::store::{AccountStore, CoordinationStore, TaskStore};
 use yulius_app::ports::store_ext::DeliveryStore;
-use yulius_domain::harness::Provider;
-use yulius_domain::ids::{AccountId, SandboxId, StepId, TaskId, UserId};
+use yulius_domain::harness::{Harness as Agent, Provider};
+use yulius_domain::ids::{AccountId, AttemptId, SandboxId, StepId, TaskId, UserId};
 use yulius_domain::intake::{ChoiceAnswer, ChoiceQuestion, ProposedTask};
-use yulius_domain::task::{Activity, StopReason, TaskStatus};
+use yulius_domain::task::{Activity, AttemptState, StopReason, TaskStatus};
 use yulius_domain::time::Timestamp;
 
 const TOKEN: &str = "task-token-for-intake-tests-0123456789";
@@ -46,11 +48,15 @@ const TEN_ITEMS: &str = "Make it the final state, everything below has to land.\
 
 /// A fake Jev: the split question says "several" for requests mixing UI and backend work; the
 /// breadth question says "broad" for the whole product; the scope question answers by keywords
-/// of the new message. Counts calls; can be "down".
+/// of the new message. Counts calls; can be "down", or `held`: each call says it `entered` and
+/// answers once `release`d (a scope check slower than the hook client's wait).
 #[derive(Default)]
 struct FakeJev {
     calls: AtomicUsize,
     down: AtomicBool,
+    held: AtomicBool,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
 }
 
 fn answer(question: &ChoiceQuestion<'_>, winner: &str, p: f64) -> ChoiceAnswer {
@@ -75,6 +81,10 @@ impl ChoiceEvaluator for FakeJev {
         _deadline: Duration,
     ) -> Result<ChoiceAnswer, JevFailure> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.held.load(Ordering::SeqCst) {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
         if self.down.load(Ordering::SeqCst) {
             return Err(JevFailure::Unavailable);
         }
@@ -659,6 +669,97 @@ async fn hook(h: &Harness, prompt: &str) -> Result<Resp, Box<dyn std::error::Err
         },
     )
     .await
+}
+
+/// SPEC-346 LPH-002 (#921): a typed prompt whose handling outlasts the hook client's wait (here
+/// its scope check) is answered after the turn it started ended: the client failed open, the
+/// agent ran the turn and its Stop settled the task. The late prompt leaves the task as that Stop
+/// left it; before, it set Working again and nothing ended that turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_prompt_answered_after_its_turn_ended_leaves_the_task_settled() -> TestResult {
+    let i = intake_with(harness()?).await?;
+    let task = seed_task(&i.h, "t-late", "s1", "u-alice", TaskStatus::Running, None).await?;
+    // On the pool's account, so the Stop stays on it instead of switching.
+    i.h.store
+        .insert_attempt(&AttemptRecord {
+            id: AttemptId::parse("a-t-late")?,
+            task_id: task.id.clone(),
+            seq: 1,
+            harness: Agent::ClaudeCode,
+            account_id: Some(AccountId::parse("acc-1")?),
+            provider_session_id: None,
+            launch_kind: LaunchKind::New,
+            state: AttemptState::Live,
+            run_dir: "/nonexistent/run".into(),
+            token_hash: i.h.app.deps.crypto.sha256_hex(TOKEN.as_bytes()),
+            host_token: i.h.app.deps.crypto.seal(&[1u8; 32])?,
+            ptyhost_pid: None,
+            child_pid: None,
+            started_at: i.h.app.now(),
+            ended_at: None,
+            exit_code: None,
+            exit_reason: None,
+        })
+        .await?;
+    let activity = || async {
+        i.h.store
+            .task(&task.id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|t| t.activity)
+    };
+    i.h.app.record_typing(&task.id, &UserId::parse("u-alice")?);
+    i.jev.held.store(true, Ordering::SeqCst);
+    let internal = i.h.internal.clone();
+    let prompt = tokio::spawn(async move {
+        call(
+            &internal,
+            Method::POST,
+            "/hooks/claude/UserPromptSubmit",
+            Some(
+                json!({"hook_event_name": "UserPromptSubmit", "session_id": "s",
+                "prompt": "use the existing chart component for the report"}),
+            ),
+            &Creds {
+                bearer: Some(TOKEN.into()),
+                ..Creds::default()
+            },
+        )
+        .await
+        .map(|r| r.status)
+        .map_err(|e| e.to_string())
+    });
+    tokio::time::timeout(Duration::from_secs(10), i.jev.entered.notified()).await?;
+    // The client gave up waiting: the agent ran the turn, and its Stop settles the task.
+    let stop = call(
+        &i.h.internal,
+        Method::POST,
+        "/hooks/claude/Stop",
+        Some(json!({"hook_event_name": "Stop", "session_id": "s", "stop_hook_active": false})),
+        &Creds {
+            bearer: Some(TOKEN.into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    assert_eq!(stop.status, StatusCode::OK, "{:?}", stop.body);
+    assert_eq!(
+        activity().await,
+        Some(Activity::Waiting),
+        "the Stop settled the turn"
+    );
+    i.jev.release.notify_one();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(10), prompt).await???,
+        StatusCode::OK
+    );
+    assert_eq!(
+        activity().await,
+        Some(Activity::Waiting),
+        "the late prompt's turn is over"
+    );
+    Ok(())
 }
 
 fn held(r: &Resp) -> bool {
