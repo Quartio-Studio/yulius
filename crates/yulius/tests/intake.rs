@@ -20,7 +20,7 @@ use support::{
 };
 use yulius_app::intake::IntakeServices;
 use yulius_app::model::{
-    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, Secret, StepRecord,
+    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, Secret, StepRecord, TaskRecord,
 };
 use yulius_app::ports::intake::{ChoiceEvaluator, JevFailure, ProposerFailure, SplitProposer};
 use yulius_app::ports::store::{AccountStore, CoordinationStore, TaskStore};
@@ -671,18 +671,13 @@ async fn hook(h: &Harness, prompt: &str) -> Result<Resp, Box<dyn std::error::Err
     .await
 }
 
-/// SPEC-346 LPH-002 (#921): a typed prompt whose handling outlasts the hook client's wait (here
-/// its scope check) is answered after the turn it started ended: the client failed open, the
-/// agent ran the turn and its Stop settled the task. The late prompt leaves the task as that Stop
-/// left it; before, it set Working again and nothing ended that turn.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_prompt_answered_after_its_turn_ended_leaves_the_task_settled() -> TestResult {
-    let i = intake_with(harness()?).await?;
-    let task = seed_task(&i.h, "t-late", "s1", "u-alice", TaskStatus::Running, None).await?;
-    // On the pool's account, so the Stop stays on it instead of switching.
+/// A running task `id` with a live run on the pool's account, so a Stop stays on it instead of
+/// switching.
+async fn live_task(i: &Intake, id: &str) -> Result<TaskRecord, Box<dyn std::error::Error>> {
+    let task = seed_task(&i.h, id, "s1", "u-alice", TaskStatus::Running, None).await?;
     i.h.store
         .insert_attempt(&AttemptRecord {
-            id: AttemptId::parse("a-t-late")?,
+            id: AttemptId::parse(&format!("a-{id}"))?,
             task_id: task.id.clone(),
             seq: 1,
             harness: Agent::ClaudeCode,
@@ -701,6 +696,83 @@ async fn a_prompt_answered_after_its_turn_ended_leaves_the_task_settled() -> Tes
             exit_reason: None,
         })
         .await?;
+    Ok(task)
+}
+
+/// A hook to the internal listener with the time its client says it sent it.
+async fn hook_sent(
+    i: &Intake,
+    event: &str,
+    body: Value,
+    sent: &str,
+) -> Result<StatusCode, Box<dyn std::error::Error>> {
+    use tower::ServiceExt as _;
+    let request = axum::http::Request::post(format!("/hooks/claude/{event}"))
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .header("content-type", "application/json")
+        .header("x-yulius-hook-sent-ms", sent)
+        .body(axum::body::Body::from(body.to_string()))?;
+    Ok(i.h.internal.clone().oneshot(request).await?.status())
+}
+
+/// SPEC-346 LPH-001: a hook's sent time is never taken later than Yulius's clock, and one not
+/// after the epoch counts as none: a Stop the client says it sent in an hour, or a prompt from
+/// 1970, never makes the next prompt look like history.
+#[tokio::test]
+async fn a_hooks_sent_time_is_clamped_to_now() -> TestResult {
+    let i = intake_with(harness()?).await?;
+    let task = live_task(&i, "t-sent").await?;
+    let activity = || async {
+        i.h.store
+            .task(&task.id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|t| t.activity)
+    };
+    let stop = json!({"hook_event_name": "Stop", "session_id": "s", "stop_hook_active": false});
+    let prompt = json!({"hook_event_name": "UserPromptSubmit", "session_id": "s",
+        "prompt": "use the existing chart component for the report"});
+    let future = (i.h.app.now().0 + 3_600_000).to_string();
+    assert_eq!(
+        hook_sent(&i, "Stop", stop.clone(), &future).await?,
+        StatusCode::OK
+    );
+    assert_eq!(activity().await, Some(Activity::Waiting));
+    i.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    let now = i.h.app.now().0.to_string();
+    assert_eq!(
+        hook_sent(&i, "UserPromptSubmit", prompt.clone(), &now).await?,
+        StatusCode::OK
+    );
+    assert_eq!(
+        activity().await,
+        Some(Activity::Working),
+        "a Stop from the future"
+    );
+    for sent in ["0", "-5"] {
+        let now = i.h.app.now().0.to_string();
+        assert_eq!(
+            hook_sent(&i, "Stop", stop.clone(), &now).await?,
+            StatusCode::OK
+        );
+        assert_eq!(activity().await, Some(Activity::Waiting));
+        i.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        let status = hook_sent(&i, "UserPromptSubmit", prompt.clone(), sent).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(activity().await, Some(Activity::Working), "sent at {sent}");
+    }
+    Ok(())
+}
+
+/// SPEC-346 LPH-002 (#921): a typed prompt whose handling outlasts the hook client's wait (here
+/// its scope check) is answered after the turn it started ended: the client failed open, the
+/// agent ran the turn and its Stop settled the task. The late prompt leaves the task as that Stop
+/// left it; before, it set Working again and nothing ended that turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_prompt_answered_after_its_turn_ended_leaves_the_task_settled() -> TestResult {
+    let i = intake_with(harness()?).await?;
+    let task = live_task(&i, "t-late").await?;
     let activity = || async {
         i.h.store
             .task(&task.id)

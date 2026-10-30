@@ -133,12 +133,17 @@ async fn start_on(
     .await
 }
 
-/// A hook the test server handles only `hold` after it arrived; `handled` says when it did.
-type LateHook = (Duration, tokio::sync::watch::Sender<bool>);
+/// A `/goal` prompt hook the test server handles only `hold` after it arrived: the first one
+/// once `armed`; `handled` says when it did.
+type LateHook = (
+    Duration,
+    Arc<std::sync::atomic::AtomicBool>,
+    tokio::sync::watch::Sender<bool>,
+);
 
-/// [`start_on`], and with `late_goal` the server sees the second `/goal` prompt hook (a resumed
-/// session's typed goal) only after its hold, then handles it to its end, as a loaded host does
-/// once the hook client gave up waiting (SPEC-346).
+/// [`start_on`], and with `late_goal` the server sees a `/goal` prompt hook (a resumed session's
+/// typed goal) only after its hold, then handles it to its end, as a loaded host does once the
+/// hook client gave up waiting (SPEC-346).
 #[allow(clippy::too_many_arguments)]
 async fn start_holding(
     data: &Path,
@@ -213,13 +218,12 @@ async fn start_holding(
             }
         },
     );
-    let goals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let goal_held = axum::middleware::from_fn(
         move |request: axum::extract::Request, next: axum::middleware::Next| {
-            let (goals, late_goal) = (goals.clone(), late_goal.clone());
+            let late_goal = late_goal.clone();
             async move {
                 use axum::response::IntoResponse as _;
-                let Some((hold, handled)) =
+                let Some((hold, armed, handled)) =
                     late_goal.filter(|_| request.uri().path().ends_with("/UserPromptSubmit"))
                 else {
                     return next.run(request).await;
@@ -231,7 +235,7 @@ async fn start_holding(
                 let goal = String::from_utf8_lossy(&bytes).contains("\"prompt\":\"/goal ");
                 let request =
                     axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
-                if !goal || goals.fetch_add(1, std::sync::atomic::Ordering::SeqCst) != 1 {
+                if !goal || !armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
                     return next.run(request).await;
                 }
                 // Its own task: the client hanging up does not cancel it (ADR-0115).
@@ -899,10 +903,13 @@ fn a_goal_whose_prompt_hook_is_answered_late_is_done() -> TestResult {
             ..FakeAgentOptions::default()
         };
         let (handled_tx, mut handled) = tokio::sync::watch::channel(false);
-        let late = Some((Duration::from_secs(6), handled_tx));
+        let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let late = Some((Duration::from_secs(6), armed.clone(), handled_tx));
         let (app, _) = start_holding(&data, &fake, agent, 0, None, None, false, None, late).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = continued_goal_task(&app, &sandbox, &user).await?;
+        // The resumed session's goal is typed from now on (its first submit is dropped).
+        armed.store(true, std::sync::atomic::Ordering::SeqCst);
         goal_typed_into_the_resumed_session(&app, &id).await?;
         tokio::time::timeout(Duration::from_secs(60), handled.wait_for(|h| *h)).await??;
         wait_for(
