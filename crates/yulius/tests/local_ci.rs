@@ -1949,6 +1949,80 @@ async fn jobs_wait_for_their_cpu_budget_and_are_told_it() -> TestResult {
     Ok(())
 }
 
+/// SPEC-351 CCH-001, CCH-002 (pomerado-rust #460): two runs in the sandbox's two lanes never share
+/// `$YULIUS_CI_CACHE`. Each job leaves a `live-<run>` marker in its cache and waits until both runs
+/// are inside the job; with one cache shared by the lanes each found the other's marker (a Cargo
+/// target directory kept there was relinked under the other run). A later run of the same
+/// checkout finds its earlier run's `kept-<run>` marker: the cache still persists.
+#[tokio::test]
+async fn concurrent_runs_never_share_a_ci_cache() -> TestResult {
+    let f = fixture_with(false, |data| {
+        format!(
+            "[[ci.jobs]]\nname = \"build\"\ncommand = 'c=\"$YULIUS_CI_CACHE\"; echo \"cache $c\"; \
+             ls \"$c\" | grep kept- || true; touch \"$c/live-$YULIUS_CI_RUN\" \
+             \"{dir}/here-$YULIUS_CI_RUN\"; while [ ! -e \"{dir}/solo\" ] && [ \"$(ls \"{dir}\" | \
+             grep -c ^here-)\" -lt 2 ]; do sleep 0.05; done; if [ \"$(ls \"$c\" | grep -c \
+             ^live-)\" -gt 1 ]; then echo shared; exit 7; fi; rm \"$c/live-$YULIUS_CI_RUN\"; \
+             touch \"$c/kept-$YULIUS_CI_RUN\"'\n",
+            dir = data.display()
+        )
+    })
+    .await?;
+    let caches = f.data.join("sandboxes/s1/ci/cache");
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let runs = overview["runs"].as_array().ok_or("runs")?;
+    assert_eq!(runs.len(), 2, "main/dev and the pull request: {overview}");
+    let mut seen = Vec::new();
+    for run in runs {
+        let id = run["id"].as_str().ok_or("id")?;
+        let detail = f.get(&format!("/api/sandboxes/s1/ci/runs/{id}")).await?;
+        let output = detail["jobs"][0]["output"].as_str().unwrap_or_default();
+        assert!(!output.contains("shared"), "one cache for two lanes: {output}");
+        assert_eq!(run["state"], "passed", "{detail}");
+        seen.extend(
+            output
+                .lines()
+                .filter_map(|line| line.strip_prefix("cache "))
+                .map(str::to_owned),
+        );
+    }
+    seen.sort();
+    let expected: Vec<String> = ["build", "build@1"]
+        .iter()
+        .map(|name| caches.join(name).display().to_string())
+        .collect();
+    assert_eq!(seen, expected, "each lane's checkout has its own cache");
+
+    std::fs::write(f.data.join("solo"), "")?;
+    let later = f.push_feature("feature.txt", Some("two\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let latest = overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["sha"] == later.as_str())
+        .cloned()
+        .ok_or_else(|| format!("no later pull request run: {overview}"))?;
+    let detail = f
+        .get(&format!(
+            "/api/sandboxes/s1/ci/runs/{}",
+            latest["id"].as_str().ok_or("id")?
+        ))
+        .await?;
+    let output = detail["jobs"][0]["output"].as_str().unwrap_or_default();
+    assert_eq!(latest["state"], "passed", "{detail}");
+    assert!(
+        output.contains(&format!("cache {}", caches.join("build").display())),
+        "{output}"
+    );
+    assert!(output.contains("kept-"), "the lane's cache persists: {output}");
+    Ok(())
+}
+
 /// A job that names its stages, a figure and prints a cargo test summary (SPEC-137 STG-203).
 /// Each step holds until the test creates its gate, `<data>/<next step>-<run id>`: the unit stage,
 /// the end of the stages and the end of the job.
