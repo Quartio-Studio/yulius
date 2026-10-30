@@ -112,7 +112,8 @@ Independent review in a fresh session (read-only, skill `om-code-review`), three
   `68e2e7f6`): the upkeep prunes each job's cache whole like its checkout's, and the guidance keeps
   a Cargo target in the checkout, where the hourly sweep reaches its units. Minor, own: a file named
   like a job's cache blocked the job (`55098a8b` failing, fixed in `f156096b`). Minor,
-  pre-existing: link-following `create_dir_all` under `ci/` is the class of #663. Nits fixed
+  pre-existing: link-following `create_dir_all` under `ci/` (the class #663 fixed for `ci/logs`
+  only), filed as #969. Nits fixed
   (reason text, guard label, matrix index in the docs, wrapped skill line, `ci_setup` wording test,
   spec test plan). Not changed: the UI label "Unused CI checkout" (`leftovers.js`); the reason it
   shows says "CI cache", and a UI change would need the e2e suite for one word.
@@ -123,8 +124,8 @@ Independent review in a fresh session (read-only, skill `om-code-review`), three
   loop is Linux-only now. Nits: `disk_consumers` names `ci/cache`, long lines rewrapped.
 - Round 3 (`5f757f61`): approve. Minor, pre-existing: `ci/home` is still made by path
   (`create_dir_all`), so a link at `ci` makes Yulius create an empty `home` folder at its target
-  before the job fails; that is the #663 class, which this change narrows (the cache no longer goes
-  that way), not a new defect. Nits: no test for a link at the cache's own name (handled by the same
+  before the job fails; pre-existing (filed as #969, with `ci/jobs`), which this change narrows (the
+  cache no longer goes that way), not a new defect. Nits: no test for a link at the cache's own name (handled by the same
   code as a link at `ci/cache`); this table order (fixed); the failure message does not name the
   entry (consistent with the job log's).
 
