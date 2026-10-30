@@ -1485,6 +1485,50 @@ async fn a_running_environment_run_is_waited_for() -> TestResult {
     Ok(())
 }
 
+/// SPEC-348 ERD-003 (#952): an environment run still recorded as running past its lost-run limit
+/// (job timeout + 35 minutes + 5 minutes) has no runner any more; the update's wait ends it as an
+/// error, as a read would, and goes on before its own bound.
+#[tokio::test]
+async fn an_environment_run_past_its_lost_run_limit_is_not_waited_for() -> TestResult {
+    use yulius_app::delivery::{EnvironmentRunKind, EnvironmentRunRecord, EnvironmentRunState};
+    use yulius_app::ports::store_ext::DeliveryStore as _;
+    let i = instance().await?;
+    two_tasks(&i).await?;
+    let alice = i.h.store.user_by_login("alice").await?.ok_or("alice")?.id;
+    i.h.store
+        .insert_environment_run(&EnvironmentRunRecord {
+            id: "env-lost".into(),
+            sandbox_id: yulius_domain::ids::SandboxId::parse("s1")?,
+            environment: "dev-vm".into(),
+            kind: EnvironmentRunKind::Command,
+            requested_by: alice,
+            command: Some("true".into()),
+            commit: None,
+            state: EnvironmentRunState::Running,
+            output: String::new(),
+            exit_code: None,
+            started_at: i.h.app.now(),
+            ended_at: None,
+        })
+        .await?;
+    advance(&i.h, 30 * 60_000);
+    build_reported(&i).await?;
+    let _ = i.h.app.update_round().await;
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(
+        view["run"]["state"], "building",
+        "within its limit it is waited for: {view}"
+    );
+    advance(&i.h, 40 * 60_000 + 1);
+    let _ = i.h.app.update_round().await;
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(view["run"]["state"], "pausing", "{view}");
+    assert_eq!(view["run"]["deploys"], json!([]));
+    let run = i.h.store.environment_run("env-lost").await?.ok_or("run")?;
+    assert_eq!(run.state, EnvironmentRunState::Error);
+    Ok(())
+}
+
 /// SPEC-342 DPU-004: the longest a deploy can legitimately last (an agent-state wait and its
 /// deploy, each up to the 30-minute job timeout; an environment run's 35-minute preparation) and
 /// 5 minutes is waited for; a deploy still running past it cancels the update and opens the gate.
