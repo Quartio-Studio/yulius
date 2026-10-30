@@ -36,7 +36,7 @@ most a few pixels further, and on release springs back into its place.
 | BND-001 | While dragged, the tab's box stays within the extent of its strip's draggable tabs (the first tab's left edge to the last tab's right edge), plus an elastic overshoot that grows ever more slowly with the pointer's distance past the edge and never exceeds `OVERSHOOT_MAX_PX` (16 px). |
 | BND-002 | Inside that extent the tab follows the pointer exactly, as before. |
 | BND-003 | On release past an edge the tab settles from its drawn (bounded) position into its slot, so it visibly springs back from the border rather than flying in from where the pointer was. |
-| BND-004 | The order chosen is unchanged: dragging far past an end puts the tab at that end. |
+| BND-004 | The order chosen is unchanged: it follows the pointer, not the bounded drawing, so dragging far past an end puts the tab at that end even when it is much wider than the tab there. |
 | BND-005 | The same bound applies to the sandbox, Notes and Editor tab strips (one shared module). |
 
 ## Plan
@@ -73,6 +73,9 @@ most a few pixels further, and on release springs back into its place.
   asked for it to bounce from the borders; resistance plus the existing settle transition gives
   that bounce without a spring simulation. A hard clamp would feel stuck; an overshoot that keeps
   growing would not be "blocked".
+- The slot is chosen from the pointer's own distance; only the drawn position (and the settle's
+  start) is bounded. Review round 1 showed that choosing it from the bounded position stops a tab
+  more than 32 px wider than the end tab from ever passing it.
 - No ADR: a bound on an existing interaction, local to one module.
 
 ## Evidence

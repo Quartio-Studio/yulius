@@ -2,8 +2,8 @@
 // the Editor's and the sandbox tabs. Mouse or pen; touch scrolls the strip and moves tabs from the menu. Past a few
 // pixels the tab follows the pointer, the tabs it passes slide aside, and on release it settles
 // into its place from where it was let go. It stays within its strip's tabs: past either end it
-// gives a little, ever more slowly, and springs back on release (SPEC-354). Escape puts it back. The click that ends a drag (or an
-// Escape) chooses nothing: the strip's click handler asks `clickConsumed()` first. A strip that
+// gives a little, ever more slowly, and springs back on release (SPEC-354). Escape puts it back.
+// The click that ends a drag (or an Escape) chooses nothing: the strip's click handler asks `clickConsumed()` first. A strip that
 // would redraw during a press waits (`dragging`) and redraws when it ends (`commit` after a drag,
 // `cancelled` otherwise: after the click that ends a plain press, so the tab pressed is the one
 // clicked).
@@ -79,11 +79,12 @@ export function createTabDrag(tablist, { keyOf, commit, cancelled = () => {}, se
       tablist.classList.add('reordering');
       drag.tab.classList.add('dragging');
     }
-    const shown = bounded(drag, dx);
-    const { shifts } = layout(drag, shown);
+    // The place follows the pointer; only where the tab is drawn stops at the strip's ends (a tab
+    // wider than the end one could not otherwise pass it).
+    const { shifts } = layout(drag, dx);
     drag.tabs.forEach((tab, i) => {
       const key = drag.keys[i];
-      tab.style.transform = `translateX(${key === drag.key ? shown : shifts.get(key)}px)`;
+      tab.style.transform = `translateX(${key === drag.key ? bounded(drag, dx) : shifts.get(key)}px)`;
     });
   }
 
@@ -106,9 +107,9 @@ export function createTabDrag(tablist, { keyOf, commit, cancelled = () => {}, se
     if (!state.moved) { setTimeout(cancelled, 0); return; }
     dragged = true; // the click after this release
     setTimeout(() => { dragged = false; }, 0); // a release outside the tab clicks nothing
-    const dx = bounded(state, event.clientX - state.startX);
+    const dx = event.clientX - state.startX;
     const { order } = layout(state, dx);
-    const from = state.lefts[state.keys.indexOf(state.key)] + dx;
+    const from = state.lefts[state.keys.indexOf(state.key)] + bounded(state, dx);
     const tabs = commit(order);
     const tab = tabs.find((t) => keyOf(t) === state.key);
     if (!tab) return;
