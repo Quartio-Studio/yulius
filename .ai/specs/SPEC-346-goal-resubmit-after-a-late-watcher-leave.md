@@ -67,7 +67,7 @@ late prompt's holds and pauses are outside this change; see Decisions.)
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | LPH-001 | The hook client sends, with every hook request, the wall-clock time it sent it (`x-yulius-hook-sent-ms`, Unix ms). The server takes it, clamped to its own clock, or its own time when the request has none or one not after the epoch (an older client). | `yulius-harness` `hook_client::forwards_payload_and_prints_200_body`; `intake::a_hooks_sent_time_is_clamped_to_now` (fails without the clamp and the epoch rule); `intake::a_prompt_answered_after_its_turn_ended_leaves_the_task_settled` (no header: arrival order) |
-| LPH-002 | A `UserPromptSubmit` sent before a Stop of the same task that already reached Yulius (by the Stop's send time), or before Claude Code recorded a goal verdict (met, not met, failed; the record's time) that Yulius already applied, belongs to a turn that is over: it changes neither the task's activity nor its achieved goal, its gate count or its turn start. What it did before that (holds, the scope check, a person's answered question) is unchanged, and the transcript watcher still sees its turn (STA-003). A prompt that passed the check sets Working before a Stop or verdict arriving meanwhile settles the turn. | `yulius-harness` `claude::tests::goal_status_attachments` and `observe::claude_goal_mode_records` (a verdict's time); `intake::a_prompt_answered_after_its_turn_ended_leaves_the_task_settled` (fails without: Working); `task_done::a_goal_whose_prompt_hook_is_answered_late_is_done` |
+| LPH-002 | A `UserPromptSubmit` sent before a Stop of the same task that already reached Yulius (by the Stop's send time), or before Claude Code recorded a goal verdict (met, not met, failed; the record's time) that Yulius already applied, belongs to a turn that is over: it changes neither the task's activity nor its achieved goal, its gate count or its turn start. What it did before that (holds, the scope check, a person's answered question) is unchanged, and the transcript watcher still sees its turn (STA-003). A prompt that passed the check sets Working before a Stop or verdict arriving meanwhile settles the turn. | `yulius-harness` `claude::tests::goal_status_attachments` and `observe::claude_goal_mode_records` (a verdict's time); `intake::a_prompt_answered_after_its_turn_ended_leaves_the_task_settled` (fails without: Working); `intake::a_stop_that_waited_for_its_prompt_settles_after_it` (fails without the Stop's re-read: Working); `intake::a_prompt_sets_working_over_an_older_stop_that_settled_meanwhile` (fails without the prompt's re-read: Your turn); `task_done::a_goal_whose_prompt_hook_is_answered_late_is_done` |
 | LPH-003 | A goal verdict "met" settles the turn a Stop waited for (BGW-005) also when the task reads Your turn: as that Stop would have, Done, with its pull request and chains. | `finish::tests::a_waited_turn_settles_a_met_goal_also_from_your_turn`; `task_done::a_goal_whose_prompt_hook_is_answered_late_is_done` (fails without: no Done) |
 
 ## Plan
@@ -97,11 +97,15 @@ late prompt's holds and pauses are outside this change; see Decisions.)
   task still reads Your turn. Without the fix it reads Working.
 - LPH-003 and the whole path: `task_done`, the resumed goal session of the flaky test, with a test
   layer that, once the test arms it with the resumed session up, holds the next `/goal`
-  `UserPromptSubmit` 8 s before the server sees it (past the client's 5 s); the turn's Stop must
-  have reached the server meanwhile (else the run did not take the late path), and after the
-  prompt was handled the task must read Done. Without the fix it never does. LPH-003 alone: a unit test of
+  `UserPromptSubmit` 5.5 s (past the client's 5 s) and then until the turn's Stop was handled
+  (at most 30 s more); that Stop must have been handled first (else the run did not take the late
+  path), and after the prompt was handled the task must read Done. Without the fix it never does. LPH-003 alone: a unit test of
   `waited_turn_settles`, since which of the turn's records the watcher reads before the Stop varies
   from run to run.
+- The turn lock and its re-reads: `intake`, with two `race` pause points (test-support builds
+  only; no-ops in production): a Stop that read the task arrives while a prompt past its check is
+  about to set Working, and must leave Your turn; a late Stop of the turn before settles the task
+  during a prompt's scope check, and the prompt must still set Working.
 - LPH-001 clamp: `intake`, a Stop sent "in an hour" and prompts sent at 0 and -5 must not make the
   next prompt look like history.
 - What else the cause could break, checked by the existing suites: Stop settling (`task_done`),
