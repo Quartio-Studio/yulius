@@ -1035,6 +1035,17 @@ fn a_fetch_whose_folder_grows_past_its_limit_is_killed() -> TestResult {
     Ok(())
 }
 
+/// The bytes `path`'s blocks take (as the size watch counts a file), 0 when it does not exist.
+#[cfg(unix)]
+fn blocks_of(path: &Path) -> Result<u64, Box<dyn Error>> {
+    use std::os::unix::fs::MetadataExt;
+    match fs::metadata(path) {
+        Ok(meta) => Ok(meta.len().max(meta.blocks() * 512)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(err) => Err(err.into()),
+    }
+}
+
 /// SPEC-349 RFB-003: a command that ends before the watch looks is still measured once it ends;
 /// one under its limit succeeds.
 #[cfg(unix)]
@@ -1044,14 +1055,18 @@ fn a_fetch_that_ends_past_its_limit_fails_and_one_under_it_succeeds() -> TestRes
     let repo = fx.path("work.git");
     fs::create_dir(&repo)?;
     let script = fx.path("quick-git");
-    write_hook(&script, "#!/bin/sh\nhead -c 3000 /dev/zero > pack\n")?;
+    write_hook(
+        &script,
+        "#!/bin/sh\nrm -f pack\nhead -c 3000 /dev/zero > pack\n",
+    )?;
     let git = Git::new(&script);
     let url = "https://github.com/acme/lib.git";
     match git.fetch_branches_and_tags(&repo, url, 2000) {
         Err(GitError::TooLarge { limit, .. }) => assert_eq!(limit, 2000),
         other => return Err(format!("expected too large, got {other:?}").into()),
     }
-    git.fetch_branches_and_tags(&repo, url, 1_000_000)?;
+    // Just above what it takes: 3000 bytes in a 4 KiB block on Linux and macOS.
+    git.fetch_branches_and_tags(&repo, url, 3000_u64.max(blocks_of(&repo.join("pack"))?))?;
     Ok(())
 }
 
@@ -1063,11 +1078,15 @@ fn a_bundle_growing_past_its_limit_is_killed_while_written() -> TestResult {
     let fx = Fixture::new()?;
     let repo = fx.path("repo.git");
     fs::create_dir(&repo)?;
-    let script = fx.path("bundling-git");
+    let (script, pids) = (fx.path("bundling-git"), fx.path("pids"));
     // Its arguments: six hardening `-c` words, `bundle create --quiet`, then the bundle's path.
     write_hook(
         &script,
-        "#!/bin/sh\nhead -c 3000000 /dev/zero > \"${10}.lock\"\nsleep 30 &\nwait\n",
+        &format!(
+            "#!/bin/sh\necho $$ > '{p}'\nhead -c 3000000 /dev/zero > \"${{10}}.lock\"\nsleep 30 &\n\
+             echo $! >> '{p}'\nwait\n",
+            p = pids.display()
+        ),
     )?;
     let git = Git::new(&script);
     let started = Instant::now();
@@ -1079,6 +1098,9 @@ fn a_bundle_growing_past_its_limit_is_killed_while_written() -> TestResult {
         started.elapsed() < Duration::from_secs(10),
         "killed, not timed out"
     );
+    for pid in fs::read_to_string(&pids)?.split_whitespace() {
+        assert!(gone(pid)?, "process {pid} survived the size limit");
+    }
     Ok(())
 }
 

@@ -385,7 +385,8 @@ fn size_of_all(paths: &[&Path]) -> u64 {
 }
 
 /// Bytes the files at `path` take (a file, or a folder walked without following links); entries
-/// that vanish while it is walked (Git renames its temporary packs) count as nothing.
+/// that vanish while it is walked (Git renames its temporary packs) count as nothing, and folders'
+/// own blocks are left out (a repository's 256 object folders take about 1 MB).
 fn size_on_disk(path: &Path) -> u64 {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return 0;
@@ -469,8 +470,12 @@ mod tests {
         let dir = tempfile::tempdir()?;
         std::fs::create_dir_all(dir.path().join("objects/pack"))?;
         let (head, pack) = (dir.path().join("HEAD"), dir.path().join("objects/pack/p"));
-        std::fs::write(&head, [0; 10])?;
-        std::fs::write(&pack, [0; 100])?;
+        for (path, len) in [(&head, 10), (&pack, 100)] {
+            let file = std::fs::File::create(path)?;
+            std::io::Write::write_all(&mut &file, &vec![0; len])?;
+            // Settled blocks: a filesystem may allocate them when it commits the write.
+            file.sync_all()?;
+        }
         let each = |path: &Path| std::fs::symlink_metadata(path).map(|m| taken(&m));
         let files = each(&head)? + each(&pack)?;
         assert!(files >= 110, "{files}");

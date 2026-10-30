@@ -254,8 +254,11 @@ impl App {
             ));
         }
         // At its peak the fetched copy, its bundle and the attached bundle are on the disk; with
-        // no size from GitHub, each may reach the cap.
-        let peak = reported.unwrap_or(MAX_REFERENCE_BYTES).saturating_mul(3);
+        // no size from GitHub (or a new repository's 0), each may reach the cap.
+        let peak = reported
+            .filter(|bytes| *bytes > 0)
+            .unwrap_or(MAX_REFERENCE_BYTES)
+            .saturating_mul(3);
         if let Some(room) = self.disk_room_if_short(peak).await {
             return Err(AppError::Conflict(format!(
                 "The server's disk has no room for a copy of {repo}: only {} can be added before \
@@ -530,7 +533,7 @@ mod tests {
         assert_eq!(above_cap(GIB + GIB / 10 + 1), "1.2 GB");
         assert_eq!(above_cap(2 * GIB), "2 GB");
         assert_eq!(above_cap(2 * GIB - 1), "2 GB");
-        assert_eq!(above_cap(u64::MAX), above_cap(u64::MAX));
+        assert_eq!(above_cap(u64::MAX), "17179869184 GB");
     }
 
     #[test]
