@@ -337,7 +337,7 @@ async fn plain_requests_to_bound_hosts_go_over_https() -> TestResult {
 }
 
 /// Opens a `CONNECT` tunnel to the opaque host with `token` and keeps it: the stream and the
-/// proxy's status line.
+/// proxy's status line, followed by a refusal's text.
 async fn tunnel(
     setup: &Setup,
     token: &str,
@@ -362,9 +362,24 @@ async fn tunnel(
         }
         head.push(byte[0]);
     }
-    let text = String::from_utf8_lossy(&head);
+    let text = String::from_utf8_lossy(&head).into_owned();
     let status = text.lines().next().unwrap_or_default().to_owned();
-    Ok((stream, status))
+    // A refusal's text, by its length (the connection stays open).
+    let length = text
+        .lines()
+        .find_map(|line| {
+            line.to_ascii_lowercase()
+                .strip_prefix("content-length:")
+                .map(str::to_owned)
+        })
+        .and_then(|n| n.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    let mut body = vec![0u8; length.min(8192)];
+    stream.read_exact(&mut body).await?;
+    Ok((
+        stream,
+        format!("{status} {}", String::from_utf8_lossy(&body)),
+    ))
 }
 
 /// SPEC-353 LAP-002 (2026-10-30: the proxy answered every sandbox "too many connections" while
@@ -376,16 +391,21 @@ async fn one_sandbox_cannot_take_every_connection() -> TestResult {
     let setup = setup().await?;
     let mut held = Vec::new();
     for at in 0..8 {
-        let token = if at % 2 == 0 { "good-token" } else { "sibling-token" };
+        let token = if at % 2 == 0 {
+            "good-token"
+        } else {
+            "sibling-token"
+        };
         let (stream, status) = tunnel(&setup, token).await?;
         assert!(status.contains(" 200"), "tunnel {at}: {status}");
         held.push(stream);
     }
-    let (mut refused, status) = tunnel(&setup, "sibling-token").await?;
-    assert!(status.contains(" 503"), "past the sandbox's share: {status}");
-    let mut body = String::new();
-    tokio::io::AsyncReadExt::read_to_string(&mut refused, &mut body).await?;
-    assert!(body.contains("this sandbox"), "{body}");
+    let (_refused, status) = tunnel(&setup, "sibling-token").await?;
+    assert!(
+        status.contains(" 503"),
+        "past the sandbox's share: {status}"
+    );
+    assert!(status.contains("this sandbox"), "{status}");
     let (_other, status) = tunnel(&setup, "other-sandbox-token").await?;
     assert!(status.contains(" 200"), "another sandbox: {status}");
     // A tunnel that ends gives its slot back.
@@ -397,7 +417,10 @@ async fn one_sandbox_cannot_take_every_connection() -> TestResult {
             held.push(stream);
             break;
         }
-        assert!(tokio::time::Instant::now() < deadline, "the slot never came back: {status}");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the slot never came back: {status}"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     Ok(())

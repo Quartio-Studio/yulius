@@ -34,6 +34,25 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// Longest [`ListeningPorts`] line accepted.
 const MAX_PORTS_LINE: u64 = 64 * 1024;
 
+/// Least time between two warnings that a relay dropped a connection at its limit.
+const WARN_EVERY: Duration = Duration::from_secs(60);
+
+/// Logs that a relay dropped a connection at [`MAX_CONNECTIONS`], at most every [`WARN_EVERY`]
+/// (`last`: when it last did): its processes hold every connection, so even their calls to Yulius
+/// fail (SPEC-353 LAP-002).
+fn warn_dropped(last: &mut Option<std::time::Instant>, relay: &str, port: Option<u16>) {
+    if last.is_none_or(|at| at.elapsed() >= WARN_EVERY) {
+        *last = Some(std::time::Instant::now());
+        tracing::warn!(
+            relay,
+            port,
+            limit = MAX_CONNECTIONS,
+            "sandbox relay: a connection was dropped at the limit; leftover processes may hold \
+             them (docs/operations.md)"
+        );
+    }
+}
+
 fn timeout_error(what: &str) -> io::Error {
     io::Error::new(io::ErrorKind::TimedOut, format!("{what} timed out"))
 }
@@ -81,6 +100,7 @@ pub async fn serve_inbound(
     ports: Arc<dyn Fn() -> Vec<u16> + Send + Sync>,
 ) {
     let limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let mut warned = None;
     loop {
         let Ok((stream, _)) = listener.accept().await else {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -88,6 +108,7 @@ pub async fn serve_inbound(
         };
         let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
             drop(stream);
+            warn_dropped(&mut warned, "inbound", None);
             continue;
         };
         let ports = Arc::clone(&ports);
@@ -177,6 +198,7 @@ pub async fn serve_forward_at(
     };
     let limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     Ok(tokio::spawn(async move {
+        let mut warned = None;
         loop {
             let accepted = match &v6 {
                 Some(v6) => tokio::select! {
@@ -190,6 +212,7 @@ pub async fn serve_forward_at(
                 continue;
             };
             let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
+                warn_dropped(&mut warned, "forward", Some(port));
                 continue;
             };
             let out_sock = out_sock.clone();
@@ -217,12 +240,15 @@ async fn forward_connection(stream: TcpStream, port: u16, out_sock: &Path) -> io
 /// Serves `out.sock`: a connection announces a port and is relayed to its target.
 pub async fn serve_outbound(listener: UnixListener, targets: Arc<BTreeMap<u16, SocketAddr>>) {
     let limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let mut warned = None;
     loop {
         let Ok((stream, _)) = listener.accept().await else {
             tokio::time::sleep(Duration::from_millis(100)).await;
             continue;
         };
         let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
+            drop(stream);
+            warn_dropped(&mut warned, "outbound", None);
             continue;
         };
         let targets = Arc::clone(&targets);
@@ -357,6 +383,7 @@ async fn accept_inbound(
     in_sock: PathBuf,
     limit: Arc<Semaphore>,
 ) {
+    let mut warned = None;
     loop {
         let accepted = match &v6 {
             Some(v6) => tokio::select! {
@@ -370,6 +397,7 @@ async fn accept_inbound(
             continue;
         };
         let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
+            warn_dropped(&mut warned, "preview", Some(port));
             continue;
         };
         let in_sock = in_sock.clone();
