@@ -258,7 +258,9 @@ test('a sandbox tab follows the pointer, the others slide aside, and it settles 
   for (const x of [third.x + third.width / 2 - 10, first.x + first.width, first.x + 4]) await browser.mouse.move(x, y);
   const moving = await shifts();
   expect(moving.home).toBe(0);
-  expect(moving['sandbox-3']).toBeCloseTo(first.x + 4 - (third.x + third.width / 2), 0);
+  // Its centre under the pointer puts its left edge past the row's start: it stops there (SPEC-354).
+  expect(moving['sandbox-3']).toBeLessThan(first.x - third.x);
+  expect(moving['sandbox-3']).toBeGreaterThanOrEqual(first.x - third.x - 16.5);
   expect(moving.studio).toBeGreaterThan(0);
   expect(moving.product).toBeGreaterThan(0);
   expect(await browser.evaluate(() => document.querySelector('.tabrow-tabs')!.classList.contains('reordering'))).toBe(true);
@@ -347,6 +349,16 @@ test('a sandbox tab dragged past either end of the row stops at its border', asy
   if (!box) throw new Error('tabs not laid out');
   const y = box.y + box.height / 2;
   const width = await browser.evaluate(() => window.innerWidth);
+
+  // BND-002: inside the row a dragged tab follows the pointer exactly.
+  const middle = await boxOf('product');
+  await browser.mouse.move((middle.left + middle.right) / 2, y);
+  await browser.mouse.down();
+  for (const x of [(middle.left + middle.right) / 2 - 10, (middle.left + middle.right) / 2 - 20]) await browser.mouse.move(x, y);
+  expect((await boxOf('product')).left).toBeCloseTo(middle.left - 20, 1);
+  await browser.keyboard.press('Escape');
+  await browser.mouse.up();
+  await expect.poll(transformed).toBe(false);
 
   // BND-001: the first tab dragged to the window's left edge gives a little past the row's start
   // and no more...

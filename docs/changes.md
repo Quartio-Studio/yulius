@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-30
 
+- A tab dragged along the sandbox row, the Notes tabs or the Editor's tabs stays within its strip
+  (SPEC-354, task #336). Past either end it gives a few pixels, more slowly the further the pointer
+  goes, and springs back into place when let go. Before, it followed the pointer anywhere on the
+  page and flew back from there.
 - The Superagent's Bash commands keep running while Yulius restarts (SPEC-352, ADR-0239, task #334,
   fixes #965). Its shell now gets a fingerprint file, as a task run does, so agent secrets stay
   redacted. Before, every command was refused ("… so the command was not run (Yulius is

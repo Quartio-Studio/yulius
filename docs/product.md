@@ -137,7 +137,8 @@ watching, steering and unblocking.
   file, Test does not run their command on the server until a person changes it (SPEC-218).
 - **Sandbox tabs**: the top row starts with All sandboxes, then a tab per sandbox in the order
   the person chose: with a mouse or pen each shows a drag grip, as the Notes tabs do, and each
-  says it can be clicked or dragged; its menu moves it too.
+  says it can be clicked or dragged; a dragged tab stays within the row, giving a little at
+  either end; its menu moves it too.
 - **Sidebar**: the sandbox pages used every day (Tasks, Git, CI/CD — one page whose CI (tests) and CD (deployment) tabs work like the Secrets page's tabs —, Secrets, Dashboard — with Overview and Pipeline (stages) tabs —; the Superagent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
