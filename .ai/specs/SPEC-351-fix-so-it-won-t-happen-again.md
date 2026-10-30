@@ -1,11 +1,11 @@
 ---
 yulius-task: 90be55e0-d683-43ac-9a83-4d494b5056b2
-status: in-progress
+status: done
 ---
 
 # SPEC-351: Concurrent CI jobs never share a cache
 
-Status: in progress
+Status: implemented
 Date: 2026-10-30
 Owner: Yulius task #333
 Scope authorization: task #333, "fix so it won't happen again" on a pomerado-rust task's Needs you
@@ -46,18 +46,18 @@ be rewritten under a running job. The cache still persists between runs.
 | CCH-001 | A CI job's `YULIUS_CI_CACHE` is `<sandbox>/ci/cache/<checkout>`, named like its checkout (`<job>[.<n>][@<lane>]`): jobs that run at the same time (two lanes, matrix siblings, two jobs of a run) never get the same one. |
 | CCH-002 | The cache persists between runs that use the same checkout, as before. |
 | CCH-003 | An entry of `ci/cache` is a stale leftover by the stale-checkout rule (no run used a job of that name for 14 days, or a lane past the configured ones), so the old shared cache's contents and unused caches go by the existing automatic rounds, under the CI claim. Yulius makes the cache through handles from the sandbox directory: a file or link at `ci/cache` or at the cache's own name is removed and a folder made, never followed (review round 2). |
-| CCH-005 | The disk upkeep prunes a job checkout's cache whole like the caches in its checkout (SPEC-008 NFR-009 e): at once past a quarter of the quota, otherwise under pressure, never while a CI run executes. Guidance puts a Cargo target directory in the checkout, whose unused build units the hourly sweep removes. |
 | CCH-004 | The docs, the onboarding prompt, the `ci_setup` instructions and the infra-bootstrap skill say the cache is the job's own, per checkout, and never shared with a concurrent job; `HOME` stays shared. |
+| CCH-005 | The disk upkeep prunes a job checkout's cache whole like the caches in its checkout (SPEC-008 NFR-009 e): at once past a quarter of the quota, otherwise under pressure, never while a CI run executes. Guidance puts a Cargo target directory in the checkout, whose unused build units the hourly sweep removes. |
 
 ## Plan
 
-- [ ] Spec SPEC-351 written and validated
-- [ ] Regression test shows two concurrent runs sharing one cache
-- [ ] Each CI job gets the cache of its own checkout
-- [ ] Unused caches are swept as stale CI leftovers
-- [ ] Docs, prompts, decision and changes say the cache is per checkout
-- [ ] Gates green and independent review answered
-- [ ] Pull request merged into dev on green CI
+- [x] Spec SPEC-351 written and validated
+- [x] Regression test shows two concurrent runs sharing one cache
+- [x] Each CI job gets the cache of its own checkout
+- [x] Unused caches are swept as stale CI leftovers
+- [x] Docs, prompts, decision and changes say the cache is per checkout
+- [x] Gates green and independent review answered
+- [x] Pull request opened and merge armed on green CI
 
 ## Acceptance criteria
 
@@ -66,6 +66,10 @@ be rewritten under a running job. The cache still persists between runs.
   marker (CCH-002).
 - `leftovers.rs` test: a `ci/cache` entry of an unused job (and a loose legacy entry) is listed and
   removed by the round; the cache of a used job stays.
+- `disk.rs` test: a job checkout's own cache is pruned at once past a quarter of the quota, under
+  pressure otherwise, never while the CI claim is held (CCH-005).
+- `local_ci.rs` link test: a link at `ci/cache` never makes Yulius remove a file outside the
+  sandbox (CCH-003, review round 2).
 - `scripts/dev ci` green.
 
 ## Test plan
@@ -98,3 +102,54 @@ be rewritten under a running job. The cache still persists between runs.
   lock their own writes, and a per-lane home would download every toolchain once per lane.
 - The cache lives under the same `ci/cache` directory, named like the checkout, so the stale
   checkout rule decides both and the old shared contents go as stale entries without a migration.
+
+## Review
+
+Independent review in a fresh session (read-only, skill `om-code-review`), three rounds:
+
+- Round 1 (`35809268`, request changes). Major, own: `ci/cache/<checkout>` was outside the disk
+  upkeep while the new guidance sent Cargo targets there. Fixed test-first (`9928cabd` failing,
+  `68e2e7f6`): the upkeep prunes each job's cache whole like its checkout's, and the guidance keeps
+  a Cargo target in the checkout, where the hourly sweep reaches its units. Minor, own: a file named
+  like a job's cache blocked the job (`55098a8b` failing, fixed in `f156096b`). Minor,
+  pre-existing: link-following `create_dir_all` under `ci/` is the class of #663. Nits fixed
+  (reason text, guard label, matrix index in the docs, wrapped skill line, `ci_setup` wording test,
+  spec test plan). Not changed: the UI label "Unused CI checkout" (`leftovers.js`); the reason it
+  shows says "CI cache", and a UI change would need the e2e suite for one word.
+- Round 2 (`f156096b`, request changes). Major, own: the stray-file removal resolved `ci/cache` by
+  path, so a link an agent put there let Yulius delete a file outside the sandbox. Fixed test-first
+  (`71495c59` failing, then `5f757f61`): the
+  cache is made through `O_NOFOLLOW` handles, as the job log is (ADR-0174). Minor, own: the cache
+  loop is Linux-only now. Nits: `disk_consumers` names `ci/cache`, long lines rewrapped.
+- Round 3 (`5f757f61`): approve. Minor, pre-existing: `ci/home` is still made by path
+  (`create_dir_all`), so a link at `ci` makes Yulius create an empty `home` folder at its target
+  before the job fails; that is the #663 class, which this change narrows (the cache no longer goes
+  that way), not a new defect. Nits: no test for a link at the cache's own name (handled by the same
+  code as a link at `ci/cache`); this table order (fixed); the failure message does not name the
+  entry (consistent with the job log's).
+
+## Evidence
+
+- Reproduction: pomerado-rust `scripts/ensure-rust.sh` sets
+  `CARGO_TARGET_DIR=$YULIUS_CI_CACHE/cargo-target`; `exec.rs` gave every job `<sandbox>/ci/cache`.
+- `local_ci::concurrent_runs_never_share_a_ci_cache` on the unfixed `exec.rs`: failed, both lanes'
+  job printed `cache …/ci/cache` and `shared` after 2.6 s of real overlap. A first version without
+  `cpus = 1` passed the shared marker only because the budget ran the jobs one after the other;
+  fixed in `0f13b81b`. With the fix: passed 3/3 (2.2–3.3 s).
+- `leftovers::unused_ci_caches_go_like_their_checkouts` on the unfixed `leftovers.rs`: failed
+  (nothing listed); passes with the fix.
+- `disk::a_ci_job_s_own_cache_is_pruned_like_its_checkout_s`: failed before `68e2e7f6` (an over-cap
+  cache stayed); passes.
+- `local_ci::a_linked_ci_cache_folder_never_reaches_outside`: failed at `f156096b` (the outside file
+  was deleted); passes at `5f757f61`.
+- `cargo nextest` of `leftovers::`, `disk::`, `local_ci::` (109 tests) and the yulius-app
+  `onboarding::`, `ci::tools::`, `ci::exec::` tests (19): all passed at `5f757f61`.
+- `scripts/dev ci` at `5f757f61` (after `python3 scripts/bootstrap.py`): exit 0; nextest 2798
+  passed, 16 skipped; repository checks, fmt, clippy, macOS, doctests, deny, shear and doc passed.
+- `yulius security-scan` (beside the gate, no cargo) at `5f757f61`: exit 2, **not run**: Vidoc
+  refused the instance key (HTTP 401, "Missing or invalid API key"); the 9 changed code files were
+  not scanned. Unrun, not passed.
+- Not tested: pomerado-rust itself on the fixed Yulius (the instance updates from `main`, which a
+  person promotes); macOS behavior of `create_job_cache` (compiled by `scripts/dev macos`, errno
+  handling reviewed, not run); a link at the cache's own name (same code path as the tested link
+  at `ci/cache`).
