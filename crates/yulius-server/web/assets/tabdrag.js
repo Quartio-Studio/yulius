@@ -3,10 +3,10 @@
 // pixels the tab follows the pointer, the tabs it passes slide aside, and on release it settles
 // into its place from where it was let go. It stays within its strip's tabs: past either end it
 // gives a little, ever more slowly, and springs back on release (SPEC-354). Escape puts it back.
-// The click that ends a drag (or an Escape) chooses nothing: the strip's click handler asks `clickConsumed()` first. A strip that
-// would redraw during a press waits (`dragging`) and redraws when it ends (`commit` after a drag,
-// `cancelled` otherwise: after the click that ends a plain press, so the tab pressed is the one
-// clicked).
+// The click that ends a drag (or an Escape) chooses nothing: the strip's click handler asks
+// `clickConsumed()` first. A strip that would redraw during a press waits (`dragging`) and redraws
+// when it ends (`commit` after a drag, `cancelled` otherwise: after the click that ends a plain
+// press, so the tab pressed is the one clicked).
 
 /** How far a pressed tab moves before it is dragged rather than clicked. */
 const DRAG_THRESHOLD_PX = 4;
@@ -84,7 +84,8 @@ export function createTabDrag(tablist, { keyOf, commit, cancelled = () => {}, se
     const { shifts } = layout(drag, dx);
     drag.tabs.forEach((tab, i) => {
       const key = drag.keys[i];
-      tab.style.transform = `translateX(${key === drag.key ? bounded(drag, dx) : shifts.get(key)}px)`;
+      const shift = key === drag.key ? bounded(drag, dx) : shifts.get(key);
+      tab.style.transform = `translateX(${shift}px)`;
     });
   }
 

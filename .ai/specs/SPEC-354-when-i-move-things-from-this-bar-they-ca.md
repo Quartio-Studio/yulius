@@ -1,11 +1,11 @@
 ---
 yulius-task: c3ac7da8-9749-4a0b-96fe-99f2e6075f96
-status: in-progress
+status: done
 ---
 
 # SPEC-354: a dragged tab stays in its strip and bounces off its ends
 
-Status: in progress
+Status: implemented
 Date: 2026-10-30
 Owner: Yulius task #336
 Scope authorization: user request "when i move things from this bar, they can go far after the
@@ -42,10 +42,10 @@ most a few pixels further, and on release springs back into its place.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Failing e2e: a sandbox tab dragged past either end of the row stops at the border
-- [ ] Shared tab drag bounds the dragged tab with an elastic overshoot
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Failing e2e: a sandbox tab dragged past either end of the row stops at the border
+- [x] Shared tab drag bounds the dragged tab with an elastic overshoot
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -80,4 +80,33 @@ most a few pixels further, and on release springs back into its place.
 
 ## Evidence
 
-(to be filled)
+- Root cause reproduced by a test: `npx e2e run tests/navigation.e2e.ts --grep "past either end"`
+  on c9db7895 (test only) failed with `expected -52 to be greater than or equal to 31.5` (the first
+  tab dragged to the window's edge was drawn at x = -52, past the row's start at 47.5); after the
+  fix (f02a14fb) it passed. Undoing only the bounded settle start in `end` failed the BND-003
+  assertion (released at -52).
+- Review round 1 (major, own code): choosing the slot from the bounded position kept a tab more
+  than 32 px wider than an end tab from passing it. Test 6b04f241 failed with
+  `expected ["product","sandbox-3-with-a-much-longer-name","studio"] to equ…` (the wide tab stayed
+  second); fix 31b4ada9 (slot from the pointer, only the drawing bounded) passes.
+- Review round 2 approved 31b4ada9; the reviewer's mutants (slot from the bounded position, no
+  drawn bound, settle from the pointer) each failed the new test. Nit fixed after it: the
+  module's header comment rewrapped to the file's width (and one long line split), comments
+  and layout only; the sandbox tab tests pass on the final head. Design note left as the spec intends
+  (BND-004): a much wider tab pinned at an edge covers the end tab for the further half-width of
+  pointer travel before the order flips.
+- The SPEC-336 drag test asserted that sandbox-3 followed the pointer exactly to `first.x + 4`,
+  which puts its left edge past the row's start; it now asserts the bound there (fails on the old
+  code too: about 57 px past).
+- `npx e2e run tests/navigation.e2e.ts tests/notes.e2e.ts tests/editor.e2e.ts` on 31b4ada9:
+  82 passed (reviewer's run; the Notes and Editor drags are unchanged inside their strips).
+- `scripts/dev ci` on 31b4ada9: exit 0, repository contracts passed, 2794 tests run, 2794 passed,
+  16 skipped.
+- `npx e2e run` (whole suite) on 31b4ada9: exit 0, 69 files passed, 1 skipped; 776 tests passed,
+  1 skipped.
+- `yulius security-scan`: **not run** (exit 2): Vidoc refused the key (HTTP 401 "Missing or
+  invalid API key"); `tabdrag.js` and `navigation.e2e.ts` were not scanned (unrun, never passed;
+  ADR-0133, ADR-0157). The pull request's CI `security` job is the live scan.
+- Not tested: a real trackpad or pen by hand (the e2e drives Chromium's mouse), Firefox and
+  Safari, and the bound on the Notes and Editor strips beyond their existing drag tests (same
+  module, same code path).
