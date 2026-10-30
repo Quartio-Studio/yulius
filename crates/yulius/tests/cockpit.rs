@@ -2092,6 +2092,26 @@ async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted
         &format!("file=<{SECRET_LABEL}> ran-42"),
     )
     .await?;
+    // The file is in its run directory, the person's only, and holds hashes, never the value.
+    socket
+        .send(Message::text(typed(
+            // `printf` keeps the key out of the echoed input line.
+            "printf 'sc%s:%s\\n' rub \"$YULIUS_SCRUB_FILE\"\r".into(),
+        )))
+        .await?;
+    read_until(&mut socket, &mut screen, "scrub:/").await?;
+    let file = PathBuf::from(printed(&screen, "scrub")?);
+    assert_eq!(file, f.data.join("shells").join(&id).join("scrub.json"));
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            std::fs::metadata(&file)?.permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    let held = std::fs::read_to_string(&file)?;
+    assert!(held.contains("APIFY_KEY"), "{held}");
+    assert!(!held.contains(SECRET_VALUE), "a value in the file");
     // Without its fingerprints (Yulius unreachable and no file) a command does not run.
     socket
         .send(Message::text(typed(

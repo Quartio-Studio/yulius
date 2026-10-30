@@ -505,8 +505,10 @@ impl App {
 
     /// Puts a Superagent behind the egress proxy as an agent run is, with its own bearer
     /// (SPEC-186 SAV-001): a placeholder per agent secret of `sandbox` its person (`person`)
-    /// gets that its environment does not set already, and — when the proxy is wired — the proxy variables and the CA bundle,
-    /// written to its shell's `run_dir` and bound read-only into a contained session.
+    /// gets that its environment does not set already, its Bash wrapper's fingerprint file (the
+    /// fallback while Yulius restarts, SPEC-352 SRF-001) and — when the proxy is wired — the proxy
+    /// variables and the CA bundle, written to its shell's `run_dir` and bound read-only into a
+    /// contained session.
     ///
     /// # Errors
     /// Store failures: a vault that cannot be read fails the start, as an agent run's does.
@@ -532,6 +534,20 @@ impl App {
             }
         }
         let before = launch.files.len();
+        let fingerprints = self
+            .scrub_fingerprints_for(&sandbox.id, super::Holder::Person(person))
+            .await?;
+        let scrub_file = run_dir.join(FINGERPRINTS_FILE);
+        launch.files.push(PlannedFile {
+            path: scrub_file.clone(),
+            contents: serde_json::to_vec(&fingerprints).map_err(AppError::internal)?,
+            mode: 0o600,
+        });
+        launch.env.retain(|(key, _)| key != SCRUB_FILE_ENV);
+        launch.env.push((
+            SCRUB_FILE_ENV.into(),
+            scrub_file.to_string_lossy().into_owned(),
+        ));
         self.egress_env("yulius", bearer, run_dir, launch);
         let added: Vec<PlannedFile> = launch.files[before..].to_vec();
         bind_read_only(&mut launch.containment, &added);
