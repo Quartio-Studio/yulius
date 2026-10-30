@@ -1089,6 +1089,11 @@ server as a task's terminal is. The wrapper and hook load their fingerprints wit
 token the person's environment holds, answered while the person may work in the sandbox (by an
 access decision within the staleness bound, never waiting on GitHub) ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
 [decision 0121](decisions/0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)).
+While Yulius cannot be reached or is not ready (a restart), the wrapper reads them from the
+shell's `scrub.json` (`YULIUS_SCRUB_FILE`, written at the start, read-only when contained), as a
+task run's does. A refused token is not a restart, so a command does not run, as it does not
+without both ([SPEC-352](../.ai/specs/SPEC-352-something-got-broken-with-yulius-fix.md),
+[decision 0239](decisions/0239-the-superagent-gets-a-fingerprint-file-as-a-task-run-does.md)).
 
 Every terminal people watch (a task's, the Superagent's, a Cockpit shell's) replaces a value with
 its label fitted to the value's display width (`fitted_label`): `[secret:NAME]` followed by `*` padding, or cut short. A full-screen
@@ -1194,6 +1199,7 @@ flowchart LR
   APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius + sandbox servers --settings: PostToolUse redaction [.mcp.json servers rejected]"]
   MS -->|"mcp_attachments: values in the secret environment"| HP
   SH -->|"scrub-exec, PostToolUse: Bearer ws_… (YULIUS_TASK_TOKEN)"| FP["/internal/scrub/fingerprints"]
+  SH -.->|"scrub-exec while Yulius restarts"| SF["shells/id/scrub.json (YULIUS_SCRUB_FILE)"]
   APP -->|"import_project_mcp (also before task runs): origin mcp_json, never host-tested"| MS[("Sandbox MCP servers")]
   REPO[".mcp.json in the repository"] --> APP
   APP --> SH["Shell runtime (user space, repository)"]

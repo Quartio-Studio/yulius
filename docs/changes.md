@@ -12,6 +12,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   kept there (as Yulius's CI guidance suggested) was relinked under the other lane's running tests
   ("never executed: No such file", pomerado-rust #460). Unused caches and the old shared contents go
   as stale CI leftovers.
+- The Superagent's Bash commands keep running while Yulius restarts (SPEC-352, ADR-0239, task #334,
+  fixes #965). Its shell now gets a fingerprint file, as a task run does, so agent secrets stay
+  redacted. Before, every command was refused ("… so the command was not run (Yulius is
+  restarting, …); try again") until the server was back. A Yulius that refuses the token still
+  stops the command, even with the file there.
 - A toast that appears, or moves to the top edge, under a mouse pointer that rests there closes on
   time (SPEC-350, ADR-0237, task #334, fixes #954). Before, it stayed until the pointer moved and
   could cover the page header's add button for good. A toast the pointer moves onto still stays
