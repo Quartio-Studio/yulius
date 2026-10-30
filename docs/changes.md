@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-30
 
+- `reference_repo` no longer fills the server's disk with a repository too large for a task
+  (SPEC-349, ADR-0236, task #333, fixes #920): a repository GitHub reports above 1 GiB is refused
+  at once, a fetch is refused when the data disk has no room for it (as uploads are), and Git is
+  stopped once its copy grows past 1 GiB, with the folder removed. Before, the whole repository was
+  fetched to the server's disk and only then refused.
 - A delivery environment run whose client goes away while it starts still runs (SPEC-348,
   ADR-0235, task #332, fixes #952), as a CD run does since #948. An update no longer waits for an
   environment run past its lost-run limit: it ends it as an error and goes on. Before, such a run

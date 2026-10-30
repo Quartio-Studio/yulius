@@ -1512,7 +1512,13 @@ into a fresh bare repository under `<data>/tmp` and writes a bundle of `HEAD` (t
 every branch and every tag; the agent's optional `branch` is the one its clone checks out, and a
 branch the repository lacks is invalid with the branch list
 ([ADR-0223](decisions/0223-a-reference-copy-carries-every-branch-and-tag-its-owner-can-read.md),
-[SPEC-330](../.ai/specs/SPEC-330-fix-this-tasks-act-as-the-user-they-shou.md)). `App::attach_server_file`
+[SPEC-330](../.ai/specs/SPEC-330-fix-this-tasks-act-as-the-user-they-shou.md)). The copy is bounded
+by the 1 GiB a task gets ([ADR-0236](decisions/0236-a-reference-fetch-is-bounded-by-the-cap-while-it-runs.md),
+[SPEC-349](../.ai/specs/SPEC-349-reference-repo-bounds-its-fetch-by-the-1.md)): a repository GitHub
+reports above it (`GhRepo::size_kib`) is refused before anything runs, and so is a fetch that would
+bring the data disk to its critical level (`App::disk_room_if_short`, shared with uploads); while
+Git runs, the runner's size watch measures the fetch folder and then the bundle every 250 ms and
+kills Git past the cap (`GitError::TooLarge`). `App::attach_server_file`
 streams the bundle into the task's attachments through the upload path's handles (ADR-0174), the
 fetch folder is removed, and the agent clones the bundle itself into
 `<sandbox>/reference/<owner>/<name>`, outside every worktree. Git never runs on the host in a folder
@@ -1524,7 +1530,7 @@ repository, a playground, a disabled or unsigned owner and no read access are re
 flowchart LR
   AG["agent"] -->|"reference_repo owner/name, branch?"| APP["Yulius"]
   APP -->|"repo_access, owner's token"| GH["GitHub"]
-  APP -->|"bundle_repository, owner's token"| TMP["data/tmp/reference-*: every branch and tag + bundle"]
+  APP -->|"bundle_repository, owner's token, 1 GiB watch"| TMP["data/tmp/reference-*: every branch and tag + bundle"]
   TMP -->|"attach_server_file (handles)"| ATT["sandbox attachments/tasks/task"]
   AG -->|"git clone bundle"| REF["sandbox reference/owner/name"]
   ATT --> REF
