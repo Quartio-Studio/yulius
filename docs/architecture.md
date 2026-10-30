@@ -1517,8 +1517,8 @@ by the 1 GiB a task gets ([ADR-0236](decisions/0236-a-reference-fetch-is-bounded
 [SPEC-349](../.ai/specs/SPEC-349-reference-repo-bounds-its-fetch-by-the-1.md)): a repository GitHub
 reports above it (`GhRepo::size_kib`) is refused before anything runs, and so is a fetch that would
 bring the data disk to its critical level (`App::disk_room_if_short`, shared with uploads); while
-Git runs, the runner's size watch measures the fetch folder and then the bundle every 250 ms and
-kills Git past the cap (`GitError::TooLarge`). `App::attach_server_file`
+Git runs, the runner's size watch measures the fetch folder and then the bundle (with Git's
+`.lock` of it) every 250 ms and kills Git past the cap (`GitError::TooLarge`). `App::attach_server_file`
 streams the bundle into the task's attachments through the upload path's handles (ADR-0174), the
 fetch folder is removed, and the agent clones the bundle itself into
 `<sandbox>/reference/<owner>/<name>`, outside every worktree. Git never runs on the host in a folder

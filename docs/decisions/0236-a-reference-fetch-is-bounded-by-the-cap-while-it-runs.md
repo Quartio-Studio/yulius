@@ -23,12 +23,14 @@ SPEC-325), and GitHub reports a repository's size, but neither was used here.
   saying the size and the cap.
 - **Refuse a fetch the disk has no room for**, with the uploads' check (`App::disk_room_if_short`,
   shared by `check_declared`): the fetch's peak is the fetched copy, its bundle and the attached
-  bundle, three times GitHub's size.
+  bundle, three times GitHub's size, or three times the cap when GitHub gives none.
 - **Bound the copy while it is written.** The Git runner takes an optional size watch (a path and
   a byte limit) and measures the path every 250 ms while the command runs; past the limit it kills
-  the process group, reaps it and fails with `GitError::TooLarge`. `bundle_repository` takes the
-  limit and watches the fetch's folder and then the bundle's file. The tool's existing cleanup
-  removes the folder.
+  the process group, reaps it and fails with `GitError::TooLarge`; a file counts by the disk blocks
+  it takes when more than its length (loose refs take a block each). `bundle_repository` takes the
+  limit and watches the fetch's folder and then the bundle's file with Git's `<path>.lock`, which
+  Git writes and renames once the bundle is complete. The tool's existing cleanup removes the
+  folder.
 
 ## Alternatives
 
@@ -49,4 +51,8 @@ SPEC-325), and GitHub reports a repository's size, but neither was used here.
   fetched costs at most about a quarter second of writes beyond the cap before Git is killed.
 - A repository GitHub reports as small but that is larger is still refused, after at most the cap
   of transient disk use instead of the whole repository.
+- GitHub's size counts all it stores (pull request refs too), so a repository it reports just
+  above 1 GiB is refused even if its branches and tags would bundle below it.
+- The disk check reserves nothing: two fetches and uploads checked at once may together pass the
+  critical level, as uploads alone already could; the two fetch slots and the cap bound it.
 - Other Git commands are unchanged: the watch is opt-in per invocation.
