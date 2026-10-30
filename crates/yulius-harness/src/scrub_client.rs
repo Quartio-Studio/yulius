@@ -125,10 +125,42 @@ pub fn load_fingerprints(env: &dyn Fn(&str) -> Option<String>) -> Fingerprints {
     Fingerprints::Unavailable(Unavailable { server, file })
 }
 
-/// What `--scrub-exec` says when it does not run a command for want of fingerprints.
+/// What `--scrub-exec` says when it does not run a command for want of fingerprints: the cause
+/// and what to do (SPEC-353 LAP-001). A token Yulius refuses means the run ended, never a restart.
 #[must_use]
-pub fn unavailable_message(_why: &Unavailable) -> String {
-    "yulius: the agent-secret fingerprints of this run cannot be loaded, so the command was not run (Yulius is restarting, the run ended, or this session may no longer work in the project); try again".to_owned()
+pub fn unavailable_message(why: &Unavailable) -> String {
+    let file = match &why.file {
+        FileState::None => "This session has no fingerprint file to fall back on.".to_owned(),
+        FileState::Unreadable(path) => format!("Its fingerprint file {path} cannot be read."),
+        FileState::Invalid(path) => {
+            format!("Its fingerprint file {path} holds no fingerprints this yulius can use.")
+        }
+    };
+    let not_run = "yulius: the agent-secret fingerprints of this run cannot be loaded, so the command was not run";
+    match why.server {
+        ServerAnswer::Refused(code) => format!(
+            "yulius: the command was not run: Yulius no longer accepts this session (HTTP {code}). \
+             The run it belonged to has ended (the task was stopped, finished or continued in a \
+             new session), or you may no longer work in this project. {file} No command can run \
+             in this session any more: close it and continue from Yulius (send the task a \
+             message, or open the Superagent again)."
+        ),
+        ServerAnswer::Unreachable => format!(
+            "{not_run}: Yulius could not be reached from this sandbox, or did not answer within \
+             {} s. {file} Yulius may be restarting: try again in a minute. If it is running, this \
+             sandbox's connections to it may be used up by leftover processes (see \"Leftover \
+             agent processes\" in Yulius's operations guide).",
+            FETCH_TIMEOUT.as_secs()
+        ),
+        ServerAnswer::Failed(code) => format!(
+            "{not_run}: Yulius answered HTTP {code}. {file} Try again; if it keeps failing, \
+             Yulius's log says why."
+        ),
+        ServerAnswer::Unusable => format!(
+            "{not_run}: Yulius's answer, or this session's Yulius address (YULIUS_URL), could not \
+             be used. {file} Continue the task from Yulius to start a fresh session."
+        ),
+    }
 }
 
 /// A matcher over a fingerprint set (`None` when it holds nothing to look for).
@@ -589,7 +621,8 @@ mod tests {
     /// work in the project): the message says so and what to do, and blames no restart. On
     /// 2026-10-30 every command of a Superagent said "Yulius is restarting" while it ran for days.
     #[test]
-    fn a_refused_token_says_the_run_ended_not_a_restart() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_refused_token_says_the_run_ended_not_a_restart() -> Result<(), Box<dyn std::error::Error>>
+    {
         let env = run_env(answering("401 Unauthorized")?, None);
         let why = unavailable(load_fingerprints(&env))?;
         assert_eq!(
@@ -622,7 +655,10 @@ mod tests {
         let invalid = dir.path().join("scrub.json");
         std::fs::write(&invalid, b"{}")?;
         let invalid = invalid.to_string_lossy().into_owned();
-        let why = unavailable(load_fingerprints(&run_env(nobody()?, Some(invalid.clone()))))?;
+        let why = unavailable(load_fingerprints(&run_env(
+            nobody()?,
+            Some(invalid.clone()),
+        )))?;
         assert_eq!(
             why,
             Unavailable {
@@ -631,14 +667,25 @@ mod tests {
             }
         );
         let text = unavailable_message(&why);
-        for part in ["could not be reached", "restarting", "leftover processes", &invalid] {
+        for part in [
+            "could not be reached",
+            "restarting",
+            "leftover processes",
+            &invalid,
+        ] {
             assert!(text.contains(part), "{part}: {text}");
         }
         let missing = dir.path().join("gone.json").to_string_lossy().into_owned();
-        let why = unavailable(load_fingerprints(&run_env(nobody()?, Some(missing.clone()))))?;
+        let why = unavailable(load_fingerprints(&run_env(
+            nobody()?,
+            Some(missing.clone()),
+        )))?;
         assert_eq!(why.file, FileState::Unreadable(missing.clone()));
         let text = unavailable_message(&why);
-        assert!(text.contains(&format!("{missing} cannot be read")), "{text}");
+        assert!(
+            text.contains(&format!("{missing} cannot be read")),
+            "{text}"
+        );
         Ok(())
     }
 
