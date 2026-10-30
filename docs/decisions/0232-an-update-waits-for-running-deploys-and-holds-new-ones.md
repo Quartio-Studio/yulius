@@ -66,7 +66,9 @@ deploy from starting while the update paused tasks or installed, either.
 - A CD run or environment run recorded as running with no executor (a request dropped between its
   record and its start) is waited for until the bound, then the update is cancelled; a person ends
   a CD run with Cancel on the CI/CD page, an environment run only expires once its lost-run limit
-  passed and it is read (pre-existing, #948 and #952).
+  passed and it is read (pre-existing, #948 and #952; closed by
+  [0233](0233-a-cd-run-starts-detached-from-its-request.md) and
+  [0235](0235-an-environment-run-starts-detached-and-a-lost-one-is-not-waited-for.md)).
 - What a deploy does outside the job timeout (a production promotion and the checks before its
   run is recorded, writing its files, restoring and saving agent states, joining its
   containment) is covered only by the 5 minutes of slack: with a long job timeout and a slow

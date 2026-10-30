@@ -11,6 +11,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   ADR-0234, task #330, fixes #921). The client now says when it sent each hook. A prompt sent
   before a Stop or goal verdict Yulius already has belongs to a turn that is over and changes
   nothing. A met goal settles an idle task Done also after a Stop that waited for the verdict.
+- A delivery environment run whose client goes away while it starts still runs (SPEC-348,
+  ADR-0235, task #332, fixes #952), as a CD run does since #948. An update no longer waits for an
+  environment run past its lost-run limit: it ends it as an error and goes on. Before, such a run
+  stayed "running" with no Cancel, and an update waited its whole bound for it and then cancelled.
+- A deploy whose client goes away while it starts still runs (SPEC-347, ADR-0233, task #331,
+  fixes #948). Before, a CD run could stay "running" with nothing running it until a restart:
+  its environment was refused as already running and an update waited for it until its bound and
+  then cancelled.
 
 ## 2026-10-28
 

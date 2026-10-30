@@ -2202,7 +2202,11 @@ does not). When the build is done the server closes the deploy gate (`deploy_gat
 and `dlv_start_environment_run` hold a permit until their run is recorded and are refused while
 it is closed; the update stays `building` while a CD or environment run is running or starting,
 and pauses tasks only once none is (SPEC-342, ADR-0232). The gate opens when the update resumes,
-is cancelled or fails.
+is cancelled or fails. A CD start runs from its run's record to its executor's spawn detached
+from its request (`App::run_detached`), the permit moved with it, so a client that goes away never
+leaves a run `running` with no executor (SPEC-347, ADR-0233); an environment-run start does the
+same (SPEC-348, ADR-0235). The wait (and the instance page's view of it) ends an environment run past
+its lost-run limit as `error` (`dlv_expire_lost_run`, as a read does) instead of waiting for it.
 
 ```mermaid
 sequenceDiagram
