@@ -73,12 +73,13 @@ fn refused(repo: &str, why: String) -> AppError {
     ))
 }
 
-/// A repository larger than a task gets; `measured` says how Yulius knows.
+/// A repository larger than a task gets; `measured` says how Yulius knows, ending before "above
+/// the cap".
 fn too_large(repo: &str, measured: &str) -> AppError {
     refused(
         repo,
         format!(
-            "{repo} is too large for a reference copy: {measured}, above the {} a task gets.",
+            "{repo} is too large for a reference copy: {measured} above the {} a task gets.",
             human_size(MAX_REFERENCE_BYTES)
         ),
     )
@@ -126,7 +127,8 @@ impl App {
     /// `Invalid` for a malformed `repo` or `branch`, and for a `branch` the repository lacks;
     /// `Conflict` (naming `needs_you`) for another owner, the
     /// sandbox's own repository, a playground, an owner who is gone, disabled, without GitHub or
-    /// without read access, and a bundle too large; Git and store failures.
+    /// without read access, a repository too large (as GitHub reports it, while it is fetched or
+    /// as bundled: SPEC-349), and a data disk without room for it; Git and store failures.
     pub(crate) async fn tool_reference_repo(
         self: &Arc<Self>,
         ctx: &AgentContext,
@@ -237,7 +239,7 @@ impl App {
         if let Some(bytes) = reported.filter(|bytes| *bytes > MAX_REFERENCE_BYTES) {
             return Err(too_large(
                 &repo,
-                &format!("GitHub reports it at {}", human_size(bytes)),
+                &format!("GitHub reports it at {},", human_size(bytes)),
             ));
         }
         // At its peak the fetched copy, its bundle and the attached bundle are on the disk.
@@ -378,11 +380,15 @@ impl App {
                     &fetch.token,
                 )
                 .await
-                .map_err(|err| {
-                    refused(
+                .map_err(|err| match err {
+                    // Git was stopped at the cap (SPEC-349 RFB-003).
+                    AppError::Capacity(_) => {
+                        too_large(&fetch.repo, "Yulius stopped its fetch when the copy grew")
+                    }
+                    err => refused(
                         &fetch.repo,
                         format!("Fetching {} as {} failed ({err}).", fetch.repo, fetch.login),
-                    )
+                    ),
                 })?;
             let branch = fetch
                 .wanted
@@ -400,7 +406,7 @@ impl App {
             if size > MAX_REFERENCE_BYTES {
                 return Err(too_large(
                     &fetch.repo,
-                    &format!("it bundles to {}", human_size(size)),
+                    &format!("it bundles to {},", human_size(size)),
                 ));
             }
             let placed = self
