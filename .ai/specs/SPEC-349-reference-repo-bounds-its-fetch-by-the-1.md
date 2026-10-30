@@ -1,11 +1,11 @@
 ---
 yulius-task: 89dccf9b-32bb-4e96-84cb-9ad2093c2c9d
-status: in-progress
+status: done
 ---
 
 # SPEC-349: reference_repo bounds its fetch by the 1 GiB cap and the disk level
 
-Status: in progress
+Status: implemented
 Date: 2026-10-30
 Owner: Yulius task #333
 Scope authorization: task #333, fix GitHub issue #920 (found by task #314's review, SPEC-330).
@@ -40,7 +40,7 @@ also holds the database.
   before any concurrency slot, folder or Git command, and the answer says the size and the cap.
 - **RFB-002** A fetch is refused before it starts when the data disk would reach its critical
   level with the fetch's peak use added: three times GitHub's size (the fetched copy, its bundle
-  and the attached bundle exist at once), or three times the cap when GitHub reports no size. The
+  and the attached bundle exist at once), or three times the cap when GitHub reports no size (or 0). The
   check is the one uploads use (`App::disk_room_if_short`, called by `check_declared`), shared, not
   copied. An unknown disk refuses nothing.
 - **RFB-003** The Git fetch and the bundle it writes are each bounded by `MAX_REFERENCE_BYTES`: a
@@ -59,7 +59,7 @@ also holds the database.
 - [x] A reference fetch past the cap is stopped and its folder removed
 - [x] Docs, changes and every gate green
 - [x] Independent review answered and fixed
-- [ ] Round 2 review approves the final head with the gate green
+- [x] Round 2 review approves the final head with the gate green
 
 ## Acceptance criteria
 
@@ -120,4 +120,37 @@ Round 1 (fresh session, read-only, at a3875c39): request changes. Every finding 
   cap (test-first, AC2's 92 % case); no reservation, recorded in ADR-0236's consequences.
 - Nits: the spec's shared-check name, AC2 and the test plan now match the code and tests; the
   stopped-fetch answer says "Yulius stopped Git when its copy grew", true for both steps.
+
+Round 2 (fresh session, at dc30398e): approve, with one low finding and five nits, all own code
+and all fixed:
+
+- Low: a reported size of 0 (a new repository) still counted as nothing in the disk check. Fixed
+  test-first: AC2's 92 % case also refuses a size of 0.
+- Nits: ADR-0236 describes the watch over several paths; the `u64::MAX` rounding case asserts its
+  value; the quick fetch is checked just above the 4 KiB its file takes; the bundle-kill test
+  checks the process group is gone; the folder-walk unit test syncs its files before measuring
+  (ZFS allocates blocks on commit); folders' own blocks are left out, as commented.
+
+## Evidence
+
+- Regression tests first, each committed before its fix and shown failing without it:
+  `a_repository_github_reports_above_the_cap_is_refused_before_any_fetch` (the 2 GiB repository
+  was fetched), `a_fetch_the_data_disk_has_no_room_for_is_refused_before_it_starts` (fetched on a
+  96 % disk; later the 92 % no-size and size-0 cases), and
+  `a_fetch_that_grows_past_the_cap_is_stopped_and_its_folder_removed` ("Fetching … failed"
+  instead of "too large"). They are in `crates/yulius/tests/reference_repo.rs`. Also
+  `a_size_above_the_cap_is_rounded_up` ("1.0 GB") and
+  `a_bundle_growing_past_its_limit_is_killed_while_written` (ran its whole 30 s).
+- Mutation check of the watch: with `watch_size` a no-op, all three `yulius-git` watch tests fail
+  (the growing fetch runs its 30 s sleep); with it they pass.
+- `git bundle create` on Git 2.43 writes `<path>.lock` while it runs (seen in a 200 MB probe).
+- `scripts/dev ci` (fmt, Clippy, macOS compile, nextest, doctests, deps, repository checks): exit 0
+  at a3875c39 (2785 passed, 16 skipped) and at dc30398e (2787 passed, 16 skipped); after round 2,
+  `cargo nextest run` of `yulius-git`, `reference_repo::` and `uploads::`: 106 passed. The gate
+  runs again at the final head before delivery.
+- `yulius security-scan`: not run. Vidoc refused the instance key (HTTP 401, exit 2), which is
+  unrun, not passed. The CI `security` job reports it the same way.
+- Not tested here: a real multi-GiB GitHub fetch (the watch is exercised by scripts standing in
+  for Git and by a real local bundle), and the disk level on a real full disk (the
+  `SettableSystem` probe stands in).
 
