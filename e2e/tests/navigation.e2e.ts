@@ -400,6 +400,34 @@ test('a sandbox tab dragged past either end of the row stops at its border', asy
   expect(await names()).toEqual(['product', 'sandbox-3', 'studio']);
   await expect.poll(transformed).toBe(false);
   expect(await hash()).toBe(start);
+
+  // BND-004 for a tab much wider than the end tabs (review round 1): its bounded centre cannot pass
+  // theirs, yet dragged far past an end it still lands there (the order follows the pointer).
+  await browser.evaluate(() => {
+    type Mock = { __yuliusMock: { sandboxes: { id: string, name: string }[], eventSockets: Set<{ push: (data: string) => void }> } };
+    const db = (window as unknown as Mock).__yuliusMock;
+    const sandbox = db.sandboxes.find((s) => s.id === 'sb_three')!;
+    sandbox.name = 'sandbox-3-with-a-much-longer-name';
+    for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'sandbox.updated', sandbox }));
+  });
+  await expect.poll(names).toEqual(['product', 'sandbox-3-with-a-much-longer-name', 'studio']);
+  const wide = await boxOf('sandbox-3-with-a-much-longer-name');
+  expect(wide.right - wide.left).toBeGreaterThan((await boxOf('product')).right - (await boxOf('product')).left + 2 * OVERSHOOT_MAX);
+  expect(wide.right - wide.left).toBeGreaterThan((await boxOf('studio')).right - (await boxOf('studio')).left + 2 * OVERSHOOT_MAX);
+  await browser.mouse.move((wide.left + wide.right) / 2, y);
+  await browser.mouse.down();
+  for (const x of [(wide.left + wide.right) / 2 - 10, 40, 1]) await browser.mouse.move(x, y);
+  await browser.mouse.up();
+  expect(await names()).toEqual(['sandbox-3-with-a-much-longer-name', 'product', 'studio']);
+  await expect.poll(transformed).toBe(false);
+  const widened = await boxOf('sandbox-3-with-a-much-longer-name');
+  await browser.mouse.move((widened.left + widened.right) / 2, y);
+  await browser.mouse.down();
+  for (const x of [(widened.left + widened.right) / 2 + 10, width - 40, width - 2]) await browser.mouse.move(x, y);
+  await browser.mouse.up();
+  expect(await names()).toEqual(['product', 'studio', 'sandbox-3-with-a-much-longer-name']);
+  await expect.poll(transformed).toBe(false);
+  expect(await hash()).toBe(start);
 });
 
 // Task #108 (SPEC-122): "We need tasks id somewhere here and not only PRs id because we use them
