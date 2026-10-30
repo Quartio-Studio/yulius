@@ -128,6 +128,7 @@ fn repo(r: Repo) -> GhRepo {
         default_branch: r.default_branch,
         html_url: r.html_url,
         clone_url: r.clone_url,
+        size_kib: r.size_kib,
     }
 }
 

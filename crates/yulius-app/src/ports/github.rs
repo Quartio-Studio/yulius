@@ -77,6 +77,8 @@ pub struct GhRepo {
     pub html_url: String,
     /// HTTPS clone URL.
     pub clone_url: String,
+    /// Size GitHub reports in KiB (an estimate it updates lazily), `None` when not given.
+    pub size_kib: Option<u64>,
 }
 
 /// Result of a permission lookup.

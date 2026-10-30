@@ -811,3 +811,50 @@ async fn a_full_attachments_folder_still_takes_a_fresh_bundle() -> TestResult {
     );
     Ok(())
 }
+
+/// Whether the Git fake fetched `repo`.
+fn fetched(w: &World, repo: &str) -> bool {
+    w.git
+        .calls()
+        .iter()
+        .any(|c| c.starts_with("bundle ") && c.contains(repo))
+}
+
+/// SPEC-349 AC1 (#920): a repository GitHub reports above the 1 GiB cap is refused before any
+/// fetch, saying its size and the cap; one GitHub reports under it is fetched.
+#[tokio::test]
+async fn a_repository_github_reports_above_the_cap_is_refused_before_any_fetch() -> TestResult {
+    let (w, _alice, _lib) = world().await?;
+    let sizes = |kib: u64| -> TestResult {
+        w.github
+            .sizes
+            .lock()
+            .map_err(|_| "lock")?
+            .insert("acme/lib".into(), kib);
+        Ok(())
+    };
+    sizes(2 * 1024 * 1024)?;
+    let large = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib"}),
+    )
+    .await?;
+    refused(&large, "2 GB")?;
+    refused(&large, "1 GB")?;
+    assert!(!fetched(&w, "acme/lib"), "{:?}", w.git.calls());
+    assert_eq!(tmp_entries(&w), 0, "no fetch folder");
+
+    sizes(1024)?;
+    let small = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib"}),
+    )
+    .await?;
+    assert_ne!(small["isError"], true, "{small}");
+    assert!(fetched(&w, "acme/lib"), "{:?}", w.git.calls());
+    Ok(())
+}

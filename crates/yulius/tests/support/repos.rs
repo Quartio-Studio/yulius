@@ -541,6 +541,8 @@ pub struct RepoGitHub {
     /// Repositories moved to another owner (`old owner/name` → `new owner/name`): GitHub
     /// answers a person's read of the old name with the new repository, as its redirect does.
     pub transferred: Mutex<HashMap<String, String>>,
+    /// Sizes GitHub reports (`owner/name` → KiB) on a person's read of a repository.
+    pub sizes: Mutex<HashMap<String, u64>>,
 }
 
 impl RepoGitHub {
@@ -571,6 +573,7 @@ fn gh_repo(owner: &str, name: &str, private: bool) -> GhRepo {
         default_branch: "main".to_owned(),
         html_url: format!("https://github.com/{owner}/{name}"),
         clone_url: format!("https://github.com/{owner}/{name}.git"),
+        size_kib: None,
     }
 }
 
@@ -632,10 +635,27 @@ impl GitHubPort for RepoGitHub {
             .map_err(AppError::internal)?
             .get(&format!("{owner}/{name}"))
             .cloned();
-        if let Some((owner, name)) = moved.as_deref().and_then(|m| m.split_once('/')) {
-            return self.base.repo_access(token, owner, name).await;
-        }
-        self.base.repo_access(token, owner, name).await
+        let (owner, name) = moved
+            .as_deref()
+            .and_then(|m| m.split_once('/'))
+            .unwrap_or((owner, name));
+        let access = self.base.repo_access(token, owner, name).await?;
+        let size = self
+            .sizes
+            .lock()
+            .map_err(AppError::internal)?
+            .get(&format!("{owner}/{name}"))
+            .copied();
+        Ok(match access {
+            RepoAccess::Access {
+                permissions,
+                mut repo,
+            } => {
+                repo.size_kib = size;
+                RepoAccess::Access { permissions, repo }
+            }
+            other => other,
+        })
     }
     async fn find_installation(&self, _: &GitHubAppConfig, _: &str) -> AppResult<Option<u64>> {
         self.installation_lookups.fetch_add(1, Ordering::SeqCst);
@@ -855,6 +875,7 @@ impl World {
             selected_only: AtomicBool::new(false),
             fail_installation_reads: AtomicBool::new(false),
             transferred: Mutex::new(HashMap::new()),
+            sizes: Mutex::new(HashMap::new()),
         });
         let clock = Arc::new(TestClock(AtomicI64::new(1_791_331_200_000)));
         let config = AppConfig::new(

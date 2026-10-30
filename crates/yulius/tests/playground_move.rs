@@ -315,6 +315,7 @@ async fn only_who_could_import_the_repository_moves_a_playground() -> TestResult
             default_branch: "main".into(),
             html_url: format!("https://github.com/{repo}"),
             clone_url: format!("https://github.com/{repo}.git"),
+            size_kib: None,
         });
     }
     w.h.github
