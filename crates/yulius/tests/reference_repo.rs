@@ -718,8 +718,8 @@ async fn the_git_adapter_bundles_every_branch_and_tag() -> TestResult {
         .bundle_repository(
             "https://github.com/acme/lib.git",
             "main",
-            &work,
-            &bundle,
+            (&work, &bundle),
+            yulius_app::reference_repo::MAX_REFERENCE_BYTES,
             &token,
         )
         .await?;
@@ -759,14 +759,34 @@ async fn the_git_adapter_bundles_every_branch_and_tag() -> TestResult {
     )?;
     assert_eq!(std::fs::read_to_string(clone.join("README.md"))?, "# Lib\n");
     assert_eq!(git(&clone, &["rev-parse", "origin/dev"])?.trim(), dev);
+    // SPEC-349 AC3: past its byte limit the fetch is stopped as a capacity bound.
+    let small = out.join("small");
+    std::fs::create_dir_all(&small)?;
+    let bounded = adapter
+        .bundle_repository(
+            "https://github.com/acme/lib.git",
+            "main",
+            (&small.join("repo.git"), &small.join("repo.bundle")),
+            1,
+            &token,
+        )
+        .await;
+    assert!(
+        matches!(bounded, Err(yulius_app::error::AppError::Capacity(_))),
+        "{bounded:?}"
+    );
+    assert!(
+        !small.join("repo.bundle").exists(),
+        "stopped before the bundle"
+    );
     for bad in ["-x", "a:b", "main..x"] {
         let fresh = out.join(format!("bad-{}", bad.len()));
         let refused = adapter
             .bundle_repository(
                 "https://github.com/acme/lib.git",
                 bad,
-                &fresh,
-                &out.join("b"),
+                (&fresh, &out.join("b")),
+                yulius_app::reference_repo::MAX_REFERENCE_BYTES,
                 &token,
             )
             .await;
@@ -809,5 +829,127 @@ async fn a_full_attachments_folder_still_takes_a_fresh_bundle() -> TestResult {
         attachments(&w).len(),
         yulius_app::uploads::MAX_ATTACHMENTS_PER_FOLDER
     );
+    Ok(())
+}
+
+/// Whether the Git fake fetched `repo`.
+fn fetched(w: &World, repo: &str) -> bool {
+    w.git
+        .calls()
+        .iter()
+        .any(|c| c.starts_with("bundle ") && c.contains(repo))
+}
+
+/// SPEC-349 AC1 (#920): a repository GitHub reports above the 1 GiB cap is refused before any
+/// fetch, saying its size and the cap; one GitHub reports under it is fetched.
+#[tokio::test]
+async fn a_repository_github_reports_above_the_cap_is_refused_before_any_fetch() -> TestResult {
+    let (w, _alice, _lib) = world().await?;
+    let sizes = |kib: u64| -> TestResult {
+        w.github
+            .sizes
+            .lock()
+            .map_err(|_| "lock")?
+            .insert("acme/lib".into(), kib);
+        Ok(())
+    };
+    sizes(2 * 1024 * 1024)?;
+    let large = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib"}),
+    )
+    .await?;
+    refused(&large, "2 GB")?;
+    refused(&large, "1 GB")?;
+    assert!(!fetched(&w, "acme/lib"), "{:?}", w.git.calls());
+    assert_eq!(tmp_entries(&w), 0, "no fetch folder");
+
+    sizes(1024)?;
+    let small = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib"}),
+    )
+    .await?;
+    assert_ne!(small["isError"], true, "{small}");
+    assert!(fetched(&w, "acme/lib"), "{:?}", w.git.calls());
+    Ok(())
+}
+
+/// SPEC-349 AC2 (#920): a fetch that would bring the data disk to its critical level (95 %) is
+/// refused before it starts, counting three times GitHub's size (the fetched copy, its bundle and
+/// the attached bundle), or three times the cap when GitHub gives none; an unknown disk or one
+/// with room refuses nothing.
+#[tokio::test]
+async fn a_fetch_the_data_disk_has_no_room_for_is_refused_before_it_starts() -> TestResult {
+    const GB: u64 = 1_000_000_000;
+    let (w, _alice, _lib) = world().await?;
+    let call = || {
+        support::mcp_tool(
+            &w.h,
+            "tok-ref",
+            "reference_repo",
+            json!({"repo": "acme/lib"}),
+        )
+    };
+    let size_mb = |mb: u64| -> TestResult {
+        w.github
+            .sizes
+            .lock()
+            .map_err(|_| "lock")?
+            .insert("acme/lib".into(), mb * 1_000_000 / 1024);
+        Ok(())
+    };
+
+    w.h.system.set_disk(100 * GB, 96 * GB);
+    let full = call().await?;
+    refused(&full, "disk")?;
+    assert!(!fetched(&w, "acme/lib"), "{:?}", w.git.calls());
+    assert_eq!(tmp_entries(&w), 0, "no fetch folder");
+
+    // No size from GitHub counts the cap: 92 GB and three times 1 GiB pass 95 of 100 GB. A new
+    // repository's 0 is no size either (review round 2).
+    w.h.system.set_disk(100 * GB, 92 * GB);
+    refused(&call().await?, "disk")?;
+    size_mb(0)?;
+    refused(&call().await?, "disk")?;
+    assert!(!fetched(&w, "acme/lib"), "{:?}", w.git.calls());
+
+    // 600 MB three times on 8 of 10 GB is 9.8 GB: past the critical level.
+    w.h.system.set_disk(10 * GB, 8 * GB);
+    size_mb(600)?;
+    refused(&call().await?, "disk")?;
+    assert!(!fetched(&w, "acme/lib"), "{:?}", w.git.calls());
+
+    // 200 MB three times is 8.6 GB: below it.
+    size_mb(200)?;
+    let fits = call().await?;
+    assert_ne!(fits["isError"], true, "{fits}");
+    assert!(fetched(&w, "acme/lib"), "{:?}", w.git.calls());
+    Ok(())
+}
+
+/// SPEC-349 AC3 (#920): a fetch that grows past the cap while it runs (GitHub reported less) is
+/// stopped; the tool says the repository is too large, nothing is attached and the fetch folder
+/// is removed.
+#[tokio::test]
+async fn a_fetch_that_grows_past_the_cap_is_stopped_and_its_folder_removed() -> TestResult {
+    let (w, _alice, _lib) = world().await?;
+    *w.git.reference_limit.lock().map_err(|_| "lock")? = Some(1);
+    let stopped = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib"}),
+    )
+    .await?;
+    refused(&stopped, "too large")?;
+    refused(&stopped, "1 GB")?;
+    assert!(fetched(&w, "acme/lib"), "{:?}", w.git.calls());
+    assert_eq!(tmp_entries(&w), 0, "the fetch folder is removed");
+    assert!(attachments(&w).is_empty(), "{:?}", attachments(&w));
     Ok(())
 }

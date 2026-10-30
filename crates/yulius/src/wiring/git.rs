@@ -87,6 +87,9 @@ impl GitAdapter {
 fn map_err(err: GitError) -> AppError {
     match err {
         GitError::InvalidInput { .. } => AppError::Invalid(err.to_string()),
+        // `reference_repo` reads a capacity error of `bundle_repository` as "too large"
+        // (SPEC-349): keep it for a size watch.
+        GitError::TooLarge { .. } => AppError::Capacity(err.to_string()),
         other => AppError::Upstream(format!("git: {other}")),
     }
 }
@@ -174,8 +177,8 @@ impl GitPort for GitAdapter {
         &self,
         url: &str,
         default_branch: &str,
-        work: &Path,
-        bundle: &Path,
+        (work, bundle): (&Path, &Path),
+        limit: u64,
         token: &Secret,
     ) -> AppResult<ReferenceBundle> {
         let (plain, git) = (self.git(), self.git_with_token(token));
@@ -183,8 +186,8 @@ impl GitPort for GitAdapter {
         let (work, bundle) = (work.to_path_buf(), bundle.to_path_buf());
         blocking(move || {
             plain.init(&work, &default_branch, true)?;
-            git.fetch_branches_and_tags(&work, &url)?;
-            plain.create_full_bundle(&work, &bundle)?;
+            git.fetch_branches_and_tags(&work, &url, limit)?;
+            plain.create_full_bundle(&work, &bundle, limit)?;
             let branches = plain.every_branch(&work)?;
             let tags = plain.every_tag(&work)?.len();
             Ok(ReferenceBundle { branches, tags })
