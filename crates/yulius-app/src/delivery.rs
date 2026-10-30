@@ -3831,7 +3831,7 @@ impl App {
             )));
         }
         // As a CD run: none starts while an update is about to restart the server (SPEC-342).
-        let _permit = self.deploy_permit()?;
+        let permit = self.deploy_permit()?;
         let action = DeliveryAction::RunEnvironment {
             name: env.name.clone(),
             confirmed: true,
@@ -3844,7 +3844,7 @@ impl App {
             environment: env.name.clone(),
             kind: EnvironmentRunKind::Command,
             requested_by: ctx.user.id.clone(),
-            command: Some(command.clone()),
+            command: Some(command),
             commit: None,
             state: EnvironmentRunState::Running,
             output: String::new(),
@@ -3852,6 +3852,30 @@ impl App {
             started_at: self.now(),
             ended_at: None,
         };
+        // Detached from the request from its record on, as a CD run (SPEC-348, ADR-0233): a
+        // client that goes away mid-start leaves the run executing, or ended as an error, never
+        // running with nothing executing it. The permit goes with it.
+        let app = Arc::clone(self);
+        let (user, for_task) = (ctx.user.clone(), for_task.cloned());
+        let run = Self::run_detached(async move {
+            let _permit = permit;
+            app.dlv_record_and_execute_run(run, (sandbox, profile, env), user, for_task)
+                .await
+        })
+        .await?;
+        self.dlv_run_view(&run, None).await
+    }
+
+    /// Records the run and its audit entry, then starts its execution; a run whose audit entry
+    /// could not be written ends as an error at once.
+    async fn dlv_record_and_execute_run(
+        self: &Arc<Self>,
+        run: EnvironmentRunRecord,
+        (sandbox, profile, env): (SandboxRecord, DeliveryProfile, Environment),
+        user: UserRecord,
+        for_task: Option<TaskRecord>,
+    ) -> AppResult<EnvironmentRunRecord> {
+        let command = run.command.as_deref().unwrap_or_default();
         self.deps
             .store
             .insert_environment_run(&run)
@@ -3869,7 +3893,7 @@ impl App {
             .store
             .audit(
                 self.now(),
-                &Self::dlv_actor_login(&ctx.user),
+                &Self::dlv_actor_login(&user),
                 "delivery.environment.run",
                 Some(&format!("{}/{}", sandbox.slug, env.name)),
                 Some(&format!("run {}; command: {command}", run.id)),
@@ -3890,14 +3914,12 @@ impl App {
             return Err(err);
         }
         let app = Arc::clone(self);
-        let user = ctx.user.clone();
         let run_id = run.id.clone();
-        let for_task = for_task.cloned();
         tokio::spawn(async move {
             app.dlv_execute_environment_run(sandbox, profile, env, run_id, user, for_task)
                 .await;
         });
-        self.dlv_run_view(&run, None).await
+        Ok(run)
     }
 
     /// `POST /api/sandboxes/{sid}/delivery/environments/{env}/confirm` (write): a person
@@ -4183,8 +4205,8 @@ impl App {
     }
 
     /// A `running` row older than every run limit has no runner any more: record it as
-    /// `error`.
-    async fn dlv_expire_lost_run(
+    /// `error` (reads, and the update's wait for running deploys, SPEC-348).
+    pub(crate) async fn dlv_expire_lost_run(
         &self,
         run: EnvironmentRunRecord,
     ) -> AppResult<EnvironmentRunRecord> {
