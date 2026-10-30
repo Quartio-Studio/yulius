@@ -637,7 +637,7 @@ impl App {
         }
         // Nothing starts while an update is about to restart the server; held until the run is
         // recorded, so the update sees it (SPEC-342 DPU-001/002).
-        let _permit = self.deploy_permit()?;
+        let permit = self.deploy_permit()?;
         // What the checks resolve the stage to: a production-stage refusal is audited, as
         // production's always was; a dev-stage failure is not a refused production deploy.
         let mut resolved = fixed;
@@ -682,6 +682,30 @@ impl App {
             started_at: self.now(),
             ended_at: None,
         };
+        // Detached from the request from its record on (SPEC-347, ADR-0233): a client that goes
+        // away mid-start leaves the run executing, or ended as an error, never running with
+        // nothing executing it. The permit goes with it.
+        let app = Arc::clone(self);
+        let (sandbox, names) = (sandbox.clone(), (actor.label(), target_name));
+        Self::run_detached(async move {
+            let _permit = permit;
+            app.cd_record_and_execute(&sandbox, run, prepared, names, (requested, confirm_ms))
+                .await
+        })
+        .await
+    }
+
+    /// Records the run, its spans and its audit entry, then starts its execution; a run whose
+    /// audit entry could not be written ends as an error at once.
+    async fn cd_record_and_execute(
+        self: &Arc<Self>,
+        sandbox: &SandboxRecord,
+        run: CdRunRecord,
+        prepared: Prepared,
+        (actor, target_name): (String, String),
+        (requested, confirm_ms): (Timestamp, Option<u64>),
+    ) -> AppResult<CdRunRecord> {
+        let env = run.environment.as_str();
         self.deps
             .store
             .insert_cd_run(&run)
@@ -712,7 +736,7 @@ impl App {
             .store
             .audit(
                 self.now(),
-                &actor.label(),
+                &actor,
                 "cd.deploy",
                 Some(&target_name),
                 Some(&detail),

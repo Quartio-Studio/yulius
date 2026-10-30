@@ -1397,11 +1397,17 @@ impl App {
     ///
     /// # Errors
     /// `Conflict` while an update is about to restart the server.
-    pub fn deploy_permit(&self) -> AppResult<DeployPermit<'_>> {
+    pub fn deploy_permit(&self) -> AppResult<DeployPermit> {
         self.updates
             .deploys
             .permit()
             .ok_or_else(|| AppError::Conflict(DEPLOY_REFUSED.into()))
+    }
+
+    /// How many deploys hold a permit and are not recorded yet (tests, diagnostics).
+    #[must_use]
+    pub fn deploys_starting(&self) -> u32 {
+        self.updates.deploys.starting()
     }
 
     fn open_deploys(&self) {

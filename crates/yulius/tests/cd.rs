@@ -607,6 +607,35 @@ async fn a_run_left_by_a_restart_is_an_error() -> TestResult {
     Ok(())
 }
 
+/// SPEC-347 DCR-001/002 (#948): a deploy whose request is dropped as soon as its run is recorded
+/// still runs its deploy and verify, never staying `running` with nothing executing it, and its
+/// permit is let go. Each poll of the request passes at most one store call and the test reads the
+/// store between polls, so the request is dropped at most one store call past its insert, while
+/// at least two (its spans, its audit entry) remain before its execution's spawn.
+#[tokio::test]
+async fn a_deploy_whose_request_is_dropped_after_its_record_still_runs() -> TestResult {
+    let f = fixture(&full_cd()).await?;
+    f.allow_secret().await?;
+    let mut request = Box::pin(f.deploy(&f.alice, "dev", None));
+    let id = loop {
+        if let std::task::Poll::Ready(answer) = futures::poll!(request.as_mut()) {
+            let answer = answer?;
+            assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+            break answer.body["run_id"].as_str().ok_or("id")?.to_owned();
+        }
+        if let Some(run) = f.h.store.running_cd_runs().await?.into_iter().next() {
+            drop(request);
+            break run.id;
+        }
+    };
+    let run = f.ended(&id).await?;
+    assert_eq!(run["state"], "passed", "{run}");
+    let output = run["output"].as_str().unwrap_or_default();
+    assert!(output.contains("verified"), "{output}");
+    assert_eq!(f.h.app.deploys_starting(), 0, "no permit is left behind");
+    Ok(())
+}
+
 /// AC4 (CDA-002): production is a person's with administrator access who typed the project's
 /// slug; the deploy promotes the integration branch (the promotion pull request, merged at once
 /// when its checks passed) and runs the scripts at the new production head.
