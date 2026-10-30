@@ -970,6 +970,12 @@ impl App {
             ci_dir.join("home"),
             ci_dir.join("cache").join(checkout_name),
         );
+        // A file or a link where the cache goes (what the cache every job shared held, or a
+        // job's doing) goes itself; a link is never followed.
+        if std::fs::symlink_metadata(&cache).is_ok_and(|m| !m.is_dir()) {
+            std::fs::remove_file(&cache)
+                .map_err(|e| format!("preparing the CI directory failed: {e}"))?;
+        }
         for dir in [&home, &cache] {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("preparing the CI directory failed: {e}"))?;

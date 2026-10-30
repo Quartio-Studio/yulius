@@ -45,7 +45,8 @@ be rewritten under a running job. The cache still persists between runs.
 | --- | --- |
 | CCH-001 | A CI job's `YULIUS_CI_CACHE` is `<sandbox>/ci/cache/<checkout>`, named like its checkout (`<job>[.<n>][@<lane>]`): jobs that run at the same time (two lanes, matrix siblings, two jobs of a run) never get the same one. |
 | CCH-002 | The cache persists between runs that use the same checkout, as before. |
-| CCH-003 | An entry of `ci/cache` is a stale leftover by the stale-checkout rule (no run used its job for 14 days, or a lane past the configured ones), so the old shared cache's contents and unused caches go by the existing automatic rounds, under the CI claim. |
+| CCH-003 | An entry of `ci/cache` is a stale leftover by the stale-checkout rule (no run used a job of that name for 14 days, or a lane past the configured ones), so the old shared cache's contents and unused caches go by the existing automatic rounds, under the CI claim. A file or link where a job's cache goes is removed, never followed, before the directory is made. |
+| CCH-005 | The disk upkeep prunes a job checkout's cache whole like the caches in its checkout (SPEC-008 NFR-009 e): at once past a quarter of the quota, otherwise under pressure, never while a CI run executes. Guidance puts a Cargo target directory in the checkout, whose unused build units the hourly sweep removes. |
 | CCH-004 | The docs, the onboarding prompt, the `ci_setup` instructions and the infra-bootstrap skill say the cache is the job's own, per checkout, and never shared with a concurrent job; `HOME` stays shared. |
 
 ## Plan
@@ -69,12 +70,23 @@ be rewritten under a running job. The cache still persists between runs.
 
 ## Test plan
 
-- `local_ci.rs::concurrent_runs_never_share_a_ci_cache`: a job writes `live-$YULIUS_CI_RUN` into
-  its cache, waits until both runs (main/dev and pull request #1, two lanes) are inside the job,
-  fails if its cache holds another `live-*`, then keeps a `kept-*` marker; a later pull request run
-  lists a `kept-*` marker from its checkout's earlier run and its cache path ends in its checkout.
-- `leftovers.rs::unused_ci_checkouts_go_while_no_run_runs` extended with `ci/cache/<name>` entries.
-- `exec.rs` unit test: matrix siblings and lanes get distinct cache names (through `checkout_name`).
+- `local_ci.rs::concurrent_runs_never_share_a_ci_cache`: a job (one CPU, so both lanes fit the
+  budget at once) writes `live-$YULIUS_CI_RUN` into its cache, waits until both runs (dev and pull
+  request #1, two lanes) are inside the job, fails if its cache holds another `live-*`, then keeps a
+  `kept-*` marker; a later pull request run lists a `kept-*` marker from its checkout's earlier run
+  and its cache path ends in its checkout. A file planted at `ci/cache/build` beforehand (what the
+  shared cache may hold) does not fail the job (CCH-003, review round 1).
+- `leftovers.rs::unused_ci_caches_go_like_their_checkouts`: an unused job's cache, a lane past the
+  configured ones, a loose file and an old shared-cache directory are listed as "CI cache" and go
+  by the round; used jobs' caches stay.
+- `disk.rs::a_ci_job_s_own_cache_is_pruned_like_its_checkout_s` (CCH-005): under the cap it stays,
+  past a quarter of the quota it goes at once, under pressure the other lane's goes, not while the
+  CI claim is held.
+- Matrix siblings and a run's other jobs: distinct cache names follow from `checkout_name`, covered
+  by the existing `exec.rs::matrix_siblings_get_their_own_checkouts` (job keys are `[a-z0-9_-]`, so
+  `.n` and `@lane` cannot collide).
+- Wording: `onboarding.rs::prompts_describe_the_persistent_ci_home_and_the_fresh_home_proof` (prompt
+  and infra-bootstrap), `ci::tools::tests::ci_setup_keeps_build_outputs_out_of_the_shared_home`.
 
 ## Decisions
 

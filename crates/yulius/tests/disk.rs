@@ -668,7 +668,10 @@ async fn a_ci_job_s_own_cache_is_pruned_like_its_checkout_s() -> BoxResult<()> {
     });
     assert!(w.h.app.set_isolation(quota.clone()));
     w.h.app.disk_upkeep(&w.sandbox, false).await?;
-    assert!(cache.exists() && lane.exists(), "under the cap, no pressure");
+    assert!(
+        cache.exists() && lane.exists(),
+        "under the cap, no pressure"
+    );
 
     std::fs::write(cache.join("cargo-target/big"), vec![6u8; 30 * BIG])?;
     w.h.app.disk_upkeep(&w.sandbox, false).await?;
@@ -682,7 +685,10 @@ async fn a_ci_job_s_own_cache_is_pruned_like_its_checkout_s() -> BoxResult<()> {
     w.h.app.ci_release(&w.sandbox.id);
     let report = w.h.app.disk_upkeep(&w.sandbox, false).await?;
     assert!(!lane.exists(), "{report:?}");
-    assert!(w.root.join("ci/cache").exists(), "only the job's own cache goes");
+    assert!(
+        w.root.join("ci/cache").exists(),
+        "only the job's own cache goes"
+    );
     Ok(())
 }
 

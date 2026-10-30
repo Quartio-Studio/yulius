@@ -44,7 +44,8 @@ pub enum Kind {
     OrphanWorktree,
     /// Git's record of a worktree whose directory is gone (`.git/worktrees/<name>`).
     GitMetadata,
-    /// A CI checkout of a job or lane no run used for [`STALE_CHECKOUT_AFTER_MS`].
+    /// A CI checkout of a job or lane no run used for [`STALE_CHECKOUT_AFTER_MS`], or its cache
+    /// (`ci/cache/<checkout>`, SPEC-351).
     StaleCiCheckout,
     /// A draft attachment older than [`DRAFT_MAX_AGE_MS`].
     OldDraft,

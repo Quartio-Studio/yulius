@@ -24,9 +24,14 @@ could as well have tested the other pull request's code and passed.
   as the checkout (one job at a time) and as persistent (between runs of that job and lane).
 - `HOME` stays shared by the lanes; installers that write there lock their own writes. Build
   outputs belong in the checkout or the cache, never in `HOME`.
-- An entry of `ci/cache` is a stale CI leftover by the stale-checkout rule (no run used its job for
-  14 days, or a lane past the configured ones), removed under the CI claim like a checkout. The old
-  shared cache's contents are such entries, so they go without a migration.
+- The disk upkeep prunes a job's cache whole, like the caches in its checkout: at once past a
+  quarter of the quota, otherwise under pressure, never while a CI run executes (SPEC-008 NFR-009).
+  A Cargo target directory is best in the checkout, whose unused build units the hourly sweep
+  removes (ADR-0205); the guidance (onboarding prompt, `ci_setup`, infra-bootstrap) says so.
+- An entry of `ci/cache` is a stale CI leftover by the stale-checkout rule (no run used a job of
+  that name for 14 days, or a lane past the configured ones), removed under the CI claim like a
+  checkout. The old shared cache's contents are such entries, so they go without a migration. A
+  file or link where a job's cache goes is removed (never followed) before the directory is made.
 
 ## Alternatives
 
@@ -41,7 +46,9 @@ could as well have tested the other pull request's code and passed.
 ## Consequences
 
 - A lane's cache warms separately: the first run of each job and lane after the update starts
-  cold, and the disk holds one cache per checkout (as it already holds one `target/` per checkout).
+  cold, and the disk holds one cache per checkout. Before, the shared cache was outside the disk
+  upkeep altogether; now each is capped and pruned, but whole: a project that keeps a Cargo target
+  directory there rebuilds it cold after a prune, where one in the checkout loses only unused units.
 - Existing contents of the shared cache stay until the automatic leftovers round removes them as
   stale (a sandbox with CI runs in the last 14 days), or until a person removes `ci/` as the
   operations guide says.

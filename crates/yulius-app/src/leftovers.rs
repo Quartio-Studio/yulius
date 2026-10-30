@@ -911,7 +911,9 @@ impl App {
         } else if job_used {
             Some(format!("{what} {name}: a lane past the {lanes} configured"))
         } else {
-            Some(format!("{what} {name}: no run used its job for 14 days"))
+            Some(format!(
+                "{what} {name}: no run used a job of that name for 14 days"
+            ))
         }
     }
 
@@ -1213,7 +1215,7 @@ impl App {
                 }
                 let used = pass.ci_keys.get(&sandbox.id).cloned().flatten();
                 let stale = used.is_some_and(|used| {
-                    self.checkout_stale("CI checkout", &file_name(&item.path), &used)
+                    self.checkout_stale("CI", &file_name(&item.path), &used)
                         .is_some()
                 });
                 if !stale {
