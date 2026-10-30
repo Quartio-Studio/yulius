@@ -111,11 +111,11 @@ a live turn owns are never touched.
 
 ## Plan
 
-- [ ] Spec and ADR for leftover processes and connection shares
-- [ ] Failing regression tests for the message, the proxy share and the strays
-- [ ] The fingerprint message names its cause
-- [ ] The egress proxy keeps a share per sandbox and logs refusals at its limits
-- [ ] The probe lists strays and an idle task's old strays are reaped
+- [x] Spec and ADR for leftover processes and connection shares
+- [x] Failing regression tests for the message, the proxy share and the strays
+- [x] The fingerprint message names its cause
+- [x] The egress proxy keeps a share per sandbox and logs refusals at its limits
+- [x] The probe lists strays and an idle task's old strays are reaped
 - [ ] Operations guide, architecture, changes and every gate green
 - [ ] Independent review in a fresh session, findings fixed test-first
 

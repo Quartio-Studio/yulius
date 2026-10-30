@@ -1904,7 +1904,14 @@ is counted from three sources:
 The probe counts only the agent's own shells. In the sandbox, an orphaned subshell that the PID
 namespace's init adopted is not one, even though it still carries Claude Code's wrapper command
 line (a server started as `(server &)`)
-([SPEC-130](../.ai/specs/SPEC-130-458-got-achieved-but-wasn-t-marked-as-do.md)). An idle agent
+([SPEC-130](../.ai/specs/SPEC-130-458-got-achieved-but-wasn-t-marked-as-do.md)). Such orphans
+(strays: everything that init adopted, other than the agent) are listed apart by the same probe.
+An idle task's strays are logged when first seen and killed 2 hours later, each process only while
+its pid keeps the recorded start time
+([SPEC-353](../.ai/specs/SPEC-353-leftover-agent-shells-pile-up-in-a-sandb.md),
+[decision 0240](decisions/0240-a-run-s-strays-are-reaped-after-a-bound-and-a-sandbox-gets-half-the-proxy.md)).
+The egress proxy gives one sandbox at most half of its connections, so its processes keep room in
+the sandbox's relay for calls to Yulius. An idle agent
 that waits in `yulius wait` goes on by itself. Its task reads Working ("Waiting for checks or
 merge"), even with a complete plan and a tested pull request; only an achieved goal makes it Done.
 

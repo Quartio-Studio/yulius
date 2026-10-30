@@ -1237,7 +1237,51 @@ Runs trust the CA through `<run>/egress-ca.pem`, built from the host's CA roots
 server logs that the roots were not found, install `ca-certificates`. Every Bash command of an
 agent runs through `yulius --scrub-exec` and every tool result through the `PostToolUse` hook:
 a command that prints `the agent-secret fingerprints of this run cannot be loaded` means the run
-cannot reach Yulius and has no `scrub.json` — continue the task to start a fresh run.
+could not get its fingerprints from Yulius and has no usable `scrub.json`. The message says which
+(SPEC-353): **Yulius no longer accepts this session** means its run ended, so continue the task
+(or open the Superagent again) to start a fresh run; **Yulius could not be reached** while the
+server is up usually means the sandbox's connections to it are used up (next section).
+
+### Leftover agent processes
+
+A process an agent's command leaves behind once its parent exits (a detached test job, a
+`(server &)`, a headless browser) is adopted by its session's sandbox init (`bwrap`). No shell of
+the agent owns it, so Claude Code neither shows nor stops it. On 2026-10-30, about 60 test jobs of
+one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles them by itself
+([ADR-0240](decisions/0240-a-run-s-strays-are-reaped-after-a-bound-and-a-sandbox-gets-half-the-proxy.md)):
+
+- When a run ends, is stopped, or its task is deleted or archived, its whole PID namespace ends
+  with it: leftovers included.
+- While an idle task's session lives, each probe of its process tree (every few seconds and
+  at each turn's end) lists them. The first sighting logs `leftover processes in the run`
+  (task, processes) as a warning; 2 hours later Yulius kills that process tree and logs
+  `reaped leftover processes`. A working task's processes and the agent's own shells (under
+  `claude`) are never touched.
+- One sandbox gets at most half of the egress proxy's 256 connections, so its leftovers cannot
+  take every other sandbox's downloads, nor its own relay's room for calls to Yulius
+  (fingerprints, hooks, MCP). A refusal at a limit is logged as a warning, at most once a minute:
+  `egress proxy: a sandbox holds its share of the connections`, `egress proxy: every connection is
+  taken`, `sandbox relay: a connection was dropped at the limit`.
+
+To find and clear them by hand, without a restart (as root on the host):
+
+```sh
+# Processes of one sandbox's agents, oldest first (the sandbox id is in the project's URL).
+S=7c46cdac-cc5a-4924-bf86-6e70935288bc
+ps -o pid,ppid,etimes,pcpu,args --sort=-etimes \
+  -p "$(paste -sd, /sys/fs/cgroup/system.slice/yulius.service/sandboxes/$S/agents/cgroup.procs)"
+# A session's init is the inner bwrap: a `bwrap … -- claude …` whose parent is another bwrap.
+# Its children other than `claude` are the leftovers; list one init's children with:
+ps -o pid,etimes,pcpu,args --ppid <init-pid>
+# End one leftover and everything below it (it never belongs to a running command).
+pkill -KILL --parent <leftover-pid>; kill -KILL <leftover-pid>
+# Connections a sandbox holds to Yulius (port 8081 by default), counted per process.
+ss -tnp state established '( dport = :8081 )' | awk -F'pid=' 'NR>1{split($2,a,",");print a[1]}' \
+  | sort | uniq -c | sort -rn | head
+```
+
+Stopping the task (or closing the Superagent) also ends its session's leftovers at once. Restarting
+Yulius only closes their connections: the processes stay until their session ends.
 
 Rotation: replace a value on the Secrets page after rotating it at its provider (the page marks
 values older than 180 days). If `master.key` and a database copy may have leaked together,

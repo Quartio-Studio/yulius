@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-30
 
+- Leftover processes no longer pile up in a sandbox for days (SPEC-353, ADR-0240, task #335, fixes
+  #966). A process its parent left behind (a leaked test job, a forgotten server) is reported once
+  an idle task's session has one, and killed after 2 hours; a working task's are left alone. One
+  sandbox now gets at most half of the egress proxy, so its processes can no longer take every
+  sandbox's downloads or its own calls to Yulius, and Yulius logs when a limit refuses a
+  connection. A command that cannot get its agent-secret fingerprints says why: a session whose
+  run ended says so and how to go on, instead of "Yulius is restarting". The leaked jobs of
+  2026-10-30 came from quartio-v2's own tests.
 - A toast that appears, or moves to the top edge, under a mouse pointer that rests there closes on
   time (SPEC-350, ADR-0237, task #334, fixes #954). Before, it stayed until the pointer moved and
   could cover the page header's add button for good. A toast the pointer moves onto still stays
