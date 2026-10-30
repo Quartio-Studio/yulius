@@ -50,14 +50,14 @@ fn warn_dropped(
     limit: usize,
 ) {
     let dropped = DROPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    let notice = Dropped {
+    let dropped = Dropped {
         relay,
         port,
         sandbox,
         limit,
         dropped,
     };
-    notice_dropped(&mut io::stderr().lock(), last, &notice);
+    notice_dropped(&mut io::stderr().lock(), last, &dropped);
 }
 
 /// One dropped connection, as its notice names it.
@@ -69,19 +69,22 @@ struct Dropped<'a> {
     dropped: u64,
 }
 
-/// Writes the notice of `drop` to `out` unless one was written within [`WARN_EVERY`] (`last`).
+/// Writes `notice` to `out` unless one was written within [`WARN_EVERY`] (`last`).
 /// A failed write (a full disk under `holder.log`) is ignored: it never stops the relay.
 fn notice_dropped(
     out: &mut dyn io::Write,
     last: &mut Option<std::time::Instant>,
-    drop: &Dropped<'_>,
+    notice: &Dropped<'_>,
 ) {
     if last.is_some_and(|at| at.elapsed() < WARN_EVERY) {
         return;
     }
     *last = Some(std::time::Instant::now());
-    let port = drop.port.map(|p| format!(" port={p}")).unwrap_or_default();
-    let sandbox = drop
+    let port = notice
+        .port
+        .map(|p| format!(" port={p}"))
+        .unwrap_or_default();
+    let sandbox = notice
         .sandbox
         .map(|s| format!(" sandbox={s}"))
         .unwrap_or_default();
@@ -90,7 +93,7 @@ fn notice_dropped(
         "WARN sandbox relay: a connection was dropped at the limit; leftover processes may hold \
          them (docs/operations.md, \"Leftover agent processes\") relay={}{port}{sandbox} \
          limit={} dropped={}",
-        drop.relay, drop.limit, drop.dropped
+        notice.relay, notice.limit, notice.dropped
     );
     let _ = out.flush();
 }
@@ -238,9 +241,9 @@ pub async fn serve_forward_at(
 /// Connections the relays of this process dropped at their limit (SPEC-353 LAP-002).
 static DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// How many connections the relays of this process dropped at their limit so far.
-#[must_use]
-pub(crate) fn dropped_connections() -> u64 {
+/// How many connections the relays of this process dropped at their limit so far (tests).
+#[cfg(test)]
+fn dropped_connections() -> u64 {
     DROPPED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
@@ -650,7 +653,7 @@ mod tests {
     /// stops the relay (no panic).
     #[test]
     fn the_drop_notice_names_the_relay_and_never_fails_it() {
-        let drop = Dropped {
+        let notice = Dropped {
             relay: "forward",
             port: Some(8081),
             sandbox: Some("s1"),
@@ -659,7 +662,7 @@ mod tests {
         };
         let mut last = None;
         let mut out = Vec::new();
-        notice_dropped(&mut out, &mut last, &drop);
+        notice_dropped(&mut out, &mut last, &notice);
         let line = String::from_utf8_lossy(&out).into_owned();
         for part in [
             "sandbox relay: a connection was dropped at the limit",
@@ -672,10 +675,10 @@ mod tests {
             assert!(line.contains(part), "{part}: {line}");
         }
         let mut again = Vec::new();
-        notice_dropped(&mut again, &mut last, &drop);
+        notice_dropped(&mut again, &mut last, &notice);
         assert!(again.is_empty(), "once a minute");
         let mut never = None;
-        notice_dropped(&mut Full, &mut never, &drop);
+        notice_dropped(&mut Full, &mut never, &notice);
         assert!(
             never.is_some(),
             "a failed write still counts as the minute's notice"

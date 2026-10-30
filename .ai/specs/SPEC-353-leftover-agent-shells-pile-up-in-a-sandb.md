@@ -177,7 +177,12 @@ Independent reviews ran in fresh sessions (skill `yulius-review`; this repositor
   `nsenter` recipe took the wrong pid (now `inner_pid` of `host.json`); the outbound warning
   names its sandbox; reap logs name pids. Fixed (e1677622).
 - Round 4 (request changes): `eprintln!` could panic the relay on a full disk (now a writer whose
-  failure is ignored, test with a failing writer red first). Fixed (c8191688).
+  failure is ignored, test with a failing writer red first, 660db331); the test checked only the
+  counter (it now checks the line's fields); `dropped_connections` was public (now test-only);
+  the ADR's pid wording. Fixed (c8191688).
+- Round 5 (request changes): `dropped_connections` became dead code outside tests (clippy); the
+  spec claimed a gate not yet run; the round-4 entry was incomplete; `drop` shadowed the prelude.
+  Fixed in the commit after 5c404d5c.
 
 ## Evidence
 
@@ -190,11 +195,12 @@ Independent reviews ran in fresh sessions (skill `yulius-review`; this repositor
   `tools/tests.rs`); Claude Code 2.1.292 contains neither string.
 - Red before each fix: commit 15617370 (3 scrub_client message tests, the egress share test with
   its 9th tunnel answered 200, 3 stray tests in `shells.rs`, `strays::an_idle_task_s_strays_are_
-  reaped_after_the_bound`), 9b9f76de, b4713e1d and the round-4 red commit; the round-2 tests were
+  reaped_after_the_bound`), 9b9f76de, b4713e1d and 660db331; the round-2 tests were
   shown red by reverting the `read_head_line` change locally.
 - `scripts/dev ci` on e1677622: exit 0, 2812 tests passed, 16 skipped (with clippy `-D warnings`,
-  fmt, the macOS build and the repository check); the round-4 change ran
-  `cargo test -p yulius-sandbox --lib relay` (9 passed) and the gate again before delivery.
+  fmt, the macOS build and the repository check). On 5c404d5c it failed at clippy
+  (`dropped_connections` never used), fixed after; the delivered head's gate result is in the
+  pull request's checks and the delivery summary.
 - `an_orphan_in_a_real_sandbox_is_a_stray` skips here: bwrap cannot create namespaces in this
   sandbox ("Creating new namespace failed: Operation not permitted"); production runs under bwrap.
 - `yulius security-scan`: exit 2, not run: Vidoc refused the instance key (HTTP 401). Unrun, not
