@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-30
 
+- A toast that appears, or moves to the top edge, under a mouse pointer that rests there closes on
+  time (SPEC-350, ADR-0237, task #334, fixes #954). Before, it stayed until the pointer moved and
+  could cover the page header's add button for good. A toast the pointer moves onto still stays
+  while pointed at.
 - A goal task whose prompt hook Yulius answers only after the hook client gave up (5 s, a loaded
   host) reads Done once the goal is met, instead of staying Working or Your turn (SPEC-346,
   ADR-0234, task #330, fixes #921). The client now says when it sent each hook. A prompt sent
