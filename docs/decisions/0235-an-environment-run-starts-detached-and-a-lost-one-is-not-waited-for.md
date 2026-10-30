@@ -43,5 +43,9 @@ the store, so such an orphan kept an update `building` until its bound, then can
 - The update never waits for an environment run past its lost-run limit, which is at most the
   wait's bound for a run that started before the wait. A store failure while expiring a run is a
   failed read, which the wait already counts as one deploy still running.
-- The update's wait now writes: it may end a lost run as `error` (audited only in the run's
-  output, as a read's expiry is).
+- The update's wait, and the instance page's view of an update waiting for deploys (it lists
+  them through the same `listed_deploys`), now write: either may end a lost run as `error` and
+  end its process host, as reading the run already did (recorded only in the run's output).
+- A run still alive past its lost-run limit (outside its job timeout, for example a slow
+  promotion after its command) is ended by the wait as a read would end it. With a job timeout
+  over 35 minutes the update then goes on sooner than its bound, where before it waited.

@@ -1,11 +1,11 @@
 ---
 yulius-task: 46588f82-ada2-4714-a66b-bf9ac1ef6059
-status: in-progress
+status: done
 ---
 
 # SPEC-348: An environment run whose request is dropped still gets its executor
 
-Status: in progress
+Status: implemented
 Date: 2026-10-30
 Owner: Yulius task #332
 Scope authorization: task #332, fix GitHub issue #952 (the delivery environment run; the CD run
@@ -55,7 +55,7 @@ environment run past its lost-run limit.
 - [x] Environment run starts detached from its request
 - [x] Update wait ends environment runs past their lost-run limit
 - [x] Decision, architecture and changes documented
-- [ ] Gates green and independent review answered
+- [x] Gates green and independent review answered
 - [ ] Pull request merged into dev on green
 
 ## Acceptance criteria
@@ -87,3 +87,30 @@ environment run past its lost-run limit.
   limit: the row is then ended for every reader too (the "already in progress" refusal goes with
   it), and the limit lives in one place. A store failure while expiring is a failed read, which
   the wait already treats as one deploy still running. ADR-0235.
+
+## Review
+
+Independent review in a fresh session of `540450ed..fba8367a`: APPROVE, no critical, high or
+medium finding. Answers:
+
+1. Minor, own: `listed_deploys` is also read by the instance page's view of an update waiting for
+   deploys, so that view may end a lost run too; ADR-0235 said only "the wait". ADR-0235 and the
+   architecture now name the view. Fixed.
+2. Nit, own: a run still alive past its lost-run limit (outside its job timeout) is ended by the
+   wait, as any read already ended it. Stated in ADR-0235's consequences.
+3. Nit, own: with the fix, the request can occasionally finish before the test reads the store,
+   so that run takes the answered branch. The test still fails without the fix on every run; a
+   temporary print showed the drop branch taken 5 of 5 runs. No change.
+
+## Evidence
+
+- Before the fix (`9654c7c4`, tests only): `cargo nextest run -p yulius -E 'binary_id(yulius::main)
+  & (test(/an_environment_run_whose_request_is_dropped/) | test(/an_environment_run_past_its_lost_run_limit/))'`
+  failed both: the dropped run "did not finish" after 22 s (`running`, no executor), and the update
+  stayed `building` with `env-lost` listed past its lost-run limit.
+- After the fix: both pass (0.5 s and 1.7 s). A temporary print in the drop branch, run 5 times
+  and reverted, showed the drop branch taken 5 of 5 runs. The reviewer reran them 15 times: 15/15.
+- `scripts/dev ci` at `fba8367a`: exit 0, nextest 2777 passed, 16 skipped; lint, docs, deny,
+  macOS targets and repository checks green.
+- `yulius security-scan` at `fba8367a`: **not run** (exit 2): Vidoc refused the key (HTTP 401),
+  4 code files listed as not scanned. Unrun, not passed; the CI `security` job reports its own.
