@@ -50,16 +50,32 @@ fn warn_dropped(
     limit: usize,
 ) {
     let dropped = DROPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    if last.is_none_or(|at| at.elapsed() >= WARN_EVERY) {
-        *last = Some(std::time::Instant::now());
-        let port = port.map(|p| format!(" port={p}")).unwrap_or_default();
-        let sandbox = sandbox.map(|s| format!(" sandbox={s}")).unwrap_or_default();
-        eprintln!(
-            "WARN sandbox relay: a connection was dropped at the limit; leftover processes may \
-             hold them (docs/operations.md, \"Leftover agent processes\") relay={relay}{port}\
-             {sandbox} limit={limit} dropped={dropped}"
-        );
-    }
+    let notice = Dropped {
+        relay,
+        port,
+        sandbox,
+        limit,
+        dropped,
+    };
+    notice_dropped(&mut io::stderr().lock(), last, &notice);
+}
+
+/// One dropped connection, as its notice names it.
+struct Dropped<'a> {
+    relay: &'a str,
+    port: Option<u16>,
+    sandbox: Option<&'a str>,
+    limit: usize,
+    dropped: u64,
+}
+
+/// Writes the notice of `drop` to `out` unless one was written within [`WARN_EVERY`] (`last`).
+/// A failed write (a full disk under `holder.log`) is ignored: it never stops the relay.
+fn notice_dropped(
+    _out: &mut dyn io::Write,
+    _last: &mut Option<std::time::Instant>,
+    _drop: &Dropped<'_>,
+) {
 }
 
 fn timeout_error(what: &str) -> io::Error {
@@ -207,7 +223,7 @@ static DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 
 /// How many connections the relays of this process dropped at their limit so far.
 #[must_use]
-pub fn dropped_connections() -> u64 {
+pub(crate) fn dropped_connections() -> u64 {
     DROPPED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
@@ -599,6 +615,54 @@ mod tests {
         forward.abort();
         server.abort();
         Ok(())
+    }
+
+    /// A writer whose every write fails (a full disk under `holder.log`).
+    struct Full;
+    impl std::io::Write for Full {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other("no space left on device"))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::other("no space left on device"))
+        }
+    }
+
+    /// SPEC-353 LAP-002 (review round 4): the drop notice names the relay, its port and sandbox,
+    /// the limit and the count, at most once a minute, and a log that cannot be written never
+    /// stops the relay (no panic).
+    #[test]
+    fn the_drop_notice_names_the_relay_and_never_fails_it() {
+        let drop = Dropped {
+            relay: "forward",
+            port: Some(8081),
+            sandbox: Some("s1"),
+            limit: 256,
+            dropped: 7,
+        };
+        let mut last = None;
+        let mut out = Vec::new();
+        notice_dropped(&mut out, &mut last, &drop);
+        let line = String::from_utf8_lossy(&out).into_owned();
+        for part in [
+            "sandbox relay: a connection was dropped at the limit",
+            "relay=forward",
+            "port=8081",
+            "sandbox=s1",
+            "limit=256",
+            "dropped=7",
+        ] {
+            assert!(line.contains(part), "{part}: {line}");
+        }
+        let mut again = Vec::new();
+        notice_dropped(&mut again, &mut last, &drop);
+        assert!(again.is_empty(), "once a minute");
+        let mut never = None;
+        notice_dropped(&mut Full, &mut never, &drop);
+        assert!(
+            never.is_some(),
+            "a failed write still counts as the minute's notice"
+        );
     }
 
     /// SPEC-187 DKR-007: with a Docker engine the forwards listen on every address of the
