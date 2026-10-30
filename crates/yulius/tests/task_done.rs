@@ -133,15 +133,15 @@ async fn start_on(
     .await
 }
 
-/// A `/goal` prompt hook the test server handles only `hold` after it arrived: the first one
-/// once `armed`. `stop_while_held` says a Stop reached the server meanwhile (the late path was
-/// taken), `handled` when the prompt was handled.
+/// A `/goal` prompt hook the test server handles only after `hold` and, within 30 s, once a Stop
+/// that arrived meanwhile was handled: the first one once `armed`. `stop_handled` says that Stop
+/// was handled first (the late path), `handled` when the prompt was.
 #[derive(Clone)]
 struct LateHook {
     hold: Duration,
     armed: Arc<std::sync::atomic::AtomicBool>,
     holding: Arc<std::sync::atomic::AtomicBool>,
-    stop_while_held: Arc<std::sync::atomic::AtomicBool>,
+    stop_handled: tokio::sync::watch::Sender<bool>,
     handled: tokio::sync::watch::Sender<bool>,
 }
 
@@ -233,7 +233,15 @@ async fn start_holding(
                 };
                 let path = request.uri().path();
                 if path.ends_with("/Stop") && late.holding.load(SeqCst) {
-                    late.stop_while_held.store(true, SeqCst);
+                    // To its end even if its client hangs up, then the held prompt goes on.
+                    let stop = tokio::spawn(async move {
+                        let response = next.run(request).await;
+                        late.stop_handled.send_replace(true);
+                        response
+                    });
+                    return stop.await.unwrap_or_else(|_| {
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                    });
                 }
                 if !path.ends_with("/UserPromptSubmit") {
                     return next.run(request).await;
@@ -252,6 +260,9 @@ async fn start_holding(
                 // Its own task: the client hanging up does not cancel it (ADR-0115).
                 let handling = tokio::spawn(async move {
                     tokio::time::sleep(late.hold).await;
+                    let mut stopped = late.stop_handled.subscribe();
+                    let _ = tokio::time::timeout(Duration::from_secs(30), stopped.wait_for(|s| *s))
+                        .await;
                     late.holding.store(false, SeqCst);
                     let response = next.run(request).await;
                     late.handled.send_replace(true);
@@ -916,12 +927,12 @@ fn a_goal_whose_prompt_hook_is_answered_late_is_done() -> TestResult {
         };
         use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
         let (handled_tx, mut handled) = tokio::sync::watch::channel(false);
-        // 8 s: past the client's 5 s, with the time the agent takes to its Stop.
+        // Past the client's 5 s, and then until the turn's Stop was handled.
         let late = LateHook {
-            hold: Duration::from_secs(8),
+            hold: Duration::from_millis(5_500),
             armed: Arc::new(AtomicBool::new(false)),
             holding: Arc::new(AtomicBool::new(false)),
-            stop_while_held: Arc::new(AtomicBool::new(false)),
+            stop_handled: tokio::sync::watch::channel(false).0,
             handled: handled_tx,
         };
         let (app, _) = start_holding(
@@ -943,8 +954,8 @@ fn a_goal_whose_prompt_hook_is_answered_late_is_done() -> TestResult {
         goal_typed_into_the_resumed_session(&app, &id).await?;
         tokio::time::timeout(Duration::from_secs(60), handled.wait_for(|h| *h)).await??;
         assert!(
-            late.stop_while_held.load(SeqCst),
-            "the goal turn's Stop came before its prompt was handled (the late path)"
+            *late.stop_handled.borrow(),
+            "the goal turn's Stop was handled before its prompt (the late path)"
         );
         wait_for(
             "Done after the late prompt",

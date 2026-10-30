@@ -187,14 +187,13 @@ impl App {
             runtime.turn_end_ms.fetch_max(sent, Ordering::SeqCst);
         }
         // A prompt that passed its check before that has set Working by now: the Stop settles the
-        // task as it is, not as it read it before the wait.
+        // task as it is, not as it read it before the wait (the copy if the store fails, so the
+        // failed Stop's handling below still runs).
         let ctx = AgentContext {
-            task: self
-                .deps
-                .store
-                .task(&ctx.task.id)
-                .await?
-                .ok_or(AppError::NotFound)?,
+            task: match self.deps.store.task(&ctx.task.id).await {
+                Ok(Some(task)) => task,
+                _ => ctx.task,
+            },
             attempt: ctx.attempt,
         };
         let _in_flight = crate::finish::StopInFlight::enter(&runtime);

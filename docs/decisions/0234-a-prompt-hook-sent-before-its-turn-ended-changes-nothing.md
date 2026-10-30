@@ -33,7 +33,8 @@ before the handler starts (the database, the accept queue).
   reset the achieved goal, the gate count or the turn start.
 - A per-task `turn_order` lock orders the two: a prompt holds it from that check until it set
   Working (its own store writes only); a Stop or verdict takes it to move `turn_end_ms`. A turn end
-  arriving while a prompt that passed the check is still writing settles after it.
+  arriving while a prompt that passed the check is still writing settles after it. Both hooks read
+  the task again under it, so neither acts on a copy the other changed meanwhile.
 - A goal verdict "met" settles a turn a Stop waited for also when the task reads Your turn, as that
   Stop would have (Done, its pull request, its chains).
 
