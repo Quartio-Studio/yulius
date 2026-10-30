@@ -27,12 +27,11 @@ SPEC-325), and GitHub reports a repository's size, but neither was used here.
   new repository).
 - **Bound the copy while it is written.** The Git runner takes an optional size watch (paths and
   a byte limit) and measures them together every 250 ms while the command runs and once when it
-  ends; past the limit it kills
-  the process group, reaps it and fails with `GitError::TooLarge`; a file counts by the disk blocks
-  it takes when more than its length (loose refs take a block each). `bundle_repository` takes the
-  limit and watches the fetch's folder and then the bundle's file with Git's `<path>.lock`, which
-  Git writes and renames once the bundle is complete. The tool's existing cleanup removes the
-  folder.
+  ends; past the limit it kills the process group, reaps it and fails with `GitError::TooLarge`;
+  a file counts by the disk blocks it takes when more than its length (loose refs take a block
+  each). `bundle_repository` takes the limit and watches the fetch's folder and then the bundle's
+  file with Git's `<path>.lock`, which Git writes and renames once the bundle is complete. The
+  tool's existing cleanup removes the folder.
 
 ## Alternatives
 

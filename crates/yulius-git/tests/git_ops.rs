@@ -1065,7 +1065,9 @@ fn a_fetch_that_ends_past_its_limit_fails_and_one_under_it_succeeds() -> TestRes
         Err(GitError::TooLarge { limit, .. }) => assert_eq!(limit, 2000),
         other => return Err(format!("expected too large, got {other:?}").into()),
     }
-    // Just above what it takes: 3000 bytes in a 4 KiB block on Linux and macOS.
+    // Exactly what it takes (the limit is inclusive): 3000 bytes in a 4 KiB block on Linux and
+    // macOS. Assumes the file's block count stays put between the two runs (not so on ZFS or
+    // compressed btrfs, which settle blocks when they commit).
     git.fetch_branches_and_tags(&repo, url, 3000_u64.max(blocks_of(&repo.join("pack"))?))?;
     Ok(())
 }

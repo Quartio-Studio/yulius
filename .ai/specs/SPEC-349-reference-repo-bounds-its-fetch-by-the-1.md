@@ -40,9 +40,9 @@ also holds the database.
   before any concurrency slot, folder or Git command, and the answer says the size and the cap.
 - **RFB-002** A fetch is refused before it starts when the data disk would reach its critical
   level with the fetch's peak use added: three times GitHub's size (the fetched copy, its bundle
-  and the attached bundle exist at once), or three times the cap when GitHub reports no size (or 0). The
-  check is the one uploads use (`App::disk_room_if_short`, called by `check_declared`), shared, not
-  copied. An unknown disk refuses nothing.
+  and the attached bundle exist at once), or three times the cap when GitHub reports no size or
+  0. The check is the one uploads use (`App::disk_room_if_short`, called by `check_declared`),
+  shared, not copied. An unknown disk refuses nothing.
 - **RFB-003** The Git fetch and the bundle it writes are each bounded by `MAX_REFERENCE_BYTES`: a
   command whose folder or file (for the bundle, also Git's `<path>.lock`, which it renames at the
   end) grows past the limit, counted by the disk blocks a file takes when more than its length,
@@ -59,15 +59,15 @@ also holds the database.
 - [x] A reference fetch past the cap is stopped and its folder removed
 - [x] Docs, changes and every gate green
 - [x] Independent review answered and fixed
-- [x] Round 2 review approves the final head with the gate green
+- [x] Round 2 review approves the final head with the gate green (round 3 approved it)
 
 ## Acceptance criteria
 
 - **AC1 (RFB-001)** GitHub reports `acme/lib` at 2 GiB: `reference_repo` is refused naming the
   size and the 1 GiB cap; no Git call ran and `<data>/tmp` holds no fetch folder.
 - **AC2 (RFB-002)** The data disk is 96 of 100 GB used: the tool is refused saying the disk has
-  no room, before any Git call; at 92 of 100 GB a repository GitHub gives no size for is refused
-  (three times the cap); a 10 GB disk at 80 % used refuses a repository GitHub reports at 600 MB
+  no room, before any Git call; at 92 of 100 GB a repository GitHub gives no size (or 0) for is
+  refused (three times the cap); a 10 GB disk at 80 % used refuses a repository GitHub reports at 600 MB
   (3 × 600 MB would pass 95 %) and fetches one reported at 200 MB.
 - **AC3 (RFB-003)** A fetch whose work folder passes the limit is killed: the real Git runner
   stops a command writing past a byte limit with `GitError::TooLarge` and leaves no process; the
@@ -127,7 +127,7 @@ and all fixed:
 - Low: a reported size of 0 (a new repository) still counted as nothing in the disk check. Fixed
   test-first: AC2's 92 % case also refuses a size of 0.
 - Nits: ADR-0236 describes the watch over several paths; the `u64::MAX` rounding case asserts its
-  value; the quick fetch is checked just above the 4 KiB its file takes; the bundle-kill test
+  value; the quick fetch is checked at exactly the 4 KiB its file takes (the limit is inclusive); the bundle-kill test
   checks the process group is gone; the folder-walk unit test syncs its files before measuring
   (ZFS allocates blocks on commit); folders' own blocks are left out, as commented.
 
@@ -146,11 +146,17 @@ and all fixed:
 - `git bundle create` on Git 2.43 writes `<path>.lock` while it runs (seen in a 200 MB probe).
 - `scripts/dev ci` (fmt, Clippy, macOS compile, nextest, doctests, deps, repository checks): exit 0
   at a3875c39 (2785 passed, 16 skipped) and at dc30398e (2787 passed, 16 skipped); after round 2,
-  `cargo nextest run` of `yulius-git`, `reference_repo::` and `uploads::`: 106 passed. The gate
-  runs again at the final head before delivery.
+  `cargo nextest run` of `yulius-git`, `reference_repo::` and `uploads::`: 106 passed; exit 0 at
+  b388ffa5 (2787 passed, 16 skipped), which round 3 approved. Its nits since are comments and
+  this text only.
 - `yulius security-scan`: not run. Vidoc refused the instance key (HTTP 401, exit 2), which is
   unrun, not passed. The CI `security` job reports it the same way.
 - Not tested here: a real multi-GiB GitHub fetch (the watch is exercised by scripts standing in
   for Git and by a real local bundle), and the disk level on a real full disk (the
   `SettableSystem` probe stands in).
+
+Round 3 (fresh session, at b388ffa5): approve, with five nits, all fixed in comments and this
+text: the round-2 plan item names the round that approved it, and the Evidence gives the gate at
+b388ffa5; the boundary comment says the limit is inclusive and assumes stable block counts (ZFS,
+compressed btrfs); AC2 lists the size-0 case; two lines are re-wrapped.
 
