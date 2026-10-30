@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-30
 
+- A toast that appears, or moves to the top edge, under a mouse pointer that rests there closes on
+  time (SPEC-350, ADR-0237, task #334, fixes #954). Before, it stayed until the pointer moved and
+  could cover the page header's add button for good. A toast the pointer moves onto still stays
+  while pointed at.
 - `reference_repo` no longer fills the server's disk with a repository too large for a task
   (SPEC-349, ADR-0236, task #333, fixes #920): a repository GitHub reports above 1 GiB is refused
   at once, a fetch is refused when the data disk has no room for it (as uploads are), and Git is
