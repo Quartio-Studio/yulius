@@ -54,7 +54,7 @@ as a task run's do, instead of being refused until the server is back.
 - [x] Spec, ADR and a failing regression test for the Superagent's restart fallback
 - [x] The Superagent gets its fingerprint file, regression test green
 - [x] Independent review in a fresh session, findings fixed test-first
-- [x] Gates green, pull request merged into dev
+- [x] Gates green, pull request armed to merge into dev on green CI
 
 ## Acceptance criteria
 
