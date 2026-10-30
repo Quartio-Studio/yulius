@@ -42,31 +42,35 @@ it never covers the page header's buttons for good.
 | TST-001 | A toast that appears under a pointer resting where it was closes after its timeout. |
 | TST-002 | A toast that the stack's flip (`keepClear`) brings under a resting pointer closes after its timeout. |
 | TST-003 | A toast the pointer moves onto stays while the pointer is on it and closes once it leaves (WCAG 2.2.1, unchanged); keyboard focus inside it keeps it as before. |
+| TST-004 | A toast under a resting pointer that keyboard focus enters and leaves closes after its timeout (the resting pointer does not count as pointing at it). |
 
 ## Plan
 
 - [x] Spec SPEC-350 written and validated
 - [x] Regression test shows a toast under a resting pointer staying open
-- [ ] Toast pauses only on a real pointer move onto it
-- [ ] Decision, changes and e2e README documented
+- [x] Toast pauses only on a real pointer move onto it
+- [x] Decision, changes and e2e README documented
 - [ ] Gates green and independent review answered
 - [ ] Pull request merged into dev on green
 
 ## Acceptance criteria
 
-- `e2e/tests/toasts.e2e.ts` fails on the unfixed `toast()` (both resting-pointer cases) and passes
+- `e2e/tests/toasts.e2e.ts` fails on the unfixed `toast()` (the resting-pointer cases) and passes
   with the fix; the pointer-moved-onto case passes on both.
 - `secrets.e2e.ts` and the full e2e suite pass.
 
 ## Test plan
 
 - `e2e/tests/toasts.e2e.ts` (mock page with `ambient=0&browserask=0`, toasts raised in the page
-  through `dom.js`'s `toast()` with a 500 ms timeout):
+  through `dom.js`'s `toast()` with a 2 s timeout, 3 s for the two-toast case, so a loaded host acts
+  inside it):
   - pointer parked at the bottom right, a toast raised there: it is `:hover`, then gone (TST-001);
   - a focused control placed where the stack shows, the pointer parked at the top right, a toast
     raised: the stack flips under the pointer, it is `:hover`, then gone (TST-002);
   - two toasts, the pointer moved onto one: the other closes, the pointed one stays, and closes
-    once the pointer leaves (TST-003).
+    once the pointer leaves (TST-003);
+  - pointer parked at the bottom right, a toast raised there, its Dismiss focused and blurred: it
+    is gone after its timeout (TST-004, review round 1).
 - Full e2e suite, `scripts/dev ci`.
 
 ## Decisions

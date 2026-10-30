@@ -12,7 +12,7 @@ No toast disappears while the pointer or keyboard focus is on it (WCAG 2.2.1): `
 sends `pointerover`, `pointerenter` and `mouseover`, but no `pointermove`, to an element that
 appears under a pointer that does not move. A toast raised where the pointer rests, or brought
 there by the stack's flip to the top edge (`keepClear`) or its move between a dialog and the page
-(`toastHost`), so paused at once, and with no `pointerleave` to come it stayed until the pointer
+(`toastHost`), was so paused at once, and with no `pointerleave` to come it stayed until the pointer
 moved. The flipped stack sits over the page header's add button: in `secrets.e2e.ts` the "Agent
 secret added." toast was still there 30 s later and took the click on "Add team secret" (#954);
 #349 was the same over the Notes tabs. A person whose mouse rests there meets it too.
@@ -21,7 +21,10 @@ secret added." toast was still there 30 s later and took the click on "Add team 
 
 - A toast pauses its close timer on `pointermove` on it (and on `focusin`, as before): the person
   moved the pointer onto it. A pointer it appeared or moved under does not pause it.
-- Leaving it (`pointerleave`, `focusout`) arms the timer again as before (at most 4 s).
+- Leaving it (`pointerleave`, `focusout`) arms the timer again as before (at most 4 s), unless
+  keyboard focus is still in it or the pointer still points at it. "Points at" is a flag set by that
+  move and cleared by `pointerleave`, not `:hover`: a toast under a resting pointer is `:hover` too,
+  and one focused and left there would never close.
 
 ## Alternatives
 
