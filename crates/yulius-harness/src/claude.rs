@@ -204,7 +204,8 @@ fn observe_attachment(record: &Map<String, Value>) -> Vec<Observed> {
     } else {
         GoalOutcome::NotMet
     };
-    vec![Observed::Goal { outcome }]
+    let at = str_of(record, "timestamp").and_then(parse_rfc3339);
+    vec![Observed::Goal { outcome, at }]
 }
 
 /// The record Claude Code writes when a turn closes. `stop_hook_summary` is not one: it is also
@@ -764,7 +765,12 @@ mod tests {
                 r#"{{"type":"attachment","isSidechain":false,"attachment":{body}}}"#
             ))
         };
-        let outcome = |o| vec![Observed::Goal { outcome: o }];
+        let outcome = |o| {
+            vec![Observed::Goal {
+                outcome: o,
+                at: None,
+            }]
+        };
         assert_eq!(
             goal(r#"{"type":"goal_status","met":false,"sentinel":true,"condition":"c"}"#),
             outcome(GoalOutcome::Set)
@@ -784,6 +790,17 @@ mod tests {
         assert_eq!(
             goal(r#"{"type":"goal_status","met":false,"failed":true,"condition":"c"}"#),
             outcome(GoalOutcome::Failed)
+        );
+        // When Claude Code recorded it, so a prompt sent before the verdict is ordered by it
+        // (SPEC-346 LPH-002).
+        assert_eq!(
+            observe_line(
+                r#"{"type":"attachment","isSidechain":false,"timestamp":"2026-10-10T05:38:01.385Z","attachment":{"type":"goal_status","met":true,"condition":"c"}}"#
+            ),
+            vec![Observed::Goal {
+                outcome: GoalOutcome::Met,
+                at: Some(Timestamp(1_791_610_681_385))
+            }]
         );
         assert!(goal(r#"{"type":"todo_reminder"}"#).is_empty());
         assert!(goal(r#""goal_status""#).is_empty());

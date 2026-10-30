@@ -24,6 +24,11 @@ pub mod events {
     pub const STATUS_LINE: &str = "StatusLine";
 }
 
+/// The request header in which `yulius hook` says when it sent the hook (Unix ms): a hook Yulius
+/// handles late, after its client gave up waiting, is ordered with the agent's later hooks by it
+/// (SPEC-346 LPH-001).
+pub const SENT_AT_HEADER: &str = "x-yulius-hook-sent-ms";
+
 /// `SessionEnd` reasons (Claude Code 2.1.292): the person left the session (`/exit`, Ctrl+C
 /// twice, Ctrl+D) — `prompt_input_exit`; `/clear` started a new conversation in the same
 /// process; `logout`; `resume` (another session was resumed in the same process); anything else

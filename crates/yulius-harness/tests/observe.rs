@@ -204,31 +204,35 @@ fn claude_goal_mode_records() {
             )
         })
         .collect();
-    let goal = |outcome| Observed::Goal { outcome };
+    // Each with its record's time (SPEC-346 LPH-002).
+    let goal = |outcome, at| Observed::Goal {
+        outcome,
+        at: Some(Timestamp(at)),
+    };
     assert_eq!(
         relevant,
         vec![
-            &goal(GoalOutcome::Set),
+            &goal(GoalOutcome::Set, 1_791_610_681_381),
             // The `/goal` command's echo starts no turn: the model's work after it does
             // (SPEC-085 STT-001).
             &Observed::TurnComplete {
                 duration_ms: None,
                 at: Some(Timestamp(1_791_610_700_000))
             },
-            &goal(GoalOutcome::NotMet),
+            &goal(GoalOutcome::NotMet, 1_791_610_704_000),
             &Observed::TurnComplete {
                 duration_ms: None,
                 at: Some(Timestamp(1_791_610_729_402))
             },
-            &goal(GoalOutcome::Met),
+            &goal(GoalOutcome::Met, 1_791_610_732_557),
             &Observed::TurnEnded {
                 background_agents: None,
                 at: Some(Timestamp(1_791_610_732_580)),
                 duration_ms: Some(51_000),
             },
             &Observed::BackgroundEnded { id: "b1".into() },
-            &goal(GoalOutcome::Failed),
-            &goal(GoalOutcome::Cleared),
+            &goal(GoalOutcome::Failed, 1_791_611_400_000),
+            &goal(GoalOutcome::Cleared, 1_791_611_460_000),
         ]
     );
     assert_eq!(

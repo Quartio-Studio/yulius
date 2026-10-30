@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use yulius_app::error::AppError;
 use yulius_app::hooks::HookReply;
-use yulius_contracts::hooks::{HookInput, StatusLineInput, events};
+use yulius_contracts::hooks::{HookInput, SENT_AT_HEADER, StatusLineInput, events};
 
 use crate::AppState;
 
@@ -61,11 +61,17 @@ pub async fn hook(
         };
     }
     let input: HookInput = serde_json::from_slice(&body).unwrap_or_default();
+    // When the client sent it (SPEC-346 LPH-001); an older client says nothing.
+    let sent_ms = headers
+        .get(SENT_AT_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<i64>().ok());
     // The hook is handled in its own task, so it is applied to its end even when the client gives
     // up waiting for the answer and closes the connection, which drops this handler (SPEC-140
     // HKS-001, ADR-0115): the agent went on, so its event happened.
     let (token, which, what) = (token.to_owned(), harness.clone(), event.clone());
-    let handled = tokio::spawn(async move { app.hook_event(&token, &which, &what, &input).await });
+    let handled =
+        tokio::spawn(async move { app.hook_event(&token, &which, &what, &input, sent_ms).await });
     let reply = match handled.await {
         Ok(reply) => reply,
         Err(err) => {

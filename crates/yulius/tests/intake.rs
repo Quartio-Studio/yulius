@@ -19,14 +19,16 @@ use support::{
     seed_github_user, seed_live_attempt, seed_sandbox, seed_task,
 };
 use yulius_app::intake::IntakeServices;
-use yulius_app::model::{AccountRecord, AccountStatus, Secret, StepRecord};
+use yulius_app::model::{
+    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, Secret, StepRecord, TaskRecord,
+};
 use yulius_app::ports::intake::{ChoiceEvaluator, JevFailure, ProposerFailure, SplitProposer};
 use yulius_app::ports::store::{AccountStore, CoordinationStore, TaskStore};
 use yulius_app::ports::store_ext::DeliveryStore;
-use yulius_domain::harness::Provider;
-use yulius_domain::ids::{AccountId, SandboxId, StepId, TaskId, UserId};
+use yulius_domain::harness::{Harness as Agent, Provider};
+use yulius_domain::ids::{AccountId, AttemptId, SandboxId, StepId, TaskId, UserId};
 use yulius_domain::intake::{ChoiceAnswer, ChoiceQuestion, ProposedTask};
-use yulius_domain::task::{Activity, StopReason, TaskStatus};
+use yulius_domain::task::{Activity, AttemptState, StopReason, TaskStatus};
 use yulius_domain::time::Timestamp;
 
 const TOKEN: &str = "task-token-for-intake-tests-0123456789";
@@ -46,11 +48,15 @@ const TEN_ITEMS: &str = "Make it the final state, everything below has to land.\
 
 /// A fake Jev: the split question says "several" for requests mixing UI and backend work; the
 /// breadth question says "broad" for the whole product; the scope question answers by keywords
-/// of the new message. Counts calls; can be "down".
+/// of the new message. Counts calls; can be "down", or `held`: each call says it `entered` and
+/// answers once `release`d (a scope check slower than the hook client's wait).
 #[derive(Default)]
 struct FakeJev {
     calls: AtomicUsize,
     down: AtomicBool,
+    held: AtomicBool,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
 }
 
 fn answer(question: &ChoiceQuestion<'_>, winner: &str, p: f64) -> ChoiceAnswer {
@@ -75,6 +81,10 @@ impl ChoiceEvaluator for FakeJev {
         _deadline: Duration,
     ) -> Result<ChoiceAnswer, JevFailure> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.held.load(Ordering::SeqCst) {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
         if self.down.load(Ordering::SeqCst) {
             return Err(JevFailure::Unavailable);
         }
@@ -659,6 +669,297 @@ async fn hook(h: &Harness, prompt: &str) -> Result<Resp, Box<dyn std::error::Err
         },
     )
     .await
+}
+
+/// A running task `id` with a live run on the pool's account, so a Stop stays on it instead of
+/// switching.
+async fn live_task(i: &Intake, id: &str) -> Result<TaskRecord, Box<dyn std::error::Error>> {
+    let task = seed_task(&i.h, id, "s1", "u-alice", TaskStatus::Running, None).await?;
+    i.h.store
+        .insert_attempt(&AttemptRecord {
+            id: AttemptId::parse(&format!("a-{id}"))?,
+            task_id: task.id.clone(),
+            seq: 1,
+            harness: Agent::ClaudeCode,
+            account_id: Some(AccountId::parse("acc-1")?),
+            provider_session_id: None,
+            launch_kind: LaunchKind::New,
+            state: AttemptState::Live,
+            run_dir: "/nonexistent/run".into(),
+            token_hash: i.h.app.deps.crypto.sha256_hex(TOKEN.as_bytes()),
+            host_token: i.h.app.deps.crypto.seal(&[1u8; 32])?,
+            ptyhost_pid: None,
+            child_pid: None,
+            started_at: i.h.app.now(),
+            ended_at: None,
+            exit_code: None,
+            exit_reason: None,
+        })
+        .await?;
+    Ok(task)
+}
+
+/// A hook to the internal listener with the time its client says it sent it.
+async fn hook_sent(
+    i: &Intake,
+    event: &str,
+    body: Value,
+    sent: &str,
+) -> Result<StatusCode, Box<dyn std::error::Error>> {
+    Ok(hook_to(
+        i.h.internal.clone(),
+        event.to_owned(),
+        body,
+        Some(sent.to_owned()),
+    )
+    .await?)
+}
+
+/// [`hook_sent`] on `internal`, with or without a sent time, for a task of its own.
+async fn hook_to(
+    internal: axum::Router,
+    event: String,
+    body: Value,
+    sent: Option<String>,
+) -> Result<StatusCode, String> {
+    use tower::ServiceExt as _;
+    let mut request = axum::http::Request::post(format!("/hooks/claude/{event}"))
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .header("content-type", "application/json");
+    if let Some(sent) = sent {
+        request = request.header("x-yulius-hook-sent-ms", sent);
+    }
+    let request = request
+        .body(axum::body::Body::from(body.to_string()))
+        .map_err(|e| e.to_string())?;
+    let response = internal.oneshot(request).await.map_err(|e| e.to_string())?;
+    Ok(response.status())
+}
+
+fn stop_body() -> Value {
+    json!({"hook_event_name": "Stop", "session_id": "s", "stop_hook_active": false})
+}
+
+fn prompt_body(prompt: &str) -> Value {
+    json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": prompt})
+}
+
+/// SPEC-346 LPH-002 (#921, review rounds 2 and 3): the turn's Stop arrives while its prompt,
+/// past its turn-end check, is still setting Working: the Stop waits for it and then settles the
+/// task as it is, Your turn. It used to settle from the copy it read before waiting, which already
+/// read Your turn, so the task stayed Working with the agent idle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stop_that_waited_for_its_prompt_settles_after_it() -> TestResult {
+    use yulius_app::race::{Point, on};
+    let i = intake_with(harness()?).await?;
+    let task = live_task(&i, "t-order").await?;
+    i.h.store
+        .set_activity(&task.id, Some(Activity::Waiting), i.h.app.now())
+        .await?;
+    let key = Path::new(task.id.as_str()).to_path_buf();
+    let (read_tx, read_rx) = std::sync::mpsc::channel();
+    on(Point::StopTurnLock, &key, move || {
+        let _ = read_tx.send(());
+    });
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+    let (internal, runtime) = (i.h.internal.clone(), tokio::runtime::Handle::current());
+    on(Point::PromptTurnChecked, &key, move || {
+        // The Stop comes now and reads the task (Your turn) before the prompt sets Working.
+        let stop = runtime.spawn(hook_to(internal, "Stop".into(), stop_body(), None));
+        let _ = stop_tx.send(stop);
+        let read = tokio::task::block_in_place(|| read_rx.recv_timeout(Duration::from_secs(10)));
+        assert!(read.is_ok(), "the Stop read the task");
+    });
+    let prompt = call(
+        &i.h.internal,
+        Method::POST,
+        "/hooks/claude/UserPromptSubmit",
+        Some(prompt_body("continue with the report page")),
+        &Creds {
+            bearer: Some(TOKEN.into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    assert_eq!(prompt.status, StatusCode::OK);
+    let stop = tokio::time::timeout(Duration::from_secs(10), stop_rx).await??;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(10), stop).await???,
+        StatusCode::OK
+    );
+    let activity = i.h.store.task(&task.id).await?.and_then(|t| t.activity);
+    assert_eq!(
+        activity,
+        Some(Activity::Waiting),
+        "the Stop came after the prompt"
+    );
+    Ok(())
+}
+
+/// SPEC-346 LPH-002 (#921, review round 3): a late Stop of the turn before (sent before this
+/// prompt) settles the task while the prompt's scope check runs: the prompt still sets Working,
+/// from the task as it is now. It used to compare with the copy it read on arrival (Working) and
+/// write nothing, so the task read Your turn while the agent worked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_prompt_sets_working_over_an_older_stop_that_settled_meanwhile() -> TestResult {
+    let i = intake_with(harness()?).await?;
+    let task = live_task(&i, "t-older").await?;
+    i.h.store
+        .set_activity(&task.id, Some(Activity::Working), i.h.app.now())
+        .await?;
+    i.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    let now = i.h.app.now().0;
+    i.h.app.record_typing(&task.id, &UserId::parse("u-alice")?);
+    i.jev.held.store(true, Ordering::SeqCst);
+    let prompt = tokio::spawn(hook_to(
+        i.h.internal.clone(),
+        "UserPromptSubmit".into(),
+        prompt_body("use the existing chart component for the report"),
+        Some(now.to_string()),
+    ));
+    tokio::time::timeout(Duration::from_secs(10), i.jev.entered.notified()).await?;
+    let older = (now - 500).to_string();
+    assert_eq!(
+        hook_sent(&i, "Stop", stop_body(), &older).await?,
+        StatusCode::OK
+    );
+    assert_eq!(
+        i.h.store.task(&task.id).await?.and_then(|t| t.activity),
+        Some(Activity::Waiting),
+        "the older Stop settled the task"
+    );
+    i.jev.release.notify_one();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(10), prompt).await???,
+        StatusCode::OK
+    );
+    assert_eq!(
+        i.h.store.task(&task.id).await?.and_then(|t| t.activity),
+        Some(Activity::Working),
+        "the prompt's turn runs"
+    );
+    Ok(())
+}
+
+/// SPEC-346 LPH-001: a hook's sent time is never taken later than Yulius's clock, and one not
+/// after the epoch counts as none: a Stop the client says it sent in an hour, or a prompt from
+/// 1970, never makes the next prompt look like history.
+#[tokio::test]
+async fn a_hooks_sent_time_is_clamped_to_now() -> TestResult {
+    let i = intake_with(harness()?).await?;
+    let task = live_task(&i, "t-sent").await?;
+    let activity = || async {
+        i.h.store
+            .task(&task.id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|t| t.activity)
+    };
+    let stop = json!({"hook_event_name": "Stop", "session_id": "s", "stop_hook_active": false});
+    let prompt = json!({"hook_event_name": "UserPromptSubmit", "session_id": "s",
+        "prompt": "use the existing chart component for the report"});
+    let future = (i.h.app.now().0 + 3_600_000).to_string();
+    assert_eq!(
+        hook_sent(&i, "Stop", stop.clone(), &future).await?,
+        StatusCode::OK
+    );
+    assert_eq!(activity().await, Some(Activity::Waiting));
+    i.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+    let now = i.h.app.now().0.to_string();
+    assert_eq!(
+        hook_sent(&i, "UserPromptSubmit", prompt.clone(), &now).await?,
+        StatusCode::OK
+    );
+    assert_eq!(
+        activity().await,
+        Some(Activity::Working),
+        "a Stop from the future"
+    );
+    for sent in ["0", "-5"] {
+        let now = i.h.app.now().0.to_string();
+        assert_eq!(
+            hook_sent(&i, "Stop", stop.clone(), &now).await?,
+            StatusCode::OK
+        );
+        assert_eq!(activity().await, Some(Activity::Waiting));
+        i.h.clock.0.fetch_add(1_000, Ordering::SeqCst);
+        let status = hook_sent(&i, "UserPromptSubmit", prompt.clone(), sent).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(activity().await, Some(Activity::Working), "sent at {sent}");
+    }
+    Ok(())
+}
+
+/// SPEC-346 LPH-002 (#921): a typed prompt whose handling outlasts the hook client's wait (here
+/// its scope check) is answered after the turn it started ended: the client failed open, the
+/// agent ran the turn and its Stop settled the task. The late prompt leaves the task as that Stop
+/// left it; before, it set Working again and nothing ended that turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_prompt_answered_after_its_turn_ended_leaves_the_task_settled() -> TestResult {
+    let i = intake_with(harness()?).await?;
+    let task = live_task(&i, "t-late").await?;
+    let activity = || async {
+        i.h.store
+            .task(&task.id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|t| t.activity)
+    };
+    i.h.app.record_typing(&task.id, &UserId::parse("u-alice")?);
+    i.jev.held.store(true, Ordering::SeqCst);
+    let internal = i.h.internal.clone();
+    let prompt = tokio::spawn(async move {
+        call(
+            &internal,
+            Method::POST,
+            "/hooks/claude/UserPromptSubmit",
+            Some(
+                json!({"hook_event_name": "UserPromptSubmit", "session_id": "s",
+                "prompt": "use the existing chart component for the report"}),
+            ),
+            &Creds {
+                bearer: Some(TOKEN.into()),
+                ..Creds::default()
+            },
+        )
+        .await
+        .map(|r| r.status)
+        .map_err(|e| e.to_string())
+    });
+    tokio::time::timeout(Duration::from_secs(10), i.jev.entered.notified()).await?;
+    // The client gave up waiting (5 s): the agent ran the turn, and its Stop settles the task.
+    // Neither request says when it was sent (an older client): Yulius orders them by arrival.
+    i.h.clock.0.fetch_add(5_000, Ordering::SeqCst);
+    let stop = call(
+        &i.h.internal,
+        Method::POST,
+        "/hooks/claude/Stop",
+        Some(json!({"hook_event_name": "Stop", "session_id": "s", "stop_hook_active": false})),
+        &Creds {
+            bearer: Some(TOKEN.into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    assert_eq!(stop.status, StatusCode::OK, "{:?}", stop.body);
+    assert_eq!(
+        activity().await,
+        Some(Activity::Waiting),
+        "the Stop settled the turn"
+    );
+    i.jev.release.notify_one();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(10), prompt).await???,
+        StatusCode::OK
+    );
+    assert_eq!(
+        activity().await,
+        Some(Activity::Waiting),
+        "the late prompt's turn is over"
+    );
+    Ok(())
 }
 
 fn held(r: &Resp) -> bool {

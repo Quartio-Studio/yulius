@@ -76,6 +76,12 @@ pub enum Point {
     /// `files_roots` (SPEC-340): the sandbox repository was found; its `.git/HEAD` is not opened
     /// yet. The path is the repository's.
     RootsHead,
+    /// A Stop hook (SPEC-346): the task was read; the Stop has not taken the turn lock yet. The
+    /// path is the task id.
+    StopTurnLock,
+    /// A prompt hook (SPEC-346) passed its turn-end check under the turn lock; it has not set
+    /// Working yet. The path is the task id.
+    PromptTurnChecked,
 }
 
 #[cfg(feature = "test-support")]

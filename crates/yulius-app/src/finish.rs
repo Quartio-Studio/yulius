@@ -140,7 +140,7 @@ impl TranscriptFacts {
                 self.context_full = true;
             }
             Observation::Compacted => self.context_full = false,
-            Observation::Goal(outcome) => {
+            Observation::Goal(outcome, _) => {
                 // Claude Code drops an armed check-in once the goal ended.
                 if !goal_stays_open(*outcome) && self.goal_retry == Some(GoalRetryFact::Armed) {
                     self.goal_retry = None;
@@ -471,6 +471,19 @@ impl Drop for StopInFlight {
     }
 }
 
+/// Whether a turn that waited for its goal verdict settles as its Stop would have, the task
+/// reading `activity` and the goal `achieved`: while it works or needs a person, and once the
+/// goal is met while it reads Your turn (its turn's prompt hook came late or never, so it never
+/// read Working; SPEC-346 LPH-003). Otherwise it reads settled already (a late replay).
+#[must_use]
+pub(crate) fn waited_turn_settles(activity: Option<Activity>, achieved: bool) -> bool {
+    match activity {
+        Some(Activity::Working | Activity::NeedsAttention) => true,
+        Some(Activity::Waiting) => achieved,
+        _ => false,
+    }
+}
+
 /// Whether a turn closed with no Stop Yulius answered settles now: not while a full context is
 /// being recovered (`context_clear` false), at a usage limit, or with an open pause, whose own
 /// paths say how the task goes on (SPEC-290 GDW-001).
@@ -541,16 +554,14 @@ impl App {
         }
     }
 
-    /// Settles a turn that waited for its verdict as the Stop would have, unless it reads idle
-    /// already (a late replay or a person settled it).
+    /// Settles a turn that waited for its verdict as the Stop would have, unless
+    /// [`waited_turn_settles`] says it reads settled already.
     async fn settle_waited_turn(self: &Arc<Self>, task_id: &TaskId) {
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };
-        if !matches!(
-            task.activity,
-            Some(Activity::Working | Activity::NeedsAttention)
-        ) {
+        let achieved = self.runtime(task_id).goal_achieved.load(Ordering::SeqCst);
+        if !waited_turn_settles(task.activity, achieved) {
             return;
         }
         if let Err(err) = self.settle_clean_turn(&task).await {
@@ -694,7 +705,12 @@ impl App {
     }
 
     /// Claude Code recorded the session goal's state.
-    pub(crate) async fn goal_observed(self: &Arc<Self>, task_id: &TaskId, outcome: GoalOutcome) {
+    pub(crate) async fn goal_observed(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        outcome: GoalOutcome,
+        at: Option<yulius_domain::time::Timestamp>,
+    ) {
         if !goal_stays_open(outcome) {
             self.goal_ended_during_retry(task_id, outcome == GoalOutcome::Met)
                 .await;
@@ -703,11 +719,21 @@ impl App {
         runtime
             .goal_open
             .store(goal_stays_open(outcome), Ordering::SeqCst);
-        // The verdict on a clean Stop whose turn waited for it (BGW-005).
-        let waited = matches!(
+        let verdict = matches!(
             outcome,
             GoalOutcome::Met | GoalOutcome::NotMet | GoalOutcome::Failed
-        ) && runtime.verdict_stop_ms.take_any();
+        );
+        // A verdict ends the turn's evaluation: a prompt sent before Claude Code recorded it is
+        // over. The record's own time, not when the watcher read it: the next turn's prompt is
+        // sent after it (SPEC-346 LPH-002).
+        if verdict {
+            let now = self.now().0;
+            let recorded = at.map_or(now, |at| at.0.min(now));
+            let _order = runtime.turn_order.lock().await;
+            runtime.turn_end_ms.fetch_max(recorded, Ordering::SeqCst);
+        }
+        // The verdict on a clean Stop whose turn waited for it (BGW-005).
+        let waited = verdict && runtime.verdict_stop_ms.take_any();
         if waited && outcome == GoalOutcome::NotMet {
             // The agent goes on, and the task never read idle.
             runtime.resumed_turn.store(true, Ordering::SeqCst);
@@ -1233,17 +1259,17 @@ mod tests {
             ))
         );
         for ended in [GoalOutcome::Cleared, GoalOutcome::Met, GoalOutcome::Failed] {
-            let facts = reduce(&[PROMPT, retry(true), ENDED, Observation::Goal(ended)]);
+            let facts = reduce(&[PROMPT, retry(true), ENDED, Observation::Goal(ended, None)]);
             assert_eq!(facts.goal_retry, None, "{ended:?}");
             // Spent retries stay: the request is the person's.
-            let facts = reduce(&[PROMPT, retry(false), ENDED, Observation::Goal(ended)]);
+            let facts = reduce(&[PROMPT, retry(false), ENDED, Observation::Goal(ended, None)]);
             assert!(facts.goal_retry.is_some(), "{ended:?}");
         }
         let still = reduce(&[
             PROMPT,
             retry(true),
             ENDED,
-            Observation::Goal(GoalOutcome::NotMet),
+            Observation::Goal(GoalOutcome::NotMet, None),
         ]);
         assert_eq!(still.goal_retry, Some(GoalRetryFact::Armed));
         let wake = Observation::UserTurn {
@@ -1322,10 +1348,10 @@ mod tests {
         assert_eq!(reduce(&[]), TranscriptFacts::default());
         // The production case: goal set, prompt, end of turn, goal achieved, turn closed.
         let finished = reduce(&[
-            Observation::Goal(GoalOutcome::Set),
+            Observation::Goal(GoalOutcome::Set, None),
             PROMPT,
             Observation::TurnComplete { at: None },
-            Observation::Goal(GoalOutcome::Met),
+            Observation::Goal(GoalOutcome::Met, None),
             ENDED,
         ]);
         assert_eq!(
@@ -1343,18 +1369,18 @@ mod tests {
             }
         );
         // Typed again after the goal: a new open turn, the goal no longer counts.
-        let again = reduce(&[Observation::Goal(GoalOutcome::Met), ENDED, PROMPT]);
+        let again = reduce(&[Observation::Goal(GoalOutcome::Met, None), ENDED, PROMPT]);
         assert_eq!(again.turn_open, Some(true));
         assert_eq!(again.goal_achieved, Some(false));
         // Not met yet: the agent continues.
         let continuing = reduce(&[
             PROMPT,
             Observation::TurnComplete { at: None },
-            Observation::Goal(GoalOutcome::NotMet),
+            Observation::Goal(GoalOutcome::NotMet, None),
         ]);
         assert_eq!(continuing.turn_open, Some(true));
         // Impossible: the turn ends without an achieved goal.
-        let failed = reduce(&[PROMPT, Observation::Goal(GoalOutcome::Failed)]);
+        let failed = reduce(&[PROMPT, Observation::Goal(GoalOutcome::Failed, None)]);
         assert_eq!(failed.turn_open, Some(false));
         assert_eq!(failed.goal_achieved, Some(false));
         // A prompt-mode session never says anything about a goal.
@@ -1362,7 +1388,7 @@ mod tests {
         assert_eq!(plain.goal_achieved, Some(false));
         assert!(!plain.goal_recorded);
         // SPEC-146 GWR-003: any record of a goal says it was taken.
-        assert!(reduce(&[Observation::Goal(GoalOutcome::Cleared)]).goal_recorded);
+        assert!(reduce(&[Observation::Goal(GoalOutcome::Cleared, None)]).goal_recorded);
         let limit = reduce(&[Observation::LimitReached {
             resets_at: None,
             message: "limit".into(),
@@ -1611,12 +1637,12 @@ mod tests {
             at: Some(Timestamp(5)),
             wake: true,
         };
-        let woken = reduce(&[Observation::Goal(GoalOutcome::Met), ENDED, wake]);
+        let woken = reduce(&[Observation::Goal(GoalOutcome::Met, None), ENDED, wake]);
         assert_eq!(
             (woken.goal_achieved, woken.turn_open),
             (Some(true), Some(true))
         );
-        let typed = reduce(&[Observation::Goal(GoalOutcome::Met), ENDED, PROMPT]);
+        let typed = reduce(&[Observation::Goal(GoalOutcome::Met, None), ENDED, PROMPT]);
         assert_eq!(typed.goal_achieved, Some(false));
     }
 
@@ -1629,7 +1655,7 @@ mod tests {
             reduce(
                 &outcomes
                     .iter()
-                    .map(|o| Observation::Goal(*o))
+                    .map(|o| Observation::Goal(*o, None))
                     .collect::<Vec<_>>(),
             )
             .goal_open
@@ -1759,6 +1785,24 @@ mod tests {
         assert!(!unanswered_turn_settles(false, false, false));
         assert!(!unanswered_turn_settles(true, true, false));
         assert!(!unanswered_turn_settles(true, false, true));
+    }
+
+    /// SPEC-346 LPH-003 (#921): a turn that waited for its verdict settles while the task works or
+    /// needs a person, and once the goal is met while it reads Your turn (its prompt hook came
+    /// late, so it never read Working); a task Done, or Your turn with the goal not met, stays.
+    #[test]
+    fn a_waited_turn_settles_a_met_goal_also_from_your_turn() {
+        for achieved in [false, true] {
+            assert!(waited_turn_settles(Some(Activity::Working), achieved));
+            assert!(waited_turn_settles(
+                Some(Activity::NeedsAttention),
+                achieved
+            ));
+            assert!(!waited_turn_settles(Some(Activity::Done), achieved));
+            assert!(!waited_turn_settles(None, achieved));
+        }
+        assert!(waited_turn_settles(Some(Activity::Waiting), true));
+        assert!(!waited_turn_settles(Some(Activity::Waiting), false));
     }
 
     /// SPEC-290 GDW-001: a Stop of the live run that failed while its turn's record came settles

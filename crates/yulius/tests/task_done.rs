@@ -119,6 +119,47 @@ async fn start_on(
     attach_late: bool,
     sessions: Option<u32>,
 ) -> Result<(Arc<App>, u16), BoxError> {
+    start_holding(
+        data,
+        fake,
+        agent,
+        port,
+        host,
+        escalation_ms,
+        attach_late,
+        sessions,
+        None,
+    )
+    .await
+}
+
+/// A `/goal` prompt hook the test server handles only after `hold` and, within 30 s, once a Stop
+/// that arrived meanwhile was answered (not held): the first one once `armed`. `stop_handled`
+/// says that Stop was answered first (the late path), `handled` when the prompt was handled.
+#[derive(Clone)]
+struct LateHook {
+    hold: Duration,
+    armed: Arc<std::sync::atomic::AtomicBool>,
+    holding: Arc<std::sync::atomic::AtomicBool>,
+    stop_handled: tokio::sync::watch::Sender<bool>,
+    handled: tokio::sync::watch::Sender<bool>,
+}
+
+/// [`start_on`], and with `late_goal` the server sees a `/goal` prompt hook (a resumed session's
+/// typed goal) only after its hold, then handles it to its end, as a loaded host does once the
+/// hook client gave up waiting (SPEC-346).
+#[allow(clippy::too_many_arguments)]
+async fn start_holding(
+    data: &Path,
+    fake: &Path,
+    agent: FakeAgentOptions,
+    port: u16,
+    host: Option<Arc<dyn SessionHost>>,
+    escalation_ms: Option<u64>,
+    attach_late: bool,
+    sessions: Option<u32>,
+    late_goal: Option<LateHook>,
+) -> Result<(Arc<App>, u16), BoxError> {
     let socket = tokio::net::TcpSocket::new_v4()?;
     socket.set_reuseaddr(true)?;
     socket.bind(SocketAddr::from(([127, 0, 0, 1], port)))?;
@@ -181,7 +222,63 @@ async fn start_on(
             }
         },
     );
+    let goal_held = axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let late_goal = late_goal.clone();
+            async move {
+                use axum::response::IntoResponse as _;
+                use std::sync::atomic::Ordering::SeqCst;
+                let Some(late) = late_goal else {
+                    return next.run(request).await;
+                };
+                let path = request.uri().path();
+                if path.ends_with("/Stop") && late.holding.load(SeqCst) {
+                    // To its end even if its client hangs up, then the held prompt goes on.
+                    let stop = tokio::spawn(async move {
+                        let response = next.run(request).await;
+                        // A held Stop (202) decided nothing about the turn.
+                        if response.status() == axum::http::StatusCode::OK {
+                            late.stop_handled.send_replace(true);
+                        }
+                        response
+                    });
+                    return stop.await.unwrap_or_else(|_| {
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                    });
+                }
+                if !path.ends_with("/UserPromptSubmit") {
+                    return next.run(request).await;
+                }
+                let (parts, body) = request.into_parts();
+                let bytes = axum::body::to_bytes(body, 1 << 20)
+                    .await
+                    .unwrap_or_default();
+                let goal = String::from_utf8_lossy(&bytes).contains("\"prompt\":\"/goal ");
+                let request =
+                    axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
+                if !goal || !late.armed.swap(false, SeqCst) {
+                    return next.run(request).await;
+                }
+                late.holding.store(true, SeqCst);
+                // Its own task: the client hanging up does not cancel it (ADR-0115).
+                let handling = tokio::spawn(async move {
+                    tokio::time::sleep(late.hold).await;
+                    let mut stopped = late.stop_handled.subscribe();
+                    let _ = tokio::time::timeout(Duration::from_secs(30), stopped.wait_for(|s| *s))
+                        .await;
+                    late.holding.store(false, SeqCst);
+                    let response = next.run(request).await;
+                    late.handled.send_replace(true);
+                    response
+                });
+                handling.await.unwrap_or_else(|_| {
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                })
+            }
+        },
+    );
     let internal = yulius_server::internal_router(app.clone())
+        .layer(goal_held)
         .layer(session_start_answered)
         .into_make_service_with_connect_info::<SocketAddr>();
     tokio::spawn(async move { axum::serve(listener, internal).await });
@@ -807,6 +904,67 @@ fn a_goal_the_tui_dropped_is_submitted_again() -> TestResult {
         wait_for("Done", Duration::from_secs(45), || async {
             activity(&app, &id).await == Some(Activity::Done)
         })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-346 LPH-002, LPH-003 (#921): the goal typed into a resumed session (after a dropped
+/// submit, as above) whose `UserPromptSubmit` the server handles only after the hook client gave
+/// up (5 s): the agent ran the goal turn meanwhile, its Stop waited for the verdict and Claude
+/// Code recorded the goal as met. The late prompt changes nothing, and the task is Done. Before,
+/// the late prompt set Working and reset the goal, or the met goal left it reading Your turn.
+#[test]
+fn a_goal_whose_prompt_hook_is_answered_late_is_done() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            drop_lines: Some(1),
+            ..FakeAgentOptions::default()
+        };
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let (handled_tx, mut handled) = tokio::sync::watch::channel(false);
+        // Past the client's 5 s, and then until the turn's Stop was handled.
+        let late = LateHook {
+            hold: Duration::from_millis(5_500),
+            armed: Arc::new(AtomicBool::new(false)),
+            holding: Arc::new(AtomicBool::new(false)),
+            stop_handled: tokio::sync::watch::channel(false).0,
+            handled: handled_tx,
+        };
+        let (app, _) = start_holding(
+            &data,
+            &fake,
+            agent,
+            0,
+            None,
+            None,
+            false,
+            None,
+            Some(late.clone()),
+        )
+        .await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = continued_goal_task(&app, &sandbox, &user).await?;
+        // The resumed session's goal is typed from now on (its first submit is dropped).
+        late.armed.store(true, SeqCst);
+        goal_typed_into_the_resumed_session(&app, &id).await?;
+        tokio::time::timeout(Duration::from_secs(60), handled.wait_for(|h| *h)).await??;
+        assert!(
+            *late.stop_handled.borrow(),
+            "the goal turn's Stop was handled before its prompt (the late path)"
+        );
+        wait_for(
+            "Done after the late prompt",
+            Duration::from_secs(45),
+            || async { activity(&app, &id).await == Some(Activity::Done) },
+        )
         .await?;
         stop(&app, &id).await
     })?;

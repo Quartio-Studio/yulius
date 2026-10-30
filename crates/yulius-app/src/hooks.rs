@@ -148,7 +148,8 @@ fn colour(code: u8, text: &str) -> String {
 }
 
 impl App {
-    /// Handles one hook event for the run owning `token`. Unknown events answer empty.
+    /// Handles one hook event for the run owning `token`, sent by its client at `sent_ms` (Unix
+    /// ms; none from an older client: now). Unknown events answer empty.
     ///
     /// # Errors
     /// `Unauthenticated` for unknown or finished runs; store failures.
@@ -158,19 +159,45 @@ impl App {
         harness: &str,
         event: &str,
         input: &HookInput,
+        sent_ms: Option<i64>,
     ) -> AppResult<HookReply> {
         if harness != "claude" {
             return Err(AppError::NotFound);
         }
+        // Never later than now: the client's clock is the host's (loopback only), and a time
+        // from the future would order nothing. One not after the epoch is none (SPEC-346 LPH-001).
+        let now = self.now().0;
+        let sent = sent_ms
+            .filter(|sent| *sent > 0)
+            .map_or(now, |sent| sent.min(now));
         let ctx = self.agent_context(token).await?;
         if event != events::STOP {
-            return self.answer_hook(&ctx, event, input).await;
+            return self.answer_hook(&ctx, event, input, sent).await;
         }
         // While Yulius answers a Stop, the record that closes its turn leaves the turn to it, until
         // the answer is recorded below.
         let runtime = self.runtime(&ctx.task.id);
+        // The agent sent this Stop after every prompt of its turn (SPEC-346 LPH-002).
+        crate::race::reached(
+            crate::race::Point::StopTurnLock,
+            std::path::Path::new(ctx.task.id.as_str()),
+        );
+        {
+            let _order = runtime.turn_order.lock().await;
+            runtime.turn_end_ms.fetch_max(sent, Ordering::SeqCst);
+        }
+        // A prompt that passed its check before that has set Working by now: the Stop settles the
+        // task as it is, not as it read it before the wait (the copy if the store fails, so the
+        // failed Stop's handling below still runs).
+        let ctx = AgentContext {
+            task: match self.deps.store.task(&ctx.task.id).await {
+                Ok(Some(task)) => task,
+                _ => ctx.task,
+            },
+            attempt: ctx.attempt,
+        };
         let _in_flight = crate::finish::StopInFlight::enter(&runtime);
-        let reply = self.answer_hook(&ctx, event, input).await;
+        let reply = self.answer_hook(&ctx, event, input, sent).await;
         // Only the live run's answers count: a late one of a run a switch ended is not this
         // session's (SPEC-290 GDW-001).
         let live = matches!(
@@ -196,12 +223,13 @@ impl App {
         reply
     }
 
-    /// Answers the hook `event` of the run `ctx` ([`Self::hook_event`]).
+    /// Answers the hook `event` of the run `ctx`, sent at `sent` ([`Self::hook_event`]).
     async fn answer_hook(
         self: &Arc<Self>,
         ctx: &AgentContext,
         event: &str,
         input: &HookInput,
+        sent: i64,
     ) -> AppResult<HookReply> {
         // This run reports its turn boundaries through hooks: the Stop hook decides switches
         // and pauses, not the transcript.
@@ -244,7 +272,7 @@ impl App {
             events::SESSION_START => Ok(HookReply::Output(
                 self.hook_session_start(ctx, input).await?,
             )),
-            events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(ctx, input).await,
+            events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(ctx, input, sent).await,
             events::STOP => self.hook_stop(ctx, input).await,
             events::NOTIFICATION => {
                 // Only a notice that asks a person to act needs one: Claude Code's reminder that
@@ -584,6 +612,7 @@ impl App {
         self: &Arc<Self>,
         ctx: &AgentContext,
         input: &HookInput,
+        sent: i64,
     ) -> AppResult<HookReply> {
         let store = &self.deps.store;
         // A person wrote to the task (they typed it, even a prompt held below): what its agent
@@ -642,6 +671,20 @@ impl App {
         // The session took its first prompt: a first message Yulius typed is no longer pending
         // (SPEC-068).
         crate::supervisor::opening_sent(&ctx.attempt.run_dir);
+        let runtime = self.runtime(&ctx.task.id);
+        // Answered after a Stop or goal verdict that came after it (its client gave up waiting
+        // and the agent went on, ADR-0115): its turn is over, and what that turn's end decided
+        // stands. The transcript still shows the turn. Held until Working is set, so a turn end
+        // arriving meanwhile settles after it (SPEC-346 LPH-002).
+        let _order = runtime.turn_order.lock().await;
+        if sent < runtime.turn_end_ms.load(Ordering::SeqCst) {
+            tracing::info!(task = %ctx.task.id, "a prompt answered after its turn ended changes nothing");
+            return Ok(HookReply::Output(HookOutput::default()));
+        }
+        crate::race::reached(
+            crate::race::Point::PromptTurnChecked,
+            std::path::Path::new(ctx.task.id.as_str()),
+        );
         // A typed prompt starts new work: an achieved goal no longer makes the task done
         // (TSK-014). Claude Code's own wake-ups (a background shell ended) keep it.
         if crate::finish::is_typed_prompt(input.prompt.as_deref()) {
@@ -652,14 +695,15 @@ impl App {
         if !crate::finish::prompt_starts_work(input.prompt.as_deref()) {
             return Ok(HookReply::Output(HookOutput::default()));
         }
-        if ctx.task.gate_blocks != 0 {
+        // As it is now: a Stop of the turn before may have settled it since it was read.
+        let task = store.task(&ctx.task.id).await?.ok_or(AppError::NotFound)?;
+        if task.gate_blocks != 0 {
             let update = TaskFieldUpdate {
                 gate_blocks: Some(0),
                 ..TaskFieldUpdate::default()
             };
-            store.update_task(&ctx.task.id, &update, self.now()).await?;
+            store.update_task(&task.id, &update, self.now()).await?;
         }
-        let runtime = self.runtime(&ctx.task.id);
         runtime.resumed_turn.store(false, Ordering::SeqCst);
         // The retry's prompt (or a person's) starts the turn an armed retry waited for.
         runtime.goal_retry_armed.store(false, Ordering::SeqCst);
@@ -670,8 +714,8 @@ impl App {
         } else {
             self.continue_working_stretch(&ctx.task.id).await
         };
-        self.set_task_activity(&ctx.task, Activity::Working).await?;
-        self.keep_working_stretch(&ctx.task.id, stretch).await;
+        self.set_task_activity(&task, Activity::Working).await?;
+        self.keep_working_stretch(&task.id, stretch).await;
         Ok(HookReply::Output(HookOutput::default()))
     }
 
