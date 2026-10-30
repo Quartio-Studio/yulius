@@ -117,7 +117,7 @@ impl Git {
                     "+refs/tags/*:refs/tags/*",
                 ])
                 .timeout(self.network_timeout)
-                .watch_size(repo, limit),
+                .watch_size(&[repo], limit),
         )?;
         Ok(())
     }

@@ -93,12 +93,16 @@ impl Git {
         limit: u64,
     ) -> Result<(), GitError> {
         require_absolute("bundle path", out_path)?;
+        // Git writes the bundle into `<path>.lock` and renames it once it is complete.
+        let mut lock = out_path.as_os_str().to_owned();
+        lock.push(".lock");
+        let lock = std::path::PathBuf::from(lock);
         self.run_ok(
             Invocation::new(self, "bundle create", Some(repo))
                 .args(["bundle", "create", "--quiet"])
                 .arg(out_path)
                 .args(["HEAD", "--branches", "--tags"])
-                .watch_size(out_path, limit),
+                .watch_size(&[out_path, &lock], limit),
         )?;
         Ok(())
     }

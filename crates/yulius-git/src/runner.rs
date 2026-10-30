@@ -82,8 +82,8 @@ pub(crate) struct Invocation<'a> {
     pub(crate) args: Vec<OsString>,
     pub(crate) env: Vec<(&'static str, String)>,
     pub(crate) timeout: Duration,
-    /// A path (folder or file) the command writes and the most bytes it may hold.
-    pub(crate) watch: Option<(&'a Path, u64)>,
+    /// Paths (folders or files) the command writes and the most bytes they may hold together.
+    pub(crate) watch: Option<(Vec<&'a Path>, u64)>,
 }
 
 impl<'a> Invocation<'a> {
@@ -123,11 +123,11 @@ impl<'a> Invocation<'a> {
         self
     }
 
-    /// Bounds the command by what `path` holds: measured every [`WATCH_INTERVAL`] while it runs
-    /// and once when it ends; past `limit` bytes the process group is killed and reaped, and the
-    /// run fails with [`GitError::TooLarge`].
-    pub(crate) fn watch_size(mut self, path: &'a Path, limit: u64) -> Self {
-        self.watch = Some((path, limit));
+    /// Bounds the command by what `paths` hold together: measured every [`WATCH_INTERVAL`] while
+    /// it runs and once when it ends; past `limit` bytes the process group is killed and reaped,
+    /// and the run fails with [`GitError::TooLarge`].
+    pub(crate) fn watch_size(mut self, paths: &[&'a Path], limit: u64) -> Self {
+        self.watch = Some((paths.to_vec(), limit));
         self
     }
 }
@@ -244,13 +244,13 @@ impl Git {
                     limit: self.max_output_bytes,
                 });
             }
-            if let Some((path, limit)) = invocation.watch
+            if let Some((paths, limit)) = &invocation.watch
                 && watched.elapsed() >= WATCH_INTERVAL
             {
                 watched = Instant::now();
-                if size_on_disk(path) > limit {
+                if size_of_all(paths) > *limit {
                     kill_tree(&mut child);
-                    return Err(too_large(limit));
+                    return Err(too_large(*limit));
                 }
             }
             let now = Instant::now();
@@ -294,10 +294,10 @@ impl Git {
             });
         }
         // A command that ended between two measures is measured once more.
-        if let Some((path, limit)) = invocation.watch
-            && size_on_disk(path) > limit
+        if let Some((paths, limit)) = &invocation.watch
+            && size_of_all(paths) > *limit
         {
-            return Err(too_large(limit));
+            return Err(too_large(*limit));
         }
         let io_error = |source| GitError::Io {
             context: "reading git output",
@@ -376,14 +376,22 @@ fn read_capped(mut pipe: impl Read, cap: usize) -> std::io::Result<Vec<u8>> {
     }
 }
 
-/// Bytes the files at `path` hold (a file, or a folder walked without following links); entries
+/// [`size_on_disk`] of every path, added.
+fn size_of_all(paths: &[&Path]) -> u64 {
+    paths
+        .iter()
+        .map(|path| size_on_disk(path))
+        .fold(0, u64::saturating_add)
+}
+
+/// Bytes the files at `path` take (a file, or a folder walked without following links); entries
 /// that vanish while it is walked (Git renames its temporary packs) count as nothing.
 fn size_on_disk(path: &Path) -> u64 {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return 0;
     };
     if !meta.is_dir() {
-        return meta.len();
+        return taken(&meta);
     }
     let Ok(entries) = std::fs::read_dir(path) else {
         return 0;
@@ -392,10 +400,24 @@ fn size_on_disk(path: &Path) -> u64 {
         .filter_map(Result::ok)
         .map(|entry| match entry.file_type() {
             Ok(kind) if kind.is_dir() => size_on_disk(&entry.path()),
-            Ok(_) => entry.metadata().map_or(0, |m| m.len()),
+            Ok(_) => entry.metadata().map_or(0, |m| taken(&m)),
             Err(_) => 0,
         })
         .fold(0, u64::saturating_add)
+}
+
+/// A file's length, or the blocks it takes when more (a loose ref of 41 bytes takes a 4 KiB
+/// block: 100 000 of them take 400 MB).
+fn taken(meta: &std::fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        meta.len().max(meta.blocks().saturating_mul(512))
+    }
+    #[cfg(not(unix))]
+    {
+        meta.len()
+    }
 }
 
 /// Kills the child's process group (Unix) and the child itself, then reaps it.
@@ -446,11 +468,16 @@ mod tests {
     fn the_size_on_disk_sums_a_folder_without_following_links() -> std::io::Result<()> {
         let dir = tempfile::tempdir()?;
         std::fs::create_dir_all(dir.path().join("objects/pack"))?;
-        std::fs::write(dir.path().join("HEAD"), [0; 10])?;
-        std::fs::write(dir.path().join("objects/pack/p"), [0; 100])?;
-        assert_eq!(size_on_disk(dir.path()), 110);
-        assert_eq!(size_on_disk(&dir.path().join("HEAD")), 10);
+        let (head, pack) = (dir.path().join("HEAD"), dir.path().join("objects/pack/p"));
+        std::fs::write(&head, [0; 10])?;
+        std::fs::write(&pack, [0; 100])?;
+        let each = |path: &Path| std::fs::symlink_metadata(path).map(|m| taken(&m));
+        let files = each(&head)? + each(&pack)?;
+        assert!(files >= 110, "{files}");
+        assert_eq!(size_on_disk(dir.path()), files);
+        assert_eq!(size_on_disk(&head), each(&head)?);
         assert_eq!(size_on_disk(&dir.path().join("missing")), 0);
+        assert_eq!(size_of_all(&[&head, &pack, &dir.path().join("x")]), files);
         #[cfg(unix)]
         {
             let outside = tempfile::tempdir()?;
@@ -458,8 +485,7 @@ mod tests {
             let link = dir.path().join("link");
             std::os::unix::fs::symlink(outside.path(), &link)?;
             // The link counts as itself (its target's path), never as what it points to.
-            let own = std::fs::symlink_metadata(&link)?.len();
-            assert_eq!(size_on_disk(dir.path()), 110 + own);
+            assert_eq!(size_on_disk(dir.path()), files + each(&link)?);
         }
         Ok(())
     }
