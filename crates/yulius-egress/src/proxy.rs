@@ -104,6 +104,13 @@ struct Share {
     warned: Option<Instant>,
 }
 
+/// `sandbox`'s share in `shares` (`max` connections). A sandbox seen for the first time drops the
+/// entries of sandboxes that hold no connection, so the map holds the busy sandboxes and one more.
+fn share_for<'a>(shares: &'a mut HashMap<String, Share>, sandbox: &str, max: usize) -> &'a mut Share {
+    let _ = (shares.len(), sandbox, max);
+    todo!("share_for")
+}
+
 /// A connection's places: one in the proxy, one in its sandbox's share. Dropped when it ends.
 struct Slot {
     _proxy: OwnedSemaphorePermit,
@@ -688,6 +695,22 @@ pub async fn serve(listener: TcpListener, proxy: Arc<EgressProxy>) {
 
 #[cfg(test)]
 mod tests {
+    /// LAP-002 (review round 1): the shares stay bounded. A new sandbox's entry drops those of
+    /// sandboxes that hold no connection; one that holds connections keeps its entry.
+    #[test]
+    fn idle_sandboxes_lose_their_share_entry() {
+        let mut shares = std::collections::HashMap::new();
+        let busy = std::sync::Arc::clone(&super::share_for(&mut shares, "busy", 2).slots)
+            .try_acquire_owned();
+        assert!(busy.is_ok());
+        for n in 0..100 {
+            let _ = super::share_for(&mut shares, &format!("idle-{n}"), 2);
+        }
+        let mut kept: Vec<&String> = shares.keys().collect();
+        kept.sort();
+        assert_eq!(kept, ["busy", "idle-99"]);
+    }
+
     use super::*;
 
     #[test]

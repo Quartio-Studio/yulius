@@ -21,12 +21,16 @@ use yulius_domain::task::{Activity, AttemptState, TaskStatus};
 
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 
+/// Runs once during a probe (a turn that starts meanwhile).
+type DuringProbe = Box<dyn FnOnce() + Send>;
+
 /// A session host whose probe reports `strays` and which records what it is asked to reap.
 #[derive(Default)]
 struct StrayHost {
     strays: Mutex<Vec<StrayProcess>>,
     reaped: Mutex<Vec<StrayProcess>>,
     probes: AtomicU32,
+    during_probe: Mutex<Option<DuringProbe>>,
 }
 
 #[async_trait::async_trait]
@@ -53,6 +57,10 @@ impl SessionHost for StrayHost {
     }
     fn background_probe(&self, _: u32) -> Option<BackgroundProbe> {
         self.probes.fetch_add(1, Ordering::SeqCst);
+        let during = self.during_probe.lock().ok().and_then(|mut d| d.take());
+        if let Some(during) = during {
+            during();
+        }
         Some(BackgroundProbe {
             strays: self.strays.lock().ok()?.clone(),
             ..BackgroundProbe::default()
@@ -196,5 +204,27 @@ async fn a_working_task_s_strays_are_left_alone() -> BoxResult<()> {
     w.advance(w.h.app.config.stray_reap_after_ms * 2);
     w.h.app.background_agents_observed(&w.task, 2).await;
     assert!(w.host.reaped().is_empty());
+    Ok(())
+}
+
+/// LAP-004 (review round 1): a turn that starts while the probe runs keeps the strays: Yulius
+/// reaps only while the task is still idle.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_that_starts_during_the_probe_keeps_its_strays() -> BoxResult<()> {
+    let w = world(Activity::Waiting).await?;
+    w.host.set(vec![job(500, 77)]);
+    w.probe().await;
+    w.advance(w.h.app.config.stray_reap_after_ms);
+    let (store, task, handle) = (
+        w.h.store.clone(),
+        w.task.clone(),
+        tokio::runtime::Handle::current(),
+    );
+    let at = w.h.app.now();
+    *w.host.during_probe.lock().map_err(|_| "lock")? = Some(Box::new(move || {
+        let _ = handle.block_on(store.set_activity(&task, Some(Activity::Working), at));
+    }));
+    w.probe().await;
+    assert!(w.host.reaped().is_empty(), "the turn's processes stay");
     Ok(())
 }

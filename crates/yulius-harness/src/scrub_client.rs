@@ -716,4 +716,42 @@ mod tests {
         assert!(text.contains("no fingerprint file"), "{text}");
         Ok(())
     }
+
+    /// A Yulius that accepts a connection and closes it before answering (a relay at its limit,
+    /// SPEC-353 review): unreachable, not an unusable answer.
+    fn closing() -> Result<String, Box<dyn std::error::Error>> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let url = format!("http://{}", listener.local_addr()?);
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(4) {
+                drop(stream);
+            }
+        });
+        Ok(url)
+    }
+
+    /// LAP-001 (review round 1): a connection closed before any answer is an unreachable Yulius.
+    #[test]
+    fn a_connection_closed_before_an_answer_is_unreachable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let why = unavailable(load_fingerprints(&run_env(closing()?, None)))?;
+        assert_eq!(why.server, ServerAnswer::Unreachable);
+        let text = unavailable_message(&why);
+        assert!(text.contains("leftover processes"), "{text}");
+        Ok(())
+    }
+
+    /// LAP-001 (review round 1): a tool result withheld for want of fingerprints says why.
+    #[test]
+    fn a_withheld_tool_result_says_why() -> Result<(), Box<dyn std::error::Error>> {
+        let env = run_env(answering("401 Unauthorized")?, None);
+        let input = serde_json::json!({"tool_response": {"stdout": "hello"}});
+        let mut out = Vec::new();
+        post_tool_use(&mut input.to_string().as_bytes(), &mut out, &env);
+        let text = String::from_utf8(out)?;
+        assert!(text.contains("withheld"), "{text}");
+        assert!(text.contains("has ended"), "{text}");
+        assert!(!text.to_lowercase().contains("restart"), "{text}");
+        Ok(())
+    }
 }

@@ -891,4 +891,96 @@ mod tests {
         assert_eq!(status.signal(), Some(9), "{status:?}");
         Ok(())
     }
+
+    /// LAP-003 (review round 1): unsandboxed, the probe's root is the agent; a namespace a command
+    /// of the agent made (`unshare --pid --fork`) adopts the agent's own processes, which are no
+    /// strays. Only an init directly below the root is the run's sandbox.
+    #[test]
+    fn a_namespace_below_an_unsandboxed_agent_has_no_strays() {
+        let table = vec![
+            entry(31, 30, true),  // the agent's background shell
+            ns_init(32, 31),      // unshare --pid --fork
+            entry(33, 32, false), // its first child
+            entry(34, 32, false), // a second one, adopted by that init
+        ];
+        assert!(strays(&table, 30).is_empty(), "{:?}", strays(&table, 30));
+    }
+
+    /// LAP-003 (review round 1): a child of the sandbox's init whose start time could not be read
+    /// (it ended mid-probe) makes the agent unknown: that init gives no strays this time.
+    #[test]
+    fn an_unknown_start_time_gives_no_strays() {
+        let table = vec![
+            ns_init(11, 10),
+            entry(12, 11, false), // the agent
+            entry(13, 12, true),
+            ProcessEntry {
+                started: 0,
+                ..entry(20, 11, false)
+            },
+            entry(21, 11, false),
+        ];
+        assert!(strays(&table, 10).is_empty(), "{:?}", strays(&table, 10));
+    }
+
+    /// LAP-003 on a real sandbox (review round 1): under `bwrap --unshare-pid`, a process whose
+    /// parent ended is adopted by the namespace's init and found as a stray, with its real start
+    /// time; the agent is not. Skipped where bwrap cannot create namespaces (unprivileged
+    /// sandboxes).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_orphan_in_a_real_sandbox_is_a_stray() -> Result<(), Box<dyn std::error::Error>> {
+        let args = [
+            "--die-with-parent",
+            "--unshare-pid",
+            "--ro-bind",
+            "/",
+            "/",
+            "--proc",
+            "/proc",
+        ];
+        let probe = Command::new("bwrap")
+            .args(args)
+            .args(["--", "/bin/true"])
+            .stderr(Stdio::null())
+            .status();
+        if !probe.is_ok_and(|status| status.success()) {
+            eprintln!("SKIPPED an_orphan_in_a_real_sandbox_is_a_stray: bwrap cannot run here");
+            return Ok(());
+        }
+        /// Ends the sandbox (and with its init everything in it) when the test ends.
+        struct Sandbox(std::process::Child);
+        impl Drop for Sandbox {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        // The agent backgrounds a `sleep` from a subshell that exits at once: the init adopts it.
+        let sandbox = Sandbox(
+            Command::new("bwrap")
+                .args(args)
+                .args(["--", "/bin/sh", "-c", "(sleep 600 &); exec sleep 601"])
+                .stdin(Stdio::null())
+                .spawn()?,
+        );
+        let root = sandbox.0.id();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let found = loop {
+            let found = background_report(root)
+                .map(|(_, strays)| strays)
+                .unwrap_or_default();
+            if found.len() == 1 || Instant::now() >= deadline {
+                break found;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(found.len(), 1, "{found:?}");
+        let (pid, started) = found[0].processes[0];
+        assert!(started > 0);
+        let line = std::fs::read_to_string(format!("/proc/{pid}/cmdline"))?;
+        assert!(line.starts_with("sleep\0600"), "{line:?}");
+        assert_eq!(reap_strays(&found), 1);
+        Ok(())
+    }
 }
