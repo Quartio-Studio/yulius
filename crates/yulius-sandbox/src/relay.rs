@@ -190,13 +190,33 @@ pub async fn serve_forward_at(
     out_sock: PathBuf,
     loopback_v6: bool,
 ) -> io::Result<JoinHandle<()>> {
+    forward_within(address, port, out_sock, loopback_v6, MAX_CONNECTIONS).await
+}
+
+/// Connections the relays of this process dropped at their limit (SPEC-353 LAP-002).
+static DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many connections the relays of this process dropped at their limit so far.
+#[must_use]
+pub fn dropped_connections() -> u64 {
+    DROPPED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// [`serve_forward_at`] with `max` connections at once (tests use a small one).
+async fn forward_within(
+    address: Ipv4Addr,
+    port: u16,
+    out_sock: PathBuf,
+    loopback_v6: bool,
+    max: usize,
+) -> io::Result<JoinHandle<()>> {
     let v4 = TcpListener::bind((address, port)).await?;
     let v6 = if loopback_v6 {
         TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await.ok()
     } else {
         None
     };
-    let limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let limit = Arc::new(Semaphore::new(max));
     Ok(tokio::spawn(async move {
         let mut warned = None;
         loop {
@@ -512,6 +532,47 @@ mod tests {
         let mut raw = UnixStream::connect(&out_sock).await?;
         raw.write_u16(inside_port.wrapping_add(1)).await?;
         assert_eq!(raw.read_u8().await?, RELAY_FORBIDDEN);
+        forward.abort();
+        server.abort();
+        Ok(())
+    }
+
+    /// SPEC-353 LAP-002 (review round 3): a forward relay at its limit drops the next connection
+    /// and says so (counted, and written to the process's stderr: the holder's `holder.log`).
+    #[tokio::test]
+    async fn a_forward_at_its_limit_counts_the_connection_it_drops() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let out_sock = dir.path().join("out.sock");
+        // `out.sock` accepts every relayed connection and keeps it open.
+        let outbound = UnixListener::bind(&out_sock)?;
+        let (held_tx, mut held) = tokio::sync::mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            let mut open = Vec::new();
+            while let Ok((mut stream, _)) = outbound.accept().await {
+                if stream.read_u16().await.is_ok() && stream.write_u8(RELAY_OK).await.is_ok() {
+                    open.push(stream);
+                    let _ = held_tx.send(());
+                }
+            }
+        });
+        let free = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let port = free.local_addr()?.port();
+        drop(free);
+        let forward = forward_within(Ipv4Addr::LOCALHOST, port, out_sock, false, 2).await?;
+        let mut clients = Vec::new();
+        for _ in 0..2 {
+            clients.push(TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await?);
+            tokio::time::timeout(Duration::from_secs(10), held.recv())
+                .await?
+                .ok_or("out.sock ended")?;
+        }
+        let before = dropped_connections();
+        let mut third = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await?;
+        // Dropped: the client reads the end of the stream (or a reset).
+        let mut byte = [0u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(10), third.read(&mut byte)).await?;
+        assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
+        assert!(dropped_connections() > before);
         forward.abort();
         server.abort();
         Ok(())
