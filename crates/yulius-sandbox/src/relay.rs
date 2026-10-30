@@ -72,10 +72,27 @@ struct Dropped<'a> {
 /// Writes the notice of `drop` to `out` unless one was written within [`WARN_EVERY`] (`last`).
 /// A failed write (a full disk under `holder.log`) is ignored: it never stops the relay.
 fn notice_dropped(
-    _out: &mut dyn io::Write,
-    _last: &mut Option<std::time::Instant>,
-    _drop: &Dropped<'_>,
+    out: &mut dyn io::Write,
+    last: &mut Option<std::time::Instant>,
+    drop: &Dropped<'_>,
 ) {
+    if last.is_some_and(|at| at.elapsed() < WARN_EVERY) {
+        return;
+    }
+    *last = Some(std::time::Instant::now());
+    let port = drop.port.map(|p| format!(" port={p}")).unwrap_or_default();
+    let sandbox = drop
+        .sandbox
+        .map(|s| format!(" sandbox={s}"))
+        .unwrap_or_default();
+    let _ = writeln!(
+        out,
+        "WARN sandbox relay: a connection was dropped at the limit; leftover processes may hold \
+         them (docs/operations.md, \"Leftover agent processes\") relay={}{port}{sandbox} \
+         limit={} dropped={}",
+        drop.relay, drop.limit, drop.dropped
+    );
+    let _ = out.flush();
 }
 
 fn timeout_error(what: &str) -> io::Error {

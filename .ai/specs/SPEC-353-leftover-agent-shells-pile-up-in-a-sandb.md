@@ -107,7 +107,8 @@ a live turn owns are never touched.
 - **LAP-004** An idle task's strays are logged as a warning when first seen. Once a stray has been
   seen for `stray_reap_after_ms` (default 2 h), Yulius kills its subtree, and logs it, at the next
   probe while the task is idle, checked again after the probe. A process is only signalled
-  while its pid still has the recorded start time. Processes under the agent (its shells, a live turn's commands) are never strays.
+  while its pid still has the recorded start time. Processes under the agent (its shells, a live
+  turn's commands) are never strays.
 - **LAP-005** `docs/operations.md` explains how an operator finds and clears leftover agent
   processes and saturated connections without a restart.
 

@@ -66,9 +66,9 @@ past their limit. Only a restart freed them.
 ## Consequences
 
 - A preview server an idle task left running stops after 2 hours. The agent starts it again when
-  it needs it, and the log names the pids that were reaped. The 2 hours count from when the stray was first
-  seen, also through turns in between, so one seen before a long turn goes at the first idle
-  probe after it.
+  it needs it, and the log names the first pid of each stray it reaped. The 2 hours count from
+  when the stray was first seen, also through turns in between, so one seen before a long turn
+  goes at the first idle probe after it.
 - A child a stray forks between the probe and the kill survives it, as a new stray with its own
   2 hours.
 - One sandbox can hold at most 128 proxy tunnels at once. Parallel package installs past that get a

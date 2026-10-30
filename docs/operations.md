@@ -1254,8 +1254,8 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   with it: leftovers included.
 - While an idle task's session lives, each probe of its process tree (every few seconds and
   at each turn's end) lists them. The first sighting logs `leftover processes in the run`
-  (task, processes, the first pid of each) as a warning; 2 hours later Yulius kills that process
-  tree and logs `reaped leftover processes` (with the same pids). A working task's processes and the agent's own shells (under
+  (task, processes, the first pid of each) as a warning; 2 hours later Yulius kills that
+  process tree and logs `reaped leftover processes` (with the same pids). A working task's processes and the agent's own shells (under
   `claude`) are never touched.
 - One sandbox gets at most half of the egress proxy's 256 connections, so its leftovers cannot
   take every other sandbox's downloads, nor, through proxy tunnels, all of its own relay's 256
