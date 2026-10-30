@@ -204,7 +204,7 @@ fn too_large(limit: u64) -> AppError {
 }
 
 /// `1 GB`, `25 MB`, `512 KB`, `100 bytes` (binary units, as `YULIUS_UPLOAD_MAX_MB`).
-fn human_size(bytes: u64) -> String {
+pub(crate) fn human_size(bytes: u64) -> String {
     const MIB: u64 = 1024 * 1024;
     const GIB: u64 = 1024 * MIB;
     if bytes >= GIB && bytes.is_multiple_of(GIB) {

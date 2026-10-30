@@ -18,6 +18,7 @@ use crate::model::Secret;
 use crate::ports::git::ReferenceBundle;
 use crate::ports::github::RepoAccess;
 use crate::projects::{blocking, clone_url, valid_owner, valid_repo_name};
+use crate::uploads::human_size;
 
 /// Largest bundle handed to a task (1 GiB).
 pub const MAX_REFERENCE_BYTES: u64 = 1024 * 1024 * 1024;
@@ -69,6 +70,17 @@ fn refused(repo: &str, why: String) -> AppError {
         "{why} Only now ask a person with `needs_you`: to give the task's owner read access to \
          {repo} on GitHub, or to put the files you need into the sandbox."
     ))
+}
+
+/// A repository larger than a task gets; `measured` says how Yulius knows.
+fn too_large(repo: &str, measured: &str) -> AppError {
+    refused(
+        repo,
+        format!(
+            "{repo} is too large for a reference copy: {measured}, above the {} a task gets.",
+            human_size(MAX_REFERENCE_BYTES)
+        ),
+    )
 }
 
 /// Removes the fetch folders below `tmp` older than [`STALE_FETCH`]: a fetch takes at most Git's
@@ -216,6 +228,15 @@ impl App {
             return Err(refused(
                 &repo,
                 format!("GitHub names no usable default branch of {repo}."),
+            ));
+        }
+        // GitHub's size lags behind pushes, so it only refuses up front; the fetch is bounded
+        // while it runs (SPEC-349 RFB-001, RFB-003).
+        let reported = found.size_kib.map(|kib| kib.saturating_mul(1024));
+        if let Some(bytes) = reported.filter(|bytes| *bytes > MAX_REFERENCE_BYTES) {
+            return Err(too_large(
+                &repo,
+                &format!("GitHub reports it at {}", human_size(bytes)),
             ));
         }
         let slot = Arc::clone(&self.uploads.references)
@@ -366,13 +387,9 @@ impl App {
             };
             let size = file_size(&bundle).await?;
             if size > MAX_REFERENCE_BYTES {
-                return Err(refused(
+                return Err(too_large(
                     &fetch.repo,
-                    format!(
-                        "{} bundles to {size} bytes, above the {MAX_REFERENCE_BYTES} bytes a \
-                         task gets.",
-                        fetch.repo
-                    ),
+                    &format!("it bundles to {}", human_size(size)),
                 ));
             }
             let placed = self
