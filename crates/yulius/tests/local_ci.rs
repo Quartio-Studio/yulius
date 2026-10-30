@@ -1970,6 +1970,10 @@ async fn concurrent_runs_never_share_a_ci_cache() -> TestResult {
     })
     .await?;
     let caches = f.data.join("sandboxes/s1/ci/cache");
+    // What the cache every job shared held may be a file named like a job's cache (review
+    // round 1): the job still gets a directory.
+    std::fs::create_dir_all(&caches)?;
+    std::fs::write(caches.join("build"), "left by the shared cache")?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     f.settle().await?;
     let overview = f.get("/api/sandboxes/s1/ci").await?;
