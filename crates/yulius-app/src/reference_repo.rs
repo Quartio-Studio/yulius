@@ -85,6 +85,11 @@ fn too_large(repo: &str, measured: &str) -> AppError {
     )
 }
 
+/// A size above the cap, as said to the agent.
+fn above_cap(bytes: u64) -> String {
+    human_size(bytes)
+}
+
 /// Removes the fetch folders below `tmp` older than [`STALE_FETCH`]: a fetch takes at most Git's
 /// network timeout, so an older one was cut short by a restart.
 fn sweep_stale(tmp: &Path) {
@@ -239,7 +244,7 @@ impl App {
         if let Some(bytes) = reported.filter(|bytes| *bytes > MAX_REFERENCE_BYTES) {
             return Err(too_large(
                 &repo,
-                &format!("GitHub reports it at {},", human_size(bytes)),
+                &format!("GitHub reports it at {},", above_cap(bytes)),
             ));
         }
         // At its peak the fetched copy, its bundle and the attached bundle are on the disk.
@@ -406,7 +411,7 @@ impl App {
             if size > MAX_REFERENCE_BYTES {
                 return Err(too_large(
                     &fetch.repo,
-                    &format!("it bundles to {},", human_size(size)),
+                    &format!("it bundles to {},", above_cap(size)),
                 ));
             }
             let placed = self
@@ -508,6 +513,18 @@ async fn file_size(path: &Path) -> AppResult<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review round 1: a size just above the cap never reads as the cap.
+    #[test]
+    fn a_size_above_the_cap_is_rounded_up() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        assert_eq!(above_cap(GIB + 1), "1.1 GB");
+        assert_eq!(above_cap(GIB + GIB / 10), "1.1 GB");
+        assert_eq!(above_cap(GIB + GIB / 10 + 1), "1.2 GB");
+        assert_eq!(above_cap(2 * GIB), "2 GB");
+        assert_eq!(above_cap(2 * GIB - 1), "2 GB");
+        assert_eq!(above_cap(u64::MAX), above_cap(u64::MAX));
+    }
 
     #[test]
     fn a_shell_word_keeps_quotes_and_expansions_literal() {

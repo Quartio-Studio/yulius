@@ -881,7 +881,8 @@ async fn a_repository_github_reports_above_the_cap_is_refused_before_any_fetch()
 
 /// SPEC-349 AC2 (#920): a fetch that would bring the data disk to its critical level (95 %) is
 /// refused before it starts, counting three times GitHub's size (the fetched copy, its bundle and
-/// the attached bundle); an unknown disk or one with room refuses nothing.
+/// the attached bundle), or three times the cap when GitHub gives none; an unknown disk or one
+/// with room refuses nothing.
 #[tokio::test]
 async fn a_fetch_the_data_disk_has_no_room_for_is_refused_before_it_starts() -> TestResult {
     const GB: u64 = 1_000_000_000;
@@ -908,6 +909,11 @@ async fn a_fetch_the_data_disk_has_no_room_for_is_refused_before_it_starts() -> 
     refused(&full, "disk")?;
     assert!(!fetched(&w, "acme/lib"), "{:?}", w.git.calls());
     assert_eq!(tmp_entries(&w), 0, "no fetch folder");
+
+    // No size from GitHub counts the cap: 92 GB and three times 1 GiB pass 95 of 100 GB.
+    w.h.system.set_disk(100 * GB, 92 * GB);
+    refused(&call().await?, "disk")?;
+    assert!(!fetched(&w, "acme/lib"), "{:?}", w.git.calls());
 
     // 600 MB three times on 8 of 10 GB is 9.8 GB: past the critical level.
     w.h.system.set_disk(10 * GB, 8 * GB);
