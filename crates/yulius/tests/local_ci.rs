@@ -1951,14 +1951,15 @@ async fn jobs_wait_for_their_cpu_budget_and_are_told_it() -> TestResult {
 
 /// SPEC-351 CCH-001, CCH-002 (pomerado-rust #460): two runs in the sandbox's two lanes never share
 /// `$YULIUS_CI_CACHE`. Each job leaves a `live-<run>` marker in its cache and waits until both runs
-/// are inside the job; with one cache shared by the lanes each found the other's marker (a Cargo
-/// target directory kept there was relinked under the other run). A later run of the same
-/// checkout finds its earlier run's `kept-<run>` marker: the cache still persists.
+/// are inside the job (one CPU each, so both fit the budget at once); with one cache shared by the
+/// lanes each found the other's marker (a Cargo target directory kept there was relinked under the
+/// other run). A later run of the same checkout finds its earlier run's `kept-<run>` marker: the
+/// cache still persists.
 #[tokio::test]
 async fn concurrent_runs_never_share_a_ci_cache() -> TestResult {
     let f = fixture_with(false, |data| {
         format!(
-            "[[ci.jobs]]\nname = \"build\"\ncommand = 'c=\"$YULIUS_CI_CACHE\"; echo \"cache $c\"; \
+            "[[ci.jobs]]\nname = \"build\"\ncpus = 1\ncommand = 'c=\"$YULIUS_CI_CACHE\"; echo \"cache $c\"; \
              ls \"$c\" | grep kept- || true; touch \"$c/live-$YULIUS_CI_RUN\" \
              \"{dir}/here-$YULIUS_CI_RUN\"; while [ ! -e \"{dir}/solo\" ] && [ \"$(ls \"{dir}\" | \
              grep -c ^here-)\" -lt 2 ]; do sleep 0.05; done; if [ \"$(ls \"$c\" | grep -c \
@@ -1974,13 +1975,16 @@ async fn concurrent_runs_never_share_a_ci_cache() -> TestResult {
     let overview = f.get("/api/sandboxes/s1/ci").await?;
     let runs = overview["runs"].as_array().ok_or("runs")?;
     assert_eq!(runs.len(), 2, "main/dev and the pull request: {overview}");
-    let mut seen = Vec::new();
+    let mut details = Vec::new();
     for run in runs {
         let id = run["id"].as_str().ok_or("id")?;
-        let detail = f.get(&format!("/api/sandboxes/s1/ci/runs/{id}")).await?;
+        details.push(f.get(&format!("/api/sandboxes/s1/ci/runs/{id}")).await?);
+    }
+    let mut seen = Vec::new();
+    for detail in &details {
         let output = detail["jobs"][0]["output"].as_str().unwrap_or_default();
         assert!(!output.contains("shared"), "one cache for two lanes: {output}");
-        assert_eq!(run["state"], "passed", "{detail}");
+        assert_eq!(detail["state"], "passed", "{details:?}");
         seen.extend(
             output
                 .lines()

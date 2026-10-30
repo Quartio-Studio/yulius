@@ -1527,6 +1527,44 @@ async fn unused_ci_checkouts_go_while_no_run_runs() -> BoxResult<()> {
     Ok(())
 }
 
+/// SPEC-351 CCH-003: a job's cache (`ci/cache/<checkout>`) goes like its checkout, and what the
+/// cache every job shared held (entries named like no job) goes too; a used job's cache stays.
+#[tokio::test]
+async fn unused_ci_caches_go_like_their_checkouts() -> BoxResult<()> {
+    let w = world().await?;
+    let live = w.sandbox("live").await?;
+    for name in ["gate", "gate@1", "old", "gate@7", "cargo-target"] {
+        write(&live.join(format!("ci/cache/{name}/f")), "x")?;
+    }
+    write(&live.join("ci/cache/loose.bin"), "x")?;
+    let now = w.h.app.now().0;
+    ci_run(&w, "live", "r-new", now - 60_000, &["gate"]).await?;
+
+    let items = w.scan().await?;
+    let mut stale: Vec<(String, String)> = items
+        .iter()
+        .filter(|i| i.kind == Kind::StaleCiCheckout)
+        .filter_map(|i| {
+            let name = i.path.file_name()?.to_string_lossy().into_owned();
+            Some((name, i.reason.clone()))
+        })
+        .collect();
+    stale.sort();
+    let names: Vec<&str> = stale.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["cargo-target", "gate@7", "loose.bin", "old"], "{stale:?}");
+    assert!(
+        stale.iter().all(|(_, reason)| reason.starts_with("CI cache ")),
+        "{stale:?}"
+    );
+
+    w.h.app.run_leftovers_round().await.ok_or("round")?;
+    for gone in ["old", "gate@7", "cargo-target", "loose.bin"] {
+        assert!(!live.join("ci/cache").join(gone).exists(), "{gone}");
+    }
+    assert!(live.join("ci/cache/gate/f").exists() && live.join("ci/cache/gate@1/f").exists());
+    Ok(())
+}
+
 /// LFT-007: a done task's cache listed by a scan stays when the task works again before the
 /// deletion.
 #[tokio::test]
