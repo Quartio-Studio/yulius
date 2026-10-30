@@ -8,7 +8,7 @@ task #141, issue #395. Amends SPEC-037 MGT-004 and SPEC-021 CKP-002
 Yulius server alone, and it gets one hook, the redaction hook.
 Superseded in part by [0239](0239-the-superagent-gets-a-fingerprint-file-as-a-task-run-does.md):
 the Superagent now has a fingerprint file, so its commands run redacted while Yulius restarts
-(the first consequence below no longer holds). A loss of access still stops them: a refusal is
+(the first sentence of the second consequence below no longer holds). A loss of access still stops them: a refusal is
 not read as a restart.
 
 ## Context

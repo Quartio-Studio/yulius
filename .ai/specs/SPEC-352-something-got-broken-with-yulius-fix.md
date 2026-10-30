@@ -1,11 +1,11 @@
 ---
 yulius-task: 1874e329-dbd8-4a49-9ec7-6e053c8b7cde
-status: in-progress
+status: done
 ---
 
 # SPEC-352: The Superagent's Bash keeps working while Yulius restarts
 
-Status: in progress
+Status: implemented
 Date: 2026-10-30
 Owner: Yulius task #334
 Scope authorization: task #334, "something got broken with yulius, fix", with a screenshot of the
@@ -51,10 +51,10 @@ as a task run's do, instead of being refused until the server is back.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Spec, ADR and a failing regression test for the Superagent's restart fallback
-- [ ] The Superagent gets its fingerprint file, regression test green
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Gates green, pull request merged into dev
+- [x] Spec, ADR and a failing regression test for the Superagent's restart fallback
+- [x] The Superagent gets its fingerprint file, regression test green
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Gates green, pull request merged into dev
 
 ## Acceptance criteria
 
@@ -93,3 +93,49 @@ as a task run's do, instead of being refused until the server is back.
   the same staleness a task run has.
 - The proxy's slot exhaustion is a separate defect with an unknown holder. It is filed as an issue
   rather than widened into this fix.
+
+## Review
+
+Independent review in a fresh session (`om-code-review`, diff `5936553c..HEAD`).
+
+- Round 1: REQUEST CHANGES.
+  - Major (own code): the file stood in for a 4xx refusal too, so a person who lost access kept a
+    working Superagent. Fixed test-first: SRF-003, the refused-token check in the cockpit test was
+    red (`ran-62`, status 0) and is green.
+  - Major (own code): `COCKPIT_LAUNCH_REVISION` was not bumped, so running Superagents would never
+    get the file. Fixed: SRF-004, revision 3.
+  - Minor (own code): the read-only bind was untested. Fixed: the `superagent_scrub_file` unit test
+    (red: the helper did not exist).
+  - Minor (pre-existing): the file is written once. Recorded in ADR-0239.
+  - Nits: the docs wording was fixed.
+- Round 2: APPROVE.
+  - Minor (pre-existing): an expired GitHub token past the staleness bound answers 401, so the
+    Superagent fails closed then, as on `dev`. Recorded in ADR-0239.
+  - Nit: the ADR-0121 note named the wrong consequence. Fixed.
+
+## Evidence
+
+- Root cause, in a task sandbox on 2026-10-30:
+  - `cockpit.rs` gives the Superagent `--scrub-exec` but no `YULIUS_SCRUB_FILE`.
+  - The red run of the regression test printed the screenshot's message: "the agent-secret
+    fingerprints of this run cannot be loaded, so the command was not run (Yulius is restarting,
+    …); try again".
+- Red, then green:
+  - `cargo test -p yulius --test main the_superagent_gets_the_sandbox_mcp_servers`: FAILED (timed
+    out waiting for `file=<[secret:APIFY_KEY]> ran-42`) at `dd7521f1`, ok at `e74a0d81`.
+  - The SRF-003 check: FAILED (`ran-62`, `refused=0`) before the wrapper change, ok at `ed8bb621`.
+  - `cargo test -p yulius-app --lib a_superagent_gets_its_fingerprint_file`: did not compile without
+    the helper, ok after it.
+- `scripts/dev ci` at `ed8bb621`: exit 0.
+  - 2794 tests run: 2794 passed, 16 skipped.
+  - Repository contracts passed.
+- `yulius security-scan`: not run (exit 2). Vidoc refused the instance key (HTTP 401), so 4 files
+  were not scanned. This is unrun, not passed.
+- Not tested:
+  - A real server restart with a live contained Superagent. The integration test stands in for it
+    with an unreachable `YULIUS_URL`. The read-only bind is covered by the unit test, not by a
+    bwrap run.
+  - The root cause of the restart itself: the running commit is unchanged since 2026-10-28, and the
+    server log cannot be reached from a sandbox.
+- Seen while reproducing, outside this change: the egress proxy answered every `CONNECT` with
+  `503 too many connections` from 21:36 to about 21:39, then recovered. Filed as #964.

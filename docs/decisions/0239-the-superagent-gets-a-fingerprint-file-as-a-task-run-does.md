@@ -51,5 +51,9 @@ restart.
   stop, which is what the refusal means ("the run ended, or this session may no longer work in
   the project"). Run tokens resolve from the database, so a live run is not refused after a
   restart.
+- Yulius answers 401 for a refusal, 5xx for store failures and 502 for GitHub failures. One
+  GitHub-outage case still comes back as 401: an access decision older than the staleness bound,
+  with the person's GitHub token expired and its refresh failing. The Superagent then fails
+  closed, as it always did before this decision.
 - Like a task run's file, it is written once. An agent secret added later is redacted from a
   Superagent's output during a restart only after the Superagent starts again.
