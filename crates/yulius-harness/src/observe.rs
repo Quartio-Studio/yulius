@@ -78,6 +78,8 @@ pub enum Observed {
     Goal {
         /// What was recorded.
         outcome: GoalOutcome,
+        /// When Claude Code recorded it (the record's `timestamp`), if parseable.
+        at: Option<Timestamp>,
     },
     /// Claude Code closed a turn (the `turn_duration` system record; `stop_hook_summary` is also
     /// written when a Stop hook blocks and the turn goes on, so it is not this). Not

@@ -11,6 +11,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   at once, a fetch is refused when the data disk has no room for it (as uploads are), and Git is
   stopped once its copy grows past 1 GiB, with the folder removed. Before, the whole repository was
   fetched to the server's disk and only then refused.
+- A goal task whose prompt hook Yulius answers only after the hook client gave up (5 s, a loaded
+  host) reads Done once the goal is met, instead of staying Working or Your turn (SPEC-346,
+  ADR-0234, task #330, fixes #921). The client now says when it sent each hook. A prompt sent
+  before a Stop or goal verdict Yulius already has belongs to a turn that is over and changes
+  nothing. A met goal settles an idle task Done also after a Stop that waited for the verdict.
 - A delivery environment run whose client goes away while it starts still runs (SPEC-348,
   ADR-0235, task #332, fixes #952), as a CD run does since #948. An update no longer waits for an
   environment run past its lost-run limit: it ends it as an error and goes on. Before, such a run
