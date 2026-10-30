@@ -981,6 +981,111 @@ fn output_bound_kills_the_command() -> TestResult {
     Ok(())
 }
 
+/// Whether the process `pid` is gone (or a zombie of a parent that no longer waits), within 5 s.
+#[cfg(unix)]
+fn gone(pid: &str) -> Result<bool, Box<dyn Error>> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let alive = Command::new("kill").args(["-0", pid]).status()?.success();
+        let zombie = Command::new("ps")
+            .args(["-o", "stat=", "-p", pid])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().starts_with('Z'))
+            .unwrap_or(false);
+        if !alive || zombie {
+            return Ok(true);
+        }
+        if Instant::now() > deadline {
+            return Ok(false);
+        }
+        std::thread::yield_now();
+    }
+}
+
+/// SPEC-349 RFB-003 (#920): a reference fetch whose folder grows past its byte limit is killed
+/// with its process group while it still runs, long before its deadline, and fails as too large.
+#[cfg(unix)]
+#[test]
+fn a_fetch_whose_folder_grows_past_its_limit_is_killed() -> TestResult {
+    let fx = Fixture::new()?;
+    let (repo, pids) = (fx.path("work.git"), fx.path("pids"));
+    fs::create_dir(&repo)?;
+    let script = fx.path("growing-git");
+    write_hook(
+        &script,
+        &format!(
+            "#!/bin/sh\necho $$ > '{p}'\nmkdir -p objects/pack\nhead -c 3000000 /dev/zero > \
+             objects/pack/tmp_pack_x\nsleep 30 &\necho $! >> '{p}'\nwait\n",
+            p = pids.display()
+        ),
+    )?;
+    let git = Git::new(&script);
+    let started = Instant::now();
+    match git.fetch_branches_and_tags(&repo, "https://github.com/acme/lib.git", 1_000_000) {
+        Err(GitError::TooLarge { limit, .. }) => assert_eq!(limit, 1_000_000),
+        other => return Err(format!("expected too large, got {other:?}").into()),
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "killed, not timed out"
+    );
+    for pid in fs::read_to_string(&pids)?.split_whitespace() {
+        assert!(gone(pid)?, "process {pid} survived the size limit");
+    }
+    Ok(())
+}
+
+/// SPEC-349 RFB-003: a command that ends before the watch looks is still measured once it ends;
+/// one under its limit succeeds.
+#[cfg(unix)]
+#[test]
+fn a_fetch_that_ends_past_its_limit_fails_and_one_under_it_succeeds() -> TestResult {
+    let fx = Fixture::new()?;
+    let repo = fx.path("work.git");
+    fs::create_dir(&repo)?;
+    let script = fx.path("quick-git");
+    write_hook(&script, "#!/bin/sh\nhead -c 3000 /dev/zero > pack\n")?;
+    let git = Git::new(&script);
+    let url = "https://github.com/acme/lib.git";
+    match git.fetch_branches_and_tags(&repo, url, 2000) {
+        Err(GitError::TooLarge { limit, .. }) => assert_eq!(limit, 2000),
+        other => return Err(format!("expected too large, got {other:?}").into()),
+    }
+    git.fetch_branches_and_tags(&repo, url, 4000)?;
+    Ok(())
+}
+
+/// SPEC-349 RFB-003: the bundle of a whole repository is bounded by its limit; a real bundle under
+/// it is written.
+#[test]
+fn a_full_bundle_past_its_limit_fails() -> TestResult {
+    let fx = Fixture::new()?;
+    let repo = fx.path("repo");
+    fs::create_dir(&repo)?;
+    fx.raw(&repo, &["init", "--quiet", "--initial-branch=main"])?;
+    // Incompressible content: the bundle is at least this large.
+    let mut state = 0x2545_f491_4f6c_dd1d_u64;
+    let noise: Vec<u8> = (0..200_000)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.to_le_bytes()[0]
+        })
+        .collect();
+    fs::write(repo.join("noise.bin"), noise)?;
+    fx.raw(&repo, &["add", "."])?;
+    fx.raw(&repo, &["commit", "--quiet", "-m", "noise"])?;
+    let bundle = fx.path("repo.bundle");
+    match fx.git.create_full_bundle(&repo, &bundle, 50_000) {
+        Err(GitError::TooLarge { limit, .. }) => assert_eq!(limit, 50_000),
+        other => return Err(format!("expected too large, got {other:?}").into()),
+    }
+    fx.git.create_full_bundle(&repo, &bundle, 10_000_000)?;
+    assert!(fs::metadata(&bundle)?.len() > 50_000);
+    Ok(())
+}
+
 #[test]
 fn missing_executable_is_a_spawn_error() -> TestResult {
     let fx = Fixture::new()?;

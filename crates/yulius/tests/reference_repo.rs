@@ -718,8 +718,8 @@ async fn the_git_adapter_bundles_every_branch_and_tag() -> TestResult {
         .bundle_repository(
             "https://github.com/acme/lib.git",
             "main",
-            &work,
-            &bundle,
+            (&work, &bundle),
+            yulius_app::reference_repo::MAX_REFERENCE_BYTES,
             &token,
         )
         .await?;
@@ -765,8 +765,8 @@ async fn the_git_adapter_bundles_every_branch_and_tag() -> TestResult {
             .bundle_repository(
                 "https://github.com/acme/lib.git",
                 bad,
-                &fresh,
-                &out.join("b"),
+                (&fresh, &out.join("b")),
+                yulius_app::reference_repo::MAX_REFERENCE_BYTES,
                 &token,
             )
             .await;

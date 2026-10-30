@@ -91,8 +91,18 @@ impl Git {
     }
 
     /// Fetches every branch and tag of the remote `url` into `repo` under the same names, forced,
-    /// without submodules (a reference copy's fetch, SPEC-330).
-    pub fn fetch_branches_and_tags(&self, repo: &Path, url: &str) -> Result<(), GitError> {
+    /// without submodules (a reference copy's fetch, SPEC-330), while `repo` holds at most `limit`
+    /// bytes (SPEC-349).
+    ///
+    /// # Errors
+    /// [`GitError::TooLarge`] once `repo` holds more than `limit` bytes (Git is killed); an invalid
+    /// URL, a timeout or a failed fetch.
+    pub fn fetch_branches_and_tags(
+        &self,
+        repo: &Path,
+        url: &str,
+        limit: u64,
+    ) -> Result<(), GitError> {
         validate_remote_url(url)?;
         self.run_ok(
             Invocation::new(self, "fetch", Some(repo))
@@ -106,7 +116,8 @@ impl Git {
                     "+refs/heads/*:refs/heads/*",
                     "+refs/tags/*:refs/tags/*",
                 ])
-                .timeout(self.network_timeout),
+                .timeout(self.network_timeout)
+                .watch_size(repo, limit),
         )?;
         Ok(())
     }

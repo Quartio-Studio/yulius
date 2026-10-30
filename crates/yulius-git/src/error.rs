@@ -59,6 +59,14 @@ pub enum GitError {
         /// The configured bound.
         limit: usize,
     },
+    /// The command wrote more to its watched path than its bound; it was killed and reaped.
+    #[error("git {command} wrote more than {limit} bytes")]
+    TooLarge {
+        /// The Git subcommand.
+        command: &'static str,
+        /// The bound in bytes.
+        limit: u64,
+    },
     /// The command exited unsuccessfully.
     #[error("git {command} failed (exit {code:?}): {stderr}")]
     Failed {

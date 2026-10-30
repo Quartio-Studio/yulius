@@ -373,8 +373,8 @@ impl App {
                 .bundle_repository(
                     &fetch.url,
                     &fetch.default_branch,
-                    &work,
-                    &bundle,
+                    (&work, &bundle),
+                    MAX_REFERENCE_BYTES,
                     &fetch.token,
                 )
                 .await

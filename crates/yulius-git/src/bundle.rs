@@ -80,14 +80,25 @@ impl Git {
     }
 
     /// Writes a bundle at the absolute `out_path` of `HEAD`, every branch and every tag of
-    /// `repo`: a whole repository's copy (a task's reference copy, SPEC-330).
-    pub fn create_full_bundle(&self, repo: &Path, out_path: &Path) -> Result<(), GitError> {
+    /// `repo`: a whole repository's copy (a task's reference copy, SPEC-330), of at most `limit`
+    /// bytes (SPEC-349).
+    ///
+    /// # Errors
+    /// [`GitError::TooLarge`] once the bundle holds more than `limit` bytes (Git is killed); a
+    /// relative path or a failed bundle.
+    pub fn create_full_bundle(
+        &self,
+        repo: &Path,
+        out_path: &Path,
+        limit: u64,
+    ) -> Result<(), GitError> {
         require_absolute("bundle path", out_path)?;
         self.run_ok(
             Invocation::new(self, "bundle create", Some(repo))
                 .args(["bundle", "create", "--quiet"])
                 .arg(out_path)
-                .args(["HEAD", "--branches", "--tags"]),
+                .args(["HEAD", "--branches", "--tags"])
+                .watch_size(out_path, limit),
         )?;
         Ok(())
     }

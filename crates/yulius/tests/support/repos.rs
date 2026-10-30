@@ -77,6 +77,21 @@ pub struct LocalGit {
     pub remotes: Mutex<HashMap<String, PathBuf>>,
     /// Operation log (`clone <url> token=<t>`, `push <local>-><remote> token=<t>`, …).
     pub calls: Mutex<Vec<String>>,
+    /// Replaces the byte limit `bundle_repository` is given (a reference fetch past the cap).
+    pub reference_limit: Mutex<Option<u64>>,
+}
+
+/// Bytes of the files below `dir`.
+fn folder_size(dir: &Path) -> u64 {
+    std::fs::read_dir(dir).map_or(0, |entries| {
+        entries
+            .filter_map(Result::ok)
+            .map(|entry| match entry.file_type() {
+                Ok(kind) if kind.is_dir() => folder_size(&entry.path()),
+                _ => entry.metadata().map_or(0, |m| m.len()),
+            })
+            .sum()
+    })
 }
 
 impl LocalGit {
@@ -168,12 +183,17 @@ impl GitPort for LocalGit {
         &self,
         url: &str,
         default_branch: &str,
-        work: &Path,
-        bundle: &Path,
+        (work, bundle): (&Path, &Path),
+        limit: u64,
         token: &Secret,
     ) -> AppResult<ReferenceBundle> {
         let remote = self.remote(url)?;
         self.record(format!("bundle {url} token={}", token.expose()));
+        let limit = self
+            .reference_limit
+            .lock()
+            .map_err(AppError::internal)?
+            .unwrap_or(limit);
         let parent = work.parent().ok_or(AppError::NotFound)?;
         git(
             parent,
@@ -198,6 +218,12 @@ impl GitPort for LocalGit {
             ],
         )
         .map_err(upstream)?;
+        // As the adapter, whose watch kills Git once the folder holds more than the limit.
+        if folder_size(work) > limit {
+            return Err(AppError::Capacity(format!(
+                "git fetch wrote more than {limit} bytes"
+            )));
+        }
         git(
             work,
             &[

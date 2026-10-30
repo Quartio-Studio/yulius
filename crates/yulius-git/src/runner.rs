@@ -3,7 +3,7 @@
 //! Every command: explicit argv (no shell), cleared environment plus an allowlist,
 //! `GIT_TERMINAL_PROMPT=0`, fixed `-c` hardening options that never come from input,
 //! bounded stdout/stderr capture and a deadline after which the whole process group is
-//! killed and reaped.
+//! killed and reaped. A command may also be bounded by what it writes to disk (a size watch).
 
 use std::ffi::{OsStr, OsString};
 use std::io::{ErrorKind, Read};
@@ -27,6 +27,8 @@ const STDERR_IN_ERROR: usize = 4 * 1024;
 const PIPE_GRACE: Duration = Duration::from_secs(2);
 /// Upper bound for the exit polling interval.
 const MAX_POLL: Duration = Duration::from_millis(20);
+/// How often a size watch measures its path: walking a folder costs system calls per file.
+const WATCH_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Variables inherited from the parent environment; everything else is cleared.
 const INHERITED_ENV: &[&str] = &[
@@ -80,6 +82,8 @@ pub(crate) struct Invocation<'a> {
     pub(crate) args: Vec<OsString>,
     pub(crate) env: Vec<(&'static str, String)>,
     pub(crate) timeout: Duration,
+    /// A path (folder or file) the command writes and the most bytes it may hold.
+    pub(crate) watch: Option<(&'a Path, u64)>,
 }
 
 impl<'a> Invocation<'a> {
@@ -90,6 +94,7 @@ impl<'a> Invocation<'a> {
             args: Vec::new(),
             env: Vec::new(),
             timeout: git.timeout,
+            watch: None,
         }
     }
 
@@ -115,6 +120,14 @@ impl<'a> Invocation<'a> {
 
     pub(crate) fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Bounds the command by what `path` holds: measured every [`WATCH_INTERVAL`] while it runs
+    /// and once when it ends; past `limit` bytes the process group is killed and reaped, and the
+    /// run fails with [`GitError::TooLarge`].
+    pub(crate) fn watch_size(mut self, path: &'a Path, limit: u64) -> Self {
+        self.watch = Some((path, limit));
         self
     }
 }
@@ -207,6 +220,11 @@ impl Git {
 
         let deadline = Instant::now() + invocation.timeout;
         let mut poll = Duration::from_millis(1);
+        let mut watched = Instant::now();
+        let too_large = |limit| GitError::TooLarge {
+            command: invocation.label,
+            limit,
+        };
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break status,
@@ -225,6 +243,15 @@ impl Git {
                     command: invocation.label,
                     limit: self.max_output_bytes,
                 });
+            }
+            if let Some((path, limit)) = invocation.watch
+                && watched.elapsed() >= WATCH_INTERVAL
+            {
+                watched = Instant::now();
+                if size_on_disk(path) > limit {
+                    kill_tree(&mut child);
+                    return Err(too_large(limit));
+                }
             }
             let now = Instant::now();
             if now >= deadline {
@@ -265,6 +292,12 @@ impl Git {
                 command: invocation.label,
                 limit: self.max_output_bytes,
             });
+        }
+        // A command that ended between two measures is measured once more.
+        if let Some((path, limit)) = invocation.watch
+            && size_on_disk(path) > limit
+        {
+            return Err(too_large(limit));
         }
         let io_error = |source| GitError::Io {
             context: "reading git output",
@@ -343,6 +376,28 @@ fn read_capped(mut pipe: impl Read, cap: usize) -> std::io::Result<Vec<u8>> {
     }
 }
 
+/// Bytes the files at `path` hold (a file, or a folder walked without following links); entries
+/// that vanish while it is walked (Git renames its temporary packs) count as nothing.
+fn size_on_disk(path: &Path) -> u64 {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if !meta.is_dir() {
+        return meta.len();
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => size_on_disk(&entry.path()),
+            Ok(_) => entry.metadata().map_or(0, |m| m.len()),
+            Err(_) => 0,
+        })
+        .fold(0, u64::saturating_add)
+}
+
 /// Kills the child's process group (Unix) and the child itself, then reaps it.
 fn kill_tree(child: &mut Child) {
     #[cfg(unix)]
@@ -385,6 +440,28 @@ mod tests {
 
     fn args(args: &[&str]) -> Vec<OsString> {
         args.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn the_size_on_disk_sums_a_folder_without_following_links() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(dir.path().join("objects/pack"))?;
+        std::fs::write(dir.path().join("HEAD"), [0; 10])?;
+        std::fs::write(dir.path().join("objects/pack/p"), [0; 100])?;
+        assert_eq!(size_on_disk(dir.path()), 110);
+        assert_eq!(size_on_disk(&dir.path().join("HEAD")), 10);
+        assert_eq!(size_on_disk(&dir.path().join("missing")), 0);
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir()?;
+            std::fs::write(outside.path().join("big"), [0; 1000])?;
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(outside.path(), &link)?;
+            // The link counts as itself (its target's path), never as what it points to.
+            let own = std::fs::symlink_metadata(&link)?.len();
+            assert_eq!(size_on_disk(dir.path()), 110 + own);
+        }
+        Ok(())
     }
 
     #[test]
