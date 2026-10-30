@@ -87,6 +87,8 @@ impl GitAdapter {
 fn map_err(err: GitError) -> AppError {
     match err {
         GitError::InvalidInput { .. } => AppError::Invalid(err.to_string()),
+        // `reference_repo` reads a capacity error of `bundle_repository` as "too large"
+        // (SPEC-349): keep it for a size watch.
         GitError::TooLarge { .. } => AppError::Capacity(err.to_string()),
         other => AppError::Upstream(format!("git: {other}")),
     }

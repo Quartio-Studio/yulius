@@ -85,9 +85,15 @@ fn too_large(repo: &str, measured: &str) -> AppError {
     )
 }
 
-/// A size above the cap, as said to the agent.
+/// A size above the 1 GiB cap in GB, rounded up to a tenth: never the cap itself.
 fn above_cap(bytes: u64) -> String {
-    human_size(bytes)
+    const GIB: u128 = 1024 * 1024 * 1024;
+    let tenths = (u128::from(bytes) * 10).div_ceil(GIB);
+    if tenths % 10 == 0 {
+        format!("{} GB", tenths / 10)
+    } else {
+        format!("{}.{} GB", tenths / 10, tenths % 10)
+    }
 }
 
 /// Removes the fetch folders below `tmp` older than [`STALE_FETCH`]: a fetch takes at most Git's
@@ -247,8 +253,9 @@ impl App {
                 &format!("GitHub reports it at {},", above_cap(bytes)),
             ));
         }
-        // At its peak the fetched copy, its bundle and the attached bundle are on the disk.
-        let peak = reported.unwrap_or(0).saturating_mul(3);
+        // At its peak the fetched copy, its bundle and the attached bundle are on the disk; with
+        // no size from GitHub, each may reach the cap.
+        let peak = reported.unwrap_or(MAX_REFERENCE_BYTES).saturating_mul(3);
         if let Some(room) = self.disk_room_if_short(peak).await {
             return Err(AppError::Conflict(format!(
                 "The server's disk has no room for a copy of {repo}: only {} can be added before \
@@ -386,9 +393,9 @@ impl App {
                 )
                 .await
                 .map_err(|err| match err {
-                    // Git was stopped at the cap (SPEC-349 RFB-003).
+                    // Git was stopped at the cap (SPEC-349 RFB-003): the port's only capacity error.
                     AppError::Capacity(_) => {
-                        too_large(&fetch.repo, "Yulius stopped its fetch when the copy grew")
+                        too_large(&fetch.repo, "Yulius stopped Git when its copy grew")
                     }
                     err => refused(
                         &fetch.repo,
