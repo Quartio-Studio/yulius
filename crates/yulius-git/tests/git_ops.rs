@@ -1051,7 +1051,34 @@ fn a_fetch_that_ends_past_its_limit_fails_and_one_under_it_succeeds() -> TestRes
         Err(GitError::TooLarge { limit, .. }) => assert_eq!(limit, 2000),
         other => return Err(format!("expected too large, got {other:?}").into()),
     }
-    git.fetch_branches_and_tags(&repo, url, 4000)?;
+    git.fetch_branches_and_tags(&repo, url, 1_000_000)?;
+    Ok(())
+}
+
+/// SPEC-349 RFB-003 (review round 1): Git writes a bundle into `<path>.lock` and renames it at the
+/// end, so the watch measures the lock file too and kills a bundle growing past its limit mid-run.
+#[cfg(unix)]
+#[test]
+fn a_bundle_growing_past_its_limit_is_killed_while_written() -> TestResult {
+    let fx = Fixture::new()?;
+    let repo = fx.path("repo.git");
+    fs::create_dir(&repo)?;
+    let script = fx.path("bundling-git");
+    // Its arguments: six hardening `-c` words, `bundle create --quiet`, then the bundle's path.
+    write_hook(
+        &script,
+        "#!/bin/sh\nhead -c 3000000 /dev/zero > \"${10}.lock\"\nsleep 30 &\nwait\n",
+    )?;
+    let git = Git::new(&script);
+    let started = Instant::now();
+    match git.create_full_bundle(&repo, &fx.path("repo.bundle"), 1_000_000) {
+        Err(GitError::TooLarge { limit, .. }) => assert_eq!(limit, 1_000_000),
+        other => return Err(format!("expected too large, got {other:?}").into()),
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "killed, not timed out"
+    );
     Ok(())
 }
 
