@@ -23,13 +23,19 @@ before the handler starts (the database, the accept queue).
 ## Decision
 
 - The hook client sends the time it sent each request in `x-yulius-hook-sent-ms` (Unix ms). The
-  server clamps it to its own clock, and uses its own time for a request without it.
+  server clamps it to its own clock, and uses its own time for a request without it or with one
+  not after the epoch.
 - A task's runtime keeps `turn_end_ms`, the latest of: the send time of a Stop that reached Yulius,
-  and when Yulius applied a goal verdict (met, not met, failed).
+  and the time Claude Code recorded a goal verdict (met, not met, failed) Yulius applied (the
+  record's `timestamp`, else when it was applied).
 - A `UserPromptSubmit` sent before `turn_end_ms` belongs to a turn that is over. It is still
   handled (holds, the scope check, a person's answered question), but it does not set Working,
   reset the achieved goal, the gate count or the turn start.
-- A goal verdict "met" settles an idle task (Your turn) as Done also when a Stop waited for it.
+- A per-task `turn_order` lock orders the two: a prompt holds it from that check until it set
+  Working (its own store writes only); a Stop or verdict takes it to move `turn_end_ms`. A turn end
+  arriving while a prompt that passed the check is still writing settles after it.
+- A goal verdict "met" settles a turn a Stop waited for also when the task reads Your turn, as that
+  Stop would have (Done, its pull request, its chains).
 
 ## Alternatives
 
@@ -37,6 +43,10 @@ before the handler starts (the database, the accept queue).
   delays the request defeats it.
 - **A per-task counter of Stops.** It needs the task, so it is read only after the token lookup,
   which waits on the same busy database.
+- **When the watcher applied a verdict.** Under watcher lag the previous turn's verdict would make
+  the next turn's prompt look like history.
+- **Re-checking after the prompt's write instead of a lock.** A repair would have to know whether
+  the Stop had settled yet.
 - **Dropping a hook handled past the client's deadline.** This reverses ADR-0115 and loses events
   the agent acted on.
 - **Matching prompts to transcript records by text.** It costs a lot to keep in step, and prompts
@@ -49,6 +59,9 @@ before the handler starts (the database, the accept queue).
 - A late prompt no longer strands a task as Working or Your turn after its turn ended.
 - The client and the server use the same clock: the client runs on the same host (loopback only).
   A forged time only affects the task's own bookkeeping, and a future one is clamped.
-- If the watcher applies the previous turn's verdict after the next prompt was sent, that prompt's
-  effects are skipped. Its transcript `UserTurn` still sets Working, so nothing is lost.
+- The rule trusts the host's wall clock. If it steps back (NTP, a resumed VM), prompts are taken
+  as history until it passes the last turn end again. Their transcript `UserTurn` still sets
+  Working, but it does not reset the gate count.
 - An older client without the header is ordered by arrival, as before, at worst.
+- Not covered, as before (ADR-0115): a late prompt's holds and pauses are decided before the check,
+  and an interrupted turn writes no Stop, so it does not end a turn for this rule.

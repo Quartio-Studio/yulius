@@ -10,15 +10,16 @@ Date: 2026-10-30
 Owner: Yulius task #330
 Scope authorization: task #330, fixing #921 ("Flaky again:
 `task_done::a_goal_the_tui_dropped_is_submitted_again` times out waiting for Done in the full
-suite"). Decided in ADR-0234; refines SPEC-140 HKS-001 / ADR-0115 (a hook Yulius received is applied to its end) and
-SPEC-079 BGW-005 (a clean Stop waits for the goal verdict).
+suite"). Decided in ADR-0234; refines SPEC-140 HKS-001 / ADR-0115 (a hook Yulius received is
+applied to its end) and SPEC-079 BGW-005 (a clean Stop waits for the goal verdict).
 
 ## Goal
 
 A goal task whose turn's `UserPromptSubmit` hook Yulius answers only after the hook client gave
 up (5 s, fail-open) still reads Done once Claude Code records the goal as met, instead of staying
-Working or Your turn for good. The same holds for any prompt: its late handling never undoes what
-the turn's Stop or goal verdict, which came after it, decided.
+Working or Your turn for good. The same holds for any prompt: its late handling never sets Working
+or resets the goal over what the turn's Stop or goal verdict, which came after it, decided. (A
+late prompt's holds and pauses are outside this change; see Decisions.)
 
 ## Context
 
@@ -44,6 +45,12 @@ the turn's Stop or goal verdict, which came after it, decided.
   the verdict (`verdict_stop_ms`) with the task still reading Your turn, and `goal_observed`
   settles a waited turn only while it reads Working or Needs you (`settle_waited_turn`), so a met
   goal leaves it reading Your turn.
+- **A race inside the fix, found by its own test:** the end-to-end test failed once (the first
+  run after a rebuild, when the hook client starts slowest). A prompt that passed the check could
+  still write Working after its database writes, by which time the Stop had arrived and the met
+  goal had settled the task Done. Probes (the Stop held 3 s, the prompt paused 4 s after its
+  check) showed it: Done, then the late Working write (skipped there only because the prompt's
+  snapshot already read Working). A per-task order lock closes it.
 - **Why tests missed it:** the fake agent's hooks are always answered within the client's
   deadline in a lone run; only a loaded host delays the server (ADR-0115: the single database
   thread) past 5 s.
@@ -56,17 +63,17 @@ the turn's Stop or goal verdict, which came after it, decided.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| LPH-001 | The hook client sends, with every hook request, the wall-clock time it sent it (`x-yulius-hook-sent-ms`, Unix ms). The server takes it, clamped to its own clock, or its own time when the request has none (an older client). | `yulius-harness` `hook_client::forwards_payload_and_prints_200_body`; `intake::a_prompt_answered_after_its_turn_ended_leaves_the_task_settled` (no header: arrival order) |
-| LPH-002 | A `UserPromptSubmit` sent before a Stop of the same task that already reached Yulius, or before a goal verdict (met, not met, failed) Yulius already applied, belongs to a turn that is over: it changes neither the task's activity nor its achieved goal, its gate count or its turn start. What it did before that (holds, the scope check, a person's answered question) is unchanged, and the transcript watcher still sees its turn (STA-003). | `intake::a_prompt_answered_after_its_turn_ended_leaves_the_task_settled` (fails without: Working); `task_done::a_goal_whose_prompt_hook_is_answered_late_is_done` |
-| LPH-003 | A goal verdict "met" makes an idle task Done also when a Stop waited for it (BGW-005) and the task reads Your turn. | `task_done::a_goal_whose_prompt_hook_is_answered_late_is_done` (fails without: no Done) |
+| LPH-001 | The hook client sends, with every hook request, the wall-clock time it sent it (`x-yulius-hook-sent-ms`, Unix ms). The server takes it, clamped to its own clock, or its own time when the request has none or one not after the epoch (an older client). | `yulius-harness` `hook_client::forwards_payload_and_prints_200_body`; `intake::a_hooks_sent_time_is_clamped_to_now` (fails without the clamp and the epoch rule); `intake::a_prompt_answered_after_its_turn_ended_leaves_the_task_settled` (no header: arrival order) |
+| LPH-002 | A `UserPromptSubmit` sent before a Stop of the same task that already reached Yulius (by the Stop's send time), or before Claude Code recorded a goal verdict (met, not met, failed; the record's time) that Yulius already applied, belongs to a turn that is over: it changes neither the task's activity nor its achieved goal, its gate count or its turn start. What it did before that (holds, the scope check, a person's answered question) is unchanged, and the transcript watcher still sees its turn (STA-003). A prompt that passed the check sets Working before a Stop or verdict arriving meanwhile settles the turn. | `yulius-harness` `claude::tests::goal_status_attachments` and `observe::claude_goal_mode_records` (a verdict's time);  `intake::a_prompt_answered_after_its_turn_ended_leaves_the_task_settled` (fails without: Working); `task_done::a_goal_whose_prompt_hook_is_answered_late_is_done` |
+| LPH-003 | A goal verdict "met" settles the turn a Stop waited for (BGW-005) also when the task reads Your turn: as that Stop would have, Done, with its pull request and chains. | `finish::tests::a_waited_turn_settles_a_met_goal_also_from_your_turn`; `task_done::a_goal_whose_prompt_hook_is_answered_late_is_done` (fails without: no Done) |
 
 ## Plan
 
 - [x] Reproduce the stranded Waiting deterministically
 - [x] Spec with root cause and regression test
-- [ ] Regression test that fails without the fix
-- [ ] Fix: a late prompt hook leaves its ended turn settled
-- [ ] Docs, changes entry and gates green
+- [x] Regression test that fails without the fix
+- [x] Fix: a late prompt hook leaves its ended turn settled
+- [x] Docs, changes entry and gates green
 - [ ] Independent review and its findings answered
 - [ ] Merge into dev on green CI and comment on #921
 
@@ -84,8 +91,13 @@ the turn's Stop or goal verdict, which came after it, decided.
   blocks until released; meanwhile the turn's Stop is answered (Your turn); after the release the
   task still reads Your turn. Without the fix it reads Working.
 - LPH-003 and the whole path: `task_done`, the resumed goal session of the flaky test, with a test
-  layer that holds the goal's `UserPromptSubmit` 6 s before the server sees it (past the client's
-  5 s); the task must read Done. Without the fix it never does.
+  layer that, once the test arms it with the resumed session up, holds the next `/goal`
+  `UserPromptSubmit` 6 s before the server sees it (past the client's 5 s); after it was handled
+  the task must read Done. Without the fix it never does. LPH-003 alone: a unit test of
+  `waited_turn_settles`, since which of the turn's records the watcher reads before the Stop varies
+  from run to run.
+- LPH-001 clamp: `intake`, a Stop sent "in an hour" and prompts sent at 0 and -5 must not make the
+  next prompt look like history.
 - What else the cause could break, checked by the existing suites: Stop settling (`task_done`),
   holds and pauses of prompts (`task_pause`, `subscription_pool`), the scope check (`intake`), the
   transcript fallback for lost prompt hooks (`session_sync`, `task_done`).
@@ -97,13 +109,24 @@ the turn's Stop or goal verdict, which came after it, decided.
   Yulius's own binary on the same host, so the clocks agree. A forged or skewed time only affects
   that task's own bookkeeping (it is clamped to the server's clock); an absent one falls back to
   the server's arrival time, as before.
-- **Compare with Stops by their send time and with verdicts by when Yulius applied them.** A Stop
-  sent after the prompt can only be its own turn's or a later one's; a verdict applied after the
-  prompt was sent can, under watcher lag, be the previous turn's: the prompt's effects are then
-  skipped and the watcher's `UserTurn` for the prompt (it comes after that verdict in the
-  transcript) still sets Working, so nothing is lost.
+- **Compare with Stops by their send time and with verdicts by their record's time.** A Stop sent
+  after the prompt can only be its own turn's or a later one's, and Claude Code records a verdict
+  before the next prompt can be sent. When the watcher applied it is no measure: under watcher
+  lag the previous turn's verdict would make the next prompt look like history (review round 1).
+  A record without a time counts as applied now.
+- **A per-task order lock, not a re-check.** The prompt holds `turn_order` from its check until it
+  set Working; a Stop or verdict takes it only to move `turn_end_ms`. Re-checking after the write
+  and repairing would have to know whether the Stop had settled yet. The lock is held across the
+  prompt's own store writes only, never across a scope check or a hold, like `attention_lock`.
+- **A waited Met from Your turn settles through the Stop's own path** (`settle_clean_turn`), not
+  `settle_idle`, so the pull request opens and chains start as for any finished turn (review
+  round 1).
 - **Skip the late prompt's effects, not the hook.** ADR-0115 stays: the event is handled to its
   end; only what a later turn end already decided is left alone.
+- **Not done here, pre-existing (review round 1):** a late prompt still reaches the holds before
+  the check: it can end a turn-end capacity pause (`hold_ended`), pause as a prompt that already
+  ran (`pause_task`), or show a scope hold for it. An interrupted turn (Esc writes no Stop) does
+  not move `turn_end_ms`. Both came with ADR-0115 and are noted on #921.
 - **Not done here: confirming a typed goal by its prompt hook.** The triage proposed that
   `spawn_goal` stop resubmitting when the goal's own `UserPromptSubmit` arrives. It did not
   cause #921 (not reproduced under watcher lag) and would change the goal typist's contract, so it

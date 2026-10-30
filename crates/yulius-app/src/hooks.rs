@@ -165,9 +165,11 @@ impl App {
             return Err(AppError::NotFound);
         }
         // Never later than now: the client's clock is the host's (loopback only), and a time
-        // from the future would order nothing (SPEC-346 LPH-001).
+        // from the future would order nothing. One not after the epoch is none (SPEC-346 LPH-001).
         let now = self.now().0;
-        let sent = sent_ms.map_or(now, |sent| sent.min(now));
+        let sent = sent_ms
+            .filter(|sent| *sent > 0)
+            .map_or(now, |sent| sent.min(now));
         let ctx = self.agent_context(token).await?;
         if event != events::STOP {
             return self.answer_hook(&ctx, event, input, sent).await;
@@ -176,7 +178,10 @@ impl App {
         // the answer is recorded below.
         let runtime = self.runtime(&ctx.task.id);
         // The agent sent this Stop after every prompt of its turn (SPEC-346 LPH-002).
-        runtime.turn_end_ms.fetch_max(sent, Ordering::SeqCst);
+        {
+            let _order = runtime.turn_order.lock().await;
+            runtime.turn_end_ms.fetch_max(sent, Ordering::SeqCst);
+        }
         let _in_flight = crate::finish::StopInFlight::enter(&runtime);
         let reply = self.answer_hook(&ctx, event, input, sent).await;
         // Only the live run's answers count: a late one of a run a switch ended is not this
@@ -655,7 +660,9 @@ impl App {
         let runtime = self.runtime(&ctx.task.id);
         // Answered after a Stop or goal verdict that came after it (its client gave up waiting
         // and the agent went on, ADR-0115): its turn is over, and what that turn's end decided
-        // stands. The transcript still shows the turn (SPEC-346 LPH-002).
+        // stands. The transcript still shows the turn. Held until Working is set, so a turn end
+        // arriving meanwhile settles after it (SPEC-346 LPH-002).
+        let _order = runtime.turn_order.lock().await;
         if sent < runtime.turn_end_ms.load(Ordering::SeqCst) {
             tracing::info!(task = %ctx.task.id, "a prompt answered after its turn ended changes nothing");
             return Ok(HookReply::Output(HookOutput::default()));

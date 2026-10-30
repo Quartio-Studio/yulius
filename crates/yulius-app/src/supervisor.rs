@@ -158,6 +158,10 @@ pub struct TaskRuntime {
     /// when Yulius applied a goal verdict. A prompt sent before it belongs to a turn that is over
     /// (SPEC-346 LPH-002).
     pub(crate) turn_end_ms: AtomicI64,
+    /// Orders a prompt's turn start with a later turn end: a prompt holds it from its
+    /// [`Self::turn_end_ms`] check until it set Working, and a Stop or verdict takes it to move
+    /// `turn_end_ms`, so their settling never lands before a prompt that passed the check.
+    pub(crate) turn_order: tokio::sync::Mutex<()>,
     /// Claude Code's SessionStart hook arrived for the current attempt: its prompt box reads
     /// input (typing before it is lost or left unsubmitted, F 2026-10-12).
     pub(crate) session_started: AtomicBool,
@@ -353,6 +357,7 @@ impl TaskRuntime {
             goal_achieved: AtomicBool::new(false),
             goal_submitted: AtomicBool::new(false),
             turn_end_ms: AtomicI64::new(0),
+            turn_order: tokio::sync::Mutex::new(()),
             session_started: AtomicBool::new(false),
             opening_turn: AtomicBool::new(false),
             typing_opening: AtomicBool::new(false),
@@ -4057,7 +4062,7 @@ impl App {
                 runtime.end_turn(self.now());
                 self.turn_interrupted(task_id, at).await;
             }
-            Observation::Goal(outcome) => self.goal_observed(task_id, outcome).await,
+            Observation::Goal(outcome, at) => self.goal_observed(task_id, outcome, at).await,
             Observation::TurnEnded {
                 background_agents,
                 at,

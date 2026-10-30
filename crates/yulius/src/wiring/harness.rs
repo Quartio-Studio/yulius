@@ -402,7 +402,7 @@ impl TranscriptWatch for Watch {
                     Observed::TurnComplete { at, .. } => {
                         out.push(Observation::TurnComplete { at });
                     }
-                    Observed::Goal { outcome } => out.push(Observation::Goal(outcome)),
+                    Observed::Goal { outcome, at } => out.push(Observation::Goal(outcome, at)),
                     Observed::TurnEnded {
                         background_agents,
                         at,
