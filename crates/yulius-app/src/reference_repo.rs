@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use yulius_domain::ids::{SandboxId, TaskId};
+use yulius_domain::sweep::CRITICAL_PERCENT;
 
 use crate::context::App;
 use crate::coordination::AgentContext;
@@ -18,6 +19,7 @@ use crate::model::Secret;
 use crate::ports::git::ReferenceBundle;
 use crate::ports::github::RepoAccess;
 use crate::projects::{blocking, clone_url, valid_owner, valid_repo_name};
+use crate::uploads::human_size;
 
 /// Largest bundle handed to a task (1 GiB).
 pub const MAX_REFERENCE_BYTES: u64 = 1024 * 1024 * 1024;
@@ -71,6 +73,29 @@ fn refused(repo: &str, why: String) -> AppError {
     ))
 }
 
+/// A repository larger than a task gets; `measured` says how Yulius knows, ending before "above
+/// the cap".
+fn too_large(repo: &str, measured: &str) -> AppError {
+    refused(
+        repo,
+        format!(
+            "{repo} is too large for a reference copy: {measured} above the {} a task gets.",
+            human_size(MAX_REFERENCE_BYTES)
+        ),
+    )
+}
+
+/// A size above the 1 GiB cap in GB, rounded up to a tenth: never the cap itself.
+fn above_cap(bytes: u64) -> String {
+    const GIB: u128 = 1024 * 1024 * 1024;
+    let tenths = (u128::from(bytes) * 10).div_ceil(GIB);
+    if tenths % 10 == 0 {
+        format!("{} GB", tenths / 10)
+    } else {
+        format!("{}.{} GB", tenths / 10, tenths % 10)
+    }
+}
+
 /// Removes the fetch folders below `tmp` older than [`STALE_FETCH`]: a fetch takes at most Git's
 /// network timeout, so an older one was cut short by a restart.
 fn sweep_stale(tmp: &Path) {
@@ -113,7 +138,8 @@ impl App {
     /// `Invalid` for a malformed `repo` or `branch`, and for a `branch` the repository lacks;
     /// `Conflict` (naming `needs_you`) for another owner, the
     /// sandbox's own repository, a playground, an owner who is gone, disabled, without GitHub or
-    /// without read access, and a bundle too large; Git and store failures.
+    /// without read access, a repository too large (as GitHub reports it, while it is fetched or
+    /// as bundled: SPEC-349), and a data disk without room for it; Git and store failures.
     pub(crate) async fn tool_reference_repo(
         self: &Arc<Self>,
         ctx: &AgentContext,
@@ -217,6 +243,29 @@ impl App {
                 &repo,
                 format!("GitHub names no usable default branch of {repo}."),
             ));
+        }
+        // GitHub's size lags behind pushes, so it only refuses up front; the fetch is bounded
+        // while it runs (SPEC-349 RFB-001, RFB-003).
+        let reported = found.size_kib.map(|kib| kib.saturating_mul(1024));
+        if let Some(bytes) = reported.filter(|bytes| *bytes > MAX_REFERENCE_BYTES) {
+            return Err(too_large(
+                &repo,
+                &format!("GitHub reports it at {},", above_cap(bytes)),
+            ));
+        }
+        // At its peak the fetched copy, its bundle and the attached bundle are on the disk; with
+        // no size from GitHub (or a new repository's 0), each may reach the cap.
+        let peak = reported
+            .filter(|bytes| *bytes > 0)
+            .unwrap_or(MAX_REFERENCE_BYTES)
+            .saturating_mul(3);
+        if let Some(room) = self.disk_room_if_short(peak).await {
+            return Err(AppError::Conflict(format!(
+                "The server's disk has no room for a copy of {repo}: only {} can be added before \
+                 it is {CRITICAL_PERCENT} % full. Only now ask a person with `needs_you` to free \
+                 space on the server's disk, or to put the files you need into the sandbox.",
+                human_size(room)
+            )));
         }
         let slot = Arc::clone(&self.uploads.references)
             .try_acquire_owned()
@@ -341,16 +390,20 @@ impl App {
                 .bundle_repository(
                     &fetch.url,
                     &fetch.default_branch,
-                    &work,
-                    &bundle,
+                    (&work, &bundle),
+                    MAX_REFERENCE_BYTES,
                     &fetch.token,
                 )
                 .await
-                .map_err(|err| {
-                    refused(
+                .map_err(|err| match err {
+                    // Git was stopped at the cap (SPEC-349 RFB-003): the port's only capacity error.
+                    AppError::Capacity(_) => {
+                        too_large(&fetch.repo, "Yulius stopped Git when its copy grew")
+                    }
+                    err => refused(
                         &fetch.repo,
                         format!("Fetching {} as {} failed ({err}).", fetch.repo, fetch.login),
-                    )
+                    ),
                 })?;
             let branch = fetch
                 .wanted
@@ -366,13 +419,9 @@ impl App {
             };
             let size = file_size(&bundle).await?;
             if size > MAX_REFERENCE_BYTES {
-                return Err(refused(
+                return Err(too_large(
                     &fetch.repo,
-                    format!(
-                        "{} bundles to {size} bytes, above the {MAX_REFERENCE_BYTES} bytes a \
-                         task gets.",
-                        fetch.repo
-                    ),
+                    &format!("it bundles to {},", above_cap(size)),
                 ));
             }
             let placed = self
@@ -474,6 +523,18 @@ async fn file_size(path: &Path) -> AppResult<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review round 1: a size just above the cap never reads as the cap.
+    #[test]
+    fn a_size_above_the_cap_is_rounded_up() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        assert_eq!(above_cap(GIB + 1), "1.1 GB");
+        assert_eq!(above_cap(GIB + GIB / 10), "1.1 GB");
+        assert_eq!(above_cap(GIB + GIB / 10 + 1), "1.2 GB");
+        assert_eq!(above_cap(2 * GIB), "2 GB");
+        assert_eq!(above_cap(2 * GIB - 1), "2 GB");
+        assert_eq!(above_cap(u64::MAX), "17179869184 GB");
+    }
 
     #[test]
     fn a_shell_word_keeps_quotes_and_expansions_literal() {

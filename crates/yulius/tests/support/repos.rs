@@ -77,6 +77,21 @@ pub struct LocalGit {
     pub remotes: Mutex<HashMap<String, PathBuf>>,
     /// Operation log (`clone <url> token=<t>`, `push <local>-><remote> token=<t>`, …).
     pub calls: Mutex<Vec<String>>,
+    /// Replaces the byte limit `bundle_repository` is given (a reference fetch past the cap).
+    pub reference_limit: Mutex<Option<u64>>,
+}
+
+/// Bytes of the files below `dir`.
+fn folder_size(dir: &Path) -> u64 {
+    std::fs::read_dir(dir).map_or(0, |entries| {
+        entries
+            .filter_map(Result::ok)
+            .map(|entry| match entry.file_type() {
+                Ok(kind) if kind.is_dir() => folder_size(&entry.path()),
+                _ => entry.metadata().map_or(0, |m| m.len()),
+            })
+            .sum()
+    })
 }
 
 impl LocalGit {
@@ -168,12 +183,17 @@ impl GitPort for LocalGit {
         &self,
         url: &str,
         default_branch: &str,
-        work: &Path,
-        bundle: &Path,
+        (work, bundle): (&Path, &Path),
+        limit: u64,
         token: &Secret,
     ) -> AppResult<ReferenceBundle> {
         let remote = self.remote(url)?;
         self.record(format!("bundle {url} token={}", token.expose()));
+        let limit = self
+            .reference_limit
+            .lock()
+            .map_err(AppError::internal)?
+            .unwrap_or(limit);
         let parent = work.parent().ok_or(AppError::NotFound)?;
         git(
             parent,
@@ -198,6 +218,12 @@ impl GitPort for LocalGit {
             ],
         )
         .map_err(upstream)?;
+        // As the adapter, whose watch kills Git once the folder holds more than the limit.
+        if folder_size(work) > limit {
+            return Err(AppError::Capacity(format!(
+                "git fetch wrote more than {limit} bytes"
+            )));
+        }
         git(
             work,
             &[
@@ -541,6 +567,8 @@ pub struct RepoGitHub {
     /// Repositories moved to another owner (`old owner/name` → `new owner/name`): GitHub
     /// answers a person's read of the old name with the new repository, as its redirect does.
     pub transferred: Mutex<HashMap<String, String>>,
+    /// Sizes GitHub reports (`owner/name` → KiB) on a person's read of a repository.
+    pub sizes: Mutex<HashMap<String, u64>>,
 }
 
 impl RepoGitHub {
@@ -571,6 +599,7 @@ fn gh_repo(owner: &str, name: &str, private: bool) -> GhRepo {
         default_branch: "main".to_owned(),
         html_url: format!("https://github.com/{owner}/{name}"),
         clone_url: format!("https://github.com/{owner}/{name}.git"),
+        size_kib: None,
     }
 }
 
@@ -632,10 +661,27 @@ impl GitHubPort for RepoGitHub {
             .map_err(AppError::internal)?
             .get(&format!("{owner}/{name}"))
             .cloned();
-        if let Some((owner, name)) = moved.as_deref().and_then(|m| m.split_once('/')) {
-            return self.base.repo_access(token, owner, name).await;
-        }
-        self.base.repo_access(token, owner, name).await
+        let (owner, name) = moved
+            .as_deref()
+            .and_then(|m| m.split_once('/'))
+            .unwrap_or((owner, name));
+        let access = self.base.repo_access(token, owner, name).await?;
+        let size = self
+            .sizes
+            .lock()
+            .map_err(AppError::internal)?
+            .get(&format!("{owner}/{name}"))
+            .copied();
+        Ok(match access {
+            RepoAccess::Access {
+                permissions,
+                mut repo,
+            } => {
+                repo.size_kib = size;
+                RepoAccess::Access { permissions, repo }
+            }
+            other => other,
+        })
     }
     async fn find_installation(&self, _: &GitHubAppConfig, _: &str) -> AppResult<Option<u64>> {
         self.installation_lookups.fetch_add(1, Ordering::SeqCst);
@@ -855,6 +901,7 @@ impl World {
             selected_only: AtomicBool::new(false),
             fail_installation_reads: AtomicBool::new(false),
             transferred: Mutex::new(HashMap::new()),
+            sizes: Mutex::new(HashMap::new()),
         });
         let clock = Arc::new(TestClock(AtomicI64::new(1_791_331_200_000)));
         let config = AppConfig::new(

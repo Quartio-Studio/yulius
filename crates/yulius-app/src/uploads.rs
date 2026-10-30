@@ -204,7 +204,7 @@ fn too_large(limit: u64) -> AppError {
 }
 
 /// `1 GB`, `25 MB`, `512 KB`, `100 bytes` (binary units, as `YULIUS_UPLOAD_MAX_MB`).
-fn human_size(bytes: u64) -> String {
+pub(crate) fn human_size(bytes: u64) -> String {
     const MIB: u64 = 1024 * 1024;
     const GIB: u64 = 1024 * MIB;
     if bytes >= GIB && bytes.is_multiple_of(GIB) {
@@ -535,12 +535,7 @@ impl App {
         if len > self.config.upload_max_bytes {
             return Err(too_large(self.config.upload_max_bytes));
         }
-        if let Some((total, used)) = self.data_disk().await
-            && Level::of(used.saturating_add(len), total) == Level::Critical
-        {
-            // What can still be added before the critical level, not all the free space.
-            let room = u128::from(total) * u128::from(CRITICAL_PERCENT) / 100;
-            let room = u64::try_from(room).unwrap_or(u64::MAX).saturating_sub(used);
+        if let Some(room) = self.disk_room_if_short(len).await {
             return Err(AppError::Invalid(format!(
                 "the server's disk has no room for this file: only {} can be added before \
                  it is {CRITICAL_PERCENT} % full",
@@ -548,6 +543,18 @@ impl App {
             )));
         }
         Ok(())
+    }
+
+    /// When adding `len` bytes would bring the data disk to its critical level (SPEC-276), what
+    /// can still be added before it (not all the free space); `None` when they fit or the disk is
+    /// unknown (uploads, SPEC-325 UPL-002; reference fetches, SPEC-349 RFB-002).
+    pub(crate) async fn disk_room_if_short(&self, len: u64) -> Option<u64> {
+        let (total, used) = self.data_disk().await?;
+        if Level::of(used.saturating_add(len), total) != Level::Critical {
+            return None;
+        }
+        let room = u128::from(total) * u128::from(CRITICAL_PERCENT) / 100;
+        Some(u64::try_from(room).unwrap_or(u64::MAX).saturating_sub(used))
     }
 
     pub(crate) fn upload_slot(&self) -> AppResult<OwnedSemaphorePermit> {

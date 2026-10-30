@@ -60,6 +60,8 @@ pub struct Repo {
     pub html_url: String,
     /// HTTPS clone URL.
     pub clone_url: String,
+    /// Size GitHub reports in KiB (`size`; GitHub updates it lazily), `None` when not given.
+    pub size_kib: Option<u64>,
 }
 
 /// A user's access to one repository (SPEC-001 ACC-007).

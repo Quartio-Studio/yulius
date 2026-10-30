@@ -376,15 +376,17 @@ pub trait GitPort: Send + Sync {
     /// Fetches every branch and tag of `url` with `token` into a new bare repository at `work`
     /// (which must not exist) whose `HEAD` is `default_branch`, and writes a bundle of `HEAD`,
     /// every branch and every tag at `bundle` (a reference copy for a task, SPEC-267, SPEC-330).
+    /// Git is stopped once `work` or `bundle` holds more than `limit` bytes, failing with
+    /// `AppError::Capacity` (SPEC-349 RFB-003).
     async fn bundle_repository(
         &self,
         url: &str,
         default_branch: &str,
-        work: &Path,
-        bundle: &Path,
+        (work, bundle): (&Path, &Path),
+        limit: u64,
         token: &Secret,
     ) -> AppResult<ReferenceBundle> {
-        let _ = (url, default_branch, work, bundle, token);
+        let _ = (url, default_branch, work, bundle, limit, token);
         unsupported("fetching another repository")
     }
     /// Copies every branch and tag of the repository at `source` into the bare repository

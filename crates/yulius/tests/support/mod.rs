@@ -198,6 +198,7 @@ impl GitHubPort for FakeGitHub {
                     default_branch: "main".into(),
                     html_url: String::new(),
                     clone_url: String::new(),
+                    size_kib: None,
                 },
             },
         })

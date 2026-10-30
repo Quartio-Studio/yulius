@@ -40,6 +40,8 @@ pub(crate) struct WireRepo {
     #[serde(default)]
     clone_url: String,
     #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
     permissions: Option<WirePermissions>,
 }
 
@@ -69,6 +71,7 @@ impl WireRepo {
                 .unwrap_or_else(|| "main".to_owned()),
             html_url: self.html_url,
             clone_url: self.clone_url,
+            size_kib: self.size,
         };
         (repo, permissions)
     }
@@ -333,6 +336,24 @@ pub(crate) fn summarize(reads: CheckReads) -> ChecksReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-349 RFB-001: GitHub's `size` (KiB) reaches the repository; a missing one is unknown.
+    #[test]
+    fn a_repository_carries_the_size_github_reports() -> Result<(), serde_json::Error> {
+        let repo = |extra: serde_json::Value| {
+            let mut value = serde_json::json!({"id": 1, "name": "lib", "owner": {"login": "acme"}});
+            if let (Some(map), Some(more)) = (value.as_object_mut(), extra.as_object()) {
+                map.extend(more.clone());
+            }
+            serde_json::from_value::<WireRepo>(value).map(WireRepo::into_repo)
+        };
+        assert_eq!(
+            repo(serde_json::json!({"size": 2048}))?.size_kib,
+            Some(2048)
+        );
+        assert_eq!(repo(serde_json::json!({}))?.size_kib, None);
+        Ok(())
+    }
 
     /// F 2026-10-11: a pull request behind its base under a strict ruleset is refused with
     /// "required status checks are expected"; GitHub says so in `mergeable_state`.

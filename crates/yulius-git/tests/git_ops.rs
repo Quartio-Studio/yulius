@@ -981,6 +981,162 @@ fn output_bound_kills_the_command() -> TestResult {
     Ok(())
 }
 
+/// Whether the process `pid` is gone (or a zombie of a parent that no longer waits), within 5 s.
+#[cfg(unix)]
+fn gone(pid: &str) -> Result<bool, Box<dyn Error>> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let alive = Command::new("kill").args(["-0", pid]).status()?.success();
+        let zombie = Command::new("ps")
+            .args(["-o", "stat=", "-p", pid])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().starts_with('Z'))
+            .unwrap_or(false);
+        if !alive || zombie {
+            return Ok(true);
+        }
+        if Instant::now() > deadline {
+            return Ok(false);
+        }
+        std::thread::yield_now();
+    }
+}
+
+/// SPEC-349 RFB-003 (#920): a reference fetch whose folder grows past its byte limit is killed
+/// with its process group while it still runs, long before its deadline, and fails as too large.
+#[cfg(unix)]
+#[test]
+fn a_fetch_whose_folder_grows_past_its_limit_is_killed() -> TestResult {
+    let fx = Fixture::new()?;
+    let (repo, pids) = (fx.path("work.git"), fx.path("pids"));
+    fs::create_dir(&repo)?;
+    let script = fx.path("growing-git");
+    write_hook(
+        &script,
+        &format!(
+            "#!/bin/sh\necho $$ > '{p}'\nmkdir -p objects/pack\nhead -c 3000000 /dev/zero > \
+             objects/pack/tmp_pack_x\nsleep 30 &\necho $! >> '{p}'\nwait\n",
+            p = pids.display()
+        ),
+    )?;
+    let git = Git::new(&script);
+    let started = Instant::now();
+    match git.fetch_branches_and_tags(&repo, "https://github.com/acme/lib.git", 1_000_000) {
+        Err(GitError::TooLarge { limit, .. }) => assert_eq!(limit, 1_000_000),
+        other => return Err(format!("expected too large, got {other:?}").into()),
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "killed, not timed out"
+    );
+    for pid in fs::read_to_string(&pids)?.split_whitespace() {
+        assert!(gone(pid)?, "process {pid} survived the size limit");
+    }
+    Ok(())
+}
+
+/// The bytes `path`'s blocks take (as the size watch counts a file), 0 when it does not exist.
+#[cfg(unix)]
+fn blocks_of(path: &Path) -> Result<u64, Box<dyn Error>> {
+    use std::os::unix::fs::MetadataExt;
+    match fs::metadata(path) {
+        Ok(meta) => Ok(meta.len().max(meta.blocks() * 512)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// SPEC-349 RFB-003: a command that ends before the watch looks is still measured once it ends;
+/// one under its limit succeeds.
+#[cfg(unix)]
+#[test]
+fn a_fetch_that_ends_past_its_limit_fails_and_one_under_it_succeeds() -> TestResult {
+    let fx = Fixture::new()?;
+    let repo = fx.path("work.git");
+    fs::create_dir(&repo)?;
+    let script = fx.path("quick-git");
+    write_hook(
+        &script,
+        "#!/bin/sh\nrm -f pack\nhead -c 3000 /dev/zero > pack\n",
+    )?;
+    let git = Git::new(&script);
+    let url = "https://github.com/acme/lib.git";
+    match git.fetch_branches_and_tags(&repo, url, 2000) {
+        Err(GitError::TooLarge { limit, .. }) => assert_eq!(limit, 2000),
+        other => return Err(format!("expected too large, got {other:?}").into()),
+    }
+    // Exactly what it takes (the limit is inclusive): 3000 bytes in a 4 KiB block on Linux and
+    // macOS. Assumes the file's block count stays put between the two runs (not so on ZFS or
+    // compressed btrfs, which settle blocks when they commit).
+    git.fetch_branches_and_tags(&repo, url, 3000_u64.max(blocks_of(&repo.join("pack"))?))?;
+    Ok(())
+}
+
+/// SPEC-349 RFB-003 (review round 1): Git writes a bundle into `<path>.lock` and renames it at the
+/// end, so the watch measures the lock file too and kills a bundle growing past its limit mid-run.
+#[cfg(unix)]
+#[test]
+fn a_bundle_growing_past_its_limit_is_killed_while_written() -> TestResult {
+    let fx = Fixture::new()?;
+    let repo = fx.path("repo.git");
+    fs::create_dir(&repo)?;
+    let (script, pids) = (fx.path("bundling-git"), fx.path("pids"));
+    // Its arguments: six hardening `-c` words, `bundle create --quiet`, then the bundle's path.
+    write_hook(
+        &script,
+        &format!(
+            "#!/bin/sh\necho $$ > '{p}'\nhead -c 3000000 /dev/zero > \"${{10}}.lock\"\nsleep 30 &\n\
+             echo $! >> '{p}'\nwait\n",
+            p = pids.display()
+        ),
+    )?;
+    let git = Git::new(&script);
+    let started = Instant::now();
+    match git.create_full_bundle(&repo, &fx.path("repo.bundle"), 1_000_000) {
+        Err(GitError::TooLarge { limit, .. }) => assert_eq!(limit, 1_000_000),
+        other => return Err(format!("expected too large, got {other:?}").into()),
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "killed, not timed out"
+    );
+    for pid in fs::read_to_string(&pids)?.split_whitespace() {
+        assert!(gone(pid)?, "process {pid} survived the size limit");
+    }
+    Ok(())
+}
+
+/// SPEC-349 RFB-003: the bundle of a whole repository is bounded by its limit; a real bundle under
+/// it is written.
+#[test]
+fn a_full_bundle_past_its_limit_fails() -> TestResult {
+    let fx = Fixture::new()?;
+    let repo = fx.path("repo");
+    fs::create_dir(&repo)?;
+    fx.raw(&repo, &["init", "--quiet", "--initial-branch=main"])?;
+    // Incompressible content: the bundle is at least this large.
+    let mut state = 0x2545_f491_4f6c_dd1d_u64;
+    let noise: Vec<u8> = (0..200_000)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state.to_le_bytes()[0]
+        })
+        .collect();
+    fs::write(repo.join("noise.bin"), noise)?;
+    fx.raw(&repo, &["add", "."])?;
+    fx.raw(&repo, &["commit", "--quiet", "-m", "noise"])?;
+    let bundle = fx.path("repo.bundle");
+    match fx.git.create_full_bundle(&repo, &bundle, 50_000) {
+        Err(GitError::TooLarge { limit, .. }) => assert_eq!(limit, 50_000),
+        other => return Err(format!("expected too large, got {other:?}").into()),
+    }
+    fx.git.create_full_bundle(&repo, &bundle, 10_000_000)?;
+    assert!(fs::metadata(&bundle)?.len() > 50_000);
+    Ok(())
+}
+
 #[test]
 fn missing_executable_is_a_spawn_error() -> TestResult {
     let fx = Fixture::new()?;

@@ -63,7 +63,9 @@ cannot read the repository either.
   `needs_you`: a repository of another owner than the sandbox repository's, judged by the owner
   GitHub answers with (a repository moved to another owner is that owner's); an owner who no
   longer exists, is disabled or has no usable GitHub sign-in; a repository GitHub says the owner
-  cannot read (or does not answer about); a failed fetch; a bundle above 1 GiB. Refused with why
+  cannot read (or does not answer about); a failed fetch; a repository above 1 GiB, as GitHub
+  reports it, as its fetch grows or as bundled, and a data disk without room for it (SPEC-349).
+  Refused with why
   but no person to ask: the sandbox's own repository (the worktree has it) and a playground (no
   GitHub owner). A malformed `repo` is `Invalid`.
 - **REF-004** Each fetch is audited (`task.reference_repo`, the repository, commit and person).
