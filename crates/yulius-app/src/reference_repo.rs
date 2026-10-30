@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use yulius_domain::ids::{SandboxId, TaskId};
+use yulius_domain::sweep::CRITICAL_PERCENT;
 
 use crate::context::App;
 use crate::coordination::AgentContext;
@@ -238,6 +239,16 @@ impl App {
                 &repo,
                 &format!("GitHub reports it at {}", human_size(bytes)),
             ));
+        }
+        // At its peak the fetched copy, its bundle and the attached bundle are on the disk.
+        let peak = reported.unwrap_or(0).saturating_mul(3);
+        if let Some(room) = self.disk_room_if_short(peak).await {
+            return Err(AppError::Conflict(format!(
+                "The server's disk has no room for a copy of {repo}: only {} can be added before \
+                 it is {CRITICAL_PERCENT} % full. Only now ask a person with `needs_you` to free \
+                 space on the server's disk, or to put the files you need into the sandbox.",
+                human_size(room)
+            )));
         }
         let slot = Arc::clone(&self.uploads.references)
             .try_acquire_owned()

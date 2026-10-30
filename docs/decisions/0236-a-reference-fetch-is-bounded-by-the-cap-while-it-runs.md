@@ -21,7 +21,7 @@ SPEC-325), and GitHub reports a repository's size, but neither was used here.
 - **Refuse what is known to be too large before anything runs.** The repository's `size` from
   GitHub (KiB) travels on `GhRepo`; above the cap, the tool refuses before taking a fetch slot,
   saying the size and the cap.
-- **Refuse a fetch the disk has no room for**, with the uploads' check (`App::disk_has_room`,
+- **Refuse a fetch the disk has no room for**, with the uploads' check (`App::disk_room_if_short`,
   shared by `check_declared`): the fetch's peak is the fetched copy, its bundle and the attached
   bundle, three times GitHub's size.
 - **Bound the copy while it is written.** The Git runner takes an optional size watch (a path and
