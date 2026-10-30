@@ -876,10 +876,15 @@ involved.
   - `jobs/<job>` (and `jobs/<job>@<lane>` past the first lane): one persistent checkout per job
     and lane; ignored build outputs such as `target/` and `node_modules/` are its cache;
   - `home`: `HOME` for jobs, with `~/.cargo`, `~/.npm` and `~/.cache`;
-  - `cache`: `YULIUS_CI_CACHE`.
+  - `cache/<job>` (and `cache/<job>@<lane>`, named like the checkout): `YULIUS_CI_CACHE`, the
+    job checkout's own persistent cache, never shared with a job running at the same time
+    (SPEC-351: a Cargo target directory kept in one shared cache was relinked under the other
+    lane's run).
 
-  `home` and `cache` are shared by the sandbox's lanes, so a job's installs there must tolerate a
-  concurrent run.
+  `home` is shared by the sandbox's lanes, so a job's installs there must tolerate a concurrent
+  run; build outputs belong in the checkout or `YULIUS_CI_CACHE`, never in `home`. Caches of jobs
+  no run used for 14 days, or of lanes past the configured ones, go like their checkouts (stale CI
+  leftovers).
 - Budget the disk: a Rust workspace's `target/` per job and lane.
 - Removing `ci/` (with no run active) resets a sandbox's caches. The next run rebuilds them.
 - CI jobs share the sandbox's CPUs and memory by budget (SPEC-082): a job starts once the CPUs
@@ -892,7 +897,8 @@ involved.
   of the sandbox's, at least 2) and the memory in proportion: three of them testing at once fill
   the sandbox.
 - `YULIUS_CI_LANES` (default 2) runs of one sandbox execute at once. Each lane past the first
-  keeps its own job checkouts and caches (`ci/jobs/<job>@<lane>`), so budget its disk too.
+  keeps its own job checkouts and caches (`ci/jobs/<job>@<lane>`, `ci/cache/<job>@<lane>`), so
+  budget its disk too.
 
 **Moving a repository off GitHub Actions** (the onboarding step; agents use the `ci_setup` tool):
 
@@ -1186,7 +1192,7 @@ task that started working again keeps its files. Every deletion is audited as `l
 | Units of a Cargo `target` (worktrees and CI checkouts) | unused for 48 hours (6 h with the disk low, 1 h critical), then the least recently used incremental ones above 5 % of the disk (at least 8 GB; half when low, a quarter when critical); never while Cargo compiles there (its locks); compiled artifacts only in a CI checkout with no CI run and in the worktree of a task that neither works nor runs background work while no Shell of the sandbox is open (otherwise only incremental state goes) | yes, hourly (audited `disk.sweep`) |
 | A closed or cancelled task's clean worktree | after 10 minutes (its branch keeps the work) | yes |
 | Git's record of a worktree inside the sandbox directory whose directory is gone (`.git/worktrees/<name>`), not locked | always (that record only; a worktree an agent keeps in its own `/tmp` keeps its record) | yes |
-| A CI checkout of a job or lane no run used for 14 days | while no CI run of that sandbox runs | yes |
+| A CI checkout of a job or lane no run used for 14 days, and its cache (`ci/cache/<job>[@<lane>]`); an entry of `ci/cache` named like no job (what the cache every job shared held before SPEC-351) | while no CI run of that sandbox runs | yes |
 | A draft attachment older than 7 days | always | yes |
 | `<data>/runs/<name>` that no attempt record, live run, active CI job, running deploy or running delivery environment run owns, untouched for a day (an ended task's last run, with its final terminal screen, stays) | always | yes |
 | Transcripts of a deleted task; a Docker smoke test's sandbox whose process is gone | always | yes |

@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-30
 
+- Two CI jobs that run at the same time never share `$YULIUS_CI_CACHE` (SPEC-351, ADR-0238, task
+  #333, fixes #963). Each job checkout has its own cache, `ci/cache/<job>[@<lane>]`, which persists
+  between its runs. Before, the sandbox's two lanes shared one: a Cargo target directory a project
+  kept there (as Yulius's CI guidance suggested) was relinked under the other lane's running tests
+  ("never executed: No such file", pomerado-rust #460). Unused caches and the old shared contents go
+  as stale CI leftovers.
 - A toast that appears, or moves to the top edge, under a mouse pointer that rests there closes on
   time (SPEC-350, ADR-0237, task #334, fixes #954). Before, it stayed until the pointer moved and
   could cover the page header's add button for good. A toast the pointer moves onto still stays

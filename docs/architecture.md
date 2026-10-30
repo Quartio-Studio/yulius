@@ -460,7 +460,9 @@ Every path under the data directory has an owner record and a rule for when it i
 inventory in SPEC-215). `yulius-domain::leftovers` holds the kinds and their policy (safe
 automatically, needs a person, report only). `yulius-app::leftovers` scans by kind: removed
 sandboxes from `SandboxStore::removed_sandboxes`, live sandboxes' ended caches (from the disk
-upkeep's own scan), worktrees no task owns, unused CI checkouts, Git records of vanished
+upkeep's own scan), worktrees no task owns, unused CI checkouts and their caches (each job
+checkout has its own `YULIUS_CI_CACHE`, `ci/cache/<checkout>`, never shared with a concurrent job;
+[decision 0238](decisions/0238-a-ci-job-s-cache-is-its-checkout-s-own.md)), Git records of vanished
 worktrees, and instance directories no record owns. It deletes one item at a time after its
 **guard** checks the rule again: the sandbox is still removed and was removed 10 minutes ago,
 `still_running` finds no run, shell, browser or CI run, no CD run is live, the isolation's

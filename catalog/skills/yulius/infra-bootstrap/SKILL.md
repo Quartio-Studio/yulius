@@ -68,8 +68,9 @@ example when it starts deploying for real), and record every change as a decisio
    secrets come from the project's agent secrets, never inline. Yulius CI gives the jobs a `HOME`
    and a cache (`$YULIUS_CI_CACHE`) of their own, separate from the agent's: they start empty and
    persist across runs, as does each job's checkout per CI lane with its ignored files. By default
-   up to two runs at once share that `HOME` and cache, so a job's installs there must tolerate a
-   concurrent run. A job installs what it needs itself and never depends on what an earlier run left
+   up to two runs at once share that `HOME`, so a job's installs there must tolerate a concurrent
+   run; the cache is each job checkout's own, never shared with a concurrent job, so build outputs
+   (a Cargo target directory) go there or in the checkout, never in `HOME`. A job installs what it needs itself and never depends on what an earlier run left
    behind, or it passes on the cache and fails on a fresh machine. System packages (`sudo apt-get`,
    a browser's system libraries) belong to the sandbox: install them during onboarding, never in a
    CI job, where they race the other CI run for the dpkg lock; jobs see what the sandbox installed.
