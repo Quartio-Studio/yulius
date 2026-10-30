@@ -1,4 +1,4 @@
-import { test, type Browser } from '@e2e-dev/web';
+import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { failOnPageErrors, mock } from './support.ts';
 
@@ -27,14 +27,16 @@ const centre = (browser: Browser, message: string) => browser.evaluate((message)
 /** A toast is hovered: the pointer is on it although it never moved there. */
 const hovered = (browser: Browser, message: string) => expect(browser.locator(`[data-probe="${message}"]:hover`)).toHaveCount(1);
 
-const open = async (app: { open: (url: string) => Promise<unknown> }, browser: Browser) => {
+const open = async (app: { open: (url: string) => Promise<unknown> }, browser: Browser, screen: Screen) => {
   await app.open(mock('/s/studio', '&ambient=0&browserask=0'));
+  // The page focuses its composer by itself; past that, focus stays where a test puts it.
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeFocused();
   // `top`: where the flipped stack starts (styles.css `.toasts.flipped`).
   return browser.evaluate(() => ({ w: innerWidth, h: innerHeight, top: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--tabrow-h')) + 8 }));
 };
 
-test('a toast that appears under a resting pointer closes on time', async ({ app, browser }) => {
-  const size = await open(app, browser);
+test('a toast that appears under a resting pointer closes on time', async ({ app, browser, screen }) => {
+  const size = await open(app, browser, screen);
   // Where the stack shows at the bottom right.
   await browser.mouse.move(size.w - 100, size.h - 30);
   expect(await raise(browser, 'Under a still pointer')).toBe(false);
@@ -42,8 +44,8 @@ test('a toast that appears under a resting pointer closes on time', async ({ app
   await expect(browser.locator('[data-probe="Under a still pointer"]')).toHaveCount(0);
 });
 
-test('a toast that flips under a resting pointer closes on time', async ({ app, browser }) => {
-  const size = await open(app, browser);
+test('a toast that flips under a resting pointer closes on time', async ({ app, browser, screen }) => {
+  const size = await open(app, browser, screen);
   // The focused control sits where the stack shows, so the stack moves to the top right, where the
   // pointer rests (the page header's add buttons are there; #954 clicked one and the toast took it).
   await browser.evaluate(() => {
@@ -53,14 +55,15 @@ test('a toast that flips under a resting pointer closes on time', async ({ app, 
     document.body.append(button);
     button.focus();
   });
+  await expect(screen.getByRole('button', 'Covered')).toBeFocused();
   await browser.mouse.move(size.w - 100, size.top + 20);
   expect(await raise(browser, 'Flipped under a still pointer')).toBe(true);
   await hovered(browser, 'Flipped under a still pointer');
   await expect(browser.locator('[data-probe="Flipped under a still pointer"]')).toHaveCount(0);
 });
 
-test('a toast the pointer moves onto stays until the pointer leaves it', async ({ app, browser }) => {
-  const size = await open(app, browser);
+test('a toast the pointer moves onto stays until the pointer leaves it', async ({ app, browser, screen }) => {
+  const size = await open(app, browser, screen);
   await browser.mouse.move(8, size.h / 2);
   await raise(browser, 'Pointed at', 3000);
   await raise(browser, 'Beside it', 3000);
@@ -73,8 +76,8 @@ test('a toast the pointer moves onto stays until the pointer leaves it', async (
   await expect(browser.locator('[data-probe="Pointed at"]')).toHaveCount(0);
 });
 
-test('a toast under a resting pointer closes on time after keyboard focus leaves it', async ({ app, browser }) => {
-  const size = await open(app, browser);
+test('a toast under a resting pointer closes on time after keyboard focus leaves it', async ({ app, browser, screen }) => {
+  const size = await open(app, browser, screen);
   await browser.mouse.move(size.w - 100, size.h - 30);
   expect(await raise(browser, 'Focused under a still pointer')).toBe(false);
   await hovered(browser, 'Focused under a still pointer');
