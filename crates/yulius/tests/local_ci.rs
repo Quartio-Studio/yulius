@@ -2037,6 +2037,36 @@ async fn concurrent_runs_never_share_a_ci_cache() -> TestResult {
     Ok(())
 }
 
+/// SPEC-351 review round 2: a link an agent put at `ci/cache` never steers what Yulius removes or
+/// makes there. Before, a file named like a job's cache was removed through the link, outside the
+/// sandbox; now the link is replaced by a folder and the outside file stays.
+#[tokio::test]
+async fn a_linked_ci_cache_folder_never_reaches_outside() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"build\"\ncpus = 1\ncommand = 'touch \"$YULIUS_CI_CACHE/made\"'\n"
+            .to_owned()
+    })
+    .await?;
+    let outside = f.data.join("outside");
+    std::fs::create_dir_all(&outside)?;
+    for name in ["build", "build@1"] {
+        std::fs::write(outside.join(name), "not the sandbox's")?;
+    }
+    let ci = f.data.join("sandboxes/s1/ci");
+    std::fs::create_dir_all(&ci)?;
+    std::os::unix::fs::symlink(&outside, ci.join("cache"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    f.all_passed(2).await?;
+    for name in ["build", "build@1"] {
+        assert!(outside.join(name).is_file(), "{name} outside the sandbox");
+    }
+    let cache = std::fs::symlink_metadata(ci.join("cache"))?;
+    assert!(cache.is_dir(), "the link was replaced by a folder");
+    assert!(ci.join("cache/build/made").exists());
+    Ok(())
+}
+
 /// A job that names its stages, a figure and prints a cargo test summary (SPEC-137 STG-203).
 /// Each step holds until the test creates its gate, `<data>/<next step>-<run id>`: the unit stage,
 /// the end of the stages and the end of the job.
