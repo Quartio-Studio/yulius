@@ -1087,9 +1087,10 @@ server as a task's terminal is. The wrapper and hook load their fingerprints wit
 token the person's environment holds, answered while the person may work in the sandbox (by an
 access decision within the staleness bound, never waiting on GitHub) ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
 [decision 0121](decisions/0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)).
-While Yulius restarts, the wrapper reads them from the shell's `scrub.json` (`YULIUS_SCRUB_FILE`,
-written at the start, read-only when contained), as a task run's does; with neither, a command does
-not run ([SPEC-352](../.ai/specs/SPEC-352-something-got-broken-with-yulius-fix.md),
+While Yulius cannot be reached or is not ready (a restart), the wrapper reads them from the
+shell's `scrub.json` (`YULIUS_SCRUB_FILE`, written at the start, read-only when contained), as a
+task run's does. A refused token is not a restart, so a command does not run, as it does not
+without both ([SPEC-352](../.ai/specs/SPEC-352-something-got-broken-with-yulius-fix.md),
 [decision 0239](decisions/0239-the-superagent-gets-a-fingerprint-file-as-a-task-run-does.md)).
 
 Every terminal people watch (a task's, the Superagent's, a Cockpit shell's) replaces a value with

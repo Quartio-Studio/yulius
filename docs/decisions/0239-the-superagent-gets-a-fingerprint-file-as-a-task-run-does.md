@@ -25,7 +25,13 @@ restart.
   at the shell's start, with mode 0600, and is bound read-only in a contained session.
   `YULIUS_SCRUB_FILE` names it. This is `App::vault_superagent_setup`, next to the proxy
   variables.
-- The wrapper's order is unchanged: Yulius first, then the file, otherwise fail closed.
+- The wrapper asks Yulius first. It reads the file only when Yulius cannot be reached or is not
+  ready: no connection, a timeout or a 5xx answer. A 4xx refusal of the token (an ended run, a
+  person who may no longer work in the sandbox) fails closed even with the file, for the
+  Superagent and task runs alike. So a loss of access still stops the Superagent's commands
+  (ADR-0121).
+- `COCKPIT_LAUNCH_REVISION` is 3, so Superagents running at deploy time start again and get the
+  file (SPEC-186 SAV-006).
 
 ## Alternatives
 
@@ -39,7 +45,11 @@ restart.
 ## Consequences
 
 - The file holds salted hashes, never values: the same set the person's own task runs get in
-  theirs. It is read only while Yulius cannot be reached. Whenever Yulius runs, SAM-003's access
-  check still decides.
+  theirs. It is read only while Yulius cannot be reached or is not ready. Whenever Yulius answers,
+  SAM-003's access check decides.
+- A task run whose token Yulius refuses no longer falls back to its file either. Its commands
+  stop, which is what the refusal means ("the run ended, or this session may no longer work in
+  the project"). Run tokens resolve from the database, so a live run is not refused after a
+  restart.
 - Like a task run's file, it is written once. An agent secret added later is redacted from a
   Superagent's output during a restart only after the Superagent starts again.

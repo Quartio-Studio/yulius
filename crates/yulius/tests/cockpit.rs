@@ -2120,6 +2120,15 @@ async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted
         .await?;
     read_until(&mut socket, &mut screen, " status=126").await?;
     assert!(!screen.contains("ran-52"), "{screen}");
+    // A Yulius that answers and refuses the token (a person who may no longer work here) is not
+    // a restart: the file does not stand in for it, and the command does not run.
+    socket
+        .send(Message::text(typed(format!(
+            "YULIUS_URL={url} YULIUS_TASK_TOKEN=ws_0000 $CLAUDE_CODE_SHELL_PREFIX 'echo ran-$((60+2))'; echo \" refused=$?\"\r"
+        ))))
+        .await?;
+    read_until(&mut socket, &mut screen, " refused=126").await?;
+    assert!(!screen.contains("ran-62"), "{screen}");
     assert!(
         !screen.contains(SECRET_VALUE),
         "the value reached the screen"

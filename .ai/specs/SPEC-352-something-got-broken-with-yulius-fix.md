@@ -45,6 +45,8 @@ as a task run's do, instead of being refused until the server is back.
 | --- | --- |
 | SRF-001 | A Superagent's shell gets a fingerprint file in its run directory (`<data>/shells/<id>/scrub.json`, mode 0600, read-only in a contained session) with the fingerprints of the agent secrets that apply to its person in its sandbox, and `YULIUS_SCRUB_FILE` naming it. While Yulius is unreachable, its Bash commands run through the wrapper with those fingerprints, as a task run's do. |
 | SRF-002 | Without both the server and a readable file, a Superagent's command still does not run (fail closed, unchanged). |
+| SRF-003 | The wrapper reads the file only when Yulius cannot be reached or is not ready: no connection, a timeout or a 5xx answer. A Yulius that answers and refuses the token with a 4xx (an ended run, a person who may no longer work in the sandbox) is not a restart. The command does not run, for the Superagent and task runs alike, so SAM-003's access check keeps stopping the Superagent of a person who lost access. |
+| SRF-004 | Superagents already running when this ships start again to get the file (`COCKPIT_LAUNCH_REVISION` 3, SPEC-186 SAV-006). |
 
 ## Plan
 
@@ -59,6 +61,8 @@ as a task run's do, instead of being refused until the server is back.
 - With Yulius unreachable (`YULIUS_URL` pointing nowhere), a Bash command in the Superagent runs
   and prints an agent secret's value as `[secret:NAME]`.
 - With Yulius unreachable and no readable file, the command does not run (status 126).
+- With Yulius reachable and refusing the token, the command does not run although the file is
+  there (status 126).
 - The file is written in the shell's run directory, never holds a value, and is bound read-only
   in a contained session.
 
@@ -67,17 +71,21 @@ as a task run's do, instead of being refused until the server is back.
 - `crates/yulius/tests/cockpit.rs`
   `the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted`: adds SRF-001 (a
   command with `YULIUS_URL=http://127.0.0.1:1` runs and prints the wrapper's label). It keeps
-  SRF-002 with `YULIUS_SCRUB_FILE=/nonexistent` (status 126). It fails on `dev` without the fix:
-  the command does not run.
+  SRF-002 with `YULIUS_SCRUB_FILE=/nonexistent` (status 126), and SRF-003 with a refused workspace
+  token `ws_0000` against the reachable test server (status 126). It fails on `dev` without the
+  fix: the command does not run. The SRF-003 part failed before the wrapper change: the command
+  ran (`ran-62`, status 0).
+- `crates/yulius-app/src/vault/runtime.rs`
+  `a_superagent_gets_its_fingerprint_file_read_only`: the file's path, mode and content, the
+  variable replacing an inherited one, and the read-only bind in a contained session.
 - The existing SAV-001 test still holds (proxy, CA bundle, placeholder).
 
 ## Decisions
 
 - ADR-0239: the Superagent gets a fingerprint file as a task run does. This supersedes the
   "no fingerprint file" decision of SPEC-147 and ADR-0121. The file holds only salted hashes of
-  values the person's own task runs get in the same file. It is only read while Yulius cannot be
-  reached. Whenever Yulius runs, SAM-003's access check still decides, and the file grants nothing
-  beyond what the person's shell already has: it already runs, with its environment. Alternatives: keep failing closed (the defect); run the
+  values the person's own task runs get in the same file. It is read only while Yulius cannot be
+  reached or is not ready (SRF-003). Whenever Yulius answers, SAM-003's access check decides. Alternatives: keep failing closed (the defect); run the
   command unredacted while Yulius is unreachable (leaks values); a longer fetch timeout (does not
   cover a restart).
 - The file is written once, at the shell's start, like a task run's. A secret added later is not

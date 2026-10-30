@@ -107,6 +107,29 @@ fn bind_read_only(containment: &mut Containment, files: &[PlannedFile]) {
     }
 }
 
+/// A Superagent's fingerprint file (SPEC-352 SRF-001): `<run_dir>/scrub.json` (0600), named by
+/// `YULIUS_SCRUB_FILE` in place of any inherited one, and bound read-only into a contained session.
+/// The Bash wrapper reads it while Yulius cannot be reached, as a task run's.
+fn superagent_scrub_file(
+    run_dir: &Path,
+    fingerprints: &FingerprintSet,
+    launch: &mut LaunchPlan,
+) -> AppResult<()> {
+    let file = PlannedFile {
+        path: run_dir.join(FINGERPRINTS_FILE),
+        contents: serde_json::to_vec(fingerprints).map_err(AppError::internal)?,
+        mode: 0o600,
+    };
+    launch.env.retain(|(key, _)| key != SCRUB_FILE_ENV);
+    launch.env.push((
+        SCRUB_FILE_ENV.into(),
+        file.path.to_string_lossy().into_owned(),
+    ));
+    bind_read_only(&mut launch.containment, std::slice::from_ref(&file));
+    launch.files.push(file);
+    Ok(())
+}
+
 fn bound_to(record: &VaultSecretRecord, host: &str, port: u16) -> bool {
     record
         .hosts
@@ -533,21 +556,11 @@ impl App {
                 }
             }
         }
-        let before = launch.files.len();
         let fingerprints = self
             .scrub_fingerprints_for(&sandbox.id, super::Holder::Person(person))
             .await?;
-        let scrub_file = run_dir.join(FINGERPRINTS_FILE);
-        launch.files.push(PlannedFile {
-            path: scrub_file.clone(),
-            contents: serde_json::to_vec(&fingerprints).map_err(AppError::internal)?,
-            mode: 0o600,
-        });
-        launch.env.retain(|(key, _)| key != SCRUB_FILE_ENV);
-        launch.env.push((
-            SCRUB_FILE_ENV.into(),
-            scrub_file.to_string_lossy().into_owned(),
-        ));
+        superagent_scrub_file(run_dir, &fingerprints, launch)?;
+        let before = launch.files.len();
         self.egress_env("yulius", bearer, run_dir, launch);
         let added: Vec<PlannedFile> = launch.files[before..].to_vec();
         bind_read_only(&mut launch.containment, &added);
@@ -1121,6 +1134,56 @@ mod tests {
         assert_eq!(page_host("chrome://newtab"), None);
         assert_eq!(authority("http://127.0.0.1:8081"), Some("127.0.0.1:8081"));
         assert_eq!(authority("http://127.0.0.1:8081/x"), Some("127.0.0.1:8081"));
+    }
+
+    /// SPEC-352 SRF-001: a Superagent's fingerprint file is in its shell's run directory, the
+    /// person's only, named by `YULIUS_SCRUB_FILE` (replacing an inherited one), and read-only in
+    /// a contained session.
+    #[test]
+    fn a_superagent_gets_its_fingerprint_file_read_only() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let set = FingerprintSet {
+            version: FINGERPRINT_VERSION,
+            base: 7,
+            salt: "00".into(),
+            names: vec!["APIFY_KEY".into()],
+            needles: Vec::new(),
+        };
+        let mut launch = LaunchPlan {
+            env: vec![(SCRUB_FILE_ENV.into(), "/elsewhere.json".into())],
+            containment: Containment::Bubblewrap {
+                sandbox_root: "/data/sandboxes/s1".into(),
+                home: "/home/alice".into(),
+                writable: Vec::new(),
+                readonly: Vec::new(),
+                binds: Vec::new(),
+                identity: None,
+                join: None,
+            },
+            argv: Vec::new(),
+            cwd: "/data/sandboxes/s1/repo".into(),
+            secret_env: Vec::new(),
+            files: Vec::new(),
+        };
+        superagent_scrub_file(Path::new("/data/shells/abc"), &set, &mut launch)?;
+        let path = std::path::PathBuf::from("/data/shells/abc/scrub.json");
+        assert_eq!(launch.files.len(), 1);
+        assert_eq!(launch.files[0].path, path);
+        assert_eq!(launch.files[0].mode, 0o600);
+        let held: FingerprintSet = serde_json::from_slice(&launch.files[0].contents)?;
+        assert_eq!(held.names, ["APIFY_KEY"]);
+        let named: Vec<&String> = launch
+            .env
+            .iter()
+            .filter(|(k, _)| k == SCRUB_FILE_ENV)
+            .map(|(_, v)| v)
+            .collect();
+        assert_eq!(named, ["/data/shells/abc/scrub.json"]);
+        let Containment::Bubblewrap { readonly, .. } = &launch.containment else {
+            unreachable!("still contained");
+        };
+        assert_eq!(readonly, &[path]);
+        Ok(())
     }
 
     /// SPEC-186 SAV-001: a contained Superagent reads its CA bundle, written to its shell's run

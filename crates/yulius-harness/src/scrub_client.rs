@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use yulius_contracts::scrub::{FINGERPRINT_VERSION, FingerprintSet, RedactionReport};
 use yulius_domain::vault::redact::{Fingerprint, HashedMatcher, Matcher, StreamRedactor};
 
-use crate::hook_client::post_internal;
+use crate::hook_client::{HookError, post_internal};
 
 /// Environment variable naming the run's fingerprint file.
 pub const SCRUB_FILE_ENV: &str = "YULIUS_SCRUB_FILE";
@@ -62,17 +62,26 @@ fn valid(set: FingerprintSet) -> Option<FingerprintSet> {
     (set.version == FINGERPRINT_VERSION).then_some(set)
 }
 
-/// Loads the run's fingerprints: from Yulius, else from the run's file.
+/// Loads the run's fingerprints: from Yulius, else from the run's file while Yulius cannot be
+/// reached or is not ready. A Yulius that refuses the token (an ended run, a person who may no
+/// longer work in the sandbox) is not a restart: the file does not stand in for it (SPEC-352
+/// SRF-003).
 pub fn load_fingerprints(env: &dyn Fn(&str) -> Option<String>) -> Fingerprints {
     let file = env(SCRUB_FILE_ENV).filter(|f| !f.is_empty());
     let in_run = file.is_some() || env(crate::launch::TASK_TOKEN_ENV).is_some();
     if !in_run {
         return Fingerprints::NotARun;
     }
-    if let Ok(body) = post_internal("/internal/scrub/fingerprints", b"{}", env, FETCH_TIMEOUT)
-        && let Some(set) = serde_json::from_slice(&body).ok().and_then(valid)
-    {
-        return Fingerprints::Set(set);
+    match post_internal("/internal/scrub/fingerprints", b"{}", env, FETCH_TIMEOUT) {
+        Ok(body) => {
+            if let Some(set) = serde_json::from_slice(&body).ok().and_then(valid) {
+                return Fingerprints::Set(set);
+            }
+        }
+        Err(HookError::Status(code)) if (400..500).contains(&code) => {
+            return Fingerprints::Unavailable;
+        }
+        Err(_) => {}
     }
     if let Some(path) = file
         && let Some(set) = std::fs::read(path)
