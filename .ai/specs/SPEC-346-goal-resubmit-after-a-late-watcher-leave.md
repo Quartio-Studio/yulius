@@ -1,11 +1,11 @@
 ---
 yulius-task: c7c33c5f-6f5c-49fc-8eb4-a4204360f745
-status: in-progress
+status: done
 ---
 
 # SPEC-346: A prompt hook handled after its turn ended leaves the task as that turn left it
 
-Status: in-progress
+Status: done
 Date: 2026-10-30
 Owner: Yulius task #330
 Scope authorization: task #330, fixing #921 ("Flaky again:
@@ -79,7 +79,7 @@ late prompt's holds and pauses are outside this change; see Decisions.)
 - [x] Docs, changes entry and gates green
 - [x] Independent review and its findings answered
 - [x] Review round 1 fixes and the turn-order race, test-first
-- [ ] Round 2 review and gate at the final head
+- [x] Round 2 review and gate at the final head
 - [ ] Merge into dev on green CI and comment on #921
 
 ## Acceptance criteria
@@ -142,3 +142,32 @@ late prompt's holds and pauses are outside this change; see Decisions.)
   `spawn_goal` stop resubmitting when the goal's own `UserPromptSubmit` arrives. It did not
   cause #921 (not reproduced under watcher lag) and would change the goal typist's contract, so it
   is noted on #921, not built.
+
+## Evidence
+
+- Reproduction (temporary probes, removed): the goal turn's `UserPromptSubmit` held 7 s in the
+  server failed the flaky test with "timed out waiting for Done" at 66.6 s; random 0-15 s watcher
+  lags (and 0-1.5 s hook delays) passed 29 of 29 runs (17-37 s).
+- Regression tests fail without their fix and pass with it:
+  `intake::a_prompt_answered_after_its_turn_ended_leaves_the_task_settled` (Working),
+  `task_done::a_goal_whose_prompt_hook_is_answered_late_is_done` (no Done at 67.3 s, the #921
+  signature), `intake::a_hooks_sent_time_is_clamped_to_now` (without `> 0`: "sent at 0"; without
+  `.min(now)`: "a Stop from the future"), `intake::a_stop_that_waited_for_its_prompt_settles_after_it`
+  (without the Stop's re-read: Working), `intake::a_prompt_sets_working_over_an_older_stop_that_settled_meanwhile`
+  (without the prompt's re-read: Your turn).
+- The turn-order race: one end-to-end failure during review round 1 (first run after a rebuild);
+  probes (the Stop held 3 s, the prompt paused 4 s after its check) showed Done, then the late
+  Working write; with `turn_order` the Stop waited and Met settled Done after it.
+- The end-to-end test: 63 passes after the race fix, alone, 6 and 12 in parallel, after relinks
+  and inside 3 parallel runs of the 615 hook, intake and `task_done` tests; 6 and 4 parallel
+  passes after rounds 3 and 4.
+- `scripts/dev ci` (check, fmt, clippy for Linux and macOS, nextest, doctests, docs): exit 0 at
+  29a1753d (2775 of 2775 tests) and at 527ec6fd (2783 of 2783, dev merged at 7ca47145); later
+  commits change two tests' layer and comments and this spec only.
+- `yulius security-scan` at 5ffdd632: not run (exit 2): Vidoc refused the instance key (HTTP 401
+  "Missing or invalid API key"); the pull request's CI `security` job is the scan of record.
+- Independent reviews: round 1 approved with minors (fixed: verdict record time, settle through
+  `settle_clean_turn`, clamp tests, the epoch rule, plan ticks); round 2 asked for the re-read
+  after the lock (M1, fixed); round 3 for its regression tests (added with `race` pause points) and
+  a sturdier late-path wait (fixed); round 4 approved at 527ec6fd with a test-layer minor and two
+  wording nits (fixed in 5ffdd632).
