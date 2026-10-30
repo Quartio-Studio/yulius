@@ -178,6 +178,10 @@ impl App {
         // the answer is recorded below.
         let runtime = self.runtime(&ctx.task.id);
         // The agent sent this Stop after every prompt of its turn (SPEC-346 LPH-002).
+        crate::race::reached(
+            crate::race::Point::StopTurnLock,
+            std::path::Path::new(ctx.task.id.as_str()),
+        );
         {
             let _order = runtime.turn_order.lock().await;
             runtime.turn_end_ms.fetch_max(sent, Ordering::SeqCst);
@@ -678,6 +682,10 @@ impl App {
             tracing::info!(task = %ctx.task.id, "a prompt answered after its turn ended changes nothing");
             return Ok(HookReply::Output(HookOutput::default()));
         }
+        crate::race::reached(
+            crate::race::Point::PromptTurnChecked,
+            std::path::Path::new(ctx.task.id.as_str()),
+        );
         // A typed prompt starts new work: an achieved goal no longer makes the task done
         // (TSK-014). Claude Code's own wake-ups (a background shell ended) keep it.
         if crate::finish::is_typed_prompt(input.prompt.as_deref()) {
