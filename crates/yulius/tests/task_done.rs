@@ -134,12 +134,16 @@ async fn start_on(
 }
 
 /// A `/goal` prompt hook the test server handles only `hold` after it arrived: the first one
-/// once `armed`; `handled` says when it did.
-type LateHook = (
-    Duration,
-    Arc<std::sync::atomic::AtomicBool>,
-    tokio::sync::watch::Sender<bool>,
-);
+/// once `armed`. `stop_while_held` says a Stop reached the server meanwhile (the late path was
+/// taken), `handled` when the prompt was handled.
+#[derive(Clone)]
+struct LateHook {
+    hold: Duration,
+    armed: Arc<std::sync::atomic::AtomicBool>,
+    holding: Arc<std::sync::atomic::AtomicBool>,
+    stop_while_held: Arc<std::sync::atomic::AtomicBool>,
+    handled: tokio::sync::watch::Sender<bool>,
+}
 
 /// [`start_on`], and with `late_goal` the server sees a `/goal` prompt hook (a resumed session's
 /// typed goal) only after its hold, then handles it to its end, as a loaded host does once the
@@ -223,11 +227,17 @@ async fn start_holding(
             let late_goal = late_goal.clone();
             async move {
                 use axum::response::IntoResponse as _;
-                let Some((hold, armed, handled)) =
-                    late_goal.filter(|_| request.uri().path().ends_with("/UserPromptSubmit"))
-                else {
+                use std::sync::atomic::Ordering::SeqCst;
+                let Some(late) = late_goal else {
                     return next.run(request).await;
                 };
+                let path = request.uri().path();
+                if path.ends_with("/Stop") && late.holding.load(SeqCst) {
+                    late.stop_while_held.store(true, SeqCst);
+                }
+                if !path.ends_with("/UserPromptSubmit") {
+                    return next.run(request).await;
+                }
                 let (parts, body) = request.into_parts();
                 let bytes = axum::body::to_bytes(body, 1 << 20)
                     .await
@@ -235,17 +245,19 @@ async fn start_holding(
                 let goal = String::from_utf8_lossy(&bytes).contains("\"prompt\":\"/goal ");
                 let request =
                     axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
-                if !goal || !armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                if !goal || !late.armed.swap(false, SeqCst) {
                     return next.run(request).await;
                 }
+                late.holding.store(true, SeqCst);
                 // Its own task: the client hanging up does not cancel it (ADR-0115).
-                let late = tokio::spawn(async move {
-                    tokio::time::sleep(hold).await;
+                let handling = tokio::spawn(async move {
+                    tokio::time::sleep(late.hold).await;
+                    late.holding.store(false, SeqCst);
                     let response = next.run(request).await;
-                    handled.send_replace(true);
+                    late.handled.send_replace(true);
                     response
                 });
-                late.await.unwrap_or_else(|_| {
+                handling.await.unwrap_or_else(|_| {
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()
                 })
             }
@@ -902,16 +914,38 @@ fn a_goal_whose_prompt_hook_is_answered_late_is_done() -> TestResult {
             drop_lines: Some(1),
             ..FakeAgentOptions::default()
         };
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
         let (handled_tx, mut handled) = tokio::sync::watch::channel(false);
-        let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let late = Some((Duration::from_secs(6), armed.clone(), handled_tx));
-        let (app, _) = start_holding(&data, &fake, agent, 0, None, None, false, None, late).await?;
+        // 8 s: past the client's 5 s, with the time the agent takes to its Stop.
+        let late = LateHook {
+            hold: Duration::from_secs(8),
+            armed: Arc::new(AtomicBool::new(false)),
+            holding: Arc::new(AtomicBool::new(false)),
+            stop_while_held: Arc::new(AtomicBool::new(false)),
+            handled: handled_tx,
+        };
+        let (app, _) = start_holding(
+            &data,
+            &fake,
+            agent,
+            0,
+            None,
+            None,
+            false,
+            None,
+            Some(late.clone()),
+        )
+        .await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = continued_goal_task(&app, &sandbox, &user).await?;
         // The resumed session's goal is typed from now on (its first submit is dropped).
-        armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        late.armed.store(true, SeqCst);
         goal_typed_into_the_resumed_session(&app, &id).await?;
         tokio::time::timeout(Duration::from_secs(60), handled.wait_for(|h| *h)).await??;
+        assert!(
+            late.stop_while_held.load(SeqCst),
+            "the goal turn's Stop came before its prompt was handled (the late path)"
+        );
         wait_for(
             "Done after the late prompt",
             Duration::from_secs(45),
