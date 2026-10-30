@@ -4,6 +4,14 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-30
+
+- A goal task whose prompt hook Yulius answers only after the hook client gave up (5 s, a loaded
+  host) reads Done once the goal is met, instead of staying Working or Your turn (SPEC-346,
+  ADR-0234, task #330, fixes #921). The client now says when it sent each hook. A prompt sent
+  before a Stop or goal verdict Yulius already has belongs to a turn that is over and changes
+  nothing. A met goal settles an idle task Done also after a Stop that waited for the verdict.
+
 ## 2026-10-28
 
 - A long host on a Secrets card wraps inside its chip instead of running past the card's edge

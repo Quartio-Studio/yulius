@@ -2301,7 +2301,10 @@ flowchart LR
 - Agents reach Yulius only through the internal loopback listener with per-run tokens. A hook runs
   in its own task: the hook client fails open after 5 s and closes its connection, which drops the
   HTTP handler, and the hook is still applied to its end
-  ([ADR-0115](decisions/0115-a-received-hook-is-applied-to-its-end.md)).
+  ([ADR-0115](decisions/0115-a-received-hook-is-applied-to-its-end.md)). The client says when it
+  sent each hook (`x-yulius-hook-sent-ms`): a prompt hook sent before a Stop that reached Yulius
+  or a goal verdict it applied belongs to a turn that is over and changes nothing
+  ([ADR-0234](decisions/0234-a-prompt-hook-sent-before-its-turn-ended-changes-nothing.md)).
 - A stop or close asks the attached run to shut down; one that comes while the run is launching
   (spawned, not attached yet) is asked by the launch once it attaches, so it never waits for the
   escalation ([SPEC-140](../.ai/specs/SPEC-140-fix-404-464-353-443-task-done-supervisio.md)).

@@ -1991,7 +1991,10 @@ the task spec plus the project-docs problems; `project_context` returns the brie
 The hook binary reads the CLI's JSON from stdin (≤ 1 MiB), forwards it to `/hooks/<event>` with the
 task token (timeout 5 s) and prints the response. Failure to reach Yulius is fail-open (exit 0, no
 output) and is recorded. A hook the server received is handled to its end even when the client
-stopped waiting and closed the connection (SPEC-140 HKS-001, ADR-0115). Responses:
+stopped waiting and closed the connection (SPEC-140 HKS-001, ADR-0115). Each request says when the
+client sent it (`x-yulius-hook-sent-ms`, Unix ms): a `UserPromptSubmit` sent before a Stop that
+reached Yulius or a goal verdict it applied belongs to a turn that is over and changes neither the
+task's activity nor its achieved goal (SPEC-346 LPH-002, ADR-0234). Responses:
 
 - `SessionStart` → `hookSpecificOutput.additionalContext` = briefing (≤ 12 KiB; §7.6).
 - `UserPromptSubmit` → first the scope check (ADR-16 rules): a held prompt returns

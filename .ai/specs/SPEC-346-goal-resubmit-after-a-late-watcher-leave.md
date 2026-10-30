@@ -10,7 +10,7 @@ Date: 2026-10-30
 Owner: Yulius task #330
 Scope authorization: task #330, fixing #921 ("Flaky again:
 `task_done::a_goal_the_tui_dropped_is_submitted_again` times out waiting for Done in the full
-suite"). Refines SPEC-140 HKS-001 / ADR-0115 (a hook Yulius received is applied to its end) and
+suite"). Decided in ADR-0234; refines SPEC-140 HKS-001 / ADR-0115 (a hook Yulius received is applied to its end) and
 SPEC-079 BGW-005 (a clean Stop waits for the goal verdict).
 
 ## Goal
@@ -56,8 +56,8 @@ the turn's Stop or goal verdict, which came after it, decided.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| LPH-001 | The hook client sends, with every hook request, the wall-clock time it sent it (`x-yulius-hook-sent-ms`, Unix ms). The server takes it, clamped to its own clock, or its own time when the request has none (an older client). | `hook_client` unit test; `agent_hooks::a_prompt_answered_after_its_turn_ended_leaves_the_task_settled` |
-| LPH-002 | A `UserPromptSubmit` sent before a Stop of the same task that already reached Yulius, or before a goal verdict (met, not met, failed) Yulius already applied, belongs to a turn that is over: it changes neither the task's activity nor its achieved goal, its gate count or its turn start. What it did before that (holds, the scope check, a person's answered question) is unchanged, and the transcript watcher still sees its turn (STA-003). | `agent_hooks::a_prompt_answered_after_its_turn_ended_leaves_the_task_settled` (fails without: Working) |
+| LPH-001 | The hook client sends, with every hook request, the wall-clock time it sent it (`x-yulius-hook-sent-ms`, Unix ms). The server takes it, clamped to its own clock, or its own time when the request has none (an older client). | `yulius-harness` `hook_client::forwards_payload_and_prints_200_body`; `intake::a_prompt_answered_after_its_turn_ended_leaves_the_task_settled` (no header: arrival order) |
+| LPH-002 | A `UserPromptSubmit` sent before a Stop of the same task that already reached Yulius, or before a goal verdict (met, not met, failed) Yulius already applied, belongs to a turn that is over: it changes neither the task's activity nor its achieved goal, its gate count or its turn start. What it did before that (holds, the scope check, a person's answered question) is unchanged, and the transcript watcher still sees its turn (STA-003). | `intake::a_prompt_answered_after_its_turn_ended_leaves_the_task_settled` (fails without: Working); `task_done::a_goal_whose_prompt_hook_is_answered_late_is_done` |
 | LPH-003 | A goal verdict "met" makes an idle task Done also when a Stop waited for it (BGW-005) and the task reads Your turn. | `task_done::a_goal_whose_prompt_hook_is_answered_late_is_done` (fails without: no Done) |
 
 ## Plan
@@ -79,8 +79,8 @@ the turn's Stop or goal verdict, which came after it, decided.
 
 ## Test plan
 
-- LPH-001: a unit test reads the request a hook client writes and finds the sent time.
-- LPH-002: `agent_hooks`, a Working task: a person's typed prompt whose scope check (a fake Jev)
+- LPH-001: the hook client test reads the request a hook client writes and finds the sent time.
+- LPH-002: `intake`, a Working task: a person's typed prompt whose scope check (a fake Jev)
   blocks until released; meanwhile the turn's Stop is answered (Your turn); after the release the
   task still reads Your turn. Without the fix it reads Working.
 - LPH-003 and the whole path: `task_done`, the resumed goal session of the flaky test, with a test
