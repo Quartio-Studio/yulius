@@ -650,6 +650,42 @@ async fn a_ci_cache_stays_while_a_run_executes_and_goes_once_it_ends() -> BoxRes
     Ok(())
 }
 
+/// SPEC-351 (review round 1): a job checkout's own `YULIUS_CI_CACHE` (`ci/cache/<checkout>`, where
+/// a project may keep a Cargo target directory) is pruned like the caches in its checkout: at once
+/// past a quarter of the quota, under pressure otherwise, never while a run executes.
+#[tokio::test]
+async fn a_ci_job_s_own_cache_is_pruned_like_its_checkout_s() -> BoxResult<()> {
+    let w = world().await?;
+    let cache = w.root.join("ci/cache/quality");
+    let lane = w.root.join("ci/cache/quality@1");
+    for dir in [&cache, &lane] {
+        std::fs::create_dir_all(dir.join("cargo-target"))?;
+        std::fs::write(dir.join("cargo-target/blob"), vec![5u8; BIG])?;
+    }
+    let quota = Arc::new(Quota {
+        used: AtomicU64::new(1),
+        limit: 100 * BIG as u64,
+    });
+    assert!(w.h.app.set_isolation(quota.clone()));
+    w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(cache.exists() && lane.exists(), "under the cap, no pressure");
+
+    std::fs::write(cache.join("cargo-target/big"), vec![6u8; 30 * BIG])?;
+    w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(!cache.exists(), "over a quarter of the quota");
+    assert!(lane.exists(), "the other lane's cache needs pressure");
+
+    quota.used.store(95 * BIG as u64, Ordering::SeqCst);
+    assert!(w.h.app.ci_claim(&w.sandbox.id));
+    w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(lane.exists(), "a run is using it");
+    w.h.app.ci_release(&w.sandbox.id);
+    let report = w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(!lane.exists(), "{report:?}");
+    assert!(w.root.join("ci/cache").exists(), "only the job's own cache goes");
+    Ok(())
+}
+
 /// SPEC-019 DSK-003: a closed task's worktree whose only ignored files are rebuildable (the
 /// repository's tool directory, Node modules) is removed; before, any ignored file kept it forever.
 #[tokio::test]
