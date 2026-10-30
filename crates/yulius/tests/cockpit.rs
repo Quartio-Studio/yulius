@@ -1972,8 +1972,8 @@ async fn scrub(
 /// SPEC-147 SAM-001/002/004 (#395, ADR-0121): the Superagent gets the sandbox's MCP servers as a
 /// task run does, next to `yulius`, their values only in its secret environment, and the task
 /// runs' redaction: a value a Bash command prints through its wrapper, or a tool result holds,
-/// comes back as `[secret:NAME]`, as does one its screen shows; without its fingerprints a command
-/// does not run.
+/// comes back as `[secret:NAME]`, as does one its screen shows; while Yulius is unreachable its
+/// fingerprint file redacts (SPEC-352 SRF-001); without either a command does not run.
 #[tokio::test]
 async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted() -> TestResult {
     let f = fixture().await?;
@@ -2079,14 +2079,27 @@ async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted
         &format!("raw=<{}>", screen_label()),
     )
     .await?;
-    // Without its fingerprints (Yulius unreachable) a command does not run.
+    // While Yulius restarts (unreachable), its fingerprint file redacts as a task run's does
+    // (SPEC-352 SRF-001): the command runs and the value comes back as the label.
     socket
         .send(Message::text(typed(
-            "$CLAUDE_CODE_SHELL_PREFIX 'echo ran-$((40+2))'; echo \" status=$?\"\r".into(),
+            "YULIUS_URL=http://127.0.0.1:1 $CLAUDE_CODE_SHELL_PREFIX 'echo \"file=<$YULIUS_MCP_APIFY_APIFY_TOKEN> ran-$((40+2))\"'\r".into(),
+        )))
+        .await?;
+    read_until(
+        &mut socket,
+        &mut screen,
+        &format!("file=<{SECRET_LABEL}> ran-42"),
+    )
+    .await?;
+    // Without its fingerprints (Yulius unreachable and no file) a command does not run.
+    socket
+        .send(Message::text(typed(
+            "YULIUS_URL=http://127.0.0.1:1 YULIUS_SCRUB_FILE=/nonexistent $CLAUDE_CODE_SHELL_PREFIX 'echo ran-$((50+2))'; echo \" status=$?\"\r".into(),
         )))
         .await?;
     read_until(&mut socket, &mut screen, " status=126").await?;
-    assert!(!screen.contains("ran-42"), "{screen}");
+    assert!(!screen.contains("ran-52"), "{screen}");
     assert!(
         !screen.contains(SECRET_VALUE),
         "the value reached the screen"

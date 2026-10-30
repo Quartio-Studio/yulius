@@ -6,6 +6,8 @@ Accepted. Specified in [SPEC-147](../../.ai/specs/SPEC-147-fix-395-the-superagen
 task #141, issue #395. Amends SPEC-037 MGT-004 and SPEC-021 CKP-002
 ([ADR-0029](0029-cockpit-manages-through-mcp.md)): the Superagent's MCP addition is no longer the
 Yulius server alone, and it gets one hook, the redaction hook.
+Superseded in part by [0239](0239-the-superagent-gets-a-fingerprint-file-as-a-task-run-does.md):
+the Superagent now has a fingerprint file, so its commands run redacted while Yulius restarts.
 
 ## Context
 
