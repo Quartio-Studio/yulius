@@ -20,7 +20,11 @@
 //! command line and outlives it. Once adopted, it is no shell of the agent's: Claude Code does not
 //! track it and never wakes the agent for it. A wrapper shell whose parent is a namespace init
 //! ([`ProcessEntry::ns_init`]) is skipped with everything under it (SPEC-130 DMD-001; task #108
-//! read Working for good behind such a preview server). The probe reads the process table once:
+//! read Working for good behind such a preview server). Those orphans are listed apart as
+//! [`Stray`]s ([`strays`], SPEC-353 LAP-003): everything the sandbox's init adopted other than the
+//! agent (its earliest-started child), with its subtree and start times, so that the server can
+//! end an idle run's leftovers ([`reap_strays`]) without hitting a reused pid. The probe reads the
+//! process table once:
 //! on Linux it walks `/proc/<pid>/task/<tid>/children` from the agent (falling back to a scan of
 //! `/proc`), elsewhere it runs `ps` with a timeout. Every read is bounded ([`MAX_PROCESSES`],
 //! [`MAX_DEPTH`], [`MAX_CMDLINE_BYTES`], [`PS_TIMEOUT`]); `None` means the table could not be read.
@@ -197,10 +201,70 @@ pub struct Stray {
     pub processes: Vec<(u32, u64)>,
 }
 
-/// The strays below `root` in `table` (LAP-003).
+/// The strays below `root` in `table` (LAP-003): the children of the run's sandbox init (the
+/// first namespace init on each path down from `root`) other than the agent, its earliest-started
+/// child, each with its subtree. A namespace deeper down (one the agent's command made) is the
+/// agent's or a stray's own. Bounded by [`MAX_PROCESSES`] and [`MAX_DEPTH`].
 #[must_use]
-pub fn strays(_table: &[ProcessEntry], _root: u32) -> Vec<Stray> {
-    Vec::new()
+pub fn strays(table: &[ProcessEntry], root: u32) -> Vec<Stray> {
+    let mut children: HashMap<u32, Vec<&ProcessEntry>> = HashMap::new();
+    for entry in table {
+        if entry.pid != entry.ppid {
+            children.entry(entry.ppid).or_default().push(entry);
+        }
+    }
+    let kids = |pid: u32| children.get(&pid).map_or(&[][..], Vec::as_slice);
+    // The sandbox inits: the first init on each path down from the root.
+    let mut inits = Vec::new();
+    let mut seen = HashSet::from([root]);
+    let mut queue = VecDeque::from([(root, 0usize)]);
+    while let Some((pid, depth)) = queue.pop_front() {
+        if depth >= MAX_DEPTH {
+            continue;
+        }
+        for child in kids(pid) {
+            if seen.len() > MAX_PROCESSES || !seen.insert(child.pid) {
+                continue;
+            }
+            if child.ns_init {
+                inits.push(child.pid);
+            } else {
+                queue.push_back((child.pid, depth + 1));
+            }
+        }
+    }
+    let mut found = Vec::new();
+    let mut listed = 0usize;
+    for init in inits {
+        let adopted = kids(init);
+        let Some(agent) = adopted.iter().min_by_key(|e| (e.started, e.pid)) else {
+            continue;
+        };
+        for stray in adopted.iter().filter(|e| e.pid != agent.pid) {
+            let mut processes = Vec::new();
+            let mut below = VecDeque::from([(*stray, 0usize)]);
+            let mut inside = HashSet::from([stray.pid]);
+            while let Some((entry, depth)) = below.pop_front() {
+                if listed >= MAX_PROCESSES {
+                    break;
+                }
+                listed += 1;
+                processes.push((entry.pid, entry.started));
+                if depth + 1 >= MAX_DEPTH {
+                    continue;
+                }
+                for child in kids(entry.pid) {
+                    if inside.insert(child.pid) {
+                        below.push_back((child, depth + 1));
+                    }
+                }
+            }
+            if !processes.is_empty() {
+                found.push(Stray { processes });
+            }
+        }
+    }
+    found
 }
 
 /// What one probe found below an agent: its background shells and its strays.
@@ -214,10 +278,15 @@ pub fn background_report(root: u32) -> Option<(ShellCount, Vec<Stray>)> {
 }
 
 /// Kills the processes of `strays` (`SIGKILL`), each only while its pid still has the recorded
-/// start time (LAP-004). Returns how many were signalled.
+/// start time (LAP-004), so a pid another process took since the probe is never signalled. A
+/// process with no known start time (0) is skipped. Returns how many were signalled.
 #[must_use]
-pub fn reap_strays(_strays: &[Stray]) -> usize {
-    0
+pub fn reap_strays(strays: &[Stray]) -> usize {
+    strays
+        .iter()
+        .flat_map(|stray| &stray.processes)
+        .filter(|(pid, started)| *started != 0 && imp::kill_if_started(*pid, *started))
+        .count()
 }
 
 #[cfg(target_os = "linux")]
@@ -288,6 +357,18 @@ mod imp {
     /// When `pid` started, in clock ticks after boot.
     pub(super) fn started(pid: u32) -> Option<u64> {
         stat_field(pid, 19)
+    }
+
+    /// `SIGKILL`s `pid` if it still started at `started`; whether it was signalled. The check and
+    /// the signal are two steps: only a process that ended, was reaped and had its pid handed out
+    /// again between them (a wrap of the pid space within that instant) could be hit instead.
+    pub(super) fn kill_if_started(pid: u32, started: u64) -> bool {
+        use nix::sys::signal::{Signal, kill};
+        let Some(raw) = i32::try_from(pid).ok().filter(|p| *p > 1) else {
+            return false;
+        };
+        self::started(pid) == Some(started)
+            && kill(nix::unistd::Pid::from_raw(raw), Signal::SIGKILL).is_ok()
     }
 
     /// The processes below `root`, walked through the kernel's child lists.
@@ -389,6 +470,11 @@ mod imp {
 
     /// Largest `ps` output read.
     const MAX_PS_BYTES: u64 = 16 * 1024 * 1024;
+
+    /// Without `/proc` no start time is known, so nothing is reaped.
+    pub(super) fn kill_if_started(_pid: u32, _started: u64) -> bool {
+        false
+    }
 
     /// Parses `ps -axww -o pid=,ppid=,command=` output.
     pub(super) fn parse_ps(text: &[u8]) -> Vec<ProcessEntry> {
@@ -698,7 +784,7 @@ mod tests {
     #[test]
     fn jobs_the_sandbox_init_adopted_are_strays() {
         let mut table = vec![
-            ns_init(11, 10),     // the sandbox's init, below the probe's root (the outer bwrap)
+            ns_init(11, 10),      // the sandbox's init, below the probe's root (the outer bwrap)
             entry(12, 11, false), // the agent
             entry(13, 12, true),  // its background shell
             entry(14, 13, false), // what the shell runs
@@ -769,8 +855,8 @@ mod tests {
     /// LAP-004 on real processes: a stray is killed only while its pid has the recorded start.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_stray_is_reaped_only_while_its_start_time_matches() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn a_stray_is_reaped_only_while_its_start_time_matches()
+    -> Result<(), Box<dyn std::error::Error>> {
         /// Kills the process when the test ends, passed or failed: a test leaves nothing behind.
         struct Reaped(std::process::Child);
         impl Drop for Reaped {
@@ -790,7 +876,11 @@ mod tests {
         let reused = Stray {
             processes: vec![(pid, started + 1)],
         };
-        assert_eq!(reap_strays(&[reused]), 0, "another process now has that pid");
+        assert_eq!(
+            reap_strays(&[reused]),
+            0,
+            "another process now has that pid"
+        );
         assert!(child.0.try_wait()?.is_none(), "not signalled");
         let stray = Stray {
             processes: vec![(pid, started), (u32::MAX - 1, 1)],

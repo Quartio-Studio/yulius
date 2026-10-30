@@ -12,8 +12,7 @@ use support::{HarnessOptions, harness_with, seed_github_user, seed_sandbox, seed
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{AttemptRecord, LaunchKind};
 use yulius_app::ports::session::{
-    AttachedRun, BackgroundProbe, LaunchPlan, RunInspection, SessionHost, SpawnedRun,
-    StrayProcess,
+    AttachedRun, BackgroundProbe, LaunchPlan, RunInspection, SessionHost, SpawnedRun, StrayProcess,
 };
 use yulius_app::ports::store::{CoordinationStore as _, TaskStore as _};
 use yulius_domain::harness::Harness as Agent;
@@ -60,7 +59,10 @@ impl SessionHost for StrayHost {
         })
     }
     fn reap_strays(&self, strays: &[StrayProcess]) -> usize {
-        let mut reaped = self.reaped.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut reaped = self
+            .reaped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         reaped.extend(strays.iter().cloned());
         strays.iter().map(|stray| stray.processes.len()).sum()
     }
@@ -68,7 +70,10 @@ impl SessionHost for StrayHost {
 
 impl StrayHost {
     fn set(&self, strays: Vec<StrayProcess>) {
-        *self.strays.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = strays;
+        *self
+            .strays
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = strays;
     }
     fn reaped(&self) -> Vec<StrayProcess> {
         self.reaped
@@ -135,8 +140,14 @@ impl World {
     async fn probe(&self) {
         let before = self.host.probes.load(Ordering::SeqCst);
         let agents = before % 2 + 1;
-        self.h.app.background_agents_observed(&self.task, agents).await;
-        assert!(self.host.probes.load(Ordering::SeqCst) > before, "no probe ran");
+        self.h
+            .app
+            .background_agents_observed(&self.task, agents)
+            .await;
+        assert!(
+            self.host.probes.load(Ordering::SeqCst) > before,
+            "no probe ran"
+        );
     }
 
     fn advance(&self, ms: i64) {
@@ -158,11 +169,14 @@ async fn an_idle_task_s_strays_are_reaped_after_the_bound() -> BoxResult<()> {
     w.probe().await;
     assert!(w.host.reaped().is_empty(), "within the bound");
     // A stray that appears now, and one whose pid another process took (a new start time).
-    w.host
-        .set(vec![job(500, 77), job(600, 91), job(700, 120)]);
+    w.host.set(vec![job(500, 77), job(600, 91), job(700, 120)]);
     w.advance(1);
     w.probe().await;
-    assert_eq!(w.host.reaped(), vec![job(500, 77)], "only the one seen for the bound");
+    assert_eq!(
+        w.host.reaped(),
+        vec![job(500, 77)],
+        "only the one seen for the bound"
+    );
     w.advance(bound);
     w.probe().await;
     assert_eq!(

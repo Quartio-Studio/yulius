@@ -260,10 +260,11 @@ pub trait SessionHost: Send + Sync {
     /// STT-002): the agent waits for Yulius and goes on by itself. A host that cannot tell them
     /// apart reports none.
     fn background_probe(&self, child_pid: u32) -> Option<BackgroundProbe> {
-        self.background_shells(child_pid).map(|shells| BackgroundProbe {
-            shells,
-            ..BackgroundProbe::default()
-        })
+        self.background_shells(child_pid)
+            .map(|shells| BackgroundProbe {
+                shells,
+                ..BackgroundProbe::default()
+            })
     }
     /// Kills `strays` (SPEC-353 LAP-004), each process only while its pid still has the recorded
     /// start time. Blocking and bounded; returns how many processes were signalled. A host that
