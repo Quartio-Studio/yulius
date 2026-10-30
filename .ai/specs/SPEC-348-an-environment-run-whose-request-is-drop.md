@@ -56,7 +56,7 @@ environment run past its lost-run limit.
 - [x] Update wait ends environment runs past their lost-run limit
 - [x] Decision, architecture and changes documented
 - [x] Gates green and independent review answered
-- [ ] Pull request merged into dev on green
+- [x] Pull request merged into dev on green
 
 ## Acceptance criteria
 
