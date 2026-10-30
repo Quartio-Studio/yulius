@@ -966,7 +966,10 @@ impl App {
         let checkout = ci_dir.join("jobs").join(checkout_name);
         // The checkout's own cache: a shared one let a lane rewrite a build cache under the
         // other lane's running job (SPEC-351, #963).
-        let (home, cache) = (ci_dir.join("home"), ci_dir.join("cache").join(checkout_name));
+        let (home, cache) = (
+            ci_dir.join("home"),
+            ci_dir.join("cache").join(checkout_name),
+        );
         for dir in [&home, &cache] {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("preparing the CI directory failed: {e}"))?;

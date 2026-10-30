@@ -909,13 +909,9 @@ impl App {
         if job_used && lane_used {
             None
         } else if job_used {
-            Some(format!(
-                "{what} {name}: a lane past the {lanes} configured"
-            ))
+            Some(format!("{what} {name}: a lane past the {lanes} configured"))
         } else {
-            Some(format!(
-                "{what} {name}: no run used its job for 14 days"
-            ))
+            Some(format!("{what} {name}: no run used its job for 14 days"))
         }
     }
 

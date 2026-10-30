@@ -1551,9 +1551,15 @@ async fn unused_ci_caches_go_like_their_checkouts() -> BoxResult<()> {
         .collect();
     stale.sort();
     let names: Vec<&str> = stale.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(names, ["cargo-target", "gate@7", "loose.bin", "old"], "{stale:?}");
+    assert_eq!(
+        names,
+        ["cargo-target", "gate@7", "loose.bin", "old"],
+        "{stale:?}"
+    );
     assert!(
-        stale.iter().all(|(_, reason)| reason.starts_with("CI cache ")),
+        stale
+            .iter()
+            .all(|(_, reason)| reason.starts_with("CI cache ")),
         "{stale:?}"
     );
 

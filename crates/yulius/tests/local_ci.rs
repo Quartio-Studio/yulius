@@ -1983,7 +1983,10 @@ async fn concurrent_runs_never_share_a_ci_cache() -> TestResult {
     let mut seen = Vec::new();
     for detail in &details {
         let output = detail["jobs"][0]["output"].as_str().unwrap_or_default();
-        assert!(!output.contains("shared"), "one cache for two lanes: {output}");
+        assert!(
+            !output.contains("shared"),
+            "one cache for two lanes: {output}"
+        );
         assert_eq!(detail["state"], "passed", "{details:?}");
         seen.extend(
             output
@@ -2023,7 +2026,10 @@ async fn concurrent_runs_never_share_a_ci_cache() -> TestResult {
         output.contains(&format!("cache {}", caches.join("build").display())),
         "{output}"
     );
-    assert!(output.contains("kept-"), "the lane's cache persists: {output}");
+    assert!(
+        output.contains("kept-"),
+        "the lane's cache persists: {output}"
+    );
     Ok(())
 }
 
