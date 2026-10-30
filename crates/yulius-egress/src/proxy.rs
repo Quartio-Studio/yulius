@@ -701,23 +701,22 @@ pub async fn serve(listener: TcpListener, proxy: Arc<EgressProxy>) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     /// LAP-002 (review round 1): the shares stay bounded. A new sandbox's entry drops those of
     /// sandboxes that hold no connection; one that holds connections keeps its entry.
     #[test]
     fn idle_sandboxes_lose_their_share_entry() {
-        let mut shares = std::collections::HashMap::new();
-        let busy = std::sync::Arc::clone(&super::share_for(&mut shares, "busy", 2).slots)
-            .try_acquire_owned();
+        let mut shares = HashMap::new();
+        let busy = Arc::clone(&share_for(&mut shares, "busy", 2).slots).try_acquire_owned();
         assert!(busy.is_ok());
         for n in 0..100 {
-            let _ = super::share_for(&mut shares, &format!("idle-{n}"), 2);
+            let _ = share_for(&mut shares, &format!("idle-{n}"), 2);
         }
         let mut kept: Vec<&String> = shares.keys().collect();
         kept.sort();
         assert_eq!(kept, ["busy", "idle-99"]);
     }
-
-    use super::*;
 
     #[test]
     fn proxy_credentials_and_targets() {

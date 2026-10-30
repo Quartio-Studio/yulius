@@ -1254,16 +1254,19 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   with it: leftovers included.
 - While an idle task's session lives, each probe of its process tree (every few seconds and
   at each turn's end) lists them. The first sighting logs `leftover processes in the run`
-  (task, processes) as a warning; 2 hours later Yulius kills that process tree and logs
-  `reaped leftover processes`. A working task's processes and the agent's own shells (under
+  (task, processes, the first pid of each) as a warning; 2 hours later Yulius kills that process
+  tree and logs `reaped leftover processes` (with the same pids). A working task's processes and the agent's own shells (under
   `claude`) are never touched.
 - One sandbox gets at most half of the egress proxy's 256 connections, so its leftovers cannot
   take every other sandbox's downloads, nor, through proxy tunnels, all of its own relay's 256
   connections, which its calls to Yulius (fingerprints, hooks, MCP) also need. Other connections
   to Yulius (`yulius wait`, kept-alive MCP connections) still count against the relay. A refusal
-  at a limit is logged as a warning, at most once a minute:
-  `egress proxy: a sandbox holds its share of the connections`, `egress proxy: every connection is
-  taken`, `sandbox relay: a connection was dropped at the limit`.
+  at a limit is logged as a warning, at most once a minute, in the journal:
+  `egress proxy: a sandbox holds its share of the connections` (with the sandbox), `egress proxy:
+  every connection is taken`, and `sandbox relay: a connection was dropped at the limit` for the
+  server's side of a sandbox's relay. The relay inside the sandbox, where a sandbox's own
+  connections to Yulius are dropped first, writes that line to the sandbox's `holder.log` (and
+  the Docker front's to `docker-front.log`), both in `<data>/runtime/sandboxes/<sandbox-id>/`.
 
 To find and clear them by hand, without a restart (as root on the host):
 
@@ -1281,8 +1284,10 @@ ps -o pid,etimes,pcpu,args --ppid <init-pid>
 kill -KILL $(pstree -p <leftover-pid> | grep -o '([0-9]*)' | tr -d '()')
 # Connections a sandbox's processes hold to Yulius (port 8081 by default), counted per process.
 # They are made inside the sandbox's network namespace (on the host, the relay makes them all as
-# the server), so look there, through its holder (the sandbox's system/ group).
-H=$(head -1 /sys/fs/cgroup/system.slice/yulius.service/sandboxes/$S/system/cgroup.procs)
+# the server), so look there, through the holder process inside it (`inner_pid` of host.json in
+# the data directory's runtime/sandboxes/<sandbox-id>/).
+H=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["inner_pid"])' \
+  /var/lib/yulius/runtime/sandboxes/$S/host.json)
 nsenter -t "$H" -n ss -tnp state established '( dport = :8081 )' \
   | awk -F'pid=' 'NR>1{split($2,a,",");print a[1]}' | sort | uniq -c | sort -rn | head
 ```

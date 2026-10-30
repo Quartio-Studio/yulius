@@ -40,7 +40,8 @@ past their limit. Only a restart freed them.
   keep theirs, and half of its relay stays free for its own calls to Yulius (fingerprints, hooks,
   MCP).
 - **Limits are logged.** A refusal at the proxy's limit or share, and a connection the relay drops
-  at its limit, is a warning, at most once a minute per limit and sandbox.
+  at its limit, is a warning, at most once a minute per limit and sandbox: in the journal, and for
+  the relay inside a sandbox (which runs no tracing) on its holder's stderr, `holder.log`.
 - **The fingerprint message names its cause**: a refused token means the run ended (continue from
   Yulius), an unreachable Yulius means a restart or used-up connections, and the fallback file's
   state is given. The message never blames a restart for a refused token.
@@ -65,7 +66,7 @@ past their limit. Only a restart freed them.
 ## Consequences
 
 - A preview server an idle task left running stops after 2 hours. The agent starts it again when
-  it needs it, and the log says what was reaped. The 2 hours count from when the stray was first
+  it needs it, and the log names the pids that were reaped. The 2 hours count from when the stray was first
   seen, also through turns in between, so one seen before a long turn goes at the first idle
   probe after it.
 - A child a stray forks between the probe and the kill survives it, as a new stray with its own

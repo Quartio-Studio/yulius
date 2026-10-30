@@ -366,6 +366,15 @@ pub(crate) fn combine_background(probe: i64, agents: u32) -> i64 {
     }
 }
 
+/// The first pid of each of `strays`, at most 20 (for the log).
+fn first_pids(strays: &[StrayProcess]) -> Vec<u32> {
+    strays
+        .iter()
+        .filter_map(|stray| stray.processes.first().map(|(pid, _)| *pid))
+        .take(20)
+        .collect()
+}
+
 /// Records the strays `found` now in `seen` (each stray's first process, `(pid, started)`, to
 /// when it was first seen), forgetting those gone, and returns the strays seen for the first time
 /// and those seen for `bound_ms` or longer (SPEC-353 LAP-004).
@@ -1138,6 +1147,7 @@ impl App {
                 task = %task_id,
                 strays = new.len(),
                 processes = new.iter().map(|s| s.processes.len()).sum::<usize>(),
+                pids = ?first_pids(&new),
                 "leftover processes in the run: no shell of the agent owns them; they are ended \
                  once the task has been idle with them for a while (docs/operations.md)"
             );
@@ -1155,12 +1165,13 @@ impl App {
             return;
         }
         let strays = due.len();
+        let pids = first_pids(&due);
         let host = Arc::clone(&self.deps.session_host);
         let reap = tokio::task::spawn_blocking(move || host.reap_strays(&due));
         match tokio::time::timeout(SHELL_PROBE_TIMEOUT, reap).await {
             Ok(Ok(0)) => {}
             Ok(Ok(processes)) => {
-                tracing::warn!(task = %task_id, strays, processes, "reaped leftover processes");
+                tracing::warn!(task = %task_id, strays, processes, pids = ?pids, "reaped leftover processes");
             }
             _ => {
                 tracing::warn!(task = %task_id, strays, "the leftover processes were not reaped in time")

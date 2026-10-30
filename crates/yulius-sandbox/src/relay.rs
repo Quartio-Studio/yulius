@@ -37,18 +37,27 @@ const MAX_PORTS_LINE: u64 = 64 * 1024;
 /// Least time between two warnings that a relay dropped a connection at its limit.
 const WARN_EVERY: Duration = Duration::from_secs(60);
 
-/// Logs that a relay dropped a connection at [`MAX_CONNECTIONS`], at most every [`WARN_EVERY`]
-/// (`last`: when it last did): its processes hold every connection, so even their calls to Yulius
+/// Counts a connection a relay dropped at its limit (`limit`) and says so on the process's stderr
+/// (the server's journal; inside a sandbox the holder's `holder.log` or the Docker front's
+/// `docker-front.log`, where no tracing subscriber runs), at most every [`WARN_EVERY`] (`last`:
+/// when it last did): the sandbox's processes hold every connection, so even their calls to Yulius
 /// fail (SPEC-353 LAP-002).
-fn warn_dropped(last: &mut Option<std::time::Instant>, relay: &str, port: Option<u16>) {
+fn warn_dropped(
+    last: &mut Option<std::time::Instant>,
+    relay: &str,
+    port: Option<u16>,
+    sandbox: Option<&str>,
+    limit: usize,
+) {
+    let dropped = DROPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     if last.is_none_or(|at| at.elapsed() >= WARN_EVERY) {
         *last = Some(std::time::Instant::now());
-        tracing::warn!(
-            relay,
-            port,
-            limit = MAX_CONNECTIONS,
-            "sandbox relay: a connection was dropped at the limit; leftover processes may hold \
-             them (docs/operations.md)"
+        let port = port.map(|p| format!(" port={p}")).unwrap_or_default();
+        let sandbox = sandbox.map(|s| format!(" sandbox={s}")).unwrap_or_default();
+        eprintln!(
+            "WARN sandbox relay: a connection was dropped at the limit; leftover processes may \
+             hold them (docs/operations.md, \"Leftover agent processes\") relay={relay}{port}\
+             {sandbox} limit={limit} dropped={dropped}"
         );
     }
 }
@@ -108,7 +117,7 @@ pub async fn serve_inbound(
         };
         let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
             drop(stream);
-            warn_dropped(&mut warned, "inbound", None);
+            warn_dropped(&mut warned, "inbound", None, None, MAX_CONNECTIONS);
             continue;
         };
         let ports = Arc::clone(&ports);
@@ -232,7 +241,7 @@ async fn forward_within(
                 continue;
             };
             let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
-                warn_dropped(&mut warned, "forward", Some(port));
+                warn_dropped(&mut warned, "forward", Some(port), None, max);
                 continue;
             };
             let out_sock = out_sock.clone();
@@ -258,7 +267,11 @@ async fn forward_connection(stream: TcpStream, port: u16, out_sock: &Path) -> io
 // On the host (the server).
 
 /// Serves `out.sock`: a connection announces a port and is relayed to its target.
-pub async fn serve_outbound(listener: UnixListener, targets: Arc<BTreeMap<u16, SocketAddr>>) {
+pub async fn serve_outbound(
+    listener: UnixListener,
+    targets: Arc<BTreeMap<u16, SocketAddr>>,
+    sandbox: String,
+) {
     let limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let mut warned = None;
     loop {
@@ -268,7 +281,13 @@ pub async fn serve_outbound(listener: UnixListener, targets: Arc<BTreeMap<u16, S
         };
         let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
             drop(stream);
-            warn_dropped(&mut warned, "outbound", None);
+            warn_dropped(
+                &mut warned,
+                "outbound",
+                None,
+                Some(&sandbox),
+                MAX_CONNECTIONS,
+            );
             continue;
         };
         let targets = Arc::clone(&targets);
@@ -417,7 +436,7 @@ async fn accept_inbound(
             continue;
         };
         let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
-            warn_dropped(&mut warned, "preview", Some(port));
+            warn_dropped(&mut warned, "preview", Some(port), None, MAX_CONNECTIONS);
             continue;
         };
         let in_sock = in_sock.clone();
@@ -517,7 +536,11 @@ mod tests {
             inside_port,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), target),
         )]));
-        let server = tokio::spawn(serve_outbound(UnixListener::bind(&out_sock)?, targets));
+        let server = tokio::spawn(serve_outbound(
+            UnixListener::bind(&out_sock)?,
+            targets,
+            "s1".to_owned(),
+        ));
         let forward = serve_forward(inside_port, out_sock.clone(), false).await?;
 
         let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, inside_port)).await?;
@@ -595,7 +618,11 @@ mod tests {
             inside_port,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), target),
         )]));
-        let server = tokio::spawn(serve_outbound(UnixListener::bind(&out_sock)?, targets));
+        let server = tokio::spawn(serve_outbound(
+            UnixListener::bind(&out_sock)?,
+            targets,
+            "s1".to_owned(),
+        ));
         let forward = serve_forward(inside_port, out_sock.clone(), true).await?;
         let mut client = TcpStream::connect((Ipv4Addr::new(127, 0, 0, 2), inside_port)).await?;
         assert_eq!(
