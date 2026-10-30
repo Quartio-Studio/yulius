@@ -36,6 +36,7 @@ use yulius_domain::update::{self as policy, RunState};
 
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
+use crate::delivery::EnvironmentRunState;
 use crate::deploy_gate::{DEPLOY_REFUSED, DeployGate, DeployPermit, DeployWait};
 use crate::error::{AppError, AppResult};
 use crate::model::Secret;
@@ -1432,13 +1433,14 @@ impl App {
             .into_iter()
             .map(|r| (r.sandbox_id, r.environment, "cd", r.id))
             .collect();
-        runs.extend(
-            store
-                .running_environment_runs()
-                .await?
-                .into_iter()
-                .map(|r| (r.sandbox_id, r.environment, "environment", r.id)),
-        );
+        // An environment run past its lost-run limit has no runner: ended, never waited for
+        // (SPEC-348). A run has no Cancel, so nothing else would end it before the bound.
+        for run in store.running_environment_runs().await? {
+            let run = self.dlv_expire_lost_run(run).await?;
+            if run.state == EnvironmentRunState::Running {
+                runs.push((run.sandbox_id, run.environment, "environment", run.id));
+            }
+        }
         let total = runs.len() + starting;
         let mut shown = Vec::new();
         for (sandbox, environment, kind, run) in runs.into_iter().take(MAX_WAITING_SHOWN) {
