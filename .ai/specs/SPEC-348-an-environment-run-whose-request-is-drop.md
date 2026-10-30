@@ -54,7 +54,7 @@ environment run past its lost-run limit.
 - [x] Regression tests drop an environment run's request and outlive its lost-run limit
 - [x] Environment run starts detached from its request
 - [x] Update wait ends environment runs past their lost-run limit
-- [ ] Decision, architecture and changes documented
+- [x] Decision, architecture and changes documented
 - [ ] Gates green and independent review answered
 - [ ] Pull request merged into dev on green
 
