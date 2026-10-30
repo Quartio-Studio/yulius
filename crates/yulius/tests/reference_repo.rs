@@ -858,3 +858,47 @@ async fn a_repository_github_reports_above_the_cap_is_refused_before_any_fetch()
     assert!(fetched(&w, "acme/lib"), "{:?}", w.git.calls());
     Ok(())
 }
+
+/// SPEC-349 AC2 (#920): a fetch that would bring the data disk to its critical level (95 %) is
+/// refused before it starts, counting three times GitHub's size (the fetched copy, its bundle and
+/// the attached bundle); an unknown disk or one with room refuses nothing.
+#[tokio::test]
+async fn a_fetch_the_data_disk_has_no_room_for_is_refused_before_it_starts() -> TestResult {
+    const GB: u64 = 1_000_000_000;
+    let (w, _alice, _lib) = world().await?;
+    let call = || {
+        support::mcp_tool(
+            &w.h,
+            "tok-ref",
+            "reference_repo",
+            json!({"repo": "acme/lib"}),
+        )
+    };
+    let size_mb = |mb: u64| -> TestResult {
+        w.github
+            .sizes
+            .lock()
+            .map_err(|_| "lock")?
+            .insert("acme/lib".into(), mb * 1_000_000 / 1024);
+        Ok(())
+    };
+
+    w.h.system.set_disk(100 * GB, 96 * GB);
+    let full = call().await?;
+    refused(&full, "disk")?;
+    assert!(!fetched(&w, "acme/lib"), "{:?}", w.git.calls());
+    assert_eq!(tmp_entries(&w), 0, "no fetch folder");
+
+    // 600 MB three times on 8 of 10 GB is 9.8 GB: past the critical level.
+    w.h.system.set_disk(10 * GB, 8 * GB);
+    size_mb(600)?;
+    refused(&call().await?, "disk")?;
+    assert!(!fetched(&w, "acme/lib"), "{:?}", w.git.calls());
+
+    // 200 MB three times is 8.6 GB: below it.
+    size_mb(200)?;
+    let fits = call().await?;
+    assert_ne!(fits["isError"], true, "{fits}");
+    assert!(fetched(&w, "acme/lib"), "{:?}", w.git.calls());
+    Ok(())
+}
