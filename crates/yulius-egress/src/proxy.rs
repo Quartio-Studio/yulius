@@ -314,10 +314,10 @@ impl EgressProxy {
         })
     }
 
-    /// A place for one connection of `client`'s sandbox, or the answer refusing it: past the
-    /// sandbox's share, or with every slot of the proxy taken (LAP-002). Each refusal is logged
+    /// A place for one connection of `client`'s sandbox, or the text of the `503` refusing it:
+    /// past the sandbox's share, or with every slot of the proxy taken (LAP-002). Each refusal is logged
     /// as a warning, at most once a minute per limit and sandbox.
-    fn slot(&self, client: &EgressClient) -> Result<Slot, Response<EgressBody>> {
+    fn slot(&self, client: &EgressClient) -> Result<Slot, String> {
         let sandbox = client.sandbox_id.as_str();
         let share = {
             let mut shares = self
@@ -339,13 +339,10 @@ impl EgressProxy {
                              leftover processes may hold them (docs/operations.md)"
                         );
                     }
-                    return Err(text(
-                        503,
-                        &format!(
-                            "Yulius proxy: this sandbox's processes hold all of its {} \
-                             connections; end leftover processes or try again",
-                            self.max_per_sandbox
-                        ),
+                    return Err(format!(
+                        "Yulius proxy: this sandbox's processes hold all of its {} connections; \
+                         end leftover processes or try again",
+                        self.max_per_sandbox
                     ));
                 }
             }
@@ -358,7 +355,7 @@ impl EgressProxy {
             if warn_due(&mut warned) {
                 tracing::warn!(sandbox, "egress proxy: every connection is taken");
             }
-            return Err(text(503, "Yulius proxy: too many connections; try again"));
+            return Err("Yulius proxy: too many connections; try again".to_owned());
         };
         Ok(Slot {
             _proxy: proxy,
@@ -394,7 +391,7 @@ impl EgressProxy {
         };
         let permit = match self.slot(&client) {
             Ok(slot) => slot,
-            Err(refused) => return refused,
+            Err(refused) => return text(503, &refused),
         };
         if request.method() == Method::CONNECT {
             let Some((host, port)) = connect_target(request.uri()) else {

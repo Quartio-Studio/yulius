@@ -14,7 +14,7 @@ use yulius_app::model::{AttemptRecord, LaunchKind};
 use yulius_app::ports::session::{
     AttachedRun, BackgroundProbe, LaunchPlan, RunInspection, SessionHost, SpawnedRun, StrayProcess,
 };
-use yulius_app::ports::store::{CoordinationStore as _, TaskStore as _};
+use yulius_app::ports::store::TaskStore as _;
 use yulius_domain::harness::Harness as Agent;
 use yulius_domain::ids::{AttemptId, TaskId};
 use yulius_domain::task::{Activity, AttemptState, TaskStatus};
