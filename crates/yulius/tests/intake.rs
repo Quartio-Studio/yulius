@@ -744,10 +744,10 @@ fn prompt_body(prompt: &str) -> Value {
     json!({"hook_event_name": "UserPromptSubmit", "session_id": "s", "prompt": prompt})
 }
 
-/// SPEC-346 LPH-002 (#921, review round 2): the turn's Stop arrives while its prompt, past its
-/// turn-end check, is still setting Working: the Stop waits for it and then settles the task as
-/// it is, Your turn. It used to settle from the copy it read before waiting, which already read
-/// Your turn, so the task stayed Working with the agent idle.
+/// SPEC-346 LPH-002 (#921, review rounds 2 and 3): the turn's Stop arrives while its prompt,
+/// past its turn-end check, is still setting Working: the Stop waits for it and then settles the
+/// task as it is, Your turn. It used to settle from the copy it read before waiting, which already
+/// read Your turn, so the task stayed Working with the agent idle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stop_that_waited_for_its_prompt_settles_after_it() -> TestResult {
     use yulius_app::race::{Point, on};

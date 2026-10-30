@@ -134,8 +134,8 @@ async fn start_on(
 }
 
 /// A `/goal` prompt hook the test server handles only after `hold` and, within 30 s, once a Stop
-/// that arrived meanwhile was handled: the first one once `armed`. `stop_handled` says that Stop
-/// was handled first (the late path), `handled` when the prompt was.
+/// that arrived meanwhile was answered (not held): the first one once `armed`. `stop_handled`
+/// says that Stop was answered first (the late path), `handled` when the prompt was handled.
 #[derive(Clone)]
 struct LateHook {
     hold: Duration,
@@ -236,7 +236,10 @@ async fn start_holding(
                     // To its end even if its client hangs up, then the held prompt goes on.
                     let stop = tokio::spawn(async move {
                         let response = next.run(request).await;
-                        late.stop_handled.send_replace(true);
+                        // A held Stop (202) decided nothing about the turn.
+                        if response.status() == axum::http::StatusCode::OK {
+                            late.stop_handled.send_replace(true);
+                        }
                         response
                     });
                     return stop.await.unwrap_or_else(|_| {

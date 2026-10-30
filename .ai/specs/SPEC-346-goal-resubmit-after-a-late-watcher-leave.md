@@ -102,10 +102,11 @@ late prompt's holds and pauses are outside this change; see Decisions.)
   path), and after the prompt was handled the task must read Done. Without the fix it never does. LPH-003 alone: a unit test of
   `waited_turn_settles`, since which of the turn's records the watcher reads before the Stop varies
   from run to run.
-- The turn lock and its re-reads: `intake`, with two `race` pause points (test-support builds
-  only; no-ops in production): a Stop that read the task arrives while a prompt past its check is
-  about to set Working, and must leave Your turn; a late Stop of the turn before settles the task
-  during a prompt's scope check, and the prompt must still set Working.
+- The turn lock and its re-reads, in `intake`: with two `race` pause points (test-support builds
+  only; no-ops in production), a Stop that read the task arrives while a prompt past its check is
+  about to set Working, and must leave Your turn; and, with the prompt parked in the fake Jev's
+  scope check, a late Stop of the turn before settles the task meanwhile, and the prompt must still
+  set Working.
 - LPH-001 clamp: `intake`, a Stop sent "in an hour" and prompts sent at 0 and -5 must not make the
   next prompt look like history.
 - What else the cause could break, checked by the existing suites: Stop settling (`task_done`),
