@@ -896,8 +896,9 @@ impl App {
         Ok((recent > 0).then_some(used))
     }
 
-    /// Why the CI checkout `name` is stale given the job keys `used`; `None` when it is not.
-    fn checkout_stale(&self, name: &str, used: &HashSet<String>) -> Option<String> {
+    /// Why the CI checkout `name` (or its cache, `what`) is stale given the job keys `used`;
+    /// `None` when it is not.
+    fn checkout_stale(&self, what: &str, name: &str, used: &HashSet<String>) -> Option<String> {
         let lanes = self.config.ci.lanes.max(1);
         let (unlaned, lane) = match name.split_once('@') {
             Some((key, lane)) => (key, lane.parse::<u32>().ok()),
@@ -909,32 +910,42 @@ impl App {
             None
         } else if job_used {
             Some(format!(
-                "CI checkout {name}: a lane past the {lanes} configured"
+                "{what} {name}: a lane past the {lanes} configured"
             ))
         } else {
             Some(format!(
-                "CI checkout {name}: no run used its job for 14 days"
+                "{what} {name}: no run used its job for 14 days"
             ))
         }
     }
 
-    /// CI checkouts whose job no run of the sandbox used for [`STALE_CHECKOUT_AFTER_MS`], or of a
-    /// lane past the configured ones. A sandbox with no recent run keeps its checkouts (they are
-    /// idle, not stale).
+    /// CI checkouts, and their caches (`ci/cache/<checkout>`, SPEC-351 CCH-003), whose job no run
+    /// of the sandbox used for [`STALE_CHECKOUT_AFTER_MS`], or of a lane past the configured ones.
+    /// An entry of the cache named like no job (what the cache shared by every job held) is
+    /// stale. A sandbox with no recent run keeps them all (they are idle, not stale).
     async fn scan_checkouts(
         &self,
         sandbox: &SandboxRecord,
         out: &mut Vec<Leftover>,
     ) -> AppResult<()> {
-        let checkouts = entries(&self.ci_dir(&sandbox.id).join("jobs"));
-        if checkouts.is_empty() {
+        let ci = self.ci_dir(&sandbox.id);
+        let found: Vec<(&str, String, PathBuf)> = entries(&ci.join("jobs"))
+            .into_iter()
+            .map(|(name, path)| ("CI checkout", name, path))
+            .chain(
+                entries(&ci.join("cache"))
+                    .into_iter()
+                    .map(|(name, path)| ("CI cache", name, path)),
+            )
+            .collect();
+        if found.is_empty() {
             return Ok(());
         }
         let Some(used) = self.ci_keys_used(&sandbox.id).await? else {
             return Ok(());
         };
-        for (name, path) in checkouts {
-            if let Some(reason) = self.checkout_stale(&name, &used) {
+        for (what, name, path) in found {
+            if let Some(reason) = self.checkout_stale(what, &name, &used) {
                 out.push(Leftover::new(Kind::StaleCiCheckout, path, reason).of(sandbox));
             }
         }
@@ -1206,7 +1217,8 @@ impl App {
                 }
                 let used = pass.ci_keys.get(&sandbox.id).cloned().flatten();
                 let stale = used.is_some_and(|used| {
-                    self.checkout_stale(&file_name(&item.path), &used).is_some()
+                    self.checkout_stale("CI checkout", &file_name(&item.path), &used)
+                        .is_some()
                 });
                 if !stale {
                     return Err("a recent run used its job".into());

@@ -8,10 +8,11 @@
 //! tail stored. The environment has no secret: no task token, provider credential or GitHub
 //! token. A job the integration branch's `[[ci.jobs]]` entry grants agent secrets gets their
 //! placeholders and the egress proxy with a credential of its own, never a value (SPEC-142,
-//! [`App::ci_job_secrets`]). `HOME` and `YULIUS_CI_CACHE` are persistent per sandbox and shared
-//! by its lanes (up to [`super::CiSettings::lanes`] runs at once, so a job's installs there must
-//! tolerate a concurrent run), and each job keeps a persistent checkout per lane
-//! ([`checkout_name`]), so caches (dependency downloads, build outputs) survive between runs.
+//! [`App::ci_job_secrets`]). `HOME` is persistent per sandbox and shared by its lanes (up to
+//! [`super::CiSettings::lanes`] runs at once, so a job's installs there must tolerate a concurrent
+//! run). Each job keeps a persistent checkout per lane ([`checkout_name`]) and a
+//! `YULIUS_CI_CACHE` named like it, so caches (dependency downloads, build outputs) survive
+//! between runs and two jobs running at once never share one (SPEC-351).
 
 use std::ffi::OsStr;
 use std::os::fd::OwnedFd;
@@ -963,7 +964,9 @@ impl App {
     ) -> Result<(Ended, Used), String> {
         let ci_dir = self.ci_dir(&sandbox.id);
         let checkout = ci_dir.join("jobs").join(checkout_name);
-        let (home, cache) = (ci_dir.join("home"), ci_dir.join("cache"));
+        // The checkout's own cache: a shared one let a lane rewrite a build cache under the
+        // other lane's running job (SPEC-351, #963).
+        let (home, cache) = (ci_dir.join("home"), ci_dir.join("cache").join(checkout_name));
         for dir in [&home, &cache] {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("preparing the CI directory failed: {e}"))?;
