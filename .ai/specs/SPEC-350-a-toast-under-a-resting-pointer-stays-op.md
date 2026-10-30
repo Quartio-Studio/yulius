@@ -104,7 +104,7 @@ finding was own code and fixed in this branch:
   open 2 s later.
 - `npx e2e run tests/toasts.e2e.ts` on the unfixed `toast()` (`a64045c3`): the resting-pointer cases
   failed (the toast still there after the 5 s assertion timeout), the pointer-moved-onto case
-  passed. The focus case (`09837db4`) failed on `pointerenter` + `:hover` code likewise. With the
+  passed. The focus case (`09837db4`) failed likewise on the round-1 code (`09d36ee5`: pause on `pointermove`, `resume()` reading `:hover`). With the
   fix: 4 passed, and 4/4 in three runs while the full suite loaded the host.
 - Full e2e suite (`E2E_TELEMETRY_DISABLED=1 npx e2e run`, at `e438f971`'s files): 69 files passed,
   1 skipped; 775 tests passed, 1 skipped, 0 failed; `secrets.e2e.ts` 28/28.
