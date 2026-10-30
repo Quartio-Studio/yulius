@@ -155,8 +155,8 @@ pub struct TaskRuntime {
     /// submitted, not left in the prompt box (a prompt alone proves nothing: it may be another).
     pub(crate) goal_submitted: AtomicBool,
     /// The latest turn end Yulius knows of (ms): when a Stop that reached Yulius was sent, or
-    /// when Yulius applied a goal verdict. A prompt sent before it belongs to a turn that is over
-    /// (SPEC-346 LPH-002).
+    /// when Claude Code recorded a goal verdict Yulius applied (clamped to now). A prompt sent
+    /// before it belongs to a turn that is over (SPEC-346 LPH-002).
     pub(crate) turn_end_ms: AtomicI64,
     /// Orders a prompt's turn start with a later turn end: a prompt holds it from its
     /// [`Self::turn_end_ms`] check until it set Working, and a Stop or verdict takes it to move

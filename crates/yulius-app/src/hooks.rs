@@ -182,6 +182,17 @@ impl App {
             let _order = runtime.turn_order.lock().await;
             runtime.turn_end_ms.fetch_max(sent, Ordering::SeqCst);
         }
+        // A prompt that passed its check before that has set Working by now: the Stop settles the
+        // task as it is, not as it read it before the wait.
+        let ctx = AgentContext {
+            task: self
+                .deps
+                .store
+                .task(&ctx.task.id)
+                .await?
+                .ok_or(AppError::NotFound)?,
+            attempt: ctx.attempt,
+        };
         let _in_flight = crate::finish::StopInFlight::enter(&runtime);
         let reply = self.answer_hook(&ctx, event, input, sent).await;
         // Only the live run's answers count: a late one of a run a switch ended is not this
@@ -677,12 +688,14 @@ impl App {
         if !crate::finish::prompt_starts_work(input.prompt.as_deref()) {
             return Ok(HookReply::Output(HookOutput::default()));
         }
-        if ctx.task.gate_blocks != 0 {
+        // As it is now: a Stop of the turn before may have settled it since it was read.
+        let task = store.task(&ctx.task.id).await?.ok_or(AppError::NotFound)?;
+        if task.gate_blocks != 0 {
             let update = TaskFieldUpdate {
                 gate_blocks: Some(0),
                 ..TaskFieldUpdate::default()
             };
-            store.update_task(&ctx.task.id, &update, self.now()).await?;
+            store.update_task(&task.id, &update, self.now()).await?;
         }
         runtime.resumed_turn.store(false, Ordering::SeqCst);
         // The retry's prompt (or a person's) starts the turn an armed retry waited for.
@@ -694,8 +707,8 @@ impl App {
         } else {
             self.continue_working_stretch(&ctx.task.id).await
         };
-        self.set_task_activity(&ctx.task, Activity::Working).await?;
-        self.keep_working_stretch(&ctx.task.id, stretch).await;
+        self.set_task_activity(&task, Activity::Working).await?;
+        self.keep_working_stretch(&task.id, stretch).await;
         Ok(HookReply::Output(HookOutput::default()))
     }
 

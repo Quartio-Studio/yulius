@@ -74,7 +74,9 @@ late prompt's holds and pauses are outside this change; see Decisions.)
 - [x] Regression test that fails without the fix
 - [x] Fix: a late prompt hook leaves its ended turn settled
 - [x] Docs, changes entry and gates green
-- [ ] Independent review and its findings answered
+- [x] Independent review and its findings answered
+- [x] Review round 1 fixes and the turn-order race, test-first
+- [ ] Round 2 review and gate at the final head
 - [ ] Merge into dev on green CI and comment on #921
 
 ## Acceptance criteria
