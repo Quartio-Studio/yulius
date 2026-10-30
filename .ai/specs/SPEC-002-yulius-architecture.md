@@ -1265,7 +1265,8 @@ space-separated values) or `[commands] gate` (one job named `gate`) in `yulius.t
 - **Process:** spawned through `SessionHost`, the same process and containment port as agents.
   Contained instances use bubblewrap over the sandbox directory, with HOME = `<sandbox>/ci/home`.
 - **Environment:** `PATH`, `LANG`, `TERM=dumb`, `CI=true`, `NO_COLOR=1`, `HOME`,
-  `YULIUS_CI_CACHE=<sandbox>/ci/cache/<checkout>` (per checkout, SPEC-351) and `YULIUS_CI_{RUN,JOB,SHA,REF,MATRIX}`. No task token,
+  `YULIUS_CI_CACHE=<sandbox>/ci/cache/<checkout>` (per checkout, SPEC-351) and
+  `YULIUS_CI_{RUN,JOB,SHA,REF,MATRIX}`. No task token,
   provider credential or GitHub token.
 - **Output:** the log is read every 500 ms from the first byte, escape sequences are removed, the
   last 512 KiB is kept and stored every 2 s while running.

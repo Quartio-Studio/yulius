@@ -30,8 +30,9 @@ could as well have tested the other pull request's code and passed.
   removes (ADR-0205); the guidance (onboarding prompt, `ci_setup`, infra-bootstrap) says so.
 - An entry of `ci/cache` is a stale CI leftover by the stale-checkout rule (no run used a job of
   that name for 14 days, or a lane past the configured ones), removed under the CI claim like a
-  checkout. The old shared cache's contents are such entries, so they go without a migration. A
-  file or link where a job's cache goes is removed (never followed) before the directory is made.
+  checkout. The old shared cache's contents are such entries, so they go without a migration. Yulius
+  makes a job's cache through handles from the sandbox directory (as a job's log, ADR-0174): a file
+  or link at `ci/cache` or at the cache's own name is removed and a folder made, never followed.
 
 ## Alternatives
 

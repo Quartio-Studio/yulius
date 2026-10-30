@@ -81,7 +81,8 @@ files (build outputs, dependency directories); by default up to two runs at once
 so a job's installs there must tolerate a concurrent run, while $YULIUS_CI_CACHE is each job \
 checkout's own, never shared with a job running at the same time: keep build outputs there or in \
 the checkout (a Cargo target directory best in the checkout, whose unused build units Yulius \
-sweeps), never in HOME; and the job's PATH lacks that home's ~/.cargo/bin and ~/.local/bin. So a job must install what it needs itself (as \
+sweeps), never in HOME; and the job's PATH lacks that home's ~/.cargo/bin and ~/.local/bin. \
+So a job must install what it needs itself (as \
 `scripts/bootstrap.py --install-rustup` does) and never depend on anything an earlier run, your \
 home or this worktree left behind: such a job passes on the cache and fails on a fresh sandbox or \
 after a cache prune. Prove it: run each job command normally, then commit and run it once more \

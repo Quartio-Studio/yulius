@@ -71,8 +71,8 @@ example when it starts deploying for real), and record every change as a decisio
    up to two runs at once share that `HOME`, so a job's installs there must tolerate a concurrent
    run; the cache is each job checkout's own, never shared with a concurrent job, so build outputs
    go there or in the checkout (a Cargo target directory best in the checkout, whose unused build
-   units Yulius sweeps), never in `HOME`. A job installs what it needs itself and never depends on what an earlier run left
-   behind, or it passes on the cache and fails on a fresh machine. System packages (`sudo apt-get`,
+   units Yulius sweeps), never in `HOME`. A job installs what it needs itself and never depends
+   on what an earlier run left behind, or it passes on the cache and fails on a fresh machine. System packages (`sudo apt-get`,
    a browser's system libraries) belong to the sandbox: install them during onboarding, never in a
    CI job, where they race the other CI run for the dpkg lock; jobs see what the sandbox installed.
    Run the gate locally and show it passes, from the repository root both normally and, once

@@ -45,7 +45,7 @@ be rewritten under a running job. The cache still persists between runs.
 | --- | --- |
 | CCH-001 | A CI job's `YULIUS_CI_CACHE` is `<sandbox>/ci/cache/<checkout>`, named like its checkout (`<job>[.<n>][@<lane>]`): jobs that run at the same time (two lanes, matrix siblings, two jobs of a run) never get the same one. |
 | CCH-002 | The cache persists between runs that use the same checkout, as before. |
-| CCH-003 | An entry of `ci/cache` is a stale leftover by the stale-checkout rule (no run used a job of that name for 14 days, or a lane past the configured ones), so the old shared cache's contents and unused caches go by the existing automatic rounds, under the CI claim. A file or link where a job's cache goes is removed, never followed, before the directory is made. |
+| CCH-003 | An entry of `ci/cache` is a stale leftover by the stale-checkout rule (no run used a job of that name for 14 days, or a lane past the configured ones), so the old shared cache's contents and unused caches go by the existing automatic rounds, under the CI claim. Yulius makes the cache through handles from the sandbox directory: a file or link at `ci/cache` or at the cache's own name is removed and a folder made, never followed (review round 2). |
 | CCH-005 | The disk upkeep prunes a job checkout's cache whole like the caches in its checkout (SPEC-008 NFR-009 e): at once past a quarter of the quota, otherwise under pressure, never while a CI run executes. Guidance puts a Cargo target directory in the checkout, whose unused build units the hourly sweep removes. |
 | CCH-004 | The docs, the onboarding prompt, the `ci_setup` instructions and the infra-bootstrap skill say the cache is the job's own, per checkout, and never shared with a concurrent job; `HOME` stays shared. |
 

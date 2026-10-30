@@ -335,6 +335,7 @@ impl App {
                     Err(_) => format!("worktree {name}"),
                 },
                 None if path == "ci/jobs" => "CI job checkouts".to_owned(),
+                None if path == "ci/cache" => "CI job caches".to_owned(),
                 None => path,
             };
             parts.push(format!("{label} {}", human(bytes)));
@@ -515,9 +516,12 @@ impl App {
                 }
             }
             // Each checkout's own `YULIUS_CI_CACHE` (SPEC-351), rebuildable as a whole: it may
-            // hold a Cargo target directory, which grows with every commit.
+            // hold a Cargo target directory, which grows with every commit. Not measured off
+            // Linux, where no cache is removed (as [`Self::find_caches`]).
             let caches = self.ci_dir(&sandbox.id).join("cache");
-            let names: Vec<String> = std::fs::read_dir(&caches)
+            let names: Vec<String> = cfg!(target_os = "linux")
+                .then(|| std::fs::read_dir(&caches).ok())
+                .flatten()
                 .map(|dir| {
                     dir.flatten()
                         .map(|e| e.file_name().to_string_lossy().into_owned())

@@ -970,16 +970,10 @@ impl App {
             ci_dir.join("home"),
             ci_dir.join("cache").join(checkout_name),
         );
-        // A file or a link where the cache goes (what the cache every job shared held, or a
-        // job's doing) goes itself; a link is never followed.
-        if std::fs::symlink_metadata(&cache).is_ok_and(|m| !m.is_dir()) {
-            std::fs::remove_file(&cache)
-                .map_err(|e| format!("preparing the CI directory failed: {e}"))?;
-        }
-        for dir in [&home, &cache] {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| format!("preparing the CI directory failed: {e}"))?;
-        }
+        std::fs::create_dir_all(&home)
+            .map_err(|e| format!("preparing the CI directory failed: {e}"))?;
+        create_job_cache(&self.sandbox_dir(&sandbox.id), OsStr::new(checkout_name))
+            .map_err(|e| format!("preparing the CI cache failed: {}", e.desc()))?;
         let repo = self.sandbox_repo(&sandbox.id);
         let checking_out = self.now();
         let checked_out = self
@@ -1280,6 +1274,31 @@ fn create_job_log(sandbox_dir: &Path, name: &OsStr) -> Result<(OwnedFd, std::fs:
         }
     }
     Err(Errno::EEXIST)
+}
+
+/// Makes a job checkout's own cache, `ci/cache/<name>` (SPEC-351), through handles from the
+/// sandbox directory, as [`create_job_log`] makes the log: a link or a file at `cache` or at the
+/// cache's own name (what the cache every job shared held, or an agent's doing) is removed and a
+/// folder made instead, never followed; one at `ci` fails it.
+fn create_job_cache(sandbox_dir: &Path, name: &OsStr) -> Result<(), Errno> {
+    let ci = crate::files::open_dirs_below(sandbox_dir, &[OsStr::new("ci")], true)?;
+    let cache = match crate::files::open_dir_at(&ci, OsStr::new("cache"), true) {
+        Err(Errno::ELOOP | Errno::ENOTDIR) => {
+            unlinkat(&ci, "cache", UnlinkatFlags::NoRemoveDir)?;
+            crate::files::open_dir_at(&ci, OsStr::new("cache"), true)?
+        }
+        opened => opened?,
+    };
+    match crate::files::open_dir_at(&cache, name, true) {
+        Err(Errno::ELOOP | Errno::ENOTDIR) => {
+            unlinkat(&cache, name, UnlinkatFlags::NoRemoveDir)?;
+            crate::files::open_dir_at(&cache, name, true)?;
+        }
+        opened => {
+            opened?;
+        }
+    }
+    Ok(())
 }
 
 /// The log [`App::ci_watch`] follows.
