@@ -14,6 +14,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   connection. A command that cannot get its agent-secret fingerprints says why: a session whose
   run ended says so and how to go on, instead of "Yulius is restarting". The leaked jobs of
   2026-10-30 came from quartio-v2's own tests.
+- The Superagent's Bash commands keep running while Yulius restarts (SPEC-352, ADR-0239, task #334,
+  fixes #965). Its shell now gets a fingerprint file, as a task run does, so agent secrets stay
+  redacted. Before, every command was refused ("… so the command was not run (Yulius is
+  restarting, …); try again") until the server was back. A Yulius that refuses the token still
+  stops the command, even with the file there.
 - A toast that appears, or moves to the top edge, under a mouse pointer that rests there closes on
   time (SPEC-350, ADR-0237, task #334, fixes #954). Before, it stayed until the pointer moved and
   could cover the page header's add button for good. A toast the pointer moves onto still stays

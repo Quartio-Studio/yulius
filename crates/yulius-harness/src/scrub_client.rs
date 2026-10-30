@@ -60,7 +60,7 @@ pub struct Unavailable {
 /// What Yulius answered the fingerprint request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerAnswer {
-    /// It refused the token (401, 403): the run ended, or the person may no longer work here.
+    /// It refused the token (a 4xx): the run ended, or the person may no longer work here.
     Refused(u16),
     /// It answered with another error status.
     Failed(u16),
@@ -79,6 +79,8 @@ pub enum FileState {
     Unreadable(String),
     /// It holds no fingerprint set this `yulius` can use.
     Invalid(String),
+    /// Not read: Yulius refused the session, which no file overrides (SPEC-352 SRF-003).
+    NotConsulted,
 }
 
 fn unhex(text: &str) -> Option<Vec<u8>> {
@@ -95,7 +97,10 @@ fn valid(set: FingerprintSet) -> Option<FingerprintSet> {
     (set.version == FINGERPRINT_VERSION).then_some(set)
 }
 
-/// Loads the run's fingerprints: from Yulius, else from the run's file.
+/// Loads the run's fingerprints: from Yulius, else from the run's file while Yulius cannot be
+/// reached or is not ready. A Yulius that refuses the token (an ended run, a person who may no
+/// longer work in the sandbox) is not a restart: the file does not stand in for it (SPEC-352
+/// SRF-003).
 pub fn load_fingerprints(env: &dyn Fn(&str) -> Option<String>) -> Fingerprints {
     let file = env(SCRUB_FILE_ENV).filter(|f| !f.is_empty());
     let in_run = file.is_some() || env(crate::launch::TASK_TOKEN_ENV).is_some();
@@ -107,7 +112,13 @@ pub fn load_fingerprints(env: &dyn Fn(&str) -> Option<String>) -> Fingerprints {
             Some(set) => return Fingerprints::Set(set),
             None => ServerAnswer::Unusable,
         },
-        Err(HookError::Status(code @ (401 | 403))) => ServerAnswer::Refused(code),
+        // A refusal is final (SPEC-352 SRF-003): the file is not consulted.
+        Err(HookError::Status(code)) if (400..500).contains(&code) => {
+            return Fingerprints::Unavailable(Unavailable {
+                server: ServerAnswer::Refused(code),
+                file: FileState::NotConsulted,
+            });
+        }
         Err(HookError::Status(code)) => ServerAnswer::Failed(code),
         Err(HookError::Io) => ServerAnswer::Unreachable,
         Err(_) => ServerAnswer::Unusable,
@@ -135,13 +146,14 @@ pub fn unavailable_message(why: &Unavailable) -> String {
         FileState::Invalid(path) => {
             format!("Its fingerprint file {path} holds no fingerprints this yulius can use.")
         }
+        FileState::NotConsulted => String::new(),
     };
     let not_run = "yulius: the agent-secret fingerprints of this run cannot be loaded, so the command was not run";
     match why.server {
         ServerAnswer::Refused(code) => format!(
             "yulius: the command was not run: Yulius no longer accepts this session (HTTP {code}). \
              The run it belonged to has ended (the task was stopped, finished or continued in a \
-             new session), or you may no longer work in this project. {file} No command can run \
+             new session), or you may no longer work in this project. No command can run \
              in this session any more: close it and continue from Yulius (send the task a \
              message, or open the Superagent again)."
         ),
@@ -623,13 +635,18 @@ mod tests {
     #[test]
     fn a_refused_token_says_the_run_ended_not_a_restart() -> Result<(), Box<dyn std::error::Error>>
     {
-        let env = run_env(answering("401 Unauthorized")?, None);
+        // A valid fallback file is not consulted once Yulius refused (SPEC-352 SRF-003).
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("scrub.json");
+        std::fs::write(&file, serde_json::to_vec(&set())?)?;
+        let file = file.to_string_lossy().into_owned();
+        let env = run_env(answering("401 Unauthorized")?, Some(file));
         let why = unavailable(load_fingerprints(&env))?;
         assert_eq!(
             why,
             Unavailable {
                 server: ServerAnswer::Refused(401),
-                file: FileState::None,
+                file: FileState::NotConsulted,
             }
         );
         let text = unavailable_message(&why);
@@ -637,7 +654,6 @@ mod tests {
         assert!(text.contains("continue from Yulius"), "{text}");
         assert!(!text.to_lowercase().contains("restart"), "{text}");
         // The command does not run.
-        let dir = tempfile::tempdir()?;
         let marker = dir.path().join("ran");
         let env = run_env(answering("403 Forbidden")?, None);
         let command = format!("touch '{}'", marker.display());
