@@ -759,6 +759,26 @@ async fn the_git_adapter_bundles_every_branch_and_tag() -> TestResult {
     )?;
     assert_eq!(std::fs::read_to_string(clone.join("README.md"))?, "# Lib\n");
     assert_eq!(git(&clone, &["rev-parse", "origin/dev"])?.trim(), dev);
+    // SPEC-349 AC3: past its byte limit the fetch is stopped as a capacity bound.
+    let small = out.join("small");
+    std::fs::create_dir_all(&small)?;
+    let bounded = adapter
+        .bundle_repository(
+            "https://github.com/acme/lib.git",
+            "main",
+            (&small.join("repo.git"), &small.join("repo.bundle")),
+            1,
+            &token,
+        )
+        .await;
+    assert!(
+        matches!(bounded, Err(yulius_app::error::AppError::Capacity(_))),
+        "{bounded:?}"
+    );
+    assert!(
+        !small.join("repo.bundle").exists(),
+        "stopped before the bundle"
+    );
     for bad in ["-x", "a:b", "main..x"] {
         let fresh = out.join(format!("bad-{}", bad.len()));
         let refused = adapter
@@ -900,5 +920,27 @@ async fn a_fetch_the_data_disk_has_no_room_for_is_refused_before_it_starts() -> 
     let fits = call().await?;
     assert_ne!(fits["isError"], true, "{fits}");
     assert!(fetched(&w, "acme/lib"), "{:?}", w.git.calls());
+    Ok(())
+}
+
+/// SPEC-349 AC3 (#920): a fetch that grows past the cap while it runs (GitHub reported less) is
+/// stopped; the tool says the repository is too large, nothing is attached and the fetch folder
+/// is removed.
+#[tokio::test]
+async fn a_fetch_that_grows_past_the_cap_is_stopped_and_its_folder_removed() -> TestResult {
+    let (w, _alice, _lib) = world().await?;
+    *w.git.reference_limit.lock().map_err(|_| "lock")? = Some(1);
+    let stopped = support::mcp_tool(
+        &w.h,
+        "tok-ref",
+        "reference_repo",
+        json!({"repo": "acme/lib"}),
+    )
+    .await?;
+    refused(&stopped, "too large")?;
+    refused(&stopped, "1 GB")?;
+    assert!(fetched(&w, "acme/lib"), "{:?}", w.git.calls());
+    assert_eq!(tmp_entries(&w), 0, "the fetch folder is removed");
+    assert!(attachments(&w).is_empty(), "{:?}", attachments(&w));
     Ok(())
 }
