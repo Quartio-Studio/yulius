@@ -514,6 +514,42 @@ impl App {
                     });
                 }
             }
+            // Each checkout's own `YULIUS_CI_CACHE` (SPEC-351), rebuildable as a whole: it may
+            // hold a Cargo target directory, which grows with every commit.
+            let caches = self.ci_dir(&sandbox.id).join("cache");
+            let names: Vec<String> = std::fs::read_dir(&caches)
+                .map(|dir| {
+                    dir.flatten()
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            for name in names {
+                let (root, path) = (sandbox_dir.clone(), caches.join(&name));
+                let measured = path.clone();
+                let bytes = tokio::task::spawn_blocking(move || {
+                    real_dir_from(&root, &measured).then(|| dir_size(&measured))
+                })
+                .await
+                .unwrap_or_default();
+                let Some(bytes) = bytes else {
+                    continue;
+                };
+                let owner = if cap.is_some_and(|cap| bytes > cap) {
+                    Owner::Ended
+                } else {
+                    Owner::Idle
+                };
+                scan.found.push(Found {
+                    label: format!("CI job {name}"),
+                    task: None,
+                    ci: true,
+                    owner,
+                    path,
+                    relative: "YULIUS_CI_CACHE".to_owned(),
+                    bytes,
+                });
+            }
         }
         Ok(scan)
     }
