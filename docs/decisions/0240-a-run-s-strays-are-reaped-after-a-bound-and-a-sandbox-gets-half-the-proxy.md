@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted. Specified in [SPEC-353](../../.ai/specs/SPEC-353-leftover-agent-shells-pile-up-in-a-sandb.md);
-task #335. Amends SPEC-130 DMD-001: the namespace init's orphans are still no background shells,
+Accepted. Specified in
+[SPEC-353](../../.ai/specs/SPEC-353-leftover-agent-shells-pile-up-in-a-sandb.md); task #335.
+Amends SPEC-130 DMD-001: the namespace init's orphans are still no background shells,
 but they are no longer ignored. Leaves the Superagent's fingerprint file to SPEC-352 (task #334).
 
 ## Context
@@ -64,7 +65,11 @@ past their limit. Only a restart freed them.
 ## Consequences
 
 - A preview server an idle task left running stops after 2 hours. The agent starts it again when
-  it needs it, and the log says what was reaped.
+  it needs it, and the log says what was reaped. The 2 hours count from when the stray was first
+  seen, also through turns in between, so one seen before a long turn goes at the first idle
+  probe after it.
+- A child a stray forks between the probe and the kill survives it, as a new stray with its own
+  2 hours.
 - One sandbox can hold at most 128 proxy tunnels at once. Parallel package installs past that get a
   `503 … try again` that npm and cargo retry.
 - An unsandboxed run (no PID namespace) reports no strays: its orphans go to the host's init.

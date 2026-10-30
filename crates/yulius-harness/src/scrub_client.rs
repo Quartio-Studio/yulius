@@ -732,15 +732,26 @@ mod tests {
         Ok(())
     }
 
-    /// A Yulius that accepts a connection and closes it before answering (a relay at its limit,
-    /// SPEC-353 review): unreachable, not an unusable answer.
+    /// A Yulius that reads the request and closes the connection without answering (a relay at
+    /// its limit, a server going down; SPEC-353 review): a clean end of stream, which is
+    /// unreachable, not an unusable answer.
     fn closing() -> Result<String, Box<dyn std::error::Error>> {
         let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
         let url = format!("http://{}", listener.local_addr()?);
         std::thread::spawn(move || {
-            for stream in listener.incoming().take(4) {
-                drop(stream);
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            // The whole request first, so the close is an end of stream, not a reset.
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 4096];
+            while !request.ends_with(b"{}") {
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buffer[..n]),
+                }
             }
+            let _ = stream.shutdown(std::net::Shutdown::Both);
         });
         Ok(url)
     }

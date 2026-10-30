@@ -965,7 +965,7 @@ mod tests {
         let (pid, started) = found[0].processes[0];
         assert!(started > 0);
         let line = std::fs::read_to_string(format!("/proc/{pid}/cmdline"))?;
-        assert!(line.starts_with("sleep\0600"), "{line:?}");
+        assert!(line.starts_with("sleep\x00600"), "{line:?}");
         assert_eq!(reap_strays(&found), 1);
         Ok(())
     }

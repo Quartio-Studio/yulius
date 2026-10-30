@@ -1235,12 +1235,12 @@ HTTP(S). Claude Code's own API traffic (`*.anthropic.com`, `claude.ai`) and loop
 Runs trust the CA through `<run>/egress-ca.pem`, built from the host's CA roots
 (`/etc/ssl/certs/ca-certificates.crt` on Ubuntu, from the `ca-certificates` package); if the
 server logs that the roots were not found, install `ca-certificates`. Every Bash command of an
-agent runs through `yulius --scrub-exec` and every tool result through the `PostToolUse` hook:
-a command that prints `the agent-secret fingerprints of this run cannot be loaded` means the run
-could not get its fingerprints from Yulius and has no usable `scrub.json`. The message says which
-(SPEC-353): **Yulius no longer accepts this session** means its run ended, so continue the task
-(or open the Superagent again) to start a fresh run; **Yulius could not be reached** while the
-server is up usually means the sandbox's connections to it are used up (next section).
+agent runs through `yulius --scrub-exec` and every tool result through the `PostToolUse` hook.
+When a command is not run, or a tool result is withheld, for want of the run's agent-secret
+fingerprints, the message says why (SPEC-353): **Yulius no longer accepts this session** means its
+run ended (its `scrub.json` is then not read), so continue the task (or open the Superagent again)
+to start a fresh run; **Yulius could not be reached** while the server is up, with no usable
+`scrub.json`, usually means the sandbox's connections to it are used up (next section).
 
 ### Leftover agent processes
 
@@ -1260,7 +1260,8 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
 - One sandbox gets at most half of the egress proxy's 256 connections, so its leftovers cannot
   take every other sandbox's downloads, nor, through proxy tunnels, all of its own relay's 256
   connections, which its calls to Yulius (fingerprints, hooks, MCP) also need. Other connections
-  to Yulius (`yulius wait`, kept-alive MCP connections) still count against the relay. A refusal at a limit is logged as a warning, at most once a minute:
+  to Yulius (`yulius wait`, kept-alive MCP connections) still count against the relay. A refusal
+  at a limit is logged as a warning, at most once a minute:
   `egress proxy: a sandbox holds its share of the connections`, `egress proxy: every connection is
   taken`, `sandbox relay: a connection was dropped at the limit`.
 
@@ -1278,9 +1279,12 @@ ps -o pid,ppid,etimes,pcpu,args --sort=-etimes -p "$(find \
 ps -o pid,etimes,pcpu,args --ppid <init-pid>
 # End one leftover and everything below it (it never belongs to a running command).
 kill -KILL $(pstree -p <leftover-pid> | grep -o '([0-9]*)' | tr -d '()')
-# Connections a sandbox holds to Yulius (port 8081 by default), counted per process.
-ss -tnp state established '( dport = :8081 )' | awk -F'pid=' 'NR>1{split($2,a,",");print a[1]}' \
-  | sort | uniq -c | sort -rn | head
+# Connections a sandbox's processes hold to Yulius (port 8081 by default), counted per process.
+# They are made inside the sandbox's network namespace (on the host, the relay makes them all as
+# the server), so look there, through its holder (the sandbox's system/ group).
+H=$(head -1 /sys/fs/cgroup/system.slice/yulius.service/sandboxes/$S/system/cgroup.procs)
+nsenter -t "$H" -n ss -tnp state established '( dport = :8081 )' \
+  | awk -F'pid=' 'NR>1{split($2,a,",");print a[1]}' | sort | uniq -c | sort -rn | head
 ```
 
 Stopping the task (or closing the Superagent) also ends its session's leftovers at once. Restarting

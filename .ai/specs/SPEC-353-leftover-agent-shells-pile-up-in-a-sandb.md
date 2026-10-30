@@ -31,8 +31,9 @@ a live turn owns are never touched.
   `--session-id`, and with `--resume` only to continue an earlier run. It always starts the
   Superagent with `--resume <its newest conversation>`.
 - Why only this session failed: `load_fingerprints` falls back to the run's `scrub.json` when
-  Yulius cannot answer (since SPEC-352 SRF-003, not when it refuses the token). A task run always has that file, read-only-bound into its bwrap, and nothing
-  deletes it while the run lives. Measured here: with Yulius unreachable, a task run's
+  Yulius cannot answer (since SPEC-352 SRF-003, not when it refuses the token). A task run
+  always has that file, read-only-bound into its bwrap, and nothing deletes it while the run
+  lives. Measured here: with Yulius unreachable, a task run's
   `--scrub-exec` still runs the command from the file. The Superagent has no file (SPEC-147 chose
   that), so it failed whenever `POST /internal/scrub/fingerprints` did not answer 200 within 2 s.
   The failing session was therefore the person's Superagent. Task #334 (SPEC-352, merged into this
@@ -105,8 +106,8 @@ a live turn owns are never touched.
   made. An init with a child whose start time is unknown gives none in that probe.
 - **LAP-004** An idle task's strays are logged as a warning when first seen. Once a stray has been
   seen for `stray_reap_after_ms` (default 2 h), Yulius kills its subtree, and logs it, at the next
-  probe while the task is idle, checked again after the probe. A process is only signalled while its pid still has the recorded
-  start time. Processes under the agent (its shells, a live turn's commands) are never strays.
+  probe while the task is idle, checked again after the probe. A process is only signalled
+  while its pid still has the recorded start time. Processes under the agent (its shells, a live turn's commands) are never strays.
 - **LAP-005** `docs/operations.md` explains how an operator finds and clears leftover agent
   processes and saturated connections without a restart.
 
