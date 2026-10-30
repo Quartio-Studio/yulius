@@ -8,10 +8,11 @@
 //! tail stored. The environment has no secret: no task token, provider credential or GitHub
 //! token. A job the integration branch's `[[ci.jobs]]` entry grants agent secrets gets their
 //! placeholders and the egress proxy with a credential of its own, never a value (SPEC-142,
-//! [`App::ci_job_secrets`]). `HOME` and `YULIUS_CI_CACHE` are persistent per sandbox and shared
-//! by its lanes (up to [`super::CiSettings::lanes`] runs at once, so a job's installs there must
-//! tolerate a concurrent run), and each job keeps a persistent checkout per lane
-//! ([`checkout_name`]), so caches (dependency downloads, build outputs) survive between runs.
+//! [`App::ci_job_secrets`]). `HOME` is persistent per sandbox and shared by its lanes (up to
+//! [`super::CiSettings::lanes`] runs at once, so a job's installs there must tolerate a concurrent
+//! run). Each job keeps a persistent checkout per lane ([`checkout_name`]) and a
+//! `YULIUS_CI_CACHE` named like it, so caches (dependency downloads, build outputs) survive
+//! between runs and two jobs running at once never share one (SPEC-351).
 
 use std::ffi::OsStr;
 use std::os::fd::OwnedFd;
@@ -963,11 +964,16 @@ impl App {
     ) -> Result<(Ended, Used), String> {
         let ci_dir = self.ci_dir(&sandbox.id);
         let checkout = ci_dir.join("jobs").join(checkout_name);
-        let (home, cache) = (ci_dir.join("home"), ci_dir.join("cache"));
-        for dir in [&home, &cache] {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| format!("preparing the CI directory failed: {e}"))?;
-        }
+        // The checkout's own cache: a shared one let a lane rewrite a build cache under the
+        // other lane's running job (SPEC-351, #963).
+        let (home, cache) = (
+            ci_dir.join("home"),
+            ci_dir.join("cache").join(checkout_name),
+        );
+        std::fs::create_dir_all(&home)
+            .map_err(|e| format!("preparing the CI directory failed: {e}"))?;
+        create_job_cache(&self.sandbox_dir(&sandbox.id), OsStr::new(checkout_name))
+            .map_err(|e| format!("preparing the CI cache failed: {}", e.desc()))?;
         let repo = self.sandbox_repo(&sandbox.id);
         let checking_out = self.now();
         let checked_out = self
@@ -1268,6 +1274,31 @@ fn create_job_log(sandbox_dir: &Path, name: &OsStr) -> Result<(OwnedFd, std::fs:
         }
     }
     Err(Errno::EEXIST)
+}
+
+/// Makes a job checkout's own cache, `ci/cache/<name>` (SPEC-351), through handles from the
+/// sandbox directory, as [`create_job_log`] makes the log: a link or a file at `cache` or at the
+/// cache's own name (what the cache every job shared held, or an agent's doing) is removed and a
+/// folder made instead, never followed; one at `ci` fails it.
+fn create_job_cache(sandbox_dir: &Path, name: &OsStr) -> Result<(), Errno> {
+    let ci = crate::files::open_dirs_below(sandbox_dir, &[OsStr::new("ci")], true)?;
+    let cache = match crate::files::open_dir_at(&ci, OsStr::new("cache"), true) {
+        Err(Errno::ELOOP | Errno::ENOTDIR) => {
+            unlinkat(&ci, "cache", UnlinkatFlags::NoRemoveDir)?;
+            crate::files::open_dir_at(&ci, OsStr::new("cache"), true)?
+        }
+        opened => opened?,
+    };
+    match crate::files::open_dir_at(&cache, name, true) {
+        Err(Errno::ELOOP | Errno::ENOTDIR) => {
+            unlinkat(&cache, name, UnlinkatFlags::NoRemoveDir)?;
+            crate::files::open_dir_at(&cache, name, true)?;
+        }
+        opened => {
+            opened?;
+        }
+    }
+    Ok(())
 }
 
 /// The log [`App::ci_watch`] follows.

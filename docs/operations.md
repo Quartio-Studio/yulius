@@ -506,7 +506,7 @@ other instead of overlapping.
 | `YULIUS_SANDBOX_MEMORY_GB` | the RAM but an eighth (at least 4 GiB kept for the host) | `memory.max` per sandbox. One sandbox runs all its agents and CI jobs: size it to the sessions, not to half the host. |
 | `YULIUS_SANDBOX_CPUS` | none | `cpu.max` per sandbox. Without it the CPU is shared by weight: a quota of all CPUs but two throttled the sandbox in half of its busy periods while the two CPUs it left idled (SPEC-082). The sandbox's capacity for budgets is this limit, else the host's CPUs. |
 | `YULIUS_SANDBOX_PIDS` | a quarter of the host's `kernel.threads-max` or `kernel.pid_max`, whichever is smaller, at least 8192, at most three quarters of `yulius.service`'s own `pids.max` | `pids.max` per sandbox: processes and threads of all its tasks, CI jobs and containers together. With the CPU split, CI jobs (`ci/`) and the Docker engine with its containers (`engine/`) each get 3/8 of it, so agent sessions keep at least a quarter (ADR-0198). All sandboxes together stop at three quarters of the service's limit (ADR-0201): a higher explicit value is not capped, but that common limit binds it. |
-| `YULIUS_SANDBOX_DISK_GB` | 100 | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. Caches are found and removed only with no link from the sandbox directory down, and on Linux only ([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)). |
+| `YULIUS_SANDBOX_DISK_GB` | 100 | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts, and each one's own `YULIUS_CI_CACHE` (`ci/cache/<checkout>`, SPEC-351), are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. Caches are found and removed only with no link from the sandbox directory down, and on Linux only ([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)). |
 | `YULIUS_SANDBOX_FORWARD` | — | Extra host loopback ports reachable inside every sandbox at the same port (for example a loopback MCP server), comma-separated. |
 | `YULIUS_SANDBOX_IDLE_MINUTES` | 5 | A holder without runs is stopped after this long; the next run starts a fresh one on the newest base. A sandbox's Docker engine stops after this long without a client and without a running container. |
 | `YULIUS_SANDBOX_DOCKER` | `on` | `on`: every isolated sandbox gets its own Docker engine when its system has `dockerd` and the cgroup delegation is on; `off`: none (the briefing then says there is no engine, and `docker` answers why). |
@@ -876,10 +876,17 @@ involved.
   - `jobs/<job>` (and `jobs/<job>@<lane>` past the first lane): one persistent checkout per job
     and lane; ignored build outputs such as `target/` and `node_modules/` are its cache;
   - `home`: `HOME` for jobs, with `~/.cargo`, `~/.npm` and `~/.cache`;
-  - `cache`: `YULIUS_CI_CACHE`.
+  - `cache/<job>[.<n>][@<lane>]` (named like the checkout): `YULIUS_CI_CACHE`, the
+    job checkout's own persistent cache, never shared with a job running at the same time
+    (SPEC-351: a Cargo target directory kept in one shared cache was relinked under the other
+    lane's run).
 
-  `home` and `cache` are shared by the sandbox's lanes, so a job's installs there must tolerate a
-  concurrent run.
+  `home` is shared by the sandbox's lanes, so a job's installs there must tolerate a concurrent
+  run; build outputs belong in the checkout or `YULIUS_CI_CACHE`, never in `home`. A Cargo target
+  directory is best in the checkout: the hourly sweep removes its unused build units, while a
+  job's `YULIUS_CI_CACHE` is pruned whole, like the caches in its checkout (at once past a quarter
+  of the quota, otherwise under pressure). Caches of jobs no run used for 14 days, or of lanes past
+  the configured ones, go like their checkouts (stale CI leftovers).
 - Budget the disk: a Rust workspace's `target/` per job and lane.
 - Removing `ci/` (with no run active) resets a sandbox's caches. The next run rebuilds them.
 - CI jobs share the sandbox's CPUs and memory by budget (SPEC-082): a job starts once the CPUs
@@ -892,7 +899,8 @@ involved.
   of the sandbox's, at least 2) and the memory in proportion: three of them testing at once fill
   the sandbox.
 - `YULIUS_CI_LANES` (default 2) runs of one sandbox execute at once. Each lane past the first
-  keeps its own job checkouts and caches (`ci/jobs/<job>@<lane>`), so budget its disk too.
+  keeps its own job checkouts and caches (`ci/jobs/<job>@<lane>`, `ci/cache/<job>@<lane>`), so
+  budget its disk too.
 
 **Moving a repository off GitHub Actions** (the onboarding step; agents use the `ci_setup` tool):
 
@@ -1186,7 +1194,7 @@ task that started working again keeps its files. Every deletion is audited as `l
 | Units of a Cargo `target` (worktrees and CI checkouts) | unused for 48 hours (6 h with the disk low, 1 h critical), then the least recently used incremental ones above 5 % of the disk (at least 8 GB; half when low, a quarter when critical); never while Cargo compiles there (its locks); compiled artifacts only in a CI checkout with no CI run and in the worktree of a task that neither works nor runs background work while no Shell of the sandbox is open (otherwise only incremental state goes) | yes, hourly (audited `disk.sweep`) |
 | A closed or cancelled task's clean worktree | after 10 minutes (its branch keeps the work) | yes |
 | Git's record of a worktree inside the sandbox directory whose directory is gone (`.git/worktrees/<name>`), not locked | always (that record only; a worktree an agent keeps in its own `/tmp` keeps its record) | yes |
-| A CI checkout of a job or lane no run used for 14 days | while no CI run of that sandbox runs | yes |
+| A CI checkout of a job or lane no run used for 14 days, and its cache (`ci/cache/<job>[.<n>][@<lane>]`); an entry of `ci/cache` named like no job (what the cache every job shared held before SPEC-351) | while no CI run of that sandbox runs | yes |
 | A draft attachment older than 7 days | always | yes |
 | `<data>/runs/<name>` that no attempt record, live run, active CI job, running deploy or running delivery environment run owns, untouched for a day (an ended task's last run, with its final terminal screen, stays) | always | yes |
 | Transcripts of a deleted task; a Docker smoke test's sandbox whose process is gone | always | yes |
