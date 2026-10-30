@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-30
 
+- Two CI jobs that run at the same time never share `$YULIUS_CI_CACHE` (SPEC-351, ADR-0238, task
+  #333, fixes #963). Each job checkout has its own cache, `ci/cache/<job>[.<n>][@<lane>]`, which persists
+  between its runs. Before, the sandbox's two lanes shared one: a Cargo target directory a project
+  kept there (as Yulius's CI guidance suggested) was relinked under the other lane's running tests
+  ("never executed: No such file", pomerado-rust #460). Unused caches and the old shared contents go
+  as stale CI leftovers.
 - The Superagent's Bash commands keep running while Yulius restarts (SPEC-352, ADR-0239, task #334,
   fixes #965). Its shell now gets a fingerprint file, as a task run does, so agent secrets stay
   redacted. Before, every command was refused ("… so the command was not run (Yulius is
