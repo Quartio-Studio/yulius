@@ -1,11 +1,11 @@
 ---
 yulius-task: b8f73838-bcdd-4709-957b-9adf63a75be4
-status: in-progress
+status: done
 ---
 
 # SPEC-350: A toast under a resting pointer closes on time
 
-Status: in progress
+Status: implemented
 Date: 2026-10-30
 Owner: Yulius task #334
 Scope authorization: task #334, fix GitHub issue #954 (flaky `secrets.e2e.ts` "a new agent secret
@@ -50,8 +50,8 @@ it never covers the page header's buttons for good.
 - [x] Regression test shows a toast under a resting pointer staying open
 - [x] Toast pauses only on a real pointer move onto it
 - [x] Decision, changes and e2e README documented
-- [ ] Gates green and independent review answered
-- [ ] Pull request merged into dev on green
+- [x] Gates green and independent review answered
+- [x] Pull request opened and merge armed on green
 
 ## Acceptance criteria
 
@@ -82,3 +82,36 @@ it never covers the page header's buttons for good.
   test that clicks the header).
 - The test-side workarounds of #349 / #503 (`browserask=0`, the wait in `notes.e2e.ts`) stay: they
   also keep the sign-in toast off what those tests point at, and removing them is not this fix.
+
+## Review
+
+Independent review in a fresh session (read-only, skill `om-code-review`), three rounds; every
+finding was own code and fixed in this branch:
+
+- Round 1 (`09d36ee5`, approve with minors): `resume()` still read `:hover`, so a toast under a
+  resting pointer that keyboard focus entered and left never closed: fixed test-first (TST-004,
+  `09837db4` failing, then a `pointed` flag in `06e90da0`). 500 ms test timeouts were tight on a
+  loaded host: now 2 s / 3 s. Stale Plan ticks and an ADR sentence: fixed.
+- Round 2 (`06e90da0`, request changes): the flip case failed once; the New task page focused its
+  composer after the test focused the covered control, so the stack did not flip. The test now
+  waits for that focus and asserts the covered control has it (`e438f971`).
+- Round 3 (`e438f971`): approve, no findings.
+
+## Evidence
+
+- Reproduction (probe in the e2e harness, unfixed `toast()`): a 500 ms toast raised under a parked
+  pointer got `pointerover`, `pointerenter`, `mouseover` and no `pointermove`, was `:hover` and still
+  open 2 s later.
+- `npx e2e run tests/toasts.e2e.ts` on the unfixed `toast()` (`a64045c3`): the resting-pointer cases
+  failed (the toast still there after the 5 s assertion timeout), the pointer-moved-onto case
+  passed. The focus case (`09837db4`) failed on `pointerenter` + `:hover` code likewise. With the
+  fix: 4 passed, and 4/4 in three runs while the full suite loaded the host.
+- Full e2e suite (`E2E_TELEMETRY_DISABLED=1 npx e2e run`, at `e438f971`'s files): 69 files passed,
+  1 skipped; 775 tests passed, 1 skipped, 0 failed; `secrets.e2e.ts` 28/28.
+- `scripts/dev ci` (after `python3 scripts/bootstrap.py`): exit 0; nextest 2783 passed, 16 skipped;
+  repository checks, fmt, clippy, doctests, deny, shear and doc passed.
+- `scripts/dev security`: exit 2, **not run**: Vidoc refused the instance key (HTTP 401, "Missing or
+  invalid API key"); `dom.js` and `toasts.e2e.ts` were not scanned. Unrun, not passed.
+- Not tested: browsers other than Chromium (the e2e suite runs Chromium only); the `toastHost`
+  move between a dialog and the page under a resting pointer (same mechanism, covered by the rule,
+  no own test).
