@@ -9,7 +9,7 @@ failOnPageErrors();
 // it would cover the page header's buttons for good.
 
 /** In the page: raise a toast with dom.js's `toast()`, its message also its `data-probe`. */
-const raise = (browser: Browser, message: string, timeout = 500) => browser.evaluate(async ({ message, timeout }) => {
+const raise = (browser: Browser, message: string, timeout = 2000) => browser.evaluate(async ({ message, timeout }) => {
   const url = '/assets/dom.js';
   const { toast } = await import(url);
   toast(message, { timeout });
@@ -62,8 +62,8 @@ test('a toast that flips under a resting pointer closes on time', async ({ app, 
 test('a toast the pointer moves onto stays until the pointer leaves it', async ({ app, browser }) => {
   const size = await open(app, browser);
   await browser.mouse.move(8, size.h / 2);
-  await raise(browser, 'Pointed at');
-  await raise(browser, 'Beside it');
+  await raise(browser, 'Pointed at', 3000);
+  await raise(browser, 'Beside it', 3000);
   const kept = await centre(browser, 'Pointed at');
   await browser.mouse.move(kept.x, kept.y);
   // The other toast of the same timeout closes; the one pointed at stays.
@@ -71,4 +71,17 @@ test('a toast the pointer moves onto stays until the pointer leaves it', async (
   await expect(browser.locator('[data-probe="Pointed at"]')).toHaveCount(1);
   await browser.mouse.move(8, size.h / 2);
   await expect(browser.locator('[data-probe="Pointed at"]')).toHaveCount(0);
+});
+
+test('a toast under a resting pointer closes on time after keyboard focus leaves it', async ({ app, browser }) => {
+  const size = await open(app, browser);
+  await browser.mouse.move(size.w - 100, size.h - 30);
+  expect(await raise(browser, 'Focused under a still pointer')).toBe(false);
+  await hovered(browser, 'Focused under a still pointer');
+  // Focus pauses it; leaving it arms the timer again, as the pointer resting there never pointed.
+  await browser.evaluate(() => {
+    document.querySelector<HTMLElement>('[data-probe="Focused under a still pointer"] .toast-x')!.focus();
+    (document.activeElement as HTMLElement).blur();
+  });
+  await expect(browser.locator('[data-probe="Focused under a still pointer"]')).toHaveCount(0);
 });
