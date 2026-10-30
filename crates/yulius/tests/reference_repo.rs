@@ -910,8 +910,11 @@ async fn a_fetch_the_data_disk_has_no_room_for_is_refused_before_it_starts() -> 
     assert!(!fetched(&w, "acme/lib"), "{:?}", w.git.calls());
     assert_eq!(tmp_entries(&w), 0, "no fetch folder");
 
-    // No size from GitHub counts the cap: 92 GB and three times 1 GiB pass 95 of 100 GB.
+    // No size from GitHub counts the cap: 92 GB and three times 1 GiB pass 95 of 100 GB. A new
+    // repository's 0 is no size either (review round 2).
     w.h.system.set_disk(100 * GB, 92 * GB);
+    refused(&call().await?, "disk")?;
+    size_mb(0)?;
     refused(&call().await?, "disk")?;
     assert!(!fetched(&w, "acme/lib"), "{:?}", w.git.calls());
 
