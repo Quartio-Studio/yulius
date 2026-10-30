@@ -1,11 +1,11 @@
 ---
 yulius-task: d5bd81f5-5c11-443e-b45d-ba7547ddc85c
-status: in-progress
+status: done
 ---
 
 # SPEC-347: A CD run whose request is dropped still gets its executor
 
-Status: in progress
+Status: implemented
 Date: 2026-10-30
 Owner: Yulius task #331
 Scope authorization: task #331, fix GitHub issue #948 (the CD run; the delivery environment run of
@@ -52,7 +52,7 @@ the environment as "already running" until a restart.
 - [x] Regression test drops a deploy request after its run is recorded
 - [x] CD start runs detached from its request with an owned deploy permit
 - [x] Decision, architecture and changes documented
-- [ ] Gates green and independent review answered
+- [x] Gates green and independent review answered
 - [ ] Pull request merged into dev on green
 
 ## Acceptance criteria
@@ -106,3 +106,20 @@ medium finding. Answers:
 5. Nit, own: ADR-0233's wording of #952 and of a panic. Fixed.
 6. Nit, own: a panic after the insert would leave the run `running` (as before; no such path
    panics). Stated in ADR-0233's consequences.
+
+## Evidence
+
+- Before the fix (`f52fd82a`, test only): `cargo nextest run -p yulius -E 'binary_id(yulius::main)
+  & test(/^cd::a_deploy_whose_request/)'` failed after 61 s with "the CD run did not end",
+  `"state":"running"`, empty output: the run had no executor.
+- After the fix: the same test passes (about 1.2 s). A temporary print in its drop branch, run
+  5 times and reverted, showed the drop branch taken 5 of 5 runs (not the answered branch).
+- `deploy_gate.rs` unit tests: 3 passed (`cargo test -p yulius-app --lib deploy_gate`); the new
+  one did not compile against the borrowing permit (E0597).
+- `cd::` and `self_update::` integration files: 52 passed.
+- `scripts/dev ci` at `a17d944f`: exit 0, nextest 2775 passed, 16 skipped; lint, docs, macOS
+  targets and repository checks green.
+- `yulius security-scan` at `a17d944f`: **not run** (exit 2): Vidoc refused the key (HTTP 401),
+  4 code files listed as not scanned. Unrun, not passed; the CI `security` job reports its own.
+- Independent review: round 1 at `c1310fe6` APPROVE (2 low and 2 nits own, fixed or stated; 2 low
+  pre-existing, reported on #948); round 2 at `a17d944f` APPROVE, nothing new.
