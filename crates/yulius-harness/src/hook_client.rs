@@ -16,9 +16,10 @@
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::launch::{TASK_TOKEN_ENV, YULIUS_URL_ENV};
+use yulius_contracts::hooks::SENT_AT_HEADER;
 
 /// Maximum hook payload read from stdin.
 pub const MAX_INPUT_BYTES: usize = 1024 * 1024;
@@ -312,9 +313,14 @@ fn exchange(addr: &SocketAddr, request: &Request<'_>) -> Result<Answer, HookErro
     let stream = TcpStream::connect_timeout(addr, timeout)?;
     let deadline = Instant::now() + timeout;
     stream.set_write_timeout(Some(remaining(deadline)?))?;
+    // When the agent sent the hook, so Yulius orders a hook it handles late (SPEC-346 LPH-001).
+    let sent_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
     let head = format!(
         "POST {}{path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {token}\r\n\
-         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+         Content-Type: application/json\r\nContent-Length: {}\r\n{SENT_AT_HEADER}: {sent_ms}\r\n\
+         Connection: close\r\n\r\n",
         target.base_path,
         target.host_header,
         body.len()

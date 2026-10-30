@@ -731,7 +731,9 @@ async fn a_prompt_answered_after_its_turn_ended_leaves_the_task_settled() -> Tes
         .map_err(|e| e.to_string())
     });
     tokio::time::timeout(Duration::from_secs(10), i.jev.entered.notified()).await?;
-    // The client gave up waiting: the agent ran the turn, and its Stop settles the task.
+    // The client gave up waiting (5 s): the agent ran the turn, and its Stop settles the task.
+    // Neither request says when it was sent (an older client): Yulius orders them by arrival.
+    i.h.clock.0.fetch_add(5_000, Ordering::SeqCst);
     let stop = call(
         &i.h.internal,
         Method::POST,

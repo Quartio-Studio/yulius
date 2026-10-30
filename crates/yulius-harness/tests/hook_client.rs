@@ -100,6 +100,7 @@ fn forwards_payload_and_prints_200_body() -> TestResult {
     let (url, server) = serve_once(response)?;
     let payload = br#"{"session_id":"s","hook_event_name":"SessionStart"}"#;
     let mut output = Vec::new();
+    let before = unix_ms();
     let code = run_hook(
         "claude",
         "SessionStart",
@@ -123,7 +124,20 @@ fn forwards_payload_and_prints_200_body() -> TestResult {
         Some("application/json")
     );
     assert_eq!(request.body, payload);
+    // When it was sent, so Yulius orders a hook it handles late (SPEC-346 LPH-001).
+    let sent: u128 = request
+        .headers
+        .get("x-yulius-hook-sent-ms")
+        .ok_or("no sent time")?
+        .parse()?;
+    assert!((before..=unix_ms()).contains(&sent), "{sent}");
     Ok(())
+}
+
+fn unix_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis())
 }
 
 #[test]

@@ -703,11 +703,18 @@ impl App {
         runtime
             .goal_open
             .store(goal_stays_open(outcome), Ordering::SeqCst);
-        // The verdict on a clean Stop whose turn waited for it (BGW-005).
-        let waited = matches!(
+        let verdict = matches!(
             outcome,
             GoalOutcome::Met | GoalOutcome::NotMet | GoalOutcome::Failed
-        ) && runtime.verdict_stop_ms.take_any();
+        );
+        // A verdict ends the turn's evaluation: a prompt sent before it is over (SPEC-346 LPH-002).
+        if verdict {
+            runtime
+                .turn_end_ms
+                .fetch_max(self.now().0, Ordering::SeqCst);
+        }
+        // The verdict on a clean Stop whose turn waited for it (BGW-005).
+        let waited = verdict && runtime.verdict_stop_ms.take_any();
         if waited && outcome == GoalOutcome::NotMet {
             // The agent goes on, and the task never read idle.
             runtime.resumed_turn.store(true, Ordering::SeqCst);
@@ -724,11 +731,11 @@ impl App {
         runtime.goal_submitted.store(true, Ordering::SeqCst);
         runtime.goal_achieved.store(achieved, Ordering::SeqCst);
         if waited && outcome != GoalOutcome::NotMet {
-            if achieved {
-                tracing::info!(task = %task_id, "the agent achieved the task's goal");
-            }
             self.settle_waited_turn(task_id).await;
-        } else if achieved {
+        }
+        // Also after a waited Stop: a task already reading Your turn (its turn's prompt hook came
+        // late or never) is Done now (SPEC-346 LPH-003).
+        if achieved {
             tracing::info!(task = %task_id, "the agent achieved the task's goal");
             self.settle_idle(task_id, None).await;
         }
