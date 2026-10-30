@@ -1,11 +1,11 @@
 ---
 yulius-task: c2ab97f7-0fb6-4a21-920a-49b7d1201574
-status: in-progress
+status: done
 ---
 
 # SPEC-353: Leftover processes pile up in a sandbox, and a session's commands stop with "fingerprints cannot be loaded"
 
-Status: in progress
+Status: implemented
 Date: 2026-10-30
 Owner: Yulius task #335
 Scope authorization: task #335, two defects seen on the production host on 2026-10-30 in the
@@ -120,7 +120,7 @@ a live turn owns are never touched.
 - [x] The egress proxy keeps a share per sandbox and logs refusals at its limits
 - [x] The probe lists strays and an idle task's old strays are reaped
 - [x] Operations guide, architecture, changes and every gate green
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -158,3 +158,47 @@ a live turn owns are never touched.
   environment and the relay. A per-sandbox share protects both with one counter.
 - The Superagent's fallback file is task #334's (SPEC-352). Not doing it twice.
 - quartio-v2's leaking tests are reported on its repository, not fixed here.
+
+## Review
+
+Independent reviews ran in fresh sessions (skill `yulius-review`; this repository has no
+`om-code-review`), each over `origin/dev...HEAD`:
+
+- Round 1 (request changes): the hook named no cause; strays were searched at any depth; a
+  conflict with SPEC-352 SRF-003; an accept-and-close read as unusable; an unknown start time
+  could pick the agent; idleness was not checked again before reaping; the share map was
+  unbounded; ops commands; a real-namespace test. All fixed test-first (9b9f76de, 5a98b6df);
+  the Superagent's strays became #970 (outside LAP-004).
+- Round 2 (request changes): the accept-and-close test could pass without the fix (it now reads
+  the request and closes cleanly, red without the fix), held hooks retry such a close (new test),
+  `ss` must run in the sandbox's network namespace. Fixed (847ab319).
+- Round 3 (request changes): relay warnings inside a sandbox went to tracing, which has no
+  subscriber there (now counted and written to stderr, `holder.log`, test red first); the
+  `nsenter` recipe took the wrong pid (now `inner_pid` of `host.json`); the outbound warning
+  names its sandbox; reap logs name pids. Fixed (e1677622).
+- Round 4 (request changes): `eprintln!` could panic the relay on a full disk (now a writer whose
+  failure is ignored, test with a failing writer red first). Fixed (c8191688).
+
+## Evidence
+
+- Reproduction, read from code and production evidence (the host's processes and journal were not
+  reachable from this sandbox): the failing session is the Superagent (`--resume <newest>`, the
+  scrub prefix, no fallback file); with Yulius unreachable a task run's `--scrub-exec` ran from its
+  `scrub.json` here (`YULIUS_URL=http://127.0.0.1:1 yulius --scrub-exec 'echo …'`: ran), without
+  a file it printed the old message and exited 126. The `.jobs` launcher and the `sleep 0.05`
+  loop were found in quartio-v2 (`reference_repo`, `crates/quartio/src/sandbox/tools.rs` and
+  `tools/tests.rs`); Claude Code 2.1.292 contains neither string.
+- Red before each fix: commit 15617370 (3 scrub_client message tests, the egress share test with
+  its 9th tunnel answered 200, 3 stray tests in `shells.rs`, `strays::an_idle_task_s_strays_are_
+  reaped_after_the_bound`), 9b9f76de, b4713e1d and the round-4 red commit; the round-2 tests were
+  shown red by reverting the `read_head_line` change locally.
+- `scripts/dev ci` on e1677622: exit 0, 2812 tests passed, 16 skipped (with clippy `-D warnings`,
+  fmt, the macOS build and the repository check); the round-4 change ran
+  `cargo test -p yulius-sandbox --lib relay` (9 passed) and the gate again before delivery.
+- `an_orphan_in_a_real_sandbox_is_a_stray` skips here: bwrap cannot create namespaces in this
+  sandbox ("Creating new namespace failed: Operation not permitted"); production runs under bwrap.
+- `yulius security-scan`: exit 2, not run: Vidoc refused the instance key (HTTP 401). Unrun, not
+  passed.
+- Not testable here: the exact connection holders of 2026-10-30 (gone after the restart), and
+  reaping on the production host.
+
