@@ -407,6 +407,11 @@ fn read_head_line(
     let budget = MAX_HEAD_BYTES.saturating_sub(*head_bytes);
     let read = reader.take(budget as u64).read_line(line)?;
     *head_bytes += read;
+    // Closed before any answer (a relay at its limit, a server going down): unreachable, not an
+    // answer off the protocol (SPEC-353 LAP-001).
+    if *head_bytes == 0 {
+        return Err(HookError::Io);
+    }
     if read == 0 || !line.ends_with('\n') {
         return Err(HookError::Protocol);
     }

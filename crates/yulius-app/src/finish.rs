@@ -1145,10 +1145,20 @@ impl App {
         if due.is_empty() {
             return;
         }
+        // Still idle now, after the probe: a turn that started meanwhile keeps its processes.
+        let idle = matches!(
+            self.deps.store.task(task_id).await,
+            Ok(Some(task)) if task.status == TaskStatus::Running
+                && task.activity.is_some_and(Activity::is_idle)
+        );
+        if !idle {
+            return;
+        }
         let strays = due.len();
         let host = Arc::clone(&self.deps.session_host);
         let reap = tokio::task::spawn_blocking(move || host.reap_strays(&due));
         match tokio::time::timeout(SHELL_PROBE_TIMEOUT, reap).await {
+            Ok(Ok(0)) => {}
             Ok(Ok(processes)) => {
                 tracing::warn!(task = %task_id, strays, processes, "reaped leftover processes");
             }

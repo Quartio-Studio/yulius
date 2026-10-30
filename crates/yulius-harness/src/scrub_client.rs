@@ -136,10 +136,10 @@ pub fn load_fingerprints(env: &dyn Fn(&str) -> Option<String>) -> Fingerprints {
     Fingerprints::Unavailable(Unavailable { server, file })
 }
 
-/// What `--scrub-exec` says when it does not run a command for want of fingerprints: the cause
-/// and what to do (SPEC-353 LAP-001). A token Yulius refuses means the run ended, never a restart.
+/// Why the fingerprints are unavailable and what to do (SPEC-353 LAP-001). A token Yulius refuses
+/// means the run ended, never a restart.
 #[must_use]
-pub fn unavailable_message(why: &Unavailable) -> String {
+pub fn unavailable_cause(why: &Unavailable) -> String {
     let file = match &why.file {
         FileState::None => "This session has no fingerprint file to fall back on.".to_owned(),
         FileState::Unreadable(path) => format!("Its fingerprint file {path} cannot be read."),
@@ -148,29 +148,40 @@ pub fn unavailable_message(why: &Unavailable) -> String {
         }
         FileState::NotConsulted => String::new(),
     };
-    let not_run = "yulius: the agent-secret fingerprints of this run cannot be loaded, so the command was not run";
     match why.server {
         ServerAnswer::Refused(code) => format!(
-            "yulius: the command was not run: Yulius no longer accepts this session (HTTP {code}). \
-             The run it belonged to has ended (the task was stopped, finished or continued in a \
-             new session), or you may no longer work in this project. No command can run \
-             in this session any more: close it and continue from Yulius (send the task a \
-             message, or open the Superagent again)."
+            "Yulius no longer accepts this session (HTTP {code}). The run it belonged to has \
+             ended (the task was stopped, finished or continued in a new session), or you may no \
+             longer work in this project. Nothing can run in this session any more: close it and \
+             continue from Yulius (send the task a message, or open the Superagent again)."
         ),
         ServerAnswer::Unreachable => format!(
-            "{not_run}: Yulius could not be reached from this sandbox, or did not answer within \
-             {} s. {file} Yulius may be restarting: try again in a minute. If it is running, this \
-             sandbox's connections to it may be used up by leftover processes (see \"Leftover \
-             agent processes\" in Yulius's operations guide).",
+            "Yulius could not be reached from this sandbox, or did not answer within {} s. {file} \
+             Yulius may be restarting: try again in a minute. If it is running, this sandbox's \
+             connections to it may be used up by leftover processes (see \"Leftover agent \
+             processes\" in Yulius's operations guide).",
             FETCH_TIMEOUT.as_secs()
         ),
         ServerAnswer::Failed(code) => format!(
-            "{not_run}: Yulius answered HTTP {code}. {file} Try again; if it keeps failing, \
-             Yulius's log says why."
+            "Yulius answered HTTP {code}. {file} Try again; if it keeps failing, Yulius's log \
+             says why."
         ),
         ServerAnswer::Unusable => format!(
-            "{not_run}: Yulius's answer, or this session's Yulius address (YULIUS_URL), could not \
-             be used. {file} Continue the task from Yulius to start a fresh session."
+            "Yulius's answer, or this session's Yulius address (YULIUS_URL), could not be used. \
+             {file} Continue the task from Yulius to start a fresh session."
+        ),
+    }
+}
+
+/// What `--scrub-exec` says when it does not run a command for want of fingerprints.
+#[must_use]
+pub fn unavailable_message(why: &Unavailable) -> String {
+    let cause = unavailable_cause(why);
+    match why.server {
+        ServerAnswer::Refused(_) => format!("yulius: the command was not run: {cause}"),
+        _ => format!(
+            "yulius: the agent-secret fingerprints of this run cannot be loaded, so the command \
+             was not run: {cause}"
         ),
     }
 }
@@ -449,8 +460,12 @@ pub fn post_tool_use(
     let set = match load_fingerprints(env) {
         Fingerprints::NotARun => return 0,
         Fingerprints::Set(set) => set,
-        Fingerprints::Unavailable(_) => {
-            return withheld(output, "it could not be checked for agent secrets");
+        Fingerprints::Unavailable(why) => {
+            let why = format!(
+                "it could not be checked for agent secrets. {}",
+                unavailable_cause(&why).trim_end_matches('.')
+            );
+            return withheld(output, &why);
         }
     };
     let Some(matcher) = matcher(&set) else {

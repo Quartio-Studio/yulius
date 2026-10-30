@@ -1258,23 +1258,26 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   `reaped leftover processes`. A working task's processes and the agent's own shells (under
   `claude`) are never touched.
 - One sandbox gets at most half of the egress proxy's 256 connections, so its leftovers cannot
-  take every other sandbox's downloads, nor its own relay's room for calls to Yulius
-  (fingerprints, hooks, MCP). A refusal at a limit is logged as a warning, at most once a minute:
+  take every other sandbox's downloads, nor, through proxy tunnels, all of its own relay's 256
+  connections, which its calls to Yulius (fingerprints, hooks, MCP) also need. Other connections
+  to Yulius (`yulius wait`, kept-alive MCP connections) still count against the relay. A refusal at a limit is logged as a warning, at most once a minute:
   `egress proxy: a sandbox holds its share of the connections`, `egress proxy: every connection is
   taken`, `sandbox relay: a connection was dropped at the limit`.
 
 To find and clear them by hand, without a restart (as root on the host):
 
 ```sh
-# Processes of one sandbox's agents, oldest first (the sandbox id is in the project's URL).
-S=7c46cdac-cc5a-4924-bf86-6e70935288bc
-ps -o pid,ppid,etimes,pcpu,args --sort=-etimes \
-  -p "$(paste -sd, /sys/fs/cgroup/system.slice/yulius.service/sandboxes/$S/agents/cgroup.procs)"
+# Processes of one sandbox's agents, oldest first (the sandbox id is in the project's URL). A run
+# a pause froze is in a run-* group below agents/, so read every group there.
+S=<sandbox-id>
+ps -o pid,ppid,etimes,pcpu,args --sort=-etimes -p "$(find \
+  /sys/fs/cgroup/system.slice/yulius.service/sandboxes/$S/agents -name cgroup.procs \
+  -exec cat {} + | paste -sd,)"
 # A session's init is the inner bwrap: a `bwrap … -- claude …` whose parent is another bwrap.
 # Its children other than `claude` are the leftovers; list one init's children with:
 ps -o pid,etimes,pcpu,args --ppid <init-pid>
 # End one leftover and everything below it (it never belongs to a running command).
-pkill -KILL --parent <leftover-pid>; kill -KILL <leftover-pid>
+kill -KILL $(pstree -p <leftover-pid> | grep -o '([0-9]*)' | tr -d '()')
 # Connections a sandbox holds to Yulius (port 8081 by default), counted per process.
 ss -tnp state established '( dport = :8081 )' | awk -F'pid=' 'NR>1{split($2,a,",");print a[1]}' \
   | sort | uniq -c | sort -rn | head

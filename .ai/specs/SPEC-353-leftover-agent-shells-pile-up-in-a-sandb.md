@@ -30,13 +30,13 @@ a live turn owns are never touched.
   `CLAUDE_CODE_SHELL_PREFIX=yulius --scrub-exec` wrapper. Yulius starts a task run with
   `--session-id`, and with `--resume` only to continue an earlier run. It always starts the
   Superagent with `--resume <its newest conversation>`.
-- Why only this session failed: `load_fingerprints` falls back to the run's `scrub.json` on any
-  server failure. A task run always has that file, read-only-bound into its bwrap, and nothing
+- Why only this session failed: `load_fingerprints` falls back to the run's `scrub.json` when
+  Yulius cannot answer (since SPEC-352 SRF-003, not when it refuses the token). A task run always has that file, read-only-bound into its bwrap, and nothing
   deletes it while the run lives. Measured here: with Yulius unreachable, a task run's
   `--scrub-exec` still runs the command from the file. The Superagent has no file (SPEC-147 chose
-  that), so it fails whenever `POST /internal/scrub/fingerprints` does not answer 200 within 2 s.
-  The failing session was therefore the person's Superagent. Task #334 (SPEC-352) gives the
-  Superagent a fingerprint file; this spec does not repeat that.
+  that), so it failed whenever `POST /internal/scrub/fingerprints` did not answer 200 within 2 s.
+  The failing session was therefore the person's Superagent. Task #334 (SPEC-352, merged into this
+  branch) gives the Superagent a fingerprint file; this spec does not repeat that.
 - Why the server path failed while Yulius was up: a sandbox reaches Yulius on one port, 8081,
   which serves both the internal API and the egress proxy, through the sandbox relay
   (`yulius-sandbox/src/relay.rs`). The relay takes at most 256 connections per sandbox and
@@ -85,7 +85,7 @@ a live turn owns are never touched.
 ## Requirements
 
 - **LAP-001** `--scrub-exec` and the tool-result hook tell why the fingerprints are unavailable.
-  When Yulius refuses the token (401 or 403), the message says that the session's run has ended
+  When Yulius refuses the token (a 4xx), the message says that the session's run has ended
   (or the person may no longer work in the project) and that the person should close the session
   and continue from Yulius, and it does not say "restarting". When Yulius cannot be reached or does
   not answer in time, the message says so, says a restart is one cause, and names leftover
@@ -101,10 +101,11 @@ a live turn owns are never touched.
 - **LAP-003** The background probe also lists a run's strays: the processes the run's own
   namespace init adopted (a child of an init that is a child of the probe's root), other than the
   agent (the init's earliest-started child), each with its whole subtree and start times. An
-  unsandboxed run has no namespace init and reports none.
+  unsandboxed run has no such init and reports none, even below a namespace one of its commands
+  made. An init with a child whose start time is unknown gives none in that probe.
 - **LAP-004** An idle task's strays are logged as a warning when first seen. Once a stray has been
   seen for `stray_reap_after_ms` (default 2 h), Yulius kills its subtree, and logs it, at the next
-  probe while the task is idle. A process is only signalled while its pid still has the recorded
+  probe while the task is idle, checked again after the probe. A process is only signalled while its pid still has the recorded
   start time. Processes under the agent (its shells, a live turn's commands) are never strays.
 - **LAP-005** `docs/operations.md` explains how an operator finds and clears leftover agent
   processes and saturated connections without a restart.
@@ -140,9 +141,11 @@ a live turn owns are never touched.
 - Unit (`yulius-ptyhost/src/shells.rs`): `strays` on tables shaped like the incident and like
   DMD-001, plus nested namespaces. Real processes: `reap_strays` kills a spawned process tree and
   skips an identity whose start time differs.
-- Integration (`yulius/tests/task_done.rs`): a session host that reports a stray for an idle task
-  (the fake agent's real run). With the bound at 0 the stray is reaped, and with the default it is
-  only reported.
+- Integration (`yulius/tests/strays.rs`): a session host that reports strays for a seeded idle
+  task, with the test clock: reported first, reaped after the bound, a reused pid is a new stray, a
+  working task's are left alone, a turn that starts during the probe keeps them.
+- Real sandbox (`shells.rs`, skipped where bwrap cannot create namespaces): an orphan under
+  `bwrap --unshare-pid` is found and reaped.
 
 ## Decisions
 

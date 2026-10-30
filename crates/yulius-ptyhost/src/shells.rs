@@ -201,10 +201,12 @@ pub struct Stray {
     pub processes: Vec<(u32, u64)>,
 }
 
-/// The strays below `root` in `table` (LAP-003): the children of the run's sandbox init (the
-/// first namespace init on each path down from `root`) other than the agent, its earliest-started
-/// child, each with its subtree. A namespace deeper down (one the agent's command made) is the
-/// agent's or a stray's own. Bounded by [`MAX_PROCESSES`] and [`MAX_DEPTH`].
+/// The strays below `root` in `table` (LAP-003): the children of the run's sandbox init (a
+/// namespace init directly below `root`, the outer `bwrap`) other than the agent, its
+/// earliest-started child, each with its subtree. A namespace deeper down (one a command of the
+/// agent made) is the agent's own, and an unsandboxed run (the root is the agent) has none. An
+/// init with a child whose start time is unknown (it ended mid-probe) gives none this time: the
+/// agent cannot be told apart. Bounded by [`MAX_PROCESSES`] and [`MAX_DEPTH`].
 #[must_use]
 pub fn strays(table: &[ProcessEntry], root: u32) -> Vec<Stray> {
     let mut children: HashMap<u32, Vec<&ProcessEntry>> = HashMap::new();
@@ -214,29 +216,13 @@ pub fn strays(table: &[ProcessEntry], root: u32) -> Vec<Stray> {
         }
     }
     let kids = |pid: u32| children.get(&pid).map_or(&[][..], Vec::as_slice);
-    // The sandbox inits: the first init on each path down from the root.
-    let mut inits = Vec::new();
-    let mut seen = HashSet::from([root]);
-    let mut queue = VecDeque::from([(root, 0usize)]);
-    while let Some((pid, depth)) = queue.pop_front() {
-        if depth >= MAX_DEPTH {
-            continue;
-        }
-        for child in kids(pid) {
-            if seen.len() > MAX_PROCESSES || !seen.insert(child.pid) {
-                continue;
-            }
-            if child.ns_init {
-                inits.push(child.pid);
-            } else {
-                queue.push_back((child.pid, depth + 1));
-            }
-        }
-    }
     let mut found = Vec::new();
     let mut listed = 0usize;
-    for init in inits {
-        let adopted = kids(init);
+    for init in kids(root).iter().filter(|e| e.ns_init) {
+        let adopted = kids(init.pid);
+        if adopted.iter().any(|e| e.started == 0) {
+            continue;
+        }
         let Some(agent) = adopted.iter().min_by_key(|e| (e.started, e.pid)) else {
             continue;
         };

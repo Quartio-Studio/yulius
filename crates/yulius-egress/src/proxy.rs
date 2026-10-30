@@ -106,9 +106,18 @@ struct Share {
 
 /// `sandbox`'s share in `shares` (`max` connections). A sandbox seen for the first time drops the
 /// entries of sandboxes that hold no connection, so the map holds the busy sandboxes and one more.
-fn share_for<'a>(shares: &'a mut HashMap<String, Share>, sandbox: &str, max: usize) -> &'a mut Share {
-    let _ = (shares.len(), sandbox, max);
-    todo!("share_for")
+fn share_for<'a>(
+    shares: &'a mut HashMap<String, Share>,
+    sandbox: &str,
+    max: usize,
+) -> &'a mut Share {
+    if !shares.contains_key(sandbox) {
+        shares.retain(|_, share| share.slots.available_permits() < max);
+    }
+    shares.entry(sandbox.to_owned()).or_insert_with(|| Share {
+        slots: Arc::new(Semaphore::new(max)),
+        warned: None,
+    })
 }
 
 /// A connection's places: one in the proxy, one in its sandbox's share. Dropped when it ends.
@@ -331,10 +340,7 @@ impl EgressProxy {
                 .shares
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let share = shares.entry(sandbox.to_owned()).or_insert_with(|| Share {
-                slots: Arc::new(Semaphore::new(self.max_per_sandbox)),
-                warned: None,
-            });
+            let share = share_for(&mut shares, sandbox, self.max_per_sandbox);
             match Arc::clone(&share.slots).try_acquire_owned() {
                 Ok(permit) => permit,
                 Err(_) => {
