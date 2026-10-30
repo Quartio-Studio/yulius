@@ -324,7 +324,8 @@ function keepClear(host) {
 
 /**
  * Show a transient message. kind: info | ok | warn | error. A toast with an action (Undo) stays
- * at least 10 s, and no toast disappears while the pointer or keyboard focus is on it (WCAG 2.2.1).
+ * at least 10 s, and no toast disappears while the pointer or keyboard focus is on it (WCAG 2.2.1):
+ * a pointer that moved onto it, not one it appeared under (ADR-0237).
  */
 export function toast(message, { kind = 'info', action, timeout = 5000, detail } = {}) {
   const host = toastHost();
@@ -340,11 +341,15 @@ export function toast(message, { kind = 'info', action, timeout = 5000, detail }
   const wait = action && timeout > 0 ? Math.max(timeout, 10000) : timeout;
   if (wait > 0) {
     let timer = setTimeout(close, wait);
+    // Pointed at: the pointer moved onto it. Not `pointerenter` or `:hover`: Chromium gives both,
+    // with no move, to a toast that appears or flips under a resting pointer, which would keep it
+    // open for good over what it covers (#954).
+    let pointed = false;
     const pause = () => clearTimeout(timer);
-    const resume = () => { if (!el.matches(':hover') && !el.contains(document.activeElement)) { clearTimeout(timer); timer = setTimeout(close, Math.min(wait, 4000)); } };
-    el.addEventListener('pointerenter', pause);
+    const resume = () => { if (!pointed && !el.contains(document.activeElement)) { clearTimeout(timer); timer = setTimeout(close, Math.min(wait, 4000)); } };
+    el.addEventListener('pointermove', () => { pointed = true; pause(); });
     el.addEventListener('focusin', pause);
-    el.addEventListener('pointerleave', resume);
+    el.addEventListener('pointerleave', () => { pointed = false; resume(); });
     el.addEventListener('focusout', () => setTimeout(resume, 0));
   }
   return close;

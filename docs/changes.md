@@ -4,6 +4,48 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-30
+
+- Two CI jobs that run at the same time never share `$YULIUS_CI_CACHE` (SPEC-351, ADR-0238, task
+  #333, fixes #963). Each job checkout has its own cache, `ci/cache/<job>[.<n>][@<lane>]`, which persists
+  between its runs. Before, the sandbox's two lanes shared one: a Cargo target directory a project
+  kept there (as Yulius's CI guidance suggested) was relinked under the other lane's running tests
+  ("never executed: No such file", pomerado-rust #460). Unused caches and the old shared contents go
+  as stale CI leftovers.
+- The Superagent's Bash commands keep running while Yulius restarts (SPEC-352, ADR-0239, task #334,
+  fixes #965). Its shell now gets a fingerprint file, as a task run does, so agent secrets stay
+  redacted. Before, every command was refused ("… so the command was not run (Yulius is
+  restarting, …); try again") until the server was back. A Yulius that refuses the token still
+  stops the command, even with the file there.
+- A toast that appears, or moves to the top edge, under a mouse pointer that rests there closes on
+  time (SPEC-350, ADR-0237, task #334, fixes #954). Before, it stayed until the pointer moved and
+  could cover the page header's add button for good. A toast the pointer moves onto still stays
+  while pointed at.
+- `reference_repo` no longer fills the server's disk with a repository too large for a task
+  (SPEC-349, ADR-0236, task #333, fixes #920): a repository GitHub reports above 1 GiB is refused
+  at once, a fetch is refused when the data disk has no room for it (as uploads are), and Git is
+  stopped once its copy grows past 1 GiB, with the folder removed. Before, the whole repository was
+  fetched to the server's disk and only then refused.
+- A goal task whose prompt hook Yulius answers only after the hook client gave up (5 s, a loaded
+  host) reads Done once the goal is met, instead of staying Working or Your turn (SPEC-346,
+  ADR-0234, task #330, fixes #921). The client now says when it sent each hook. A prompt sent
+  before a Stop or goal verdict Yulius already has belongs to a turn that is over and changes
+  nothing. A met goal settles an idle task Done also after a Stop that waited for the verdict.
+- A delivery environment run whose client goes away while it starts still runs (SPEC-348,
+  ADR-0235, task #332, fixes #952), as a CD run does since #948. An update no longer waits for an
+  environment run past its lost-run limit: it ends it as an error and goes on. Before, such a run
+  stayed "running" with no Cancel, and an update waited its whole bound for it and then cancelled.
+- A deploy whose client goes away while it starts still runs (SPEC-347, ADR-0233, task #331,
+  fixes #948). Before, a CD run could stay "running" with nothing running it until a restart:
+  its environment was refused as already running and an update waited for it until its bound and
+  then cancelled.
+
+## 2026-10-28
+
+- A long host on a Secrets card wraps inside its chip instead of running past the card's edge
+  (SPEC-344, task #328, fixes #956). Bound and requested hosts and an MCP server's secret keys
+  show whole, on more lines when the card is narrow; short chips look as before.
+
 ## 2026-10-27
 
 - An update of Yulius no longer cuts a running deploy (SPEC-342, ADR-0232, task #326). A CD run or

@@ -1265,7 +1265,8 @@ space-separated values) or `[commands] gate` (one job named `gate`) in `yulius.t
 - **Process:** spawned through `SessionHost`, the same process and containment port as agents.
   Contained instances use bubblewrap over the sandbox directory, with HOME = `<sandbox>/ci/home`.
 - **Environment:** `PATH`, `LANG`, `TERM=dumb`, `CI=true`, `NO_COLOR=1`, `HOME`,
-  `YULIUS_CI_CACHE=<sandbox>/ci/cache` and `YULIUS_CI_{RUN,JOB,SHA,REF,MATRIX}`. No task token,
+  `YULIUS_CI_CACHE=<sandbox>/ci/cache/<checkout>` (per checkout, SPEC-351) and
+  `YULIUS_CI_{RUN,JOB,SHA,REF,MATRIX}`. No task token,
   provider credential or GitHub token.
 - **Output:** the log is read every 500 ms from the first byte, escape sequences are removed, the
   last 512 KiB is kept and stored every 2 s while running.
@@ -1991,7 +1992,10 @@ the task spec plus the project-docs problems; `project_context` returns the brie
 The hook binary reads the CLI's JSON from stdin (≤ 1 MiB), forwards it to `/hooks/<event>` with the
 task token (timeout 5 s) and prints the response. Failure to reach Yulius is fail-open (exit 0, no
 output) and is recorded. A hook the server received is handled to its end even when the client
-stopped waiting and closed the connection (SPEC-140 HKS-001, ADR-0115). Responses:
+stopped waiting and closed the connection (SPEC-140 HKS-001, ADR-0115). Each request says when the
+client sent it (`x-yulius-hook-sent-ms`, Unix ms): a `UserPromptSubmit` sent before a Stop that
+reached Yulius or a goal verdict it applied belongs to a turn that is over and changes neither the
+task's activity nor its achieved goal (SPEC-346 LPH-002, ADR-0234). Responses:
 
 - `SessionStart` → `hookSpecificOutput.additionalContext` = briefing (≤ 12 KiB; §7.6).
 - `UserPromptSubmit` → first the scope check (ADR-16 rules): a held prompt returns

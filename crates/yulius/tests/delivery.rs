@@ -1551,6 +1551,54 @@ async fn product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out()
     Ok(())
 }
 
+/// SPEC-348 ERD-001/002 (#952): an environment run whose request is dropped as soon as its run is
+/// recorded still runs its command, never staying `running` with nothing executing it, and its
+/// permit is let go. Each poll of the request passes at most one store call and the test reads the
+/// store between polls, so the request is dropped at most one store call past its insert, while
+/// its audit entry remains before its execution's spawn.
+#[tokio::test]
+async fn an_environment_run_whose_request_is_dropped_after_its_record_still_runs() -> TestResult {
+    let f = fixture(&DeliveryProfile::product()).await?;
+    let patched = f
+        .req(
+            Method::PATCH,
+            "/api/sandboxes/s1",
+            Some(product_with_deploy()),
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    let mut request = Box::pin(f.req(
+        Method::POST,
+        "/api/sandboxes/s1/delivery/environments/dev-vm/runs",
+        Some(json!({"confirm": true})),
+        &f.bob,
+    ));
+    let id = loop {
+        if let std::task::Poll::Ready(answer) = futures::poll!(request.as_mut()) {
+            let answer = answer?;
+            assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+            break answer.body["run_id"].as_str().ok_or("id")?.to_owned();
+        }
+        if let Some(run) =
+            f.h.store
+                .running_environment_runs()
+                .await?
+                .into_iter()
+                .next()
+        {
+            drop(request);
+            break run.id;
+        }
+    };
+    let run = f.wait_run(&id).await?;
+    assert_eq!(run["state"], "succeeded", "{run}");
+    let output = run["output"].as_str().unwrap_or_default();
+    assert!(output.contains("on dev-vm"), "{output}");
+    assert_eq!(f.h.app.deploys_starting(), 0, "no permit is left behind");
+    Ok(())
+}
+
 /// AC-DLV-3: studio — after a merge into quartio, main fast-forwards automatically even with
 /// failing checks (none are required); switching the profile to gated disables it.
 #[tokio::test]

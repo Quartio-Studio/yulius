@@ -42,9 +42,10 @@ default-branch-only copy gave the task less than its owner can read.
 - A task reads any branch or tag of its owner's organisation repository without a person; nobody
   is asked to change a repository's default branch for a task.
 - Bundles grow by the history only other branches and tags reach; the 1 GiB cap of ADR-0197
-  bounds what a task receives, and its two concurrent fetches bound the work, but the cap is
-  checked after the fetch, so the server's `<data>/tmp` briefly holds the whole repository
-  (#920).
+  bounds what a task receives, and its two concurrent fetches bound the work. The cap was checked
+  after the fetch, so the server's `<data>/tmp` briefly held the whole repository (#920); since
+  [ADR-0236](0236-a-reference-fetch-is-bounded-by-the-cap-while-it-runs.md) the fetch is bounded
+  while it runs.
 - The answer gives the clone and update commands with every word shell-quoted (`clone_command`,
   `update_command`): a branch name may hold `$`, `(` or `'`, and the update forces branches and
   tags so a re-pointed tag does not fail it.

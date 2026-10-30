@@ -77,9 +77,12 @@ repository's test, lint and build commands until they work and record them in yu
 `[[ci.jobs]]` command exactly as written, from the repository root, until it passes. Yulius CI \
 gives the sandbox's jobs their own HOME and cache ($YULIUS_CI_CACHE), separate from yours: they \
 start empty and persist across runs, as does each job's checkout per CI lane with its ignored \
-files (build outputs, dependency directories); by default up to two runs at once share that HOME \
-and cache, so a job's installs there must tolerate a concurrent run; and the job's PATH lacks that \
-home's ~/.cargo/bin and ~/.local/bin. So a job must install what it needs itself (as \
+files (build outputs, dependency directories); by default up to two runs at once share that HOME, \
+so a job's installs there must tolerate a concurrent run, while $YULIUS_CI_CACHE is each job \
+checkout's own, never shared with a job running at the same time: keep build outputs there or in \
+the checkout (a Cargo target directory best in the checkout, whose unused build units Yulius \
+sweeps), never in HOME; and the job's PATH lacks that home's ~/.cargo/bin and ~/.local/bin. \
+So a job must install what it needs itself (as \
 `scripts/bootstrap.py --install-rustup` does) and never depend on anything an earlier run, your \
 home or this worktree left behind: such a job passes on the cache and fails on a fresh sandbox or \
 after a cache prune. Prove it: run each job command normally, then commit and run it once more \
@@ -1823,6 +1826,10 @@ mod tests {
                 "checkout per CI lane",
                 "by default up to two runs at once share",
                 "tolerate a concurrent run",
+                // SPEC-351 (#963): a target directory in a shared cache was relinked under the
+                // other lane's run; the cache is the checkout's own.
+                "$YULIUS_CI_CACHE is each job checkout's own",
+                "never in HOME",
                 // #272 (#299, #300): an apt-get in a job raced the other lane for the dpkg lock.
                 "belong to the sandbox: install them now, never in a CI job",
             ] {
@@ -1856,6 +1863,8 @@ mod tests {
             "checkout per CI lane",
             "default up to two runs at once share",
             "tolerate a concurrent run",
+            "the cache is each job checkout's own",
+            "never in `HOME`",
             "never in a CI job",
         ] {
             assert!(

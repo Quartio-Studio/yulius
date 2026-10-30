@@ -460,7 +460,9 @@ Every path under the data directory has an owner record and a rule for when it i
 inventory in SPEC-215). `yulius-domain::leftovers` holds the kinds and their policy (safe
 automatically, needs a person, report only). `yulius-app::leftovers` scans by kind: removed
 sandboxes from `SandboxStore::removed_sandboxes`, live sandboxes' ended caches (from the disk
-upkeep's own scan), worktrees no task owns, unused CI checkouts, Git records of vanished
+upkeep's own scan), worktrees no task owns, unused CI checkouts and their caches (each job
+checkout has its own `YULIUS_CI_CACHE`, `ci/cache/<checkout>`, never shared with a concurrent job;
+[decision 0238](decisions/0238-a-ci-job-s-cache-is-its-checkout-s-own.md)), Git records of vanished
 worktrees, and instance directories no record owns. It deletes one item at a time after its
 **guard** checks the rule again: the sandbox is still removed and was removed 10 minutes ago,
 `still_running` finds no run, shell, browser or CI run, no CD run is live, the isolation's
@@ -1087,6 +1089,11 @@ server as a task's terminal is. The wrapper and hook load their fingerprints wit
 token the person's environment holds, answered while the person may work in the sandbox (by an
 access decision within the staleness bound, never waiting on GitHub) ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
 [decision 0121](decisions/0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)).
+While Yulius cannot be reached or is not ready (a restart), the wrapper reads them from the
+shell's `scrub.json` (`YULIUS_SCRUB_FILE`, written at the start, read-only when contained), as a
+task run's does. A refused token is not a restart, so a command does not run, as it does not
+without both ([SPEC-352](../.ai/specs/SPEC-352-something-got-broken-with-yulius-fix.md),
+[decision 0239](decisions/0239-the-superagent-gets-a-fingerprint-file-as-a-task-run-does.md)).
 
 Every terminal people watch (a task's, the Superagent's, a Cockpit shell's) replaces a value with
 its label fitted to the value's display width (`fitted_label`): `[secret:NAME]` followed by `*` padding, or cut short. A full-screen
@@ -1192,6 +1199,7 @@ flowchart LR
   APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius + sandbox servers --settings: PostToolUse redaction [.mcp.json servers rejected]"]
   MS -->|"mcp_attachments: values in the secret environment"| HP
   SH -->|"scrub-exec, PostToolUse: Bearer ws_… (YULIUS_TASK_TOKEN)"| FP["/internal/scrub/fingerprints"]
+  SH -.->|"scrub-exec while Yulius restarts"| SF["shells/id/scrub.json (YULIUS_SCRUB_FILE)"]
   APP -->|"import_project_mcp (also before task runs): origin mcp_json, never host-tested"| MS[("Sandbox MCP servers")]
   REPO[".mcp.json in the repository"] --> APP
   APP --> SH["Shell runtime (user space, repository)"]
@@ -1512,7 +1520,13 @@ into a fresh bare repository under `<data>/tmp` and writes a bundle of `HEAD` (t
 every branch and every tag; the agent's optional `branch` is the one its clone checks out, and a
 branch the repository lacks is invalid with the branch list
 ([ADR-0223](decisions/0223-a-reference-copy-carries-every-branch-and-tag-its-owner-can-read.md),
-[SPEC-330](../.ai/specs/SPEC-330-fix-this-tasks-act-as-the-user-they-shou.md)). `App::attach_server_file`
+[SPEC-330](../.ai/specs/SPEC-330-fix-this-tasks-act-as-the-user-they-shou.md)). The copy is bounded
+by the 1 GiB a task gets ([ADR-0236](decisions/0236-a-reference-fetch-is-bounded-by-the-cap-while-it-runs.md),
+[SPEC-349](../.ai/specs/SPEC-349-reference-repo-bounds-its-fetch-by-the-1.md)): a repository GitHub
+reports above it (`GhRepo::size_kib`) is refused before anything runs, and so is a fetch that would
+bring the data disk to its critical level (`App::disk_room_if_short`, shared with uploads); while
+Git runs, the runner's size watch measures the fetch folder and then the bundle (with Git's
+`.lock` of it) every 250 ms and kills Git past the cap (`GitError::TooLarge`). `App::attach_server_file`
 streams the bundle into the task's attachments through the upload path's handles (ADR-0174), the
 fetch folder is removed, and the agent clones the bundle itself into
 `<sandbox>/reference/<owner>/<name>`, outside every worktree. Git never runs on the host in a folder
@@ -1524,7 +1538,7 @@ repository, a playground, a disabled or unsigned owner and no read access are re
 flowchart LR
   AG["agent"] -->|"reference_repo owner/name, branch?"| APP["Yulius"]
   APP -->|"repo_access, owner's token"| GH["GitHub"]
-  APP -->|"bundle_repository, owner's token"| TMP["data/tmp/reference-*: every branch and tag + bundle"]
+  APP -->|"bundle_repository, owner's token, 1 GiB watch"| TMP["data/tmp/reference-*: every branch and tag + bundle"]
   TMP -->|"attach_server_file (handles)"| ATT["sandbox attachments/tasks/task"]
   AG -->|"git clone bundle"| REF["sandbox reference/owner/name"]
   ATT --> REF
@@ -2202,7 +2216,11 @@ does not). When the build is done the server closes the deploy gate (`deploy_gat
 and `dlv_start_environment_run` hold a permit until their run is recorded and are refused while
 it is closed; the update stays `building` while a CD or environment run is running or starting,
 and pauses tasks only once none is (SPEC-342, ADR-0232). The gate opens when the update resumes,
-is cancelled or fails.
+is cancelled or fails. A CD start runs from its run's record to its executor's spawn detached
+from its request (`App::run_detached`), the permit moved with it, so a client that goes away never
+leaves a run `running` with no executor (SPEC-347, ADR-0233); an environment-run start does the
+same (SPEC-348, ADR-0235). The wait (and the instance page's view of it) ends an environment run past
+its lost-run limit as `error` (`dlv_expire_lost_run`, as a read does) instead of waiting for it.
 
 ```mermaid
 sequenceDiagram
@@ -2301,7 +2319,10 @@ flowchart LR
 - Agents reach Yulius only through the internal loopback listener with per-run tokens. A hook runs
   in its own task: the hook client fails open after 5 s and closes its connection, which drops the
   HTTP handler, and the hook is still applied to its end
-  ([ADR-0115](decisions/0115-a-received-hook-is-applied-to-its-end.md)).
+  ([ADR-0115](decisions/0115-a-received-hook-is-applied-to-its-end.md)). The client says when it
+  sent each hook (`x-yulius-hook-sent-ms`): a prompt hook sent before a Stop that reached Yulius
+  or a goal verdict it applied belongs to a turn that is over and changes nothing
+  ([ADR-0234](decisions/0234-a-prompt-hook-sent-before-its-turn-ended-changes-nothing.md)).
 - A stop or close asks the attached run to shut down; one that comes while the run is launching
   (spawned, not attached yet) is asked by the launch once it attaches, so it never waits for the
   escalation ([SPEC-140](../.ai/specs/SPEC-140-fix-404-464-353-443-task-done-supervisio.md)).
