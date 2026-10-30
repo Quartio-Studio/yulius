@@ -50,6 +50,10 @@ pub const SHELL_PROBE_MS: i64 = 5_000;
 
 /// Longest a shell probe may take before its result counts as unknown.
 pub const SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long an idle task's strays live once seen before they are killed (SPEC-353 LAP-004,
+/// ADR-0240): a preview server a person may still look at survives a long break, a busy loop
+/// burns hours, not days.
+pub const STRAY_REAP_AFTER_MS: i64 = 2 * 3600 * 1000;
 
 /// Claude Code's last goal notice after a turn an error ended (SPEC-333).
 #[derive(Debug, Clone, PartialEq, Eq)]

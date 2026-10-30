@@ -241,12 +241,28 @@ impl SessionHost for PtySessionHost {
         &self,
         child_pid: u32,
     ) -> Option<yulius_app::ports::session::BackgroundProbe> {
-        yulius_ptyhost::shells::background_probe(child_pid).map(|count| {
+        yulius_ptyhost::shells::background_report(child_pid).map(|(count, strays)| {
             yulius_app::ports::session::BackgroundProbe {
                 shells: count.shells,
                 waits: count.waits,
+                strays: strays
+                    .into_iter()
+                    .map(|stray| yulius_app::ports::session::StrayProcess {
+                        processes: stray.processes,
+                    })
+                    .collect(),
             }
         })
+    }
+
+    fn reap_strays(&self, strays: &[yulius_app::ports::session::StrayProcess]) -> usize {
+        let strays: Vec<yulius_ptyhost::shells::Stray> = strays
+            .iter()
+            .map(|stray| yulius_ptyhost::shells::Stray {
+                processes: stray.processes.clone(),
+            })
+            .collect();
+        yulius_ptyhost::shells::reap_strays(&strays)
     }
 
     fn terminate(&self, run_dir: &Path) -> AppResult<()> {

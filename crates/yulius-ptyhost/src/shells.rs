@@ -57,6 +57,9 @@ pub struct ProcessEntry {
     /// The process is the init of a PID namespace (the sandbox's `bwrap`): it adopts the orphans
     /// of the processes in that namespace.
     pub ns_init: bool,
+    /// When it started, in clock ticks after boot (`/proc/<pid>/stat`); 0 when unknown. With the
+    /// pid it identifies the process (pids are reused).
+    pub started: u64,
 }
 
 /// Whether a command line (raw `/proc` bytes or `ps` text) is a Claude Code Bash tool shell.
@@ -186,6 +189,37 @@ pub fn background_probe(root: u32) -> Option<ShellCount> {
     Some(count_background(&table, root))
 }
 
+/// A stray: a process the run's sandbox init adopted, other than the agent, with everything below
+/// it (SPEC-353 LAP-003). No shell of the agent owns it, so Claude Code neither tracks nor stops it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stray {
+    /// `(pid, started)` of the adopted process first, then of the processes below it.
+    pub processes: Vec<(u32, u64)>,
+}
+
+/// The strays below `root` in `table` (LAP-003).
+#[must_use]
+pub fn strays(_table: &[ProcessEntry], _root: u32) -> Vec<Stray> {
+    Vec::new()
+}
+
+/// What one probe found below an agent: its background shells and its strays.
+#[must_use]
+pub fn background_report(root: u32) -> Option<(ShellCount, Vec<Stray>)> {
+    if root <= 1 {
+        return None;
+    }
+    let table = imp::table_under(root)?;
+    Some((count_background(&table, root), strays(&table, root)))
+}
+
+/// Kills the processes of `strays` (`SIGKILL`), each only while its pid still has the recorded
+/// start time (LAP-004). Returns how many were signalled.
+#[must_use]
+pub fn reap_strays(_strays: &[Stray]) -> usize {
+    0
+}
+
 #[cfg(target_os = "linux")]
 mod imp {
     use std::collections::{HashSet, VecDeque};
@@ -240,10 +274,20 @@ mod imp {
         listed.then_some(out)
     }
 
-    fn parent(pid: u32) -> Option<u32> {
+    /// Field `n` of `/proc/<pid>/stat` after the command name (0: the state).
+    fn stat_field(pid: u32, n: usize) -> Option<u64> {
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
         let after = stat.get(stat.rfind(')')? + 1..)?;
-        after.split_whitespace().nth(1)?.parse().ok()
+        after.split_whitespace().nth(n)?.parse().ok()
+    }
+
+    fn parent(pid: u32) -> Option<u32> {
+        stat_field(pid, 1).and_then(|ppid| u32::try_from(ppid).ok())
+    }
+
+    /// When `pid` started, in clock ticks after boot.
+    pub(super) fn started(pid: u32) -> Option<u64> {
+        stat_field(pid, 19)
     }
 
     /// The processes below `root`, walked through the kernel's child lists.
@@ -274,6 +318,7 @@ mod imp {
                     waits: is_yulius_wait(&line),
                     // A wrapper shell is never a namespace's init: its status is not read.
                     ns_init: !shell && ns_init(kid),
+                    started: started(kid).unwrap_or(0),
                 });
                 queue.push_back((kid, depth + 1));
             }
@@ -315,6 +360,7 @@ mod imp {
                         shell,
                         waits,
                         ns_init: !shell && ns_init(pid),
+                        started: started(pid).unwrap_or(0),
                     });
                 }
             }
@@ -358,6 +404,7 @@ mod imp {
                     shell: is_agent_shell(command.as_bytes()),
                     waits: is_yulius_wait(command.as_bytes()),
                     ns_init: false,
+                    started: 0,
                 })
             })
             .collect()
@@ -413,6 +460,7 @@ mod tests {
             shell,
             waits: false,
             ns_init: false,
+            started: u64::from(pid),
         }
     }
 
@@ -431,6 +479,7 @@ mod tests {
             shell: false,
             waits: true,
             ns_init: false,
+            started: u64::from(pid),
         }
     }
 
@@ -594,9 +643,15 @@ mod tests {
         let rows = imp::parse_ps(
             b"  1     0 /sbin/launchd\n 42     1 /bin/sh -c sleep 3 && pwd -P >| /tmp/c\nbad\n 43    42\n",
         );
+        // `ps` gives no start time.
+        let unknown = |e: ProcessEntry| ProcessEntry { started: 0, ..e };
         assert_eq!(
             rows,
-            vec![entry(1, 0, false), entry(42, 1, true), entry(43, 42, false)]
+            vec![
+                unknown(entry(1, 0, false)),
+                unknown(entry(42, 1, true)),
+                unknown(entry(43, 42, false))
+            ]
         );
     }
 
@@ -624,6 +679,126 @@ mod tests {
         parent.wait()?;
         assert_eq!(background_shells(root), None, "the root is gone");
         assert_eq!(background_shells(0), None);
+        Ok(())
+    }
+
+    /// The pids of each stray, in order.
+    fn pids(found: &[Stray]) -> Vec<Vec<u32>> {
+        found
+            .iter()
+            .map(|stray| stray.processes.iter().map(|(pid, _)| *pid).collect())
+            .collect()
+    }
+
+    /// SPEC-353 LAP-003, the quartio-v2 sandbox on 2026-10-30: about 60 detached test jobs
+    /// (`sh -c "if command -v bash …"` running `bash /tmp/.tmpXXXXXX/.jobs/job-<hex>.sh`, each
+    /// polling `sleep 0.05`) whose test had ended, adopted by the sandbox's init, beside the agent
+    /// and its own background shell. Every job is a stray with its tree; the agent, its shells and
+    /// a live turn's commands never are.
+    #[test]
+    fn jobs_the_sandbox_init_adopted_are_strays() {
+        let mut table = vec![
+            ns_init(11, 10),     // the sandbox's init, below the probe's root (the outer bwrap)
+            entry(12, 11, false), // the agent
+            entry(13, 12, true),  // its background shell
+            entry(14, 13, false), // what the shell runs
+        ];
+        for job in 0..60 {
+            let sh = 100 + 3 * job;
+            table.push(entry(sh, 11, false)); // sh -c "if command -v bash …"
+            table.push(entry(sh + 1, sh, false)); // bash …/.jobs/job-<hex>.sh
+            table.push(entry(sh + 2, sh + 1, false)); // sleep 0.05
+        }
+        let found = strays(&table, 10);
+        assert_eq!(found.len(), 60, "{found:?}");
+        assert_eq!(found[0].processes, vec![(100, 100), (101, 101), (102, 102)]);
+        assert!(
+            found
+                .iter()
+                .flat_map(|stray| &stray.processes)
+                .all(|(pid, _)| *pid >= 100),
+            "the agent and its shells are no strays"
+        );
+        // They are no background shells either (DMD-001): the agent's own shell alone counts.
+        assert_eq!(count_shells(&table, 10), 1);
+    }
+
+    /// LAP-003: the agent is the init's earliest-started child, whatever the pids (they wrap);
+    /// a namespace inside the agent (its own `bwrap` or `unshare`) adopts the agent's processes,
+    /// which stay the agent's; without a sandbox init there are no strays.
+    #[test]
+    fn the_agent_is_the_init_s_first_child_and_inner_namespaces_are_its_own() {
+        let table = vec![
+            ns_init(11, 10),
+            ProcessEntry {
+                started: 50,
+                ..entry(900, 11, false) // the agent, at a high pid
+            },
+            ProcessEntry {
+                started: 400,
+                ..entry(20, 11, true) // an orphaned preview subshell (DMD-001), at a low pid
+            },
+            ProcessEntry {
+                started: 401,
+                ..entry(21, 20, false) // the server it started
+            },
+            ProcessEntry {
+                started: 60,
+                ..entry(901, 900, true)
+            },
+            ProcessEntry {
+                started: 61,
+                ..ns_init(902, 901) // a namespace the agent's command made
+            },
+            ProcessEntry {
+                started: 62,
+                ..entry(903, 902, false)
+            },
+            ProcessEntry {
+                started: 63,
+                ..entry(904, 902, false) // an orphan inside it: the agent's still
+            },
+        ];
+        assert_eq!(pids(&strays(&table, 10)), vec![vec![20, 21]]);
+        // Unsandboxed, the root is the agent: nothing is adopted below it.
+        assert!(strays(&[entry(31, 30, true), entry(32, 31, false)], 30).is_empty());
+        // Nothing but the agent below the init.
+        assert!(strays(&table[..2], 10).is_empty());
+    }
+
+    /// LAP-004 on real processes: a stray is killed only while its pid has the recorded start.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_stray_is_reaped_only_while_its_start_time_matches() -> Result<(), Box<dyn std::error::Error>>
+    {
+        /// Kills the process when the test ends, passed or failed: a test leaves nothing behind.
+        struct Reaped(std::process::Child);
+        impl Drop for Reaped {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = Reaped(
+            Command::new("/bin/sleep")
+                .arg("600")
+                .stdin(Stdio::null())
+                .spawn()?,
+        );
+        let pid = child.0.id();
+        let started = imp::started(pid).ok_or("no start time")?;
+        let reused = Stray {
+            processes: vec![(pid, started + 1)],
+        };
+        assert_eq!(reap_strays(&[reused]), 0, "another process now has that pid");
+        assert!(child.0.try_wait()?.is_none(), "not signalled");
+        let stray = Stray {
+            processes: vec![(pid, started), (u32::MAX - 1, 1)],
+        };
+        assert_eq!(reap_strays(&[stray]), 1);
+        let status = child.0.wait()?;
+        use std::os::unix::process::ExitStatusExt as _;
+        assert_eq!(status.signal(), Some(9), "{status:?}");
         Ok(())
     }
 }

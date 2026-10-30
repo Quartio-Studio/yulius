@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use yulius_contracts::scrub::{FINGERPRINT_VERSION, FingerprintSet, RedactionReport};
 use yulius_domain::vault::redact::{Fingerprint, HashedMatcher, Matcher, StreamRedactor};
 
-use crate::hook_client::post_internal;
+use crate::hook_client::{HookError, post_internal};
 
 /// Environment variable naming the run's fingerprint file.
 pub const SCRUB_FILE_ENV: &str = "YULIUS_SCRUB_FILE";
@@ -44,8 +44,41 @@ pub enum Fingerprints {
     NotARun,
     /// The fingerprints.
     Set(FingerprintSet),
-    /// A Yulius run whose fingerprints cannot be loaded.
-    Unavailable,
+    /// A Yulius run whose fingerprints cannot be loaded, and why.
+    Unavailable(Unavailable),
+}
+
+/// Why a run's fingerprints could not be loaded (SPEC-353 LAP-001).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unavailable {
+    /// What Yulius answered.
+    pub server: ServerAnswer,
+    /// What became of the run's fingerprint file.
+    pub file: FileState,
+}
+
+/// What Yulius answered the fingerprint request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerAnswer {
+    /// It refused the token (401, 403): the run ended, or the person may no longer work here.
+    Refused(u16),
+    /// It answered with another error status.
+    Failed(u16),
+    /// It could not be reached, or did not answer in time.
+    Unreachable,
+    /// Its answer, or this session's Yulius address, could not be used.
+    Unusable,
+}
+
+/// The run's fingerprint file, the fallback while Yulius cannot answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileState {
+    /// The session has none (`YULIUS_SCRUB_FILE` is not set).
+    None,
+    /// It cannot be read.
+    Unreadable(String),
+    /// It holds no fingerprint set this `yulius` can use.
+    Invalid(String),
 }
 
 fn unhex(text: &str) -> Option<Vec<u8>> {
@@ -69,20 +102,33 @@ pub fn load_fingerprints(env: &dyn Fn(&str) -> Option<String>) -> Fingerprints {
     if !in_run {
         return Fingerprints::NotARun;
     }
-    if let Ok(body) = post_internal("/internal/scrub/fingerprints", b"{}", env, FETCH_TIMEOUT)
-        && let Some(set) = serde_json::from_slice(&body).ok().and_then(valid)
-    {
-        return Fingerprints::Set(set);
-    }
-    if let Some(path) = file
-        && let Some(set) = std::fs::read(path)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .and_then(valid)
-    {
-        return Fingerprints::Set(set);
-    }
-    Fingerprints::Unavailable
+    let server = match post_internal("/internal/scrub/fingerprints", b"{}", env, FETCH_TIMEOUT) {
+        Ok(body) => match serde_json::from_slice(&body).ok().and_then(valid) {
+            Some(set) => return Fingerprints::Set(set),
+            None => ServerAnswer::Unusable,
+        },
+        Err(HookError::Status(code @ (401 | 403))) => ServerAnswer::Refused(code),
+        Err(HookError::Status(code)) => ServerAnswer::Failed(code),
+        Err(HookError::Io) => ServerAnswer::Unreachable,
+        Err(_) => ServerAnswer::Unusable,
+    };
+    let file = match file {
+        None => FileState::None,
+        Some(path) => match std::fs::read(&path) {
+            Err(_) => FileState::Unreadable(path),
+            Ok(bytes) => match serde_json::from_slice(&bytes).ok().and_then(valid) {
+                Some(set) => return Fingerprints::Set(set),
+                None => FileState::Invalid(path),
+            },
+        },
+    };
+    Fingerprints::Unavailable(Unavailable { server, file })
+}
+
+/// What `--scrub-exec` says when it does not run a command for want of fingerprints.
+#[must_use]
+pub fn unavailable_message(_why: &Unavailable) -> String {
+    "yulius: the agent-secret fingerprints of this run cannot be loaded, so the command was not run (Yulius is restarting, the run ended, or this session may no longer work in the project); try again".to_owned()
 }
 
 /// A matcher over a fingerprint set (`None` when it holds nothing to look for).
@@ -219,10 +265,8 @@ pub fn run_scrub_exec(args: &[String], env: &dyn Fn(&str) -> Option<String>) -> 
     let set = match load_fingerprints(env) {
         Fingerprints::Set(set) => Some(set),
         Fingerprints::NotARun => None,
-        Fingerprints::Unavailable => {
-            eprintln!(
-                "yulius: the agent-secret fingerprints of this run cannot be loaded, so the command was not run (Yulius is restarting, the run ended, or this session may no longer work in the project); try again"
-            );
+        Fingerprints::Unavailable(why) => {
+            eprintln!("{}", unavailable_message(&why));
             return NOT_RUN;
         }
     };
@@ -361,7 +405,7 @@ pub fn post_tool_use(
     let set = match load_fingerprints(env) {
         Fingerprints::NotARun => return 0,
         Fingerprints::Set(set) => set,
-        Fingerprints::Unavailable => {
+        Fingerprints::Unavailable(_) => {
             return withheld(output, "it could not be checked for agent secrets");
         }
     };
@@ -491,5 +535,122 @@ mod tests {
         empty.needles.clear();
         assert!(matcher(&empty).is_none());
         assert!(matcher(&set()).is_some());
+    }
+
+    /// A Yulius that answers one fingerprint request with `status`; its URL.
+    fn answering(status: &'static str) -> Result<String, Box<dyn std::error::Error>> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let url = format!("http://{}", listener.local_addr()?);
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            // The whole request (its body is `{}`), so the answer never cuts the client's write.
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 4096];
+            while !request.ends_with(b"{}") {
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buffer[..n]),
+                }
+            }
+            let _ = stream.write_all(
+                format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            );
+        });
+        Ok(url)
+    }
+
+    /// A URL nothing listens on.
+    fn nobody() -> Result<String, Box<dyn std::error::Error>> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        Ok(format!("http://{}", listener.local_addr()?))
+    }
+
+    fn run_env(url: String, file: Option<String>) -> impl Fn(&str) -> Option<String> {
+        move |key: &str| match key {
+            crate::launch::YULIUS_URL_ENV => Some(url.clone()),
+            crate::launch::TASK_TOKEN_ENV => Some("synthetic-task-token".to_owned()),
+            SCRUB_FILE_ENV => file.clone(),
+            _ => None,
+        }
+    }
+
+    fn unavailable(fingerprints: Fingerprints) -> Result<Unavailable, &'static str> {
+        match fingerprints {
+            Fingerprints::Unavailable(why) => Ok(why),
+            Fingerprints::Set(_) => Err("fingerprints loaded"),
+            Fingerprints::NotARun => Err("not a run"),
+        }
+    }
+
+    /// SPEC-353 LAP-001: a token Yulius refuses means the run ended (or the person may no longer
+    /// work in the project): the message says so and what to do, and blames no restart. On
+    /// 2026-10-30 every command of a Superagent said "Yulius is restarting" while it ran for days.
+    #[test]
+    fn a_refused_token_says_the_run_ended_not_a_restart() -> Result<(), Box<dyn std::error::Error>> {
+        let env = run_env(answering("401 Unauthorized")?, None);
+        let why = unavailable(load_fingerprints(&env))?;
+        assert_eq!(
+            why,
+            Unavailable {
+                server: ServerAnswer::Refused(401),
+                file: FileState::None,
+            }
+        );
+        let text = unavailable_message(&why);
+        assert!(text.contains("has ended"), "{text}");
+        assert!(text.contains("continue from Yulius"), "{text}");
+        assert!(!text.to_lowercase().contains("restart"), "{text}");
+        // The command does not run.
+        let dir = tempfile::tempdir()?;
+        let marker = dir.path().join("ran");
+        let env = run_env(answering("403 Forbidden")?, None);
+        let command = format!("touch '{}'", marker.display());
+        assert_eq!(run_scrub_exec(&[command], &env), NOT_RUN);
+        assert!(!marker.exists());
+        Ok(())
+    }
+
+    /// LAP-001: an unreachable Yulius may be restarting, or this sandbox's connections to it may
+    /// be used up by leftover processes; the message says both and what is wrong with the file.
+    #[test]
+    fn an_unreachable_yulius_names_a_restart_and_used_up_connections()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let invalid = dir.path().join("scrub.json");
+        std::fs::write(&invalid, b"{}")?;
+        let invalid = invalid.to_string_lossy().into_owned();
+        let why = unavailable(load_fingerprints(&run_env(nobody()?, Some(invalid.clone()))))?;
+        assert_eq!(
+            why,
+            Unavailable {
+                server: ServerAnswer::Unreachable,
+                file: FileState::Invalid(invalid.clone()),
+            }
+        );
+        let text = unavailable_message(&why);
+        for part in ["could not be reached", "restarting", "leftover processes", &invalid] {
+            assert!(text.contains(part), "{part}: {text}");
+        }
+        let missing = dir.path().join("gone.json").to_string_lossy().into_owned();
+        let why = unavailable(load_fingerprints(&run_env(nobody()?, Some(missing.clone()))))?;
+        assert_eq!(why.file, FileState::Unreadable(missing.clone()));
+        let text = unavailable_message(&why);
+        assert!(text.contains(&format!("{missing} cannot be read")), "{text}");
+        Ok(())
+    }
+
+    /// LAP-001: another error status is named as it is.
+    #[test]
+    fn another_error_status_is_named() -> Result<(), Box<dyn std::error::Error>> {
+        let env = run_env(answering("500 Internal Server Error")?, None);
+        let why = unavailable(load_fingerprints(&env))?;
+        assert_eq!(why.server, ServerAnswer::Failed(500));
+        let text = unavailable_message(&why);
+        assert!(text.contains("HTTP 500"), "{text}");
+        assert!(text.contains("no fingerprint file"), "{text}");
+        Ok(())
     }
 }

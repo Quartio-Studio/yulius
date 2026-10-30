@@ -260,8 +260,16 @@ pub trait SessionHost: Send + Sync {
     /// STT-002): the agent waits for Yulius and goes on by itself. A host that cannot tell them
     /// apart reports none.
     fn background_probe(&self, child_pid: u32) -> Option<BackgroundProbe> {
-        self.background_shells(child_pid)
-            .map(|shells| BackgroundProbe { shells, waits: 0 })
+        self.background_shells(child_pid).map(|shells| BackgroundProbe {
+            shells,
+            ..BackgroundProbe::default()
+        })
+    }
+    /// Kills `strays` (SPEC-353 LAP-004), each process only while its pid still has the recorded
+    /// start time. Blocking and bounded; returns how many processes were signalled. A host that
+    /// cannot tell a process's start time kills nothing.
+    fn reap_strays(&self, _strays: &[StrayProcess]) -> usize {
+        0
     }
     /// Freezes the run's agent and everything it started, never its host, so that nothing in it
     /// can tell (SPEC-160 OPS-010). Blocking and bounded; idempotent. A host that cannot freeze
@@ -295,10 +303,21 @@ pub enum RunFreeze {
 }
 
 /// What one probe of an agent's process tree found (SPEC-085 STT-002).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BackgroundProbe {
     /// Background shells that run something (TSK-014).
     pub shells: u32,
     /// Background shells whose only process is `yulius wait` (SPEC-050 DSK-102).
     pub waits: u32,
+    /// Processes the run's sandbox init adopted, other than the agent (SPEC-353 LAP-003).
+    pub strays: Vec<StrayProcess>,
+}
+
+/// A stray of a run (SPEC-353 LAP-003): a process its sandbox's init adopted (its parent ended),
+/// other than the agent, with everything below it. No shell of the agent owns it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StrayProcess {
+    /// `(pid, started)` of the adopted process first, then of the processes below it; `started`
+    /// is the start time in clock ticks after boot, which tells a reused pid apart.
+    pub processes: Vec<(u32, u64)>,
 }

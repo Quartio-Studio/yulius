@@ -64,6 +64,10 @@ pub struct EgressConfig {
     pub extra_roots_pem: Vec<String>,
     /// Simultaneous tunnels and intercepted connections.
     pub max_connections: usize,
+    /// Simultaneous tunnels and intercepted connections of one sandbox (SPEC-353 LAP-002): half
+    /// of the proxy, so one sandbox can neither take every slot nor all of its own relay's
+    /// connections to Yulius.
+    pub max_per_sandbox: usize,
 }
 
 impl Default for EgressConfig {
@@ -72,6 +76,7 @@ impl Default for EgressConfig {
             resolve: HashMap::new(),
             extra_roots_pem: Vec::new(),
             max_connections: 256,
+            max_per_sandbox: 128,
         }
     }
 }

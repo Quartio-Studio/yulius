@@ -36,16 +36,20 @@ struct Policy {
 #[async_trait]
 impl EgressPolicy for Policy {
     async fn egress_client(&self, token: &str) -> Option<EgressClient> {
-        if token != "good-token" {
-            return None;
-        }
+        // Two runs of sandbox s1 and one of sandbox s2.
+        let (run, sandbox) = match token {
+            "good-token" => ("a1", "s1"),
+            "sibling-token" => ("a2", "s1"),
+            "other-sandbox-token" => ("b1", "s2"),
+            _ => return None,
+        };
         Some(EgressClient {
             caller: EgressCaller::Agent {
-                attempt_id: "a1".into(),
+                attempt_id: run.into(),
                 task_id: TaskId::parse("t1").ok()?,
                 task_number: 1,
             },
-            sandbox_id: SandboxId::parse("s1").ok()?,
+            sandbox_id: SandboxId::parse(sandbox).ok()?,
         })
     }
 
@@ -194,6 +198,7 @@ async fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
                 resolve: HashMap::from([(BOUND.into(), upstream), (OTHER.into(), upstream)]),
                 extra_roots_pem: vec![test_ca.clone()],
                 max_connections: 16,
+                max_per_sandbox: 8,
             },
         )
         .map_err(|e| e.to_string())?,
@@ -328,5 +333,72 @@ async fn plain_requests_to_bound_hosts_go_over_https() -> TestResult {
     assert!(body.contains("auth=Bearer [secret:API_KEY]"), "{body}");
     let seen = setup.seen.lock().map_err(|_| "lock")?.clone();
     assert!(seen[0].contains(&format!("auth=Bearer {VALUE}")));
+    Ok(())
+}
+
+/// Opens a `CONNECT` tunnel to the opaque host with `token` and keeps it: the stream and the
+/// proxy's status line.
+async fn tunnel(
+    setup: &Setup,
+    token: &str,
+) -> Result<(tokio::net::TcpStream, String), Box<dyn std::error::Error>> {
+    use base64::Engine as _;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let mut stream = tokio::net::TcpStream::connect(setup.proxy).await?;
+    let auth = base64::engine::general_purpose::STANDARD.encode(format!("yulius:{token}"));
+    stream
+        .write_all(
+            format!(
+                "CONNECT {OTHER}:443 HTTP/1.1\r\nHost: {OTHER}:443\r\nProxy-Authorization: Basic {auth}\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await?;
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") && head.len() < 8192 {
+        if stream.read(&mut byte).await? == 0 {
+            break;
+        }
+        head.push(byte[0]);
+    }
+    let text = String::from_utf8_lossy(&head);
+    let status = text.lines().next().unwrap_or_default().to_owned();
+    Ok((stream, status))
+}
+
+/// SPEC-353 LAP-002 (2026-10-30: the proxy answered every sandbox "too many connections" while
+/// one sandbox's leftover processes held its connections, and that sandbox's own calls to Yulius
+/// failed): one sandbox gets at most its share of the proxy, whichever of its runs asks, and the
+/// refusal says why; another sandbox still gets a tunnel.
+#[tokio::test]
+async fn one_sandbox_cannot_take_every_connection() -> TestResult {
+    let setup = setup().await?;
+    let mut held = Vec::new();
+    for at in 0..8 {
+        let token = if at % 2 == 0 { "good-token" } else { "sibling-token" };
+        let (stream, status) = tunnel(&setup, token).await?;
+        assert!(status.contains(" 200"), "tunnel {at}: {status}");
+        held.push(stream);
+    }
+    let (mut refused, status) = tunnel(&setup, "sibling-token").await?;
+    assert!(status.contains(" 503"), "past the sandbox's share: {status}");
+    let mut body = String::new();
+    tokio::io::AsyncReadExt::read_to_string(&mut refused, &mut body).await?;
+    assert!(body.contains("this sandbox"), "{body}");
+    let (_other, status) = tunnel(&setup, "other-sandbox-token").await?;
+    assert!(status.contains(" 200"), "another sandbox: {status}");
+    // A tunnel that ends gives its slot back.
+    drop(held.pop());
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let (stream, status) = tunnel(&setup, "good-token").await?;
+        if status.contains(" 200") {
+            held.push(stream);
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "the slot never came back: {status}");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     Ok(())
 }
