@@ -80,7 +80,7 @@ late prompt's holds and pauses are outside this change; see Decisions.)
 - [x] Independent review and its findings answered
 - [x] Review round 1 fixes and the turn-order race, test-first
 - [x] Round 2 review and gate at the final head
-- [ ] Merge into dev on green CI and comment on #921
+- [x] Merge into dev on green CI and comment on #921
 
 ## Acceptance criteria
 
