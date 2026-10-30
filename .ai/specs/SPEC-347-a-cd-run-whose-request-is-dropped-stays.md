@@ -53,7 +53,7 @@ the environment as "already running" until a restart.
 - [x] CD start runs detached from its request with an owned deploy permit
 - [x] Decision, architecture and changes documented
 - [x] Gates green and independent review answered
-- [ ] Pull request merged into dev on green
+- [x] Pull request merged into dev on green
 
 ## Acceptance criteria
 
