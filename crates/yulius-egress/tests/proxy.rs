@@ -416,6 +416,10 @@ async fn one_sandbox_cannot_take_every_connection() -> TestResult {
         "past the sandbox's share: {status}"
     );
     assert!(status.contains("this sandbox"), "{status}");
+    assert!(
+        status.contains("this run holds 4 of them, and no other run has 2 more to give up"),
+        "SPEC-357 ESR-004: {status}"
+    );
     let (_other, status) = tunnel(&setup, "other-sandbox-token").await?;
     assert!(status.contains(" 200"), "another sandbox: {status}");
     // A tunnel that ends gives its slot back.
@@ -515,7 +519,10 @@ async fn one_busy_run_gives_way_to_another_run_of_its_sandbox() -> TestResult {
     );
     let (_refused, status) = tunnel(&setup, "good-token").await?;
     assert!(status.contains(" 503"), "the busy run itself: {status}");
-    assert!(status.contains("this run holds 7 of them"), "{status}");
+    assert!(
+        status.contains("this run holds 7 of them, the most of the sandbox's runs"),
+        "{status}"
+    );
     Ok(())
 }
 
@@ -523,6 +530,7 @@ async fn one_busy_run_gives_way_to_another_run_of_its_sandbox() -> TestResult {
 /// up a connection to a sandbox holding fewer.
 #[tokio::test]
 async fn a_full_proxy_takes_from_the_busiest_sandbox() -> TestResult {
+    use tokio::io::AsyncReadExt as _;
     let setup = setup_with(yulius_egress::IDLE_FLOOR, 10).await?;
     let mut held = Vec::new();
     for at in 0..10 {
@@ -539,6 +547,13 @@ async fn a_full_proxy_takes_from_the_busiest_sandbox() -> TestResult {
     assert!(
         status.contains(" 200"),
         "the sandbox holding fewer: {status}"
+    );
+    let mut byte = [0u8; 1];
+    let read =
+        tokio::time::timeout(std::time::Duration::from_secs(10), held[0].read(&mut byte)).await?;
+    assert!(
+        matches!(read, Ok(0) | Err(_)),
+        "the busiest sandbox's oldest tunnel gave way: {read:?}"
     );
     Ok(())
 }

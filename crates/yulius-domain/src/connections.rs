@@ -436,7 +436,7 @@ mod tests {
         let taken = table.admit_by("s", "b", 5, 10)?.evicted.ok_or("none")?;
         assert_eq!(
             (taken.owner, taken.payload, taken.busier, taken.idle_ms),
-            ("a", 1, Some(4), 10)
+            ("a", 1, Some(Busier::Owner(4)), 10)
         );
         assert_eq!(table.admit_by("s", "a", 6, 20).err(), Some(Full::Key));
         assert_eq!(
@@ -451,6 +451,14 @@ mod tests {
         // Past the floor, the longest idle goes first, even the asker's own.
         let idle = table.admit_by("s", "b", 9, 5_000)?.evicted.ok_or("none")?;
         assert_eq!((idle.payload, idle.busier), (3, None));
+        // Review round 1: one more than the asker is not enough.
+        let mut close = Connections::with_owners(8, 5, 1_000);
+        for payload in 1..=3 {
+            close.admit_by("s", "a", payload, 0)?;
+        }
+        close.admit_by("s", "b", 4, 0)?;
+        close.admit_by("s", "b", 5, 0)?;
+        assert_eq!(close.admit_by("s", "b", 6, 10).err(), Some(Full::Key));
         Ok(())
     }
 
@@ -470,6 +478,17 @@ mod tests {
             all_held.admit_by("s", "a", payload, 0)?.activity.hold();
         }
         assert_eq!(all_held.admit_by("s", "b", 3, 10).err(), Some(Full::Key));
+        // Review round 1: an owner with nothing to give up is passed over for the next busiest,
+        // and is not counted as busier (the refusal's text).
+        assert_eq!(all_held.most_of_others(&"s", &"b"), 0);
+        let mut next = Connections::with_owners(8, 5, 1_000);
+        for payload in 1..=3 {
+            next.admit_by("s", "a", payload, 0)?.activity.hold();
+        }
+        next.admit_by("s", "c", 4, 0)?;
+        next.admit_by("s", "c", 5, 0)?;
+        let taken = next.admit_by("s", "b", 6, 10)?.evicted.ok_or("none")?;
+        assert_eq!((taken.owner, taken.payload), ("c", 4));
         Ok(())
     }
 
@@ -485,7 +504,7 @@ mod tests {
         let taken = table.admit_by("s2", "y", 5, 10)?.evicted.ok_or("none")?;
         assert_eq!(
             (taken.key, taken.owner, taken.payload, taken.busier),
-            ("s1", "b", 2, Some(3))
+            ("s1", "b", 2, Some(Busier::Key(3)))
         );
         // s1 and s2 hold 2 each: a third key takes from the first of them.
         let taken = table.admit_by("s3", "z", 6, 20)?.evicted.ok_or("none")?;
