@@ -1,14 +1,17 @@
 // Dragging a tab along its strip (SPEC-112 NOT-015, SPEC-127 EDT-011, SPEC-336), for the notepads',
 // the Editor's and the sandbox tabs. Mouse or pen; touch scrolls the strip and moves tabs from the menu. Past a few
 // pixels the tab follows the pointer, the tabs it passes slide aside, and on release it settles
-// into its place from where it was let go; Escape puts it back. The click that ends a drag (or an
-// Escape) chooses nothing: the strip's click handler asks `clickConsumed()` first. A strip that
-// would redraw during a press waits (`dragging`) and redraws when it ends (`commit` after a drag,
-// `cancelled` otherwise: after the click that ends a plain press, so the tab pressed is the one
-// clicked).
+// into its place from where it was let go. It stays within its strip's tabs: past either end it
+// gives a little, ever more slowly, and springs back on release (SPEC-354). Escape puts it back.
+// The click that ends a drag (or an Escape) chooses nothing: the strip's click handler asks
+// `clickConsumed()` first. A strip that would redraw during a press waits (`dragging`) and redraws
+// when it ends (`commit` after a drag, `cancelled` otherwise: after the click that ends a plain
+// press, so the tab pressed is the one clicked).
 
 /** How far a pressed tab moves before it is dragged rather than clicked. */
 const DRAG_THRESHOLD_PX = 4;
+/** How far past either end of its strip a dragged tab can be pulled (it never quite gets there). */
+const OVERSHOOT_MAX_PX = 16;
 
 /**
  * Drag for the tabs of `tablist` (the elements matching `selector`): `keyOf(tab)` names a tab
@@ -31,6 +34,22 @@ export function createTabDrag(tablist, { keyOf, commit, cancelled = () => {}, se
     window.addEventListener('pointerup', end);
     window.addEventListener('pointercancel', cancel);
     window.addEventListener('keydown', escape, true);
+  }
+
+  /**
+   * How far the dragged tab is drawn from its place for a pointer moved by `dx`: as far, within the
+   * strip's tabs; past an end, an overshoot that slows as it grows and stays under OVERSHOOT_MAX_PX.
+   */
+  function bounded(state, dx) {
+    const from = state.keys.indexOf(state.key);
+    const last = state.keys.length - 1;
+    const min = state.lefts[0];
+    const max = state.lefts[last] + state.widths[last] - state.widths[from];
+    const left = state.lefts[from] + dx;
+    const give = (over) => OVERSHOOT_MAX_PX * over / (over + OVERSHOOT_MAX_PX);
+    if (left < min) return min - give(min - left) - state.lefts[from];
+    if (left > max) return max + give(left - max) - state.lefts[from];
+    return dx;
   }
 
   /** Where the dragged tab lands moved by `dx`: the order it makes and how far each tab shifts. */
@@ -60,10 +79,13 @@ export function createTabDrag(tablist, { keyOf, commit, cancelled = () => {}, se
       tablist.classList.add('reordering');
       drag.tab.classList.add('dragging');
     }
+    // The place follows the pointer; only where the tab is drawn stops at the strip's ends (a tab
+    // wider than the end one could not otherwise pass it).
     const { shifts } = layout(drag, dx);
     drag.tabs.forEach((tab, i) => {
       const key = drag.keys[i];
-      tab.style.transform = `translateX(${key === drag.key ? dx : shifts.get(key)}px)`;
+      const shift = key === drag.key ? bounded(drag, dx) : shifts.get(key);
+      tab.style.transform = `translateX(${shift}px)`;
     });
   }
 
@@ -88,7 +110,7 @@ export function createTabDrag(tablist, { keyOf, commit, cancelled = () => {}, se
     setTimeout(() => { dragged = false; }, 0); // a release outside the tab clicks nothing
     const dx = event.clientX - state.startX;
     const { order } = layout(state, dx);
-    const from = state.lefts[state.keys.indexOf(state.key)] + dx;
+    const from = state.lefts[state.keys.indexOf(state.key)] + bounded(state, dx);
     const tabs = commit(order);
     const tab = tabs.find((t) => keyOf(t) === state.key);
     if (!tab) return;
