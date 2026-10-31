@@ -167,6 +167,13 @@ pub enum UiEvent {
         /// The Superagent's sandbox.
         sandbox_id: String,
     },
+    /// A person's Superagent in a sandbox lost its link to Yulius, or got it back (SPEC-355
+    /// SLR-006): its panel reads the link again. Sent to that person only.
+    #[serde(rename = "superagent.link")]
+    SuperagentLink {
+        /// The Superagent's sandbox.
+        sandbox_id: String,
+    },
     /// Events were lost; refetch.
     #[serde(rename = "resync")]
     Resync,

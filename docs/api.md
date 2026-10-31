@@ -1222,6 +1222,15 @@ resolves to nothing, the run gets the server without that variable or token.
     for its owner (SPEC-066); on an uncontained server Claude Code asks the person before every
     tool that is not read-only, on a contained one it bypasses approvals (SPEC-208).
     A conversation it could not resume (an error exit within 10 s) is skipped next time.
+  - `GET /api/sandboxes/{sid}/cockpit/link` (write) → 200 `{"state","lost_at"}`: the caller's
+    Superagent's link to Yulius, tested from its sandbox every minute through the holder's forward
+    (SPEC-355): `lost` (the last test failed), `recovered` (it failed since this Superagent
+    started, then worked: its Yulius tools may stay disconnected), `ok`, or `unknown` (not tested,
+    cannot be told, or none runs); `lost_at` is when it was last found lost (ms) or `null`.
+  - `POST /api/sandboxes/{sid}/cockpit/restart` (write) → 200 `Shell`: ends the caller's running
+    Superagent (its viewers get `switched`) and starts it again in place, resuming its newest
+    conversation, as `POST …/cockpit` would; starts one when none runs. 409 when its process could
+    not be ended (it keeps running). A request it was waiting on ends with it (SPEC-355).
   - `GET /api/sandboxes/{sid}/superagent/requests` → 200 `[{"id","sandbox":{"id","slug",
     "repository"},"title"|null,"prompt","options":{…the start options set},"ends_at"}]`: the
     caller's own requests of their Superagent in `sid` to start a task in another sandbox, oldest
@@ -1580,6 +1589,9 @@ personal secret was switched on or off for a project; to a project secret's view
 `GET /api/sandboxes/{sid}/agent-secrets` again; SPEC-209), `{"type":"superagent.requests","sandbox_id"}`
 (the requests the person's Superagent in that sandbox waits on them to answer changed; to that
 person only; its panel reads `GET /api/sandboxes/{sid}/superagent/requests` again; SPEC-335),
+`{"type":"superagent.link","sandbox_id"}` (the person's Superagent in that sandbox lost its link
+to Yulius or got it back; to that person only; its panel reads `GET
+/api/sandboxes/{sid}/cockpit/link` again; SPEC-355),
 `{"type":"resync"}`,
 `{"type":"heartbeat"}` (every 20 s, `events_heartbeat_ms`: a page that hears nothing for 50 s, or
 for 1.5 beats when it is shown again or back online, takes the connection for dead and reconnects,

@@ -183,6 +183,11 @@ pub struct ShellRuntime {
     /// A Cockpit's strays as last probed, by their first process `(pid, started)`, to when (ms)
     /// each was first seen (SPEC-355 SLR-004).
     pub(crate) strays_seen: Mutex<HashMap<(u32, u64), i64>>,
+    /// A Cockpit's link to Yulius as last tested: [`crate::cockpit::LINK_UNKNOWN`], `LINK_OK` or
+    /// `LINK_LOST` (SPEC-355 SLR-005).
+    pub(crate) link: AtomicU8,
+    /// When its link was last found lost (ms; 0: never since it started).
+    pub(crate) link_lost_ms: AtomicI64,
 }
 
 /// A shell as its owner sees it (`GET /api/sandboxes/{sid}/shells`).
@@ -822,6 +827,8 @@ impl App {
             watch: Mutex::new(None),
             child_pid: AtomicU32::new(0),
             strays_seen: Mutex::new(HashMap::new()),
+            link: AtomicU8::new(crate::cockpit::LINK_UNKNOWN),
+            link_lost_ms: AtomicI64::new(0),
         })
     }
 
@@ -1431,6 +1438,8 @@ impl App {
             watch: Mutex::new(None),
             child_pid: AtomicU32::new(0),
             strays_seen: Mutex::new(HashMap::new()),
+            link: AtomicU8::new(crate::cockpit::LINK_UNKNOWN),
+            link_lost_ms: AtomicI64::new(0),
         });
         let reader = self.attach_shell(&runtime).await?;
         self.shells

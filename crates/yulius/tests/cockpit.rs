@@ -4064,3 +4064,127 @@ async fn a_superagent_turn_that_starts_during_the_probe_keeps_its_strays() -> Te
     f.h.app.end_all_shells().await;
     Ok(())
 }
+
+/// A sandbox whose link to Yulius the test sets (SPEC-355 SLR-005): `None` cannot be told.
+struct Link(std::sync::Mutex<Option<bool>>);
+
+impl Link {
+    fn set(&self, link: Option<bool>) {
+        *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = link;
+    }
+}
+
+#[async_trait::async_trait]
+impl yulius_app::ports::isolation::SandboxIsolation for Link {
+    async fn prepare(
+        &self,
+        _: &yulius_app::ports::isolation::SandboxRef,
+    ) -> AppResult<Option<yulius_app::ports::isolation::SandboxJoin>> {
+        Ok(None)
+    }
+    fn release(&self, _: &SandboxId) {}
+    async fn link(&self, _: &SandboxId) -> Option<bool> {
+        *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// The link of `creds`'s Superagent as its panel reads it.
+async fn link_state(f: &Fixture, creds: &Creds) -> Result<Value, Box<dyn std::error::Error>> {
+    let resp = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/cockpit/link",
+        None,
+        creds,
+    )
+    .await?;
+    assert_eq!(resp.status, StatusCode::OK, "{:?}", resp.body);
+    Ok(resp.body)
+}
+
+/// Waits until alice's Superagent's link reads `state`.
+async fn link_reads(f: &Fixture, state: &str) -> Result<Value, Box<dyn std::error::Error>> {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let link = link_state(f, &f.alice).await?;
+        if link["state"] == state {
+            return Ok(link);
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("the link never read {state}: {link}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// SPEC-355 SLR-005, SLR-006 (2026-10-31: a Superagent whose sandbox could not reach Yulius kept
+/// its Yulius tools disconnected, and the person could only close it): Yulius tests the link from
+/// the sandbox, the panel reads it lost and then recovered, and Restart Superagent starts it again
+/// in place, resuming the same conversation.
+#[tokio::test]
+async fn a_superagent_that_lost_yulius_says_so_and_restarts_in_place() -> TestResult {
+    let f = fixture().await?;
+    let link = Arc::new(Link(std::sync::Mutex::new(Some(true))));
+    assert!(f.h.app.set_isolation(link.clone()));
+    idle_conversation(&f)?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    link_reads(&f, "ok").await?;
+
+    link.set(Some(false));
+    f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
+    let lost = link_reads(&f, "lost").await?;
+    let lost_at = lost["lost_at"].as_i64().ok_or("lost_at")?;
+    link.set(Some(true));
+    f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
+    let recovered = link_reads(&f, "recovered").await?;
+    assert_eq!(recovered["lost_at"].as_i64(), Some(lost_at), "{recovered}");
+    // A link that cannot be told changes nothing.
+    link.set(None);
+    f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
+    assert_eq!(link_state(&f, &f.alice).await?["state"], "recovered");
+
+    // Only the owner reads or restarts it; bob may not even work in the sandbox.
+    let refused = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/cockpit/restart",
+        None,
+        &f.bob,
+    )
+    .await?;
+    assert!(refused.status.is_client_error(), "{:?}", refused.status);
+    let restarted = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/cockpit/restart",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(restarted.status, StatusCode::OK, "{:?}", restarted.body);
+    let again = restarted.body["id"].as_str().ok_or("id")?.to_owned();
+    assert_ne!(again, id, "a new process");
+    let live: Vec<String> =
+        f.h.app
+            .sandbox_shells(&sid())
+            .iter()
+            .map(|s| s.id().to_owned())
+            .collect();
+    assert_eq!(live, vec![again.clone()], "the old one ended");
+    let served = serve(f.h.router.clone()).await?;
+    let mut socket = attach(served.addr, &again, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(
+        printed(&screen, "cockpit-args")?,
+        "[--resume conv-1 --model claude-opus-5-5 --effort high]",
+        "the same conversation"
+    );
+    let fresh = link_state(&f, &f.alice).await?;
+    assert!(
+        fresh["state"] == "ok" || fresh["state"] == "unknown",
+        "the new one lost nothing: {fresh}"
+    );
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
