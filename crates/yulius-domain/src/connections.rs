@@ -223,10 +223,16 @@ mod tests {
     /// answer) never gives way, however long it has carried no byte.
     #[test]
     fn a_held_connection_never_gives_way() -> TestResult {
-        let mut table = Connections::new(1, 1, 10);
-        let held = table.admit((), "request", 0)?;
-        held.activity.hold();
-        assert_eq!(table.admit((), "new", 1_000_000).err(), Some(Full::Total));
+        for floor in [10, 0] {
+            let mut table = Connections::new(1, 1, floor);
+            let held = table.admit((), "request", 0)?;
+            held.activity.hold();
+            assert_eq!(
+                table.admit((), "new", 1_000_000).err(),
+                Some(Full::Total),
+                "floor {floor}"
+            );
+        }
         Ok(())
     }
 
