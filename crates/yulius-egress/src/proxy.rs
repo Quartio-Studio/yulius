@@ -116,7 +116,8 @@ type Warned = HashMap<(&'static str, Option<String>), Instant>;
 /// The proxy's connections: at most `max_connections`, `max_per_sandbox` per sandbox; at a limit
 /// the longest-idle one past the floor gives way (SLR-002). Each holds the sender that ends it.
 struct Slots {
-    table: Mutex<Connections<String, oneshot::Sender<()>>>,
+    /// By sandbox and run (`EgressClient::use_key`), SPEC-357.
+    table: Mutex<Connections<String, oneshot::Sender<()>, String>>,
     epoch: Instant,
 }
 
@@ -403,7 +404,7 @@ impl EgressProxy {
             http: builder.build()?,
             resolve: config.resolve,
             slots: Arc::new(Slots {
-                table: Mutex::new(Connections::new(
+                table: Mutex::new(Connections::with_owners(
                     config.max_connections,
                     config.max_per_sandbox,
                     u64::try_from(config.idle_floor.as_millis()).unwrap_or(u64::MAX),
@@ -417,25 +418,50 @@ impl EgressProxy {
         })
     }
 
-    /// A place for one connection of `client`'s sandbox, with what resolves once it gave way, or
-    /// the text of the `503` refusing it. Past the sandbox's share its longest-idle connection
-    /// gives way, past the proxy's limit the longest-idle of all (SPEC-355 SLR-002); one active
-    /// within the floor never does, and then the connection is refused (LAP-002). Each refusal and
-    /// each connection that gave way is logged as a warning, at most once a minute per limit and
-    /// sandbox.
+    /// A place for one connection of `client`'s run in its sandbox, with what resolves once it
+    /// gave way, or the text of the `503` refusing it. Past the sandbox's share its longest-idle
+    /// connection gives way, past the proxy's limit the longest-idle of all (SPEC-355 SLR-002);
+    /// failing that, the oldest of the busiest other run (or sandbox) holding 2 more (SPEC-357
+    /// ESR-002, ESR-003); else the connection is refused (LAP-002) with how many the asking run
+    /// holds. Each refusal and each connection that gave way is logged as a warning, at most once
+    /// a minute per limit and sandbox.
     fn slot(&self, client: &EgressClient) -> Result<(Slot, oneshot::Receiver<()>), String> {
         let sandbox = client.sandbox_id.as_str();
+        let run = client.use_key();
         let (end, ended) = oneshot::channel();
-        let admitted = self
-            .slots
-            .table
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .admit(sandbox.to_owned(), end, self.slots.now());
+        let (admitted, held) = {
+            let mut table = self
+                .slots
+                .table
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let admitted =
+                table.admit_by(sandbox.to_owned(), run.to_owned(), end, self.slots.now());
+            let (sandbox, run) = (sandbox.to_owned(), run.to_owned());
+            let held = (
+                table.count_of(&sandbox, &run),
+                table.most_of_others(&sandbox, &run),
+            );
+            (admitted, held)
+        };
         let mut warned = self.warned.lock().unwrap_or_else(PoisonError::into_inner);
         match admitted {
             Ok(admitted) => {
-                if let Some(evicted) = admitted.evicted
+                if let Some(evicted) = &admitted.evicted
+                    && let Some(busier) = evicted.busier
+                {
+                    if warn_due(&mut warned, "busiest", Some(&evicted.key)) {
+                        tracing::warn!(
+                            sandbox = %evicted.key,
+                            run = %evicted.owner,
+                            held = busier,
+                            for_sandbox = sandbox,
+                            "egress proxy: at a limit with every connection active, the busiest \
+                             run's oldest connection was closed for another run; its leftover \
+                             processes may hold them (docs/operations.md)"
+                        );
+                    }
+                } else if let Some(evicted) = admitted.evicted
                     && warn_due(&mut warned, "gave way", Some(&evicted.key))
                 {
                     tracing::warn!(
@@ -453,17 +479,25 @@ impl EgressProxy {
                 Ok((slot, ended))
             }
             Err(connections::Full::Key) => {
+                let (mine, others) = held;
                 if warn_due(&mut warned, "share", Some(sandbox)) {
                     tracing::warn!(
                         sandbox,
+                        run,
+                        held = mine,
                         share = self.max_per_sandbox,
                         "egress proxy: a sandbox holds its share of the connections; \
                          leftover processes may hold them (docs/operations.md)"
                     );
                 }
+                let whose = if mine > others {
+                    "the most of its runs: end this run's leftover processes"
+                } else {
+                    "and no other run holds 2 more: end leftover processes"
+                };
                 Err(format!(
-                    "Yulius proxy: this sandbox's processes hold all of its {} connections; \
-                     end leftover processes or try again",
+                    "Yulius proxy: this sandbox's processes hold all of its {} connections, each \
+                     active lately; this run holds {mine} of them, {whose} or try again",
                     self.max_per_sandbox
                 ))
             }

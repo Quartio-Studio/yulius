@@ -502,7 +502,10 @@ async fn one_busy_run_gives_way_to_another_run_of_its_sandbox() -> TestResult {
         held.push(stream);
     }
     let (_sibling, status) = tunnel(&setup, "sibling-token").await?;
-    assert!(status.contains(" 200"), "another run of the sandbox: {status}");
+    assert!(
+        status.contains(" 200"),
+        "another run of the sandbox: {status}"
+    );
     let mut byte = [0u8; 1];
     let read =
         tokio::time::timeout(std::time::Duration::from_secs(10), held[0].read(&mut byte)).await?;
@@ -533,6 +536,9 @@ async fn a_full_proxy_takes_from_the_busiest_sandbox() -> TestResult {
         held.push(stream);
     }
     let (_other, status) = tunnel(&setup, "other-sandbox-token").await?;
-    assert!(status.contains(" 200"), "the sandbox holding fewer: {status}");
+    assert!(
+        status.contains(" 200"),
+        "the sandbox holding fewer: {status}"
+    );
     Ok(())
 }
