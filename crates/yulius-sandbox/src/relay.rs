@@ -8,22 +8,28 @@
 //!
 //! Every connection is bounded: [`MAX_CONNECTIONS`] at once per direction and sandbox, the
 //! header within [`HEADER_TIMEOUT`], the target within [`CONNECT_TIMEOUT`]. Bytes are copied
-//! unchanged; nothing is parsed after the header.
+//! unchanged; nothing is parsed after the header. At its limit a relay toward Yulius (a forward,
+//! `out.sock`) closes its longest-idle connection past [`IDLE_FLOOR`] for a new one instead of
+//! refusing it (SPEC-355 SLR-001, ADR-0241).
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
 use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use tokio::sync::Semaphore;
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use yulius_contracts::sandbox::{
     INBOUND_CONNECT, INBOUND_PORTS, ListeningPorts, RELAY_FORBIDDEN, RELAY_OK, RELAY_REFUSED,
 };
+use yulius_domain::connections::{Activity, Connections};
 
 /// Connections relayed at once per direction and sandbox.
 pub const MAX_CONNECTIONS: usize = 256;
@@ -36,6 +42,161 @@ const MAX_PORTS_LINE: u64 = 64 * 1024;
 
 /// Least time between two warnings that a relay dropped a connection at its limit.
 const WARN_EVERY: Duration = Duration::from_secs(60);
+/// Least time a connection toward Yulius is idle (no byte either way) before it may give way to a
+/// new one at its relay's limit (SPEC-355 SLR-001, SLR-003): longer than Yulius's longest hold of
+/// a call (`/internal/agent/wait`, 55 s).
+pub const IDLE_FLOOR: Duration = Duration::from_secs(60);
+
+/// One relay's places toward Yulius (SLR-001): at its limit the longest-idle connection past the
+/// floor gives way to a new one. Each place holds the sender that ends its connection.
+struct Places {
+    table: Mutex<Connections<(), oneshot::Sender<()>>>,
+    epoch: Instant,
+}
+
+/// A connection's place, freed when dropped.
+struct Place {
+    places: Arc<Places>,
+    id: u64,
+    activity: Activity,
+}
+
+impl Places {
+    fn new(max: usize, floor: Duration) -> Arc<Self> {
+        let floor = u64::try_from(floor.as_millis()).unwrap_or(u64::MAX);
+        Arc::new(Self {
+            table: Mutex::new(Connections::new(max, max, floor)),
+            epoch: Instant::now(),
+        })
+    }
+
+    fn now(&self) -> u64 {
+        u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// A place, what resolves once its connection gave way, and how long the connection that
+    /// gave way to it had been idle (ms); `None` when every connection was active lately.
+    fn admit(self: &Arc<Self>) -> Option<(Place, oneshot::Receiver<()>, Option<u64>)> {
+        let (end, ended) = oneshot::channel();
+        let admitted = self
+            .table
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .admit((), end, self.now())
+            .ok()?;
+        // Dropping the evicted sender ends that connection.
+        let idle = admitted.evicted.map(|evicted| evicted.idle_ms);
+        let place = Place {
+            places: Arc::clone(self),
+            id: admitted.id,
+            activity: admitted.activity,
+        };
+        Some((place, ended, idle))
+    }
+}
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        self.places
+            .table
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .close(self.id);
+    }
+}
+
+/// A relayed client's stream: every byte either way marks its connection active, and its place
+/// is freed with it.
+struct Tracked<S> {
+    inner: S,
+    place: Place,
+}
+
+impl<S> Tracked<S> {
+    fn touch(&self) {
+        self.place.activity.touch(self.place.places.now());
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for Tracked<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if buf.filled().len() > before {
+            self.touch();
+        }
+        poll
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Tracked<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let poll = Pin::new(&mut self.inner).poll_write(cx, buf);
+        if matches!(poll, Poll::Ready(Ok(n)) if n > 0) {
+            self.touch();
+        }
+        poll
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// Says on the process's stderr, at most every [`WARN_EVERY`] (`last`), that a relay closed its
+/// longest-idle connection (idle `idle_ms`) for a new one (SLR-001).
+fn warn_gave_way(
+    last: &mut Option<Instant>,
+    relay: &str,
+    port: Option<u16>,
+    sandbox: Option<&str>,
+    idle_ms: u64,
+) {
+    notice_gave_way(
+        &mut io::stderr().lock(),
+        last,
+        relay,
+        port,
+        sandbox,
+        idle_ms,
+    );
+}
+
+fn notice_gave_way(
+    out: &mut dyn io::Write,
+    last: &mut Option<Instant>,
+    relay: &str,
+    port: Option<u16>,
+    sandbox: Option<&str>,
+    idle_ms: u64,
+) {
+    if last.is_some_and(|at| at.elapsed() < WARN_EVERY) {
+        return;
+    }
+    *last = Some(Instant::now());
+    let port = port.map(|p| format!(" port={p}")).unwrap_or_default();
+    let sandbox = sandbox.map(|s| format!(" sandbox={s}")).unwrap_or_default();
+    let _ = writeln!(
+        out,
+        "WARN sandbox relay: at the limit, the longest-idle connection was closed for a new one; \
+         leftover processes may hold them (docs/operations.md, \"Leftover agent processes\") \
+         relay={relay}{port}{sandbox} idle_s={}",
+        idle_ms / 1000
+    );
+    let _ = out.flush();
+}
 
 /// Counts a connection a relay dropped at its limit (`limit`) and says so on the process's stderr
 /// (the server's journal; inside a sandbox the holder's `holder.log` or the Docker front's
@@ -235,7 +396,15 @@ pub async fn serve_forward_at(
     out_sock: PathBuf,
     loopback_v6: bool,
 ) -> io::Result<JoinHandle<()>> {
-    forward_within(address, port, out_sock, loopback_v6, MAX_CONNECTIONS).await
+    forward_within(
+        address,
+        port,
+        out_sock,
+        loopback_v6,
+        MAX_CONNECTIONS,
+        IDLE_FLOOR,
+    )
+    .await
 }
 
 /// Connections the relays of this process dropped at their limit (SPEC-353 LAP-002).
@@ -247,13 +416,15 @@ fn dropped_connections() -> u64 {
     DROPPED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// [`serve_forward_at`] with `max` connections at once (tests use a small one).
+/// [`serve_forward_at`] with `max` connections at once, idle ones giving way after `floor`
+/// (tests use small ones).
 async fn forward_within(
     address: Ipv4Addr,
     port: u16,
     out_sock: PathBuf,
     loopback_v6: bool,
     max: usize,
+    floor: Duration,
 ) -> io::Result<JoinHandle<()>> {
     let v4 = TcpListener::bind((address, port)).await?;
     let v6 = if loopback_v6 {
@@ -261,9 +432,10 @@ async fn forward_within(
     } else {
         None
     };
-    let limit = Arc::new(Semaphore::new(max));
+    let places = Places::new(max, floor);
     Ok(tokio::spawn(async move {
         let mut warned = None;
+        let mut gave_way = None;
         loop {
             let accepted = match &v6 {
                 Some(v6) => tokio::select! {
@@ -276,20 +448,32 @@ async fn forward_within(
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             };
-            let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
+            let Some((place, ended, idle)) = places.admit() else {
                 warn_dropped(&mut warned, "forward", Some(port), None, max);
                 continue;
             };
+            if let Some(idle) = idle {
+                warn_gave_way(&mut gave_way, "forward", Some(port), None, idle);
+            }
             let out_sock = out_sock.clone();
             tokio::spawn(async move {
-                let _ = forward_connection(stream, port, &out_sock).await;
-                drop(permit);
+                let stream = Tracked {
+                    inner: stream,
+                    place,
+                };
+                tokio::select! {
+                    _ = forward_connection(stream, port, &out_sock) => {}
+                    _ = ended => {}
+                }
             });
         }
     }))
 }
 
-async fn forward_connection(stream: TcpStream, port: u16, out_sock: &Path) -> io::Result<()> {
+async fn forward_connection<S>(stream: S, port: u16, out_sock: &Path) -> io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut server = with_timeout(CONNECT_TIMEOUT, "relay", UnixStream::connect(out_sock)).await?;
     server.write_u16(port).await?;
     let status = with_timeout(HEADER_TIMEOUT, "relay status", server.read_u8()).await?;
@@ -308,14 +492,15 @@ pub async fn serve_outbound(
     targets: Arc<BTreeMap<u16, SocketAddr>>,
     sandbox: String,
 ) {
-    let limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let places = Places::new(MAX_CONNECTIONS, IDLE_FLOOR);
     let mut warned = None;
+    let mut gave_way = None;
     loop {
         let Ok((stream, _)) = listener.accept().await else {
             tokio::time::sleep(Duration::from_millis(100)).await;
             continue;
         };
-        let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
+        let Some((place, ended, idle)) = places.admit() else {
             drop(stream);
             warn_dropped(
                 &mut warned,
@@ -326,18 +511,30 @@ pub async fn serve_outbound(
             );
             continue;
         };
+        if let Some(idle) = idle {
+            warn_gave_way(&mut gave_way, "outbound", None, Some(&sandbox), idle);
+        }
         let targets = Arc::clone(&targets);
         tokio::spawn(async move {
-            let _ = outbound_connection(stream, &targets).await;
-            drop(permit);
+            let stream = Tracked {
+                inner: stream,
+                place,
+            };
+            tokio::select! {
+                _ = outbound_connection(stream, &targets) => {}
+                _ = ended => {}
+            }
         });
     }
 }
 
-async fn outbound_connection(
-    mut stream: UnixStream,
+async fn outbound_connection<S>(
+    mut stream: S,
     targets: &BTreeMap<u16, SocketAddr>,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let port = with_timeout(HEADER_TIMEOUT, "relay header", stream.read_u16()).await?;
     let Some(target) = targets.get(&port) else {
         return stream.write_u8(RELAY_FORBIDDEN).await;
@@ -617,7 +814,8 @@ mod tests {
         let free = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let port = free.local_addr()?.port();
         drop(free);
-        let forward = forward_within(Ipv4Addr::LOCALHOST, port, out_sock, false, 2).await?;
+        let forward =
+            forward_within(Ipv4Addr::LOCALHOST, port, out_sock, false, 2, IDLE_FLOOR).await?;
         let mut clients = Vec::new();
         for _ in 0..2 {
             clients.push(TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await?);
@@ -683,6 +881,30 @@ mod tests {
             never.is_some(),
             "a failed write still counts as the minute's notice"
         );
+    }
+
+    /// SPEC-355 SLR-001: closing an idle connection for a new one is said, with the relay, its
+    /// sandbox and the idle time, at most once a minute, and never fails the relay.
+    #[test]
+    fn the_give_way_notice_names_the_relay_and_never_fails_it() {
+        let mut last = None;
+        let mut out = Vec::new();
+        notice_gave_way(&mut out, &mut last, "outbound", None, Some("s1"), 7_200_000);
+        let line = String::from_utf8_lossy(&out).into_owned();
+        for part in [
+            "the longest-idle connection was closed for a new one",
+            "relay=outbound",
+            "sandbox=s1",
+            "idle_s=7200",
+        ] {
+            assert!(line.contains(part), "{part}: {line}");
+        }
+        let mut again = Vec::new();
+        notice_gave_way(&mut again, &mut last, "outbound", None, Some("s1"), 1);
+        assert!(again.is_empty(), "once a minute");
+        let mut never = None;
+        notice_gave_way(&mut Full, &mut never, "forward", Some(8081), None, 1);
+        assert!(never.is_some());
     }
 
     /// What the stand-in for Yulius's internal listener answers to every request.
@@ -810,7 +1032,16 @@ mod tests {
         let port = free.local_addr()?.port();
         drop(free);
         let server = ServerProcess::start(out_sock.clone(), port)?;
-        let forward = forward_within(Ipv4Addr::LOCALHOST, port, out_sock.clone(), false, 4).await?;
+        // Idle at once: the test's leftovers are idle for as long as the floor.
+        let forward = forward_within(
+            Ipv4Addr::LOCALHOST,
+            port,
+            out_sock.clone(),
+            false,
+            4,
+            Duration::ZERO,
+        )
+        .await?;
         // Leftover processes: each made a call and keeps its connection, idle, for good.
         let mut leftovers = Vec::new();
         for _ in 0..4 {
