@@ -2,8 +2,8 @@
 //! reports it on a sandbox's Security scan card (SPEC-359 VSB-003). It checks the file's shape as
 //! the scanner's `parse_config` does (the keys, the tables, `enabled`, `exclude` and each
 //! `[[ignore]]` entry), so a file the scanner refuses reads as unreadable, never as on or off; it
-//! is no full TOML parser, and a TOML form beyond that shape (a multi-line string) reads as
-//! unreadable too.
+//! is no full TOML parser, and a TOML form beyond that shape (a multi-line string, a number
+//! written `1_0`, an inline `ignore = []`) reads as unreadable too: the safer side, a warning.
 
 /// Where the repository's Vidoc switch lives.
 pub const VIDOC_CONFIG: &str = ".config/vidoc.toml";
@@ -40,6 +40,9 @@ pub fn repository_vidoc(text: Option<&str>) -> RepositoryVidoc {
     match read(text.strip_prefix('\u{feff}').unwrap_or(text)) {
         Ok(true) => RepositoryVidoc::On,
         Ok(false) => RepositoryVidoc::Off,
+        Err(problem) if problem.starts_with(':') => {
+            RepositoryVidoc::Unreadable(format!("{VIDOC_CONFIG}{problem}"))
+        }
         Err(problem) => RepositoryVidoc::Unreadable(format!("{VIDOC_CONFIG} {problem}")),
     }
 }
@@ -52,6 +55,8 @@ fn read(text: &str) -> Result<bool, String> {
     let mut entry: Option<Vec<String>> = None;
     // Open `[` of a multi-line array value: its lines are not keys.
     let mut depth = 0usize;
+    // `exclude`'s value while its lines are read, checked once its array closes.
+    let mut exclude: Option<String> = None;
     for (index, raw) in text.lines().enumerate() {
         let line = index + 1;
         let Some(code) = without_comment(raw) else {
@@ -62,6 +67,13 @@ fn read(text: &str) -> Result<bool, String> {
         let code = code.trim();
         if depth > 0 {
             depth = brackets(code, depth);
+            if let Some(value) = exclude.as_mut() {
+                value.push(' ');
+                value.push_str(code);
+            }
+            if depth == 0 {
+                globs(exclude.take())?;
+            }
             continue;
         }
         if code.is_empty() {
@@ -116,18 +128,77 @@ fn read(text: &str) -> Result<bool, String> {
                         }
                     });
                 }
-                "exclude" if value.starts_with('[') => {}
-                "exclude" => return Err(": exclude must be a list of glob strings".to_owned()),
+                "exclude" => exclude = Some(value.to_owned()),
                 other => return Err(format!("has unexpected keys ['{other}']")),
             }
         }
         depth = brackets(value, 0);
+        if depth == 0 {
+            globs(exclude.take())?;
+        }
     }
     if depth > 0 {
         return Err("cannot be read: an array is not closed".to_owned());
     }
     finish(entry)?;
     Ok(enabled != Some(false))
+}
+
+/// `exclude`'s whole value, if it was set: a list of non-empty strings, nothing after it.
+fn globs(value: Option<String>) -> Result<(), String> {
+    match value {
+        Some(value) if !glob_list(&value) => {
+            Err(": exclude must be a list of glob strings".to_owned())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// `[ "a", 'b', ]`: quoted non-empty strings between commas (one may trail), and nothing after.
+fn glob_list(value: &str) -> bool {
+    let Some(mut rest) = value.trim().strip_prefix('[') else {
+        return false;
+    };
+    let mut item_next = true;
+    loop {
+        rest = rest.trim_start();
+        if let Some(after) = rest.strip_prefix(']') {
+            return after.trim().is_empty();
+        }
+        if !item_next {
+            let Some(after) = rest.strip_prefix(',') else {
+                return false;
+            };
+            rest = after;
+            item_next = true;
+            continue;
+        }
+        let Some((inner, after)) = quoted(rest) else {
+            return false;
+        };
+        if inner.is_empty() {
+            return false;
+        }
+        rest = after;
+        item_next = false;
+    }
+}
+
+/// The string `text` starts with and what follows it.
+fn quoted(text: &str) -> Option<(&str, &str)> {
+    let quote = text.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+    let mut escaped = false;
+    for (at, c) in text.char_indices().skip(1) {
+        if quote == '"' && c == '\\' && !escaped {
+            escaped = true;
+            continue;
+        }
+        if c == quote && !escaped {
+            return Some((&text[1..at], &text[at + 1..]));
+        }
+        escaped = false;
+    }
+    None
 }
 
 /// An `[[ignore]]` entry's end: it named its path, title and reason.
@@ -300,6 +371,36 @@ mod tests {
         assert!(
             unreadable("enabled = true\nx = \"open\n"),
             "a string left open"
+        );
+    }
+
+    /// Review round 2: `exclude` is a list of non-empty strings and nothing after it.
+    #[test]
+    fn exclude_is_a_list_of_glob_strings() {
+        for good in [
+            "exclude = []\n",
+            "exclude = [\"a\", 'b/**',]\n",
+            "exclude = [\n  \"a\", # why\n  \"b\",\n]\n",
+        ] {
+            assert_eq!(repository_vidoc(Some(good)), RepositoryVidoc::On, "{good}");
+        }
+        for bad in [
+            "exclude = [1]\n",
+            "exclude = [\"\"]\n",
+            "exclude = [\"a\", 2]\n",
+            "exclude = [src/**]\n",
+            "exclude = [\"a\"] x\n",
+            "exclude = [\"a\" \"b\"]\n",
+            "exclude = [\n  \"a\",\n  3,\n]\n",
+        ] {
+            assert!(unreadable(bad), "{bad}");
+        }
+        let RepositoryVidoc::Unreadable(problem) = repository_vidoc(Some("exclude = [1]\n")) else {
+            return;
+        };
+        assert_eq!(
+            problem,
+            ".config/vidoc.toml: exclude must be a list of glob strings"
         );
     }
 
