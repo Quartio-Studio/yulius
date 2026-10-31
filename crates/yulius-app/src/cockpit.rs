@@ -67,6 +67,8 @@ pub(crate) const REFRESH_WAITING: u8 = 2;
 /// How long a refresh that could not start (no capacity, access lost) waits before it is tried
 /// again.
 const REFRESH_RETRY_MS: i64 = 60_000;
+/// How often an idle Cockpit's process tree is probed for strays (SPEC-355 SLR-004).
+const STRAY_PROBE_EVERY_MS: i64 = 60_000;
 
 /// How a refresh went ([`App::refresh_cockpit`]).
 enum Refresh {
@@ -393,6 +395,8 @@ impl App {
         let mut turn = TurnState::default();
         // A refresh that could not start is tried again from then on (ms).
         let mut refresh_from = 0_i64;
+        // When its process tree was last probed for strays (ms).
+        let mut strays_probed: Option<i64> = None;
         let mut interval = tokio::time::interval(WATCH_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -476,6 +480,15 @@ impl App {
             });
             let limit = limit.next_back();
             history_read = history_read || watch.caught_up();
+            // SPEC-355 SLR-004: an idle Cockpit's leftover processes, as an idle task's.
+            if history_read
+                && turn.idle(now)
+                && strays_probed.is_none_or(|at| now.0.saturating_sub(at) >= STRAY_PROBE_EVERY_MS)
+            {
+                strays_probed = Some(now.0);
+                self.tend_cockpit_strays(&runtime, (watched_path.as_path(), polled_len))
+                    .await;
+            }
             if let Some((resets_at, window_minutes, at)) = limit {
                 runtime
                     .limit_handled_ms
@@ -504,6 +517,62 @@ impl App {
                 } else {
                     runtime.refresh.store(REFRESH_WAITING, Ordering::SeqCst);
                 }
+            }
+        }
+    }
+
+    /// Probes an idle Cockpit's process tree for strays (SPEC-355 SLR-004): logs the ones seen for
+    /// the first time and reaps those seen for
+    /// [`crate::context::AppConfig::stray_reap_after_ms`], while its conversation is still idle
+    /// (`seen`: its transcript as it was found idle; a prompt written since keeps them). Processes
+    /// under the agent are never strays.
+    async fn tend_cockpit_strays(&self, runtime: &ShellRuntime, seen: (&std::path::Path, u64)) {
+        let pid = runtime.child_pid.load(Ordering::SeqCst);
+        if pid == 0 {
+            return;
+        }
+        let host = Arc::clone(&self.deps.session_host);
+        let probe = tokio::task::spawn_blocking(move || host.background_probe(pid));
+        let Ok(Ok(Some(found))) =
+            tokio::time::timeout(crate::finish::SHELL_PROBE_TIMEOUT, probe).await
+        else {
+            return;
+        };
+        let (new, due) = {
+            let mut seen_strays = runtime
+                .strays_seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            crate::finish::sort_strays(
+                &mut seen_strays,
+                found.strays,
+                self.now().0,
+                self.config.stray_reap_after_ms,
+            )
+        };
+        if !new.is_empty() {
+            tracing::warn!(
+                shell = %runtime.id(),
+                sandbox = %runtime.sandbox(),
+                strays = new.len(),
+                processes = new.iter().map(|s| s.processes.len()).sum::<usize>(),
+                pids = ?crate::finish::first_pids(&new),
+                "leftover processes in the Superagent's session: no shell of the agent owns them; \
+                 they are ended once it has been idle with them for a while (docs/operations.md)"
+            );
+        }
+        if due.is_empty() || !still_idle(Some(seen)) {
+            return;
+        }
+        let strays = due.len();
+        let pids = crate::finish::first_pids(&due);
+        match self.reap_due_strays(due).await {
+            Some(0) => {}
+            Some(processes) => {
+                tracing::warn!(shell = %runtime.id(), strays, processes, pids = ?pids, "reaped the Superagent's leftover processes");
+            }
+            None => {
+                tracing::warn!(shell = %runtime.id(), strays, "the Superagent's leftover processes were not reaped in time");
             }
         }
     }

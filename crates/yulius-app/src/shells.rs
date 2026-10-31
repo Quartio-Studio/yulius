@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
@@ -178,6 +178,11 @@ pub struct ShellRuntime {
     pump: Mutex<Option<JoinHandle<()>>>,
     /// A Cockpit's usage-limit watch (SPEC-074); aborted with the pump.
     pub(crate) watch: Mutex<Option<JoinHandle<()>>>,
+    /// The process its host runs (0 until attached): the root of a Cockpit's stray probe.
+    pub(crate) child_pid: AtomicU32,
+    /// A Cockpit's strays as last probed, by their first process `(pid, started)`, to when (ms)
+    /// each was first seen (SPEC-355 SLR-004).
+    pub(crate) strays_seen: Mutex<HashMap<(u32, u64), i64>>,
 }
 
 /// A shell as its owner sees it (`GET /api/sandboxes/{sid}/shells`).
@@ -815,6 +820,8 @@ impl App {
             idle_since_ms: AtomicI64::new(self.now().0),
             pump: Mutex::new(None),
             watch: Mutex::new(None),
+            child_pid: AtomicU32::new(0),
+            strays_seen: Mutex::new(HashMap::new()),
         })
     }
 
@@ -897,6 +904,7 @@ impl App {
             .attach(&runtime.run_dir, &runtime.token)
             .await?;
         let welcome = attached.welcome;
+        runtime.child_pid.store(welcome.child_pid, Ordering::SeqCst);
         let screen = self
             .shell_screen(runtime, welcome.snapshot.as_deref().unwrap_or_default())
             .await;
@@ -1421,6 +1429,8 @@ impl App {
             idle_since_ms: AtomicI64::new(self.now().0),
             pump: Mutex::new(None),
             watch: Mutex::new(None),
+            child_pid: AtomicU32::new(0),
+            strays_seen: Mutex::new(HashMap::new()),
         });
         let reader = self.attach_shell(&runtime).await?;
         self.shells
