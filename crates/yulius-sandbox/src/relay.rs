@@ -305,6 +305,19 @@ pub async fn serve_inbound(
     last: u16,
     ports: Arc<dyn Fn() -> Vec<u16> + Send + Sync>,
 ) {
+    serve_inbound_forwarding(listener, first, last, Vec::new(), ports).await;
+}
+
+/// [`serve_inbound`], whose [`INBOUND_CONNECT`] also reaches the holder's own `forwards`, so
+/// Yulius can test a call from inside the sandbox to itself ([`probe_link`], SPEC-355 SLR-005).
+pub async fn serve_inbound_forwarding(
+    listener: UnixListener,
+    first: u16,
+    last: u16,
+    forwards: Vec<u16>,
+    ports: Arc<dyn Fn() -> Vec<u16> + Send + Sync>,
+) {
+    let forwards = Arc::new(forwards);
     let limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let mut warned = None;
     loop {
@@ -318,8 +331,9 @@ pub async fn serve_inbound(
             continue;
         };
         let ports = Arc::clone(&ports);
+        let forwards = Arc::clone(&forwards);
         tokio::spawn(async move {
-            let _ = inbound_connection(stream, first, last, ports.as_ref()).await;
+            let _ = inbound_connection(stream, first, last, &forwards, ports.as_ref()).await;
             drop(permit);
         });
     }
@@ -329,6 +343,7 @@ async fn inbound_connection(
     mut stream: UnixStream,
     first: u16,
     last: u16,
+    forwards: &[u16],
     ports: &(dyn Fn() -> Vec<u16> + Send + Sync),
 ) -> io::Result<()> {
     let op = with_timeout(HEADER_TIMEOUT, "relay header", stream.read_u8()).await?;
@@ -341,7 +356,7 @@ async fn inbound_connection(
         }
         INBOUND_CONNECT => {
             let port = with_timeout(HEADER_TIMEOUT, "relay header", stream.read_u16()).await?;
-            if !(first..=last).contains(&port) {
+            if !(first..=last).contains(&port) && !forwards.contains(&port) {
                 stream.write_u8(RELAY_FORBIDDEN).await?;
                 return Ok(());
             }
@@ -547,6 +562,39 @@ where
         }
         Err(_) => stream.write_u8(RELAY_REFUSED).await,
     }
+}
+
+/// Time for Yulius to answer the link test ([`probe_link`]).
+const LINK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Tests a sandbox's link to Yulius from inside it (SPEC-355 SLR-005): through the holder at
+/// `in_sock`, a connection to the holder's own forward of `port` (Yulius's internal listener)
+/// asks `GET /internal/healthz` and must be answered `200` within [`LINK_TIMEOUT`]. It takes a
+/// place in the forward as any call does. `None` when the holder cannot be reached or does not
+/// offer the test (one started by an older Yulius forbids the port).
+pub async fn probe_link(in_sock: &Path, port: u16) -> Option<bool> {
+    let mut holder = with_timeout(CONNECT_TIMEOUT, "relay", UnixStream::connect(in_sock))
+        .await
+        .ok()?;
+    holder.write_u8(INBOUND_CONNECT).await.ok()?;
+    holder.write_u16(port).await.ok()?;
+    match with_timeout(HEADER_TIMEOUT, "relay status", holder.read_u8()).await {
+        Ok(RELAY_OK) => {}
+        Ok(RELAY_FORBIDDEN) | Err(_) => return None,
+        // Nothing listens on the forward inside: no call gets through.
+        Ok(_) => return Some(false),
+    }
+    let asked = holder
+        .write_all(
+            b"GET /internal/healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+    if asked.is_err() {
+        return Some(false);
+    }
+    let mut head = [0u8; 12];
+    let answered = with_timeout(LINK_TIMEOUT, "link", holder.read_exact(&mut head)).await;
+    Some(answered.is_ok() && head.starts_with(b"HTTP/1.") && head.ends_with(b" 200"))
 }
 
 /// Asks the holder at `in_sock` which ports of its range listen inside.
@@ -1068,6 +1116,60 @@ mod tests {
         drop(leftovers);
         forward.abort();
         restarted.exit();
+        Ok(())
+    }
+
+    /// SPEC-355 SLR-005: Yulius tests a sandbox's link to it from inside, through the holder's
+    /// forward: answered while the forward takes connections, failed when its places are all held
+    /// by connections active lately, and unknown with a holder that does not offer the test.
+    #[tokio::test]
+    async fn the_link_test_goes_through_the_forward() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let out_sock = dir.path().join("out.sock");
+        let in_sock = dir.path().join("in.sock");
+        let free = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let port = free.local_addr()?.port();
+        drop(free);
+        let server = ServerProcess::start(out_sock.clone(), port)?;
+        let forward = forward_within(
+            Ipv4Addr::LOCALHOST,
+            port,
+            out_sock.clone(),
+            false,
+            2,
+            IDLE_FLOOR,
+        )
+        .await?;
+        let holder = tokio::spawn(serve_inbound_forwarding(
+            UnixListener::bind(&in_sock)?,
+            1,
+            1,
+            vec![port],
+            Arc::new(Vec::new),
+        ));
+        assert_eq!(probe_link(&in_sock, port).await, Some(true));
+        // Two leftovers hold both places, active within the floor: nothing gets through.
+        let mut held = Vec::new();
+        for _ in 0..2 {
+            let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await?;
+            request(&mut stream).await?;
+            held.push(stream);
+        }
+        assert_eq!(probe_link(&in_sock, port).await, Some(false));
+        drop(held);
+        holder.abort();
+        // A holder without the test (started by an older Yulius) forbids the port: unknown.
+        let _ = std::fs::remove_file(&in_sock);
+        let old = tokio::spawn(serve_inbound(
+            UnixListener::bind(&in_sock)?,
+            1,
+            1,
+            Arc::new(Vec::new),
+        ));
+        assert_eq!(probe_link(&in_sock, port).await, None);
+        old.abort();
+        forward.abort();
+        server.exit();
         Ok(())
     }
 
