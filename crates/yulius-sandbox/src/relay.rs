@@ -34,6 +34,70 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// Longest [`ListeningPorts`] line accepted.
 const MAX_PORTS_LINE: u64 = 64 * 1024;
 
+/// Least time between two warnings that a relay dropped a connection at its limit.
+const WARN_EVERY: Duration = Duration::from_secs(60);
+
+/// Counts a connection a relay dropped at its limit (`limit`) and says so on the process's stderr
+/// (the server's journal; inside a sandbox the holder's `holder.log` or the Docker front's
+/// `docker-front.log`, where no tracing subscriber runs), at most every [`WARN_EVERY`] (`last`:
+/// when it last did): the sandbox's processes hold every connection, so even their calls to Yulius
+/// fail (SPEC-353 LAP-002).
+fn warn_dropped(
+    last: &mut Option<std::time::Instant>,
+    relay: &str,
+    port: Option<u16>,
+    sandbox: Option<&str>,
+    limit: usize,
+) {
+    let dropped = DROPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let dropped = Dropped {
+        relay,
+        port,
+        sandbox,
+        limit,
+        dropped,
+    };
+    notice_dropped(&mut io::stderr().lock(), last, &dropped);
+}
+
+/// One dropped connection, as its notice names it.
+struct Dropped<'a> {
+    relay: &'a str,
+    port: Option<u16>,
+    sandbox: Option<&'a str>,
+    limit: usize,
+    dropped: u64,
+}
+
+/// Writes `notice` to `out` unless one was written within [`WARN_EVERY`] (`last`).
+/// A failed write (a full disk under `holder.log`) is ignored: it never stops the relay.
+fn notice_dropped(
+    out: &mut dyn io::Write,
+    last: &mut Option<std::time::Instant>,
+    notice: &Dropped<'_>,
+) {
+    if last.is_some_and(|at| at.elapsed() < WARN_EVERY) {
+        return;
+    }
+    *last = Some(std::time::Instant::now());
+    let port = notice
+        .port
+        .map(|p| format!(" port={p}"))
+        .unwrap_or_default();
+    let sandbox = notice
+        .sandbox
+        .map(|s| format!(" sandbox={s}"))
+        .unwrap_or_default();
+    let _ = writeln!(
+        out,
+        "WARN sandbox relay: a connection was dropped at the limit; leftover processes may hold \
+         them (docs/operations.md, \"Leftover agent processes\") relay={}{port}{sandbox} \
+         limit={} dropped={}",
+        notice.relay, notice.limit, notice.dropped
+    );
+    let _ = out.flush();
+}
+
 fn timeout_error(what: &str) -> io::Error {
     io::Error::new(io::ErrorKind::TimedOut, format!("{what} timed out"))
 }
@@ -81,6 +145,7 @@ pub async fn serve_inbound(
     ports: Arc<dyn Fn() -> Vec<u16> + Send + Sync>,
 ) {
     let limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let mut warned = None;
     loop {
         let Ok((stream, _)) = listener.accept().await else {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -88,6 +153,7 @@ pub async fn serve_inbound(
         };
         let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
             drop(stream);
+            warn_dropped(&mut warned, "inbound", None, None, MAX_CONNECTIONS);
             continue;
         };
         let ports = Arc::clone(&ports);
@@ -169,14 +235,35 @@ pub async fn serve_forward_at(
     out_sock: PathBuf,
     loopback_v6: bool,
 ) -> io::Result<JoinHandle<()>> {
+    forward_within(address, port, out_sock, loopback_v6, MAX_CONNECTIONS).await
+}
+
+/// Connections the relays of this process dropped at their limit (SPEC-353 LAP-002).
+static DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many connections the relays of this process dropped at their limit so far (tests).
+#[cfg(test)]
+fn dropped_connections() -> u64 {
+    DROPPED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// [`serve_forward_at`] with `max` connections at once (tests use a small one).
+async fn forward_within(
+    address: Ipv4Addr,
+    port: u16,
+    out_sock: PathBuf,
+    loopback_v6: bool,
+    max: usize,
+) -> io::Result<JoinHandle<()>> {
     let v4 = TcpListener::bind((address, port)).await?;
     let v6 = if loopback_v6 {
         TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await.ok()
     } else {
         None
     };
-    let limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let limit = Arc::new(Semaphore::new(max));
     Ok(tokio::spawn(async move {
+        let mut warned = None;
         loop {
             let accepted = match &v6 {
                 Some(v6) => tokio::select! {
@@ -190,6 +277,7 @@ pub async fn serve_forward_at(
                 continue;
             };
             let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
+                warn_dropped(&mut warned, "forward", Some(port), None, max);
                 continue;
             };
             let out_sock = out_sock.clone();
@@ -215,14 +303,27 @@ async fn forward_connection(stream: TcpStream, port: u16, out_sock: &Path) -> io
 // On the host (the server).
 
 /// Serves `out.sock`: a connection announces a port and is relayed to its target.
-pub async fn serve_outbound(listener: UnixListener, targets: Arc<BTreeMap<u16, SocketAddr>>) {
+pub async fn serve_outbound(
+    listener: UnixListener,
+    targets: Arc<BTreeMap<u16, SocketAddr>>,
+    sandbox: String,
+) {
     let limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+    let mut warned = None;
     loop {
         let Ok((stream, _)) = listener.accept().await else {
             tokio::time::sleep(Duration::from_millis(100)).await;
             continue;
         };
         let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
+            drop(stream);
+            warn_dropped(
+                &mut warned,
+                "outbound",
+                None,
+                Some(&sandbox),
+                MAX_CONNECTIONS,
+            );
             continue;
         };
         let targets = Arc::clone(&targets);
@@ -357,6 +458,7 @@ async fn accept_inbound(
     in_sock: PathBuf,
     limit: Arc<Semaphore>,
 ) {
+    let mut warned = None;
     loop {
         let accepted = match &v6 {
             Some(v6) => tokio::select! {
@@ -370,6 +472,7 @@ async fn accept_inbound(
             continue;
         };
         let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
+            warn_dropped(&mut warned, "preview", Some(port), None, MAX_CONNECTIONS);
             continue;
         };
         let in_sock = in_sock.clone();
@@ -469,7 +572,11 @@ mod tests {
             inside_port,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), target),
         )]));
-        let server = tokio::spawn(serve_outbound(UnixListener::bind(&out_sock)?, targets));
+        let server = tokio::spawn(serve_outbound(
+            UnixListener::bind(&out_sock)?,
+            targets,
+            "s1".to_owned(),
+        ));
         let forward = serve_forward(inside_port, out_sock.clone(), false).await?;
 
         let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, inside_port)).await?;
@@ -489,6 +596,95 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-353 LAP-002 (review round 3): a forward relay at its limit drops the next connection
+    /// and says so (counted, and written to the process's stderr: the holder's `holder.log`).
+    #[tokio::test]
+    async fn a_forward_at_its_limit_counts_the_connection_it_drops() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let out_sock = dir.path().join("out.sock");
+        // `out.sock` accepts every relayed connection and keeps it open.
+        let outbound = UnixListener::bind(&out_sock)?;
+        let (held_tx, mut held) = tokio::sync::mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            let mut open = Vec::new();
+            while let Ok((mut stream, _)) = outbound.accept().await {
+                if stream.read_u16().await.is_ok() && stream.write_u8(RELAY_OK).await.is_ok() {
+                    open.push(stream);
+                    let _ = held_tx.send(());
+                }
+            }
+        });
+        let free = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let port = free.local_addr()?.port();
+        drop(free);
+        let forward = forward_within(Ipv4Addr::LOCALHOST, port, out_sock, false, 2).await?;
+        let mut clients = Vec::new();
+        for _ in 0..2 {
+            clients.push(TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await?);
+            tokio::time::timeout(Duration::from_secs(10), held.recv())
+                .await?
+                .ok_or("out.sock ended")?;
+        }
+        let before = dropped_connections();
+        let mut third = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await?;
+        // Dropped: the client reads the end of the stream (or a reset).
+        let mut byte = [0u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(10), third.read(&mut byte)).await?;
+        assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
+        assert!(dropped_connections() > before);
+        forward.abort();
+        server.abort();
+        Ok(())
+    }
+
+    /// A writer whose every write fails (a full disk under `holder.log`).
+    struct Full;
+    impl std::io::Write for Full {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other("no space left on device"))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::other("no space left on device"))
+        }
+    }
+
+    /// SPEC-353 LAP-002 (review round 4): the drop notice names the relay, its port and sandbox,
+    /// the limit and the count, at most once a minute, and a log that cannot be written never
+    /// stops the relay (no panic).
+    #[test]
+    fn the_drop_notice_names_the_relay_and_never_fails_it() {
+        let notice = Dropped {
+            relay: "forward",
+            port: Some(8081),
+            sandbox: Some("s1"),
+            limit: 256,
+            dropped: 7,
+        };
+        let mut last = None;
+        let mut out = Vec::new();
+        notice_dropped(&mut out, &mut last, &notice);
+        let line = String::from_utf8_lossy(&out).into_owned();
+        for part in [
+            "sandbox relay: a connection was dropped at the limit",
+            "relay=forward",
+            "port=8081",
+            "sandbox=s1",
+            "limit=256",
+            "dropped=7",
+        ] {
+            assert!(line.contains(part), "{part}: {line}");
+        }
+        let mut again = Vec::new();
+        notice_dropped(&mut again, &mut last, &notice);
+        assert!(again.is_empty(), "once a minute");
+        let mut never = None;
+        notice_dropped(&mut Full, &mut never, &notice);
+        assert!(
+            never.is_some(),
+            "a failed write still counts as the minute's notice"
+        );
+    }
+
     /// SPEC-187 DKR-007: with a Docker engine the forwards listen on every address of the
     /// sandbox's network, so containers reach them through their bridge's gateway (here another
     /// address than `127.0.0.1`).
@@ -506,7 +702,11 @@ mod tests {
             inside_port,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), target),
         )]));
-        let server = tokio::spawn(serve_outbound(UnixListener::bind(&out_sock)?, targets));
+        let server = tokio::spawn(serve_outbound(
+            UnixListener::bind(&out_sock)?,
+            targets,
+            "s1".to_owned(),
+        ));
         let forward = serve_forward(inside_port, out_sock.clone(), true).await?;
         let mut client = TcpStream::connect((Ipv4Addr::new(127, 0, 0, 2), inside_port)).await?;
         assert_eq!(

@@ -421,6 +421,38 @@ fn a_held_hook_survives_a_server_restart() -> TestResult {
     Ok(())
 }
 
+/// SPEC-353 (review round 2): in a sandbox Yulius is behind the relay, which accepts a connection
+/// and closes it unanswered while Yulius restarts or the relay is at its limit. Held, that close is
+/// retried as an unreachable server is, and the later answer is printed.
+#[test]
+fn a_held_hook_retries_a_connection_closed_unanswered() -> TestResult {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let url = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
+    let server = serve_sequence(
+        listener,
+        vec![
+            HOLD.to_vec(),
+            Vec::new(), // read, then closed with no answer
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec(),
+        ],
+    );
+    let mut output = Vec::new();
+    run_hook_with(
+        "claude",
+        "Stop",
+        &mut &b"{}"[..],
+        &mut output,
+        &env_with(url, Some("t")),
+        FAST_HOLD,
+    );
+    assert_eq!(output, b"ok");
+    let requests = server
+        .join()
+        .map_err(|_| io::Error::other("server thread panicked"))??;
+    assert_eq!(requests.len(), 3);
+    Ok(())
+}
+
 /// A held hook fails open (prints nothing) when the run is refused or the hold bound passes.
 #[test]
 fn a_held_hook_fails_open_on_refusal_or_after_its_bound() -> TestResult {

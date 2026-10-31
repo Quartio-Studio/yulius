@@ -38,6 +38,9 @@ pub struct AppConfig {
     pub permission_ttl_ms: i64,
     /// Accept stale permissions on GitHub failure up to this age.
     pub permission_stale_ms: i64,
+    /// How long an idle task's strays (processes its sandbox init adopted) live once seen before
+    /// they are killed (SPEC-353 LAP-004).
+    pub stray_reap_after_ms: i64,
     /// Cookies carry `Secure`.
     pub secure_cookies: bool,
     /// How often open terminal viewers re-check their access (ACC-008).
@@ -151,6 +154,7 @@ impl AppConfig {
             session_ttl_ms: 30 * 24 * 3600 * 1000,
             permission_ttl_ms: 5 * 60 * 1000,
             permission_stale_ms: 30 * 60 * 1000,
+            stray_reap_after_ms: crate::finish::STRAY_REAP_AFTER_MS,
             upload_max_bytes: crate::uploads::DEFAULT_UPLOAD_MAX_BYTES,
             ci: crate::ci::CiSettings::default(),
             proxy_secret: None,
