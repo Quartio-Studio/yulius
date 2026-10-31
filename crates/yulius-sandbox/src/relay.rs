@@ -109,17 +109,16 @@ impl Places {
     /// gave way to it had been idle (ms); `None` when every connection was active lately.
     fn admit(self: &Arc<Self>) -> Option<(Place, oneshot::Receiver<()>, Option<u64>)> {
         let (end, ended) = oneshot::channel();
-        let (admitted, held) = {
-            let mut table = self.table.lock().unwrap_or_else(PoisonError::into_inner);
-            let admitted = table.admit((), end, self.now());
-            (admitted, table.len())
-        };
+        let mut table = self.table.lock().unwrap_or_else(PoisonError::into_inner);
+        let admitted = table.admit((), end, self.now());
         let Ok(admitted) = admitted else {
+            // Reported under the table's lock, so a close after it sees the trouble open and ends
+            // it (review round 1). The registry never calls back into the relay.
             if let Some(report) = &self.report {
                 let refusal = Refusal {
                     limit: Limit::Relay,
                     sandbox: Some(report.sandbox.clone()),
-                    held,
+                    held: table.len(),
                     max: self.max,
                     holders: Vec::new(),
                 };
@@ -131,6 +130,7 @@ impl Places {
             }
             return None;
         };
+        drop(table);
         // Dropping the evicted sender ends that connection.
         let idle = admitted.evicted.map(|evicted| evicted.idle_ms);
         let place = Place {
@@ -144,25 +144,22 @@ impl Places {
 
 impl Drop for Place {
     fn drop(&mut self) {
-        // Counted only while its sandbox's relay has a trouble open (SPEC-361 CHR-002).
-        let report = self.places.report.as_ref().filter(|report| {
-            report
+        let mut table = self
+            .places
+            .table
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        table.close(self.id);
+        // Under the table's lock, as a refusal is reported: a trouble begun before this close is
+        // seen, and one begun after it counts this close (SPEC-361 CHR-002, review round 1).
+        if let Some(report) = &self.places.report
+            && report
                 .health
                 .open(Limit::Relay, Some(report.sandbox.as_str()))
-        });
-        let held = {
-            let mut table = self
-                .places
-                .table
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            table.close(self.id);
-            table.len()
-        };
-        if let Some(report) = report {
+        {
             report
                 .health
-                .held(Limit::Relay, Some(report.sandbox.as_str()), held);
+                .held(Limit::Relay, Some(report.sandbox.as_str()), table.len());
         }
     }
 }

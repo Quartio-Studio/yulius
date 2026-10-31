@@ -155,26 +155,20 @@ struct Slot {
 impl Drop for Slot {
     fn drop(&mut self) {
         let health = &self.slots.health;
-        // Counted only while a trouble is open there (SPEC-361 CHR-002).
-        let share = health.open(Limit::Share, Some(&self.sandbox));
-        let proxy = health.open(Limit::Proxy, None);
-        let (held, total) = {
-            let mut table = self
-                .slots
-                .table
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            table.close(self.id);
-            (
-                share.then(|| table.count(&self.sandbox)),
-                proxy.then(|| table.len()),
-            )
-        };
-        if let Some(held) = held {
-            health.held(Limit::Share, Some(&self.sandbox), held);
+        let mut table = self
+            .slots
+            .table
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        table.close(self.id);
+        // Counted only while a trouble is open there, under the table's lock as a refusal is
+        // reported, so no close slips between a refusal and its report (SPEC-361 CHR-002, review
+        // round 1).
+        if health.open(Limit::Share, Some(&self.sandbox)) {
+            health.held(Limit::Share, Some(&self.sandbox), table.count(&self.sandbox));
         }
-        if let Some(total) = total {
-            health.held(Limit::Proxy, None, total);
+        if health.open(Limit::Proxy, None) {
+            health.held(Limit::Proxy, None, table.len());
         }
     }
 }
@@ -507,7 +501,7 @@ impl EgressProxy {
         let sandbox = client.sandbox_id.as_str();
         let run = client.use_key();
         let (end, ended) = oneshot::channel();
-        let (admitted, counts, trouble) = {
+        let (admitted, counts) = {
             let mut table = self
                 .slots
                 .table
@@ -546,11 +540,13 @@ impl EgressProxy {
                 }),
                 Ok(_) => None,
             };
-            (admitted, counts, trouble)
+            // Reported under the table's lock, so a close after it sees the trouble open (review
+            // round 1). The registry never calls back into the proxy.
+            if let Some(trouble) = trouble {
+                self.slots.health.refused(trouble, wall_ms());
+            }
+            (admitted, counts)
         };
-        if let Some(trouble) = trouble {
-            self.slots.health.refused(trouble, wall_ms());
-        }
         let mut warned = self.warned.lock().unwrap_or_else(PoisonError::into_inner);
         match admitted {
             Ok(admitted) => {
