@@ -239,6 +239,12 @@ pub struct TaskRuntime {
     /// When the last record that closes a turn was written (its own time, ms; 0 = none or no
     /// time): a failed Stop settles its turn only after that turn's record (SPEC-290 GDW-001).
     pub(crate) turn_record_at_ms: AtomicI64,
+    /// When the last record that closes the session's turn was written (ms; 0 = none), from the
+    /// replayed transcript and live: Yulius wakes a task whose turn closed while it was down
+    /// (SPEC-358 MSB-007).
+    pub(crate) turn_closed_ms: AtomicI64,
+    /// The server start (ms) after whose outage this task was woken, once (SPEC-358 MSB-007).
+    pub(crate) woken_after_outage_ms: AtomicI64,
     /// Background work the transcript says the session started and no notification ended yet:
     /// Monitor streams and background agents by Claude Code's task id (SPEC-079 BGW-002).
     pub(crate) launches: Mutex<std::collections::BTreeMap<String, crate::finish::Launch>>,
@@ -374,6 +380,8 @@ impl TaskRuntime {
             turn_began_ms: AtomicI64::new(0),
             stops_in_flight: AtomicU32::new(0),
             turn_record_at_ms: AtomicI64::new(0),
+            turn_closed_ms: AtomicI64::new(0),
+            woken_after_outage_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
             limits_at_start: Mutex::new(None),
             background_waits: AtomicI64::new(-1),
@@ -3779,6 +3787,7 @@ impl App {
         runtime.stop_answered_ms.store(0, Ordering::SeqCst);
         runtime.turn_began_ms.store(0, Ordering::SeqCst);
         runtime.turn_record_at_ms.store(0, Ordering::SeqCst);
+        runtime.turn_closed_ms.store(0, Ordering::SeqCst);
         // A new session runs none of the old one's monitors or agents.
         if let Ok(mut launches) = runtime.launches.lock() {
             launches.clear();
@@ -4047,6 +4056,9 @@ impl App {
                 self.keep_working_stretch(task_id, stretch).await;
             }
             Observation::TurnComplete { at } => {
+                if let Some(at) = at {
+                    runtime.turn_closed_ms.fetch_max(at.0, Ordering::SeqCst);
+                }
                 self.context_replied(task_id, &attempt.id);
                 // A continuation that is only the answer ending the turn has no agent work.
                 self.cut_turn_continued(task_id, at).await;
@@ -4072,6 +4084,9 @@ impl App {
                 background_agents,
                 at,
             } => {
+                if let Some(at) = at {
+                    runtime.turn_closed_ms.fetch_max(at.0, Ordering::SeqCst);
+                }
                 self.background_agents_observed(task_id, background_agents.unwrap_or(0))
                     .await;
                 self.turn_record_seen(task_id, at).await;

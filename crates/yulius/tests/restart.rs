@@ -311,7 +311,7 @@ async fn turn_closed_while_down(
     at: i64,
 ) -> TestResult {
     use yulius_app::ports::harness::HarnessPort as _;
-    use yulius_app::ports::store::TaskStore as _;
+
     let record = app.deps.store.task(id).await?.ok_or("task")?;
     let attempt = app.deps.store.live_attempt(id).await?.ok_or("attempt")?;
     let session = attempt.provider_session_id.ok_or("session")?;
@@ -341,6 +341,12 @@ async fn turn_closed_while_down(
         lines.push_str(&format!("{line}\n"));
     }
     std::fs::write(&transcript, lines)?;
+    // Claude Code's SessionStart hook reached Yulius before the outage (the fake agent here runs
+    // no hooks): the restarted server knows its prompt box takes text.
+    std::fs::write(
+        std::path::Path::new(&attempt.run_dir).join("session-started"),
+        b"",
+    )?;
     Ok(())
 }
 
@@ -382,8 +388,12 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
     rt.block_on(async {
         let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent())?;
         // While Yulius was down, the cut task's wait died and its agent ended a turn.
-        turn_closed_while_down(&app, &data, &cut, down_since.0 + 10).await?;
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Transcript times are whole seconds: the first one after Yulius went down.
+        let closed = (down_since.0 / 1000 + 1) * 1000;
+        turn_closed_while_down(&app, &data, &cut, closed).await?;
+        while app.now().0 <= closed {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         let started = app.now();
         app.reconcile().await?;
         // Each pass wakes what has replayed so far: it ends once the cut task is woken.
