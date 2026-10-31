@@ -165,7 +165,11 @@ impl Drop for Slot {
         // reported, so no close slips between a refusal and its report (SPEC-361 CHR-002, review
         // round 1).
         if health.open(Limit::Share, Some(&self.sandbox)) {
-            health.held(Limit::Share, Some(&self.sandbox), table.count(&self.sandbox));
+            health.held(
+                Limit::Share,
+                Some(&self.sandbox),
+                table.count(&self.sandbox),
+            );
         }
         if health.open(Limit::Proxy, None) {
             health.held(Limit::Proxy, None, table.len());
