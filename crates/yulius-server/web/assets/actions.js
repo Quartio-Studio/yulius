@@ -745,7 +745,7 @@ export function openSandboxDialog(ctx, mode = 'import') {
   const vidocField = () => (vidocOffered
     ? h('div', { class: 'field' },
       h('label', { class: 'check' }, scanBox, h('span', null, 'Scan pull requests with Vidoc')),
-      h('p', { class: 'muted xs', id: 'sb-vidoc-hint' }, 'Agents and CI send each change to Vidoc’s security scan. Uncheck it to leave this project unscanned, for example while the Vidoc key’s quota is used up; an instance superadmin can switch it later in Settings → Instance.'))
+      h('p', { class: 'muted xs', id: 'sb-vidoc-hint' }, 'Agents and CI send each change to Vidoc’s security scan. Uncheck it to leave this project unscanned, for example while the Vidoc key’s quota is used up; its admins can switch it later on its CI/CD page (Security scan), a superadmin also in Settings → Instance.'))
     : null);
 
   const updateSubmit = () => {

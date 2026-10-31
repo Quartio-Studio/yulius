@@ -8,7 +8,7 @@ use yulius_app::delivery::preset_profiles;
 use yulius_contracts::api::git::{
     Delivery, EnvironmentRun, OpenPr, PromoteResult, RunEnvironment, TaskChanges, TaskCommit,
 };
-use yulius_contracts::api::sandboxes::{Profile, Sandbox, UpdateSandbox};
+use yulius_contracts::api::sandboxes::{Profile, Sandbox, SandboxVidocView, UpdateSandbox};
 
 use crate::AppState;
 use crate::auth::Auth;
@@ -21,6 +21,15 @@ pub async fn update_sandbox(
     Json(req): Json<UpdateSandbox>,
 ) -> ApiResult<Json<Sandbox>> {
     Ok(Json(app.update_sandbox_profile(&ctx, &sid, &req).await?))
+}
+
+/// `GET /api/sandboxes/{sid}/vidoc` (SPEC-359 VSB-001).
+pub async fn sandbox_vidoc(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+) -> ApiResult<Json<SandboxVidocView>> {
+    Ok(Json(app.sandbox_vidoc_view(&ctx, &sid).await?))
 }
 
 pub async fn presets(Auth(_ctx): Auth) -> Json<Vec<Profile>> {

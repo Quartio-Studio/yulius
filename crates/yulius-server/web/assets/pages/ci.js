@@ -15,6 +15,7 @@ import { BRAND } from '../brand.js';
 import { loadWaterfall } from '../stages.js';
 import { pipelineHref } from './pipeline.js';
 import { runView, stageNow, soFar, focusIfLost } from '../runview.js';
+import { loadVidocView, vidocCard, vidocCardShape, watchVidocSwitch } from './cividoc.js';
 
 const STATE = {
   queued: { label: 'Queued', tone: '', icon: 'clock' },
@@ -92,7 +93,27 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
   }
   host.append(runsHost, hygieneHost);
 
-  const reload = loader(runsHost, 'the CI runs', () => ctx.api.get(`${base}/ci`), (overview) => {
+  let last = { runs: [] };
+  // SPEC-359 VSB-004: the Security scan card is read with the runs and drawn under the jobs it
+  // decides, so nothing moves when it lands. Its view costs Git reads on the server and changes
+  // only with a switch or the integration branch: it is read again after a change, when its read
+  // failed, and at the idle rate, not with every refresh while a run is active (review round 4).
+  // It counts as read once a fresh view is drawn: a read a newer refresh overtook, or one that
+  // failed, leaves it to be read again (review round 5).
+  let vidocStale = true;
+  let vidocReadAt = 0;
+  const read = async () => {
+    const kept = last.vidoc;
+    const fresh = vidocStale || !kept || kept.error || Date.now() - vidocReadAt >= POLL_IDLE_MS;
+    const [overview, vidoc] = await Promise.all([ctx.api.get(`${base}/ci`), fresh ? loadVidocView(ctx, sandbox) : kept]);
+    return { ...overview, vidoc, vidocFresh: fresh };
+  };
+  const rereadVidoc = () => { vidocStale = true; return reload({ quiet: true }); };
+  const reload = loader(runsHost, 'the CI runs', read, (overview) => {
+    if (overview.vidocFresh) {
+      vidocStale = false;
+      vidocReadAt = Date.now();
+    }
     schedule(overview);
     const drawn = renderOverview(overview);
     // Back from a run's view: the keyboard goes to that run's card, once.
@@ -106,11 +127,13 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
   function loadingLayout() {
     return h('div', { class: 'stack' },
       h('div', { class: 'card card-pad stack-sm' }, h('div', { class: 'card-title' }, bar('xl')), bar(70), bar(50)),
+      sandbox.playground ? null : vidocCardShape(),
       h('div', { class: 'ci-heading' }, bar('md')),
       drawShape('items'));
   }
 
-  let last = { runs: [] };
+  // The switch changed elsewhere while the card is shown: read it again.
+  const offVidoc = watchVidocSwitch(ctx, sandbox, () => last.vidoc, rereadVidoc);
   /** Refreshes quietly: every few seconds while a run is active, else now and then. */
   function schedule(overview) {
     last = overview;
@@ -135,6 +158,7 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     }
     if (overview.gate_problem) parts.push(h('div', { class: 'banner banner-warn', role: 'status' }, icon('warn', { size: 16 }), h('span', { class: 'banner-text' }, `CI is not running: ${overview.gate_problem}`)));
     parts.push(configCard(overview.gate));
+    if (overview.vidoc) parts.push(vidocCard(ctx, sandbox, overview.vidoc, rereadVidoc));
     const runs = overview.runs || [];
     if (runs.length === 0) {
       parts.push(emptyState({ iconName: 'check', title: 'No runs yet', text: overview.gate
@@ -506,5 +530,5 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     await hygieneAction('clean', safe.length, async () => (await ctx.api.post(`${base}/hygiene/cleanup`, { items: [], force: false })).report, 'Couldn’t clean up');
   }
 
-  return () => { destroyed = true; clearTimeout(timer); clearInterval(hygieneTick); };
+  return () => { destroyed = true; clearTimeout(timer); clearInterval(hygieneTick); offVidoc(); };
 }

@@ -730,6 +730,20 @@ not on the service.
 | --- | --- | --- |
 | `--vidoc-api-key-file` / `YULIUS_VIDOC_API_KEY_FILE` | unset | File holding the instance's Vidoc API key, owned by the service user, mode `0600`. Used while no key is saved in settings; read at start. |
 
+**Turning Vidoc off for one project.** While the key fails (refused, HTTP 401, or out of quota,
+HTTP 429), the sandbox's admins (GitHub `admin` on its repository) switch its scans off on the
+sandbox's CI/CD page: the CI tab's **Security scan (Vidoc)** card, "Scan this project with Vidoc".
+No instance administrator is needed; a superadmin can do the same on the Instance page's Vidoc
+card, which shows the same switch (and switch Vidoc off for every project there). Off, the project
+sends nothing to Vidoc, its scans and CI's `security` job report "disabled" (Skipped), and its
+agents ask nobody about the key or its quota; on again, the next run and CI job scan. Each change is
+audited as `delivery.vidoc.update` (who, when, on or off), and the card says who changed it last.
+Members with write or maintain access see the card but cannot change it. A repository whose
+integration branch commits `enabled = false` in `.config/vidoc.toml` stays off whatever the switch
+says; the card says so and offers no way on (a reviewed pull request turns it on). A scan whose key
+fails names the card's address (`YULIUS_VIDOC_SWITCH`, which Yulius sets from `--public-url`), and
+so does CI's job log (SPEC-359, ADR-0245).
+
 The start log says `Vidoc is on (instance key saved in settings)` (or `… from
 YULIUS_VIDOC_API_KEY_FILE`) or `Vidoc is off: no instance key`.
 
