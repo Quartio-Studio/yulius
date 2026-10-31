@@ -5,6 +5,7 @@
 // to delete it: /clear starts over inside it.
 
 import { enc } from './api.js';
+import { BRAND } from './brand.js';
 import { h, icon, setChildren, emptyState, loadError, skeleton, toast, errorToast } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { allows } from './status.js';
@@ -216,8 +217,8 @@ function createLink(ctx, sandbox, restart) {
     }
     const at = link.lost_at ? new Date(link.lost_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null;
     const text = state === 'lost'
-      ? 'Your Superagent can’t reach Yulius from this sandbox, so its Yulius tools fail. Leftover processes may hold the sandbox’s connections.'
-      : `Your Superagent lost its connection to Yulius${at ? ` at ${at}` : ''}. Its Yulius tools may stay disconnected until it restarts.`;
+      ? `Your Superagent can’t reach ${BRAND.name} from this sandbox, so its ${BRAND.name} tools fail. Leftover processes may hold the sandbox’s connections.`
+      : `Your Superagent lost its connection to ${BRAND.name}${at ? ` at ${at}` : ''}. Its ${BRAND.name} tools may stay disconnected until it restarts.`;
     const button = h('button', { type: 'button', class: 'btn btn-sm', disabled: busy, onClick: () => run() }, 'Restart Superagent');
     async function run() {
       if (busy) return;
