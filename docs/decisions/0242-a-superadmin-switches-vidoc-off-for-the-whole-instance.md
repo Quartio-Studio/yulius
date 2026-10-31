@@ -32,7 +32,9 @@ and its refusals (HTTP 429 and 401, 2026-10-22 to 2026-10-30) kept stopping ever
   proxy therefore intercepts `model.vidocsecurity.com:443` for a project whose scans are off (the
   instance's or its own) and refuses each request with 403 "Yulius: Vidoc is turned off in Yulius
   …; nothing was sent", whatever key it carries. The scanner reports that as not run, saying
-  Vidoc is off, not as a refused key. A switch that cannot be read counts as off.
+  Vidoc is off, not as a refused key. A switch that cannot be read counts as off; at the proxy it
+  refuses with 503 instead, so the scan ends incomplete (a CI error that blocks the merge), never
+  "off" (Skipped).
 - **The same variable.** The scanner keeps reading `YULIUS_VIDOC=off`, and its disabled line says
   "turned off in Yulius, for this project or the whole instance". The briefing tells agents which
   (`VidocBriefing::OffForInstance`), and the onboarding prompt adds no scan rule.
@@ -59,6 +61,7 @@ and its refusals (HTTP 429 and 401, 2026-10-22 to 2026-10-30) kept stopping ever
   and by whom, CI has no scan job or its own job reads Skipped, and agents report "disabled".
 - Switching off takes effect at once for every request toward Vidoc; a running session's own
   environment and briefing still say "on" until its next run, and its scan ends "not run" with the
-  reason. Turning it on takes effect at the next run or CI job; nothing is rescanned by itself.
+  reason. Interception needs the proxy's CA in the session (as for any bound secret): without it
+  the TLS handshake fails, nothing is sent, and the scan ends incomplete. Turning it on takes effect at the next run or CI job; nothing is rescanned by itself.
 - A store write that finds no instance row fails (409), so the switch is never cached without being
   stored.

@@ -123,10 +123,28 @@ async fn toward_vidoc(
     })
 }
 
-/// A request refused because Vidoc is off, saying so.
+/// A request refused because Vidoc is off, with the text the scanner recognizes (review round 2).
 fn refused_as_off(answer: &TowardVidoc) -> bool {
+    use yulius_app::vidoc_key::{VIDOC_OFF_MARKER, VIDOC_OFF_REFUSAL};
     matches!(answer, TowardVidoc::Refused(403, message)
-        if message.contains("Vidoc is turned off in Yulius") && message.contains("nothing was sent"))
+        if message == VIDOC_OFF_REFUSAL && message.starts_with(VIDOC_OFF_MARKER)
+            && message.contains("nothing was sent"))
+}
+
+/// SPEC-356 (review round 2): the proxy's refusal and the scanner agree on its marker, so a
+/// running session's scan says Vidoc is off rather than that Vidoc refused the key.
+#[test]
+fn the_scanner_recognizes_the_proxys_refusal() {
+    use yulius_app::vidoc_key::{VIDOC_OFF_MARKER, VIDOC_OFF_REFUSAL};
+    assert!(VIDOC_OFF_REFUSAL.starts_with(VIDOC_OFF_MARKER));
+    assert!(
+        yulius::security_scan::SCANNER.contains(&format!("\"{VIDOC_OFF_MARKER}\" in message")),
+        "scripts/vidoc_scan.py matches the marker"
+    );
+    assert!(
+        include_str!("../../../scripts/test_vidoc_scan.py").contains(VIDOC_OFF_REFUSAL.trim_end()),
+        "the scanner's test uses the proxy's own text"
+    );
 }
 
 /// The audit entries of `s1`'s Vidoc switch, as "actor detail".

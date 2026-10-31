@@ -68,9 +68,11 @@ class FakeVidoc:
                 headers = {k.lower(): v for k, v in self.headers.items()}
                 fake.requests.append((self.path, headers, body))
                 status, payload, extra = fake.behave(body, headers)
-                data = json.dumps(payload).encode()
+                # A string is sent as plain text, as Yulius's egress proxy answers its refusals.
+                text = isinstance(payload, str)
+                data = payload.encode() if text else json.dumps(payload).encode()
                 self.send_response(status)
-                self.send_header("content-type", "application/json")
+                self.send_header("content-type", "text/plain" if text else "application/json")
                 self.send_header("content-length", str(len(data)))
                 for name, value in extra.items():
                     self.send_header(name, value)
@@ -375,13 +377,14 @@ class Service(Scanning):
         # SPEC-356 (review round 1): a session that started before Vidoc was switched off has no
         # YULIUS_VIDOC=off; Yulius's egress proxy refuses the request and nothing is sent.
         repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
-        refusal = ("Yulius: Vidoc is turned off in Yulius, for this project or the whole instance; "
-                   "nothing was sent.")
-        server = self.fake(lambda body, headers: (403, refusal, {}))
+        # The proxy's own text (`VIDOC_OFF_REFUSAL`), as a plain-text body with its line end.
+        refusal = ("Yulius: Vidoc is turned off in Yulius, for this project or the whole instance; nothing was sent. The scan did not run: report it as not run, Vidoc off, and ask nobody about Vidoc's key or quota.")
+        server = self.fake(lambda body, headers: (403, refusal + "\n", {}))
         code, output = self.run_scan(repo, server)
         self.assertEqual(code, 2, output)
         self.assertIn("Security scan not run: Vidoc is turned off in Yulius", output)
         self.assertNotIn("refused the key", output)
+        self.assertNotIn("\n\n", output, "no blank line from the body's line end")
         self.assertEqual(len(server.requests), 1, "never retried")
 
     def test_a_429_that_says_the_key_is_used_up_is_no_quota_not_an_outage(self):

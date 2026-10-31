@@ -24,6 +24,11 @@ use crate::ports::vidoc::{VidocCheck, VidocConnector};
 pub const VIDOC_HOST: &str = "model.vidocsecurity.com";
 /// The agent secret name the instance key stands in for (a sandbox's own secret wins).
 pub const VIDOC_SECRET: &str = "VIDOC_API_KEY";
+/// How the egress proxy's refusal toward Vidoc starts, for a project whose scans are off
+/// (SPEC-356): `scripts/vidoc_scan.py` matches it to say Vidoc is off, not that the key was refused.
+pub const VIDOC_OFF_MARKER: &str = "Yulius: Vidoc is turned off";
+/// The whole refusal (HTTP 403): nothing was sent.
+pub const VIDOC_OFF_REFUSAL: &str = "Yulius: Vidoc is turned off in Yulius, for this project or the whole instance; nothing was sent. The scan did not run: report it as not run, Vidoc off, and ask nobody about Vidoc's key or quota.";
 /// The audit target of its uses (`vault.agent.use`).
 pub const VIDOC_SECRET_ID: &str = "instance:vidoc";
 

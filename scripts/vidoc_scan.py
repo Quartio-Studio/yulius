@@ -753,7 +753,7 @@ class Client:
                 # Yulius's egress proxy for a project, or an instance, with Vidoc switched off
                 # (SPEC-356): nothing was sent.
                 if err.code == 403 and "Yulius: Vidoc is turned off" in message:
-                    raise Usage(message.strip('"').removeprefix("Yulius: ")) from None
+                    raise Usage(message.strip().strip('"').removeprefix("Yulius: ")) from None
                 if err.code in (401, 403):
                     raise Usage(f"Vidoc refused the key (HTTP {err.code}: {message}). "
                                 f"{HOW_TO_GET_A_KEY}") from None

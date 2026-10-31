@@ -54,7 +54,8 @@ project, agents are not asked about the key or its quota, and every scan says "d
   that started before the switch went off sends nothing either: the egress proxy refuses its
   requests to `model.vidocsecurity.com` (403, "Vidoc is turned off in Yulius … nothing was
   sent"), whatever key they carry, and the scanner reports that reason (not run), never a refused
-  key; this applies to the project switch too. A switch that cannot be read counts as off.
+  key; this applies to the project switch too. A switch that cannot be read counts as off; at the
+  proxy it refuses with 503 (the scan retries and ends incomplete, never "off", review round 2).
 - **VIO-003 Agents are told.** The briefing's `## Security scan` section says that a superadmin
   switched Vidoc off for the whole instance, that the scan reports "disabled", never a pass, and
   that nobody is to be asked about Vidoc's key or quota; the onboarding prompt adds no scan rule.

@@ -941,17 +941,36 @@ impl App {
 }
 
 impl App {
-    /// Whether a request toward Vidoc from `client` is refused because its project's Vidoc scans,
-    /// or the instance's, are off (SPEC-338, SPEC-356): a session that started before the switch
-    /// went off has no `YULIUS_VIDOC=off`, and its scan must still send nothing. Unreadable counts
-    /// as off.
-    async fn vidoc_refused(&self, client: &EgressClient, host: &str, port: u16) -> bool {
-        port == 443
-            && host.eq_ignore_ascii_case(crate::vidoc_key::VIDOC_HOST)
-            && !self
-                .sandbox_vidoc_on(&client.sandbox_id)
-                .await
-                .unwrap_or(false)
+    /// The refusal of a request toward Vidoc from `client` whose project's Vidoc scans, or the
+    /// instance's, are off (SPEC-338, SPEC-356): a session that started before the switch went off
+    /// has no `YULIUS_VIDOC=off`, and its scan must still send nothing. A switch that cannot be
+    /// read refuses too, as a passing failure (503: the scan retries, then ends incomplete), never
+    /// as "off", which would end a CI scan skipped.
+    async fn vidoc_refusal(
+        &self,
+        client: &EgressClient,
+        host: &str,
+        port: u16,
+    ) -> Option<EgressDecision> {
+        if port != 443 || !host.eq_ignore_ascii_case(crate::vidoc_key::VIDOC_HOST) {
+            return None;
+        }
+        match self.sandbox_vidoc_on(&client.sandbox_id).await {
+            Ok(true) => None,
+            Ok(false) => Some(EgressDecision::Refuse {
+                status: 403,
+                message: crate::vidoc_key::VIDOC_OFF_REFUSAL.into(),
+            }),
+            Err(err) => {
+                tracing::error!(error = %err, "the Vidoc switch could not be read for the proxy");
+                Some(EgressDecision::Refuse {
+                    status: 503,
+                    message: "Yulius could not read whether Vidoc is on for this project; \
+                              nothing was sent"
+                        .into(),
+                })
+            }
+        }
     }
 }
 
@@ -963,7 +982,7 @@ impl EgressPolicy for App {
 
     async fn egress_intercepts(&self, client: &EgressClient, host: &str, port: u16) -> bool {
         // Intercepted to be refused: tunneled, the code would reach Vidoc.
-        if self.vidoc_refused(client, host, port).await {
+        if self.vidoc_refusal(client, host, port).await.is_some() {
             return true;
         }
         match self.client_secrets(client).await {
@@ -978,17 +997,11 @@ impl EgressPolicy for App {
     }
 
     async fn egress_apply(&self, client: &EgressClient, request: EgressRequest) -> EgressDecision {
-        if self
-            .vidoc_refused(client, &request.host, request.port)
+        if let Some(refusal) = self
+            .vidoc_refusal(client, &request.host, request.port)
             .await
         {
-            return EgressDecision::Refuse {
-                status: 403,
-                message: "Yulius: Vidoc is turned off in Yulius, for this project or the whole \
-                          instance; nothing was sent. Report the scan as disabled and ask nobody \
-                          about Vidoc's key or quota."
-                    .into(),
-            };
+            return refusal;
         }
         let bound = match self
             .bound_secrets(client, &request.host, request.port)
