@@ -1,11 +1,11 @@
 ---
 yulius-task: f637fdb9-46bc-4a1b-9161-5b9b24fd1f15
-status: in-progress
+status: done
 ---
 
 # SPEC-356: A superadmin switches Vidoc off for the whole instance, keeping its key
 
-Status: in-progress
+Status: done
 Date: 2026-10-31
 Owner: Yulius task #338
 Scope authorization: task #338 (`/goal`): "vidoc security should be optional and superadmin should
@@ -76,7 +76,7 @@ project, agents are not asked about the key or its quota, and every scan says "d
 - [x] ADR, architecture, AGENTS.md and product docs describe the instance switch
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Review round 2 approves the fixed head
-- [ ] Every gate green, docs and the changes log updated
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -122,11 +122,11 @@ project, agents are not asked about the key or its quota, and every scan says "d
 
 On 2026-10-31:
 
-- `scripts/dev ci`: exit 0 at `7e97386a` (after the review round 1 fixes; also at `04906128`
-  before them). Repository contracts, the Python unit tests (91 scanner tests, 2 new: the disabled
+- `scripts/dev ci`: exit 0 at `36f1309e` (after the review round 2 fixes, 2840 tests; also at
+  `7e97386a` and `04906128` before them; later commits edit this spec only). Repository contracts, the Python unit tests (91 scanner tests, 2 new: the disabled
   line, a refusal by Yulius's proxy), `cargo check`, `fmt --check`, `clippy -D warnings` (Linux and
   `aarch64-apple-darwin`), `cargo nextest run --profile ci` 2839 passed, 16 skipped, doctests,
-  `cargo deny`, `cargo shear`, `cargo doc`.
+  `cargo deny`, `cargo shear`, `cargo doc`. Counts below are at `7e97386a`.
 - `cd e2e && npx e2e run` at `04906128`: 778 passed, 1 skipped, 1 failed. The failure,
   `superagent-requests.e2e.ts` "Create task starts it in that sandbox", happened while the gate
   loaded the host; that file passed 30/30 run alone three times right after, and this change does
