@@ -1,11 +1,11 @@
 ---
 yulius-task: ba278958-27a5-41e2-b1fc-57b35ee30eed
-status: in-progress
+status: done
 ---
 
 # SPEC-363: Change notes as a folder, one file per pull request
 
-Status: draft
+Status: implemented
 Date: 2026-10-31
 Owner: Yulius task #346 (from the owner's quartio-v2 sandbox)
 Scope authorization: task #346. Builds on SPEC-116 CHG-001 (the changes excerpt), SPEC-083
@@ -65,11 +65,11 @@ changes quote the newest notes. Projects with one changes file see no difference
 ## Plan
 
 - [x] Spec and ADR-0248 for the changes folder
-- [ ] `[docs] changes` parses a folder path with a trailing slash
-- [ ] Briefing gives the folder rule and quotes the newest notes
-- [ ] Checkouts resolve an existing changes directory and read its newest notes
-- [ ] Union merges and the documentation check handle the folder
-- [ ] Product summary, config reference and changes updated
+- [x] `[docs] changes` parses a folder path with a trailing slash
+- [x] Briefing gives the folder rule and quotes the newest notes
+- [x] Checkouts resolve an existing changes directory and read its newest notes
+- [x] Union merges and the documentation check handle the folder
+- [x] Product summary, config reference and changes updated
 
 ## Acceptance criteria
 
@@ -101,3 +101,32 @@ changes quote the newest notes. Projects with one changes file see no difference
   checkout is known (`DocsLayout::resolve_changes_folder`). See ADR-0248 for the alternatives.
 - The naming rule fills in the task's number and leaves the date and slug to the agent, since the
   delivery date is not known at the briefing.
+- Notes of the same day sort by name, so `…-99-x.md` comes before `…-488-y.md` (review nit 5):
+  kept as specified ("then by the name"); a numeric task key would assume one naming.
+- The union-line check reads `symlink_metadata` of the joined path (review nit 7): it only
+  decides whether a union line is kept, reads nothing, so a link in a parent is harmless there.
+
+## Evidence
+
+- `scripts/dev ci` at 40287d1f: exit 0; nextest 2917 tests run, 2917 passed, 16 skipped; fmt,
+  clippy, deps, macOS check and `cargo doc -D warnings` passed. The first run (619437aa) failed
+  only at `cargo doc` (a public doc linked the private `MAX_CHANGE_NOTE_BYTES`), fixed.
+- New tests, each seen failing without its change (mutation runs): config
+  `a_changes_path_with_a_trailing_slash_names_a_folder`; briefing
+  `a_changes_folder_gets_the_one_file_per_change_rule`; hooks
+  `repo_docs_read_a_changes_folder_as_its_newest_notes` (failed before RepoDocs read folders);
+  project `a_changes_folder_is_present_with_a_note`; integration merges
+  `a_changes_folder_has_no_union_line` (did not compile before `checkout_layout`). Also
+  `change_notes_are_ordered_newest_first`, `the_change_notes_excerpt_is_bounded`,
+  `an_existing_changes_directory_names_a_folder`, `checkout_validation_accepts_a_changes_folder`
+  and end to end `agent_hooks::a_changes_folder_briefs_one_new_file_per_change` (SessionStart
+  briefing for `changes = "docs/changes/"`: folder rule with the task number, newest note first,
+  README left out). Every existing single-file briefing test passes unchanged (CHN-005).
+- Independent review (fresh session, diff `origin/dev...619437aa`): APPROVE; low findings
+  answered: spec closed out (1), Context sentence corrected (2), the 10,000-entry listing bound
+  documented (3), the ordering assertion made strict (4), a comment on the presence-only
+  `Some("")` (6); nits 5 and 7 kept, see Decisions.
+- `yulius security-scan`: exit 2, not run — Vidoc is turned off in Yulius for this project or
+  the instance; nothing was sent. Not a pass.
+- Not tested: a real quartio-v2 checkout (no access from this sandbox); the behaviour is covered
+  by the fixture folders above.
