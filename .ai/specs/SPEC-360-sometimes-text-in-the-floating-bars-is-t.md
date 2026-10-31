@@ -43,6 +43,8 @@ extends 40 px left of the plot.
   words (a word longer than a line breaks anywhere).
 - STT-002: The tip's left edge is clamped by its measured width, so all of it is inside its plot.
 - STT-003: Both chart tips (the waterfall's and the daily chart's) use the same placement.
+- STT-004: The waterfall tip breaks its figures list between figures ("wrote under 1 MiB" stays
+  whole), each figure an inline block that still wraps inside itself only when wider than the tip.
 
 ## Plan
 
@@ -55,6 +57,8 @@ extends 40 px left of the plot.
 
 - At 1280 px and 390 px, the tip of the `quality` job hovered at the row's left and right edge
   is 0 px past the plot and the window, and no part of it scrolls horizontally (text cut).
+- The failed job's figures (the reported ones, now in the mock's run `ci_s2`) wrap onto more than
+  one line at both widths, and every figure lies on one line.
 - The existing waterfall and Pipeline e2e tests still pass.
 
 ## Test plan
@@ -74,5 +78,10 @@ extends 40 px left of the plot.
 - **Clamp by the measured width** (`offsetWidth`, after the content is set) instead of a fixed
   80 px, in one `placeTip` helper used by both charts. No ADR: a local layout fix that changes no
   contract.
+- **Break between figures.** Wrapping words alone split "under 1 / MiB" across lines; each
+  figure is an inline block, so a line ends at a " · " separator. `figureText()` stays one string
+  for the row's `title` and the table; only the tip splits it.
+- **The mock's failed job carries the reported figures** (tests, CPU, peak memory, bytes
+  written, exit 101) so the e2e test hovers a tip that must wrap; no other test reads them.
 - **What else the cause touches.** Only these two tips use `.chart-tip`; other floating bars
   (`.tg-node`, menus, toasts) have their own rules and are not changed.
