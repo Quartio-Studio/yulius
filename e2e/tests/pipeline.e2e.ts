@@ -256,6 +256,8 @@ function tipFit(browser: Browser, selector: string) {
         const figures = tip.lastElementChild;
         if (!figures) return 0;
         const left = figures.getBoundingClientRect().left;
+        // Within an em of the edge: a no-break space before a dot at a line start is not dropped.
+        const em = parseFloat(getComputedStyle(figures).fontSize);
         const walker = document.createTreeWalker(figures, NodeFilter.SHOW_TEXT);
         let count = 0;
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
@@ -264,7 +266,7 @@ function tipFit(browser: Browser, selector: string) {
             const range = document.createRange();
             range.setStart(node, i);
             range.setEnd(node, i + 1);
-            if (range.getBoundingClientRect().left - left < 2) count += 1;
+            if (range.getBoundingClientRect().left - left < em) count += 1;
           }
         }
         return count;

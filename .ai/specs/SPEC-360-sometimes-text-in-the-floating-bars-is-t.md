@@ -1,11 +1,11 @@
 ---
 yulius-task: c41c3875-7567-4d53-b475-4465bb55578d
-status: in-progress
+status: done
 ---
 
 # SPEC-360: A chart's hover tip wraps its text and stays inside its plot
 
-Status: in progress
+Status: implemented
 Date: 2026-10-31
 Owner: Yulius task #340
 Scope authorization: task #340 ("sometimes text in the floating bars is too big, fix … add line
@@ -50,8 +50,8 @@ extends 40 px left of the plot.
 
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Fix the cause until the regression test and every gate pass
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -86,11 +86,11 @@ extends 40 px left of the plot.
   contract.
 - **Break between figures.** Wrapping words alone split "under 1 / MiB" across lines; each
   figure is an inline block, so a line ends at a " · " separator. Each dot ends its figure's block
-  (a no-break space joins them), so a line breaks after a dot, never before one: a no-break space
-  between two inline blocks would not stop a break (CSS Text 3, review round 2). The e2e test
-  counts dots at a line start as a guard; it could not be made to fail first, since Chromium never
-  started a line with a dot for this content at any width from 320 to 1400 px, with either
-  separator. `figureParts()` returns the figures as a list (it replaces `figureText()`,
+  (a no-break space joins them), so a line breaks after a dot, never before one, by construction:
+  a no-break space between two inline blocks is not guaranteed to stop a break (review round 2).
+  The e2e test counts dots within an em of a line start as a guard; it could not be made to fail
+  first: Chromium started no line with a dot for this content at any width from 320 to 1400 px,
+  with a plain " · ", a no-break " · " or the current separator (probe in Evidence). `figureParts()` returns the figures as a list (it replaces `figureText()`,
   which joined them): the row's `title` and the table join them, the tip keeps them apart.
 - **The mock's failed job carries the reported figures** (tests, CPU, peak memory, bytes
   written, exit 101) so the e2e test hovers a tip that must wrap; no other test reads them.
@@ -101,3 +101,28 @@ extends 40 px left of the plot.
   left out; the test guards the bound.
 - **What else the cause touches.** Only these two tips use `.chart-tip`; other floating bars
   (`.tg-node`, menus, toasts) have their own rules and are not changed.
+
+## Evidence
+
+- Reproduced on dev: e2e mock run `ci_s2`, 1280 px, pointer 4 px into the `quality` row: tip
+  40 px past the plot. Issue #986.
+- Regression tests (`e2e/tests/pipeline.e2e.ts`) fail without the fix: the waterfall test at
+  e7f63fdb against dev's code (40 px past); the daily chart test against dev's `stages.js` and
+  `styles.css` (7 px past at 1280 px); the whole-figure assertion before 12cfdcec (`[]` figures).
+- Mutation checks, each failing the waterfall test: `white-space: nowrap` restored (text cut),
+  the fixed 80 px clamp restored (40 px past), dev's `stages.js` and `styles.css` (40 px past).
+- Screenshots at 1280 and 390 px (local, mock `ci_s2`, failed job hovered at its row's left edge):
+  the tip is inside the plot on three lines, each figure whole.
+- Dot probe (local Playwright, widths 320-1400 px step 1, failed job's tip): no line starts with a
+  dot (within an em of the edge) for any of the three separators; the probe with no threshold
+  finds dots at every width (sanity check).
+- At 993e74d2: full e2e `npx e2e run`: 69 files passed, 1 skipped; 782 tests passed, 1 skipped.
+  `python3 scripts/bootstrap.py && scripts/dev ci`: exit 0 (nextest 2888 passed, 16 skipped).
+- After 993e74d2 only the test's dot threshold and this spec changed: `pipeline.e2e.ts` and
+  `responsive.e2e.ts` rerun: 41 passed; Yulius CI runs every job on the head.
+- Security: `yulius security-scan` at 55124d48 did not run: Vidoc refused the key (HTTP 401,
+  exit 2). Unrun, not passed; the CI `security` job reports its own result.
+- Reviews in fresh sessions: round 1 (7beed878) request changes, all findings fixed test-first
+  (daily chart test, hover from off the chart, vertical bounds tested, figures as a list,
+  unrounded width); round 2 (55124d48) approve with minors, fixed (dot inside its figure, spec
+  wording); round 3 (993e74d2) approve with one minor, fixed (em threshold, spec wording).
