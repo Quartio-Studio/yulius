@@ -22,7 +22,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use yulius_app::ports::egress::{EgressClient, EgressDecision, EgressPolicy, EgressRequest};
-use yulius_domain::connections::{self, Activity, Connections};
+use yulius_domain::connections::{self, Activity, Busier, Connections};
 use yulius_domain::vault::egress_destination_allowed;
 use yulius_domain::vault::redact::{Matcher, PlainMatcher, StreamRedactor, redact_all};
 
@@ -437,11 +437,14 @@ impl EgressProxy {
                 .unwrap_or_else(PoisonError::into_inner);
             let admitted =
                 table.admit_by(sandbox.to_owned(), run.to_owned(), end, self.slots.now());
-            let (sandbox, run) = (sandbox.to_owned(), run.to_owned());
-            let held = (
-                table.count_of(&sandbox, &run),
-                table.most_of_others(&sandbox, &run),
-            );
+            // Only a refusal at the share tells how many (SPEC-357 ESR-004).
+            let held = matches!(admitted, Err(connections::Full::Key)).then(|| {
+                let (sandbox, run) = (sandbox.to_owned(), run.to_owned());
+                (
+                    table.count_of(&sandbox, &run),
+                    table.most_of_others(&sandbox, &run),
+                )
+            });
             (admitted, held)
         };
         let mut warned = self.warned.lock().unwrap_or_else(PoisonError::into_inner);
@@ -451,15 +454,25 @@ impl EgressProxy {
                     && let Some(busier) = evicted.busier
                 {
                     if warn_due(&mut warned, "busiest", Some(&evicted.key)) {
-                        tracing::warn!(
-                            sandbox = %evicted.key,
-                            run = %evicted.owner,
-                            held = busier,
-                            for_sandbox = sandbox,
-                            "egress proxy: at a limit with every connection active, the busiest \
-                             run's oldest connection was closed for another run; its leftover \
-                             processes may hold them (docs/operations.md)"
-                        );
+                        match busier {
+                            Busier::Owner(held) => tracing::warn!(
+                                sandbox = %evicted.key,
+                                run = %evicted.owner,
+                                held,
+                                "egress proxy: a sandbox's share is full of active connections; \
+                                 the busiest run's oldest connection was closed for another run \
+                                 of the sandbox; its leftover processes may hold them \
+                                 (docs/operations.md)"
+                            ),
+                            Busier::Key(held) => tracing::warn!(
+                                sandbox = %evicted.key,
+                                run = %evicted.owner,
+                                sandbox_held = held,
+                                for_sandbox = sandbox,
+                                "egress proxy: every connection is taken and active; the busiest \
+                                 sandbox's oldest connection was closed for another sandbox"
+                            ),
+                        }
                     }
                 } else if let Some(evicted) = admitted.evicted
                     && warn_due(&mut warned, "gave way", Some(&evicted.key))
@@ -479,7 +492,7 @@ impl EgressProxy {
                 Ok((slot, ended))
             }
             Err(connections::Full::Key) => {
-                let (mine, others) = held;
+                let (mine, others) = held.unwrap_or_default();
                 if warn_due(&mut warned, "share", Some(sandbox)) {
                     tracing::warn!(
                         sandbox,
@@ -491,9 +504,9 @@ impl EgressProxy {
                     );
                 }
                 let whose = if mine > others {
-                    "the most of its runs: end this run's leftover processes"
+                    "the most of the sandbox's runs: end this run's leftover processes"
                 } else {
-                    "and no other run holds 2 more: end leftover processes"
+                    "and no other run has 2 more to give up: end leftover processes"
                 };
                 Err(format!(
                     "Yulius proxy: this sandbox's processes hold all of its {} connections, each \

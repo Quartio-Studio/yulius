@@ -60,5 +60,7 @@ are.
   (usually leftovers' streams) close first, and their clients see the tunnel end.
 - A run that legitimately needs many simultaneous connections can lose its oldest one while
   another run of the sandbox works. HTTP clients reconnect, and the loss is logged.
-- A refusal now means the asking run is itself the busiest (or the runs hold equal shares). Its
-  text says so, and the operations guide shows how to find its processes.
+- A refusal at a share now means that no other run of the sandbox has 2 more connections to
+  give up: the asking run is the busiest, or the runs hold about as many each. The text says
+  which, and the run that reads it in its own commands' output is the one whose processes to
+  end. The operations guide lists a sandbox's processes and their connections.

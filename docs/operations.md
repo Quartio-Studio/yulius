@@ -1274,13 +1274,18 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   others out (SPEC-357,
   [ADR-0243](decisions/0243-the-busiest-run-gives-way-at-a-full-proxy-share.md)). At a full share
   with every connection active, the oldest connection of the run holding the most gives way to
-  a run holding at least 2 fewer, and at the full proxy the busiest sandbox's does. This is logged
-  as `egress proxy: at a limit with every connection active, the busiest run's oldest connection
-  was closed for another run` (sandbox, run, how many it held). A `503` now goes only to the
-  busiest run, or to runs that share the places evenly, and it says how many the asking run holds
-  (`this run holds 120 of them, the most of its runs`). On 2026-10-31, quartio-v2's tasks got
-  `503` for every host for 90 minutes, while their Claude traffic, which bypasses the proxy
-  (`NO_PROXY`), kept working.
+  a run holding at least 2 fewer, and at the full proxy the busiest sandbox's does. A plain
+  request waiting for its answer is never taken. This is logged as `egress proxy: a sandbox's share
+  is full of active connections; the busiest run's oldest connection was closed for another run`
+  (sandbox, run, how many it held) or `egress proxy: every connection is taken and active; the
+  busiest sandbox's oldest connection was closed for another sandbox`. At a full share, a `503`
+  goes only to a run that no other run of the sandbox holds 2 more than, and it says how many
+  the asking run holds (`this run holds 120 of them, the most of the sandbox's runs`). A run reads
+  it in its own commands' output, so the task whose processes hold the places sees it. The
+  journal names the run by its run (attempt) id. At the proxy's own limit, a sandbox that no other
+  sandbox holds 2 more than still gets `too many connections; try again`. On 2026-10-31,
+  quartio-v2's tasks got `503` for every host for 90 minutes, while their Claude traffic, which
+  bypasses the proxy (`NO_PROXY`), kept working.
 - A full relay gives way instead of refusing (SPEC-355,
   [ADR-0241](decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)).
   A sandbox reaches Yulius on one port (8081: internal API, MCP, egress proxy) through two relays,
@@ -1288,11 +1293,13 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   its limit a relay, and the proxy at a sandbox's share or at its own limit, closes its
   longest-idle connection (no byte for at least 5 minutes, longer than any call to Yulius waits)
   for the new one. Only when every connection was active within those 5 minutes is the new one
-  refused. A refused client sees
+  refused (by the proxy, only once no busier run or sandbox can give one up, as above). A client
+  that a relay refused sees
   `ECONNRESET`, as the Superagent's `/mcp` reconnect did on 2026-10-31. These events are logged as
   warnings, at most once a minute, in the journal: `egress proxy: at a limit, the longest-idle
-  connection was closed for a new one`, `egress proxy: a sandbox holds its share of the
-  connections` (with the sandbox), `egress proxy: every connection is taken`, and `sandbox relay:
+  connection was closed for a new one`, the two busiest-run lines above, `egress proxy: a sandbox
+  holds its share of the connections` (with the sandbox, the run and how many it holds), `egress
+  proxy: every connection is taken`, and `sandbox relay:
   …` for the server's side of a sandbox's relay. The relay inside the sandbox writes its `sandbox
   relay: at the limit, the longest-idle connection was closed …` and `sandbox relay: a connection
   was dropped at the limit` lines to the sandbox's `holder.log` (and the Docker front's to

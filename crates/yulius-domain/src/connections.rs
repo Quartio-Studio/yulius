@@ -51,12 +51,23 @@ impl Activity {
 /// The limit a refused connection met.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Full {
-    /// Its key (a sandbox) holds all of its share, each active within the floor.
-    #[error("every connection of its share was active lately")]
+    /// Its key (a sandbox) holds all of its share, each active within the floor, and no other
+    /// owner of the key had [`MARGIN`] more to give up.
+    #[error("every connection of its share was active lately, and no other owner was busier")]
     Key,
-    /// The table holds all of its places, each active within the floor.
-    #[error("every connection was active lately")]
+    /// The table holds all of its places, each active within the floor, and no other key had
+    /// [`MARGIN`] more to give up.
+    #[error("every connection was active lately, and no other key was busier")]
     Total,
+}
+
+/// Whom an active connection was taken from (SPEC-357 ESR-005), with how many it held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Busier {
+    /// The busiest other owner of the asker's key, holding this many there.
+    Owner(usize),
+    /// The busiest other key, holding this many in all.
+    Key(usize),
 }
 
 /// A connection the table closed to admit another: its payload is dropped by the caller, which
@@ -71,9 +82,9 @@ pub struct Evicted<K, T, O = ()> {
     pub idle_ms: u64,
     /// What ends it once dropped.
     pub payload: T,
-    /// Taken while active from a busier owner (or key), which held this many: `None` when it
-    /// gave way for being idle past the floor (SPEC-357 ESR-002).
-    pub busier: Option<usize>,
+    /// Taken while active from a busier owner or key: `None` when it gave way for being idle past
+    /// the floor (SPEC-357 ESR-002).
+    pub busier: Option<Busier>,
 }
 
 /// An admitted connection.
@@ -88,7 +99,7 @@ pub struct Admitted<K, T, O = ()> {
 }
 
 #[derive(Debug)]
-struct Open<K, O, T> {
+struct Open<K, T, O> {
     id: u64,
     key: K,
     owner: O,
@@ -96,7 +107,7 @@ struct Open<K, O, T> {
     payload: T,
 }
 
-impl<K, O, T> Open<K, O, T> {
+impl<K, T, O> Open<K, T, O> {
     /// Whether it may be taken: a connection held in flight never is.
     fn takeable(&self) -> bool {
         self.activity.last() != u64::MAX
@@ -111,7 +122,7 @@ pub struct Connections<K, T, O = ()> {
     per_key: usize,
     floor_ms: u64,
     next: u64,
-    open: Vec<Open<K, O, T>>,
+    open: Vec<Open<K, T, O>>,
 }
 
 impl<K: PartialEq, T> Connections<K, T> {
@@ -239,7 +250,7 @@ impl<K: PartialEq, T, O: PartialEq> Connections<K, T, O> {
             |open| open.key == *key && open.owner != *owner,
             |a, b| a.key == b.key && a.owner == b.owner,
         )?;
-        (held >= mine.saturating_add(MARGIN)).then(|| self.take(at, held, now_ms))
+        (held >= mine.saturating_add(MARGIN)).then(|| self.take(at, Busier::Owner(held), now_ms))
     }
 
     /// Takes the oldest takeable connection of the busiest owner of the busiest key other than
@@ -255,7 +266,7 @@ impl<K: PartialEq, T, O: PartialEq> Connections<K, T, O> {
             |open| open.key == *busiest,
             |a, b| a.key == b.key && a.owner == b.owner,
         )?;
-        Some(self.take(at, held, now_ms))
+        Some(self.take(at, Busier::Key(held), now_ms))
     }
 
     /// Of the groups (`same`) of the connections that `pick` selects, the one with the most
@@ -263,8 +274,8 @@ impl<K: PartialEq, T, O: PartialEq> Connections<K, T, O> {
     /// group whose first connection is the oldest.
     fn busiest(
         &self,
-        pick: impl Fn(&Open<K, O, T>) -> bool,
-        same: impl Fn(&Open<K, O, T>, &Open<K, O, T>) -> bool,
+        pick: impl Fn(&Open<K, T, O>) -> bool,
+        same: impl Fn(&Open<K, T, O>, &Open<K, T, O>) -> bool,
     ) -> Option<(usize, usize)> {
         let mut best: Option<(usize, usize)> = None;
         for (first, open) in self.open.iter().enumerate().filter(|(_, o)| pick(o)) {
@@ -289,15 +300,15 @@ impl<K: PartialEq, T, O: PartialEq> Connections<K, T, O> {
         best
     }
 
-    /// Removes the connection at `at`, taken from a group holding `held`.
-    fn take(&mut self, at: usize, held: usize, now_ms: u64) -> Evicted<K, T, O> {
+    /// Removes the connection at `at`, taken from `busier`.
+    fn take(&mut self, at: usize, busier: Busier, now_ms: u64) -> Evicted<K, T, O> {
         let open = self.open.remove(at);
         Evicted {
             idle_ms: now_ms.saturating_sub(open.activity.last()),
             key: open.key,
             owner: open.owner,
             payload: open.payload,
-            busier: Some(held),
+            busier: Some(busier),
         }
     }
 
@@ -335,15 +346,15 @@ impl<K: PartialEq, T, O: PartialEq> Connections<K, T, O> {
             .count()
     }
 
-    /// The most open connections any owner of `key` other than `owner` holds.
+    /// The most open connections any owner of `key` other than `owner` holds, of those that
+    /// have one to give up (not all held in flight): what a refusal at the key's share compares.
     #[must_use]
     pub fn most_of_others(&self, key: &K, owner: &O) -> usize {
-        self.open
-            .iter()
-            .filter(|open| open.key == *key && open.owner != *owner)
-            .map(|open| self.count_of(key, &open.owner))
-            .max()
-            .unwrap_or(0)
+        self.busiest(
+            |open| open.key == *key && open.owner != *owner,
+            |a, b| a.key == b.key && a.owner == b.owner,
+        )
+        .map_or(0, |(held, _)| held)
     }
 }
 
