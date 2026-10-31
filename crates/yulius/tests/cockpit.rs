@@ -4066,14 +4066,24 @@ async fn a_superagent_turn_that_starts_during_the_probe_keeps_its_strays() -> Te
 }
 
 /// A sandbox whose link to Yulius the test sets (SPEC-355 SLR-005): `None` cannot be told.
-struct Link(std::sync::Mutex<Option<bool>>);
+/// It counts the tests.
+struct Link(std::sync::Mutex<Option<bool>>, std::sync::atomic::AtomicU32);
 
 impl Link {
+    fn new(link: Option<bool>) -> Self {
+        Self(
+            std::sync::Mutex::new(link),
+            std::sync::atomic::AtomicU32::new(0),
+        )
+    }
     fn set(&self, link: Option<bool>) {
         *self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = link;
+    }
+    fn tests(&self) -> u32 {
+        self.1.load(Ordering::SeqCst)
     }
 }
 
@@ -4087,10 +4097,12 @@ impl yulius_app::ports::isolation::SandboxIsolation for Link {
     }
     fn release(&self, _: &SandboxId) {}
     async fn link(&self, _: &SandboxId) -> Option<bool> {
-        *self
+        let link = *self
             .0
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.1.fetch_add(1, Ordering::SeqCst);
+        link
     }
 }
 
@@ -4130,13 +4142,19 @@ async fn link_reads(f: &Fixture, state: &str) -> Result<Value, Box<dyn std::erro
 #[tokio::test]
 async fn a_superagent_that_lost_yulius_says_so_and_restarts_in_place() -> TestResult {
     let f = fixture().await?;
-    let link = Arc::new(Link(std::sync::Mutex::new(Some(true))));
+    let link = Arc::new(Link::new(Some(true)));
     assert!(f.h.app.set_isolation(link.clone()));
     idle_conversation(&f)?;
     let id = cockpit_id(&f, &f.alice).await?;
     link_reads(&f, "ok").await?;
 
+    // One failed test is not a lost link (review round 1: a server still adopting its shells
+    // answers late); a second one in a row is.
     link.set(Some(false));
+    let before = link.tests();
+    f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
+    wait_for("the next link test", || link.tests() > before).await?;
+    assert_eq!(link_state(&f, &f.alice).await?["state"], "ok");
     f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
     let lost = link_reads(&f, "lost").await?;
     let lost_at = lost["lost_at"].as_i64().ok_or("lost_at")?;
@@ -4191,6 +4209,53 @@ async fn a_superagent_that_lost_yulius_says_so_and_restarts_in_place() -> TestRe
         fresh["state"] == "ok" || fresh["state"] == "unknown",
         "the new one lost nothing: {fresh}"
     );
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-355 SLR-006 (review round 1): a restart whose old process cannot be ended starts no second
+/// Superagent on the same conversation: it answers 409, the running one stays, and its viewers are
+/// told it was not restarted.
+#[tokio::test]
+async fn a_superagent_whose_process_cannot_be_ended_is_not_restarted() -> TestResult {
+    let f = fixture_ending(true, None, Some(500)).await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    f.gate.refuse_ends(true);
+    let refused = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/cockpit/restart",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    let notice = loop {
+        let notice = read_message(&mut socket, "notice").await?;
+        if notice["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("could not restart"))
+        {
+            break notice;
+        }
+    };
+    assert_eq!(
+        notice["text"],
+        "The Superagent could not restart: its process could not be ended, so it keeps running."
+    );
+    let live: Vec<String> =
+        f.h.app
+            .sandbox_shells(&sid())
+            .into_iter()
+            .filter(|shell| !shell.has_ended())
+            .map(|shell| shell.id().to_owned())
+            .collect();
+    assert_eq!(live, vec![id], "the same Superagent, and no second one");
+    f.gate.refuse_ends(false);
     f.h.app.end_all_shells().await;
     Ok(())
 }
