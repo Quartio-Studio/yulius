@@ -650,7 +650,15 @@ docs/architecture.md              architecture with at least one Mermaid diagram
 docs/decisions/NNNN-<slug>.md     ADRs: Status, Context, Decision, Alternatives, Consequences
 docs/specs/YYYY-MM-DD-<slug>.md   one spec per task
 docs/changes.md                   reverse-chronological summary of delivered changes
+                                  (or docs/changes/: one note per change, SPEC-363)
 ```
+
+`yulius.toml`'s `[docs]` keys name these paths: `product`, `architecture`, `decisions` (a `.md`
+path is one decisions file, anything else a directory of ADRs), `specs_dir`, `changes` and
+`agents`. `changes` ending with `/` (`"docs/changes/"`), or naming an existing directory, is a
+folder of change notes: each task adds one new file `YYYY-MM-DD-<task number>-<short-slug>.md`
+there (or follows the repository's own naming) and never edits another's, and the briefing quotes
+the newest notes (SPEC-363, ADR-0248).
 
 A task spec must contain frontmatter (`yulius-task`, `status`) and the sections Goal, Context,
 Requirements, Plan (Markdown checklist, ≥ 1 item), Acceptance criteria, Test plan, Decisions, and —

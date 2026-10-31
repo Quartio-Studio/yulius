@@ -564,7 +564,8 @@ Tasks working at once must not collide where their parallel work meets
 [decision 0066](decisions/0066-parallel-tasks-stop-colliding-at-merge.md)). Numbered files
 (decision records, specs, migrations) get their number from Yulius (`record_number`): past the
 integration branch, every live task's checkout and every reservation in `record_numbers`. The logs
-every task appends to (the changes log, the decision index) merge by union in every repository,
+every task appends to (the changes log, the decision index) merge by union in every repository
+(a changes folder, one note per change, has nothing to merge and no union line; SPEC-363),
 from Yulius's block in the clone's `info/attributes`; Yulius merges the integration branch
 locally before GitHub merges (SPEC-050 DLV-203), so GitHub never sees those conflicts. A review
 carries over Git's own merges of the integration branch, checked with `git merge-tree`.
@@ -878,7 +879,9 @@ and `delivery_merge` like every task
 ([SPEC-116](../.ai/specs/SPEC-116-linter-dead-code-should-be-installed-on.md),
 [decision 0094](decisions/0094-onboarding-installs-the-gate-in-its-own-pull-request.md)). The
 briefing quotes the newest end of the changes log: a log whose ISO dates run oldest first is
-quoted from its end, and its new entries go there.
+quoted from its end, and its new entries go there. A changes folder (`[docs] changes` ending with
+`/`, or naming a directory) is quoted as its newest notes, by the date in their names, and each
+task adds one new note there ([decision 0248](decisions/0248-change-notes-may-be-a-folder-of-one-file-per-change.md)).
 
 ### Supertasks
 
