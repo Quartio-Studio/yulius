@@ -80,8 +80,8 @@ pub struct GatedHost {
     refused: Arc<watch::Sender<u32>>,
     /// The strays every probe reports, once set.
     strays: Mutex<Option<Vec<StrayProcess>>>,
-    /// The strays it was asked to reap.
-    reaped: Mutex<Vec<StrayProcess>>,
+    /// The strays it was asked to reap, each with the number of probes before it.
+    reaped: Mutex<Vec<(u32, StrayProcess)>>,
     /// Probes so far.
     probes: AtomicU32,
     during_probe: Mutex<Option<DuringProbe>>,
@@ -120,6 +120,12 @@ impl GatedHost {
     /// The strays it was asked to reap so far.
     #[must_use]
     pub fn reaped(&self) -> Vec<StrayProcess> {
+        self.reaped_after().into_iter().map(|(_, stray)| stray).collect()
+    }
+
+    /// [`Self::reaped`], each with how many probes had run before it was asked.
+    #[must_use]
+    pub fn reaped_after(&self) -> Vec<(u32, StrayProcess)> {
         self.reaped
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -246,10 +252,11 @@ impl SessionHost for GatedHost {
     }
 
     fn reap_strays(&self, strays: &[StrayProcess]) -> usize {
+        let probes = self.probes();
         self.reaped
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .extend(strays.iter().cloned());
+            .extend(strays.iter().map(|stray| (probes, stray.clone())));
         strays.iter().map(|stray| stray.processes.len()).sum()
     }
 }

@@ -4056,7 +4056,11 @@ async fn a_superagent_turn_that_starts_during_the_probe_keeps_its_strays() -> Te
         !f.gate.reaped().is_empty()
     })
     .await?;
-    assert_eq!(f.gate.reaped(), vec![leaked_job(500, 77)], "reaped once");
+    assert_eq!(
+        f.gate.reaped_after(),
+        vec![(3, leaked_job(500, 77))],
+        "reaped once, after the turn's end (the third probe), not at the second"
+    );
     f.h.app.end_all_shells().await;
     Ok(())
 }
