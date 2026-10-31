@@ -224,10 +224,7 @@ fn forward(shared: &Shared, method: &str, id: Option<&Value>, line: &[u8]) {
         let failure = match agent_call(PATH, line, shared.env.as_ref(), settings.limits) {
             Ok(answer) => {
                 shared.up();
-                // A request Claude Code cancelled meanwhile is not answered (MCP cancellation).
-                if !id.is_some_and(|id| shared.is_cancelled(id)) {
-                    shared.deliver(id, answer.status, &answer.body);
-                }
+                shared.deliver(id, answer.status, &answer.body);
                 return;
             }
             Err(CallError::TooLarge(max)) => {
@@ -340,7 +337,8 @@ impl Shared {
 
     /// Passes Yulius's answer on: a JSON body as one line, nothing for an accepted notification.
     fn deliver(&self, id: Option<&Value>, status: u16, body: &[u8]) {
-        let Some(id) = id else {
+        // A request Claude Code cancelled meanwhile is not answered (MCP cancellation).
+        let Some(id) = id.filter(|id| !self.is_cancelled(id)) else {
             return;
         };
         match status {
@@ -361,6 +359,9 @@ impl Shared {
     }
 
     fn answer(&self, id: &Value, code: i64, message: &str) {
+        if self.is_cancelled(id) {
+            return;
+        }
         self.write(
             &json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}),
         );
@@ -678,6 +679,46 @@ mod tests {
         respond(&mut ping, "{\"jsonrpc\":\"2.0\",\"id\":10,\"result\":{}}")?;
         assert_eq!(first(&rx)?["id"], json!(10));
         respond(&mut stream, "{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{}}")?;
+        drop(lines_tx);
+        assert!(
+            rx.recv_timeout(Duration::from_secs(2)).is_err(),
+            "a cancelled call was answered"
+        );
+        Ok(())
+    }
+
+    /// A cancelled call whose connection breaks is not answered either.
+    #[test]
+    fn a_call_cancelled_in_flight_is_not_answered_even_when_cut()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let (tx, rx) = mpsc::channel();
+        let (lines_tx, lines_rx) = mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            let mut input = BufReader::new(ChannelReader(lines_rx, Vec::new()));
+            run(
+                &mut input,
+                Box::new(Lines(tx)),
+                env(port),
+                settings(Duration::from_secs(30)),
+            );
+        });
+        lines_tx.send(b"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\"}\n".to_vec())?;
+        let (mut stream, _) = listener.accept()?;
+        read_request(&mut stream)?;
+        lines_tx.send(
+            b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":9}}\n"
+                .to_vec(),
+        )?;
+        // The cancel is read before the answer goes out: a ping after it is answered first.
+        lines_tx.send(b"{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"ping\"}\n".to_vec())?;
+        let (mut ping, _) = listener.accept()?;
+        read_request(&mut ping)?;
+        respond(&mut ping, "{\"jsonrpc\":\"2.0\",\"id\":10,\"result\":{}}")?;
+        assert_eq!(first(&rx)?["id"], json!(10));
+        // Review round 2: cut after Yulius read it, it is not answered "may have taken effect".
+        drop(stream);
         drop(lines_tx);
         assert!(
             rx.recv_timeout(Duration::from_secs(2)).is_err(),

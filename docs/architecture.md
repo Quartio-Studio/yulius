@@ -612,7 +612,7 @@ A restart or an update is invisible to a task's session
     is one path, `<run>/scrub-exec`.
 - **`yulius wait`** keeps asking until its own deadline.
 - **The wake.** Yulius writes `<data>/alive-at` every 30 s.
-  - After a start has reattached the runs, it waits 90 s, then works for 10 minutes, every 30 s.
+  - From 90 s after a start has reattached the runs until about 10 minutes after, every 30 s.
   - It types "Yulius is back; continue" once into each live, idle, Running task whose last turn
     closed between that time and the start, and whose Stop it did not answer (`<run>/stop-answered`
     holds when it last did).

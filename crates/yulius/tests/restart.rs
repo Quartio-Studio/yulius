@@ -563,6 +563,11 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
 
 /// Runs `yulius wait` at `port` with `total` and the session's token; its code, output and time.
 fn wait_at(port: u16, total: Duration) -> (i32, String, Duration) {
+    wait_paced(port, total, Duration::from_millis(50))
+}
+
+/// [`wait_at`] with its longest pause.
+fn wait_paced(port: u16, total: Duration, backoff_cap: Duration) -> (i32, String, Duration) {
     let mut out = Shared::default();
     let env = move |name: &str| match name {
         "YULIUS_URL" => Some(format!("http://127.0.0.1:{port}")),
@@ -572,7 +577,7 @@ fn wait_at(port: u16, total: Duration) -> (i32, String, Duration) {
     let pace = yulius::wait_cli::Pace {
         total,
         request_wait_secs: 1,
-        backoff_cap: Duration::from_millis(50),
+        backoff_cap,
     };
     let began = Instant::now();
     let code = yulius::wait_cli::run_with(&mut out, Some(&"ab".repeat(20)), pace, &env);
@@ -607,10 +612,8 @@ async fn a_refused_token_ends_the_wait_at_once() -> TestResult {
     Ok(())
 }
 
-/// Review round 1: an answer that is not an outage (a 500 every time) ends the wait after a few
-/// tries, not at its deadline as if Yulius were restarting.
-#[test]
-fn a_server_failing_every_request_ends_the_wait_after_a_few_tries() -> TestResult {
+/// A server answering 500 to every request, on a port of its own.
+fn failing_server() -> Result<u16, Box<dyn std::error::Error>> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     std::thread::spawn(move || {
@@ -623,6 +626,27 @@ fn a_server_failing_every_request_ends_the_wait_after_a_few_tries() -> TestResul
             );
         }
     });
+    Ok(port)
+}
+
+/// Review round 2: bad answers do not keep a wait past its deadline.
+#[test]
+fn bad_answers_end_the_wait_at_its_deadline() -> TestResult {
+    let port = failing_server()?;
+    let (code, said, took) = wait_paced(port, Duration::from_millis(300), Duration::from_secs(1));
+    assert_eq!(code, 1, "{said}");
+    assert!(
+        took < Duration::from_secs(2),
+        "5 pauses of 1 s ran past it: {took:?}"
+    );
+    Ok(())
+}
+
+/// Review round 1: an answer that is not an outage (a 500 every time) ends the wait after a few
+/// tries, not at its deadline as if Yulius were restarting.
+#[test]
+fn a_server_failing_every_request_ends_the_wait_after_a_few_tries() -> TestResult {
+    let port = failing_server()?;
     let (code, said, took) = wait_at(port, Duration::from_secs(60));
     assert_eq!(code, 1, "{said}");
     assert!(said.contains("HTTP 500"), "{said}");
@@ -657,5 +681,12 @@ async fn a_start_reads_alive_at_and_refreshes_it() -> TestResult {
         assert!(Instant::now() < deadline, "alive-at was not refreshed");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    // Review round 2: restarted again before its wakes ran, the next start still covers the
+    // first outage, not only the moment the start before it was alive.
+    let third = App::new(h.app.config.clone(), h.app.deps.clone());
+    assert_eq!(
+        third.start_outage_watch().down_since,
+        Some(yulius_domain::time::Timestamp(1000))
+    );
     Ok(())
 }

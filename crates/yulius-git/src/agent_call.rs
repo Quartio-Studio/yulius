@@ -108,6 +108,7 @@ pub fn agent_call(
             // No word within the wait: the body goes anyway, as a server that ignores the
             // expectation needs it.
             Ok(None) => break,
+            Err(ReadError::TooLarge(max)) => return Err(CallError::TooLarge(max)),
             Err(err) => return Err(CallError::Unsent(err.to_string())),
         }
     }

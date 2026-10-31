@@ -21,6 +21,9 @@ use crate::context::App;
 
 /// The file holding when Yulius was last alive (milliseconds since the epoch).
 pub const ALIVE_FILE: &str = "alive-at";
+/// The file holding when the outage whose wakes have not run yet began (ms): kept until a start's
+/// wake window ends, so a restart within it still covers that outage.
+pub const PENDING_FILE: &str = "outage-pending";
 /// The file in a run directory holding when Yulius last answered the run's Stop (ms).
 pub const STOP_ANSWERED_FILE: &str = "stop-answered";
 /// How often `alive-at` is written.
@@ -82,7 +85,7 @@ pub fn wakes_after_outage(facts: &WakeFacts, down_since_ms: i64, started_ms: i64
 /// Records in `run_dir` that Yulius answered the run's Stop at `at` (best effort: without it a
 /// settled turn may be woken once after a restart).
 pub fn mark_stop_answered(run_dir: &Path, at: i64) {
-    if let Err(err) = std::fs::write(run_dir.join(STOP_ANSWERED_FILE), at.to_string()) {
+    if let Err(err) = write_time(&run_dir.join(STOP_ANSWERED_FILE), at) {
         tracing::debug!(run_dir = %run_dir.display(), error = %err, "could not record the answered Stop");
     }
 }
@@ -99,7 +102,11 @@ pub fn stop_answered_at(run_dir: &Path) -> i64 {
 /// When Yulius was last alive, from `<data_dir>/alive-at`.
 #[must_use]
 pub fn read_alive_at(data_dir: &Path) -> Option<Timestamp> {
-    let text = std::fs::read_to_string(data_dir.join(ALIVE_FILE)).ok()?;
+    read_time(&data_dir.join(ALIVE_FILE))
+}
+
+fn read_time(path: &Path) -> Option<Timestamp> {
+    let text = std::fs::read_to_string(path).ok()?;
     text.trim()
         .parse::<i64>()
         .ok()
@@ -113,12 +120,19 @@ pub fn read_alive_at(data_dir: &Path) -> Option<Timestamp> {
 /// # Errors
 /// File errors.
 pub fn write_alive_at(data_dir: &Path, at: Timestamp) -> std::io::Result<()> {
+    write_time(&data_dir.join(ALIVE_FILE), at.0)
+}
+
+/// Writes `ms` to `path` through a synced temporary file, so a crash leaves the old time or the
+/// new one.
+fn write_time(path: &Path, ms: i64) -> std::io::Result<()> {
     use std::io::Write as _;
-    let tmp = data_dir.join(format!("{ALIVE_FILE}.tmp"));
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
     let mut file = std::fs::File::create(&tmp)?;
-    file.write_all(at.0.to_string().as_bytes())?;
+    file.write_all(ms.to_string().as_bytes())?;
     file.sync_all()?;
-    std::fs::rename(tmp, data_dir.join(ALIVE_FILE))
+    std::fs::rename(tmp, path)
 }
 
 /// What a start knows about the outage before it.
@@ -131,13 +145,21 @@ pub struct OutageStart {
 }
 
 impl App {
-    /// Reads when the previous server was last alive and keeps `alive-at` fresh from now on.
+    /// Reads when the outage before this start began (one whose wakes never ran, else when the
+    /// previous server was last alive) and keeps `alive-at` fresh from now on.
     pub fn start_outage_watch(self: &Arc<Self>) -> OutageStart {
         let data_dir = self.config.data_dir.clone();
         let start = OutageStart {
-            down_since: read_alive_at(&data_dir),
+            down_since: read_time(&data_dir.join(PENDING_FILE))
+                .or_else(|| read_alive_at(&data_dir)),
             started: self.now(),
         };
+        // Kept until this start's wakes ran (`schedule_outage_wakes`).
+        if let Some(down_since) = start.down_since
+            && let Err(err) = write_time(&data_dir.join(PENDING_FILE), down_since.0)
+        {
+            tracing::warn!(error = %err, "could not record the outage to wake after");
+        }
         let app = Arc::clone(self);
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(ALIVE_EVERY);
@@ -165,10 +187,12 @@ impl App {
             loop {
                 app.wake_after_outage(down_since, start.started).await;
                 if tokio::time::Instant::now() + WAKE_EVERY > until {
-                    return;
+                    break;
                 }
                 tokio::time::sleep(WAKE_EVERY).await;
             }
+            // This outage is dealt with: the next start looks back only to its own.
+            let _ = std::fs::remove_file(app.config.data_dir.join(PENDING_FILE));
         });
     }
 

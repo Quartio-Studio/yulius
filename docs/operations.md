@@ -1321,9 +1321,11 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
     down: its stderr in Claude Code's MCP log says `Yulius cannot be reached …; holding calls
     until it is back`, then `Yulius is back`.
   - `yulius wait` waits on until its deadline.
-  - Yulius records the time it was last alive in `<data>/alive-at`, and in each run's `stop-answered` when it last answered its
-    Stop. From 90 s after a start, for 10 minutes, it logs
-    `woken after Yulius's outage` for each idle task it told "Yulius is back; continue".
+  - Yulius records the time it was last alive in `<data>/alive-at`, and in each run's
+    `stop-answered` when it last answered the run's Stop. From 90 s after a start's runs are
+    reattached until about 10 minutes after that, it logs `woken after Yulius's outage` for each
+    idle task it told "Yulius is back; continue". `<data>/outage-pending` holds the outage being
+    dealt with, so a second restart within that window still covers the first.
   - Sessions started before this release still have the HTTP config: if one says "MCP server
     yulius is not connected" after a restart, `/mcp` in its terminal (or continuing the task)
     brings it back.

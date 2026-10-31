@@ -100,18 +100,22 @@ woke the tasks.
   or 504. Any other answer that is no state (an HTTP error, an unreadable body) ends the wait after
   5 in a row. A refused token still ends it at once.
 - **MSB-006** Yulius writes the time it was last alive to `<data>/alive-at` every `ALIVE_EVERY`
-  (30 s). At the start, the time read from that file is when it went down.
+  (30 s). At the start, the time read from that file is when it went down. That time is kept in
+  `<data>/outage-pending` until the start's wake window ends, so a second restart within it still
+  covers the first outage.
 - **MSB-007** After a restart, once the runs are reattached, Yulius waits `WAKE_GRACE` (90 s) so
-  that they replay their transcripts. Then, every `WAKE_EVERY` (30 s) until 10 minutes after the
-  start, it types "Yulius is back; continue" once into each reattached task that went idle while
+  that they replay their transcripts. Then, every `WAKE_EVERY` (30 s) until about 10 minutes
+  after the runs were reattached, it types "Yulius is back; continue" once into each reattached task that went idle while
   it was down:
   - "Idle" means no turn open and the task Running.
   - The transcript's record that closes the last turn falls between `alive-at` and this start.
-  - No Stop of the run was answered since the prompt that opened that turn. Yulius keeps the time
+  - No Stop of the run was answered since its last prompt or answer. A Stop answered with a block
+    comes before the turn's next answer. Yulius keeps the time
     it answers a run's Stop in `<run>/stop-answered`. `alive-at` is up to 30 s old, so a turn
     Yulius settled just before it stopped also closed after it.
 
-  This covers a wait that died, the turn its exit woke, and a turn whose Stop went unanswered. A task is not woken in these cases: its goal is achieved, it has an open `needs_you`
+  This covers a wait that died, the turn its exit woke, and a turn whose Stop went unanswered.
+  A task is not woken in these cases: its goal is achieved, it has an open `needs_you`
   or pause, a person typed within the last minute, or the start knows no `alive-at`. The text is
   typed with the guards of a typed message (SPEC-230 TMS-004), unlabelled, and is not a person's.
   It amends SPEC-028 MSR-004 for this single case.
@@ -229,6 +233,25 @@ Independent reviews in fresh sessions (skills `om-code-review` and `yulius-revie
     - The bridge's unit tests take a free port and bind it later, to stand for a server that
       is down. Another test may take it in between; nothing failed in this change's runs.
     - The fold test's sub-agent case is the `TurnComplete { at: None }` line.
+- Round 2 on d67d7b52: request changes. All of round 1 was verified fixed. All findings were in
+  this change's own code and all were fixed, test-first:
+  - **Major (introduced by round 1's fix).** A turn whose earlier Stop Yulius answered with a
+    block was never woken, though its last Stop failed in the outage. The block's feedback is an
+    `isMeta` record, not a prompt. The answered Stop is now compared with the turn's last prompt
+    *or answer* (`turn_moved_ms`). Red first: the wake test's `Blocked` task was not woken.
+  - Minor:
+    - No test exercised writing `stop-answered`. Now `agent_hooks::an_answered_stop_is_kept_in_the_run_directory`
+      covers it, and a mutation that drops the write fails it.
+    - Two restarts within a wake window lost the first outage. `<data>/outage-pending` keeps it
+      until the window ends. Red first.
+    - The "lost" and "too large" paths answered a cancelled call. Red first.
+    - `yulius wait` counted bad answers in total and could run past its deadline on them. Red
+      first: it took 4 s past a 0.3 s deadline.
+  - Nits fixed:
+    - The wake window in the docs.
+    - `stop-answered` written through a synced temporary file.
+    - `TooLarge` while waiting for `100 Continue`.
+    - Long lines.
 
 ## Evidence
 

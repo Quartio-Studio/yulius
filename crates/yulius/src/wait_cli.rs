@@ -247,7 +247,9 @@ fn ask(
     let mut pause = pace.backoff_cap.min(Duration::from_secs(1));
     loop {
         let timeout = Duration::from_secs(wait_secs + 15);
-        let error = match yulius_git::credential::agent_post(PATH, &body, env, timeout) {
+        // An outage is waited out; an answer that is no state (an HTTP error, an unreadable body)
+        // ends the wait after MAX_BAD_ANSWERS in a row.
+        let bad = match yulius_git::credential::agent_post(PATH, &body, env, timeout) {
             Ok((200, raw)) => match serde_json::from_slice::<WaitState>(&raw) {
                 Ok(state) => {
                     if unreachable_since.is_some() {
@@ -255,15 +257,7 @@ fn ask(
                     }
                     return Some(state);
                 }
-                Err(err) => {
-                    bad_answers += 1;
-                    if bad_answers >= MAX_BAD_ANSWERS {
-                        let _ = writeln!(out, "yulius wait: unreadable answer from Yulius: {err}");
-                        return None;
-                    }
-                    std::thread::sleep(pause);
-                    continue;
-                }
+                Err(err) => Err(format!("an unreadable answer from Yulius: {err}")),
             },
             Ok((401 | 403 | 404, _)) => {
                 let _ = writeln!(
@@ -274,18 +268,24 @@ fn ask(
                 return None;
             }
             // A proxy in front of a Yulius that is starting: an outage.
-            Ok((status @ 502..=504, _)) => format!("HTTP {status}"),
-            // Yulius answers, but not with a state: not an outage, so not waited out.
-            Ok((status, _)) => {
+            Ok((status @ 502..=504, _)) => Ok(format!("HTTP {status}")),
+            Ok((status, _)) => Err(format!("Yulius answered HTTP {status}")),
+            Err(err) => Ok(err.to_string()),
+        };
+        let error = match bad {
+            Ok(outage) => {
+                bad_answers = 0;
+                outage
+            }
+            Err(bad) => {
                 bad_answers += 1;
-                if bad_answers >= MAX_BAD_ANSWERS {
-                    let _ = writeln!(out, "yulius wait: Yulius answered HTTP {status}.");
+                if bad_answers >= MAX_BAD_ANSWERS || Instant::now() + pause >= deadline {
+                    let _ = writeln!(out, "yulius wait: {bad}.");
                     return None;
                 }
                 std::thread::sleep(pause);
                 continue;
             }
-            Err(err) => err.to_string(),
         };
         let since = *unreachable_since.get_or_insert_with(|| {
             let _ = writeln!(
