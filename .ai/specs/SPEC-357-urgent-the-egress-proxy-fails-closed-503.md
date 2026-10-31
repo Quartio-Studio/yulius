@@ -156,4 +156,20 @@ Independent reviews in fresh sessions (skill `yulius-review`), read-only over
     reworded.
   - Nits: `Open`'s generic order matches `Evicted`'s; the `Full` texts mention the busier
     owner; the refusal reads "the most of the sandbox's runs".
+- Round 2 on baba7a66: approve. Two minor own-code findings, both fixed test-first (the red
+  commit has `share_refusal` and `most_of_others` with held connections missing):
+  - The refusal could call the asker "the most" while another run held more connections, all
+    held in flight. "The most" now compares every connection, held ones included
+    (`share_refusal`, unit test). `most_of_others` counts them. The takeable-aware count went
+    away: "no other run has 2 more to give up" is what the table found.
+  - The run-level and sandbox-level takes shared one warning's rate limit. They are now
+    separate kinds (`busier_kind`, unit test).
+  - Nits fixed:
+    - The refusal's margin comes from `MARGIN`.
+    - The changes entry no longer claims only the busiest is refused.
+    - The operations guide says which id names a CI job and a Superagent.
+    - The `Slots` doc mentions the take.
+  - Nit left: `busiest()` is quadratic in the open connections, at most 256. It runs only at a
+    full share with nothing idle, at about 0.3 ms by the reviewer's estimate. A one-pass count
+    is worth it only if the limits grow.
 

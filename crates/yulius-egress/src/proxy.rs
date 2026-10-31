@@ -114,7 +114,8 @@ pub struct EgressProxy {
 type Warned = HashMap<(&'static str, Option<String>), Instant>;
 
 /// The proxy's connections: at most `max_connections`, `max_per_sandbox` per sandbox; at a limit
-/// the longest-idle one past the floor gives way (SLR-002). Each holds the sender that ends it.
+/// the longest-idle one past the floor gives way (SLR-002), else the oldest of a busier run or
+/// sandbox (SPEC-357). Each holds the sender that ends it.
 struct Slots {
     /// By sandbox and run (`EgressClient::use_key`), SPEC-357.
     table: Mutex<Connections<String, oneshot::Sender<()>, String>>,
@@ -245,6 +246,33 @@ async fn lookup(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
         ));
     }
     Ok(allowed)
+}
+
+/// The warning kind of a connection taken from a busier run or sandbox: each warns once a minute
+/// per sandbox, apart (SPEC-357 ESR-005).
+fn busier_kind(busier: Busier) -> &'static str {
+    match busier {
+        Busier::Owner(_) => "busiest run",
+        Busier::Key(_) => "busiest sandbox",
+    }
+}
+
+/// The `503` at a full sandbox share (SPEC-357 ESR-004): `mine` of `share` are the asking run's,
+/// another run holds at most `most_held` (held in flight included). "The most" only when no
+/// other run holds as many; else the table found no run with `MARGIN` more to give up.
+fn share_refusal(share: usize, mine: usize, most_held: usize) -> String {
+    let whose = if mine > most_held {
+        "the most of the sandbox's runs: end this run's leftover processes".to_owned()
+    } else {
+        format!(
+            "and no other run has {} more to give up: end leftover processes",
+            connections::MARGIN
+        )
+    };
+    format!(
+        "Yulius proxy: this sandbox's processes hold all of its {share} connections, each active \
+         lately; this run holds {mine} of them, {whose} or try again"
+    )
 }
 
 /// reqwest's resolver: the same destination policy (no DNS rebinding to local addresses).
@@ -453,7 +481,7 @@ impl EgressProxy {
                 if let Some(evicted) = &admitted.evicted
                     && let Some(busier) = evicted.busier
                 {
-                    if warn_due(&mut warned, "busiest", Some(&evicted.key)) {
+                    if warn_due(&mut warned, busier_kind(busier), Some(&evicted.key)) {
                         match busier {
                             Busier::Owner(held) => tracing::warn!(
                                 sandbox = %evicted.key,
@@ -492,7 +520,7 @@ impl EgressProxy {
                 Ok((slot, ended))
             }
             Err(connections::Full::Key) => {
-                let (mine, others) = held.unwrap_or_default();
+                let (mine, most_held) = held.unwrap_or_default();
                 if warn_due(&mut warned, "share", Some(sandbox)) {
                     tracing::warn!(
                         sandbox,
@@ -503,16 +531,7 @@ impl EgressProxy {
                          leftover processes may hold them (docs/operations.md)"
                     );
                 }
-                let whose = if mine > others {
-                    "the most of the sandbox's runs: end this run's leftover processes"
-                } else {
-                    "and no other run has 2 more to give up: end leftover processes"
-                };
-                Err(format!(
-                    "Yulius proxy: this sandbox's processes hold all of its {} connections, each \
-                     active lately; this run holds {mine} of them, {whose} or try again",
-                    self.max_per_sandbox
-                ))
+                Err(share_refusal(self.max_per_sandbox, mine, most_held))
             }
             Err(connections::Full::Total) => {
                 if warn_due(&mut warned, "full", None) {
@@ -885,10 +904,10 @@ mod tests {
     /// connections included; "nothing to give up" names the margin the table used.
     #[test]
     fn a_share_refusal_names_the_busiest_run_only_when_it_is() {
-        let busiest = share_refusal(8, 7, 1, 1);
+        let busiest = share_refusal(8, 7, 1);
         assert!(busiest.contains("this run holds 7 of them, the most of the sandbox's runs"));
         // Another run holds 7 requests in flight: it has nothing to give up, but it is busier.
-        let not = share_refusal(8, 1, 7, 0);
+        let not = share_refusal(8, 1, 7);
         assert!(!not.contains("the most"), "{not}");
         assert!(
             not.contains(&format!(

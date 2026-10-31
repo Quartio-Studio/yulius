@@ -346,15 +346,15 @@ impl<K: PartialEq, T, O: PartialEq> Connections<K, T, O> {
             .count()
     }
 
-    /// The most open connections any owner of `key` other than `owner` holds, of those that
-    /// have one to give up (not all held in flight): what a refusal at the key's share compares.
+    /// The most open connections any owner of `key` other than `owner` holds, held ones included.
     #[must_use]
     pub fn most_of_others(&self, key: &K, owner: &O) -> usize {
-        self.busiest(
-            |open| open.key == *key && open.owner != *owner,
-            |a, b| a.key == b.key && a.owner == b.owner,
-        )
-        .map_or(0, |(held, _)| held)
+        self.open
+            .iter()
+            .filter(|open| open.key == *key && open.owner != *owner)
+            .map(|open| self.count_of(key, &open.owner))
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -489,11 +489,9 @@ mod tests {
             all_held.admit_by("s", "a", payload, 0)?.activity.hold();
         }
         assert_eq!(all_held.admit_by("s", "b", 3, 10).err(), Some(Full::Key));
-        // Review round 1: an owner with nothing to give up is passed over for the next busiest,
-        // and is not counted as busier (the refusal's text).
-        assert_eq!(all_held.most_of_others(&"s", &"b"), 0);
-        // Review round 2: a's held connections still count as held (the refusal's "the most").
-        assert_eq!(all_held.most_held_by_others(&"s", &"b"), 2);
+        // Review round 1: an owner with nothing to give up is passed over for the next busiest.
+        // Review round 2: a's held connections still count (the refusal's "the most").
+        assert_eq!(all_held.most_of_others(&"s", &"b"), 2);
         let mut next = Connections::with_owners(8, 5, 1_000);
         for payload in 1..=3 {
             next.admit_by("s", "a", payload, 0)?.activity.hold();

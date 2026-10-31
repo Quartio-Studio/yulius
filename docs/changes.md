@@ -11,7 +11,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   the proxy) for 90 minutes, because its processes held the sandbox's whole share of 128. The
   proxy now counts each connection's run. At a full share with every connection active, the
   busiest run's oldest connection gives way to a run holding fewer, and at the full proxy the
-  busiest sandbox's does. Only the busiest is refused, with how many it holds.
+  busiest sandbox's does. A run is refused only when no other run of its sandbox has 2 more to
+  give up, and the refusal says how many it holds.
 - A superadmin can switch Vidoc security scans off for the whole instance, and on again, without
   removing the key (SPEC-356, ADR-0242, task #338). The Instance page's Vidoc card has "Scan every
   project with Vidoc"; while it is off it says since when and by whom, and the project switches
