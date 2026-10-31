@@ -1224,6 +1224,27 @@ command = 'if [ "$YULIUS_CI_MATRIX" = 2 ]; then exit "$YULIUS_CI_SKIP_CODE"; fi'
     Ok(())
 }
 
+/// SPEC-359 VSB-006: a job is told where its sandbox's Vidoc switch is, so a scan whose key
+/// fails points there.
+#[tokio::test]
+async fn a_job_is_told_where_the_sandboxs_vidoc_switch_is() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"where\"\ncommand = 'echo \"switch=[$YULIUS_VIDOC_SWITCH]\"'\n"
+            .to_owned()
+    })
+    .await?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let head = git(&f.work, &["rev-parse", "HEAD"])?;
+    let outputs = job_outputs(&f, &head).await?;
+    let expected = format!("switch=[{}/s/app/ci]", f.h.app.config.public_url);
+    assert!(
+        output_of(&outputs, "where")?.contains(&expected),
+        "{outputs:?}"
+    );
+    Ok(())
+}
+
 /// SPEC-273 NOI-006: a job that exits `$YULIUS_CI_INCOMPLETE_CODE` (a security scan Vidoc's
 /// outage cut short) ends error with the files it names, never failed: the status says
 /// incomplete, the merge is blocked, and the other job still ends passed.

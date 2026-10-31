@@ -1204,6 +1204,33 @@ async fn a_live_shell_keeps_a_resting_task_s_build_artifacts() -> TestResult {
     Ok(())
 }
 
+/// SPEC-359 VSB-006: a terminal is told where its sandbox's Vidoc switch is.
+#[tokio::test]
+async fn a_terminal_is_told_where_the_sandboxs_vidoc_switch_is() -> TestResult {
+    use yulius_app::ports::store::SandboxStore as _;
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    let created = create(&f, &f.writer, "s1", None).await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+    let mut socket = open_terminal(served.addr, &id, &f.writer).await?;
+    let mut screen = String::new();
+    input(
+        &mut socket,
+        "echo \"switch=[${YULIUS_VIDOC_SWITCH:-unset}]\"\r",
+    )
+    .await?;
+    let slug =
+        f.h.store
+            .sandbox(&SandboxId::parse("s1")?)
+            .await?
+            .ok_or("s1")?
+            .slug;
+    let expected = format!("switch=[{}/s/{slug}/ci]", f.h.app.config.public_url);
+    read_until(&mut socket, &mut screen, &expected).await?;
+    Ok(())
+}
+
 /// SPEC-338 VOF-002 (review round 1): a terminal of a project whose Vidoc scans are switched off
 /// gets `YULIUS_VIDOC=off`, so a scan typed there says "disabled" too.
 #[tokio::test]

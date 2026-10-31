@@ -59,7 +59,7 @@ function keyInput(service, id) {
  * Turns `sandbox`'s Vidoc scans on or off (SPEC-338 VOF-001). Answers the updated sandbox, or null
  * after saying why it failed; a switch `input` goes back then.
  */
-async function setVidocScans(ctx, sandbox, on, { input = null } = {}) {
+export async function setVidocScans(ctx, sandbox, on, { input = null } = {}) {
   if (input) { input.disabled = true; input.dataset.busy = '1'; }
   try {
     const updated = await ctx.api.patch(`/api/sandboxes/${enc(sandbox.id)}`, { vidoc: on });

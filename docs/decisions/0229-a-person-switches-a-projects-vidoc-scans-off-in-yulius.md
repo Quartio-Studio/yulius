@@ -7,7 +7,9 @@ task #322. Amends [ADR-0157](0157-vidoc-is-an-optional-instance-key-and-the-scan
 (where the key applies) and [ADR-0107](0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md)
 (the committed switch stays; this one is Yulius's, per project). Amended by
 [ADR-0242](0242-a-superadmin-switches-vidoc-off-for-the-whole-instance.md): a superadmin can also
-switch Vidoc off for the whole instance.
+switch Vidoc off for the whole instance. Amended by
+[ADR-0245](0245-a-sandboxs-admins-switch-its-vidoc-scans-on-its-ci-cd-page.md): the sandbox's admins
+switch it on its CI/CD page, and a failing key points there.
 
 ## Context
 

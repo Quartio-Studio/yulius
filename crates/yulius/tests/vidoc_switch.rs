@@ -41,7 +41,11 @@ struct Instance {
 
 /// An instance with a Vidoc key and sandbox `s1` (`acme/app`): alice administers it, bob writes.
 async fn instance() -> Result<Instance, Box<dyn std::error::Error>> {
-    let h = harness()?;
+    instance_on(harness()?).await
+}
+
+/// [`instance`] on harness `h`.
+async fn instance_on(h: Harness) -> Result<Instance, Box<dyn std::error::Error>> {
     let admin = setup_superadmin_creds(&h).await?;
     configure_github_app(&h).await?;
     let alice = admit_and_sign_in(&h, &admin, "alice", 11, true).await?;
@@ -430,5 +434,224 @@ async fn every_project_follows_the_instance_switch() -> TestResult {
     assert_eq!(i.h.app.vidoc_briefing(&record), VidocBriefing::On);
     let me = call(&i.h.router, Method::GET, "/api/me", None, &i.bob).await?;
     assert_eq!(me.body["instance"]["vidoc"], true, "{}", me.body);
+    Ok(())
+}
+
+/// `s1`'s Vidoc view (SPEC-359 VSB-001) as `who`.
+async fn vidoc_view(i: &Instance, who: &Creds) -> Result<Value, Box<dyn std::error::Error>> {
+    let r = call(
+        &i.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/vidoc",
+        None,
+        who,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    Ok(r.body)
+}
+
+/// `s1`'s clone with `origin/dev` at a commit holding `.config/vidoc.toml` as `config` (none
+/// for `None`).
+fn integration_head(i: &Instance, config: Option<&str>) -> TestResult {
+    let repo = i.h.app.config.data_dir.join("sandboxes/s1/repo");
+    std::fs::create_dir_all(repo.join(".config"))?;
+    let git = |args: &[&str]| -> TestResult {
+        let out = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=Yulius Test",
+                "-c",
+                "user.email=test@yulius.test",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(&repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()?;
+        if !out.status.success() {
+            return Err(format!("git {args:?}: {}", String::from_utf8_lossy(&out.stderr)).into());
+        }
+        Ok(())
+    };
+    if !repo.join(".git").exists() {
+        git(&["init", "-q", "-b", "main"])?;
+    }
+    let file = repo.join(".config/vidoc.toml");
+    match config {
+        Some(text) => std::fs::write(&file, text)?,
+        None => {
+            let _ = std::fs::remove_file(&file);
+        }
+    }
+    std::fs::write(repo.join("README.md"), format!("{config:?}\n"))?;
+    git(&["add", "-A"])?;
+    git(&["commit", "-q", "-m", "head"])?;
+    git(&["update-ref", "refs/remotes/origin/dev", "HEAD"])?;
+    Ok(())
+}
+
+/// SPEC-359 VSB-001, VSB-002: the sandbox's admin (not a superadmin) switches its Vidoc scans off
+/// and on in the sandbox; a writer sees the state but cannot change it; the superadmin's change
+/// (the Instance card) and the sandbox's are one switch, and each is audited with who and when.
+#[tokio::test]
+async fn a_sandbox_admin_switches_vidoc_in_the_sandbox_and_the_instance_card_agrees() -> TestResult
+{
+    let i = instance().await?;
+    let seen = vidoc_view(&i, &i.bob).await?;
+    assert_eq!(seen["project"], true, "{seen}");
+    assert_eq!(seen["instance"], true);
+    assert_eq!(seen["key"], true, "the instance key reaches it");
+    assert_eq!(seen["repository"], "on", "no clone: nothing says off");
+    assert_eq!(seen["scans"], true);
+    assert_eq!(seen["can_change"], false, "a writer cannot");
+    assert_eq!(seen["changed_by"], Value::Null);
+    let denied = switch(&i, json!({"vidoc": false}), &i.bob).await?;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN, "{}", denied.body);
+
+    let alice = i.h.store.user_by_login("alice").await?.ok_or("alice")?;
+    assert!(!alice.is_superadmin, "alice is only the sandbox's admin");
+    assert_eq!(vidoc_view(&i, &i.alice).await?["can_change"], true);
+    let off = switch(&i, json!({"vidoc": false}), &i.alice).await?;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.body);
+    let seen = vidoc_view(&i, &i.bob).await?;
+    assert_eq!(seen["project"], false, "{seen}");
+    assert_eq!(seen["scans"], false);
+    assert_eq!(seen["changed_by"], "alice");
+    assert!(
+        seen["changed_at"]
+            .as_str()
+            .is_some_and(|at| at.contains('T')),
+        "{seen}"
+    );
+
+    // The Instance card reads the sandbox list: the same switch.
+    let list = call(&i.h.router, Method::GET, "/api/sandboxes", None, &i.admin).await?;
+    let s1 = list
+        .body
+        .as_array()
+        .ok_or("list")?
+        .iter()
+        .find(|s| s["id"] == "s1")
+        .ok_or("s1")?;
+    assert_eq!(s1["profile"]["vidoc"], false, "{s1}");
+    let on = switch(&i, json!({"vidoc": true}), &i.admin).await?;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+    let seen = vidoc_view(&i, &i.alice).await?;
+    assert_eq!(seen["project"], true, "{seen}");
+    assert_eq!(seen["changed_by"], "superadmin");
+    assert_eq!(vidoc_view(&i, &i.admin).await?["can_change"], true);
+
+    assert_eq!(audited(&i).await?, ["superadmin on", "alice off"]);
+    Ok(())
+}
+
+/// SPEC-359 VSB-003: `enabled = false` committed on the integration branch wins over Yulius's
+/// switch; a file the scanner would refuse is said; an instance switched off is said.
+#[tokio::test]
+async fn the_repositorys_committed_switch_wins_and_is_said() -> TestResult {
+    let git = Arc::new(yulius::wiring::git::GitAdapter::new("git"));
+    let i = instance_on(support::harness_with_git(git)?).await?;
+    integration_head(&i, None)?;
+    assert_eq!(vidoc_view(&i, &i.alice).await?["repository"], "on");
+
+    integration_head(&i, Some("# paused\nenabled = false\n"))?;
+    let seen = vidoc_view(&i, &i.alice).await?;
+    assert_eq!(seen["repository"], "off", "{seen}");
+    assert_eq!(seen["branch"], "dev");
+    assert_eq!(seen["project"], true, "Yulius's own switch is kept");
+    assert_eq!(seen["scans"], false, "the repository wins");
+
+    integration_head(&i, Some("enabled = \"no\"\n"))?;
+    let seen = vidoc_view(&i, &i.alice).await?;
+    assert_eq!(seen["repository"], "unreadable", "{seen}");
+    assert!(
+        seen["repository_problem"]
+            .as_str()
+            .is_some_and(|p| p.contains("enabled")),
+        "{seen}"
+    );
+
+    integration_head(&i, Some("enabled = true\n"))?;
+    switch_instance(&i, false, &i.admin).await?;
+    let seen = vidoc_view(&i, &i.alice).await?;
+    assert_eq!(seen["repository"], "on", "{seen}");
+    assert_eq!(seen["instance"], false);
+    assert_eq!(seen["scans"], false);
+    Ok(())
+}
+
+/// SPEC-359 VSB-001: a playground has no switch.
+#[tokio::test]
+async fn a_playground_has_no_vidoc_view() -> TestResult {
+    let i = instance().await?;
+    let mut playground =
+        i.h.store
+            .sandbox(&SandboxId::parse("s1")?)
+            .await?
+            .ok_or("s1")?;
+    playground.id = SandboxId::parse("s3")?;
+    playground.slug = "play".into();
+    playground.repo_owner = String::new();
+    playground.repo_name = "play".into();
+    playground.github_repo_id = None;
+    playground.port_base = i.h.store.next_port_base(43000, 20).await?;
+    i.h.store.insert_sandbox(&playground).await?;
+    let r = call(
+        &i.h.router,
+        Method::GET,
+        "/api/sandboxes/s3/vidoc",
+        None,
+        &i.alice,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
+    Ok(())
+}
+
+/// SPEC-359 VSB-002 (review round 1): a sandbox added again under a removed one's slug does not
+/// show the removed one's last change as its own.
+#[tokio::test]
+async fn a_change_before_the_sandbox_existed_is_not_its_last_change() -> TestResult {
+    use yulius_app::ports::store::AuditStore as _;
+    let i = instance().await?;
+    let created =
+        i.h.store
+            .sandbox(&SandboxId::parse("s1")?)
+            .await?
+            .ok_or("s1")?
+            .created_at;
+    i.h.store
+        .audit(
+            yulius_domain::time::Timestamp(created.0 - 1),
+            "carol",
+            "delivery.vidoc.update",
+            Some("app"),
+            Some("off"),
+        )
+        .await?;
+    let seen = vidoc_view(&i, &i.alice).await?;
+    assert_eq!(seen["changed_by"], Value::Null, "{seen}");
+    switch(&i, json!({"vidoc": false}), &i.alice).await?;
+    assert_eq!(vidoc_view(&i, &i.alice).await?["changed_by"], "alice");
+    Ok(())
+}
+
+/// SPEC-359 VSB-001 (review round 1): someone without access to the sandbox does not see it.
+#[tokio::test]
+async fn a_stranger_does_not_see_a_sandboxs_vidoc_view() -> TestResult {
+    let i = instance().await?;
+    let carol = admit_and_sign_in(&i.h, &i.admin, "carol", 13, true).await?;
+    let r = call(
+        &i.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/vidoc",
+        None,
+        &carol,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "{}", r.body);
     Ok(())
 }

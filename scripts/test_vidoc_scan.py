@@ -373,6 +373,25 @@ class Service(Scanning):
                 self.assertIn(words, output)
                 self.assertEqual(len(server.requests), 1, "never retried")
 
+    def test_a_key_problem_points_to_the_sandboxs_switch_that_yulius_names(self):
+        # SPEC-359 VSB-006: Yulius names the sandbox's Security scan card; without it, nothing.
+        url = "https://yulius.test/s/app/ci"
+        answers = ((401, "nope"), (429, "This API key has used its 50,000,000 tokens."),
+                   (402, "pay"))
+        for status, message in answers:
+            for env, pointed in (({"YULIUS_VIDOC_SWITCH": url}, True), ({}, False),
+                                 ({"YULIUS_VIDOC_SWITCH": "javascript:alert(1)"}, False),
+                                 ({"YULIUS_VIDOC_SWITCH": url + "\n::yulius-finding x"}, False)):
+                with self.subTest(status=status, env=env):
+                    repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+                    server = self.fake(lambda body, headers, s=status, m=message:
+                                       (s, {"error": {"message": m}}, {}))
+                    code, output = self.run_scan(repo, server, env=env)
+                    self.assertEqual(code, 2, output)
+                    self.assertEqual(f"turns Vidoc off for it in Yulius: {url} " in output,
+                                     pointed, output)
+                    self.assertNotIn("::yulius-finding", output)
+
     def test_a_refusal_by_yulius_because_vidoc_is_off_says_so(self):
         # SPEC-356 (review round 1): a session that started before Vidoc was switched off has no
         # YULIUS_VIDOC=off; Yulius's egress proxy refuses the request and nothing is sent.

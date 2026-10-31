@@ -117,6 +117,21 @@ HOW_TO_GET_A_KEY = (
     "A superadmin sets the instance's Vidoc key in Settings, Instance (keys come from "
     "https://model.vidocsecurity.com/#key); Yulius then gives agents and granted CI jobs "
     "VIDOC_API_KEY. Elsewhere set VIDOC_API_KEY yourself.")
+# SPEC-359 VSB-006: the sandbox's Security scan card, which Yulius names in YULIUS_VIDOC_SWITCH.
+SWITCH_URL = re.compile(r"https?://[!-~]{1,500}")
+
+
+def switch_hint(env):
+    """What a refused key or a used-up quota adds: where this project's Vidoc switch is, when
+    Yulius names it as a plain web address; nothing otherwise."""
+    url = (env.get("YULIUS_VIDOC_SWITCH") or "").strip()
+    if not SWITCH_URL.fullmatch(url):
+        return ""
+    return (f" To stop scanning this project until the key works, a sandbox admin turns Vidoc off "
+            f"for it in Yulius: {url} (Security scan card); a superadmin can also do it in "
+            "Settings, Instance.")
+
+
 SYSTEM = """You are Vidoc, a security code reviewer. Find security vulnerabilities an attacker \
 could exploit in the files you are given: injection (SQL, OS command, path traversal, template, \
 header), broken authentication or authorization, secrets or credentials in code, insecure \
@@ -717,8 +732,10 @@ def _message(body):
 class Client:
     """`POST /v1/messages` with retries (VSC-007). `sleep(seconds)` waits between attempts."""
 
-    def __init__(self, api, key, sleep):
+    def __init__(self, api, key, sleep, hint=""):
         self.url, self.key, self.sleep = api + "/v1/messages", key, sleep
+        # Where to switch Vidoc off while the key fails (`switch_hint`).
+        self.hint = hint
         self.opener = urllib.request.build_opener(_NoRedirect)
 
     def post(self, body, deadline):
@@ -756,10 +773,10 @@ class Client:
                     raise Usage(message.strip().strip('"').removeprefix("Yulius: ")) from None
                 if err.code in (401, 403):
                     raise Usage(f"Vidoc refused the key (HTTP {err.code}: {message}). "
-                                f"{HOW_TO_GET_A_KEY}") from None
+                                f"{HOW_TO_GET_A_KEY}{self.hint}") from None
                 if err.code == 402 or (err.code == 429 and USED_UP.search(message)):
                     raise Usage(f"Vidoc is out of quota for this key (HTTP {err.code}: "
-                                f"{message})") from None
+                                f"{message}).{self.hint}") from None
                 if err.code not in (408, 409, 429) and err.code < 500:
                     raise Failed(f"Vidoc refused the request (HTTP {err.code}: {message})") from None
                 last = f"HTTP {err.code}: {message}"
@@ -955,8 +972,9 @@ def arguments(argv):
 
 def run(args, env, root, sleep, out):
     # SPEC-338 VOF-002, SPEC-356 VIO-002: Yulius sets it for a project a person switched off
-    # (Settings, Instance, or the Add sandbox dialog) and for every project while a superadmin
-    # switched Vidoc off for the instance; checked first, so nothing is read or sent.
+    # (its CI/CD page, SPEC-359; Settings, Instance; or the Add sandbox dialog) and for every
+    # project while a superadmin switched Vidoc off for the instance; checked first, so nothing is
+    # read or sent.
     if env.get("YULIUS_VIDOC") == "off":
         print("Security scan disabled: Vidoc is turned off in Yulius, for this project or the "
               "whole instance; nothing was scanned.", file=out)
@@ -1021,8 +1039,8 @@ def run(args, env, root, sleep, out):
         classify(finding, changes, lines)
         apply_ignores(finding, config, lines)
 
-    outcome = scan_chunks(Client(api, key, sleep), chunks, args.jobs, deadline, label, out, config,
-                          judge)
+    client = Client(api, key, sleep, switch_hint(env))
+    outcome = scan_chunks(client, chunks, args.jobs, deadline, label, out, config, judge)
     unscanned = sorted(set(outcome.unscanned) | set(unsent))
     order = {s: i for i, s in enumerate(SEVERITIES)}
     outcome.findings.sort(key=lambda f: (order[f.severity], f.file, f.line or 0))

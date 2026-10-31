@@ -11,8 +11,8 @@
 // URL options (with ?mock=1): setup=1 (setup required), signedout=1 (start signed out),
 // role=member|admin|superadmin (default superadmin), contained=0 (not isolated), github=0,
 // recovery=1 (setup issues a recovery code), update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
-// jev=config (a Jev key file is configured), vidoc=config (a Vidoc key file), fail=<path> (GETs of that path answer 500),
-// failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs of that path wait for
+// jev=config (a Jev key file is configured), vidoc=config (a Vidoc key file), vidoc_repo=off|bad (studio's .config/vidoc.toml), vidoc_patch_fail=1 (a sandbox's Vidoc switch is refused), fail=<path> (GETs of that path answer 500),
+// failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs and PATCHes of that path wait for
 // `__yuliusMock.release()`, as hold= does for GETs; `heldWaiting` counts those waiting), as=<login> (signed in as another member, a
 // teammate in a second window: mock pages of one origin relay presence to each other, SPEC-127).
 
@@ -174,7 +174,7 @@ function seed(params) {
         : { level: 'ok', used: 141 * 1024 ** 3, total: 386 * 1024 ** 3 },
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
-    vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null, fail: params.get('vidoc_fail') === '1' },
+    vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null, fail: params.get('vidoc_fail') === '1', repo: params.get('vidoc_repo'), patchFail: params.get('vidoc_patch_fail') === '1' },
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
     // failed (in place, naming what failed, with Try again; #147). A test may set `failPath` later;
     // `failedReads` counts the GET requests failed on purpose.
@@ -991,6 +991,8 @@ route('POST', '/api/sandboxes', ({ db, body }) => {
     access: 'admin', default_branch: 'main',
     // SPEC-338 VOF-004: added switched off when the person unchecked Vidoc.
     profile: { ...clone(PRESETS.standard), vidoc: body.vidoc !== false },
+    // Like the server, a project added switched off is audited as its first change.
+    vidocChanged: body.vidoc === false ? { by: db.me.user.login, at: new Date().toISOString() } : null,
     // An imported repository is onboarded; created projects start from a conforming template.
     // The real server starts a browser import's onboarding at once; the mock leaves it `pending`,
     // standing in for a repository added with `yulius onboard` (SPEC-051), so Start onboarding can
@@ -1004,12 +1006,35 @@ route('POST', '/api/sandboxes', ({ db, body }) => {
   return json(201, sandbox);
 });
 route('GET', `/api/sandboxes/${ID}`, ({ db, p }) => shown(sandboxOf(db, p[0])));
+// SPEC-359 VSB-001: the sandbox's Vidoc view. `vidoc_repo=off|bad` stands for studio's committed
+// `.config/vidoc.toml` (`enabled = false`, or a value the scanner refuses).
+route('GET', `/api/sandboxes/${ID}/vidoc`, async ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  db.vidocReads = (db.vidocReads || 0) + 1;
+  if (sandbox.playground) fail(422, 'invalid', 'a playground runs no Vidoc scan: it has no switch to turn');
+  const file = sandbox.slug === 'studio' ? db.vidoc.repo : null;
+  const repository = file === 'off' ? 'off' : file === 'bad' ? 'unreadable' : 'on';
+  const project = sandbox.profile.vidoc !== false;
+  const instance = !db.vidoc.offAt;
+  const view = {
+    project, instance, key: Boolean(db.vidoc.key || db.vidoc.config), repository,
+    repository_problem: repository === 'unreadable' ? '.config/vidoc.toml must set enabled = true or enabled = false (line 1)' : null,
+    branch: sandbox.profile.integration_branch, scans: project && instance && repository !== 'off',
+    can_change: sandbox.access === 'admin', changed_by: sandbox.vidocChanged ? sandbox.vidocChanged.by : null, changed_at: sandbox.vidocChanged ? sandbox.vidocChanged.at : null,
+  };
+  // `__yuliusMock.holdVidocReads = true`: each read waits until `releaseVidoc()`, answering what it
+  // saw when it started (SPEC-359 review round 5).
+  if (db.holdVidocReads) await new Promise((resolve) => db.vidocHolds.push(resolve));
+  return view;
+});
 route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'admin');
   // SPEC-338 VOF-001: the Vidoc switch is set on its own; a profile update keeps it.
   if (body.vidoc !== undefined && body.vidoc !== null) {
     if (sandbox.playground) fail(422, 'invalid', 'a playground runs no Vidoc scan: it has no switch to turn');
+    if (db.vidoc.patchFail) fail(503, 'unavailable', 'the store is busy');
+    if ((sandbox.profile.vidoc !== false) !== Boolean(body.vidoc)) sandbox.vidocChanged = { by: db.me.user.login, at: new Date().toISOString() };
     sandbox.profile = { ...sandbox.profile, vidoc: Boolean(body.vidoc) };
   }
   if (body.profile) {
@@ -1866,7 +1891,7 @@ function ciOverview(db, sid) {
   };
 }
 
-route('GET', `/api/sandboxes/${ID}/ci`, ({ db, p }) => ciOverview(db, p[0]));
+route('GET', `/api/sandboxes/${ID}/ci`, ({ db, p }) => { db.ciReads = (db.ciReads || 0) + 1; return ciOverview(db, p[0]); });
 route('POST', `/api/sandboxes/${ID}/ci/sync`, ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
   return ciOverview(db, p[0]);
@@ -3539,7 +3564,8 @@ function mockTimeline(kind, id) {
       s('job:j1@1/checkout', 'prepare', 'checkout', 44.8, 0.5, { parent_key: 'job:j1@1', job: 'quality' }),
       s('job:j1@1/stage:1', 'stage', 'lint', 44.3, 3, { parent_key: 'job:j1@1', job: 'quality' }),
       s('job:j1@1/stage:2', 'stage', 'unit', 41.3, 8.5, { parent_key: 'job:j1@1', job: 'quality', detail: { tests_passed: 1234, tests_flaky: 2, tests_skipped: 3 } }),
-      s('job:j2@1', 'job', failed ? 'test (2/2)' : 'e2e', 44.8, 13.8, { job: 'test', outcome: failed ? 'failed' : 'passed', detail: failed ? { exit_code: 1 } : {} }),
+      // The failed job's figures, as long as the reported screenshot's (#986): its tip wraps.
+      s('job:j2@1', 'job', failed ? 'test (2/2)' : 'e2e', 44.8, 13.8, { job: 'test', outcome: failed ? 'failed' : 'passed', detail: failed ? { tests_passed: 1457, tests_skipped: 4, cpu_ms: 40, memory_peak_mb: 7, disk_written_mb: 0, exit_code: 101 } : {} }),
       s('job:j2@1/stage:1', 'stage', 'integration', 44.6, 13.6, { parent_key: 'job:j2@1', job: 'test', outcome: failed ? 'failed' : 'passed', detail: failed ? { tests_passed: 310, tests_failed: 1 } : {} }),
     ], related: [] };
   }
@@ -4342,7 +4368,7 @@ async function handleFetchAfterLatency(db, url, init) {
   }
   // `hold=<path>` keeps GET requests of that path waiting, to look at a view while it loads (SPEC-092).
   // `heldWaiting`: the requests waiting at the hold now, so a test releases them once they are there.
-  if (db.held && ((method === 'GET' && u.pathname === db.holdPath) || (method === 'POST' && u.pathname === db.holdPostPath))) {
+  if (db.held && ((method === 'GET' && u.pathname === db.holdPath) || ((method === 'POST' || method === 'PATCH') && u.pathname === db.holdPostPath))) {
     db.heldWaiting = (db.heldWaiting || 0) + 1;
     try { await db.held; } finally { db.heldWaiting -= 1; }
   }
@@ -5550,6 +5576,8 @@ export function createMockTransport(params) {
   db.advanceClock = (ms) => { if (!pullClock) throw new Error('advanceClock needs pullclock=manual'); pullClock.advance(ms); };
   // Releases the held Git overview reads, the newest first (an older read answering last).
   db.releaseGit = () => { for (const resolve of db.gitHolds.splice(0).reverse()) resolve(); };
+  db.vidocHolds = [];
+  db.releaseVidoc = () => { for (const resolve of db.vidocHolds.splice(0)) resolve(); };
   // Simulate an outage and its end: __yuliusMock.goOffline() / .goOnline().
   db.goOffline = () => {
     db.offline = true;
