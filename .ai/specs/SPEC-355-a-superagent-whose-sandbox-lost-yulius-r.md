@@ -66,15 +66,17 @@ Superagent's leftover processes are reaped like an idle task's.
 
 - **SLR-001** At its limit, a relay toward Yulius (the holder's forward, the server's `out.sock`)
   admits a new connection by closing the connection that has been idle longest (no byte either
-  way), if it has been idle for at least `IDLE_FLOOR` (60 s), instead of refusing the new one.
+  way), if it has been idle for at least `IDLE_FLOOR` (300 s), instead of refusing the new one.
   Only when every connection was active within the floor is the new one refused (and warned
   about, as SPEC-353 LAP-002). An eviction is logged at most once a minute per relay.
 - **SLR-002** The egress proxy does the same at a sandbox's share (128): it closes that sandbox's
   longest-idle tunnel or intercepted connection, idle for at least the floor; and at its own
   limit (256), the longest-idle one of any sandbox. Otherwise it refuses as before (`503`).
-- **SLR-003** The floor keeps a live call: Yulius's longest hold (`/internal/agent/wait`, at most
-  55 s) is below it, and the Yulius MCP route answers each call on its request (no idle stream:
-  `GET /mcp` is 405).
+- **SLR-003** The floor keeps a live call: the longest call to Yulius that carries no byte while
+  it waits, the Superagent's `sandbox_task_create` (240 s and 50 s of grace, SPEC-335), is below
+  it, as is `/internal/agent/wait` (55 s); the Yulius MCP route answers each call on its request
+  (no idle stream: `GET /mcp` is 405). A plain HTTP request through the proxy is held in flight
+  until its answer's head arrives.
 - **SLR-004** An idle Superagent's strays (SPEC-353 LAP-003) are logged when first seen and reaped
   once seen for `stray_reap_after_ms`, signalled only while their start times match. Its
   conversation counts as idle when no turn is open and no background work runs, as its refresh
@@ -83,8 +85,8 @@ Superagent's leftover processes are reaped like an idle task's.
   a person's own and is not reaped.
 - **SLR-005** Yulius tests each live Superagent's link to Yulius every `LINK_EVERY` (60 s): from
   inside its sandbox, through the holder's forward, a request to the internal listener must be
-  answered. A holder that cannot be asked (one started by an older Yulius) gives no answer, which
-  is not a failure.
+  answered. Two failures in a row make the link lost. A holder that cannot be asked (one started by
+  an older Yulius) gives no answer, which is not a failure.
 - **SLR-006** When the link test failed since the Superagent started, its panel says so above its
   session: while it fails, that the Superagent cannot reach Yulius and its Yulius tools fail; once
   it works again, that it lost Yulius at that time and its tools may stay disconnected. Both offer
@@ -145,10 +147,35 @@ Superagent's leftover processes are reaped like an idle task's.
   held connection is idle.
 - The restart in place reuses the refresh path of SPEC-186 (end, start again resuming the newest
   conversation); it is a person's explicit action, so it does not wait for the turn to end.
+- The link state lives in the server's memory. A Superagent whose MCP failed before a Yulius
+  restart shows no notice afterwards unless its link fails again. Persisting it would need a new
+  record for a rare case; the person can still restart it from the notice or close and open it.
+- Holders keep the relay they started with: the fix reaches a sandbox when its holder starts
+  again (operations guide).
 
 ## Review
 
-(to be filled)
+Independent reviews in fresh sessions (skill `yulius-review`; this repository has no
+`om-code-review`), over `origin/dev...HEAD`:
+
+- Round 1 on 7c7071b1 (request changes):
+  - Major (own code): the 60 s floor was shorter than the Superagent's own `sandbox_task_create`
+    call (up to 290 s without a byte), so SLR-003 was false. Fixed test-first: the floor is 300 s,
+    and `cross_sandbox::the_relays_idle_floor_outlasts_the_longest_superagent_call` was red (60 s).
+  - Minor (own code): plain HTTP requests through the proxy recorded no activity. They are now
+    held in flight (`Activity::hold`, domain test).
+  - Minor (own code): `out.sock`'s give-way, a restart that cannot end and the proxy's total limit
+    were untested. Now tested (`a_full_out_sock_…`, `a_superagent_whose_process_cannot_be_ended_is_not_restarted`,
+    red without its notice, and `a_full_proxy_closes_…`).
+  - Minor (own code): one failed link test left a permanent notice, for example while a restarted
+    server adopts its shells. A link is now lost after two failures in a row (the cockpit test was
+    red: one failure read `lost`).
+  - Minor (own code): the link test and the stray probe blocked the watch loop past the Cockpit's
+    end. They now race its end.
+  - Nits (own code): separate warning keys per kind; a correction notice after an unended restart;
+    the link test's leftovers retry while the probe's place winds down; the operations guide tells
+    an old holder by its start time.
+  - Nit (accepted, Decisions): the link state is not kept across a server restart.
 
 ## Evidence
 
