@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use futures::{Stream, StreamExt, TryStreamExt};
@@ -28,6 +28,9 @@ use crate::ca::CertificateAuthority;
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// Response body of the proxy.
 pub type EgressBody = UnsyncBoxBody<Bytes, std::io::Error>;
+
+/// Least time between two warnings about the same limit (SPEC-353 LAP-002).
+const WARN_EVERY: Duration = Duration::from_secs(60);
 
 /// Connect timeout toward a destination.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -64,6 +67,10 @@ pub struct EgressConfig {
     pub extra_roots_pem: Vec<String>,
     /// Simultaneous tunnels and intercepted connections.
     pub max_connections: usize,
+    /// Simultaneous tunnels and intercepted connections of one sandbox (SPEC-353 LAP-002): half
+    /// of the proxy, so one sandbox can neither take every slot nor all of its own relay's
+    /// connections to Yulius.
+    pub max_per_sandbox: usize,
 }
 
 impl Default for EgressConfig {
@@ -72,6 +79,7 @@ impl Default for EgressConfig {
             resolve: HashMap::new(),
             extra_roots_pem: Vec::new(),
             max_connections: 256,
+            max_per_sandbox: 128,
         }
     }
 }
@@ -83,6 +91,48 @@ pub struct EgressProxy {
     http: reqwest::Client,
     resolve: HashMap<String, SocketAddr>,
     slots: Arc<Semaphore>,
+    /// Each sandbox's share of [`Self::slots`] (LAP-002), one entry per sandbox that asked.
+    shares: Mutex<HashMap<String, Share>>,
+    max_per_sandbox: usize,
+    /// When the proxy last warned that every slot was taken.
+    full_warned: Mutex<Option<Instant>>,
+}
+
+/// One sandbox's connections and when the proxy last warned that they were all taken.
+struct Share {
+    slots: Arc<Semaphore>,
+    warned: Option<Instant>,
+}
+
+/// `sandbox`'s share in `shares` (`max` connections). A sandbox seen for the first time drops the
+/// entries of sandboxes that hold no connection, so the map holds the busy sandboxes and one more.
+fn share_for<'a>(
+    shares: &'a mut HashMap<String, Share>,
+    sandbox: &str,
+    max: usize,
+) -> &'a mut Share {
+    if !shares.contains_key(sandbox) {
+        shares.retain(|_, share| share.slots.available_permits() < max);
+    }
+    shares.entry(sandbox.to_owned()).or_insert_with(|| Share {
+        slots: Arc::new(Semaphore::new(max)),
+        warned: None,
+    })
+}
+
+/// A connection's places: one in the proxy, one in its sandbox's share. Dropped when it ends.
+struct Slot {
+    _proxy: OwnedSemaphorePermit,
+    _sandbox: OwnedSemaphorePermit,
+}
+
+/// Whether a warning last given at `last` may be given again now (and records it).
+fn warn_due(last: &mut Option<Instant>) -> bool {
+    let due = last.is_none_or(|at| at.elapsed() >= WARN_EVERY);
+    if due {
+        *last = Some(Instant::now());
+    }
+    due
 }
 
 impl std::fmt::Debug for EgressProxy {
@@ -274,6 +324,55 @@ impl EgressProxy {
             http: builder.build()?,
             resolve: config.resolve,
             slots: Arc::new(Semaphore::new(config.max_connections.max(1))),
+            shares: Mutex::new(HashMap::new()),
+            max_per_sandbox: config.max_per_sandbox.max(1),
+            full_warned: Mutex::new(None),
+        })
+    }
+
+    /// A place for one connection of `client`'s sandbox, or the text of the `503` refusing it:
+    /// past the sandbox's share, or with every slot of the proxy taken (LAP-002). Each refusal is logged
+    /// as a warning, at most once a minute per limit and sandbox.
+    fn slot(&self, client: &EgressClient) -> Result<Slot, String> {
+        let sandbox = client.sandbox_id.as_str();
+        let share = {
+            let mut shares = self
+                .shares
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let share = share_for(&mut shares, sandbox, self.max_per_sandbox);
+            match Arc::clone(&share.slots).try_acquire_owned() {
+                Ok(permit) => permit,
+                Err(_) => {
+                    if warn_due(&mut share.warned) {
+                        tracing::warn!(
+                            sandbox,
+                            share = self.max_per_sandbox,
+                            "egress proxy: a sandbox holds its share of the connections; \
+                             leftover processes may hold them (docs/operations.md)"
+                        );
+                    }
+                    return Err(format!(
+                        "Yulius proxy: this sandbox's processes hold all of its {} connections; \
+                         end leftover processes or try again",
+                        self.max_per_sandbox
+                    ));
+                }
+            }
+        };
+        let Ok(proxy) = Arc::clone(&self.slots).try_acquire_owned() else {
+            let mut warned = self
+                .full_warned
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if warn_due(&mut warned) {
+                tracing::warn!(sandbox, "egress proxy: every connection is taken");
+            }
+            return Err("Yulius proxy: too many connections; try again".to_owned());
+        };
+        Ok(Slot {
+            _proxy: proxy,
+            _sandbox: share,
         })
     }
 
@@ -303,8 +402,9 @@ impl EgressProxy {
         let Some(client) = self.policy.egress_client(&token).await else {
             return auth_required();
         };
-        let Ok(permit) = Arc::clone(&self.slots).try_acquire_owned() else {
-            return text(503, "Yulius proxy: too many connections; try again");
+        let permit = match self.slot(&client) {
+            Ok(slot) => slot,
+            Err(refused) => return text(503, &refused),
         };
         if request.method() == Method::CONNECT {
             let Some((host, port)) = connect_target(request.uri()) else {
@@ -378,7 +478,7 @@ impl EgressProxy {
         host: String,
         port: u16,
         upgraded: Upgraded,
-        permit: OwnedSemaphorePermit,
+        permit: Slot,
     ) {
         let config = match self.ca.server_config(&host) {
             Ok(config) => config,
@@ -559,7 +659,7 @@ impl EgressProxy {
 }
 
 /// An opaque tunnel to a host without agent secrets.
-async fn tunnel(addrs: Vec<SocketAddr>, upgraded: Upgraded, permit: OwnedSemaphorePermit) {
+async fn tunnel(addrs: Vec<SocketAddr>, upgraded: Upgraded, permit: Slot) {
     let stream = match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&addrs[..])).await {
         Ok(Ok(stream)) => stream,
         _ => {
@@ -602,6 +702,21 @@ pub async fn serve(listener: TcpListener, proxy: Arc<EgressProxy>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// LAP-002 (review round 1): the shares stay bounded. A new sandbox's entry drops those of
+    /// sandboxes that hold no connection; one that holds connections keeps its entry.
+    #[test]
+    fn idle_sandboxes_lose_their_share_entry() {
+        let mut shares = HashMap::new();
+        let busy = Arc::clone(&share_for(&mut shares, "busy", 2).slots).try_acquire_owned();
+        assert!(busy.is_ok());
+        for n in 0..100 {
+            let _ = share_for(&mut shares, &format!("idle-{n}"), 2);
+        }
+        let mut kept: Vec<&String> = shares.keys().collect();
+        kept.sort();
+        assert_eq!(kept, ["busy", "idle-99"]);
+    }
 
     #[test]
     fn proxy_credentials_and_targets() {

@@ -32,6 +32,7 @@
 //! to its final state ([`TranscriptFacts`]) and applied once, so a replayed prompt cannot put a
 //! finished task back to Working, and a goal achieved while Yulius was down is not lost.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
@@ -44,12 +45,17 @@ use crate::context::App;
 use crate::error::AppResult;
 use crate::model::TaskRecord;
 use crate::ports::harness::Observation;
+use crate::ports::session::StrayProcess;
 
 /// How often the background shells of an idle task are probed (ms).
 pub const SHELL_PROBE_MS: i64 = 5_000;
 
 /// Longest a shell probe may take before its result counts as unknown.
 pub const SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long an idle task's strays live once seen before they are killed (SPEC-353 LAP-004,
+/// ADR-0240): a preview server a person may still look at survives a long break, a busy loop
+/// burns hours, not days.
+pub const STRAY_REAP_AFTER_MS: i64 = 2 * 3600 * 1000;
 
 /// Claude Code's last goal notice after a turn an error ended (SPEC-333).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,6 +364,45 @@ pub(crate) fn combine_background(probe: i64, agents: u32) -> i64 {
     } else {
         probe
     }
+}
+
+/// The first pid of each of `strays`, at most 20 (for the log).
+fn first_pids(strays: &[StrayProcess]) -> Vec<u32> {
+    strays
+        .iter()
+        .filter_map(|stray| stray.processes.first().map(|(pid, _)| *pid))
+        .take(20)
+        .collect()
+}
+
+/// Records the strays `found` now in `seen` (each stray's first process, `(pid, started)`, to
+/// when it was first seen), forgetting those gone, and returns the strays seen for the first time
+/// and those seen for `bound_ms` or longer (SPEC-353 LAP-004).
+pub(crate) fn sort_strays(
+    seen: &mut HashMap<(u32, u64), i64>,
+    found: Vec<StrayProcess>,
+    now: i64,
+    bound_ms: i64,
+) -> (Vec<StrayProcess>, Vec<StrayProcess>) {
+    let keys: HashSet<(u32, u64)> = found
+        .iter()
+        .filter_map(|stray| stray.processes.first().copied())
+        .collect();
+    seen.retain(|key, _| keys.contains(key));
+    let (mut new, mut due) = (Vec::new(), Vec::new());
+    for stray in found {
+        let Some(key) = stray.processes.first().copied() else {
+            continue;
+        };
+        let first = *seen.entry(key).or_insert_with(|| {
+            new.push(stray.clone());
+            now
+        });
+        if now.saturating_sub(first) >= bound_ms {
+            due.push(stray);
+        }
+    }
+    (new, due)
 }
 
 /// Whether the record that closes the turn of a clean Stop (`stop_ms`, 0 = none) is still
@@ -1017,20 +1062,27 @@ impl App {
         } else {
             None
         };
-        let (count, waits) = match child {
+        let (count, waits, strays) = match child {
             Some(pid) => {
                 let host = Arc::clone(&self.deps.session_host);
                 let probe = tokio::task::spawn_blocking(move || host.background_probe(pid));
                 match tokio::time::timeout(SHELL_PROBE_TIMEOUT, probe).await {
-                    Ok(Ok(Some(found))) => (i64::from(found.shells), i64::from(found.waits)),
+                    Ok(Ok(Some(found))) => (
+                        i64::from(found.shells),
+                        i64::from(found.waits),
+                        Some(found.strays),
+                    ),
                     _ => {
                         tracing::debug!(task = %task_id, "the background-shell probe gave no answer");
-                        (-1, -1)
+                        (-1, -1, None)
                     }
                 }
             }
-            None => (-1, -1),
+            None => (-1, -1, None),
         };
+        if let Some(strays) = strays {
+            self.tend_strays(task_id, &runtime, strays).await;
+        }
         // An agent waiting in `yulius wait` goes on by itself (SPEC-085 STT-002).
         let waits_before = runtime.background_waits.swap(waits, Ordering::SeqCst);
         // Background agents are no process of the session's shell tree: Claude Code counts them
@@ -1065,6 +1117,64 @@ impl App {
                     app.advance_chains(&task_id).await;
                     app.drain_queue().await;
                 });
+            }
+        }
+    }
+
+    /// Logs an idle run's strays when first seen and reaps those seen for
+    /// [`crate::context::AppConfig::stray_reap_after_ms`] (SPEC-353 LAP-004). Only an idle task's
+    /// run is probed, so a working turn's processes are never reaped.
+    async fn tend_strays(
+        &self,
+        task_id: &TaskId,
+        runtime: &crate::supervisor::TaskRuntime,
+        strays: Vec<StrayProcess>,
+    ) {
+        let (new, due) = {
+            let mut seen = runtime
+                .strays_seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            sort_strays(
+                &mut seen,
+                strays,
+                self.now().0,
+                self.config.stray_reap_after_ms,
+            )
+        };
+        if !new.is_empty() {
+            tracing::warn!(
+                task = %task_id,
+                strays = new.len(),
+                processes = new.iter().map(|s| s.processes.len()).sum::<usize>(),
+                pids = ?first_pids(&new),
+                "leftover processes in the run: no shell of the agent owns them; they are ended \
+                 once the task has been idle with them for a while (docs/operations.md)"
+            );
+        }
+        if due.is_empty() {
+            return;
+        }
+        // Still idle now, after the probe: a turn that started meanwhile keeps its processes.
+        let idle = matches!(
+            self.deps.store.task(task_id).await,
+            Ok(Some(task)) if task.status == TaskStatus::Running
+                && task.activity.is_some_and(Activity::is_idle)
+        );
+        if !idle {
+            return;
+        }
+        let strays = due.len();
+        let pids = first_pids(&due);
+        let host = Arc::clone(&self.deps.session_host);
+        let reap = tokio::task::spawn_blocking(move || host.reap_strays(&due));
+        match tokio::time::timeout(SHELL_PROBE_TIMEOUT, reap).await {
+            Ok(Ok(0)) => {}
+            Ok(Ok(processes)) => {
+                tracing::warn!(task = %task_id, strays, processes, pids = ?pids, "reaped leftover processes");
+            }
+            _ => {
+                tracing::warn!(task = %task_id, strays, "the leftover processes were not reaped in time")
             }
         }
     }
