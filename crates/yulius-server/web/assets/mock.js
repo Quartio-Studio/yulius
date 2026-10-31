@@ -172,6 +172,8 @@ function seed(params) {
       : params.get('disk') === 'low'
         ? { level: 'low', used: 340 * 1024 ** 3, total: 386 * 1024 ** 3 }
         : { level: 'ok', used: 141 * 1024 ** 3, total: 386 * 1024 ** 3 },
+    // Connection troubles (SPEC-361): none until a test calls `setConnections`.
+    connections: { troubles: [] },
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
     vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null, fail: params.get('vidoc_fail') === '1' },
@@ -3763,6 +3765,7 @@ route('GET', '/api/update', async ({ db }) => {
   return response;
 });
 route('GET', '/api/disk', ({ db }) => clone(db.disk));
+route('GET', '/api/connections', ({ db }) => clone(db.connections));
 route('POST', '/api/admin/update/check', ({ db }) => {
   if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only');
   db.update.checkedAt = new Date().toISOString();
@@ -5542,6 +5545,11 @@ export function createMockTransport(params) {
   db.setDisk = (level, used) => {
     db.disk = { level, used, total: db.disk.total };
     emit(db, { type: 'disk.updated', level, used, total: db.disk.total });
+  };
+  // Connection troubles begin or end (`connections.updated`, SPEC-361).
+  db.setConnections = (troubles) => {
+    db.connections = { troubles };
+    emit(db, { type: 'connections.updated', sandbox_id: null });
   };
   db.gitHolds = [];
   db.gitReads = () => db.gitHolds.length;

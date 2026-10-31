@@ -39,6 +39,7 @@ import { mountSettingsPage } from './pages/settings.js';
 import { mountInstancePage } from './pages/instance.js';
 import { createUpdateBanner, createUpdateButton } from './updates.js';
 import { createDiskAlert } from './diskalert.js';
+import { createConnectionAlert } from './connectionalert.js';
 import { mountSecretsPage } from './pages/secrets.js';
 import { mountDesignPage } from './pages/design.js';
 import { mountHomePage } from './pages/home.js';
@@ -250,6 +251,8 @@ function createApp(root, transport) {
     ctx.updates = null;
     if (ctx.diskAlert) ctx.diskAlert.destroy();
     ctx.diskAlert = null;
+    if (ctx.connectionAlert) ctx.connectionAlert.destroy();
+    ctx.connectionAlert = null;
     shell = null;
     store.state.me = null;
     // The pull requests kept for the next page load go with the session, signed out or expired
@@ -282,9 +285,12 @@ function createApp(root, transport) {
     // The server's disk running low (SPEC-276 RDA-007): a warning pill beside it, for everyone.
     const diskAlert = createDiskAlert(ctx);
     ctx.diskAlert = diskAlert;
+    // A full egress proxy share or relay (SPEC-361): a warning pill for the sandbox's people.
+    const connectionAlert = createConnectionAlert(ctx);
+    ctx.connectionAlert = connectionAlert;
     const tabRight = tabRow.el.querySelector('.tabrow-right');
-    if (tabRight) tabRight.prepend(diskAlert.el, updates.el);
-    else root.append(diskAlert.el, updates.el);
+    if (tabRight) tabRight.prepend(connectionAlert.el, diskAlert.el, updates.el);
+    else root.append(connectionAlert.el, diskAlert.el, updates.el);
     // The superadmin's Update button, beside the account button (SPEC-133).
     const sidebarFoot = sidebar.el.querySelector('.sidebar-foot');
     if (sidebarFoot) sidebarFoot.append(createUpdateButton(ctx, updates).el);
