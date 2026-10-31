@@ -64,6 +64,9 @@ struct Places {
 struct Report {
     health: Arc<ConnectionHealth>,
     sandbox: String,
+    /// Runs right before a refusal is reported (tests: a close racing it, review round 1).
+    #[cfg(test)]
+    pause: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 /// The wall clock in ms since the epoch: when a trouble began.
@@ -120,6 +123,10 @@ impl Places {
                     max: self.max,
                     holders: Vec::new(),
                 };
+                #[cfg(test)]
+                if let Some(pause) = &report.pause {
+                    pause();
+                }
                 report.health.refused(refusal, wall_ms());
             }
             return None;
@@ -600,6 +607,8 @@ async fn outbound_reporting(
     let report = Report {
         health,
         sandbox: sandbox.clone(),
+        #[cfg(test)]
+        pause: None,
     };
     let places = Places::reporting(max, floor, Some(report));
     let mut warned = None;
@@ -1250,6 +1259,58 @@ mod tests {
             "the oldest gave way: {read:?}"
         );
         server.abort();
+        Ok(())
+    }
+
+    /// SPEC-361 CHR-002 (review round 1): a refusal whose report races every place closing still
+    /// ends its trouble. The closes wait for the refusal's report, so the last one sees it open.
+    #[test]
+    fn a_trouble_begun_while_every_place_closes_still_ends() -> TestResult {
+        let health = Arc::new(ConnectionHealth::default());
+        let (paused_tx, paused_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let go_rx = Mutex::new(go_rx);
+        let pause = move || {
+            let _ = paused_tx.send(());
+            let _ = go_rx
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .recv_timeout(Duration::from_secs(10));
+        };
+        let places = Places::reporting(
+            2,
+            IDLE_FLOOR,
+            Some(Report {
+                health: Arc::clone(&health),
+                sandbox: "s1".to_owned(),
+                pause: Some(Box::new(pause)),
+            }),
+        );
+        let held: Vec<Place> = (0..2)
+            .map(|_| places.admit().map(|(place, _, _)| place))
+            .collect::<Option<_>>()
+            .ok_or("admitted")?;
+        let asking = {
+            let places = Arc::clone(&places);
+            std::thread::spawn(move || places.admit().is_none())
+        };
+        paused_rx.recv_timeout(Duration::from_secs(10))?;
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let closing = std::thread::spawn(move || {
+            drop(held);
+            let _ = done_tx.send(());
+        });
+        // Without the fix the closes end here, before the refusal is reported; with it they wait
+        // for it, and this times out.
+        let _ = done_rx.recv_timeout(Duration::from_millis(500));
+        go_tx.send(())?;
+        assert!(asking.join().map_err(|_| "the asker panicked")?, "refused");
+        closing.join().map_err(|_| "the closes panicked")?;
+        assert!(
+            health.troubles().is_empty(),
+            "the trouble never ends: {:?}",
+            health.troubles()
+        );
         Ok(())
     }
 
