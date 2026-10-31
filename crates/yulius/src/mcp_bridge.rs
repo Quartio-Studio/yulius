@@ -224,7 +224,21 @@ fn forward(shared: &Shared, method: &str, id: Option<&Value>, line: &[u8]) {
         let failure = match agent_call(PATH, line, shared.env.as_ref(), settings.limits) {
             Ok(answer) => {
                 shared.up();
-                shared.deliver(id, answer.status, &answer.body);
+                // A request Claude Code cancelled meanwhile is not answered (MCP cancellation).
+                if !id.is_some_and(|id| shared.is_cancelled(id)) {
+                    shared.deliver(id, answer.status, &answer.body);
+                }
+                return;
+            }
+            Err(CallError::TooLarge(max)) => {
+                shared.up();
+                if let Some(id) = id {
+                    shared.answer(
+                        id,
+                        -32603,
+                        &format!("Yulius answered more than {max} bytes: ask for less"),
+                    );
+                }
                 return;
             }
             Err(CallError::Environment(why)) => {
@@ -607,6 +621,68 @@ mod tests {
         let answer: Value = serde_json::from_str(&rx.try_recv()?)?;
         assert_eq!(answer["id"], json!(5));
         server.join().map_err(|_| "server panicked")??;
+        Ok(())
+    }
+
+    /// An answer past the bound is said at once, even for a method safe to resend (review round
+    /// 1: it was resent for the whole outage bound).
+    #[test]
+    fn an_oversized_answer_is_said_at_once() -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let rx = bridge(
+            "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/list\"}\n",
+            port,
+            Duration::from_secs(30),
+        );
+        let (mut stream, _) = listener.accept()?;
+        read_request(&mut stream)?;
+        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 999999\r\n\r\n")?;
+        let answer = first(&rx)?;
+        let message = answer
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(message.contains("more than 1024 bytes"), "{answer}");
+        Ok(())
+    }
+
+    /// A call Claude Code cancels while Yulius works on it gets no answer (MCP: a cancelled
+    /// request is not answered).
+    #[test]
+    fn a_call_cancelled_in_flight_is_not_answered() -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let (tx, rx) = mpsc::channel();
+        let (lines_tx, lines_rx) = mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            let mut input = BufReader::new(ChannelReader(lines_rx, Vec::new()));
+            run(
+                &mut input,
+                Box::new(Lines(tx)),
+                env(port),
+                settings(Duration::from_secs(30)),
+            );
+        });
+        lines_tx.send(b"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\"}\n".to_vec())?;
+        let (mut stream, _) = listener.accept()?;
+        read_request(&mut stream)?;
+        lines_tx.send(
+            b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":9}}\n"
+                .to_vec(),
+        )?;
+        // The cancel is read before the answer goes out: a ping after it is answered first.
+        lines_tx.send(b"{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"ping\"}\n".to_vec())?;
+        let (mut ping, _) = listener.accept()?;
+        read_request(&mut ping)?;
+        respond(&mut ping, "{\"jsonrpc\":\"2.0\",\"id\":10,\"result\":{}}")?;
+        assert_eq!(first(&rx)?["id"], json!(10));
+        respond(&mut stream, "{\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{}}")?;
+        drop(lines_tx);
+        assert!(
+            rx.recv_timeout(Duration::from_secs(2)).is_err(),
+            "a cancelled call was answered"
+        );
         Ok(())
     }
 

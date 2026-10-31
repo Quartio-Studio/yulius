@@ -32,6 +32,9 @@ pub enum CallError {
     /// Yulius never read the body: no handler ran, so the call can be made again.
     #[error("Yulius cannot be reached ({0})")]
     Unsent(String),
+    /// The answer was larger than [`CallLimits::max_body`]: sending it again would not help.
+    #[error("Yulius answered more than {0} bytes")]
+    TooLarge(usize),
     /// The body was sent and the answer did not come: the call may have taken effect.
     #[error("the connection to Yulius broke during the call ({0})")]
     Lost(String),
@@ -93,13 +96,14 @@ pub fn agent_call(
         match reader.head(continue_by) {
             Ok(Some(100)) => break,
             // 102 and 103 say nothing about the body: wait on.
-            Ok(Some(status)) if (101..200).contains(&status) => {}
+            Ok(Some(status)) if (101..200).contains(&status) => reader.drop_interim(),
             // A final answer before the body: Yulius answered without reading it (a refused
             // token, say).
             Ok(Some(_)) => {
-                return reader
-                    .answer(deadline)
-                    .map_err(|e| CallError::Unsent(e.to_string()));
+                return reader.answer(deadline).map_err(|e| match e {
+                    ReadError::TooLarge(max) => CallError::TooLarge(max),
+                    e => CallError::Unsent(e.to_string()),
+                });
             }
             // No word within the wait: the body goes anyway, as a server that ignores the
             // expectation needs it.
@@ -118,12 +122,14 @@ pub fn agent_call(
             Ok(Some(status)) if (100..200).contains(&status) => reader.drop_interim(),
             Ok(Some(_)) => break,
             Ok(None) => return Err(CallError::Lost("timed out".to_owned())),
+            Err(ReadError::TooLarge(max)) => return Err(CallError::TooLarge(max)),
             Err(err) => return Err(CallError::Lost(err.to_string())),
         }
     }
-    reader
-        .answer(deadline)
-        .map_err(|e| CallError::Lost(e.to_string()))
+    reader.answer(deadline).map_err(|e| match e {
+        ReadError::TooLarge(max) => CallError::TooLarge(max),
+        e => CallError::Lost(e.to_string()),
+    })
 }
 
 /// Reads the server's answers off one connection.
@@ -434,8 +440,37 @@ mod tests {
         })?;
         let result = agent_call("/mcp", b"{}", &env_for(port), LIMITS);
         assert!(
-            matches!(&result, Err(CallError::Lost(why)) if why.contains("larger than 1024")),
+            matches!(&result, Err(CallError::TooLarge(1024))),
             "{result:?}"
+        );
+        server
+            .join()
+            .map_err(|_| std::io::Error::other("server panicked"))?
+    }
+
+    /// An interim 103 before the 100 is skipped, not read again forever (review round 1).
+    #[test]
+    fn an_early_hint_before_the_continue_is_skipped() -> std::io::Result<()> {
+        let (port, server) = server(|mut reader| {
+            let (_, length) = read_head(&mut reader)?;
+            reader.get_mut().write_all(
+                b"HTTP/1.1 103 Early Hints\r\nLink: </x>\r\n\r\nHTTP/1.1 100 Continue\r\n\r\n",
+            )?;
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body)?;
+            reader.get_mut().write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\n{\"a\r\n3\r\n\":1\r\n1\r\n}\r\n0\r\n\r\n",
+            )?;
+            Ok(())
+        })?;
+        let answer = agent_call("/mcp", b"{}", &env_for(port), LIMITS);
+        assert_eq!(
+            answer,
+            Ok(Answer {
+                status: 200,
+                body: b"{\"a\":1}".to_vec()
+            }),
+            "the chunked answer, de-chunked"
         );
         server
             .join()
