@@ -176,6 +176,10 @@ Independent reviews in fresh sessions (skill `yulius-review`; this repository ha
     the link test's leftovers retry while the probe's place winds down; the operations guide tells
     an old holder by its start time.
   - Nit (accepted, Decisions): the link state is not kept across a server restart.
+- Round 2 on 05485759: approve. Nits (own code), fixed after it: a held connection could still
+  give way under a zero floor (test-only floors; the domain test was red at floor 0, a8ce000c),
+  and the link test's retry spun (now backs off 10 ms). Minor (pre-existing on dev): a plain HTTP
+  request whose upstream never answers holds its proxy slot without a time limit; filed as #975.
 
 ## Evidence
 
