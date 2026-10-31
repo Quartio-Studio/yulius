@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-31
 
+- A superadmin can switch Vidoc security scans off for the whole instance, and on again, without
+  removing the key (SPEC-356, ADR-0242, task #338). The Instance page's Vidoc card has "Scan every
+  project with Vidoc"; while it is off it says since when and by whom, and the project switches
+  show their own choice, disabled. Every project then scans nothing, whatever its own switch or
+  key: agents and CI report the scan as disabled (CI: Skipped), no built-in security job runs,
+  agents are told not to ask about the key or its quota, and the Add sandbox dialog offers no
+  Vidoc box. It also works for a key from the server's configuration file. Switched on again,
+  each project scans as its own switch says.
 - A Superagent whose sandbox's connections to Yulius are used up by leftover processes is no longer
   cut off, before or after a Yulius restart (SPEC-355, ADR-0241, task #337, fixes #974 and #970).
   A full relay toward Yulius, and the egress proxy at a sandbox's share, now closes the connection

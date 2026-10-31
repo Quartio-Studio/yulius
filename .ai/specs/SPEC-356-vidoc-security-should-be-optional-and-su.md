@@ -64,11 +64,11 @@ project, agents are not asked about the key or its quota, and every scan says "d
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] The instance switch is stored, shown and changed by a superadmin through the API
-- [ ] Every project follows the instance switch: environments, virtual key, CI job and briefing
-- [ ] The Vidoc card switches Vidoc off and on for the instance
-- [ ] ADR, architecture, AGENTS.md and product docs describe the instance switch
+- [x] Read the product context and related work, then write and validate the spec
+- [x] The instance switch is stored, shown and changed by a superadmin through the API
+- [x] Every project follows the instance switch: environments, virtual key, CI job and briefing
+- [x] The Vidoc card switches Vidoc off and on for the instance
+- [x] ADR, architecture, AGENTS.md and product docs describe the instance switch
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
