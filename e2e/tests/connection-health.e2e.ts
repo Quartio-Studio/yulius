@@ -67,11 +67,11 @@ test('a full proxy share shows a pill naming the run and notifies once per troub
   expect(await browser.locator('.connection-alert a').count()).toBe(0);
   expect(await notified(browser)).toEqual([[`connections:${RELAY.id}`, false], [`connections:${SHARE.id}`, true]]);
 
-  // Cleared, and the page loaded again: the open troubles do not notify again.
+  // Cleared, and the page loaded again (its first read lists the open troubles, as the server's
+  // would): they do not notify again.
   await screen.getByRole('button', { name: 'Clear' }).click();
   await expect.poll(() => notified(browser)).toEqual([]);
-  await app.open(mock('/'));
-  await set(browser, [SHARE, RELAY]);
+  await browser.reload();
   await expect(screen.getByText('Proxy share full: studio +1')).toBeVisible();
   expect(await notified(browser)).toEqual([]);
 });

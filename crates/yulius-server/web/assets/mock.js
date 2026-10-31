@@ -172,8 +172,9 @@ function seed(params) {
       : params.get('disk') === 'low'
         ? { level: 'low', used: 340 * 1024 ** 3, total: 386 * 1024 ** 3 }
         : { level: 'ok', used: 141 * 1024 ** 3, total: 386 * 1024 ** 3 },
-    // Connection troubles (SPEC-361): none until a test calls `setConnections`.
-    connections: { troubles: [] },
+    // Connection troubles (SPEC-361): none until a test calls `setConnections`; kept in
+    // sessionStorage, so a reload's first read lists them as the server still would.
+    connections: savedConnections(),
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
     vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null, fail: params.get('vidoc_fail') === '1', repo: params.get('vidoc_repo'), patchFail: params.get('vidoc_patch_fail') === '1' },
@@ -677,6 +678,17 @@ function manualClock(start) {
       now = end;
     },
   };
+}
+
+const CONNECTIONS_KEY = 'yulius.mock.connections';
+
+/** The connection troubles a test set before a reload (SPEC-361). */
+function savedConnections() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(CONNECTIONS_KEY) || 'null');
+    if (saved && Array.isArray(saved.troubles)) return saved;
+  } catch { /* none */ }
+  return { troubles: [] };
 }
 
 /** Sandbox changes: the server publishes `resync` (sandbox views differ per user). */
@@ -5575,6 +5587,7 @@ export function createMockTransport(params) {
   // `announce: false` changes them without the event, as if it was lost; `resync()` then says so.
   db.setConnections = (troubles, announce = true) => {
     db.connections = { troubles };
+    try { sessionStorage.setItem(CONNECTIONS_KEY, JSON.stringify(db.connections)); } catch { /* memory only */ }
     if (announce) emit(db, { type: 'connections.updated', sandbox_id: null });
   };
   db.resync = () => resync(db);
