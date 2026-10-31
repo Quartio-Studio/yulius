@@ -239,6 +239,12 @@ function tipFit(browser: Browser) {
       pastPlot: Math.max(0, Math.round(plot.left - box.left), Math.round(box.right - plot.right)),
       pastWindow: Math.max(0, Math.round(-box.left), Math.round(box.right - window.innerWidth)),
       cut: [tip, ...tip.children].some((part) => part.scrollWidth > part.clientWidth + 1),
+      // Lines of its last part (the figures), from the line boxes of its text.
+      lines: (() => {
+        const range = document.createRange();
+        range.selectNodeContents(tip.lastElementChild ?? tip);
+        return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
+      })(),
     };
   });
 }
@@ -248,12 +254,21 @@ test('the waterfall’s hover tip wraps its figures and stays inside the plot at
     await browser.setViewport({ width, height: 900 });
     await app.open(mock('/s/studio/ci?run=ci_s2'));
     await expect(screen.getByRole('region', 'Stages of this run')).toContainText('quality');
-    const row = await browser.locator('.st-row.st-job:has-text("quality")').boundingBox();
-    if (!row) throw new Error('the quality row is not laid out');
-    for (const x of [row.x + 4, row.x + row.width - 4]) {
-      await browser.mouse.move(x, row.y + row.height / 2);
-      await expect(browser.locator('.st-tip')).toContainText('CPU 31 min · peak 2.0 GiB · wrote 640 MiB');
-      expect(await tipFit(browser), `${width} px, pointer at ${Math.round(x)}`).toMatchObject({ pastPlot: 0, pastWindow: 0, cut: false });
+    // quality's figures fit one line; the failed job's (the reported ones) wrap even at 1280 px.
+    const jobs = [
+      ['quality', 'CPU 31 min · peak 2.0 GiB · wrote 640 MiB', false],
+      ['test (2/2)', '1,457 passed, 4 skipped · CPU 0.0 s · peak 7.0 MiB · wrote under 1 MiB · exit 101', true],
+    ] as const;
+    for (const [job, figures, wraps] of jobs) {
+      const row = await browser.locator(`.st-row.st-job:has-text("${job}")`).boundingBox();
+      if (!row) throw new Error(`the ${job} row is not laid out`);
+      for (const x of [row.x + 4, row.x + row.width - 4]) {
+        await browser.mouse.move(x, row.y + row.height / 2);
+        await expect(browser.locator('.st-tip')).toContainText(figures);
+        const fit = await tipFit(browser);
+        expect(fit, `${job}, ${width} px, pointer at ${Math.round(x)}`).toMatchObject({ pastPlot: 0, pastWindow: 0, cut: false });
+        if (wraps) expect(fit?.lines, `${job}, ${width} px`).toBeGreaterThan(1);
+      }
     }
   }
 });
