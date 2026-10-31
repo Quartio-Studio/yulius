@@ -1,5 +1,6 @@
 //! Sandbox shells: `GET`/`POST /api/sandboxes/{sid}/shells`, `PATCH`/`DELETE
-//! /api/sandboxes/{sid}/shells/{id}`, the Cockpit `POST /api/sandboxes/{sid}/cockpit`, its
+//! /api/sandboxes/{sid}/shells/{id}`, the Cockpit `POST /api/sandboxes/{sid}/cockpit`, its link
+//! and restart (`…/cockpit/link`, `…/cockpit/restart`, SPEC-355), its
 //! requests `/api/sandboxes/{sid}/superagent/requests` (SPEC-335) and
 //! `WS /api/shells/{id}/terminal` (docs/api.md; SPEC-001 UI-015, UI-016, AC-UI-7; SPEC-021).
 //! The WebSocket speaks the task terminal protocol.
@@ -83,6 +84,30 @@ pub async fn cockpit(
     Path(sid): Path<String>,
 ) -> ApiResult<Json<Shell>> {
     Ok(Json(dto(app.cockpit_open(&ctx, &sid).await?)))
+}
+
+/// `GET /api/sandboxes/{sid}/cockpit/link`: `{"state": "ok"|"lost"|"recovered"|"unknown",
+/// "lost_at": ms | null}`, the caller's Superagent's link to Yulius (SPEC-355 SLR-006).
+pub async fn cockpit_link(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let link = app.cockpit_link(&ctx, &sid).await?;
+    Ok(Json(serde_json::json!({
+        "state": link.state,
+        "lost_at": link.lost_at.map(|at| at.0),
+    })))
+}
+
+/// `POST /api/sandboxes/{sid}/cockpit/restart`: the caller's Superagent, ended and started again
+/// in place, resuming its conversation (SPEC-355 SLR-006).
+pub async fn cockpit_restart(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+) -> ApiResult<Json<Shell>> {
+    Ok(Json(dto(app.cockpit_restart(&ctx, &sid).await?)))
 }
 
 /// `GET /api/sandboxes/{sid}/superagent/requests`: the caller's own requests of their

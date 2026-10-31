@@ -34,7 +34,7 @@ pub const CROSS_REQUEST_WAIT: Duration = Duration::from_secs(240);
 pub const MAX_WAITING: usize = 3;
 /// How long a waiting call still waits once its person answered (the task is being created).
 /// Short enough that the wait and the grace stay below those 300 s.
-const ANSWER_GRACE: Duration = Duration::from_secs(50);
+pub const ANSWER_GRACE: Duration = Duration::from_secs(50);
 
 /// What `sandbox_task_create` takes: the target and `task_create`'s arguments.
 #[derive(Deserialize)]

@@ -172,6 +172,15 @@ struct Setup {
 }
 
 async fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
+    setup_with(yulius_egress::IDLE_FLOOR, 16).await
+}
+
+/// [`setup`] whose connections give way once idle for `idle_floor`, with `max_connections` in
+/// all (8 per sandbox).
+async fn setup_with(
+    idle_floor: std::time::Duration,
+    max_connections: usize,
+) -> Result<Setup, Box<dyn std::error::Error>> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let mut ca = CertificateParams::default();
     ca.distinguished_name
@@ -197,8 +206,9 @@ async fn setup() -> Result<Setup, Box<dyn std::error::Error>> {
             EgressConfig {
                 resolve: HashMap::from([(BOUND.into(), upstream), (OTHER.into(), upstream)]),
                 extra_roots_pem: vec![test_ca.clone()],
-                max_connections: 16,
+                max_connections,
                 max_per_sandbox: 8,
+                idle_floor,
             },
         )
         .map_err(|e| e.to_string())?,
@@ -423,5 +433,56 @@ async fn one_sandbox_cannot_take_every_connection() -> TestResult {
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
+    Ok(())
+}
+
+/// SPEC-355 SLR-002: a sandbox whose share is held by idle tunnels (leftover processes) gets a new
+/// one: its longest-idle tunnel closes for it. Within the floor it is still refused (above).
+#[tokio::test]
+async fn a_sandbox_at_its_share_closes_its_longest_idle_tunnel_for_a_new_one() -> TestResult {
+    use tokio::io::AsyncReadExt as _;
+    let setup = setup_with(std::time::Duration::ZERO, 16).await?;
+    let mut held = Vec::new();
+    for at in 0..8 {
+        let (stream, status) = tunnel(&setup, "good-token").await?;
+        assert!(status.contains(" 200"), "tunnel {at}: {status}");
+        held.push(stream);
+    }
+    let (_agent, status) = tunnel(&setup, "sibling-token").await?;
+    assert!(status.contains(" 200"), "the agent's tunnel: {status}");
+    // The oldest one gave way: the proxy closed it.
+    let mut byte = [0u8; 1];
+    let read =
+        tokio::time::timeout(std::time::Duration::from_secs(10), held[0].read(&mut byte)).await?;
+    assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
+    Ok(())
+}
+
+/// SPEC-355 SLR-002 (review round 1): a full proxy closes the longest-idle connection of any
+/// sandbox for a sandbox still within its share.
+#[tokio::test]
+async fn a_full_proxy_closes_the_longest_idle_connection_of_any_sandbox() -> TestResult {
+    use tokio::io::AsyncReadExt as _;
+    let setup = setup_with(std::time::Duration::ZERO, 12).await?;
+    let mut held = Vec::new();
+    for at in 0..12 {
+        let token = if at < 8 {
+            "good-token"
+        } else {
+            "other-sandbox-token"
+        };
+        let (stream, status) = tunnel(&setup, token).await?;
+        assert!(status.contains(" 200"), "tunnel {at}: {status}");
+        held.push(stream);
+    }
+    let (_other, status) = tunnel(&setup, "other-sandbox-token").await?;
+    assert!(status.contains(" 200"), "within its share: {status}");
+    let mut byte = [0u8; 1];
+    let read =
+        tokio::time::timeout(std::time::Duration::from_secs(10), held[0].read(&mut byte)).await?;
+    assert!(
+        matches!(read, Ok(0) | Err(_)),
+        "the oldest of all gave way: {read:?}"
+    );
     Ok(())
 }

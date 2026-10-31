@@ -67,6 +67,37 @@ pub(crate) const REFRESH_WAITING: u8 = 2;
 /// How long a refresh that could not start (no capacity, access lost) waits before it is tried
 /// again.
 const REFRESH_RETRY_MS: i64 = 60_000;
+/// How often an idle Cockpit's process tree is probed for strays (SPEC-355 SLR-004).
+const STRAY_PROBE_EVERY_MS: i64 = 60_000;
+/// How often a Cockpit's link to Yulius is tested from its sandbox (SPEC-355 SLR-005).
+const LINK_EVERY_MS: i64 = 60_000;
+/// Longest wait for one link test (its own steps are bounded below it).
+const LINK_TEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// Failed link tests in a row before a link counts as lost: one can fail while a restarted server
+/// still adopts its shells before it serves (review round 1).
+const LINK_LOST_AFTER: u32 = 2;
+/// What a Cockpit's viewers are told when its restart could not end it (SPEC-355 SLR-006).
+const COCKPIT_NOT_RESTARTED: &str =
+    "The Superagent could not restart: its process could not be ended, so it keeps running.";
+/// A Cockpit whose link was not tested, or could not be told.
+pub(crate) const LINK_UNKNOWN: u8 = 0;
+/// A Cockpit whose last link test was answered.
+pub(crate) const LINK_OK: u8 = 1;
+/// A Cockpit whose last link test failed.
+pub(crate) const LINK_LOST: u8 = 2;
+/// What a Cockpit's viewers are told when its person restarts it (SPEC-355 SLR-006).
+pub const RESTART_NOTICE: &str =
+    "Restarting the Superagent: it reconnects to Yulius, and its conversation continues.";
+
+/// A Cockpit's link to Yulius as its panel shows it (SPEC-355 SLR-006).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CockpitLink {
+    /// `lost` (its last test failed), `recovered` (it failed since the Cockpit started, then
+    /// worked), `ok`, or `unknown` (not tested, cannot be told, or no Cockpit runs).
+    pub state: &'static str,
+    /// When it was last found lost.
+    pub lost_at: Option<Timestamp>,
+}
 
 /// How a refresh went ([`App::refresh_cockpit`]).
 enum Refresh {
@@ -393,6 +424,10 @@ impl App {
         let mut turn = TurnState::default();
         // A refresh that could not start is tried again from then on (ms).
         let mut refresh_from = 0_i64;
+        // When its process tree was last probed for strays (ms).
+        let mut strays_probed: Option<i64> = None;
+        // When its link to Yulius was last tested (ms).
+        let mut link_tested: Option<i64> = None;
         let mut interval = tokio::time::interval(WATCH_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -402,6 +437,15 @@ impl App {
             }
             if !runtime.is_live() {
                 return;
+            }
+            let now = self.now().0;
+            if link_tested.is_none_or(|at| now.saturating_sub(at) >= LINK_EVERY_MS) {
+                link_tested = Some(now);
+                // Never past the Cockpit's end (review round 1).
+                tokio::select! {
+                    () = self.test_cockpit_link(&runtime) => {}
+                    _ = ended.wait_for(|ended| *ended) => return,
+                }
             }
             let newest = match self
                 .deps
@@ -476,6 +520,17 @@ impl App {
             });
             let limit = limit.next_back();
             history_read = history_read || watch.caught_up();
+            // SPEC-355 SLR-004: an idle Cockpit's leftover processes, as an idle task's.
+            if history_read
+                && turn.idle(now)
+                && strays_probed.is_none_or(|at| now.0.saturating_sub(at) >= STRAY_PROBE_EVERY_MS)
+            {
+                strays_probed = Some(now.0);
+                tokio::select! {
+                    () = self.tend_cockpit_strays(&runtime, (watched_path.as_path(), polled_len)) => {}
+                    _ = ended.wait_for(|ended| *ended) => return,
+                }
+            }
             if let Some((resets_at, window_minutes, at)) = limit {
                 runtime
                     .limit_handled_ms
@@ -504,6 +559,172 @@ impl App {
                 } else {
                     runtime.refresh.store(REFRESH_WAITING, Ordering::SeqCst);
                 }
+            }
+        }
+    }
+
+    /// Tests a Cockpit's link to Yulius from its sandbox (SPEC-355 SLR-005) and tells its panel
+    /// when the answer changed. A link that cannot be told changes nothing.
+    async fn test_cockpit_link(&self, runtime: &ShellRuntime) {
+        let Some(isolation) = self.isolation.get() else {
+            return;
+        };
+        let tested =
+            tokio::time::timeout(LINK_TEST_TIMEOUT, isolation.link(runtime.sandbox())).await;
+        let Ok(Some(ok)) = tested else {
+            return;
+        };
+        let failures = if ok {
+            runtime.link_failures.store(0, Ordering::SeqCst);
+            0
+        } else {
+            runtime.link_failures.fetch_add(1, Ordering::SeqCst) + 1
+        };
+        if !ok && failures < LINK_LOST_AFTER {
+            return;
+        }
+        let now = if ok { LINK_OK } else { LINK_LOST };
+        let before = runtime.link.swap(now, Ordering::SeqCst);
+        if before == now {
+            return;
+        }
+        if ok {
+            if before == LINK_LOST {
+                tracing::info!(shell = %runtime.id(), sandbox = %runtime.sandbox(), "the Superagent's sandbox reaches Yulius again");
+            }
+        } else {
+            runtime.link_lost_ms.store(self.now().0, Ordering::SeqCst);
+            tracing::warn!(
+                shell = %runtime.id(),
+                sandbox = %runtime.sandbox(),
+                "the Superagent's sandbox cannot reach Yulius: its relay may be full of leftover \
+                 processes' connections (docs/operations.md, \"Leftover agent processes\")"
+            );
+        }
+        self.events.publish_to_user(
+            runtime.creator().clone(),
+            yulius_contracts::events::UiEvent::SuperagentLink {
+                sandbox_id: runtime.sandbox().as_str().to_owned(),
+            },
+        );
+    }
+
+    /// `GET /api/sandboxes/{sid}/cockpit/link`: the caller's Superagent's link to Yulius (SPEC-355
+    /// SLR-006).
+    ///
+    /// # Errors
+    /// `NotFound`/`Forbidden` without write access.
+    pub async fn cockpit_link(&self, ctx: &AuthContext, sandbox: &str) -> AppResult<CockpitLink> {
+        let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
+        let (record, _) = self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        let Some(running) = self.running_cockpit(&ctx.user.id, &record.id) else {
+            return Ok(CockpitLink {
+                state: "unknown",
+                lost_at: None,
+            });
+        };
+        let lost_ms = running.link_lost_ms.load(Ordering::SeqCst);
+        let lost_at = (lost_ms > 0).then_some(Timestamp(lost_ms));
+        let state = match running.link.load(Ordering::SeqCst) {
+            LINK_LOST => "lost",
+            LINK_OK if lost_at.is_some() => "recovered",
+            LINK_OK => "ok",
+            _ => "unknown",
+        };
+        Ok(CockpitLink { state, lost_at })
+    }
+
+    /// `POST /api/sandboxes/{sid}/cockpit/restart`: ends the caller's Superagent and starts it
+    /// again in place, resuming the same conversation (SPEC-355 SLR-006); its viewers follow it
+    /// (`switched`). Starts it when none runs.
+    ///
+    /// # Errors
+    /// As [`Self::cockpit_open`]; `Conflict` when its process could not be ended (it keeps
+    /// running).
+    pub async fn cockpit_restart(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        sandbox: &str,
+    ) -> AppResult<ShellInfo> {
+        let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
+        let (record, _) = self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        let app = Arc::clone(self);
+        let user = ctx.user.clone();
+        Self::run_detached(async move {
+            {
+                let _starting = app.cockpit_start_slot(&user.id, &record.id).await?;
+                if let Some(running) = app.running_cockpit(&user.id, &record.id) {
+                    let account = app
+                        .pool_account(Provider::Anthropic, cockpit_family())
+                        .await?;
+                    running.notice(RESTART_NOTICE);
+                    running.switching.store(true, Ordering::SeqCst);
+                    if !app.end_shells(std::slice::from_ref(&running)).await {
+                        running.switching.store(false, Ordering::SeqCst);
+                        running.notice(COCKPIT_NOT_RESTARTED);
+                        return Err(AppError::Conflict(COCKPIT_NOT_RESTARTED.into()));
+                    }
+                    tracing::info!(shell = %running.id(), user = %user.id, "the person restarts their Superagent");
+                    return app.start_cockpit(&user, &record, &account, false).await;
+                }
+            }
+            app.start_requested_cockpit(&user, &record).await
+        })
+        .await
+    }
+
+    /// Probes an idle Cockpit's process tree for strays (SPEC-355 SLR-004): logs the ones seen for
+    /// the first time and reaps those seen for
+    /// [`crate::context::AppConfig::stray_reap_after_ms`], while its conversation is still idle
+    /// (`seen`: its transcript as it was found idle; a prompt written since keeps them). Processes
+    /// under the agent are never strays.
+    async fn tend_cockpit_strays(&self, runtime: &ShellRuntime, seen: (&std::path::Path, u64)) {
+        let pid = runtime.child_pid.load(Ordering::SeqCst);
+        if pid == 0 {
+            return;
+        }
+        let host = Arc::clone(&self.deps.session_host);
+        let probe = tokio::task::spawn_blocking(move || host.background_probe(pid));
+        let Ok(Ok(Some(found))) =
+            tokio::time::timeout(crate::finish::SHELL_PROBE_TIMEOUT, probe).await
+        else {
+            return;
+        };
+        let (new, due) = {
+            let mut seen_strays = runtime
+                .strays_seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            crate::finish::sort_strays(
+                &mut seen_strays,
+                found.strays,
+                self.now().0,
+                self.config.stray_reap_after_ms,
+            )
+        };
+        if !new.is_empty() {
+            tracing::warn!(
+                shell = %runtime.id(),
+                sandbox = %runtime.sandbox(),
+                strays = new.len(),
+                processes = new.iter().map(|s| s.processes.len()).sum::<usize>(),
+                pids = ?crate::finish::first_pids(&new),
+                "leftover processes in the Superagent's session: no shell of the agent owns them; \
+                 they are ended once it has been idle with them for a while (docs/operations.md)"
+            );
+        }
+        if due.is_empty() || !still_idle(Some(seen)) {
+            return;
+        }
+        let strays = due.len();
+        let pids = crate::finish::first_pids(&due);
+        match self.reap_due_strays(due).await {
+            Some(0) => {}
+            Some(processes) => {
+                tracing::warn!(shell = %runtime.id(), strays, processes, pids = ?pids, "reaped the Superagent's leftover processes");
+            }
+            None => {
+                tracing::warn!(shell = %runtime.id(), strays, "the Superagent's leftover processes were not reaped in time");
             }
         }
     }

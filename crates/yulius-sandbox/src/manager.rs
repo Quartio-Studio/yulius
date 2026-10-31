@@ -1116,6 +1116,20 @@ impl Manager {
         .unwrap_or(1)
     }
 
+    /// Whether a call from inside `sandbox` reaches Yulius's listener on `port` through its
+    /// holder's forward (SPEC-355 SLR-005, [`crate::relay::probe_link`]): `None` without a live
+    /// holder, for a production holder (it forwards nothing) and for a holder that does not offer
+    /// the test.
+    pub async fn probe_link(&self, sandbox: &str, port: u16) -> Option<bool> {
+        if !valid_name(sandbox) || production_sandbox(sandbox).is_some() {
+            return None;
+        }
+        let entry = lock(&self.sandboxes).get(sandbox).cloned()?;
+        entry.lock().await.live.as_ref()?;
+        let state = StatePaths::new(self.state_dir(sandbox));
+        crate::relay::probe_link(&state.inbound(), port).await
+    }
+
     /// Whether `sandbox`'s holder runs, ended while processes still use its namespaces (and its
     /// overlay mount), holds a lease, or is recorded alive in its state directory: its system
     /// layer and state are never deleted then (SPEC-215 LFT-002). A record that cannot be read

@@ -367,7 +367,7 @@ pub(crate) fn combine_background(probe: i64, agents: u32) -> i64 {
 }
 
 /// The first pid of each of `strays`, at most 20 (for the log).
-fn first_pids(strays: &[StrayProcess]) -> Vec<u32> {
+pub(crate) fn first_pids(strays: &[StrayProcess]) -> Vec<u32> {
     strays
         .iter()
         .filter_map(|stray| stray.processes.first().map(|(pid, _)| *pid))
@@ -1166,16 +1166,25 @@ impl App {
         }
         let strays = due.len();
         let pids = first_pids(&due);
+        match self.reap_due_strays(due).await {
+            Some(0) => {}
+            Some(processes) => {
+                tracing::warn!(task = %task_id, strays, processes, pids = ?pids, "reaped leftover processes");
+            }
+            None => {
+                tracing::warn!(task = %task_id, strays, "the leftover processes were not reaped in time")
+            }
+        }
+    }
+
+    /// Kills `due` strays through the session host within [`SHELL_PROBE_TIMEOUT`]: how many
+    /// processes were signalled, `None` when it did not answer in time.
+    pub(crate) async fn reap_due_strays(&self, due: Vec<StrayProcess>) -> Option<usize> {
         let host = Arc::clone(&self.deps.session_host);
         let reap = tokio::task::spawn_blocking(move || host.reap_strays(&due));
         match tokio::time::timeout(SHELL_PROBE_TIMEOUT, reap).await {
-            Ok(Ok(0)) => {}
-            Ok(Ok(processes)) => {
-                tracing::warn!(task = %task_id, strays, processes, pids = ?pids, "reaped leftover processes");
-            }
-            _ => {
-                tracing::warn!(task = %task_id, strays, "the leftover processes were not reaped in time")
-            }
+            Ok(Ok(processes)) => Some(processes),
+            _ => None,
         }
     }
 

@@ -5,6 +5,7 @@
 // to delete it: /clear starts over inside it.
 
 import { enc } from './api.js';
+import { BRAND } from './brand.js';
 import { h, icon, setChildren, emptyState, loadError, skeleton, toast, errorToast } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { allows } from './status.js';
@@ -24,7 +25,8 @@ export function createAgentView(ctx, sandbox) {
       h('strong', null, 'For quick work'), ': setting up automations, asking a quick question. Anything more complex, such as writing code, belongs in a task, not here', newTask ? [': ', newTask, '.'] : '.'));
   const body = h('div', { class: 'agent-term' });
   const requests = createRequests(ctx, sandbox);
-  const el = h('div', { class: 'agent' }, notice, requests.el, body);
+  const link = createLink(ctx, sandbox, () => restart());
+  const el = h('div', { class: 'agent' }, notice, link.el, requests.el, body);
   let terminal = null;
   let alive = true;
   let opening = false;
@@ -32,6 +34,8 @@ export function createAgentView(ctx, sandbox) {
   let shown = false;
   let current = null;
   let recovering = false;
+  /** A restart the person asked for is under way: the old session's `switched` exit is expected. */
+  let restarting = false;
   /** Whether the last mount was to take the keyboard, and from where (for a recovery after it). */
   let asked = { focus: false, from: null };
 
@@ -82,6 +86,27 @@ export function createAgentView(ctx, sandbox) {
     }
   }
 
+  /**
+   * SPEC-355 SLR-006: Restart Superagent. The server ends the session and starts it again in place,
+   * resuming its conversation; the panel follows it to the new one.
+   */
+  async function restart() {
+    if (restarting || !alive) return;
+    restarting = true;
+    const keep = el.contains(document.activeElement);
+    try {
+      const shell = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/cockpit/restart`);
+      if (alive) mount(shell, { focus: keep });
+    } catch (err) {
+      // The old session may have ended: ask for the Superagent again, which shows why it cannot start.
+      restarting = false;
+      if (alive) open({ focus: keep });
+      throw err;
+    } finally {
+      restarting = false;
+    }
+  }
+
   /** The keyboard is still where it was when the start began (or nowhere, or in the Superagent). */
   const stayed = (from) => {
     const now = document.activeElement;
@@ -111,7 +136,7 @@ export function createAgentView(ctx, sandbox) {
       exitActions: (exit) => (exit.status === 'switched' ? [] : [{ label: 'Start again', run: () => open() }]),
       // Opened again rather than recovered: the server answers once the new one runs (it holds the
       // start), and a failure shows why with Try again instead of leaving "Moving…" on screen.
-      onExit: (exit) => { if (exit.status === 'switched') open({ focus: el.contains(document.activeElement) }); },
+      onExit: (exit) => { if (exit.status === 'switched' && !restarting) open({ focus: el.contains(document.activeElement) }); },
       onFatal: (message) => { if (message.code === 'not_found') recover(); },
       // Once its first screen shows, the wish to focus from opening it is spent: a later recovery
       // leaves the keyboard where it is.
@@ -129,6 +154,7 @@ export function createAgentView(ctx, sandbox) {
     setChildren(body, terminal.el);
     terminal.start();
     if (wantFocus) focus();
+    link.load();
   }
 
   if (!write) {
@@ -152,7 +178,80 @@ export function createAgentView(ctx, sandbox) {
     destroy() {
       alive = false;
       requests.destroy();
+      link.destroy();
       drop();
+    },
+  };
+}
+
+/**
+ * SPEC-355 SLR-006: when the Superagent's link to Yulius is lost (tested from its sandbox), above
+ * its session: that it cannot reach Yulius, or that it lost it and its Yulius tools may stay
+ * disconnected, with Restart Superagent, which keeps the conversation. Nothing while the link works.
+ */
+function createLink(ctx, sandbox, restart) {
+  const el = h('div', { class: 'agent-link', hidden: true });
+  const path = `/api/sandboxes/${enc(sandbox.id)}/cockpit/link`;
+  let alive = true;
+  let reading = null;
+  let again = false;
+  let busy = false;
+
+  async function load() {
+    if (!allows(sandbox.access, 'write')) return;
+    if (reading) { again = true; return; }
+    reading = ctx.api.get(path).then(render, () => { /* the next event or resync reads again */ });
+    try { await reading; } finally {
+      reading = null;
+      if (again && alive) { again = false; load(); }
+    }
+  }
+
+  function render(link) {
+    if (!alive) return;
+    const state = link && link.state;
+    if (state !== 'lost' && state !== 'recovered') {
+      el.hidden = true;
+      setChildren(el);
+      return;
+    }
+    const at = link.lost_at ? new Date(link.lost_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null;
+    const text = state === 'lost'
+      ? `Your Superagent can’t reach ${BRAND.name} from this sandbox, so its ${BRAND.name} tools fail. Leftover processes may hold the sandbox’s connections.`
+      : `Your Superagent lost its connection to ${BRAND.name}${at ? ` at ${at}` : ''}. Its ${BRAND.name} tools may stay disconnected until it restarts.`;
+    const button = h('button', { type: 'button', class: 'btn btn-sm', disabled: busy, onClick: () => run() }, 'Restart Superagent');
+    async function run() {
+      if (busy) return;
+      busy = true;
+      button.disabled = true;
+      try {
+        await restart();
+        load();
+      } catch (err) {
+        errorToast(err, 'Couldn’t restart the Superagent');
+      } finally {
+        busy = false;
+        button.disabled = false;
+      }
+    }
+    setChildren(el, h('div', { class: `banner ${state === 'lost' ? 'banner-warn' : 'banner-info'} small agent-link-banner`, role: 'status', 'aria-label': 'Superagent connection' },
+      icon('warn', { size: 16 }),
+      h('span', { class: 'banner-text' }, text, ' ', h('span', { class: 'muted' }, 'Restarting keeps its conversation; a task request it is waiting on ends.')),
+      button));
+    el.hidden = false;
+  }
+
+  const offs = [
+    ctx.store.on('superagent-link', (event) => { if (event && event.sandbox_id === sandbox.id) load(); }),
+    ctx.store.on('resync', () => load()),
+  ];
+
+  return {
+    el,
+    load,
+    destroy() {
+      alive = false;
+      for (const off of offs) if (typeof off === 'function') off();
     },
   };
 }

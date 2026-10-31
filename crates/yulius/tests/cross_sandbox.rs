@@ -584,3 +584,18 @@ async fn an_approval_whose_page_went_away_still_reaches_the_call() -> TestResult
     assert_eq!(task_count(&w, "s2").await?, 1);
     Ok(())
 }
+
+/// SPEC-355 SLR-003 (review round 1): a waiting `sandbox_task_create` call carries no byte for up
+/// to its wait and grace, so the relays and the egress proxy must never pick it to give way to a
+/// new connection: their idle floor outlasts it.
+#[test]
+fn the_relays_idle_floor_outlasts_the_longest_superagent_call() {
+    use yulius_app::cross_sandbox::{ANSWER_GRACE, CROSS_REQUEST_WAIT};
+    let longest = CROSS_REQUEST_WAIT + ANSWER_GRACE;
+    assert!(
+        yulius_sandbox::relay::IDLE_FLOOR > longest,
+        "relay floor {:?} within the call's {longest:?}",
+        yulius_sandbox::relay::IDLE_FLOOR
+    );
+    assert_eq!(yulius_egress::IDLE_FLOOR, yulius_sandbox::relay::IDLE_FLOOR);
+}
