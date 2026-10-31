@@ -965,6 +965,14 @@ rail ([SPEC-035](../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.
 [decision 0036](decisions/0036-agent-in-the-right-panel.md),
 [decision 0106](decisions/0106-the-superagent-is-opened-from-the-tools-rail-only.md)).
 
+Every minute Yulius tests each Cockpit's link to it from inside its sandbox, through the holder's
+forward (`relay::probe_link`, `GET /internal/healthz`). When a test fails, the panel says that the
+Superagent cannot reach Yulius. Once the link works again after a loss, the panel says that its
+Yulius tools may stay disconnected, because Claude Code does not reconnect a failed MCP server.
+Both offer Restart Superagent (`POST …/cockpit/restart`), which ends it and starts it again in
+place, resuming its newest conversation
+([SPEC-355](../.ai/specs/SPEC-355-a-superagent-whose-sandbox-lost-yulius-r.md)).
+
 A Cockpit remembers its pool subscription (in `shell.json`) and watches its newest conversation
 while it runs ([SPEC-074](../.ai/specs/SPEC-074-i-just-hit-usage-limit-in-the-agent-it-s.md),
 [decision 0055](decisions/0055-cockpit-moves-past-a-usage-limit.md)). A usage limit recorded after
@@ -1918,8 +1926,25 @@ An idle task's strays are logged when first seen and killed 2 hours later, each 
 its pid keeps the recorded start time
 ([SPEC-353](../.ai/specs/SPEC-353-leftover-agent-shells-pile-up-in-a-sandb.md),
 [decision 0240](decisions/0240-a-run-s-strays-are-reaped-after-a-bound-and-a-sandbox-gets-half-the-proxy.md)).
-The egress proxy gives one sandbox at most half of its connections, so its processes keep room in
-the sandbox's relay for calls to Yulius. An idle agent
+An idle Superagent's strays are probed every minute and reaped the same way
+([SPEC-355](../.ai/specs/SPEC-355-a-superagent-whose-sandbox-lost-yulius-r.md)).
+The egress proxy gives one sandbox at most half of its connections. At a limit, the relays toward
+Yulius (the holder's forward, the server's `out.sock`) and the proxy close their longest-idle
+connection (no byte for at least 60 s) for a new one instead of refusing it, so leftover processes
+holding connections cannot cut a sandbox's agents off from Yulius, also after a server restart,
+which does not restart the holder
+([decision 0241](decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)):
+
+```mermaid
+flowchart LR
+  A["process in the sandbox"] -->|"127.0.0.1:8081"| F["holder's forward (256 places)"]
+  F -->|"out.sock"| O["server's out.sock relay (256 places)"]
+  O --> I["internal listener: API, MCP, egress proxy (128 per sandbox, 256 in all)"]
+  F -.->|"full: the longest-idle place (idle 60 s or more) gives way"| F
+  Y["Yulius link test, every minute per Superagent"] -->|"in.sock CONNECT 8081"| F
+```
+
+An idle agent
 that waits in `yulius wait` goes on by itself. Its task reads Working ("Waiting for checks or
 merge"), even with a complete plan and a tested pull request; only an achieved goal makes it Done.
 
