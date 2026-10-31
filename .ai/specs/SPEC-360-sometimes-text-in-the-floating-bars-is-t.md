@@ -80,12 +80,17 @@ extends 40 px left of the plot.
   with `max-width: min(360px, 100%)` keeps a short tip on one line, wraps a long one, and stops
   an absolutely placed tip from shrinking as it nears the right edge. 360 px keeps a readable
   line length (about 50 characters at the small size).
-- **Clamp by the measured width** (`offsetWidth`, after the content is set) instead of a fixed
+- **Clamp by the measured width** (`getBoundingClientRect().width`, unrounded, after the content is
+  set; `Math.min` with the plot's width stays as a guard although `max-width` already caps it) instead of a fixed
   80 px, in one `placeTip` helper used by both charts. No ADR: a local layout fix that changes no
   contract.
 - **Break between figures.** Wrapping words alone split "under 1 / MiB" across lines; each
-  figure is an inline block, so a line ends at a " · " separator, after the dot (the space before
-  it does not break). `figureParts()` returns the figures as a list (it replaces `figureText()`,
+  figure is an inline block, so a line ends at a " · " separator. Each dot ends its figure's block
+  (a no-break space joins them), so a line breaks after a dot, never before one: a no-break space
+  between two inline blocks would not stop a break (CSS Text 3, review round 2). The e2e test
+  counts dots at a line start as a guard; it could not be made to fail first, since Chromium never
+  started a line with a dot for this content at any width from 320 to 1400 px, with either
+  separator. `figureParts()` returns the figures as a list (it replaces `figureText()`,
   which joined them): the row's `title` and the table join them, the tip keeps them apart.
 - **The mock's failed job carries the reported figures** (tests, CPU, peak memory, bytes
   written, exit 101) so the e2e test hovers a tip that must wrap; no other test reads them.

@@ -226,7 +226,7 @@ test('a busy CI run reads one row per job: its wait for a slot and its run on on
 
 // Task #340 (#986): a chart's hover tip once kept its text on one line and centred itself at most
 // 80 px from the plot's edge, so a long one ran past the plot (and the page) and its words were cut
-// off. It also always sat above the pointer, so a tall (wrapped) one rose above the plot.
+// off. It now wraps, so it is taller: it must not rise above the plot either.
 
 /** A chart's hover tip against its plot and the window: px past each edge, and text cut in it. */
 function tipFit(browser: Browser, selector: string) {
@@ -251,6 +251,24 @@ function tipFit(browser: Browser, selector: string) {
       lines: lineCount(tip.lastElementChild ?? tip),
       // Each figure is whole on its line: lines break between figures, never inside one.
       figures: [...tip.querySelectorAll('.st-tip-figure')].map((figure) => lineCount(figure)),
+      // Separator dots at the start of a line (each line starts at the figures' left edge).
+      leadingDots: (() => {
+        const figures = tip.lastElementChild;
+        if (!figures) return 0;
+        const left = figures.getBoundingClientRect().left;
+        const walker = document.createTreeWalker(figures, NodeFilter.SHOW_TEXT);
+        let count = 0;
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          const text = node.textContent ?? '';
+          for (let i = text.indexOf('·'); i >= 0; i = text.indexOf('·', i + 1)) {
+            const range = document.createRange();
+            range.setStart(node, i);
+            range.setEnd(node, i + 1);
+            if (range.getBoundingClientRect().left - left < 2) count += 1;
+          }
+        }
+        return count;
+      })(),
     };
   }, selector);
 }
@@ -287,6 +305,7 @@ test('the waterfall’s hover tip wraps its figures and stays inside the plot at
         if (wraps) {
           expect(fit?.lines, at).toBeGreaterThan(1);
           expect(fit?.figures, at).toEqual(text.split(' · ').map(() => 1));
+          expect(fit?.leadingDots, at).toBe(0);
         }
       }
     }

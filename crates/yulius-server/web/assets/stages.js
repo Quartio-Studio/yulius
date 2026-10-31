@@ -268,8 +268,9 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
       setChildren(tip, h('span', null, `${d.label}${span.source === 'backfilled' ? ' · backfilled' : ''}`), h('strong', null, d.took),
         d.waited ? h('span', null, `waited ${d.waited} for a job slot`) : null,
         // Each figure whole, so a long list wraps between figures, not inside one (#986).
-        // The space before each dot does not break, so a line never starts with one.
-        d.parts.length ? h('span', null, ...d.parts.flatMap((part, i) => [i ? '\u{a0}· ' : null, h('span', { class: 'st-tip-figure' }, part)])) : null);
+        // Each dot ends its figure's block, so a line breaks after a dot, never before one.
+        d.parts.length ? h('span', null, ...d.parts.flatMap((part, i) => [i ? ' ' : null,
+          h('span', { class: 'st-tip-figure' }, part, i < d.parts.length - 1 ? '\u{a0}·' : null)])) : null);
       const box = tip.parentElement.getBoundingClientRect();
       placeTip(tip, event.clientX - box.left, event.clientY - box.top);
     };
