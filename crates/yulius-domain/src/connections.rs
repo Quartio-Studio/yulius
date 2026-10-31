@@ -10,7 +10,8 @@
 //! its key (a sandbox), SPEC-357, ADR-0243. When nothing was idle for the floor, a full key takes
 //! the oldest connection of its busiest other owner, and a full table that of the busiest other
 //! key, if that one holds at least [`MARGIN`] more than the asker; so one busy run cannot lock the
-//! others of its sandbox out. Relays have a single owner, and this never applies to them.
+//! others of its sandbox out. Relays have one key, one owner and a share that is the whole table,
+//! so nothing is ever taken from them.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -127,7 +128,8 @@ pub struct Connections<K, T, O = ()> {
 
 impl<K: PartialEq, T> Connections<K, T> {
     /// A table of `max` places, `per_key` of them per key, whose connections give way once idle
-    /// for `floor_ms`; each key has a single owner.
+    /// for `floor_ms`, every connection with the same owner: none is ever taken from a busier
+    /// owner, but a full table still takes from a busier key when it has several keys.
     #[must_use]
     pub fn new(max: usize, per_key: usize, floor_ms: u64) -> Self {
         Self::with_owners(max, per_key, floor_ms)
@@ -459,7 +461,7 @@ mod tests {
         // 2 and 2: neither holds MARGIN more.
         assert_eq!(table.admit_by("s", "b", 8, 40).err(), Some(Full::Key));
         assert_eq!(table.admit_by("s", "a", 8, 40).err(), Some(Full::Key));
-        // Past the floor, the longest idle goes first, even the asker's own.
+        // Past the floor, the longest idle goes first, before anything is taken.
         let idle = table.admit_by("s", "b", 9, 5_000)?.evicted.ok_or("none")?;
         assert_eq!((idle.payload, idle.busier), (3, None));
         // Review round 1: one more than the asker is not enough.

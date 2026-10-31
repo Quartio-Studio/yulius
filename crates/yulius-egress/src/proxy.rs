@@ -568,10 +568,8 @@ impl EgressProxy {
         let Some(client) = self.policy.egress_client(&token).await else {
             return auth_required();
         };
-        let (permit, ended) = match self.slot(&client) {
-            Ok(slot) => slot,
-            Err(refused) => return text(503, &refused),
-        };
+        // A place is taken only once the request is known to be served, so that a refused one
+        // never closes another connection for it (SPEC-357, review round 3).
         if request.method() == Method::CONNECT {
             let Some((host, port)) = connect_target(request.uri()) else {
                 return text(400, "Yulius proxy: CONNECT needs host:port");
@@ -580,6 +578,10 @@ impl EgressProxy {
             let addrs = match self.destination(&host, port).await {
                 Ok(addrs) => addrs,
                 Err(message) => return text(403, &message),
+            };
+            let (permit, ended) = match self.slot(&client) {
+                Ok(slot) => slot,
+                Err(refused) => return text(503, &refused),
             };
             let on_upgrade = hyper::upgrade::on(&mut request);
             let proxy = Arc::clone(self);
@@ -639,11 +641,15 @@ impl EgressProxy {
                 bound: false,
             }
         };
-        let (parts, body) = request.into_parts();
+        let (permit, ended) = match self.slot(&client) {
+            Ok(slot) => slot,
+            Err(refused) => return text(503, &refused),
+        };
         // In flight until its answer's head arrives: it never gives way meanwhile (its bytes pass
-        // through no tracked stream).
+        // through no tracked stream). Held at once, so nothing takes it before.
         permit.activity.hold();
         drop(ended);
+        let (parts, body) = request.into_parts();
         let response = self.forward(&client, &upstream, parts, body).await;
         drop(permit);
         response

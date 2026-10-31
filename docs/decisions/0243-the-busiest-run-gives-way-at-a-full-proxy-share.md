@@ -34,10 +34,12 @@ are.
 - **At the proxy's full total,** the same rule applies one level up. The longest-idle connection of
   any sandbox goes first. Otherwise the busiest sandbox's busiest run gives up its oldest
   connection, when that sandbox holds at least 2 more than the asking sandbox.
-- **Only the busiest is refused.** A run (or sandbox) is refused only when none holds 2 more than
-  it, so a share used evenly is refused as before. The `503` says how many of the sandbox's
-  connections the asking run holds. A connection taken from a busier run is logged once a minute
-  per sandbox, with the run and its count.
+- **A refusal means no other run had room to give.** A run (or sandbox) is refused only when no
+  other one has 2 more connections to give up (requests in flight are never taken), so a share
+  used evenly is refused as before. The `503` says how many of the sandbox's connections the asking
+  run holds, and whether that is the most. A request refused anyway (bad target, local
+  destination) takes no place first. A connection taken from a busier run or sandbox is logged
+  once a minute per sandbox and kind, with the run and its count.
 - The limits stay: 256 in all and 128 per sandbox. The sandbox's relay toward Yulius (256) also
   carries its MCP, hook and wait calls, and ADR-0240 keeps half of it for them.
 

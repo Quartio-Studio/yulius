@@ -16,8 +16,8 @@ production host, 2026-10-31. Builds on SPEC-353 (LAP-002, the per-sandbox share)
 
 A run whose processes hold many connections through the egress proxy no longer cuts off the
 other runs of its sandbox. When a sandbox's share is full of active connections, the run holding
-the most gives way to one holding fewer, and only the busiest run itself is refused, with a
-message that says so.
+the most gives way to one holding fewer. A run is refused only when no other run has 2 more to
+give up, and the message says how many it holds and whether that is the most.
 
 ## Context
 
@@ -172,4 +172,17 @@ Independent reviews in fresh sessions (skill `yulius-review`), read-only over
   - Nit left: `busiest()` is quadratic in the open connections, at most 256. It runs only at a
     full share with nothing idle, at about 0.3 ms by the reviewer's estimate. A one-pass count
     is worth it only if the limits grow.
+- Round 3 on fe8b3d72: request changes. Two minor own-code findings and three nits, all fixed
+  test-first (the red commit, `a_refused_destination_takes_no_place_from_a_busier_run`: the busy
+  run got `200` after a sibling's refused request had taken its place):
+  - A request refused anyway (a bad target, a local or unresolvable destination) took its place
+    first. At a full share, that could close a busier run's active tunnel for nothing. `handle`
+    now takes the place only after the target and destination checks, and a plain request is
+    held in flight at once (the nit about the window before `hold()`).
+  - Nothing tested that an idle connection goes before an active one is taken. Now
+    `an_idle_connection_goes_before_the_busiest_gives_way` covers the share and the table, with
+    the idle one not the busiest's oldest. It passed on first run because the behaviour was
+    already right; it guards against a swap.
+  - Docs: the Goal, ADR-0243, the operations guide and two doc comments said "only the busiest
+    is refused" or that relays are safe for having a single owner. Reworded.
 

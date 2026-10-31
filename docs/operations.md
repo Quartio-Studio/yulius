@@ -1280,12 +1280,14 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   (sandbox, run, how many it held) or `egress proxy: every connection is taken and active; the
   busiest sandbox's oldest connection was closed for another sandbox`, each at most once a minute
   per sandbox. At a full share, a `503`
-  goes only to a run that no other run of the sandbox holds 2 more than, and it says how many
+  goes only to a run when no other run of the sandbox has 2 more to give up (requests waiting for
+  their answer are never taken), and it says how many
   the asking run holds (`this run holds 120 of them, the most of the sandbox's runs`). A run reads
   it in its own commands' output, so the task whose processes hold the places sees it. The
   journal names the run by its run (attempt) id, a CI job by its job id and a Superagent by its
-  shell id. At the proxy's own limit, a sandbox that no other
-  sandbox holds 2 more than still gets `too many connections; try again`. On 2026-10-31,
+  shell id. At the proxy's own limit, a sandbox gets `too many connections; try again` when no
+  other sandbox has 2 more to give up. A request the proxy refuses anyway (a bad target, a local
+  destination) takes no place, so it closes nothing. On 2026-10-31,
   quartio-v2's tasks got `503` for every host for 90 minutes, while their Claude traffic, which
   bypasses the proxy (`NO_PROXY`), kept working.
 - A full relay gives way instead of refusing (SPEC-355,
