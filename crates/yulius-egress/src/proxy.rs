@@ -377,6 +377,13 @@ impl Upstream {
     }
 }
 
+/// A request as it goes upstream, once the policy allowed it.
+struct Outgoing {
+    method: Method,
+    path: String,
+    headers: Vec<(String, Vec<u8>)>,
+}
+
 /// A response body redacted as it streams.
 fn redacting_body(
     stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
@@ -453,27 +460,38 @@ impl EgressProxy {
     /// ESR-002, ESR-003); else the connection is refused (LAP-002) with how many the asking run
     /// holds. Each refusal and each connection that gave way is logged as a warning, at most once
     /// a minute per limit and sandbox.
-    fn slot(&self, client: &EgressClient) -> Result<(Slot, oneshot::Receiver<()>), String> {
+    ///
+    /// A `held` connection (a plain request) is held in flight before the table is released, so
+    /// nothing takes it meanwhile (review round 4).
+    fn slot(
+        &self,
+        client: &EgressClient,
+        held: bool,
+    ) -> Result<(Slot, oneshot::Receiver<()>), String> {
         let sandbox = client.sandbox_id.as_str();
         let run = client.use_key();
         let (end, ended) = oneshot::channel();
-        let (admitted, held) = {
+        let (admitted, counts) = {
             let mut table = self
                 .slots
                 .table
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            let admitted =
-                table.admit_by(sandbox.to_owned(), run.to_owned(), end, self.slots.now());
+            let (key, owner, now) = (sandbox.to_owned(), run.to_owned(), self.slots.now());
+            let admitted = if held {
+                table.admit_held_by(key, owner, end, now)
+            } else {
+                table.admit_by(key, owner, end, now)
+            };
             // Only a refusal at the share tells how many (SPEC-357 ESR-004).
-            let held = matches!(admitted, Err(connections::Full::Key)).then(|| {
+            let counts = matches!(admitted, Err(connections::Full::Key)).then(|| {
                 let (sandbox, run) = (sandbox.to_owned(), run.to_owned());
                 (
                     table.count_of(&sandbox, &run),
                     table.most_of_others(&sandbox, &run),
                 )
             });
-            (admitted, held)
+            (admitted, counts)
         };
         let mut warned = self.warned.lock().unwrap_or_else(PoisonError::into_inner);
         match admitted {
@@ -520,7 +538,7 @@ impl EgressProxy {
                 Ok((slot, ended))
             }
             Err(connections::Full::Key) => {
-                let (mine, most_held) = held.unwrap_or_default();
+                let (mine, most_held) = counts.unwrap_or_default();
                 if warn_due(&mut warned, "share", Some(sandbox)) {
                     tracing::warn!(
                         sandbox,
@@ -579,7 +597,7 @@ impl EgressProxy {
                 Ok(addrs) => addrs,
                 Err(message) => return text(403, &message),
             };
-            let (permit, ended) = match self.slot(&client) {
+            let (permit, ended) = match self.slot(&client, false) {
                 Ok(slot) => slot,
                 Err(refused) => return text(503, &refused),
             };
@@ -641,16 +659,21 @@ impl EgressProxy {
                 bound: false,
             }
         };
-        let (permit, ended) = match self.slot(&client) {
+        let (parts, body) = request.into_parts();
+        // The policy decides before a place is taken: a refused request takes none (review
+        // round 4).
+        let outgoing = match self.prepare(&client, &upstream, &parts).await {
+            Ok(outgoing) => outgoing,
+            Err((status, message)) => return text(status, &message),
+        };
+        // In flight until its answer's head arrives: it never gives way meanwhile (its bytes pass
+        // through no tracked stream).
+        let (permit, ended) = match self.slot(&client, true) {
             Ok(slot) => slot,
             Err(refused) => return text(503, &refused),
         };
-        // In flight until its answer's head arrives: it never gives way meanwhile (its bytes pass
-        // through no tracked stream). Held at once, so nothing takes it before.
-        permit.activity.hold();
         drop(ended);
-        let (parts, body) = request.into_parts();
-        let response = self.forward(&client, &upstream, parts, body).await;
+        let response = self.send(&client, &upstream, outgoing, body).await;
         drop(permit);
         response
     }
@@ -720,11 +743,26 @@ impl EgressProxy {
         B: Body<Data = Bytes> + Send + 'static,
         B::Error: Into<BoxError>,
     {
+        match self.prepare(client, upstream, &parts).await {
+            Ok(outgoing) => self.send(client, upstream, outgoing, body).await,
+            Err((status, message)) => text(status, &message),
+        }
+    }
+
+    /// What `parts` becomes upstream (rewritten by the policy for a bound host), or the status and
+    /// text refusing it.
+    async fn prepare(
+        &self,
+        client: &EgressClient,
+        upstream: &Upstream,
+        parts: &Parts,
+    ) -> Result<Outgoing, (u16, String)> {
         if parts.headers.contains_key(header::UPGRADE) {
-            return text(
+            return Err((
                 501,
-                "Yulius proxy: protocol upgrades (WebSockets) are not proxied for hosts with agent secrets",
-            );
+                "Yulius proxy: protocol upgrades (WebSockets) are not proxied for hosts with agent secrets"
+                    .to_owned(),
+            ));
         }
         let listed: Vec<String> = parts
             .headers
@@ -758,13 +796,37 @@ impl EgressProxy {
                     headers,
                     ..
                 } => (path_and_query, headers),
-                EgressDecision::Refuse { status, message } => return text(status, &message),
+                EgressDecision::Refuse { status, message } => return Err((status, message)),
             }
         } else {
             headers.retain(|(name, _)| name != "x-yulius-secret");
             (path, headers)
         };
-        let mut builder = self.http.request(parts.method.clone(), upstream.url(&path));
+        Ok(Outgoing {
+            method: parts.method.clone(),
+            path,
+            headers,
+        })
+    }
+
+    /// Sends a prepared request upstream and streams the redacted response back.
+    async fn send<B>(
+        &self,
+        client: &EgressClient,
+        upstream: &Upstream,
+        outgoing: Outgoing,
+        body: B,
+    ) -> Response<EgressBody>
+    where
+        B: Body<Data = Bytes> + Send + 'static,
+        B::Error: Into<BoxError>,
+    {
+        let Outgoing {
+            method,
+            path,
+            headers,
+        } = outgoing;
+        let mut builder = self.http.request(method, upstream.url(&path));
         for (name, value) in headers {
             if let (Ok(name), Ok(value)) = (
                 HeaderName::from_bytes(name.as_bytes()),

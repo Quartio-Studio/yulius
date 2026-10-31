@@ -213,6 +213,23 @@ impl<K: PartialEq, T, O: PartialEq> Connections<K, T, O> {
         })
     }
 
+    /// [`Connections::admit_by`] for a connection held in flight from the start (a plain request
+    /// waiting for its answer): held before the table is released, so it is never taken.
+    ///
+    /// # Errors
+    /// As [`Connections::admit_by`].
+    pub fn admit_held_by(
+        &mut self,
+        key: K,
+        owner: O,
+        payload: T,
+        now_ms: u64,
+    ) -> Result<Admitted<K, T, O>, Full> {
+        let admitted = self.admit_by(key, owner, payload, now_ms)?;
+        admitted.activity.hold();
+        Ok(admitted)
+    }
+
     /// Removes the longest-idle connection (of `key`, or of all) idle for the floor.
     fn evict(&mut self, key: Option<&K>, now_ms: u64) -> Option<Evicted<K, T, O>> {
         let (at, idle_ms) = self

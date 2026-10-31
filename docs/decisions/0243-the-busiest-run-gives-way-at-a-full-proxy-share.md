@@ -38,7 +38,8 @@ are.
   other one has 2 more connections to give up (requests in flight are never taken), so a share
   used evenly is refused as before. The `503` says how many of the sandbox's connections the asking
   run holds, and whether that is the most. A request refused anyway (bad target, local
-  destination) takes no place first. A connection taken from a busier run or sandbox is logged
+  destination, protocol upgrade, policy refusal) takes no place first, and a plain request is held
+  in flight from the moment it is admitted. A connection taken from a busier run or sandbox is logged
   once a minute per sandbox and kind, with the run and its count.
 - The limits stay: 256 in all and 128 per sandbox. The sandbox's relay toward Yulius (256) also
   carries its MCP, hook and wait calls, and ADR-0240 keeps half of it for them.

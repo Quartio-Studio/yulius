@@ -185,4 +185,19 @@ Independent reviews in fresh sessions (skill `yulius-review`), read-only over
     already right; it guards against a swap.
   - Docs: the Goal, ADR-0243, the operations guide and two doc comments said "only the busiest
     is refused" or that relays are safe for having a single owner. Reworded.
+- Round 4 on cd51f9f1: request changes. The round-3 fixes were verified, and three more minor
+  own-code findings came up, all fixed test-first (red commit:
+  `refused_plain_requests_take_no_place_from_a_busier_run` got `200` after a refused upgrade,
+  and `admit_held_by` did not exist):
+  - A plain request was held only after `slot()` released the table, so another run could
+    take it in between. It is now admitted held under the table's lock
+    (`Connections::admit_held_by`, unit test). Round 3's claim that the gap was closed was
+    wrong.
+  - Plain requests refused after the place was taken (a protocol upgrade, a policy refusal)
+    could still close a busier run's tunnel. `forward` is split into `prepare` (upgrade check,
+    hop headers, the policy) and `send`, and `handle` takes the place between them.
+  - The plain path's reordering had no test. The new test covers a local destination (`403`),
+    an upgrade (`501`) and a policy refusal (`409`).
+  - Nit kept, as the reviewer allowed: a request refused at a full share now pays its DNS lookup
+    and policy check first.
 
