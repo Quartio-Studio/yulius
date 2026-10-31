@@ -75,7 +75,7 @@ project, agents are not asked about the key or its quota, and every scan says "d
 - [x] The Vidoc card switches Vidoc off and on for the instance
 - [x] ADR, architecture, AGENTS.md and product docs describe the instance switch
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Review round 2 approves the fixed head
+- [x] Review round 2 approves the fixed head
 - [ ] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
@@ -148,6 +148,16 @@ On 2026-10-31:
   corrected, the card says the key is kept and not used while off, the view reads the switch once,
   and a failed switch goes back (e2e). The fail-closed reads (store error at start, a poisoned
   lock) have no test: the store has no fault injection, and the code was checked by reading.
+- Independent review, round 2 (fresh session, at `2fd4fd67`): approve; every round 1 fix
+  verified (55 targeted Rust tests, 13 `shells::`, 91 scanner tests, 8 `vidoc-switch` e2e). Its 2
+  minor findings and 3 nits, all own code, are fixed in `5b91e718`: a switch the proxy cannot read
+  refuses with 503 (the scan ends incomplete, which blocks a merge) instead of "off" (Skipped);
+  the refusal is one constant whose marker `the_scanner_recognizes_the_proxys_refusal` checks
+  against the scanner's matcher and its test (a mutation of the matcher fails it); the scanner
+  drops the body's line end (its test failed with a blank line before); the text says the scan
+  did not run; ADR-0242 notes that interception needs the proxy's CA. The 503 path has no test
+  (no store fault injection).
+- Round 3 (the reviewer of round 2, on `2fd4fd67..` the final head) checks those fixes.
 - `yulius security-scan`: **not run**, exit 2. Vidoc refused the instance key (HTTP 401 "Missing or
   invalid API key"); the 25 changed code files were not scanned, and this is not a pass. No
   `[[ignore]]` entry was added.
