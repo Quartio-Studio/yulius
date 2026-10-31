@@ -89,21 +89,29 @@ woke the tasks.
   was sent answers an error saying that Yulius restarted during the call and that it may have taken
   effect. Read its state before calling again.
 - **MSB-004** A call that Claude Code cancels (`notifications/cancelled`) while the bridge holds
-  it is never sent afterwards. At most `MAX_IN_FLIGHT` (64) messages are in flight. Beyond that a
-  request is answered an error at once. Answers larger than 32 MiB, or lines longer than 4 MiB,
-  are answered an error. Each answer is one line of JSON.
+  it is never sent afterwards, and one cancelled while Yulius works on it is not answered. At most
+  `MAX_IN_FLIGHT` (64) messages are in flight. Beyond that a request is answered an error at
+  once. Answers larger than 32 MiB, or lines longer than 4 MiB, are answered an error at once,
+  never sent again. Interim answers (1xx) are skipped. Each answer is one line of JSON.
 - **MSB-005** `yulius wait` rides out an outage. It keeps asking with a backoff of at most 10 s
   until its own deadline. It says once that Yulius cannot be reached and that it keeps waiting.
   When the deadline passes while Yulius is still down, it ends (exit 1) saying so, and that Yulius
-  wakes the task once it is back. A refused token still ends it at once.
+  wakes the task when it restarts. Only an outage is waited out: a transport error or a 502, 503
+  or 504. Any other answer that is no state (an HTTP error, an unreadable body) ends the wait after
+  5 in a row. A refused token still ends it at once.
 - **MSB-006** Yulius writes the time it was last alive to `<data>/alive-at` every `ALIVE_EVERY`
   (30 s). At the start, the time read from that file is when it went down.
-- **MSB-007** After a restart, Yulius waits `WAKE_GRACE` (90 s) so that the reattached runs replay
-  their transcripts. Then it types "Yulius is back; continue" once into each reattached task whose
-  session is idle and whose last turn closed after Yulius went down. "Idle" means no turn open
-  and the task Running. "Closed after" means the transcript's record that closes the turn is later
-  than `alive-at`. This covers a wait that died, the turn its exit woke, and a turn whose Stop went
-  unanswered. A task is not woken in these cases: its goal is achieved, it has an open `needs_you`
+- **MSB-007** After a restart, once the runs are reattached, Yulius waits `WAKE_GRACE` (90 s) so
+  that they replay their transcripts. Then, every `WAKE_EVERY` (30 s) until 10 minutes after the
+  start, it types "Yulius is back; continue" once into each reattached task that went idle while
+  it was down:
+  - "Idle" means no turn open and the task Running.
+  - The transcript's record that closes the last turn falls between `alive-at` and this start.
+  - No Stop of the run was answered since the prompt that opened that turn. Yulius keeps the time
+    it answers a run's Stop in `<run>/stop-answered`. `alive-at` is up to 30 s old, so a turn
+    Yulius settled just before it stopped also closed after it.
+
+  This covers a wait that died, the turn its exit woke, and a turn whose Stop went unanswered. A task is not woken in these cases: its goal is achieved, it has an open `needs_you`
   or pause, a person typed within the last minute, or the start knows no `alive-at`. The text is
   typed with the guards of a typed message (SPEC-230 TMS-004), unlabelled, and is not a person's.
   It amends SPEC-028 MSR-004 for this single case.
@@ -140,18 +148,32 @@ woke the tasks.
 
 ## Test plan
 
-- Unit (`yulius-git::credential`): `agent_call` tells "not sent" from "lost after sending" for a
-  server that closes before `100 Continue` and one that closes after reading the body.
-- Integration (`yulius/tests/mcp_bridge.rs`): the real `yulius mcp` binary is run against a real
-  internal router. The test restarts the server on the same port, and the bridge's held call is
-  answered. It also covers a cut `tools/call` that is not resent, a cancelled held call that is
-  never sent, and a refused token. The restart test then asks the git credential, `gh-token` and
-  the egress client with the run's token from the new server.
-- Integration (`yulius/tests/delivery.rs`): `yulius wait` runs across a restart of the server, and
-  an armed merge with passed checks merges at the restore.
-- Integration (`yulius/tests/supervision.rs` or `task_message.rs`): the wake. The test covers the
-  typed text for an idle task whose turn closed after `alive-at`, and nothing for one idle since
-  before, one mid-turn, one with `needs_you`, and one without `alive-at`.
+- Unit (`yulius-git::agent_call`): "not sent" against "lost after sending" for a server that
+  closes before `100 Continue` and for one that closes after reading the body. Also a final
+  answer before the body, a silent server, an interim 103, a chunked answer and an oversized
+  answer.
+- Unit (`yulius::mcp_bridge`), each against a server that goes away and comes back:
+  - a held call answered once Yulius is back;
+  - a cut `tools/call` that is not resent, and a cut `tools/list` that is;
+  - the outage bound;
+  - a cancelled held call that is never sent, and a call cancelled in flight that gets no answer;
+  - a refused token, an oversized answer, and the calls in flight answered after stdin ends.
+- Integration (`yulius/tests/restart.rs`, real processes: a detached ptyhost and the fake agent):
+  - **The acceptance test.** A running session's bridge is spawned from the run's own
+    `mcp.json` and environment through its `scrub-exec`, as Claude Code does. The server is
+    restarted on the same port, with `reconcile`. The held call is answered, and `git credential
+    fill`, `yulius gh-token` and the egress client work with the run's token.
+  - `yulius wait` across a restart, at its deadline while down, with a refused token, and against
+    a server failing every request.
+  - The wake: an idle task whose turn closed after `alive-at` is woken once. Not woken: one idle
+    since before, one whose Stop was answered, one with `needs_you`.
+  - A start reading and refreshing `alive-at`.
+- Unit (`yulius-app::outage`, `finish`): the wake rule (mid-turn, goal achieved, pause, a person's
+  typing, already woken, an answered Stop), `alive-at` and `stop-answered` files, and the
+  transcript facts.
+- Integration (`delivery.rs`): an armed merge with passed checks merges at the start. In
+  `secrets_redaction.rs` and `cockpit.rs`: the prefix script runs a stdio server line by line with
+  its output redacted.
 - Unit (`yulius-harness::launch`): the run's MCP config names `yulius mcp` with only `${VAR}`
   references.
 
@@ -174,6 +196,39 @@ woke the tasks.
   table of waits.
 - The Superagent keeps SPEC-355's restart in place: its config is inline JSON with its own bearer,
   and it is a person's session. Moving it onto the bridge is a later change.
+
+## Review
+
+Independent reviews in fresh sessions (skills `om-code-review` and `yulius-review`), read-only over
+`origin/dev...HEAD`:
+
+- Round 1 on 0e5124d6: request changes. All findings were in this change's own code and all were
+  fixed, test-first:
+  - **Major.** A task settled just before a restart was woken. `alive-at` is up to 30 s old, so
+    its turn closed after it. Yulius now keeps the time it answers a run's Stop in
+    `<run>/stop-answered`. It wakes only a turn with no answer since its prompt. Red first: the
+    `Answered` task of the wake test was woken.
+  - Minor:
+    - The wake ran once, beside recovery. It now starts after recovery and repeats for
+      10 minutes, waking each task once.
+    - A 102/103 spun `agent_call`'s loop. Red first: the test hung.
+    - `yulius wait` waited out a persistent HTTP 500 as an outage. Red first: it ran to its
+      60 s deadline.
+    - Missing tests, now added: the wait at its deadline, a refused token, `alive-at` at a start,
+      a `needs_you` task, chunked and interim answers, and a stdio server through `scrub-exec`
+      with fingerprints.
+    - The spec's test plan and requirements were out of date.
+    - The armed-merge test asserted only "not `pr_open`".
+  - Nits fixed:
+    - An oversized answer was resent for 10 minutes; now it is answered at once. Red first.
+    - A call cancelled in flight was still answered. Red first.
+    - `alive-at` is now synced to disk.
+    - The docs agree on Claude Code's reconnect window.
+    - A long comment line.
+  - Nits kept:
+    - The bridge's unit tests take a free port and bind it later, to stand for a server that
+      is down. Another test may take it in between; nothing failed in this change's runs.
+    - The fold test's sub-agent case is the `TurnComplete { at: None }` line.
 
 ## Evidence
 

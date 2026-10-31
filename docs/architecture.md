@@ -611,9 +611,12 @@ A restart or an update is invisible to a task's session
   - Claude Code spawns `CLAUDE_CODE_SHELL_PREFIX` itself as a stdio server's program, so the prefix
     is one path, `<run>/scrub-exec`.
 - **`yulius wait`** keeps asking until its own deadline.
-- **The wake.** Yulius writes `<data>/alive-at` every 30 s. 90 s after a start, it types "Yulius is
-  back; continue" once into each live, idle, Running task whose last turn closed between that
-  time and the start: a turn a dead wait woke, or one whose Stop hook failed open. This is the
+- **The wake.** Yulius writes `<data>/alive-at` every 30 s.
+  - After a start has reattached the runs, it waits 90 s, then works for 10 minutes, every 30 s.
+  - It types "Yulius is back; continue" once into each live, idle, Running task whose last turn
+    closed between that time and the start, and whose Stop it did not answer (`<run>/stop-answered`
+    holds when it last did).
+  - That turn is one a dead wait woke, or one whose Stop hook failed open. This is the
   one thing Yulius types into an idle session, besides a person's message. The woken turn ends
   with a Stop Yulius answers, so the branch is pushed and delivery goes on.
 - **Armed merges** are restored, then tried once at the start.
