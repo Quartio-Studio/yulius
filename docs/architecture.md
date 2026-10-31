@@ -1395,6 +1395,16 @@ Vidoc is an optional instance service, like Jev
   `YULIUS_VIDOC=off`, on which the scanner says "disabled" and sends nothing (in CI the skip
   code); `applied_agent_secrets` leaves the instance key out, `ci_scans` adds no built-in job, and
   the briefing and onboarding prompt say it is off (`VidocBriefing::Off`).
+- **The instance switch** ([SPEC-356](../.ai/specs/SPEC-356-vidoc-security-should-be-optional-and-su.md),
+  [decision 0242](decisions/0242-a-superadmin-switches-vidoc-off-for-the-whole-instance.md)).
+  `PUT /api/admin/vidoc/enabled` (superadmin) sets `vidoc_off_at`/`vidoc_off_by` on the `instance`
+  row, cached in `VidocServices` and read at start with the key, which it keeps. Off, every project
+  is off: `App::vidoc_scans_on(sandbox)` (instance and project switch) decides the environments,
+  the applied instance key and `ci_scans`, the briefing says `VidocBriefing::OffForInstance`, and
+  `me.instance.vidoc` is false. Each project's own switch is kept and shown disabled on the card.
+  For either switch the egress proxy intercepts `model.vidocsecurity.com:443` and refuses (403,
+  nothing sent; `vault/runtime.rs` `vidoc_refused`), so a session started before it went off sends
+  no code either.
 
 ```mermaid
 flowchart LR
@@ -1409,6 +1419,7 @@ flowchart LR
   ISS -->|"issues, once per fingerprint"| GH["GitHub issues"]
   APP -->|"key set: briefing and onboarding add the scan rule"| BOOT["infra bootstrap"]
   SW["Project switch off: Vidoc card, Add sandbox dialog"] -.->|"no key, no built-in job, YULIUS_VIDOC=off: disabled"| AG
+  ISW["Instance switch off: superadmin, Vidoc card, PUT /api/admin/vidoc/enabled"] -.->|"every project as switched off, key kept"| SW
 ```
 
 ## CD (deployment)

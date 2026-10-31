@@ -68,9 +68,11 @@ class FakeVidoc:
                 headers = {k.lower(): v for k, v in self.headers.items()}
                 fake.requests.append((self.path, headers, body))
                 status, payload, extra = fake.behave(body, headers)
-                data = json.dumps(payload).encode()
+                # A string is sent as plain text, as Yulius's egress proxy answers its refusals.
+                text = isinstance(payload, str)
+                data = payload.encode() if text else json.dumps(payload).encode()
                 self.send_response(status)
-                self.send_header("content-type", "application/json")
+                self.send_header("content-type", "text/plain" if text else "application/json")
                 self.send_header("content-length", str(len(data)))
                 for name, value in extra.items():
                     self.send_header(name, value)
@@ -371,6 +373,20 @@ class Service(Scanning):
                 self.assertIn(words, output)
                 self.assertEqual(len(server.requests), 1, "never retried")
 
+    def test_a_refusal_by_yulius_because_vidoc_is_off_says_so(self):
+        # SPEC-356 (review round 1): a session that started before Vidoc was switched off has no
+        # YULIUS_VIDOC=off; Yulius's egress proxy refuses the request and nothing is sent.
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+        # The proxy's own text (`VIDOC_OFF_REFUSAL`), as a plain-text body with its line end.
+        refusal = ("Yulius: Vidoc is turned off in Yulius, for this project or the whole instance; nothing was sent. The scan did not run: report it as not run, Vidoc off, and ask nobody about Vidoc's key or quota.")
+        server = self.fake(lambda body, headers: (403, refusal + "\n", {}))
+        code, output = self.run_scan(repo, server)
+        self.assertEqual(code, 2, output)
+        self.assertIn("Security scan not run: Vidoc is turned off in Yulius", output)
+        self.assertNotIn("refused the key", output)
+        self.assertNotIn("\n\n", output, "no blank line from the body's line end")
+        self.assertEqual(len(server.requests), 1, "never retried")
+
     def test_a_429_that_says_the_key_is_used_up_is_no_quota_not_an_outage(self):
         # Vidoc answered this on 2026-10-22: only a person can fix it, so the scan is not run
         # (skipped in CI) rather than incomplete, which would block every pull request.
@@ -496,12 +512,12 @@ class Config(Scanning):
                 server = self.fake()
                 code, output = self.run_scan(repo, server, env=env)
                 self.assertEqual(code, 0, output)
-                self.assertIn("Security scan disabled: Vidoc is turned off for this project in "
-                              "Yulius; nothing was scanned.", output)
+                self.assertIn("Security scan disabled: Vidoc is turned off in Yulius, for this "
+                              "project or the whole instance; nothing was scanned.", output)
                 self.assertEqual(server.requests, [])
         code, output = self.run_scan(repo, self.fake(), "--all", env={"YULIUS_VIDOC": "off"})
         self.assertEqual(code, 0, output)
-        self.assertIn("turned off for this project", output)
+        self.assertIn("turned off in Yulius", output)
 
     def test_only_off_turns_it_off(self):
         repo = Repo(self, {"a.py": CLEAN}, {"b.py": PLANTED})
@@ -692,7 +708,7 @@ class CiMode(Scanning):
                                      env={"YULIUS_CI_REF": "pr/7", "YULIUS_CI_SKIP_CODE": "78",
                                           "YULIUS_VIDOC": "off"})
         self.assertEqual(code, 78, output)
-        self.assertIn("turned off for this project", output)
+        self.assertIn("turned off in Yulius", output)
         self.assertIn("[yulius] security scan skipped", output)
         self.assertEqual(server.requests, [])
 

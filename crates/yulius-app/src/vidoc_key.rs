@@ -24,6 +24,11 @@ use crate::ports::vidoc::{VidocCheck, VidocConnector};
 pub const VIDOC_HOST: &str = "model.vidocsecurity.com";
 /// The agent secret name the instance key stands in for (a sandbox's own secret wins).
 pub const VIDOC_SECRET: &str = "VIDOC_API_KEY";
+/// How the egress proxy's refusal toward Vidoc starts, for a project whose scans are off
+/// (SPEC-356): `scripts/vidoc_scan.py` matches it to say Vidoc is off, not that the key was refused.
+pub const VIDOC_OFF_MARKER: &str = "Yulius: Vidoc is turned off";
+/// The whole refusal (HTTP 403): nothing was sent.
+pub const VIDOC_OFF_REFUSAL: &str = "Yulius: Vidoc is turned off in Yulius, for this project or the whole instance; nothing was sent. The scan did not run: report it as not run, Vidoc off, and ask nobody about Vidoc's key or quota.";
 /// The audit target of its uses (`vault.agent.use`).
 pub const VIDOC_SECRET_ID: &str = "instance:vidoc";
 
@@ -36,6 +41,15 @@ pub struct StoredVidocKey {
     pub set_at: Timestamp,
     /// Who set it (login).
     pub set_by: Option<String>,
+}
+
+/// The instance Vidoc switch while off (SPEC-356 VIO-001): when and by whom.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VidocOff {
+    /// When it was switched off.
+    pub at: Timestamp,
+    /// Who switched it off (login).
+    pub by: Option<String>,
 }
 
 /// Where the key in use comes from.
@@ -60,6 +74,10 @@ pub struct VidocServices {
     /// The key of `YULIUS_VIDOC_API_KEY_FILE`, or why it is not usable.
     config_key: Result<Option<Secret>, String>,
     active: RwLock<Option<(Secret, VidocSource)>>,
+    /// The instance switch, while off (SPEC-356): read at start, changed by a superadmin.
+    off: RwLock<Option<VidocOff>>,
+    /// Serializes switch changes, so the stored and the cached switch agree.
+    switching: tokio::sync::Mutex<()>,
 }
 
 impl VidocServices {
@@ -73,6 +91,8 @@ impl VidocServices {
             connector,
             config_key,
             active: RwLock::new(None),
+            off: RwLock::new(None),
+            switching: tokio::sync::Mutex::new(()),
         }
     }
 }
@@ -118,11 +138,31 @@ impl App {
         slot.as_ref().map(|(_, source)| *source)
     }
 
-    /// What `sandbox`'s agents are told about the Vidoc scan: off when a person switched its scans
-    /// off (SPEC-338 VOF-003), whatever key it has; else on with the instance key.
+    /// Whether Vidoc scans are on for the instance (SPEC-356 VIO-001): no superadmin switched
+    /// them off. Without Vidoc services there is nothing to switch, and it is on; a switch that
+    /// cannot be read is off, so no code goes out by mistake.
+    #[must_use]
+    pub fn vidoc_enabled(&self) -> bool {
+        self.vidoc
+            .get()
+            .is_none_or(|services| services.off.read().is_ok_and(|off| off.is_none()))
+    }
+
+    /// Whether `sandbox` scans with Vidoc: the instance switch (SPEC-356 VIO-002) and its own
+    /// (SPEC-338 VOF-002) are both on. Its own switch alone is what its view shows.
+    #[must_use]
+    pub fn vidoc_scans_on(&self, sandbox: &crate::model::SandboxRecord) -> bool {
+        self.vidoc_enabled() && crate::delivery::vidoc_switched_on(sandbox)
+    }
+
+    /// What `sandbox`'s agents are told about the Vidoc scan: off when a superadmin switched
+    /// Vidoc off for the instance (SPEC-356 VIO-003) or a person switched its scans off (SPEC-338
+    /// VOF-003), whatever key it has; else on with the instance key.
     #[must_use]
     pub fn vidoc_briefing(&self, sandbox: &crate::model::SandboxRecord) -> VidocBriefing {
-        if !crate::delivery::vidoc_switched_on(sandbox) {
+        if !self.vidoc_enabled() {
+            VidocBriefing::OffForInstance
+        } else if !crate::delivery::vidoc_switched_on(sandbox) {
             VidocBriefing::Off
         } else if self.vidoc_key().is_some() {
             VidocBriefing::On
@@ -169,6 +209,21 @@ impl App {
             opened.map(|key| (Secret(key), VidocSource::Settings))
         });
         let active = from_settings.or_else(|| self.config_vidoc());
+        let off = match self.deps.store.vidoc_off().await {
+            Ok(off) => off,
+            // Unreadable, it is off until a superadmin switches it on (which stores it again).
+            Err(err) => {
+                tracing::warn!(error = %err, "could not read the instance Vidoc switch: off");
+                Some(VidocOff {
+                    at: self.now(),
+                    by: None,
+                })
+            }
+        };
+        if off.is_some() {
+            tracing::info!("Vidoc scans are switched off for the instance");
+        }
+        self.set_vidoc_off_cache(off);
         match active.as_ref().map(|(_, source)| *source) {
             Some(VidocSource::Settings) => {
                 tracing::info!("Vidoc is on (instance key saved in settings)");
@@ -179,6 +234,59 @@ impl App {
             None => tracing::info!("Vidoc is off: no instance key"),
         }
         self.set_active_vidoc(active);
+    }
+
+    fn set_vidoc_off_cache(&self, off: Option<VidocOff>) {
+        if let Some(services) = self.vidoc.get()
+            && let Ok(mut slot) = services.off.write()
+        {
+            *slot = off;
+        }
+    }
+
+    fn vidoc_off_now(&self) -> Option<VidocOff> {
+        self.vidoc.get()?.off.read().ok()?.clone()
+    }
+
+    /// `PUT /api/admin/vidoc/enabled` (superadmin, SPEC-356 VIO-001): switches Vidoc scans off
+    /// for every project of the instance, keeping the key, or on again; at once and stored.
+    ///
+    /// # Errors
+    /// `Forbidden` for others, `Conflict` without Vidoc services; store failures.
+    pub async fn set_vidoc_enabled(
+        &self,
+        ctx: &AuthContext,
+        enabled: bool,
+    ) -> AppResult<VidocKeyView> {
+        self.require_superadmin(ctx)?;
+        let services = self.vidoc_services()?;
+        let _switching = services.switching.lock().await;
+        if self.vidoc_enabled() != enabled {
+            let login = self.login_of(&ctx.user.id).await;
+            let now = self.now();
+            let off = (!enabled).then(|| VidocOff {
+                at: now,
+                by: Some(login.clone()),
+            });
+            self.deps
+                .store
+                .set_vidoc_off((!enabled).then_some(login.as_str()), now)
+                .await?;
+            self.set_vidoc_off_cache(off);
+            // The virtual key follows the switch from the next request on.
+            self.bump_vault_generation();
+            let action = if enabled {
+                "vidoc.enabled"
+            } else {
+                "vidoc.disabled"
+            };
+            self.deps
+                .store
+                .audit(now, &login, action, Some(VIDOC_SECRET_ID), None)
+                .await?;
+            tracing::info!(enabled, "the instance Vidoc switch changed");
+        }
+        self.vidoc_key_view(ctx).await
     }
 
     /// `GET /api/admin/vidoc` (superadmin): the key's state, never the key.
@@ -193,6 +301,9 @@ impl App {
             Some(Err(err)) => (false, Some(err.clone())),
             _ => (false, None),
         };
+        // One reading of the switch: `enabled` and its details agree.
+        let enabled = self.vidoc_enabled();
+        let off = if enabled { None } else { self.vidoc_off_now() };
         Ok(VidocKeyView {
             configured: self.vidoc_key().is_some(),
             source: self.vidoc_source().map(|s| s.as_str().to_owned()),
@@ -200,6 +311,9 @@ impl App {
             set_by: saved.and_then(|s| s.set_by),
             config_present,
             config_error,
+            enabled,
+            disabled_at: off.as_ref().map(|off| rfc3339(off.at)),
+            disabled_by: off.and_then(|off| off.by),
         })
     }
 

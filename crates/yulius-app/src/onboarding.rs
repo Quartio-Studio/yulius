@@ -191,6 +191,13 @@ pub fn security_setup(vidoc: VidocBriefing) -> &'static str {
          by itself and a task following skill infra-bootstrap adds \
          the AGENTS.md rule."
         }
+        VidocBriefing::OffForInstance => {
+            "Security scan: a superadmin switched Vidoc off for this whole Yulius instance, so \
+         Yulius CI runs no security scan; add none, and say in your summary that the Vidoc scan \
+         was skipped (turned off for the instance): once it is switched on again (Settings, \
+         Instance, the Vidoc card), Yulius CI runs it by itself and a task following skill \
+         infra-bootstrap adds the AGENTS.md rule."
+        }
     }
 }
 
@@ -1932,6 +1939,16 @@ mod tests {
         );
         assert!(!off.contains("security-scan --ci"), "{off}");
         assert!(!off.contains("Add the AGENTS.md rule"), "{off}");
+        // SPEC-356 VIO-003: switched off for the instance, the same, saying so.
+        let instance_off = security_setup(VidocBriefing::OffForInstance);
+        assert!(
+            instance_off.contains("switched Vidoc off for this whole Yulius instance"),
+            "{instance_off}"
+        );
+        assert!(
+            !instance_off.contains("security-scan --ci"),
+            "{instance_off}"
+        );
         let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
         let skill = crate::skills::pack::PACKS
             .iter()

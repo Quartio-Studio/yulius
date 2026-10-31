@@ -1149,6 +1149,54 @@ fn a_switched_off_project_runs_without_vidoc() -> TestResult {
     })
 }
 
+/// SPEC-356 VIO-002: with Vidoc switched off for the instance, a run of a project whose own switch
+/// is on gets `YULIUS_VIDOC=off` and not the instance key as `VIDOC_API_KEY`.
+#[test]
+fn a_run_follows_the_instance_vidoc_switch() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            report_env: vec!["YULIUS_VIDOC".into(), "VIDOC_API_KEY".into()],
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
+        app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
+            Arc::new(AnyVidoc),
+            Ok(Some(yulius_app::model::Secret(
+                "vidoc-instance-key-for-runs-0123456789".into(),
+            ))),
+        ));
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        yulius_app::ports::store::InstanceStore::init_instance(
+            app.deps.store.as_ref(),
+            "https://yulius.test",
+            "setup-token-hash",
+        )
+        .await?;
+        yulius_app::ports::store_ext::UpdateStore::set_vidoc_off(
+            app.deps.store.as_ref(),
+            Some("superadmin"),
+            yulius_domain::time::Timestamp(1_800_000_000),
+        )
+        .await?;
+        app.load_vidoc_key().await;
+        let id = new_task(&app, &sandbox, &user, "Scan").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("ENV YULIUS_VIDOC=") }
+        })
+        .await?;
+        let shown = screen(&app, &id);
+        assert!(shown.contains("ENV YULIUS_VIDOC=set len=3"), "{shown}");
+        assert!(!shown.contains("ENV VIDOC_API_KEY=set"), "{shown}");
+        Ok(())
+    })
+}
+
 /// SPEC-275 VAR-004, VAR-002: a task run gets the project's variables in its environment, in
 /// plain; an agent secret of the same name (created after the variable) wins with its
 /// placeholder.

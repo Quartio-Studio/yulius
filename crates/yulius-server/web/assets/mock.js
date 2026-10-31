@@ -174,7 +174,7 @@ function seed(params) {
         : { level: 'ok', used: 141 * 1024 ** 3, total: 386 * 1024 ** 3 },
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
-    vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config' },
+    vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null, fail: params.get('vidoc_fail') === '1' },
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
     // failed (in place, naming what failed, with Try again; #147). A test may set `failPath` later;
     // `failedReads` counts the GET requests failed on purpose.
@@ -791,7 +791,7 @@ const claudeUsable = (db) => db.accounts.some((a) => a.status === 'ok' || a.stat
 const needClaude = (db) => {
   if (!claudeUsable(db)) fail(409, 'claude_account_required', 'Connect a Claude account first: no Claude account is connected, so no agent can start. An instance administrator connects one in Subscriptions (/admin/accounts).');
 };
-route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db), vidoc: Boolean(db.vidoc.key || db.vidoc.config) } }));
+route('GET', '/api/me', ({ db }) => ({ ...db.me, instance: { ...db.me.instance, claude_connected: claudeUsable(db), vidoc: Boolean(db.vidoc.key || db.vidoc.config) && !db.vidoc.offAt } }));
 // Superadmin recovery (ACC-011): a code is set, three attempts left. A test can hold the answers
 // (`__yuliusMock.holdRecovery = promise`; `recoveryWaiting` counts the reads waiting there), so a
 // page that asked can be left before it answers (#581).
@@ -3972,7 +3972,7 @@ route('POST', '/api/admin/jev/test', ({ db }) => {
 function vidocView(db) {
   const v = db.vidoc;
   const source = v.key ? 'settings' : v.config ? 'config' : null;
-  return { configured: Boolean(source), source, set_at: v.key ? v.setAt : null, set_by: v.key ? v.setBy : null, config_present: v.config, config_error: null };
+  return { configured: Boolean(source), source, set_at: v.key ? v.setAt : null, set_by: v.key ? v.setBy : null, config_present: v.config, config_error: null, enabled: !v.offAt, disabled_at: v.offAt, disabled_by: v.offBy };
 }
 route('GET', '/api/admin/vidoc', ({ db }) => { superadminOnly(db); return vidocView(db); });
 route('PUT', '/api/admin/vidoc', ({ db, body }) => {
@@ -3980,6 +3980,15 @@ route('PUT', '/api/admin/vidoc', ({ db, body }) => {
   const key = String(body.key || '').trim();
   if (key.length < 8 || /\s/.test(key)) fail(422, 'invalid', 'the Vidoc key must be 8-4096 printable characters without spaces');
   Object.assign(db.vidoc, { key, setAt: new Date().toISOString(), setBy: db.me.user.login });
+  return vidocView(db);
+});
+// The instance Vidoc switch (SPEC-356 VIO-001): off for every project, the key kept.
+route('PUT', '/api/admin/vidoc/enabled', ({ db, body }) => {
+  superadminOnly(db);
+  if (typeof body.enabled !== 'boolean') fail(422, 'invalid', 'enabled must be true or false');
+  if (db.vidoc.fail) fail(503, 'unavailable', 'the store is busy');
+  if (body.enabled) Object.assign(db.vidoc, { offAt: null, offBy: null });
+  else if (!db.vidoc.offAt) Object.assign(db.vidoc, { offAt: new Date().toISOString(), offBy: db.me.user.login });
   return vidocView(db);
 });
 route('DELETE', '/api/admin/vidoc', ({ db }) => { superadminOnly(db); db.vidoc.key = null; return vidocView(db); });

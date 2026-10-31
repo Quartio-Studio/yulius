@@ -250,6 +250,8 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
                 .delete(updates::remove_vidoc),
         )
         .route("/api/admin/vidoc/adopt", post(updates::adopt_vidoc))
+        // The instance Vidoc switch (SPEC-356 VIO-001).
+        .route("/api/admin/vidoc/enabled", put(updates::set_vidoc_enabled))
         .route("/api/admin/vidoc/test", post(updates::test_vidoc))
         .route("/api/github/repositories", get(projects::repositories))
         .route("/api/templates", get(projects::templates))
