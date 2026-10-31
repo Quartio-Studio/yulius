@@ -262,7 +262,9 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
     ];
     const show = (event) => {
       setChildren(tip, h('span', null, `${d.label}${span.source === 'backfilled' ? ' · backfilled' : ''}`), h('strong', null, d.took),
-        d.waited ? h('span', null, `waited ${d.waited} for a job slot`) : null, d.figures ? h('span', null, d.figures) : null);
+        d.waited ? h('span', null, `waited ${d.waited} for a job slot`) : null,
+        // Each figure whole, so a long list wraps between figures, not inside one (#986).
+        d.figures ? h('span', null, ...d.figures.split(' · ').flatMap((part, i) => [i ? ' · ' : null, h('span', { class: 'st-tip-figure' }, part)])) : null);
       const box = tip.parentElement.getBoundingClientRect();
       placeTip(tip, event.clientX - box.left, event.clientY - box.top);
     };
