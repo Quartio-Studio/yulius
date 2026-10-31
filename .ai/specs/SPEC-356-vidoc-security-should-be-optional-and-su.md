@@ -73,7 +73,8 @@ project, agents are not asked about the key or its quota, and every scan says "d
 - [x] Every project follows the instance switch: environments, virtual key, CI job and briefing
 - [x] The Vidoc card switches Vidoc off and on for the instance
 - [x] ADR, architecture, AGENTS.md and product docs describe the instance switch
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
+- [ ] Review round 2 approves the fixed head
 - [ ] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
@@ -118,4 +119,36 @@ project, agents are not asked about the key or its quota, and every scan says "d
 
 ## Evidence
 
-Pending.
+On 2026-10-31:
+
+- `scripts/dev ci`: exit 0 at `7e97386a` (after the review round 1 fixes; also at `04906128`
+  before them). Repository contracts, the Python unit tests (91 scanner tests, 2 new: the disabled
+  line, a refusal by Yulius's proxy), `cargo check`, `fmt --check`, `clippy -D warnings` (Linux and
+  `aarch64-apple-darwin`), `cargo nextest run --profile ci` 2839 passed, 16 skipped, doctests,
+  `cargo deny`, `cargo shear`, `cargo doc`.
+- `cd e2e && npx e2e run` at `04906128`: 778 passed, 1 skipped, 1 failed. The failure,
+  `superagent-requests.e2e.ts` "Create task starts it in that sandbox", happened while the gate
+  loaded the host; that file passed 30/30 run alone three times right after, and this change does
+  not touch its path. Filed as #978. After the round 1 UI fixes, `vidoc-switch.e2e.ts`: 8 passed.
+- Test first: the instance API, persistence, briefing and onboarding tests did not compile before
+  their change; the run, CI and `me` tests (`a_run_follows_the_instance_vidoc_switch`,
+  `no_project_scans_in_ci_while_vidoc_is_off_for_the_instance`,
+  `every_project_follows_the_instance_switch`) failed before the call sites changed; the scanner
+  tests failed (4 failures) before its line changed; the card's e2e failed (no switch) before the
+  card; the proxy tests (`a_switched_off_project_does_not_get_the_instance_key`,
+  `every_project_follows_the_instance_switch`: "Tunneled") failed before `vidoc_refused`. Mutation
+  runs: removing the store write in `set_vidoc_enabled` fails
+  `a_superadmin_switches_vidoc_off_for_the_instance_and_on_again`, and reverting `shells.rs` to the
+  project switch fails `a_terminal_follows_the_instance_vidoc_switch`.
+- Independent review, round 1 (fresh session, at `04906128`): approve, with 5 minor findings and 4
+  nits, all own code, all fixed in this change: the proxy now refuses Vidoc requests of running
+  sessions while scans are off (nothing sent; the scanner says Vidoc is off), the stored switch and
+  the terminal environment are tested, an unreadable switch is off, `docs/api.md` and the ADR index
+  corrected, the card says the key is kept and not used while off, the view reads the switch once,
+  and a failed switch goes back (e2e). The fail-closed reads (store error at start, a poisoned
+  lock) have no test: the store has no fault injection, and the code was checked by reading.
+- `yulius security-scan`: **not run**, exit 2. Vidoc refused the instance key (HTTP 401 "Missing or
+  invalid API key"); the 25 changed code files were not scanned, and this is not a pass. No
+  `[[ignore]]` entry was added.
+- Not tested: a real Vidoc scan after this change (the key is refused), and a production instance
+  (the change goes to `dev` only).
