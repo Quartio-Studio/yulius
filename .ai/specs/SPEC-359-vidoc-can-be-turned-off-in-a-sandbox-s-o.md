@@ -67,8 +67,11 @@ this sandbox's switch.
 - **VSB-003 The repository wins.** With `enabled = false` committed on the integration branch, the
   view says `repository: off` and `scans: false`; the card shows the switch off and disabled,
   says that the repository turned Vidoc off (`.config/vidoc.toml` on the branch) and that a
-  reviewed pull request setting `enabled = true` turns it on, and offers no way to turn it on. An
-  unreadable file is said (scans then end not run), and the switch still works.
+  reviewed pull request setting `enabled = true` turns it on, and offers no way to turn it on. A
+  file the scanner would refuse (its keys, tables, `enabled`, `exclude` or an `[[ignore]]` entry,
+  as `parse_config` checks them) is said as unreadable, never as on or off (scans then end not
+  run), and the switch still works. The last change shown is this sandbox's: entries older than
+  the sandbox (a removed one's, under the same slug) are not.
 - **VSB-004 The CI/CD page's Security scan card.** The CI tab of `/s/<slug>/ci` shows, at its top
   (above the CI configuration card and the runs, which it decides), a "Security scan (Vidoc)" card with the switch "Scan this project with
   Vidoc", for every non-playground sandbox. While the instance is off, it says so and shows the
@@ -95,9 +98,9 @@ this sandbox's switch.
 
 - [x] Read the product context and related work, then write and validate the spec
 - [x] A sandbox's Vidoc view says its switch, the instance's, the repository file's and who changed it
-- [ ] Sandbox admins switch Vidoc off and on from the CI/CD page's Security scan card
-- [ ] Key failures in scans and agents' texts point to the sandbox's switch
-- [ ] ADR, architecture, operations, API, AGENTS.md and product docs describe the sandbox switch
+- [x] Sandbox admins switch Vidoc off and on from the CI/CD page's Security scan card
+- [x] Key failures in scans and agents' texts point to the sandbox's switch
+- [x] ADR, architecture, operations, API, AGENTS.md and product docs describe the sandbox switch
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -156,6 +159,12 @@ this sandbox's switch.
   changes nothing visible (`scans` stays false), so the server keeps accepting it (the Instance
   card keeps working), and the sandbox card does not offer it. The Instance card does not read
   each project's repository (a Git read per project on a superadmin overview).
+- **`key` counts the instance key and the project's own secret, not a personal one.** A personal
+  `VIDOC_API_KEY` reaches only its owner's own tasks (ADR-0186), not CI or other people's runs, so
+  the card (seen by every member) does not claim a key reaches "this project" for it.
+- **The repository file's shape, not full TOML.** The domain has no TOML parser; the reader checks
+  what the scanner's `parse_config` refuses line by line (review round 1), and treats a form it
+  does not know (a multi-line string) as unreadable rather than guessing on or off.
 - **A URL in the environment, not a guessed one.** The scanner runs in sandboxes, terminals and CI
   jobs without knowing Yulius's public address; Yulius sets `YULIUS_VIDOC_SWITCH` from
   `public_url`, as the `yulius/ci` commit status links to the same page. An older Yulius or

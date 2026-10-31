@@ -972,8 +972,9 @@ def arguments(argv):
 
 def run(args, env, root, sleep, out):
     # SPEC-338 VOF-002, SPEC-356 VIO-002: Yulius sets it for a project a person switched off
-    # (its CI/CD page, Settings, Instance, or the Add sandbox dialog; SPEC-359) and for every project while a superadmin
-    # switched Vidoc off for the instance; checked first, so nothing is read or sent.
+    # (its CI/CD page, SPEC-359; Settings, Instance; or the Add sandbox dialog) and for every
+    # project while a superadmin switched Vidoc off for the instance; checked first, so nothing is
+    # read or sent.
     if env.get("YULIUS_VIDOC") == "off":
         print("Security scan disabled: Vidoc is turned off in Yulius, for this project or the "
               "whole instance; nothing was scanned.", file=out)
@@ -1038,8 +1039,8 @@ def run(args, env, root, sleep, out):
         classify(finding, changes, lines)
         apply_ignores(finding, config, lines)
 
-    outcome = scan_chunks(Client(api, key, sleep, switch_hint(env)), chunks, args.jobs, deadline, label, out, config,
-                          judge)
+    client = Client(api, key, sleep, switch_hint(env))
+    outcome = scan_chunks(client, chunks, args.jobs, deadline, label, out, config, judge)
     unscanned = sorted(set(outcome.unscanned) | set(unsent))
     order = {s: i for i, s in enumerate(SEVERITIES)}
     outcome.findings.sort(key=lambda f: (order[f.severity], f.file, f.line or 0))

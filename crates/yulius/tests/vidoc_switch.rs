@@ -583,7 +583,7 @@ async fn the_repositorys_committed_switch_wins_and_is_said() -> TestResult {
     Ok(())
 }
 
-/// SPEC-359 VSB-001: a playground has no switch, and a stranger does not see the sandbox.
+/// SPEC-359 VSB-001: a playground has no switch.
 #[tokio::test]
 async fn a_playground_has_no_vidoc_view() -> TestResult {
     let i = instance().await?;
@@ -608,5 +608,50 @@ async fn a_playground_has_no_vidoc_view() -> TestResult {
     )
     .await?;
     assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
+    Ok(())
+}
+
+/// SPEC-359 VSB-002 (review round 1): a sandbox added again under a removed one's slug does not
+/// show the removed one's last change as its own.
+#[tokio::test]
+async fn a_change_before_the_sandbox_existed_is_not_its_last_change() -> TestResult {
+    use yulius_app::ports::store::AuditStore as _;
+    let i = instance().await?;
+    let created =
+        i.h.store
+            .sandbox(&SandboxId::parse("s1")?)
+            .await?
+            .ok_or("s1")?
+            .created_at;
+    i.h.store
+        .audit(
+            yulius_domain::time::Timestamp(created.0 - 1),
+            "carol",
+            "delivery.vidoc.update",
+            Some("app"),
+            Some("off"),
+        )
+        .await?;
+    let seen = vidoc_view(&i, &i.alice).await?;
+    assert_eq!(seen["changed_by"], Value::Null, "{seen}");
+    switch(&i, json!({"vidoc": false}), &i.alice).await?;
+    assert_eq!(vidoc_view(&i, &i.alice).await?["changed_by"], "alice");
+    Ok(())
+}
+
+/// SPEC-359 VSB-001 (review round 1): someone without access to the sandbox does not see it.
+#[tokio::test]
+async fn a_stranger_does_not_see_a_sandboxs_vidoc_view() -> TestResult {
+    let i = instance().await?;
+    let carol = admit_and_sign_in(&i.h, &i.admin, "carol", 13, true).await?;
+    let r = call(
+        &i.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/vidoc",
+        None,
+        &carol,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::NOT_FOUND, "{}", r.body);
     Ok(())
 }

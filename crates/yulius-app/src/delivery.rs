@@ -2068,7 +2068,9 @@ impl App {
         let changed = self
             .deps
             .store
-            .last_audit(&sandbox.slug, "delivery.vidoc.update")
+            // A removed sandbox's slug is given to the next one (`release_removed_slug`): its
+            // entries are not this one's.
+            .last_audit(&sandbox.slug, "delivery.vidoc.update", sandbox.created_at)
             .await?;
         let (repository, repository_problem) = match repository {
             RepositoryVidoc::On => ("on", None),

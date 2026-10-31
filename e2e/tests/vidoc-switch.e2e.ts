@@ -245,3 +245,44 @@ test('the sandbox’s card says when the instance switched Vidoc off, keeping th
   await expect(scan).toBeChecked();
   await expect(scan).toBeDisabled();
 });
+
+test('the sandbox’s switch keeps the keyboard, and a refused change goes back and says why', async ({ app, browser, screen }) => {
+  // SPEC-359 review round 1: VSB-004's failure and focus.
+  await app.open(mock('/s/studio/ci', '&vidoc=config'));
+  const scan = screen.getByRole('region', 'Security scan (Vidoc)').getByRole('switch', 'Scan this project with Vidoc');
+  await scan.click();
+  await expect(scan).not.toBeChecked();
+  await expect(scan).toBeEnabled();
+  const focused = await browser.evaluate(() => (document.activeElement as HTMLElement | null)?.getAttribute('aria-label') ?? null);
+  expect(focused).toBe('Scan this project with Vidoc');
+
+  await app.open(mock('/s/studio/ci', '&vidoc=config&vidoc_patch_fail=1'));
+  const refused = screen.getByRole('region', 'Security scan (Vidoc)').getByRole('switch', 'Scan this project with Vidoc');
+  await refused.click();
+  await expect(screen.getByText(/Couldn’t change the Vidoc scans/)).toBeVisible();
+  await expect(refused).toBeChecked();
+  await expect(refused).toBeEnabled();
+});
+
+test('the sandbox’s card says an unreadable repository file and a missing key, and follows changes made elsewhere', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci', '&vidoc=config&vidoc_repo=bad'));
+  let card = screen.getByRole('region', 'Security scan (Vidoc)');
+  await expect(card.getByText(/must set enabled = true or enabled = false .* scans end “not run” until it is fixed/)).toBeVisible();
+  await expect(card.getByRole('switch', 'Scan this project with Vidoc')).toBeEnabled();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await app.open(mock('/s/studio/ci'));
+  card = screen.getByRole('region', 'Security scan (Vidoc)');
+  await expect(card.getByText(/no Vidoc key reaches this project/)).toBeVisible();
+
+  // Switched off elsewhere (the Instance card in another tab, a live update) while the card is shown.
+  const scan = card.getByRole('switch', 'Scan this project with Vidoc');
+  await expect(scan).toBeChecked();
+  await browser.evaluate(() => {
+    const db = (window as unknown as Mocked).__yuliusMock;
+    db.sandboxes.find((sb) => sb.slug === 'studio')!.profile.vidoc = false;
+    db.resyncNow();
+  });
+  await expect(scan).not.toBeChecked();
+  await expect(card.getByText(/^Off: agents and CI scan nothing/)).toBeVisible();
+});

@@ -58,13 +58,18 @@ impl AuditStore for SqliteStore {
         .await
     }
 
-    async fn last_audit(&self, target: &str, action: &str) -> AppResult<Option<AuditEntry>> {
+    async fn last_audit(
+        &self,
+        target: &str,
+        action: &str,
+        since: Timestamp,
+    ) -> AppResult<Option<AuditEntry>> {
         let (target, action) = (target.to_owned(), action.to_owned());
         self.call(move |c| {
             c.query_row(
                 "SELECT at, actor, action, detail FROM audit_log WHERE target = ?1 AND action = ?2 \
-                 ORDER BY id DESC LIMIT 1",
-                params![target, action],
+                 AND at >= ?3 ORDER BY id DESC LIMIT 1",
+                params![target, action, since.0],
                 |r| {
                     Ok(AuditEntry {
                         at: Timestamp(r.get(0)?),

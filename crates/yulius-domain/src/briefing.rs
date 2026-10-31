@@ -893,15 +893,22 @@ fn security_scan(input: &BriefingInput<'_>) -> String {
         }
         VidocBriefing::On => {}
     }
-    "## Security scan\n\nThis instance has a Vidoc key: `yulius security-scan` sends the files your \
+    let mut text = "## Security scan\n\nThis instance has a Vidoc key: `yulius security-scan` sends the files your \
      branch changed (`--all`: the whole repository) to Vidoc's vidoc-1. It exits 1 on critical \
      or high findings, or medium ones in your changed lines; decide on low ones there (fix, or \
      say why not in Evidence); 2 is not run and 3 incomplete (rerun it), never a pass. A \
      project's CI runs it built in (`yulius \
-     security-scan --ci`) and files findings outside your change as issues. If Vidoc refuses the \
-     key or its quota is used up, point any `needs_you` to the sandbox's Vidoc switch \
-     (`$YULIUS_VIDOC_SWITCH`), where its admins turn it off.\n\n"
-        .to_owned()
+     security-scan --ci`) and files findings outside your change as issues."
+        .to_owned();
+    // A playground has no switch (SPEC-359 VSB-006).
+    if !input.playground {
+        text.push_str(
+            " If Vidoc refuses the key or its quota is used up, point any `needs_you` to the \
+             sandbox's Vidoc switch (`$YULIUS_VIDOC_SWITCH`), where its admins turn it off.",
+        );
+    }
+    text.push_str("\n\n");
+    text
 }
 
 /// The goal quote's length, before a tight budget shrinks it (#555).
@@ -2164,6 +2171,14 @@ mod tests {
             ..base(&profile, &layout)?
         });
         assert!(section.len() <= 640, "{} bytes: {section}", section.len());
+        // Review round 1: a playground has no switch, and no `YULIUS_VIDOC_SWITCH`.
+        let playground = security_scan(&BriefingInput {
+            vidoc: VidocBriefing::On,
+            playground: true,
+            ..base(&profile, &layout)?
+        });
+        assert!(playground.contains("## Security scan"), "{playground}");
+        assert!(!playground.contains("YULIUS_VIDOC_SWITCH"), "{playground}");
         let without = build_briefing(&base(&profile, &layout)?, DEFAULT_BUDGET_BYTES);
         assert!(!without.contains("## Security scan"), "{without}");
         assert!(!without.contains("security-scan"), "{without}");

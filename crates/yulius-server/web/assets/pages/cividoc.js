@@ -40,7 +40,13 @@ export function mountVidocCard(ctx, sandbox) {
       disabled: locked || !view.can_change,
       label: LABEL,
       onChange: async (on, input) => {
-        if (await setVidocScans(ctx, sandbox, on, { input })) reload({ quiet: true });
+        // The switch is disabled while the change is sent (which drops focus) and drawn again
+        // after it: the keyboard comes back to the new switch.
+        const focused = document.activeElement === input;
+        if (await setVidocScans(ctx, sandbox, on, { input })) await reload({ quiet: true });
+        const now = el.querySelector('input[role="switch"]');
+        const lost = !document.activeElement || document.activeElement === document.body;
+        if (focused && lost && now && !now.disabled) now.focus();
       },
     });
     const notes = [h('p', { class: 'muted xs' }, state(view))];
