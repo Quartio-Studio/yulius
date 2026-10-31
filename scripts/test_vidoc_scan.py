@@ -496,12 +496,12 @@ class Config(Scanning):
                 server = self.fake()
                 code, output = self.run_scan(repo, server, env=env)
                 self.assertEqual(code, 0, output)
-                self.assertIn("Security scan disabled: Vidoc is turned off for this project in "
-                              "Yulius; nothing was scanned.", output)
+                self.assertIn("Security scan disabled: Vidoc is turned off in Yulius, for this "
+                              "project or the whole instance; nothing was scanned.", output)
                 self.assertEqual(server.requests, [])
         code, output = self.run_scan(repo, self.fake(), "--all", env={"YULIUS_VIDOC": "off"})
         self.assertEqual(code, 0, output)
-        self.assertIn("turned off for this project", output)
+        self.assertIn("turned off in Yulius", output)
 
     def test_only_off_turns_it_off(self):
         repo = Repo(self, {"a.py": CLEAN}, {"b.py": PLANTED})
@@ -692,7 +692,7 @@ class CiMode(Scanning):
                                      env={"YULIUS_CI_REF": "pr/7", "YULIUS_CI_SKIP_CODE": "78",
                                           "YULIUS_VIDOC": "off"})
         self.assertEqual(code, 78, output)
-        self.assertIn("turned off for this project", output)
+        self.assertIn("turned off in Yulius", output)
         self.assertIn("[yulius] security scan skipped", output)
         self.assertEqual(server.requests, [])
 

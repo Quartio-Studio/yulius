@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
-use yulius_app::error::AppResult;
+use yulius_app::error::{AppError, AppResult};
 use yulius_app::jev_key::StoredJevKey;
 use yulius_app::model::Sealed;
 use yulius_app::ports::store_ext::UpdateStore;
@@ -247,7 +247,7 @@ impl UpdateStore for SqliteStore {
     async fn set_vidoc_off(&self, by: Option<&str>, at: Timestamp) -> AppResult<()> {
         let by = by.map(str::to_owned);
         self.call(move |c| {
-            match by {
+            let changed = match by {
                 Some(by) => c.execute(
                     "UPDATE instance SET vidoc_off_at = ?1, vidoc_off_by = ?2 WHERE singleton = 1",
                     params![at.0, by],
@@ -259,6 +259,10 @@ impl UpdateStore for SqliteStore {
                 ),
             }
             .map_err(db)?;
+            // A switch that is not stored would come back on at the next start.
+            if changed == 0 {
+                return Err(AppError::Conflict("the instance is not set up yet".into()));
+            }
             Ok(())
         })
         .await

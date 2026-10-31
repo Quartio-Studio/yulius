@@ -367,7 +367,8 @@ impl App {
         Ok(records)
     }
 
-    /// Whether `sandbox`'s Vidoc scans are on (SPEC-338 VOF-001); a sandbox that is gone is off.
+    /// Whether `sandbox`'s Vidoc scans are on (SPEC-338 VOF-001), the instance's too (SPEC-356
+    /// VIO-002); a sandbox that is gone is off.
     ///
     /// # Errors
     /// Store failures.
@@ -377,7 +378,7 @@ impl App {
             .store
             .sandbox(sandbox)
             .await?
-            .is_some_and(|record| crate::delivery::vidoc_switched_on(&record)))
+            .is_some_and(|record| self.vidoc_scans_on(&record)))
     }
 
     /// Whether runs of `task` get a personal secret (its owner's, switched on for its project).
