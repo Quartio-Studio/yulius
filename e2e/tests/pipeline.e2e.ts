@@ -234,17 +234,20 @@ function tipFit(browser: Browser) {
     if (!tip || tip.hidden || !tip.parentElement) return null;
     const plot = tip.parentElement.getBoundingClientRect();
     const box = tip.getBoundingClientRect();
+    const lineCount = (node: Element) => {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
+    };
     return {
       text: tip.textContent ?? '',
       pastPlot: Math.max(0, Math.round(plot.left - box.left), Math.round(box.right - plot.right)),
       pastWindow: Math.max(0, Math.round(-box.left), Math.round(box.right - window.innerWidth)),
       cut: [tip, ...tip.children].some((part) => part.scrollWidth > part.clientWidth + 1),
       // Lines of its last part (the figures), from the line boxes of its text.
-      lines: (() => {
-        const range = document.createRange();
-        range.selectNodeContents(tip.lastElementChild ?? tip);
-        return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
-      })(),
+      lines: lineCount(tip.lastElementChild ?? tip),
+      // Each figure is whole on its line: lines break between figures, never inside one.
+      figures: [...tip.querySelectorAll('.st-tip-figure')].map((figure) => lineCount(figure)),
     };
   });
 }
@@ -268,6 +271,7 @@ test('the waterfall’s hover tip wraps its figures and stays inside the plot at
         const fit = await tipFit(browser);
         expect(fit, `${job}, ${width} px, pointer at ${Math.round(x)}`).toMatchObject({ pastPlot: 0, pastWindow: 0, cut: false });
         if (wraps) expect(fit?.lines, `${job}, ${width} px`).toBeGreaterThan(1);
+        expect(fit?.figures, `${job}, ${width} px`).toEqual(figures.split(' · ').map(() => 1));
       }
     }
   }
