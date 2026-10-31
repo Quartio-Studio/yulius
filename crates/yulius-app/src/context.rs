@@ -271,6 +271,8 @@ pub struct App {
     pub(crate) purging: Mutex<std::collections::HashSet<yulius_domain::ids::SandboxId>>,
     /// Sandboxes whose disk upkeep runs right now.
     pub(crate) upkeeps: Mutex<std::collections::HashSet<yulius_domain::ids::SandboxId>>,
+    /// The egress proxy's and the sandbox relays' open connection troubles (SPEC-361).
+    pub(crate) connection_health: Arc<yulius_domain::connection_health::ConnectionHealth>,
 }
 
 impl App {
@@ -320,6 +322,7 @@ impl App {
             disk_watch: crate::pressure::DiskWatch::default(),
             purging: Mutex::default(),
             upkeeps: Mutex::default(),
+            connection_health: Arc::default(),
         })
     }
 

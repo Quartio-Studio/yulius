@@ -109,6 +109,7 @@ pub struct EgressProxy {
     /// The open tunnels and intercepted connections by sandbox (LAP-002, SPEC-355 SLR-002).
     slots: Arc<Slots>,
     max_per_sandbox: usize,
+    max_connections: usize,
     /// When the proxy last gave each warning (a kind, and a sandbox or `None` for the whole
     /// proxy). Holds the warnings of the last minute only.
     warned: Mutex<Warned>,
@@ -124,6 +125,8 @@ struct Slots {
     /// By sandbox and run (`EgressClient::use_key`), SPEC-357.
     table: Mutex<Connections<String, oneshot::Sender<()>, String>>,
     epoch: Instant,
+    /// Where a refusing share or proxy is a trouble until it has room (SPEC-361).
+    health: Arc<ConnectionHealth>,
 }
 
 impl Slots {
@@ -132,20 +135,47 @@ impl Slots {
     }
 }
 
+/// The wall clock in ms since the epoch: when a trouble began.
+fn wall_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(0)
+}
+
 /// A connection's place in its sandbox's share and the proxy. Freed when it ends.
 struct Slot {
     slots: Arc<Slots>,
     id: u64,
     activity: Activity,
+    sandbox: String,
 }
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        self.slots
-            .table
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .close(self.id);
+        let health = &self.slots.health;
+        // Counted only while a trouble is open there (SPEC-361 CHR-002).
+        let share = health.open(Limit::Share, Some(&self.sandbox));
+        let proxy = health.open(Limit::Proxy, None);
+        let (held, total) = {
+            let mut table = self
+                .slots
+                .table
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            table.close(self.id);
+            (
+                share.then(|| table.count(&self.sandbox)),
+                proxy.then(|| table.len()),
+            )
+        };
+        if let Some(held) = held {
+            health.held(Limit::Share, Some(&self.sandbox), held);
+        }
+        if let Some(total) = total {
+            health.held(Limit::Proxy, None, total);
+        }
     }
 }
 
@@ -449,10 +479,12 @@ impl EgressProxy {
                     u64::try_from(config.idle_floor.as_millis()).unwrap_or(u64::MAX),
                 )),
                 epoch: Instant::now(),
+                health: config.health,
             }),
             max_per_sandbox: config
                 .max_per_sandbox
                 .clamp(1, config.max_connections.max(1)),
+            max_connections: config.max_connections.max(1),
             warned: Mutex::new(HashMap::new()),
         })
     }
@@ -475,7 +507,7 @@ impl EgressProxy {
         let sandbox = client.sandbox_id.as_str();
         let run = client.use_key();
         let (end, ended) = oneshot::channel();
-        let (admitted, counts) = {
+        let (admitted, counts, trouble) = {
             let mut table = self
                 .slots
                 .table
@@ -495,8 +527,30 @@ impl EgressProxy {
                     table.most_of_others(&sandbox, &run),
                 )
             });
-            (admitted, counts)
+            // A refusal is a trouble, with whose connections they are (SPEC-361 CHR-001).
+            let key = sandbox.to_owned();
+            let trouble = match admitted {
+                Err(connections::Full::Key) => Some(Refusal {
+                    limit: Limit::Share,
+                    sandbox: Some(key.clone()),
+                    held: table.count(&key),
+                    max: self.max_per_sandbox,
+                    holders: connection_health::busiest(table.owners_of(&key)),
+                }),
+                Err(connections::Full::Total) => Some(Refusal {
+                    limit: Limit::Proxy,
+                    sandbox: None,
+                    held: table.len(),
+                    max: self.max_connections,
+                    holders: connection_health::busiest(table.keys()),
+                }),
+                Ok(_) => None,
+            };
+            (admitted, counts, trouble)
         };
+        if let Some(trouble) = trouble {
+            self.slots.health.refused(trouble, wall_ms());
+        }
         let mut warned = self.warned.lock().unwrap_or_else(PoisonError::into_inner);
         match admitted {
             Ok(admitted) => {
@@ -538,6 +592,7 @@ impl EgressProxy {
                     slots: Arc::clone(&self.slots),
                     id: admitted.id,
                     activity: admitted.activity,
+                    sandbox: sandbox.to_owned(),
                 };
                 Ok((slot, ended))
             }
