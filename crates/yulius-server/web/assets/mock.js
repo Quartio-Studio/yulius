@@ -5572,10 +5572,12 @@ export function createMockTransport(params) {
     emit(db, { type: 'disk.updated', level, used, total: db.disk.total });
   };
   // Connection troubles begin or end (`connections.updated`, SPEC-361).
-  db.setConnections = (troubles) => {
+  // `announce: false` changes them without the event, as if it was lost; `resync()` then says so.
+  db.setConnections = (troubles, announce = true) => {
     db.connections = { troubles };
-    emit(db, { type: 'connections.updated', sandbox_id: null });
+    if (announce) emit(db, { type: 'connections.updated', sandbox_id: null });
   };
+  db.resync = () => resync(db);
   db.gitHolds = [];
   db.gitReads = () => db.gitHolds.length;
   db.gitRequests = 0; // Git overview reads the page asked for
