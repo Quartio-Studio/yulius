@@ -5,7 +5,9 @@
 Accepted. Specified in [SPEC-338](../../.ai/specs/SPEC-338-in-vidoc-related-problems-we-want-to-be.md);
 task #322. Amends [ADR-0157](0157-vidoc-is-an-optional-instance-key-and-the-scan-runs-on-vidoc-1.md)
 (where the key applies) and [ADR-0107](0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md)
-(the committed switch stays; this one is Yulius's, per project).
+(the committed switch stays; this one is Yulius's, per project). Amended by
+[ADR-0242](0242-a-superadmin-switches-vidoc-off-for-the-whole-instance.md): a superadmin can also
+switch Vidoc off for the whole instance.
 
 ## Context
 

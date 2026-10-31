@@ -1225,3 +1225,47 @@ async fn a_switched_off_projects_terminal_scans_nothing() -> TestResult {
     read_until(&mut socket, &mut screen, "vidoc=[off]").await?;
     Ok(())
 }
+
+/// SPEC-356 VIO-002 (review round 1): while a superadmin has Vidoc off for the instance, a
+/// terminal of a project whose own switch is on gets `YULIUS_VIDOC=off` too.
+#[tokio::test]
+async fn a_terminal_follows_the_instance_vidoc_switch() -> TestResult {
+    struct NoVidoc;
+    #[async_trait::async_trait]
+    impl yulius_app::ports::vidoc::VidocConnector for NoVidoc {
+        async fn check(
+            &self,
+            _key: &yulius_app::model::Secret,
+        ) -> yulius_app::ports::vidoc::VidocCheck {
+            yulius_app::ports::vidoc::VidocCheck::Ok
+        }
+    }
+    let f = fixture().await?;
+    f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
+        std::sync::Arc::new(NoVidoc),
+        Ok(None),
+    ));
+    {
+        use yulius_app::ports::store::InstanceStore as _;
+        use yulius_app::ports::store_ext::UpdateStore as _;
+        f.h.store
+            .init_instance("https://yulius.test", "setup-token-hash")
+            .await?;
+        f.h.store
+            .set_vidoc_off(
+                Some("superadmin"),
+                yulius_domain::time::Timestamp(1_800_000_000),
+            )
+            .await?;
+    }
+    f.h.app.load_vidoc_key().await;
+    let served = serve(f.h.router.clone()).await?;
+    let created = create(&f, &f.writer, "s1", None).await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+    let mut socket = open_terminal(served.addr, &id, &f.writer).await?;
+    let mut screen = String::new();
+    input(&mut socket, "echo \"vidoc=[${YULIUS_VIDOC:-unset}]\"\r").await?;
+    read_until(&mut socket, &mut screen, "vidoc=[off]").await?;
+    Ok(())
+}

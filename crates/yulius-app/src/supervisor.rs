@@ -2105,8 +2105,9 @@ impl App {
                 self.profile_of(sandbox).integration_branch,
             ),
         ];
-        // A project whose Vidoc scans a person switched off: the scan says "disabled" (SPEC-338).
-        if !crate::delivery::vidoc_switched_on(sandbox) {
+        // A project whose Vidoc scans a person switched off, or every project while Vidoc is off
+        // for the instance: the scan says "disabled" (SPEC-338, SPEC-356).
+        if !self.vidoc_scans_on(sandbox) {
             env.push(("YULIUS_VIDOC".into(), "off".into()));
         }
         // Parallel tasks share the sandbox: each plans for its budget (a third of the sandbox by

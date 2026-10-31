@@ -3118,6 +3118,72 @@ async fn every_project_with_a_vidoc_key_runs_the_built_in_security_job() -> Test
     Ok(())
 }
 
+/// SPEC-356 VIO-002: with Vidoc switched off for the instance, a project whose own switch is on
+/// gets no built-in security job, and its own scanning job, with its own key, ends skipped.
+#[tokio::test]
+async fn no_project_scans_in_ci_while_vidoc_is_off_for_the_instance() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo plain\"\n".to_owned()
+    })
+    .await?;
+    f.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
+        Arc::new(AnyVidoc),
+        Ok(Some(yulius_app::model::Secret(
+            "vidoc-instance-key-0123456789".into(),
+        ))),
+    ));
+    {
+        use yulius_app::ports::store_ext::UpdateStore as _;
+        f.h.store
+            .set_vidoc_off(
+                Some("superadmin"),
+                yulius_domain::time::Timestamp(1_800_000_000),
+            )
+            .await?;
+    }
+    f.h.app.load_vidoc_key().await;
+    f.h.app.enable_egress(Some(
+        "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n".into(),
+    ));
+    let created = f
+        .post(
+            "/api/sandboxes/s1/agent-secrets",
+            Some(serde_json::json!({
+                "name": "VIDOC_API_KEY",
+                "hosts": ["model.vidocsecurity.com"],
+                "value": "vidoc-own-key-0123456789",
+            })),
+        )
+        .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let sha = f.push_feature("notes.txt", Some("two\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &sha).await?;
+    assert_eq!(
+        outputs.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+        ["plain"],
+        "instance off: no built-in scan"
+    );
+    let own = f.push_feature(
+        "yulius.toml",
+        Some(
+            "[[ci.jobs]]\nname = \"plain\"\ncommand = \"echo plain\"\n\n\
+             [[ci.jobs]]\nname = \"security\"\nsecrets = \"VIDOC_API_KEY\"\ncommand = \"yulius security-scan --ci\"\n",
+        ),
+    )?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let outputs = job_outputs(&f, &own).await?;
+    let security = output_of(&outputs, "security")?;
+    assert!(security.contains("Security scan disabled"), "{security}");
+    assert!(
+        security.contains("[yulius] security scan skipped"),
+        "{security}"
+    );
+    Ok(())
+}
+
 /// SPEC-338 VOF-002: a project whose Vidoc switch is off gets no built-in security job even with
 /// the instance's key and its own, and its own scanning job says "disabled" and ends skipped, never passed.
 #[tokio::test]
@@ -3178,7 +3244,7 @@ async fn a_switched_off_project_scans_nothing_in_ci() -> TestResult {
     let outputs = job_outputs(&f, &own).await?;
     let security = output_of(&outputs, "security")?;
     assert!(
-        security.contains("Vidoc is turned off for this project in Yulius"),
+        security.contains("Vidoc is turned off in Yulius, for this project or the whole instance"),
         "{security}"
     );
     assert!(

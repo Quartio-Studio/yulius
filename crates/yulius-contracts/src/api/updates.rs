@@ -241,6 +241,20 @@ pub struct VidocKeyView {
     pub config_present: bool,
     /// Why the configured key file is not usable, in words.
     pub config_error: Option<String>,
+    /// Whether Vidoc scans are on for the instance (SPEC-356 VIO-001): off, no project scans,
+    /// whatever its own switch or key.
+    pub enabled: bool,
+    /// While off: when it was switched off (RFC 3339).
+    pub disabled_at: Option<String>,
+    /// While off: who switched it off (login).
+    pub disabled_by: Option<String>,
+}
+
+/// `PUT /api/admin/vidoc/enabled` (SPEC-356 VIO-001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetVidocEnabled {
+    /// `false` switches Vidoc off for every project of the instance, `true` on again.
+    pub enabled: bool,
 }
 
 /// `PUT /api/admin/vidoc`.

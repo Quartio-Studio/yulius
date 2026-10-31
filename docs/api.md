@@ -62,7 +62,8 @@ Me = {
 }
 ```
 
-`instance.vidoc`: whether the instance has a Vidoc key, so the Add sandbox dialog offers "Scan pull
+`instance.vidoc`: whether the instance has a Vidoc key and Vidoc is on for it (a superadmin can
+switch it off for the whole instance, SPEC-356), so the Add sandbox dialog offers "Scan pull
 requests with Vidoc" (SPEC-338); never the key.
 
 `instance.claude_connected`: whether a Claude account is usable (signed in, `ok` or `limited`);
@@ -1312,6 +1313,7 @@ resolves to nothing, the run gets the server without that variable or token.
 | GET | `/api/admin/vidoc` | superadmin | → `VidocKeyView` (never the key; SPEC-195 VDK-002) |
 | PUT | `/api/admin/vidoc` | superadmin | `{"key"}` (8–4096 printable characters, no spaces; 422 otherwise) → `VidocKeyView`: sealed, audited `vidoc.key_set`, used at once as the virtual agent secret `VIDOC_API_KEY` toward `model.vidocsecurity.com` |
 | DELETE | `/api/admin/vidoc` | superadmin | removes the saved key (the `YULIUS_VIDOC_API_KEY_FILE` key is used again, if any), audited `vidoc.key_removed` → `VidocKeyView` |
+| PUT | `/api/admin/vidoc/enabled` | superadmin | `{"enabled": bool}` → `VidocKeyView` (`enabled`, `disabled_at`, `disabled_by`): `false` switches Vidoc off for every project of the instance, keeping the key (runs and CI jobs get `YULIUS_VIDOC=off`, no instance key, no built-in `security` job), `true` on again; at once, stored, audited `vidoc.disabled` / `vidoc.enabled` (SPEC-356) |
 | POST | `/api/admin/vidoc/adopt` | superadmin | saves the key of `YULIUS_VIDOC_API_KEY_FILE` in settings → `VidocKeyView`; 409 without a usable file |
 | POST | `/api/admin/vidoc/test` | superadmin | one `GET /v1/models` with the key in use → `{"ok","result":"ok|refused|unreachable|timeout|invalid|none","message","latency_ms|null"}` (`invalid`: no `vidoc-1` in the answer) |
 | GET | `/api/admin/leftovers` | superadmin | → `LeftoversView` `{"items":[{"id","kind","path","bytes|null","sandbox|null","task|null","reason","auto","deletable"}],"scanned_at|null","total_bytes","safe_bytes","disk_used|null","disk_total|null","data_dir","job|null","next_auto_at|null"}`: what is kept and what can go (SPEC-215, [operations](operations.md#leftovers-what-is-kept-what-is-cleaned-and-when)) |
@@ -1489,7 +1491,8 @@ UpdateView = {"current":{"commit":"<40 hex>|null","short":"…|null"},
          "can_cancel","can_proceed"}|null}
 JevKeyView = {"configured","source":"settings|config|null","set_at|null","set_by|null",
               "config_present","config_error|null"}
-VidocKeyView = JevKeyView's fields, for the Vidoc key
+VidocKeyView = JevKeyView's fields, for the Vidoc key, and "enabled", "disabled_at|null",
+               "disabled_by|null" (the instance switch, SPEC-356)
 ```
 
 `available` lists the commits from the build to the head of `main` without merges and promotions,

@@ -24,14 +24,15 @@ touch, one at its place (`function`, `line` within 10 lines) or that Vidoc, told
 each chunk's files, answers as that accepted risk (SPEC-273). An answer cut at max_tokens splits
 its chunk in half, at most 3 times.
 
-Exit codes: 0 passed (or disabled by `enabled = false`, or by `YULIUS_VIDOC=off`, which Yulius
-sets for a project switched off (SPEC-338); it says so), 1 failed (an open critical
-or high finding, an open medium finding in the change, a refused request), 2 not run (no key, the
-key refused, out of quota, no base, a malformed config, past the byte budget), 3 incomplete (files
-left unscanned by an outage, timeouts, unreadable or cut answers, the deadline: infrastructure,
-not a finding). With `--ci` it scans pull request heads only (`YULIUS_CI_REF=pr/<n>`), turns "not
-run" into `$YULIUS_CI_SKIP_CODE` (ADR-0133) and incomplete into `$YULIUS_CI_INCOMPLETE_CODE` after
-a `::yulius-incomplete` line (ADR-0202; the skip code where that is not set).
+Exit codes: 0 passed (or disabled by `enabled = false`, or by `YULIUS_VIDOC=off`, which Yulius sets
+for a project switched off (SPEC-338), and for all while the instance is (SPEC-356); it says so), 1
+failed (an open critical or high finding, an open medium finding in the change, a refused request),
+2 not run (no key, the key refused, out of quota, no base, a malformed config, past the byte
+budget), 3 incomplete (files left unscanned by an outage, timeouts, unreadable or cut answers, the
+deadline: infrastructure, not a finding). With `--ci` it scans pull request heads only
+(`YULIUS_CI_REF=pr/<n>`), turns "not run" into `$YULIUS_CI_SKIP_CODE` (ADR-0133) and incomplete
+into `$YULIUS_CI_INCOMPLETE_CODE` after a `::yulius-incomplete` line (ADR-0202; the skip code where
+that is not set).
 
 This one file is the scanner: `scripts/dev security` runs it here, and the `yulius` binary embeds
 it as `yulius security-scan` for every project (ADR-0157). Standard library only.
@@ -749,6 +750,10 @@ class Client:
                     message = _message(err.read(4096))
                 except (OSError, ValueError, http.client.HTTPException):
                     message = "no readable body"
+                # Yulius's egress proxy for a project, or an instance, with Vidoc switched off
+                # (SPEC-356): nothing was sent.
+                if err.code == 403 and "Yulius: Vidoc is turned off" in message:
+                    raise Usage(message.strip().strip('"').removeprefix("Yulius: ")) from None
                 if err.code in (401, 403):
                     raise Usage(f"Vidoc refused the key (HTTP {err.code}: {message}). "
                                 f"{HOW_TO_GET_A_KEY}") from None
@@ -949,11 +954,12 @@ def arguments(argv):
 
 
 def run(args, env, root, sleep, out):
-    # SPEC-338 VOF-002: Yulius sets it for a project a person switched off (Settings, Instance, or
-    # the Add sandbox dialog); checked first, so nothing is read or sent.
+    # SPEC-338 VOF-002, SPEC-356 VIO-002: Yulius sets it for a project a person switched off
+    # (Settings, Instance, or the Add sandbox dialog) and for every project while a superadmin
+    # switched Vidoc off for the instance; checked first, so nothing is read or sent.
     if env.get("YULIUS_VIDOC") == "off":
-        print("Security scan disabled: Vidoc is turned off for this project in Yulius; nothing "
-              "was scanned.", file=out)
+        print("Security scan disabled: Vidoc is turned off in Yulius, for this project or the "
+              "whole instance; nothing was scanned.", file=out)
         return NOTHING_CHECKED
     if tomllib is None:
         raise Usage(f"the scan needs Python 3.11 or later, not {sys.version.split()[0]} "

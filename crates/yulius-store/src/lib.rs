@@ -114,6 +114,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0043_project_variables.sql"),
     // Schema version 44 (SPEC-332).
     include_str!("migrations/0044_mcp_server_owner.sql"),
+    // Schema version 45 (SPEC-356).
+    include_str!("migrations/0045_instance_vidoc_off.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;

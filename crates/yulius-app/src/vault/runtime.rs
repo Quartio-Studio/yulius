@@ -940,6 +940,40 @@ impl App {
     }
 }
 
+impl App {
+    /// The refusal of a request toward Vidoc from `client` whose project's Vidoc scans, or the
+    /// instance's, are off (SPEC-338, SPEC-356): a session that started before the switch went off
+    /// has no `YULIUS_VIDOC=off`, and its scan must still send nothing. A switch that cannot be
+    /// read refuses too, as a passing failure (503: the scan retries, then ends incomplete), never
+    /// as "off", which would end a CI scan skipped.
+    async fn vidoc_refusal(
+        &self,
+        client: &EgressClient,
+        host: &str,
+        port: u16,
+    ) -> Option<EgressDecision> {
+        if port != 443 || !host.eq_ignore_ascii_case(crate::vidoc_key::VIDOC_HOST) {
+            return None;
+        }
+        match self.sandbox_vidoc_on(&client.sandbox_id).await {
+            Ok(true) => None,
+            Ok(false) => Some(EgressDecision::Refuse {
+                status: 403,
+                message: crate::vidoc_key::VIDOC_OFF_REFUSAL.into(),
+            }),
+            Err(err) => {
+                tracing::error!(error = %err, "the Vidoc switch could not be read for the proxy");
+                Some(EgressDecision::Refuse {
+                    status: 503,
+                    message: "Yulius could not read whether Vidoc is on for this project; \
+                              nothing was sent"
+                        .into(),
+                })
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl EgressPolicy for App {
     async fn egress_client(&self, token: &str) -> Option<EgressClient> {
@@ -947,6 +981,10 @@ impl EgressPolicy for App {
     }
 
     async fn egress_intercepts(&self, client: &EgressClient, host: &str, port: u16) -> bool {
+        // Intercepted to be refused: tunneled, the code would reach Vidoc.
+        if self.vidoc_refusal(client, host, port).await.is_some() {
+            return true;
+        }
         match self.client_secrets(client).await {
             Ok(records) => records
                 .iter()
@@ -959,6 +997,12 @@ impl EgressPolicy for App {
     }
 
     async fn egress_apply(&self, client: &EgressClient, request: EgressRequest) -> EgressDecision {
+        if let Some(refusal) = self
+            .vidoc_refusal(client, &request.host, request.port)
+            .await
+        {
+            return refusal;
+        }
         let bound = match self
             .bound_secrets(client, &request.host, request.port)
             .await

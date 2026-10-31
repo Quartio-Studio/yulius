@@ -3,12 +3,12 @@
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
-use yulius_app::error::AppResult;
+use yulius_app::error::{AppError, AppResult};
 use yulius_app::jev_key::StoredJevKey;
 use yulius_app::model::Sealed;
 use yulius_app::ports::store_ext::UpdateStore;
 use yulius_app::updates::UpdateRunRecord;
-use yulius_app::vidoc_key::StoredVidocKey;
+use yulius_app::vidoc_key::{StoredVidocKey, VidocOff};
 use yulius_domain::time::Timestamp;
 use yulius_domain::update::RunState;
 
@@ -219,6 +219,50 @@ impl UpdateStore for SqliteStore {
                 ),
             }
             .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn vidoc_off(&self) -> AppResult<Option<VidocOff>> {
+        self.call(|c| {
+            let row = c
+                .query_row(
+                    "SELECT vidoc_off_at, vidoc_off_by FROM instance WHERE singleton = 1",
+                    [],
+                    |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<String>>(1)?)),
+                )
+                .optional()
+                .map_err(db)?;
+            Ok(row.and_then(|(at, by)| {
+                at.map(|at| VidocOff {
+                    at: Timestamp(at),
+                    by,
+                })
+            }))
+        })
+        .await
+    }
+
+    async fn set_vidoc_off(&self, by: Option<&str>, at: Timestamp) -> AppResult<()> {
+        let by = by.map(str::to_owned);
+        self.call(move |c| {
+            let changed = match by {
+                Some(by) => c.execute(
+                    "UPDATE instance SET vidoc_off_at = ?1, vidoc_off_by = ?2 WHERE singleton = 1",
+                    params![at.0, by],
+                ),
+                None => c.execute(
+                    "UPDATE instance SET vidoc_off_at = NULL, vidoc_off_by = NULL \
+                     WHERE singleton = 1",
+                    [],
+                ),
+            }
+            .map_err(db)?;
+            // A switch that is not stored would come back on at the next start.
+            if changed == 0 {
+                return Err(AppError::Conflict("the instance is not set up yet".into()));
+            }
             Ok(())
         })
         .await
