@@ -551,4 +551,15 @@ mod tests {
         assert_eq!((idle.key, idle.payload, idle.busier), ("s2", 4, None));
         Ok(())
     }
+
+    /// SPEC-357 ESR-002 (review round 4): a connection admitted held (a plain request) is held
+    /// before the table is released, so it is never taken, not even in the moment after.
+    #[test]
+    fn a_connection_admitted_held_is_never_taken() -> TestResult {
+        let mut table = Connections::with_owners(8, 2, 0);
+        table.admit_held_by("s", "a", 1, 0)?;
+        table.admit_held_by("s", "a", 2, 0)?;
+        assert_eq!(table.admit_by("s", "b", 3, 10).err(), Some(Full::Key));
+        Ok(())
+    }
 }

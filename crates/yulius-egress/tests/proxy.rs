@@ -361,17 +361,28 @@ async fn tunnel_to(
     token: &str,
     target: &str,
 ) -> Result<(tokio::net::TcpStream, String), Box<dyn std::error::Error>> {
+    ask(
+        setup,
+        token,
+        &format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n"),
+    )
+    .await
+}
+
+/// Sends a request `head` (request line and headers, each ending in CRLF) with `token`'s proxy
+/// credentials and keeps the connection: the stream and the proxy's status line, followed by a
+/// refusal's text.
+async fn ask(
+    setup: &Setup,
+    token: &str,
+    head: &str,
+) -> Result<(tokio::net::TcpStream, String), Box<dyn std::error::Error>> {
     use base64::Engine as _;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let mut stream = tokio::net::TcpStream::connect(setup.proxy).await?;
     let auth = base64::engine::general_purpose::STANDARD.encode(format!("yulius:{token}"));
     stream
-        .write_all(
-            format!(
-                "CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nProxy-Authorization: Basic {auth}\r\n\r\n"
-            )
-            .as_bytes(),
-        )
+        .write_all(format!("{head}Proxy-Authorization: Basic {auth}\r\n\r\n").as_bytes())
         .await?;
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
@@ -586,5 +597,43 @@ async fn a_refused_destination_takes_no_place_from_a_busier_run() -> TestResult 
         status.contains(" 503"),
         "the busy run kept all of its places: {status}"
     );
+    Ok(())
+}
+
+/// SPEC-357 ESR-002 (review round 4): plain `http://` requests the proxy refuses anyway (a local
+/// destination, a protocol upgrade, a policy refusal) take no place from a busier run either.
+#[tokio::test]
+async fn refused_plain_requests_take_no_place_from_a_busier_run() -> TestResult {
+    let setup = setup().await?;
+    let mut held = Vec::new();
+    for at in 0..8 {
+        let (stream, status) = tunnel(&setup, "good-token").await?;
+        assert!(status.contains(" 200"), "tunnel {at}: {status}");
+        held.push(stream);
+    }
+    for (head, refused) in [
+        (
+            "GET http://127.0.0.1:9/ HTTP/1.1\r\nHost: 127.0.0.1:9\r\n".to_owned(),
+            " 403",
+        ),
+        (
+            format!(
+                "GET http://{OTHER}/ HTTP/1.1\r\nHost: {OTHER}\r\nConnection: upgrade\r\nUpgrade: websocket\r\n"
+            ),
+            " 501",
+        ),
+        (
+            format!("GET http://{BOUND}/refuse HTTP/1.1\r\nHost: {BOUND}\r\n"),
+            " 409",
+        ),
+    ] {
+        let (_sibling, status) = ask(&setup, "sibling-token", &head).await?;
+        assert!(status.contains(refused), "{head}: {status}");
+        let (_again, status) = tunnel(&setup, "good-token").await?;
+        assert!(
+            status.contains(" 503"),
+            "after {head}: the busy run kept all of its places: {status}"
+        );
+    }
     Ok(())
 }
