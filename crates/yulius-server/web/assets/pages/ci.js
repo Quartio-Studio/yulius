@@ -15,6 +15,7 @@ import { BRAND } from '../brand.js';
 import { loadWaterfall } from '../stages.js';
 import { pipelineHref } from './pipeline.js';
 import { runView, stageNow, soFar, focusIfLost } from '../runview.js';
+import { mountVidocCard } from './cividoc.js';
 
 const STATE = {
   queued: { label: 'Queued', tone: '', icon: 'clock' },
@@ -90,7 +91,9 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     focusIfLost(view.el);
     return () => { destroyed = true; clearTimeout(poll); view.dispose(); leftRun.set(sandbox.id, shownRun); };
   }
-  host.append(runsHost, hygieneHost);
+  // SPEC-359 VSB-004: the sandbox's Vidoc switch, above the jobs it decides.
+  const vidoc = mountVidocCard(ctx, sandbox);
+  host.append(vidoc.el, runsHost, hygieneHost);
 
   const reload = loader(runsHost, 'the CI runs', () => ctx.api.get(`${base}/ci`), (overview) => {
     schedule(overview);
@@ -506,5 +509,5 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     await hygieneAction('clean', safe.length, async () => (await ctx.api.post(`${base}/hygiene/cleanup`, { items: [], force: false })).report, 'Couldn’t clean up');
   }
 
-  return () => { destroyed = true; clearTimeout(timer); clearInterval(hygieneTick); };
+  return () => { destroyed = true; clearTimeout(timer); clearInterval(hygieneTick); vidoc.destroy(); };
 }

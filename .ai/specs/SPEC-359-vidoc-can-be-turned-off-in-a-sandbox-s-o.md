@@ -94,7 +94,7 @@ this sandbox's switch.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A sandbox's Vidoc view says its switch, the instance's, the repository file's and who changed it
+- [x] A sandbox's Vidoc view says its switch, the instance's, the repository file's and who changed it
 - [ ] Sandbox admins switch Vidoc off and on from the CI/CD page's Security scan card
 - [ ] Key failures in scans and agents' texts point to the sandbox's switch
 - [ ] ADR, architecture, operations, API, AGENTS.md and product docs describe the sandbox switch

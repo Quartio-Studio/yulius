@@ -188,3 +188,60 @@ test('a failed instance switch goes back and says why', async ({ app, screen }) 
   await expect(instance).toBeEnabled();
   await expect(screen.getByRole('switch', 'Vidoc scans for studio')).toBeEnabled();
 });
+
+// SPEC-359: the sandbox's own Security scan card on its CI/CD page, the same switch.
+
+test('a sandbox admin switches its Vidoc scans off and on from the CI/CD page, and the Instance card agrees', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci', '&vidoc=config'));
+  const card = screen.getByRole('region', 'Security scan (Vidoc)');
+  const scan = card.getByRole('switch', 'Scan this project with Vidoc');
+  await expect(scan).toBeChecked();
+  await expect(scan).toBeEnabled();
+  await expect(card.getByText(/agents scan their changes/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await scan.click();
+  await expect(screen.getByText(/Vidoc scans are off for studio/)).toBeVisible();
+  await expect(scan).not.toBeChecked();
+  await expect(card.getByText(/nobody is asked about the key or its quota/)).toBeVisible();
+  await expect(card.getByText(/Last changed by mkarp/)).toBeVisible();
+  expect(await switchOf(browser, 'studio')).toBe(false);
+
+  // The Instance page's card shows the same switch, and turns it on again.
+  await browser.evaluate(() => { location.hash = '#/admin/instance'; return null; });
+  const studio = screen.getByRole('switch', 'Vidoc scans for studio');
+  await expect(studio).not.toBeChecked();
+  await studio.click();
+  await expect(studio).toBeChecked();
+  await browser.evaluate(() => { location.hash = '#/s/studio/ci'; return null; });
+  await expect(screen.getByRole('region', 'Security scan (Vidoc)').getByRole('switch', 'Scan this project with Vidoc')).toBeChecked();
+});
+
+test('a member without admin access sees the sandbox’s Vidoc switch but cannot change it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci', '&vidoc=config&role=member'));
+  const card = screen.getByRole('region', 'Security scan (Vidoc)');
+  const scan = card.getByRole('switch', 'Scan this project with Vidoc');
+  await expect(scan).toBeChecked();
+  await expect(scan).toBeDisabled();
+  await expect(card.getByText(/Only this sandbox’s admins/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('a repository that turned Vidoc off in .config/vidoc.toml is said, and the switch offers no way on', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci', '&vidoc=config&vidoc_repo=off'));
+  const card = screen.getByRole('region', 'Security scan (Vidoc)');
+  const scan = card.getByRole('switch', 'Scan this project with Vidoc');
+  await expect(card.getByText(/The repository turned Vidoc off/)).toBeVisible();
+  await expect(scan).not.toBeChecked();
+  await expect(scan).toBeDisabled();
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('the sandbox’s card says when the instance switched Vidoc off, keeping the project’s choice', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/ci', '&vidoc=config&vidoc_off=1'));
+  const card = screen.getByRole('region', 'Security scan (Vidoc)');
+  await expect(card.getByText(/A superadmin switched Vidoc off for the whole instance/)).toBeVisible();
+  const scan = card.getByRole('switch', 'Scan this project with Vidoc');
+  await expect(scan).toBeChecked();
+  await expect(scan).toBeDisabled();
+});

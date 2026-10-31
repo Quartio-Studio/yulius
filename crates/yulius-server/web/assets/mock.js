@@ -11,7 +11,7 @@
 // URL options (with ?mock=1): setup=1 (setup required), signedout=1 (start signed out),
 // role=member|admin|superadmin (default superadmin), contained=0 (not isolated), github=0,
 // recovery=1 (setup issues a recovery code), update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
-// jev=config (a Jev key file is configured), vidoc=config (a Vidoc key file), fail=<path> (GETs of that path answer 500),
+// jev=config (a Jev key file is configured), vidoc=config (a Vidoc key file), vidoc_repo=off|bad (studio's .config/vidoc.toml), fail=<path> (GETs of that path answer 500),
 // failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs of that path wait for
 // `__yuliusMock.release()`, as hold= does for GETs; `heldWaiting` counts those waiting), as=<login> (signed in as another member, a
 // teammate in a second window: mock pages of one origin relay presence to each other, SPEC-127).
@@ -174,7 +174,7 @@ function seed(params) {
         : { level: 'ok', used: 141 * 1024 ** 3, total: 386 * 1024 ** 3 },
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
-    vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null, fail: params.get('vidoc_fail') === '1' },
+    vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null, fail: params.get('vidoc_fail') === '1', repo: params.get('vidoc_repo') },
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
     // failed (in place, naming what failed, with Try again; #147). A test may set `failPath` later;
     // `failedReads` counts the GET requests failed on purpose.
@@ -1004,12 +1004,29 @@ route('POST', '/api/sandboxes', ({ db, body }) => {
   return json(201, sandbox);
 });
 route('GET', `/api/sandboxes/${ID}`, ({ db, p }) => shown(sandboxOf(db, p[0])));
+// SPEC-359 VSB-001: the sandbox's Vidoc view. `vidoc_repo=off|bad` stands for studio's committed
+// `.config/vidoc.toml` (`enabled = false`, or a value the scanner refuses).
+route('GET', `/api/sandboxes/${ID}/vidoc`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  if (sandbox.playground) fail(422, 'invalid', 'a playground runs no Vidoc scan: it has no switch to turn');
+  const file = sandbox.slug === 'studio' ? db.vidoc.repo : null;
+  const repository = file === 'off' ? 'off' : file === 'bad' ? 'unreadable' : 'on';
+  const project = sandbox.profile.vidoc !== false;
+  const instance = !db.vidoc.offAt;
+  return {
+    project, instance, key: Boolean(db.vidoc.key || db.vidoc.config), repository,
+    repository_problem: repository === 'unreadable' ? '.config/vidoc.toml must set enabled = true or enabled = false (line 1)' : null,
+    branch: sandbox.profile.integration_branch, scans: project && instance && repository !== 'off',
+    can_change: sandbox.access === 'admin', changed_by: sandbox.vidocChanged ? sandbox.vidocChanged.by : null, changed_at: sandbox.vidocChanged ? sandbox.vidocChanged.at : null,
+  };
+});
 route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'admin');
   // SPEC-338 VOF-001: the Vidoc switch is set on its own; a profile update keeps it.
   if (body.vidoc !== undefined && body.vidoc !== null) {
     if (sandbox.playground) fail(422, 'invalid', 'a playground runs no Vidoc scan: it has no switch to turn');
+    if ((sandbox.profile.vidoc !== false) !== Boolean(body.vidoc)) sandbox.vidocChanged = { by: db.me.user.login, at: new Date().toISOString() };
     sandbox.profile = { ...sandbox.profile, vidoc: Boolean(body.vidoc) };
   }
   if (body.profile) {
