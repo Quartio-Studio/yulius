@@ -535,13 +535,21 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         }
     });
 
+    // Yulius's own tools go through `yulius mcp`, a stdio bridge to `${YULIUS_URL}/mcp` that
+    // lives as long as the session: Claude Code gives up on an HTTP server after a minute of
+    // failed reconnects, so a Yulius restart would cut the session off until `/mcp`
+    // (SPEC-358 MSB-001, ADR-0244).
     let mut servers = Map::new();
     servers.insert(
         YULIUS_MCP_NAME.to_owned(),
         json!({
-            "type": "http",
-            "url": format!("{}/mcp", base_url(request)),
-            "headers": { "Authorization": format!("Bearer ${{{TASK_TOKEN_ENV}}}") }
+            "type": "stdio",
+            "command": utf8(&request.yulius_exe, "yulius_exe")?,
+            "args": ["mcp"],
+            "env": {
+                YULIUS_URL_ENV: format!("${{{YULIUS_URL_ENV}}}"),
+                TASK_TOKEN_ENV: format!("${{{TASK_TOKEN_ENV}}}"),
+            }
         }),
     );
     for server in &request.mcp_servers {

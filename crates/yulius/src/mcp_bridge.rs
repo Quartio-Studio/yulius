@@ -14,8 +14,8 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -31,6 +31,8 @@ const MAX_LINE: usize = 4 * 1024 * 1024;
 const MAX_ANSWER: usize = 32 * 1024 * 1024;
 /// Methods that change nothing, sent again even when Yulius may have read them.
 const SAFE_TO_RESEND: [&str; 3] = ["initialize", "ping", "tools/list"];
+/// How long the calls in flight may finish once Claude Code closed stdin.
+const DRAIN: Duration = Duration::from_secs(10);
 
 /// The bridge's bounds.
 #[derive(Debug, Clone, Copy)]
@@ -66,7 +68,9 @@ struct Shared {
     out: Mutex<Box<dyn Write + Send>>,
     /// The requests in flight, by id, and whether Claude Code cancelled each.
     pending: Mutex<HashMap<String, bool>>,
-    in_flight: AtomicUsize,
+    /// Messages being forwarded, and its signal when one ends.
+    in_flight: Mutex<usize>,
+    ended: Condvar,
     /// Whether the last try found Yulius unreachable, so the log says so once per outage.
     down: AtomicBool,
     settings: Settings,
@@ -83,13 +87,17 @@ pub fn run(
         env,
         out: Mutex::new(output),
         pending: Mutex::new(HashMap::new()),
-        in_flight: AtomicUsize::new(0),
+        in_flight: Mutex::new(0),
+        ended: Condvar::new(),
         down: AtomicBool::new(false),
         settings,
     });
     loop {
         match read_line(input) {
-            Ok(Line::End) => return 0,
+            Ok(Line::End) => {
+                shared.drain();
+                return 0;
+            }
             Ok(Line::TooLong) => shared.answer(
                 &Value::Null,
                 -32600,
@@ -177,8 +185,7 @@ fn dispatch(shared: &Arc<Shared>, line: Vec<u8>) {
         }
         return;
     }
-    if shared.in_flight.fetch_add(1, Ordering::SeqCst) >= MAX_IN_FLIGHT {
-        shared.in_flight.fetch_sub(1, Ordering::SeqCst);
+    if !shared.enter() {
         if let Some(id) = &id {
             shared.answer(
                 id,
@@ -201,7 +208,7 @@ fn dispatch(shared: &Arc<Shared>, line: Vec<u8>) {
         {
             pending.remove(&id.to_string());
         }
-        shared.in_flight.fetch_sub(1, Ordering::SeqCst);
+        shared.leave();
     });
 }
 
@@ -271,6 +278,34 @@ fn resendable(method: &str, id: Option<&Value>) -> bool {
 }
 
 impl Shared {
+    /// Counts a message in flight; `false` past [`MAX_IN_FLIGHT`].
+    fn enter(&self) -> bool {
+        let Ok(mut count) = self.in_flight.lock() else {
+            return false;
+        };
+        if *count >= MAX_IN_FLIGHT {
+            return false;
+        }
+        *count += 1;
+        true
+    }
+
+    fn leave(&self) {
+        if let Ok(mut count) = self.in_flight.lock() {
+            *count = count.saturating_sub(1);
+        }
+        self.ended.notify_all();
+    }
+
+    /// Waits (at most [`DRAIN`]) for the messages in flight to be answered.
+    fn drain(&self) {
+        if let Ok(count) = self.in_flight.lock() {
+            let _ = self
+                .ended
+                .wait_timeout_while(count, DRAIN, |count| *count > 0);
+        }
+    }
+
     fn is_cancelled(&self, id: &Value) -> bool {
         self.pending
             .lock()
@@ -545,6 +580,33 @@ mod tests {
         stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")?;
         let answer = first(&rx)?;
         assert_eq!(answer["error"]["code"], json!(-32001), "{answer}");
+        Ok(())
+    }
+
+    /// A call in flight when stdin ends is still answered before the bridge exits.
+    #[test]
+    fn the_calls_in_flight_are_answered_after_stdin_ends() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        let server = std::thread::spawn(move || -> std::io::Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            read_request(&mut stream)?;
+            std::thread::sleep(Duration::from_millis(200));
+            respond(&mut stream, "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{}}")
+        });
+        let (tx, rx) = mpsc::channel();
+        let mut input = "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"ping\"}\n".as_bytes();
+        run(
+            &mut input,
+            Box::new(Lines(tx)),
+            env(port),
+            settings(Duration::from_secs(30)),
+        );
+        // `run` returned: the answer must be written already.
+        let answer: Value = serde_json::from_str(&rx.try_recv()?)?;
+        assert_eq!(answer["id"], json!(5));
+        server.join().map_err(|_| "server panicked")??;
         Ok(())
     }
 
