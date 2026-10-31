@@ -507,3 +507,73 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// Runs `yulius wait` at `port` with `total` and the session's token; its code, output and time.
+fn wait_at(port: u16, total: Duration) -> (i32, String, Duration) {
+    let mut out = Shared::default();
+    let env = move |name: &str| match name {
+        "YULIUS_URL" => Some(format!("http://127.0.0.1:{port}")),
+        "YULIUS_TASK_TOKEN" => Some(TOKEN.to_owned()),
+        _ => None,
+    };
+    let pace = yulius::wait_cli::Pace {
+        total,
+        request_wait_secs: 1,
+        backoff_cap: Duration::from_millis(50),
+    };
+    let began = Instant::now();
+    let code = yulius::wait_cli::run_with(&mut out, Some(&"ab".repeat(20)), pace, &env);
+    (code, out.text(), began.elapsed())
+}
+
+/// MSB-005: a wait whose deadline passes while Yulius is down ends 1, saying so.
+#[test]
+fn a_wait_ends_at_its_deadline_while_yulius_is_down() -> TestResult {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port();
+    let (code, said, _) = wait_at(port, Duration::from_secs(1));
+    assert_eq!(code, 1, "{said}");
+    assert!(said.contains("could not be reached for"), "{said}");
+    Ok(())
+}
+
+/// MSB-005: a refused token ends the wait at once, outage or not.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_token_ends_the_wait_at_once() -> TestResult {
+    let h = harness()?;
+    let port = std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port();
+    serve_on(&tokio::runtime::Handle::current(), h.app.clone(), port);
+    let (code, said, took) =
+        tokio::task::spawn_blocking(move || wait_at(port, Duration::from_secs(30))).await?;
+    assert_eq!(code, 1, "{said}");
+    assert!(said.contains("token was refused"), "{said}");
+    assert!(took < Duration::from_secs(10), "{took:?}");
+    Ok(())
+}
+
+/// Review round 1: an answer that is not an outage (a 500 every time) ends the wait after a few
+/// tries, not at its deadline as if Yulius were restarting.
+#[test]
+fn a_server_failing_every_request_ends_the_wait_after_a_few_tries() -> TestResult {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { return };
+            let mut buffer = [0_u8; 4096];
+            let _ = std::io::Read::read(&mut stream, &mut buffer);
+            let _ = stream.write_all(
+                b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        }
+    });
+    let (code, said, took) = wait_at(port, Duration::from_secs(60));
+    assert_eq!(code, 1, "{said}");
+    assert!(said.contains("HTTP 500"), "{said}");
+    assert!(!said.contains("cannot be reached"), "not an outage: {said}");
+    assert!(took < Duration::from_secs(20), "{took:?}");
+    Ok(())
+}

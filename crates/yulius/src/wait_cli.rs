@@ -15,6 +15,9 @@ const PATH: &str = "/internal/agent/wait";
 const REQUEST_WAIT_SECS: u64 = 50;
 /// Longest pause between two tries while Yulius cannot be reached (SPEC-358 MSB-005).
 const BACKOFF_CAP: Duration = Duration::from_secs(10);
+/// Answers in a row that are no outage (another HTTP error, an unreadable answer) before the
+/// wait gives up.
+const MAX_BAD_ANSWERS: u32 = 5;
 
 /// How a wait paces itself.
 #[derive(Debug, Clone, Copy)]
@@ -240,6 +243,7 @@ fn ask(
     })
     .to_string();
     let mut unreachable_since: Option<Instant> = None;
+    let mut bad_answers = 0;
     let mut pause = pace.backoff_cap.min(Duration::from_secs(1));
     loop {
         let timeout = Duration::from_secs(wait_secs + 15);
@@ -251,7 +255,15 @@ fn ask(
                     }
                     return Some(state);
                 }
-                Err(err) => format!("unreadable answer: {err}"),
+                Err(err) => {
+                    bad_answers += 1;
+                    if bad_answers >= MAX_BAD_ANSWERS {
+                        let _ = writeln!(out, "yulius wait: unreadable answer from Yulius: {err}");
+                        return None;
+                    }
+                    std::thread::sleep(pause);
+                    continue;
+                }
             },
             Ok((401 | 403 | 404, _)) => {
                 let _ = writeln!(
@@ -261,7 +273,18 @@ fn ask(
                 );
                 return None;
             }
-            Ok((status, _)) => format!("HTTP {status}"),
+            // A proxy in front of a Yulius that is starting: an outage.
+            Ok((status @ (502 | 503 | 504), _)) => format!("HTTP {status}"),
+            // Yulius answers, but not with a state: not an outage, so not waited out.
+            Ok((status, _)) => {
+                bad_answers += 1;
+                if bad_answers >= MAX_BAD_ANSWERS {
+                    let _ = writeln!(out, "yulius wait: Yulius answered HTTP {status}.");
+                    return None;
+                }
+                std::thread::sleep(pause);
+                continue;
+            }
             Err(err) => err.to_string(),
         };
         let since = *unreachable_since.get_or_insert_with(|| {
@@ -275,8 +298,8 @@ fn ask(
         if Instant::now() + pause >= deadline {
             let _ = writeln!(
                 out,
-                "yulius wait: Yulius could not be reached for {} s ({error}). Yulius wakes this \
-                 task with \"Yulius is back; continue\" once it is back; or start `yulius wait` \
+                "yulius wait: Yulius could not be reached for {} s ({error}). When it restarts, \
+                 Yulius wakes this task with \"Yulius is back; continue\"; or start `yulius wait` \
                  again.",
                 since.elapsed().as_secs()
             );
