@@ -462,6 +462,55 @@ pub fn changes_excerpt(text: &str, max: usize) -> (String, bool) {
     }
 }
 
+/// Most change notes of a changes folder the briefing quotes (SPEC-363 CHN-003).
+pub const MAX_CHANGE_NOTES: usize = 12;
+/// Most bytes of one change note quoted.
+const MAX_CHANGE_NOTE_BYTES: usize = 1_200;
+
+/// The change notes among a changes folder's file `names`, newest first (SPEC-363 CHN-003):
+/// its `.md` files but `README.md` and `index.md`, by the first ISO date in the name, then by
+/// the name (an undated name after every dated one).
+#[must_use]
+pub fn change_notes_newest_first(names: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut notes: Vec<String> = names
+        .into_iter()
+        .filter(|name| {
+            name.ends_with(".md")
+                && !name.eq_ignore_ascii_case("README.md")
+                && !name.eq_ignore_ascii_case("index.md")
+        })
+        .collect();
+    let date = |name: &str| {
+        let bytes = name.as_bytes();
+        (0..bytes.len())
+            .find_map(|at| iso_date_at(bytes, at))
+            .map(<[u8]>::to_vec)
+    };
+    notes.sort_by_cached_key(|name| std::cmp::Reverse((date(name), name.clone())));
+    notes
+}
+
+/// The part of a changes folder the briefing quotes, at most `max` bytes: its `notes` (file
+/// name and text, newest first), each under its name and cut to [`MAX_CHANGE_NOTE_BYTES`], as
+/// many whole ones as fit, at most [`MAX_CHANGE_NOTES`] (SPEC-363 CHN-003).
+#[must_use]
+pub fn change_notes_excerpt(notes: &[(String, String)], max: usize) -> String {
+    let mut out = String::new();
+    for (name, text) in notes.iter().take(MAX_CHANGE_NOTES) {
+        let note = format!(
+            "{}:\n{}\n\n",
+            code(name, 200),
+            truncate_block(text.trim(), MAX_CHANGE_NOTE_BYTES)
+        );
+        if !out.is_empty() && out.len() + note.len() > max {
+            break;
+        }
+        out.push_str(&note);
+    }
+    out.truncate(floor_boundary(&out, max));
+    out
+}
+
 /// A Markdown quote of untrusted multi-line text, at most about `max` bytes of source.
 fn quoted(text: &str, max: usize) -> String {
     let source = &text[..floor_boundary(text, max.saturating_mul(2).saturating_add(64))];
@@ -614,21 +663,36 @@ fn discipline(input: &BriefingInput<'_>) -> String {
          in the ignored `.env` (names in `.env.example`), agent secrets via \
          `secret_copy_to_env`.\n\
          6. Finish with evidence: run every project gate. With a spec, check every Plan item, \
-         add an Evidence section (commands run and results) and set `status: done`. Add a short \
-         entry at the {end} of {changes}.\n\n",
+         add an Evidence section (commands run and results) and set `status: done`. \
+         {changes}\n\n",
         spec = spec_rule(input),
         min = steps::COARSE_BELOW,
         max = steps::FINE_ABOVE,
         open = steps::MAX_IN_PROGRESS,
         decisions = decisions_rule(layout),
         architecture = code(&layout.architecture, 200),
-        changes = code(&layout.changes, 200),
-        end = if input.changes_newest_at_end {
-            "end"
-        } else {
-            "top"
-        },
+        changes = changes_rule(input),
     )
+}
+
+/// Rule 6's change note: an entry in the changes log, or one new file of a changes folder
+/// (SPEC-363 CHN-002).
+fn changes_rule(input: &BriefingInput<'_>) -> String {
+    let changes = code(&input.layout.changes, 200);
+    if input.layout.changes_folder().is_some() {
+        return format!(
+            "Add one new file to {changes} for your change, named \
+             `YYYY-MM-DD-{}-<short-slug>.md` (unless AGENTS.md or the newest files there use \
+             another naming: follow it), and never edit other tasks' files.",
+            input.task.number
+        );
+    }
+    let end = if input.changes_newest_at_end {
+        "end"
+    } else {
+        "top"
+    };
+    format!("Add a short entry at the {end} of {changes}.")
 }
 
 fn git_rules(input: &BriefingInput<'_>) -> String {
@@ -761,7 +825,7 @@ fn read_first(input: &BriefingInput<'_>) -> String {
          - {architecture}: components and data flow.\n\
          - {decisions}: decisions already taken.\n\
          - {specs}: earlier task specs; search them for the area you touch.\n\
-         - {changes}: what was delivered recently.\n\
+         - {changes}: what was delivered recently{per_change}.\n\
          Sessions are docs too: when you do not know how something was implemented or why, \
          search other tasks' transcripts and the imported sessions with `sessions_search` and \
          read one with `session_read` before guessing. When you change what a document \
@@ -771,6 +835,11 @@ fn read_first(input: &BriefingInput<'_>) -> String {
         architecture = code(&layout.architecture, 200),
         specs = code(&layout.specs_dir, 200),
         changes = code(&layout.changes, 200),
+        per_change = if layout.changes_folder().is_some() {
+            ", one file per change"
+        } else {
+            ""
+        },
     )
 }
 
@@ -1069,7 +1138,9 @@ fn recent_changes(input: &BriefingInput<'_>, head_max: usize) -> String {
         }
         let path = code(&input.layout.changes, 200);
         // An oldest-first log keeps its newest entries, at its end, within the share.
-        let (label, head) = if input.changes_newest_at_end {
+        let (label, head) = if input.layout.changes_folder().is_some() {
+            (format!("From the newest notes in {path}:"), head)
+        } else if input.changes_newest_at_end {
             (
                 format!("From {path} (newest entries, at its end):"),
                 tail_lines(head, head_max),
@@ -1504,6 +1575,121 @@ mod tests {
         let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
         assert!(text.contains("entry at the top of `knowledge/log.md`"));
         assert!(text.contains("From `knowledge/log.md`:"));
+        Ok(())
+    }
+
+    /// SPEC-363 CHN-003: a folder's notes, newest first by the date in their names, then by
+    /// name; its index and other files are no notes.
+    #[test]
+    fn change_notes_are_ordered_newest_first() {
+        let names = [
+            "2026-10-30-480-search.md",
+            "README.md",
+            "index.md",
+            "2026-10-31-488-folder.md",
+            "notes.txt",
+            "0042-undated.md",
+            "2026-10-31-12-same-day.md",
+            "0043-undated.md",
+        ]
+        .map(str::to_owned);
+        assert_eq!(
+            change_notes_newest_first(names),
+            [
+                "2026-10-31-488-folder.md",
+                "2026-10-31-12-same-day.md",
+                "2026-10-30-480-search.md",
+                "0043-undated.md",
+                "0042-undated.md",
+            ]
+        );
+    }
+
+    /// SPEC-363 CHN-003: the excerpt holds whole notes, newest first, each under its name and
+    /// cut to its own share, within `max`.
+    #[test]
+    fn the_change_notes_excerpt_is_bounded() {
+        let note = |n: usize| {
+            (
+                format!("2026-10-{n:02}-{n}-note.md"),
+                format!("# Note {n}\n\nDone {n}.\n"),
+            )
+        };
+        let notes: Vec<_> = (1..=30).rev().map(note).collect();
+        let excerpt = change_notes_excerpt(&notes, 4_000);
+        assert!(
+            excerpt.starts_with("`2026-10-30-30-note.md`:\n# Note 30\n\nDone 30.\n"),
+            "{excerpt}"
+        );
+        assert_eq!(
+            excerpt.matches("# Note").count(),
+            MAX_CHANGE_NOTES,
+            "{excerpt}"
+        );
+        let tight = change_notes_excerpt(&notes, 100);
+        assert!(tight.len() <= 100, "{tight}");
+        assert!(tight.contains("Done 30."), "{tight}");
+        assert!(!tight.contains("Done 28."), "{tight}");
+        let huge = vec![("2026-10-31-1-big.md".to_owned(), "x".repeat(10_000))];
+        let excerpt = change_notes_excerpt(&huge, 4_000);
+        assert!(excerpt.len() < 1_300, "{}", excerpt.len());
+        assert!(excerpt.contains(TRUNCATION_MARKER));
+        assert_eq!(change_notes_excerpt(&[], 4_000), "");
+    }
+
+    /// SPEC-363 CHN-002/003 (task #346): with `changes = "docs/changes/"` the briefing asks for
+    /// one new file in the folder, never an entry at the top of a shared log, and quotes the
+    /// newest notes.
+    #[test]
+    fn a_changes_folder_gets_the_one_file_per_change_rule() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout {
+            changes: "docs/changes/".to_owned(),
+            ..DocsLayout::default()
+        };
+        let notes = vec![
+            (
+                "2026-10-31-488-folder.md".to_owned(),
+                "# Change notes as files\n".to_owned(),
+            ),
+            (
+                "2026-10-30-480-search.md".to_owned(),
+                "# Search\n".to_owned(),
+            ),
+        ];
+        let excerpt = change_notes_excerpt(&notes, 4_000);
+        let mut input = base(&profile, &layout)?;
+        input.changes_head = Some(&excerpt);
+        let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+        assert!(
+            text.contains(
+                "Add one new file to `docs/changes/` for your change, named \
+                 `YYYY-MM-DD-12-<short-slug>.md` (unless AGENTS.md or the newest files there use \
+                 another naming: follow it), and never edit other tasks' files."
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("entry at the"), "{text}");
+        assert!(
+            text.contains("- `docs/changes/`: what was delivered recently, one file per change.")
+        );
+        let section = &text[text.find("## Recent changes").ok_or("recent")?..];
+        assert!(
+            section.contains("From the newest notes in `docs/changes/`:\n> `2026-10-31-488-folder.md`:\n> # Change notes as files"),
+            "{section}"
+        );
+        assert!(section.find("# Search") > section.find("# Change notes as files"));
+        // A folder without notes: nothing delivered yet.
+        input.changes_head = None;
+        input.recent_changes.clear();
+        let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+        assert!(text.contains("## Recent changes\n\nNo delivered changes yet."));
+        // The single file keeps its rule.
+        let file = DocsLayout::default();
+        let text = build_briefing(&base(&profile, &file)?, DEFAULT_BUDGET_BYTES);
+        assert!(text.contains("Add a short entry at the top of `docs/changes.md`."));
+        assert!(text.contains("- `docs/changes.md`: what was delivered recently.\n"));
+        assert!(text.contains("From `docs/changes.md`:"));
         Ok(())
     }
 

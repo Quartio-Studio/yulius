@@ -1851,7 +1851,10 @@ mod tests {
             docs: folder.clone(),
             ..ProjectConfig::default()
         });
-        assert!(rendered.contains("changes = \"docs/changes/\"\n"), "{rendered}");
+        assert!(
+            rendered.contains("changes = \"docs/changes/\"\n"),
+            "{rendered}"
+        );
         assert_eq!(parse_yulius_toml(&rendered)?.docs, folder);
         Ok(())
     }
