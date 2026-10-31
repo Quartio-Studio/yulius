@@ -1944,7 +1944,12 @@ Yulius (the holder's forward, the server's `out.sock`) and the proxy close their
 connection (no byte for at least 5 minutes) for a new one instead of refusing it, so leftover processes
 holding connections cannot cut a sandbox's agents off from Yulius, also after a server restart,
 which does not restart the holder
-([decision 0241](decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)):
+([decision 0241](decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)).
+The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
+idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and
+the full proxy that of the busiest sandbox, if it holds at least 2 more than the asker, so one busy
+run cannot lock the other runs of its sandbox out
+([decision 0243](decisions/0243-the-busiest-run-gives-way-at-a-full-proxy-share.md)):
 
 ```mermaid
 flowchart LR
@@ -1952,6 +1957,7 @@ flowchart LR
   F -->|"out.sock"| O["server's out.sock relay (256 places)"]
   O --> I["internal listener: API, MCP, egress proxy (128 per sandbox, 256 in all)"]
   F -.->|"full: the longest-idle place (idle 5 min or more) gives way"| F
+  I -.->|"share full, all active: the busiest run's oldest tunnel gives way"| I
   Y["Yulius link test, every minute per Superagent"] -->|"in.sock CONNECT 8081"| F
 ```
 
