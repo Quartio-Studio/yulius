@@ -29,8 +29,9 @@ type SendError = Box<dyn std::error::Error + Send + Sync>;
 const TOKEN: &str = "tt";
 const YULIUS: &str = env!("CARGO_BIN_EXE_yulius");
 
-/// Serves `app`'s internal listener on `port` from `runtime`.
+/// Serves `app`'s internal listener on `port` from `runtime`; returns once it listens.
 fn serve_on(runtime: &tokio::runtime::Handle, app: Arc<App>, port: u16) {
+    let (bound, listening) = mpsc::channel();
     runtime.spawn(async move {
         // The port of the server before may still be closing.
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -43,10 +44,13 @@ fn serve_on(runtime: &tokio::runtime::Handle, app: Arc<App>, port: u16) {
                 Err(err) => panic!("port {port} stays taken: {err}"),
             }
         };
+        let _ = bound.send(());
         let router = yulius_server::internal_router(app)
             .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
         let _ = axum::serve(listener, router).await;
     });
+    // Waited for on this thread: the server runs on the runtime's workers.
+    let _ = listening.recv_timeout(Duration::from_secs(15));
 }
 
 /// The session's `yulius mcp`, with its answers as lines.

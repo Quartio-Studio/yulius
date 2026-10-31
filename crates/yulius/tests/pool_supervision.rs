@@ -151,7 +151,11 @@ pub(crate) fn build_served(
         crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
         github,
         session_host: Arc::new(PtySessionHost::new(exe.clone())),
-        harness: Arc::new(FakeAgentHarness::new(exe, fake.to_path_buf(), agent)),
+        harness: Arc::new(FakeAgentHarness {
+            // Runs reach Yulius at `internal_url`, as the instance's own adapter tells them.
+            inner: yulius::wiring::harness::HarnessAdapter::new(exe.clone(), internal_url),
+            ..FakeAgentHarness::new(exe, fake.to_path_buf(), agent)
+        }),
         git: Arc::new(GitAdapter::new("git")),
         system: Arc::new(support::FixedSystem),
         browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),
