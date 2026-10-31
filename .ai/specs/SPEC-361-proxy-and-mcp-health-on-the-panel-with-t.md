@@ -62,12 +62,14 @@ on every refusal, and the notice goes away once places are free again.
   run, as "CI job" for a CI job, and as "Superagent" for a Superagent's shell. At the proxy's
   limit a sandbox the person cannot view is named "another sandbox".
 - **CHR-005** The panel shows a warning pill in the tab row while a trouble the person may see is
-  open, read at start, on `connections.updated` and when the event stream reconnects. Its text
-  says what is full and for which sandbox; its title says the reason and whose the connections
-  are ("task #12's run holds 120 of them"), and what to do. With one trouble whose busiest holder
-  is a task, it leads to that task. The pill goes away when the trouble ends.
+  open, read at start, on `connections.updated`, on `resync` and when the event stream reconnects.
+  Its text says what is full and for which sandbox; its title says the reason, since when, whose
+  the connections are ("task #12's run holds 120 of them"), and what to do. With one trouble whose
+  busiest holder is a task, it leads to that task. The pill goes away when the trouble ends.
 - **CHR-006** Each trouble that begins adds one entry to the notification center (and the
-  desktop, when turned on), keyed by the trouble, so refusals within it never add another.
+  desktop, when turned on), keyed by the trouble, so refusals within it never add another. The
+  browser keeps the ids it notified apart from the list, so clearing the list or reloading does
+  not notify an open trouble again.
 - **CHR-007** The journal warnings of SPEC-353, SPEC-355 and SPEC-357 stay as they are; a
   trouble's beginning and end are logged once each (`connection trouble began`, `… ended`).
 
@@ -107,6 +109,27 @@ on every refusal, and the notice goes away once places are free again.
   a seeded agent run is listed with the task's number and title, hidden from a person who cannot
   view the sandbox, and gone once it ends; `connections.updated` reaches the event stream.
 - e2e (`e2e/tests`): the pill, its title and one notification, then the pill gone.
+
+## Review
+
+Independent reviews in fresh sessions (skill `yulius-review`; this repository has no
+`om-code-review`), read-only over `origin/dev...HEAD`:
+
+- Round 1 on 97025309 (request changes). All own code, all fixed test-first:
+  - Major: a trouble could stay open for good. `slot()` and `Places::admit` reported a refusal
+    after releasing the table, and a close checked for an open trouble before taking it, so the
+    closes that freed the limit could all slip between the refusal and its report. Both now report
+    and check under the table's lock (the registry never calls back). Red first:
+    `relay::tests::a_trouble_begun_while_every_place_closes_still_ends` ("the trouble never ends").
+  - Minor: a lost `connections.updated` (the server sends `resync`) left the pill stale; it now
+    reads again on `resync` (e2e red first).
+  - Minor: the title's refusal count looked live while nothing publishes refusals within a
+    trouble; it now says since when.
+  - Minor: Clear (or 100 newer entries) made an open trouble notify again; the notified ids are
+    kept apart, pruned to the open troubles (e2e red first: Clear and a reload notified again).
+  - Nits fixed: the pill leads to a task only with one trouble; an event whose sandbox id does not
+    parse reaches nobody rather than everyone; a long line in the product summary. Nit kept: the
+    proxy and the relay each read the wall clock (`wall_ms`), one line each in their own crate.
 
 ## Decisions
 
