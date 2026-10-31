@@ -224,6 +224,40 @@ test('a busy CI run reads one row per job: its wait for a slot and its run on on
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// Task #340: the hover tip once kept its figures on one line and centred itself at most 80 px from
+// the plot's edge, so a long one ran past the plot (and the page) and its words were cut off.
+
+/** The waterfall's hover tip against its plot and the window: px past each edge, and text cut in it. */
+function tipFit(browser: Browser) {
+  return browser.evaluate(() => {
+    const tip = document.querySelector<HTMLElement>('.st-tip');
+    if (!tip || tip.hidden || !tip.parentElement) return null;
+    const plot = tip.parentElement.getBoundingClientRect();
+    const box = tip.getBoundingClientRect();
+    return {
+      text: tip.textContent ?? '',
+      pastPlot: Math.max(0, Math.round(plot.left - box.left), Math.round(box.right - plot.right)),
+      pastWindow: Math.max(0, Math.round(-box.left), Math.round(box.right - window.innerWidth)),
+      cut: [tip, ...tip.children].some((part) => part.scrollWidth > part.clientWidth + 1),
+    };
+  });
+}
+
+test('the waterfall’s hover tip wraps its figures and stays inside the plot at either edge', async ({ app, browser, screen }) => {
+  for (const width of [1280, 390]) {
+    await browser.setViewport({ width, height: 900 });
+    await app.open(mock('/s/studio/ci?run=ci_s2'));
+    await expect(screen.getByRole('region', 'Stages of this run')).toContainText('quality');
+    const row = await browser.locator('.st-row.st-job:has-text("quality")').boundingBox();
+    if (!row) throw new Error('the quality row is not laid out');
+    for (const x of [row.x + 4, row.x + row.width - 4]) {
+      await browser.mouse.move(x, row.y + row.height / 2);
+      await expect(browser.locator('.st-tip')).toContainText('CPU 31 min · peak 2.0 GiB · wrote 640 MiB');
+      expect(await tipFit(browser), `${width} px, pointer at ${Math.round(x)}`).toMatchObject({ pastPlot: 0, pastWindow: 0, cut: false });
+    }
+  }
+});
+
 test('a job’s stages fold under it, a failed job opens, and the fold outlives a refresh', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/ci?run=ci_s4'));
   await expect(screen.getByRole('region', 'Stages of this run')).toContainText('engine');
