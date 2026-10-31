@@ -475,7 +475,7 @@ shells and CI jobs join it. A sandbox gets:
 - limits (CPU, memory, tasks) through the unit's delegated cgroup, and a soft disk quota. Inside
   a sandbox, CI jobs get four times the agents' CPU weight (`ci/` 400 against `agents/` 100), so
   CI gets up to 80 % of the sandbox's CPU while agents build ([ADR-0039](decisions/0039-ci-jobs-get-the-cpu-first.md)).
-  On the host, a sandbox's own group weighs 100 plus 400 per CI job of it running now, so its CI
+  On the host, a sandbox's own group weighs 500 while any of its CI jobs runs (else 100), so its CI
   also out-weighs other sandboxes' agents ([ADR-0247](decisions/0247-a-sandbox-running-ci-jobs-weighs-more-on-the-host.md));
 - a seccomp filter: no nested user namespaces, `io_uring`, `bpf`, keyrings, module or mount calls;
 - its own **Docker engine** ([ADR-0151](decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md)),
@@ -913,12 +913,11 @@ involved.
   `YULIUS_CI_JOB_TIMEOUT_MIN`. A project cuts what its jobs take on a busy host with `cpus` on each
   `[[ci.jobs]]` entry: a run of 6 jobs on 12 CPUs gets 2 each by default, and `cpus = 1` halves it
   (SPEC-362).
-- While a sandbox's CI jobs run, its group weighs `100 + 400 × jobs` on the host (at most
-  10 000), so its CI gets more of a loaded host than the agents' local builds in every sandbox
+- While any of a sandbox's CI jobs runs, its group weighs 500 on the host (100 otherwise), so its
+  CI gets more of a loaded host than the agents' local builds in every sandbox
   ([ADR-0247](decisions/0247-a-sandbox-running-ci-jobs-weighs-more-on-the-host.md)). Check it with
-  `cat /sys/fs/cgroup/system.slice/yulius.service/sandboxes/<sandbox>/cpu.weight` (100 with no job
-  running). A stopping server and the first preparation after a start write 100 again; after a
-  crash, `echo 100 > .../sandboxes/<sandbox>/cpu.weight` resets one by hand.
+  `cat /sys/fs/cgroup/system.slice/yulius.service/sandboxes/<sandbox>/cpu.weight`. Every start
+  and graceful stop of the server writes 100 to every sandbox.
 - Agent sessions, terminals and the Cockpit plan for `YULIUS_AGENT_CPUS` CPUs (default a third
   of the sandbox's, at least 2) and the memory in proportion: three of them testing at once fill
   the sandbox.

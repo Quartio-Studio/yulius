@@ -39,8 +39,8 @@ SPEC-082 / ADR-0065 (CI jobs' CPU budgets). The cgroup layout follows ADR-0201 a
   `cpu.weight` 100 under `<unit>/sandboxes`. cgroup v2 shares CPU by weight among the busy
   children of each group, so a sandbox whose agents build gets as much of the host as a sandbox
   running CI. ADR-0039 named this consequence: "one sandbox's agents can still slow another
-  sandbox's CI". With CI in one sandbox and agents building in two others, CI gets
-  1/3 × 4/5 ≈ 27 % of the host and the local builds the other 73 %.
+  sandbox's CI". With CI and agents building in one sandbox and agents building in two others, CI
+  gets 1/3 × 4/5 ≈ 27 % of what the sandboxes get and the local builds the other 73 %.
 
 ## Requirements
 
@@ -48,29 +48,32 @@ SPEC-082 / ADR-0065 (CI jobs' CPU budgets). The cgroup layout follows ADR-0201 a
   (`cpus`), else an equal share among its run's jobs (unchanged default). No second knob is
   added. The documentation names `cpus` as the place to cut a job's slots.
 - **CSW-002 A sandbox weighs more while its CI jobs run.** With the `cpu` controller delegated,
-  `<unit>/sandboxes/<sandbox>/cpu.weight` is `100 + 400 × n` while `n` CI jobs of the sandbox run
-  (at most 10 000, the kernel's maximum), and 100 when none runs. A job counts from when it has
+  `<unit>/sandboxes/<sandbox>/cpu.weight` is 500 while at least one CI job of the sandbox runs,
+  and 100 when none runs. It does not grow with the number of jobs (review round 1: 400 per job
+  left two sandboxes that only build about 5 % each against 4 jobs). A job counts from when it has
   its slot and budget until its process ended and was reaped, whether it passed, failed, timed
   out or was cancelled.
-- **CSW-003 Preparation keeps the weight.** Preparing a sandbox's groups (every run does) writes
-  the weight for its jobs running now, so it never undoes a raised weight. After a restart the
-  first preparation writes 100 again, since no job runs in a new server.
+- **CSW-003 Preparation keeps the weight; a start resets it.** Preparing a sandbox's groups (every
+  run does) writes the weight for its jobs running now, so it never undoes a raised weight. A
+  starting server writes 100 to every sandbox group, since no job runs in a new server and a
+  crashed one left its weights. A sandbox whose group does not exist yet is skipped without a
+  warning; its first preparation writes the weight.
 - **CSW-004 Stop and rollback.** A stopping server writes 100 to every sandbox group with its
-  split undo, so an older binary or a crash-free restart finds the default.
+  split undo, so an older binary finds the default.
 - **CSW-005 No delegation, no change.** Without delegation or the `cpu` controller nothing is
   written and CI runs as before.
-- **CSW-006 Under load CI gets more than local builds.** With one sandbox running one CI job
-  while its own agents and the agents of two other sandboxes build, the weights Yulius writes give
-  the CI job more of the host than all agents together, under cgroup v2's hierarchical weight
-  sharing.
+- **CSW-006 Under load CI gets more than local builds.** With one sandbox running CI while its
+  own agents and the agents of two other sandboxes build, the weights Yulius writes give CI more
+  of the sandboxes' CPU than all agents together, under cgroup v2's hierarchical weight sharing.
+  Each other sandbox keeps 1/7 however many jobs run.
 
 ## Plan
 
 - [x] Spec and ADR for CI's host-wide CPU weight
-- [ ] A sandbox weighs more while its CI jobs run, in the cgroup adapter
-- [ ] CI jobs raise and lower their sandbox's weight through the isolation port
-- [ ] A test shows CI out-weighing local builds under load
-- [ ] Docs: architecture, operations, changes; per-job cpus documented as the slots
+- [x] A sandbox weighs more while its CI jobs run, in the cgroup adapter
+- [x] CI jobs raise and lower their sandbox's weight through the isolation port
+- [x] A test shows CI out-weighing local builds under load
+- [x] Docs: architecture, operations, changes; per-job cpus documented as the slots
 - [ ] Independent review, findings fixed test-first
 - [ ] Gates green, pull request merged into dev on green CI
 
@@ -78,27 +81,32 @@ SPEC-082 / ADR-0065 (CI jobs' CPU budgets). The cgroup layout follows ADR-0201 a
 
 - A project's job declared with `cpus = N` runs with `YULIUS_CPUS=N` and waits for N CPUs
   (existing `local_ci::jobs_wait_for_their_cpu_budget_and_are_told_it`, rerun).
-- A fake cgroup tree shows a sandbox's `cpu.weight` at 500 with one CI job, 900 with two, and back
-  at 100 when they end. Preparation keeps it, and the stop writes 100.
-- An integration test runs a real CI job through the app and observes the raised weight while the
-  job runs, and 100 after it.
-- The share model over the written weights gives CI more of the host than the agents of three
-  busy sandboxes (CSW-006). Without this change it gives CI less.
+- A fake cgroup tree shows a sandbox's `cpu.weight` at 500 with one or more CI jobs and back at
+  100 when they end. Preparation keeps it; a start and a stop write 100; a sandbox without a group
+  yet is skipped.
+- An integration test runs real CI jobs through the app and observes the counts the app tells the
+  isolation: up while jobs run, down on every end (passed, timed out, cancelled by a superseding
+  push), and 0 after the last.
+- The share model over the written weights gives CI more of the sandboxes' CPU than the agents of
+  three busy sandboxes (CSW-006), and each other sandbox 1/7 with 4 jobs. Without this change it
+  gives CI less.
 
 ## Test plan
 
-- `yulius-sandbox` unit tests on fake cgroup trees: weight per job count, cap, preparation, stop,
-  no `cpu` controller.
+- `yulius-sandbox` unit tests on fake cgroup trees: weight by job count, preparation, start,
+  stop, a missing group, no `cpu` controller.
 - `yulius-sandbox` unit test: the cgroup v2 share model (weight divided among busy siblings, per
   level) over the tree that `Delegation` writes, with CI busy in one sandbox and agents in three.
-- `yulius` integration test (`local_ci`): a fake isolation records the weights the app asks for
-  while a CI job runs and after it ends, and after a cancelled job.
+- `yulius` integration test (`local_ci`): a fake isolation records the counts the app tells it
+  while CI jobs run and after they end, including jobs cancelled by a superseding push. The
+  adapter's `NamespaceIsolation::ci_jobs_running` is a two-line delegation to the tested
+  `Delegation::set_ci_jobs` and runs in no test.
 - No live kernel measurement: this sandbox has no cgroup mount (`/sys/fs/cgroup` is absent and
   mounting cgroup2 is refused). The VM measurement is left to the deployment, as with ADR-0039.
 
 ## Decisions
 
 - [ADR-0247](../../docs/decisions/0247-a-sandbox-running-ci-jobs-weighs-more-on-the-host.md):
-  a sandbox's own `cpu.weight` follows its running CI jobs. Alternatives (a lower agents' leaf
-  weight, a `cpu.max` cap on the agents, a host-wide CI group, a project-wide `[ci] cpus`) are
-  compared there.
+  a sandbox's own `cpu.weight` is 500 while its CI jobs run. Alternatives (a lower agents' leaf
+  weight, a `cpu.max` cap on the agents, a host-wide CI group, 400 per job, a project-wide
+  `[ci] cpus`) are compared there.

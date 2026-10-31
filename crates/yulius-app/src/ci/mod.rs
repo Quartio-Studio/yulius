@@ -257,7 +257,7 @@ pub struct CiState {
     /// job (SPEC-082 RES-003).
     pub(crate) budget: OnceLock<crate::resources::CiPools>,
     /// CI jobs running per sandbox (SPEC-362 CSW-002), told to the isolation ([`JobWeight`]).
-    running_jobs: Mutex<HashMap<String, u32>>,
+    running_jobs: Mutex<HashMap<SandboxId, u32>>,
     /// Executing runs: their cancellation (the reason, once cancelled).
     executing: Mutex<HashMap<String, watch::Sender<Option<String>>>>,
     /// Lanes in use (`<sandbox>/<lane>` for an executing run) and whole-sandbox claims
@@ -428,14 +428,16 @@ impl App {
     }
 
     /// Counts one more (`started`) or one fewer running CI job of `sandbox` and tells the
-    /// isolation the new count, under the lock so the last count told is the current one.
+    /// isolation the new count, under the lock so the last count told is the current one. The
+    /// isolation writes one cgroup file there and may wait for a preparation of the sandbox's
+    /// groups (moving at most 4096 processes): bounded, and other jobs' starts and ends wait.
     fn ci_weigh(&self, sandbox: &SandboxId, started: bool) {
         let mut running = self
             .ci
             .running_jobs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let count = running.entry(sandbox.as_str().to_owned()).or_insert(0);
+        let count = running.entry(sandbox.clone()).or_insert(0);
         *count = if started {
             count.saturating_add(1)
         } else {
@@ -443,7 +445,7 @@ impl App {
         };
         let jobs = *count;
         if jobs == 0 {
-            running.remove(sandbox.as_str());
+            running.remove(sandbox);
         }
         if let Some(isolation) = self.isolation.get() {
             isolation.ci_jobs_running(sandbox, jobs);

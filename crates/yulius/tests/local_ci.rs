@@ -2002,7 +2002,8 @@ impl SandboxIsolation for Weighing {
 }
 
 /// SPEC-362 CSW-002: while a sandbox's CI jobs run, the app tells the isolation how many, so it
-/// weighs the sandbox by them; every end counts, a timed-out job's too, and none is left counted.
+/// weighs the sandbox by them; every end counts (passed, timed out, and cancelled when a push
+/// supersedes the run, review round 1), and none is left counted.
 #[tokio::test]
 async fn running_ci_jobs_weigh_on_their_sandbox_until_they_end() -> TestResult {
     let f = fixture_with(false, |data| {
@@ -2030,16 +2031,28 @@ async fn running_ci_jobs_weigh_on_their_sandbox_until_they_end() -> TestResult {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    // A push supersedes the pull request's run: its running jobs are cancelled.
+    f.push_feature("more.txt", Some("more\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     std::fs::write(f.data.join("go"), "")?;
     // `build` jobs pass, `hang` jobs time out (8 s); every end lowers the count.
     f.settle().await?;
+    let runs = f.h.store.ci_runs(&f.sandbox.id, 10).await?;
+    assert!(
+        runs.iter().any(|r| r.state == RunState::Cancelled),
+        "{runs:?}"
+    );
     let seen = weighing.jobs.lock().map_err(|_| "lock")?.clone();
     assert!(seen.iter().all(|(sandbox, _)| sandbox == "s1"), "{seen:?}");
     let history = weighing.history();
     assert_eq!(history.last(), Some(&0), "a job left counted: {history:?}");
     assert!(history.iter().all(|n| *n <= 3), "{history:?}");
-    // One call per start and one per end: four jobs.
-    assert_eq!(history.len(), 8, "{history:?}");
+    // One call per start and one per end, each one job up or down from none.
+    let mut previous = 0;
+    for n in &history {
+        assert_eq!(n.abs_diff(previous), 1, "{history:?}");
+        previous = *n;
+    }
     Ok(())
 }
 
