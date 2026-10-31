@@ -177,6 +177,10 @@ pub trait SandboxIsolation: Send + Sync {
         0
     }
 
+    /// `jobs` CI jobs of `sandbox` run now (SPEC-362 CSW-002): the adapter weighs the sandbox on
+    /// the host by them. Nothing where nothing enforces limits.
+    fn ci_jobs_running(&self, _sandbox: &SandboxId, _jobs: u32) {}
+
     /// `sandbox`'s limit counters (SPEC-268 PID-004); `None` where nothing enforces limits.
     async fn limit_counters(&self, _sandbox: &SandboxId) -> Option<LimitCounters> {
         None

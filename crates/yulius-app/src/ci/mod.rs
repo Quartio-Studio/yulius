@@ -256,6 +256,8 @@ pub struct CiState {
     /// The CPUs and MiB of memory CI jobs share, sized from the sandbox capacity at the first
     /// job (SPEC-082 RES-003).
     pub(crate) budget: OnceLock<crate::resources::CiPools>,
+    /// CI jobs running per sandbox (SPEC-362 CSW-002), told to the isolation ([`JobWeight`]).
+    running_jobs: Mutex<HashMap<SandboxId, u32>>,
     /// Executing runs: their cancellation (the reason, once cancelled).
     executing: Mutex<HashMap<String, watch::Sender<Option<String>>>>,
     /// Lanes in use (`<sandbox>/<lane>` for an executing run) and whole-sandbox claims
@@ -278,6 +280,29 @@ pub struct CiState {
     /// One pass deciding a sandbox's armed merges (and its merge train) at a time (SPEC-084
     /// TRN-010): passes started by runs that end together wait for each other.
     pub(crate) armed_passes: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+/// A running CI job's weight on its sandbox (SPEC-362 CSW-002): counted from its start until it
+/// is dropped, on every end, so the isolation weighs the sandbox on the host by its running jobs.
+pub(crate) struct JobWeight {
+    app: Arc<App>,
+    sandbox: SandboxId,
+}
+
+impl JobWeight {
+    pub(crate) fn new(app: Arc<App>, sandbox: &SandboxId) -> Self {
+        app.ci_weigh(sandbox, true);
+        Self {
+            app,
+            sandbox: sandbox.clone(),
+        }
+    }
+}
+
+impl Drop for JobWeight {
+    fn drop(&mut self) {
+        self.app.ci_weigh(&self.sandbox, false);
+    }
 }
 
 pub(crate) fn short(sha: &str) -> &str {
@@ -400,6 +425,31 @@ impl App {
                 Arc::new(Semaphore::new(jobs))
             })
             .clone()
+    }
+
+    /// Counts one more (`started`) or one fewer running CI job of `sandbox` and tells the
+    /// isolation the new count, under the lock so the last count told is the current one. The
+    /// isolation writes one cgroup file there and may wait for a preparation of the sandbox's
+    /// groups (moving at most 4096 processes): bounded, and other jobs' starts and ends wait.
+    fn ci_weigh(&self, sandbox: &SandboxId, started: bool) {
+        let mut running = self
+            .ci
+            .running_jobs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = running.entry(sandbox.clone()).or_insert(0);
+        *count = if started {
+            count.saturating_add(1)
+        } else {
+            count.saturating_sub(1)
+        };
+        let jobs = *count;
+        if jobs == 0 {
+            running.remove(sandbox);
+        }
+        if let Some(isolation) = self.isolation.get() {
+            isolation.ci_jobs_running(sandbox, jobs);
+        }
     }
 
     pub(crate) fn ci_dir(&self, sandbox: &SandboxId) -> PathBuf {

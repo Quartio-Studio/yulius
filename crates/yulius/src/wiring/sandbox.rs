@@ -391,6 +391,15 @@ impl SandboxIsolation for NamespaceIsolation {
         self.manager.processes(sandbox.as_str()).await
     }
 
+    fn ci_jobs_running(&self, sandbox: &SandboxId, jobs: u32) {
+        let Some(delegation) = self.manager.config().delegation.as_ref() else {
+            return;
+        };
+        if let Err(error) = delegation.set_ci_jobs(sandbox.as_str(), jobs) {
+            tracing::warn!(sandbox = %sandbox, jobs, %error, "cannot weigh the sandbox by its CI jobs");
+        }
+    }
+
     async fn limit_counters(&self, sandbox: &SandboxId) -> Option<LimitCounters> {
         let delegation = self.manager.config().delegation.clone()?;
         let sandbox = sandbox.as_str().to_owned();
