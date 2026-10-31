@@ -1970,6 +1970,111 @@ async fn jobs_wait_for_their_cpu_budget_and_are_told_it() -> TestResult {
     Ok(())
 }
 
+/// A sandbox limited to 4 CPUs that records the CI jobs the app says run in it (SPEC-362).
+#[derive(Default)]
+struct Weighing {
+    jobs: std::sync::Mutex<Vec<(String, u32)>>,
+}
+
+impl Weighing {
+    fn history(&self) -> Vec<u32> {
+        self.jobs
+            .lock()
+            .map(|jobs| jobs.iter().map(|(_, n)| *n).collect())
+            .unwrap_or_default()
+    }
+}
+
+#[async_trait::async_trait]
+impl SandboxIsolation for Weighing {
+    async fn prepare(&self, _: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
+        Ok(None)
+    }
+    fn release(&self, _: &SandboxId) {}
+    fn limits(&self) -> SandboxLimits {
+        Limited.limits()
+    }
+    fn ci_jobs_running(&self, sandbox: &SandboxId, jobs: u32) {
+        if let Ok(mut seen) = self.jobs.lock() {
+            seen.push((sandbox.as_str().to_owned(), jobs));
+        }
+    }
+}
+
+/// SPEC-362 CSW-002: while a sandbox's CI jobs run, the app tells the isolation how many, so it
+/// weighs the sandbox by them; every end counts (passed, timed out, and cancelled when a push
+/// supersedes the run, review round 1), and none is left counted.
+#[tokio::test]
+async fn running_ci_jobs_weigh_on_their_sandbox_until_they_end() -> TestResult {
+    let f = fixture_with(false, |data| {
+        format!(
+            "[[ci.jobs]]\nname = \"build\"\ncpus = 1\ncommand = 'while [ ! -e \"{go}\" ]; do \
+             sleep 0.05; done'\n\n\
+             [[ci.jobs]]\nname = \"hang\"\ncpus = 1\ncommand = 'while [ ! -e \"{go}\" ]; do \
+             sleep 0.05; done; sleep 30'\n",
+            go = data.join("go").display()
+        )
+    })
+    .await?;
+    let weighing = Arc::new(Weighing::default());
+    assert!(f.h.app.set_isolation(weighing.clone()));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    // Two runs of two jobs, one CPU each: the three job slots fill, and the app says so.
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        f.h.app.ci_dispatch().await;
+        if weighing.history().last() == Some(&3) {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("never three jobs: {:?}", weighing.history()).into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // A push supersedes the pull request's run: its running jobs are cancelled.
+    f.push_feature("more.txt", Some("more\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    // Its jobs still wait for `go`, so only the cancellation ends them (review round 2).
+    let deadline = tokio::time::Instant::now() + WAIT;
+    let superseded = loop {
+        let runs = f.h.store.ci_runs(&f.sandbox.id, 10).await?;
+        if let Some(run) = runs.into_iter().find(|r| r.state == RunState::Cancelled) {
+            break run;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err("the superseded run never ended".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    std::fs::write(f.data.join("go"), "")?;
+    // `build` jobs pass, `hang` jobs time out (8 s); every end lowers the count.
+    f.settle().await?;
+    // A job that was running when its run was superseded ended cancelled.
+    let detail = f
+        .get(&format!("/api/sandboxes/s1/ci/runs/{}", superseded.id))
+        .await?;
+    assert!(
+        detail["jobs"]
+            .as_array()
+            .ok_or("jobs")?
+            .iter()
+            .any(|job| job["state"] == "cancelled" && job["duration_ms"].is_u64()),
+        "no started job was cancelled: {detail}"
+    );
+    let seen = weighing.jobs.lock().map_err(|_| "lock")?.clone();
+    assert!(seen.iter().all(|(sandbox, _)| sandbox == "s1"), "{seen:?}");
+    let history = weighing.history();
+    assert_eq!(history.last(), Some(&0), "a job left counted: {history:?}");
+    assert!(history.iter().all(|n| *n <= 3), "{history:?}");
+    // One call per start and one per end, each one job up or down from none.
+    let mut previous = 0;
+    for n in &history {
+        assert_eq!(n.abs_diff(previous), 1, "{history:?}");
+        previous = *n;
+    }
+    Ok(())
+}
+
 /// SPEC-351 CCH-001, CCH-002 (pomerado-rust #460): two runs in the sandbox's two lanes never share
 /// `$YULIUS_CI_CACHE`. Each job leaves a `live-<run>` marker in its cache and waits until both runs
 /// are inside the job (one CPU each, so both fit the budget at once); with one cache shared by the
