@@ -27,7 +27,8 @@ changes quote the newest notes. Projects with one changes file see no difference
   `docs/changes/` (its PR #488, AGENTS.md updated). Yulius' briefing still said "add a short entry
   at the top of `docs/changes.md`" and quoted that file, so tasks got two contradicting rules.
 - **Where the path is used.** `DocsLayout::changes` (a `String`, parsed in
-  `spec_format/config.rs`, which refuses a trailing `/` today as an empty segment) is read by:
+  `spec_format/config.rs`, which strips one trailing `/` today, so `"docs/changes/"` read as the
+  file `docs/changes`) is read by:
   the briefing's discipline rule 6, "Read before you build" and "Recent changes"
   (`yulius-domain/src/briefing.rs`), filled by `RepoDocs::read` in `yulius-app/src/hooks.rs`
   through `changes_excerpt`; the documentation check `validate_project` (missing changes file)

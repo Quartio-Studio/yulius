@@ -491,7 +491,7 @@ pub fn change_notes_newest_first(names: impl IntoIterator<Item = String>) -> Vec
 }
 
 /// The part of a changes folder the briefing quotes, at most `max` bytes: its `notes` (file
-/// name and text, newest first), each under its name and cut to [`MAX_CHANGE_NOTE_BYTES`], as
+/// name and text, newest first), each under its name and cut to 1,200 bytes, as
 /// many whole ones as fit, at most [`MAX_CHANGE_NOTES`] (SPEC-363 CHN-003).
 #[must_use]
 pub fn change_notes_excerpt(notes: &[(String, String)], max: usize) -> String {
@@ -1678,7 +1678,11 @@ mod tests {
             section.contains("From the newest notes in `docs/changes/`:\n> `2026-10-31-488-folder.md`:\n> # Change notes as files"),
             "{section}"
         );
-        assert!(section.find("# Search") > section.find("# Change notes as files"));
+        let newest = section
+            .find("# Change notes as files")
+            .ok_or("newest note")?;
+        let older = section.find("# Search").ok_or("older note")?;
+        assert!(newest < older, "{section}");
         // A folder without notes: nothing delivered yet.
         input.changes_head = None;
         input.recent_changes.clear();

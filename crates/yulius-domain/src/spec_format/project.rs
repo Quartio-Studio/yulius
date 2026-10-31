@@ -389,6 +389,8 @@ pub fn validate_project(files: &ProjectFiles<'_>) -> ProjectReport {
             push(path, ProjectProblemKind::ExpectedFile);
         }
     }
+    // Presence only: a changes folder is `Some("")` (SPEC-363 CHN-004), so a check of the
+    // text here would have to tell a folder from an empty file.
     if files.changes.is_none() {
         push(&layout.changes, ProjectProblemKind::Missing);
     }

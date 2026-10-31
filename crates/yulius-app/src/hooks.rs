@@ -1196,7 +1196,8 @@ fn folder_names(root: &Path, dir: &Path, max: usize) -> Vec<String> {
         .collect()
 }
 
-/// Most entries of a changes folder listed (SPEC-363).
+/// Most entries of a changes folder listed (SPEC-363), in directory order before the newest are
+/// picked: a folder of more notes may lose some of its newest from the briefing.
 const MAX_CHANGE_NOTE_ENTRIES: usize = 10_000;
 
 /// The newest notes of the changes `folder` as the briefing quotes them (SPEC-363 CHN-003), or
