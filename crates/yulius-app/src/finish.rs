@@ -94,11 +94,29 @@ pub struct TranscriptFacts {
     /// The last word after a turn an error ended is Claude Code's goal notice (SPEC-333), until a
     /// prompt, agent work or an interrupt; an armed retry also ends with the goal.
     pub goal_retry: Option<GoalRetryFact>,
+    /// When the last record that closes a session's turn (its answer or its `turn_duration`)
+    /// was written: a turn closed while Yulius was down is woken after it (SPEC-358 MSB-007).
+    pub turn_closed_at: Option<yulius_domain::time::Timestamp>,
+    /// When the session last moved toward a Stop: its last prompt (typed, or Claude Code's own
+    /// wake-up) or its last answer. A Stop Yulius answered after it was the last turn's, so that
+    /// turn is not woken after an outage; one answered before it (a blocked Stop, after which the
+    /// turn went on) was not (SPEC-358 MSB-007).
+    pub turn_moved_at: Option<yulius_domain::time::Timestamp>,
 }
 
 impl TranscriptFacts {
     /// Folds one observation, in transcript order.
     pub fn fold(&mut self, observation: &Observation) {
+        if let Observation::TurnComplete { at: Some(at) }
+        | Observation::TurnEnded { at: Some(at), .. } = observation
+        {
+            self.turn_closed_at = Some(self.turn_closed_at.map_or(*at, |last| last.max(*at)));
+        }
+        if let Observation::UserTurn { at: Some(at), .. }
+        | Observation::TurnComplete { at: Some(at) } = observation
+        {
+            self.turn_moved_at = Some(self.turn_moved_at.map_or(*at, |last| last.max(*at)));
+        }
         if let Observation::UserTurn { at: Some(at), .. }
         | Observation::TurnInterrupted { at: Some(at) }
         | Observation::AgentWork { at: Some(at) }
@@ -812,6 +830,12 @@ impl App {
         facts: TranscriptFacts,
     ) {
         let runtime = self.runtime(task_id);
+        if let Some(at) = facts.turn_closed_at {
+            runtime.turn_closed_ms.fetch_max(at.0, Ordering::SeqCst);
+        }
+        if let Some(at) = facts.turn_moved_at {
+            runtime.turn_moved_ms.fetch_max(at.0, Ordering::SeqCst);
+        }
         if let Some(achieved) = facts.goal_achieved {
             runtime.goal_achieved.store(achieved, Ordering::SeqCst);
         }
@@ -1354,6 +1378,40 @@ mod tests {
         at: None,
     };
 
+    /// SPEC-358 MSB-007: the time of the last record closing a session's turn, its answer or its
+    /// `turn_duration`; a prompt, an interrupt or a sub-agent's answer is not one.
+    #[test]
+    fn the_last_turn_close_is_folded() {
+        let at = |ms| Some(Timestamp(ms));
+        let facts = reduce(&[
+            Observation::TurnComplete { at: at(10) },
+            Observation::TurnEnded {
+                background_agents: None,
+                at: at(12),
+            },
+            Observation::TurnComplete { at: None },
+            Observation::TurnInterrupted { at: at(30) },
+            Observation::UserTurn {
+                at: at(40),
+                wake: false,
+            },
+        ]);
+        assert_eq!(facts.turn_closed_at, Some(Timestamp(12)));
+        assert_eq!(facts.turn_moved_at, Some(Timestamp(40)));
+        // A Stop answered with a block, then the turn went on to a new answer: it moved since.
+        let blocked = reduce(&[
+            Observation::UserTurn {
+                at: at(10),
+                wake: false,
+            },
+            Observation::TurnComplete { at: at(20) },
+            Observation::AgentWork { at: at(25) },
+            Observation::TurnComplete { at: at(30) },
+        ]);
+        assert_eq!(blocked.turn_moved_at, Some(Timestamp(30)));
+        assert_eq!(reduce(&[PROMPT]).turn_closed_at, None);
+    }
+
     fn retry(armed: bool) -> Observation {
         Observation::GoalRetry {
             armed,
@@ -1485,6 +1543,8 @@ mod tests {
                 goal_open: false,
                 goal_recorded: true,
                 goal_retry: None,
+                turn_closed_at: None,
+                turn_moved_at: Some(Timestamp(1)),
             }
         );
         // Typed again after the goal: a new open turn, the goal no longer counts.

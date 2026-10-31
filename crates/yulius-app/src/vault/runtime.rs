@@ -32,6 +32,8 @@ use crate::ports::vault::{AgentScope, VaultSecretRecord};
 
 /// First argument of `yulius` that runs the Bash wrapper (`CLAUDE_CODE_SHELL_PREFIX`).
 pub const SCRUB_EXEC_FLAG: &str = "--scrub-exec";
+/// The run's Bash wrapper script, the value of `CLAUDE_CODE_SHELL_PREFIX` (SPEC-358).
+pub const SCRUB_EXEC_SCRIPT: &str = "scrub-exec";
 /// The run's fingerprint file (fallback when Yulius cannot be reached).
 pub const FINGERPRINTS_FILE: &str = "scrub.json";
 /// The run's CA bundle: the host's roots plus the egress CA.
@@ -479,7 +481,10 @@ impl App {
             SCRUB_FILE_ENV.into(),
             scrub_file.to_string_lossy().into_owned(),
         ));
-        launch.env.extend(self.scrub_shell_prefix());
+        if let Some((script, prefix)) = self.scrub_shell_prefix(run_dir) {
+            launch.files.push(script);
+            launch.env.push(prefix);
+        }
         self.egress_env("yulius", task_token, run_dir, launch);
         Ok(())
     }
@@ -561,28 +566,50 @@ impl App {
             .await?;
         superagent_scrub_file(run_dir, &fingerprints, launch)?;
         let before = launch.files.len();
+        // Its Bash commands, hooks and stdio MCP servers run through the agent-secret
+        // redaction, which loads its fingerprints with the person's workspace token (SPEC-147
+        // SAM-002).
+        if let Some((script, prefix)) = self.scrub_shell_prefix(run_dir) {
+            launch.env.retain(|(key, _)| *key != prefix.0);
+            launch.env.push(prefix);
+            launch.files.push(script);
+        }
         self.egress_env("yulius", bearer, run_dir, launch);
         let added: Vec<PlannedFile> = launch.files[before..].to_vec();
         bind_read_only(&mut launch.containment, &added);
         Ok(())
     }
 
-    /// The Bash wrapper of agent sessions and the Superagent (SPEC-147 SAM-002):
-    /// `CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec`. Claude Code runs
-    /// `'<prefix before the last " -">' <flag> '<command>'` for Bash commands, hooks and stdio MCP
-    /// servers, so a path holding `" -"` cannot be the prefix (`None`, with a warning).
-    pub(crate) fn scrub_shell_prefix(&self) -> Option<(String, String)> {
-        let exe = self.config.yulius_exe.to_string_lossy();
-        if exe.contains(" -") {
+    /// The Bash wrapper of agent sessions and the Superagent (SPEC-147 SAM-002): the script
+    /// `<run_dir>/scrub-exec`, which runs `<yulius> --scrub-exec "$@"`, and
+    /// `CLAUDE_CODE_SHELL_PREFIX` naming it. Claude Code 2.1.292 runs `'<prefix>' '<command>'`
+    /// for a Bash command or a hook (splitting the prefix at its last `" -"`), but spawns the
+    /// prefix itself as the program of a stdio MCP server, with the server's command line as one
+    /// argument: `<yulius> --scrub-exec` there failed with `ENOENT`, so the prefix is one path
+    /// (SPEC-358). A run directory holding `" -"` cannot be the prefix (`None`, with a warning).
+    pub(crate) fn scrub_shell_prefix(
+        &self,
+        run_dir: &Path,
+    ) -> Option<(PlannedFile, (String, String))> {
+        let path = run_dir.join(SCRUB_EXEC_SCRIPT);
+        let shown = path.to_string_lossy().into_owned();
+        if shown.contains(" -") {
             tracing::warn!(
-                "the yulius path contains \" -\": Bash output is redacted by the tool hook only"
+                "the run directory contains \" -\": Bash output is redacted by the tool hook only"
             );
             return None;
         }
-        Some((
-            "CLAUDE_CODE_SHELL_PREFIX".into(),
-            format!("{exe} {SCRUB_EXEC_FLAG}"),
-        ))
+        let exe = self
+            .config
+            .yulius_exe
+            .to_string_lossy()
+            .replace('\'', "'\\''");
+        let script = PlannedFile {
+            path,
+            contents: format!("#!/bin/sh\nexec '{exe}' {SCRUB_EXEC_FLAG} \"$@\"\n").into_bytes(),
+            mode: 0o755,
+        };
+        Some((script, ("CLAUDE_CODE_SHELL_PREFIX".into(), shown)))
     }
 
     /// Adds the egress proxy to a run's environment when the proxy is wired (`false` when it is

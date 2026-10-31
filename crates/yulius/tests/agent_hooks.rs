@@ -1229,3 +1229,18 @@ async fn session_start_refuses_another_tasks_session() -> TestResult {
     assert_eq!(lineage_of(&f, "t-other").await?, ["other-1", "other-2"]);
     Ok(())
 }
+
+/// SPEC-358 MSB-007 (review round 2): an answered Stop is kept in the run directory, so a
+/// restarted server does not wake the turn it settled.
+#[tokio::test]
+async fn an_answered_stop_is_kept_in_the_run_directory() -> TestResult {
+    let f = fixture().await?;
+    let run = f._repo.path().join("run");
+    std::fs::create_dir_all(&run)?;
+    assert_eq!(yulius_app::outage::stop_answered_at(&run), 0);
+    let before = f.h.app.now().0;
+    hook(&f, "Stop", json!({})).await?;
+    let answered = yulius_app::outage::stop_answered_at(&run);
+    assert!(answered >= before && answered > 0, "{answered}");
+    Ok(())
+}

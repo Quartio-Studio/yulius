@@ -190,6 +190,19 @@ impl App {
         channel: Channel,
         text: &str,
     ) -> AppResult<()> {
+        self.type_into_session(task, &message_paste(login, channel, text))
+            .await?;
+        // The person spoke to the task (through their Superagent or their own agent): what it
+        // asked them is answered.
+        self.end_needs_you(&task.id).await;
+        Ok(())
+    }
+
+    /// Types `paste` (one bracketed paste) and then Enter into the running task's session, once
+    /// it takes typed text (TMS-004): its session started, no person typed in the last minute,
+    /// and nothing else is being typed. Also Yulius's own "Yulius is back; continue" (SPEC-358
+    /// MSB-007).
+    pub(crate) async fn type_into_session(&self, task: &TaskRecord, paste: &[u8]) -> AppResult<()> {
         let runtime = self.existing_runtime(&task.id).ok_or_else(|| {
             AppError::Conflict(format!("task #{} has no live session", task.number))
         })?;
@@ -236,8 +249,7 @@ impl App {
             )));
         }
         let _typing = Typing(&runtime.typing_message);
-        self.send_input(&task.id, &message_paste(login, channel, text))
-            .await?;
+        self.send_input(&task.id, paste).await?;
         tokio::time::sleep(SUBMIT_DELAY).await;
         // The text is in the prompt box but not sent: said, so a retry does not send it twice.
         self.send_input(&task.id, b"\r").await.map_err(|err| {
@@ -248,9 +260,6 @@ impl App {
                 err.public_message()
             ))
         })?;
-        // The person spoke to the task (through their Superagent or their own agent): what it
-        // asked them is answered.
-        self.end_needs_you(&task.id).await;
         Ok(())
     }
 }

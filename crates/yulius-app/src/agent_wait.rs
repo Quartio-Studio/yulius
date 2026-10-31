@@ -318,6 +318,29 @@ impl App {
         }
     }
 
+    /// At a start: puts back the armed merges (DLV-205), then tries them once, as the delivery
+    /// loop does, so one whose checks passed while Yulius was down merges now, not at the loop's
+    /// first round (SPEC-358 MSB-008).
+    pub async fn resume_armed_merges(self: &Arc<Self>) {
+        self.restore_armed_merges().await;
+        self.merge_armed_everywhere().await;
+    }
+
+    /// One merge pass over every sandbox's armed merges. A sandbox whose pass is held (a merge
+    /// or a move to GitHub, which can push for minutes) is merged by whoever holds it, or on the
+    /// next round: the other sandboxes never wait for it.
+    pub(crate) async fn merge_armed_everywhere(self: &Arc<Self>) {
+        let Ok(sandboxes) = self.deps.store.sandboxes().await else {
+            return;
+        };
+        for sandbox in sandboxes.iter().filter(|s| s.removed_at.is_none()) {
+            if self.armed_pass(&sandbox.id).try_lock().is_err() {
+                continue;
+            }
+            self.merge_armed(&sandbox.id).await;
+        }
+    }
+
     /// Forgets how an earlier armed merge ended (a new `delivery_merge` call answers for itself).
     pub(crate) fn forget_merge_outcome(&self, task: &TaskRecord) {
         lock_slot(&self.runtime(&task.id)).outcome = None;

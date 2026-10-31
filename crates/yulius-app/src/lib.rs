@@ -55,6 +55,7 @@ pub mod model;
 pub mod needs_you;
 pub mod notes;
 pub mod onboarding;
+pub mod outage;
 mod pause;
 pub mod playground;
 pub mod ports;
