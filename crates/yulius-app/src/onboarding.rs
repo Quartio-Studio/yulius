@@ -1945,7 +1945,10 @@ mod tests {
             instance_off.contains("switched Vidoc off for this whole Yulius instance"),
             "{instance_off}"
         );
-        assert!(!instance_off.contains("security-scan --ci"), "{instance_off}");
+        assert!(
+            !instance_off.contains("security-scan --ci"),
+            "{instance_off}"
+        );
         let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
         let skill = crate::skills::pack::PACKS
             .iter()

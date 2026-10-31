@@ -137,9 +137,9 @@ impl App {
     /// them off. Without Vidoc services there is nothing to switch, and it is on.
     #[must_use]
     pub fn vidoc_enabled(&self) -> bool {
-        self.vidoc.get().is_none_or(|services| {
-            services.off.read().map(|off| off.is_none()).unwrap_or(true)
-        })
+        self.vidoc
+            .get()
+            .is_none_or(|services| services.off.read().map(|off| off.is_none()).unwrap_or(true))
     }
 
     /// Whether `sandbox` scans with Vidoc: the instance switch (SPEC-356 VIO-002) and its own
@@ -265,7 +265,11 @@ impl App {
             self.set_vidoc_off_cache(off);
             // The virtual key follows the switch from the next request on.
             self.bump_vault_generation();
-            let action = if enabled { "vidoc.enabled" } else { "vidoc.disabled" };
+            let action = if enabled {
+                "vidoc.enabled"
+            } else {
+                "vidoc.disabled"
+            };
             self.deps
                 .store
                 .audit(now, &login, action, Some(VIDOC_SECRET_ID), None)

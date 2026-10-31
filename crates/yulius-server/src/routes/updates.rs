@@ -6,8 +6,8 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use yulius_app::model::Secret;
 use yulius_contracts::api::updates::{
-    JevKeyView, JevTestResult, SandboxDockerView, SetJevKey, SetVidocEnabled, SetVidocKey, StartUpdate, UpdateView,
-    VidocKeyView, VidocTestResult,
+    JevKeyView, JevTestResult, SandboxDockerView, SetJevKey, SetVidocEnabled, SetVidocKey,
+    StartUpdate, UpdateView, VidocKeyView, VidocTestResult,
 };
 use yulius_contracts::update::VersionInfo;
 

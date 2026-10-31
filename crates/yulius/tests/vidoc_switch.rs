@@ -319,7 +319,10 @@ async fn a_restarted_server_keeps_vidoc_off_for_the_instance() -> TestResult {
     let h = harness()?;
     let admin = setup_superadmin_creds(&h).await?;
     h.store
-        .set_vidoc_off(Some("superadmin"), yulius_domain::time::Timestamp(1_800_000_000))
+        .set_vidoc_off(
+            Some("superadmin"),
+            yulius_domain::time::Timestamp(1_800_000_000),
+        )
         .await?;
     h.app.set_vidoc(VidocServices::new(
         Arc::new(AnyVidoc) as Arc<dyn VidocConnector>,
@@ -353,7 +356,10 @@ async fn every_project_follows_the_instance_switch() -> TestResult {
         "instance off: the instance key is not applied"
     );
     let record = i.h.store.sandbox(&s1).await?.ok_or("s1")?;
-    assert_eq!(i.h.app.vidoc_briefing(&record), VidocBriefing::OffForInstance);
+    assert_eq!(
+        i.h.app.vidoc_briefing(&record),
+        VidocBriefing::OffForInstance
+    );
     assert!(!i.h.app.vidoc_scans_on(&record), "no scan for the project");
     assert_eq!(shown(&i).await?, true, "the project keeps its own choice");
     let me = call(&i.h.router, Method::GET, "/api/me", None, &i.bob).await?;

@@ -3135,7 +3135,10 @@ async fn no_project_scans_in_ci_while_vidoc_is_off_for_the_instance() -> TestRes
     {
         use yulius_app::ports::store_ext::UpdateStore as _;
         f.h.store
-            .set_vidoc_off(Some("superadmin"), yulius_domain::time::Timestamp(1_800_000_000))
+            .set_vidoc_off(
+                Some("superadmin"),
+                yulius_domain::time::Timestamp(1_800_000_000),
+            )
             .await?;
     }
     f.h.app.load_vidoc_key().await;
