@@ -9,12 +9,15 @@
 //!   (SPEC-053); `ci/` and `engine/` then also get 3/8 of its task limit each, so sessions keep
 //!   a quarter of it whatever CI jobs and containers do (SPEC-268);
 //! - limits `<unit>/sandboxes` to three quarters of the service's own task limit, so the server
-//!   keeps a quarter however many sandboxes are busy (SPEC-272).
+//!   keeps a quarter however many sandboxes are busy (SPEC-272);
+//! - weighs each sandbox group by its running CI jobs ([`sandbox_weight`]), so on a loaded host a
+//!   sandbox's CI also out-weighs other sandboxes' agents (SPEC-362).
 //!
 //! The holder, `slirp4netns` and every run of a sandbox join their leaf before they start
 //! anything ([`join`]). Without delegation (the parent of the server's cgroup is not ours),
 //! nothing changes and sandboxes run without limits.
 
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -41,6 +44,29 @@ const LEAVES: [(&str, u32); 4] = [
 ];
 /// The engine's group, also without the `cpu` split.
 const ENGINE_LEAF: &str = "engine";
+/// A sandbox group's `cpu.weight` while none of its CI jobs runs (the kernel's default).
+const BASE_WEIGHT: u32 = 100;
+/// What each running CI job adds to its sandbox group's weight (SPEC-362 CSW-002): what the `ci`
+/// leaf weighs in its sandbox, so a job weighs on the host four sandboxes that only run agents.
+const CI_JOB_WEIGHT: u32 = 400;
+/// The kernel's largest `cpu.weight`.
+const MAX_WEIGHT: u32 = 10_000;
+
+/// The `cpu.weight` of a sandbox group while `jobs` of its CI jobs run (SPEC-362 CSW-002).
+///
+/// # Examples
+/// ```
+/// use yulius_sandbox::cgroup::sandbox_weight;
+/// assert_eq!(sandbox_weight(0), 100);
+/// assert_eq!(sandbox_weight(2), 900);
+/// assert_eq!(sandbox_weight(1000), 10_000);
+/// ```
+#[must_use]
+pub fn sandbox_weight(jobs: u32) -> u32 {
+    jobs.saturating_mul(CI_JOB_WEIGHT)
+        .saturating_add(BASE_WEIGHT)
+        .min(MAX_WEIGHT)
+}
 
 /// Limits of one sandbox; `None` leaves a limit unset (`max`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -164,6 +190,8 @@ pub struct Delegation {
     /// Set by [`Delegation::unsplit_all`], which holds it while it undoes the split: a split is
     /// either done before the undo or not at all once the server stops (shared by clones).
     stopping: Arc<Mutex<bool>>,
+    /// CI jobs running per sandbox ([`Delegation::set_ci_jobs`]; shared by clones).
+    ci_jobs: Arc<Mutex<HashMap<String, u32>>>,
 }
 
 impl PartialEq for Delegation {
@@ -279,6 +307,7 @@ pub fn prepare(unit: &Path) -> io::Result<Delegation> {
         unit: unit.to_path_buf(),
         controllers,
         stopping: Arc::new(Mutex::new(false)),
+        ci_jobs: Arc::default(),
     })
 }
 
@@ -497,6 +526,9 @@ impl Delegation {
         if let Err(error) = split_cpu(&dir, &groups) {
             tracing::warn!(sandbox, %error, "CI jobs run without CPU priority for now");
         }
+        if let Err(error) = write(&dir.join("cpu.weight"), &self.weight_of(sandbox).to_string()) {
+            tracing::warn!(sandbox, %error, "the sandbox's CI jobs run without their weight on the host for now");
+        }
         if let Some(pids_max) = limits.pids_max
             && self.controllers.iter().any(|c| c == "pids")
             && let Err(error) = cap_leaves(&dir, &groups, pids_max)
@@ -505,6 +537,43 @@ impl Delegation {
         }
         drop(stopping);
         Ok(groups)
+    }
+
+    /// The weight of `sandbox`'s group for its CI jobs running now.
+    fn weight_of(&self, sandbox: &str) -> u32 {
+        let jobs = self.ci_jobs.lock().unwrap_or_else(PoisonError::into_inner);
+        sandbox_weight(jobs.get(sandbox).copied().unwrap_or(0))
+    }
+
+    /// Records that `jobs` CI jobs of `sandbox` run now and writes its group's `cpu.weight`
+    /// ([`sandbox_weight`], SPEC-362 CSW-002). Returns whether it was written: not without the
+    /// `cpu` controller, nor once the server stops.
+    ///
+    /// # Errors
+    /// The weight cannot be written (the group is gone).
+    pub fn set_ci_jobs(&self, sandbox: &str, jobs: u32) -> io::Result<bool> {
+        {
+            let mut counts = self.ci_jobs.lock().unwrap_or_else(PoisonError::into_inner);
+            if jobs == 0 {
+                counts.remove(sandbox);
+            } else {
+                counts.insert(sandbox.to_owned(), jobs);
+            }
+        }
+        if !self.controllers.iter().any(|c| c == "cpu") {
+            return Ok(false);
+        }
+        let stopping = self.stopping.lock().unwrap_or_else(PoisonError::into_inner);
+        if *stopping {
+            return Ok(false);
+        }
+        let dir = self
+            .unit
+            .join(SANDBOXES)
+            .join(crate::manager::path_name(sandbox));
+        write(&dir.join("cpu.weight"), &self.weight_of(sandbox).to_string())?;
+        drop(stopping);
+        Ok(true)
     }
 
     /// Takes the task limits and the CPU back from every sandbox's leaves (`-pids`, `-cpu`) when
@@ -519,6 +588,13 @@ impl Delegation {
             return;
         };
         for entry in entries.flatten().take(MAX_MOVED) {
+            // The default weight for whatever runs next (SPEC-362 CSW-004).
+            let weight = entry.path().join("cpu.weight");
+            if weight.exists()
+                && let Err(error) = write(&weight, &BASE_WEIGHT.to_string())
+            {
+                tracing::warn!(group = %entry.path().display(), %error, "cannot reset the sandbox's weight");
+            }
             let control = entry.path().join("cgroup.subtree_control");
             let split = std::fs::read_to_string(&control).is_ok_and(|text| {
                 text.split_whitespace()
@@ -1118,6 +1194,52 @@ mod tests {
         // DKR-005), without controllers passed down.
         assert!(dir.join("engine").is_dir());
         assert!(!dir.join("cgroup.subtree_control").exists());
+        Ok(())
+    }
+
+    /// SPEC-362 CSW-002, CSW-003, CSW-004: a sandbox's own group weighs 100 plus 400 per running
+    /// CI job (at most 10 000), preparing its groups keeps that, and a stopping server writes 100.
+    #[test]
+    fn a_sandbox_weighs_more_while_its_ci_jobs_run() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(sandbox_weight(0), 100);
+        assert_eq!(sandbox_weight(1), 500);
+        assert_eq!(sandbox_weight(2), 900);
+        assert_eq!(sandbox_weight(u32::MAX), MAX_WEIGHT);
+        let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+        let weight = || std::fs::read_to_string(dir.join("cpu.weight"));
+        delegation.sandbox_group("s1", &Limits::default())?;
+        assert_eq!(weight()?, "100", "no job runs");
+        assert!(delegation.set_ci_jobs("s1", 1)?);
+        assert_eq!(weight()?, "500");
+        assert!(delegation.set_ci_jobs("s1", 2)?);
+        assert_eq!(weight()?, "900");
+        // Every run prepares the groups again; that keeps the weight of the jobs running now.
+        delegation.sandbox_group("s1", &Limits::default())?;
+        assert_eq!(weight()?, "900");
+        assert!(delegation.set_ci_jobs("s1", 0)?);
+        assert_eq!(weight()?, "100", "the jobs ended");
+        // A new server knows of no job: its first preparation writes the default again.
+        delegation.set_ci_jobs("s1", 1)?;
+        let unit = dir.parent().and_then(Path::parent).ok_or("unit")?;
+        prepare(unit)?.sandbox_group("s1", &Limits::default())?;
+        assert_eq!(weight()?, "100", "after a restart");
+        // A stopping server leaves the default for whatever starts next, and writes no more.
+        delegation.set_ci_jobs("s1", 2)?;
+        delegation.unsplit_all();
+        assert_eq!(weight()?, "100", "after the stop");
+        assert!(!delegation.set_ci_jobs("s1", 3)?);
+        assert_eq!(weight()?, "100");
+        Ok(())
+    }
+
+    /// SPEC-362 CSW-005: without the `cpu` controller nothing is weighted.
+    #[test]
+    fn without_the_cpu_controller_ci_jobs_weigh_nothing() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (_root, delegation, dir) = fake_sandbox("memory pids\n")?;
+        delegation.sandbox_group("s1", &Limits::default())?;
+        assert!(!delegation.set_ci_jobs("s1", 1)?);
+        assert!(!dir.join("cpu.weight").exists());
         Ok(())
     }
 }
