@@ -20,6 +20,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
+pub mod agent_call;
 mod bundle;
 mod cd;
 mod ci;

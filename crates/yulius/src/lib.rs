@@ -6,6 +6,7 @@ pub mod doctor;
 pub mod host_setup;
 pub mod instance;
 pub mod leftovers_cli;
+pub mod mcp_bridge;
 pub mod remote_cli;
 pub mod remove_cli;
 pub mod sandbox_cli;

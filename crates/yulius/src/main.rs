@@ -62,6 +62,9 @@ enum Command {
         #[arg(long, default_value_t = 90)]
         minutes: u64,
     },
+    /// Internal: the stdio bridge of a task run's Yulius MCP (SPEC-358), started by Claude Code.
+    #[command(hide = true)]
+    Mcp,
     /// Scan this repository with Vidoc's vidoc-1 (SPEC-195): the branch's changes against the
     /// integration branch, or the whole repository with --all; exit 0 passed, 1 failed, 2 not run.
     /// `yulius security-scan --help` lists the options.
@@ -594,6 +597,15 @@ fn main() -> ExitCode {
         Command::Wait { minutes } => {
             let code =
                 yulius::wait_cli::run(&mut std::io::stdout(), minutes, &|k| std::env::var(k).ok());
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Command::Mcp => {
+            let code = yulius::mcp_bridge::run(
+                &mut std::io::stdin().lock(),
+                Box::new(std::io::stdout()),
+                Box::new(|k| std::env::var(k).ok()),
+                yulius::mcp_bridge::Settings::default(),
+            );
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Command::SecurityScan { args } => yulius::security_scan::run(&args),
