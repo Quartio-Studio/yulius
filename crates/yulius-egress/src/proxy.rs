@@ -109,7 +109,6 @@ pub struct EgressProxy {
     /// The open tunnels and intercepted connections by sandbox (LAP-002, SPEC-355 SLR-002).
     slots: Arc<Slots>,
     max_per_sandbox: usize,
-    max_connections: usize,
     /// When the proxy last gave each warning (a kind, and a sandbox or `None` for the whole
     /// proxy). Holds the warnings of the last minute only.
     warned: Mutex<Warned>,
@@ -549,7 +548,6 @@ impl EgressProxy {
             max_per_sandbox: config
                 .max_per_sandbox
                 .clamp(1, config.max_connections.max(1)),
-            max_connections: config.max_connections.max(1),
             warned: Mutex::new(HashMap::new()),
         })
     }
