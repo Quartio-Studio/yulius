@@ -211,6 +211,14 @@ Independent reviews in fresh sessions (skill `yulius-review`; this repository ha
     alone, and the next full run passed.
   - These files neither touch nor depend on this change. They were timeouts under the host's
     load, not a regression.
+- **Yulius CI, first run at 0dc9f038.** It failed one test outside this change:
+  `xtask::cli security_is_listed_and_needs_a_vidoc_key` expected exit 2 (no key) and got 0.
+  - The cause: the CI job ran with Vidoc switched off in Yulius (`YULIUS_VIDOC=off`, ADR-0229 and
+    ADR-0242), and the test inherited it, so the scan exited 0 as disabled.
+  - Dev passed it earlier because the switch was on then. The failure would hit every pull request
+    while the switch is off.
+  - Reproduced locally with `YULIUS_VIDOC=off`. The test now removes the variable for its scan, as
+    it already did for `VIDOC_API_KEY`. The xtask tests pass with and without the variable.
 - **Security.** `yulius security-scan` exited 2 (not run): Vidoc refused the instance's key
   (HTTP 401), and 24 changed files were not scanned. This is unrun, not passed. Yulius CI's
   `security` job scans the pull request head.
