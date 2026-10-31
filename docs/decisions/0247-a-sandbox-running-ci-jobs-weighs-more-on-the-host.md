@@ -63,8 +63,8 @@ about 73 %.
   is still twice what it got before.
 - Idle CPU still goes to whoever wants it: weights act only under contention, so the agents slow
   down only while the host is full and CI runs.
-- The sandbox's own agents gain a little too while its CI runs (they share its raised weight at
-  their 1:4 ratio to CI).
+- The sandbox's own agents gain too while its CI runs: they share its raised weight at their 1:4
+  ratio to CI. While its jobs wait on the network or the disk, they get the whole raised share.
 - Not measured on a live kernel here: the task's sandbox has no cgroup mount. A test applies
   cgroup v2's weight sharing to the files Yulius writes. The VM measurement follows the deployment,
   as with ADR-0039.

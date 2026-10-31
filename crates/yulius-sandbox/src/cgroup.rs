@@ -1232,6 +1232,77 @@ mod tests {
         Ok(())
     }
 
+    /// The share of the CPU under `root` that cgroup v2 gives the busy group `group` when the
+    /// groups in `busy` all want more than they get: at each level, its `cpu.weight` (100 when
+    /// unset) over the weights of its siblings that hold a busy group.
+    fn cpu_share(root: &Path, busy: &[PathBuf], group: &Path) -> f64 {
+        let weight = |dir: &Path| {
+            std::fs::read_to_string(dir.join("cpu.weight"))
+                .ok()
+                .and_then(|w| w.trim().parse::<f64>().ok())
+                .unwrap_or(100.0)
+        };
+        let mut share = 1.0;
+        let mut node = group;
+        while node != root {
+            let Some(parent) = node.parent() else {
+                return 0.0;
+            };
+            let siblings: f64 = std::fs::read_dir(parent)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir() && busy.iter().any(|b| b.starts_with(path)))
+                .map(|path| weight(&path))
+                .sum();
+            share *= weight(node) / siblings;
+            node = parent;
+        }
+        share
+    }
+
+    /// SPEC-362 CSW-006: one sandbox runs a CI job while its agents and those of two other
+    /// sandboxes build. With the weights Yulius writes the CI job gets 4/7 of the host and all
+    /// local builds 3/7; with every sandbox at 100 (before) CI got 4/15 and the builds 11/15.
+    #[test]
+    fn under_load_ci_gets_more_of_the_host_than_local_builds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+        let sandboxes = dir.parent().ok_or("sandboxes")?.to_path_buf();
+        let mut agents = Vec::new();
+        let mut ci = PathBuf::new();
+        for sandbox in ["s1", "s2", "s3"] {
+            let groups = delegation.sandbox_group(sandbox, &Limits::default())?;
+            agents.push(groups.agents);
+            if sandbox == "s1" {
+                ci = groups.ci;
+            }
+        }
+        let busy: Vec<PathBuf> = agents.iter().cloned().chain([ci.clone()]).collect();
+        let builds = |busy: &[PathBuf]| -> f64 {
+            agents
+                .iter()
+                .map(|leaf| cpu_share(&sandboxes, busy, leaf))
+                .sum()
+        };
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        // Before: the sandboxes weigh the same, so CI gets a third of four fifths.
+        let (ci_before, builds_before) = (cpu_share(&sandboxes, &busy, &ci), builds(&busy));
+        assert!(close(ci_before, 4.0 / 15.0), "{ci_before}");
+        assert!(ci_before < builds_before, "{ci_before} vs {builds_before}");
+        // While the job runs.
+        delegation.set_ci_jobs("s1", 1)?;
+        let (ci_now, builds_now) = (cpu_share(&sandboxes, &busy, &ci), builds(&busy));
+        assert!(close(ci_now, 4.0 / 7.0), "{ci_now}");
+        assert!(close(builds_now, 3.0 / 7.0), "{builds_now}");
+        assert!(ci_now > builds_now, "{ci_now} vs {builds_now}");
+        // Idle CPU still goes to whoever wants it: with no CI work the agents share everything.
+        let only_agents = agents.clone();
+        assert!(close(builds(&only_agents), 1.0));
+        Ok(())
+    }
+
     /// SPEC-362 CSW-005: without the `cpu` controller nothing is weighted.
     #[test]
     fn without_the_cpu_controller_ci_jobs_weigh_nothing() -> Result<(), Box<dyn std::error::Error>>
