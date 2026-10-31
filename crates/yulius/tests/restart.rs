@@ -433,7 +433,9 @@ async fn turn_closed_while_down(
 }
 
 /// MSB-007: after a restart, the task whose turn closed while Yulius was down is told "Yulius is
-/// back; continue" once; a task idle since before the outage is not.
+/// back; continue" once. A task idle since before the outage is not, nor one whose turn closed
+/// after `alive-at` but whose Stop Yulius answered (review round 1: an update 10 s after it), nor
+/// one that waits for a person.
 #[test]
 fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
     use crate::pool_supervision::{
@@ -448,21 +450,28 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
         ..crate::support::agents::FakeAgentOptions::default()
     };
 
-    // Two tasks answer their first message; then Yulius goes down.
+    // Four tasks answer their first message; then Yulius goes down.
     let first = runtime()?;
-    let (cut, quiet, down_since) = first.block_on(async {
+    let (cut, quiet, answered, asked, down_since) = first.block_on(async {
         let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent())?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let cut = new_task(&app, &sandbox, &user, "Cut").await?;
         let quiet = new_task(&app, &sandbox, &user, "Quiet").await?;
-        for (id, title) in [(&cut, "Cut"), (&quiet, "Quiet")] {
+        let answered = new_task(&app, &sandbox, &user, "Answered").await?;
+        let asked = new_task(&app, &sandbox, &user, "Asked").await?;
+        for (id, title) in [
+            (&cut, "Cut"),
+            (&quiet, "Quiet"),
+            (&answered, "Answered"),
+            (&asked, "Asked"),
+        ] {
             wait_for("the first answer", Duration::from_secs(30), || {
                 let shown = screen(&app, id);
                 async move { shown.contains(&format!("ECHO: {title}: answer with an echo")) }
             })
             .await?;
         }
-        Ok::<_, Box<dyn std::error::Error>>((cut, quiet, app.now()))
+        Ok::<_, Box<dyn std::error::Error>>((cut, quiet, answered, asked, app.now()))
     })?;
     first.shutdown_timeout(Duration::from_secs(5));
 
@@ -472,21 +481,54 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
         // While Yulius was down, the cut task's wait died and its agent ended a turn.
         // Transcript times are whole seconds: the first one after Yulius went down.
         let closed = (down_since.0 / 1000 + 1) * 1000;
-        turn_closed_while_down(&app, &data, &cut, closed).await?;
+        for id in [&cut, &answered, &asked] {
+            turn_closed_while_down(&app, &data, id, closed).await?;
+        }
+        // Yulius answered the answered task's Stop before it stopped answering.
+        let run_dir = app
+            .deps
+            .store
+            .live_attempt(&answered)
+            .await?
+            .ok_or("attempt")?
+            .run_dir;
+        std::fs::write(
+            std::path::Path::new(&run_dir).join("stop-answered"),
+            closed.to_string(),
+        )?;
+        // The asked task waits for a person.
+        app.deps
+            .store
+            .set_task_needs_you(
+                &asked,
+                Some(&yulius_app::needs_you::NeedsYouRecord {
+                    action: "Approve the plan".into(),
+                    happened: None,
+                    problem: None,
+                    decision: true,
+                    link: None,
+                    at: closed,
+                }),
+                yulius_domain::time::Timestamp(closed),
+            )
+            .await?;
         while app.now().0 <= closed {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         let started = app.now();
         app.reconcile().await?;
-        // Each pass wakes what has replayed so far: it ends once the cut task is woken.
+        // Each pass wakes what has replayed so far: passes run until the cut task is woken, and
+        // for 2 s after, as production repeats them (MSB-007).
         let deadline = Instant::now() + Duration::from_secs(30);
-        let woken = loop {
-            let woken = app.wake_after_outage(down_since, started).await;
-            if !woken.is_empty() || Instant::now() >= deadline {
-                break woken;
+        let mut woken = Vec::new();
+        let mut settle: Option<Instant> = None;
+        while Instant::now() < deadline && settle.is_none_or(|at| Instant::now() < at) {
+            woken.extend(app.wake_after_outage(down_since, started).await);
+            if !woken.is_empty() && settle.is_none() {
+                settle = Some(Instant::now() + Duration::from_secs(2));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
-        };
+        }
         assert_eq!(woken, vec![cut.clone()], "only the task cut by the outage");
         wait_for("the wake-up typed", Duration::from_secs(30), || {
             let shown = screen(&app, &cut);
@@ -500,8 +542,9 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
             "{}",
             screen(&app, &quiet)
         );
-        stop(&app, &cut).await?;
-        stop(&app, &quiet).await?;
+        for id in [&cut, &quiet, &answered, &asked] {
+            stop(&app, id).await?;
+        }
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -575,5 +618,34 @@ fn a_server_failing_every_request_ends_the_wait_after_a_few_tries() -> TestResul
     assert!(said.contains("HTTP 500"), "{said}");
     assert!(!said.contains("cannot be reached"), "not an outage: {said}");
     assert!(took < Duration::from_secs(20), "{took:?}");
+    Ok(())
+}
+
+/// MSB-006: a start reads when the server before was last alive, and writes `alive-at` itself;
+/// with no `alive-at`, nothing is known and nobody will be woken.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_start_reads_alive_at_and_refreshes_it() -> TestResult {
+    use yulius_app::outage::{ALIVE_FILE, read_alive_at};
+    let h = harness()?;
+    let data = h.app.config.data_dir.clone();
+    let _ = std::fs::remove_file(data.join(ALIVE_FILE));
+    let first = h.app.start_outage_watch();
+    assert_eq!(first.down_since, None, "no alive-at: unknown");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while read_alive_at(&data).is_none() {
+        assert!(Instant::now() < deadline, "alive-at was never written");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    std::fs::write(data.join(ALIVE_FILE), "1000")?;
+    let next = App::new(h.app.config.clone(), h.app.deps.clone());
+    let second = next.start_outage_watch();
+    assert_eq!(
+        second.down_since,
+        Some(yulius_domain::time::Timestamp(1000))
+    );
+    while read_alive_at(&data) == Some(yulius_domain::time::Timestamp(1000)) {
+        assert!(Instant::now() < deadline, "alive-at was not refreshed");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     Ok(())
 }

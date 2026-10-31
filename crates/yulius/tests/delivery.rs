@@ -3978,10 +3978,10 @@ async fn an_armed_merge_green_during_a_restart_merges_at_the_start() -> TestResu
     f.h.github.set_checks(&t.head, ChecksState::Success);
     let next = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
     next.resume_armed_merges().await;
-    assert_ne!(
+    assert_eq!(
         f.delivery("t1").await?["stage"],
-        "pr_open",
-        "merged at the start"
+        "production_done",
+        "merged at the start (this profile's only branch)"
     );
     Ok(())
 }

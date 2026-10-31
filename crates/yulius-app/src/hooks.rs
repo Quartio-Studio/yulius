@@ -206,8 +206,10 @@ impl App {
         );
         let now = self.now().0;
         if reply.is_ok() && live {
-            // An answered Stop, whatever Yulius decided.
+            // An answered Stop, whatever Yulius decided. Also kept in the run directory: after a
+            // restart, a turn whose Stop was answered is not woken (SPEC-358 MSB-007).
             runtime.stop_answered_ms.store(now, Ordering::SeqCst);
+            crate::outage::mark_stop_answered(std::path::Path::new(&ctx.attempt.run_dir), now);
         } else if reply.is_err()
             && crate::finish::failed_stop_settles(
                 live,

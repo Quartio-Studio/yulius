@@ -15,7 +15,7 @@ On 2026-10-31 every Yulius restart left the task sessions of the quartio-v2 sand
 Yulius MCP connection. A session could not call `ci_status`, `ci_rerun` or `delivery_merge` until
 a person ran `/mcp`.
 
-Claude Code 2.1.292 retries a closed HTTP MCP transport 5 times, over about 30 seconds. It retries
+Claude Code 2.1.292 retries a closed HTTP MCP transport 5 times, about a minute in all. It retries
 a failed first connect 3 times, and only for some errors. Then it leaves the server failed. No
 hook output or setting reconnects it. A Yulius restart or update takes longer than that, so every
 outage cut the sessions off for good.
