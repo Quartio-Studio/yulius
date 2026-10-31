@@ -1435,7 +1435,16 @@ Vidoc is an optional instance service, like Jev
   (`shell_env`) and CI jobs (`ci_job_env`) get
   `YULIUS_VIDOC=off`, on which the scanner says "disabled" and sends nothing (in CI the skip
   code); `applied_agent_secrets` leaves the instance key out, `ci_scans` adds no built-in job, and
-  the briefing and onboarding prompt say it is off (`VidocBriefing::Off`).
+  the briefing and onboarding prompt say it is off (`VidocBriefing::Off`). The sandbox's admins
+  flip it on the CI/CD page's Security scan card (`pages/cividoc.js`;
+  [SPEC-359](../.ai/specs/SPEC-359-vidoc-can-be-turned-off-in-a-sandbox-s-o.md),
+  [decision 0245](decisions/0245-a-sandboxs-admins-switch-its-vidoc-scans-on-its-ci-cd-page.md)),
+  which reads `GET /api/sandboxes/{sid}/vidoc` (`App::sandbox_vidoc_view`: the project and instance
+  switches, `.config/vidoc.toml` at `origin/<integration>` read by
+  `yulius_domain::ci::vidoc::repository_vidoc`, which wins when off, and the last
+  `delivery.vidoc.update` audit entry). Runs, terminals and CI jobs get `YULIUS_VIDOC_SWITCH`
+  (`App::vidoc_switch_env`, the CI/CD page's address), which the scanner names when Vidoc refuses
+  the key or its quota is used up.
 - **The instance switch** ([SPEC-356](../.ai/specs/SPEC-356-vidoc-security-should-be-optional-and-su.md),
   [decision 0242](decisions/0242-a-superadmin-switches-vidoc-off-for-the-whole-instance.md)).
   `PUT /api/admin/vidoc/enabled` (superadmin) sets `vidoc_off_at`/`vidoc_off_by` on the `instance`

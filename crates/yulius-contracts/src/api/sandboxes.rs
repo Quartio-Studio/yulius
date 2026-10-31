@@ -172,6 +172,35 @@ pub struct UpdateSandbox {
     pub vidoc: Option<bool>,
 }
 
+/// `GET /api/sandboxes/{sid}/vidoc`: whether the sandbox scans with Vidoc, and why not
+/// (SPEC-359 VSB-001). The switch itself is `profile.vidoc`, changed by `PATCH
+/// /api/sandboxes/{sid}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxVidocView {
+    /// The project's own switch (SPEC-338): the sandbox view's `profile.vidoc`.
+    pub project: bool,
+    /// The instance switch (SPEC-356): off, no project scans.
+    pub instance: bool,
+    /// Whether a Vidoc key reaches the project while it is on: the instance key, or its own
+    /// `VIDOC_API_KEY` agent secret. Without one a scan ends "not run".
+    pub key: bool,
+    /// `.config/vidoc.toml` at the integration branch's head (ADR-0107): `on` (also without the
+    /// file), `off` (`enabled = false`, which wins) or `unreadable`.
+    pub repository: String,
+    /// Why the repository's file cannot be read, in words.
+    pub repository_problem: Option<String>,
+    /// The integration branch the repository's file is read from.
+    pub branch: String,
+    /// Whether a scan runs: the project, the instance and the repository all on.
+    pub scans: bool,
+    /// Whether the caller may change the project's switch (sandbox admin or superadmin).
+    pub can_change: bool,
+    /// Who changed the project's switch last (login), if anyone.
+    pub changed_by: Option<String>,
+    /// When (RFC 3339).
+    pub changed_at: Option<String>,
+}
+
 /// `GET /api/github/repositories` item.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableRepo {

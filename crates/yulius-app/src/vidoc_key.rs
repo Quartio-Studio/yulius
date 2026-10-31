@@ -155,6 +155,26 @@ impl App {
         self.vidoc_enabled() && crate::delivery::vidoc_switched_on(sandbox)
     }
 
+    /// `YULIUS_VIDOC_SWITCH`, the address of `sandbox`'s CI/CD page, whose Security scan card
+    /// holds its Vidoc switch (SPEC-359 VSB-006): the scanner names it when the key fails. None for
+    /// a playground, which has no switch.
+    #[must_use]
+    pub fn vidoc_switch_env(
+        &self,
+        sandbox: &crate::model::SandboxRecord,
+    ) -> Option<(String, String)> {
+        (!sandbox.is_playground()).then(|| {
+            (
+                "YULIUS_VIDOC_SWITCH".to_owned(),
+                format!(
+                    "{}/s/{}/ci",
+                    self.config.public_url.trim_end_matches('/'),
+                    sandbox.slug
+                ),
+            )
+        })
+    }
+
     /// What `sandbox`'s agents are told about the Vidoc scan: off when a superadmin switched
     /// Vidoc off for the instance (SPEC-356 VIO-003) or a person switched its scans off (SPEC-338
     /// VOF-003), whatever key it has; else on with the instance key.

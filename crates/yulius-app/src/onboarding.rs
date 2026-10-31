@@ -186,10 +186,10 @@ pub fn security_setup(vidoc: VidocBriefing) -> &'static str {
         VidocBriefing::Off => {
             "Security scan: Vidoc is turned off for this project in Yulius, so \
          Yulius CI runs no security scan; add none, and say in your summary that the Vidoc scan \
-         was skipped (turned off for this project): once an instance superadmin switches it on \
-         again (Settings, Instance, the Vidoc card) and a Vidoc key reaches it, Yulius CI runs it \
-         by itself and a task following skill infra-bootstrap adds \
-         the AGENTS.md rule."
+         was skipped (turned off for this project): once a sandbox admin switches it on again on \
+         this sandbox's CI/CD page (the Security scan card, `$YULIUS_VIDOC_SWITCH`; a superadmin \
+         also in Settings, Instance) and a Vidoc key reaches it, Yulius CI runs it by itself and \
+         a task following skill infra-bootstrap adds the AGENTS.md rule."
         }
         VidocBriefing::OffForInstance => {
             "Security scan: a superadmin switched Vidoc off for this whole Yulius instance, so \
@@ -1939,6 +1939,14 @@ mod tests {
         );
         assert!(!off.contains("security-scan --ci"), "{off}");
         assert!(!off.contains("Add the AGENTS.md rule"), "{off}");
+        // SPEC-359 VSB-006: the sandbox's own admins switch it on again on its CI/CD page.
+        assert!(
+            off.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .contains("a sandbox admin switches it on again on this sandbox's CI/CD page"),
+            "{off}"
+        );
         // SPEC-356 VIO-003: switched off for the instance, the same, saying so.
         let instance_off = security_setup(VidocBriefing::OffForInstance);
         assert!(

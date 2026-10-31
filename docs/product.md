@@ -224,7 +224,10 @@ watching, steering and unblocking.
   switch a project's scans off, for example while the key's quota is used up, on the Instance
   page's Vidoc card or when adding the project ("Scan pull requests with Vidoc"); it then scans
   nothing, its scan and CI job say "disabled" (Skipped), and its agents ask nobody about the key
-  (SPEC-338, ADR-0229). A superadmin can switch Vidoc off for the whole instance on the same card
+  (SPEC-338, ADR-0229). The sandbox's own admins switch the same setting on its CI/CD page (the
+  Security scan card), which also says when the repository's committed `.config/vidoc.toml` or
+  the instance has Vidoc off and who changed it last; a scan whose key is refused or out of quota
+  names that page (SPEC-359, ADR-0245). A superadmin can switch Vidoc off for the whole instance on the same card
   ("Scan every project with Vidoc"), keeping the key, also one from the server's configuration
   file: every project then scans nothing in the same way until it is switched on again, and each
   project keeps its own choice for then (SPEC-356, ADR-0242).

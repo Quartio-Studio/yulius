@@ -188,3 +188,175 @@ test('a failed instance switch goes back and says why', async ({ app, screen }) 
   await expect(instance).toBeEnabled();
   await expect(screen.getByRole('switch', 'Vidoc scans for studio')).toBeEnabled();
 });
+
+// SPEC-359: the sandbox's own Security scan card on its CI/CD page, the same switch.
+
+test('a sandbox admin switches its Vidoc scans off and on from the CI/CD page, and the Instance card agrees', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci', '&vidoc=config'));
+  const card = screen.getByRole('region', 'Security scan (Vidoc)');
+  const scan = card.getByRole('switch', 'Scan this project with Vidoc');
+  await expect(scan).toBeChecked();
+  await expect(scan).toBeEnabled();
+  await expect(card.getByText(/agents scan their changes/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await scan.click();
+  await expect(screen.getByText(/Vidoc scans are off for studio/)).toBeVisible();
+  await expect(scan).not.toBeChecked();
+  await expect(card.getByText(/nobody is asked about the key or its quota/)).toBeVisible();
+  await expect(card.getByText(/Last changed by mkarp/)).toBeVisible();
+  expect(await switchOf(browser, 'studio')).toBe(false);
+
+  // The Instance page's card shows the same switch, and turns it on again.
+  await browser.evaluate(() => { location.hash = '#/admin/instance'; return null; });
+  const studio = screen.getByRole('switch', 'Vidoc scans for studio');
+  await expect(studio).not.toBeChecked();
+  await studio.click();
+  await expect(studio).toBeChecked();
+  await browser.evaluate(() => { location.hash = '#/s/studio/ci'; return null; });
+  await expect(screen.getByRole('region', 'Security scan (Vidoc)').getByRole('switch', 'Scan this project with Vidoc')).toBeChecked();
+});
+
+test('a member without admin access sees the sandbox’s Vidoc switch but cannot change it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci', '&vidoc=config&role=member'));
+  const card = screen.getByRole('region', 'Security scan (Vidoc)');
+  const scan = card.getByRole('switch', 'Scan this project with Vidoc');
+  await expect(scan).toBeChecked();
+  await expect(scan).toBeDisabled();
+  await expect(card.getByText(/Only this sandbox’s admins/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('a repository that turned Vidoc off in .config/vidoc.toml is said, and the switch offers no way on', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci', '&vidoc=config&vidoc_repo=off'));
+  const card = screen.getByRole('region', 'Security scan (Vidoc)');
+  const scan = card.getByRole('switch', 'Scan this project with Vidoc');
+  await expect(card.getByText(/The repository turned Vidoc off/)).toBeVisible();
+  await expect(scan).not.toBeChecked();
+  await expect(scan).toBeDisabled();
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('the sandbox’s card says when the instance switched Vidoc off, keeping the project’s choice', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/ci', '&vidoc=config&vidoc_off=1'));
+  const card = screen.getByRole('region', 'Security scan (Vidoc)');
+  await expect(card.getByText(/A superadmin switched Vidoc off for the whole instance/)).toBeVisible();
+  const scan = card.getByRole('switch', 'Scan this project with Vidoc');
+  await expect(scan).toBeChecked();
+  await expect(scan).toBeDisabled();
+});
+
+test('the sandbox’s switch keeps the keyboard, and a refused change goes back and says why', async ({ app, browser, screen }) => {
+  // SPEC-359 review round 1: VSB-004's failure and focus.
+  await app.open(mock('/s/studio/ci', '&vidoc=config'));
+  const scan = screen.getByRole('region', 'Security scan (Vidoc)').getByRole('switch', 'Scan this project with Vidoc');
+  await scan.click();
+  await expect(scan).not.toBeChecked();
+  await expect(scan).toBeEnabled();
+  const focused = await browser.evaluate(() => (document.activeElement as HTMLElement | null)?.getAttribute('aria-label') ?? null);
+  expect(focused).toBe('Scan this project with Vidoc');
+
+  await app.open(mock('/s/studio/ci', '&vidoc=config&vidoc_patch_fail=1'));
+  const refused = screen.getByRole('region', 'Security scan (Vidoc)').getByRole('switch', 'Scan this project with Vidoc');
+  await refused.click();
+  await expect(screen.getByText(/Couldn’t change the Vidoc scans/)).toBeVisible();
+  await expect(refused).toBeChecked();
+  await expect(refused).toBeEnabled();
+});
+
+test('the sandbox’s card says an unreadable repository file and a missing key, and follows changes made elsewhere', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci', '&vidoc=config&vidoc_repo=bad'));
+  let card = screen.getByRole('region', 'Security scan (Vidoc)');
+  await expect(card.getByText(/must set enabled = true or enabled = false .* scans end “not run” until it is fixed/)).toBeVisible();
+  await expect(card.getByRole('switch', 'Scan this project with Vidoc')).toBeEnabled();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await app.open(mock('/s/studio/ci'));
+  card = screen.getByRole('region', 'Security scan (Vidoc)');
+  await expect(card.getByText(/no Vidoc key reaches this project/)).toBeVisible();
+
+  // Switched off elsewhere (the Instance card in another tab, a live update) while the card is shown.
+  const scan = card.getByRole('switch', 'Scan this project with Vidoc');
+  await expect(scan).toBeChecked();
+  await browser.evaluate(() => {
+    const db = (window as unknown as Mocked).__yuliusMock;
+    db.sandboxes.find((sb) => sb.slug === 'studio')!.profile.vidoc = false;
+    db.resyncNow();
+  });
+  await expect(scan).not.toBeChecked();
+  await expect(card.getByText(/^Off: agents and CI scan nothing/)).toBeVisible();
+});
+
+type Counted = { __yuliusMock: { ciReads?: number; vidocReads?: number; heldWaiting?: number; release: () => void } };
+const reads = (browser: Browser) => browser.evaluate(() => {
+  const db = (window as unknown as Counted).__yuliusMock;
+  return { ci: db.ciReads || 0, vidoc: db.vidocReads || 0 };
+});
+
+test('refreshing the CI runs does not read the Vidoc switch again', async ({ app, browser, screen }) => {
+  // SPEC-359 review round 4: the view costs Git reads on the server; it changes only with a switch.
+  await app.open(mock('/s/studio/ci', '&vidoc=config'));
+  await expect(screen.getByRole('region', 'Security scan (Vidoc)')).toBeVisible();
+  // The Now summary reads the runs too: counted from here.
+  const start = await reads(browser);
+  expect(start.vidoc).toBe(1);
+  const check = screen.getByRole('button', 'Check for commits');
+  await check.click();
+  await expect.poll(async () => (await reads(browser)).ci).toBeGreaterThan(start.ci);
+  await expect(check).toBeEnabled();
+  const once = (await reads(browser)).ci;
+  await check.click();
+  await expect.poll(async () => (await reads(browser)).ci).toBeGreaterThan(once);
+  expect((await reads(browser)).vidoc).toBe(1);
+  // Its own change reads it again.
+  await screen.getByRole('switch', 'Scan this project with Vidoc').click();
+  await expect.poll(async () => (await reads(browser)).vidoc).toBe(2);
+});
+
+test('a refresh while the switch is sent shows the change on its way, disabled', async ({ app, browser, screen }) => {
+  // SPEC-359 review round 4: the `pending` state.
+  await app.open(mock('/s/studio/ci', '&vidoc=config&holdpost=/api/sandboxes/sb_studio'));
+  const scan = () => screen.getByRole('region', 'Security scan (Vidoc)').getByRole('switch', 'Scan this project with Vidoc');
+  await scan().click();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Counted).__yuliusMock.heldWaiting || 0)).toBe(1);
+  const before = (await reads(browser)).ci;
+  await screen.getByRole('button', 'Check for commits').click();
+  await expect.poll(async () => (await reads(browser)).ci).toBeGreaterThan(before);
+  await expect(scan()).not.toBeChecked();
+  await expect(scan()).toBeDisabled();
+  await browser.evaluate(() => { (window as unknown as Counted).__yuliusMock.release(); return null; });
+  await expect(screen.getByText(/Vidoc scans are off for studio/)).toBeVisible();
+  await expect(scan()).not.toBeChecked();
+  await expect(scan()).toBeEnabled();
+  expect(await switchOf(browser, 'studio')).toBe(false);
+});
+
+type Holding = { __yuliusMock: { holdVidocReads?: boolean; vidocHolds: unknown[]; releaseVidoc: () => void } };
+
+test('a refresh that overtakes the read after a change still shows the change', async ({ app, browser, screen }) => {
+  // SPEC-359 review round 5: the read after a change was dropped for a newer refresh, which drew
+  // the view from before the change.
+  await app.open(mock('/s/studio/ci', '&vidoc=config'));
+  const scan = () => screen.getByRole('region', 'Security scan (Vidoc)').getByRole('switch', 'Scan this project with Vidoc');
+  await expect(scan()).toBeChecked();
+  await browser.evaluate(() => { (window as unknown as Holding).__yuliusMock.holdVidocReads = true; return null; });
+  await scan().click();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Holding).__yuliusMock.vidocHolds.length)).toBe(1);
+  // The card drawn now (the change, sent); a newer refresh either draws it again or reads anew.
+  await browser.evaluate(() => { (document.querySelector('#vidoc') as HTMLElement).dataset.drawn = 'before'; return null; });
+  await screen.getByRole('button', 'Check for commits').click();
+  await expect.poll(() => browser.evaluate(() => {
+    const redrawn = (document.querySelector('#vidoc') as HTMLElement | null)?.dataset.drawn !== 'before';
+    return redrawn || (window as unknown as Holding).__yuliusMock.vidocHolds.length === 2;
+  })).toBe(true);
+  await expect(scan()).not.toBeChecked();
+  await browser.evaluate(() => {
+    const db = (window as unknown as Holding).__yuliusMock;
+    db.holdVidocReads = false;
+    db.releaseVidoc();
+    return null;
+  });
+  await expect(scan()).not.toBeChecked();
+  await expect(scan()).toBeEnabled();
+  await expect(screen.getByRole('region', 'Security scan (Vidoc)').getByText(/^Off: agents and CI scan nothing/)).toBeVisible();
+});

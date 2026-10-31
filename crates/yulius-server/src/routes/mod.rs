@@ -289,6 +289,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             post(sessions::continue_session),
         )
         .route("/api/sandboxes/{sid}", patch(delivery::update_sandbox))
+        .route("/api/sandboxes/{sid}/vidoc", get(delivery::sandbox_vidoc))
         .route("/api/delivery/presets", get(delivery::presets))
         .route("/api/sandboxes/{sid}/git", get(git::overview))
         .route("/api/tasks/{tid}/delivery", get(delivery::task_delivery))

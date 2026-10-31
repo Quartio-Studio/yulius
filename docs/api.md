@@ -116,6 +116,7 @@ true}` adds the tool's record as `structuredContent`. `initialize` answers
 | POST | `/api/playgrounds?name=<name>` | anyone signed in | raw body: a gzip tar of the folder (`files/…` its working tree, `git/…` its `.git`, of which only `HEAD`, `packed-refs`, `shallow`, `objects/` and `refs/` are taken) → 201 `Sandbox` (`playground: true`); 409 for a person who keeps 10 playgrounds (the superadmin is not counted); at most 1 GiB (refused from `Content-Length` before it is read) and the import bounds once unpacked (2 GiB, 200 000 entries); 422 for an empty, unreadable or over-limit archive, nothing kept (SPEC-099) |
 | GET | `/api/sandboxes/{sid}` | read | → `Sandbox` |
 | PATCH | `/api/sandboxes/{sid}` | admin | `{"profile": Profile}` → `Sandbox` |
+| GET | `/api/sandboxes/{sid}/vidoc` | read | `SandboxVidocView`: the project's, instance's and repository's Vidoc switches, `can_change`, the last change (SPEC-359) |
 | GET | `/api/sandboxes/{sid}/onboarding/plan` | read | → `{"title", "steps": [..], "task_number"}`: what onboarding does, its task's title and steps, or while that task does not exist yet (a `pending` sandbox, SPEC-097) the ones it would be created with (`task_number: null`); reads only |
 | POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`); an operator's recovery path for an onboarding that cannot finish: the web UI offers no skip (ADR-0076) |
 | POST | `/api/sandboxes/{sid}/onboarding/approve` | write, browser session or `operate` token | Optional body `{notes?}`: the hand-over of the person's agent (≤ 24 KiB, 422 beyond; redacted) added to the onboarding task's request before it starts; 409 with notes once onboarding started (SPEC-256). Start onboarding → `Sandbox`; creates the onboarding task if it has none and starts it (`pending` → `preparing`); idempotent while `preparing` without notes; 403 for a `cli` token (`yulius onboard` only uploads, SPEC-051; an `operate` token is the person's own agent, SPEC-247); 409 when nothing awaits preparation or the task cannot start |
@@ -234,6 +235,12 @@ SPEC-051, SPEC-247). Only Claude Code sessions are imported.
 always a boolean in responses, and a `profile` update keeps the switch whatever it carries.
 `POST /api/sandboxes` import and create take `"vidoc": false` to add the project switched off,
 before its onboarding starts.
+`GET /api/sandboxes/{sid}/vidoc` (read) answers `SandboxVidocView` (SPEC-359, ADR-0245): `project`
+(the switch, as `profile.vidoc`), `instance` (the instance switch), `key` (a Vidoc key reaches the
+project when on), `repository` (`on`, `off` or `unreadable`: `.config/vidoc.toml` at the
+integration head, `off` winning) with `repository_problem` and `branch`, `scans` (all on),
+`can_change` (sandbox admin or superadmin, the PATCH's permission), and `changed_by`/`changed_at`
+(the last `delivery.vidoc.update`); `422` for a playground.
 `PATCH /api/sandboxes/{sid}` validates the profile (branch names, distinct branches, environment
 names, single-line commands ≤ 2000 bytes, `verify: command` needs a command, ≤ 8 environments) and
 relabels it: `preset` stays a named preset only while every setting equals that preset's

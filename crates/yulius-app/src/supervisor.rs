@@ -2122,6 +2122,8 @@ impl App {
         if !self.vidoc_scans_on(sandbox) {
             env.push(("YULIUS_VIDOC".into(), "off".into()));
         }
+        // Where its switch is, for a scan whose key fails to point to (SPEC-359 VSB-006).
+        env.extend(self.vidoc_switch_env(sandbox));
         // Parallel tasks share the sandbox: each plans for its budget (a third of the sandbox by
         // default), in YULIUS_CPUS and the repository's own variables (SPEC-082 RES-005). It
         // replaces the CARGO_BUILD_JOBS Yulius set for every repository (OOM kills of

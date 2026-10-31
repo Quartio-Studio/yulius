@@ -870,16 +870,18 @@ fn containers(input: &BriefingInput<'_>) -> String {
 
 /// The security scan, when the instance has a Vidoc key (SPEC-195 VIB-001, SPEC-217 VDP-002):
 /// what it does and fails on, the agent's call on low findings, and that CI runs it built in;
-/// nothing without a key; that it is off when a person switched it off (SPEC-338 VOF-003).
+/// nothing without a key; that it is off when a person switched it off (SPEC-338 VOF-003); and
+/// where the sandbox's switch is when the key fails (SPEC-359 VSB-006).
 fn security_scan(input: &BriefingInput<'_>) -> String {
     match input.vidoc {
         VidocBriefing::Absent => return String::new(),
         VidocBriefing::Off => {
             return "## Security scan\n\nVidoc is turned off for this project in Yulius: \
                     `yulius security-scan` prints \"Security scan disabled\" and sends \
-                    nothing, and a CI scan job ends skipped. Report it as disabled, never as passed, and do not ask \
-                    anyone about Vidoc's key or quota: an instance superadmin switches it on \
-                    again (Settings, Instance, the Vidoc card).\n\n"
+                    nothing, and a CI scan job ends skipped. Report it as disabled, never as \
+                    passed, and do not ask anyone about Vidoc's key or quota: a sandbox admin \
+                    switches it on again at `$YULIUS_VIDOC_SWITCH` (a superadmin also in \
+                    Settings, Instance).\n\n"
                 .to_owned();
         }
         VidocBriefing::OffForInstance => {
@@ -891,13 +893,22 @@ fn security_scan(input: &BriefingInput<'_>) -> String {
         }
         VidocBriefing::On => {}
     }
-    "## Security scan\n\nThis instance has a Vidoc key: `yulius security-scan` sends the files your \
+    let mut text = "## Security scan\n\nThis instance has a Vidoc key: `yulius security-scan` sends the files your \
      branch changed (`--all`: the whole repository) to Vidoc's vidoc-1. It exits 1 on critical \
      or high findings, or medium ones in your changed lines; decide on low ones there (fix, or \
      say why not in Evidence); 2 is not run and 3 incomplete (rerun it), never a pass. A \
      project's CI runs it built in (`yulius \
-     security-scan --ci`) and files findings outside your change as issues.\n\n"
-        .to_owned()
+     security-scan --ci`) and files findings outside your change as issues."
+        .to_owned();
+    // A playground has no switch (SPEC-359 VSB-006).
+    if !input.playground {
+        text.push_str(
+            " If Vidoc refuses the key or its quota is used up, point any `needs_you` to the \
+             sandbox's Vidoc switch (`$YULIUS_VIDOC_SWITCH`), where its admins turn it off.",
+        );
+    }
+    text.push_str("\n\n");
+    text
 }
 
 /// The goal quote's length, before a tight budget shrinks it (#555).
@@ -2148,6 +2159,10 @@ mod tests {
             "decide on low ones there",
             "`yulius security-scan --ci`",
             "files findings outside your change as issues",
+            // SPEC-359 VSB-006: a failing key points to the sandbox's own switch.
+            "refuses the key or its quota is used up",
+            "`needs_you`",
+            "`$YULIUS_VIDOC_SWITCH`",
         ] {
             assert!(with.contains(present), "{present} not in {with}");
         }
@@ -2155,7 +2170,15 @@ mod tests {
             vidoc: VidocBriefing::On,
             ..base(&profile, &layout)?
         });
-        assert!(section.len() <= 480, "{} bytes: {section}", section.len());
+        assert!(section.len() <= 640, "{} bytes: {section}", section.len());
+        // Review round 1: a playground has no switch, and no `YULIUS_VIDOC_SWITCH`.
+        let playground = security_scan(&BriefingInput {
+            vidoc: VidocBriefing::On,
+            playground: true,
+            ..base(&profile, &layout)?
+        });
+        assert!(playground.contains("## Security scan"), "{playground}");
+        assert!(!playground.contains("YULIUS_VIDOC_SWITCH"), "{playground}");
         let without = build_briefing(&base(&profile, &layout)?, DEFAULT_BUDGET_BYTES);
         assert!(!without.contains("## Security scan"), "{without}");
         assert!(!without.contains("security-scan"), "{without}");
@@ -2181,6 +2204,8 @@ mod tests {
             "Security scan disabled",
             "never as passed",
             "do not ask anyone about Vidoc's key or quota",
+            // SPEC-359 VSB-006: the sandbox's own admins switch it on again.
+            "a sandbox admin switches it on again at `$YULIUS_VIDOC_SWITCH`",
         ] {
             assert!(off.contains(present), "{present} not in {off}");
         }
