@@ -133,3 +133,27 @@ site.
   places since. The owner was asked (needs_you) to confirm from quartio-v2 and given the
   journal and `nsenter … ss` recipe in case active holders fill the share again before this
   fix is deployed.
+
+## Review
+
+Independent reviews in fresh sessions (skill `yulius-review`), read-only over
+`origin/dev...HEAD`:
+
+- Round 1 on 1fb0e847: approve with no critical or major findings. It found seven minor
+  own-code findings and four nits, all fixed in this pull request. The tests were strengthened
+  first (025a7e09, red: the refusal texts and `Busier` did not exist).
+  - Counts for the refusal were computed on every connection under the table's lock. Now they
+    are computed only on a refusal.
+  - The refusal counted runs whose connections were all held in flight, so "no other run holds
+    2 more" could be false. `most_of_others` now uses the same takeable-aware choice as
+    admission (unit test).
+  - A sandbox-level take was logged as a run's, with the sandbox's count.
+    `Evicted::busier` is now `Busier::Owner(n)` or `Busier::Key(n)`, each with its own warning.
+  - Test gaps closed: the two refusal texts, a run holding just one more than the asker, a
+    fully held busiest run passed over for the next, and which tunnel closes at the full proxy.
+  - The operations guide's "only when every connection was active" and its list of warnings
+    now cover the new rule. The ADR's consequence about finding the run's processes was
+    reworded.
+  - Nits: `Open`'s generic order matches `Evicted`'s; the `Full` texts mention the busier
+    owner; the refusal reads "the most of the sandbox's runs".
+
