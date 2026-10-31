@@ -527,4 +527,26 @@ mod tests {
         assert_eq!(table.admit_by("s5", "v", 9, 40).err(), Some(Full::Total));
         Ok(())
     }
+
+    /// SPEC-357 ESR-002, ESR-003 (review round 3): a connection idle past the floor goes before an
+    /// active one is taken from the busiest, at a key's share and at the table's limit, also when
+    /// the idle one is not the busiest's.
+    #[test]
+    fn an_idle_connection_goes_before_the_busiest_gives_way() -> TestResult {
+        let mut share = Connections::with_owners(8, 4, 1_000);
+        for payload in 1..=3 {
+            share.admit_by("s", "a", payload, 0)?.activity.touch(1_500);
+        }
+        share.admit_by("s", "b", 4, 0)?;
+        let idle = share.admit_by("s", "c", 5, 2_000)?.evicted.ok_or("none")?;
+        assert_eq!((idle.owner, idle.payload, idle.busier), ("b", 4, None));
+        let mut table = Connections::with_owners(4, 3, 1_000);
+        for payload in 1..=3 {
+            table.admit_by("s1", "a", payload, 0)?.activity.touch(1_500);
+        }
+        table.admit_by("s2", "x", 4, 0)?;
+        let idle = table.admit_by("s3", "z", 5, 2_000)?.evicted.ok_or("none")?;
+        assert_eq!((idle.key, idle.payload, idle.busier), ("s2", 4, None));
+        Ok(())
+    }
 }

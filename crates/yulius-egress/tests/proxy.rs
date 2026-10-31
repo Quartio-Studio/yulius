@@ -352,6 +352,15 @@ async fn tunnel(
     setup: &Setup,
     token: &str,
 ) -> Result<(tokio::net::TcpStream, String), Box<dyn std::error::Error>> {
+    tunnel_to(setup, token, &format!("{OTHER}:443")).await
+}
+
+/// [`tunnel`] to `target` (`host:port`).
+async fn tunnel_to(
+    setup: &Setup,
+    token: &str,
+    target: &str,
+) -> Result<(tokio::net::TcpStream, String), Box<dyn std::error::Error>> {
     use base64::Engine as _;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let mut stream = tokio::net::TcpStream::connect(setup.proxy).await?;
@@ -359,7 +368,7 @@ async fn tunnel(
     stream
         .write_all(
             format!(
-                "CONNECT {OTHER}:443 HTTP/1.1\r\nHost: {OTHER}:443\r\nProxy-Authorization: Basic {auth}\r\n\r\n"
+                "CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nProxy-Authorization: Basic {auth}\r\n\r\n"
             )
             .as_bytes(),
         )
@@ -554,6 +563,28 @@ async fn a_full_proxy_takes_from_the_busiest_sandbox() -> TestResult {
     assert!(
         matches!(read, Ok(0) | Err(_)),
         "the busiest sandbox's oldest tunnel gave way: {read:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-357 ESR-002 (review round 3): a request the proxy refuses anyway (a local destination)
+/// takes no place, so it never closes a busier run's active tunnel. The busy run still finds its
+/// share full afterwards.
+#[tokio::test]
+async fn a_refused_destination_takes_no_place_from_a_busier_run() -> TestResult {
+    let setup = setup().await?;
+    let mut held = Vec::new();
+    for at in 0..8 {
+        let (stream, status) = tunnel(&setup, "good-token").await?;
+        assert!(status.contains(" 200"), "tunnel {at}: {status}");
+        held.push(stream);
+    }
+    let (_local, status) = tunnel_to(&setup, "sibling-token", "127.0.0.1:9").await?;
+    assert!(status.contains(" 403"), "a local destination: {status}");
+    let (_again, status) = tunnel(&setup, "good-token").await?;
+    assert!(
+        status.contains(" 503"),
+        "the busy run kept all of its places: {status}"
     );
     Ok(())
 }
