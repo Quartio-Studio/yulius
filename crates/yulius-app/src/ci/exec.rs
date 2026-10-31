@@ -638,6 +638,8 @@ impl App {
         ) {
             return false;
         }
+        // It weighs on its sandbox until its process ended (SPEC-362 CSW-002).
+        let weight = super::JobWeight::new(Arc::clone(&self), &run.sandbox_id);
         // Its stages (SPEC-137): the wait for a slot and its budget, then what its output names,
         // under the job's span (the store opened it with the start).
         let mut stages = OutputStages::ci_job(
@@ -687,6 +689,7 @@ impl App {
             Ok((ended, usage)) => (Ok(ended), usage),
             Err(reason) => (Err(reason), None),
         };
+        drop(weight);
         let no_disk = matches!(ended, Ok(Ended::NoDisk(_)));
         let (state, exit_code, reason) = match ended {
             Ok(Ended::Exit(exit)) if exit.spawn_failed => (
