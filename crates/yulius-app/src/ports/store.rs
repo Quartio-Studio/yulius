@@ -637,6 +637,12 @@ pub trait AuditStore: Send + Sync {
     /// The details of the newest `limit` entries of `action` about `target`, newest first.
     async fn audit_details(&self, target: &str, action: &str, limit: u32)
     -> AppResult<Vec<String>>;
+    /// The newest entry of `action` about `target`, if any.
+    async fn last_audit(
+        &self,
+        target: &str,
+        action: &str,
+    ) -> AppResult<Option<crate::automations::AuditEntry>>;
 }
 
 /// Every store area; the SQLite adapter implements this.

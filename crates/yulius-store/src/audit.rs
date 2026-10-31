@@ -1,7 +1,8 @@
 //! Audit log.
 
 use async_trait::async_trait;
-use rusqlite::params;
+use rusqlite::{OptionalExtension as _, params};
+use yulius_app::automations::AuditEntry;
 use yulius_app::error::AppResult;
 use yulius_app::ports::store::AuditStore;
 use yulius_domain::time::Timestamp;
@@ -53,6 +54,28 @@ impl AuditStore for SqliteStore {
                 .query_map(params![target, action, i64::from(limit)], |r| r.get(0))
                 .map_err(db)?;
             rows.collect::<Result<Vec<String>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn last_audit(&self, target: &str, action: &str) -> AppResult<Option<AuditEntry>> {
+        let (target, action) = (target.to_owned(), action.to_owned());
+        self.call(move |c| {
+            c.query_row(
+                "SELECT at, actor, action, detail FROM audit_log WHERE target = ?1 AND action = ?2 \
+                 ORDER BY id DESC LIMIT 1",
+                params![target, action],
+                |r| {
+                    Ok(AuditEntry {
+                        at: Timestamp(r.get(0)?),
+                        actor: r.get(1)?,
+                        action: r.get(2)?,
+                        detail: r.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(db)
         })
         .await
     }

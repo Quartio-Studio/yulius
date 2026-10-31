@@ -43,9 +43,10 @@ use yulius_contracts::api::git::{
     PromoteResult, PullView, RunEnvironment, TaskBranch, TaskChanges, TaskCommit, WorktreeState,
 };
 use yulius_contracts::api::sandboxes::{
-    Environment as EnvironmentView, Profile, Sandbox, UpdateSandbox,
+    Environment as EnvironmentView, Profile, Sandbox, SandboxVidocView, UpdateSandbox,
 };
 use yulius_domain::branch_policy::{self, BranchPolicy, PullFacts};
+use yulius_domain::ci::vidoc::{RepositoryVidoc, VIDOC_CONFIG, repository_vidoc};
 use yulius_domain::delivery::{
     self as dlv, ChecksState, DeliveryAction, DeliveryError, DeliveryFacts, DeliveryProfile,
     DeliveryStage, Environment, EnvironmentEvidence, Initiator, MergeMethod, NextAction, PrState,
@@ -2033,6 +2034,85 @@ impl App {
             if on { "on" } else { "off" },
         )
         .await;
+    }
+
+    /// `GET /api/sandboxes/{sid}/vidoc` (anyone who sees the sandbox): its Vidoc switch with the
+    /// instance's, the repository's committed one at the integration head, whether a key reaches
+    /// it, whether the caller may change it and its last change (SPEC-359 VSB-001).
+    ///
+    /// # Errors
+    /// `NotFound` without access, `Invalid` for a playground; store failures.
+    pub async fn sandbox_vidoc_view(
+        &self,
+        ctx: &AuthContext,
+        sandbox_id: &str,
+    ) -> AppResult<SandboxVidocView> {
+        let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
+        let (sandbox, level) = self.require(&ctx.user, &sid, Action::View).await?;
+        if sandbox.is_playground() {
+            return Err(playground_has_no_vidoc());
+        }
+        let branch = delivery_profile(&sandbox).integration_branch;
+        let repository = self.repository_vidoc(&sandbox, &branch).await;
+        let project = vidoc_switched_on(&sandbox);
+        let instance = self.vidoc_enabled();
+        let key = self.vidoc_key().is_some()
+            || self
+                .applied_agent_secrets(&sid, crate::vault::Holder::Nobody)
+                .await
+                .is_ok_and(|records| {
+                    records
+                        .iter()
+                        .any(|r| r.name == yulius_domain::ci::VIDOC_SECRET)
+                });
+        let changed = self
+            .deps
+            .store
+            .last_audit(&sandbox.slug, "delivery.vidoc.update")
+            .await?;
+        let (repository, repository_problem) = match repository {
+            RepositoryVidoc::On => ("on", None),
+            RepositoryVidoc::Off => ("off", None),
+            RepositoryVidoc::Unreadable(problem) => ("unreadable", Some(problem)),
+        };
+        Ok(SandboxVidocView {
+            project,
+            instance,
+            key,
+            repository: repository.to_owned(),
+            repository_problem,
+            branch,
+            scans: project && instance && repository != "off",
+            can_change: level.allows(Action::Administer),
+            changed_by: changed.as_ref().map(|entry| entry.actor.clone()),
+            changed_at: changed.map(|entry| rfc3339(entry.at)),
+        })
+    }
+
+    /// `.config/vidoc.toml` at `origin/<branch>` of the sandbox's clone (ADR-0107); on when there
+    /// is no clone or branch yet, as CI reads `yulius.toml` there.
+    async fn repository_vidoc(&self, sandbox: &SandboxRecord, branch: &str) -> RepositoryVidoc {
+        let repo = self.sandbox_repo(&sandbox.id);
+        if !repo.join(".git").exists() {
+            return RepositoryVidoc::On;
+        }
+        let head = self
+            .deps
+            .git
+            .resolve_commit(&repo, &format!("origin/{branch}"))
+            .await
+            .ok()
+            .flatten();
+        let Some(head) = head else {
+            return RepositoryVidoc::On;
+        };
+        match self.deps.git.show_file(&repo, &head, VIDOC_CONFIG).await {
+            Ok(text) => repository_vidoc(text.as_deref()),
+            Err(err) => RepositoryVidoc::Unreadable(format!(
+                "{VIDOC_CONFIG} can't be read: {}",
+                err.public_message()
+            )),
+        }
     }
 
     /// `PATCH /api/sandboxes/{sid}` (admin): validates and stores the delivery profile and the
