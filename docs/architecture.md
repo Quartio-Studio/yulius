@@ -1402,6 +1402,9 @@ Vidoc is an optional instance service, like Jev
   is off: `App::vidoc_scans_on(sandbox)` (instance and project switch) decides the environments,
   the applied instance key and `ci_scans`, the briefing says `VidocBriefing::OffForInstance`, and
   `me.instance.vidoc` is false. Each project's own switch is kept and shown disabled on the card.
+  For either switch the egress proxy intercepts `model.vidocsecurity.com:443` and refuses (403,
+  nothing sent; `vault/runtime.rs` `vidoc_refused`), so a session started before it went off sends
+  no code either.
 
 ```mermaid
 flowchart LR

@@ -12,8 +12,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   show their own choice, disabled. Every project then scans nothing, whatever its own switch or
   key: agents and CI report the scan as disabled (CI: Skipped), no built-in security job runs,
   agents are told not to ask about the key or its quota, and the Add sandbox dialog offers no
-  Vidoc box. It also works for a key from the server's configuration file. Switched on again,
-  each project scans as its own switch says.
+  Vidoc box. It also works for a key from the server's configuration file. A session that was
+  already running sends nothing either: Yulius's proxy refuses its requests to Vidoc, for a
+  project switched off on its own too. Switched on again, each project scans as its own switch
+  says.
 - A Superagent whose sandbox's connections to Yulius are used up by leftover processes is no longer
   cut off, before or after a Yulius restart (SPEC-355, ADR-0241, task #337, fixes #974 and #970).
   A full relay toward Yulius, and the egress proxy at a sandbox's share, now closes the connection

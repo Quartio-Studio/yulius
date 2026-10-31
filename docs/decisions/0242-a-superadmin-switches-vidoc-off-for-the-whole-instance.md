@@ -27,6 +27,12 @@ and its refusals (HTTP 429 and 401, 2026-10-22 to 2026-10-30) kept stopping ever
   it: `YULIUS_VIDOC=off` for agent runs, terminals and CI jobs, no instance key as the virtual
   `VIDOC_API_KEY`, no built-in `security` job. A project's own key and own job stop too, as with
   the project switch. `me.instance.vidoc` is false, so the Add sandbox dialog offers no Vidoc box.
+- **Sessions already running send nothing either.** An agent run, terminal or Superagent that
+  started before the switch went off has no `YULIUS_VIDOC=off` and an older briefing; the egress
+  proxy therefore intercepts `model.vidocsecurity.com:443` for a project whose scans are off (the
+  instance's or its own) and refuses each request with 403 "Yulius: Vidoc is turned off in Yulius
+  …; nothing was sent", whatever key it carries. The scanner reports that as not run, saying
+  Vidoc is off, not as a refused key. A switch that cannot be read counts as off.
 - **The same variable.** The scanner keeps reading `YULIUS_VIDOC=off`, and its disabled line says
   "turned off in Yulius, for this project or the whole instance". The briefing tells agents which
   (`VidocBriefing::OffForInstance`), and the onboarding prompt adds no scan rule.
@@ -51,6 +57,8 @@ and its refusals (HTTP 429 and 401, 2026-10-22 to 2026-10-30) kept stopping ever
 
 - While off, every project's pull requests merge unscanned, visibly: the Vidoc card says since when
   and by whom, CI has no scan job or its own job reads Skipped, and agents report "disabled".
-- Turning it on takes effect at the next run or CI job; nothing is rescanned by itself.
+- Switching off takes effect at once for every request toward Vidoc; a running session's own
+  environment and briefing still say "on" until its next run, and its scan ends "not run" with the
+  reason. Turning it on takes effect at the next run or CI job; nothing is rescanned by itself.
 - A store write that finds no instance row fails (409), so the switch is never cached without being
   stored.

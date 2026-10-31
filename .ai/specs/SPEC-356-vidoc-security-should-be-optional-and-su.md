@@ -50,7 +50,11 @@ project, agents are not asked about the key or its quota, and every scan says "d
   as a project switched off by SPEC-338 VOF-002, whatever its own switch or own key: its agent
   runs, terminals and CI jobs get `YULIUS_VIDOC=off`, the instance key is not applied as its
   virtual `VIDOC_API_KEY`, and Yulius CI adds no built-in `security` job. The scanner's disabled
-  line names Yulius without claiming which switch, since both set the same variable.
+  line names Yulius without claiming which switch, since both set the same variable. A session
+  that started before the switch went off sends nothing either: the egress proxy refuses its
+  requests to `model.vidocsecurity.com` (403, "Vidoc is turned off in Yulius … nothing was
+  sent"), whatever key they carry, and the scanner reports that reason (not run), never a refused
+  key; this applies to the project switch too. A switch that cannot be read counts as off.
 - **VIO-003 Agents are told.** The briefing's `## Security scan` section says that a superadmin
   switched Vidoc off for the whole instance, that the scan reports "disabled", never a pass, and
   that nobody is to be asked about Vidoc's key or quota; the onboarding prompt adds no scan rule.
@@ -107,6 +111,10 @@ project, agents are not asked about the key or its quota, and every scan says "d
   `App::vidoc_scans_on(sandbox)` combines both and is used wherever a scan would run, while the
   project's own switch stays what the project view and its PATCH show.
 - **Superadmin only.** It changes every project at once, like the key itself.
+- **The proxy refuses rather than tunnels** (review round 1). Without the instance key applied, a
+  running session's request to Vidoc was tunneled, code included; intercepting the host for a
+  switched-off project and answering 403 sends nothing. The alternative, documenting that running
+  sessions follow at their next run, would break "nothing is sent to Vidoc".
 
 ## Evidence
 
