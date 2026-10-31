@@ -4070,7 +4070,10 @@ struct Link(std::sync::Mutex<Option<bool>>);
 
 impl Link {
     fn set(&self, link: Option<bool>) {
-        *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = link;
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = link;
     }
 }
 
@@ -4084,7 +4087,10 @@ impl yulius_app::ports::isolation::SandboxIsolation for Link {
     }
     fn release(&self, _: &SandboxId) {}
     async fn link(&self, _: &SandboxId) -> Option<bool> {
-        *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 

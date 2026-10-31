@@ -120,7 +120,10 @@ impl GatedHost {
     /// The strays it was asked to reap so far.
     #[must_use]
     pub fn reaped(&self) -> Vec<StrayProcess> {
-        self.reaped_after().into_iter().map(|(_, stray)| stray).collect()
+        self.reaped_after()
+            .into_iter()
+            .map(|(_, stray)| stray)
+            .collect()
     }
 
     /// [`Self::reaped`], each with how many probes had run before it was asked.

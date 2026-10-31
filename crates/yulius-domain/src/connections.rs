@@ -105,12 +105,7 @@ impl<K: PartialEq, T> Connections<K, T> {
     ///
     /// # Errors
     /// The limit met, when no connection there was idle for the floor.
-    pub fn admit(
-        &mut self,
-        key: K,
-        payload: T,
-        now_ms: u64,
-    ) -> Result<Admitted<K, T>, Full> {
+    pub fn admit(&mut self, key: K, payload: T, now_ms: u64) -> Result<Admitted<K, T>, Full> {
         let evicted = if self.count(&key) >= self.per_key {
             // A key whose share is the whole table met the table's limit.
             let full = if self.per_key < self.max {
@@ -227,7 +222,11 @@ mod tests {
         table.admit("b", 2, 0)?;
         table.admit("b", 3, 5)?;
         let evicted = table.admit("b", 4, 20)?.evicted.ok_or("none")?;
-        assert_eq!((evicted.key, evicted.payload), ("b", 2), "b's own, not a's older one");
+        assert_eq!(
+            (evicted.key, evicted.payload),
+            ("b", 2),
+            "b's own, not a's older one"
+        );
         assert_eq!((table.count(&"a"), table.count(&"b")), (1, 2));
         table.admit("c", 5, 20)?;
         let evicted = table.admit("d", 6, 30)?.evicted.ok_or("none")?;
@@ -237,7 +236,10 @@ mod tests {
         fresh.admit("b", 1, 0)?;
         fresh.admit("b", 2, 0)?;
         assert_eq!(fresh.admit("b", 3, 5).err(), Some(Full::Key));
-        assert!(fresh.admit("a", 4, 5).is_ok(), "another key keeps its places");
+        assert!(
+            fresh.admit("a", 4, 5).is_ok(),
+            "another key keeps its places"
+        );
         Ok(())
     }
 }
