@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-30
 
+- A tab dragged along the sandbox row, the Notes tabs or the Editor's tabs stays within its strip
+  (SPEC-354, task #336). Past either end it gives a few pixels, more slowly the further the pointer
+  goes, and springs back into place when let go. Before, it followed the pointer anywhere on the
+  page and flew back from there.
 - Leftover processes no longer pile up in a sandbox for days (SPEC-353, ADR-0240, task #335, fixes
   #966). A process its parent left behind (a leaked test job, a forgotten server) is reported once
   an idle task's session has one, and killed after 2 hours; a working task's are left alone. One
