@@ -286,3 +286,47 @@ test('the sandbox’s card says an unreadable repository file and a missing key,
   await expect(scan).not.toBeChecked();
   await expect(card.getByText(/^Off: agents and CI scan nothing/)).toBeVisible();
 });
+
+type Counted = { __yuliusMock: { ciReads?: number; vidocReads?: number; heldWaiting?: number; release: () => void } };
+const reads = (browser: Browser) => browser.evaluate(() => {
+  const db = (window as unknown as Counted).__yuliusMock;
+  return { ci: db.ciReads || 0, vidoc: db.vidocReads || 0 };
+});
+
+test('refreshing the CI runs does not read the Vidoc switch again', async ({ app, browser, screen }) => {
+  // SPEC-359 review round 4: the view costs Git reads on the server; it changes only with a switch.
+  await app.open(mock('/s/studio/ci', '&vidoc=config'));
+  await expect(screen.getByRole('region', 'Security scan (Vidoc)')).toBeVisible();
+  // The Now summary reads the runs too: counted from here.
+  const start = await reads(browser);
+  expect(start.vidoc).toBe(1);
+  const check = screen.getByRole('button', 'Check for commits');
+  await check.click();
+  await expect.poll(async () => (await reads(browser)).ci).toBeGreaterThan(start.ci);
+  await expect(check).toBeEnabled();
+  const once = (await reads(browser)).ci;
+  await check.click();
+  await expect.poll(async () => (await reads(browser)).ci).toBeGreaterThan(once);
+  expect((await reads(browser)).vidoc).toBe(1);
+  // Its own change reads it again.
+  await screen.getByRole('switch', 'Scan this project with Vidoc').click();
+  await expect.poll(async () => (await reads(browser)).vidoc).toBe(2);
+});
+
+test('a refresh while the switch is sent shows the change on its way, disabled', async ({ app, browser, screen }) => {
+  // SPEC-359 review round 4: the `pending` state.
+  await app.open(mock('/s/studio/ci', '&vidoc=config&holdpost=/api/sandboxes/sb_studio'));
+  const scan = () => screen.getByRole('region', 'Security scan (Vidoc)').getByRole('switch', 'Scan this project with Vidoc');
+  await scan().click();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Counted).__yuliusMock.heldWaiting || 0)).toBe(1);
+  const before = (await reads(browser)).ci;
+  await screen.getByRole('button', 'Check for commits').click();
+  await expect.poll(async () => (await reads(browser)).ci).toBeGreaterThan(before);
+  await expect(scan()).not.toBeChecked();
+  await expect(scan()).toBeDisabled();
+  await browser.evaluate(() => { (window as unknown as Counted).__yuliusMock.release(); return null; });
+  await expect(screen.getByText(/Vidoc scans are off for studio/)).toBeVisible();
+  await expect(scan()).not.toBeChecked();
+  await expect(scan()).toBeEnabled();
+  expect(await switchOf(browser, 'studio')).toBe(false);
+});

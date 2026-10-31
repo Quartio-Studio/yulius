@@ -93,12 +93,22 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
   }
   host.append(runsHost, hygieneHost);
 
+  let last = { runs: [] };
   // SPEC-359 VSB-004: the Security scan card is read with the runs and drawn under the jobs it
-  // decides, so nothing moves when it lands.
+  // decides, so nothing moves when it lands. Its view costs Git reads on the server and changes
+  // only with a switch or the integration branch: it is read again after a change, when its read
+  // failed, and at the idle rate, not with every refresh while a run is active (review round 4).
+  let vidocStale = true;
+  let vidocReadAt = 0;
   const read = async () => {
-    const [overview, vidoc] = await Promise.all([ctx.api.get(`${base}/ci`), loadVidocView(ctx, sandbox)]);
+    const kept = last.vidoc;
+    const fresh = vidocStale || !kept || kept.error || Date.now() - vidocReadAt >= POLL_IDLE_MS;
+    if (fresh) vidocStale = false;
+    const [overview, vidoc] = await Promise.all([ctx.api.get(`${base}/ci`), fresh ? loadVidocView(ctx, sandbox) : kept]);
+    if (fresh) vidocReadAt = Date.now();
     return { ...overview, vidoc };
   };
+  const rereadVidoc = () => { vidocStale = true; return reload({ quiet: true }); };
   const reload = loader(runsHost, 'the CI runs', read, (overview) => {
     schedule(overview);
     const drawn = renderOverview(overview);
@@ -118,9 +128,8 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
       drawShape('items'));
   }
 
-  let last = { runs: [] };
   // The switch changed elsewhere while the card is shown: read it again.
-  const offVidoc = watchVidocSwitch(ctx, sandbox, () => last.vidoc, () => reload({ quiet: true }));
+  const offVidoc = watchVidocSwitch(ctx, sandbox, () => last.vidoc, rereadVidoc);
   /** Refreshes quietly: every few seconds while a run is active, else now and then. */
   function schedule(overview) {
     last = overview;
@@ -145,7 +154,7 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
     }
     if (overview.gate_problem) parts.push(h('div', { class: 'banner banner-warn', role: 'status' }, icon('warn', { size: 16 }), h('span', { class: 'banner-text' }, `CI is not running: ${overview.gate_problem}`)));
     parts.push(configCard(overview.gate));
-    if (overview.vidoc) parts.push(vidocCard(ctx, sandbox, overview.vidoc, () => reload({ quiet: true })));
+    if (overview.vidoc) parts.push(vidocCard(ctx, sandbox, overview.vidoc, rereadVidoc));
     const runs = overview.runs || [];
     if (runs.length === 0) {
       parts.push(emptyState({ iconName: 'check', title: 'No runs yet', text: overview.gate

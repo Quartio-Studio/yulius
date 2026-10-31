@@ -12,7 +12,7 @@
 // role=member|admin|superadmin (default superadmin), contained=0 (not isolated), github=0,
 // recovery=1 (setup issues a recovery code), update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
 // jev=config (a Jev key file is configured), vidoc=config (a Vidoc key file), vidoc_repo=off|bad (studio's .config/vidoc.toml), vidoc_patch_fail=1 (a sandbox's Vidoc switch is refused), fail=<path> (GETs of that path answer 500),
-// failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs of that path wait for
+// failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs and PATCHes of that path wait for
 // `__yuliusMock.release()`, as hold= does for GETs; `heldWaiting` counts those waiting), as=<login> (signed in as another member, a
 // teammate in a second window: mock pages of one origin relay presence to each other, SPEC-127).
 
@@ -1010,6 +1010,7 @@ route('GET', `/api/sandboxes/${ID}`, ({ db, p }) => shown(sandboxOf(db, p[0])));
 // `.config/vidoc.toml` (`enabled = false`, or a value the scanner refuses).
 route('GET', `/api/sandboxes/${ID}/vidoc`, ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
+  db.vidocReads = (db.vidocReads || 0) + 1;
   if (sandbox.playground) fail(422, 'invalid', 'a playground runs no Vidoc scan: it has no switch to turn');
   const file = sandbox.slug === 'studio' ? db.vidoc.repo : null;
   const repository = file === 'off' ? 'off' : file === 'bad' ? 'unreadable' : 'on';
@@ -1886,7 +1887,7 @@ function ciOverview(db, sid) {
   };
 }
 
-route('GET', `/api/sandboxes/${ID}/ci`, ({ db, p }) => ciOverview(db, p[0]));
+route('GET', `/api/sandboxes/${ID}/ci`, ({ db, p }) => { db.ciReads = (db.ciReads || 0) + 1; return ciOverview(db, p[0]); });
 route('POST', `/api/sandboxes/${ID}/ci/sync`, ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
   return ciOverview(db, p[0]);
@@ -4362,7 +4363,7 @@ async function handleFetchAfterLatency(db, url, init) {
   }
   // `hold=<path>` keeps GET requests of that path waiting, to look at a view while it loads (SPEC-092).
   // `heldWaiting`: the requests waiting at the hold now, so a test releases them once they are there.
-  if (db.held && ((method === 'GET' && u.pathname === db.holdPath) || (method === 'POST' && u.pathname === db.holdPostPath))) {
+  if (db.held && ((method === 'GET' && u.pathname === db.holdPath) || ((method === 'POST' || method === 'PATCH') && u.pathname === db.holdPostPath))) {
     db.heldWaiting = (db.heldWaiting || 0) + 1;
     try { await db.held; } finally { db.heldWaiting -= 1; }
   }
