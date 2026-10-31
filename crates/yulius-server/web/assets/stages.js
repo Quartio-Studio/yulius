@@ -195,6 +195,18 @@ function tickLabel(ms) {
 }
 
 /**
+ * Shows a chart tip (its content already set) centred above `x`, `y` in its plot, moved in so all
+ * of it stays inside: the CSS caps its width at the plot's and wraps the rest (#986).
+ */
+function placeTip(tip, x, y) {
+  tip.hidden = false;
+  const room = tip.parentElement.clientWidth;
+  const half = Math.min(tip.offsetWidth, room) / 2;
+  tip.style.left = `${Math.max(half, Math.min(room - half, x))}px`;
+  tip.style.top = `${y}px`;
+}
+
+/**
  * One subject's spans as a waterfall (and a table). `related` spans (a task's CI runs) follow
  * under their own heading. Empty when nothing was measured. `view` keeps what a person chose
  * (the spans they opened or closed, the table) across redraws of a running subject.
@@ -251,10 +263,8 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
     const show = (event) => {
       setChildren(tip, h('span', null, `${d.label}${span.source === 'backfilled' ? ' · backfilled' : ''}`), h('strong', null, d.took),
         d.waited ? h('span', null, `waited ${d.waited} for a job slot`) : null, d.figures ? h('span', null, d.figures) : null);
-      tip.hidden = false;
       const box = tip.parentElement.getBoundingClientRect();
-      tip.style.left = `${Math.max(80, Math.min(box.width - 80, event.clientX - box.left))}px`;
-      tip.style.top = `${event.clientY - box.top}px`;
+      placeTip(tip, event.clientX - box.left, event.clientY - box.top);
     };
     const word = outcomeWord(span);
     const mark = span.kind === 'job' && JOB_MARKS[word] ? icon(JOB_MARKS[word], { size: 12, label: word })
@@ -461,9 +471,7 @@ export function trendChart(trend, { label = 'Stage' } = {}) {
       setChildren(tip, h('span', { class: 'db-tip-date' }, LONG_DATE.format(day(row.date))),
         h('strong', null, Number.isFinite(row.p50_ms) ? `p50 ${duration(row.p50_ms)} · p90 ${duration(row.p90_ms)}` : 'nothing ended'),
         h('span', null, `${int(row.count)} ended`));
-      tip.hidden = false;
-      tip.style.left = `${Math.max(80, Math.min(box.width - 80, (x(i) / width) * box.width))}px`;
-      tip.style.top = `${((Number.isFinite(row.p90_ms) ? y(row.p90_ms) : bottom - 8) / height) * box.height}px`;
+      placeTip(tip, (x(i) / width) * box.width, ((Number.isFinite(row.p90_ms) ? y(row.p90_ms) : bottom - 8) / height) * box.height);
     });
     hit.addEventListener('pointerleave', () => { cross.setAttribute('visibility', 'hidden'); tip.hidden = true; });
     svg.append(hit);

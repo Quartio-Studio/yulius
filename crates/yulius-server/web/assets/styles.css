@@ -2152,7 +2152,8 @@ a.dl-task:hover { text-decoration: underline; }
 .chart-grid { stroke: var(--grid); stroke-width: 1; shape-rendering: crispEdges; }
 .chart-baseline { stroke: var(--axis); stroke-width: 1; shape-rendering: crispEdges; }
 .chart-hit { fill: transparent; cursor: default; }
-.chart-tip { position: absolute; z-index: var(--z-float); pointer-events: none; padding: 6px 8px; border-radius: var(--radius-sm); background: var(--surface-3); border: 1px solid var(--border-strong); box-shadow: var(--shadow); font-size: var(--fs-sm); line-height: var(--lh-sm); white-space: nowrap; transform: translate(-50%, -100%); }
+/* A chart's hover tip wraps past 360 px or its plot's width, and placeTip() keeps it inside the plot (#986). */
+.chart-tip { position: absolute; z-index: var(--z-float); pointer-events: none; padding: 6px 8px; border-radius: var(--radius-sm); background: var(--surface-3); border: 1px solid var(--border-strong); box-shadow: var(--shadow); font-size: var(--fs-sm); line-height: var(--lh-sm); width: max-content; max-width: min(360px, 100%); overflow-wrap: anywhere; transform: translate(-50%, -100%); }
 .chart-tip strong { display: block; color: var(--text); font-size: var(--fs); line-height: var(--lh); }
 .chart-tip span { color: var(--text-2); }
 
