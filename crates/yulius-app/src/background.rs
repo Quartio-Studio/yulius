@@ -51,8 +51,9 @@ impl App {
         tokio::spawn(async move {
             // Nothing waits for the recount (SPEC-091 RCT-005).
             drop(app.recover().await);
-            // Merges armed before the restart stay armed (DLV-205).
-            app.restore_armed_merges().await;
+            // Merges armed before the restart stay armed (DLV-205), and one whose checks passed
+            // meanwhile merges now (SPEC-358 MSB-008).
+            app.resume_armed_merges().await;
             app.drain_queue().await;
             // Paused tasks (also those paused before a restart) resume from here.
             app.start_capacity_loop();
@@ -79,18 +80,8 @@ impl App {
             loop {
                 every.tick().await;
                 app.reconcile_deliveries().await;
-                // Armed merges whose checks passed while no CI run ended here (a restart).
-                if let Ok(sandboxes) = app.deps.store.sandboxes().await {
-                    for sandbox in sandboxes.iter().filter(|s| s.removed_at.is_none()) {
-                        // A sandbox whose pass is held (a merge or a move to GitHub, which can
-                        // push for minutes) is merged by whoever holds it, or on the next round:
-                        // the other sandboxes never wait for it.
-                        if app.armed_pass(&sandbox.id).try_lock().is_err() {
-                            continue;
-                        }
-                        app.merge_armed(&sandbox.id).await;
-                    }
-                }
+                // Armed merges whose checks passed while no CI run ended here.
+                app.merge_armed_everywhere().await;
             }
         });
         // Yulius-run CI and repository hygiene (SPEC-002 ADR-21).

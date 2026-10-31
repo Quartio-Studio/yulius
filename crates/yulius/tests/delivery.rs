@@ -3958,6 +3958,34 @@ async fn an_armed_merge_survives_a_restart() -> TestResult {
     Ok(())
 }
 
+/// SPEC-358 MSB-008: a merge armed before a restart whose checks passed while Yulius was down
+/// merges as the new server starts, not at its delivery loop's first round minutes later.
+#[tokio::test]
+async fn an_armed_merge_green_during_a_restart_merges_at_the_start() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    f.h.store
+        .transition_task(
+            &TaskId::parse("t1")?,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    t.arm().await?;
+    // Down: the checks pass meanwhile, and no CI run ends in this process to merge it.
+    f.h.github.set_checks(&t.head, ChecksState::Success);
+    let next = yulius_app::context::App::new(f.h.app.config.clone(), f.h.app.deps.clone());
+    next.resume_armed_merges().await;
+    assert_ne!(
+        f.delivery("t1").await?["stage"],
+        "pr_open",
+        "merged at the start"
+    );
+    Ok(())
+}
+
 /// DLV-205 with SPEC-064 WAI-002: a restore that read the saved merges before a merge was armed
 /// and decided in this process does not bring that merge back (it would be decided again, as
 /// "dropped", over the real outcome).
