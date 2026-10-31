@@ -486,3 +486,53 @@ async fn a_full_proxy_closes_the_longest_idle_connection_of_any_sandbox() -> Tes
     );
     Ok(())
 }
+
+/// SPEC-357 ESR-002 (2026-10-31: quartio-v2's tasks all got `503` for every host while its
+/// processes held the sandbox's whole share): one run whose tunnels stay active within the floor
+/// no longer locks the other runs of its sandbox out. The newcomer gets a tunnel, the busy run's
+/// oldest one closes, and the busy run itself is refused with a text that says it holds them.
+#[tokio::test]
+async fn one_busy_run_gives_way_to_another_run_of_its_sandbox() -> TestResult {
+    use tokio::io::AsyncReadExt as _;
+    let setup = setup().await?;
+    let mut held = Vec::new();
+    for at in 0..8 {
+        let (stream, status) = tunnel(&setup, "good-token").await?;
+        assert!(status.contains(" 200"), "tunnel {at}: {status}");
+        held.push(stream);
+    }
+    let (_sibling, status) = tunnel(&setup, "sibling-token").await?;
+    assert!(status.contains(" 200"), "another run of the sandbox: {status}");
+    let mut byte = [0u8; 1];
+    let read =
+        tokio::time::timeout(std::time::Duration::from_secs(10), held[0].read(&mut byte)).await?;
+    assert!(
+        matches!(read, Ok(0) | Err(_)),
+        "the busy run's oldest tunnel gave way: {read:?}"
+    );
+    let (_refused, status) = tunnel(&setup, "good-token").await?;
+    assert!(status.contains(" 503"), "the busy run itself: {status}");
+    assert!(status.contains("this run holds 7 of them"), "{status}");
+    Ok(())
+}
+
+/// SPEC-357 ESR-003: at the proxy's limit with every connection active, the busiest sandbox gives
+/// up a connection to a sandbox holding fewer.
+#[tokio::test]
+async fn a_full_proxy_takes_from_the_busiest_sandbox() -> TestResult {
+    let setup = setup_with(yulius_egress::IDLE_FLOOR, 10).await?;
+    let mut held = Vec::new();
+    for at in 0..10 {
+        let token = if at < 8 {
+            "good-token"
+        } else {
+            "other-sandbox-token"
+        };
+        let (stream, status) = tunnel(&setup, token).await?;
+        assert!(status.contains(" 200"), "tunnel {at}: {status}");
+        held.push(stream);
+    }
+    let (_other, status) = tunnel(&setup, "other-sandbox-token").await?;
+    assert!(status.contains(" 200"), "the sandbox holding fewer: {status}");
+    Ok(())
+}
