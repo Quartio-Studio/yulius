@@ -4,7 +4,9 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -16,9 +18,11 @@ use hyper::http::request::Parts;
 use hyper::http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode, header};
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::{TokioIo, TokioTimer};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::oneshot;
 use yulius_app::ports::egress::{EgressClient, EgressDecision, EgressPolicy, EgressRequest};
+use yulius_domain::connections::{self, Activity, Connections};
 use yulius_domain::vault::egress_destination_allowed;
 use yulius_domain::vault::redact::{Matcher, PlainMatcher, StreamRedactor, redact_all};
 
@@ -97,49 +101,112 @@ pub struct EgressProxy {
     ca: CertificateAuthority,
     http: reqwest::Client,
     resolve: HashMap<String, SocketAddr>,
-    slots: Arc<Semaphore>,
-    /// Each sandbox's share of [`Self::slots`] (LAP-002), one entry per sandbox that asked.
-    shares: Mutex<HashMap<String, Share>>,
+    /// The open tunnels and intercepted connections by sandbox (LAP-002, SPEC-355 SLR-002).
+    slots: Arc<Slots>,
     max_per_sandbox: usize,
-    /// When the proxy last warned that every slot was taken.
-    full_warned: Mutex<Option<Instant>>,
+    /// When the proxy last warned about each limit: `None` for its own, else a sandbox's share.
+    /// Holds the warnings of the last minute only.
+    warned: Mutex<HashMap<Option<String>, Instant>>,
 }
 
-/// One sandbox's connections and when the proxy last warned that they were all taken.
-struct Share {
-    slots: Arc<Semaphore>,
-    warned: Option<Instant>,
+/// The proxy's connections: at most `max_connections`, `max_per_sandbox` per sandbox; at a limit
+/// the longest-idle one past the floor gives way (SLR-002). Each holds the sender that ends it.
+struct Slots {
+    table: Mutex<Connections<String, oneshot::Sender<()>>>,
+    epoch: Instant,
 }
 
-/// `sandbox`'s share in `shares` (`max` connections). A sandbox seen for the first time drops the
-/// entries of sandboxes that hold no connection, so the map holds the busy sandboxes and one more.
-fn share_for<'a>(
-    shares: &'a mut HashMap<String, Share>,
-    sandbox: &str,
-    max: usize,
-) -> &'a mut Share {
-    if !shares.contains_key(sandbox) {
-        shares.retain(|_, share| share.slots.available_permits() < max);
+impl Slots {
+    fn now(&self) -> u64 {
+        u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
-    shares.entry(sandbox.to_owned()).or_insert_with(|| Share {
-        slots: Arc::new(Semaphore::new(max)),
-        warned: None,
-    })
 }
 
-/// A connection's places: one in the proxy, one in its sandbox's share. Dropped when it ends.
+/// A connection's place in its sandbox's share and the proxy. Freed when it ends.
 struct Slot {
-    _proxy: OwnedSemaphorePermit,
-    _sandbox: OwnedSemaphorePermit,
+    slots: Arc<Slots>,
+    id: u64,
+    activity: Activity,
 }
 
-/// Whether a warning last given at `last` may be given again now (and records it).
-fn warn_due(last: &mut Option<Instant>) -> bool {
-    let due = last.is_none_or(|at| at.elapsed() >= WARN_EVERY);
-    if due {
-        *last = Some(Instant::now());
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.slots
+            .table
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .close(self.id);
     }
-    due
+}
+
+/// A connection's stream whose every byte either way marks it active (SLR-002).
+struct Tracked<S> {
+    inner: S,
+    slots: Arc<Slots>,
+    activity: Activity,
+}
+
+impl<S> Tracked<S> {
+    fn new(inner: S, slot: &Slot) -> Self {
+        Self {
+            inner,
+            slots: Arc::clone(&slot.slots),
+            activity: slot.activity.clone(),
+        }
+    }
+
+    fn touch(&self) {
+        self.activity.touch(self.slots.now());
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for Tracked<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if buf.filled().len() > before {
+            self.touch();
+        }
+        poll
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Tracked<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let poll = Pin::new(&mut self.inner).poll_write(cx, buf);
+        if matches!(poll, Poll::Ready(Ok(n)) if n > 0) {
+            self.touch();
+        }
+        poll
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// Whether the warning about `limit` may be given again now (and records it); forgets the
+/// warnings older than [`WARN_EVERY`], so the map stays as small as the minute's refusals.
+fn warn_due(warned: &mut HashMap<Option<String>, Instant>, limit: Option<&str>) -> bool {
+    warned.retain(|_, at| at.elapsed() < WARN_EVERY);
+    let key = limit.map(str::to_owned);
+    if warned.contains_key(&key) {
+        return false;
+    }
+    warned.insert(key, Instant::now());
+    true
 }
 
 impl std::fmt::Debug for EgressProxy {
@@ -330,57 +397,78 @@ impl EgressProxy {
             ca,
             http: builder.build()?,
             resolve: config.resolve,
-            slots: Arc::new(Semaphore::new(config.max_connections.max(1))),
-            shares: Mutex::new(HashMap::new()),
-            max_per_sandbox: config.max_per_sandbox.max(1),
-            full_warned: Mutex::new(None),
+            slots: Arc::new(Slots {
+                table: Mutex::new(Connections::new(
+                    config.max_connections,
+                    config.max_per_sandbox,
+                    u64::try_from(config.idle_floor.as_millis()).unwrap_or(u64::MAX),
+                )),
+                epoch: Instant::now(),
+            }),
+            max_per_sandbox: config
+                .max_per_sandbox
+                .clamp(1, config.max_connections.max(1)),
+            warned: Mutex::new(HashMap::new()),
         })
     }
 
-    /// A place for one connection of `client`'s sandbox, or the text of the `503` refusing it:
-    /// past the sandbox's share, or with every slot of the proxy taken (LAP-002). Each refusal is logged
-    /// as a warning, at most once a minute per limit and sandbox.
-    fn slot(&self, client: &EgressClient) -> Result<Slot, String> {
+    /// A place for one connection of `client`'s sandbox, with what resolves once it gave way, or
+    /// the text of the `503` refusing it. Past the sandbox's share its longest-idle connection
+    /// gives way, past the proxy's limit the longest-idle of all (SPEC-355 SLR-002); one active
+    /// within the floor never does, and then the connection is refused (LAP-002). Each refusal and
+    /// each connection that gave way is logged as a warning, at most once a minute per limit and
+    /// sandbox.
+    fn slot(&self, client: &EgressClient) -> Result<(Slot, oneshot::Receiver<()>), String> {
         let sandbox = client.sandbox_id.as_str();
-        let share = {
-            let mut shares = self
-                .shares
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let share = share_for(&mut shares, sandbox, self.max_per_sandbox);
-            match Arc::clone(&share.slots).try_acquire_owned() {
-                Ok(permit) => permit,
-                Err(_) => {
-                    if warn_due(&mut share.warned) {
-                        tracing::warn!(
-                            sandbox,
-                            share = self.max_per_sandbox,
-                            "egress proxy: a sandbox holds its share of the connections; \
-                             leftover processes may hold them (docs/operations.md)"
-                        );
-                    }
-                    return Err(format!(
-                        "Yulius proxy: this sandbox's processes hold all of its {} connections; \
-                         end leftover processes or try again",
-                        self.max_per_sandbox
-                    ));
+        let (end, ended) = oneshot::channel();
+        let admitted = self
+            .slots
+            .table
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .admit(sandbox.to_owned(), end, self.slots.now());
+        let mut warned = self.warned.lock().unwrap_or_else(PoisonError::into_inner);
+        match admitted {
+            Ok(admitted) => {
+                if let Some(evicted) = admitted.evicted
+                    && warn_due(&mut warned, Some(&evicted.key))
+                {
+                    tracing::warn!(
+                        sandbox = %evicted.key,
+                        idle_s = evicted.idle_ms / 1000,
+                        "egress proxy: at a limit, the longest-idle connection was closed for a \
+                         new one; leftover processes may hold them (docs/operations.md)"
+                    );
                 }
+                let slot = Slot {
+                    slots: Arc::clone(&self.slots),
+                    id: admitted.id,
+                    activity: admitted.activity,
+                };
+                Ok((slot, ended))
             }
-        };
-        let Ok(proxy) = Arc::clone(&self.slots).try_acquire_owned() else {
-            let mut warned = self
-                .full_warned
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if warn_due(&mut warned) {
-                tracing::warn!(sandbox, "egress proxy: every connection is taken");
+            Err(connections::Full::Key) => {
+                if warn_due(&mut warned, Some(sandbox)) {
+                    tracing::warn!(
+                        sandbox,
+                        share = self.max_per_sandbox,
+                        "egress proxy: a sandbox holds its share of the connections; \
+                         leftover processes may hold them (docs/operations.md)"
+                    );
+                }
+                Err(format!(
+                    "Yulius proxy: this sandbox's processes hold all of its {} connections; \
+                     end leftover processes or try again",
+                    self.max_per_sandbox
+                ))
             }
-            return Err("Yulius proxy: too many connections; try again".to_owned());
-        };
-        Ok(Slot {
-            _proxy: proxy,
-            _sandbox: share,
-        })
+            Err(connections::Full::Total) => {
+                if warn_due(&mut warned, None) {
+                    tracing::warn!(sandbox, "egress proxy: every connection is taken");
+                }
+                Err("Yulius proxy: too many connections; try again".to_owned())
+            }
+        }
     }
 
     /// The CA certificate agent runs trust.
@@ -409,7 +497,7 @@ impl EgressProxy {
         let Some(client) = self.policy.egress_client(&token).await else {
             return auth_required();
         };
-        let permit = match self.slot(&client) {
+        let (permit, ended) = match self.slot(&client) {
             Ok(slot) => slot,
             Err(refused) => return text(503, &refused),
         };
@@ -425,12 +513,19 @@ impl EgressProxy {
             let on_upgrade = hyper::upgrade::on(&mut request);
             let proxy = Arc::clone(self);
             tokio::spawn(async move {
-                match on_upgrade.await {
-                    Ok(upgraded) if intercept => {
-                        proxy.intercept(client, host, port, upgraded, permit).await;
+                let serving = async move {
+                    match on_upgrade.await {
+                        Ok(upgraded) if intercept => {
+                            proxy.intercept(client, host, port, upgraded, permit).await;
+                        }
+                        Ok(upgraded) => tunnel(addrs, upgraded, permit).await,
+                        Err(error) => tracing::debug!(%error, "proxy tunnel was not opened"),
                     }
-                    Ok(upgraded) => tunnel(addrs, upgraded, permit).await,
-                    Err(error) => tracing::debug!(%error, "proxy tunnel was not opened"),
+                };
+                // A connection that gave way to a new one ends here (SLR-002).
+                tokio::select! {
+                    () = serving => {}
+                    _ = ended => {}
                 }
             });
             return empty(StatusCode::OK);
@@ -474,7 +569,10 @@ impl EgressProxy {
             }
         };
         let (parts, body) = request.into_parts();
-        let response = self.forward(&client, &upstream, parts, body).await;
+        let response = tokio::select! {
+            response = self.forward(&client, &upstream, parts, body) => response,
+            _ = ended => text(503, "Yulius proxy: the request gave way to a newer one; try again"),
+        };
         drop(permit);
         response
     }
@@ -495,17 +593,15 @@ impl EgressProxy {
             }
         };
         let acceptor = tokio_rustls::TlsAcceptor::from(config);
-        let tls =
-            match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(TokioIo::new(upgraded)))
-                .await
-            {
-                Ok(Ok(tls)) => tls,
-                Ok(Err(error)) => {
-                    tracing::debug!(%error, "client refused the egress certificate");
-                    return;
-                }
-                Err(_) => return,
-            };
+        let client_io = Tracked::new(TokioIo::new(upgraded), &permit);
+        let tls = match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(client_io)).await {
+            Ok(Ok(tls)) => tls,
+            Ok(Err(error)) => {
+                tracing::debug!(%error, "client refused the egress certificate");
+                return;
+            }
+            Err(_) => return,
+        };
         let proxy = Arc::clone(&self);
         let service = hyper::service::service_fn(move |request: Request<Incoming>| {
             let proxy = Arc::clone(&proxy);
@@ -676,7 +772,7 @@ async fn tunnel(addrs: Vec<SocketAddr>, upgraded: Upgraded, permit: Slot) {
     };
     let _ = stream.set_nodelay(true);
     let mut client = TokioIo::new(upgraded);
-    let mut server = stream;
+    let mut server = Tracked::new(stream, &permit);
     let _ = tokio::time::timeout(
         CONNECTION_MAX,
         tokio::io::copy_bidirectional(&mut client, &mut server),
@@ -710,19 +806,22 @@ pub async fn serve(listener: TcpListener, proxy: Arc<EgressProxy>) {
 mod tests {
     use super::*;
 
-    /// LAP-002 (review round 1): the shares stay bounded. A new sandbox's entry drops those of
-    /// sandboxes that hold no connection; one that holds connections keeps its entry.
+    /// LAP-002 (review round 1): the warnings stay bounded: each limit warns once a minute, and
+    /// the map keeps only the last minute's.
     #[test]
-    fn idle_sandboxes_lose_their_share_entry() {
-        let mut shares = HashMap::new();
-        let busy = Arc::clone(&share_for(&mut shares, "busy", 2).slots).try_acquire_owned();
-        assert!(busy.is_ok());
-        for n in 0..100 {
-            let _ = share_for(&mut shares, &format!("idle-{n}"), 2);
+    fn warnings_are_once_a_minute_per_limit() {
+        let mut warned = HashMap::new();
+        assert!(warn_due(&mut warned, Some("s1")));
+        assert!(!warn_due(&mut warned, Some("s1")));
+        assert!(warn_due(&mut warned, Some("s2")));
+        assert!(warn_due(&mut warned, None));
+        assert!(!warn_due(&mut warned, None));
+        let old = Instant::now().checked_sub(WARN_EVERY);
+        for at in warned.values_mut() {
+            *at = old.unwrap_or(*at);
         }
-        let mut kept: Vec<&String> = shares.keys().collect();
-        kept.sort();
-        assert_eq!(kept, ["busy", "idle-99"]);
+        assert!(warn_due(&mut warned, Some("s3")));
+        assert_eq!(warned.len(), 1, "older warnings are forgotten");
     }
 
     #[test]
