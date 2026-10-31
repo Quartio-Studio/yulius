@@ -1204,9 +1204,8 @@ mod tests {
             let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await?;
             match request(&mut stream).await {
                 Ok(()) => held.push(stream),
-                Err(error) if tokio::time::Instant::now() < deadline => {
-                    let _ = error;
-                    tokio::task::yield_now().await;
+                Err(_) if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
                 }
                 Err(error) => return Err(error.into()),
             }

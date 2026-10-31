@@ -148,6 +148,8 @@ impl<K: PartialEq, T> Connections<K, T> {
             .iter()
             .enumerate()
             .filter(|(_, open)| key.is_none_or(|key| open.key == *key))
+            // A connection held in flight never gives way, whatever the floor.
+            .filter(|(_, open)| open.activity.last() != u64::MAX)
             .map(|(at, open)| (at, now_ms.saturating_sub(open.activity.last())))
             .filter(|(_, idle)| *idle >= self.floor_ms)
             // The longest idle; of equals, the oldest (the first in the list).
