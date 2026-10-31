@@ -685,6 +685,161 @@ mod tests {
         );
     }
 
+    /// What the stand-in for Yulius's internal listener answers to every request.
+    const ANSWER: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+
+    /// A stand-in for Yulius's internal listener (`127.0.0.1:8081`): answers every request with
+    /// [`ANSWER`] and keeps the connection open (HTTP keep-alive).
+    async fn yulius_stub() -> io::Result<u16> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let port = listener.local_addr()?.port();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    while let Ok(n) = stream.read(&mut buf).await {
+                        if n == 0 || stream.write_all(ANSWER).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        Ok(port)
+    }
+
+    /// The server's side of a sandbox's relay, `out.sock` to a [`yulius_stub`], in a runtime of
+    /// its own: dropping it closes every socket it holds, as the server process's exit does.
+    struct ServerProcess {
+        stop: Option<tokio::sync::oneshot::Sender<()>>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl ServerProcess {
+        fn start(out_sock: PathBuf, inside_port: u16) -> io::Result<Self> {
+            let (ready_tx, ready) = std::sync::mpsc::channel();
+            let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+            let thread = std::thread::spawn(move || {
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                else {
+                    return;
+                };
+                runtime.block_on(async move {
+                    let started = async {
+                        let target = yulius_stub().await?;
+                        let _ = std::fs::remove_file(&out_sock);
+                        let listener = UnixListener::bind(&out_sock)?;
+                        let targets = Arc::new(BTreeMap::from([(
+                            inside_port,
+                            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), target),
+                        )]));
+                        tokio::spawn(serve_outbound(listener, targets, "s1".to_owned()));
+                        io::Result::Ok(())
+                    };
+                    let _ = ready_tx.send(started.await.map_err(|e| e.to_string()));
+                    let _ = stopped.await;
+                });
+                // The runtime drops here with every task and socket of this "process".
+            });
+            ready
+                .recv()
+                .map_err(io::Error::other)?
+                .map_err(io::Error::other)?;
+            Ok(Self {
+                stop: Some(stop),
+                thread: Some(thread),
+            })
+        }
+
+        /// The process exits: every connection it held closes.
+        fn exit(mut self) {
+            if let Some(stop) = self.stop.take() {
+                let _ = stop.send(());
+            }
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+
+    /// One request through the forward on `port`, as the Superagent's `--scrub-exec` asks for
+    /// its fingerprints: `Ok` once Yulius answered, else what the client saw.
+    async fn agent_call(port: u16) -> Result<(), String> {
+        let call = async {
+            let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await?;
+            request(&mut stream).await
+        };
+        call.await.map_err(|e| format!("{:?}: {e}", e.kind()))
+    }
+
+    /// Sends one request on `stream` and reads Yulius's answer.
+    async fn request(stream: &mut TcpStream) -> io::Result<()> {
+        stream
+            .write_all(
+                b"POST /internal/scrub/fingerprints HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+                  Content-Length: 0\r\n\r\n",
+            )
+            .await?;
+        let mut back = vec![0; ANSWER.len()];
+        with_timeout(
+            Duration::from_secs(10),
+            "answer",
+            stream.read_exact(&mut back),
+        )
+        .await?;
+        if back == ANSWER {
+            Ok(())
+        } else {
+            Err(io::Error::other("another answer"))
+        }
+    }
+
+    /// SPEC-355 (2026-10-30, quartio-v2): leftover processes hold every connection of the
+    /// sandbox's forward to Yulius, so the Superagent's own calls are reset (`ECONNRESET at
+    /// http://127.0.0.1:8081`). A server restart does not free them: the holder keeps each
+    /// connection whose server end closed until its client closes too, and a leftover process
+    /// never does. The forward gives way to the new call instead (the longest-idle connection).
+    #[tokio::test]
+    async fn the_agent_gets_through_a_forward_full_of_leftovers_before_and_after_a_restart()
+    -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let out_sock = dir.path().join("out.sock");
+        let free = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let port = free.local_addr()?.port();
+        drop(free);
+        let server = ServerProcess::start(out_sock.clone(), port)?;
+        let forward = forward_within(Ipv4Addr::LOCALHOST, port, out_sock.clone(), false, 4).await?;
+        // Leftover processes: each made a call and keeps its connection, idle, for good.
+        let mut leftovers = Vec::new();
+        for _ in 0..4 {
+            let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await?;
+            request(&mut stream).await?;
+            leftovers.push(stream);
+        }
+        let before = agent_call(port).await;
+
+        server.exit();
+        // The server's ends are closed (the relay passed that on), and the leftovers still hold
+        // theirs.
+        let mut byte = [0u8; 1];
+        for stream in &mut leftovers {
+            let read = with_timeout(Duration::from_secs(10), "end", stream.read(&mut byte)).await;
+            assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
+        }
+        let restarted = ServerProcess::start(out_sock.clone(), port)?;
+        let after = agent_call(port).await;
+        assert!(
+            before.is_ok() && after.is_ok(),
+            "the agent's call before the restart: {before:?}, after it: {after:?}"
+        );
+        drop(leftovers);
+        forward.abort();
+        restarted.exit();
+        Ok(())
+    }
+
     /// SPEC-187 DKR-007: with a Docker engine the forwards listen on every address of the
     /// sandbox's network, so containers reach them through their bridge's gateway (here another
     /// address than `127.0.0.1`).
