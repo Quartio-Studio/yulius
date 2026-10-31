@@ -402,20 +402,21 @@ async fn turn_closed_while_down(
     let adapter =
         yulius::wiring::harness::HarnessAdapter::new(std::path::PathBuf::from(YULIUS), "x");
     let transcript = adapter.claude_transcript(&home, &worktree, &session);
-    let time = yulius_app::auth::rfc3339(yulius_domain::time::Timestamp(at));
-    let envelope = |kind: &str, uuid: &str| {
+    // Whole seconds, as the records carry them: the prompt 2 s and the answer 1 s before the close.
+    let envelope = |kind: &str, uuid: &str, ms: i64| {
+        let time = yulius_app::auth::rfc3339(yulius_domain::time::Timestamp(ms));
         json!({"type": kind, "uuid": uuid, "timestamp": time, "sessionId": session,
                "isSidechain": false, "userType": "external", "entrypoint": "cli"})
     };
-    let mut user = envelope("user", "outage-u");
+    let mut user = envelope("user", "outage-u", at - 2000);
     user["message"] = json!({"role": "user", "content":
         "<task-notification>yulius wait: Yulius cannot be reached</task-notification>"});
-    let mut answer = envelope("assistant", "outage-a");
+    let mut answer = envelope("assistant", "outage-a", at - 1000);
     answer["message"] = json!({"id": "msg_outage", "type": "message", "role": "assistant",
         "model": "fake-model", "content": [{"type": "text", "text": "Yulius is down; I wait."}],
         "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1,
         "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}});
-    let mut closed = envelope("system", "outage-d");
+    let mut closed = envelope("system", "outage-d", at);
     closed["subtype"] = json!("turn_duration");
     closed["durationMs"] = json!(1000);
     let mut lines = std::fs::read_to_string(&transcript)?;
@@ -433,9 +434,10 @@ async fn turn_closed_while_down(
 }
 
 /// MSB-007: after a restart, the task whose turn closed while Yulius was down is told "Yulius is
-/// back; continue" once. A task idle since before the outage is not, nor one whose turn closed
-/// after `alive-at` but whose Stop Yulius answered (review round 1: an update 10 s after it), nor
-/// one that waits for a person.
+/// back; continue" once, and so is one whose earlier Stop Yulius answered with a block (review
+/// round 2: the turn went on and its last Stop failed). A task idle since before the outage is
+/// not, nor one whose turn closed after `alive-at` but whose Stop Yulius answered (review round 1:
+/// an update 10 s after it), nor one that waits for a person.
 #[test]
 fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
     use crate::pool_supervision::{
@@ -452,18 +454,20 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
 
     // Four tasks answer their first message; then Yulius goes down.
     let first = runtime()?;
-    let (cut, quiet, answered, asked, down_since) = first.block_on(async {
+    let (cut, quiet, answered, asked, blocked, down_since) = first.block_on(async {
         let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent())?;
         let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
         let cut = new_task(&app, &sandbox, &user, "Cut").await?;
         let quiet = new_task(&app, &sandbox, &user, "Quiet").await?;
         let answered = new_task(&app, &sandbox, &user, "Answered").await?;
         let asked = new_task(&app, &sandbox, &user, "Asked").await?;
+        let blocked = new_task(&app, &sandbox, &user, "Blocked").await?;
         for (id, title) in [
             (&cut, "Cut"),
             (&quiet, "Quiet"),
             (&answered, "Answered"),
             (&asked, "Asked"),
+            (&blocked, "Blocked"),
         ] {
             wait_for("the first answer", Duration::from_secs(30), || {
                 let shown = screen(&app, id);
@@ -471,7 +475,7 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
             })
             .await?;
         }
-        Ok::<_, Box<dyn std::error::Error>>((cut, quiet, answered, asked, app.now()))
+        Ok::<_, Box<dyn std::error::Error>>((cut, quiet, answered, asked, blocked, app.now()))
     })?;
     first.shutdown_timeout(Duration::from_secs(5));
 
@@ -480,22 +484,25 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
         let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent())?;
         // While Yulius was down, the cut task's wait died and its agent ended a turn.
         // Transcript times are whole seconds: the first one after Yulius went down.
-        let closed = (down_since.0 / 1000 + 1) * 1000;
-        for id in [&cut, &answered, &asked] {
+        let closed = (down_since.0 / 1000 + 3) * 1000;
+        for id in [&cut, &answered, &asked, &blocked] {
             turn_closed_while_down(&app, &data, id, closed).await?;
         }
-        // Yulius answered the answered task's Stop before it stopped answering.
-        let run_dir = app
-            .deps
-            .store
-            .live_attempt(&answered)
-            .await?
-            .ok_or("attempt")?
-            .run_dir;
-        std::fs::write(
-            std::path::Path::new(&run_dir).join("stop-answered"),
-            closed.to_string(),
-        )?;
+        // Yulius answered the answered task's Stop (after its answer) before it stopped
+        // answering, and the blocked task's earlier Stop (before its last answer) with a block.
+        for (id, answered_at) in [(&answered, closed - 500), (&blocked, closed - 1500)] {
+            let run_dir = app
+                .deps
+                .store
+                .live_attempt(id)
+                .await?
+                .ok_or("attempt")?
+                .run_dir;
+            std::fs::write(
+                std::path::Path::new(&run_dir).join("stop-answered"),
+                answered_at.to_string(),
+            )?;
+        }
         // The asked task waits for a person.
         app.deps
             .store
@@ -529,7 +536,10 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        assert_eq!(woken, vec![cut.clone()], "only the task cut by the outage");
+        woken.sort();
+        let mut expected = vec![cut.clone(), blocked.clone()];
+        expected.sort();
+        assert_eq!(woken, expected, "only the tasks cut by the outage");
         wait_for("the wake-up typed", Duration::from_secs(30), || {
             let shown = screen(&app, &cut);
             async move { shown.contains("ECHO: Yulius is back; continue") }
@@ -542,7 +552,7 @@ fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
             "{}",
             screen(&app, &quiet)
         );
-        for id in [&cut, &quiet, &answered, &asked] {
+        for id in [&cut, &quiet, &answered, &asked, &blocked] {
             stop(&app, id).await?;
         }
         Ok::<_, Box<dyn std::error::Error>>(())

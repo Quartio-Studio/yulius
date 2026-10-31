@@ -97,9 +97,11 @@ pub struct TranscriptFacts {
     /// When the last record that closes a session's turn (its answer or its `turn_duration`)
     /// was written: a turn closed while Yulius was down is woken after it (SPEC-358 MSB-007).
     pub turn_closed_at: Option<yulius_domain::time::Timestamp>,
-    /// When the last prompt (typed, or Claude Code's own wake-up) opened a turn: a turn whose
-    /// Stop Yulius answered after it is not woken after an outage (SPEC-358 MSB-007).
-    pub turn_opened_at: Option<yulius_domain::time::Timestamp>,
+    /// When the session last moved toward a Stop: its last prompt (typed, or Claude Code's own
+    /// wake-up) or its last answer. A Stop Yulius answered after it was the last turn's, so that
+    /// turn is not woken after an outage; one answered before it (a blocked Stop, after which the
+    /// turn went on) was not (SPEC-358 MSB-007).
+    pub turn_moved_at: Option<yulius_domain::time::Timestamp>,
 }
 
 impl TranscriptFacts {
@@ -110,8 +112,10 @@ impl TranscriptFacts {
         {
             self.turn_closed_at = Some(self.turn_closed_at.map_or(*at, |last| last.max(*at)));
         }
-        if let Observation::UserTurn { at: Some(at), .. } = observation {
-            self.turn_opened_at = Some(self.turn_opened_at.map_or(*at, |last| last.max(*at)));
+        if let Observation::UserTurn { at: Some(at), .. }
+        | Observation::TurnComplete { at: Some(at) } = observation
+        {
+            self.turn_moved_at = Some(self.turn_moved_at.map_or(*at, |last| last.max(*at)));
         }
         if let Observation::UserTurn { at: Some(at), .. }
         | Observation::TurnInterrupted { at: Some(at) }
@@ -829,8 +833,8 @@ impl App {
         if let Some(at) = facts.turn_closed_at {
             runtime.turn_closed_ms.fetch_max(at.0, Ordering::SeqCst);
         }
-        if let Some(at) = facts.turn_opened_at {
-            runtime.turn_opened_ms.fetch_max(at.0, Ordering::SeqCst);
+        if let Some(at) = facts.turn_moved_at {
+            runtime.turn_moved_ms.fetch_max(at.0, Ordering::SeqCst);
         }
         if let Some(achieved) = facts.goal_achieved {
             runtime.goal_achieved.store(achieved, Ordering::SeqCst);
@@ -1393,7 +1397,18 @@ mod tests {
             },
         ]);
         assert_eq!(facts.turn_closed_at, Some(Timestamp(12)));
-        assert_eq!(facts.turn_opened_at, Some(Timestamp(40)));
+        assert_eq!(facts.turn_moved_at, Some(Timestamp(40)));
+        // A Stop answered with a block, then the turn went on to a new answer: it moved since.
+        let blocked = reduce(&[
+            Observation::UserTurn {
+                at: at(10),
+                wake: false,
+            },
+            Observation::TurnComplete { at: at(20) },
+            Observation::AgentWork { at: at(25) },
+            Observation::TurnComplete { at: at(30) },
+        ]);
+        assert_eq!(blocked.turn_moved_at, Some(Timestamp(30)));
         assert_eq!(reduce(&[PROMPT]).turn_closed_at, None);
     }
 
@@ -1529,7 +1544,7 @@ mod tests {
                 goal_recorded: true,
                 goal_retry: None,
                 turn_closed_at: None,
-                turn_opened_at: Some(Timestamp(1)),
+                turn_moved_at: Some(Timestamp(1)),
             }
         );
         // Typed again after the goal: a new open turn, the goal no longer counts.

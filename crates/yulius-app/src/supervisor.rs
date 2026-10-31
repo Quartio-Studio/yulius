@@ -243,8 +243,9 @@ pub struct TaskRuntime {
     /// replayed transcript and live: Yulius wakes a task whose turn closed while it was down
     /// (SPEC-358 MSB-007).
     pub(crate) turn_closed_ms: AtomicI64,
-    /// When the last prompt record opened a turn (ms; 0 = none), replayed and live (MSB-007).
-    pub(crate) turn_opened_ms: AtomicI64,
+    /// When the session's last prompt or answer was recorded (ms; 0 = none), replayed and live:
+    /// a Stop answered after it was the last turn's (MSB-007).
+    pub(crate) turn_moved_ms: AtomicI64,
     /// The server start (ms) after whose outage this task was woken, once (SPEC-358 MSB-007).
     pub(crate) woken_after_outage_ms: AtomicI64,
     /// Background work the transcript says the session started and no notification ended yet:
@@ -383,7 +384,7 @@ impl TaskRuntime {
             stops_in_flight: AtomicU32::new(0),
             turn_record_at_ms: AtomicI64::new(0),
             turn_closed_ms: AtomicI64::new(0),
-            turn_opened_ms: AtomicI64::new(0),
+            turn_moved_ms: AtomicI64::new(0),
             woken_after_outage_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
             limits_at_start: Mutex::new(None),
@@ -3791,7 +3792,7 @@ impl App {
         runtime.turn_began_ms.store(0, Ordering::SeqCst);
         runtime.turn_record_at_ms.store(0, Ordering::SeqCst);
         runtime.turn_closed_ms.store(0, Ordering::SeqCst);
-        runtime.turn_opened_ms.store(0, Ordering::SeqCst);
+        runtime.turn_moved_ms.store(0, Ordering::SeqCst);
         // A new session runs none of the old one's monitors or agents.
         if let Ok(mut launches) = runtime.launches.lock() {
             launches.clear();
@@ -4019,7 +4020,7 @@ impl App {
             }
             Observation::UserTurn { at, wake } => {
                 if let Some(at) = at {
-                    runtime.turn_opened_ms.fetch_max(at.0, Ordering::SeqCst);
+                    runtime.turn_moved_ms.fetch_max(at.0, Ordering::SeqCst);
                 }
                 // The retry's prompt (or a person's) starts the turn an armed retry waited for.
                 runtime.goal_retry_armed.store(false, Ordering::SeqCst);
@@ -4065,6 +4066,7 @@ impl App {
             Observation::TurnComplete { at } => {
                 if let Some(at) = at {
                     runtime.turn_closed_ms.fetch_max(at.0, Ordering::SeqCst);
+                    runtime.turn_moved_ms.fetch_max(at.0, Ordering::SeqCst);
                 }
                 self.context_replied(task_id, &attempt.id);
                 // A continuation that is only the answer ending the turn has no agent work.

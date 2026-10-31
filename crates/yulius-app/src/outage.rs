@@ -44,8 +44,8 @@ pub struct WakeFacts {
     pub turn_open: bool,
     /// When the record closing its last turn was written (ms), 0 for none.
     pub turn_closed_ms: i64,
-    /// When the prompt that opened its last turn was written (ms), 0 for none.
-    pub turn_opened_ms: i64,
+    /// When its last prompt or answer was written (ms), 0 for none.
+    pub turn_moved_ms: i64,
     /// When Yulius last answered the run's Stop (ms), 0 for never.
     pub stop_answered_ms: i64,
     /// Its goal is achieved: it is done.
@@ -61,16 +61,17 @@ pub struct WakeFacts {
 }
 
 /// Whether the task is woken: idle, Running, with its last turn closed while Yulius was down
-/// (after `down_since_ms`, before `started_ms`) and its Stop never answered (no answer since the
-/// prompt that opened it: `alive-at` is up to [`ALIVE_EVERY`] old, so a turn Yulius settled just
-/// before it stopped also closed after it), and nobody else to wait for (MSB-007).
+/// (after `down_since_ms`, before `started_ms`) and its last Stop never answered (no answer since
+/// its last prompt or answer: `alive-at` is up to [`ALIVE_EVERY`] old, so a turn Yulius settled
+/// just before it stopped also closed after it; a Stop answered with a block came before the
+/// turn's next answer), and nobody else to wait for (MSB-007).
 #[must_use]
 pub fn wakes_after_outage(facts: &WakeFacts, down_since_ms: i64, started_ms: i64) -> bool {
     facts.running
         && !facts.turn_open
         && facts.turn_closed_ms > down_since_ms
         && facts.turn_closed_ms < started_ms
-        && facts.stop_answered_ms < facts.turn_opened_ms
+        && facts.stop_answered_ms < facts.turn_moved_ms
         && !facts.goal_achieved
         && !facts.needs_you
         && !facts.paused
@@ -197,7 +198,7 @@ impl App {
                 running: task.status == TaskStatus::Running,
                 turn_open: runtime.turn_in_progress(),
                 turn_closed_ms: runtime.turn_closed_ms.load(Ordering::SeqCst),
-                turn_opened_ms: runtime.turn_opened_ms.load(Ordering::SeqCst),
+                turn_moved_ms: runtime.turn_moved_ms.load(Ordering::SeqCst),
                 stop_answered_ms: stop_answered_at(Path::new(&attempt.run_dir)),
                 goal_achieved: runtime.goal_achieved.load(Ordering::SeqCst),
                 needs_you: !matches!(self.deps.store.task_needs_you(&task.id).await, Ok(None)),
@@ -236,7 +237,7 @@ mod tests {
     fn idle() -> WakeFacts {
         WakeFacts {
             running: true,
-            turn_opened_ms: 2_500,
+            turn_moved_ms: 2_500,
             turn_closed_ms: 3_000,
             stop_answered_ms: 800,
             ..WakeFacts::default()
@@ -257,6 +258,13 @@ mod tests {
             ..idle()
         };
         assert!(wakes_after_outage(&never, DOWN, STARTED));
+        // Review round 2: a Stop answered with a block, then a new answer and a last Stop that
+        // failed: the turn moved after the answered Stop.
+        let blocked = WakeFacts {
+            stop_answered_ms: 2_200,
+            ..idle()
+        };
+        assert!(wakes_after_outage(&blocked, DOWN, STARTED));
     }
 
     #[test]
