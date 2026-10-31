@@ -43,6 +43,12 @@ woke the tasks.
 - So any outage longer than about a minute, which every Yulius restart and update is, leaves the
   session without Yulius tools for good. SPEC-355 hit the same wall for the Superagent and
   solved it with a restart in place.
+- **A stdio server never started in a task run.** Claude Code spawns `CLAUDE_CODE_SHELL_PREFIX`
+  itself as the program of a stdio MCP server: `command = PREFIX || command`, with the server's
+  command line as one quoted argument. For Bash and hooks it splits the prefix at its last
+  `" -"`. Yulius's prefix was `<yulius> --scrub-exec`, so every stdio server of a task run or
+  Superagent, the sandbox's own included, failed with `ENOENT: posix_spawn '/usr/local/bin/yulius
+  --scrub-exec'`. This was measured with `claude -p --debug-file` in this task's own run.
 
 ### What a restart loses on the server today
 
@@ -70,7 +76,10 @@ woke the tasks.
 - **MSB-001** A task run reaches the Yulius MCP through a stdio bridge, `yulius mcp`, started by
   Claude Code. The bridge forwards each JSON-RPC message to the run's `POST /mcp`, with the task
   token as bearer. It writes each answer back as one line. The bridge never exits while Claude
-  Code runs, so Claude Code never sees the Yulius MCP fail.
+  Code runs, so Claude Code never sees the Yulius MCP fail. `CLAUDE_CODE_SHELL_PREFIX` is one
+  program, `<run_dir>/scrub-exec` (a script that runs `<yulius> --scrub-exec "$@"`), so Claude
+  Code can spawn stdio servers through it. When stdin ends, the bridge answers the calls in
+  flight (bounded by 10 s) before it exits.
 - **MSB-002** A message that Yulius never read is sent again until Yulius answers, for at most
   `OUTAGE_WAIT` (10 min). "Never read" means the connection failed before Yulius asked for the
   body (`Expect: 100-continue`). Past the bound, the call answers an error saying that Yulius could
