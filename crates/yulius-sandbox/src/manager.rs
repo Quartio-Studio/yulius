@@ -1381,7 +1381,9 @@ impl Manager {
             Ok(listener) => {
                 let targets = Arc::new(self.config.forwards.clone());
                 tasks.push(tokio::spawn(crate::relay::serve_outbound(
-                    listener, targets,
+                    listener,
+                    targets,
+                    sandbox.to_string(),
                 )));
             }
             Err(error) => tracing::warn!(sandbox, %error, "cannot serve the sandbox's out.sock"),

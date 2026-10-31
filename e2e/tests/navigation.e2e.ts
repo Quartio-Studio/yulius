@@ -258,7 +258,9 @@ test('a sandbox tab follows the pointer, the others slide aside, and it settles 
   for (const x of [third.x + third.width / 2 - 10, first.x + first.width, first.x + 4]) await browser.mouse.move(x, y);
   const moving = await shifts();
   expect(moving.home).toBe(0);
-  expect(moving['sandbox-3']).toBeCloseTo(first.x + 4 - (third.x + third.width / 2), 0);
+  // Its centre under the pointer puts its left edge past the row's start: it stops there (SPEC-354).
+  expect(moving['sandbox-3']).toBeLessThan(first.x - third.x);
+  expect(moving['sandbox-3']).toBeGreaterThanOrEqual(first.x - third.x - 16.5);
   expect(moving.studio).toBeGreaterThan(0);
   expect(moving.product).toBeGreaterThan(0);
   expect(await browser.evaluate(() => document.querySelector('.tabrow-tabs')!.classList.contains('reordering'))).toBe(true);
@@ -313,6 +315,119 @@ test('a sandbox tab follows the pointer, the others slide aside, and it settles 
   await expect(browser).toHaveURL(/#\/s\/product/);
   await browser.reload();
   await expect.poll(async () => (await names()).map((name) => name?.replace('-renamed', ''))).toEqual(['studio', 'sandbox-3', 'product']);
+});
+
+// Task #336 (SPEC-354): "when i move things from this bar, they can go far after the available
+// space. It should be blocked so visually it bounces from borders instead of going infinitly far".
+test('a sandbox tab dragged past either end of the row stops at its border', async ({ app, browser, screen }) => {
+  const OVERSHOOT_MAX = 16;
+  await app.open(mock('/s/studio', '&ambient=0'));
+  const row = screen.getByRole('navigation', 'Sandboxes');
+  await expect(row.getByRole('link', /^sandbox-3\b/)).toBeVisible();
+  await eventsConnected(browser);
+  const names = () => browser.evaluate(() => [...document.querySelectorAll('.tabrow-tabs .tab-name')].map((n) => n.textContent));
+  const boxOf = (name: string) => browser.evaluate((tabName) => {
+    const tab = [...document.querySelectorAll<HTMLElement>('.tabrow-tabs .tab')].find((t) => t.querySelector('.tab-name')?.textContent === tabName)!;
+    const box = tab.getBoundingClientRect();
+    return { left: box.left, right: box.right };
+  }, name);
+  const transformed = () => browser.evaluate(() => [...document.querySelectorAll<HTMLElement>('.tabrow-tabs .tab')].some((tab) => tab.style.transform !== ''));
+  // Where the settling tab is drawn as it is let go (a window listener added after the press runs
+  // after the drag's own): the start of its settle.
+  const recordRelease = () => browser.evaluate(() => window.addEventListener('pointerup', () => {
+    const tab = document.querySelector<HTMLElement>('.tabrow-tabs .tab.settling');
+    const box = tab?.getBoundingClientRect();
+    (window as unknown as { e2eReleased: unknown }).e2eReleased = box ? { left: box.left, right: box.right } : null;
+  }, { once: true }));
+  const released = () => browser.evaluate(() => (window as unknown as { e2eReleased: { left: number, right: number } | null }).e2eReleased);
+  const hash = () => browser.evaluate(() => location.hash);
+  const start = await hash();
+  expect(await names()).toEqual(['studio', 'product', 'sandbox-3']);
+  const edgeLeft = (await boxOf('studio')).left;
+  const edgeRight = (await boxOf('sandbox-3')).right;
+  const box = await row.getByRole('link', /^studio\b/).boundingBox();
+  if (!box) throw new Error('tabs not laid out');
+  const y = box.y + box.height / 2;
+  const width = await browser.evaluate(() => window.innerWidth);
+
+  // BND-002: inside the row a dragged tab follows the pointer exactly.
+  const middle = await boxOf('product');
+  await browser.mouse.move((middle.left + middle.right) / 2, y);
+  await browser.mouse.down();
+  for (const x of [(middle.left + middle.right) / 2 - 10, (middle.left + middle.right) / 2 - 20]) await browser.mouse.move(x, y);
+  expect((await boxOf('product')).left).toBeCloseTo(middle.left - 20, 1);
+  await browser.keyboard.press('Escape');
+  await browser.mouse.up();
+  await expect.poll(transformed).toBe(false);
+
+  // BND-001: the first tab dragged to the window's left edge gives a little past the row's start
+  // and no more...
+  const studio = await boxOf('studio');
+  await browser.mouse.move((studio.left + studio.right) / 2, y);
+  await browser.mouse.down();
+  for (const x of [(studio.left + studio.right) / 2 - 10, 40, 1]) await browser.mouse.move(x, y);
+  const pastLeft = await boxOf('studio');
+  expect(pastLeft.left).toBeLessThan(edgeLeft - 2);
+  expect(pastLeft.left).toBeGreaterThanOrEqual(edgeLeft - OVERSHOOT_MAX - 0.5);
+  // BND-003: ...and springs back from there, not from under the pointer.
+  await recordRelease();
+  await browser.mouse.up();
+  expect((await released())!.left).toBeGreaterThanOrEqual(edgeLeft - OVERSHOOT_MAX - 0.5);
+  expect(await names()).toEqual(['studio', 'product', 'sandbox-3']);
+  await expect.poll(transformed).toBe(false);
+  expect(await hash()).toBe(start);
+
+  // The last tab dragged to the window's right edge stops just past the row's end.
+  const last = await boxOf('sandbox-3');
+  await browser.mouse.move((last.left + last.right) / 2, y);
+  await browser.mouse.down();
+  for (const x of [(last.left + last.right) / 2 + 10, width - 40, width - 2]) await browser.mouse.move(x, y);
+  const pastRight = await boxOf('sandbox-3');
+  expect(pastRight.right).toBeGreaterThan(edgeRight + 2);
+  expect(pastRight.right).toBeLessThanOrEqual(edgeRight + OVERSHOOT_MAX + 0.5);
+  await recordRelease();
+  await browser.mouse.up();
+  expect((await released())!.right).toBeLessThanOrEqual(edgeRight + OVERSHOOT_MAX + 0.5);
+  expect(await names()).toEqual(['studio', 'product', 'sandbox-3']);
+  await expect.poll(transformed).toBe(false);
+
+  // BND-004: dragged far past the end, the first tab still lands last, bounded on the way.
+  await browser.mouse.move((studio.left + studio.right) / 2, y);
+  await browser.mouse.down();
+  for (const x of [(studio.left + studio.right) / 2 + 10, edgeRight, width - 2]) await browser.mouse.move(x, y);
+  expect((await boxOf('studio')).right).toBeLessThanOrEqual(edgeRight + OVERSHOOT_MAX + 0.5);
+  await browser.mouse.up();
+  expect(await names()).toEqual(['product', 'sandbox-3', 'studio']);
+  await expect.poll(transformed).toBe(false);
+  expect(await hash()).toBe(start);
+
+  // BND-004 for a tab much wider than the end tabs (review round 1): its bounded centre cannot pass
+  // theirs, yet dragged far past an end it still lands there (the order follows the pointer).
+  await browser.evaluate(() => {
+    type Mock = { __yuliusMock: { sandboxes: { id: string, name: string }[], eventSockets: Set<{ push: (data: string) => void }> } };
+    const db = (window as unknown as Mock).__yuliusMock;
+    const sandbox = db.sandboxes.find((s) => s.id === 'sb_three')!;
+    sandbox.name = 'sandbox-3-with-a-much-longer-name';
+    for (const socket of db.eventSockets) socket.push(JSON.stringify({ type: 'sandbox.updated', sandbox }));
+  });
+  await expect.poll(names).toEqual(['product', 'sandbox-3-with-a-much-longer-name', 'studio']);
+  const wide = await boxOf('sandbox-3-with-a-much-longer-name');
+  expect(wide.right - wide.left).toBeGreaterThan((await boxOf('product')).right - (await boxOf('product')).left + 2 * OVERSHOOT_MAX);
+  expect(wide.right - wide.left).toBeGreaterThan((await boxOf('studio')).right - (await boxOf('studio')).left + 2 * OVERSHOOT_MAX);
+  await browser.mouse.move((wide.left + wide.right) / 2, y);
+  await browser.mouse.down();
+  for (const x of [(wide.left + wide.right) / 2 - 10, 40, 1]) await browser.mouse.move(x, y);
+  await browser.mouse.up();
+  expect(await names()).toEqual(['sandbox-3-with-a-much-longer-name', 'product', 'studio']);
+  await expect.poll(transformed).toBe(false);
+  const widened = await boxOf('sandbox-3-with-a-much-longer-name');
+  await browser.mouse.move((widened.left + widened.right) / 2, y);
+  await browser.mouse.down();
+  for (const x of [(widened.left + widened.right) / 2 + 10, width - 40, width - 2]) await browser.mouse.move(x, y);
+  await browser.mouse.up();
+  expect(await names()).toEqual(['product', 'studio', 'sandbox-3-with-a-much-longer-name']);
+  await expect.poll(transformed).toBe(false);
+  expect(await hash()).toBe(start);
 });
 
 // Task #108 (SPEC-122): "We need tasks id somewhere here and not only PRs id because we use them

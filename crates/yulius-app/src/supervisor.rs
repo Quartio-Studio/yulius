@@ -198,6 +198,9 @@ pub struct TaskRuntime {
     pub(crate) background_waits: AtomicI64,
     /// Since when (ms) the idle agent's background shells have been running (0 = none).
     pub(crate) shells_since_ms: AtomicI64,
+    /// The run's strays as last probed, by their first process `(pid, started)`, to when (ms) each
+    /// was first seen (SPEC-353 LAP-004).
+    pub(crate) strays_seen: Mutex<HashMap<(u32, u64), i64>>,
     /// Background agents Claude Code still waited for when the last turn ended (its
     /// `turn_duration` record, STA-001): they wake the session by themselves, so the idle task
     /// is not done. Counted with the shells.
@@ -375,6 +378,7 @@ impl TaskRuntime {
             limits_at_start: Mutex::new(None),
             background_waits: AtomicI64::new(-1),
             shells_since_ms: AtomicI64::new(0),
+            strays_seen: Mutex::new(HashMap::new()),
             background_agents: AtomicU32::new(0),
             notice_attention_ms: AtomicI64::new(0),
             secret_wait_at: AtomicI64::new(0),
