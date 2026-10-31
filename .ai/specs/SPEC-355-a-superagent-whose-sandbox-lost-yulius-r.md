@@ -1,11 +1,11 @@
 ---
 yulius-task: 1f698f47-3522-4ef5-9129-1ea074abe1fc
-status: in-progress
+status: done
 ---
 
 # SPEC-355: A Superagent whose sandbox lost Yulius recovers without the person closing it
 
-Status: in progress
+Status: implemented
 Date: 2026-10-31
 Owner: Yulius task #337
 Scope authorization: task #337, a follow-up to #335 (PR #971, SPEC-353), #334 (PR #967,
@@ -101,14 +101,14 @@ Superagent's leftover processes are reaped like an idle task's.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Relays toward Yulius give way to a new connection at their limit
-- [ ] The egress proxy gives way at a sandbox's share and at its limit
-- [ ] An idle Superagent's strays are reported and reaped
-- [ ] Yulius tests each Superagent's link to Yulius
-- [ ] The panel says when the link is lost and restarts the Superagent in place
-- [ ] Operations guide, ADR, architecture and changes
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Gates green, pull request merged into dev on green CI
+- [x] Relays toward Yulius give way to a new connection at their limit
+- [x] The egress proxy gives way at a sandbox's share and at its limit
+- [x] An idle Superagent's strays are reported and reaped
+- [x] Yulius tests each Superagent's link to Yulius
+- [x] The panel says when the link is lost and restarts the Superagent in place
+- [x] Operations guide, ADR, architecture and changes
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Gates green, pull request merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -183,6 +183,38 @@ Independent reviews in fresh sessions (skill `yulius-review`; this repository ha
 
 ## Evidence
 
-- Red before the fix: `cargo test -p yulius-sandbox --lib the_agent_gets_through` →
-  `the agent's call before the restart: Err("ConnectionReset: Connection reset by peer (os error
-  104)"), after it: Err("ConnectionReset: …")`.
+- Root cause, verified by a deterministic test rather than assumed (the production host's
+  connection table and holder log could not be reached from this sandbox):
+  `relay::tests::the_agent_gets_through_a_forward_full_of_leftovers_before_and_after_a_restart`.
+  Red at c743349c: `the agent's call before the restart: Err("ConnectionReset: Connection reset by
+  peer (os error 104)"), after it: Err("ConnectionReset: …")`. Green from d3d09299.
+- Red before each fix, then green:
+  - The egress share test (b8e6406b): `503 … this sandbox's processes hold all of its 8
+    connections`. Green at 9823ff95.
+  - The Superagent strays tests (40855b42): `timed out waiting for the idle Superagent's first
+    probe`. Green at 5a470847. A mutation that dropped the idle re-check was not caught by the
+    first version of the test, so the test was strengthened (19cf5c45): with the mutation it fails
+    with `left: [(2, …)] right: [(3, …)]`.
+  - Review round 1 (ccebb173): the floor test (60 s, within the 290 s call), one failed link test
+    reading `lost`, and an unended restart sending no notice. Green at ee4fcdaa.
+  - Review round 2 (e815642b): a held connection gave way under a zero floor. Green at a8ce000c.
+- `scripts/dev ci` on 0a1c3b0a:
+  - Passed: doctor, the repository check, the script tests, `cargo check`, fmt, clippy
+    `-D warnings` (Linux and macOS), nextest (2832 passed, 16 skipped) and the doctests.
+  - It then stopped at `cargo deny --locked check`, which could not fetch the RustSec advisory
+    database: `CONNECT tunnel failed, response 503`. The instance's egress proxy answered `too many
+    connections` for every sandbox.
+  - Run by hand: `cargo deny --locked --offline check` (advisories ok, bans ok, licenses ok,
+    sources ok, against the cached database), `cargo shear --locked --deny-warnings` (no issues)
+    and the docs step (`cargo doc … --no-deps`, no warnings).
+- e2e: `npx e2e run`, 778 passed, 1 skipped (69 files), including the two new Superagent panel
+  tests.
+- `scripts/dev security`: incomplete (exit 3). Vidoc could not be reached through the proxy
+  (`Tunnel connection failed: 503`), so 25 files were not scanned. This is infrastructure, not a
+  pass; Yulius CI's `security` job scans the pull request head.
+- Not testable here:
+  - A real bwrap holder: namespaces cannot be created in this sandbox. The relays, the link test
+    and the in.sock change are tested in-process.
+  - The production incident's exact connection holders.
+  - Claude Code's own MCP reconnect behaviour. The restart test checks that the new process
+    resumes the same conversation with the fake `claude`.
