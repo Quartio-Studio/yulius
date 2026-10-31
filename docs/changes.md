@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-31
 
+- A full egress proxy share shows on the panel, with whose connections they are (SPEC-361,
+  ADR-0246, task #344). On 2026-10-31 quartio-v2's tasks found out one by one that the proxy
+  refused them; the cause was only in the journal. Now a sandbox at its share, a full `out.sock`
+  relay or a full proxy shows a warning pill in the tab row to the sandbox's people ("Proxy share
+  full: quartio-v2", naming the task whose run holds the most and how many), with one
+  notification per trouble and none per refusal. It goes once the limit falls to seven eighths.
+  `GET /api/connections` lists them.
 - A chart's hover tip shows all its text (SPEC-360, task #340, #986). The stages waterfall's tip
   kept its figures on one line and stayed only 80 px from the plot's edge, so a job with many
   figures ran past the panel and was cut off. It now wraps at 360 px or its plot's width,
