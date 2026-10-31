@@ -108,7 +108,6 @@ pub struct EgressProxy {
     resolve: HashMap<String, SocketAddr>,
     /// The open tunnels and intercepted connections by sandbox (LAP-002, SPEC-355 SLR-002).
     slots: Arc<Slots>,
-    max_per_sandbox: usize,
     /// When the proxy last gave each warning (a kind, and a sandbox or `None` for the whole
     /// proxy). Holds the warnings of the last minute only.
     warned: Mutex<Warned>,
@@ -545,9 +544,6 @@ impl EgressProxy {
                 #[cfg(test)]
                 pause: None,
             }),
-            max_per_sandbox: config
-                .max_per_sandbox
-                .clamp(1, config.max_connections.max(1)),
             warned: Mutex::new(HashMap::new()),
         })
     }
@@ -623,12 +619,12 @@ impl EgressProxy {
                         sandbox,
                         run,
                         held = mine,
-                        share = self.max_per_sandbox,
+                        share = self.slots.share,
                         "egress proxy: a sandbox holds its share of the connections; \
                          leftover processes may hold them (docs/operations.md)"
                     );
                 }
-                Err(share_refusal(self.max_per_sandbox, mine, most_held))
+                Err(share_refusal(self.slots.share, mine, most_held))
             }
             Err(connections::Full::Total) => {
                 if warn_due(&mut warned, "full", None) {
