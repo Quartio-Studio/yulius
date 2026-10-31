@@ -1,11 +1,11 @@
 ---
 yulius-task: 68da275a-2e0c-499b-a44a-17515c2de5b4
-status: in-progress
+status: done
 ---
 
 # SPEC-359: A sandbox's admins switch its Vidoc scans off and on in the sandbox itself
 
-Status: in-progress
+Status: done
 Date: 2026-10-31
 Owner: Yulius task #339
 Scope authorization: task #339 (`/goal`): extend SPEC-338 (task #322) so that the people of a
@@ -104,7 +104,7 @@ this sandbox's switch.
 - [x] ADR, architecture, operations, API, AGENTS.md and product docs describe the sandbox switch
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Later review rounds fixed: exclude checked, the card loads with the runs and reads less
-- [ ] Every gate green, docs and the changes log updated
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -175,4 +175,48 @@ this sandbox's switch.
 
 ## Evidence
 
-(to be filled)
+On 2026-10-31, at `55c6e0a6` (the last code change):
+
+- `scripts/dev ci`: exit 0. Repository contracts, the Python unit tests (92 scanner tests, 1 new:
+  the switch's address on a refused key and a used-up quota, none without `YULIUS_VIDOC_SWITCH` or
+  for a value that is not a plain web address), `cargo check`, `fmt --check`, `clippy -D warnings`
+  (Linux and `aarch64-apple-darwin`), `cargo nextest run --profile ci` 2903 passed, 16 skipped,
+  doctests, `cargo deny`, `cargo shear`, `cargo doc`.
+- `cd e2e && npx e2e run`: 789 passed, 1 skipped (70 files), including the 10 new tests of
+  `vidoc-switch.e2e.ts`. An earlier full run (at `5677d99f`) failed 3 tests: two
+  `loading-shapes.e2e.ts` tests caught the card, then read on its own at the top of the CI tab,
+  pushing the cards below it down 50 px (fixed: it is read with the runs, after the configuration
+  card), and `quality.e2e.ts` "the CD page has no errors" failed once under load; it passed run alone
+  (21/21) and in the final full run, and this change does not touch the CD tab.
+- Test first: each new behavior test was seen failing before its change: the domain reader (2,
+  then 2, then 1 failing in rounds 0 to 2), the view and its repository override (404 before the
+  route; a mutation dropping the repository from `scans` fails
+  `the_repositorys_committed_switch_wins_and_is_said`), the removed sandbox's audit entry
+  (`changed_by` was "carol"), the run, terminal and CI job environments (3 failures), the scanner
+  pointer (3 failures), the briefing and onboarding texts (3 failures), the playground briefing,
+  the card's e2e tests (4 failing without the card), the keyboard focus after a change (focus was
+  lost), the re-reads on refresh (3 reads instead of 1) and the overtaken read (the switch shown
+  checked). The stranger's 404 passed at once: the existing `require` already answers it, the test
+  pins it.
+- Independent review in a fresh session, six rounds (all findings own code, all fixed in this
+  change, test-first):
+  - Round 1: approve with 5 minors: the reader missed files the scanner refuses, the last change
+    could be a removed sandbox's, card behaviour untested (refused change, unreadable file, no key,
+    a change made elsewhere, focus), a stranger's 404 untested, a playground told of a switch it
+    lacks; nits (ADR index order, line lengths, spec scope).
+  - Round 2: approve with 1 minor: `exclude`'s items were not checked.
+  - Round 3: approve, nothing open (one optional test-style nit left).
+  - Round 4 (after the layout fix): approve with 2 minors: the view was read on every 3 s refresh,
+    and the pending state was untested.
+  - Round 5: request changes, 1 major: a refresh overtaking the read after a change drew the old
+    state for up to 20 s.
+  - Round 6: approve at `55c6e0a6`, nothing open.
+- `yulius security-scan`: **not run**, exit 2, at `55c6e0a6` (and at `b3b6e773`). Vidoc refused the
+  instance key (HTTP 401 "Missing or invalid API key"); the 27 changed code files were not scanned,
+  and this is not a pass. No `[[ignore]]` entry was added.
+- Not tested: a real Vidoc scan after this change (the key is refused); the switch's address in a
+  live session's scan message (the installed `yulius` predates this change, and this session
+  started without `YULIUS_VIDOC_SWITCH`); a production instance (the change goes to `dev` only).
+  Left as is: a failed read of the card's view draws a shorter warning card (the error path only),
+  and `last.vidoc` is reused for at most 20 s, so a repository change to `.config/vidoc.toml` shows
+  within that.
