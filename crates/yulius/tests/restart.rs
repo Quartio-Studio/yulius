@@ -210,3 +210,93 @@ async fn a_running_session_uses_mcp_git_and_gh_across_a_restart() -> TestResult 
     assert!(after.egress_client(TOKEN).await.is_some());
     Ok(())
 }
+
+/// What a writer was given, readable while it is written to.
+#[derive(Clone, Default)]
+struct Shared(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl Shared {
+    fn text(&self) -> String {
+        self.0
+            .lock()
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .unwrap_or_default()
+    }
+}
+
+impl Write for Shared {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Ok(mut bytes) = self.0.lock() {
+            bytes.extend_from_slice(buf);
+        }
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// MSB-005: a `yulius wait` running when Yulius goes down keeps waiting through an outage far
+/// longer than its old 5 tries, and goes on once Yulius is back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wait_rides_out_a_restart() -> TestResult {
+    let h = harness()?;
+    seed_github_user(&h, "u-a", "alice").await?;
+    seed_sandbox(&h, "s1", "repo", "u-a").await?;
+    seed_task(&h, "t1", "s1", "u-a", TaskStatus::Running, None).await?;
+    seed_live_attempt(&h, "t1", TOKEN).await?;
+    let port = std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port();
+    let before = tokio::runtime::Runtime::new()?;
+    serve_on(before.handle(), h.app.clone(), port);
+
+    let out = Shared::default();
+    let mut writer = out.clone();
+    let wait = tokio::task::spawn_blocking(move || {
+        let env = move |name: &str| match name {
+            "YULIUS_URL" => Some(format!("http://127.0.0.1:{port}")),
+            "YULIUS_TASK_TOKEN" => Some(TOKEN.to_owned()),
+            _ => None,
+        };
+        let pace = yulius::wait_cli::Pace {
+            total: Duration::from_secs(8),
+            request_wait_secs: 1,
+            backoff_cap: Duration::from_millis(50),
+        };
+        yulius::wait_cli::run_with(&mut writer, Some(&"ab".repeat(20)), pace, &env)
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !out.text().contains("Waiting:") {
+        assert!(
+            Instant::now() < deadline,
+            "the wait never started: {}",
+            out.text()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    before.shutdown_background();
+    // Down long enough for dozens of tries at this pace.
+    while !out.text().contains("cannot be reached") {
+        assert!(
+            Instant::now() < deadline,
+            "the outage was not seen: {}",
+            out.text()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let after = App::new(h.app.config.clone(), h.app.deps.clone());
+    serve_on(&tokio::runtime::Handle::current(), after, port);
+    let code = wait.await?;
+    let said = out.text();
+    assert_eq!(code, 0, "{said}");
+    assert!(said.contains("Yulius is back."), "{said}");
+    assert!(said.contains("Still waiting after"), "{said}");
+    assert_eq!(
+        said.matches("cannot be reached").count(),
+        1,
+        "said once: {said}"
+    );
+    Ok(())
+}

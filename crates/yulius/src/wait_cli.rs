@@ -13,15 +13,41 @@ use yulius_app::agent_wait::WaitState;
 const PATH: &str = "/internal/agent/wait";
 /// Server-side wait of one request (the server caps it at 55 s).
 const REQUEST_WAIT_SECS: u64 = 50;
-/// Consecutive failed requests before giving up.
-const MAX_FAILURES: u32 = 5;
+/// Longest pause between two tries while Yulius cannot be reached (SPEC-358 MSB-005).
+const BACKOFF_CAP: Duration = Duration::from_secs(10);
+
+/// How a wait paces itself.
+#[derive(Debug, Clone, Copy)]
+pub struct Pace {
+    /// The whole wait.
+    pub total: Duration,
+    /// Server-side wait of one request, in seconds.
+    pub request_wait_secs: u64,
+    /// Longest pause between two tries while Yulius cannot be reached.
+    pub backoff_cap: Duration,
+}
 
 /// Runs `yulius wait` for at most `minutes`; returns the exit code (0 = something happened or
-/// the time is up, 1 = the server cannot be reached).
+/// the time is up, 1 = the server could not be reached until then, or refused the token).
 pub fn run(out: &mut dyn Write, minutes: u64, env: &dyn Fn(&str) -> Option<String>) -> i32 {
-    let head = git_head();
-    let deadline = Instant::now() + Duration::from_secs(minutes.max(1) * 60);
-    let Some(first) = ask(out, head.as_deref(), None, 0, env) else {
+    let pace = Pace {
+        total: Duration::from_secs(minutes.max(1) * 60),
+        request_wait_secs: REQUEST_WAIT_SECS,
+        backoff_cap: BACKOFF_CAP,
+    };
+    run_with(out, git_head().as_deref(), pace, env)
+}
+
+/// [`run`] at `head` with its own pace.
+pub fn run_with(
+    out: &mut dyn Write,
+    head: Option<&str>,
+    pace: Pace,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> i32 {
+    let deadline = Instant::now() + pace.total;
+    let minutes = pace.total.as_secs().div_ceil(60);
+    let Some(first) = ask(out, head, None, 0, pace, deadline, env) else {
         return 1;
     };
     if let Some(line) = settled(&first, None) {
@@ -41,7 +67,15 @@ pub fn run(out: &mut dyn Write, minutes: u64, env: &dyn Fn(&str) -> Option<Strin
             );
             return 0;
         }
-        let Some(next) = ask(out, head.as_deref(), Some(&since), REQUEST_WAIT_SECS, env) else {
+        let Some(next) = ask(
+            out,
+            head,
+            Some(&since),
+            pace.request_wait_secs,
+            pace,
+            deadline,
+            env,
+        ) else {
             return 1;
         };
         if next == since {
@@ -187,12 +221,16 @@ fn short(sha: &str) -> &str {
     sha.get(..9).unwrap_or(sha)
 }
 
-/// One request; retries a few times on transport errors, reporting the last one.
+/// One request. While Yulius cannot be reached (a restart, an update) it is tried again with a
+/// backoff until `deadline`, said once when it starts and once when Yulius is back (SPEC-358
+/// MSB-005); a refused token ends the wait at once.
 fn ask(
     out: &mut dyn Write,
     head: Option<&str>,
     since: Option<&WaitState>,
     wait_secs: u64,
+    pace: Pace,
+    deadline: Instant,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Option<WaitState> {
     let body = serde_json::json!({
@@ -201,12 +239,18 @@ fn ask(
         "timeout_secs": wait_secs,
     })
     .to_string();
-    let mut failures = 0;
+    let mut unreachable_since: Option<Instant> = None;
+    let mut pause = pace.backoff_cap.min(Duration::from_secs(1));
     loop {
         let timeout = Duration::from_secs(wait_secs + 15);
         let error = match yulius_git::credential::agent_post(PATH, &body, env, timeout) {
             Ok((200, raw)) => match serde_json::from_slice::<WaitState>(&raw) {
-                Ok(state) => return Some(state),
+                Ok(state) => {
+                    if unreachable_since.is_some() {
+                        let _ = writeln!(out, "Yulius is back.");
+                    }
+                    return Some(state);
+                }
                 Err(err) => format!("unreadable answer: {err}"),
             },
             Ok((401 | 403 | 404, _)) => {
@@ -220,12 +264,26 @@ fn ask(
             Ok((status, _)) => format!("HTTP {status}"),
             Err(err) => err.to_string(),
         };
-        failures += 1;
-        if failures >= MAX_FAILURES {
-            let _ = writeln!(out, "yulius wait: Yulius cannot be reached ({error}).");
+        let since = *unreachable_since.get_or_insert_with(|| {
+            let _ = writeln!(
+                out,
+                "Yulius cannot be reached ({error}); waiting for it to come back."
+            );
+            let _ = out.flush();
+            Instant::now()
+        });
+        if Instant::now() + pause >= deadline {
+            let _ = writeln!(
+                out,
+                "yulius wait: Yulius could not be reached for {} s ({error}). Yulius wakes this \
+                 task with \"Yulius is back; continue\" once it is back; or start `yulius wait` \
+                 again.",
+                since.elapsed().as_secs()
+            );
             return None;
         }
-        std::thread::sleep(Duration::from_secs(5 * u64::from(failures)));
+        std::thread::sleep(pause);
+        pause = (pause * 2).min(pace.backoff_cap);
     }
 }
 
