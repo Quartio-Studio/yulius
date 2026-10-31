@@ -188,6 +188,8 @@ pub struct ShellRuntime {
     pub(crate) link: AtomicU8,
     /// When its link was last found lost (ms; 0: never since it started).
     pub(crate) link_lost_ms: AtomicI64,
+    /// Failed link tests in a row.
+    pub(crate) link_failures: AtomicU32,
 }
 
 /// A shell as its owner sees it (`GET /api/sandboxes/{sid}/shells`).
@@ -829,6 +831,7 @@ impl App {
             strays_seen: Mutex::new(HashMap::new()),
             link: AtomicU8::new(crate::cockpit::LINK_UNKNOWN),
             link_lost_ms: AtomicI64::new(0),
+            link_failures: AtomicU32::new(0),
         })
     }
 
@@ -1440,6 +1443,7 @@ impl App {
             strays_seen: Mutex::new(HashMap::new()),
             link: AtomicU8::new(crate::cockpit::LINK_UNKNOWN),
             link_lost_ms: AtomicI64::new(0),
+            link_failures: AtomicU32::new(0),
         });
         let reader = self.attach_shell(&runtime).await?;
         self.shells

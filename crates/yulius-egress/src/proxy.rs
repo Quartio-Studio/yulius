@@ -45,8 +45,9 @@ const HEADER_TIMEOUT: Duration = Duration::from_secs(60);
 /// Longest life of one tunnel or intercepted connection.
 const CONNECTION_MAX: Duration = Duration::from_secs(24 * 3600);
 /// Least idle time before a connection gives way to a new one at a limit (SPEC-355 SLR-002,
-/// SLR-003): longer than Yulius's longest hold of a call (55 s), as the relays'.
-pub const IDLE_FLOOR: Duration = Duration::from_secs(60);
+/// SLR-003): the relays' (`yulius_sandbox::relay::IDLE_FLOOR`), longer than any call to Yulius
+/// waits without a byte.
+pub const IDLE_FLOOR: Duration = Duration::from_secs(300);
 /// DNS resolution timeout.
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -104,10 +105,13 @@ pub struct EgressProxy {
     /// The open tunnels and intercepted connections by sandbox (LAP-002, SPEC-355 SLR-002).
     slots: Arc<Slots>,
     max_per_sandbox: usize,
-    /// When the proxy last warned about each limit: `None` for its own, else a sandbox's share.
-    /// Holds the warnings of the last minute only.
-    warned: Mutex<HashMap<Option<String>, Instant>>,
+    /// When the proxy last gave each warning (a kind, and a sandbox or `None` for the whole
+    /// proxy). Holds the warnings of the last minute only.
+    warned: Mutex<Warned>,
 }
+
+/// When each warning was last given, by kind and sandbox.
+type Warned = HashMap<(&'static str, Option<String>), Instant>;
 
 /// The proxy's connections: at most `max_connections`, `max_per_sandbox` per sandbox; at a limit
 /// the longest-idle one past the floor gives way (SLR-002). Each holds the sender that ends it.
@@ -197,11 +201,12 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for Tracked<S> {
     }
 }
 
-/// Whether the warning about `limit` may be given again now (and records it); forgets the
-/// warnings older than [`WARN_EVERY`], so the map stays as small as the minute's refusals.
-fn warn_due(warned: &mut HashMap<Option<String>, Instant>, limit: Option<&str>) -> bool {
+/// Whether the warning `kind` about `sandbox` (`None`: the whole proxy) may be given again now
+/// (and records it); forgets the warnings older than [`WARN_EVERY`], so the map stays as small as
+/// the minute's warnings.
+fn warn_due(warned: &mut Warned, kind: &'static str, sandbox: Option<&str>) -> bool {
     warned.retain(|_, at| at.elapsed() < WARN_EVERY);
-    let key = limit.map(str::to_owned);
+    let key = (kind, sandbox.map(str::to_owned));
     if warned.contains_key(&key) {
         return false;
     }
@@ -431,7 +436,7 @@ impl EgressProxy {
         match admitted {
             Ok(admitted) => {
                 if let Some(evicted) = admitted.evicted
-                    && warn_due(&mut warned, Some(&evicted.key))
+                    && warn_due(&mut warned, "gave way", Some(&evicted.key))
                 {
                     tracing::warn!(
                         sandbox = %evicted.key,
@@ -448,7 +453,7 @@ impl EgressProxy {
                 Ok((slot, ended))
             }
             Err(connections::Full::Key) => {
-                if warn_due(&mut warned, Some(sandbox)) {
+                if warn_due(&mut warned, "share", Some(sandbox)) {
                     tracing::warn!(
                         sandbox,
                         share = self.max_per_sandbox,
@@ -463,7 +468,7 @@ impl EgressProxy {
                 ))
             }
             Err(connections::Full::Total) => {
-                if warn_due(&mut warned, None) {
+                if warn_due(&mut warned, "full", None) {
                     tracing::warn!(sandbox, "egress proxy: every connection is taken");
                 }
                 Err("Yulius proxy: too many connections; try again".to_owned())
@@ -569,10 +574,11 @@ impl EgressProxy {
             }
         };
         let (parts, body) = request.into_parts();
-        let response = tokio::select! {
-            response = self.forward(&client, &upstream, parts, body) => response,
-            _ = ended => text(503, "Yulius proxy: the request gave way to a newer one; try again"),
-        };
+        // In flight until its answer's head arrives: it never gives way meanwhile (its bytes pass
+        // through no tracked stream).
+        permit.activity.hold();
+        drop(ended);
+        let response = self.forward(&client, &upstream, parts, body).await;
         drop(permit);
         response
     }
@@ -811,16 +817,20 @@ mod tests {
     #[test]
     fn warnings_are_once_a_minute_per_limit() {
         let mut warned = HashMap::new();
-        assert!(warn_due(&mut warned, Some("s1")));
-        assert!(!warn_due(&mut warned, Some("s1")));
-        assert!(warn_due(&mut warned, Some("s2")));
-        assert!(warn_due(&mut warned, None));
-        assert!(!warn_due(&mut warned, None));
+        assert!(warn_due(&mut warned, "share", Some("s1")));
+        assert!(!warn_due(&mut warned, "share", Some("s1")));
+        assert!(
+            warn_due(&mut warned, "gave way", Some("s1")),
+            "another kind of warning about the same sandbox (review round 1)"
+        );
+        assert!(warn_due(&mut warned, "share", Some("s2")));
+        assert!(warn_due(&mut warned, "full", None));
+        assert!(!warn_due(&mut warned, "full", None));
         let old = Instant::now().checked_sub(WARN_EVERY);
         for at in warned.values_mut() {
             *at = old.unwrap_or(*at);
         }
-        assert!(warn_due(&mut warned, Some("s3")));
+        assert!(warn_due(&mut warned, "share", Some("s3")));
         assert_eq!(warned.len(), 1, "older warnings are forgotten");
     }
 

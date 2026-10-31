@@ -1930,7 +1930,7 @@ An idle Superagent's strays are probed every minute and reaped the same way
 ([SPEC-355](../.ai/specs/SPEC-355-a-superagent-whose-sandbox-lost-yulius-r.md)).
 The egress proxy gives one sandbox at most half of its connections. At a limit, the relays toward
 Yulius (the holder's forward, the server's `out.sock`) and the proxy close their longest-idle
-connection (no byte for at least 60 s) for a new one instead of refusing it, so leftover processes
+connection (no byte for at least 5 minutes) for a new one instead of refusing it, so leftover processes
 holding connections cannot cut a sandbox's agents off from Yulius, also after a server restart,
 which does not restart the holder
 ([decision 0241](decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)):
@@ -1940,7 +1940,7 @@ flowchart LR
   A["process in the sandbox"] -->|"127.0.0.1:8081"| F["holder's forward (256 places)"]
   F -->|"out.sock"| O["server's out.sock relay (256 places)"]
   O --> I["internal listener: API, MCP, egress proxy (128 per sandbox, 256 in all)"]
-  F -.->|"full: the longest-idle place (idle 60 s or more) gives way"| F
+  F -.->|"full: the longest-idle place (idle 5 min or more) gives way"| F
   Y["Yulius link test, every minute per Superagent"] -->|"in.sock CONNECT 8081"| F
 ```
 

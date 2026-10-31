@@ -9,7 +9,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - A Superagent whose sandbox's connections to Yulius are used up by leftover processes is no longer
   cut off, before or after a Yulius restart (SPEC-355, ADR-0241, task #337, fixes #974 and #970).
   A full relay toward Yulius, and the egress proxy at a sandbox's share, now closes the connection
-  that has been idle longest (a minute or more) for a new one instead of resetting it. Yulius tests
+  that has been idle longest (5 minutes or more) for a new one instead of resetting it. Yulius tests
   each Superagent's link from its sandbox every minute. When the link is lost, the panel says so
   and **Restart Superagent** starts it again in place, keeping its conversation. An idle
   Superagent's leftover processes are reaped like an idle task's. The operations guide says how to

@@ -43,9 +43,10 @@ const MAX_PORTS_LINE: u64 = 64 * 1024;
 /// Least time between two warnings that a relay dropped a connection at its limit.
 const WARN_EVERY: Duration = Duration::from_secs(60);
 /// Least time a connection toward Yulius is idle (no byte either way) before it may give way to a
-/// new one at its relay's limit (SPEC-355 SLR-001, SLR-003): longer than Yulius's longest hold of
-/// a call (`/internal/agent/wait`, 55 s).
-pub const IDLE_FLOOR: Duration = Duration::from_secs(60);
+/// new one at its relay's limit (SPEC-355 SLR-001, SLR-003): longer than the longest call to
+/// Yulius that carries no byte while it waits, the Superagent's `sandbox_task_create` (240 s for
+/// its person and 50 s of grace, below Node's 300 s for an answer's headers).
+pub const IDLE_FLOOR: Duration = Duration::from_secs(300);
 
 /// One relay's places toward Yulius (SLR-001): at its limit the longest-idle connection past the
 /// floor gives way to a new one. Each place holds the sender that ends its connection.
@@ -507,7 +508,19 @@ pub async fn serve_outbound(
     targets: Arc<BTreeMap<u16, SocketAddr>>,
     sandbox: String,
 ) {
-    let places = Places::new(MAX_CONNECTIONS, IDLE_FLOOR);
+    outbound_within(listener, targets, sandbox, MAX_CONNECTIONS, IDLE_FLOOR).await;
+}
+
+/// [`serve_outbound`] with `max` connections at once, idle ones giving way after `floor` (tests
+/// use small ones).
+async fn outbound_within(
+    listener: UnixListener,
+    targets: Arc<BTreeMap<u16, SocketAddr>>,
+    sandbox: String,
+    max: usize,
+    floor: Duration,
+) {
+    let places = Places::new(max, floor);
     let mut warned = None;
     let mut gave_way = None;
     loop {
@@ -517,13 +530,7 @@ pub async fn serve_outbound(
         };
         let Some((place, ended, idle)) = places.admit() else {
             drop(stream);
-            warn_dropped(
-                &mut warned,
-                "outbound",
-                None,
-                Some(&sandbox),
-                MAX_CONNECTIONS,
-            );
+            warn_dropped(&mut warned, "outbound", None, Some(&sandbox), max);
             continue;
         };
         if let Some(idle) = idle {
@@ -1045,7 +1052,7 @@ mod tests {
     }
 
     /// Sends one request on `stream` and reads Yulius's answer.
-    async fn request(stream: &mut TcpStream) -> io::Result<()> {
+    async fn request<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S) -> io::Result<()> {
         stream
             .write_all(
                 b"POST /internal/scrub/fingerprints HTTP/1.1\r\nHost: 127.0.0.1\r\n\
@@ -1119,6 +1126,46 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-355 SLR-001 (review round 1): the server's `out.sock` relay gives way too: full of
+    /// idle connections, it closes the longest-idle one for a new one.
+    #[tokio::test]
+    async fn a_full_out_sock_closes_its_longest_idle_connection_for_a_new_one() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let out_sock = dir.path().join("out.sock");
+        let target = yulius_stub().await?;
+        let targets = Arc::new(BTreeMap::from([(
+            9,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), target),
+        )]));
+        let server = tokio::spawn(outbound_within(
+            UnixListener::bind(&out_sock)?,
+            targets,
+            "s1".to_owned(),
+            2,
+            Duration::ZERO,
+        ));
+        let open = || async {
+            let mut stream = UnixStream::connect(&out_sock).await?;
+            stream.write_u16(9).await?;
+            if stream.read_u8().await? != RELAY_OK {
+                return Err(io::Error::other("not relayed"));
+            }
+            request(&mut stream).await?;
+            io::Result::Ok(stream)
+        };
+        let mut first = open().await?;
+        let _second = open().await?;
+        let _third = open().await?;
+        let mut byte = [0u8; 1];
+        let read = with_timeout(Duration::from_secs(10), "end", first.read(&mut byte)).await;
+        assert!(
+            matches!(read, Ok(0) | Err(_)),
+            "the oldest gave way: {read:?}"
+        );
+        server.abort();
+        Ok(())
+    }
+
     /// SPEC-355 SLR-005: Yulius tests a sandbox's link to it from inside, through the holder's
     /// forward: answered while the forward takes connections, failed when its places are all held
     /// by connections active lately, and unknown with a holder that does not offer the test.
@@ -1148,12 +1195,21 @@ mod tests {
             Arc::new(Vec::new),
         ));
         assert_eq!(probe_link(&in_sock, port).await, Some(true));
-        // Two leftovers hold both places, active within the floor: nothing gets through.
+        // Two leftovers hold both places, active within the floor: nothing gets through. The
+        // probe's own place is freed once its connection has wound down, so a leftover refused
+        // before that tries again.
         let mut held = Vec::new();
-        for _ in 0..2 {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while held.len() < 2 {
             let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await?;
-            request(&mut stream).await?;
-            held.push(stream);
+            match request(&mut stream).await {
+                Ok(()) => held.push(stream),
+                Err(error) if tokio::time::Instant::now() < deadline => {
+                    let _ = error;
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => return Err(error.into()),
+            }
         }
         assert_eq!(probe_link(&in_sock, port).await, Some(false));
         drop(held);

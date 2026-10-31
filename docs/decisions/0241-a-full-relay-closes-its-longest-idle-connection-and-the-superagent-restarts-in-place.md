@@ -31,16 +31,20 @@ way out was to close the pane.
 
 - **A full relay gives way.** At its limit a relay toward Yulius (the holder's forward, the
   server's `out.sock`) admits a new connection by closing its longest-idle one, if that one
-  carried no byte for at least 60 s (`IDLE_FLOOR`). The egress proxy does the same at a sandbox's
+  carried no byte for at least 5 minutes (`IDLE_FLOOR`). The egress proxy does the same at a sandbox's
   share, with that sandbox's own connections, and at its own limit, with any. A relay or proxy
   whose connections were all active within the floor refuses as before. Each connection's
   activity is updated by its copy loop, and the choice is a deterministic domain table
   (`yulius_domain::connections`). Giving way is logged at most once a minute.
-- **The floor keeps live calls.** Yulius's longest hold of a call is 55 s
-  (`/internal/agent/wait`), and its MCP route answers on each request (`GET /mcp` is 405), so a
-  call in progress is idle for less than the floor.
+- **The floor keeps live calls.** The longest call to Yulius that carries no byte while it waits
+  is the Superagent's `sandbox_task_create`: 240 s for its person and 50 s of grace (SPEC-335,
+  below Node's 300 s for an answer's headers). `yulius wait` holds at most 55 s, and the MCP route
+  answers on each request (`GET /mcp` is 405). A call in progress is therefore idle for less than
+  the floor. A test ties the floor to that call. A plain HTTP request through the proxy is held in
+  flight until its answer's head arrives, because its bytes pass through no tracked stream.
 - **Yulius tests each Superagent's link.** Every minute, from inside the sandbox through the
-  holder's forward, `GET /internal/healthz` must be answered. The holder's `in.sock` now also
+  holder's forward, `GET /internal/healthz` must be answered. Two failures in a row count as a
+  lost link, because one test can fail while a restarted server is still adopting its shells. The holder's `in.sock` now also
   connects to its own forwarded ports for this. `in.sock` is reachable only by the server. A holder
   started by an older Yulius refuses the port, which counts as unknown, not lost.
 - **The panel says so, and the Superagent restarts in place.** While the link is lost, or once it
@@ -69,7 +73,7 @@ way out was to close the pane.
 
 ## Consequences
 
-- A leftover process's connection idle for a minute closes when the relay or the proxy needs the
+- A leftover process's connection idle for 5 minutes closes when the relay or the proxy needs the
   room. Its client sees a reset and reconnects, which HTTP clients do.
 - An agent's own call idle past the floor (a tool that thinks for minutes) can give way only when
   no connection has been idle longer.

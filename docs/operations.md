@@ -1276,8 +1276,9 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   A sandbox reaches Yulius on one port (8081: internal API, MCP, egress proxy) through two relays,
   the holder's forward inside the sandbox and the server's `out.sock`, 256 connections each. At
   its limit a relay, and the proxy at a sandbox's share or at its own limit, closes its
-  longest-idle connection (no byte for at least a minute) for the new one. Only when every
-  connection was active within that minute is the new one refused. A refused client sees
+  longest-idle connection (no byte for at least 5 minutes, longer than any call to Yulius waits)
+  for the new one. Only when every connection was active within those 5 minutes is the new one
+  refused. A refused client sees
   `ECONNRESET`, as the Superagent's `/mcp` reconnect did on 2026-10-31. These events are logged as
   warnings, at most once a minute, in the journal: `egress proxy: at a limit, the longest-idle
   connection was closed for a new one`, `egress proxy: a sandbox holds its share of the
@@ -1287,7 +1288,7 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   was dropped at the limit` lines to the sandbox's `holder.log` (and the Docker front's to
   `docker-front.log`), both in `<data>/runtime/sandboxes/<sandbox-id>/`.
 - Every minute Yulius tests each live Superagent's link from inside its sandbox, through the
-  holder's forward. A failed test logs `the Superagent's sandbox cannot reach Yulius`, and its
+  holder's forward. Two failed tests in a row log `the Superagent's sandbox cannot reach Yulius`, and its
   panel says so and offers **Restart Superagent**, which starts it again in place, resuming its
   conversation. Claude Code keeps a failed MCP server disconnected, so the panel also offers the
   restart once the link works again (`the Superagent's sandbox reaches Yulius again`).
@@ -1335,11 +1336,11 @@ To free it without restarting Yulius:
 
 A Yulius restart does not free the relay. The holder (and its relay inside the sandbox) keeps
 running, and it keeps each connection whose server end closed until its client closes it, which
-a leftover process never does. The holder runs the relay it started with. If its `holder.log`
-never shows the `longest-idle connection was closed` line, the holder predates SPEC-355 and still
-refuses when full. In that case, end every process in the sandbox (stop its tasks, close its
-Superagents and terminals, kill the leftovers) and the holder stops once it has been idle for
-`YULIUS_SANDBOX_IDLE_MINUTES`. The next run starts a holder with the new relay.
+a leftover process never does. The holder runs the relay it started with. If it started before the Yulius update that shipped
+SPEC-355 (compare `ps -o lstart= -p "$H"` with the update's time), it still refuses when full, and
+its Superagents' panels show no link state. In that case, end every process in the sandbox (stop
+its tasks, close its Superagents and terminals, kill the leftovers) and the holder stops once it
+has been idle for `YULIUS_SANDBOX_IDLE_MINUTES`. The next run starts a holder with the new relay.
 
 Rotation: replace a value on the Secrets page after rotating it at its provider (the page marks
 values older than 180 days). If `master.key` and a database copy may have leaked together,

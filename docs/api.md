@@ -1224,7 +1224,7 @@ resolves to nothing, the run gets the server without that variable or token.
     A conversation it could not resume (an error exit within 10 s) is skipped next time.
   - `GET /api/sandboxes/{sid}/cockpit/link` (write) → 200 `{"state","lost_at"}`: the caller's
     Superagent's link to Yulius, tested from its sandbox every minute through the holder's forward
-    (SPEC-355): `lost` (the last test failed), `recovered` (it failed since this Superagent
+    (SPEC-355): `lost` (the last two tests failed), `recovered` (it failed since this Superagent
     started, then worked: its Yulius tools may stay disconnected), `ok`, or `unknown` (not tested,
     cannot be told, or none runs); `lost_at` is when it was last found lost (ms) or `null`.
   - `POST /api/sandboxes/{sid}/cockpit/restart` (write) → 200 `Shell`: ends the caller's running

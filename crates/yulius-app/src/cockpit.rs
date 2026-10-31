@@ -72,7 +72,13 @@ const STRAY_PROBE_EVERY_MS: i64 = 60_000;
 /// How often a Cockpit's link to Yulius is tested from its sandbox (SPEC-355 SLR-005).
 const LINK_EVERY_MS: i64 = 60_000;
 /// Longest wait for one link test (its own steps are bounded below it).
-const LINK_TEST_TIMEOUT: Duration = Duration::from_secs(20);
+const LINK_TEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// Failed link tests in a row before a link counts as lost: one can fail while a restarted server
+/// still adopts its shells before it serves (review round 1).
+const LINK_LOST_AFTER: u32 = 2;
+/// What a Cockpit's viewers are told when its restart could not end it (SPEC-355 SLR-006).
+const COCKPIT_NOT_RESTARTED: &str =
+    "The Superagent could not restart: its process could not be ended, so it keeps running.";
 /// A Cockpit whose link was not tested, or could not be told.
 pub(crate) const LINK_UNKNOWN: u8 = 0;
 /// A Cockpit whose last link test was answered.
@@ -435,7 +441,11 @@ impl App {
             let now = self.now().0;
             if link_tested.is_none_or(|at| now.saturating_sub(at) >= LINK_EVERY_MS) {
                 link_tested = Some(now);
-                self.test_cockpit_link(&runtime).await;
+                // Never past the Cockpit's end (review round 1).
+                tokio::select! {
+                    () = self.test_cockpit_link(&runtime) => {}
+                    _ = ended.wait_for(|ended| *ended) => return,
+                }
             }
             let newest = match self
                 .deps
@@ -516,8 +526,10 @@ impl App {
                 && strays_probed.is_none_or(|at| now.0.saturating_sub(at) >= STRAY_PROBE_EVERY_MS)
             {
                 strays_probed = Some(now.0);
-                self.tend_cockpit_strays(&runtime, (watched_path.as_path(), polled_len))
-                    .await;
+                tokio::select! {
+                    () = self.tend_cockpit_strays(&runtime, (watched_path.as_path(), polled_len)) => {}
+                    _ = ended.wait_for(|ended| *ended) => return,
+                }
             }
             if let Some((resets_at, window_minutes, at)) = limit {
                 runtime
@@ -562,6 +574,15 @@ impl App {
         let Ok(Some(ok)) = tested else {
             return;
         };
+        let failures = if ok {
+            runtime.link_failures.store(0, Ordering::SeqCst);
+            0
+        } else {
+            runtime.link_failures.fetch_add(1, Ordering::SeqCst) + 1
+        };
+        if !ok && failures < LINK_LOST_AFTER {
+            return;
+        }
         let now = if ok { LINK_OK } else { LINK_LOST };
         let before = runtime.link.swap(now, Ordering::SeqCst);
         if before == now {
@@ -640,10 +661,8 @@ impl App {
                     running.switching.store(true, Ordering::SeqCst);
                     if !app.end_shells(std::slice::from_ref(&running)).await {
                         running.switching.store(false, Ordering::SeqCst);
-                        return Err(AppError::Conflict(
-                            "The Superagent could not restart: its process could not be ended, so it keeps running."
-                                .into(),
-                        ));
+                        running.notice(COCKPIT_NOT_RESTARTED);
+                        return Err(AppError::Conflict(COCKPIT_NOT_RESTARTED.into()));
                     }
                     tracing::info!(shell = %running.id(), user = %user.id, "the person restarts their Superagent");
                     return app.start_cockpit(&user, &record, &account, false).await;

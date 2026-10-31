@@ -25,6 +25,12 @@ impl Activity {
         self.0.fetch_max(now_ms, Ordering::Relaxed);
     }
 
+    /// The connection is in flight (a request waiting for its answer, whose bytes nobody
+    /// counts): it never gives way until it ends.
+    pub fn hold(&self) {
+        self.0.store(u64::MAX, Ordering::Relaxed);
+    }
+
     /// When it last carried a byte.
     #[must_use]
     pub fn last(&self) -> u64 {
@@ -210,6 +216,17 @@ mod tests {
         assert!(table.close(third.id));
         assert_eq!(table.len(), 2);
         assert!(table.admit((), "free", 61_000)?.evicted.is_none());
+        Ok(())
+    }
+
+    /// SLR-002 (review round 1): a connection held in flight (a plain request waiting for its
+    /// answer) never gives way, however long it has carried no byte.
+    #[test]
+    fn a_held_connection_never_gives_way() -> TestResult {
+        let mut table = Connections::new(1, 1, 10);
+        let held = table.admit((), "request", 0)?;
+        held.activity.hold();
+        assert_eq!(table.admit((), "new", 1_000_000).err(), Some(Full::Total));
         Ok(())
     }
 
