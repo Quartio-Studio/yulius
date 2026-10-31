@@ -328,6 +328,9 @@ pub enum VidocBriefing {
     /// A person switched this project's Vidoc scans off in Yulius (SPEC-338 VOF-001): the scan
     /// says "disabled" and nobody is asked about the key or its quota.
     Off,
+    /// A superadmin switched Vidoc off for the whole instance (SPEC-356 VIO-003): as `Off`, for
+    /// every project, until it is switched on again.
+    OffForInstance,
 }
 
 fn floor_boundary(text: &str, max: usize) -> usize {
@@ -877,6 +880,13 @@ fn security_scan(input: &BriefingInput<'_>) -> String {
                     nothing, and a CI scan job ends skipped. Report it as disabled, never as passed, and do not ask \
                     anyone about Vidoc's key or quota: an instance superadmin switches it on \
                     again (Settings, Instance, the Vidoc card).\n\n"
+                .to_owned();
+        }
+        VidocBriefing::OffForInstance => {
+            return "## Security scan\n\nA superadmin switched Vidoc off for this whole Yulius \
+                    instance: `yulius security-scan` prints \"Security scan disabled\" and sends \
+                    nothing, and a CI scan job ends skipped. Report it as disabled, never as \
+                    passed, and do not ask anyone about Vidoc's key or quota.\n\n"
                 .to_owned();
         }
         VidocBriefing::On => {}
@@ -2179,6 +2189,32 @@ mod tests {
             vidoc: VidocBriefing::Off,
             ..base(&profile, &layout)?
         });
+        assert!(section.len() <= 480, "{} bytes: {section}", section.len());
+        Ok(())
+    }
+
+    /// SPEC-356 VIO-003: with Vidoc switched off for the instance, every project is told so, that
+    /// the scan reports "disabled" and not to ask anyone about Vidoc's key or quota.
+    #[test]
+    fn a_project_is_told_when_vidoc_is_off_for_the_instance() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout::default();
+        let input = BriefingInput {
+            vidoc: VidocBriefing::OffForInstance,
+            ..base(&profile, &layout)?
+        };
+        let off = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+        for present in [
+            "## Security scan",
+            "switched Vidoc off for this whole Yulius instance",
+            "Security scan disabled",
+            "never as passed",
+            "do not ask anyone about Vidoc's key or quota",
+        ] {
+            assert!(off.contains(present), "{present} not in {off}");
+        }
+        assert!(!off.contains("exits 1 on critical"), "{off}");
+        let section = security_scan(&input);
         assert!(section.len() <= 480, "{} bytes: {section}", section.len());
         Ok(())
     }

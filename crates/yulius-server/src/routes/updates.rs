@@ -6,7 +6,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use yulius_app::model::Secret;
 use yulius_contracts::api::updates::{
-    JevKeyView, JevTestResult, SandboxDockerView, SetJevKey, SetVidocKey, StartUpdate, UpdateView,
+    JevKeyView, JevTestResult, SandboxDockerView, SetJevKey, SetVidocEnabled, SetVidocKey, StartUpdate, UpdateView,
     VidocKeyView, VidocTestResult,
 };
 use yulius_contracts::update::VersionInfo;
@@ -105,6 +105,15 @@ pub async fn remove_vidoc(
     Auth(ctx): Auth,
 ) -> ApiResult<Json<VidocKeyView>> {
     Ok(Json(app.remove_vidoc_key(&ctx).await?))
+}
+
+/// `PUT /api/admin/vidoc/enabled` (SPEC-356 VIO-001).
+pub async fn set_vidoc_enabled(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Json(req): Json<SetVidocEnabled>,
+) -> ApiResult<Json<VidocKeyView>> {
+    Ok(Json(app.set_vidoc_enabled(&ctx, req.enabled).await?))
 }
 
 /// `POST /api/admin/vidoc/adopt`: saves the key of `YULIUS_VIDOC_API_KEY_FILE` in settings.

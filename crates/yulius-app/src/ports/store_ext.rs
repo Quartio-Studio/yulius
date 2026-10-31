@@ -432,6 +432,10 @@ pub trait UpdateStore: Send + Sync {
         key: Option<(&crate::model::Sealed, &str)>,
         at: Timestamp,
     ) -> AppResult<()>;
+    /// When and by whom Vidoc was switched off for the instance (SPEC-356); `None` while on.
+    async fn vidoc_off(&self) -> AppResult<Option<crate::vidoc_key::VidocOff>>;
+    /// Switches Vidoc off for the instance, by `by` (`Some`), or on again (`None`).
+    async fn set_vidoc_off(&self, by: Option<&str>, at: Timestamp) -> AppResult<()>;
 }
 
 /// Yulius-run CI (SPEC-001 DLV-006, SPEC-002 ADR-21, tables `ci_runs` and `ci_jobs`).

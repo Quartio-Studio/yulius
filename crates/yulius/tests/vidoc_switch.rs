@@ -247,3 +247,124 @@ async fn a_refused_profile_leaves_the_switch_as_it_was() -> TestResult {
     assert!(audited(&i).await?.is_empty());
     Ok(())
 }
+
+async fn switch_instance(
+    i: &Instance,
+    enabled: bool,
+    who: &Creds,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &i.h.router,
+        Method::PUT,
+        "/api/admin/vidoc/enabled",
+        Some(json!({ "enabled": enabled })),
+        who,
+    )
+    .await
+}
+
+/// The instance switch's audit entries, as "actor action", newest first.
+async fn instance_audited(i: &Instance) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    use yulius_app::ports::store_ext::AutomationStore as _;
+    Ok(i.h
+        .store
+        .automation_audit("instance:vidoc", 100)
+        .await?
+        .into_iter()
+        .filter(|e| e.action == "vidoc.disabled" || e.action == "vidoc.enabled")
+        .map(|e| format!("{} {}", e.actor, e.action))
+        .collect())
+}
+
+/// SPEC-356 VIO-001: a superadmin, and only a superadmin, switches Vidoc off for the instance
+/// and on again; the key stays, and each change is audited.
+#[tokio::test]
+async fn a_superadmin_switches_vidoc_off_for_the_instance_and_on_again() -> TestResult {
+    let i = instance().await?;
+    let view = call(&i.h.router, Method::GET, "/api/admin/vidoc", None, &i.admin).await?;
+    assert_eq!(view.status, StatusCode::OK, "{}", view.body);
+    assert_eq!(view.body["enabled"], true, "on by default: {}", view.body);
+
+    let denied = switch_instance(&i, false, &i.alice).await?;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN, "{}", denied.body);
+
+    let off = switch_instance(&i, false, &i.admin).await?;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.body);
+    assert_eq!(off.body["enabled"], false, "{}", off.body);
+    assert_eq!(off.body["disabled_by"], "superadmin", "{}", off.body);
+    assert!(off.body["disabled_at"].is_string(), "{}", off.body);
+    assert_eq!(off.body["configured"], true, "the key is kept");
+    assert!(i.h.app.vidoc_key().is_some(), "the key is kept");
+
+    let again = switch_instance(&i, false, &i.admin).await?;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+
+    let on = switch_instance(&i, true, &i.admin).await?;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+    assert_eq!(on.body["enabled"], true, "{}", on.body);
+    assert!(on.body["disabled_by"].is_null(), "{}", on.body);
+
+    assert_eq!(
+        instance_audited(&i).await?,
+        ["superadmin vidoc.enabled", "superadmin vidoc.disabled"],
+        "a repeated off changes nothing; newest first"
+    );
+    Ok(())
+}
+
+/// SPEC-356 VIO-001: the switch is stored, so a restarted server starts with Vidoc off.
+#[tokio::test]
+async fn a_restarted_server_keeps_vidoc_off_for_the_instance() -> TestResult {
+    use yulius_app::ports::store_ext::UpdateStore as _;
+    let h = harness()?;
+    let admin = setup_superadmin_creds(&h).await?;
+    h.store
+        .set_vidoc_off(Some("superadmin"), yulius_domain::time::Timestamp(1_800_000_000))
+        .await?;
+    h.app.set_vidoc(VidocServices::new(
+        Arc::new(AnyVidoc) as Arc<dyn VidocConnector>,
+        Ok(Some(Secret(KEY.into()))),
+    ));
+    h.app.load_vidoc_key().await;
+    let view = call(&h.router, Method::GET, "/api/admin/vidoc", None, &admin).await?;
+    assert_eq!(view.status, StatusCode::OK, "{}", view.body);
+    assert_eq!(view.body["enabled"], false, "{}", view.body);
+    assert_eq!(view.body["disabled_by"], "superadmin", "{}", view.body);
+    Ok(())
+}
+
+/// SPEC-356 VIO-002..VIO-005: while the instance is off, a switched-on project gets no instance
+/// key, its agents are told, `me` offers no Vidoc box, and the project keeps its own choice,
+/// which is followed again once the instance is on.
+#[tokio::test]
+async fn every_project_follows_the_instance_switch() -> TestResult {
+    use yulius_domain::briefing::VidocBriefing;
+    let i = instance().await?;
+    let owner = i.h.store.user_by_login("alice").await?.ok_or("alice")?.id;
+    seed_task(&i.h, "t1", "s1", owner.as_str(), TaskStatus::Running, None).await?;
+    seed_live_attempt(&i.h, "t1", TOKEN).await?;
+    let app: Arc<dyn EgressPolicy> = i.h.app.clone();
+    let s1 = SandboxId::parse("s1")?;
+
+    switch_instance(&i, false, &i.admin).await?;
+    let client = app.egress_client(TOKEN).await.ok_or("client")?;
+    assert!(
+        !app.egress_intercepts(&client, VIDOC_HOST, 443).await,
+        "instance off: the instance key is not applied"
+    );
+    let record = i.h.store.sandbox(&s1).await?.ok_or("s1")?;
+    assert_eq!(i.h.app.vidoc_briefing(&record), VidocBriefing::OffForInstance);
+    assert!(!i.h.app.vidoc_scans_on(&record), "no scan for the project");
+    assert_eq!(shown(&i).await?, true, "the project keeps its own choice");
+    let me = call(&i.h.router, Method::GET, "/api/me", None, &i.bob).await?;
+    assert_eq!(me.body["instance"]["vidoc"], false, "{}", me.body);
+
+    switch_instance(&i, true, &i.admin).await?;
+    let client = app.egress_client(TOKEN).await.ok_or("client")?;
+    assert!(app.egress_intercepts(&client, VIDOC_HOST, 443).await);
+    let record = i.h.store.sandbox(&s1).await?.ok_or("s1")?;
+    assert_eq!(i.h.app.vidoc_briefing(&record), VidocBriefing::On);
+    let me = call(&i.h.router, Method::GET, "/api/me", None, &i.bob).await?;
+    assert_eq!(me.body["instance"]["vidoc"], true, "{}", me.body);
+    Ok(())
+}
