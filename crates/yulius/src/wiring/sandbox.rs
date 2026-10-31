@@ -224,6 +224,7 @@ pub fn resolve(
             stop_after: Duration::from_secs(args.idle_minutes.max(1) * 60),
         },
         auto_build: true,
+        health: Arc::default(),
         docker: docker_setting(args.docker),
     })
 }
@@ -657,6 +658,8 @@ pub async fn install(
         }
         Err(why) => tracing::warn!(%why, "per-sandbox CPU, memory and task limits are off"),
     }
+    // Its relays' troubles are the app's to show (SPEC-361).
+    config.health = app.connection_health();
     let manager = Manager::new(config);
     manager.adopt().await;
     let strict = args.mode == IsolationMode::Namespaces;

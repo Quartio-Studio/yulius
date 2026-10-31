@@ -220,6 +220,8 @@ pub struct IsolationConfig {
     /// Give each sandbox a Docker engine (ADR-0151), or why not ([`DOCKER_OFF`]); it also needs
     /// the cgroup delegation and `dockerd` in the sandbox's system ([`system_has_dockerd`]).
     pub docker: Result<(), String>,
+    /// Where the sandboxes' `out.sock` relays report their troubles (SPEC-361).
+    pub health: Arc<yulius_domain::connection_health::ConnectionHealth>,
 }
 
 /// A sandbox asking to be entered.
@@ -1398,6 +1400,7 @@ impl Manager {
                     listener,
                     targets,
                     sandbox.to_string(),
+                    Arc::clone(&self.config.health),
                 )));
             }
             Err(error) => tracing::warn!(sandbox, %error, "cannot serve the sandbox's out.sock"),
@@ -2058,6 +2061,7 @@ mod tests {
             },
             auto_build: false,
             docker: Err(DOCKER_OFF.into()),
+            health: Arc::default(),
         });
         let request = SandboxRequest {
             id: "s1".into(),
@@ -2101,6 +2105,7 @@ mod tests {
             },
             auto_build: false,
             docker: Err(DOCKER_OFF.into()),
+            health: Arc::default(),
         }
     }
 
