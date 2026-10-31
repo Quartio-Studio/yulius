@@ -1008,7 +1008,7 @@ route('POST', '/api/sandboxes', ({ db, body }) => {
 route('GET', `/api/sandboxes/${ID}`, ({ db, p }) => shown(sandboxOf(db, p[0])));
 // SPEC-359 VSB-001: the sandbox's Vidoc view. `vidoc_repo=off|bad` stands for studio's committed
 // `.config/vidoc.toml` (`enabled = false`, or a value the scanner refuses).
-route('GET', `/api/sandboxes/${ID}/vidoc`, ({ db, p }) => {
+route('GET', `/api/sandboxes/${ID}/vidoc`, async ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   db.vidocReads = (db.vidocReads || 0) + 1;
   if (sandbox.playground) fail(422, 'invalid', 'a playground runs no Vidoc scan: it has no switch to turn');
@@ -1016,12 +1016,16 @@ route('GET', `/api/sandboxes/${ID}/vidoc`, ({ db, p }) => {
   const repository = file === 'off' ? 'off' : file === 'bad' ? 'unreadable' : 'on';
   const project = sandbox.profile.vidoc !== false;
   const instance = !db.vidoc.offAt;
-  return {
+  const view = {
     project, instance, key: Boolean(db.vidoc.key || db.vidoc.config), repository,
     repository_problem: repository === 'unreadable' ? '.config/vidoc.toml must set enabled = true or enabled = false (line 1)' : null,
     branch: sandbox.profile.integration_branch, scans: project && instance && repository !== 'off',
     can_change: sandbox.access === 'admin', changed_by: sandbox.vidocChanged ? sandbox.vidocChanged.by : null, changed_at: sandbox.vidocChanged ? sandbox.vidocChanged.at : null,
   };
+  // `__yuliusMock.holdVidocReads = true`: each read waits until `releaseVidoc()`, answering what it
+  // saw when it started (SPEC-359 review round 5).
+  if (db.holdVidocReads) await new Promise((resolve) => db.vidocHolds.push(resolve));
+  return view;
 });
 route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
@@ -5571,6 +5575,8 @@ export function createMockTransport(params) {
   db.advanceClock = (ms) => { if (!pullClock) throw new Error('advanceClock needs pullclock=manual'); pullClock.advance(ms); };
   // Releases the held Git overview reads, the newest first (an older read answering last).
   db.releaseGit = () => { for (const resolve of db.gitHolds.splice(0).reverse()) resolve(); };
+  db.vidocHolds = [];
+  db.releaseVidoc = () => { for (const resolve of db.vidocHolds.splice(0)) resolve(); };
   // Simulate an outage and its end: __yuliusMock.goOffline() / .goOnline().
   db.goOffline = () => {
     db.offline = true;

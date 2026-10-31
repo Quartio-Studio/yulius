@@ -98,18 +98,22 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
   // decides, so nothing moves when it lands. Its view costs Git reads on the server and changes
   // only with a switch or the integration branch: it is read again after a change, when its read
   // failed, and at the idle rate, not with every refresh while a run is active (review round 4).
+  // It counts as read once a fresh view is drawn: a read a newer refresh overtook, or one that
+  // failed, leaves it to be read again (review round 5).
   let vidocStale = true;
   let vidocReadAt = 0;
   const read = async () => {
     const kept = last.vidoc;
     const fresh = vidocStale || !kept || kept.error || Date.now() - vidocReadAt >= POLL_IDLE_MS;
-    if (fresh) vidocStale = false;
     const [overview, vidoc] = await Promise.all([ctx.api.get(`${base}/ci`), fresh ? loadVidocView(ctx, sandbox) : kept]);
-    if (fresh) vidocReadAt = Date.now();
-    return { ...overview, vidoc };
+    return { ...overview, vidoc, vidocFresh: fresh };
   };
   const rereadVidoc = () => { vidocStale = true; return reload({ quiet: true }); };
   const reload = loader(runsHost, 'the CI runs', read, (overview) => {
+    if (overview.vidocFresh) {
+      vidocStale = false;
+      vidocReadAt = Date.now();
+    }
     schedule(overview);
     const drawn = renderOverview(overview);
     // Back from a run's view: the keyboard goes to that run's card, once.

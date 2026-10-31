@@ -102,7 +102,8 @@ this sandbox's switch.
 - [x] Sandbox admins switch Vidoc off and on from the CI/CD page's Security scan card
 - [x] Key failures in scans and agents' texts point to the sandbox's switch
 - [x] ADR, architecture, operations, API, AGENTS.md and product docs describe the sandbox switch
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Later review rounds fixed: exclude checked, the card loads with the runs and reads less
 - [ ] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria

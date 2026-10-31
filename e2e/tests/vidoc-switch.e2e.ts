@@ -330,3 +330,33 @@ test('a refresh while the switch is sent shows the change on its way, disabled',
   await expect(scan()).toBeEnabled();
   expect(await switchOf(browser, 'studio')).toBe(false);
 });
+
+type Holding = { __yuliusMock: { holdVidocReads?: boolean; vidocHolds: unknown[]; releaseVidoc: () => void } };
+
+test('a refresh that overtakes the read after a change still shows the change', async ({ app, browser, screen }) => {
+  // SPEC-359 review round 5: the read after a change was dropped for a newer refresh, which drew
+  // the view from before the change.
+  await app.open(mock('/s/studio/ci', '&vidoc=config'));
+  const scan = () => screen.getByRole('region', 'Security scan (Vidoc)').getByRole('switch', 'Scan this project with Vidoc');
+  await expect(scan()).toBeChecked();
+  await browser.evaluate(() => { (window as unknown as Holding).__yuliusMock.holdVidocReads = true; return null; });
+  await scan().click();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Holding).__yuliusMock.vidocHolds.length)).toBe(1);
+  // The card drawn now (the change, sent); a newer refresh either draws it again or reads anew.
+  await browser.evaluate(() => { (document.querySelector('#vidoc') as HTMLElement).dataset.drawn = 'before'; return null; });
+  await screen.getByRole('button', 'Check for commits').click();
+  await expect.poll(() => browser.evaluate(() => {
+    const redrawn = (document.querySelector('#vidoc') as HTMLElement | null)?.dataset.drawn !== 'before';
+    return redrawn || (window as unknown as Holding).__yuliusMock.vidocHolds.length === 2;
+  })).toBe(true);
+  await expect(scan()).not.toBeChecked();
+  await browser.evaluate(() => {
+    const db = (window as unknown as Holding).__yuliusMock;
+    db.holdVidocReads = false;
+    db.releaseVidoc();
+    return null;
+  });
+  await expect(scan()).not.toBeChecked();
+  await expect(scan()).toBeEnabled();
+  await expect(screen.getByRole('region', 'Security scan (Vidoc)').getByText(/^Off: agents and CI scan nothing/)).toBeVisible();
+});
