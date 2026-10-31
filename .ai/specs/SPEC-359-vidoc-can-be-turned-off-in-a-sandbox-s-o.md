@@ -182,7 +182,7 @@ On 2026-10-31, at `55c6e0a6` (the last code change):
   for a value that is not a plain web address), `cargo check`, `fmt --check`, `clippy -D warnings`
   (Linux and `aarch64-apple-darwin`), `cargo nextest run --profile ci` 2903 passed, 16 skipped,
   doctests, `cargo deny`, `cargo shear`, `cargo doc`.
-- `cd e2e && npx e2e run`: 789 passed, 1 skipped (70 files), including the 10 new tests of
+- `cd e2e && npx e2e run`: 789 passed, 1 skipped (70 files), including the 9 new tests of
   `vidoc-switch.e2e.ts`. An earlier full run (at `5677d99f`) failed 3 tests: two
   `loading-shapes.e2e.ts` tests caught the card, then read on its own at the top of the CI tab,
   pushing the cards below it down 50 px (fixed: it is read with the runs, after the configuration
