@@ -143,3 +143,36 @@ test('a Vidoc card left before its key loaded never starts listening', async ({ 
   });
   expect(listeners).toBe(0);
 });
+
+test('the superadmin switches Vidoc off for the whole instance and on again, keeping the key', async ({ app, browser, screen }) => {
+  // SPEC-356 VIO-001, VIO-005: one switch for every project; the projects keep their own choice.
+  await app.open(mock('/admin/instance', '&vidoc=config'));
+  const card = screen.getByRole('region', 'Vidoc key');
+  const instance = screen.getByRole('switch', 'Vidoc scans for every project');
+  await expect(instance).toBeChecked();
+  const studio = screen.getByRole('switch', 'Vidoc scans for studio');
+  await expect(studio).toBeEnabled();
+
+  await instance.click();
+  await expect(screen.getByText(/Vidoc is off for every project/)).toBeVisible();
+  await expect(instance).not.toBeChecked();
+  await expect(card.getByText(/Off for every project since/)).toBeVisible();
+  await expect(screen.getByRole('switch', 'Vidoc scans for studio')).toBeDisabled();
+  await expect(screen.getByRole('switch', 'Vidoc scans for studio')).toBeChecked();
+  await expect(card.getByText(/In use: the key from the server’s configuration/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  // Off for the instance: the Add sandbox dialog offers no Vidoc box.
+  await browser.evaluate(() => { location.hash = '#/'; return null; });
+  await screen.getByRole('button', 'Import repository').click();
+  await expect(screen.getByRole('radio', /Quartio-Studio\/website/)).toBeVisible();
+  await expect(screen.getByRole('dialog', 'Add sandbox').getByRole('checkbox', 'Scan pull requests with Vidoc')).toHaveCount(0);
+
+  await app.open(mock('/admin/instance', '&vidoc=config&vidoc_off=1'));
+  const again = screen.getByRole('switch', 'Vidoc scans for every project');
+  await expect(again).not.toBeChecked();
+  await again.click();
+  await expect(screen.getByText(/Vidoc scans are on again/)).toBeVisible();
+  await expect(again).toBeChecked();
+  await expect(screen.getByRole('switch', 'Vidoc scans for studio')).toBeEnabled();
+  expect(await switchOf(browser, 'studio')).toBe(true);
+});

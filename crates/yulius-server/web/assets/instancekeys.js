@@ -1,8 +1,8 @@
 // The instance's service keys, Jev (SPEC-001 ADM-001, ADM-002) and Vidoc (SPEC-195 VDK-003,
 // VDK-004): optional steps of the setup wizard and cards on the instance page where a superadmin
 // sets, replaces, tests and removes them. A key goes to the server once and never comes back: the
-// API answers with its state only. The Vidoc card also switches each project's scans off or on
-// (SPEC-338 VOF-005).
+// API answers with its state only. The Vidoc card also switches Vidoc off or on for the whole
+// instance (SPEC-356 VIO-005) and each project's scans (SPEC-338 VOF-005).
 
 import { enc } from './api.js';
 import { h, icon, field, setChildren, toast, errorToast, confirmDialog, skeleton, toggle } from './dom.js';
@@ -60,7 +60,7 @@ function keyInput(service, id) {
  * after saying why it failed; a switch `input` goes back then.
  */
 async function setVidocScans(ctx, sandbox, on, { input = null } = {}) {
-  if (input) input.disabled = true;
+  if (input) { input.disabled = true; input.dataset.busy = '1'; }
   try {
     const updated = await ctx.api.patch(`/api/sandboxes/${enc(sandbox.id)}`, { vidoc: on });
     ctx.store.upsertSandbox(updated);
@@ -71,17 +71,49 @@ async function setVidocScans(ctx, sandbox, on, { input = null } = {}) {
     errorToast(error, 'Couldn’t change the Vidoc scans');
     return null;
   } finally {
-    if (input) input.disabled = false;
+    if (input) { input.disabled = false; delete input.dataset.busy; }
   }
 }
 
 /**
+ * The Vidoc card's instance switch (SPEC-356 VIO-005): off, no project scans, whatever its own
+ * switch; the key is kept. `onChange` gets the updated key state.
+ */
+function vidocInstanceSwitch(ctx, state, onChange) {
+  const enabled = state.enabled !== false;
+  const control = toggle({
+    checked: enabled,
+    label: 'Vidoc scans for every project',
+    onChange: async (on, input) => {
+      input.disabled = true;
+      try {
+        const updated = await ctx.api.put('/api/admin/vidoc/enabled', { enabled: on });
+        toast(on ? 'Vidoc scans are on again: each project scans as its own switch says.' : 'Vidoc is off for every project: nothing is scanned or sent to Vidoc until you switch it on.', { kind: 'ok' });
+        onChange(updated);
+      } catch (error) {
+        input.checked = !on;
+        input.disabled = false;
+        errorToast(error, 'Couldn’t switch Vidoc');
+      }
+    },
+  });
+  const when = state.disabled_at ? ` ${relLong(state.disabled_at)}` : '';
+  const by = state.disabled_by ? ` by ${state.disabled_by}` : '';
+  return h('div', { class: 'vidoc-instance' },
+    h('div', { class: 'row vidoc-project' }, h('span', { class: 'vidoc-project-name' }, 'Scan every project with Vidoc'), control),
+    h('p', { class: 'muted xs' }, enabled
+      ? 'Switch it off to stop every project’s scans at once, for example while Vidoc is down or its key’s quota is used up. The key stays saved.'
+      : `Off for every project since${when}${by}: nothing is scanned or sent to Vidoc, agents and CI report the scan as disabled, and nobody is asked about the key or its quota. The key stays saved.`));
+}
+
+/**
  * The Vidoc card's projects, each with its switch (SPEC-338 VOF-005; exported for its in-page
- * test); playgrounds scan nothing. It
+ * test); playgrounds scan nothing. With `locked` (Vidoc off for the instance, SPEC-356) the
+ * switches show each project's own choice, disabled. It
  * follows the sandbox list: a project added or removed redraws it, and a switch changed elsewhere
  * (another tab, a live update) moves in place, so focus stays on the switch in hand.
  */
-export function vidocProjects(ctx) {
+export function vidocProjects(ctx, { locked = false } = {}) {
   const box = h('div', { class: 'vidoc-projects', role: 'group', 'aria-labelledby': 'vidoc-projects-title' });
   const projects = () => (ctx.store.state.sandboxes || []).filter((sb) => !sb.playground);
   const isOn = (sb) => !sb.profile || sb.profile.vidoc !== false;
@@ -93,7 +125,7 @@ export function vidocProjects(ctx) {
     if (shape === drawn) {
       for (const sb of list) {
         const input = inputs.get(sb.id);
-        if (input && !input.disabled) input.checked = isOn(sb);
+        if (input && !input.dataset.busy) input.checked = isOn(sb);
       }
       return;
     }
@@ -103,7 +135,7 @@ export function vidocProjects(ctx) {
       h('h3', { class: 'small', id: 'vidoc-projects-title' }, 'Projects'),
       h('p', { class: 'muted xs' }, 'A project switched off scans nothing: its agents and CI report the scan as disabled, and nobody is asked about the key or its quota, until you switch it on again. Use it while the key’s quota is used up.'),
       h('ul', { class: 'vidoc-project-list' }, list.map((sb) => {
-        const control = toggle({ checked: isOn(sb), label: `Vidoc scans for ${sb.name}`, onChange: (on, input) => setVidocScans(ctx, sb, on, { input }) });
+        const control = toggle({ checked: isOn(sb), disabled: locked, label: `Vidoc scans for ${sb.name}`, onChange: (on, input) => setVidocScans(ctx, sb, on, { input }) });
         inputs.set(sb.id, control.querySelector('input'));
         return h('li', { class: 'row vidoc-project' }, h('span', { class: 'vidoc-project-name' }, sb.name), control);
       })),
@@ -216,7 +248,8 @@ export function keySettingsCard(ctx, service) {
   function render() {
     // The Add sandbox dialog offers the switch while the instance has a key (SPEC-338 VOF-004).
     const me = ctx.store.state.me;
-    if (service === 'vidoc' && me && me.instance) me.instance.vidoc = Boolean(state.configured);
+    // Not while Vidoc is off for the instance (SPEC-356 VIO-005).
+    if (service === 'vidoc' && me && me.instance) me.instance.vidoc = Boolean(state.configured) && state.enabled !== false;
     const input = keyInput(service, `settings-${service}`);
     const save = h('button', { type: 'submit', class: 'btn btn-primary btn-sm', disabled: true }, state.source === 'settings' ? 'Replace' : 'Save');
     input.addEventListener('input', () => { save.disabled = !input.value.trim(); });
@@ -258,7 +291,8 @@ export function keySettingsCard(ctx, service) {
       result,
       form,
       h('p', { class: 'muted xs', id: `settings-${service}-hint` }, 'Stored encrypted on this server and never shown again.'),
-      service === 'vidoc' ? vidocProjects(ctx) : null);
+      service === 'vidoc' ? vidocInstanceSwitch(ctx, state, (updated) => { state = updated; render(); }) : null,
+      service === 'vidoc' ? vidocProjects(ctx, { locked: state.enabled === false }) : null);
   }
 
   async function test() {
