@@ -48,7 +48,7 @@ pub fn busiest(counts: impl IntoIterator<Item = (String, usize)>) -> Vec<Holder>
         .into_iter()
         .map(|(name, held)| Holder { name, held })
         .collect();
-    holders.sort_by(|a, b| b.held.cmp(&a.held));
+    holders.sort_by_key(|holder| std::cmp::Reverse(holder.held));
     holders.truncate(HOLDERS);
     holders
 }
