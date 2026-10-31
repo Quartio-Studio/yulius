@@ -224,55 +224,89 @@ test('a busy CI run reads one row per job: its wait for a slot and its run on on
   expect(await axeViolations(browser)).toEqual([]);
 });
 
-// Task #340: the hover tip once kept its figures on one line and centred itself at most 80 px from
-// the plot's edge, so a long one ran past the plot (and the page) and its words were cut off.
+// Task #340 (#986): a chart's hover tip once kept its text on one line and centred itself at most
+// 80 px from the plot's edge, so a long one ran past the plot (and the page) and its words were cut
+// off. It also always sat above the pointer, so a tall (wrapped) one rose above the plot.
 
-/** The waterfall's hover tip against its plot and the window: px past each edge, and text cut in it. */
-function tipFit(browser: Browser) {
-  return browser.evaluate(() => {
-    const tip = document.querySelector<HTMLElement>('.st-tip');
+/** A chart's hover tip against its plot and the window: px past each edge, and text cut in it. */
+function tipFit(browser: Browser, selector: string) {
+  return browser.evaluate((sel) => {
+    const tip = document.querySelector<HTMLElement>(sel);
     if (!tip || tip.hidden || !tip.parentElement) return null;
     const plot = tip.parentElement.getBoundingClientRect();
     const box = tip.getBoundingClientRect();
-    const lineCount = (node: Element) => {
+    const past = (outer: { left: number; right: number; top: number; bottom: number }) =>
+      Math.max(0, ...[outer.left - box.left, box.right - outer.right, outer.top - box.top, box.bottom - outer.bottom].map(Math.round));
+    const lineCount = (node: Node) => {
       const range = document.createRange();
       range.selectNodeContents(node);
       return new Set([...range.getClientRects()].map((r) => Math.round(r.top))).size;
     };
     return {
       text: tip.textContent ?? '',
-      pastPlot: Math.max(0, Math.round(plot.left - box.left), Math.round(box.right - plot.right)),
-      pastWindow: Math.max(0, Math.round(-box.left), Math.round(box.right - window.innerWidth)),
+      pastPlot: past(plot),
+      pastWindow: past({ left: 0, right: window.innerWidth, top: 0, bottom: window.innerHeight }),
       cut: [tip, ...tip.children].some((part) => part.scrollWidth > part.clientWidth + 1),
       // Lines of its last part (the figures), from the line boxes of its text.
       lines: lineCount(tip.lastElementChild ?? tip),
       // Each figure is whole on its line: lines break between figures, never inside one.
       figures: [...tip.querySelectorAll('.st-tip-figure')].map((figure) => lineCount(figure)),
     };
-  });
+  }, selector);
 }
 
-test('the waterfall’s hover tip wraps its figures and stays inside the plot at either edge', async ({ app, browser, screen }) => {
+/** Moves the pointer onto (x, y) from off the chart, so the tip measured is the one placed there. */
+async function hoverAt(browser: Browser, tip: string, x: number, y: number) {
+  await browser.mouse.move(0, 0);
+  await expect(browser.locator(tip)).toBeHidden();
+  await browser.mouse.move(x, y);
+  await expect(browser.locator(tip)).toBeVisible();
+}
+
+test('the waterfall’s hover tip wraps its figures and stays inside the plot at every edge', async ({ app, browser, screen }) => {
   for (const width of [1280, 390]) {
     await browser.setViewport({ width, height: 900 });
     await app.open(mock('/s/studio/ci?run=ci_s2'));
     await expect(screen.getByRole('region', 'Stages of this run')).toContainText('quality');
-    // quality's figures fit one line; the failed job's (the reported ones) wrap even at 1280 px.
-    const jobs = [
-      ['quality', 'CPU 31 min · peak 2.0 GiB · wrote 640 MiB', false],
-      ['test (2/2)', '1,457 passed, 4 skipped · CPU 0.0 s · peak 7.0 MiB · wrote under 1 MiB · exit 101', true],
+    // The first row, at the plot's top; quality's figures fit one line; the failed job's (the
+    // reported ones) wrap even at 1280 px.
+    const rows = [
+      ['.st-row:has-text("Queue")', 'Queue', false],
+      ['.st-row.st-job:has-text("quality")', 'CPU 31 min · peak 2.0 GiB · wrote 640 MiB', false],
+      ['.st-row.st-job:has-text("test (2/2)")', '1,457 passed, 4 skipped · CPU 0.0 s · peak 7.0 MiB · wrote under 1 MiB · exit 101', true],
     ] as const;
-    for (const [job, figures, wraps] of jobs) {
-      const row = await browser.locator(`.st-row.st-job:has-text("${job}")`).boundingBox();
-      if (!row) throw new Error(`the ${job} row is not laid out`);
+    for (const [selector, text, wraps] of rows) {
+      const row = await browser.locator(selector).boundingBox();
+      if (!row) throw new Error(`${selector} is not laid out`);
       for (const x of [row.x + 4, row.x + row.width - 4]) {
-        await browser.mouse.move(x, row.y + row.height / 2);
-        await expect(browser.locator('.st-tip')).toContainText(figures);
-        const fit = await tipFit(browser);
-        expect(fit, `${job}, ${width} px, pointer at ${Math.round(x)}`).toMatchObject({ pastPlot: 0, pastWindow: 0, cut: false });
-        if (wraps) expect(fit?.lines, `${job}, ${width} px`).toBeGreaterThan(1);
-        expect(fit?.figures, `${job}, ${width} px`).toEqual(figures.split(' · ').map(() => 1));
+        await hoverAt(browser, '.st-tip', x, row.y + row.height / 2);
+        await expect(browser.locator('.st-tip')).toContainText(text);
+        const fit = await tipFit(browser, '.st-tip');
+        const at = `${text}, ${width} px, pointer at ${Math.round(x)}`;
+        expect(fit, at).toMatchObject({ pastPlot: 0, pastWindow: 0, cut: false });
+        if (wraps) {
+          expect(fit?.lines, at).toBeGreaterThan(1);
+          expect(fit?.figures, at).toEqual(text.split(' · ').map(() => 1));
+        }
       }
+    }
+  }
+});
+
+test('the daily chart’s hover tip stays inside its chart on the first and the last day', async ({ app, browser, screen }) => {
+  for (const width of [1280, 390]) {
+    await browser.setViewport({ width, height: 900 });
+    await app.open(mock('/s/studio/dashboard?section=pipeline'));
+    const trend = screen.getByRole('region', 'Trend: CI · Run');
+    await expect(trend.getByRole('img', /CI · Run, p50 and p90 by day/)).toBeVisible();
+    // At 390 px the chart starts below the fold.
+    await browser.evaluate(() => document.querySelector('.st-chart')?.scrollIntoView({ block: 'center' }));
+    const hit = await browser.locator('.st-chart .chart-hit').boundingBox();
+    if (!hit) throw new Error('the trend chart is not laid out');
+    for (const x of [hit.x + 2, hit.x + hit.width - 2]) {
+      await hoverAt(browser, '.db-tip', x, hit.y + hit.height / 2);
+      await expect(browser.locator('.db-tip')).toContainText('ended');
+      expect(await tipFit(browser, '.db-tip'), `${width} px, pointer at ${Math.round(x)}`).toMatchObject({ pastPlot: 0, pastWindow: 0, cut: false });
     }
   }
 });
