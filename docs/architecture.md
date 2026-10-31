@@ -596,6 +596,46 @@ sequenceDiagram
     W-->>A: one line, then exits: Claude Code wakes the agent
 ```
 
+### Across a Yulius restart
+
+A restart or an update is invisible to a task's session
+([SPEC-358](../.ai/specs/SPEC-358-sessions-keep-yulius-mcp-waits-and-deliv.md),
+[decision 0244](decisions/0244-task-runs-reach-yulius-through-a-stdio-bridge-and-are-woken-after-an-outage.md)):
+
+- **The MCP bridge.** Claude Code gives up on an HTTP MCP server after about a minute of failed
+  reconnects. So a task run's `yulius` server is the stdio bridge `yulius mcp`, which lives as
+  long as the session and forwards each JSON-RPC line to `POST /mcp`.
+  - A call Yulius never read (`Expect: 100-continue`) is held and sent again, for up to 10
+    minutes.
+  - A `tools/call` cut after Yulius read it answers that it may have taken effect.
+  - Claude Code spawns `CLAUDE_CODE_SHELL_PREFIX` itself as a stdio server's program, so the prefix
+    is one path, `<run>/scrub-exec`.
+- **`yulius wait`** keeps asking until its own deadline.
+- **The wake.** Yulius writes `<data>/alive-at` every 30 s.
+  - From 90 s after a start has reattached the runs until about 10 minutes after, every 30 s.
+  - It types "Yulius is back; continue" once into each live, idle, Running task whose last turn
+    closed between that time and the start, and whose Stop it did not answer (`<run>/stop-answered`
+    holds when it last did).
+  - That turn is one a dead wait woke, or one whose Stop hook failed open. This is the
+  one thing Yulius types into an idle session, besides a person's message. The woken turn ends
+  with a Stop Yulius answers, so the branch is pushed and delivery goes on.
+- **Armed merges** are restored, then tried once at the start.
+
+```mermaid
+sequenceDiagram
+    participant C as Claude Code (task session)
+    participant B as yulius mcp (stdio bridge)
+    participant Y as Yulius (restarting)
+    C->>B: tools/call ci_status
+    B-xY: POST /mcp, Expect 100-continue: refused (down)
+    Note over B: never read: held, sent again with a backoff (at most 10 min)
+    Y->>Y: start: alive-at read, runs reattached, armed merges tried
+    B->>Y: POST /mcp
+    Y-->>B: 100 Continue, then the answer
+    B-->>C: the answer, one line
+    Y->>C: 90 s later, to a task idle since the outage: "Yulius is back; continue"
+```
+
 ## A task's own files
 
 Claude Code's removal check asks a person even with approvals bypassed (a root-level path, a path
@@ -1091,8 +1131,9 @@ flowchart LR
 
 The Superagent gets the same servers as its person's task run of its sandbox (`App::mcp_attachments`), inline
 in its `--mcp-config` next to `yulius`, their values in its secret environment, and the task runs'
-redaction of agent secrets: `CLAUDE_CODE_SHELL_PREFIX=<yulius> --scrub-exec` for its Bash commands,
-hooks and stdio servers, and the `PostToolUse` hook, its only hook; its screen is redacted on the
+redaction of agent secrets: `CLAUDE_CODE_SHELL_PREFIX=<run>/scrub-exec` (a script running
+`<yulius> --scrub-exec "$@"`, one program as Claude Code spawns it for a stdio server, SPEC-358) for
+its Bash commands, hooks and stdio servers, and the `PostToolUse` hook, its only hook; its screen is redacted on the
 server as a task's terminal is. The wrapper and hook load their fingerprints with the workspace
 token the person's environment holds, answered while the person may work in the sandbox (by an
 access decision within the staleness bound, never waiting on GitHub) ([SPEC-147](../.ai/specs/SPEC-147-fix-395-the-superagent-gets-the-sandbox.md),
@@ -1944,7 +1985,12 @@ Yulius (the holder's forward, the server's `out.sock`) and the proxy close their
 connection (no byte for at least 5 minutes) for a new one instead of refusing it, so leftover processes
 holding connections cannot cut a sandbox's agents off from Yulius, also after a server restart,
 which does not restart the holder
-([decision 0241](decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)):
+([decision 0241](decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)).
+The proxy also counts each connection's run (agent run, CI job, Superagent shell). When nothing was
+idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and
+the full proxy that of the busiest sandbox, if it holds at least 2 more than the asker, so one busy
+run cannot lock the other runs of its sandbox out
+([decision 0243](decisions/0243-the-busiest-run-gives-way-at-a-full-proxy-share.md)):
 
 ```mermaid
 flowchart LR
@@ -1952,6 +1998,7 @@ flowchart LR
   F -->|"out.sock"| O["server's out.sock relay (256 places)"]
   O --> I["internal listener: API, MCP, egress proxy (128 per sandbox, 256 in all)"]
   F -.->|"full: the longest-idle place (idle 5 min or more) gives way"| F
+  I -.->|"share full, all active: the busiest run's oldest tunnel gives way"| I
   Y["Yulius link test, every minute per Superagent"] -->|"in.sock CONNECT 8081"| F
 ```
 

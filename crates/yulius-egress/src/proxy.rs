@@ -22,7 +22,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use yulius_app::ports::egress::{EgressClient, EgressDecision, EgressPolicy, EgressRequest};
-use yulius_domain::connections::{self, Activity, Connections};
+use yulius_domain::connections::{self, Activity, Busier, Connections};
 use yulius_domain::vault::egress_destination_allowed;
 use yulius_domain::vault::redact::{Matcher, PlainMatcher, StreamRedactor, redact_all};
 
@@ -114,9 +114,11 @@ pub struct EgressProxy {
 type Warned = HashMap<(&'static str, Option<String>), Instant>;
 
 /// The proxy's connections: at most `max_connections`, `max_per_sandbox` per sandbox; at a limit
-/// the longest-idle one past the floor gives way (SLR-002). Each holds the sender that ends it.
+/// the longest-idle one past the floor gives way (SLR-002), else the oldest of a busier run or
+/// sandbox (SPEC-357). Each holds the sender that ends it.
 struct Slots {
-    table: Mutex<Connections<String, oneshot::Sender<()>>>,
+    /// By sandbox and run (`EgressClient::use_key`), SPEC-357.
+    table: Mutex<Connections<String, oneshot::Sender<()>, String>>,
     epoch: Instant,
 }
 
@@ -246,6 +248,33 @@ async fn lookup(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
     Ok(allowed)
 }
 
+/// The warning kind of a connection taken from a busier run or sandbox: each warns once a minute
+/// per sandbox, apart (SPEC-357 ESR-005).
+fn busier_kind(busier: Busier) -> &'static str {
+    match busier {
+        Busier::Owner(_) => "busiest run",
+        Busier::Key(_) => "busiest sandbox",
+    }
+}
+
+/// The `503` at a full sandbox share (SPEC-357 ESR-004): `mine` of `share` are the asking run's,
+/// another run holds at most `most_held` (held in flight included). "The most" only when no
+/// other run holds as many; else the table found no run with `MARGIN` more to give up.
+fn share_refusal(share: usize, mine: usize, most_held: usize) -> String {
+    let whose = if mine > most_held {
+        "the most of the sandbox's runs: end this run's leftover processes".to_owned()
+    } else {
+        format!(
+            "and no other run has {} more to give up: end leftover processes",
+            connections::MARGIN
+        )
+    };
+    format!(
+        "Yulius proxy: this sandbox's processes hold all of its {share} connections, each active \
+         lately; this run holds {mine} of them, {whose} or try again"
+    )
+}
+
 /// reqwest's resolver: the same destination policy (no DNS rebinding to local addresses).
 struct PolicyResolver;
 
@@ -348,6 +377,13 @@ impl Upstream {
     }
 }
 
+/// A request as it goes upstream, once the policy allowed it.
+struct Outgoing {
+    method: Method,
+    path: String,
+    headers: Vec<(String, Vec<u8>)>,
+}
+
 /// A response body redacted as it streams.
 fn redacting_body(
     stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
@@ -403,7 +439,7 @@ impl EgressProxy {
             http: builder.build()?,
             resolve: config.resolve,
             slots: Arc::new(Slots {
-                table: Mutex::new(Connections::new(
+                table: Mutex::new(Connections::with_owners(
                     config.max_connections,
                     config.max_per_sandbox,
                     u64::try_from(config.idle_floor.as_millis()).unwrap_or(u64::MAX),
@@ -417,25 +453,74 @@ impl EgressProxy {
         })
     }
 
-    /// A place for one connection of `client`'s sandbox, with what resolves once it gave way, or
-    /// the text of the `503` refusing it. Past the sandbox's share its longest-idle connection
-    /// gives way, past the proxy's limit the longest-idle of all (SPEC-355 SLR-002); one active
-    /// within the floor never does, and then the connection is refused (LAP-002). Each refusal and
-    /// each connection that gave way is logged as a warning, at most once a minute per limit and
-    /// sandbox.
-    fn slot(&self, client: &EgressClient) -> Result<(Slot, oneshot::Receiver<()>), String> {
+    /// A place for one connection of `client`'s run in its sandbox, with what resolves once it
+    /// gave way, or the text of the `503` refusing it. Past the sandbox's share its longest-idle
+    /// connection gives way, past the proxy's limit the longest-idle of all (SPEC-355 SLR-002);
+    /// failing that, the oldest of the busiest other run (or sandbox) holding 2 more (SPEC-357
+    /// ESR-002, ESR-003); else the connection is refused (LAP-002) with how many the asking run
+    /// holds. Each refusal and each connection that gave way is logged as a warning, at most once
+    /// a minute per limit and sandbox.
+    ///
+    /// A `held` connection (a plain request) is held in flight before the table is released, so
+    /// nothing takes it meanwhile (review round 4).
+    fn slot(
+        &self,
+        client: &EgressClient,
+        held: bool,
+    ) -> Result<(Slot, oneshot::Receiver<()>), String> {
         let sandbox = client.sandbox_id.as_str();
+        let run = client.use_key();
         let (end, ended) = oneshot::channel();
-        let admitted = self
-            .slots
-            .table
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .admit(sandbox.to_owned(), end, self.slots.now());
+        let (admitted, counts) = {
+            let mut table = self
+                .slots
+                .table
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let (key, owner, now) = (sandbox.to_owned(), run.to_owned(), self.slots.now());
+            let admitted = if held {
+                table.admit_held_by(key, owner, end, now)
+            } else {
+                table.admit_by(key, owner, end, now)
+            };
+            // Only a refusal at the share tells how many (SPEC-357 ESR-004).
+            let counts = matches!(admitted, Err(connections::Full::Key)).then(|| {
+                let (sandbox, run) = (sandbox.to_owned(), run.to_owned());
+                (
+                    table.count_of(&sandbox, &run),
+                    table.most_of_others(&sandbox, &run),
+                )
+            });
+            (admitted, counts)
+        };
         let mut warned = self.warned.lock().unwrap_or_else(PoisonError::into_inner);
         match admitted {
             Ok(admitted) => {
-                if let Some(evicted) = admitted.evicted
+                if let Some(evicted) = &admitted.evicted
+                    && let Some(busier) = evicted.busier
+                {
+                    if warn_due(&mut warned, busier_kind(busier), Some(&evicted.key)) {
+                        match busier {
+                            Busier::Owner(held) => tracing::warn!(
+                                sandbox = %evicted.key,
+                                run = %evicted.owner,
+                                held,
+                                "egress proxy: a sandbox's share is full of active connections; \
+                                 the busiest run's oldest connection was closed for another run \
+                                 of the sandbox; its leftover processes may hold them \
+                                 (docs/operations.md)"
+                            ),
+                            Busier::Key(held) => tracing::warn!(
+                                sandbox = %evicted.key,
+                                run = %evicted.owner,
+                                sandbox_held = held,
+                                for_sandbox = sandbox,
+                                "egress proxy: every connection is taken and active; the busiest \
+                                 sandbox's oldest connection was closed for another sandbox"
+                            ),
+                        }
+                    }
+                } else if let Some(evicted) = admitted.evicted
                     && warn_due(&mut warned, "gave way", Some(&evicted.key))
                 {
                     tracing::warn!(
@@ -453,19 +538,18 @@ impl EgressProxy {
                 Ok((slot, ended))
             }
             Err(connections::Full::Key) => {
+                let (mine, most_held) = counts.unwrap_or_default();
                 if warn_due(&mut warned, "share", Some(sandbox)) {
                     tracing::warn!(
                         sandbox,
+                        run,
+                        held = mine,
                         share = self.max_per_sandbox,
                         "egress proxy: a sandbox holds its share of the connections; \
                          leftover processes may hold them (docs/operations.md)"
                     );
                 }
-                Err(format!(
-                    "Yulius proxy: this sandbox's processes hold all of its {} connections; \
-                     end leftover processes or try again",
-                    self.max_per_sandbox
-                ))
+                Err(share_refusal(self.max_per_sandbox, mine, most_held))
             }
             Err(connections::Full::Total) => {
                 if warn_due(&mut warned, "full", None) {
@@ -502,10 +586,8 @@ impl EgressProxy {
         let Some(client) = self.policy.egress_client(&token).await else {
             return auth_required();
         };
-        let (permit, ended) = match self.slot(&client) {
-            Ok(slot) => slot,
-            Err(refused) => return text(503, &refused),
-        };
+        // A place is taken only once the request is known to be served, so that a refused one
+        // never closes another connection for it (SPEC-357, review round 3).
         if request.method() == Method::CONNECT {
             let Some((host, port)) = connect_target(request.uri()) else {
                 return text(400, "Yulius proxy: CONNECT needs host:port");
@@ -514,6 +596,10 @@ impl EgressProxy {
             let addrs = match self.destination(&host, port).await {
                 Ok(addrs) => addrs,
                 Err(message) => return text(403, &message),
+            };
+            let (permit, ended) = match self.slot(&client, false) {
+                Ok(slot) => slot,
+                Err(refused) => return text(503, &refused),
             };
             let on_upgrade = hyper::upgrade::on(&mut request);
             let proxy = Arc::clone(self);
@@ -574,11 +660,20 @@ impl EgressProxy {
             }
         };
         let (parts, body) = request.into_parts();
+        // The policy decides before a place is taken: a refused request takes none (review
+        // round 4).
+        let outgoing = match self.prepare(&client, &upstream, &parts).await {
+            Ok(outgoing) => outgoing,
+            Err((status, message)) => return text(status, &message),
+        };
         // In flight until its answer's head arrives: it never gives way meanwhile (its bytes pass
         // through no tracked stream).
-        permit.activity.hold();
+        let (permit, ended) = match self.slot(&client, true) {
+            Ok(slot) => slot,
+            Err(refused) => return text(503, &refused),
+        };
         drop(ended);
-        let response = self.forward(&client, &upstream, parts, body).await;
+        let response = self.send(&client, &upstream, outgoing, body).await;
         drop(permit);
         response
     }
@@ -648,11 +743,26 @@ impl EgressProxy {
         B: Body<Data = Bytes> + Send + 'static,
         B::Error: Into<BoxError>,
     {
+        match self.prepare(client, upstream, &parts).await {
+            Ok(outgoing) => self.send(client, upstream, outgoing, body).await,
+            Err((status, message)) => text(status, &message),
+        }
+    }
+
+    /// What `parts` becomes upstream (rewritten by the policy for a bound host), or the status and
+    /// text refusing it.
+    async fn prepare(
+        &self,
+        client: &EgressClient,
+        upstream: &Upstream,
+        parts: &Parts,
+    ) -> Result<Outgoing, (u16, String)> {
         if parts.headers.contains_key(header::UPGRADE) {
-            return text(
+            return Err((
                 501,
-                "Yulius proxy: protocol upgrades (WebSockets) are not proxied for hosts with agent secrets",
-            );
+                "Yulius proxy: protocol upgrades (WebSockets) are not proxied for hosts with agent secrets"
+                    .to_owned(),
+            ));
         }
         let listed: Vec<String> = parts
             .headers
@@ -686,13 +796,37 @@ impl EgressProxy {
                     headers,
                     ..
                 } => (path_and_query, headers),
-                EgressDecision::Refuse { status, message } => return text(status, &message),
+                EgressDecision::Refuse { status, message } => return Err((status, message)),
             }
         } else {
             headers.retain(|(name, _)| name != "x-yulius-secret");
             (path, headers)
         };
-        let mut builder = self.http.request(parts.method.clone(), upstream.url(&path));
+        Ok(Outgoing {
+            method: parts.method.clone(),
+            path,
+            headers,
+        })
+    }
+
+    /// Sends a prepared request upstream and streams the redacted response back.
+    async fn send<B>(
+        &self,
+        client: &EgressClient,
+        upstream: &Upstream,
+        outgoing: Outgoing,
+        body: B,
+    ) -> Response<EgressBody>
+    where
+        B: Body<Data = Bytes> + Send + 'static,
+        B::Error: Into<BoxError>,
+    {
+        let Outgoing {
+            method,
+            path,
+            headers,
+        } = outgoing;
+        let mut builder = self.http.request(method, upstream.url(&path));
         for (name, value) in headers {
             if let (Ok(name), Ok(value)) = (
                 HeaderName::from_bytes(name.as_bytes()),
@@ -832,6 +966,34 @@ mod tests {
         }
         assert!(warn_due(&mut warned, "share", Some("s3")));
         assert_eq!(warned.len(), 1, "older warnings are forgotten");
+    }
+
+    /// SPEC-357 ESR-004 (review round 2): "the most" only when no other run holds as many, held
+    /// connections included; "nothing to give up" names the margin the table used.
+    #[test]
+    fn a_share_refusal_names_the_busiest_run_only_when_it_is() {
+        let busiest = share_refusal(8, 7, 1);
+        assert!(busiest.contains("this run holds 7 of them, the most of the sandbox's runs"));
+        // Another run holds 7 requests in flight: it has nothing to give up, but it is busier.
+        let not = share_refusal(8, 1, 7);
+        assert!(!not.contains("the most"), "{not}");
+        assert!(
+            not.contains(&format!(
+                "this run holds 1 of them, and no other run has {} more to give up",
+                connections::MARGIN
+            )),
+            "{not}"
+        );
+    }
+
+    /// SPEC-357 ESR-005 (review round 2): a run-level and a sandbox-level take warn apart.
+    #[test]
+    fn takes_from_a_busier_run_and_sandbox_warn_apart() {
+        let (run, sandbox) = (busier_kind(Busier::Owner(3)), busier_kind(Busier::Key(3)));
+        assert_ne!(run, sandbox);
+        let mut warned = HashMap::new();
+        assert!(warn_due(&mut warned, run, Some("s1")));
+        assert!(warn_due(&mut warned, sandbox, Some("s1")));
     }
 
     #[test]

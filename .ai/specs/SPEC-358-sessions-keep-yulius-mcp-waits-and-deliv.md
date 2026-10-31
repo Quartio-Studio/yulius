@@ -1,0 +1,337 @@
+---
+yulius-task: 4cfd3777-a8cf-412d-896a-2dd86ddcb606
+status: done
+---
+
+# SPEC-358: Sessions keep Yulius MCP, waits and delivery working across Yulius restarts
+
+Status: implemented
+Date: 2026-10-31
+Owner: Yulius task #343
+Scope authorization: task #343, follow-up 2 of task #342 (SPEC-357). Builds on SPEC-355 (the
+Superagent's link test and restart in place) and SPEC-290 (a Stop Yulius did not answer).
+
+## Goal
+
+A Yulius restart is invisible to a task. A task session's Yulius tools work again once Yulius is
+back, with no `/mcp`. A `yulius wait` running across the restart keeps waiting. A task that
+went idle while Yulius was down gets "Yulius is back; continue" once it is back. An armed merge
+whose checks already passed merges right after the restart.
+
+## Context
+
+### What happened
+
+On 2026-10-31, after each Yulius outage in the quartio-v2 sandbox (`7c46cdac-…`), task sessions
+kept a dead Yulius MCP connection: "MCP server yulius is not connected", or `ECONNRESET` at
+startup or on reconnect. They could not call `ci_status`, `ci_rerun` or `delivery_merge` until a
+person ran `/mcp`, even after Yulius was back. `yulius wait` gave up after its loop, and nothing
+woke the tasks.
+
+### How Claude Code treats a failed HTTP MCP server (2.1.292, read from the shipped CLI)
+
+- A task run gets the Yulius MCP as `{"type": "http", "url": "<YULIUS_URL>/mcp"}` with the task
+  token as bearer (`yulius-harness::launch::plan_claude`).
+- When a remote (`http`, `sse`) transport closes, Claude Code reconnects at most 5 times
+  (`see=5`), with a backoff from 1 s up to 30 s. Then it gives up ("Max reconnection attempts (5)
+  reached") and leaves the server `failed`.
+- A failed initial connect is retried only 3 times (`W6=3`), and only for some errors (5xx,
+  `CONNECT_TIMEOUT`, or any `sse` failure).
+- A tool of a server that is not connected answers "MCP server yulius is not connected".
+- No hook output and no setting asks Claude Code to reconnect a server. Only `/mcp` or a new
+  process does that.
+- So any outage longer than about a minute, which every Yulius restart and update is, leaves the
+  session without Yulius tools for good. SPEC-355 hit the same wall for the Superagent and
+  solved it with a restart in place.
+- **A stdio server never started in a task run.** Claude Code spawns `CLAUDE_CODE_SHELL_PREFIX`
+  itself as the program of a stdio MCP server: `command = PREFIX || command`, with the server's
+  command line as one quoted argument. For Bash and hooks it splits the prefix at its last
+  `" -"`. Yulius's prefix was `<yulius> --scrub-exec`, so every stdio server of a task run or
+  Superagent, the sandbox's own included, failed with `ENOENT: posix_spawn '/usr/local/bin/yulius
+  --scrub-exec'`. This was measured with `claude -p --debug-file` in this task's own run.
+
+### What a restart loses on the server today
+
+- **`yulius wait`** (`crates/yulius/src/wait_cli.rs`) gives up after 5 failed requests, about
+  50 s of retries. It exits 1 with "Yulius cannot be reached". Claude Code wakes the agent with
+  that line while Yulius is still down. The agent can do nothing, so it ends its turn, and nothing
+  wakes it once Yulius is back.
+- **A turn that ends while Yulius is down.** Its Stop hook fails open, so Yulius never settles
+  that turn. The turn's push and pull request (`auto_open_pr`, `finish.rs`), its arming and its
+  chains wait for a next turn that nobody starts. SPEC-290 GDW-001 settles a Stop Yulius failed to
+  answer only while Yulius runs (`hooks_seen` is memory and false after a restart).
+- **An armed merge** survives (`armed-merges.json`, DLV-205). One whose checks passed while Yulius
+  was down merges only at the delivery loop's first tick, about 3 minutes after the start.
+- **What already survives:**
+  - CI runs that were running are re-queued (`ci_recover`), and a `ci_rerun` is a queued run in the
+    database.
+  - Pushes made by a turn end that Yulius did answer have already happened.
+  - Task runs are reattached (`reconcile`).
+  - The egress proxy and the git credential helper take the run's task token from the database.
+  - A CD or environment run cut by the restart reads `error` (SPEC-134, SPEC-347). A person or the
+    agent starts it again. This is out of scope.
+
+## Requirements
+
+- **MSB-001** A task run reaches the Yulius MCP through a stdio bridge, `yulius mcp`, started by
+  Claude Code. The bridge forwards each JSON-RPC message to the run's `POST /mcp`, with the task
+  token as bearer. It writes each answer back as one line. The bridge never exits while Claude
+  Code runs, so Claude Code never sees the Yulius MCP fail. `CLAUDE_CODE_SHELL_PREFIX` is one
+  program, `<run_dir>/scrub-exec` (a script that runs `<yulius> --scrub-exec "$@"`), so Claude
+  Code can spawn stdio servers through it. When stdin ends, the bridge answers the calls in
+  flight (bounded by 10 s) before it exits.
+- **MSB-002** A message that Yulius never read is sent again until Yulius answers, for at most
+  `OUTAGE_WAIT` (10 min). "Never read" means the connection failed before Yulius asked for the
+  body (`Expect: 100-continue`). Past the bound, the call answers an error saying that Yulius could
+  not be reached and the call was not made. Any later call is tried again.
+- **MSB-003** A message that Yulius may have read is sent again only when it changes nothing:
+  `initialize`, `ping`, `tools/list` or a notification. A `tools/call` that fails after its body
+  was sent answers an error saying that Yulius restarted during the call and that it may have taken
+  effect. Read its state before calling again.
+- **MSB-004** A call that Claude Code cancels (`notifications/cancelled`) while the bridge holds
+  it is never sent afterwards, and one cancelled while Yulius works on it is not answered. At most
+  `MAX_IN_FLIGHT` (64) messages are in flight. Beyond that a request is answered an error at
+  once. Answers larger than 32 MiB, or lines longer than 4 MiB, are answered an error at once,
+  never sent again. Interim answers (1xx) are skipped. Each answer is one line of JSON.
+- **MSB-005** `yulius wait` rides out an outage. It keeps asking with a backoff of at most 10 s
+  until its own deadline. It says once that Yulius cannot be reached and that it keeps waiting.
+  When the deadline passes while Yulius is still down, it ends (exit 1) saying so, and that Yulius
+  wakes the task when it restarts. Only an outage is waited out: a transport error or a 502, 503
+  or 504. Any other answer that is no state (an HTTP error, an unreadable body) ends the wait after
+  5 in a row. A refused token still ends it at once.
+- **MSB-006** Yulius writes the time it was last alive to `<data>/alive-at` every `ALIVE_EVERY`
+  (30 s). At the start, the time read from that file is when it went down. That time is kept in
+  `<data>/outage-pending` until the start's wake window ends, so a second restart within it still
+  covers the first outage.
+- **MSB-007** After a restart, once the runs are reattached, Yulius waits `WAKE_GRACE` (90 s) so
+  that they replay their transcripts. Then, every `WAKE_EVERY` (30 s) until about 10 minutes
+  after the runs were reattached, it types "Yulius is back; continue" once into each reattached
+  task that went idle while it was down:
+  - "Idle" means no turn open and the task Running.
+  - The transcript's record that closes the last turn falls between the outage's start
+    (`outage-pending`, else `alive-at`) and this start.
+  - No Stop of the run was answered since its last prompt or answer. Yulius keeps the time it
+    answers a run's Stop in `<run>/stop-answered`, and the time only grows. `alive-at` is up to
+    30 s old, so a turn Yulius settled just before it stopped also closed after it. A Stop
+    answered with a block comes before the turn's next answer, so that turn is still woken.
+
+  This covers a wait that died, the turn its exit woke, and a turn whose Stop went unanswered.
+  A task is not woken in these cases: its goal is achieved, it has an open `needs_you`
+  or pause, a person typed within the last minute, or the start knows no `alive-at`. The text is
+  typed with the guards of a typed message (SPEC-230 TMS-004), unlabelled, and is not a person's.
+  It amends SPEC-028 MSR-004 for this single case.
+- **MSB-008** Right after the armed merges are restored at the start, Yulius tries them once, as
+  its delivery loop would. An armed merge whose checks passed during the outage merges then.
+
+## Plan
+
+- [x] Read SPEC-355 and SPEC-357, and find what a restart loses
+- [x] Spec and ADR for the stdio bridge and the wake-up
+- [x] `yulius mcp` bridges stdio to the Yulius MCP across a restart
+- [x] Task runs reach the Yulius MCP through the bridge
+- [x] `yulius wait` rides out an outage until its deadline
+- [x] Yulius wakes the tasks that went idle while it was down
+- [x] An armed merge whose checks passed merges right after a restart
+- [x] A restart test: a running session uses MCP, git and gh afterwards
+- [x] Architecture, operations guide and changes
+- [x] Independent review rounds 1-3, findings fixed test-first
+- [x] Review round 4 confirms the final head
+- [x] Gates green, pull request merged into dev on green CI
+
+## Acceptance criteria
+
+- A session's `yulius mcp` bridge is set up before a restart. While the server is down, a call is
+  held. Once a new server listens on the same address, the call is answered, with no new process
+  and no `/mcp`. A `tools/call` cut after Yulius read it is not sent twice.
+- `yulius wait` started before a restart longer than its old 50 s of retries ends with the
+  outcome after the restart, not with "Yulius cannot be reached".
+- After a restart, an idle reattached task whose last turn closed after `alive-at` gets "Yulius is
+  back; continue" once. A task idle since before the outage, and a task mid-turn, get nothing.
+- An armed merge whose checks passed during the outage merges at the start, with no delivery
+  tick.
+- After the restart the run's token still opens the git credential helper, `gh-token` and the
+  egress proxy.
+
+## Test plan
+
+- Unit (`yulius-git::agent_call`): "not sent" against "lost after sending" for a server that
+  closes before `100 Continue` and for one that closes after reading the body. Also a final
+  answer before the body, a silent server, an interim 103, a chunked answer and an oversized
+  answer.
+- Unit (`yulius::mcp_bridge`), each against a server that goes away and comes back (including a
+  call cancelled in flight whose connection is then cut):
+  - a held call answered once Yulius is back;
+  - a cut `tools/call` that is not resent, and a cut `tools/list` that is;
+  - the outage bound;
+  - a cancelled held call that is never sent, and a call cancelled in flight that gets no answer;
+  - a refused token, an oversized answer, and the calls in flight answered after stdin ends.
+- Integration (`yulius/tests/restart.rs`, real processes: a detached ptyhost and the fake agent):
+  - **The acceptance test.** A running session's bridge is spawned from the run's own
+    `mcp.json` and environment through its `scrub-exec`, as Claude Code does. The server is
+    restarted on the same port, with `reconcile`. The held call is answered, and `git credential
+    fill`, `yulius gh-token` and the egress client work with the run's token.
+  - `yulius wait` across a restart, at its deadline while down, with a refused token, and against
+    a server failing every request.
+  - The wake: an idle task whose turn closed after `alive-at` is woken once, and so is one whose
+    earlier Stop was blocked. Not woken: one idle since before, one whose Stop was answered, one
+    with `needs_you`.
+  - A start reading and refreshing `alive-at`, and a second start within the wake window keeping
+    the first outage.
+  - `yulius wait` with bad answers stops at its deadline.
+- Unit (`yulius-app::outage`, `finish`): the wake rule (mid-turn, goal achieved, pause, a person's
+  typing, already woken, an answered or a blocked Stop), the `alive-at`, `outage-pending` (read
+  first, forgotten once dealt with, ignored after a day) and `stop-answered` (only grows) files,
+  and the transcript facts.
+- Integration (`agent_hooks.rs`): an answered Stop writes `stop-answered`.
+- Integration (`delivery.rs`): an armed merge with passed checks merges at the start. In
+  `secrets_redaction.rs` and `cockpit.rs`: the prefix script runs a stdio server line by line with
+  its output redacted.
+- Unit (`yulius-harness::launch`): the run's MCP config names `yulius mcp` with only `${VAR}`
+  references.
+
+## Decisions
+
+- ADR-0244: a task run reaches the Yulius MCP through a stdio bridge that outlives Yulius
+  restarts, and Yulius wakes the tasks that went idle while it was down. Alternatives considered:
+  - A hook or the `yulius` wrapper triggering a reconnect: Claude Code has no such interface.
+  - Restarting the task's session in place as SPEC-355 does for the Superagent: it cuts a turn in
+    progress, and it needs a detection of the dead client that the server cannot see.
+  - Answering `initialize` and `tools/list` in the bridge without Yulius: the tools would be a
+    stale copy.
+- The bridge resends only what Yulius never read (`Expect: 100-continue`), or what changes
+  nothing. Tool calls are not all idempotent (`task_create`, `issue_create`, `record_number`), and
+  the server keeps no call ids across a restart.
+- The wake keys on the transcript's turn-closing record against `alive-at`, not on a record of
+  open waits. Each way a wait ends during an outage (the old client's give-up, the new client's
+  deadline) wakes the agent through Claude Code, and the turn this starts closes while Yulius is
+  down. The same key also covers a turn whose Stop went unanswered. One persisted time replaces a
+  table of waits.
+- The Superagent keeps SPEC-355's restart in place: its config is inline JSON with its own bearer,
+  and it is a person's session. Moving it onto the bridge is a later change.
+
+## Review
+
+Independent reviews in fresh sessions (skills `om-code-review` and `yulius-review`), read-only over
+`origin/dev...HEAD`:
+
+- Round 1 on 0e5124d6: request changes. All findings were in this change's own code and all were
+  fixed, test-first:
+  - **Major.** A task settled just before a restart was woken. `alive-at` is up to 30 s old, so
+    its turn closed after it. Yulius now keeps the time it answers a run's Stop in
+    `<run>/stop-answered`. It wakes only a turn with no answer since its prompt. Red first: the
+    `Answered` task of the wake test was woken.
+  - Minor:
+    - The wake ran once, beside recovery. It now starts after recovery and repeats for
+      10 minutes, waking each task once.
+    - A 102/103 spun `agent_call`'s loop. Red first: the test hung.
+    - `yulius wait` waited out a persistent HTTP 500 as an outage. Red first: it ran to its
+      60 s deadline.
+    - Missing tests, now added: the wait at its deadline, a refused token, `alive-at` at a start,
+      a `needs_you` task, chunked and interim answers, and a stdio server through `scrub-exec`
+      with fingerprints.
+    - The spec's test plan and requirements were out of date.
+    - The armed-merge test asserted only "not `pr_open`".
+  - Nits fixed:
+    - An oversized answer was resent for 10 minutes; now it is answered at once. Red first.
+    - A call cancelled in flight was still answered. Red first.
+    - `alive-at` is now synced to disk.
+    - The docs agree on Claude Code's reconnect window.
+    - A long comment line.
+  - Nits kept:
+    - The bridge's unit tests take a free port and bind it later, to stand for a server that
+      is down. Another test may take it in between; nothing failed in this change's runs.
+    - The fold test's sub-agent case is the `TurnComplete { at: None }` line.
+- Round 2 on d67d7b52: request changes. All of round 1 was verified fixed. All findings were in
+  this change's own code and all were fixed, test-first:
+  - **Major (introduced by round 1's fix).** A turn whose earlier Stop Yulius answered with a
+    block was never woken, though its last Stop failed in the outage. The block's feedback is an
+    `isMeta` record, not a prompt. The answered Stop is now compared with the turn's last prompt
+    *or answer* (`turn_moved_ms`). Red first: the wake test's `Blocked` task was not woken.
+  - Minor:
+    - No test exercised writing `stop-answered`. Now
+      `agent_hooks::an_answered_stop_is_kept_in_the_run_directory` covers it, and a mutation that
+      drops the write fails it.
+    - Two restarts within a wake window lost the first outage. `<data>/outage-pending` keeps it
+      until the window ends. Red first.
+    - The "lost" and "too large" paths answered a cancelled call. Red first.
+    - `yulius wait` counted bad answers in total and could run past its deadline on them. Red
+      first: it took 4 s past a 0.3 s deadline.
+  - Nits fixed:
+    - The wake window in the docs.
+    - `stop-answered` written through a synced temporary file.
+    - `TooLarge` while waiting for `100 Continue`.
+    - Long lines.
+- Round 3 on f1d4778d: approve, with no critical or major findings. All of round 2 was verified
+  fixed. Its minor findings and nits, all in this change's own code, were fixed after it:
+  - ADR-0244 and this spec described round 1's rule. They now state the "last prompt or answer"
+    rule and `outage-pending`.
+  - Nothing tested that the pending outage is forgotten. It is now read through `outage_began`
+    and dropped through `outage_dealt_with`, with a unit test. That test was red first: the
+    functions did not exist.
+  - The pending outage now has an age limit of a day.
+  - `stop-answered` only grows. Red first, in the unit test.
+  - Long spec lines.
+  - Nits left as they are:
+    - The bridge says "answered more than N bytes" for a head that is too large before the body
+      was sent. Yulius never sends one.
+    - `stop-answered` is written just before the hook's answer, so a hard crash between the two
+      loses a block Yulius decided. A graceful shutdown drains requests.
+- Round 4 on 3b63c05f: approve, with no critical or major findings, and round 3 verified fixed.
+  - Minor, accepted and documented here. A pending outage's age counts from when the outage
+    began. If Yulius was down for more than a day and a start crashes within its 10-minute wake
+    window, the next start falls back to `alive-at`.
+  - Nits left:
+    - The "only grows" read of `stop-answered` and its write are not atomic. The CLI waits for
+      each Stop hook, so the effect is at most one extra wake.
+    - A test's doc comment links `PENDING_MAX_AGE` instead of `PENDING_MAX_AGE_MS`.
+
+## Evidence
+
+- **How Claude Code 2.1.292 treats MCP servers** (read from the shipped CLI). These facts decided
+  the design:
+  - A closed remote transport is retried 5 times, with a backoff of 1 to 30 s.
+  - A failed first connect is retried 3 times, for some errors only.
+  - No hook or setting reconnects a server.
+  - A stdio server is spawned as `CLAUDE_CODE_SHELL_PREFIX || command`.
+- **The shell-prefix defect.** It was measured in this task's own run with
+  `claude -p --debug-file`, with no credentials and so no paid call. With the old prefix:
+  `MCP server "yulius": Connection failed (ENOENT): … posix_spawn '/usr/local/bin/yulius
+  --scrub-exec'`. With a `scrub-exec` script and the built `yulius mcp`, against this instance's
+  live Yulius: `Successfully connected (transport: stdio) in 173ms`, with its tools listed.
+- **Red before each fix, then green.**
+  - The prefix tests in `cockpit.rs` and `secrets_redaction.rs` failed with the old
+    `runtime.rs` and `cockpit.rs`.
+  - `restart::a_wait_rides_out_a_restart` exited 1 under the old five-tries rule.
+  - The wake test, before the transcript replay set `turn_closed_ms`, woke nobody.
+  - `delivery::an_armed_merge_green_during_a_restart_merges_at_the_start`: `pr_open` before the
+    start's merge pass.
+  - `the_calls_in_flight_are_answered_after_stdin_ends`: the bridge exited before answering.
+  - Review rounds 1 to 3: each red listed in the Review section.
+- **The acceptance test.** `restart::a_running_session_uses_mcp_git_and_gh_across_a_restart`
+  passes with a real detached ptyhost and the fake agent:
+  - the bridge is spawned from the run's `mcp.json` through its `scrub-exec`;
+  - the server restarts on the same port, with `reconcile`;
+  - the held `steps_get` and a `delivery_status` are answered;
+  - `git credential fill` and `yulius gh-token` work;
+  - the egress client knows the run's token.
+- **Gate.** `scripts/dev ci` on 3b63c05f exited 0:
+  - doctor, the repository check and the script tests;
+  - `cargo check`, fmt, and clippy `-D warnings` for Linux and macOS;
+  - nextest: 2888 passed, 16 skipped;
+  - doctests;
+  - `cargo deny --locked check`: advisories, bans, licenses and sources ok;
+  - `cargo shear`, and `cargo doc` with no warnings.
+
+  The commit after it changes only this spec.
+- **Security.** `yulius security-scan` on 0e5124d6 exited 2 (not run). Vidoc refused the
+  instance's key with HTTP 401, and 25 changed files were not scanned. This is unrun, not passed.
+  Yulius CI's `security` job scans the pull request head.
+- **e2e.** Not applicable: no web UI change.
+- **Not testable here:**
+  - A real Claude Code session calling a Yulius tool across a real Yulius restart. That needs
+    paid model calls, and a restart of the shared instance is a person's to make. The bridge
+    process stands in for Claude Code's stdio client, and the live connect above shows that
+    Claude Code starts it.
+  - A real bwrap sandbox: namespaces cannot be created here.
+  - The production quartio-v2 sessions themselves. Sessions started before this release keep the
+    HTTP config until they start again (operations guide).

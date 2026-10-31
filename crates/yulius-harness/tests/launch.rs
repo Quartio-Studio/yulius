@@ -183,10 +183,15 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
     assert_eq!(
         mcp,
         json!({ "mcpServers": {
+            // The stdio bridge that outlives Yulius restarts (SPEC-358 MSB-001).
             "yulius": {
-                "type": "http",
-                "url": "http://127.0.0.1:7801/mcp",
-                "headers": { "Authorization": "Bearer ${YULIUS_TASK_TOKEN}" }
+                "type": "stdio",
+                "command": "/opt/yulius/bin/yulius",
+                "args": ["mcp"],
+                "env": {
+                    "YULIUS_URL": "${YULIUS_URL}",
+                    "YULIUS_TASK_TOKEN": "${YULIUS_TASK_TOKEN}"
+                }
             },
             "apify": {
                 "type": "stdio",

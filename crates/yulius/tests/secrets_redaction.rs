@@ -410,6 +410,46 @@ fn the_terminal_and_the_run_environment_hold_no_value() -> TestResult {
         wait_for(&app, &task.id, "ENV STRIPE_KEY=set len=24").await?;
         wait_for(&app, &task.id, "ENV CLAUDE_CODE_SHELL_PREFIX=set").await?;
         wait_for(&app, &task.id, "ENV YULIUS_SCRUB_FILE=set").await?;
+        // The prefix is one program: Claude Code 2.1.292 spawns it as the command of a stdio MCP
+        // server with the server's command line as one quoted argument (SPEC-358).
+        let run_dir = std::path::PathBuf::from(
+            app.deps
+                .store
+                .live_attempt(&task.id)
+                .await?
+                .ok_or("no attempt")?
+                .run_dir,
+        );
+        let stdio = std::process::Command::new(run_dir.join("scrub-exec"))
+            .arg(format!("'printf' 'stdio %s' '{VALUE}'"))
+            .env_clear()
+            .env("YULIUS_SCRUB_FILE", run_dir.join("scrub.json"))
+            .output()?;
+        assert!(stdio.status.success(), "{stdio:?}");
+        assert_eq!(String::from_utf8(stdio.stdout)?, format!("stdio {LABEL}"));
+        // A stdio server talks line by line through it: what Claude Code writes reaches the
+        // server, and each line the server answers comes back (redacted) as it is written.
+        let mut server = std::process::Command::new(run_dir.join("scrub-exec"))
+            .arg("'sh' '-c' 'read line; echo \"answer $line\"; cat >/dev/null'")
+            .env_clear()
+            .env("YULIUS_SCRUB_FILE", run_dir.join("scrub.json"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()?;
+        let mut stdin = server.stdin.take().ok_or("stdin")?;
+        std::io::Write::write_all(&mut stdin, format!("{VALUE}\n").as_bytes())?;
+        let mut answer = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(server.stdout.take().ok_or("stdout")?),
+            &mut answer,
+        )?;
+        assert_eq!(
+            answer,
+            format!("answer {LABEL}\n"),
+            "before the server ends"
+        );
+        drop(stdin);
+        assert!(server.wait()?.success());
 
         // A value typed into the terminal (echoed by the PTY and by the agent) shows as the label.
         app.send_input(&task.id, format!("{VALUE}\r").as_bytes())

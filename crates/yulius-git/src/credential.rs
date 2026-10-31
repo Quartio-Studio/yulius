@@ -260,14 +260,14 @@ fn parse_credential(body: &[u8]) -> Result<Credential, CredentialError> {
 
 /// A parsed `http://<loopback>[:port][/base]` URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct LoopbackUrl {
-    address: SocketAddr,
-    host_header: String,
-    base_path: String,
+pub(crate) struct LoopbackUrl {
+    pub(crate) address: SocketAddr,
+    pub(crate) host_header: String,
+    pub(crate) base_path: String,
 }
 
 impl LoopbackUrl {
-    fn parse(url: &str) -> Result<Self, CredentialError> {
+    pub(crate) fn parse(url: &str) -> Result<Self, CredentialError> {
         let invalid =
             || CredentialError::BadEnvironment("YULIUS_URL must be http:// on a loopback address");
         let rest = url.strip_prefix("http://").ok_or_else(invalid)?;
@@ -419,11 +419,11 @@ fn http_post_to(
         .ok_or(CredentialError::BadResponse("truncated response"))
 }
 
-fn header_end(raw: &[u8]) -> Option<usize> {
+pub(crate) fn header_end(raw: &[u8]) -> Option<usize> {
     raw.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
 }
 
-fn parse_head(head: &[u8]) -> Result<(u16, Option<usize>, bool), CredentialError> {
+pub(crate) fn parse_head(head: &[u8]) -> Result<(u16, Option<usize>, bool), CredentialError> {
     let text =
         std::str::from_utf8(head).map_err(|_| CredentialError::BadResponse("non-UTF-8 headers"))?;
     let mut lines = text.split("\r\n");
@@ -492,7 +492,7 @@ fn parse_until_eof(raw: &[u8]) -> Option<HttpResponse> {
 }
 
 /// Decodes a chunked body; `None` while incomplete.
-fn decode_chunked(mut body: &[u8]) -> Result<Option<Vec<u8>>, CredentialError> {
+pub(crate) fn decode_chunked(mut body: &[u8]) -> Result<Option<Vec<u8>>, CredentialError> {
     let mut decoded = Vec::new();
     loop {
         let Some(line_end) = body.windows(2).position(|w| w == b"\r\n") else {

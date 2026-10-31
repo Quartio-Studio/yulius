@@ -1,6 +1,7 @@
 //! Server-lifetime background work: crash recovery and the metrics recount, queue draining, the
 //! subscription pool's resume loop (ROT-010) and account usage refresh (ROT-009) (SPEC-002 §6.1,
-//! §7.5, §10). Nothing is typed into an idle task's session (SPEC-028 MSR-004).
+//! §7.5, §10). Nothing is typed into an idle task's session (SPEC-028 MSR-004), except "Yulius is
+//! back; continue" into a task that went idle while Yulius was down (SPEC-358 MSB-007).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,12 +44,18 @@ impl App {
 
     /// Starts recovery and periodic work; call once after the listeners are bound.
     pub fn start_background(self: &Arc<Self>) {
+        // When the previous server was last alive (SPEC-358 MSB-006).
+        let outage = self.start_outage_watch();
         let app = Arc::clone(self);
         tokio::spawn(async move {
             // Nothing waits for the recount (SPEC-091 RCT-005).
             drop(app.recover().await);
-            // Merges armed before the restart stay armed (DLV-205).
-            app.restore_armed_merges().await;
+            // The runs are reattached: the tasks that went idle while Yulius was down are woken
+            // once their transcripts replayed (MSB-007).
+            app.schedule_outage_wakes(outage);
+            // Merges armed before the restart stay armed (DLV-205), and one whose checks passed
+            // meanwhile merges now (SPEC-358 MSB-008).
+            app.resume_armed_merges().await;
             app.drain_queue().await;
             // Paused tasks (also those paused before a restart) resume from here.
             app.start_capacity_loop();
@@ -75,18 +82,8 @@ impl App {
             loop {
                 every.tick().await;
                 app.reconcile_deliveries().await;
-                // Armed merges whose checks passed while no CI run ended here (a restart).
-                if let Ok(sandboxes) = app.deps.store.sandboxes().await {
-                    for sandbox in sandboxes.iter().filter(|s| s.removed_at.is_none()) {
-                        // A sandbox whose pass is held (a merge or a move to GitHub, which can
-                        // push for minutes) is merged by whoever holds it, or on the next round:
-                        // the other sandboxes never wait for it.
-                        if app.armed_pass(&sandbox.id).try_lock().is_err() {
-                            continue;
-                        }
-                        app.merge_armed(&sandbox.id).await;
-                    }
-                }
+                // Armed merges whose checks passed while no CI run ended here.
+                app.merge_armed_everywhere().await;
             }
         });
         // Yulius-run CI and repository hygiene (SPEC-002 ADR-21).

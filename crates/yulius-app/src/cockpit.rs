@@ -972,12 +972,6 @@ impl App {
         let mut env = self.shell_env(record, &space, &self.shell_program(), &folder);
         env.retain(|(key, _)| !plan.env.iter().any(|(k, _)| k == key));
         env.append(&mut plan.env);
-        // Its Bash commands, hooks and stdio MCP servers run through the agent-secret redaction,
-        // which loads its fingerprints with the person's workspace token (SPEC-147 SAM-002).
-        if let Some(prefix) = self.scrub_shell_prefix() {
-            env.retain(|(key, _)| *key != prefix.0);
-            env.push(prefix);
-        }
         plan.env = env;
         plan.containment = space.containment.clone();
         // Behind the egress proxy as a task run is, with its own bearer (SPEC-186 SAV-001).
