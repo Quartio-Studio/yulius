@@ -20,8 +20,8 @@ Instance page.
 
 ## Decision
 
-- **The switch lives on the sandbox's CI/CD page.** A "Security scan (Vidoc)" card at the top of
-  the CI tab (`/s/<slug>/ci`, `pages/cividoc.js`) shows the one switch ADR-0229 stores and changes
+- **The switch lives on the sandbox's CI/CD page.** A "Security scan (Vidoc)" card after the CI
+  configuration card of the CI tab (`/s/<slug>/ci`, `pages/cividoc.js`, read with the runs) shows the one switch ADR-0229 stores and changes
   it with the same PATCH; the Instance card and the Add sandbox dialog keep working on the same
   value, and the shared sandbox list keeps them in step.
 - **Its admins flip it.** The PATCH keeps `Action::Administer` (GitHub admin on the repository, or a

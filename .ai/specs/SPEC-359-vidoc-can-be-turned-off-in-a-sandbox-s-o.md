@@ -72,8 +72,9 @@ this sandbox's switch.
   as `parse_config` checks them) is said as unreadable, never as on or off (scans then end not
   run), and the switch still works. The last change shown is this sandbox's: entries older than
   the sandbox (a removed one's, under the same slug) are not.
-- **VSB-004 The CI/CD page's Security scan card.** The CI tab of `/s/<slug>/ci` shows, at its top
-  (above the CI configuration card and the runs, which it decides), a "Security scan (Vidoc)" card with the switch "Scan this project with
+- **VSB-004 The CI/CD page's Security scan card.** The CI tab of `/s/<slug>/ci` shows, right after the
+  CI configuration card (above the runs it decides), a "Security scan (Vidoc)" card, read with the
+  runs in one read so nothing on the page moves when it lands, with the switch "Scan this project with
   Vidoc", for every non-playground sandbox. While the instance is off, it says so and shows the
   project's own choice, disabled. Without a key reaching the project it says that scans end "not
   run" and that switching off makes them say "disabled". Turned off, it says that nothing is
@@ -140,8 +141,9 @@ this sandbox's switch.
 - **On the CI/CD page, not a new sandbox settings page.** A sandbox has no single settings page;
   each setting sits where it acts (the delivery profile on the Git page, CI on the CI tab). The
   switch decides CI's `security` job and the agents' scans, and the CI tab already lists the jobs
-  in force and where they come from, so the card sits there, at the top (its own loader keeps
-  focus while the runs below refresh), at the plain address `/s/<slug>/ci` that the scanner's message can link to. A new page for one switch
+  in force and where they come from, so the card sits there, after the configuration card (read
+  with the runs: a separate read pushed the cards below it down when it landed, which the
+  loading-shape tests caught), at the plain address `/s/<slug>/ci` that the scanner's message can link to. A new page for one switch
   would be a second home for sandbox settings.
 - **Sandbox admins, as the delivery profile.** The PATCH already requires `Action::Administer`
   (GitHub admin, or superadmin), the permission of every other sandbox setting that can turn a
