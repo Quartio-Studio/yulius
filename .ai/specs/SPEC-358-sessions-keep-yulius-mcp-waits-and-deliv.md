@@ -105,14 +105,15 @@ woke the tasks.
   covers the first outage.
 - **MSB-007** After a restart, once the runs are reattached, Yulius waits `WAKE_GRACE` (90 s) so
   that they replay their transcripts. Then, every `WAKE_EVERY` (30 s) until about 10 minutes
-  after the runs were reattached, it types "Yulius is back; continue" once into each reattached task that went idle while
-  it was down:
+  after the runs were reattached, it types "Yulius is back; continue" once into each reattached
+  task that went idle while it was down:
   - "Idle" means no turn open and the task Running.
-  - The transcript's record that closes the last turn falls between `alive-at` and this start.
-  - No Stop of the run was answered since its last prompt or answer. A Stop answered with a block
-    comes before the turn's next answer. Yulius keeps the time
-    it answers a run's Stop in `<run>/stop-answered`. `alive-at` is up to 30 s old, so a turn
-    Yulius settled just before it stopped also closed after it.
+  - The transcript's record that closes the last turn falls between the outage's start
+    (`outage-pending`, else `alive-at`) and this start.
+  - No Stop of the run was answered since its last prompt or answer. Yulius keeps the time it
+    answers a run's Stop in `<run>/stop-answered`, and the time only grows. `alive-at` is up to
+    30 s old, so a turn Yulius settled just before it stopped also closed after it. A Stop
+    answered with a block comes before the turn's next answer, so that turn is still woken.
 
   This covers a wait that died, the turn its exit woke, and a turn whose Stop went unanswered.
   A task is not woken in these cases: its goal is achieved, it has an open `needs_you`
@@ -156,7 +157,8 @@ woke the tasks.
   closes before `100 Continue` and for one that closes after reading the body. Also a final
   answer before the body, a silent server, an interim 103, a chunked answer and an oversized
   answer.
-- Unit (`yulius::mcp_bridge`), each against a server that goes away and comes back:
+- Unit (`yulius::mcp_bridge`), each against a server that goes away and comes back (including a
+  call cancelled in flight whose connection is then cut):
   - a held call answered once Yulius is back;
   - a cut `tools/call` that is not resent, and a cut `tools/list` that is;
   - the outage bound;
@@ -169,12 +171,17 @@ woke the tasks.
     fill`, `yulius gh-token` and the egress client work with the run's token.
   - `yulius wait` across a restart, at its deadline while down, with a refused token, and against
     a server failing every request.
-  - The wake: an idle task whose turn closed after `alive-at` is woken once. Not woken: one idle
-    since before, one whose Stop was answered, one with `needs_you`.
-  - A start reading and refreshing `alive-at`.
+  - The wake: an idle task whose turn closed after `alive-at` is woken once, and so is one whose
+    earlier Stop was blocked. Not woken: one idle since before, one whose Stop was answered, one
+    with `needs_you`.
+  - A start reading and refreshing `alive-at`, and a second start within the wake window keeping
+    the first outage.
+  - `yulius wait` with bad answers stops at its deadline.
 - Unit (`yulius-app::outage`, `finish`): the wake rule (mid-turn, goal achieved, pause, a person's
-  typing, already woken, an answered Stop), `alive-at` and `stop-answered` files, and the
-  transcript facts.
+  typing, already woken, an answered or a blocked Stop), the `alive-at`, `outage-pending` (read
+  first, forgotten once dealt with, ignored after a day) and `stop-answered` (only grows) files,
+  and the transcript facts.
+- Integration (`agent_hooks.rs`): an answered Stop writes `stop-answered`.
 - Integration (`delivery.rs`): an armed merge with passed checks merges at the start. In
   `secrets_redaction.rs` and `cockpit.rs`: the prefix script runs a stdio server line by line with
   its output redacted.
@@ -240,8 +247,9 @@ Independent reviews in fresh sessions (skills `om-code-review` and `yulius-revie
     `isMeta` record, not a prompt. The answered Stop is now compared with the turn's last prompt
     *or answer* (`turn_moved_ms`). Red first: the wake test's `Blocked` task was not woken.
   - Minor:
-    - No test exercised writing `stop-answered`. Now `agent_hooks::an_answered_stop_is_kept_in_the_run_directory`
-      covers it, and a mutation that drops the write fails it.
+    - No test exercised writing `stop-answered`. Now
+      `agent_hooks::an_answered_stop_is_kept_in_the_run_directory` covers it, and a mutation that
+      drops the write fails it.
     - Two restarts within a wake window lost the first outage. `<data>/outage-pending` keeps it
       until the window ends. Red first.
     - The "lost" and "too large" paths answered a cancelled call. Red first.
@@ -252,6 +260,21 @@ Independent reviews in fresh sessions (skills `om-code-review` and `yulius-revie
     - `stop-answered` written through a synced temporary file.
     - `TooLarge` while waiting for `100 Continue`.
     - Long lines.
+- Round 3 on f1d4778d: approve, with no critical or major findings. All of round 2 was verified
+  fixed. Its minor findings and nits, all in this change's own code, were fixed after it:
+  - ADR-0244 and this spec described round 1's rule. They now state the "last prompt or answer"
+    rule and `outage-pending`.
+  - Nothing tested that the pending outage is forgotten. It is now read through `outage_began`
+    and dropped through `outage_dealt_with`, with a unit test. That test was red first: the
+    functions did not exist.
+  - The pending outage now has an age limit of a day.
+  - `stop-answered` only grows. Red first, in the unit test.
+  - Long spec lines.
+  - Nits left as they are:
+    - The bridge says "answered more than N bytes" for a head that is too large before the body
+      was sent. Yulius never sends one.
+    - `stop-answered` is written just before the hook's answer, so a hard crash between the two
+      loses a block Yulius decided. A graceful shutdown drains requests.
 
 ## Evidence
 

@@ -46,9 +46,11 @@ nothing woke the task when Yulius came back.
   - Once a start has reattached the runs, it waits 90 seconds so that they replay their
     transcripts. Then, every 30 seconds for the first 10 minutes, it types "Yulius is back;
     continue" once into each reattached, idle, Running task whose last turn closed between
-    `alive-at` and the start, and whose Stop it never answered. It answered none since the prompt
-    that opened the turn: it keeps that time in `<run>/stop-answered`, because `alive-at` is up
-    to 30 seconds old. That covers a wait that died during the outage, the turn
+    `alive-at` and the start, and whose last Stop it never answered. It answered none since the
+    turn's last prompt or answer: it keeps that time in `<run>/stop-answered`, because `alive-at`
+    is up to 30 seconds old, and a Stop it blocked comes before the turn's next answer. If the
+    server restarts again before those wakes ran, `<data>/outage-pending` keeps the first outage
+    (for at most a day). That covers a wait that died during the outage, the turn
     the wait's exit woke, and a turn whose Stop Yulius never answered. The woken turn ends with a
     Stop that Yulius answers, which pushes the branch and opens or arms delivery as usual.
   - These tasks are left alone: a task whose goal is achieved, one with an open `needs_you` or

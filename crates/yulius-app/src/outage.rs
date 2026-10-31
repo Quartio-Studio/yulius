@@ -24,6 +24,9 @@ pub const ALIVE_FILE: &str = "alive-at";
 /// The file holding when the outage whose wakes have not run yet began (ms): kept until a start's
 /// wake window ends, so a restart within it still covers that outage.
 pub const PENDING_FILE: &str = "outage-pending";
+/// An outage pending longer than this (ms) is forgotten: restarts kept landing within the wake
+/// windows, and looking back further would wake tasks for an outage long dealt with by people.
+pub const PENDING_MAX_AGE_MS: i64 = 24 * 60 * 60 * 1000;
 /// The file in a run directory holding when Yulius last answered the run's Stop (ms).
 pub const STOP_ANSWERED_FILE: &str = "stop-answered";
 /// How often `alive-at` is written.
@@ -85,6 +88,8 @@ pub fn wakes_after_outage(facts: &WakeFacts, down_since_ms: i64, started_ms: i64
 /// Records in `run_dir` that Yulius answered the run's Stop at `at` (best effort: without it a
 /// settled turn may be woken once after a restart).
 pub fn mark_stop_answered(run_dir: &Path, at: i64) {
+    // Stops answered at once may finish out of order: the time only grows.
+    let at = at.max(stop_answered_at(run_dir));
     if let Err(err) = write_time(&run_dir.join(STOP_ANSWERED_FILE), at) {
         tracing::debug!(run_dir = %run_dir.display(), error = %err, "could not record the answered Stop");
     }
@@ -103,6 +108,24 @@ pub fn stop_answered_at(run_dir: &Path) -> i64 {
 #[must_use]
 pub fn read_alive_at(data_dir: &Path) -> Option<Timestamp> {
     read_time(&data_dir.join(ALIVE_FILE))
+}
+
+/// When the outage before a start at `now` began: one whose wakes never ran (and not older than
+/// [`PENDING_MAX_AGE_MS`]), else when the server before was last alive.
+#[must_use]
+pub fn outage_began(data_dir: &Path, now: Timestamp) -> Option<Timestamp> {
+    read_time(&data_dir.join(PENDING_FILE))
+        .filter(|at| now.0.saturating_sub(at.0) <= PENDING_MAX_AGE_MS)
+        .or_else(|| read_alive_at(data_dir))
+}
+
+/// The pending outage's wakes ran: the next start looks back only to its own outage.
+pub fn outage_dealt_with(data_dir: &Path) {
+    if let Err(err) = std::fs::remove_file(data_dir.join(PENDING_FILE))
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(error = %err, "could not forget the outage dealt with");
+    }
 }
 
 fn read_time(path: &Path) -> Option<Timestamp> {
@@ -149,10 +172,10 @@ impl App {
     /// previous server was last alive) and keeps `alive-at` fresh from now on.
     pub fn start_outage_watch(self: &Arc<Self>) -> OutageStart {
         let data_dir = self.config.data_dir.clone();
+        let started = self.now();
         let start = OutageStart {
-            down_since: read_time(&data_dir.join(PENDING_FILE))
-                .or_else(|| read_alive_at(&data_dir)),
-            started: self.now(),
+            down_since: outage_began(&data_dir, started),
+            started,
         };
         // Kept until this start's wakes ran (`schedule_outage_wakes`).
         if let Some(down_since) = start.down_since
@@ -192,7 +215,7 @@ impl App {
                 tokio::time::sleep(WAKE_EVERY).await;
             }
             // This outage is dealt with: the next start looks back only to its own.
-            let _ = std::fs::remove_file(app.config.data_dir.join(PENDING_FILE));
+            outage_dealt_with(&app.config.data_dir);
         });
     }
 
@@ -297,6 +320,42 @@ mod tests {
         assert_eq!(stop_answered_at(dir.path()), 0);
         mark_stop_answered(dir.path(), 1_234);
         assert_eq!(stop_answered_at(dir.path()), 1_234);
+        // Review round 3: an earlier Stop answered last does not move it back.
+        mark_stop_answered(dir.path(), 1_000);
+        assert_eq!(stop_answered_at(dir.path()), 1_234);
+        Ok(())
+    }
+
+    /// Review round 3: the outage being dealt with is read before `alive-at`, forgotten once its
+    /// wakes ran, and ignored once older than [`PENDING_MAX_AGE`].
+    #[test]
+    fn the_pending_outage_is_kept_until_dealt_with() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let now = Timestamp(PENDING_MAX_AGE_MS * 3);
+        write_alive_at(dir.path(), Timestamp(now.0 - 5_000))?;
+        assert_eq!(
+            outage_began(dir.path(), now),
+            Some(Timestamp(now.0 - 5_000))
+        );
+        write_time(&dir.path().join(PENDING_FILE), now.0 - 60_000)?;
+        assert_eq!(
+            outage_began(dir.path(), now),
+            Some(Timestamp(now.0 - 60_000))
+        );
+        outage_dealt_with(dir.path());
+        assert_eq!(
+            outage_began(dir.path(), now),
+            Some(Timestamp(now.0 - 5_000))
+        );
+        write_time(
+            &dir.path().join(PENDING_FILE),
+            now.0 - PENDING_MAX_AGE_MS - 1,
+        )?;
+        assert_eq!(
+            outage_began(dir.path(), now),
+            Some(Timestamp(now.0 - 5_000)),
+            "too old: the outage before this start only"
+        );
         Ok(())
     }
 

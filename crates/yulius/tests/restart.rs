@@ -670,23 +670,19 @@ async fn a_start_reads_alive_at_and_refreshes_it() -> TestResult {
         assert!(Instant::now() < deadline, "alive-at was never written");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    std::fs::write(data.join(ALIVE_FILE), "1000")?;
+    // The server before was last alive a minute ago.
+    let before = yulius_domain::time::Timestamp(h.app.now().0 - 60_000);
+    std::fs::write(data.join(ALIVE_FILE), before.0.to_string())?;
     let next = App::new(h.app.config.clone(), h.app.deps.clone());
     let second = next.start_outage_watch();
-    assert_eq!(
-        second.down_since,
-        Some(yulius_domain::time::Timestamp(1000))
-    );
-    while read_alive_at(&data) == Some(yulius_domain::time::Timestamp(1000)) {
+    assert_eq!(second.down_since, Some(before));
+    while read_alive_at(&data) == Some(before) {
         assert!(Instant::now() < deadline, "alive-at was not refreshed");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     // Review round 2: restarted again before its wakes ran, the next start still covers the
     // first outage, not only the moment the start before it was alive.
     let third = App::new(h.app.config.clone(), h.app.deps.clone());
-    assert_eq!(
-        third.start_outage_watch().down_since,
-        Some(yulius_domain::time::Timestamp(1000))
-    );
+    assert_eq!(third.start_outage_watch().down_since, Some(before));
     Ok(())
 }
