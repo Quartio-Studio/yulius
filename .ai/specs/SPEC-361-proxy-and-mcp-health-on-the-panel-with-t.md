@@ -82,7 +82,8 @@ on every refusal, and the notice goes away once places are free again.
 - [x] The API lists troubles a person may see, named by task, and publishes their changes
 - [x] The panel shows a pill and notifies once per trouble
 - [x] Operations guide, architecture, changes
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review round 1, findings fixed test-first
+- [ ] Independent review round 2 approves the head
 - [ ] Gates green, pull request merged into dev on green CI
 
 ## Acceptance criteria
