@@ -2032,9 +2032,16 @@ async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted
         settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"],
         hook
     );
+    // One program, as Claude Code spawns the prefix itself for a stdio MCP server (SPEC-358).
+    let prefix = PathBuf::from(std::fs::read_to_string(config.join("launch-shell-prefix"))?);
+    assert!(
+        prefix.is_absolute() && prefix.ends_with("scrub-exec"),
+        "{}",
+        prefix.display()
+    );
     assert_eq!(
-        std::fs::read_to_string(config.join("launch-shell-prefix"))?,
-        format!("{} --scrub-exec", exe.display())
+        std::fs::read_to_string(&prefix)?,
+        format!("#!/bin/sh\nexec '{}' --scrub-exec \"$@\"\n", exe.display())
     );
     let record = std::fs::read_to_string(f.data.join("shells").join(&id).join("shell.json"))?;
     for value in [SECRET_VALUE, LITERAL_BEARER] {

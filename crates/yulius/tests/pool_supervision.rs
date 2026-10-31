@@ -123,12 +123,24 @@ fn build_with_github(
     agent: FakeAgentOptions,
     github: Arc<FakeGitHub>,
 ) -> Result<Arc<App>, Box<dyn std::error::Error>> {
+    build_served(data, fake, usage, agent, github, "http://127.0.0.1:9")
+}
+
+/// [`build_with_github`] whose runs reach Yulius at `internal_url` (their `YULIUS_URL`).
+pub(crate) fn build_served(
+    data: &Path,
+    fake: &Path,
+    usage: Arc<ScriptedUsage>,
+    agent: FakeAgentOptions,
+    github: Arc<FakeGitHub>,
+    internal_url: &str,
+) -> Result<Arc<App>, Box<dyn std::error::Error>> {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let store = SqliteStore::open(&data.join("yulius.db"))?;
     let mut config = AppConfig::new(
         data.to_path_buf(),
         "https://yulius.test",
-        "http://127.0.0.1:9",
+        internal_url,
         exe.clone(),
     );
     config.contained = false;
@@ -139,7 +151,11 @@ fn build_with_github(
         crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
         github,
         session_host: Arc::new(PtySessionHost::new(exe.clone())),
-        harness: Arc::new(FakeAgentHarness::new(exe, fake.to_path_buf(), agent)),
+        harness: Arc::new(FakeAgentHarness {
+            // Runs reach Yulius at `internal_url`, as the instance's own adapter tells them.
+            inner: yulius::wiring::harness::HarnessAdapter::new(exe.clone(), internal_url),
+            ..FakeAgentHarness::new(exe, fake.to_path_buf(), agent)
+        }),
         git: Arc::new(GitAdapter::new("git")),
         system: Arc::new(support::FixedSystem),
         browser: Arc::new(yulius::wiring::browser::UnavailableBrowser),

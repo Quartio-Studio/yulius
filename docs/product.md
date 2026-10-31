@@ -297,7 +297,9 @@ watching, steering and unblocking.
   whole session from its first message, which Claude Code no longer shows after a compaction
   (SPEC-326). Messages are
   withdrawn for now (SPEC-028): agents learn about checks, delivery and armed merges from
-  `yulius wait`, `ci_status` and `delivery_status`. An agent removes the files its task created
+  `yulius wait`, `ci_status` and `delivery_status`. A Yulius restart is invisible to a session:
+  its Yulius tools and `yulius wait` hold on until Yulius is back, and a task that went idle
+  meanwhile is told "Yulius is back; continue" (SPEC-358). An agent removes the files its task created
   with `yulius remove` instead of asking a person when Claude Code stops an `rm` (SPEC-192).
 - **Agent primitives as code**: Yulius's own skills are APM packages with a lockfile, deployed to
   every harness and checked for drift; onboarding codifies a project's conventions as primitives.

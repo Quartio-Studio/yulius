@@ -13,6 +13,19 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `.config/vidoc.toml` (which wins) or the instance has Vidoc off. Members without admin access see
   it disabled. When Vidoc refuses the key or its quota is used up, the scan's message, and so CI's
   security job log and the agents' "Needs you" questions, name that card's address.
+- A Yulius restart is invisible to a task's session (SPEC-358, ADR-0244, task #343). On
+  2026-10-31 every outage left quartio-v2's sessions with a dead Yulius MCP ("MCP server yulius
+  is not connected") until a person ran `/mcp`. `yulius wait` gave up after about 50 s, and
+  nothing woke the tasks.
+  - A task run's Yulius MCP is now `yulius mcp`, a stdio bridge to `POST /mcp` that outlives
+    restarts. It sends again what Yulius never read, and never a tool call Yulius may have run.
+  - `yulius wait` waits through an outage until its deadline.
+  - Yulius records `alive-at` and, after a start, tells each task that went idle while it was
+    down "Yulius is back; continue".
+  - An armed merge whose checks passed meanwhile merges at the start.
+  - Also fixed: Claude Code spawns `CLAUDE_CODE_SHELL_PREFIX` itself for a stdio MCP server, so
+    `<yulius> --scrub-exec` failed with `ENOENT` for every stdio server of a task run or
+    Superagent. The prefix is now one script, `<run>/scrub-exec`.
 - One busy run no longer locks the egress proxy for its whole sandbox (SPEC-357, ADR-0243, task
   #342). On 2026-10-31, quartio-v2's tasks got `503` for every host but Anthropic (which bypasses
   the proxy) for 90 minutes, because its processes held the sandbox's whole share of 128. The
