@@ -1288,8 +1288,8 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   shell id. At the proxy's own limit, a sandbox gets `too many connections; try again` when no
   other sandbox has 2 more to give up. A request the proxy refuses anyway (a bad target, a local
   destination, a protocol upgrade, a policy refusal) takes no place, so it closes nothing. On
-  2026-10-31, quartio-v2's tasks got `503` for every host for 90 minutes, while their Claude traffic, which
-  bypasses the proxy (`NO_PROXY`), kept working.
+  2026-10-31, quartio-v2's tasks got `503` for every host for 90 minutes, while their Claude
+  traffic, which bypasses the proxy (`NO_PROXY`), kept working.
 - A full relay gives way instead of refusing (SPEC-355,
   [ADR-0241](decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)).
   A sandbox reaches Yulius on one port (8081: internal API, MCP, egress proxy) through two relays,
