@@ -57,6 +57,9 @@ extends 40 px left of the plot.
 
 - At 1280 px and 390 px, the tip of the `quality` job hovered at the row's left and right edge
   is 0 px past the plot and the window, and no part of it scrolls horizontally (text cut).
+- The daily chart's tip on its first and last day, at 1280 px and 390 px, is 0 px past its chart
+  and the window (it ran 7 px past at 1280 px before).
+- The waterfall's first row (Queue), at the plot's top, keeps its tip inside the plot vertically too.
 - The failed job's figures (the reported ones, now in the mock's run `ci_s2`) wrap onto more than
   one line at both widths, and every figure lies on one line.
 - The existing waterfall and Pipeline e2e tests still pass.
@@ -64,7 +67,9 @@ extends 40 px left of the plot.
 ## Test plan
 
 - e2e `pipeline.e2e.ts`: "the waterfall's hover tip wraps its figures and stays inside the plot
-  at either edge" (fails before the fix: 40 px past the plot at 1280 px).
+  at every edge" (fails before the fix: 40 px past the plot at 1280 px) and "the daily chart's
+  hover tip stays inside its chart on the first and the last day" (fails before: 7 px past). Each
+  hover starts with the tip hidden, so the tip measured is the one just placed.
 - The whole `pipeline.e2e.ts` and `responsive.e2e.ts` suites; then the full e2e suite and
   `scripts/dev ci` through Yulius CI.
 
@@ -79,9 +84,15 @@ extends 40 px left of the plot.
   80 px, in one `placeTip` helper used by both charts. No ADR: a local layout fix that changes no
   contract.
 - **Break between figures.** Wrapping words alone split "under 1 / MiB" across lines; each
-  figure is an inline block, so a line ends at a " · " separator. `figureText()` stays one string
-  for the row's `title` and the table; only the tip splits it.
+  figure is an inline block, so a line ends at a " · " separator, after the dot (the space before
+  it does not break). `figureParts()` returns the figures as a list (it replaces `figureText()`,
+  which joined them): the row's `title` and the table join them, the tip keeps them apart.
 - **The mock's failed job carries the reported figures** (tests, CPU, peak memory, bytes
   written, exit 101) so the e2e test hovers a tip that must wrap; no other test reads them.
+- **The tip stays above the pointer** (review round 1 asked whether a tall tip rises above the
+  plot). The test measures the top row's tip against the plot's top and bottom and it fits: the
+  rows near the top (queue, run, prepare) carry short figures, and the legend and axis sit above
+  them. A flip below the pointer would be untested code for a case no timeline produces, so it is
+  left out; the test guards the bound.
 - **What else the cause touches.** Only these two tips use `.chart-tip`; other floating bars
   (`.tg-node`, menus, toasts) have their own rules and are not changed.
