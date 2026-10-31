@@ -526,7 +526,10 @@ impl Delegation {
         if let Err(error) = split_cpu(&dir, &groups) {
             tracing::warn!(sandbox, %error, "CI jobs run without CPU priority for now");
         }
-        if let Err(error) = write(&dir.join("cpu.weight"), &self.weight_of(sandbox).to_string()) {
+        if let Err(error) = write(
+            &dir.join("cpu.weight"),
+            &self.weight_of(sandbox).to_string(),
+        ) {
             tracing::warn!(sandbox, %error, "the sandbox's CI jobs run without their weight on the host for now");
         }
         if let Some(pids_max) = limits.pids_max
@@ -571,7 +574,10 @@ impl Delegation {
             .unit
             .join(SANDBOXES)
             .join(crate::manager::path_name(sandbox));
-        write(&dir.join("cpu.weight"), &self.weight_of(sandbox).to_string())?;
+        write(
+            &dir.join("cpu.weight"),
+            &self.weight_of(sandbox).to_string(),
+        )?;
         drop(stopping);
         Ok(true)
     }
