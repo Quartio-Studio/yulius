@@ -77,7 +77,7 @@ on every refusal, and the notice goes away once places are free again.
 - [x] The domain keeps connection troubles with their holders
 - [x] The egress proxy reports a full share and a full proxy, and their end
 - [x] The server's sandbox relay reports a full relay, and its end
-- [ ] The API lists troubles a person may see, named by task, and publishes their changes
+- [x] The API lists troubles a person may see, named by task, and publishes their changes
 - [ ] The panel shows a pill and notifies once per trouble
 - [ ] Operations guide, architecture, changes
 - [ ] Independent review in a fresh session, findings fixed test-first

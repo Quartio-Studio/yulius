@@ -720,7 +720,12 @@ async fn a_full_proxy_is_a_trouble_naming_the_sandboxes_until_it_has_room() -> T
     assert_eq!(troubles.len(), 1, "{troubles:?}");
     let trouble = &troubles[0];
     assert_eq!(
-        (trouble.limit, trouble.sandbox.as_deref(), trouble.held, trouble.max),
+        (
+            trouble.limit,
+            trouble.sandbox.as_deref(),
+            trouble.held,
+            trouble.max
+        ),
         (Limit::Proxy, None, 10, 10)
     );
     let holders: Vec<_> = trouble

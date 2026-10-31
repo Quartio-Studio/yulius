@@ -283,11 +283,13 @@ impl App {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
+        let events = EventBus::new(1024);
+        let connection_health = crate::connection_health::connection_health(events.clone());
         Arc::new(Self {
             instance_tag,
             config,
             deps,
-            events: EventBus::new(1024),
+            events,
             login_attempts: Mutex::new(HashMap::new()),
             device_starts: Mutex::new(HashMap::new()),
             remote_calls: Mutex::new(HashMap::new()),
@@ -322,7 +324,7 @@ impl App {
             disk_watch: crate::pressure::DiskWatch::default(),
             purging: Mutex::default(),
             upkeeps: Mutex::default(),
-            connection_health: Arc::default(),
+            connection_health,
         })
     }
 

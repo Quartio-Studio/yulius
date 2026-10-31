@@ -1290,7 +1290,12 @@ mod tests {
         assert_eq!(troubles.len(), 1, "{troubles:?}");
         let trouble = &troubles[0];
         assert_eq!(
-            (trouble.limit, trouble.sandbox.as_deref(), trouble.held, trouble.max),
+            (
+                trouble.limit,
+                trouble.sandbox.as_deref(),
+                trouble.held,
+                trouble.max
+            ),
             (Limit::Relay, Some("s1"), 2, 2)
         );
         held.clear();
