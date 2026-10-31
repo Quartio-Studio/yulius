@@ -1243,7 +1243,8 @@ HTTP(S). Claude Code's own API traffic (`*.anthropic.com`, `claude.ai`) and loop
 Runs trust the CA through `<run>/egress-ca.pem`, built from the host's CA roots
 (`/etc/ssl/certs/ca-certificates.crt` on Ubuntu, from the `ca-certificates` package); if the
 server logs that the roots were not found, install `ca-certificates`. Every Bash command of an
-agent runs through `yulius --scrub-exec` and every tool result through the `PostToolUse` hook.
+agent runs through `<run>/scrub-exec` (which runs `yulius --scrub-exec`) and every tool result
+through the `PostToolUse` hook.
 When a command is not run, or a tool result is withheld, for want of the run's agent-secret
 fingerprints, the message says why (SPEC-353): **Yulius no longer accepts this session** means its
 run ended (its `scrub.json` is then not read), so continue the task (or open the Superagent again)
@@ -1313,6 +1314,18 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   panel says so and offers **Restart Superagent**, which starts it again in place, resuming its
   conversation. Claude Code keeps a failed MCP server disconnected, so the panel also offers the
   restart once the link works again (`the Superagent's sandbox reaches Yulius again`).
+
+- A Yulius restart or update needs nothing from the tasks (SPEC-358,
+  [ADR-0244](decisions/0244-task-runs-reach-yulius-through-a-stdio-bridge-and-are-woken-after-an-outage.md)).
+  - Their Yulius tools go through `yulius mcp`, a stdio bridge that holds a call while Yulius is
+    down: its stderr in Claude Code's MCP log says `Yulius cannot be reached …; holding calls
+    until it is back`, then `Yulius is back`.
+  - `yulius wait` waits on until its deadline.
+  - Yulius records the time it was last alive in `<data>/alive-at`. 90 s after a start it logs
+    `woken after Yulius's outage` for each idle task it told "Yulius is back; continue".
+  - Sessions started before this release still have the HTTP config: if one says "MCP server
+    yulius is not connected" after a restart, `/mcp` in its terminal (or continuing the task)
+    brings it back.
 
 To find and clear them by hand, without a restart (as root on the host):
 

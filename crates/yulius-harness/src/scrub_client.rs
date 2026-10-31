@@ -1,9 +1,10 @@
 //! In-sandbox redaction of agent secrets (SPEC-002 ADR-20, VLT-007).
 //!
 //! Two entry points run inside the agent's sandbox, as the agent's own user:
-//! - `yulius --scrub-exec '<command>'` is Claude Code's `CLAUDE_CODE_SHELL_PREFIX`: every Bash
-//!   command (and hook, and stdio MCP server) runs through it. It runs the command with the
-//!   shell, streams stdout and stderr through a redactor and exits with the command's status.
+//! - `yulius --scrub-exec '<command>'`, run by the run's `scrub-exec` script, which is Claude
+//!   Code's `CLAUDE_CODE_SHELL_PREFIX` (SPEC-358): every Bash command (and hook, and stdio MCP
+//!   server) runs through it. It runs the command with the shell, streams stdout and stderr
+//!   through a redactor and exits with the command's status.
 //! - `yulius hook claude PostToolUse` replaces a tool result that holds a secret with its
 //!   redacted copy (`hookSpecificOutput.updatedToolOutput`, Claude Code ≥ 2.1.292).
 //!
