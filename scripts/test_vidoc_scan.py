@@ -371,6 +371,19 @@ class Service(Scanning):
                 self.assertIn(words, output)
                 self.assertEqual(len(server.requests), 1, "never retried")
 
+    def test_a_refusal_by_yulius_because_vidoc_is_off_says_so(self):
+        # SPEC-356 (review round 1): a session that started before Vidoc was switched off has no
+        # YULIUS_VIDOC=off; Yulius's egress proxy refuses the request and nothing is sent.
+        repo = Repo(self, {"a.py": CLEAN}, {"b.py": CLEAN})
+        refusal = ("Yulius: Vidoc is turned off in Yulius, for this project or the whole instance; "
+                   "nothing was sent.")
+        server = self.fake(lambda body, headers: (403, refusal, {}))
+        code, output = self.run_scan(repo, server)
+        self.assertEqual(code, 2, output)
+        self.assertIn("Security scan not run: Vidoc is turned off in Yulius", output)
+        self.assertNotIn("refused the key", output)
+        self.assertEqual(len(server.requests), 1, "never retried")
+
     def test_a_429_that_says_the_key_is_used_up_is_no_quota_not_an_outage(self):
         # Vidoc answered this on 2026-10-22: only a person can fix it, so the scan is not run
         # (skipped in CI) rather than incomplete, which would block every pull request.

@@ -240,9 +240,11 @@ export function keySettingsCard(ctx, service) {
 
   function statusText() {
     if (!state.configured) return s.off;
-    if (state.source === 'config') return `In use: the key from the server’s configuration (${s.configFile}).`;
+    // Off for the instance (SPEC-356), the key stays but nothing uses it.
+    const lead = state.enabled === false ? 'Kept, not used while Vidoc is off' : 'In use';
+    if (state.source === 'config') return `${lead}: the key from the server’s configuration (${s.configFile}).`;
     const when = state.set_at ? ` ${relLong(state.set_at)}` : '';
-    return `In use: saved here${state.set_by ? ` by ${state.set_by}` : ''}${when}.`;
+    return `${lead}: saved here${state.set_by ? ` by ${state.set_by}` : ''}${when}.`;
   }
 
   function render() {
@@ -250,6 +252,7 @@ export function keySettingsCard(ctx, service) {
     const me = ctx.store.state.me;
     // Not while Vidoc is off for the instance (SPEC-356 VIO-005).
     if (service === 'vidoc' && me && me.instance) me.instance.vidoc = Boolean(state.configured) && state.enabled !== false;
+    const inUse = state.configured && state.enabled !== false;
     const input = keyInput(service, `settings-${service}`);
     const save = h('button', { type: 'submit', class: 'btn btn-primary btn-sm', disabled: true }, state.source === 'settings' ? 'Replace' : 'Save');
     input.addEventListener('input', () => { save.disabled = !input.value.trim(); });
@@ -282,7 +285,7 @@ export function keySettingsCard(ctx, service) {
       : null;
     setChildren(body,
       keyExplanation(service),
-      h('div', { class: ['jev-status', state.configured ? 'jev-on' : 'jev-off'] }, icon(state.configured ? 'check' : 'key', { size: 14 }), h('span', null, statusText())),
+      h('div', { class: ['jev-status', inUse ? 'jev-on' : 'jev-off'] }, icon(inUse ? 'check' : 'key', { size: 14 }), h('span', null, statusText())),
       state.source === 'config'
         ? h('p', { class: 'muted xs' }, '“Save it here” stores that key encrypted in settings, so the file can be removed from the service. A key saved here always wins over the file.')
         : null,

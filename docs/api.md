@@ -62,7 +62,8 @@ Me = {
 }
 ```
 
-`instance.vidoc`: whether the instance has a Vidoc key, so the Add sandbox dialog offers "Scan pull
+`instance.vidoc`: whether the instance has a Vidoc key and Vidoc is on for it (a superadmin can
+switch it off for the whole instance, SPEC-356), so the Add sandbox dialog offers "Scan pull
 requests with Vidoc" (SPEC-338); never the key.
 
 `instance.claude_connected`: whether a Claude account is usable (signed in, `ok` or `limited`);
@@ -1490,7 +1491,8 @@ UpdateView = {"current":{"commit":"<40 hex>|null","short":"…|null"},
          "can_cancel","can_proceed"}|null}
 JevKeyView = {"configured","source":"settings|config|null","set_at|null","set_by|null",
               "config_present","config_error|null"}
-VidocKeyView = JevKeyView's fields, for the Vidoc key
+VidocKeyView = JevKeyView's fields, for the Vidoc key, and "enabled", "disabled_at|null",
+               "disabled_by|null" (the instance switch, SPEC-356)
 ```
 
 `available` lists the commits from the build to the head of `main` without merges and promotions,

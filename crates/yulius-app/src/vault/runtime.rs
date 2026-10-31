@@ -940,6 +940,21 @@ impl App {
     }
 }
 
+impl App {
+    /// Whether a request toward Vidoc from `client` is refused because its project's Vidoc scans,
+    /// or the instance's, are off (SPEC-338, SPEC-356): a session that started before the switch
+    /// went off has no `YULIUS_VIDOC=off`, and its scan must still send nothing. Unreadable counts
+    /// as off.
+    async fn vidoc_refused(&self, client: &EgressClient, host: &str, port: u16) -> bool {
+        port == 443
+            && host.eq_ignore_ascii_case(crate::vidoc_key::VIDOC_HOST)
+            && !self
+                .sandbox_vidoc_on(&client.sandbox_id)
+                .await
+                .unwrap_or(false)
+    }
+}
+
 #[async_trait]
 impl EgressPolicy for App {
     async fn egress_client(&self, token: &str) -> Option<EgressClient> {
@@ -947,6 +962,10 @@ impl EgressPolicy for App {
     }
 
     async fn egress_intercepts(&self, client: &EgressClient, host: &str, port: u16) -> bool {
+        // Intercepted to be refused: tunneled, the code would reach Vidoc.
+        if self.vidoc_refused(client, host, port).await {
+            return true;
+        }
         match self.client_secrets(client).await {
             Ok(records) => records
                 .iter()
@@ -959,6 +978,18 @@ impl EgressPolicy for App {
     }
 
     async fn egress_apply(&self, client: &EgressClient, request: EgressRequest) -> EgressDecision {
+        if self
+            .vidoc_refused(client, &request.host, request.port)
+            .await
+        {
+            return EgressDecision::Refuse {
+                status: 403,
+                message: "Yulius: Vidoc is turned off in Yulius, for this project or the whole \
+                          instance; nothing was sent. Report the scan as disabled and ask nobody \
+                          about Vidoc's key or quota."
+                    .into(),
+            };
+        }
         let bound = match self
             .bound_secrets(client, &request.host, request.port)
             .await

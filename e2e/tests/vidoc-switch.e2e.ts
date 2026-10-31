@@ -159,7 +159,7 @@ test('the superadmin switches Vidoc off for the whole instance and on again, kee
   await expect(card.getByText(/Off for every project since/)).toBeVisible();
   await expect(screen.getByRole('switch', 'Vidoc scans for studio')).toBeDisabled();
   await expect(screen.getByRole('switch', 'Vidoc scans for studio')).toBeChecked();
-  await expect(card.getByText(/In use: the key from the server’s configuration/)).toBeVisible();
+  await expect(card.getByText(/Kept, not used while Vidoc is off: the key from the server’s configuration/)).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
   // Off for the instance: the Add sandbox dialog offers no Vidoc box.
   await browser.evaluate(() => { location.hash = '#/'; return null; });
@@ -175,4 +175,16 @@ test('the superadmin switches Vidoc off for the whole instance and on again, kee
   await expect(again).toBeChecked();
   await expect(screen.getByRole('switch', 'Vidoc scans for studio')).toBeEnabled();
   expect(await switchOf(browser, 'studio')).toBe(true);
+});
+
+test('a failed instance switch goes back and says why', async ({ app, screen }) => {
+  // SPEC-356 (review round 1): the server refuses the change; nothing moves.
+  await app.open(mock('/admin/instance', '&vidoc=config&vidoc_fail=1'));
+  const instance = screen.getByRole('switch', 'Vidoc scans for every project');
+  await expect(instance).toBeChecked();
+  await instance.click();
+  await expect(screen.getByText(/Couldn’t switch Vidoc/)).toBeVisible();
+  await expect(instance).toBeChecked();
+  await expect(instance).toBeEnabled();
+  await expect(screen.getByRole('switch', 'Vidoc scans for studio')).toBeEnabled();
 });

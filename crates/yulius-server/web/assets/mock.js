@@ -174,7 +174,7 @@ function seed(params) {
         : { level: 'ok', used: 141 * 1024 ** 3, total: 386 * 1024 ** 3 },
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
     // The instance Vidoc key (SPEC-195): `vidoc=config` (YULIUS_VIDOC_API_KEY_FILE is set).
-    vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null },
+    vidoc: { key: null, setAt: null, setBy: null, config: params.get('vidoc') === 'config', offAt: params.get('vidoc_off') ? '2026-10-30T09:00:00Z' : null, offBy: params.get('vidoc_off') ? 'superadmin' : null, fail: params.get('vidoc_fail') === '1' },
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
     // failed (in place, naming what failed, with Try again; #147). A test may set `failPath` later;
     // `failedReads` counts the GET requests failed on purpose.
@@ -3986,6 +3986,7 @@ route('PUT', '/api/admin/vidoc', ({ db, body }) => {
 route('PUT', '/api/admin/vidoc/enabled', ({ db, body }) => {
   superadminOnly(db);
   if (typeof body.enabled !== 'boolean') fail(422, 'invalid', 'enabled must be true or false');
+  if (db.vidoc.fail) fail(503, 'unavailable', 'the store is busy');
   if (body.enabled) Object.assign(db.vidoc, { offAt: null, offBy: null });
   else if (!db.vidoc.offAt) Object.assign(db.vidoc, { offAt: new Date().toISOString(), offBy: db.me.user.login });
   return vidocView(db);

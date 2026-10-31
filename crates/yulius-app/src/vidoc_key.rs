@@ -134,12 +134,13 @@ impl App {
     }
 
     /// Whether Vidoc scans are on for the instance (SPEC-356 VIO-001): no superadmin switched
-    /// them off. Without Vidoc services there is nothing to switch, and it is on.
+    /// them off. Without Vidoc services there is nothing to switch, and it is on; a switch that
+    /// cannot be read is off, so no code goes out by mistake.
     #[must_use]
     pub fn vidoc_enabled(&self) -> bool {
         self.vidoc
             .get()
-            .is_none_or(|services| services.off.read().map(|off| off.is_none()).unwrap_or(true))
+            .is_none_or(|services| services.off.read().is_ok_and(|off| off.is_none()))
     }
 
     /// Whether `sandbox` scans with Vidoc: the instance switch (SPEC-356 VIO-002) and its own
@@ -205,9 +206,13 @@ impl App {
         let active = from_settings.or_else(|| self.config_vidoc());
         let off = match self.deps.store.vidoc_off().await {
             Ok(off) => off,
+            // Unreadable, it is off until a superadmin switches it on (which stores it again).
             Err(err) => {
-                tracing::warn!(error = %err, "could not read the instance Vidoc switch");
-                None
+                tracing::warn!(error = %err, "could not read the instance Vidoc switch: off");
+                Some(VidocOff {
+                    at: self.now(),
+                    by: None,
+                })
             }
         };
         if off.is_some() {
@@ -291,6 +296,9 @@ impl App {
             Some(Err(err)) => (false, Some(err.clone())),
             _ => (false, None),
         };
+        // One reading of the switch: `enabled` and its details agree.
+        let enabled = self.vidoc_enabled();
+        let off = if enabled { None } else { self.vidoc_off_now() };
         Ok(VidocKeyView {
             configured: self.vidoc_key().is_some(),
             source: self.vidoc_source().map(|s| s.as_str().to_owned()),
@@ -298,9 +306,9 @@ impl App {
             set_by: saved.and_then(|s| s.set_by),
             config_present,
             config_error,
-            enabled: self.vidoc_enabled(),
-            disabled_at: self.vidoc_off_now().map(|off| rfc3339(off.at)),
-            disabled_by: self.vidoc_off_now().and_then(|off| off.by),
+            enabled,
+            disabled_at: off.as_ref().map(|off| rfc3339(off.at)),
+            disabled_by: off.and_then(|off| off.by),
         })
     }
 
