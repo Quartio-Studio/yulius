@@ -1,11 +1,11 @@
 ---
 yulius-task: 4cfd3777-a8cf-412d-896a-2dd86ddcb606
-status: in-progress
+status: done
 ---
 
 # SPEC-358: Sessions keep Yulius MCP, waits and delivery working across Yulius restarts
 
-Status: in progress
+Status: implemented
 Date: 2026-10-31
 Owner: Yulius task #343
 Scope authorization: task #343, follow-up 2 of task #342 (SPEC-357). Builds on SPEC-355 (the
@@ -126,16 +126,17 @@ woke the tasks.
 ## Plan
 
 - [x] Read SPEC-355 and SPEC-357, and find what a restart loses
-- [ ] Spec and ADR for the stdio bridge and the wake-up
-- [ ] `yulius mcp` bridges stdio to the Yulius MCP across a restart
-- [ ] Task runs reach the Yulius MCP through the bridge
-- [ ] `yulius wait` rides out an outage until its deadline
-- [ ] Yulius wakes the tasks that went idle while it was down
-- [ ] An armed merge whose checks passed merges right after a restart
-- [ ] A restart test: a running session uses MCP, git and gh afterwards
-- [ ] Architecture, operations guide and changes
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Gates green, pull request merged into dev on green CI
+- [x] Spec and ADR for the stdio bridge and the wake-up
+- [x] `yulius mcp` bridges stdio to the Yulius MCP across a restart
+- [x] Task runs reach the Yulius MCP through the bridge
+- [x] `yulius wait` rides out an outage until its deadline
+- [x] Yulius wakes the tasks that went idle while it was down
+- [x] An armed merge whose checks passed merges right after a restart
+- [x] A restart test: a running session uses MCP, git and gh afterwards
+- [x] Architecture, operations guide and changes
+- [x] Independent review rounds 1-3, findings fixed test-first
+- [x] Review round 4 confirms the final head
+- [x] Gates green, pull request merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -275,7 +276,62 @@ Independent reviews in fresh sessions (skills `om-code-review` and `yulius-revie
       was sent. Yulius never sends one.
     - `stop-answered` is written just before the hook's answer, so a hard crash between the two
       loses a block Yulius decided. A graceful shutdown drains requests.
+- Round 4 on 3b63c05f: approve, with no critical or major findings, and round 3 verified fixed.
+  - Minor, accepted and documented here. A pending outage's age counts from when the outage
+    began. If Yulius was down for more than a day and a start crashes within its 10-minute wake
+    window, the next start falls back to `alive-at`.
+  - Nits left:
+    - The "only grows" read of `stop-answered` and its write are not atomic. The CLI waits for
+      each Stop hook, so the effect is at most one extra wake.
+    - A test's doc comment links `PENDING_MAX_AGE` instead of `PENDING_MAX_AGE_MS`.
 
 ## Evidence
 
-Pending.
+- **How Claude Code 2.1.292 treats MCP servers** (read from the shipped CLI). These facts decided
+  the design:
+  - A closed remote transport is retried 5 times, with a backoff of 1 to 30 s.
+  - A failed first connect is retried 3 times, for some errors only.
+  - No hook or setting reconnects a server.
+  - A stdio server is spawned as `CLAUDE_CODE_SHELL_PREFIX || command`.
+- **The shell-prefix defect.** It was measured in this task's own run with
+  `claude -p --debug-file`, with no credentials and so no paid call. With the old prefix:
+  `MCP server "yulius": Connection failed (ENOENT): … posix_spawn '/usr/local/bin/yulius
+  --scrub-exec'`. With a `scrub-exec` script and the built `yulius mcp`, against this instance's
+  live Yulius: `Successfully connected (transport: stdio) in 173ms`, with its tools listed.
+- **Red before each fix, then green.**
+  - The prefix tests in `cockpit.rs` and `secrets_redaction.rs` failed with the old
+    `runtime.rs` and `cockpit.rs`.
+  - `restart::a_wait_rides_out_a_restart` exited 1 under the old five-tries rule.
+  - The wake test, before the transcript replay set `turn_closed_ms`, woke nobody.
+  - `delivery::an_armed_merge_green_during_a_restart_merges_at_the_start`: `pr_open` before the
+    start's merge pass.
+  - `the_calls_in_flight_are_answered_after_stdin_ends`: the bridge exited before answering.
+  - Review rounds 1 to 3: each red listed in the Review section.
+- **The acceptance test.** `restart::a_running_session_uses_mcp_git_and_gh_across_a_restart`
+  passes with a real detached ptyhost and the fake agent:
+  - the bridge is spawned from the run's `mcp.json` through its `scrub-exec`;
+  - the server restarts on the same port, with `reconcile`;
+  - the held `steps_get` and a `delivery_status` are answered;
+  - `git credential fill` and `yulius gh-token` work;
+  - the egress client knows the run's token.
+- **Gate.** `scripts/dev ci` on 3b63c05f exited 0:
+  - doctor, the repository check and the script tests;
+  - `cargo check`, fmt, and clippy `-D warnings` for Linux and macOS;
+  - nextest: 2888 passed, 16 skipped;
+  - doctests;
+  - `cargo deny --locked check`: advisories, bans, licenses and sources ok;
+  - `cargo shear`, and `cargo doc` with no warnings.
+
+  The commit after it changes only this spec.
+- **Security.** `yulius security-scan` on 0e5124d6 exited 2 (not run). Vidoc refused the
+  instance's key with HTTP 401, and 25 changed files were not scanned. This is unrun, not passed.
+  Yulius CI's `security` job scans the pull request head.
+- **e2e.** Not applicable: no web UI change.
+- **Not testable here:**
+  - A real Claude Code session calling a Yulius tool across a real Yulius restart. That needs
+    paid model calls, and a restart of the shared instance is a person's to make. The bridge
+    process stands in for Claude Code's stdio client, and the live connect above shows that
+    Claude Code starts it.
+  - A real bwrap sandbox: namespaces cannot be created here.
+  - The production quartio-v2 sessions themselves. Sessions started before this release keep the
+    HTTP config until they start again (operations guide).
