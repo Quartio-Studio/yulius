@@ -17,4 +17,4 @@ mod proxy;
 pub use ca::{
     CaError, CertificateAuthority, generate_ca_material, pem_certificates, run_ca_bundle,
 };
-pub use proxy::{BoxError, EgressBody, EgressConfig, EgressProxy, serve};
+pub use proxy::{BoxError, EgressBody, EgressConfig, EgressProxy, IDLE_FLOOR, serve};

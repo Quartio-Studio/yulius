@@ -40,6 +40,9 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const HEADER_TIMEOUT: Duration = Duration::from_secs(60);
 /// Longest life of one tunnel or intercepted connection.
 const CONNECTION_MAX: Duration = Duration::from_secs(24 * 3600);
+/// Least idle time before a connection gives way to a new one at a limit (SPEC-355 SLR-002,
+/// SLR-003): longer than Yulius's longest hold of a call (55 s), as the relays'.
+pub const IDLE_FLOOR: Duration = Duration::from_secs(60);
 /// DNS resolution timeout.
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -71,6 +74,9 @@ pub struct EgressConfig {
     /// of the proxy, so one sandbox can neither take every slot nor all of its own relay's
     /// connections to Yulius.
     pub max_per_sandbox: usize,
+    /// How long a connection is idle (no byte either way) before it may give way to a new one at
+    /// a sandbox's share or the proxy's limit (SPEC-355 SLR-002).
+    pub idle_floor: Duration,
 }
 
 impl Default for EgressConfig {
@@ -80,6 +86,7 @@ impl Default for EgressConfig {
             extra_roots_pem: Vec::new(),
             max_connections: 256,
             max_per_sandbox: 128,
+            idle_floor: IDLE_FLOOR,
         }
     }
 }
