@@ -2034,13 +2034,32 @@ async fn running_ci_jobs_weigh_on_their_sandbox_until_they_end() -> TestResult {
     // A push supersedes the pull request's run: its running jobs are cancelled.
     f.push_feature("more.txt", Some("more\n"))?;
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    // Its jobs still wait for `go`, so only the cancellation ends them (review round 2).
+    let deadline = tokio::time::Instant::now() + WAIT;
+    let superseded = loop {
+        let runs = f.h.store.ci_runs(&f.sandbox.id, 10).await?;
+        if let Some(run) = runs.into_iter().find(|r| r.state == RunState::Cancelled) {
+            break run;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err("the superseded run never ended".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
     std::fs::write(f.data.join("go"), "")?;
     // `build` jobs pass, `hang` jobs time out (8 s); every end lowers the count.
     f.settle().await?;
-    let runs = f.h.store.ci_runs(&f.sandbox.id, 10).await?;
+    // A job that was running when its run was superseded ended cancelled.
+    let detail = f
+        .get(&format!("/api/sandboxes/s1/ci/runs/{}", superseded.id))
+        .await?;
     assert!(
-        runs.iter().any(|r| r.state == RunState::Cancelled),
-        "{runs:?}"
+        detail["jobs"]
+            .as_array()
+            .ok_or("jobs")?
+            .iter()
+            .any(|job| job["state"] == "cancelled" && job["duration_ms"].is_u64()),
+        "no started job was cancelled: {detail}"
     );
     let seen = weighing.jobs.lock().map_err(|_| "lock")?.clone();
     assert!(seen.iter().all(|(sandbox, _)| sandbox == "s1"), "{seen:?}");

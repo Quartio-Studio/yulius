@@ -66,7 +66,7 @@ got about 27 % of what the sandboxes get (1/3 × 4/5) and the local builds about
   build too. CI gets 4/7 (57 %) of what the sandboxes get, and all agents together 3/7. Each other
   sandbox keeps at least 1/7 however many jobs run. Against three other sandboxes whose agents
   all build, CI gets exactly half (500/800 × 4/5). Against four or more it gets less than half,
-  still about twice what it got before.
+  still more than twice what it got before (4/9 against 4/25 with four).
 - Shares are of what `<unit>/sandboxes` gets. The server's `server/` group and the host's other
   slices compete above it, as before.
 - Idle CPU still goes to whoever wants it: weights act only under contention, so the agents slow

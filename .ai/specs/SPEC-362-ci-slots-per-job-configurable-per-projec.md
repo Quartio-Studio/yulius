@@ -1,11 +1,11 @@
 ---
 yulius-task: 5d96b389-585c-42e7-b512-293f22c9f9a8
-status: in-progress
+status: done
 ---
 
 # SPEC-362: A sandbox running CI jobs weighs more on the host than one that only builds locally
 
-Status: in progress
+Status: implemented
 Date: 2026-10-31
 Owner: Yulius task #345 (follow-up 4 of #342)
 Scope authorization: task #345. Builds on SPEC-053 / ADR-0039 (the per-sandbox `ci/` leaf) and
@@ -74,8 +74,8 @@ SPEC-082 / ADR-0065 (CI jobs' CPU budgets). The cgroup layout follows ADR-0201 a
 - [x] CI jobs raise and lower their sandbox's weight through the isolation port
 - [x] A test shows CI out-weighing local builds under load
 - [x] Docs: architecture, operations, changes; per-job cpus documented as the slots
-- [ ] Independent review, findings fixed test-first
-- [ ] Gates green, pull request merged into dev on green CI
+- [x] Independent review, findings fixed test-first
+- [x] Gates green, pull request merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -110,3 +110,44 @@ SPEC-082 / ADR-0065 (CI jobs' CPU budgets). The cgroup layout follows ADR-0201 a
   a sandbox's own `cpu.weight` is 500 while its CI jobs run. Alternatives (a lower agents' leaf
   weight, a `cpu.max` cap on the agents, a host-wide CI group, 400 per job, a project-wide
   `[ci] cpus`) are compared there.
+
+## Evidence
+
+- **Slots per job (CSW-001):** no code change. `[[ci.jobs]] cpus` already sets a job's CPUs per
+  project, with the equal share as the default. `local_ci::jobs_wait_for_their_cpu_budget_and_are_told_it`
+  passes: a job declared `cpus = 3` runs with `YULIUS_CPUS=3` and `-j3`, and waits while the pool
+  lacks 3 CPUs.
+- **Adapter (CSW-002 to CSW-005):** the `yulius-sandbox` `cgroup::` tests pass, 23 in all
+  (`cargo test -p yulius-sandbox --lib cgroup::`), plus the `sandbox_weight` doctest.
+  - `a_sandbox_weighs_more_while_its_ci_jobs_run`: 500 with 1, 2 or 4 jobs, and 100 at 0. It
+    covers preparation, the reset at start and stop, and a missing group.
+  - `without_the_cpu_controller_ci_jobs_weigh_nothing`.
+  - Before the implementation these tests failed to compile (no `sandbox_weight`, no
+    `set_ci_jobs`). Round 1's new assertions failed on 900 and on the 1/7 share before the fix.
+- **App (CSW-002):** `local_ci::running_ci_jobs_weigh_on_their_sandbox_until_they_end` passes
+  (3 of 3 runs after round 2).
+  - It sees 3 running jobs and steps of ±1 that end at 0, across passed, timed-out and cancelled
+    jobs. The cancelled ones are killed while they wait, by a superseding push.
+  - With the `JobWeight` guard replaced by `()`, the test fails: "never three jobs: []".
+- **Under load (CSW-006):** `under_load_ci_gets_more_of_the_host_than_local_builds` passes. This
+  is the cgroup v2 weight split among busy siblings, applied to the files `Delegation` writes.
+  - Before (every sandbox at 100): CI gets 4/15 and the builds 11/15.
+  - With one job: CI gets 4/7 and the builds 3/7.
+  - With 4 jobs: each other sandbox keeps 1/7.
+- **Not measured on a live kernel:** this sandbox has no `/sys/fs/cgroup`, and
+  `mount -t cgroup2` is refused (permission denied). The VM check after deployment:
+  `cat /sys/fs/cgroup/system.slice/yulius.service/sandboxes/<sandbox>/cpu.weight` reads 500
+  while a job runs.
+- **Gate:** `scripts/dev ci` passed at `e897c6c7`: 2907 tests passed, 16 skipped, with fmt,
+  clippy, macOS, deps and docs (log in `.ai/runs/gate-362.log`). The first run, at `e3cf5e9e`,
+  failed only on `cargo fmt --check`, fixed by `3a8e76d6`. After round 2's test and ADR wording
+  change, `scripts/dev lint` passed and the changed test passed 3 times.
+- **Security:** `yulius security-scan` exited 2 (not run): Vidoc refused the instance's key (HTTP
+  401). That is unrun, not passed.
+- **Review:** an independent session, `om-code-review` read-only, with no cargo while the gate ran.
+  - Round 1: request changes. The major finding was that 400 per job contradicted the ADR (4 jobs
+    left other sandboxes about 5 %). The minors were no cancel case, no reset at start, a warning
+    on a missing group and the lock bound note; the nits were the key type and wording. All were
+    fixed test-first in `e897c6c7`.
+  - Round 2: approve at `e897c6c7`. Its two nits (assert a started job ended cancelled; "more
+    than twice") were fixed after it.
