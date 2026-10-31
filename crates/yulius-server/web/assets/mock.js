@@ -3539,7 +3539,8 @@ function mockTimeline(kind, id) {
       s('job:j1@1/checkout', 'prepare', 'checkout', 44.8, 0.5, { parent_key: 'job:j1@1', job: 'quality' }),
       s('job:j1@1/stage:1', 'stage', 'lint', 44.3, 3, { parent_key: 'job:j1@1', job: 'quality' }),
       s('job:j1@1/stage:2', 'stage', 'unit', 41.3, 8.5, { parent_key: 'job:j1@1', job: 'quality', detail: { tests_passed: 1234, tests_flaky: 2, tests_skipped: 3 } }),
-      s('job:j2@1', 'job', failed ? 'test (2/2)' : 'e2e', 44.8, 13.8, { job: 'test', outcome: failed ? 'failed' : 'passed', detail: failed ? { exit_code: 1 } : {} }),
+      // The failed job's figures, as long as the reported screenshot's (#986): its tip wraps.
+      s('job:j2@1', 'job', failed ? 'test (2/2)' : 'e2e', 44.8, 13.8, { job: 'test', outcome: failed ? 'failed' : 'passed', detail: failed ? { tests_passed: 1457, tests_skipped: 4, cpu_ms: 40, memory_peak_mb: 7, disk_written_mb: 0, exit_code: 101 } : {} }),
       s('job:j2@1/stage:1', 'stage', 'integration', 44.6, 13.6, { parent_key: 'job:j2@1', job: 'test', outcome: failed ? 'failed' : 'passed', detail: failed ? { tests_passed: 310, tests_failed: 1 } : {} }),
     ], related: [] };
   }
