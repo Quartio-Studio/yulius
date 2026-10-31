@@ -274,7 +274,7 @@ fn ask(
                 return None;
             }
             // A proxy in front of a Yulius that is starting: an outage.
-            Ok((status @ (502 | 503 | 504), _)) => format!("HTTP {status}"),
+            Ok((status @ 502..=504, _)) => format!("HTTP {status}"),
             // Yulius answers, but not with a state: not an outage, so not waited out.
             Ok((status, _)) => {
                 bad_answers += 1;
