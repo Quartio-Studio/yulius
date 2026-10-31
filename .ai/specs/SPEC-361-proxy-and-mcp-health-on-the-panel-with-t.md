@@ -83,7 +83,8 @@ on every refusal, and the notice goes away once places are free again.
 - [x] The panel shows a pill and notifies once per trouble
 - [x] Operations guide, architecture, changes
 - [x] Independent review round 1, findings fixed test-first
-- [ ] Independent review round 2 approves the head
+- [x] Independent review round 2, findings fixed test-first
+- [ ] Independent review round 3 approves the head
 - [ ] Gates green, pull request merged into dev on green CI
 
 ## Acceptance criteria
