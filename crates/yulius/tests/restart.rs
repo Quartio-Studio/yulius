@@ -300,3 +300,118 @@ async fn a_wait_rides_out_a_restart() -> TestResult {
     );
     Ok(())
 }
+
+/// Appends to the transcript of `id`'s session a turn that closed at `at` while Yulius was down:
+/// what a dead `yulius wait` leaves (its exit woke the agent, which could do nothing and ended
+/// the turn), with no Stop hook Yulius answered.
+async fn turn_closed_while_down(
+    app: &App,
+    data: &std::path::Path,
+    id: &yulius_domain::ids::TaskId,
+    at: i64,
+) -> TestResult {
+    use yulius_app::ports::harness::HarnessPort as _;
+    use yulius_app::ports::store::TaskStore as _;
+    let record = app.deps.store.task(id).await?.ok_or("task")?;
+    let attempt = app.deps.store.live_attempt(id).await?.ok_or("attempt")?;
+    let session = attempt.provider_session_id.ok_or("session")?;
+    let worktree = std::path::PathBuf::from(record.worktree_path.ok_or("worktree")?);
+    let home = data.join("sandboxes").join("s-pool").join("home");
+    let adapter =
+        yulius::wiring::harness::HarnessAdapter::new(std::path::PathBuf::from(YULIUS), "x");
+    let transcript = adapter.claude_transcript(&home, &worktree, &session);
+    let time = yulius_app::auth::rfc3339(yulius_domain::time::Timestamp(at));
+    let envelope = |kind: &str, uuid: &str| {
+        json!({"type": kind, "uuid": uuid, "timestamp": time, "sessionId": session,
+               "isSidechain": false, "userType": "external", "entrypoint": "cli"})
+    };
+    let mut user = envelope("user", "outage-u");
+    user["message"] = json!({"role": "user", "content":
+        "<task-notification>yulius wait: Yulius cannot be reached</task-notification>"});
+    let mut answer = envelope("assistant", "outage-a");
+    answer["message"] = json!({"id": "msg_outage", "type": "message", "role": "assistant",
+        "model": "fake-model", "content": [{"type": "text", "text": "Yulius is down; I wait."}],
+        "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 1,
+        "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}});
+    let mut closed = envelope("system", "outage-d");
+    closed["subtype"] = json!("turn_duration");
+    closed["durationMs"] = json!(1000);
+    let mut lines = std::fs::read_to_string(&transcript)?;
+    for line in [user, answer, closed] {
+        lines.push_str(&format!("{line}\n"));
+    }
+    std::fs::write(&transcript, lines)?;
+    Ok(())
+}
+
+/// MSB-007: after a restart, the task whose turn closed while Yulius was down is told "Yulius is
+/// back; continue" once; a task idle since before the outage is not.
+#[test]
+fn a_task_that_went_idle_during_the_outage_is_woken_once() -> TestResult {
+    use crate::pool_supervision::{
+        ScriptedUsage, build_with, new_task, runtime, screen, seed, stop, temp, wait_for,
+    };
+    use yulius_ptyhost::test_support::locate_fake_agent;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let agent = || crate::support::agents::FakeAgentOptions {
+        transcript: true,
+        answers_first_message: true,
+        ..crate::support::agents::FakeAgentOptions::default()
+    };
+
+    // Two tasks answer their first message; then Yulius goes down.
+    let first = runtime()?;
+    let (cut, quiet, down_since) = first.block_on(async {
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent())?;
+        let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
+        let cut = new_task(&app, &sandbox, &user, "Cut").await?;
+        let quiet = new_task(&app, &sandbox, &user, "Quiet").await?;
+        for (id, title) in [(&cut, "Cut"), (&quiet, "Quiet")] {
+            wait_for("the first answer", Duration::from_secs(30), || {
+                let shown = screen(&app, id);
+                async move { shown.contains(&format!("ECHO: {title}: answer with an echo")) }
+            })
+            .await?;
+        }
+        Ok::<_, Box<dyn std::error::Error>>((cut, quiet, app.now()))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent())?;
+        // While Yulius was down, the cut task's wait died and its agent ended a turn.
+        turn_closed_while_down(&app, &data, &cut, down_since.0 + 10).await?;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let started = app.now();
+        app.reconcile().await?;
+        // Each pass wakes what has replayed so far: it ends once the cut task is woken.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let woken = loop {
+            let woken = app.wake_after_outage(down_since, started).await;
+            if !woken.is_empty() || Instant::now() >= deadline {
+                break woken;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        assert_eq!(woken, vec![cut.clone()], "only the task cut by the outage");
+        wait_for("the wake-up typed", Duration::from_secs(30), || {
+            let shown = screen(&app, &cut);
+            async move { shown.contains("ECHO: Yulius is back; continue") }
+        })
+        .await?;
+        // Once: its woken turn closed after this start.
+        assert!(app.wake_after_outage(down_since, started).await.is_empty());
+        assert!(
+            !screen(&app, &quiet).contains("Yulius is back"),
+            "{}",
+            screen(&app, &quiet)
+        );
+        stop(&app, &cut).await?;
+        stop(&app, &quiet).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

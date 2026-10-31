@@ -1,6 +1,7 @@
 //! Server-lifetime background work: crash recovery and the metrics recount, queue draining, the
 //! subscription pool's resume loop (ROT-010) and account usage refresh (ROT-009) (SPEC-002 §6.1,
-//! §7.5, §10). Nothing is typed into an idle task's session (SPEC-028 MSR-004).
+//! §7.5, §10). Nothing is typed into an idle task's session (SPEC-028 MSR-004), except "Yulius is
+//! back; continue" into a task that went idle while Yulius was down (SPEC-358 MSB-007).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,6 +44,9 @@ impl App {
 
     /// Starts recovery and periodic work; call once after the listeners are bound.
     pub fn start_background(self: &Arc<Self>) {
+        // When the previous server was last alive; the tasks that went idle since are woken once
+        // the runs replayed their transcripts (SPEC-358 MSB-007).
+        self.start_outage_watch();
         let app = Arc::clone(self);
         tokio::spawn(async move {
             // Nothing waits for the recount (SPEC-091 RCT-005).
