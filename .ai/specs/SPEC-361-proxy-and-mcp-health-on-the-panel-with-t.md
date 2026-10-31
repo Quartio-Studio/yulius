@@ -131,6 +131,19 @@ Independent reviews in fresh sessions (skill `yulius-review`; this repository ha
   - Nits fixed: the pill leads to a task only with one trouble; an event whose sandbox id does not
     parse reaches nobody rather than everyone; a long line in the product summary. Nit kept: the
     proxy and the relay each read the wall clock (`wall_ms`), one line each in their own crate.
+- Round 2 on f00e5afa (request changes): round 1's fixes verified, no deadlock. Own code, fixed:
+  - Minor: the e2e reload step depended on timing: the reseeded mock answered the first read with
+    no troubles, which pruned the notified ids. The mock now keeps its troubles across a reload,
+    as the server would list them, and the step reloads the page. A mutation that ignores the
+    notified ids fails it.
+  - Minor: the proxy half of round 1's race had no test. Its locked admission and report are now
+    `Slots::admit`, and `proxy::tests::a_trouble_begun_while_every_slot_closes_still_ends`
+    covers it (a mutation that reports after releasing the table fails it: "the trouble never
+    ends").
+  - Nit: `on_change` runs under the reporter's table lock; its doc now says it must be quick,
+    never block and never call back.
+  - Nit, accepted with a comment: a sandbox relay replaced while its old connections live may end
+    the new relay's trouble early with its old count; the next refusal begins another.
 
 ## Decisions
 

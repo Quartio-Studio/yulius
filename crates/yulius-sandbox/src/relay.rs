@@ -151,7 +151,11 @@ impl Drop for Place {
             .unwrap_or_else(PoisonError::into_inner);
         table.close(self.id);
         // Under the table's lock, as a refusal is reported: a trouble begun before this close is
-        // seen, and one begun after it counts this close (SPEC-361 CHR-002, review round 1).
+        // seen, and one begun after it counts this close (SPEC-361 CHR-002, review round 1). A
+        // connection of a relay the sandbox replaced (a restart overlapping its old relay's
+        // connections) reports its old table's count: it may end the new relay's trouble early,
+        // and the next refusal begins another (review round 2, accepted: a holder that ends closes
+        // its connections).
         if let Some(report) = &self.places.report
             && report
                 .health

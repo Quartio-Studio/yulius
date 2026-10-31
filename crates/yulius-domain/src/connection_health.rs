@@ -96,7 +96,9 @@ pub struct Refusal {
     pub holders: Vec<Holder>,
 }
 
-/// Told when a trouble begins (`true`) or ends (`false`), after the registry's lock is released.
+/// Told when a trouble begins (`true`) or ends (`false`), after the registry's lock is released
+/// but while the reporting adapter holds its own table's lock (a refusal and a close must not
+/// interleave with their report): it must be quick, never block and never call into a reporter.
 type OnChange = Box<dyn Fn(&Trouble, bool) + Send + Sync>;
 
 /// The open troubles, at most one per limit and sandbox.
@@ -129,7 +131,8 @@ impl ConnectionHealth {
         }
     }
 
-    /// Sets what is told when a trouble begins or ends (once); `false` when one was set.
+    /// Sets what is told when a trouble begins or ends (once); `false` when one was set. It runs
+    /// under the reporter's table lock: quick, non-blocking, never calling back (see `OnChange`).
     pub fn on_change(&self, f: impl Fn(&Trouble, bool) + Send + Sync + 'static) -> bool {
         self.on_change.set(Box::new(f)).is_ok()
     }
