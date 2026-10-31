@@ -881,6 +881,34 @@ mod tests {
         assert_eq!(warned.len(), 1, "older warnings are forgotten");
     }
 
+    /// SPEC-357 ESR-004 (review round 2): "the most" only when no other run holds as many, held
+    /// connections included; "nothing to give up" names the margin the table used.
+    #[test]
+    fn a_share_refusal_names_the_busiest_run_only_when_it_is() {
+        let busiest = share_refusal(8, 7, 1, 1);
+        assert!(busiest.contains("this run holds 7 of them, the most of the sandbox's runs"));
+        // Another run holds 7 requests in flight: it has nothing to give up, but it is busier.
+        let not = share_refusal(8, 1, 7, 0);
+        assert!(!not.contains("the most"), "{not}");
+        assert!(
+            not.contains(&format!(
+                "this run holds 1 of them, and no other run has {} more to give up",
+                connections::MARGIN
+            )),
+            "{not}"
+        );
+    }
+
+    /// SPEC-357 ESR-005 (review round 2): a run-level and a sandbox-level take warn apart.
+    #[test]
+    fn takes_from_a_busier_run_and_sandbox_warn_apart() {
+        let (run, sandbox) = (busier_kind(Busier::Owner(3)), busier_kind(Busier::Key(3)));
+        assert_ne!(run, sandbox);
+        let mut warned = HashMap::new();
+        assert!(warn_due(&mut warned, run, Some("s1")));
+        assert!(warn_due(&mut warned, sandbox, Some("s1")));
+    }
+
     #[test]
     fn proxy_credentials_and_targets() {
         let mut headers = hyper::http::HeaderMap::new();
