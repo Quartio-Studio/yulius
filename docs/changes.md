@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-31
 
+- A sandbox's admins can switch its Vidoc security scans off and on in the sandbox itself, without
+  the instance admin (SPEC-359, ADR-0245, task #339). The CI tab of its CI/CD page has a "Security
+  scan (Vidoc)" card with "Scan this project with Vidoc", the same switch as the Instance page's
+  Vidoc card. It says who changed it last, and says when the repository's committed
+  `.config/vidoc.toml` (which wins) or the instance has Vidoc off. Members without admin access see
+  it disabled. When Vidoc refuses the key or its quota is used up, the scan's message, and so CI's
+  security job log and the agents' "Needs you" questions, name that card's address.
 - One busy run no longer locks the egress proxy for its whole sandbox (SPEC-357, ADR-0243, task
   #342). On 2026-10-31, quartio-v2's tasks got `503` for every host but Anthropic (which bypasses
   the proxy) for 90 minutes, because its processes held the sandbox's whole share of 128. The

@@ -106,7 +106,8 @@ is unrun, not passed, and an incomplete one ends **error** ("incomplete: …"), 
 until a rerun passes. `enabled` in `.config/vidoc.toml` turns the scan on (as committed) or off
 ([ADR-0107](docs/decisions/0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md)); a disabled
 scan exits 0 saying so and is reported as disabled, not passed. A person can also switch a project's
-scans off in Yulius (Instance page, Vidoc card; [ADR-0229](docs/decisions/0229-a-person-switches-a-projects-vidoc-scans-off-in-yulius.md)):
+scans off in Yulius (Instance page, Vidoc card; [ADR-0229](docs/decisions/0229-a-person-switches-a-projects-vidoc-scans-off-in-yulius.md)),
+and the sandbox's admins on its CI/CD page (Security scan card; [ADR-0245](docs/decisions/0245-a-sandboxs-admins-switch-its-vidoc-scans-on-its-ci-cd-page.md)):
 runs then get `YULIUS_VIDOC=off`, the scan exits 0 as disabled (CI: skipped), and nobody is asked
 about the key or its quota. A superadmin can switch Vidoc off the same way for every project of the
 instance, keeping the key (the same card; [ADR-0242](docs/decisions/0242-a-superadmin-switches-vidoc-off-for-the-whole-instance.md)). Other projects run the same scanner
