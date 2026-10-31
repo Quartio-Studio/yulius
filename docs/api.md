@@ -679,8 +679,9 @@ Yulius is the projects' only CI (SPEC-001 DLV-006/007, SPEC-002 ADR-21). The job
 name = "test"               # [a-z0-9][a-z0-9_-]*, at most 32 bytes, unique
 command = "cargo test"      # one line, run as /bin/sh -c in the job's CI checkout
 matrix = "1/2 2/2"          # optional: one job per value, as $YULIUS_CI_MATRIX ("test (1/2)")
-cpus = 4                    # optional (1-1024): the CPUs it uses; default: an equal share of the
-memory_gb = 8               #   sandbox among the run's jobs; memory_gb (1-4096) follows the CPUs
+cpus = 4                    # optional (1-1024): the CPUs it uses and waits for (its "slots");
+memory_gb = 8               #   default: an equal share of the sandbox among the run's jobs;
+                            #   memory_gb (1-4096) follows the CPUs
 # or, for one job: [commands] gate = "…"   (not both)
 
 [resources.env]             # optional: the budget in this repository's tools' terms (SPEC-082)

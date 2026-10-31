@@ -65,6 +65,16 @@ the sandbox and the agents at least 20 %, and idle CPU goes to whoever wants it.
 5 nice levels below the agents themselves ([SPEC-053](../.ai/specs/SPEC-053-ci-e2e-timeouts-under-agent-load-give-ci.md),
 [decision 0039](decisions/0039-ci-jobs-get-the-cpu-first.md)).
 
+Weights only compare siblings, so the sandboxes' own groups are weighed too. While `n` CI jobs of
+a sandbox run, its group weighs `100 + 400 × n` among the sandboxes (100 with none). On a loaded
+host its CI then also out-weighs the agents' local builds in the other sandboxes. With one job
+against agents building in three sandboxes, CI gets 4/7 of the host instead of 4/15. The CI
+executor counts a job from its slot to its reap (`JobWeight`). The isolation adapter writes the
+weight, every preparation keeps it, and a stopping server writes 100 again
+([SPEC-362](../.ai/specs/SPEC-362-ci-slots-per-job-configurable-per-projec.md),
+[decision 0247](decisions/0247-a-sandbox-running-ci-jobs-weighs-more-on-the-host.md)). A job's CPUs
+(its "slots") are its budget, `cpus` in `[[ci.jobs]]` or an equal share of its run.
+
 Tasks (processes and threads) are one budget too, sized from the host (a quarter of its task
 table, at least 8192, at most three quarters of the service's own limit). CI jobs and the engine with its containers each stop at 3/8 of it, so the
 agent sessions keep at least a quarter. A session that still ends while the sandbox was at its
@@ -83,7 +93,7 @@ flowchart TD
   UNIT["yulius.service: pids.max (TasksMax)"] --> SRV["server/: yulius serve"]
   UNIT --> ALL["sandboxes/: pids.max 3/4 of the service's"]
   ALL --> SBX
-  SBX["sandboxes/sandbox: cpu.max, memory.max, pids.max"] --> SYS["system/ weight 100: holder, slirp4netns"]
+  SBX["sandboxes/sandbox: cpu.weight 100 + 400 per running CI job, cpu.max, memory.max, pids.max"] --> SYS["system/ weight 100: holder, slirp4netns"]
   SBX --> AGS["agents/ weight 100: agent runs, shells, browsers"]
   SBX --> CIG["ci/ weight 400, pids.max 3/8: CI jobs"]
   SBX --> ENG["engine/ weight 100, pids.max 3/8: dockerd, containers below it"]

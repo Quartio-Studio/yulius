@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-31
 
+- On a loaded host, CI jobs get more CPU than the agents' local builds, in every sandbox
+  (SPEC-362, ADR-0247, task #345, follow-up 4 of #342). On 2026-10-31 the 12-CPU host ran at load
+  30–52 for hours, with CI jobs and every task's cargo builds side by side. CI already had four
+  times the agents' weight inside its own sandbox, but each sandbox weighed the same on the host,
+  so agents in other sandboxes still took most of it. A sandbox's group now weighs 100 plus 400
+  per CI job of it running. With one job against agents building in three sandboxes, CI gets 4/7
+  of the host instead of 4/15. Idle CPU still goes to whoever wants it. A job's CPUs ("slots")
+  stay `cpus` in `[[ci.jobs]]`, by default an equal share of its run (2 each for 6 jobs on 12
+  CPUs), and the docs now say so.
+
 - A sandbox's admins can switch its Vidoc security scans off and on in the sandbox itself, without
   the instance admin (SPEC-359, ADR-0245, task #339). The CI tab of its CI/CD page has a "Security
   scan (Vidoc)" card with "Scan this project with Vidoc", the same switch as the Instance page's
