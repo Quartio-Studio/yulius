@@ -1117,7 +1117,11 @@ fn a_switched_off_project_runs_without_vidoc() -> TestResult {
     rt.block_on(async {
         let agent = FakeAgentOptions {
             transcript: true,
-            report_env: vec!["YULIUS_VIDOC".into(), "VIDOC_API_KEY".into()],
+            report_env: vec![
+                "YULIUS_VIDOC".into(),
+                "VIDOC_API_KEY".into(),
+                "YULIUS_VIDOC_SWITCH".into(),
+            ],
             ..FakeAgentOptions::default()
         };
         let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
@@ -1145,6 +1149,16 @@ fn a_switched_off_project_runs_without_vidoc() -> TestResult {
         let shown = screen(&app, &id);
         assert!(shown.contains("ENV YULIUS_VIDOC=set len=3"), "{shown}");
         assert!(!shown.contains("ENV VIDOC_API_KEY=set"), "{shown}");
+        // SPEC-359 VSB-006: where the switch is, to turn it on again or point to it.
+        let record =
+            yulius_app::ports::store::SandboxStore::sandbox(app.deps.store.as_ref(), &sandbox)
+                .await?
+                .ok_or("sandbox")?;
+        let url = format!("{}/s/{}/ci", app.config.public_url, record.slug);
+        assert!(
+            shown.contains(&format!("ENV YULIUS_VIDOC_SWITCH=set len={}", url.len())),
+            "{shown}"
+        );
         Ok(())
     })
 }

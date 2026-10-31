@@ -817,6 +817,8 @@ impl App {
         if !self.vidoc_scans_on(sandbox) {
             env.push(("YULIUS_VIDOC".to_owned(), "off".to_owned()));
         }
+        // Where its switch is, for a scan whose key fails to point to (SPEC-359 VSB-006).
+        env.extend(self.vidoc_switch_env(sandbox));
         env.extend(budget_env(budget, &repository_templates(checkout)));
         env
     }
