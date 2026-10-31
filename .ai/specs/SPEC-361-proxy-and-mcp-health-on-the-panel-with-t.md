@@ -1,11 +1,11 @@
 ---
 yulius-task: e43c3936-2d99-4851-bfd3-837e875359be
-status: in-progress
+status: done
 ---
 
 # SPEC-361: A full proxy share or relay shows on the panel, with whose connections they are
 
-Status: in progress
+Status: implemented
 Date: 2026-10-31
 Owner: Yulius task #344
 Scope authorization: task #344, follow-up 3 of task #342 (SPEC-357, ADR-0243). Builds on SPEC-353
@@ -84,8 +84,8 @@ on every refusal, and the notice goes away once places are free again.
 - [x] Operations guide, architecture, changes
 - [x] Independent review round 1, findings fixed test-first
 - [x] Independent review round 2, findings fixed test-first
-- [ ] Independent review round 3 approves the head
-- [ ] Gates green, pull request merged into dev on green CI
+- [x] Independent review round 3 approves the head
+- [x] Gates green, pull request merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -146,6 +146,11 @@ Independent reviews in fresh sessions (skill `yulius-review`; this repository ha
   - Nit, accepted with a comment: a sandbox relay replaced while its old connections live may end
     the new relay's trouble early with its old count; the next refusal begins another.
 
+- Round 3 on acbabf14: approve, no critical, major or minor findings; the mock's sessionStorage
+  does not leak between tests (a new browser context per attempt). Two nits fixed after it: the
+  proxy keeps one share for its refusals and its troubles (`Slots::share`), and the callback's
+  doc says "a log line and an event sent at most" instead of "never block".
+
 ## Decisions
 
 - ADR-0246: connection troubles are kept in one registry in the domain, which the proxy and the
@@ -162,3 +167,56 @@ Independent reviews in fresh sessions (skill `yulius-review`; this repository ha
   serves the internal API as well. The notice leads to the task, whose background processes the
   task's panel already lists, and the operations guide keeps the `nsenter … ss` recipe.
 - The state is in memory: a server restart empties the proxy's table and the troubles with it.
+
+## Evidence
+
+- **Acceptance (task #344's done criterion).**
+  `connection_health::a_full_share_is_listed_with_the_runs_task_until_its_tunnels_end`
+  (`crates/yulius/tests`) goes through the real egress proxy wired to the app. A seeded task
+  run fills its sandbox's share (4) with `CONNECT` tunnels and is refused twice (`503`).
+  - `GET /api/connections` then lists one `share` trouble for `s1` ("app"): held 4 of 4, refused
+    2, its holder `task` t1 with the task's number, title and count 4.
+  - A person who cannot view the sandbox sees none.
+  - Once the tunnels end, the API lists none.
+  - Exactly two `connections.updated` events were published (begin, end), scoped to `s1`.
+  - Red first without the route.
+- **Red before each fix:**
+  - Proxy: `a_full_share_is_a_trouble_naming_the_run_until_its_tunnels_end` and
+    `a_full_proxy_is_a_trouble_naming_the_sandboxes_until_it_has_room`, red at 8721b786 with
+    the field only.
+  - Relay: `a_full_out_sock_is_a_relay_trouble_until_its_connections_end`, red with its report
+    off.
+  - Round 1:
+    - `a_trouble_begun_while_every_place_closes_still_ends`, red at d70cda13 ("the trouble never
+      ends").
+    - The e2e for resync, Clear and the single-trouble link, red before bcf7a955.
+    - The e2e "notifies once" step, red with `once: false`.
+  - Round 2: `proxy::tests::a_trouble_begun_while_every_slot_closes_still_ends`, and the e2e
+    reload step, each red under a mutation (report after releasing the table; notified ids
+    ignored).
+- **Gate.** `scripts/dev ci` on 7445e68f exited 0:
+  - doctor, the repository check, script tests, `cargo check`, fmt and clippy `-D warnings`
+    (Linux and macOS);
+  - nextest: 2915 passed, 16 skipped;
+  - doctests;
+  - `cargo deny`: advisories, bans, licenses and sources ok;
+  - `cargo shear` and docs.
+
+  After 7445e68f came a clean merge of dev (#990, `cargo check --workspace --all-targets` clean)
+  and the round 3 nits (egress and domain tests: 436 passed; clippy clean). Yulius CI runs the
+  gate on the delivered head.
+- **e2e.** `npx e2e run` on 7445e68f: 794 passed, 1 skipped (71 files).
+  - An earlier full run at load average ~30 failed `automations.e2e.ts` ("the shipped automations
+    are the defaults…", 66 s) and `filedrop.e2e.ts` once each. Both files passed 3 of 3 runs
+    alone, and the next full run passed.
+  - These files neither touch nor depend on this change. They were timeouts under the host's
+    load, not a regression.
+- **Security.** `yulius security-scan` exited 2 (not run): Vidoc refused the instance's key
+  (HTTP 401), and 24 changed files were not scanned. This is unrun, not passed. Yulius CI's
+  `security` job scans the pull request head.
+- **Not testable here:**
+  - The production host's proxy under quartio-v2's real load.
+  - A real bwrap holder's forward, which is not covered by design.
+  - Desktop notifications from the operating system: the e2e checks the notification center's
+    entries, not the OS popup.
+
