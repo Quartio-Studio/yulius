@@ -42,10 +42,13 @@ pub(crate) fn connection_health(events: EventBus) -> Arc<ConnectionHealth> {
                 "connection trouble ended: the limit has room again"
             );
         }
-        let sandbox = trouble
-            .sandbox
-            .as_deref()
-            .and_then(|s| SandboxId::parse(s).ok());
+        // A sandbox's trouble reaches only its viewers: one whose id does not parse reaches nobody
+        // rather than everyone (review round 1).
+        let sandbox = match trouble.sandbox.as_deref().map(SandboxId::parse) {
+            None => None,
+            Some(Ok(id)) => Some(id),
+            Some(Err(_)) => return,
+        };
         events.publish(
             sandbox,
             false,
