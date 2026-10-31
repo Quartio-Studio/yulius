@@ -22,6 +22,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use yulius_app::ports::egress::{EgressClient, EgressDecision, EgressPolicy, EgressRequest};
+use yulius_domain::connection_health::{self, ConnectionHealth, Limit, Refusal};
 use yulius_domain::connections::{self, Activity, Busier, Connections};
 use yulius_domain::vault::egress_destination_allowed;
 use yulius_domain::vault::redact::{Matcher, PlainMatcher, StreamRedactor, redact_all};
@@ -82,6 +83,8 @@ pub struct EgressConfig {
     /// How long a connection is idle (no byte either way) before it may give way to a new one at
     /// a sandbox's share or the proxy's limit (SPEC-355 SLR-002).
     pub idle_floor: Duration,
+    /// Where a refusing share or proxy is reported as a connection trouble (SPEC-361 CHR-001).
+    pub health: Arc<ConnectionHealth>,
 }
 
 impl Default for EgressConfig {
@@ -92,6 +95,7 @@ impl Default for EgressConfig {
             max_connections: 256,
             max_per_sandbox: 128,
             idle_floor: IDLE_FLOOR,
+            health: Arc::default(),
         }
     }
 }
