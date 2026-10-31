@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-31
 
+- One busy run no longer locks the egress proxy for its whole sandbox (SPEC-357, ADR-0243, task
+  #342). On 2026-10-31, quartio-v2's tasks got `503` for every host but Anthropic (which bypasses
+  the proxy) for 90 minutes, because its processes held the sandbox's whole share of 128. The
+  proxy now counts each connection's run. At a full share with every connection active, the
+  busiest run's oldest connection gives way to a run holding fewer, and at the full proxy the
+  busiest sandbox's does. Only the busiest is refused, with how many it holds.
 - A superadmin can switch Vidoc security scans off for the whole instance, and on again, without
   removing the key (SPEC-356, ADR-0242, task #338). The Instance page's Vidoc card has "Scan every
   project with Vidoc"; while it is off it says since when and by whom, and the project switches

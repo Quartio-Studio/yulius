@@ -1270,7 +1270,17 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   seen, `reaped the Superagent's leftover processes` 2 hours later. A prompt written meanwhile
   keeps them. A terminal of the Shell panel is a person's own and is not probed.
 - One sandbox gets at most half of the egress proxy's 256 connections, so its leftovers cannot
-  take every other sandbox's downloads.
+  take every other sandbox's downloads. Within a sandbox, one run's processes cannot lock the
+  others out (SPEC-357,
+  [ADR-0243](decisions/0243-the-busiest-run-gives-way-at-a-full-proxy-share.md)). At a full share
+  with every connection active, the oldest connection of the run holding the most gives way to
+  a run holding at least 2 fewer, and at the full proxy the busiest sandbox's does. This is logged
+  as `egress proxy: at a limit with every connection active, the busiest run's oldest connection
+  was closed for another run` (sandbox, run, how many it held). A `503` now goes only to the
+  busiest run, or to runs that share the places evenly, and it says how many the asking run holds
+  (`this run holds 120 of them, the most of its runs`). On 2026-10-31, quartio-v2's tasks got
+  `503` for every host for 90 minutes, while their Claude traffic, which bypasses the proxy
+  (`NO_PROXY`), kept working.
 - A full relay gives way instead of refusing (SPEC-355,
   [ADR-0241](decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)).
   A sandbox reaches Yulius on one port (8081: internal API, MCP, egress proxy) through two relays,

@@ -86,10 +86,10 @@ site.
 
 - [x] Reproduce the defect and find its root cause
 - [x] Spec and ADR for the per-run give-way
-- [ ] The busiest run gives way at a sandbox's share, with a regression test
-- [ ] The busiest sandbox gives way at the proxy's limit
-- [ ] Refusals and warnings name whose the connections are
-- [ ] Operations guide, architecture and changes; follow-up tasks for the rest of #342
+- [x] The busiest run gives way at a sandbox's share, with a regression test
+- [x] The busiest sandbox gives way at the proxy's limit
+- [x] Refusals and warnings name whose the connections are
+- [x] Operations guide, architecture and changes; follow-up tasks for the rest of #342
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Gates green, pull request merged into dev on green CI
 
@@ -126,4 +126,10 @@ site.
 - The rest of task #342 (MCP clients reconnecting after a restart, waking tasks once Yulius is
   back, proxy and MCP health on the panel, CI slots per job and local builds yielding to CI) is
   separate. Each is its own concern and goes to its own chained task, so this urgent fix ships
-  alone.
+  alone: #343 (MCP, waits and delivery across restarts), #344 (proxy and MCP health on the panel)
+  and #345 (CI slots per job, local builds yielding to CI). Issue #982 tracks this defect.
+- Restoring service needed no operator action from this task: the update to #979 at 12:22 UTC
+  restarted the server, which emptied the proxy's table, and its SPEC-355 give-way frees idle
+  places since. The owner was asked (needs_you) to confirm from quartio-v2 and given the
+  journal and `nsenter … ss` recipe in case active holders fill the share again before this
+  fix is deployed.
