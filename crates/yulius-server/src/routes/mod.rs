@@ -350,6 +350,15 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         // The user's Cockpit (SPEC-021): opened or started, never deleted.
         .route("/api/sandboxes/{sid}/cockpit", post(shells::cockpit))
+        // Its link to Yulius, and its restart in place (SPEC-355).
+        .route(
+            "/api/sandboxes/{sid}/cockpit/link",
+            get(shells::cockpit_link),
+        )
+        .route(
+            "/api/sandboxes/{sid}/cockpit/restart",
+            post(shells::cockpit_restart),
+        )
         // What the user's Superagent asks them to approve (SPEC-335).
         .route(
             "/api/sandboxes/{sid}/superagent/requests",

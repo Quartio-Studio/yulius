@@ -3016,6 +3016,30 @@ route('POST', `/api/sandboxes/${ID}/cockpit`, async ({ db, p }) => {
   }
   return shellDto(shell);
 });
+// The Superagent's link to Yulius (SPEC-355): a test sets it with
+// `__yuliusMock.setCockpitLink('sb_studio', 'lost' | 'recovered' | 'ok', lostAt)`; a restart
+// ends the running Cockpit as `switched` and starts it again resuming its conversation.
+route('GET', `/api/sandboxes/${ID}/cockpit/link`, async ({ db, p }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  return clone((db.cockpitLinks || {})[p[0]] || { state: 'unknown', lost_at: null });
+});
+route('POST', `/api/sandboxes/${ID}/cockpit/restart`, async ({ db, p }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  needClaude(db);
+  if (db.cockpitRestartFails) fail(409, 'conflict', 'The Superagent could not restart: its process could not be ended, so it keeps running.');
+  const old = [...db.shells.values()].find((s) => s.sandbox_id === p[0] && s.cockpit);
+  db.nextId += 1;
+  db.cockpitStarts = (db.cockpitStarts || 0) + 1;
+  const shell = { id: `ck_${p[0]}_${db.nextId}`, sandbox_id: p[0], name: 'Cockpit', task_id: null, created_at: new Date().toISOString(), session: null, cockpit: true, resumed: true };
+  shell.folder = shellFolder(db, shell);
+  if (old) {
+    db.shells.delete(old.id);
+    if (old.session) old.session.end(null, 'switched');
+  }
+  db.shells.set(shell.id, shell);
+  db.cockpitLinks = { ...(db.cockpitLinks || {}), [p[0]]: { state: 'ok', lost_at: null } };
+  return shellDto(shell);
+});
 // What the person's Superagent asks them to approve (SPEC-335): a test asks with
 // `__yuliusMock.askSuperagent('sb_studio', { sandbox: 'product', prompt, title, options })`; an
 // approval creates the task in that sandbox, as the server's `task_create` would.
@@ -5547,6 +5571,11 @@ export function createMockTransport(params) {
   db.endSuperagentRequest = (source, id) => {
     db.superagentRequests = (db.superagentRequests || []).filter((r) => r.view.id !== id);
     emit(db, { type: 'superagent.requests', sandbox_id: source });
+  };
+  // The Superagent's link to Yulius in `sid` was tested (SPEC-355).
+  db.setCockpitLink = (sid, state, lostAt = null) => {
+    db.cockpitLinks = { ...(db.cockpitLinks || {}), [sid]: { state, lost_at: lostAt } };
+    emit(db, { type: 'superagent.link', sandbox_id: sid });
   };
   // The machine rebooted: every Cockpit's process is gone, its viewers lose the connection.
   db.rebootCockpits = () => {

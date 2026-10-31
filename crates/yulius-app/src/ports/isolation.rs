@@ -182,6 +182,12 @@ pub trait SandboxIsolation: Send + Sync {
         None
     }
 
+    /// Whether a call from inside `sandbox` to Yulius gets an answer (SPEC-355 SLR-005): `None`
+    /// when it cannot be told (no live holder, one started by an older Yulius, no isolation).
+    async fn link(&self, _sandbox: &SandboxId) -> Option<bool> {
+        None
+    }
+
     /// Ends a lease of [`SandboxIsolation::prepare`] (may finish in the background).
     fn release(&self, sandbox: &SandboxId);
 

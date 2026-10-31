@@ -3980,3 +3980,282 @@ async fn the_superagent_stores_a_key_from_its_persons_home() -> TestResult {
     f.h.app.end_all_shells().await;
     Ok(())
 }
+
+/// A job a project's tests leaked into the Superagent's sandbox (SPEC-353): `sh -c …`, `bash …`
+/// and its `sleep`, adopted by the sandbox init.
+fn leaked_job(pid: u32, started: u64) -> yulius_app::ports::session::StrayProcess {
+    yulius_app::ports::session::StrayProcess {
+        processes: vec![(pid, started), (pid + 1, started), (pid + 2, started + 1)],
+    }
+}
+
+/// Alice's Superagent conversation `conv-1`, idle: one prompt and its answer. Returns its path.
+fn idle_conversation(f: &Fixture) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let project = alice_project(f)?;
+    std::fs::create_dir_all(&project)?;
+    let transcript = project.join("conv-1.jsonl");
+    std::fs::write(
+        &transcript,
+        [
+            prompt_record("u0", None, -60),
+            answer_record("a0", "u0", -59),
+        ]
+        .concat(),
+    )?;
+    Ok(transcript)
+}
+
+/// SPEC-355 SLR-004 (#970): an idle Superagent's strays are reported when first seen and reaped
+/// once seen for the bound, as an idle task's (SPEC-353 LAP-004). On 2026-10-30 the Superagent's
+/// sandbox session had lived for days with a project's leaked test jobs.
+#[tokio::test]
+async fn an_idle_superagents_strays_are_reaped_after_the_bound() -> TestResult {
+    let f = fixture().await?;
+    idle_conversation(&f)?;
+    f.gate.report_strays(vec![leaked_job(500, 77)]);
+    cockpit_id(&f, &f.alice).await?;
+    wait_for("the idle Superagent's first probe", || f.gate.probes() > 0).await?;
+    assert!(f.gate.reaped().is_empty(), "first seen: reported only");
+    f.h.clock
+        .0
+        .fetch_add(f.h.app.config.stray_reap_after_ms, Ordering::SeqCst);
+    wait_for("the strays to be reaped", || !f.gate.reaped().is_empty()).await?;
+    assert_eq!(f.gate.reaped(), vec![leaked_job(500, 77)]);
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-355 SLR-004: a prompt written while the probe runs keeps the strays (the Superagent is in
+/// a turn again), and its turn's processes are not probed; once the turn ends they are reaped.
+#[tokio::test]
+async fn a_superagent_turn_that_starts_during_the_probe_keeps_its_strays() -> TestResult {
+    let f = fixture().await?;
+    let transcript = idle_conversation(&f)?;
+    f.gate.report_strays(vec![leaked_job(500, 77)]);
+    cockpit_id(&f, &f.alice).await?;
+    wait_for("the first probe", || f.gate.probes() > 0).await?;
+    let prompted = transcript.clone();
+    f.gate.during_probe(Box::new(move || {
+        use std::io::Write as _;
+        if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(&prompted) {
+            let _ = file.write_all(prompt_record("u1", Some("a0"), 0).as_bytes());
+        }
+    }));
+    f.h.clock
+        .0
+        .fetch_add(f.h.app.config.stray_reap_after_ms, Ordering::SeqCst);
+    wait_for("the probe that finds them due", || f.gate.probes() > 1).await?;
+    // The turn ends; the next idle probe reaps them, once: none was reaped during the turn.
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new().append(true).open(&transcript)?;
+        file.write_all(answer_record("a1", "u1", 5).as_bytes())?;
+    }
+    f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
+    wait_for("the strays to be reaped after the turn", || {
+        !f.gate.reaped().is_empty()
+    })
+    .await?;
+    assert_eq!(
+        f.gate.reaped_after(),
+        vec![(3, leaked_job(500, 77))],
+        "reaped once, after the turn's end (the third probe), not at the second"
+    );
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// A sandbox whose link to Yulius the test sets (SPEC-355 SLR-005): `None` cannot be told.
+/// It counts the tests.
+struct Link(std::sync::Mutex<Option<bool>>, std::sync::atomic::AtomicU32);
+
+impl Link {
+    fn new(link: Option<bool>) -> Self {
+        Self(
+            std::sync::Mutex::new(link),
+            std::sync::atomic::AtomicU32::new(0),
+        )
+    }
+    fn set(&self, link: Option<bool>) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = link;
+    }
+    fn tests(&self) -> u32 {
+        self.1.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl yulius_app::ports::isolation::SandboxIsolation for Link {
+    async fn prepare(
+        &self,
+        _: &yulius_app::ports::isolation::SandboxRef,
+    ) -> AppResult<Option<yulius_app::ports::isolation::SandboxJoin>> {
+        Ok(None)
+    }
+    fn release(&self, _: &SandboxId) {}
+    async fn link(&self, _: &SandboxId) -> Option<bool> {
+        let link = *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.1.fetch_add(1, Ordering::SeqCst);
+        link
+    }
+}
+
+/// The link of `creds`'s Superagent as its panel reads it.
+async fn link_state(f: &Fixture, creds: &Creds) -> Result<Value, Box<dyn std::error::Error>> {
+    let resp = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/cockpit/link",
+        None,
+        creds,
+    )
+    .await?;
+    assert_eq!(resp.status, StatusCode::OK, "{:?}", resp.body);
+    Ok(resp.body)
+}
+
+/// Waits until alice's Superagent's link reads `state`.
+async fn link_reads(f: &Fixture, state: &str) -> Result<Value, Box<dyn std::error::Error>> {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let link = link_state(f, &f.alice).await?;
+        if link["state"] == state {
+            return Ok(link);
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("the link never read {state}: {link}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// SPEC-355 SLR-005, SLR-006 (2026-10-31: a Superagent whose sandbox could not reach Yulius kept
+/// its Yulius tools disconnected, and the person could only close it): Yulius tests the link from
+/// the sandbox, the panel reads it lost and then recovered, and Restart Superagent starts it again
+/// in place, resuming the same conversation.
+#[tokio::test]
+async fn a_superagent_that_lost_yulius_says_so_and_restarts_in_place() -> TestResult {
+    let f = fixture().await?;
+    let link = Arc::new(Link::new(Some(true)));
+    assert!(f.h.app.set_isolation(link.clone()));
+    idle_conversation(&f)?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    link_reads(&f, "ok").await?;
+
+    // One failed test is not a lost link (review round 1: a server still adopting its shells
+    // answers late); a second one in a row is.
+    link.set(Some(false));
+    let before = link.tests();
+    f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
+    wait_for("the next link test", || link.tests() > before).await?;
+    assert_eq!(link_state(&f, &f.alice).await?["state"], "ok");
+    f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
+    let lost = link_reads(&f, "lost").await?;
+    let lost_at = lost["lost_at"].as_i64().ok_or("lost_at")?;
+    link.set(Some(true));
+    f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
+    let recovered = link_reads(&f, "recovered").await?;
+    assert_eq!(recovered["lost_at"].as_i64(), Some(lost_at), "{recovered}");
+    // A link that cannot be told changes nothing.
+    link.set(None);
+    f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
+    assert_eq!(link_state(&f, &f.alice).await?["state"], "recovered");
+
+    // Only the owner reads or restarts it; bob may not even work in the sandbox.
+    let refused = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/cockpit/restart",
+        None,
+        &f.bob,
+    )
+    .await?;
+    assert!(refused.status.is_client_error(), "{:?}", refused.status);
+    let restarted = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/cockpit/restart",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(restarted.status, StatusCode::OK, "{:?}", restarted.body);
+    let again = restarted.body["id"].as_str().ok_or("id")?.to_owned();
+    assert_ne!(again, id, "a new process");
+    let live: Vec<String> =
+        f.h.app
+            .sandbox_shells(&sid())
+            .iter()
+            .map(|s| s.id().to_owned())
+            .collect();
+    assert_eq!(live, vec![again.clone()], "the old one ended");
+    let served = serve(f.h.router.clone()).await?;
+    let mut socket = attach(served.addr, &again, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(
+        printed(&screen, "cockpit-args")?,
+        "[--resume conv-1 --model claude-opus-5-5 --effort high]",
+        "the same conversation"
+    );
+    let fresh = link_state(&f, &f.alice).await?;
+    assert!(
+        fresh["state"] == "ok" || fresh["state"] == "unknown",
+        "the new one lost nothing: {fresh}"
+    );
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-355 SLR-006 (review round 1): a restart whose old process cannot be ended starts no second
+/// Superagent on the same conversation: it answers 409, the running one stays, and its viewers are
+/// told it was not restarted.
+#[tokio::test]
+async fn a_superagent_whose_process_cannot_be_ended_is_not_restarted() -> TestResult {
+    let f = fixture_ending(true, None, Some(500)).await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    f.gate.refuse_ends(true);
+    let refused = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/cockpit/restart",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    let notice = loop {
+        let notice = read_message(&mut socket, "notice").await?;
+        if notice["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("could not restart"))
+        {
+            break notice;
+        }
+    };
+    assert_eq!(
+        notice["text"],
+        "The Superagent could not restart: its process could not be ended, so it keeps running."
+    );
+    let live: Vec<String> =
+        f.h.app
+            .sandbox_shells(&sid())
+            .into_iter()
+            .filter(|shell| !shell.has_ended())
+            .map(|shell| shell.id().to_owned())
+            .collect();
+    assert_eq!(live, vec![id], "the same Superagent, and no second one");
+    f.gate.refuse_ends(false);
+    f.h.app.end_all_shells().await;
+    Ok(())
+}

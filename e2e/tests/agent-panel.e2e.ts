@@ -590,3 +590,50 @@ test('the API client retries nothing after the page signed in again meanwhile, n
   expect(result.sent.filter((s: string) => s.startsWith('/after:'))).toEqual(['/after:token-of-a-third-sign-in']);
   expect(result.sent.filter((s: string) => s.startsWith('/cancelled:'))).toEqual(['/cancelled:reread-for-the-fourth']);
 });
+
+type Linking = Window & { __yuliusMock: { setCockpitLink(sid: string, state: string, lostAt?: number | null): void; cockpitRestartFails?: boolean } };
+
+// SPEC-355 SLR-006 (2026-10-31: the Superagent's sandbox could not reach Yulius, its Yulius tools
+// stayed disconnected, and the person could only close it, losing their place): the panel says so
+// and Restart Superagent starts it again in place, resuming its conversation.
+test('a Superagent that lost Yulius says so and restarts in place, keeping its conversation', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1920, height: 1000 });
+  await app.open(mock('/s/studio'));
+  await openSuperagent(browser, screen);
+  const terminal = browser.locator(agentTerminal);
+  await expect(terminal).toHaveText(/Welcome to Claude Code/);
+  await expect(browser.locator('.agent-link')).toBeHidden();
+
+  await browser.evaluate(() => (window as unknown as Linking).__yuliusMock.setCockpitLink('sb_studio', 'lost', Date.now()));
+  const status = browser.locator('.agent-link [role="status"]');
+  await expect(status).toHaveText(/can’t reach Yulius from this sandbox/);
+  await browser.evaluate(() => (window as unknown as Linking).__yuliusMock.setCockpitLink('sb_studio', 'recovered', Date.now()));
+  await expect(status).toHaveText(/lost its connection to Yulius at .*Restarting keeps its conversation/);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await screen.getByRole('button', 'Restart Superagent').click();
+  await expect(terminal).toHaveText(/resumed your last conversation/);
+  await expect(browser.locator('.agent-link')).toBeHidden();
+  await expect(screen.getByRole('button', 'Start again')).toBeHidden();
+  await browser.keyboard.type('why?');
+  await browser.keyboard.press('Enter');
+  await expect(terminal).toHaveText(/Good question/);
+});
+
+// SPEC-355 SLR-006: a restart that cannot end the old process says why, and the Superagent goes on.
+test('a Superagent restart that fails says why and keeps the session', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1920, height: 1000 });
+  await app.open(mock('/s/studio'));
+  await openSuperagent(browser, screen);
+  const terminal = browser.locator(agentTerminal);
+  await expect(terminal).toHaveText(/Welcome to Claude Code/);
+  await browser.evaluate(() => {
+    const mock = (window as unknown as Linking).__yuliusMock;
+    mock.cockpitRestartFails = true;
+    mock.setCockpitLink('sb_studio', 'lost', Date.now());
+  });
+  await screen.getByRole('button', 'Restart Superagent').click();
+  await expect(screen.getByText(/Couldn’t restart the Superagent/)).toBeVisible();
+  await expect(terminal).toHaveText(/Welcome to Claude Code/);
+  await expect(screen.getByRole('button', 'Restart Superagent')).toBeEnabled();
+});

@@ -278,6 +278,8 @@ pub struct NamespaceIsolation {
     manager: Arc<Manager>,
     strict: bool,
     extra_readonly: Vec<PathBuf>,
+    /// Yulius's internal listener as a sandbox reaches it (the link test, SPEC-355 SLR-005).
+    link_port: Option<u16>,
 }
 
 impl NamespaceIsolation {
@@ -288,7 +290,15 @@ impl NamespaceIsolation {
             manager,
             strict,
             extra_readonly: agent_cli_dir().into_iter().collect(),
+            link_port: None,
         }
+    }
+
+    /// Tests sandboxes' links to Yulius's internal listener on `port` (SPEC-355 SLR-005).
+    #[must_use]
+    pub fn with_link_port(mut self, port: u16) -> Self {
+        self.link_port = Some(port);
+        self
     }
 }
 
@@ -410,6 +420,11 @@ impl SandboxIsolation for NamespaceIsolation {
 
     async fn holder_live(&self, name: &str) -> bool {
         self.manager.holder_live(name).await
+    }
+
+    async fn link(&self, sandbox: &SandboxId) -> Option<bool> {
+        let port = self.link_port?;
+        self.manager.probe_link(sandbox.as_str(), port).await
     }
 
     async fn remove_owned_tree(&self, path: &std::path::Path) -> Result<(), String> {
@@ -645,10 +660,9 @@ pub async fn install(
     let manager = Manager::new(config);
     manager.adopt().await;
     let strict = args.mode == IsolationMode::Namespaces;
-    app.set_isolation(Arc::new(NamespaceIsolation::new(
-        Arc::clone(&manager),
-        strict,
-    )));
+    app.set_isolation(Arc::new(
+        NamespaceIsolation::new(Arc::clone(&manager), strict).with_link_port(internal_port),
+    ));
     let ticker = Arc::clone(&manager);
     tokio::spawn(async move {
         loop {

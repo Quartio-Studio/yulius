@@ -1265,16 +1265,33 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   (task, processes, the first pid of each) as a warning; 2 hours later Yulius kills that
   process tree and logs `reaped leftover processes` (with the same pids). A working task's
   processes and the agent's own shells (under `claude`) are never touched.
+- The Superagent's session is probed the same way every minute while its conversation is idle
+  (SPEC-355): `leftover processes in the Superagent's session` (shell, sandbox, pids) when first
+  seen, `reaped the Superagent's leftover processes` 2 hours later. A prompt written meanwhile
+  keeps them. A terminal of the Shell panel is a person's own and is not probed.
 - One sandbox gets at most half of the egress proxy's 256 connections, so its leftovers cannot
-  take every other sandbox's downloads, nor, through proxy tunnels, all of its own relay's 256
-  connections, which its calls to Yulius (fingerprints, hooks, MCP) also need. Other connections
-  to Yulius (`yulius wait`, kept-alive MCP connections) still count against the relay. A refusal
-  at a limit is logged as a warning, at most once a minute, in the journal:
-  `egress proxy: a sandbox holds its share of the connections` (with the sandbox), `egress proxy:
-  every connection is taken`, and `sandbox relay: a connection was dropped at the limit` for the
-  server's side of a sandbox's relay. The relay inside the sandbox, where a sandbox's own
-  connections to Yulius are dropped first, writes that line to the sandbox's `holder.log` (and
-  the Docker front's to `docker-front.log`), both in `<data>/runtime/sandboxes/<sandbox-id>/`.
+  take every other sandbox's downloads.
+- A full relay gives way instead of refusing (SPEC-355,
+  [ADR-0241](decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md)).
+  A sandbox reaches Yulius on one port (8081: internal API, MCP, egress proxy) through two relays,
+  the holder's forward inside the sandbox and the server's `out.sock`, 256 connections each. At
+  its limit a relay, and the proxy at a sandbox's share or at its own limit, closes its
+  longest-idle connection (no byte for at least 5 minutes, longer than any call to Yulius waits)
+  for the new one. Only when every connection was active within those 5 minutes is the new one
+  refused. A refused client sees
+  `ECONNRESET`, as the Superagent's `/mcp` reconnect did on 2026-10-31. These events are logged as
+  warnings, at most once a minute, in the journal: `egress proxy: at a limit, the longest-idle
+  connection was closed for a new one`, `egress proxy: a sandbox holds its share of the
+  connections` (with the sandbox), `egress proxy: every connection is taken`, and `sandbox relay:
+  …` for the server's side of a sandbox's relay. The relay inside the sandbox writes its `sandbox
+  relay: at the limit, the longest-idle connection was closed …` and `sandbox relay: a connection
+  was dropped at the limit` lines to the sandbox's `holder.log` (and the Docker front's to
+  `docker-front.log`), both in `<data>/runtime/sandboxes/<sandbox-id>/`.
+- Every minute Yulius tests each live Superagent's link from inside its sandbox, through the
+  holder's forward. Two failed tests in a row log `the Superagent's sandbox cannot reach Yulius`, and its
+  panel says so and offers **Restart Superagent**, which starts it again in place, resuming its
+  conversation. Claude Code keeps a failed MCP server disconnected, so the panel also offers the
+  restart once the link works again (`the Superagent's sandbox reaches Yulius again`).
 
 To find and clear them by hand, without a restart (as root on the host):
 
@@ -1300,8 +1317,30 @@ nsenter -t "$H" -n ss -tnp state established '( dport = :8081 )' \
   | awk -F'pid=' 'NR>1{split($2,a,",");print a[1]}' | sort | uniq -c | sort -rn | head
 ```
 
-Stopping the task (or closing the Superagent) also ends its session's leftovers at once. Restarting
-Yulius only closes their connections: the processes stay until their session ends.
+Stopping the task (or closing the Superagent) also ends its session's leftovers at once.
+
+#### A saturated sandbox relay
+
+Signs: a Superagent panel that says it cannot reach Yulius; `the Superagent's sandbox cannot reach
+Yulius` or `sandbox relay: a connection was dropped at the limit` in the journal or the sandbox's
+`holder.log`; agents' calls to `127.0.0.1:8081` reset. Count the sandbox's connections to Yulius
+with the `nsenter … ss` recipe above: about 256 in one sandbox means its relay is full, and the
+pids show whose they are.
+
+To free it without restarting Yulius:
+
+1. End the leftover processes that hold the connections (the `kill` recipe above). Their
+   connections close with them, and the relay has room again at once.
+2. If the Superagent's Yulius tools stay disconnected, press **Restart Superagent** in its panel
+   (or close and open it). It resumes the same conversation.
+
+A Yulius restart does not free the relay. The holder (and its relay inside the sandbox) keeps
+running, and it keeps each connection whose server end closed until its client closes it, which
+a leftover process never does. The holder runs the relay it started with. If it started before the Yulius update that shipped
+SPEC-355 (compare `ps -o lstart= -p "$H"` with the update's time), it still refuses when full, and
+its Superagents' panels show no link state. In that case, end every process in the sandbox (stop
+its tasks, close its Superagents and terminals, kill the leftovers) and the holder stops once it
+has been idle for `YULIUS_SANDBOX_IDLE_MINUTES`. The next run starts a holder with the new relay.
 
 Rotation: replace a value on the Secrets page after rotating it at its provider (the page marks
 values older than 180 days). If `master.key` and a database copy may have leaked together,

@@ -409,7 +409,13 @@ pub fn inner(spec_path: &Path, ready_fd: i32) -> Result<(), String> {
         let (first, last) = (spec.port_first, spec.port_last);
         let ports: Arc<dyn Fn() -> Vec<u16> + Send + Sync> =
             Arc::new(move || crate::procnet::listening_ports(first, last));
-        tokio::spawn(crate::relay::serve_inbound(listener, first, last, ports));
+        tokio::spawn(crate::relay::serve_inbound_forwarding(
+            listener,
+            first,
+            last,
+            spec.forwards.clone(),
+            ports,
+        ));
         for port in &spec.forwards {
             if let Err(e) =
                 crate::relay::serve_forward(*port, paths.outbound(), spec.containers).await
