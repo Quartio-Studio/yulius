@@ -4,11 +4,13 @@
 //! [`GatedHost::arm_spawn`] the next spawn waits until [`GatedHost::release_spawn`], before its
 //! process starts, so a switch's task stays `Switching` (SPEC-250). With
 //! [`GatedHost::refuse_ends`] its runs cannot be ended: a shutdown request is dropped and
-//! `terminate` fails, as for a process that survives SIGKILL (SPEC-146).
+//! `terminate` fails, as for a process that survives SIGKILL (SPEC-146). With
+//! [`GatedHost::report_strays`] its probe reports those strays and its reaps are recorded
+//! (SPEC-355).
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -16,8 +18,12 @@ use tokio::sync::watch;
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::session::{
-    AttachedRun, LaunchPlan, RunInspection, RunSignal, RunWriter, SessionHost, SpawnedRun,
+    AttachedRun, BackgroundProbe, LaunchPlan, RunInspection, RunSignal, RunWriter, SessionHost,
+    SpawnedRun, StrayProcess,
 };
+
+/// Runs once during the next probe (a prompt written meanwhile).
+pub type DuringProbe = Box<dyn FnOnce() + Send>;
 
 /// A held attach goes ahead by itself after this long, so a failing test cannot hang.
 const HOLD_LIMIT: Duration = Duration::from_secs(60);
@@ -72,6 +78,13 @@ pub struct GatedHost {
     refusing: Arc<AtomicBool>,
     /// Shutdown requests dropped while refusing, so far.
     refused: Arc<watch::Sender<u32>>,
+    /// The strays every probe reports, once set.
+    strays: Mutex<Option<Vec<StrayProcess>>>,
+    /// The strays it was asked to reap.
+    reaped: Mutex<Vec<StrayProcess>>,
+    /// Probes so far.
+    probes: AtomicU32,
+    during_probe: Mutex<Option<DuringProbe>>,
 }
 
 impl GatedHost {
@@ -84,7 +97,39 @@ impl GatedHost {
             spawn: Gate::new(),
             refusing: Arc::new(AtomicBool::new(false)),
             refused: Arc::new(watch::channel(0).0),
+            strays: Mutex::new(None),
+            reaped: Mutex::new(Vec::new()),
+            probes: AtomicU32::new(0),
+            during_probe: Mutex::new(None),
         }
+    }
+
+    /// From now on every probe reports `strays`.
+    pub fn report_strays(&self, strays: Vec<StrayProcess>) {
+        *self.strays.lock().unwrap_or_else(PoisonError::into_inner) = Some(strays);
+    }
+
+    /// Runs `during` once, inside the next probe.
+    pub fn during_probe(&self, during: DuringProbe) {
+        *self
+            .during_probe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(during);
+    }
+
+    /// The strays it was asked to reap so far.
+    #[must_use]
+    pub fn reaped(&self) -> Vec<StrayProcess> {
+        self.reaped
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Probes reporting strays so far.
+    #[must_use]
+    pub fn probes(&self) -> u32 {
+        self.probes.load(Ordering::SeqCst)
     }
 
     /// While `refuse` holds, no run can be ended: shutdown requests are dropped and `terminate`
@@ -174,6 +219,38 @@ impl SessionHost for GatedHost {
 
     fn background_shells(&self, child_pid: u32) -> Option<u32> {
         self.inner.background_shells(child_pid)
+    }
+
+    fn background_probe(&self, child_pid: u32) -> Option<BackgroundProbe> {
+        let strays = self
+            .strays
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let Some(strays) = strays else {
+            return self.inner.background_probe(child_pid);
+        };
+        let during = self
+            .during_probe
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(during) = during {
+            during();
+        }
+        self.probes.fetch_add(1, Ordering::SeqCst);
+        Some(BackgroundProbe {
+            strays,
+            ..BackgroundProbe::default()
+        })
+    }
+
+    fn reap_strays(&self, strays: &[StrayProcess]) -> usize {
+        self.reaped
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend(strays.iter().cloned());
+        strays.iter().map(|stray| stray.processes.len()).sum()
     }
 }
 

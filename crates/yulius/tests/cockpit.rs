@@ -3980,3 +3980,83 @@ async fn the_superagent_stores_a_key_from_its_persons_home() -> TestResult {
     f.h.app.end_all_shells().await;
     Ok(())
 }
+
+/// A job a project's tests leaked into the Superagent's sandbox (SPEC-353): `sh -c …`, `bash …`
+/// and its `sleep`, adopted by the sandbox init.
+fn leaked_job(pid: u32, started: u64) -> yulius_app::ports::session::StrayProcess {
+    yulius_app::ports::session::StrayProcess {
+        processes: vec![(pid, started), (pid + 1, started), (pid + 2, started + 1)],
+    }
+}
+
+/// Alice's Superagent conversation `conv-1`, idle: one prompt and its answer. Returns its path.
+fn idle_conversation(f: &Fixture) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let project = alice_project(f)?;
+    std::fs::create_dir_all(&project)?;
+    let transcript = project.join("conv-1.jsonl");
+    std::fs::write(
+        &transcript,
+        [
+            prompt_record("u0", None, -60),
+            answer_record("a0", "u0", -59),
+        ]
+        .concat(),
+    )?;
+    Ok(transcript)
+}
+
+/// SPEC-355 SLR-004 (#970): an idle Superagent's strays are reported when first seen and reaped
+/// once seen for the bound, as an idle task's (SPEC-353 LAP-004). On 2026-10-30 the Superagent's
+/// sandbox session had lived for days with a project's leaked test jobs.
+#[tokio::test]
+async fn an_idle_superagents_strays_are_reaped_after_the_bound() -> TestResult {
+    let f = fixture().await?;
+    idle_conversation(&f)?;
+    f.gate.report_strays(vec![leaked_job(500, 77)]);
+    cockpit_id(&f, &f.alice).await?;
+    wait_for("the idle Superagent's first probe", || f.gate.probes() > 0).await?;
+    assert!(f.gate.reaped().is_empty(), "first seen: reported only");
+    f.h.clock
+        .0
+        .fetch_add(f.h.app.config.stray_reap_after_ms, Ordering::SeqCst);
+    wait_for("the strays to be reaped", || !f.gate.reaped().is_empty()).await?;
+    assert_eq!(f.gate.reaped(), vec![leaked_job(500, 77)]);
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-355 SLR-004: a prompt written while the probe runs keeps the strays (the Superagent is in
+/// a turn again), and its turn's processes are not probed; once the turn ends they are reaped.
+#[tokio::test]
+async fn a_superagent_turn_that_starts_during_the_probe_keeps_its_strays() -> TestResult {
+    let f = fixture().await?;
+    let transcript = idle_conversation(&f)?;
+    f.gate.report_strays(vec![leaked_job(500, 77)]);
+    cockpit_id(&f, &f.alice).await?;
+    wait_for("the first probe", || f.gate.probes() > 0).await?;
+    let prompted = transcript.clone();
+    f.gate.during_probe(Box::new(move || {
+        use std::io::Write as _;
+        if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(&prompted) {
+            let _ = file.write_all(prompt_record("u1", Some("a0"), 0).as_bytes());
+        }
+    }));
+    f.h.clock
+        .0
+        .fetch_add(f.h.app.config.stray_reap_after_ms, Ordering::SeqCst);
+    wait_for("the probe that finds them due", || f.gate.probes() > 1).await?;
+    // The turn ends; the next idle probe reaps them, once: none was reaped during the turn.
+    {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new().append(true).open(&transcript)?;
+        file.write_all(answer_record("a1", "u1", 5).as_bytes())?;
+    }
+    f.h.clock.0.fetch_add(60_000, Ordering::SeqCst);
+    wait_for("the strays to be reaped after the turn", || {
+        !f.gate.reaped().is_empty()
+    })
+    .await?;
+    assert_eq!(f.gate.reaped(), vec![leaked_job(500, 77)], "reaped once");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
