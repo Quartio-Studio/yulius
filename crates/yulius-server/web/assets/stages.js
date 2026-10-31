@@ -79,21 +79,25 @@ export function mebibytes(mb) {
 }
 
 /**
- * What a CI job or a CD run used (SPEC-154), as its process host measured it: "CPU 31 min · peak
- * 2.0 GiB · wrote 640 MiB". Empty when nothing was measured: unknown is never shown as zero.
+ * What a CI job or a CD run used (SPEC-154), as its process host measured it, one figure each:
+ * "CPU 31 min", "peak 2.0 GiB", "wrote 640 MiB". None when nothing was measured: unknown is never
+ * shown as zero.
  */
-export function useText(detail) {
+function useParts(detail) {
   const d = detail || {};
   return [
     Number.isFinite(d.cpu_ms) ? `CPU ${cpuTime(d.cpu_ms)}` : null,
     Number.isFinite(d.memory_peak_mb) ? `peak ${mebibytes(d.memory_peak_mb)}` : null,
     // Rounded to the nearest MiB: 0 is under half a MiB, not nothing.
     Number.isFinite(d.disk_written_mb) ? `wrote ${d.disk_written_mb === 0 ? 'under 1 MiB' : mebibytes(d.disk_written_mb)}` : null,
-  ].filter(Boolean).join(' · ');
+  ].filter(Boolean);
 }
 
-/** Figures worth a line in a tooltip or a table cell: tests, tokens, resource use, exit code, reason. */
-export function figureText(span) {
+/**
+ * Figures worth a line in a tooltip or a table cell: tests, tokens, resource use, exit code, reason,
+ * one string each (joined with " · ", and kept whole on its line in the hover tip).
+ */
+function figureParts(span) {
   const d = span.detail || {};
   const parts = [];
   const tests = ['tests_passed', 'tests_failed', 'tests_flaky', 'tests_skipped'].filter((k) => Number.isFinite(d[k]));
@@ -101,8 +105,7 @@ export function figureText(span) {
   if (Number.isFinite(d.output_tokens) || Number.isFinite(d.input_tokens)) parts.push(`${int((d.input_tokens || 0) + (d.output_tokens || 0))} tokens`);
   if (Number.isFinite(d.active_ms) && d.active_ms > 0) parts.push(`agent work ${duration(d.active_ms)}`);
   if (Number.isFinite(d.cache_hits)) parts.push(`${int(d.cache_hits)} cache hits`);
-  const used = useText(d);
-  if (used) parts.push(used);
+  parts.push(...useParts(d));
   if (d.reused === true) parts.push('reused result, not run');
   if (d.exit_code !== undefined && d.exit_code !== null && d.exit_code !== 0) parts.push(`exit ${d.exit_code}`);
   if (typeof d.reason === 'string' && d.reason) parts.push(d.reason);
@@ -110,7 +113,7 @@ export function figureText(span) {
   if (typeof d.sha === 'string' && span.kind === 'run') parts.push(d.sha.slice(0, 7));
   if (typeof d.action === 'string') parts.push(d.action);
   if (d.measured_by === 'page') parts.push('measured by the page');
-  return parts.join(' · ');
+  return parts;
 }
 
 function outcomeWord(span) {
@@ -195,6 +198,18 @@ function tickLabel(ms) {
 }
 
 /**
+ * Shows a chart tip (its content already set) centred above `x`, `y` in its plot, moved in so all
+ * of it stays inside: the CSS caps its width at the plot's and wraps the rest (#986).
+ */
+function placeTip(tip, x, y) {
+  tip.hidden = false;
+  const room = tip.parentElement.clientWidth;
+  const half = Math.min(tip.getBoundingClientRect().width, room) / 2;
+  tip.style.left = `${Math.max(half, Math.min(room - half, x))}px`;
+  tip.style.top = `${y}px`;
+}
+
+/**
  * One subject's spans as a waterfall (and a table). `related` spans (a task's CI runs) follow
  * under their own heading. Empty when nothing was measured. `view` keeps what a person chose
  * (the spans they opened or closed, the table) across redraws of a running subject.
@@ -236,9 +251,10 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
     const label = inJobs && span.kind === 'job' ? span.name : stageLabel(span);
     const took = span.ended_at ? duration(span.duration_ms) : `${duration(to - from)} so far`;
     const waited = wait ? duration(time(wait.ended_at || span.started_at) - time(wait.started_at)) : null;
-    const figures = figureText(span);
+    const parts = figureParts(span);
+    const figures = parts.join(' · ');
     const said = `${label}: ${waited ? `waited ${waited} for a job slot, ran ${took}` : took}, ${outcomeWord(span)}${figures ? ` (${figures})` : ''}`;
-    return { from, to, label, took, waited, figures, said, failed: FAILED.has(span.outcome) };
+    return { from, to, label, took, waited, figures, parts, said, failed: FAILED.has(span.outcome) };
   };
 
   const rowOf = (span, depth, { inJobs, wait, kids, open, toggle }) => {
@@ -250,11 +266,13 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
     ];
     const show = (event) => {
       setChildren(tip, h('span', null, `${d.label}${span.source === 'backfilled' ? ' · backfilled' : ''}`), h('strong', null, d.took),
-        d.waited ? h('span', null, `waited ${d.waited} for a job slot`) : null, d.figures ? h('span', null, d.figures) : null);
-      tip.hidden = false;
+        d.waited ? h('span', null, `waited ${d.waited} for a job slot`) : null,
+        // Each figure whole, so a long list wraps between figures, not inside one (#986).
+        // Each dot ends its figure's block, so a line breaks after a dot, never before one.
+        d.parts.length ? h('span', null, ...d.parts.flatMap((part, i) => [i ? ' ' : null,
+          h('span', { class: 'st-tip-figure' }, part, i < d.parts.length - 1 ? '\u{a0}·' : null)])) : null);
       const box = tip.parentElement.getBoundingClientRect();
-      tip.style.left = `${Math.max(80, Math.min(box.width - 80, event.clientX - box.left))}px`;
-      tip.style.top = `${event.clientY - box.top}px`;
+      placeTip(tip, event.clientX - box.left, event.clientY - box.top);
     };
     const word = outcomeWord(span);
     const mark = span.kind === 'job' && JOB_MARKS[word] ? icon(JOB_MARKS[word], { size: 12, label: word })
@@ -461,9 +479,7 @@ export function trendChart(trend, { label = 'Stage' } = {}) {
       setChildren(tip, h('span', { class: 'db-tip-date' }, LONG_DATE.format(day(row.date))),
         h('strong', null, Number.isFinite(row.p50_ms) ? `p50 ${duration(row.p50_ms)} · p90 ${duration(row.p90_ms)}` : 'nothing ended'),
         h('span', null, `${int(row.count)} ended`));
-      tip.hidden = false;
-      tip.style.left = `${Math.max(80, Math.min(box.width - 80, (x(i) / width) * box.width))}px`;
-      tip.style.top = `${((Number.isFinite(row.p90_ms) ? y(row.p90_ms) : bottom - 8) / height) * box.height}px`;
+      placeTip(tip, (x(i) / width) * box.width, ((Number.isFinite(row.p90_ms) ? y(row.p90_ms) : bottom - 8) / height) * box.height);
     });
     hit.addEventListener('pointerleave', () => { cross.setAttribute('visibility', 'hidden'); tip.hidden = true; });
     svg.append(hit);

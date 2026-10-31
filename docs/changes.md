@@ -13,6 +13,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `.config/vidoc.toml` (which wins) or the instance has Vidoc off. Members without admin access see
   it disabled. When Vidoc refuses the key or its quota is used up, the scan's message, and so CI's
   security job log and the agents' "Needs you" questions, name that card's address.
+- A chart's hover tip shows all its text (SPEC-360, task #340, #986). The stages waterfall's tip
+  kept its figures on one line and stayed only 80 px from the plot's edge, so a job with many
+  figures ran past the panel and was cut off. It now wraps at 360 px or its plot's width,
+  between figures, and is kept inside its plot by its measured width (the Dashboard's daily
+  chart tip too).
 - A Yulius restart is invisible to a task's session (SPEC-358, ADR-0244, task #343). On
   2026-10-31 every outage left quartio-v2's sessions with a dead Yulius MCP ("MCP server yulius
   is not connected") until a person ran `/mcp`. `yulius wait` gave up after about 50 s, and
