@@ -569,7 +569,7 @@ const LINK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Tests a sandbox's link to Yulius from inside it (SPEC-355 SLR-005): through the holder at
 /// `in_sock`, a connection to the holder's own forward of `port` (Yulius's internal listener)
-/// asks `GET /internal/healthz` and must be answered `200` within [`LINK_TIMEOUT`]. It takes a
+/// asks `GET /internal/healthz` and must be answered `200` within `LINK_TIMEOUT` (5 s). It takes a
 /// place in the forward as any call does. `None` when the holder cannot be reached or does not
 /// offer the test (one started by an older Yulius forbids the port).
 pub async fn probe_link(in_sock: &Path, port: u16) -> Option<bool> {
