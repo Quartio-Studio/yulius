@@ -1,11 +1,11 @@
 ---
 yulius-task: 298e9e28-cb28-4826-bff6-3009173e18e2
-status: in-progress
+status: done
 ---
 
 # SPEC-357: One busy run no longer closes the egress proxy for its whole sandbox
 
-Status: in progress
+Status: implemented
 Date: 2026-10-31
 Owner: Yulius task #342
 Scope authorization: task #342 (replaces #341), the quartio-v2 sandbox `7c46cdac-…` on the
@@ -90,8 +90,8 @@ site.
 - [x] The busiest sandbox gives way at the proxy's limit
 - [x] Refusals and warnings name whose the connections are
 - [x] Operations guide, architecture and changes; follow-up tasks for the rest of #342
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Gates green, pull request merged into dev on green CI
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Gates green, pull request merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -200,4 +200,46 @@ Independent reviews in fresh sessions (skill `yulius-review`), read-only over
     an upgrade (`501`) and a policy refusal (`409`).
   - Nit kept, as the reviewer allowed: a request refused at a full share now pays its DNS lookup
     and policy check first.
+- Round 5 on ec56ba8b: approve, with no critical, major or minor findings. Nits:
+  - Own code, accepted. A plain request to a bound host now runs the policy before the place is
+    taken. So a request then refused at a full share has already applied its secret and noted
+    its use (`note_agent_use`: last-used time, one `vault.agent.use` audit entry per run, secret
+    and host). An upstream `502` counts as a use too, and the alternative is round 4's
+    take-then-refuse, so the cost is accepted.
+  - Pre-existing design, no change. A CONNECT takes its place before the upstream dial. A less
+    busy run may take a place for a host that then cannot be reached, for up to the connect
+    timeout. It is entitled to the place by the rule.
+  - Own code: one line of the operations guide was too long. Rewrapped.
+
+## Evidence
+
+- **Root cause.** The proxy's only `503` path is `slot()`. `NO_PROXY` in every run covers
+  `anthropic.com`, so Anthropic traffic bypasses the proxy. Release #977 (`6658488f`, 09:59 UTC)
+  had the share without the give-way. The running server's commit at 13:34 UTC was
+  `curl 127.0.0.1:8081/internal/version` → `42be970b` (#979).
+- **Today's failure reproduced.** `one_busy_run_gives_way_to_another_run_of_its_sandbox` was red
+  at b427f2da with today's text: `503 … this sandbox's processes hold all of its 8 connections;
+  end leftover processes or try again`. `a_full_proxy_takes_from_the_busiest_sandbox` was red with
+  `503 … too many connections`. Both are green from eb8b7f82.
+- **Review rounds.** Each round's tests were red first: 025a7e09 (round 1), 8e31a6c6 (round 2),
+  the round 3 red commit (the busy run got `200` after a refused destination), and the round 4
+  red commit (`200` after a refused upgrade; `admit_held_by` missing). All are green at HEAD.
+- **Gate.** `scripts/dev ci` on ec56ba8b exited 0:
+  - doctor, the repository check, the script tests, `cargo check`, fmt, clippy `-D warnings`
+    (Linux and macOS);
+  - nextest: 2851 passed, 16 skipped;
+  - doctests;
+  - `cargo deny --locked check`: advisories, bans, licenses and sources ok;
+  - `cargo shear`, and `cargo doc` with no warnings.
+
+  The commit after it changes only the spec and one rewrapped line of the operations guide.
+- **Security.** `yulius security-scan` on ec56ba8b exited 2 (not run): Vidoc refused the
+  instance's key with HTTP 401, and the 3 changed code files were not scanned. This is unrun,
+  not passed. Yulius CI's `security` job scans the pull request head.
+- **e2e.** Not applicable: no web UI change.
+- **Not testable here:**
+  - The production host's journal and quartio-v2's connection table, which are not reachable
+    from this sandbox. The owner was asked (needs_you) to confirm recovery, with the recipe.
+  - The real mix of quartio-v2's holders (browsers, test jobs). The tests use raw tunnels from
+    two runs.
 
