@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-01
 
+- A plain-HTTP request through the egress proxy waits a bounded time for its answer (SPEC-369,
+  ADR-0250, task #352, #975). A plain `http://` request keeps its place in its sandbox's proxy
+  share until the answer's head arrives; an upstream that accepted and never answered kept it for
+  good, so leftover processes could fill the share. It now gets `504` naming the host after 5
+  minutes with no progress (each request-body frame sent restarts the wait), and frees its place.
+  Intercepted requests and tunnels are unchanged.
 - `[docs] changes` may name a folder of change notes, one file per pull request (SPEC-363,
   ADR-0248, task #346). Every task added an entry at the top of one changes log, so in quartio-v2
   each merge into `dev` made every other open pull request conflict on GitHub and rerun its CI
