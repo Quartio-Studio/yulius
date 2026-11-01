@@ -75,5 +75,5 @@ Changes tile) only when the task's worktree is on disk, and otherwise says why (
 - `WORKTREE_TEXT` moves behind an exported `worktreeMissing(row)` in `pages/git.js`, which
   `app.js` already loads, rather than a new module for one constant (a new asset would also need
   the preload list).
-- The tile keeps the diffstat of a branch without a worktree: the numbers come from the branch,
-  which is on GitHub; only the link to the worktree's view goes.
+- The tile keeps the diffstat of a branch without a worktree: the numbers come from the branch in the
+  sandbox's repository (`delivery.rs`), not the worktree; only the link to the worktree's view goes.

@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-01
 
+- The task overview offers its changes only when the task's worktree is there (SPEC-370, task
+  #353, #945): "Review changes" waits for the Git overview and stays away for a task not started
+  or whose worktree was removed, and the Changes tile says "No worktree yet" / "Worktree gone"
+  instead of linking "N files · review", as the Git board does (SPEC-343). Both led to
+  "Couldn't load the changes".
 - `[docs] changes` may name a folder of change notes, one file per pull request (SPEC-363,
   ADR-0248, task #346). Every task added an entry at the top of one changes log, so in quartio-v2
   each merge into `dev` made every other open pull request conflict on GitHub and rerun its CI
