@@ -1,11 +1,11 @@
 ---
 yulius-task: 6cb40d53-d461-49df-b09b-acbed616712b
-status: in-progress
+status: done
 ---
 
 # SPEC-376: The Superagent request tests click "Open" on a toast that stays put (#978)
 
-Status: in-progress
+Status: done
 Date: 2026-11-01
 Owner: Yulius task #356
 Scope authorization: the person's request (task #356): fix GitHub issue #978 in one pull request
@@ -63,7 +63,7 @@ load: no other toast can move the "Open" button while the test clicks it.
 - [x] Regression case for a toast arriving mid-click (red)
 - [x] superagent-requests tests no longer race the ambient toast (green)
 - [x] Independent review approved and findings answered
-- [ ] Gates and full e2e suite green with evidence in the spec
+- [x] Gates and full e2e suite green with evidence in the spec
 
 ## Acceptance criteria
 
@@ -88,3 +88,21 @@ load: no other toast can move the "Open" button while the test clicks it.
   files already turned off the same way. No ADR: this follows the existing `browserask=0` rule.
 - **Fire the mock's own request, not a stand-in.** The regression case calls the function the 5 s
   timer runs, so it fails exactly when that timer could reach the test, not on a dummy `.toast`.
+
+## Evidence
+
+- Reproduction on dev d7346573 (temporary probe, removed): pressing Open with `browser.mouse`, the
+  `startAmbient` event pushed to the event sockets, release: Open moved from y 867 to y 767, the
+  URL stayed `?mock=1#/s/studio/tasks` (fail). Without the event: pass.
+- Red (012e8459): `npx e2e run tests/superagent-requests.e2e.ts`: 10 passed, the regression case
+  failed with `expect.toHaveURL failed … observed: URL …?mock=1#/s/studio/tasks`, the #978 signature.
+  The review reproduced it again by removing `&browserask=0` from a scratch copy of the file.
+- Green (8fa45cf9, 7b36b787): the file passed 11/11, also on a heavily loaded machine where the first
+  test took 10.6 s, past the 5 s sign-in request. `tests/task-done.e2e.ts`, which awaits the request,
+  passed 19/19.
+- Review: round 1 approved 8fa45cf9 with two own-code findings (the regression case's name, comment
+  and README row claimed a toast arrives; the `if` hid the guard), fixed in 7b36b787; round 2
+  approved 7b36b787. No pre-existing findings.
+- `scripts/dev ci` at 7b36b787: exit 0 (repository contracts passed; nextest 2949 passed, 16
+  skipped; doctests and docs built).
+- Full `npx e2e run` at 7b36b787: 70 files passed, 1 skipped; 798 tests passed, 1 skipped (40 min).
