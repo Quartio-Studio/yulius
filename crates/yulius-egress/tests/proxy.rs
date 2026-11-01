@@ -432,9 +432,7 @@ async fn ask(
 }
 
 /// The proxy's status line on `stream`, followed by the text of the body its length announces.
-async fn answer(
-    stream: &mut tokio::net::TcpStream,
-) -> Result<String, Box<dyn std::error::Error>> {
+async fn answer(stream: &mut tokio::net::TcpStream) -> Result<String, Box<dyn std::error::Error>> {
     use tokio::io::AsyncReadExt as _;
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
