@@ -1,11 +1,11 @@
 ---
 yulius-task: 2d9500da-bae1-4253-9576-63ee2c3a5066
-status: in-progress
+status: done
 ---
 
 # SPEC-367: CI job preparation never follows a link at ci, ci/jobs or ci/home
 
-Status: in progress
+Status: implemented
 Date: 2026-11-01
 Owner: Yulius task #350
 Scope authorization: task #350, "Solve GitHub issue #969 in one pull request" (Fixes #969).
@@ -48,13 +48,13 @@ or the checkout's name. Nothing outside the sandbox is created, removed, checked
 
 ## Plan
 
-- [ ] Spec SPEC-367 written and validated
-- [ ] Regression tests show links at ci, ci/home and ci/jobs followed today
-- [ ] The job's HOME and checkout place are made through handles from the sandbox directory
-- [ ] The CI checkout in yulius-git removes and makes nothing by path
-- [ ] Merge-train scratch checkouts are readied through handles too
-- [ ] Docs, changes and evidence updated, gates green and review answered
-- [ ] Pull request merged into dev on green CI
+- [x] Spec SPEC-367 written and validated
+- [x] Regression tests show links at ci, ci/home and ci/jobs followed today
+- [x] The job's HOME and checkout place are made through handles from the sandbox directory
+- [x] The CI checkout in yulius-git removes and makes nothing by path
+- [x] Merge-train scratch checkouts are readied through handles too
+- [x] Docs, changes and evidence updated, gates green and review answered
+- [x] Pull request opened and merge armed on green CI
 
 ## Acceptance criteria
 
@@ -120,3 +120,52 @@ or the checkout's name. Nothing outside the sandbox is created, removed, checked
   repository's; `checkout --force` would then rewrite that repository's `HEAD` and index. Hooks and
   `fsmonitor` are already off for Yulius's Git (`runner.rs`).
 - **No new ADR**: this applies ADR-0174 to two more folders; the spec records the specifics.
+
+## Review
+
+Independent reviews in fresh read-only sessions (skill `om-code-review`), each marking findings
+own code or pre-existing:
+
+- Round 1 (3fe20a42): APPROVE with six own-code minors, all fixed in 78f59044. Registrations
+  outside `ci` counted (forged or pre-fix ones), fixed with a test. Two lanes replacing one link
+  could fail each other, fixed with a test. Errors showed as "internal error". The registration
+  check had no test (`stale`, `aliased` added). Registrations are now compared resolved on both
+  sides. The `remove_tree` bound is documented. Overclaiming docs were reworded. The nits were
+  fixed too. Two pre-existing findings were reported on #969: the `gitdir:` redirect and the
+  merge train's by-path window.
+- Round 2 (78f59044): APPROVE with three minors and two nits, fixed in the next commit:
+  - `EPERM` is now tolerated on macOS only.
+  - The merge checkout's errors name `ci/candidate`.
+  - Removal errors keep their reason.
+  - The comparison with `worktree_remove_if_safe` is corrected.
+  - The race test was accepted as written: it calls `replace_with_folder`, which `folder_in` only
+    delegates to.
+
+## Evidence
+
+- Regression tests fail on dev 50f1faf5 (commit 9712a25b):
+  - `local_ci::a_linked_ci_folder_fails_the_job_and_makes_nothing_outside`: `outside` held
+    `["home"]`.
+  - `local_ci::a_linked_ci_home_is_replaced_by_a_folder`: `["keep", "made"]`.
+  - `local_ci::a_linked_ci_jobs_folder_is_never_checked_out_or_removed_through`: `outside/build`
+    held `[".git", "README.md", "yulius.toml"]`, so `keep` was removed and the checkout made
+    there.
+  - `git_ops::a_ci_checkout_refuses_a_folder_in_the_way` and
+    `git_ops::a_ci_checkout_reached_through_a_link_is_not_cleaned`: both returned `Ok(())`.
+  - `git_ops::a_ci_checkout_registered_outside_is_not_cleaned` failed on 3fe20a42 (round 1).
+- With the fix, all of them pass, as do the unit tests `a_checkout_place_is_readied_without_following_links`
+  and `a_link_replaced_by_another_lane_meanwhile_is_no_error`.
+- `scripts/dev ci` on 3fe20a42: 2934 of 2935 tests passed. The one failure was
+  `local_ci::running_ci_jobs_weigh_on_their_sandbox_until_they_end` with `fatal: bad object
+  worktrees/build/HEAD`. That is the known flake #995 (a fetch racing a half-added worktree),
+  owned by task #351. This change adds no `worktree add`.
+- `scripts/dev ci` on 78f59044: exit 0, with 2937 of 2937 tests passed.
+- After round 2:
+  - `cargo clippy -p yulius-app --all-targets --all-features -D warnings` is clean.
+  - 95 focused tests passed: the CI checkout, merge-train, playground and linked-CI tests.
+  - The final head's full gate is Yulius CI's run.
+- `scripts/dev security`: "Security scan disabled: Vidoc is turned off in Yulius". Nothing was
+  scanned; this is disabled, not passed.
+- Not tested: macOS (`F_GETPATH`, the `EPERM` branch), which compiles in the gate's macOS step
+  but does not run here. The remaining window, an agent swapping a link exactly during one Git
+  command, is recorded under Decisions and has no test.
