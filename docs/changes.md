@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-01
 
+- Two e2e tests no longer measure a layout a ResizeObserver sets once (SPEC-375, task #358, fixes
+  #1003): the way on below a held card (`terminal.e2e.ts`) and the corner notices below a phone's
+  needs_you bar (`cd.e2e.ts`) are polled until they hold, and both run with every observer 2 s
+  late (`lateResizeObservers` in `tests/support.ts`), which failed the single measure every run.
+  Test only: an observer's callback runs before paint, so nobody sees the old place.
 - The Superagent request e2e tests no longer get the mock's sandbox browser sign-in request
   (`browserask=0`): on a slow machine its toast moved "Created #N"'s Open button between the
   click's press and release, and the click was lost (SPEC-376, task #356, #978). A regression case
