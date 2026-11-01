@@ -1,11 +1,11 @@
 ---
 yulius-task: 9df61d43-e974-4e41-90dd-b18f9fda32c1
-status: in-progress
+status: done
 ---
 
 # SPEC-377: the skip answer is true when a chosen step was removed or skipped meanwhile
 
-Status: in-progress
+Status: done
 Date: 2026-11-01
 Owner: Yulius task #359
 Scope authorization: task #359, Fixes #944 (a nit left by the review of #942, SPEC-341).
@@ -51,7 +51,7 @@ answer says what can have happened to them: finished, skipped or removed meanwhi
 - [x] Spec for the skip answer's zero case
 - [x] Regression test for a step removed while the skip waits
 - [x] Skip answer covers finished, skipped and removed steps
-- [ ] Gates, review and delivery
+- [x] Gates, review and delivery
 
 ## Acceptance criteria
 
@@ -84,3 +84,25 @@ answer says what can have happened to them: finished, skipped or removed meanwhi
   branch as the `done` test.
 - The partial case ("1 step skipped" while another chosen step was resolved) keeps its answer: it
   is true, and the step list shows the rest.
+
+## Evidence
+
+- **Red.** `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^intake::a_step_/)'`
+  before the fix: `a_step_removed_while_the_skip_waits_stays_removed` failed with the note "No
+  open step was left to skip (already finished); #2 runs after this task." (bc805f69). Before
+  SAZ-003, `a_skip_with_no_chosen_step_says_so` failed with "No open step was left to skip
+  (finished, skipped or removed meanwhile); #2 runs after this task." (3dbb1cdc).
+- **Green.** `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^intake::/)'`: 17
+  tests, all passed.
+- **Gate.** `scripts/dev ci` exited 0 at `c2238bee` (2950 passed, 16 skipped) and at `e41d8c92`
+  (2951 passed, 16 skipped): fmt, lint, macOS compile, deps, nextest, doctests and docs. Later
+  commits change only `docs/api.md` and this spec.
+- **Security.** `yulius security-scan` exited 0: "Security scan disabled" (Vidoc is off for this
+  project in Yulius). Nothing was scanned; this is not a pass.
+- **Review.** Fresh-session `om-code-review`: round 1 approved `c2238bee` with one pre-existing
+  minor (the empty selection, fixed test-first as SAZ-003), the unfinished spec, an overclaiming
+  test comment and loose assertions (all fixed), and no test for "skipped by someone else"
+  (answered in Decisions). Round 2 approved `e41d8c92`; its nits: the `docs/api.md` clause was
+  added, and the pre-existing `starts_with("1 step skipped")` check in the happy-path test is left
+  as it is (true, outside this change).
+- **Not tested.** No browser run: the web card only shows `note` in a toast, unchanged.
