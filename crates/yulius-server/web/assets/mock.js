@@ -5470,11 +5470,7 @@ function startAmbient(db) {
   if (db.ambient || db.noAmbient) return;
   db.ambient = true;
   let tick = 0;
-  setTimeout(() => {
-    // Like the server, events reach only viewers of the sandbox (none without GitHub).
-    if (db.noBrowserAsk || !db.sandboxes.some((s) => s.id === 'sb_studio')) return;
-    emit(db, { type: 'browser.action_requested', sandbox_id: 'sb_studio', tab_id: 'tab-aws', reason: 'Sign in to AWS so task #10 can deploy', task_id: 'tsk_studio_10' });
-  }, 5000);
+  setTimeout(() => db.askBrowserSignIn(), 5000);
   setInterval(() => {
     if (db.eventSockets.size === 0) return;
     tick += 1;
@@ -5615,6 +5611,14 @@ export function createMockTransport(params) {
   };
   db.heartbeatMs = params.has('heartbeat') ? Number(params.get('heartbeat')) : 20000;
   db.heartbeats = 0; // beats sent, so a test can silence the stream right after one
+  // The sandbox browser's sign-in request that `startAmbient` sends 5 s after the start; a test
+  // fires it at the moment it races (#978). Nothing under `browserask=0`; says whether it was sent.
+  db.askBrowserSignIn = () => {
+    // Like the server, events reach only viewers of the sandbox (none without GitHub).
+    if (db.noBrowserAsk || !db.sandboxes.some((s) => s.id === 'sb_studio')) return false;
+    emit(db, { type: 'browser.action_requested', sandbox_id: 'sb_studio', tab_id: 'tab-aws', reason: 'Sign in to AWS so task #10 can deploy', task_id: 'tsk_studio_10' });
+    return true;
+  };
   // The person's Superagent in `source` asks to start a task in another sandbox (SPEC-335).
   db.askSuperagent = (source, { sandbox, prompt, title = null, options = {} }) => {
     const target = db.sandboxes.find((s) => s.slug === sandbox);
