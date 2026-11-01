@@ -2014,6 +2014,9 @@ idle for 5 minutes, a full sandbox share takes the oldest connection of its busi
 the full proxy that of the busiest sandbox, if it holds at least 2 more than the asker, so one busy
 run cannot lock the other runs of its sandbox out
 ([decision 0243](decisions/0243-the-busiest-run-gives-way-at-a-full-proxy-share.md)).
+A plain `http://` request never gives way while in flight, so it waits at most 5 minutes with no
+progress for its upstream's response head, then gets `504` and frees its place
+([decision 0250](decisions/0250-a-plain-http-request-waits-a-bounded-time-for-its-answer.md)).
 A refusal that remains (a sandbox's share, its `out.sock`, the proxy's total) is a connection
 trouble in the app's `ConnectionHealth` registry, with the three busiest runs or sandboxes. It
 ends once its limit falls to seven eighths, and only its beginning and end are published
