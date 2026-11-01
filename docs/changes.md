@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-01
 
+- The e2e test of a Vidoc refresh that overtakes the read after a change no longer times out on
+  a loaded host: it waited for exactly two held reads, which the page's own rereads (the sandbox
+  list reloaded, its poll) overshot; it now waits for the refresh to start and a read after it
+  (SPEC-374, #1002, task #357).
 - The CI/CD page's Security scan (Vidoc) card puts its switch at the card's right edge, as the
   Settings rows do, instead of 520 px across a full-width card (SPEC-364, #997, task #347).
 - The task overview offers its changes only when the task's worktree is there (SPEC-370, task
