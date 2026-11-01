@@ -66,8 +66,9 @@ test('a request shows in full above the Superagent and Create task starts it in 
 
 // #978: the mock's sign-in request from the sandbox browser (5 s after the start) added a toast
 // below "Created #N", which moved its Open button up between the click's press and release on a
-// slow machine: no click, and the page stayed. Here it comes at that very moment.
-test('a toast arriving while Open is pressed does not lose the click', async ({ app, browser, screen }) => {
+// slow machine: no click, and the page stayed. The request is fired at that very moment; this
+// file's pages leave it out (`browserask=0`), so it must not come and the click must open the task.
+test('a sign-in request from the sandbox browser cannot move a pressed Open (#978)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/tasks'));
   await openSuperagent(browser, screen);
   await ask(browser, 'sb_studio', { sandbox: 'product', prompt: PROMPT, title: 'API client v2' });
@@ -80,6 +81,7 @@ test('a toast arriving while Open is pressed does not lose the click', async ({ 
   });
   await browser.mouse.move(open.x, open.y);
   await browser.mouse.down();
+  // Sent only without `browserask=0`: its toast then moves Open, and the release below misses it.
   if (await browser.evaluate(() => (window as unknown as Asking).__yuliusMock.askBrowserSignIn())) {
     await expect(browser.locator('.toast:has-text("needs your action")')).toBeVisible();
   }
