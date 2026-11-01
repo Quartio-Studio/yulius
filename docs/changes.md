@@ -15,6 +15,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   at the checkout's name that is not a checkout Git registers there is removed through handles.
   `ci_checkout` removes and makes nothing by path and matches registrations by resolved path. The
   merge train's scratch checkouts are readied the same way.
+- A fetch survives a worktree being added beside it (SPEC-368, ADR-0249, task #351, fixes #995).
+  `git worktree add` writes the new registration's `HEAD` as the null id before it sets the
+  commit, and a fetch's connectivity check, which reads every worktree's `HEAD`, failed meanwhile
+  with `bad object worktrees/<name>/HEAD`: a sandbox sync beside a CI job's checkout (seen in the
+  `local_ci` test under load), an integration merge's fetch beside a new task worktree, or an
+  agent's own add. Yulius's Git adapter now runs such a fetch again, at most 5 attempts with a
+  100 to 800 ms backoff, once its own registration changes have ended; any other failure returns
+  at once.
 - A plain-HTTP request through the egress proxy waits a bounded time for its answer (SPEC-369,
   ADR-0250, task #352, #975). A plain `http://` request keeps its place in its sandbox's proxy
   share until the answer's head arrives; an upstream that accepted and never answered kept it for
