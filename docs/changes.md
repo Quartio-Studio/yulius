@@ -10,6 +10,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   (`browserask=0`): on a slow machine its toast moved "Created #N"'s Open button between the
   click's press and release, and the click was lost (SPEC-376, task #356, #978). A regression case
   fires that request (`__yuliusMock.askBrowserSignIn()`) while Open is pressed: it must not come.
+- The e2e helper `terminalShown` waits up to `TERMINAL_SHOW_MS` (30 s) for a task terminal's
+  first screen, with a message naming it, instead of an assertion's 5 s, which was shorter than
+  the app may take to show it (its core's load, then up to 5 s until it reveals anyway) and
+  failed a loaded run (SPEC-372, ADR-0251, task #355, fixes #949). A regression test holds the
+  core and the hello so the terminal shows only by that limit.
+- A held prompt's "skip after" that finds none of the chosen steps still open now answers "No open
+  step was left to skip (finished, skipped or removed meanwhile)" instead of "(already finished)",
+  which was false for a step the spec sync or `steps_set` removed, or someone else skipped, while
+  the skip waited for the steps lock (SPEC-377, task #359, #944). With no step checked it answers
+  "No step was chosen to skip".
 - The CI/CD page's Security scan (Vidoc) card puts its switch at the card's right edge, as the
   Settings rows do, instead of 520 px across a full-width card (SPEC-364, #997, task #347).
 - The task overview offers its changes only when the task's worktree is there (SPEC-370, task
