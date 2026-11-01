@@ -2193,6 +2193,101 @@ async fn a_linked_ci_cache_folder_never_reaches_outside() -> TestResult {
     Ok(())
 }
 
+/// The names in `dir`, sorted.
+fn names_in(dir: &Path) -> BoxResult<Vec<String>> {
+    let mut names = std::fs::read_dir(dir)?
+        .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
+        .collect::<BoxResult<Vec<_>>>()?;
+    names.sort();
+    Ok(names)
+}
+
+/// #969 (SPEC-367 CJP-001): a link an agent put at `ci` fails the jobs before Yulius makes
+/// anything: before, `<target>/home` (and the checkout) were made at the link's target.
+#[tokio::test]
+async fn a_linked_ci_folder_fails_the_job_and_makes_nothing_outside() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"build\"\ncommand = 'echo ran'\n".to_owned()
+    })
+    .await?;
+    let outside = f.data.join("outside");
+    std::fs::create_dir_all(&outside)?;
+    std::os::unix::fs::symlink(&outside, f.data.join("sandboxes/s1/ci"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let jobs = all_jobs(&f).await?;
+    assert!(!jobs.is_empty(), "no job was queued");
+    assert!(jobs.iter().all(|job| job["state"] != "passed"), "{jobs:?}");
+    assert_eq!(names_in(&outside)?, Vec::<String>::new(), "made outside");
+    Ok(())
+}
+
+/// #969 (SPEC-367 CJP-002): a link at `ci/home` is replaced by a folder of the sandbox, never the
+/// job's `HOME`: before, the job wrote into the link's target.
+#[tokio::test]
+async fn a_linked_ci_home_is_replaced_by_a_folder() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"build\"\ncommand = 'touch \"$HOME/made\"'\n".to_owned()
+    })
+    .await?;
+    let outside = f.data.join("outside");
+    std::fs::create_dir_all(&outside)?;
+    std::fs::write(outside.join("keep"), "host\n")?;
+    let ci = f.data.join("sandboxes/s1/ci");
+    std::fs::create_dir_all(&ci)?;
+    std::os::unix::fs::symlink(&outside, ci.join("home"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    f.all_passed(2).await?;
+    assert_eq!(
+        names_in(&outside)?,
+        ["keep"],
+        "the target is left as it was"
+    );
+    assert!(std::fs::symlink_metadata(ci.join("home"))?.is_dir());
+    assert!(
+        ci.join("home/made").exists(),
+        "HOME is the sandbox's folder"
+    );
+    Ok(())
+}
+
+/// #969 (SPEC-367 CJP-002, CJP-003): a link at `ci/jobs` to a folder holding the checkouts' names
+/// is replaced by a folder: before, Git added the checkouts at the target, and the next run
+/// removed `<target>/<checkout>` through the link as a broken checkout.
+#[tokio::test]
+async fn a_linked_ci_jobs_folder_is_never_checked_out_or_removed_through() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"build\"\ncommand = 'echo ran'\n".to_owned()
+    })
+    .await?;
+    let outside = f.data.join("outside");
+    for name in ["build", "build@1"] {
+        std::fs::create_dir_all(outside.join(name))?;
+        std::fs::write(outside.join(name).join("keep"), "host\n")?;
+    }
+    let ci = f.data.join("sandboxes/s1/ci");
+    std::fs::create_dir_all(&ci)?;
+    std::os::unix::fs::symlink(&outside, ci.join("jobs"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    f.all_passed(2).await?;
+    for name in ["build", "build@1"] {
+        assert_eq!(names_in(&outside.join(name))?, ["keep"], "{name} outside");
+    }
+    assert!(std::fs::symlink_metadata(ci.join("jobs"))?.is_dir());
+    assert!(ci.join("jobs/build/README.md").exists());
+    let registered = git(
+        &f.data.join("sandboxes/s1/repo"),
+        &["worktree", "list", "--porcelain"],
+    )?;
+    assert!(
+        !registered.contains(&*outside.to_string_lossy()),
+        "{registered}"
+    );
+    Ok(())
+}
+
 /// A job that names its stages, a figure and prints a cargo test summary (SPEC-137 STG-203).
 /// Each step holds until the test creates its gate, `<data>/<next step>-<run id>`: the unit stage,
 /// the end of the stages and the end of the job.

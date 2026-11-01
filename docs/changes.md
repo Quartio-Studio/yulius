@@ -14,6 +14,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   trouble (ADR-0240, 0241, 0243, 0246). A test shows the 300 s floor with an explicit clock:
   #964's idle reclaim is met as ADR-0241 decided, at a full limit rather than on a timer.
 
+- CI job preparation never follows a link an agent put at `ci`, `ci/jobs` or `ci/home` (SPEC-367,
+  task #350, fixes #969). Before, a link at `ci` made the next job create `home` and its checkout
+  at the link's target, outside the sandbox; a link at `ci/home` became the job's `HOME`; a link at
+  `ci/jobs` made Git add the checkout at the target and every later run remove it there through
+  the link. Now `ci` is opened from the sandbox directory with `O_NOFOLLOW` (a link fails the job,
+  nothing is made), a link or file at `ci/home` or `ci/jobs` is replaced by a folder, and anything
+  at the checkout's name that is not a checkout Git registers there is removed through handles.
+  `ci_checkout` removes and makes nothing by path and matches registrations by resolved path. The
+  merge train's scratch checkouts are readied the same way.
 - A fetch survives a worktree being added beside it (SPEC-368, ADR-0249, task #351, fixes #995).
   `git worktree add` writes the new registration's `HEAD` as the null id before it sets the
   commit, and a fetch's connectivity check, which reads every worktree's `HEAD`, failed meanwhile
