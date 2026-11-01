@@ -121,7 +121,7 @@ type Warned = HashMap<(&'static str, Option<String>), Instant>;
 /// sandbox (SPEC-357). Each holds the sender that ends it.
 struct Slots {
     /// By sandbox and run (`EgressClient::use_key`), SPEC-357.
-    table: Mutex<Connections<String, oneshot::Sender<()>, String>>,
+    table: Mutex<Table>,
     epoch: Instant,
     /// Where a refusing share or proxy is a trouble until it has room (SPEC-361).
     health: Arc<ConnectionHealth>,
@@ -131,6 +131,18 @@ struct Slots {
     /// Runs right before a refusal is reported (tests: a close racing it, review round 2).
     #[cfg(test)]
     pause: Option<Box<dyn Fn() + Send + Sync>>,
+}
+
+/// The connections by sandbox and run, each with what ends it.
+type Table = Connections<String, oneshot::Sender<()>, String>;
+
+/// The table `config` bounds: its total, a sandbox's share and the idle floor (SPEC-366 EPB-003).
+fn table(config: &EgressConfig) -> Table {
+    Connections::with_owners(
+        config.max_connections,
+        config.max_per_sandbox,
+        u64::try_from(config.idle_floor.as_millis()).unwrap_or(u64::MAX),
+    )
 }
 
 /// A place the table gave, or the limit met.
@@ -529,17 +541,14 @@ impl EgressProxy {
         if !roots.is_empty() {
             builder = builder.tls_certs_merge(roots);
         }
+        let table = table(&config);
         Ok(Self {
             policy,
             ca,
             http: builder.build()?,
             resolve: config.resolve,
             slots: Arc::new(Slots {
-                table: Mutex::new(Connections::with_owners(
-                    config.max_connections,
-                    config.max_per_sandbox,
-                    u64::try_from(config.idle_floor.as_millis()).unwrap_or(u64::MAX),
-                )),
+                table: Mutex::new(table),
                 epoch: Instant::now(),
                 health: config.health,
                 share: config
@@ -1090,6 +1099,44 @@ mod tests {
             health.troubles().is_empty(),
             "the trouble never ends: {:?}",
             health.troubles()
+        );
+        Ok(())
+    }
+
+    /// SPEC-366 EPB-003 (#964 criterion 3, as ADR-0241 decided): at the proxy's default floor, a
+    /// full limit takes a connection idle for `IDLE_FLOOR` and never one idle for less.
+    #[test]
+    fn a_connection_gives_way_once_idle_for_the_floor() -> Result<(), Box<dyn std::error::Error>> {
+        let floor = u64::try_from(IDLE_FLOOR.as_millis())?;
+        assert_eq!(floor, 300_000);
+        let mut table = table(&EgressConfig {
+            max_connections: 2,
+            max_per_sandbox: 2,
+            ..EgressConfig::default()
+        });
+        let mut admit = |run: &str, now| {
+            let (end, ended) = oneshot::channel();
+            let admitted = table.admit_by("s1".to_owned(), run.to_owned(), end, now);
+            (admitted, ended)
+        };
+        let (_old, mut old_ended) = admit("old", 0);
+        let (_young, mut young_ended) = admit("young", 1);
+        assert!(admit("agent", floor - 1).0.is_err(), "idle for less");
+        let (agent, _) = admit("agent", floor);
+        let evicted = agent?.evicted.ok_or("nothing gave way")?;
+        assert_eq!(
+            (evicted.owner.as_str(), evicted.idle_ms, evicted.busier),
+            ("old", floor, None)
+        );
+        drop(evicted.payload);
+        assert!(old_ended.try_recv().is_err(), "its tunnel is ended");
+        assert!(
+            admit("other", floor).0.is_err(),
+            "the young one is idle 1 ms less"
+        );
+        assert_eq!(
+            young_ended.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
         );
         Ok(())
     }
