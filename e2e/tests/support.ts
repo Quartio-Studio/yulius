@@ -156,6 +156,26 @@ export async function touchTask(browser: Browser, sandbox: string, number: numbe
 }
 
 /**
+ * Makes every ResizeObserver of the next pages answer `ms` late, as a loaded host does when it
+ * delays the rendering update that runs them (#1003). The default outlasts a test's waits for
+ * what shows (so a single measure fails every run) and leaves room in a poll's 5 s: a layout an
+ * observer sets is measured by polling, never once. Call it before `app.open`.
+ */
+export async function lateResizeObservers(browser: Browser, ms = 2000): Promise<void> {
+  await browser.addInitScript((delay) => {
+    const Native = window.ResizeObserver;
+    window.ResizeObserver = class extends Native {
+      constructor(callback: ResizeObserverCallback) {
+        let connected = true;
+        super((entries, observer) => { setTimeout(() => { if (connected) callback(entries, observer); }, delay); });
+        const disconnect = this.disconnect.bind(this);
+        this.disconnect = () => { connected = false; disconnect(); };
+      }
+    };
+  }, ms);
+}
+
+/**
  * The new-task prompt's text as it shows (SPEC-124), each file in it as `[name]`: the prompt is a
  * text box with files inside its text, not a textarea, so it has no value to read.
  */

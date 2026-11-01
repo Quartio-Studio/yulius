@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, lateResizeObservers, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -700,6 +700,9 @@ test('a needs_you request reads What happened, Problem and To do', async ({ app,
 // terminal's corner notices start below the bar, and an unpaired backtick stays a backtick.
 test('the longest needs_you request keeps its to-do and buttons in view on a phone', async ({ app, browser }) => {
   await browser.setViewport({ width: 360, height: 780 });
+  // The corner moves below the bar when a ResizeObserver sees the bar (taskview.js), at a
+  // rendering update a loaded host delays (#1003).
+  await lateResizeObservers(browser);
   await app.open(mock('/s/studio/t/12'));
   await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {
     needs_you: {
