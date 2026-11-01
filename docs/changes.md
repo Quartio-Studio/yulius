@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-01
 
+- The Superagent request e2e tests no longer get the mock's sandbox browser sign-in request
+  (`browserask=0`): on a slow machine its toast moved "Created #N"'s Open button between the
+  click's press and release, and the click was lost (SPEC-376, task #356, #978). A regression case
+  fires the request (`__yuliusMock.askBrowserSignIn()`) while Open is pressed.
 - The CI/CD page's Security scan (Vidoc) card puts its switch at the card's right edge, as the
   Settings rows do, instead of 520 px across a full-width card (SPEC-364, #997, task #347).
 - The task overview offers its changes only when the task's worktree is there (SPEC-370, task

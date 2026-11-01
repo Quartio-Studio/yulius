@@ -60,8 +60,8 @@ load: no other toast can move the "Open" button while the test clicks it.
 ## Plan
 
 - [x] Spec the fix and reproduce the race
-- [ ] Regression case for a toast arriving mid-click (red)
-- [ ] superagent-requests tests no longer race the ambient toast (green)
+- [x] Regression case for a toast arriving mid-click (red)
+- [x] superagent-requests tests no longer race the ambient toast (green)
 - [ ] Independent review approved and findings answered
 - [ ] Gates and full e2e suite green with evidence in the spec
 

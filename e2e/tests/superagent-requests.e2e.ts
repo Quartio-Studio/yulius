@@ -1,9 +1,16 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import type { Browser } from '@e2e-dev/web';
-import { axeViolations, eventsConnected, failOnPageErrors, mock, openSuperagent } from './support.ts';
+import { axeViolations, eventsConnected, failOnPageErrors, mock as mockPage, openSuperagent } from './support.ts';
 
 failOnPageErrors();
+
+/**
+ * A mock page without the sandbox browser's sign-in request 5 s after the start (`browserask=0`):
+ * its toast goes below the others and moves them up, so on a slow machine it moved a toast's
+ * button between a click's press and release, and the click was lost (#978).
+ */
+const mock = (path: string) => mockPage(path, '&browserask=0');
 
 // SPEC-335: the Superagent starts a task in another sandbox only once its person approves that
 // one request, which its panel shows above the session in full.
@@ -51,9 +58,9 @@ test('a request shows in full above the Superagent and Create task starts it in 
   const created = await productTasks(browser);
   expect(created.length).toBe(before.length + 1);
   expect(created[created.length - 1]).toEqual({ title: 'API client v2', prompt: PROMPT, status: 'prepared' });
-  // The toast names the task and opens it.
-  await expect(browser.locator('.toast:has-text("in product")')).toBeVisible();
-  await browser.locator('.toast:has-text("in product") button:has-text("Open")').click();
+  // The toast names the task and opens it ("in product" alone also matches the error toast).
+  await expect(browser.locator('.toast:has-text("Created #"):has-text("in product")')).toBeVisible();
+  await browser.locator('.toast:has-text("Created #"):has-text("in product") button:has-text("Open")').click();
   await expect(browser).toHaveURL(/#\/s\/product\/t\/\d+$/);
 });
 
