@@ -1224,7 +1224,8 @@ async fn a_step_finished_while_the_skip_waits_stays_done() -> TestResult {
     let runtime = i.h.app.runtime(&task);
     let held_lock = runtime.steps_lock.lock().await;
     let agent = async {
-        // The new direction exists: the skip checked the step and now waits for the lock.
+        // The new direction exists: the skip passed its check, and its re-read cannot run
+        // before the lock is released.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while i.h.store.tasks(&sandbox, false).await?.len() == before {
             if std::time::Instant::now() > deadline {
@@ -1250,20 +1251,18 @@ async fn a_step_finished_while_the_skip_waits_stays_done() -> TestResult {
     finished?;
     let r = r?;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
-    assert!(
-        r.body["note"]
-            .as_str()
-            .is_some_and(|n| n.starts_with(NOTHING_LEFT_TO_SKIP)),
-        "{:?}",
-        r.body
-    );
+    assert_eq!(r.body["note"], nothing_left_to_skip(&r.body));
     assert_eq!(i.h.store.steps(&task).await?[1].status, "done");
     Ok(())
 }
 
 /// SPEC-377 SAZ-001: the answer when none of the chosen steps was still open to skip.
-const NOTHING_LEFT_TO_SKIP: &str =
-    "No open step was left to skip (finished, skipped or removed meanwhile); #";
+fn nothing_left_to_skip(body: &Value) -> String {
+    format!(
+        "No open step was left to skip (finished, skipped or removed meanwhile); #{} runs after this task.",
+        body["created"]["number"]
+    )
+}
 
 /// SPEC-377 SAZ-002 (#944): a step the spec sync or `steps_set` removed while the skip waited
 /// for the steps lock stays removed, and the answer does not claim it was finished.
@@ -1288,7 +1287,8 @@ async fn a_step_removed_while_the_skip_waits_stays_removed() -> TestResult {
     let runtime = i.h.app.runtime(&task);
     let held_lock = runtime.steps_lock.lock().await;
     let sync = async {
-        // The new direction exists: the skip checked the step and now waits for the lock.
+        // The new direction exists: the skip passed its check, and its re-read cannot run
+        // before the lock is released.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while i.h.store.tasks(&sandbox, false).await?.len() == before {
             if std::time::Instant::now() > deadline {
@@ -1320,13 +1320,50 @@ async fn a_step_removed_while_the_skip_waits_stays_removed() -> TestResult {
     removed?;
     let r = r?;
     assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
-    let note = r.body["note"].as_str().ok_or("note")?;
-    assert!(note.starts_with(NOTHING_LEFT_TO_SKIP), "{note}");
-    assert!(!note.contains("already finished"), "{note}");
+    assert_eq!(r.body["created"]["status"], "chained");
+    assert_eq!(r.body["note"], nothing_left_to_skip(&r.body));
     let steps = i.h.store.steps(&task).await?;
     assert_eq!(steps.len(), 1, "{steps:?}");
     assert_eq!(steps[0].id.as_str(), "st-1");
     assert_eq!(steps[0].status, "pending");
+    Ok(())
+}
+
+/// SPEC-377 SAZ-003: "Skip the selected steps…" with no step checked chains the new direction,
+/// skips nothing and says no step was chosen, not that one was finished meanwhile.
+#[tokio::test]
+async fn a_skip_with_no_chosen_step_says_so() -> TestResult {
+    let h = harness_with(HarnessOptions {
+        configure: Some(Box::new(|c| c.max_live_sessions = 0)),
+        ..HarnessOptions::default()
+    })?;
+    let i = intake_with(h).await?;
+    let task = running_task(&i).await?;
+    i.h.app.record_typing(&task, &UserId::parse("u-alice")?);
+    let r = hook(&i.h, "drop the export, show the report as a chart instead").await?;
+    assert!(held(&r), "{:?}", r.body);
+    let hold = summary(&i, "t-run").await?["held_prompt"].clone();
+    let path = format!(
+        "/api/tasks/t-run/held-prompts/{}",
+        hold["id"].as_str().ok_or("id")?
+    );
+    let r = post(
+        &i,
+        &path,
+        json!({"action": "skip_after", "skip_step_ids": []}),
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.body["created"]["status"], "chained");
+    assert_eq!(
+        r.body["note"],
+        format!(
+            "No step was chosen to skip; #{} runs after this task.",
+            r.body["created"]["number"]
+        )
+    );
+    let steps = i.h.store.steps(&task).await?;
+    assert!(steps.iter().all(|s| s.status == "pending"), "{steps:?}");
     Ok(())
 }
 
