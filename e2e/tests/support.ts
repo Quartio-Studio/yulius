@@ -112,15 +112,27 @@ export async function editorShown(browser: Browser): Promise<void> {
 }
 
 /**
- * Waits until the task view's terminal shows its first screen. The task view asks for the
- * keyboard when it opens, and that request lands when the terminal shows, over a button or link
- * focused meanwhile (SPEC-056 WUI-102). A test that puts the keyboard elsewhere on a task's page
- * waits for this first: before, it raced the terminal, which took the keyboard 30–100 ms after the
- * sidebar showed (SPEC-082 TST-003).
+ * Budget for a task terminal's first screen (ADR-0251). The terminal shows once its core has
+ * loaded (eight modules, xterm's stylesheet and the code font, terminal.js) and its server drew
+ * the first screen, or at the latest `REVEAL_LIMIT_MS` (5 s, terminal-core.js) after it started,
+ * which is after that load: an assertion's 5 s is shorter than the app's own limit, and a starved
+ * runner missed it (#949). It bounds that one condition, not the steps after it.
+ */
+export const TERMINAL_SHOW_MS = 30_000;
+
+/**
+ * Waits until the task view's terminal shows its first screen, within `TERMINAL_SHOW_MS`. The task
+ * view asks for the keyboard when it opens, and that request lands when the terminal shows, over a
+ * button or link focused meanwhile (SPEC-056 WUI-102). A test that puts the keyboard elsewhere on a
+ * task's page waits for this first: before, it raced the terminal, which took the keyboard 30–100 ms
+ * after the sidebar showed (SPEC-082 TST-003).
  */
 export async function terminalShown(browser: Browser): Promise<void> {
   await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .term') !== null
-    && document.querySelector('.taskview .term-pending, .taskview .term-placeholder') === null)).toBe(true);
+    && document.querySelector('.taskview .term-pending, .taskview .term-placeholder') === null), {
+    timeout: TERMINAL_SHOW_MS,
+    message: 'the task view’s terminal never showed its first screen (its core did not load or it never revealed)',
+  }).toBe(true);
 }
 
 /**

@@ -105,7 +105,10 @@ rejection or `console.error` (`failOnPageErrors()` in `tests/support.ts`). In th
 `app.open` and `browser.reload` of a mock page return once the mock is installed, so a test can
 use `window.__yuliusMock` right away. A test that calls `window.monaco.editor` waits for
 `editorShown(browser)` first: the Editor's first opening loads Monaco (its own budget,
-`MONACO_LOAD_MS`), and an API call while it loads breaks the editor (#394, ADR-0122). Change a
+`MONACO_LOAD_MS`), and an API call while it loads breaks the editor (#394, ADR-0122). A test
+that waits for a task terminal's first screen calls `terminalShown(browser)`: its budget
+(`TERMINAL_SHOW_MS`) outlasts the app's own reveal limit after the terminal core's load (#949,
+ADR-0251). Change a
 task as the server would announce it with `touchTask` from `tests/support.ts`: it waits until the
 page is connected to its live updates (`eventsConnected`), because a change announced before is
 lost to the page, as on the server (#506). A check that names tasks the mock changes by itself

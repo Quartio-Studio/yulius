@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-01
 
+- The e2e helper `terminalShown` waits up to `TERMINAL_SHOW_MS` (30 s) for a task terminal's
+  first screen, with a message naming it, instead of an assertion's 5 s, which was shorter than
+  the app may take to show it (its core's load, then up to 5 s until it reveals anyway) and
+  failed a loaded run (SPEC-372, ADR-0251, task #355, fixes #949). A regression test holds the
+  core and the hello so the terminal shows only by that limit.
 - A held prompt's "skip after" that finds none of the chosen steps still open now answers "No open
   step was left to skip (finished, skipped or removed meanwhile)" instead of "(already finished)",
   which was false for a step the spec sync or `steps_set` removed, or someone else skipped, while
