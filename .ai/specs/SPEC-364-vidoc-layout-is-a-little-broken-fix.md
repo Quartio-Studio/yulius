@@ -47,8 +47,8 @@ keeps its own 520px cap, which is right in its narrow settings column and is not
 ## Plan
 
 - [x] Spec the Security scan card layout fix and file the issue
-- [ ] Regression test: the card's switch sits at the card's right edge
-- [ ] The Security scan card's switch at its right edge, like Settings rows
+- [x] Regression test: the card's switch sits at the card's right edge
+- [x] The Security scan card's switch at its right edge, like Settings rows
 - [ ] Independent review, gates green, changes log and delivery
 
 ## Acceptance criteria

@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-01
 
+- The CI/CD page's Security scan (Vidoc) card puts its switch at the card's right edge, as the
+  Settings rows do, instead of 520 px across a full-width card (SPEC-364, #997, task #347).
+
 - `[docs] changes` may name a folder of change notes, one file per pull request (SPEC-363,
   ADR-0248, task #346). Every task added an entry at the top of one changes log, so in quartio-v2
   each merge into `dev` made every other open pull request conflict on GitHub and rerun its CI
