@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-01
 
+- The task overview offers its changes only when the task's worktree is there (SPEC-370, task
+  #353, #945): "Review changes" waits for the Git overview and stays away for a task not started
+  or whose worktree was removed, and the Changes tile says "No worktree yet" / "Worktree gone"
+  instead of linking "N files · review", as the Git board does (SPEC-343). Both led to
+  "Couldn't load the changes".
 - The egress proxy's own warnings at a full proxy and a full share now name the busiest holders
   with their counts (`holders=s1 (5), s2 (5)`: sandboxes, or runs of the sandbox), so the journal
   says who holds the connections (SPEC-366, task #349, closes #964). SPEC-002 §2.7 now states
