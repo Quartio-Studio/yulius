@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-01
 
+- The Superagent request e2e tests no longer get the mock's sandbox browser sign-in request
+  (`browserask=0`): on a slow machine its toast moved "Created #N"'s Open button between the
+  click's press and release, and the click was lost (SPEC-376, task #356, #978). A regression case
+  fires that request (`__yuliusMock.askBrowserSignIn()`) while Open is pressed: it must not come.
 - The e2e helper `terminalShown` waits up to `TERMINAL_SHOW_MS` (30 s) for a task terminal's
   first screen, with a message naming it, instead of an assertion's 5 s, which was shorter than
   the app may take to show it (its core's load, then up to 5 s until it reveals anyway) and
