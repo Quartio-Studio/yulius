@@ -122,7 +122,7 @@ code, all answered in this change:
   `cargo nextest run -p yulius-egress --test proxy` → 3 failed, 13 passed;
   `a_plain_request_to_a_silent_upstream_gets_504_and_frees_its_place` failed with "a plain request
   to a silent upstream was never answered" (30 s deadline), the plain `/slow` request got 200.
-- Fix (75719e66): `cargo nextest run -p yulius-egress` → 24 passed.
+- Fix (82fd3bde): `cargo nextest run -p yulius-egress` → 24 passed.
 - Mutation: `within` ignoring progress (a total bound) → `a_plain_request_still_sending_its_body_is_not_cut`
   failed; restored.
 - Gate at e90e04b2: `scripts/dev ci` exit 0; nextest 2932 passed, 16 skipped; clippy, fmt, docs,
