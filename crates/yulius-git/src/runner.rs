@@ -29,6 +29,10 @@ const PIPE_GRACE: Duration = Duration::from_secs(2);
 const MAX_POLL: Duration = Duration::from_millis(20);
 /// How often a size watch measures its path: walking a folder costs system calls per file.
 const WATCH_INTERVAL: Duration = Duration::from_millis(250);
+/// Attempts of a fetch that met a worktree being added beside it (SPEC-368, ADR-0249).
+const FETCH_ATTEMPTS: u32 = 5;
+/// Wait before the first retry of such a fetch; it doubles before each later one (1.5 s in all).
+const FETCH_RETRY_BACKOFF: Duration = Duration::from_millis(100);
 
 /// Variables inherited from the parent environment; everything else is cleared.
 const INHERITED_ENV: &[&str] = &[
@@ -155,6 +159,19 @@ fn touches_worktree_registrations(args: &[OsString]) -> bool {
         })
 }
 
+/// Whether Git's `stderr` names a linked worktree's `HEAD` as a bad object: `git worktree add`
+/// writes the new registration's `HEAD` as the null id before it sets the commit, and a fetch's
+/// connectivity check, which reads every worktree's `HEAD`, dies meanwhile with "fatal: bad object
+/// worktrees/<name>/HEAD" (#995, SPEC-368).
+fn names_a_half_added_worktree(stderr: &[u8]) -> bool {
+    String::from_utf8_lossy(stderr).lines().any(|line| {
+        line.split_once("bad object worktrees/")
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .and_then(|path| path.strip_suffix("/HEAD"))
+            .is_some_and(|name| !name.is_empty() && !name.contains('/'))
+    })
+}
+
 impl Git {
     /// Runs and requires exit status 0.
     pub(crate) fn run_ok(&self, invocation: Invocation<'_>) -> Result<Output, GitError> {
@@ -167,8 +184,33 @@ impl Git {
         }
     }
 
-    /// Runs and returns the output whatever the exit status.
+    /// Runs and returns the output whatever the exit status. A fetch that failed on a worktree
+    /// being added beside it runs again, up to [`FETCH_ATTEMPTS`] in all, after a doubling backoff
+    /// and once this process's own registration change has ended (SPEC-368, ADR-0249); the last
+    /// attempt's output is returned as it is.
     pub(crate) fn run(&self, invocation: Invocation<'_>) -> Result<Output, GitError> {
+        let fetch = invocation
+            .args
+            .first()
+            .is_some_and(|a| a.as_os_str() == OsStr::new("fetch"));
+        let mut backoff = FETCH_RETRY_BACKOFF;
+        for _ in 1..FETCH_ATTEMPTS {
+            let output = self.run_once(&invocation)?;
+            if !fetch || output.status.success() || !names_a_half_added_worktree(&output.stderr) {
+                return Ok(output);
+            }
+            thread::sleep(backoff);
+            backoff *= 2;
+            drop(
+                WORKTREE_CHANGES
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner),
+            );
+        }
+        self.run_once(&invocation)
+    }
+
+    fn run_once(&self, invocation: &Invocation<'_>) -> Result<Output, GitError> {
         let _changes = touches_worktree_registrations(&invocation.args).then(|| {
             WORKTREE_CHANGES
                 .lock()
@@ -511,5 +553,29 @@ mod tests {
             "list"
         ])));
         assert!(!touches_worktree_registrations(&args(&[])));
+    }
+
+    #[test]
+    fn only_a_worktree_head_named_bad_is_a_half_added_worktree() {
+        let fetch = b"fatal: bad object worktrees/build@1/HEAD\nerror: /tmp/o.git did not send all necessary objects\n";
+        assert!(names_a_half_added_worktree(fetch));
+        assert!(names_a_half_added_worktree(
+            b"fatal: bad object worktrees/t1/HEAD"
+        ));
+        for other in [
+            &b"fatal: bad object HEAD"[..],
+            b"fatal: bad object refs/heads/x",
+            b"fatal: bad object worktrees//HEAD",
+            b"fatal: bad object worktrees/a/b/HEAD",
+            b"fatal: bad object worktrees/a/index",
+            b"fatal: could not read from remote repository",
+            b"",
+        ] {
+            assert!(
+                !names_a_half_added_worktree(other),
+                "{}",
+                String::from_utf8_lossy(other)
+            );
+        }
     }
 }
