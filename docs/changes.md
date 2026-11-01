@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-01
 
+- The CI/CD page's Security scan (Vidoc) card puts its switch at the card's right edge, as the
+  Settings rows do, instead of 520 px across a full-width card (SPEC-364, #997, task #347).
 - The task overview offers its changes only when the task's worktree is there (SPEC-370, task
   #353, #945): "Review changes" waits for the Git overview and stays away for a task not started
   or whose worktree was removed, and the Changes tile says "No worktree yet" / "Worktree gone"

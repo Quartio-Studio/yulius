@@ -360,3 +360,29 @@ test('a refresh that overtakes the read after a change still shows the change', 
   await expect(scan()).toBeEnabled();
   await expect(screen.getByRole('region', 'Security scan (Vidoc)').getByText(/^Off: agents and CI scan nothing/)).toBeVisible();
 });
+
+// SPEC-364 (#997): the card's switch sits at its right edge, like the Settings rows, not halfway
+// across a wide card.
+for (const viewport of [{ width: 1600, height: 900 }, { width: 390, height: 844 }]) {
+  test(`the Security scan card’s label is at its left and its switch at its right at ${viewport.width} px`, async ({ app, browser, screen }) => {
+    await browser.setViewport(viewport);
+    await app.open(mock('/s/studio/ci', '&vidoc=config'));
+    await expect(screen.getByRole('region', 'Security scan (Vidoc)').getByRole('switch', 'Scan this project with Vidoc')).toBeVisible();
+    const edges = await browser.evaluate(() => {
+      const card = document.querySelector('#vidoc')!;
+      const style = getComputedStyle(card);
+      const box = card.getBoundingClientRect();
+      const left = box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft);
+      const right = box.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight);
+      const name = card.querySelector('.vidoc-project-name')!;
+      const label = name.getBoundingClientRect();
+      const control = card.querySelector('.switch')!.getBoundingClientRect();
+      return {
+        labelGap: Math.round(label.left - left),
+        switchGap: Math.round(right - control.right),
+        labelLines: Math.round(label.height / parseFloat(getComputedStyle(name).lineHeight)),
+      };
+    });
+    expect(edges).toEqual({ labelGap: 0, switchGap: 0, labelLines: 1 });
+  });
+}
