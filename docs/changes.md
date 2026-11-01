@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-01
 
+- A fetch survives a worktree being added beside it (SPEC-368, ADR-0249, task #351, fixes #995).
+  `git worktree add` writes the new registration's `HEAD` as the null id before it sets the
+  commit, and a fetch's connectivity check, which reads every worktree's `HEAD`, failed meanwhile
+  with `bad object worktrees/<name>/HEAD`: a sandbox sync beside a CI job's checkout (seen in the
+  `local_ci` test under load), an integration merge's fetch beside a new task worktree, or an
+  agent's own add. Yulius's Git adapter now runs such a fetch again, at most 5 attempts with a
+  100 to 800 ms backoff, once its own registration changes have ended; any other failure returns
+  at once.
 - `[docs] changes` may name a folder of change notes, one file per pull request (SPEC-363,
   ADR-0248, task #346). Every task added an entry at the top of one changes log, so in quartio-v2
   each merge into `dev` made every other open pull request conflict on GitHub and rerun its CI
