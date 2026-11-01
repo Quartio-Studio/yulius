@@ -716,7 +716,8 @@ test('the longest needs_you request keeps its to-do and buttons in view on a pho
   }));
   await expect(browser.locator('.attention-bar .needs-you-todo')).toBeVisible();
   await expect(browser.locator('.taskview-term .term-corner')).toHaveCount(1);
-  const placed = await browser.evaluate(() => {
+  // Read until the bar's observer has run: it places the corner and lets the list scroll.
+  await expect.poll(() => browser.evaluate(() => {
     const inView = (el: Element | null) => {
       if (!el) return false;
       const r = el.getBoundingClientRect();
@@ -736,8 +737,7 @@ test('the longest needs_you request keeps its to-do and buttons in view on a pho
       code: [...document.querySelectorAll('.attention-bar .needs-you-todo code')].map((c) => c.textContent),
       todoText: todo!.querySelector('dd')?.textContent?.slice(0, 50),
     };
-  });
-  expect(placed).toEqual({
+  })).toEqual({
     todo: true,
     todoOnTop: true,
     buttons: [true, true],
