@@ -1,11 +1,11 @@
 ---
 yulius-task: 4f38a6d4-308b-46a5-bd63-d9a5e9b28b32
-status: in-progress
+status: done
 ---
 
 # SPEC-364: The Security scan card's switch sits at the card's right edge
 
-Status: in progress
+Status: implemented
 Date: 2026-11-01
 Owner: Yulius task #347
 Scope authorization: task #347 ("vidoc layout is a little broken, fix", with a screenshot of a
@@ -51,7 +51,8 @@ project list (`.vidoc-project-list`) and its "Scan every project with Vidoc" row
 - [x] Spec the Security scan card layout fix and file the issue
 - [x] Regression test: the card's switch sits at the card's right edge
 - [x] The Security scan card's switch at its right edge, like Settings rows
-- [ ] Independent review, gates green, changes log and delivery
+- [x] Independent review, findings fixed
+- [x] Every gate green, the changes log updated
 
 ## Acceptance criteria
 
@@ -76,3 +77,24 @@ project list (`.vidoc-project-list`) and its "Scan every project with Vidoc" row
   SPEC-359's decision.
 - Keep the 72ch cap on the notes: long lines across a 1900 px card are hard to read; the switch,
   not the text, has to reach the edge.
+
+## Evidence
+
+- Regression test first (`7d15b47e`): `npx e2e run tests/vidoc-switch.e2e.ts` failed at 1600 px
+  with `{"labelGap":0,"switchGap":654,"labelLines":1}` (the 390 px case passed: the card is
+  narrower than 520 px there); after the fix (`c1eb528c`) 19/19 passed, and again after review
+  round 1.
+- Screenshots of the card in the mock (`?mock=1&vidoc=config#/s/studio/ci`) at 1600 px and 390 px:
+  label at the left, switch at the right edge, notes at 72ch.
+- `python3 scripts/bootstrap.py && scripts/dev ci`: exit 0, nextest 2929 passed, 16 skipped.
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius"; nothing was
+  scanned (disabled, not passed).
+- Full e2e suite (`npx e2e run`): 794 passed, 1 skipped, 2 failed under load in tests this
+  change does not touch; both files then passed alone (48/48). Filed as flaky: #1002
+  (vidoc-switch "a refresh that overtakes the read", SPEC-359's data reads) and #1003
+  (terminal "the way on sits below a held card", #911).
+- Independent review (fresh session, om-code-review) approved `c1eb528c` with no blocker, major or
+  minor findings; its four nits (own code) are answered in `test(web): review round 1`: the
+  spec's grid wording, the Instance page's "Scan every project" row named as unaffected, the
+  measure split over lines, and the test plan saying VLF-002/003 are untouched rules. Kept: the
+  one-line check, which guards the label's `nowrap`.
