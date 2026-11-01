@@ -1129,7 +1129,11 @@ mod tests {
             ("old", floor, None)
         );
         drop(evicted.payload);
-        assert!(old_ended.try_recv().is_err(), "its tunnel is ended");
+        assert_eq!(
+            old_ended.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed),
+            "its tunnel is ended"
+        );
         assert!(
             admit("other", floor).0.is_err(),
             "the young one is idle 1 ms less"

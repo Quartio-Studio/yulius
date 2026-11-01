@@ -1,11 +1,11 @@
 ---
 yulius-task: 4dbbe8d1-89f3-4613-873f-551636744ed8
-status: in-progress
+status: done
 ---
 
 # SPEC-366: The egress proxy's bounds in SPEC-002, and its holders in the proxy-full warning
 
-Status: in progress
+Status: implemented
 Date: 2026-11-01
 Owner: Yulius task #349
 Scope authorization: task #349, the remainder of issue #964 found by task #348's verification.
@@ -59,10 +59,10 @@ delivered by PRs #971, #976, #984 and #992 without linking it. What is left:
 
 ## Plan
 
-- [ ] Proxy-full and share warnings name the busiest holders, test-first
-- [ ] Idle connections give way at IDLE_FLOOR, shown with an explicit clock
-- [ ] SPEC-002 §2.7 states every egress bound and links its ADRs
-- [ ] Independent review, gates green, changes log and delivery
+- [x] Proxy-full and share warnings name the busiest holders, test-first
+- [x] Idle connections give way at IDLE_FLOOR, shown with an explicit clock
+- [x] SPEC-002 §2.7 states every egress bound and links its ADRs
+- [x] Independent review, gates green, changes log and delivery
 
 ## Acceptance criteria
 
@@ -96,3 +96,33 @@ delivered by PRs #971, #976, #984 and #992 without linking it. What is left:
   and the app's trouble line read the same.
 - **The log test captures with `tracing-subscriber`** (already a workspace dependency), as a
   dev-dependency of `yulius-egress` only.
+
+## Evidence
+
+- **Red first (EPB-001).** `a_full_proxys_warning_names_the_busiest_sandboxes`
+  (`crates/yulius-egress/tests/proxy.rs`) committed alone at 80af9eeb and failing:
+  `WARN yulius_egress::proxy: egress proxy: every connection is taken sandbox="s2"` lacked
+  `holders=s1 (5), s2 (5)`. Green after 020f4fa9. `a_full_shares_warning_names_the_busiest_runs`
+  was shown red by removing the share warning's `holders` field (panicked at the `holders=a1 (4),
+  a2 (4)` assertion), then restored. The full-proxy test also checks that a second refusal within
+  the minute writes no second line.
+- **EPB-003.** `proxy::tests::a_connection_gives_way_once_idle_for_the_floor` builds the table
+  through the proxy's own `table(&EgressConfig::default()…)`: idle 299 999 ms is refused, idle
+  300 000 ms gives way (`busier: None`, its tunnel's sender closed), and the younger one, 1 ms
+  short, is refused. It documents ADR-0241's existing behavior, so it passed at once.
+- **EPB-002.** SPEC-002 §2.7 rewritten; `python3 scripts/check_repository.py` passed (local
+  Markdown links resolve).
+- **Gate.** `scripts/dev ci` at 85ee7db7: exit 0 (check, fmt, clippy Linux and macOS, nextest
+  2932 passed / 16 skipped, doctests, deny, shear, doc). After the review fixes:
+  `cargo fmt --check`, `cargo nextest run -p yulius-egress` (24 passed), `cargo clippy -p
+  yulius-egress --all-targets -D warnings`, `scripts/check_repository.py`: all green.
+- **Review.** Independent read-only review of 50f1faf5..85ee7db7: approve, 3 minors and 2 nits,
+  all own code, all fixed: SPEC-002 said every taken connection's warning names holders (only the
+  refusals' do); operations.md's "each" was ambiguous and its example used sandbox names for runs;
+  an assertion `try_recv().is_err()` could not fail (now `Err(Closed)`); SPEC-002 now says the
+  busiest run of the busiest sandbox gives way at the proxy's limit, and that only the counts and
+  the floor are `EgressConfig` fields.
+- **Security scan.** Vidoc is turned off for this project in Yulius; `yulius security-scan`
+  reports it disabled (not passed).
+- **Not tested here.** A real proxy with 256 places under load; the bounds are the same code
+  with smaller limits in the tests.
