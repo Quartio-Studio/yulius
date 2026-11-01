@@ -2277,6 +2277,14 @@ async fn a_linked_ci_jobs_folder_is_never_checked_out_or_removed_through() -> Te
     }
     assert!(std::fs::symlink_metadata(ci.join("jobs"))?.is_dir());
     assert!(ci.join("jobs/build/README.md").exists());
+    let registered = git(
+        &f.data.join("sandboxes/s1/repo"),
+        &["worktree", "list", "--porcelain"],
+    )?;
+    assert!(
+        !registered.contains(&*outside.to_string_lossy()),
+        "{registered}"
+    );
     Ok(())
 }
 

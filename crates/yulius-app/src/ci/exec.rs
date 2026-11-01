@@ -985,18 +985,16 @@ impl App {
             .map_err(|e| format!("preparing the CI cache failed: {}", e.desc()))?;
         let repo = self.sandbox_repo(&sandbox.id);
         let checking_out = self.now();
-        let checked_out = match self
+        let mut checked_out = self
             .ci_checkout_ready(&sandbox.id, &["jobs"], checkout_name)
-            .await
-        {
-            Ok(()) => {
-                self.deps
-                    .git
-                    .ci_checkout(&repo, &checkout, &run.sha, &ci_dir)
-                    .await
-            }
-            Err(err) => Err(err),
-        };
+            .await;
+        if checked_out.is_ok() {
+            checked_out = self
+                .deps
+                .git
+                .ci_checkout(&repo, &checkout, &run.sha, &ci_dir)
+                .await;
+        }
         let span = stages.child(
             "checkout",
             "prepare",
@@ -1301,12 +1299,26 @@ fn create_job_cache(sandbox_dir: &Path, name: &OsStr) -> Result<(), Errno> {
 /// folder made instead, never followed (ADR-0174).
 fn folder_in(dir: &OwnedFd, name: &OsStr) -> Result<OwnedFd, Errno> {
     match crate::files::open_dir_at(dir, name, true) {
-        Err(Errno::ELOOP | Errno::ENOTDIR) => {
-            unlinkat(dir, name, UnlinkatFlags::NoRemoveDir)?;
-            crate::files::open_dir_at(dir, name, true)
-        }
+        Err(Errno::ELOOP | Errno::ENOTDIR) => replace_with_folder(dir, name),
         opened => opened,
     }
+}
+
+/// Removes the link or file `name` in `dir` and opens the folder made in its place. Another lane
+/// replacing it at the same time may have removed it already (`ENOENT`) or made the folder
+/// (`EISDIR`, `EPERM` on macOS): that folder is opened.
+fn replace_with_folder(dir: &OwnedFd, name: &OsStr) -> Result<OwnedFd, Errno> {
+    match unlinkat(dir, name, UnlinkatFlags::NoRemoveDir) {
+        Ok(()) | Err(Errno::ENOENT | Errno::EISDIR | Errno::EPERM) => {}
+        Err(err) => return Err(err),
+    }
+    crate::files::open_dir_at(dir, name, true)
+}
+
+/// A failure readying a CI folder, with the OS's reason (an internal error would hide it from the
+/// job's output).
+fn ready_error(err: Errno) -> AppError {
+    AppError::Conflict(err.desc().to_owned())
 }
 
 /// Opens `<sandbox>/ci` from the sandbox directory with `O_DIRECTORY | O_NOFOLLOW`, made when
@@ -1316,21 +1328,22 @@ fn open_ci(sandbox_dir: &Path) -> AppResult<OwnedFd> {
         Err(Errno::ELOOP | Errno::ENOTDIR) => Err(AppError::Forbidden(
             "the sandbox's `ci` is a link or a file, not a folder".into(),
         )),
-        opened => opened.map_err(crate::files::errno_error),
+        opened => opened.map_err(ready_error),
     }
 }
 
 /// Makes the jobs' `HOME`, `ci/home`, through handles from the sandbox directory (SPEC-367
 /// CJP-002): a link or a file there is replaced by a folder.
 fn create_job_home(sandbox_dir: &Path) -> AppResult<()> {
-    folder_in(&open_ci(sandbox_dir)?, OsStr::new("home")).map_err(crate::files::errno_error)?;
+    folder_in(&open_ci(sandbox_dir)?, OsStr::new("home")).map_err(ready_error)?;
     Ok(())
 }
 
 /// Readies `ci/<folders…>/<name>` for [`crate::ports::git::GitPort::ci_checkout`] through handles
 /// from the sandbox directory (SPEC-367 CJP-003): `ci` must be a folder, a link or a file at one
 /// of `folders` is replaced by a folder, and at `name` anything but a checkout that Git registers
-/// at its real path, with a regular `.git` file, is removed through handles. Nothing is followed.
+/// at its real path (each registration resolved), with a regular `.git` file, is removed through
+/// handles. Nothing is followed.
 fn ready_checkout(
     sandbox_dir: &Path,
     folders: &[&str],
@@ -1340,20 +1353,25 @@ fn ready_checkout(
     use nix::sys::stat::SFlag;
     let mut dir = open_ci(sandbox_dir)?;
     for folder in folders {
-        dir = folder_in(&dir, OsStr::new(folder)).map_err(crate::files::errno_error)?;
+        dir = folder_in(&dir, OsStr::new(folder)).map_err(ready_error)?;
     }
     let usable = match crate::files::kind_at(&dir, name) {
         Err(Errno::ENOENT) => return Ok(()),
-        Err(err) => return Err(crate::files::errno_error(err)),
+        Err(err) => return Err(ready_error(err)),
         Ok((SFlag::S_IFDIR, _)) => match crate::files::open_dir_at(&dir, name, false) {
             Ok(checkout) => {
                 matches!(
                     crate::files::kind_at(&checkout, OsStr::new(".git")),
                     Ok((SFlag::S_IFREG, _))
-                ) && registered.contains(&crate::files::real_path(&checkout)?)
+                ) && {
+                    let real = crate::files::real_path(&checkout)?;
+                    registered
+                        .iter()
+                        .any(|path| path.canonicalize().is_ok_and(|path| path == real))
+                }
             }
             Err(Errno::ELOOP | Errno::ENOTDIR) => false,
-            Err(err) => return Err(crate::files::errno_error(err)),
+            Err(err) => return Err(ready_error(err)),
         },
         Ok(_) => false,
     };
@@ -1509,16 +1527,29 @@ mod tests {
         std::os::unix::fs::symlink(&outside, sandbox.join("ci/jobs/broken/inner"))?;
         std::os::unix::fs::symlink(&outside, sandbox.join("ci/jobs/linked"))?;
         std::os::unix::fs::symlink(&outside, sandbox.join("ci/train"))?;
-        let registered = [sandbox.join("ci/jobs/kept"), sandbox.join("ci/jobs/broken")];
-        for name in ["kept", "broken", "linked", "missing"] {
+        // Registered, but under another spelling of its path (a link to `ci/jobs`).
+        std::fs::create_dir_all(sandbox.join("ci/jobs/aliased"))?;
+        std::fs::write(sandbox.join("ci/jobs/aliased/.git"), "gitdir: x")?;
+        std::os::unix::fs::symlink(sandbox.join("ci/jobs"), root.join("alias"))?;
+        // A `.git` file, but Git does not register it.
+        std::fs::create_dir_all(sandbox.join("ci/jobs/stale"))?;
+        std::fs::write(sandbox.join("ci/jobs/stale/.git"), "gitdir: x")?;
+        let registered = [
+            sandbox.join("ci/jobs/kept"),
+            sandbox.join("ci/jobs/broken"),
+            root.join("alias/aliased"),
+        ];
+        for name in ["kept", "broken", "linked", "missing", "aliased", "stale"] {
             ready_checkout(&sandbox, &["jobs"], OsStr::new(name), &registered)?;
         }
         ready_checkout(&sandbox, &[], OsStr::new("train"), &registered)?;
         assert!(sandbox.join("ci/jobs/kept/.git").is_file());
+        assert!(sandbox.join("ci/jobs/aliased/.git").is_file());
         for gone in [
             "ci/jobs/broken",
             "ci/jobs/linked",
             "ci/jobs/missing",
+            "ci/jobs/stale",
             "ci/train",
         ] {
             assert!(sandbox.join(gone).symlink_metadata().is_err(), "{gone}");
@@ -1534,6 +1565,27 @@ mod tests {
             "{refused:?}"
         );
         assert!(!outside.join("jobs").exists(), "nothing made at the target");
+        Ok(())
+    }
+
+    /// SPEC-367 review round 1: two lanes replace the same link at once. The one that comes
+    /// second finds the link gone, or the other lane's folder already made, and opens that.
+    #[test]
+    fn a_link_replaced_by_another_lane_meanwhile_is_no_error()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let dir = nix::fcntl::open(
+            tmp.path(),
+            OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )?;
+        replace_with_folder(&dir, OsStr::new("gone"))?;
+        assert!(tmp.path().join("gone").is_dir(), "a folder is made");
+        replace_with_folder(&dir, OsStr::new("gone"))?;
+        assert!(
+            tmp.path().join("gone").is_dir(),
+            "the folder made meanwhile is used"
+        );
         Ok(())
     }
 

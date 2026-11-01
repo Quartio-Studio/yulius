@@ -91,10 +91,29 @@ or the checkout's name. Nothing outside the sandbox is created, removed, checked
   is compared with the resolved checkout path (the handle's real path in the app,
   `canonicalize` in `yulius-git`); a registration made through an old link, outside, never matches
   a checkout inside again, and a data directory below a link no longer re-adds checkouts each run.
+- **Registrations outside the CI directory never count** (review round 1). The registrations
+  (`repo/.git/worktrees/*/gitdir`) are in the sandbox, so an agent can forge one for any host
+  folder holding a regular `.git` file, and checkouts added through a link before this fix are
+  registered outside. `ci_checkout` treats a registration as its checkout only when the resolved
+  path is inside `owned_root` with the root's parent resolved and its own name not followed, as
+  `worktree_remove_if_safe` already does; both sides are compared resolved (`canonicalize`), so
+  a registration spelled through a link to the real checkout still matches.
+- **Two lanes replacing one link** (review round 1): the second finds it gone (`ENOENT`) or the
+  other's folder made (`EISDIR`, `EPERM` on macOS) and opens that folder instead of failing.
+- **Bounded removal.** A broken checkout is removed with `remove_tree`, which stops at
+  `MAX_REMOVED_ENTRIES` (1,000,000) entries: a broken checkout with a larger cache fails the job
+  with that reason, and each later run removes the next million until it is gone. The old
+  `remove_dir_all` was unbounded and followed links on the way.
 - **Remaining window, recorded as SPEC-263 did.** Git takes paths, so between the preparation
-  through handles and `git worktree add`, `checkout` or `clean`, an agent that swaps `ci/jobs` for
-  a link again at exactly that moment can still make Git act at the link's target. Closing it
-  would need Git to run on a directory handle (not possible on macOS, ADR-0169) or the checkout to
-  run inside the sandbox's containment, a change of its own. The window is now the few
-  milliseconds of one Git command instead of every run, and a removal never goes through a link.
+  through handles and `git worktree add`, `checkout` or `clean` (and, for the merge train, the
+  merge and commit commands `build_train` runs in its scratch checkout after each `ci_checkout`),
+  an agent that swaps `ci/jobs` or `ci` for a link again at exactly that moment can still make Git
+  act at the link's target. Closing it would need Git to run on a directory handle (not possible
+  on macOS, ADR-0169) or the checkout to run inside the sandbox's containment, a change of its
+  own. The window is now the Git commands of one preparation instead of every run, a removal
+  never goes through a link, and Git never acts on a registration outside `ci`.
+- **Out of scope, reported on #969** (review round 1, pre-existing): a registered checkout's
+  `.git` file names its admin folder (`gitdir: …`), which an agent can point at another
+  repository's; `checkout --force` would then rewrite that repository's `HEAD` and index. Hooks and
+  `fsmonitor` are already off for Yulius's Git (`runner.rs`).
 - **No new ADR**: this applies ADR-0174 to two more folders; the spec records the specifics.

@@ -113,9 +113,11 @@ impl Git {
     /// kept, so the next run of the job reuses them as a cache.
     ///
     /// It removes and makes no folder itself (SPEC-367, #969): the caller readies the place
-    /// through handles. A registration matches the path as it resolves now, and the checkout and
-    /// the clean run in that resolved path, so a link swapped in on the way never gets a
-    /// registered checkout cleaned at its target.
+    /// through handles. A registration counts only when it is the path as it resolves now and
+    /// that is inside `owned_root` (its parent resolved, its own name not followed), so a
+    /// checkout registered outside (an agent can write the registrations) is never checked out
+    /// or cleaned. Git still works by path: a link swapped in after this check is followed by
+    /// the Git command that runs right after it.
     ///
     /// # Errors
     /// Paths outside `owned_root`, something that is not a checkout registered there in the way,
@@ -135,19 +137,26 @@ impl Git {
             });
         }
         let commit = self.rev_parse(repo, sha)?;
-        // Git records a worktree's resolved path.
+        // Git records a worktree's resolved path; both sides are resolved the same way.
+        let root = owned_root
+            .parent()
+            .and_then(|parent| parent.canonicalize().ok())
+            .zip(owned_root.file_name())
+            .map(|(parent, name)| parent.join(name));
         let resolved = path.canonicalize().ok().filter(|resolved| {
-            resolved
-                .join(".git")
-                .symlink_metadata()
-                .is_ok_and(|m| m.is_file())
+            root.as_ref()
+                .is_some_and(|root| resolved.starts_with(root) && resolved != root)
+                && resolved
+                    .join(".git")
+                    .symlink_metadata()
+                    .is_ok_and(|m| m.is_file())
         });
         let registered = match resolved {
             Some(resolved) => self
                 .worktree_list(repo)?
                 .iter()
                 .skip(1)
-                .any(|w| w.path == resolved)
+                .any(|w| w.path.canonicalize().is_ok_and(|w| w == resolved))
                 .then_some(resolved),
             None => None,
         };

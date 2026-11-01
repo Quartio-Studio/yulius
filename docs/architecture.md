@@ -684,7 +684,9 @@ does everything else through that handle
 ([SPEC-220](../.ai/specs/SPEC-220-fix-657-host-writes-into-agent-owned-fol.md),
 [SPEC-285](../.ai/specs/SPEC-285-ci-job-log-created-without-following-pla.md),
 [SPEC-367](../.ai/specs/SPEC-367-ci-job-preparation-never-follows-a-link.md),
-[decision 0174](decisions/0174-host-access-to-agent-owned-folders-goes-through-handles.md)). The
+[decision 0174](decisions/0174-host-access-to-agent-owned-folders-goes-through-handles.md)). A CI
+checkout is the exception Git imposes: its place is readied through handles, then Git adds, checks
+out and cleans it by path, only when Git registers it at its resolved path inside `ci`. The
 helpers are `files::open_inside` (a resolved path opened with `O_NOFOLLOW`, the handle's real path
 checked to be inside the root), `files::open_dirs_below` (each folder from the sandbox directory
 with `O_DIRECTORY | O_NOFOLLOW`, made with `mkdirat` when missing) and `files::replace_in` (a

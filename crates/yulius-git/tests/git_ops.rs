@@ -293,12 +293,44 @@ fn a_ci_checkout_reached_through_a_link_is_not_cleaned() -> TestResult {
     fs::rename(ci.join("jobs"), ci.join("jobs-moved"))?;
     std::os::unix::fs::symlink(&outside, ci.join("jobs"))?;
     let refused = fx.git.ci_checkout(&repo, &path, &sha, &ci);
-    assert!(refused.is_err(), "{refused:?}");
+    assert!(
+        matches!(refused, Err(GitError::InvalidInput { .. })),
+        "{refused:?}"
+    );
     assert_eq!(fs::read_to_string(outside.join("lint/junk"))?, "host");
     assert!(
         !outside.join("lint/README.md").exists(),
         "nothing checked out"
     );
+    Ok(())
+}
+
+/// SPEC-367 review round 1: a checkout Git registers outside the CI directory (an agent can write
+/// the registrations, or one was made through a link before #969) is never checked out or
+/// cleaned, also when a link at `ci/jobs` leads there.
+#[cfg(unix)]
+#[test]
+fn a_ci_checkout_registered_outside_is_not_cleaned() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let sha = fx.git.rev_parse(&repo, "main")?;
+    let (ci, outside) = (fx.path("ci"), fx.path("outside"));
+    fs::create_dir_all(&ci)?;
+    fs::create_dir_all(&outside)?;
+    let lint = outside.join("lint");
+    let lint_arg = lint.to_string_lossy().into_owned();
+    fx.raw(
+        &repo,
+        &["worktree", "add", "--quiet", "--detach", &lint_arg, &sha],
+    )?;
+    fs::write(lint.join("junk"), "host")?;
+    std::os::unix::fs::symlink(&outside, ci.join("jobs"))?;
+    let refused = fx.git.ci_checkout(&repo, &ci.join("jobs/lint"), &sha, &ci);
+    assert!(
+        matches!(refused, Err(GitError::InvalidInput { .. })),
+        "{refused:?}"
+    );
+    assert_eq!(fs::read_to_string(lint.join("junk"))?, "host");
     Ok(())
 }
 
