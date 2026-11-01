@@ -1,11 +1,11 @@
 ---
 yulius-task: b88061bb-2253-4c04-a490-249793c064fc
-status: in-progress
+status: done
 ---
 
 # SPEC-370: the task overview links to changes only when the task has a worktree
 
-Status: in-progress
+Status: done
 Date: 2026-11-01
 Owner: Yulius task #353
 Scope authorization: task #353, Fixes #945 (found by the review of #943, SPEC-343).
@@ -45,11 +45,12 @@ Changes tile) only when the task's worktree is on disk, and otherwise says why (
 
 ## Plan
 
-- [ ] Spec the fix and reproduce it
-- [ ] e2e for a gone and a not-created worktree on the task overview (red)
-- [ ] The overview links to changes only with a worktree (green)
-- [ ] Independent review approved and findings answered
-- [ ] Gates green with evidence in the spec
+- [x] Spec the fix and reproduce it
+- [x] e2e for a gone and a not-created worktree on the task overview (red)
+- [x] The overview links to changes only with a worktree (green)
+- [x] Independent review approved and findings answered
+- [x] Gates green with evidence in the spec
+- [x] Full e2e suite green and dev merged before the final review
 
 ## Acceptance criteria
 
@@ -85,3 +86,25 @@ Changes tile) only when the task's worktree is on disk, and otherwise says why (
   the preload list).
 - The tile keeps the diffstat of a branch without a worktree: the numbers come from the branch in the
   sandbox's repository (`delivery.rs`), not the worktree; only the link to the worktree's view goes.
+
+## Evidence
+
+- Red first: `npx e2e run tests/git.e2e.ts` at d3ebdbc1 (test only, dev's page) failed with
+  `expected ["Review changes"] to equal []` while the Git overview was held; the corrected test
+  (092ad133: a reload per case, visible links only) failed the same way against dev 50f1faf5's
+  `taskinfo.js`. With only the tile's change reverted it failed on `expected: text containing
+  "Worktree gone"`, observed `16 files · review`.
+- After the fix: `npx e2e run tests/git.e2e.ts` 6/6 passed; full suite `npx e2e run` at 7d6a54e0:
+  795 passed, 1 skipped (70 files, 1 skipped file), exit 0.
+- `scripts/dev ci` at c3565d86 (after `python3 scripts/bootstrap.py`): exit 0; 2929 tests passed,
+  16 skipped; repository check, fmt, clippy (Linux and macOS targets), doctests, deny, shear, doc.
+  Later commits touch only this spec, `docs/changes.md` and the e2e test.
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius"; nothing was
+  scanned. Disabled, not passed.
+- Independent review in a fresh session: round 1 approved conditionally on the gate, with two
+  minor own-code findings (archived tasks lose "Review changes": accepted and documented above;
+  the Decisions bullet contradicting the code: reworded) and one nit (axe on the present case:
+  added); round 2 approved 7d6a54e0 with no new findings.
+- `origin/dev` merged before the final review: already up to date at 50f1faf5.
+- Not tested: the real instance's task overview against a removed worktree in a browser (the
+  server's `worktree` field is covered by SPEC-343's Rust test; the page by the mock e2e).
