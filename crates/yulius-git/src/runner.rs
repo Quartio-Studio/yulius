@@ -159,6 +159,20 @@ fn touches_worktree_registrations(args: &[OsString]) -> bool {
         })
 }
 
+/// The Git subcommand `args` run, past leading `-c <name>=<value>` pairs (a CD mirror's fetch sets
+/// its fsck options so).
+fn subcommand(args: &[OsString]) -> Option<&OsStr> {
+    let mut rest = args;
+    while let [flag, _, tail @ ..] = rest
+        && flag.as_os_str() == OsStr::new("-c")
+    {
+        rest = tail;
+    }
+    rest.first()
+        .map(OsString::as_os_str)
+        .filter(|a| *a != OsStr::new("-c"))
+}
+
 /// Whether Git's `stderr` names a linked worktree's `HEAD` as a bad object: `git worktree add`
 /// writes the new registration's `HEAD` as the null id before it sets the commit, and a fetch's
 /// connectivity check, which reads every worktree's `HEAD`, dies meanwhile with "fatal: bad object
@@ -189,10 +203,7 @@ impl Git {
     /// and once this process's own registration change has ended (SPEC-368, ADR-0249); the last
     /// attempt's output is returned as it is.
     pub(crate) fn run(&self, invocation: Invocation<'_>) -> Result<Output, GitError> {
-        let fetch = invocation
-            .args
-            .first()
-            .is_some_and(|a| a.as_os_str() == OsStr::new("fetch"));
+        let fetch = subcommand(&invocation.args) == Some(OsStr::new("fetch"));
         let mut backoff = FETCH_RETRY_BACKOFF;
         for _ in 1..FETCH_ATTEMPTS {
             let output = self.run_once(&invocation)?;
@@ -553,6 +564,33 @@ mod tests {
             "list"
         ])));
         assert!(!touches_worktree_registrations(&args(&[])));
+    }
+
+    #[test]
+    fn the_subcommand_comes_after_the_configuration_pairs() {
+        let fetch = Some(OsStr::new("fetch"));
+        assert_eq!(
+            subcommand(&args(&["fetch", "--quiet", "--", "origin"])),
+            fetch
+        );
+        assert_eq!(
+            subcommand(&args(&[
+                "-c",
+                "transfer.fsckObjects=true",
+                "-c",
+                "fetch.fsckObjects=true",
+                "fetch",
+                "--quiet"
+            ])),
+            fetch
+        );
+        assert_eq!(
+            subcommand(&args(&["worktree", "list", "fetch"])),
+            Some(OsStr::new("worktree"))
+        );
+        assert_eq!(subcommand(&args(&["-c"])), None);
+        assert_eq!(subcommand(&args(&["-c", "a=b"])), None);
+        assert_eq!(subcommand(&args(&[])), None);
     }
 
     #[test]

@@ -59,9 +59,10 @@ Confirmed against `dev` at 50f1faf5 with Git 2.43.0.
 ## Plan
 
 - [x] Spec and ADR for the fetch retry
-- [ ] Regression test reproducing the half-added worktree
-- [ ] Fetch retries past a worktree add in progress
-- [ ] Docs, changes and gates green
+- [x] Regression test reproducing the half-added worktree
+- [x] Fetch retries past a worktree add in progress
+- [x] Docs and changes entry
+- [ ] Full gate green
 - [ ] Independent review answered
 - [ ] Merged into dev on green CI
 
