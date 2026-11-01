@@ -149,6 +149,22 @@ async function selectRow(browser: Browser, text: string): Promise<void> {
   await browser.mouse.up();
 }
 
+test('terminalShown waits out the app’s own reveal limit, counted after the terminal core loaded (#949)', async ({ app, browser }) => {
+  // The core loads only once the wait has begun, and the hello is never answered: the terminal
+  // shows by the app's fallback alone, REVEAL_LIMIT_MS (5 s) after start(), so more than 5 s after
+  // the wait began, as a starved runner can make it.
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  await browser.route(/\/assets\/terminal-core\.js(\?|$)/, async (route) => { await released; await route.continue(); });
+  await browser.addInitScript(() => {
+    (window as unknown as { __yuliusHoldTerminal: Promise<void> }).__yuliusHoldTerminal = new Promise<void>(() => {});
+  });
+  await app.open(mock('/s/studio/t/12'));
+  const shown = terminalShown(browser);
+  release();
+  await shown;
+});
+
 test('the clipboard keys follow desktop terminals', async ({ app, browser }) => {
   await app.open(mock('/s/studio'));
   const table = await browser.evaluate(async () => {
