@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-01
 
+- The e2e test of a Vidoc refresh that overtakes the read after a change no longer times out on
+  a loaded host: it waited for exactly two held reads, which the page's own rereads (the sandbox
+  list reloaded, its poll) overshot; it now waits for the refresh to start and a read after it
+  (SPEC-374, #1002, task #357). The test that refreshes the runs without rereading the view
+  now allows a second read after its change, for the same reason.
 - Two e2e tests no longer measure a layout a ResizeObserver sets once (SPEC-375, task #358, fixes
   #1003): the way on below a held card (`terminal.e2e.ts`) and the corner notices below a phone's
   needs_you bar (`cd.e2e.ts`) are polled until they hold, and both run with every observer 2 s
