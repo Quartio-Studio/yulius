@@ -321,7 +321,10 @@ fn half_added_worktree_beside_a_fetch(
 ) -> Result<(PathBuf, PathBuf, String), Box<dyn Error>> {
     let (remote, repo) = fx.repo_with_remote()?;
     let pusher = fx.path("pusher");
-    fx.raw(&fx.root, &["clone", "--quiet", path_str(&remote)?, path_str(&pusher)?])?;
+    fx.raw(
+        &fx.root,
+        &["clone", "--quiet", path_str(&remote)?, path_str(&pusher)?],
+    )?;
     fs::write(pusher.join("a.txt"), "pushed\n")?;
     fx.raw(&pusher, &["commit", "--quiet", "-am", "pushed"])?;
     fx.raw(&pusher, &["push", "--quiet", "origin", "HEAD:main"])?;
@@ -401,7 +404,10 @@ fn a_fetch_retries_only_a_half_added_worktree_and_gives_up() -> TestResult {
     let Err(GitError::Failed { stderr, .. }) = git.fetch(&repo, "origin") else {
         return Err("a fetch past a broken worktree HEAD succeeded".into());
     };
-    assert!(stderr.contains("bad object worktrees/build@1/HEAD"), "{stderr}");
+    assert!(
+        stderr.contains("bad object worktrees/build@1/HEAD"),
+        "{stderr}"
+    );
     assert_eq!(fs::read_to_string(&attempts)?, "1\n".repeat(5));
 
     fs::remove_file(&attempts)?;
