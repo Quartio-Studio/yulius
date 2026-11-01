@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { editorShown, failOnPageErrors, lateResizeObservers, mock, terminalShown, touchTask } from './support.ts';
+import { editorShown, failOnPageErrors, LATE_OBSERVER_MS, lateResizeObservers, mock, terminalShown, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -1013,7 +1013,7 @@ test('the way on sits below a held card over the terminal (#911)', async ({ app,
     const card = document.querySelector('.taskview .held-slot')!.getBoundingClientRect();
     const button = document.querySelector('.taskview .term-history-offer')!.getBoundingClientRect();
     return button.top - card.bottom;
-  }), { message: 'the button is below the card' }).toBeGreaterThanOrEqual(0);
+  }), { message: 'the button is below the card', timeout: LATE_OBSERVER_MS + 5_000 }).toBeGreaterThanOrEqual(0);
 });
 
 test('a task that never ran offers no earlier messages (#911)', async ({ app, browser }) => {

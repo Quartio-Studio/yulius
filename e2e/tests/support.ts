@@ -156,20 +156,36 @@ export async function touchTask(browser: Browser, sandbox: string, number: numbe
 }
 
 /**
- * Makes every ResizeObserver of the next pages answer `ms` late, as a loaded host does when it
- * delays the rendering update that runs them (#1003). The default outlasts a test's waits for
- * what shows (so a single measure fails every run) and leaves room in a poll's 5 s: a layout an
- * observer sets is measured by polling, never once. Call it before `app.open`.
+ * How late `lateResizeObservers` makes every ResizeObserver answer by default. It outlasts a test's
+ * waits for what shows, so a single measure fails every run; a poll of what an observer sets
+ * gives it this much on top of its usual 5 s (`timeout: LATE_OBSERVER_MS + 5_000`).
  */
-export async function lateResizeObservers(browser: Browser, ms = 2000): Promise<void> {
+export const LATE_OBSERVER_MS = 2_000;
+
+/**
+ * Makes every ResizeObserver of the next pages answer `ms` late, as a loaded host does when it
+ * delays the rendering update that runs them (#1003): a layout an observer sets is measured by
+ * polling, never once. Entries of a target unobserved (or a disconnect) meanwhile are dropped, as
+ * a real observer would never report them. Call it before `app.open`.
+ */
+export async function lateResizeObservers(browser: Browser, ms = LATE_OBSERVER_MS): Promise<void> {
   await browser.addInitScript((delay) => {
     const Native = window.ResizeObserver;
     window.ResizeObserver = class extends Native {
       constructor(callback: ResizeObserverCallback) {
-        let connected = true;
-        super((entries, observer) => { setTimeout(() => { if (connected) callback(entries, observer); }, delay); });
+        const watched = new Set<Element>();
+        super((entries, observer) => {
+          setTimeout(() => {
+            const live = entries.filter((entry) => watched.has(entry.target));
+            if (live.length) callback(live, observer);
+          }, delay);
+        });
+        const observe = this.observe.bind(this);
+        const unobserve = this.unobserve.bind(this);
         const disconnect = this.disconnect.bind(this);
-        this.disconnect = () => { connected = false; disconnect(); };
+        this.observe = (target, options) => { watched.add(target); observe(target, options); };
+        this.unobserve = (target) => { watched.delete(target); unobserve(target); };
+        this.disconnect = () => { watched.clear(); disconnect(); };
       }
     };
   }, ms);

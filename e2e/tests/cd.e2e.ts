@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, lateResizeObservers, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, LATE_OBSERVER_MS, lateResizeObservers, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -716,7 +716,8 @@ test('the longest needs_you request keeps its to-do and buttons in view on a pho
   }));
   await expect(browser.locator('.attention-bar .needs-you-todo')).toBeVisible();
   await expect(browser.locator('.taskview-term .term-corner')).toHaveCount(1);
-  // Read until the bar's observer has run: it places the corner and lets the list scroll.
+  // Read until the bar's observer has run: it places the corner below the bar and makes a list
+  // that scrolls a tab stop.
   await expect.poll(() => browser.evaluate(() => {
     const inView = (el: Element | null) => {
       if (!el) return false;
@@ -737,7 +738,7 @@ test('the longest needs_you request keeps its to-do and buttons in view on a pho
       code: [...document.querySelectorAll('.attention-bar .needs-you-todo code')].map((c) => c.textContent),
       todoText: todo!.querySelector('dd')?.textContent?.slice(0, 50),
     };
-  })).toEqual({
+  }), { message: 'the to-do, the buttons and the corner are placed', timeout: LATE_OBSERVER_MS + 5_000 }).toEqual({
     todo: true,
     todoOnTop: true,
     buttons: [true, true],
