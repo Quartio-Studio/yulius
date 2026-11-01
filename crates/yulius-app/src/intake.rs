@@ -713,6 +713,8 @@ impl App {
         let note = format!(
             "{}; #{} runs after this task.",
             match skipped {
+                // "Skip the selected steps" with none checked (SPEC-377 SAZ-003).
+                0 if chosen.is_empty() => "No step was chosen to skip".to_owned(),
                 // Who resolved or removed it cannot be told apart (SPEC-377 SAZ-001).
                 0 => "No open step was left to skip (finished, skipped or removed meanwhile)"
                     .to_owned(),
