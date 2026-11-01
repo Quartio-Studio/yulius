@@ -458,7 +458,8 @@ nothing is checked and nothing is held, and Auto uses its defaults.
   - `after`: a new task chained after this one;
   - `skip_after`: the given steps become `skipped` (with the note "Ruled out by the user: …" by
     `user:<login>`; the agent sees them in its steps, no message is sent, SPEC-028), and a chained
-    task gets the prompt;
+    task gets the prompt; with no step given it skips nothing and still chains the task, and a
+    chosen step finished, skipped or removed meanwhile is left as it is (SPEC-377);
   - `revert`: stops the task (reaped within 30 s, else 409 and nothing changes), commits its work to
     a new branch `yulius/reverted/<number>-<ms>`, resets its worktree to where it forked from the
     integration branch, archives it, and starts a new task with the prompt; `note` names the

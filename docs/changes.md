@@ -11,6 +11,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   needs_you bar (`cd.e2e.ts`) are polled until they hold, and both run with every observer 2 s
   late (`lateResizeObservers` in `tests/support.ts`), which failed the single measure every run.
   Test only: an observer's callback runs before paint, so nobody sees the old place.
+- A held prompt's "skip after" that finds none of the chosen steps still open now answers "No open
+  step was left to skip (finished, skipped or removed meanwhile)" instead of "(already finished)",
+  which was false for a step the spec sync or `steps_set` removed, or someone else skipped, while
+  the skip waited for the steps lock (SPEC-377, task #359, #944). With no step checked it answers
+  "No step was chosen to skip".
 - The CI/CD page's Security scan (Vidoc) card puts its switch at the card's right edge, as the
   Settings rows do, instead of 520 px across a full-width card (SPEC-364, #997, task #347).
 - The task overview offers its changes only when the task's worktree is there (SPEC-370, task
