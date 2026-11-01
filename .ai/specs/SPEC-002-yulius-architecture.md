@@ -1139,9 +1139,29 @@ egress CA, bound read-only into containment). Without credentials of a live run 
 - Responses (intercepted and plain HTTP): every in-scope value and encoding is redacted from
   headers and the streamed body; a compressed response that would hide one is refused (502).
 - Destinations are resolved first and loopback, unspecified, link-local (cloud metadata),
-  multicast and broadcast addresses refused, also after DNS (no rebinding). Bounds: 256
-  connections, 10 s connect and handshake, 60 s request head, 24 h per connection; a plain request
-  waits 300 s with no progress for its response head, then `504` (SPEC-369).
+  multicast and broadcast addresses refused, also after DNS (no rebinding).
+- Bounds (issue #964): 10 s connect and handshake, 60 s request head, 24 h per connection; a
+  plain request waits 300 s with no progress for its response head, then `504` (SPEC-369); at
+  most **256** tunnels and intercepted connections in all (`EgressConfig::max_connections`) and
+  **128** per sandbox (`max_per_sandbox`), counted by sandbox and by run (an agent run, a CI job
+  or a Superagent's shell, `EgressClient::use_key`). At a full share or proxy a new connection
+  is admitted, in order: (1) by closing the longest-idle connection (no byte either way) of the
+  sandbox, or of any sandbox at the proxy's limit, once idle for **300 s** (`IDLE_FLOOR`, the
+  relays' floor); an idle connection is never closed on a timer while there is room
+  ([ADR-0241](../../docs/decisions/0241-a-full-relay-closes-its-longest-idle-connection-and-the-superagent-restarts-in-place.md));
+  (2) else by taking the oldest connection of the busiest other run of the sandbox (at the proxy's
+  limit, of the busiest run of the busiest other sandbox) when that run (or sandbox) holds at least
+  2 more than the asker
+  ([ADR-0243](../../docs/decisions/0243-the-busiest-run-gives-way-at-a-full-proxy-share.md)); a
+  plain request waiting for its answer is held in flight and never taken. (3) Else `503`: at the
+  share "this sandbox's processes hold all of its 128 connections …; this run holds N of them",
+  saying whether that is the most; at the proxy's limit "too many connections; try again"
+  ([ADR-0240](../../docs/decisions/0240-a-run-s-strays-are-reaped-after-a-bound-and-a-sandbox-gets-half-the-proxy.md)).
+  Each refusal, and each connection taken, is a `warn` at most once a minute per limit and
+  sandbox; a refusal's names the busiest holders with their counts (runs of the sandbox, or
+  sandboxes; SPEC-366). A refusal also opens a connection trouble, logged once with the three
+  busiest holders and shown on the panel until the limit holds at most seven eighths again
+  ([ADR-0246](../../docs/decisions/0246-a-full-proxy-share-or-relay-shows-on-the-panel-once-per-trouble.md)).
 - The first use of a secret by a run on a host is audited (`vault.agent.use`) and `last_used_at`
   set.
 
