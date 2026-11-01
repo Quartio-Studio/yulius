@@ -1,11 +1,11 @@
 ---
 yulius-task: 9340bfbc-6810-43e8-802c-dbaf1d27e95a
-status: in-progress
+status: done
 ---
 
 # SPEC-372: The terminal's first-show wait outlasts the app's own reveal limit (#949)
 
-Status: in-progress
+Status: done
 Date: 2026-11-01
 Owner: Yulius task #355
 Scope authorization: the issue-triage goal (task #354's handoff). Fix GitHub issue #949 in one pull
@@ -57,10 +57,11 @@ terminal's first screen, so the tests that open a task view never fail for a loa
 ## Plan
 
 - [x] Spec with root cause of the terminalShown flake
-- [ ] Regression test that holds the terminal past 5 s and fails
-- [ ] Named first-show budget for terminalShown
-- [ ] Suites using the terminal pass, docs and changes updated
-- [ ] Independent review answered
+- [x] Regression test that holds the terminal past 5 s and fails
+- [x] Named first-show budget for terminalShown
+- [x] Suites using the terminal pass, docs and changes updated
+- [x] Independent review answered
+- [x] Full e2e suite passes at the final head
 - [ ] Merged into dev on green CI and issue closed
 
 ## Acceptance criteria
@@ -91,3 +92,36 @@ terminal's first screen, so the tests that open a task view never fail for a loa
   for good, so the only way the terminal shows is `REVEAL_LIMIT_MS` after `start()`; holding the
   core until the wait has begun makes that later than 5 s after the wait's start every time,
   with no sleep in the test.
+
+## Evidence
+
+All on `feat/355-flaky-e2e-watching-following-survives-wo` from dev d7346573, in the task sandbox.
+
+- **Reproduction, old wait.** `npx e2e run tests/terminal.e2e.ts` at 5e0dc017 (regression test,
+  unchanged helper): 29 passed, the new case failed with #949's signature, `ASSERTION_FAILED:
+  expect.poll(...).toBe(...) timed out after 5000 ms, last: expected false to be true` at
+  `tests/support.ts:122`.
+- **Repeated, old against new.** A scratch file (not committed) ran the case with the new
+  `terminalShown` and with the old 5 s poll, `--repeat-each 8`: old 0 of 8 passed (each
+  `ASSERTION_FAILED` after ~6.5 s), new 8 of 8 passed (6.7–7.4 s each).
+- **Callers.** `archive`, `reply`, `terminals`, `watching` and `terminal` with the fix (13892935):
+  77 of 77 passed. After review round 1 (bfad08e3, hold count added) `terminal.e2e.ts`: 30 of 30.
+- **Gate.** `python3 scripts/bootstrap.py && scripts/dev ci` at 13892935: exit 0, nextest 2949 of
+  2949 passed (16 skipped). The round-1 commit after it changes only e2e TypeScript and Markdown;
+  Yulius CI runs the gate on the final head.
+- **Full e2e suite** (`npx e2e run` at bfad08e3, 40 min): 797 passed, 1 skipped (the agent test,
+  no model key), 1 failed: `vidoc-switch.e2e.ts` "a refresh that overtakes the read after a change
+  still shows the change" (`expect.poll` 5 s at line 348, CI page). That is #1002, fixed in
+  parallel by task #357; it reads no terminal and does not call `terminalShown`, so it is outside
+  this change. Every test calling `terminalShown` passed.
+- **Security.** `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius";
+  nothing was scanned (disabled, not passed).
+- **Review round 1** (fresh session, approved 13892935): (1) minor, own: the case did not prove the
+  core was held, so a renamed core would make it pass on a 5 s wait; fixed, it counts the route's
+  holds. (2) nit, own: call counts (24 calls in 5 files); fixed. (3) minor, own: this Evidence
+  section; added. (4) nit, own: the changes entry compared 5 s with 5 s; reworded. (5) nit,
+  pre-existing: `terminal.e2e.ts` near "only keystrokes count as typing" says the terminal shows
+  once its first state arrived, which the fallback does not guarantee; the mock answers within
+  milliseconds, so no change.
+- **Not tested.** A probe-controlled CPU share run: the held core and hello reproduce the timing
+  deterministically instead, which the issue's acceptance allows.
