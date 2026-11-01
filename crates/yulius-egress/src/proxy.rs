@@ -83,6 +83,10 @@ pub struct EgressConfig {
     /// How long a connection is idle (no byte either way) before it may give way to a new one at
     /// a sandbox's share or the proxy's limit (SPEC-355 SLR-002).
     pub idle_floor: Duration,
+    /// How long a plain `http://` request waits for its upstream's response head with no progress
+    /// (no request-body frame forwarded) before it is answered `504` and frees its place (SPEC-369
+    /// PHT-001).
+    pub response_head_timeout: Duration,
     /// Where a refusing share or proxy is reported as a connection trouble (SPEC-361 CHR-001).
     pub health: Arc<ConnectionHealth>,
 }
@@ -95,6 +99,7 @@ impl Default for EgressConfig {
             max_connections: 256,
             max_per_sandbox: 128,
             idle_floor: IDLE_FLOOR,
+            response_head_timeout: IDLE_FLOOR,
             health: Arc::default(),
         }
     }
