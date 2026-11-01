@@ -374,9 +374,14 @@ for (const viewport of [{ width: 1600, height: 900 }, { width: 390, height: 844 
       const box = card.getBoundingClientRect();
       const left = box.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft);
       const right = box.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight);
-      const label = card.querySelector('.vidoc-project-name')!.getBoundingClientRect();
+      const name = card.querySelector('.vidoc-project-name')!;
+      const label = name.getBoundingClientRect();
       const control = card.querySelector('.switch')!.getBoundingClientRect();
-      return { labelGap: Math.round(label.left - left), switchGap: Math.round(right - control.right), labelLines: Math.round(label.height / parseFloat(getComputedStyle(card.querySelector('.vidoc-project-name')!).lineHeight)) };
+      return {
+        labelGap: Math.round(label.left - left),
+        switchGap: Math.round(right - control.right),
+        labelLines: Math.round(label.height / parseFloat(getComputedStyle(name).lineHeight)),
+      };
     });
     expect(edges).toEqual({ labelGap: 0, switchGap: 0, labelLines: 1 });
   });

@@ -28,14 +28,16 @@ right edge.
 (`crates/yulius-server/web/assets/styles.css`) to the card's label/switch row, copying the
 Instance page's Vidoc card, where the row sits in a 520px list of projects inside a settings
 column. On the CI/CD page the card is full width, so `justify-content: space-between` puts the
-switch at 520px, not at the card's edge. The Settings page's rows (`.settings-row`, a
-`1fr auto` grid) put every switch at their right edge.
+switch at 520px, not at the card's edge. The Settings page's rows (`.settings-row`, a grid
+whose last column, the control, is `auto`) put every switch at their right edge.
 
 **Why the tests missed it.** The e2e tests of the card (`e2e/tests/vidoc-switch.e2e.ts`) check
 its roles, text, states and axe, never its boxes.
 
-**What else the cause touches.** Only the CI/CD card: the Instance page's `.vidoc-project-list`
-keeps its own 520px cap, which is right in its narrow settings column and is not changed.
+**What else the cause touches.** Only the CI/CD card: the removed selector needs a `.vidoc-card`
+ancestor, which only `pages/cividoc.js` draws. The Instance page's `.vidoc-project` rows, its
+project list (`.vidoc-project-list`) and its "Scan every project with Vidoc" row (inside
+`.vidoc-instance`), keep their own 520px caps, right in that narrow settings column, unchanged.
 
 ## Requirements
 
@@ -63,6 +65,8 @@ keeps its own 520px cap, which is right in its narrow settings column and is not
 - e2e (`e2e/tests/vidoc-switch.e2e.ts`): open `/s/studio/ci` in the mock at 1600 px and 390 px,
   measure the card, its padding, the switch and the label with `getBoundingClientRect`.
 - The existing Vidoc e2e tests and axe checks still pass.
+- The label's one line guards its `white-space: nowrap`; the ellipsis and the notes' 72ch cap
+  (VLF-002, VLF-003) are rules this change does not touch, so no new test covers them.
 
 ## Decisions
 
