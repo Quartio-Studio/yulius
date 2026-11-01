@@ -12,6 +12,7 @@ type Asking = {
   __yuliusMock: {
     askSuperagent: (source: string, request: unknown) => string;
     endSuperagentRequest: (source: string, id: string) => void;
+    askBrowserSignIn: () => boolean;
     tasks: { sandbox_id: string; title: string; prompt: string; status: string }[];
   };
 };
@@ -53,6 +54,29 @@ test('a request shows in full above the Superagent and Create task starts it in 
   // The toast names the task and opens it.
   await expect(browser.locator('.toast:has-text("in product")')).toBeVisible();
   await browser.locator('.toast:has-text("in product") button:has-text("Open")').click();
+  await expect(browser).toHaveURL(/#\/s\/product\/t\/\d+$/);
+});
+
+// #978: the mock's sign-in request from the sandbox browser (5 s after the start) added a toast
+// below "Created #N", which moved its Open button up between the click's press and release on a
+// slow machine: no click, and the page stayed. Here it comes at that very moment.
+test('a toast arriving while Open is pressed does not lose the click', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await openSuperagent(browser, screen);
+  await ask(browser, 'sb_studio', { sandbox: 'product', prompt: PROMPT, title: 'API client v2' });
+  await screen.getByRole('button', 'Create task').click();
+  await expect(browser.locator('.toast:has-text("Created #")')).toBeVisible();
+  const open = await browser.evaluate(() => {
+    const toast = [...document.querySelectorAll('.toast')].find((t) => t.textContent!.startsWith('Created #'))!;
+    const box = toast.querySelector('button.btn')!.getBoundingClientRect();
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  });
+  await browser.mouse.move(open.x, open.y);
+  await browser.mouse.down();
+  if (await browser.evaluate(() => (window as unknown as Asking).__yuliusMock.askBrowserSignIn())) {
+    await expect(browser.locator('.toast:has-text("needs your action")')).toBeVisible();
+  }
+  await browser.mouse.up();
   await expect(browser).toHaveURL(/#\/s\/product\/t\/\d+$/);
 });
 
