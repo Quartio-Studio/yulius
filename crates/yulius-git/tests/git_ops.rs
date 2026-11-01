@@ -295,7 +295,10 @@ fn a_ci_checkout_reached_through_a_link_is_not_cleaned() -> TestResult {
     let refused = fx.git.ci_checkout(&repo, &path, &sha, &ci);
     assert!(refused.is_err(), "{refused:?}");
     assert_eq!(fs::read_to_string(outside.join("lint/junk"))?, "host");
-    assert!(!outside.join("lint/README.md").exists(), "nothing checked out");
+    assert!(
+        !outside.join("lint/README.md").exists(),
+        "nothing checked out"
+    );
     Ok(())
 }
 

@@ -2239,9 +2239,16 @@ async fn a_linked_ci_home_is_replaced_by_a_folder() -> TestResult {
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
     f.settle().await?;
     f.all_passed(2).await?;
-    assert_eq!(names_in(&outside)?, ["keep"], "the target is left as it was");
+    assert_eq!(
+        names_in(&outside)?,
+        ["keep"],
+        "the target is left as it was"
+    );
     assert!(std::fs::symlink_metadata(ci.join("home"))?.is_dir());
-    assert!(ci.join("home/made").exists(), "HOME is the sandbox's folder");
+    assert!(
+        ci.join("home/made").exists(),
+        "HOME is the sandbox's folder"
+    );
     Ok(())
 }
 

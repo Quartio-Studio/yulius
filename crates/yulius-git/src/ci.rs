@@ -112,8 +112,14 @@ impl Git {
     /// cleaned of untracked files. Ignored files (build outputs, dependency directories) are
     /// kept, so the next run of the job reuses them as a cache.
     ///
+    /// It removes and makes no folder itself (SPEC-367, #969): the caller readies the place
+    /// through handles. A registration matches the path as it resolves now, and the checkout and
+    /// the clean run in that resolved path, so a link swapped in on the way never gets a
+    /// registered checkout cleaned at its target.
+    ///
     /// # Errors
-    /// Paths outside `owned_root`, unknown commits, or Git failures.
+    /// Paths outside `owned_root`, something that is not a checkout registered there in the way,
+    /// unknown commits, or Git failures.
     pub fn ci_checkout(
         &self,
         repo: &Path,
@@ -129,27 +135,33 @@ impl Git {
             });
         }
         let commit = self.rev_parse(repo, sha)?;
-        let registered = self
-            .worktree_list(repo)?
-            .iter()
-            .skip(1)
-            .any(|w| w.path == path);
-        if !registered || !path.join(".git").exists() {
-            if path.exists() {
-                std::fs::remove_dir_all(path).map_err(|source| GitError::Io {
-                    context: "removing a broken CI checkout",
-                    source,
-                })?;
+        // Git records a worktree's resolved path.
+        let resolved = path.canonicalize().ok().filter(|resolved| {
+            resolved
+                .join(".git")
+                .symlink_metadata()
+                .is_ok_and(|m| m.is_file())
+        });
+        let registered = match resolved {
+            Some(resolved) => self
+                .worktree_list(repo)?
+                .iter()
+                .skip(1)
+                .any(|w| w.path == resolved)
+                .then_some(resolved),
+            None => None,
+        };
+        let Some(resolved) = registered else {
+            if path.symlink_metadata().is_ok() {
+                return Err(GitError::InvalidInput {
+                    what: "CI checkout path",
+                    reason: "something that is not a checkout of this repository is in the way"
+                        .into(),
+                });
             }
             self.run_ok(
                 Invocation::new(self, "worktree prune", Some(repo)).args(["worktree", "prune"]),
             )?;
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(|source| GitError::Io {
-                    context: "creating the CI directory",
-                    source,
-                })?;
-            }
             self.run_ok(
                 Invocation::new(self, "worktree add", Some(repo))
                     .args(["worktree", "add", "--quiet", "--detach", "--"])
@@ -157,16 +169,18 @@ impl Git {
                     .arg(&commit),
             )?;
             return Ok(());
-        }
+        };
         // `commit` is a full object id from `rev-parse`, never an option. (`checkout --detach`
         // refuses `--end-of-options` in Git 2.43, Ubuntu 24.04's.)
         self.run_ok(
-            Invocation::new(self, "checkout", Some(path))
+            Invocation::new(self, "checkout", Some(&resolved))
                 .args(["checkout", "--quiet", "--force", "--detach"])
                 .arg(&commit),
         )?;
         // Untracked files go; ignored ones (caches) stay. Submodules are not touched.
-        self.run_ok(Invocation::new(self, "clean", Some(path)).args(["clean", "-f", "-d", "-q"]))?;
+        self.run_ok(
+            Invocation::new(self, "clean", Some(&resolved)).args(["clean", "-f", "-d", "-q"]),
+        )?;
         Ok(())
     }
 

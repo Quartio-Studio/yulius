@@ -86,6 +86,8 @@ impl App {
             return Ok(TaskChecks::Clear);
         }
         let ci_dir = self.ci_dir(&sandbox.id);
+        // Readied through handles: Git checks out in it by its path (SPEC-367).
+        self.ci_checkout_ready(&sandbox.id, &[], SCRATCH).await?;
         let built = git
             .build_train(
                 &repo,
