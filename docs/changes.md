@@ -19,6 +19,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-31
 
+- A full egress proxy share shows on the panel, with whose connections they are (SPEC-361,
+  ADR-0246, task #344). On 2026-10-31 quartio-v2's tasks found out one by one that the proxy
+  refused them; the cause was only in the journal. Now a sandbox at its share, a full `out.sock`
+  relay or a full proxy shows a warning pill in the tab row to the sandbox's people ("Proxy share
+  full: quartio-v2", naming the task whose run holds the most and how many), with one
+  notification per trouble and none per refusal. It goes once the limit falls to seven eighths.
+  `GET /api/connections` lists them.
 - On a loaded host, CI jobs get more CPU than the agents' local builds, in every sandbox
   (SPEC-362, ADR-0247, task #345, follow-up 4 of #342). On 2026-10-31 the 12-CPU host ran at load
   30–52 for hours, with CI jobs and every task's cargo builds side by side. CI already had four

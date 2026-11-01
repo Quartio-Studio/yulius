@@ -2013,7 +2013,14 @@ The proxy also counts each connection's run (agent run, CI job, Superagent shell
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and
 the full proxy that of the busiest sandbox, if it holds at least 2 more than the asker, so one busy
 run cannot lock the other runs of its sandbox out
-([decision 0243](decisions/0243-the-busiest-run-gives-way-at-a-full-proxy-share.md)):
+([decision 0243](decisions/0243-the-busiest-run-gives-way-at-a-full-proxy-share.md)).
+A refusal that remains (a sandbox's share, its `out.sock`, the proxy's total) is a connection
+trouble in the app's `ConnectionHealth` registry, with the three busiest runs or sandboxes. It
+ends once its limit falls to seven eighths, and only its beginning and end are published
+(`connections.updated`): the panel shows a pill naming the run's task, and the notification
+center gets one entry per trouble (`GET /api/connections`;
+[SPEC-361](../.ai/specs/SPEC-361-proxy-and-mcp-health-on-the-panel-with-t.md),
+[decision 0246](decisions/0246-a-full-proxy-share-or-relay-shows-on-the-panel-once-per-trouble.md)):
 
 ```mermaid
 flowchart LR
@@ -2022,6 +2029,9 @@ flowchart LR
   O --> I["internal listener: API, MCP, egress proxy (128 per sandbox, 256 in all)"]
   F -.->|"full: the longest-idle place (idle 5 min or more) gives way"| F
   I -.->|"share full, all active: the busiest run's oldest tunnel gives way"| I
+  I -.->|"still refused: a trouble"| H["ConnectionHealth"]
+  O -.->|"dropped at its limit: a trouble"| H
+  H -->|"connections.updated, GET /api/connections"| P["panel pill and one notification"]
   Y["Yulius link test, every minute per Superagent"] -->|"in.sock CONNECT 8081"| F
 ```
 

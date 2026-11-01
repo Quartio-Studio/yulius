@@ -132,6 +132,11 @@ changes quote the newest notes. Projects with one changes file see no difference
   (also on PR #992): CI jobs now get `YULIUS_VIDOC=off`, and the test only removed the key, so the
   scan exited 0 as disabled. Reproduced with `YULIUS_VIDOC=off cargo test -p xtask --test cli`
   (failed), fixed by removing `YULIUS_VIDOC` from the child's environment (passes with and
-  without the variable); issue #994.
+  without the variable); issue #994. PR #992 merged the same fix into `dev` meanwhile, so the
+  merge of `dev` keeps its version and this change no longer touches the test.
+- A later full gate (4cc89884, `YULIUS_VIDOC=off`) failed once at
+  `local_ci::running_ci_jobs_weigh_on_their_sandbox_until_they_end` (git fetch "bad object
+  worktrees/build@1/HEAD"): code this change does not touch (SPEC-362); 8 of 8 isolated reruns
+  passed; filed as flaky, issue #995.
 - Not tested: a real quartio-v2 checkout (no access from this sandbox); the behaviour is covered
   by the fixture folders above.

@@ -104,3 +104,55 @@ pub struct DiskView {
     /// Its total bytes; `None` when unknown.
     pub total: Option<u64>,
 }
+
+/// `GET /api/connections` (SPEC-361 CHR-004): the open connection troubles a person may see.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ConnectionsView {
+    /// Oldest first.
+    pub troubles: Vec<ConnectionTroubleView>,
+}
+
+/// A limit refusing connections: a sandbox's proxy share, its relay toward Yulius, or the proxy's
+/// own total.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionTroubleView {
+    /// Unique per trouble, also across restarts: one notification per id.
+    pub id: String,
+    /// `share`, `relay` or `proxy`.
+    pub limit: String,
+    /// Its sandbox; `None` for the proxy's own total.
+    pub sandbox_id: Option<String>,
+    /// The sandbox's name.
+    pub sandbox_name: Option<String>,
+    /// When it began (ms since the epoch).
+    pub since_ms: i64,
+    /// Connections held at its last refusal.
+    pub held: usize,
+    /// The limit.
+    pub max: usize,
+    /// Refusals since it began.
+    pub refused: u64,
+    /// The busiest holders at its last refusal, busiest first: runs at a share, sandboxes at the
+    /// proxy's total, none for a relay.
+    pub holders: Vec<ConnectionHolderView>,
+}
+
+/// Who holds connections at a limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionHolderView {
+    /// `task` (an agent run), `ci` (a CI job), `superagent`, `run` (one that ended), `sandbox`
+    /// or `other_sandbox` (one the person cannot view).
+    pub kind: String,
+    /// How the panel names it: `task #12`, `a CI job`, the sandbox's name.
+    pub label: String,
+    /// The run's task.
+    pub task_id: Option<String>,
+    /// Its number.
+    pub task_number: Option<u32>,
+    /// Its title.
+    pub task_title: Option<String>,
+    /// The sandbox, at the proxy's total.
+    pub sandbox_id: Option<String>,
+    /// Connections it holds there.
+    pub held: usize,
+}

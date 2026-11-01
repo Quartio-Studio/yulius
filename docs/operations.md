@@ -1332,6 +1332,19 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   relay: at the limit, the longest-idle connection was closed …` and `sandbox relay: a connection
   was dropped at the limit` lines to the sandbox's `holder.log` (and the Docker front's to
   `docker-front.log`), both in `<data>/runtime/sandboxes/<sandbox-id>/`.
+- A refusal that remains shows on the panel (SPEC-361,
+  [ADR-0246](decisions/0246-a-full-proxy-share-or-relay-shows-on-the-panel-once-per-trouble.md)).
+  A sandbox at its proxy share, a sandbox whose `out.sock` dropped a connection, and the proxy at
+  its own limit each begin a *connection trouble*: the journal says `connection trouble began`
+  (limit, sandbox, held of max, the busiest runs or sandboxes by run id), and the people who can
+  view the sandbox (everyone, for the proxy's own) get a warning pill in the tab row and one
+  notification, naming the task whose run holds the most ("Proxy share full: quartio-v2", title
+  "task #12's run holds 120 of them"). Refusals within it only update its counts. It ends, with
+  `connection trouble ended`, once its limit falls to seven eighths (112 of a share of 128, 224 of
+  256). `GET /api/connections` lists the open ones. To free the share, end the processes of the
+  named task's run (its panel lists its background processes; the `nsenter … ss` recipe below shows
+  their connections), or stop the task. The holder's forward inside the sandbox is not reported
+  there: read its `holder.log`.
 - Every minute Yulius tests each live Superagent's link from inside its sandbox, through the
   holder's forward. Two failed tests in a row log `the Superagent's sandbox cannot reach Yulius`, and its
   panel says so and offers **Restart Superagent**, which starts it again in place, resuming its

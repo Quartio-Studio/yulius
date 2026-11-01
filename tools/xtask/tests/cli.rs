@@ -37,8 +37,8 @@ fn security_is_listed_and_needs_a_vidoc_key() -> std::io::Result<()> {
         .arg("--help")
         .output()?;
     assert!(String::from_utf8_lossy(&help.stdout).contains("security"));
-    // Without a key, and not switched off: a CI job of a project whose Vidoc is off gets
-    // `YULIUS_VIDOC=off` (ADR-0245), which would make the scan exit 0 as disabled.
+    // Not the runner's Vidoc switch: a CI job of a project or instance with Vidoc off has
+    // `YULIUS_VIDOC=off`, which makes the scan exit 0 as disabled.
     let result = Command::new(env!("CARGO_BIN_EXE_xtask"))
         .env_remove("VIDOC_API_KEY")
         .env_remove("YULIUS_VIDOC")
