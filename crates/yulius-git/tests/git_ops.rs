@@ -312,6 +312,179 @@ exec git "$@"
     Ok(())
 }
 
+/// A clone with a commit to fetch on `origin/main` and the registration `git worktree add` leaves
+/// for a moment: `.git/worktrees/build@1/` whose `HEAD` is still the null object id (#995).
+/// Returns the clone, that `HEAD` file, the clone's own commit (what the add writes into it) and
+/// the commit to fetch.
+#[cfg(unix)]
+fn half_added_worktree_beside_a_fetch(
+    fx: &Fixture,
+) -> Result<(PathBuf, PathBuf, String, String), Box<dyn Error>> {
+    let (remote, repo) = fx.repo_with_remote()?;
+    let own = fx.git.rev_parse(&repo, "main")?;
+    let pusher = fx.path("pusher");
+    fx.raw(
+        &fx.root,
+        &["clone", "--quiet", path_str(&remote)?, path_str(&pusher)?],
+    )?;
+    fs::write(pusher.join("a.txt"), "pushed\n")?;
+    fx.raw(&pusher, &["commit", "--quiet", "-am", "pushed"])?;
+    fx.raw(&pusher, &["push", "--quiet", "origin", "HEAD:main"])?;
+    let sha = fx.raw(&pusher, &["rev-parse", "HEAD"])?.trim().to_owned();
+    let admin = repo.join(".git/worktrees/build@1");
+    fs::create_dir_all(&admin)?;
+    fs::write(admin.join("HEAD"), format!("{}\n", "0".repeat(40)))?;
+    fs::write(admin.join("commondir"), "../..\n")?;
+    fs::write(
+        admin.join("gitdir"),
+        format!("{}\n", fx.path("jobs/build@1/.git").display()),
+    )?;
+    Ok((repo, admin.join("HEAD"), own, sha))
+}
+
+/// A Git wrapper that appends each fetch's exit status to `attempts` and, when `complete` names a
+/// commit, writes it into `head` after the first fetch, as `git worktree add`'s own child does.
+#[cfg(unix)]
+fn fetch_recorder(
+    fx: &Fixture,
+    attempts: &Path,
+    head: &Path,
+    complete: Option<&str>,
+) -> Result<Git, Box<dyn Error>> {
+    let completion = complete.map_or(String::new(), |sha| {
+        format!(
+            "[ -s '{attempts}' ] || echo {sha} > '{head}'",
+            attempts = attempts.display(),
+            head = head.display(),
+        )
+    });
+    let wrapper = fx.path("bin/git");
+    write_hook(
+        &wrapper,
+        &format!(
+            r#"#!/bin/sh
+case " $* " in
+*" fetch "*)
+  git "$@"; status=$?
+  {completion}
+  echo $status >> '{attempts}'
+  exit $status ;;
+esac
+exec git "$@"
+"#,
+            attempts = attempts.display(),
+        ),
+    )?;
+    Ok(isolated(Git::new(&wrapper), &fx.home))
+}
+
+/// #995: a sandbox sync fetched into a clone while a CI job's `git worktree add` had written the
+/// new registration's `HEAD` as the null id, and the fetch's connectivity check died ("bad object
+/// worktrees/build@1/HEAD"). The add completes after the first attempt; the fetch must survive.
+#[cfg(unix)]
+#[test]
+fn a_fetch_survives_a_worktree_being_added_beside_it() -> TestResult {
+    let fx = Fixture::new()?;
+    let (repo, head, own, fetched) = half_added_worktree_beside_a_fetch(&fx)?;
+    let attempts = fx.path("attempts");
+    let git = fetch_recorder(&fx, &attempts, &head, Some(&own))?;
+    git.fetch(&repo, "origin")?;
+    assert_eq!(fs::read_to_string(&attempts)?, "1\n0\n");
+    assert_eq!(
+        fx.git.rev_parse(&repo, "refs/remotes/origin/main")?,
+        fetched
+    );
+    Ok(())
+}
+
+/// The retry waits for this process's own worktree add to end. The add runs through a wrapper
+/// that holds it, with the registration lock, until a later fetch attempt shows up or 2 s have
+/// passed, then completes the half-added `HEAD`; the first fetch attempt fails meanwhile, and no
+/// later attempt may start while the add still runs. The bound only limits how long the fixed
+/// code waits; it never decides the result.
+#[cfg(unix)]
+#[test]
+fn a_fetch_retry_waits_for_this_process_s_worktree_add() -> TestResult {
+    let fx = Fixture::new()?;
+    let (repo, head, own, fetched) = half_added_worktree_beside_a_fetch(&fx)?;
+    let marks = fx.path("marks");
+    fs::create_dir(&marks)?;
+    let wrapper = fx.path("bin/git");
+    write_hook(
+        &wrapper,
+        &format!(
+            r#"#!/bin/sh
+case " $* " in
+*" worktree add "*)
+  : > '{m}/adding'
+  n=0
+  while [ ! -s '{m}/attempts' ] && [ $n -lt 6000 ]; do sleep 0.01; n=$((n + 1)); done
+  n=0
+  while [ "$(wc -l < '{m}/attempts')" -lt 2 ] && [ $n -lt 200 ]; do sleep 0.01; n=$((n + 1)); done
+  echo {own} > '{head}'
+  git "$@"; status=$?; rm -f '{m}/adding'; exit $status ;;
+*" fetch "*)
+  if [ -s '{m}/attempts' ] && [ -e '{m}/adding' ]; then : > '{m}/overlapped'; fi
+  git "$@"; status=$?; echo $status >> '{m}/attempts'; exit $status ;;
+esac
+exec git "$@"
+"#,
+            m = marks.display(),
+            head = head.display(),
+        ),
+    )?;
+    let git = isolated(Git::new(&wrapper), &fx.home);
+    let add = {
+        let (git, repo, path) = (Clone::clone(&git), repo.clone(), fx.path("worktrees/t1"));
+        std::thread::spawn(move || git.worktree_add(&repo, &path, "task/t1", "main"))
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !marks.join("adding").exists() {
+        if add.is_finished() || Instant::now() > deadline {
+            return Err("the worktree add never started".into());
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    git.fetch(&repo, "origin")?;
+    add.join().map_err(|_| "the add thread panicked")??;
+    assert!(
+        !marks.join("overlapped").exists(),
+        "a fetch retry ran while this process's worktree add was still running"
+    );
+    assert_eq!(fs::read_to_string(marks.join("attempts"))?, "1\n0\n");
+    assert_eq!(
+        fx.git.rev_parse(&repo, "refs/remotes/origin/main")?,
+        fetched
+    );
+    Ok(())
+}
+
+/// The retry is bounded and narrow: a `HEAD` that stays bad fails after 5 attempts with Git's own
+/// message, and any other fetch failure is attempted once.
+#[cfg(unix)]
+#[test]
+fn a_fetch_retries_only_a_half_added_worktree_and_gives_up() -> TestResult {
+    let fx = Fixture::new()?;
+    let (repo, head, _, _) = half_added_worktree_beside_a_fetch(&fx)?;
+    let attempts = fx.path("attempts");
+    let git = fetch_recorder(&fx, &attempts, &head, None)?;
+    let Err(GitError::Failed { stderr, .. }) = git.fetch(&repo, "origin") else {
+        return Err("a fetch past a broken worktree HEAD succeeded".into());
+    };
+    assert!(
+        stderr.contains("bad object worktrees/build@1/HEAD"),
+        "{stderr}"
+    );
+    assert_eq!(fs::read_to_string(&attempts)?, "1\n".repeat(5));
+
+    fs::remove_file(&attempts)?;
+    fs::remove_dir_all(repo.join(".git/worktrees/build@1"))?;
+    let missing = fx.path("missing.git");
+    assert!(git.fetch(&repo, path_str(&missing)?).is_err());
+    assert_eq!(fs::read_to_string(&attempts)?.lines().count(), 1);
+    Ok(())
+}
+
 #[test]
 fn worktree_lifecycle_and_guarded_removal() -> TestResult {
     let fx = Fixture::new()?;
