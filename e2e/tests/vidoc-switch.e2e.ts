@@ -331,8 +331,12 @@ test('a refresh while the switch is sent shows the change on its way, disabled',
   expect(await switchOf(browser, 'studio')).toBe(false);
 });
 
-type Holding = { __yuliusMock: { holdVidocReads?: boolean; vidocHolds: unknown[]; releaseVidoc: () => void; resyncNow: () => void } };
+type Holding = {
+  __yuliusMock: { holdVidocReads?: boolean; vidocHolds: unknown[]; releaseVidoc: () => void; resyncNow: () => void; asked?: Record<string, number> };
+};
 const held = (browser: Browser) => browser.evaluate(() => (window as unknown as Holding).__yuliusMock.vidocHolds.length);
+/** The Vidoc reads the page has asked for, counted as it asks (before the mock's latency). */
+const askedVidoc = (browser: Browser) => browser.evaluate(() => (window as unknown as Holding).__yuliusMock.asked?.['/api/sandboxes/sb_studio/vidoc'] ?? 0);
 
 // SPEC-359 review round 5: the read after a change was dropped for a newer refresh, which drew the
 // view from before the change. #1002: while that read is held, the page reads the view again by
@@ -357,11 +361,17 @@ for (const rereads of [0, 2]) {
     }
     // The card drawn now (the change, sent); a newer refresh either draws it again or reads anew.
     await browser.evaluate(() => { (document.querySelector('#vidoc') as HTMLElement).dataset.drawn = 'before'; return null; });
-    await screen.getByRole('button', 'Check for commits').click();
-    await expect.poll(() => browser.evaluate(() => {
+    const asked = await askedVidoc(browser);
+    const check = screen.getByRole('button', 'Check for commits');
+    await check.click();
+    // The refresh has started once the button is back (its look answered, the reload called).
+    // Other reads may come before or after its own, so they are counted from the click, not to an
+    // exact number (#1002).
+    await expect(check).toBeEnabled();
+    await expect.poll(() => browser.evaluate((n: number) => {
       const redrawn = (document.querySelector('#vidoc') as HTMLElement | null)?.dataset.drawn !== 'before';
-      return redrawn || (window as unknown as Holding).__yuliusMock.vidocHolds.length === 2;
-    })).toBe(true);
+      return redrawn || ((window as unknown as Holding).__yuliusMock.asked?.['/api/sandboxes/sb_studio/vidoc'] ?? 0) > n;
+    }, asked)).toBe(true);
     await expect(scan()).not.toBeChecked();
     await browser.evaluate(() => {
       const db = (window as unknown as Holding).__yuliusMock;
