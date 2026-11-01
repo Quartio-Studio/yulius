@@ -113,6 +113,14 @@ lost to the page, as on the server (#506). A check that names tasks the mock cha
 locators by role and accessible name (`screen.getByRole('button', 'Start task')`): they test what
 assistive technology sees, and they survive markup changes.
 
+## Layout an observer sets
+
+A place the UI computes in a `ResizeObserver` callback (the attention bar's height, the cards over
+the terminal) is laid out at the browser's next rendering update, which a loaded host delays: a
+test reads it with `expect.poll` until it holds, never once right after something shows (#1003).
+`lateResizeObservers(browser)` (`tests/support.ts`, before `app.open`) makes every observer answer
+2 s late, so a test that measures once fails on every run instead of once in a full suite.
+
 ## Agent steps
 
 `agent.act('…')` lets a model drive the UI towards a goal; `agent.assert('…')` lets it judge the

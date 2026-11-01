@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-01
 
+- Two e2e tests no longer measure a layout a ResizeObserver sets once (SPEC-375, task #358, fixes
+  #1003): the way on below a held card (`terminal.e2e.ts`) and the corner notices below a phone's
+  needs_you bar (`cd.e2e.ts`) are polled until they hold, and both run with every observer 2 s
+  late (`lateResizeObservers` in `tests/support.ts`), which failed the single measure every run.
+  Test only: an observer's callback runs before paint, so nobody sees the old place.
 - The CI/CD page's Security scan (Vidoc) card puts its switch at the card's right edge, as the
   Settings rows do, instead of 520 px across a full-width card (SPEC-364, #997, task #347).
 - The task overview offers its changes only when the task's worktree is there (SPEC-370, task
