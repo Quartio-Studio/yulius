@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-01
 
+- The e2e helper `terminalShown` waits up to `TERMINAL_SHOW_MS` (30 s) for a task terminal's
+  first screen, with a message naming it, instead of an assertion's 5 s, which was shorter than
+  the app's own reveal limit (5 s after the terminal starts, which is after its core loaded) and
+  failed a loaded run (SPEC-372, ADR-0251, task #355, fixes #949). A regression test holds the
+  core and the hello so the terminal shows only by that limit.
 - The CI/CD page's Security scan (Vidoc) card puts its switch at the card's right edge, as the
   Settings rows do, instead of 520 px across a full-width card (SPEC-364, #997, task #347).
 - The task overview offers its changes only when the task's worktree is there (SPEC-370, task
