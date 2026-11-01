@@ -63,7 +63,6 @@ impossible.
 - [x] Wait on the refresh having started and a newer Vidoc read, passing the regression and probe runs
 - [x] Project gate green and review round 1 answered
 - [x] Full e2e run and review of the answered head
-- [ ] Merged into dev and issue #1002 closed
 
 ## Acceptance criteria
 
