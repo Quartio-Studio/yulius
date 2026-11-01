@@ -738,3 +738,77 @@ async fn a_full_proxy_is_a_trouble_naming_the_sandboxes_until_it_has_room() -> T
     held.truncate(8);
     until_no_trouble(&setup.health).await
 }
+
+/// The proxy's log lines, written by a subscriber set on this thread (a `tokio::test` runtime
+/// runs the proxy's tasks on it).
+#[derive(Clone, Default)]
+struct Logs(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Logs {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Logs {
+    /// The lines that contain `text`.
+    fn lines_with(&self, text: &str) -> Vec<String> {
+        let logs = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        String::from_utf8_lossy(&logs)
+            .lines()
+            .filter(|line| line.contains(text))
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+/// SPEC-366 EPB-001 (#964: on 2026-10-30 the journal said the proxy was full, not who held it): a
+/// full proxy's warning names the busiest sandboxes with their counts, once a minute.
+#[tokio::test]
+async fn a_full_proxys_warning_names_the_busiest_sandboxes() -> TestResult {
+    let logs = Logs::default();
+    let writer = logs.clone();
+    let _logging = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish(),
+    );
+    let setup = setup_with(yulius_egress::IDLE_FLOOR, 10).await?;
+    let mut held = Vec::new();
+    for at in 0..10 {
+        // Evenly: with 2 more, the busiest sandbox would give way (SPEC-357 ESR-003).
+        let token = if at % 2 == 0 {
+            "good-token"
+        } else {
+            "other-sandbox-token"
+        };
+        let (stream, status) = tunnel(&setup, token).await?;
+        assert!(status.contains(" 200"), "tunnel {at}: {status}");
+        held.push(stream);
+    }
+    for _ in 0..2 {
+        let (_refused, status) = tunnel(&setup, "other-sandbox-token").await?;
+        assert!(status.contains("too many connections"), "{status}");
+    }
+    let warnings = logs.lines_with("egress proxy: every connection is taken");
+    assert_eq!(warnings.len(), 1, "once a minute: {warnings:?}");
+    assert!(warnings[0].contains("WARN"), "{}", warnings[0]);
+    assert!(
+        warnings[0].contains("holders=s1 (5), s2 (5)"),
+        "the busiest first, with their counts: {}",
+        warnings[0]
+    );
+    Ok(())
+}
