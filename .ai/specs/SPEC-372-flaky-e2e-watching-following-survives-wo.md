@@ -86,7 +86,7 @@ terminal's first screen, so the tests that open a task view never fail for a loa
     and a second condition to keep in step with `terminal.js`.
   - A named budget, `TERMINAL_SHOW_MS = 30_000`, as `MONACO_LOAD_MS` does for Monaco: chosen.
     It covers `REVEAL_LIMIT_MS` (5 s) plus the core load on a starved runner, bounds this one
-    condition, and every caller (about 30, in 6 files) gets it.
+    condition, and every caller (24 calls in 5 files) gets it.
 - **The regression test drives the app's fallback, not a timer of its own.** It holds the hello
   for good, so the only way the terminal shows is `REVEAL_LIMIT_MS` after `start()`; holding the
   core until the wait has begun makes that later than 5 s after the wait's start every time,

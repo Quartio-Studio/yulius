@@ -38,6 +38,6 @@ server failed it at any load.
 
 ## Consequences
 
-The roughly 30 calls in `archive`, `reply`, `terminal`, `terminals` and `watching` no longer fail
+The 24 calls in `archive`, `reply`, `terminal`, `terminals` and `watching` no longer fail
 for a slow terminal start alone; a terminal that never shows still fails, after 30 s instead of
 5 s, with a message that names it.

@@ -155,7 +155,8 @@ test('terminalShown waits out the app’s own reveal limit, counted after the te
   // the wait began, as a starved runner can make it.
   let release!: () => void;
   const released = new Promise<void>((resolve) => { release = resolve; });
-  await browser.route(/\/assets\/terminal-core\.js(\?|$)/, async (route) => { await released; await route.continue(); });
+  let holds = 0;
+  await browser.route(/\/assets\/terminal-core\.js(\?|$)/, async (route) => { holds += 1; await released; await route.continue(); });
   await browser.addInitScript(() => {
     (window as unknown as { __yuliusHoldTerminal: Promise<void> }).__yuliusHoldTerminal = new Promise<void>(() => {});
   });
@@ -163,6 +164,7 @@ test('terminalShown waits out the app’s own reveal limit, counted after the te
   const shown = terminalShown(browser);
   release();
   await shown;
+  expect(holds, 'the terminal core was held until the wait began').toBe(1);
 });
 
 test('the clipboard keys follow desktop terminals', async ({ app, browser }) => {

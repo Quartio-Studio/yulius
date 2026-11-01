@@ -8,7 +8,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - The e2e helper `terminalShown` waits up to `TERMINAL_SHOW_MS` (30 s) for a task terminal's
   first screen, with a message naming it, instead of an assertion's 5 s, which was shorter than
-  the app's own reveal limit (5 s after the terminal starts, which is after its core loaded) and
+  the app may take to show it (its core's load, then up to 5 s until it reveals anyway) and
   failed a loaded run (SPEC-372, ADR-0251, task #355, fixes #949). A regression test holds the
   core and the hello so the terminal shows only by that limit.
 - The CI/CD page's Security scan (Vidoc) card puts its switch at the card's right edge, as the
