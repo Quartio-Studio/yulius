@@ -1000,6 +1000,19 @@ test('the attention bar’s Reply leaves the whole session for the terminal (#91
 });
 
 test('the way on sits below a held card over the terminal (#911)', async ({ app, browser }) => {
+  // The button moves below the card when a ResizeObserver sees the card (taskview.js), at a
+  // rendering update a loaded host delays (#1003): every observer answers 500 ms late here.
+  await browser.addInitScript(() => {
+    const Native = window.ResizeObserver;
+    window.ResizeObserver = class extends Native {
+      constructor(callback: ResizeObserverCallback) {
+        let connected = true;
+        super((entries, observer) => { setTimeout(() => { if (connected) callback(entries, observer); }, 500); });
+        const disconnect = this.disconnect.bind(this);
+        this.disconnect = () => { connected = false; disconnect(); };
+      }
+    };
+  });
   const point = await classicTask12(app, browser);
   await touchTask(browser, 'sb_studio', 12, { heldPrompt: { id: 'hold_9', class: 'new_scope', excerpt: 'Also add a dark mode to the invoice settings page.', percent: 92, typed_by: 'mkarp', created_at: new Date().toISOString() } });
   await expect(browser.locator('.taskview .held-slot')).toBeVisible();
