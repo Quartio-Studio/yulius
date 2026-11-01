@@ -22,7 +22,8 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use yulius_app::ports::egress::{EgressClient, EgressDecision, EgressPolicy, EgressRequest};
-use yulius_domain::connections::{self, Activity, Busier, Connections};
+use yulius_domain::connection_health::{self, ConnectionHealth, Limit, Refusal};
+use yulius_domain::connections::{self, Activity, Admitted, Busier, Connections};
 use yulius_domain::vault::egress_destination_allowed;
 use yulius_domain::vault::redact::{Matcher, PlainMatcher, StreamRedactor, redact_all};
 
@@ -82,6 +83,8 @@ pub struct EgressConfig {
     /// How long a connection is idle (no byte either way) before it may give way to a new one at
     /// a sandbox's share or the proxy's limit (SPEC-355 SLR-002).
     pub idle_floor: Duration,
+    /// Where a refusing share or proxy is reported as a connection trouble (SPEC-361 CHR-001).
+    pub health: Arc<ConnectionHealth>,
 }
 
 impl Default for EgressConfig {
@@ -92,6 +95,7 @@ impl Default for EgressConfig {
             max_connections: 256,
             max_per_sandbox: 128,
             idle_floor: IDLE_FLOOR,
+            health: Arc::default(),
         }
     }
 }
@@ -104,7 +108,6 @@ pub struct EgressProxy {
     resolve: HashMap<String, SocketAddr>,
     /// The open tunnels and intercepted connections by sandbox (LAP-002, SPEC-355 SLR-002).
     slots: Arc<Slots>,
-    max_per_sandbox: usize,
     /// When the proxy last gave each warning (a kind, and a sandbox or `None` for the whole
     /// proxy). Holds the warnings of the last minute only.
     warned: Mutex<Warned>,
@@ -120,12 +123,84 @@ struct Slots {
     /// By sandbox and run (`EgressClient::use_key`), SPEC-357.
     table: Mutex<Connections<String, oneshot::Sender<()>, String>>,
     epoch: Instant,
+    /// Where a refusing share or proxy is a trouble until it has room (SPEC-361).
+    health: Arc<ConnectionHealth>,
+    /// A sandbox's share and the proxy's total, as the troubles report them.
+    share: usize,
+    total: usize,
+    /// Runs right before a refusal is reported (tests: a close racing it, review round 2).
+    #[cfg(test)]
+    pause: Option<Box<dyn Fn() + Send + Sync>>,
 }
+
+/// A place the table gave, or the limit met.
+type Answer = Result<Admitted<String, oneshot::Sender<()>, String>, connections::Full>;
 
 impl Slots {
     fn now(&self) -> u64 {
         u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
+
+    /// Admits a connection of `run` in `sandbox` (`held`: in flight from the start), `end` ending
+    /// it. A refusal is reported as a trouble, with whose connections they are (SPEC-361
+    /// CHR-001), under the table's lock, so a close after it sees the trouble open (review round
+    /// 1; the registry never calls back into the proxy). With a refusal at the share, also how
+    /// many `run` holds and the most another run holds (SPEC-357 ESR-004).
+    fn admit(
+        &self,
+        sandbox: &str,
+        run: &str,
+        held: bool,
+        end: oneshot::Sender<()>,
+    ) -> (Answer, Option<(usize, usize)>) {
+        let mut table = self.table.lock().unwrap_or_else(PoisonError::into_inner);
+        let (key, owner, now) = (sandbox.to_owned(), run.to_owned(), self.now());
+        let admitted = if held {
+            table.admit_held_by(key.clone(), owner.clone(), end, now)
+        } else {
+            table.admit_by(key.clone(), owner.clone(), end, now)
+        };
+        let counts = matches!(admitted, Err(connections::Full::Key)).then(|| {
+            (
+                table.count_of(&key, &owner),
+                table.most_of_others(&key, &owner),
+            )
+        });
+        let trouble = match admitted {
+            Err(connections::Full::Key) => Some(Refusal {
+                limit: Limit::Share,
+                sandbox: Some(key.clone()),
+                held: table.count(&key),
+                max: self.share,
+                holders: connection_health::busiest(table.owners_of(&key)),
+            }),
+            Err(connections::Full::Total) => Some(Refusal {
+                limit: Limit::Proxy,
+                sandbox: None,
+                held: table.len(),
+                max: self.total,
+                holders: connection_health::busiest(table.keys()),
+            }),
+            Ok(_) => None,
+        };
+        if let Some(trouble) = trouble {
+            #[cfg(test)]
+            if let Some(pause) = &self.pause {
+                pause();
+            }
+            self.health.refused(trouble, wall_ms());
+        }
+        (admitted, counts)
+    }
+}
+
+/// The wall clock in ms since the epoch: when a trouble began.
+fn wall_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 /// A connection's place in its sandbox's share and the proxy. Freed when it ends.
@@ -133,15 +208,31 @@ struct Slot {
     slots: Arc<Slots>,
     id: u64,
     activity: Activity,
+    sandbox: String,
 }
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        self.slots
+        let health = &self.slots.health;
+        let mut table = self
+            .slots
             .table
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .close(self.id);
+            .unwrap_or_else(PoisonError::into_inner);
+        table.close(self.id);
+        // Counted only while a trouble is open there, under the table's lock as a refusal is
+        // reported, so no close slips between a refusal and its report (SPEC-361 CHR-002, review
+        // round 1).
+        if health.open(Limit::Share, Some(&self.sandbox)) {
+            health.held(
+                Limit::Share,
+                Some(&self.sandbox),
+                table.count(&self.sandbox),
+            );
+        }
+        if health.open(Limit::Proxy, None) {
+            health.held(Limit::Proxy, None, table.len());
+        }
     }
 }
 
@@ -445,10 +536,14 @@ impl EgressProxy {
                     u64::try_from(config.idle_floor.as_millis()).unwrap_or(u64::MAX),
                 )),
                 epoch: Instant::now(),
+                health: config.health,
+                share: config
+                    .max_per_sandbox
+                    .clamp(1, config.max_connections.max(1)),
+                total: config.max_connections.max(1),
+                #[cfg(test)]
+                pause: None,
             }),
-            max_per_sandbox: config
-                .max_per_sandbox
-                .clamp(1, config.max_connections.max(1)),
             warned: Mutex::new(HashMap::new()),
         })
     }
@@ -471,28 +566,7 @@ impl EgressProxy {
         let sandbox = client.sandbox_id.as_str();
         let run = client.use_key();
         let (end, ended) = oneshot::channel();
-        let (admitted, counts) = {
-            let mut table = self
-                .slots
-                .table
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            let (key, owner, now) = (sandbox.to_owned(), run.to_owned(), self.slots.now());
-            let admitted = if held {
-                table.admit_held_by(key, owner, end, now)
-            } else {
-                table.admit_by(key, owner, end, now)
-            };
-            // Only a refusal at the share tells how many (SPEC-357 ESR-004).
-            let counts = matches!(admitted, Err(connections::Full::Key)).then(|| {
-                let (sandbox, run) = (sandbox.to_owned(), run.to_owned());
-                (
-                    table.count_of(&sandbox, &run),
-                    table.most_of_others(&sandbox, &run),
-                )
-            });
-            (admitted, counts)
-        };
+        let (admitted, counts) = self.slots.admit(sandbox, run, held, end);
         let mut warned = self.warned.lock().unwrap_or_else(PoisonError::into_inner);
         match admitted {
             Ok(admitted) => {
@@ -534,6 +608,7 @@ impl EgressProxy {
                     slots: Arc::clone(&self.slots),
                     id: admitted.id,
                     activity: admitted.activity,
+                    sandbox: sandbox.to_owned(),
                 };
                 Ok((slot, ended))
             }
@@ -544,12 +619,12 @@ impl EgressProxy {
                         sandbox,
                         run,
                         held = mine,
-                        share = self.max_per_sandbox,
+                        share = self.slots.share,
                         "egress proxy: a sandbox holds its share of the connections; \
                          leftover processes may hold them (docs/operations.md)"
                     );
                 }
-                Err(share_refusal(self.max_per_sandbox, mine, most_held))
+                Err(share_refusal(self.slots.share, mine, most_held))
             }
             Err(connections::Full::Total) => {
                 if warn_due(&mut warned, "full", None) {
@@ -945,6 +1020,68 @@ pub async fn serve(listener: TcpListener, proxy: Arc<EgressProxy>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-361 CHR-002 (review round 2): a refusal whose report races every slot of its sandbox
+    /// closing still ends its trouble: the closes wait for the report, so the last sees it open.
+    #[test]
+    fn a_trouble_begun_while_every_slot_closes_still_ends() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let health = Arc::new(ConnectionHealth::default());
+        let (paused_tx, paused_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let go_rx = Mutex::new(go_rx);
+        let pause = move || {
+            let _ = paused_tx.send(());
+            let _ = go_rx
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .recv_timeout(Duration::from_secs(10));
+        };
+        let slots = Arc::new(Slots {
+            table: Mutex::new(Connections::with_owners(4, 2, u64::MAX)),
+            epoch: Instant::now(),
+            health: Arc::clone(&health),
+            share: 2,
+            total: 4,
+            pause: Some(Box::new(pause)),
+        });
+        let mut held = Vec::new();
+        for _ in 0..2 {
+            let (end, _ended) = oneshot::channel();
+            let admitted = slots.admit("s1", "a1", false, end).0?;
+            held.push(Slot {
+                slots: Arc::clone(&slots),
+                id: admitted.id,
+                activity: admitted.activity,
+                sandbox: "s1".to_owned(),
+            });
+        }
+        let asking = {
+            let slots = Arc::clone(&slots);
+            std::thread::spawn(move || {
+                let (end, _ended) = oneshot::channel();
+                slots.admit("s1", "a1", false, end).0.is_err()
+            })
+        };
+        paused_rx.recv_timeout(Duration::from_secs(10))?;
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let closing = std::thread::spawn(move || {
+            drop(held);
+            let _ = done_tx.send(());
+        });
+        // Without the lock the closes end here, before the refusal is reported; with it they wait
+        // for it, and this times out.
+        let _ = done_rx.recv_timeout(Duration::from_millis(500));
+        go_tx.send(())?;
+        assert!(asking.join().map_err(|_| "the asker panicked")?, "refused");
+        closing.join().map_err(|_| "the closes panicked")?;
+        assert!(
+            health.troubles().is_empty(),
+            "the trouble never ends: {:?}",
+            health.troubles()
+        );
+        Ok(())
+    }
 
     /// LAP-002 (review round 1): the warnings stay bounded: each limit warns once a minute, and
     /// the map keeps only the last minute's.

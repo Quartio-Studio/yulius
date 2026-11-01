@@ -19,6 +19,7 @@
 //! ```toml
 //! [docs]
 //! decisions = "knowledge/decisions.md"   # a `.md` path selects single-file decisions
+//! changes = "docs/changes/"              # a trailing `/`: one change note per pull request
 //!
 //! [commands]
 //! test = "cargo test"
@@ -679,6 +680,8 @@ fn docs_layout(table: Option<&Table>) -> Result<DocsLayout, FormatError> {
             }
             "decisions" => layout.decisions = DecisionsLocation::Directory(path),
             "specs_dir" => layout.specs_dir = path,
+            // A trailing `/` names a folder of change notes (SPEC-363 CHN-001).
+            "changes" if string_value(entry)?.ends_with('/') => layout.changes = path + "/",
             "changes" => layout.changes = path,
             "agents" => layout.agents = path,
             _ => return Err(unknown("docs", entry, DOCS_KEYS)),
@@ -1832,6 +1835,44 @@ mod tests {
             problem("[docs]\nproduct = 1\n"),
             Some((2, ConfigProblem::ExpectedString("product".to_owned())))
         );
+    }
+
+    #[test]
+    fn a_changes_path_with_a_trailing_slash_names_a_folder() -> TestResult {
+        let folder = parse_yulius_toml("[docs]\nchanges = \"docs/changes/\"\n")?.docs;
+        assert_eq!(folder.changes, "docs/changes/");
+        assert_eq!(folder.changes_folder(), Some("docs/changes"));
+        let file = parse_yulius_toml("[docs]\nchanges = \"CHANGELOG.md\"\n")?.docs;
+        assert_eq!(file.changes, "CHANGELOG.md");
+        assert_eq!(file.changes_folder(), None);
+        assert_eq!(DocsLayout::default().changes_folder(), None);
+        assert!(parse_yulius_toml("[docs]\nchanges = \"docs/changes//\"\n").is_err());
+        let rendered = render_yulius_toml(&ProjectConfig {
+            docs: folder.clone(),
+            ..ProjectConfig::default()
+        });
+        assert!(
+            rendered.contains("changes = \"docs/changes/\"\n"),
+            "{rendered}"
+        );
+        assert_eq!(parse_yulius_toml(&rendered)?.docs, folder);
+        Ok(())
+    }
+
+    #[test]
+    fn an_existing_changes_directory_names_a_folder() {
+        let mut layout = DocsLayout {
+            changes: "docs/changes".to_owned(),
+            ..DocsLayout::default()
+        };
+        layout.resolve_changes_folder(|path| path == "docs/changes");
+        assert_eq!(layout.changes_folder(), Some("docs/changes"));
+        // Already a folder, or a file: unchanged, and the checkout is not asked again.
+        layout.resolve_changes_folder(|_| unreachable!("a folder is not resolved again"));
+        assert_eq!(layout.changes, "docs/changes/");
+        let mut file = DocsLayout::default();
+        file.resolve_changes_folder(|_| false);
+        assert_eq!(file, DocsLayout::default());
     }
 
     #[test]

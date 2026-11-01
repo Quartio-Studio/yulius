@@ -359,6 +359,57 @@ async fn session_start_returns_the_project_briefing() -> TestResult {
     Ok(())
 }
 
+/// SPEC-363 (task #346): a project whose change notes are a folder, one file per pull request,
+/// is told to add one new file there instead of an entry at the top of a shared log, and its
+/// Recent changes quote the newest notes.
+#[tokio::test]
+async fn a_changes_folder_briefs_one_new_file_per_change() -> TestResult {
+    let f = fixture().await?;
+    std::fs::write(
+        f.worktree.join("yulius.toml"),
+        "[docs]\nchanges = \"docs/changes/\"\n",
+    )?;
+    let notes = f.worktree.join("docs/changes");
+    std::fs::create_dir_all(&notes)?;
+    std::fs::write(notes.join("README.md"), "# One note per pull request\n")?;
+    std::fs::write(notes.join("2026-10-30-480-search.md"), "# Search by tag\n")?;
+    std::fs::write(
+        notes.join("2026-10-31-488-notes.md"),
+        "# Change notes as files\n",
+    )?;
+    let body = hook(
+        &f,
+        "SessionStart",
+        json!({"session_id": "sess-1", "hook_event_name": "SessionStart"}),
+    )
+    .await?;
+    let context = body["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .ok_or("no additionalContext")?;
+    assert!(
+        context.contains(
+            "Add one new file to `docs/changes/` for your change, named \
+             `YYYY-MM-DD-1-<short-slug>.md`"
+        ),
+        "{context}"
+    );
+    assert!(
+        context.contains("never edit other tasks' files"),
+        "{context}"
+    );
+    assert!(!context.contains("entry at the top"), "{context}");
+    let recent = &context[context.find("## Recent changes").ok_or("recent")?..];
+    let newest = recent.find("# Change notes as files").ok_or(recent)?;
+    let older = recent.find("# Search by tag").ok_or(recent)?;
+    assert!(newest < older, "{recent}");
+    assert!(
+        recent.contains("From the newest notes in `docs/changes/`:"),
+        "{recent}"
+    );
+    assert!(!recent.contains("One note per pull request"), "{recent}");
+    Ok(())
+}
+
 /// MSR-004 (SPEC-028): stored messages reach no hook: no digest, no turn-end block.
 #[tokio::test]
 async fn stored_messages_reach_no_hook() -> TestResult {

@@ -271,6 +271,8 @@ pub struct App {
     pub(crate) purging: Mutex<std::collections::HashSet<yulius_domain::ids::SandboxId>>,
     /// Sandboxes whose disk upkeep runs right now.
     pub(crate) upkeeps: Mutex<std::collections::HashSet<yulius_domain::ids::SandboxId>>,
+    /// The egress proxy's and the sandbox relays' open connection troubles (SPEC-361).
+    pub(crate) connection_health: Arc<yulius_domain::connection_health::ConnectionHealth>,
 }
 
 impl App {
@@ -281,11 +283,13 @@ impl App {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
+        let events = EventBus::new(1024);
+        let connection_health = crate::connection_health::connection_health(events.clone());
         Arc::new(Self {
             instance_tag,
             config,
             deps,
-            events: EventBus::new(1024),
+            events,
             login_attempts: Mutex::new(HashMap::new()),
             device_starts: Mutex::new(HashMap::new()),
             remote_calls: Mutex::new(HashMap::new()),
@@ -320,6 +324,7 @@ impl App {
             disk_watch: crate::pressure::DiskWatch::default(),
             purging: Mutex::default(),
             upkeeps: Mutex::default(),
+            connection_health,
         })
     }
 

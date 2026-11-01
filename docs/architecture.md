@@ -65,6 +65,17 @@ the sandbox and the agents at least 20 %, and idle CPU goes to whoever wants it.
 5 nice levels below the agents themselves ([SPEC-053](../.ai/specs/SPEC-053-ci-e2e-timeouts-under-agent-load-give-ci.md),
 [decision 0039](decisions/0039-ci-jobs-get-the-cpu-first.md)).
 
+Weights only compare siblings, so the sandboxes' own groups are weighed too. While any CI job of
+a sandbox runs, its group weighs 500 among the sandboxes (100 with none), however many jobs run.
+On a loaded host its CI then also out-weighs the agents' local builds in the other sandboxes.
+With CI and agents building in one sandbox and agents building in two others, CI gets 4/7 of what
+the sandboxes get instead of 4/15, and each other sandbox keeps 1/7. The CI executor counts a job
+from its slot to its reap (`JobWeight`). The isolation adapter writes the weight, every
+preparation keeps it, and every start and stop of the server writes 100 again
+([SPEC-362](../.ai/specs/SPEC-362-ci-slots-per-job-configurable-per-projec.md),
+[decision 0247](decisions/0247-a-sandbox-running-ci-jobs-weighs-more-on-the-host.md)). A job's CPUs
+(its "slots") are its budget, `cpus` in `[[ci.jobs]]` or an equal share of its run.
+
 Tasks (processes and threads) are one budget too, sized from the host (a quarter of its task
 table, at least 8192, at most three quarters of the service's own limit). CI jobs and the engine with its containers each stop at 3/8 of it, so the
 agent sessions keep at least a quarter. A session that still ends while the sandbox was at its
@@ -83,7 +94,7 @@ flowchart TD
   UNIT["yulius.service: pids.max (TasksMax)"] --> SRV["server/: yulius serve"]
   UNIT --> ALL["sandboxes/: pids.max 3/4 of the service's"]
   ALL --> SBX
-  SBX["sandboxes/sandbox: cpu.max, memory.max, pids.max"] --> SYS["system/ weight 100: holder, slirp4netns"]
+  SBX["sandboxes/sandbox: cpu.weight 500 while CI jobs run, else 100; cpu.max, memory.max, pids.max"] --> SYS["system/ weight 100: holder, slirp4netns"]
   SBX --> AGS["agents/ weight 100: agent runs, shells, browsers"]
   SBX --> CIG["ci/ weight 400, pids.max 3/8: CI jobs"]
   SBX --> ENG["engine/ weight 100, pids.max 3/8: dockerd, containers below it"]
@@ -553,7 +564,8 @@ Tasks working at once must not collide where their parallel work meets
 [decision 0066](decisions/0066-parallel-tasks-stop-colliding-at-merge.md)). Numbered files
 (decision records, specs, migrations) get their number from Yulius (`record_number`): past the
 integration branch, every live task's checkout and every reservation in `record_numbers`. The logs
-every task appends to (the changes log, the decision index) merge by union in every repository,
+every task appends to (the changes log, the decision index) merge by union in every repository
+(a changes folder, one note per change, has nothing to merge and no union line; SPEC-363),
 from Yulius's block in the clone's `info/attributes`; Yulius merges the integration branch
 locally before GitHub merges (SPEC-050 DLV-203), so GitHub never sees those conflicts. A review
 carries over Git's own merges of the integration branch, checked with `git merge-tree`.
@@ -867,7 +879,9 @@ and `delivery_merge` like every task
 ([SPEC-116](../.ai/specs/SPEC-116-linter-dead-code-should-be-installed-on.md),
 [decision 0094](decisions/0094-onboarding-installs-the-gate-in-its-own-pull-request.md)). The
 briefing quotes the newest end of the changes log: a log whose ISO dates run oldest first is
-quoted from its end, and its new entries go there.
+quoted from its end, and its new entries go there. A changes folder (`[docs] changes` ending with
+`/`, or naming a directory) is quoted as its newest notes, by the date in their names, and each
+task adds one new note there ([decision 0248](decisions/0248-change-notes-may-be-a-folder-of-one-file-per-change.md)).
 
 ### Supertasks
 
@@ -1999,7 +2013,14 @@ The proxy also counts each connection's run (agent run, CI job, Superagent shell
 idle for 5 minutes, a full sandbox share takes the oldest connection of its busiest other run, and
 the full proxy that of the busiest sandbox, if it holds at least 2 more than the asker, so one busy
 run cannot lock the other runs of its sandbox out
-([decision 0243](decisions/0243-the-busiest-run-gives-way-at-a-full-proxy-share.md)):
+([decision 0243](decisions/0243-the-busiest-run-gives-way-at-a-full-proxy-share.md)).
+A refusal that remains (a sandbox's share, its `out.sock`, the proxy's total) is a connection
+trouble in the app's `ConnectionHealth` registry, with the three busiest runs or sandboxes. It
+ends once its limit falls to seven eighths, and only its beginning and end are published
+(`connections.updated`): the panel shows a pill naming the run's task, and the notification
+center gets one entry per trouble (`GET /api/connections`;
+[SPEC-361](../.ai/specs/SPEC-361-proxy-and-mcp-health-on-the-panel-with-t.md),
+[decision 0246](decisions/0246-a-full-proxy-share-or-relay-shows-on-the-panel-once-per-trouble.md)):
 
 ```mermaid
 flowchart LR
@@ -2008,6 +2029,9 @@ flowchart LR
   O --> I["internal listener: API, MCP, egress proxy (128 per sandbox, 256 in all)"]
   F -.->|"full: the longest-idle place (idle 5 min or more) gives way"| F
   I -.->|"share full, all active: the busiest run's oldest tunnel gives way"| I
+  I -.->|"still refused: a trouble"| H["ConnectionHealth"]
+  O -.->|"dropped at its limit: a trouble"| H
+  H -->|"connections.updated, GET /api/connections"| P["panel pill and one notification"]
   Y["Yulius link test, every minute per Superagent"] -->|"in.sock CONNECT 8081"| F
 ```
 

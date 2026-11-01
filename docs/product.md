@@ -36,7 +36,10 @@ watching, steering and unblocking.
   `yulius leftovers` (SPEC-215). Cargo build directories of worktrees and CI checkouts lose what
   nobody used for two days and stay under a cap, never while a build holds them; when the
   server's disk runs low Yulius sweeps harder, prunes idle caches and every page shows a warning
-  (SPEC-276). Removing a sandbox asks whether to delete its files permanently or keep them; kept
+  (SPEC-276). When the egress proxy refuses a sandbox at its share, or its relay toward Yulius or
+  the proxy itself is full, the sandbox's people see a warning naming the task whose run holds the
+  most connections, notified once until it has room again (SPEC-361). Removing a sandbox asks
+  whether to delete its files permanently or keep them; kept
   ones are listed with their size for a later deletion. `yulius onboard`
   only uploads: the onboarding task that adapts the repository to the Yulius standards is created
   and started when someone clicks Start onboarding on the sandbox page, or when the person's own
@@ -195,7 +198,11 @@ watching, steering and unblocking.
   (findings in the change's own code are fixed before merge, never deferred to an issue),
   merge on green into `dev`, cleanup; promotion to `main` is a person's. Profiles live in
   `yulius.toml`, with the branch policy (typed branches, conventional titles, `dev` → `main`
-  promotions) that Yulius checks before every merge.
+  promotions) that Yulius checks before every merge. Each task records what it delivered in the
+  project's changes log, or, with `[docs] changes = "docs/changes/"` (a trailing `/` or an
+  existing directory), in one new note of its own in that folder, named
+  `YYYY-MM-DD-<task number>-<short-slug>.md`, so parallel pull requests never conflict on it; the
+  briefing then quotes the newest notes as Recent changes (SPEC-363).
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions. A job uses an agent
   secret only when the integration branch's `[[ci.jobs]]` entry names it (`secrets`) and the job
   runs that entry's command (a pull request's own job with another command gets none), as a

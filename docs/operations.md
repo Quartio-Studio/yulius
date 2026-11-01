@@ -474,7 +474,9 @@ shells and CI jobs join it. A sandbox gets:
   `sudo apt-get install …` works and persists for that sandbox only;
 - limits (CPU, memory, tasks) through the unit's delegated cgroup, and a soft disk quota. Inside
   a sandbox, CI jobs get four times the agents' CPU weight (`ci/` 400 against `agents/` 100), so
-  CI gets up to 80 % of the sandbox's CPU while agents build ([ADR-0039](decisions/0039-ci-jobs-get-the-cpu-first.md));
+  CI gets up to 80 % of the sandbox's CPU while agents build ([ADR-0039](decisions/0039-ci-jobs-get-the-cpu-first.md)).
+  On the host, a sandbox's own group weighs 500 while any of its CI jobs runs (else 100), so its CI
+  also out-weighs other sandboxes' agents ([ADR-0247](decisions/0247-a-sandbox-running-ci-jobs-weighs-more-on-the-host.md));
 - a seccomp filter: no nested user namespaces, `io_uring`, `bpf`, keyrings, module or mount calls;
 - its own **Docker engine** ([ADR-0151](decisions/0151-a-sandbox-runs-its-own-docker-engine-under-an-engine-seccomp-profile.md)),
   started on the first use of `/var/run/docker.sock` (`DOCKER_HOST`) by an agent, the
@@ -908,7 +910,14 @@ involved.
   run's jobs) are free, so the jobs of all lanes never ask for more than the sandbox has. Each
   is told its budget in `YULIUS_CPUS` and `YULIUS_MEMORY_MB` and the repository's
   `[resources.env]`. `YULIUS_CI_MAX_JOBS` still bounds the number of jobs. Each job gets
-  `YULIUS_CI_JOB_TIMEOUT_MIN`.
+  `YULIUS_CI_JOB_TIMEOUT_MIN`. A project cuts what its jobs take on a busy host with `cpus` on each
+  `[[ci.jobs]]` entry: a run of 6 jobs on 12 CPUs gets 2 each by default, and `cpus = 1` halves it
+  (SPEC-362).
+- While any of a sandbox's CI jobs runs, its group weighs 500 on the host (100 otherwise), so its
+  CI gets more of a loaded host than the agents' local builds in every sandbox
+  ([ADR-0247](decisions/0247-a-sandbox-running-ci-jobs-weighs-more-on-the-host.md)). Check it with
+  `cat /sys/fs/cgroup/system.slice/yulius.service/sandboxes/<sandbox>/cpu.weight`. Every start
+  and graceful stop of the server writes 100 to every sandbox.
 - Agent sessions, terminals and the Cockpit plan for `YULIUS_AGENT_CPUS` CPUs (default a third
   of the sandbox's, at least 2) and the memory in proportion: three of them testing at once fill
   the sandbox.
@@ -1323,6 +1332,19 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   relay: at the limit, the longest-idle connection was closed …` and `sandbox relay: a connection
   was dropped at the limit` lines to the sandbox's `holder.log` (and the Docker front's to
   `docker-front.log`), both in `<data>/runtime/sandboxes/<sandbox-id>/`.
+- A refusal that remains shows on the panel (SPEC-361,
+  [ADR-0246](decisions/0246-a-full-proxy-share-or-relay-shows-on-the-panel-once-per-trouble.md)).
+  A sandbox at its proxy share, a sandbox whose `out.sock` dropped a connection, and the proxy at
+  its own limit each begin a *connection trouble*: the journal says `connection trouble began`
+  (limit, sandbox, held of max, the busiest runs or sandboxes by run id), and the people who can
+  view the sandbox (everyone, for the proxy's own) get a warning pill in the tab row and one
+  notification, naming the task whose run holds the most ("Proxy share full: quartio-v2", title
+  "task #12's run holds 120 of them"). Refusals within it only update its counts. It ends, with
+  `connection trouble ended`, once its limit falls to seven eighths (112 of a share of 128, 224 of
+  256). `GET /api/connections` lists the open ones. To free the share, end the processes of the
+  named task's run (its panel lists its background processes; the `nsenter … ss` recipe below shows
+  their connections), or stop the task. The holder's forward inside the sandbox is not reported
+  there: read its `holder.log`.
 - Every minute Yulius tests each live Superagent's link from inside its sandbox, through the
   holder's forward. Two failed tests in a row log `the Superagent's sandbox cannot reach Yulius`, and its
   panel says so and offers **Restart Superagent**, which starts it again in place, resuming its

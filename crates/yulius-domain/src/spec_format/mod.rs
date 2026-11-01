@@ -12,6 +12,7 @@
 //! docs/decisions/NNNN-<slug>.md     ADRs: Status, Context, Decision, Alternatives, Consequences
 //! docs/specs/YYYY-MM-DD-<slug>.md   one spec per task
 //! docs/changes.md                   reverse-chronological summary of delivered changes
+//!                                   (or docs/changes/: one note per change, SPEC-363)
 //! ```
 //!
 //! A task spec has frontmatter (`yulius-task`, `status`) and the level-2 sections Goal,
@@ -68,10 +69,28 @@ pub struct DocsLayout {
     pub decisions: DecisionsLocation,
     /// Directory of task specs.
     pub specs_dir: String,
-    /// Delivered-changes summary.
+    /// Delivered-changes summary: one file, or a folder of one note per change when it ends
+    /// with `/` ([`DocsLayout::changes_folder`]).
     pub changes: String,
     /// Agent entry point.
     pub agents: String,
+}
+
+impl DocsLayout {
+    /// The folder of change notes, one file per change (SPEC-363 CHN-001), when `changes` names
+    /// one: the path without its trailing `/`.
+    #[must_use]
+    pub fn changes_folder(&self) -> Option<&str> {
+        self.changes.strip_suffix('/')
+    }
+
+    /// Marks `changes` as a folder when `is_dir` finds a directory of the checkout at that path
+    /// (CHN-001: `changes = "docs/changes"` naming an existing directory).
+    pub fn resolve_changes_folder(&mut self, is_dir: impl FnOnce(&str) -> bool) {
+        if self.changes_folder().is_none() && is_dir(&self.changes) {
+            self.changes.push('/');
+        }
+    }
 }
 
 impl Default for DocsLayout {

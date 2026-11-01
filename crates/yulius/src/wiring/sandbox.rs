@@ -224,6 +224,7 @@ pub fn resolve(
             stop_after: Duration::from_secs(args.idle_minutes.max(1) * 60),
         },
         auto_build: true,
+        health: Arc::default(),
         docker: docker_setting(args.docker),
     })
 }
@@ -388,6 +389,15 @@ impl SandboxIsolation for NamespaceIsolation {
 
     async fn processes(&self, sandbox: &SandboxId) -> usize {
         self.manager.processes(sandbox.as_str()).await
+    }
+
+    fn ci_jobs_running(&self, sandbox: &SandboxId, jobs: u32) {
+        let Some(delegation) = self.manager.config().delegation.as_ref() else {
+            return;
+        };
+        if let Err(error) = delegation.set_ci_jobs(sandbox.as_str(), jobs) {
+            tracing::warn!(sandbox = %sandbox, jobs, %error, "cannot weigh the sandbox by its CI jobs");
+        }
     }
 
     async fn limit_counters(&self, sandbox: &SandboxId) -> Option<LimitCounters> {
@@ -657,6 +667,8 @@ pub async fn install(
         }
         Err(why) => tracing::warn!(%why, "per-sandbox CPU, memory and task limits are off"),
     }
+    // Its relays' troubles are the app's to show (SPEC-361).
+    config.health = app.connection_health();
     let manager = Manager::new(config);
     manager.adopt().await;
     let strict = args.mode == IsolationMode::Namespaces;

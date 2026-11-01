@@ -5,7 +5,8 @@
 //!   by union in every repository: Yulius keeps `merge=union` for them in the clone's
 //!   `info/attributes`, which every task worktree reads, so a repository needs no committed
 //!   `.gitattributes` for it. A host's server-side merge ignores merge drivers, so Yulius always
-//!   merges the integration branch locally first (SPEC-050 DLV-203).
+//!   merges the integration branch locally first (SPEC-050 DLV-203). A changes folder, one note
+//!   per change, needs no union merge (SPEC-363).
 //! - **REV-001.** A branch that moved past its reviewed head only through Git's own merges of the
 //!   integration branch keeps its independent review: such a merge brings in only commits that
 //!   were reviewed and merged, and resolves nothing by hand. 33 of 57 merges on 2026-10-12/13
@@ -23,7 +24,8 @@ use crate::model::TaskRecord;
 pub const MAX_CARRIED_MERGES: usize = 16;
 
 /// The `info/attributes` lines that make the logs every task appends to merge by union: the
-/// changes log, and the decisions file or the index (`README.md`) of the decisions directory.
+/// changes log (not a changes folder, where each task adds its own note, SPEC-363), and the
+/// decisions file or the index (`README.md`) of the decisions directory.
 /// A path a gitattributes pattern would read as more than a path (a glob, an escape, a space) is
 /// left out.
 #[must_use]
@@ -33,13 +35,29 @@ pub fn union_lines(layout: &DocsLayout) -> Vec<String> {
         DecisionsLocation::File(file) => file.clone(),
     };
     let mut lines: Vec<String> = Vec::new();
-    for path in [layout.changes.as_str(), decisions.as_str()] {
+    let changes = if layout.changes_folder().is_some() {
+        ""
+    } else {
+        layout.changes.as_str()
+    };
+    for path in [changes, decisions.as_str()] {
         let line = format!("/{path} merge=union");
         if plain_path(path) && !lines.contains(&line) {
             lines.push(line);
         }
     }
     lines
+}
+
+/// The documentation layout of the checkout at `root`, from its `yulius.toml` text `config`,
+/// with a changes path that is a directory there read as a changes folder (SPEC-363 CHN-001).
+#[must_use]
+pub fn checkout_layout(root: &Path, config: Option<&str>) -> DocsLayout {
+    let mut layout = spec_format::project_layout(config);
+    layout.resolve_changes_folder(|rel| {
+        std::fs::symlink_metadata(root.join(rel)).is_ok_and(|meta| meta.is_dir())
+    });
+    layout
 }
 
 /// A repository-relative path of letters, digits, `.`, `_`, `-` and `/` only, with normal
@@ -69,7 +87,7 @@ impl App {
         )
         .await
         .ok();
-        let lines = union_lines(&spec_format::project_layout(config.as_deref()));
+        let lines = union_lines(&checkout_layout(worktree, config.as_deref()));
         match self.deps.git.set_merge_attributes(worktree, &lines).await {
             Ok(true) => tracing::info!(lines = ?lines, "the shared logs merge by union"),
             Ok(false) => {}
@@ -127,6 +145,34 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-363 CHN-004: a changes folder (each task adds its own note) has no union line,
+    /// named with a trailing `/` or existing as a directory of the checkout.
+    #[test]
+    fn a_changes_folder_has_no_union_line() -> Result<(), Box<dyn std::error::Error>> {
+        let checkout = tempfile::tempdir()?;
+        let decisions = vec!["/docs/decisions/README.md merge=union".to_owned()];
+        let slash = Some("[docs]\nchanges = \"docs/changes/\"\n");
+        assert_eq!(
+            union_lines(&checkout_layout(checkout.path(), slash)),
+            decisions
+        );
+        let bare = Some("[docs]\nchanges = \"docs/changes\"\n");
+        assert_eq!(
+            union_lines(&checkout_layout(checkout.path(), bare)),
+            vec![
+                "/docs/changes merge=union".to_owned(),
+                "/docs/decisions/README.md merge=union".to_owned(),
+            ],
+            "a file of that name"
+        );
+        std::fs::create_dir_all(checkout.path().join("docs/changes"))?;
+        assert_eq!(
+            union_lines(&checkout_layout(checkout.path(), bare)),
+            decisions
+        );
+        Ok(())
+    }
 
     #[test]
     fn the_changes_log_and_the_decision_index_merge_by_union() {

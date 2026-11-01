@@ -174,6 +174,13 @@ pub enum UiEvent {
         /// The Superagent's sandbox.
         sandbox_id: String,
     },
+    /// A connection trouble began or ended (SPEC-361 CHR-003): pages read `GET /api/connections`
+    /// again. A sandbox's reaches its viewers, the proxy's own (`sandbox_id: null`) everyone.
+    #[serde(rename = "connections.updated")]
+    ConnectionsUpdated {
+        /// The trouble's sandbox.
+        sandbox_id: Option<String>,
+    },
     /// Events were lost; refetch.
     #[serde(rename = "resync")]
     Resync,
