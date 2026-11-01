@@ -140,6 +140,12 @@ own code or pre-existing:
   - The comparison with `worktree_remove_if_safe` is corrected.
   - The race test was accepted as written: it calls `replace_with_folder`, which `folder_in` only
     delegates to.
+- Round 3 (08e0ac21): APPROVE with one minor and two nits:
+  - The merge checkout's error now keeps its variant, so an internal error is still logged and a
+    link at `ci` is still a 403; only the folder's name is added.
+  - `real_path` failures in `ready_checkout` keep their reason, like removal errors.
+  - The Plan item for the pull request was ticked before the merge was armed. It is the last
+    step, and `delivery_merge` arms the merge in the same call.
 
 ## Evidence
 

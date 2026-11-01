@@ -1365,7 +1365,7 @@ fn ready_checkout(
                     crate::files::kind_at(&checkout, OsStr::new(".git")),
                     Ok((SFlag::S_IFREG, _))
                 ) && {
-                    let real = crate::files::real_path(&checkout)?;
+                    let real = crate::files::real_path(&checkout).map_err(shown)?;
                     registered
                         .iter()
                         .any(|path| path.canonicalize().is_ok_and(|path| path == real))
@@ -1379,10 +1379,16 @@ fn ready_checkout(
     if usable {
         Ok(())
     } else {
-        crate::files::remove_tree(&dir, name).map_err(|err| match err {
-            AppError::Internal(reason) => AppError::Conflict(reason),
-            other => other,
-        })
+        crate::files::remove_tree(&dir, name).map_err(shown)
+    }
+}
+
+/// An error of the file helpers with its reason shown: their internal errors carry the OS's
+/// reason and no path, which the job's output and the caller need.
+fn shown(err: AppError) -> AppError {
+    match err {
+        AppError::Internal(reason) => AppError::Conflict(reason),
+        other => other,
     }
 }
 
