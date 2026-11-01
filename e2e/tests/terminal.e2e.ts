@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { editorShown, failOnPageErrors, mock, terminalShown, touchTask } from './support.ts';
+import { editorShown, failOnPageErrors, LATE_OBSERVER_MS, lateResizeObservers, mock, terminalShown, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -1018,17 +1018,20 @@ test('the attention bar’s Reply leaves the whole session for the terminal (#91
 });
 
 test('the way on sits below a held card over the terminal (#911)', async ({ app, browser }) => {
+  // The button moves below the card when a ResizeObserver sees the card (taskview.js), at a
+  // rendering update a loaded host delays (#1003).
+  await lateResizeObservers(browser);
   const point = await classicTask12(app, browser);
   await touchTask(browser, 'sb_studio', 12, { heldPrompt: { id: 'hold_9', class: 'new_scope', excerpt: 'Also add a dark mode to the invoice settings page.', percent: 92, typed_by: 'mkarp', created_at: new Date().toISOString() } });
   await expect(browser.locator('.taskview .held-slot')).toBeVisible();
   await turn(browser, point, -120);
   await expect(offer(browser)).toBeVisible();
-  const boxes = await browser.evaluate(() => {
+  // Measured until the observer has run: the gap from the card's bottom to the button's top.
+  await expect.poll(() => browser.evaluate(() => {
     const card = document.querySelector('.taskview .held-slot')!.getBoundingClientRect();
     const button = document.querySelector('.taskview .term-history-offer')!.getBoundingClientRect();
-    return { cardBottom: card.bottom, buttonTop: button.top };
-  });
-  expect(boxes.buttonTop, 'the button is below the card').toBeGreaterThanOrEqual(boxes.cardBottom);
+    return button.top - card.bottom;
+  }), { message: 'the button is below the card', timeout: LATE_OBSERVER_MS + 5_000 }).toBeGreaterThanOrEqual(0);
 });
 
 test('a task that never ran offers no earlier messages (#911)', async ({ app, browser }) => {
