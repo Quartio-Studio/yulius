@@ -44,7 +44,8 @@ pub struct ProjectFiles<'a> {
     pub architecture: Option<&'a str>,
     /// Decision records (layout `decisions`).
     pub decisions: DecisionFiles<'a>,
-    /// Changes summary (layout `changes`).
+    /// Changes summary (layout `changes`); of a changes folder, `Some` (any text) when it
+    /// exists (SPEC-363 CHN-004).
     pub changes: Option<&'a str>,
 }
 
@@ -90,7 +91,17 @@ impl<'a> ProjectFiles<'a> {
             product: find(&layout.product),
             architecture: find(&layout.architecture),
             decisions,
-            changes: find(&layout.changes),
+            // A changes folder is there when it holds a file (SPEC-363 CHN-004).
+            changes: match layout.changes_folder() {
+                Some(folder) => {
+                    let prefix = format!("{folder}/");
+                    files
+                        .iter()
+                        .any(|(path, _)| path.starts_with(&prefix))
+                        .then_some("")
+                }
+                None => find(&layout.changes),
+            },
         }
     }
 }
@@ -378,6 +389,8 @@ pub fn validate_project(files: &ProjectFiles<'_>) -> ProjectReport {
             push(path, ProjectProblemKind::ExpectedFile);
         }
     }
+    // Presence only: a changes folder is `Some("")` (SPEC-363 CHN-004), so a check of the
+    // text here would have to tell a folder from an empty file.
     if files.changes.is_none() {
         push(&layout.changes, ProjectProblemKind::Missing);
     }
@@ -431,6 +444,18 @@ mod tests {
         let report = validate_project(&ProjectFiles::from_files(&files));
         assert!(report.is_valid(), "{:?}", report.problems);
         assert!(report.config.is_some());
+    }
+
+    /// SPEC-363 CHN-004: a changes folder is present when the listing has a note in it.
+    #[test]
+    fn a_changes_folder_is_present_with_a_note() {
+        let toml = ("yulius.toml", "[docs]\nchanges = \"docs/changes/\"\n");
+        let note = ("docs/changes/2026-10-31-1-start.md", "# Start\n");
+        assert!(problems(&listing(&[toml, note], &["yulius.toml", "docs/changes.md"])).is_empty());
+        assert_eq!(
+            problems(&listing(&[toml], &["yulius.toml"])),
+            vec!["docs/changes/: is missing"]
+        );
     }
 
     #[test]

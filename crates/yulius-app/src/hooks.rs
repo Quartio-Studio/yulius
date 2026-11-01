@@ -1148,7 +1148,8 @@ struct RepoDocs {
     layout: yulius_domain::spec_format::DocsLayout,
     product: Option<String>,
     architecture_present: bool,
-    /// The newest part of the changes log, and whether it is the log's end.
+    /// The newest part of the changes log, and whether it is the log's end; of a changes
+    /// folder, its newest notes (SPEC-363).
     changes: Option<(String, bool)>,
     decision_file: Option<String>,
     decision_dir: Vec<(String, String)>,
@@ -1165,26 +1166,58 @@ fn actions_workflows(root: &Path) -> usize {
         .map_or(0, |(root, dir)| workflow_count(&root, &dir))
 }
 
-/// The workflow files in the `resolved` folder (see [`resolved_in_repo`]) under `root`, listed
-/// through the opened folder, whose real path must still be under `root` (SPEC-262 VTR-004).
+/// The workflow files in the `resolved` folder (see [`resolved_in_repo`]) under `root`.
 fn workflow_count(root: &Path, dir: &Path) -> usize {
+    folder_names(root, dir, MAX_WORKFLOW_ENTRIES)
+        .iter()
+        .filter(|name| name.ends_with(".yml") || name.ends_with(".yaml"))
+        .count()
+}
+
+/// The names in the `resolved` folder (see [`resolved_in_repo`]) under `root`, at most about
+/// `max` entries, listed through the opened folder, whose real path must still be under `root`
+/// (SPEC-262 VTR-004).
+fn folder_names(root: &Path, dir: &Path, max: usize) -> Vec<String> {
     use nix::fcntl::OFlag;
     let Some(mut listing) =
         crate::files::open_inside(root, dir, OFlag::O_RDONLY | OFlag::O_DIRECTORY)
             .ok()
             .and_then(|fd| nix::dir::Dir::from_fd(fd).ok())
     else {
-        return 0;
+        return Vec::new();
     };
     // Bounded before errors are dropped: a folder whose reads keep failing ends the listing.
     listing
         .iter()
-        .take(MAX_WORKFLOW_ENTRIES + 2)
+        .take(max + 2)
         .filter_map(Result::ok)
         .filter(|entry| !matches!(entry.file_name().to_bytes(), b"." | b".."))
         .filter_map(|entry| entry.file_name().to_str().ok().map(str::to_owned))
-        .filter(|name| name.ends_with(".yml") || name.ends_with(".yaml"))
-        .count()
+        .collect()
+}
+
+/// Most entries of a changes folder listed (SPEC-363), in directory order before the newest are
+/// picked: a folder of more notes may lose some of its newest from the briefing.
+const MAX_CHANGE_NOTE_ENTRIES: usize = 10_000;
+
+/// The newest notes of the changes `folder` as the briefing quotes them (SPEC-363 CHN-003), or
+/// `None` without any: a real directory inside the repository, each note read like a document.
+fn change_notes(root: &Path, folder: &str) -> Option<(String, bool)> {
+    use yulius_domain::briefing::{
+        MAX_CHANGE_NOTES, change_notes_excerpt, change_notes_newest_first,
+    };
+    let (canonical, dir) = resolved_in_repo(root, folder, std::fs::Metadata::is_dir)?;
+    let names = folder_names(&canonical, &dir, MAX_CHANGE_NOTE_ENTRIES);
+    let notes: Vec<(String, String)> = change_notes_newest_first(names)
+        .into_iter()
+        .take(MAX_CHANGE_NOTES)
+        .filter_map(|name| {
+            let text = read_repo_doc(root, &format!("{folder}/{name}"))?;
+            Some((name, text))
+        })
+        .collect();
+    let excerpt = change_notes_excerpt(&notes, 4_000);
+    (!excerpt.is_empty()).then_some((excerpt, false))
 }
 
 /// The project's foundations as the briefing reports them (DSC-014).
@@ -1209,12 +1242,19 @@ fn foundations(root: &Path, toml: Option<&str>) -> Foundations {
 impl RepoDocs {
     fn read(root: &Path) -> Self {
         let toml = read_repo_doc(root, "yulius.toml");
-        let layout = project_layout(toml.as_deref());
+        let mut layout = project_layout(toml.as_deref());
+        layout.resolve_changes_folder(|rel| {
+            resolved_in_repo(root, rel, std::fs::Metadata::is_dir).is_some()
+        });
         let doc = |rel: &str| read_repo_doc(root, rel);
         let product = doc(&layout.product).map(|t| t.chars().take(4_000).collect());
         let architecture_present = repo_doc_exists(root, &layout.architecture);
-        let changes =
-            doc(&layout.changes).map(|t| yulius_domain::briefing::changes_excerpt(&t, 4_000));
+        let changes = match layout.changes_folder() {
+            Some(folder) => change_notes(root, folder),
+            None => {
+                doc(&layout.changes).map(|t| yulius_domain::briefing::changes_excerpt(&t, 4_000))
+            }
+        };
         let (mut decision_file, mut decision_dir) = (None, Vec::new());
         match &layout.decisions {
             DecisionsLocation::File(rel) => decision_file = doc(rel.as_str()),
@@ -1384,6 +1424,65 @@ mod tests {
             Some("agent_needs_input"),
             None
         )));
+    }
+
+    /// SPEC-363 CHN-001/003: a changes folder, named with a trailing `/` or existing as a
+    /// directory, is read as its newest notes; one through a link out of the repository is not.
+    #[test]
+    fn repo_docs_read_a_changes_folder_as_its_newest_notes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let root = tmp.path().join("repo");
+        let notes = root.join("docs/changes");
+        std::fs::create_dir_all(&notes)?;
+        std::fs::write(notes.join("README.md"), "# How to write a note")?;
+        std::fs::write(notes.join("2026-10-30-1-search.md"), "# Search")?;
+        std::fs::write(notes.join("2026-10-31-2-folder.md"), "# Notes as files")?;
+        for changes in ["docs/changes/", "docs/changes"] {
+            std::fs::write(
+                root.join("yulius.toml"),
+                format!("[docs]\nchanges = \"{changes}\"\n"),
+            )?;
+            let docs = RepoDocs::read(&root);
+            assert_eq!(docs.layout.changes, "docs/changes/", "{changes}");
+            let (excerpt, at_end) = docs.changes.ok_or("the notes are read")?;
+            assert!(!at_end);
+            assert!(
+                excerpt.starts_with("`2026-10-31-2-folder.md`:\n# Notes as files\n\n`2026-10-30-1-search.md`:\n# Search"),
+                "{excerpt}"
+            );
+            assert!(!excerpt.contains("How to write"), "{excerpt}");
+        }
+        // No notes yet: nothing to quote.
+        for name in ["2026-10-30-1-search.md", "2026-10-31-2-folder.md"] {
+            std::fs::remove_file(notes.join(name))?;
+        }
+        assert_eq!(RepoDocs::read(&root).changes, None);
+        // The single file stays a file.
+        std::fs::write(root.join("docs/changes.md"), "# Changes\n\n- One.\n")?;
+        std::fs::write(
+            root.join("yulius.toml"),
+            "[docs]\nchanges = \"docs/changes.md\"\n",
+        )?;
+        let docs = RepoDocs::read(&root);
+        assert_eq!(docs.layout.changes, "docs/changes.md");
+        assert_eq!(
+            docs.changes,
+            Some(("# Changes\n\n- One.\n".to_owned(), false))
+        );
+        // A folder through a link out of the repository is neither listed nor a folder.
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside)?;
+        std::fs::write(outside.join("2026-10-31-9-secret.md"), "TOP SECRET")?;
+        std::os::unix::fs::symlink(&outside, root.join("x"))?;
+        for changes in ["x/", "x"] {
+            std::fs::write(
+                root.join("yulius.toml"),
+                format!("[docs]\nchanges = \"{changes}\"\n"),
+            )?;
+            assert_eq!(RepoDocs::read(&root).changes, None, "{changes}");
+        }
+        Ok(())
     }
 
     /// #70: a document path through a linked directory never leaves the repository (the

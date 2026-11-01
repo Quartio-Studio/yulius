@@ -319,12 +319,17 @@ pub fn validate_checkout(root: &Path) -> (ProjectReport, Option<String>) {
         "yulius.toml",
         u64::try_from(MAX_CONFIG_BYTES).unwrap_or(u64::MAX),
     );
-    let layout = project_layout(yulius_toml.as_deref());
+    let mut layout = project_layout(yulius_toml.as_deref());
+    layout.resolve_changes_folder(|rel| directory_inside(root, &canonical, rel).is_some());
     let agents = read(&layout.agents, MAX_DOC_BYTES);
     let claude = read("CLAUDE.md", MAX_DOC_BYTES);
     let product = read(&layout.product, MAX_DOC_BYTES);
     let architecture = read(&layout.architecture, MAX_DOC_BYTES);
-    let changes = read(&layout.changes, MAX_DOC_BYTES);
+    let changes = match layout.changes_folder() {
+        // A changes folder is there when it exists (SPEC-363 CHN-004).
+        Some(folder) => directory_inside(root, &canonical, folder).map(|_| String::new()),
+        None => read(&layout.changes, MAX_DOC_BYTES),
+    };
     let decisions = match &layout.decisions {
         DecisionsLocation::Directory(path) | DecisionsLocation::File(path) => {
             if let Some(dir) = directory_inside(root, &canonical, path) {
@@ -1558,6 +1563,43 @@ mod tests {
         fs::remove_file(root.join("docs/changes.md"))?;
         write(root, "docs/changes.md", "# Changes\n")?;
         assert!(validate_checkout(root).0.is_valid());
+        Ok(())
+    }
+
+    /// SPEC-363 CHN-004: a changes folder, named with a trailing `/` or existing as a
+    /// directory, passes the check when it exists, and is reported missing otherwise.
+    #[test]
+    fn checkout_validation_accepts_a_changes_folder() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path();
+        write(root, "AGENTS.md", "# Rules\n\nRun the tests.\n")?;
+        write(root, "CLAUDE.md", "See AGENTS.md.\n")?;
+        write(root, "docs/product.md", "# Shop\n\nSells things.\n")?;
+        write(
+            root,
+            "docs/architecture.md",
+            "# A\n\n```mermaid\nflowchart LR\n  A --> B\n```\n",
+        )?;
+        write(
+            root,
+            "docs/decisions/0001-use-sqlite.md",
+            "# 1. Use SQLite\n\n## Status\n\nAccepted\n\n## Context\n\nOne VM.\n\n\
+             ## Decision\n\nSQLite.\n\n## Alternatives\n\n- Postgres\n\n## Consequences\n\nSimple.\n",
+        )?;
+        write(root, "yulius.toml", "[docs]\nchanges = \"docs/changes/\"\n")?;
+        let problems = |root: &Path| -> Vec<String> {
+            validate_checkout(root)
+                .0
+                .problems
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        };
+        assert_eq!(problems(root), vec!["docs/changes/: is missing".to_owned()]);
+        write(root, "docs/changes/2026-10-31-1-start.md", "# Start\n")?;
+        assert_eq!(problems(root), Vec::<String>::new());
+        write(root, "yulius.toml", "[docs]\nchanges = \"docs/changes\"\n")?;
+        assert_eq!(problems(root), Vec::<String>::new());
         Ok(())
     }
 

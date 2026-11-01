@@ -4,6 +4,19 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-01
+
+- `[docs] changes` may name a folder of change notes, one file per pull request (SPEC-363,
+  ADR-0248, task #346). Every task added an entry at the top of one changes log, so in quartio-v2
+  each merge into `dev` made every other open pull request conflict on GitHub and rerun its CI
+  (up to an hour), again and again on 2026-10-31. quartio-v2 moved to `docs/changes/`, but the
+  briefing still asked for an entry in `docs/changes.md`. With `changes = "docs/changes/"` (or a
+  path that is a directory), the briefing now asks for one new file there, named
+  `YYYY-MM-DD-<task number>-<short-slug>.md` unless the repository uses another naming, and never
+  to edit other tasks' files; its Recent changes quote the newest notes, within the same budget.
+  The folder gets no union merge line, and the documentation check accepts it. Projects with one
+  changes file see no difference.
+
 ## 2026-10-31
 
 - A full egress proxy share shows on the panel, with whose connections they are (SPEC-361,

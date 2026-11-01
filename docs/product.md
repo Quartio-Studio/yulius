@@ -198,7 +198,11 @@ watching, steering and unblocking.
   (findings in the change's own code are fixed before merge, never deferred to an issue),
   merge on green into `dev`, cleanup; promotion to `main` is a person's. Profiles live in
   `yulius.toml`, with the branch policy (typed branches, conventional titles, `dev` → `main`
-  promotions) that Yulius checks before every merge.
+  promotions) that Yulius checks before every merge. Each task records what it delivered in the
+  project's changes log, or, with `[docs] changes = "docs/changes/"` (a trailing `/` or an
+  existing directory), in one new note of its own in that folder, named
+  `YYYY-MM-DD-<task number>-<short-slug>.md`, so parallel pull requests never conflict on it; the
+  briefing then quotes the newest notes as Recent changes (SPEC-363).
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions. A job uses an agent
   secret only when the integration branch's `[[ci.jobs]]` entry names it (`secrets`) and the job
   runs that entry's command (a pull request's own job with another command gets none), as a
