@@ -34,8 +34,9 @@ Changes tile) only when the task's worktree is on disk, and otherwise says why (
 
 - **TOW-001** The head's "Review changes" button shows only when the task's Git overview row is
   read and its `worktree` is `present` (or absent, as from an older server, which SPEC-343 reads as
-  `present`). While the overview is still loading, when the task has no row (no branch) and when
-  the worktree is `not_created` or `gone`, there is no button. It follows each new read.
+  `present`). While the overview is still loading, when the task has no row (no branch, or archived:
+  the overview lists live tasks only) and when the worktree is `not_created` or `gone`, there is no
+  button. It follows each new read.
 - **TOW-002** The Changes tile links "N files · review" only under the same condition. With a
   `not_created` or `gone` worktree its line reads "N files · No worktree yet" / "N files · Worktree
   gone" (or the reason alone with no changed files), as plain text; its diffstat stays.
@@ -66,12 +67,19 @@ Changes tile) only when the task's worktree is on disk, and otherwise says why (
 
 ## Decisions
 
-- The button is redrawn in `renderHead()` (which every `pulls` and `task` event reaches) into a
-  slot of the title row, rather than built once and toggled: one place decides, from the same row
-  as the tile.
+- The button is built once, hidden, and shown or hidden by `renderHead()` (which every `pulls` and
+  `task` event reaches, also before the task's detail is read), from the same row as the tile:
+  one place decides. `[hidden]` is `display: none !important`, so a hidden button is out of the
+  tab order and the accessibility tree.
 - No row means no button: a link that may answer 409 is worse than a button that appears when the
   overview lands (usually within the first read). The tile already said "No branch changes yet"
   without a row; it keeps that.
+- An archived task has no row (the Git overview lists live tasks), so its overview no longer offers
+  "Review changes" (review round 1). Accepted: whether its worktree is still there is unknown to
+  the page (repository cleanup removes it later), and a link that may answer 409 is what #945
+  removes; "Go to task" still reaches it, and its tile linked nothing before either. Adding
+  archived tasks to the overview, or a worktree state to the task detail, would be a separate
+  change.
 - `WORKTREE_TEXT` moves behind an exported `worktreeMissing(row)` in `pages/git.js`, which
   `app.js` already loads, rather than a new module for one constant (a new asset would also need
   the preload list).

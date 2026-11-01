@@ -189,4 +189,5 @@ test('a task overview links to its changes only when its worktree is there', asy
   await expect(screen.getByRole('link', 'Review changes')).toBeVisible();
   await expect(browser.locator('.ti-facts .stat:has-text("Changes") a')).toHaveText(/^\d+ files? · review$/);
   expect(await changesLinks()).toHaveLength(2);
+  expect(await axeViolations(browser)).toEqual([]);
 });
