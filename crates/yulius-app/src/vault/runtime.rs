@@ -894,6 +894,16 @@ impl App {
         Some(token)
     }
 
+    /// Whether `job` is a CI job holding a proxy credential now (SPEC-361: naming a proxy
+    /// connection's run).
+    pub(crate) fn ci_job_has_egress(&self, job: &str) -> bool {
+        self.vault.ci_clients.0.lock().is_ok_and(|clients| {
+            clients
+                .iter()
+                .any(|(_, c)| matches!(&c.caller, EgressCaller::Ci { job_id, .. } if job_id == job))
+        })
+    }
+
     /// Ends a CI job's proxy credential: from now on the proxy refuses it (407).
     pub fn ci_egress_close(&self, token: &str) {
         let digest = self.deps.crypto.sha256_hex(token.as_bytes()).into_bytes();

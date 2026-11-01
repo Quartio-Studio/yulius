@@ -377,6 +377,35 @@ impl<K: PartialEq, T, O: PartialEq> Connections<K, T, O> {
     }
 }
 
+impl<K: PartialEq + Clone, T, O: PartialEq + Clone> Connections<K, T, O> {
+    /// How many open connections each owner of `key` holds, in the order they first connected
+    /// (SPEC-361 CHR-001).
+    #[must_use]
+    pub fn owners_of(&self, key: &K) -> Vec<(O, usize)> {
+        let mut owners: Vec<(O, usize)> = Vec::new();
+        for open in self.open.iter().filter(|open| open.key == *key) {
+            match owners.iter_mut().find(|(owner, _)| *owner == open.owner) {
+                Some((_, held)) => *held += 1,
+                None => owners.push((open.owner.clone(), 1)),
+            }
+        }
+        owners
+    }
+
+    /// How many open connections each key holds, in the order they first connected.
+    #[must_use]
+    pub fn keys(&self) -> Vec<(K, usize)> {
+        let mut keys: Vec<(K, usize)> = Vec::new();
+        for open in &self.open {
+            match keys.iter_mut().find(|(key, _)| *key == open.key) {
+                Some((_, held)) => *held += 1,
+                None => keys.push((open.key.clone(), 1)),
+            }
+        }
+        keys
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,6 +606,21 @@ mod tests {
         table.admit_held_by("s", "a", 1, 0)?;
         table.admit_held_by("s", "a", 2, 0)?;
         assert_eq!(table.admit_by("s", "b", 3, 10).err(), Some(Full::Key));
+        Ok(())
+    }
+
+    #[test]
+    fn owners_and_keys_are_counted_in_the_order_they_connected() -> TestResult {
+        let mut table = Connections::with_owners(16, 8, 1_000);
+        table.admit_by("s", "b", 1, 0)?;
+        table.admit_by("t", "c", 2, 0)?;
+        table.admit_by("s", "a", 3, 0)?;
+        let b = table.admit_by("s", "b", 4, 0)?;
+        assert_eq!(table.owners_of(&"s"), vec![("b", 2), ("a", 1)]);
+        assert_eq!(table.keys(), vec![("s", 3), ("t", 1)]);
+        assert!(table.close(b.id));
+        assert_eq!(table.owners_of(&"s"), vec![("b", 1), ("a", 1)]);
+        assert!(table.owners_of(&"u").is_empty());
         Ok(())
     }
 }

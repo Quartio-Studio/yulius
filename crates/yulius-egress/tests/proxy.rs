@@ -18,6 +18,7 @@ use rcgen::{
 use yulius_app::ports::egress::{
     EgressCaller, EgressClient, EgressDecision, EgressPolicy, EgressRequest,
 };
+use yulius_domain::connection_health::{ConnectionHealth, Holder, Limit};
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::vault::encode::needles;
 use yulius_domain::vault::redact::PlainMatcher;
@@ -166,6 +167,7 @@ async fn upstream(
 
 struct Setup {
     proxy: SocketAddr,
+    health: Arc<ConnectionHealth>,
     egress_ca: String,
     test_ca: String,
     seen: Arc<Mutex<Vec<String>>>,
@@ -199,6 +201,7 @@ async fn setup_with(
     let policy = Arc::new(Policy {
         matcher: Arc::new(PlainMatcher::new(vec![("API_KEY".into(), needles(VALUE))])),
     });
+    let health = Arc::new(ConnectionHealth::default());
     let proxy = Arc::new(
         EgressProxy::new(
             policy,
@@ -209,6 +212,7 @@ async fn setup_with(
                 max_connections,
                 max_per_sandbox: 8,
                 idle_floor,
+                health: Arc::clone(&health),
             },
         )
         .map_err(|e| e.to_string())?,
@@ -218,6 +222,7 @@ async fn setup_with(
     tokio::spawn(yulius_egress::serve(listener, proxy));
     Ok(Setup {
         proxy: addr,
+        health,
         egress_ca,
         test_ca,
         seen,
@@ -636,4 +641,100 @@ async fn refused_plain_requests_take_no_place_from_a_busier_run() -> TestResult 
         );
     }
     Ok(())
+}
+
+/// Waits until `health` has no open trouble.
+async fn until_no_trouble(health: &ConnectionHealth) -> TestResult {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !health.troubles().is_empty() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the trouble never ended: {:?}",
+            health.troubles()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Ok(())
+}
+
+/// SPEC-361 CHR-001, CHR-002: a run that fills its sandbox's share and is refused is a `share`
+/// trouble of the sandbox naming the run and its count; refusals within it only count; once its
+/// tunnels end, the trouble ends.
+#[tokio::test]
+async fn a_full_share_is_a_trouble_naming_the_run_until_its_tunnels_end() -> TestResult {
+    let setup = setup().await?;
+    let mut held = Vec::new();
+    for at in 0..8 {
+        let (stream, status) = tunnel(&setup, "good-token").await?;
+        assert!(status.contains(" 200"), "tunnel {at}: {status}");
+        held.push(stream);
+    }
+    assert!(setup.health.troubles().is_empty(), "no refusal yet");
+    for _ in 0..2 {
+        let (_refused, status) = tunnel(&setup, "good-token").await?;
+        assert!(status.contains(" 503"), "{status}");
+    }
+    let troubles = setup.health.troubles();
+    assert_eq!(troubles.len(), 1, "{troubles:?}");
+    let trouble = &troubles[0];
+    assert_eq!(
+        (
+            trouble.limit,
+            trouble.sandbox.as_deref(),
+            trouble.held,
+            trouble.max,
+            trouble.refused
+        ),
+        (Limit::Share, Some("s1"), 8, 8, 2)
+    );
+    assert_eq!(
+        trouble.holders,
+        vec![Holder {
+            name: "a1".into(),
+            held: 8
+        }]
+    );
+    held.clear();
+    until_no_trouble(&setup.health).await
+}
+
+/// SPEC-361 CHR-001: a full proxy that refuses is a `proxy` trouble naming the busiest
+/// sandboxes; it ends once the proxy has room.
+#[tokio::test]
+async fn a_full_proxy_is_a_trouble_naming_the_sandboxes_until_it_has_room() -> TestResult {
+    let setup = setup_with(yulius_egress::IDLE_FLOOR, 10).await?;
+    let mut held = Vec::new();
+    for at in 0..10 {
+        let token = if at % 2 == 0 {
+            "good-token"
+        } else {
+            "other-sandbox-token"
+        };
+        let (stream, status) = tunnel(&setup, token).await?;
+        assert!(status.contains(" 200"), "tunnel {at}: {status}");
+        held.push(stream);
+    }
+    let (_refused, status) = tunnel(&setup, "other-sandbox-token").await?;
+    assert!(status.contains("too many connections"), "{status}");
+    let troubles = setup.health.troubles();
+    assert_eq!(troubles.len(), 1, "{troubles:?}");
+    let trouble = &troubles[0];
+    assert_eq!(
+        (
+            trouble.limit,
+            trouble.sandbox.as_deref(),
+            trouble.held,
+            trouble.max
+        ),
+        (Limit::Proxy, None, 10, 10)
+    );
+    let holders: Vec<_> = trouble
+        .holders
+        .iter()
+        .map(|h| (h.name.as_str(), h.held))
+        .collect();
+    assert_eq!(holders, vec![("s1", 5), ("s2", 5)]);
+    // Room is seven eighths of 10, 8 (the domain's tests check that 9 is not).
+    held.truncate(8);
+    until_no_trouble(&setup.health).await
 }

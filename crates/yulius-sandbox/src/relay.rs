@@ -29,6 +29,7 @@ use tokio::task::JoinHandle;
 use yulius_contracts::sandbox::{
     INBOUND_CONNECT, INBOUND_PORTS, ListeningPorts, RELAY_FORBIDDEN, RELAY_OK, RELAY_REFUSED,
 };
+use yulius_domain::connection_health::{ConnectionHealth, Limit, Refusal};
 use yulius_domain::connections::{Activity, Connections};
 
 /// Connections relayed at once per direction and sandbox.
@@ -53,6 +54,28 @@ pub const IDLE_FLOOR: Duration = Duration::from_secs(300);
 struct Places {
     table: Mutex<Connections<(), oneshot::Sender<()>>>,
     epoch: Instant,
+    max: usize,
+    /// Where a refusal is reported as its sandbox's relay trouble (the server's `out.sock`,
+    /// SPEC-361).
+    report: Option<Report>,
+}
+
+/// A relay's sandbox and the registry its troubles go to.
+struct Report {
+    health: Arc<ConnectionHealth>,
+    sandbox: String,
+    /// Runs right before a refusal is reported (tests: a close racing it, review round 1).
+    #[cfg(test)]
+    pause: Option<Box<dyn Fn() + Send + Sync>>,
+}
+
+/// The wall clock in ms since the epoch: when a trouble began.
+fn wall_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 /// A connection's place, freed when dropped.
@@ -64,10 +87,17 @@ struct Place {
 
 impl Places {
     fn new(max: usize, floor: Duration) -> Arc<Self> {
+        Self::reporting(max, floor, None)
+    }
+
+    /// [`Places::new`] whose refusals are `report`ed.
+    fn reporting(max: usize, floor: Duration, report: Option<Report>) -> Arc<Self> {
         let floor = u64::try_from(floor.as_millis()).unwrap_or(u64::MAX);
         Arc::new(Self {
             table: Mutex::new(Connections::new(max, max, floor)),
             epoch: Instant::now(),
+            max,
+            report,
         })
     }
 
@@ -79,12 +109,28 @@ impl Places {
     /// gave way to it had been idle (ms); `None` when every connection was active lately.
     fn admit(self: &Arc<Self>) -> Option<(Place, oneshot::Receiver<()>, Option<u64>)> {
         let (end, ended) = oneshot::channel();
-        let admitted = self
-            .table
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .admit((), end, self.now())
-            .ok()?;
+        let mut table = self.table.lock().unwrap_or_else(PoisonError::into_inner);
+        let admitted = table.admit((), end, self.now());
+        let Ok(admitted) = admitted else {
+            // Reported under the table's lock, so a close after it sees the trouble open and ends
+            // it (review round 1). The registry never calls back into the relay.
+            if let Some(report) = &self.report {
+                let refusal = Refusal {
+                    limit: Limit::Relay,
+                    sandbox: Some(report.sandbox.clone()),
+                    held: table.len(),
+                    max: self.max,
+                    holders: Vec::new(),
+                };
+                #[cfg(test)]
+                if let Some(pause) = &report.pause {
+                    pause();
+                }
+                report.health.refused(refusal, wall_ms());
+            }
+            return None;
+        };
+        drop(table);
         // Dropping the evicted sender ends that connection.
         let idle = admitted.evicted.map(|evicted| evicted.idle_ms);
         let place = Place {
@@ -98,11 +144,27 @@ impl Places {
 
 impl Drop for Place {
     fn drop(&mut self) {
-        self.places
+        let mut table = self
+            .places
             .table
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .close(self.id);
+            .unwrap_or_else(PoisonError::into_inner);
+        table.close(self.id);
+        // Under the table's lock, as a refusal is reported: a trouble begun before this close is
+        // seen, and one begun after it counts this close (SPEC-361 CHR-002, review round 1). A
+        // connection of a relay the sandbox replaced (a restart overlapping its old relay's
+        // connections) reports its old table's count: it may end the new relay's trouble early,
+        // and the next refusal begins another (review round 2, accepted: a holder that ends closes
+        // its connections).
+        if let Some(report) = &self.places.report
+            && report
+                .health
+                .open(Limit::Relay, Some(report.sandbox.as_str()))
+        {
+            report
+                .health
+                .held(Limit::Relay, Some(report.sandbox.as_str()), table.len());
+        }
     }
 }
 
@@ -502,17 +564,28 @@ where
 // ---------------------------------------------------------------------------------------------
 // On the host (the server).
 
-/// Serves `out.sock`: a connection announces a port and is relayed to its target.
+/// Serves `out.sock`: a connection announces a port and is relayed to its target. A connection
+/// dropped at the limit is a relay trouble of the sandbox in `health` (SPEC-361).
 pub async fn serve_outbound(
     listener: UnixListener,
     targets: Arc<BTreeMap<u16, SocketAddr>>,
     sandbox: String,
+    health: Arc<ConnectionHealth>,
 ) {
-    outbound_within(listener, targets, sandbox, MAX_CONNECTIONS, IDLE_FLOOR).await;
+    outbound_reporting(
+        listener,
+        targets,
+        sandbox,
+        MAX_CONNECTIONS,
+        IDLE_FLOOR,
+        health,
+    )
+    .await;
 }
 
 /// [`serve_outbound`] with `max` connections at once, idle ones giving way after `floor` (tests
-/// use small ones).
+/// use small ones), reporting to nobody.
+#[cfg(test)]
 async fn outbound_within(
     listener: UnixListener,
     targets: Arc<BTreeMap<u16, SocketAddr>>,
@@ -520,7 +593,25 @@ async fn outbound_within(
     max: usize,
     floor: Duration,
 ) {
-    let places = Places::new(max, floor);
+    outbound_reporting(listener, targets, sandbox, max, floor, Arc::default()).await;
+}
+
+/// [`serve_outbound`] with `max` connections at once, idle ones giving way after `floor`.
+async fn outbound_reporting(
+    listener: UnixListener,
+    targets: Arc<BTreeMap<u16, SocketAddr>>,
+    sandbox: String,
+    max: usize,
+    floor: Duration,
+    health: Arc<ConnectionHealth>,
+) {
+    let report = Report {
+        health,
+        sandbox: sandbox.clone(),
+        #[cfg(test)]
+        pause: None,
+    };
+    let places = Places::reporting(max, floor, Some(report));
     let mut warned = None;
     let mut gave_way = None;
     loop {
@@ -828,6 +919,7 @@ mod tests {
             UnixListener::bind(&out_sock)?,
             targets,
             "s1".to_owned(),
+            Arc::default(),
         ));
         let forward = serve_forward(inside_port, out_sock.clone(), false).await?;
 
@@ -1012,7 +1104,12 @@ mod tests {
                             inside_port,
                             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), target),
                         )]));
-                        tokio::spawn(serve_outbound(listener, targets, "s1".to_owned()));
+                        tokio::spawn(serve_outbound(
+                            listener,
+                            targets,
+                            "s1".to_owned(),
+                            Arc::default(),
+                        ));
                         io::Result::Ok(())
                     };
                     let _ = ready_tx.send(started.await.map_err(|e| e.to_string()));
@@ -1166,6 +1263,113 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-361 CHR-002 (review round 1): a refusal whose report races every place closing still
+    /// ends its trouble. The closes wait for the refusal's report, so the last one sees it open.
+    #[test]
+    fn a_trouble_begun_while_every_place_closes_still_ends() -> TestResult {
+        let health = Arc::new(ConnectionHealth::default());
+        let (paused_tx, paused_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let go_rx = Mutex::new(go_rx);
+        let pause = move || {
+            let _ = paused_tx.send(());
+            let _ = go_rx
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .recv_timeout(Duration::from_secs(10));
+        };
+        let places = Places::reporting(
+            2,
+            IDLE_FLOOR,
+            Some(Report {
+                health: Arc::clone(&health),
+                sandbox: "s1".to_owned(),
+                pause: Some(Box::new(pause)),
+            }),
+        );
+        let held: Vec<Place> = (0..2)
+            .map(|_| places.admit().map(|(place, _, _)| place))
+            .collect::<Option<_>>()
+            .ok_or("admitted")?;
+        let asking = {
+            let places = Arc::clone(&places);
+            std::thread::spawn(move || places.admit().is_none())
+        };
+        paused_rx.recv_timeout(Duration::from_secs(10))?;
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let closing = std::thread::spawn(move || {
+            drop(held);
+            let _ = done_tx.send(());
+        });
+        // Without the fix the closes end here, before the refusal is reported; with it they wait
+        // for it, and this times out.
+        let _ = done_rx.recv_timeout(Duration::from_millis(500));
+        go_tx.send(())?;
+        assert!(asking.join().map_err(|_| "the asker panicked")?, "refused");
+        closing.join().map_err(|_| "the closes panicked")?;
+        assert!(
+            health.troubles().is_empty(),
+            "the trouble never ends: {:?}",
+            health.troubles()
+        );
+        Ok(())
+    }
+
+    /// SPEC-361 CHR-001, CHR-002: a full `out.sock` that drops a connection is a `relay`
+    /// trouble of its sandbox, which ends once its connections end.
+    #[tokio::test]
+    async fn a_full_out_sock_is_a_relay_trouble_until_its_connections_end() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let out_sock = dir.path().join("out.sock");
+        let target = yulius_stub().await?;
+        let targets = Arc::new(BTreeMap::from([(
+            9,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), target),
+        )]));
+        let health = Arc::new(ConnectionHealth::default());
+        let server = tokio::spawn(outbound_reporting(
+            UnixListener::bind(&out_sock)?,
+            targets,
+            "s1".to_owned(),
+            2,
+            IDLE_FLOOR,
+            Arc::clone(&health),
+        ));
+        let mut held = Vec::new();
+        for _ in 0..2 {
+            let mut stream = UnixStream::connect(&out_sock).await?;
+            stream.write_u16(9).await?;
+            assert_eq!(stream.read_u8().await?, RELAY_OK);
+            held.push(stream);
+        }
+        assert!(health.troubles().is_empty());
+        let mut refused = UnixStream::connect(&out_sock).await?;
+        let _ = refused.write_u16(9).await;
+        let mut byte = [0u8; 1];
+        let read = with_timeout(Duration::from_secs(10), "drop", refused.read(&mut byte)).await;
+        assert!(matches!(read, Ok(0) | Err(_)), "dropped: {read:?}");
+        let troubles = health.troubles();
+        assert_eq!(troubles.len(), 1, "{troubles:?}");
+        let trouble = &troubles[0];
+        assert_eq!(
+            (
+                trouble.limit,
+                trouble.sandbox.as_deref(),
+                trouble.held,
+                trouble.max
+            ),
+            (Limit::Relay, Some("s1"), 2, 2)
+        );
+        held.clear();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !health.troubles().is_empty() {
+            assert!(Instant::now() < deadline, "the trouble never ended");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        server.abort();
+        Ok(())
+    }
+
     /// SPEC-355 SLR-005: Yulius tests a sandbox's link to it from inside, through the holder's
     /// forward: answered while the forward takes connections, failed when its places are all held
     /// by connections active lately, and unknown with a holder that does not offer the test.
@@ -1249,6 +1453,7 @@ mod tests {
             UnixListener::bind(&out_sock)?,
             targets,
             "s1".to_owned(),
+            Arc::default(),
         ));
         let forward = serve_forward(inside_port, out_sock.clone(), true).await?;
         let mut client = TcpStream::connect((Ipv4Addr::new(127, 0, 0, 2), inside_port)).await?;

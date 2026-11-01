@@ -224,6 +224,7 @@ export function createStore(api, { pullGapMs = 3000, clock = REAL_CLOCK } = {}) 
       case 'account.updated': emit('account', event.account); break;
       case 'update.updated': emit('update', event); break;
       case 'disk.updated': emit('disk', event); break;
+      case 'connections.updated': emit('connections', event); break;
       case 'note.updated': emit('note', event); break;
       case 'note.presence': emit('note-presence', event); break;
       case 'file.presence': emit('file-presence', event); break;

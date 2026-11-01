@@ -37,8 +37,11 @@ fn security_is_listed_and_needs_a_vidoc_key() -> std::io::Result<()> {
         .arg("--help")
         .output()?;
     assert!(String::from_utf8_lossy(&help.stdout).contains("security"));
+    // Not the runner's Vidoc switch: a CI job of a project or instance with Vidoc off has
+    // `YULIUS_VIDOC=off`, which makes the scan exit 0 as disabled.
     let result = Command::new(env!("CARGO_BIN_EXE_xtask"))
         .env_remove("VIDOC_API_KEY")
+        .env_remove("YULIUS_VIDOC")
         .arg("security")
         .output()?;
     // Exit 2 is "not run", distinct from findings (1): the gate's code passes through.
@@ -47,6 +50,7 @@ fn security_is_listed_and_needs_a_vidoc_key() -> std::io::Result<()> {
     // SPEC-195: its options reach the scan (`scripts/dev security --all` is the broad scan).
     let broad = Command::new(env!("CARGO_BIN_EXE_xtask"))
         .env_remove("VIDOC_API_KEY")
+        .env_remove("YULIUS_VIDOC")
         .args(["security", "--all"])
         .output()?;
     assert_eq!(broad.status.code(), Some(2));

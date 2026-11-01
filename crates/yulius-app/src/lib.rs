@@ -19,6 +19,7 @@ pub mod capacity;
 pub mod chains;
 pub mod ci;
 pub mod cockpit;
+pub mod connection_health;
 pub mod context;
 pub mod context_full;
 pub mod coordination;

@@ -43,6 +43,11 @@ pub async fn egress_proxy(
     }
     app.enable_egress(bundle);
     let policy: Arc<dyn EgressPolicy> = app.clone();
+    // Its troubles are the app's to show (SPEC-361).
+    let config = EgressConfig {
+        health: app.connection_health(),
+        ..config
+    };
     EgressProxy::new(policy, ca, config)
         .map(Arc::new)
         .map_err(|e| format!("egress proxy: {e}"))
