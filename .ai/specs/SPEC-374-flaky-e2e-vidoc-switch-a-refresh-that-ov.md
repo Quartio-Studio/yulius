@@ -27,8 +27,8 @@ impossible.
   times, with and without `ambient=0`; held reads before the click: 3.
 - Root cause, traced with a stack recorded at each CI read (temporary probe): two more reads start
   by themselves while the read after the change is held, ambient activity or not:
-  - ~1.5 s after the change the store reloads the sandbox list (`scheduleCountsRefresh`, after a
-    pulls read or a task event, `COUNTS_REFRESH_MS`), and `watchVidocSwitch`
+  - 1.5 s after a pulls read or a task event (`scheduleCountsRefresh`, `COUNTS_REFRESH_MS`; here
+    about 1.5 s after the change) the store reloads the sandbox list, and `watchVidocSwitch`
     (`pages/cividoc.js`) sees the drawn view (from before the change, its fresh read being held)
     differ from the store, `pending` already cleared, and calls `rereadVidoc`;
   - ~3 s after the page drew its runs the CI page's own poll (`POLL_ACTIVE_MS`, studio has an
@@ -50,7 +50,11 @@ impossible.
   read was asked after the click; no exact count of reads.
 - REQ-2: A regression test clicks only after two more rereads (two sandbox-list resyncs) and
   fails with the exact-count wait.
-- REQ-3: No product change.
+- REQ-3: The neighbouring "refreshing the CI runs does not read the Vidoc switch again" waits for
+  at least one read after its change, not exactly one: it failed once (`expected 3 to be 2`) in
+  three runs of the file while this was reviewed, the same cause (a resync while the read after the
+  change is on its way; probe: hold that read, `resyncNow()`, release, 3 reads every time).
+- REQ-4: No product change.
 
 ## Plan
 

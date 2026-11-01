@@ -308,9 +308,10 @@ test('refreshing the CI runs does not read the Vidoc switch again', async ({ app
   await check.click();
   await expect.poll(async () => (await reads(browser)).ci).toBeGreaterThan(once);
   expect((await reads(browser)).vidoc).toBe(1);
-  // Its own change reads it again.
+  // Its own change reads it again; the page may read it once more by itself while that read is on
+  // its way (the sandbox list reloaded, its own poll), which is no refresh's doing (#1002).
   await screen.getByRole('switch', 'Scan this project with Vidoc').click();
-  await expect.poll(async () => (await reads(browser)).vidoc).toBe(2);
+  await expect.poll(async () => (await reads(browser)).vidoc).toBeGreaterThanOrEqual(2);
 });
 
 test('a refresh while the switch is sent shows the change on its way, disabled', async ({ app, browser, screen }) => {
@@ -351,6 +352,8 @@ for (const rereads of [0, 2]) {
     await expect(scan()).toBeChecked();
     await browser.evaluate(() => { (window as unknown as Holding).__yuliusMock.holdVidocReads = true; return null; });
     await scan().click();
+    // The change is answered (its toast) and read again, held: the view it draws waits there.
+    await expect(screen.getByText(/Vidoc scans are off for studio/)).toBeVisible();
     await expect.poll(() => held(browser)).toBeGreaterThanOrEqual(1);
     // The sandbox list reloaded (a resync): the card, which still shows the view from before the
     // change, reads it again, held too.
