@@ -250,6 +250,90 @@ fn ci_checkouts_created_at_once_all_succeed() -> TestResult {
     Ok(())
 }
 
+/// #969 (SPEC-367 CJP-004): a folder at a CI checkout's path that Git does not register there is
+/// refused and left as it is; the caller removes it through handles. Before, it was removed by
+/// path, through any link on the way.
+#[test]
+fn a_ci_checkout_refuses_a_folder_in_the_way() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let sha = fx.git.rev_parse(&repo, "main")?;
+    let ci = fx.path("ci");
+    let path = ci.join("jobs/lint");
+    fs::create_dir_all(&path)?;
+    fs::write(path.join("keep"), "not a checkout")?;
+    let refused = fx.git.ci_checkout(&repo, &path, &sha, &ci);
+    assert!(
+        matches!(refused, Err(GitError::InvalidInput { .. })),
+        "{refused:?}"
+    );
+    assert_eq!(fs::read_to_string(path.join("keep"))?, "not a checkout");
+    assert_eq!(fx.git.worktree_list(&repo)?.len(), 1);
+    Ok(())
+}
+
+/// #969 (SPEC-367 CJP-004): a registered checkout whose `ci/jobs` was swapped for a link to a
+/// folder holding a copy of it is not checked out or cleaned at the link's target: the
+/// registration is matched against the resolved path. Before, `checkout --force` and `clean`
+/// ran there.
+#[cfg(unix)]
+#[test]
+fn a_ci_checkout_reached_through_a_link_is_not_cleaned() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let sha = fx.git.rev_parse(&repo, "main")?;
+    let ci = fx.path("ci");
+    let path = ci.join("jobs/lint");
+    fs::create_dir_all(ci.join("jobs"))?;
+    fx.git.ci_checkout(&repo, &path, &sha, &ci)?;
+    let outside = fx.path("outside");
+    fs::create_dir_all(outside.join("lint"))?;
+    fs::copy(path.join(".git"), outside.join("lint/.git"))?;
+    fs::write(outside.join("lint/junk"), "host")?;
+    fs::rename(ci.join("jobs"), ci.join("jobs-moved"))?;
+    std::os::unix::fs::symlink(&outside, ci.join("jobs"))?;
+    let refused = fx.git.ci_checkout(&repo, &path, &sha, &ci);
+    assert!(
+        matches!(refused, Err(GitError::InvalidInput { .. })),
+        "{refused:?}"
+    );
+    assert_eq!(fs::read_to_string(outside.join("lint/junk"))?, "host");
+    assert!(
+        !outside.join("lint/README.md").exists(),
+        "nothing checked out"
+    );
+    Ok(())
+}
+
+/// SPEC-367 review round 1: a checkout Git registers outside the CI directory (an agent can write
+/// the registrations, or one was made through a link before #969) is never checked out or
+/// cleaned, also when a link at `ci/jobs` leads there.
+#[cfg(unix)]
+#[test]
+fn a_ci_checkout_registered_outside_is_not_cleaned() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let sha = fx.git.rev_parse(&repo, "main")?;
+    let (ci, outside) = (fx.path("ci"), fx.path("outside"));
+    fs::create_dir_all(&ci)?;
+    fs::create_dir_all(&outside)?;
+    let lint = outside.join("lint");
+    let lint_arg = lint.to_string_lossy().into_owned();
+    fx.raw(
+        &repo,
+        &["worktree", "add", "--quiet", "--detach", &lint_arg, &sha],
+    )?;
+    fs::write(lint.join("junk"), "host")?;
+    std::os::unix::fs::symlink(&outside, ci.join("jobs"))?;
+    let refused = fx.git.ci_checkout(&repo, &ci.join("jobs/lint"), &sha, &ci);
+    assert!(
+        matches!(refused, Err(GitError::InvalidInput { .. })),
+        "{refused:?}"
+    );
+    assert_eq!(fs::read_to_string(lint.join("junk"))?, "host");
+    Ok(())
+}
+
 /// #666: a checkout's `worktree list` ran while another checkout's `worktree add` had written
 /// `.git/worktrees/<name>/` only partly, and Git died ("failed to read …/commondir: Success").
 /// The adapter's Git is a wrapper that holds that half-written state during the first add until
