@@ -156,11 +156,14 @@ test('a task overview links to its changes only when its worktree is there', asy
     const w = window as unknown as HoldingGit;
     w.__yuliusHoldGit = new Promise<void>((resolve) => { w.__releaseGit = resolve; });
   });
-  const changesLinks = () => browser.evaluate(() => [...document.querySelectorAll('#main a[href$="/git/t/12"]')].map((a) => (a.textContent ?? '').trim()));
+  // The links to the task's changes a person can see.
+  const changesLinks = () => browser.evaluate(() => [...document.querySelectorAll('#main a[href$="/git/t/12"]')]
+    .filter((a) => a.checkVisibility()).map((a) => (a.textContent ?? '').trim()));
   const changesTile = browser.locator('.ti-facts .stat:has-text("Changes")');
 
+  // Each case its own query, so the page loads again (a new mock, the Git overview held again).
   for (const [worktree, reason] of [['gone', 'Worktree gone'], ['not_created', 'No worktree yet']]) {
-    await app.open(mock('/s/studio/tasks/12', '&ambient=0'));
+    await app.open(mock('/s/studio/tasks/12', `&ambient=0&case=${worktree}`));
     await expect(browser.locator('.ti-facts')).toContainText('Agent work');
     // The Git overview is held: no link that may answer 409.
     await expect(screen.getByRole('heading', { level: 1 })).toContainText('#12');
@@ -179,10 +182,11 @@ test('a task overview links to its changes only when its worktree is there', asy
   }
 
   // Its worktree there, both open the changes once the overview is read.
-  await app.open(mock('/s/studio/tasks/12', '&ambient=0'));
+  await app.open(mock('/s/studio/tasks/12', '&ambient=0&case=present'));
   await expect(browser.locator('.ti-facts')).toContainText('Agent work');
+  expect(await changesLinks()).toEqual([]);
   await browser.evaluate(() => (window as unknown as HoldingGit).__releaseGit!());
   await expect(screen.getByRole('link', 'Review changes')).toBeVisible();
-  await expect(changesTile.locator('a')).toHaveText(/^\d+ files? · review$/);
+  await expect(browser.locator('.ti-facts .stat:has-text("Changes") a')).toHaveText(/^\d+ files? · review$/);
   expect(await changesLinks()).toHaveLength(2);
 });
