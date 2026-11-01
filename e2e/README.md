@@ -119,7 +119,8 @@ A place the UI computes in a `ResizeObserver` callback (the attention bar's heig
 the terminal) is laid out at the browser's next rendering update, which a loaded host delays: a
 test reads it with `expect.poll` until it holds, never once right after something shows (#1003).
 `lateResizeObservers(browser)` (`tests/support.ts`, before `app.open`) makes every observer answer
-2 s late, so a test that measures once fails on every run instead of once in a full suite.
+2 s late, so a test that measures once fails on every run instead of once in a full suite. Such a
+poll takes `timeout: LATE_OBSERVER_MS + 5_000`, so the delay does not eat its usual 5 s.
 
 ## Agent steps
 

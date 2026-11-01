@@ -79,11 +79,12 @@ strip fit in `responsive.e2e.ts`, splitter `aria-valuenow`), found by the indepe
   message, and the phone test with `cornerBelowBar: false`.
 - With the delay and the poll, both tests pass; the whole terminal and cd files pass.
 - With the observer removed (a mutation: no `--term-overlay-bottom`), the polled test fails.
-- The full e2e suite passes on this shared host.
+- The full e2e suite passes on this shared host, apart from failures already filed (#1002).
 
 ## Test plan
 
 - `npx e2e run tests/terminal.e2e.ts` before the fix (test commit only) and after, several runs.
+- `npx e2e run tests/cd.e2e.ts` with the polls swapped back to single measures, and with the polls.
 - Mutation: comment out `termArea.style.setProperty('--term-overlay-bottom', …)` and run the file.
 - `E2E_TELEMETRY_DISABLED=1 npx e2e run` (the whole suite) and `scripts/dev ci`.
 
