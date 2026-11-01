@@ -30,6 +30,10 @@ answer says what can have happened to them: finished, skipped or removed meanwhi
 - What else the cause could break: nothing. The steps are left as they are in every case (a
   removed step stays removed, a resolved one keeps its status); only the answer's text was wrong.
   No other code or the web UI reads that text (`grep "No open step"`).
+- A fourth way to skip nothing, found by the review: the card's "Skip the selected steps…" button
+  posts `skip_step_ids: []` when no step is checked (it is the only way a `drops_scope` card runs
+  the new direction after the task), and the answer then claimed a chosen step had stopped being
+  open (before this change: "already finished").
 
 ## Requirements
 
@@ -39,12 +43,14 @@ answer says what can have happened to them: finished, skipped or removed meanwhi
   author: `skipped` also comes from the spec sync.
 - **SAZ-002** A chosen step removed from the list while the skip waits for the steps lock is not
   recreated, the chained task is still created, and the answer is SAZ-001's (status 200).
+- **SAZ-003** With no step chosen, the skip still chains the new direction, skips nothing and
+  answers "No step was chosen to skip; #N runs after this task."
 
 ## Plan
 
 - [x] Spec for the skip answer's zero case
-- [ ] Regression test for a step removed while the skip waits
-- [ ] Skip answer covers finished, skipped and removed steps
+- [x] Regression test for a step removed while the skip waits
+- [x] Skip answer covers finished, skipped and removed steps
 - [ ] Gates, review and delivery
 
 ## Acceptance criteria
@@ -53,13 +59,16 @@ answer says what can have happened to them: finished, skipped or removed meanwhi
   (SAZ-001).
 - A test covers a step removed while the skip waits for the steps lock (SAZ-002), and failed
   before the fix.
+- An empty selection says no step was chosen (SAZ-003), with a test that failed before.
 
 ## Test plan
 
 - New `intake::a_step_removed_while_the_skip_waits_stays_removed`: holds the task's steps lock,
   waits for the chained task (the skip now waits for the lock), replaces the steps without `st-2`,
-  releases the lock; asserts 200, the SAZ-001 answer (not "already finished") and `st-2` gone.
+  releases the lock; asserts 200, the chained task, the full SAZ-001 answer and `st-2` gone.
 - `intake::a_step_finished_while_the_skip_waits_stays_done` asserts the full SAZ-001 text.
+- New `intake::a_skip_with_no_chosen_step_says_so`: `skip_step_ids: []` answers SAZ-003, chains
+  the task and leaves every step pending.
 - Run `intake::` with nextest, then `scripts/dev ci`.
 
 ## Decisions
@@ -68,5 +77,10 @@ answer says what can have happened to them: finished, skipped or removed meanwhi
   is possible, but "skipped by another person" cannot be told from "skipped by the spec sync", and
   with several chosen steps a per-step reason would make a long answer for a rare race. The issue
   suggests this wording; it is reversible. No ADR: no lasting design choice.
+- **An empty selection stays allowed** (SAZ-003) rather than answering 422: on a `drops_scope`
+  card the skip button is the only way to run the new direction after the task, and skipping
+  nothing is a fair choice. Only its answer changes.
+- The "skipped by someone else" case has no test of its own: it takes the same `is_resolved`
+  branch as the `done` test.
 - The partial case ("1 step skipped" while another chosen step was resolved) keeps its answer: it
   is true, and the step list shows the rest.
