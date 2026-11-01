@@ -146,3 +146,43 @@ test('a board card without a worktree says why and opens nothing', async ({ app,
   expect(after.filter((c) => c.text.includes('Worktree gone')).length).toBe(1);
   expect(await axeViolations(browser)).toEqual([]);
 });
+
+// Task #353 (SPEC-370, #945): the task overview's "Review changes" and "N files · review" opened
+// the same changes view, which could only say "Couldn't load the changes" without a worktree. They
+// follow the Git overview's `worktree`, and offer nothing while it is still being read.
+test('a task overview links to its changes only when its worktree is there', async ({ app, browser, screen }) => {
+  type HoldingGit = Window & { __yuliusHoldGit?: Promise<void>; __releaseGit?: () => void };
+  await browser.addInitScript(() => {
+    const w = window as unknown as HoldingGit;
+    w.__yuliusHoldGit = new Promise<void>((resolve) => { w.__releaseGit = resolve; });
+  });
+  const changesLinks = () => browser.evaluate(() => [...document.querySelectorAll('#main a[href$="/git/t/12"]')].map((a) => (a.textContent ?? '').trim()));
+  const changesTile = browser.locator('.ti-facts .stat:has-text("Changes")');
+
+  for (const [worktree, reason] of [['gone', 'Worktree gone'], ['not_created', 'No worktree yet']]) {
+    await app.open(mock('/s/studio/tasks/12', '&ambient=0'));
+    await expect(browser.locator('.ti-facts')).toContainText('Agent work');
+    // The Git overview is held: no link that may answer 409.
+    await expect(screen.getByRole('heading', { level: 1 })).toContainText('#12');
+    expect(await changesLinks()).toEqual([]);
+    await browser.evaluate((state: string) => {
+      const w = window as any;
+      w.__yuliusMock.tasks.find((t: any) => t.id === 'tsk_studio_12').worktree = state;
+      w.__releaseGit();
+    }, worktree);
+    await expect(changesTile).toContainText(reason);
+    expect(await changesLinks()).toEqual([]);
+    await expect(screen.getByRole('link', 'Review changes')).toBeHidden();
+    if (worktree === 'not_created') await expect(changesTile).not.toContainText('gone');
+    await expect(screen.getByRole('link', 'Go to task')).toBeVisible();
+    expect(await axeViolations(browser)).toEqual([]);
+  }
+
+  // Its worktree there, both open the changes once the overview is read.
+  await app.open(mock('/s/studio/tasks/12', '&ambient=0'));
+  await expect(browser.locator('.ti-facts')).toContainText('Agent work');
+  await browser.evaluate(() => (window as unknown as HoldingGit).__releaseGit!());
+  await expect(screen.getByRole('link', 'Review changes')).toBeVisible();
+  await expect(changesTile.locator('a')).toHaveText(/^\d+ files? · review$/);
+  expect(await changesLinks()).toHaveLength(2);
+});
