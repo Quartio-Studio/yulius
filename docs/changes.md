@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-01
 
+- The egress proxy's own warnings at a full proxy and a full share now name the busiest holders
+  with their counts (`holders=s1 (5), s2 (5)`: sandboxes, or runs of the sandbox), so the journal
+  says who holds the connections (SPEC-366, task #349, closes #964). SPEC-002 §2.7 now states
+  every bound: 256 in all, 128 per sandbox, the longest-idle connection past 300 s giving way at a
+  full limit, then the busiest run or sandbox, the `503` texts, the warnings and the panel's
+  trouble (ADR-0240, 0241, 0243, 0246). A test shows the 300 s floor with an explicit clock:
+  #964's idle reclaim is met as ADR-0241 decided, at a full limit rather than on a timer.
+
 - CI job preparation never follows a link an agent put at `ci`, `ci/jobs` or `ci/home` (SPEC-367,
   task #350, fixes #969). Before, a link at `ci` made the next job create `home` and its checkout
   at the link's target, outside the sandbox; a link at `ci/home` became the job's `HOME`; a link at
