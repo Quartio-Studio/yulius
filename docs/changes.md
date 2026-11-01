@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-01
 
+- CI job preparation never follows a link an agent put at `ci`, `ci/jobs` or `ci/home` (SPEC-367,
+  task #350, fixes #969). Before, a link at `ci` made the next job create `home` and its checkout
+  at the link's target, outside the sandbox; a link at `ci/home` became the job's `HOME`; a link at
+  `ci/jobs` made Git add the checkout at the target and every later run remove it there through
+  the link. Now `ci` is opened from the sandbox directory with `O_NOFOLLOW` (a link fails the job,
+  nothing is made), a link or file at `ci/home` or `ci/jobs` is replaced by a folder, and anything
+  at the checkout's name that is not a checkout Git registers there is removed through handles.
+  `ci_checkout` removes and makes nothing by path and matches registrations by resolved path. The
+  merge train's scratch checkouts are readied the same way.
 - `[docs] changes` may name a folder of change notes, one file per pull request (SPEC-363,
   ADR-0248, task #346). Every task added an entry at the top of one changes log, so in quartio-v2
   each merge into `dev` made every other open pull request conflict on GitHub and rerun its CI
