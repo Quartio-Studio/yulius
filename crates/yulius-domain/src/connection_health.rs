@@ -53,6 +53,17 @@ pub fn busiest(counts: impl IntoIterator<Item = (String, usize)>) -> Vec<Holder>
     holders
 }
 
+/// `holders` as a log reads them, `name (held)` joined by commas: the proxy's warnings and the
+/// trouble's (SPEC-366 EPB-001).
+#[must_use]
+pub fn listed(holders: &[Holder]) -> String {
+    holders
+        .iter()
+        .map(|holder| format!("{} ({})", holder.name, holder.held))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// How many connections a limit of `max` holds at most once its trouble ends: seven eighths, so
 /// a limit that stays busy does not begin and end a trouble with each connection (CHR-002).
 #[must_use]
@@ -340,6 +351,8 @@ mod tests {
         ]);
         let names: Vec<_> = holders.iter().map(|h| (h.name.as_str(), h.held)).collect();
         assert_eq!(names, vec![("b", 9), ("d", 5), ("a", 2)]);
+        assert_eq!(listed(&holders), "b (9), d (5), a (2)");
+        assert_eq!(listed(&[]), "");
         assert_eq!(room_at(128), 112);
         assert_eq!(room_at(256), 224);
         assert_eq!(room_at(8), 7);

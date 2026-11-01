@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use yulius_contracts::api::status::{ConnectionHolderView, ConnectionTroubleView, ConnectionsView};
 use yulius_contracts::events::UiEvent;
-use yulius_domain::connection_health::{ConnectionHealth, Holder, Limit, Trouble};
+use yulius_domain::connection_health::{self, ConnectionHealth, Holder, Limit, Trouble};
 use yulius_domain::ids::{AttemptId, SandboxId};
 
 use crate::context::App;
@@ -20,18 +20,13 @@ use crate::model::UserRecord;
 pub(crate) fn connection_health(events: EventBus) -> Arc<ConnectionHealth> {
     let health = Arc::new(ConnectionHealth::default());
     health.on_change(move |trouble, began| {
-        let holders: Vec<String> = trouble
-            .holders
-            .iter()
-            .map(|h| format!("{} ({})", h.name, h.held))
-            .collect();
         if began {
             tracing::warn!(
                 limit = trouble.limit.as_str(),
                 sandbox = trouble.sandbox.as_deref().unwrap_or("-"),
                 held = trouble.held,
                 max = trouble.max,
-                holders = %holders.join(", "),
+                holders = %connection_health::listed(&trouble.holders),
                 "connection trouble began: a limit refuses connections (docs/operations.md)"
             );
         } else {
