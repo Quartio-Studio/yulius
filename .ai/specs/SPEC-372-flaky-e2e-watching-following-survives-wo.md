@@ -62,7 +62,7 @@ terminal's first screen, so the tests that open a task view never fail for a loa
 - [x] Suites using the terminal pass, docs and changes updated
 - [x] Independent review answered
 - [x] Full e2e suite passes at the final head
-- [ ] Merged into dev on green CI and issue closed
+- [x] Merged into dev on green CI and issue closed
 
 ## Acceptance criteria
 
