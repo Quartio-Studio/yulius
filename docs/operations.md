@@ -1327,7 +1327,9 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   warnings, at most once a minute, in the journal: `egress proxy: at a limit, the longest-idle
   connection was closed for a new one`, the two busiest-run lines above, `egress proxy: a sandbox
   holds its share of the connections` (with the sandbox, the run and how many it holds), `egress
-  proxy: every connection is taken`, and `sandbox relay:
+  proxy: every connection is taken` (with the asking sandbox and the total), each with `holders`,
+  the busiest three with their counts (`holders=s1 (120), s2 (8)`: runs of the sandbox at a share,
+  sandboxes at the proxy's limit; SPEC-366), and `sandbox relay:
   …` for the server's side of a sandbox's relay. The relay inside the sandbox writes its `sandbox
   relay: at the limit, the longest-idle connection was closed …` and `sandbox relay: a connection
   was dropped at the limit` lines to the sandbox's `holder.log` (and the Docker front's to

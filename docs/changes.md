@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-01
 
+- The egress proxy's own warnings at a full proxy and a full share now name the busiest holders
+  with their counts (`holders=s1 (5), s2 (5)`: sandboxes, or runs of the sandbox), so the journal
+  says who holds the connections (SPEC-366, task #349, closes #964). SPEC-002 §2.7 now states
+  every bound: 256 in all, 128 per sandbox, the longest-idle connection past 300 s giving way at a
+  full limit, then the busiest run or sandbox, the `503` texts, the warnings and the panel's
+  trouble (ADR-0240, 0241, 0243, 0246). A test shows the 300 s floor with an explicit clock:
+  #964's idle reclaim is met as ADR-0241 decided, at a full limit rather than on a timer.
+
 - `[docs] changes` may name a folder of change notes, one file per pull request (SPEC-363,
   ADR-0248, task #346). Every task added an entry at the top of one changes log, so in quartio-v2
   each merge into `dev` made every other open pull request conflict on GitHub and rerun its CI
