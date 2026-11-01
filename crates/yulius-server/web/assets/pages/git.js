@@ -22,6 +22,8 @@ const ACTIVITY_LIMIT = 8;
 const CHECK_TEXT = { success: 'checks passed', failure: 'checks failing', pending: 'checks running', unknown: 'checks unknown' };
 // A task's worktree when it is not there (the overview's `worktree`, SPEC-343); `present` opens.
 const WORKTREE_TEXT = { not_created: 'No worktree yet', gone: 'Worktree gone' };
+/** Why a task's Git overview row has no changes view to open (no worktree), or null when it has one. */
+export const worktreeMissing = (row) => WORKTREE_TEXT[row.worktree] || null;
 const CHECK_ICON = { success: ['check', 'ok'], failure: ['x', 'danger'], pending: ['clock', 'warn'] };
 
 /** Environments of a profile, split by where they run. */
@@ -352,7 +354,7 @@ export function mountGitPage(ctx, sandbox) {
       h('span', { class: 'muted' }, plural(item.row.files_changed, 'file')), ' ', h('span', { class: 'gt-add' }, `+${item.row.insertions ?? 0}`), ' ', h('span', { class: 'gt-del' }, `−${item.row.deletions ?? 0}`)) : null;
     // The card opens the task's changes (diff, commits, branch); "Go to task" is there. Without its
     // worktree (not created yet, or gone) there are no changes to read: the card says so (SPEC-343).
-    const noWorktree = item.task ? WORKTREE_TEXT[item.row.worktree] || null : null;
+    const noWorktree = item.task ? worktreeMissing(item.row) : null;
     const review = item.task && !noWorktree ? `/s/${encodeURIComponent(sandbox.slug)}/git/t/${item.task.number}` : null;
     const title = review
       ? h('a', { class: 'dl-task dl-card-link', href: href(review), dataset: { route: review } }, h('span', { class: 'muted' }, `#${item.task.number} `), item.row.title)
