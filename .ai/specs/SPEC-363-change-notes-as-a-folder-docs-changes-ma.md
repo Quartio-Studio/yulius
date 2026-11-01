@@ -128,5 +128,10 @@ changes quote the newest notes. Projects with one changes file see no difference
   `Some("")` (6); nits 5 and 7 kept, see Decisions.
 - `yulius security-scan`: exit 2, not run — Vidoc is turned off in Yulius for this project or
   the instance; nothing was sent. Not a pass.
+- Yulius CI on PR #993 at 0ed8ecea failed `xtask::cli security_is_listed_and_needs_a_vidoc_key`
+  (also on PR #992): CI jobs now get `YULIUS_VIDOC=off`, and the test only removed the key, so the
+  scan exited 0 as disabled. Reproduced with `YULIUS_VIDOC=off cargo test -p xtask --test cli`
+  (failed), fixed by removing `YULIUS_VIDOC` from the child's environment (passes with and
+  without the variable); issue #994.
 - Not tested: a real quartio-v2 checkout (no access from this sandbox); the behaviour is covered
   by the fixture folders above.
