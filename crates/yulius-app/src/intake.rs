@@ -688,7 +688,7 @@ impl App {
         let now = self.now();
         let note_text = format!("Ruled out by the user: {}", short(&d.hold.prompt, 300));
         // Under the steps lock, only around the writes (SPEC-341 LSS-002): the steps are read
-        // again, and a chosen step the agent or the spec finished meanwhile stays finished.
+        // again, and a chosen step finished, skipped or removed meanwhile stays as it is.
         let runtime = self.runtime(&d.task.id);
         let steps_lock = runtime.steps_lock.lock().await;
         let current = store.steps(&d.task.id).await?;
@@ -713,7 +713,9 @@ impl App {
         let note = format!(
             "{}; #{} runs after this task.",
             match skipped {
-                0 => "No open step was left to skip (already finished)".to_owned(),
+                // Who resolved or removed it cannot be told apart (SPEC-377 SAZ-001).
+                0 => "No open step was left to skip (finished, skipped or removed meanwhile)"
+                    .to_owned(),
                 1 => "1 step skipped".to_owned(),
                 n => format!("{n} steps skipped"),
             },

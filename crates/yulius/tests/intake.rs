@@ -1296,14 +1296,13 @@ async fn a_step_removed_while_the_skip_waits_stays_removed() -> TestResult {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        let kept: Vec<StepRecord> = i
-            .h
-            .store
-            .steps(&task)
-            .await?
-            .into_iter()
-            .filter(|s| s.id.as_str() != "st-2")
-            .collect();
+        let kept: Vec<StepRecord> =
+            i.h.store
+                .steps(&task)
+                .await?
+                .into_iter()
+                .filter(|s| s.id.as_str() != "st-2")
+                .collect();
         i.h.store
             .replace_steps(&task, &kept, "spec", i.h.app.now())
             .await?;
