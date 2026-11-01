@@ -720,7 +720,7 @@ async fn a_plain_request_to_a_silent_upstream_gets_504_and_frees_its_place() -> 
 async fn a_plain_request_still_sending_its_body_is_not_cut() -> TestResult {
     use base64::Engine as _;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    let bound = std::time::Duration::from_secs(1);
+    let bound = std::time::Duration::from_secs(2);
     let setup = setup_bounded(yulius_egress::IDLE_FLOOR, 16, bound).await?;
     let mut stream = tokio::net::TcpStream::connect(setup.proxy).await?;
     let auth = base64::engine::general_purpose::STANDARD.encode("yulius:good-token");
@@ -733,17 +733,22 @@ async fn a_plain_request_still_sending_its_body_is_not_cut() -> TestResult {
             .as_bytes(),
         )
         .await?;
-    // The client's own pace: 1.6 s in all, a frame every 200 ms.
-    for _ in 0..8 {
-        tokio::time::sleep(bound / 5).await;
+    // The client's own pace: 2.4 s in all, a frame every 200 ms.
+    for _ in 0..12 {
+        tokio::time::sleep(bound / 10).await;
         stream.write_all(b"1\r\nx\r\n").await?;
     }
     stream.write_all(b"0\r\n\r\n").await?;
     // The body streams chunked; the proxy closes once it ended.
     let mut answer = String::new();
-    stream.read_to_string(&mut answer).await?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        stream.read_to_string(&mut answer),
+    )
+    .await
+    .map_err(|_| "the proxy never ended its answer")??;
     assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
-    assert!(answer.contains("body=xxxxxxxx"), "{answer}");
+    assert!(answer.contains("body=xxxxxxxxxxxx"), "{answer}");
     Ok(())
 }
 

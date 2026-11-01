@@ -267,12 +267,19 @@ impl Progress {
         self.last_ms.store(now, Ordering::Relaxed);
     }
 
-    /// `waiting`'s output, or `None` once `bound` passed with no progress.
+    /// `waiting`'s output, or `None` once `bound` passed with no progress. A bound past the clock's
+    /// range waits with no bound.
     async fn within<F: Future>(&self, bound: Duration, waiting: F) -> Option<F::Output> {
         let mut waiting = std::pin::pin!(waiting);
         loop {
             let last = self.last_ms.load(Ordering::Relaxed);
-            let deadline = self.start + Duration::from_millis(last) + bound;
+            let Some(deadline) = self
+                .start
+                .checked_add(Duration::from_millis(last))
+                .and_then(|at| at.checked_add(bound))
+            else {
+                return Some(waiting.await);
+            };
             tokio::select! {
                 biased;
                 output = &mut waiting => return Some(output),
@@ -990,7 +997,7 @@ impl EgressProxy {
             return text(
                 504,
                 &format!(
-                    "Yulius proxy: {} sent no response within {} s",
+                    "Yulius proxy: {} sent no response for {} s",
                     upstream.host,
                     head_bound.unwrap_or_default().as_secs_f32()
                 ),
@@ -1101,6 +1108,18 @@ pub async fn serve(listener: TcpListener, proxy: Arc<EgressProxy>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-369 PHT-002 (review round 1): a bound too long to add to the clock means no bound,
+    /// not a panic.
+    #[tokio::test]
+    async fn an_endless_head_bound_waits_without_overflow() {
+        assert_eq!(
+            Progress::default()
+                .within(Duration::MAX, async { "answered" })
+                .await,
+            Some("answered")
+        );
+    }
 
     /// SPEC-361 CHR-002 (review round 2): a refusal whose report races every slot of its sandbox
     /// closing still ends its trouble: the closes wait for the report, so the last sees it open.

@@ -1,11 +1,11 @@
 ---
 yulius-task: fa7a326e-6f91-449d-b623-1908912df463
-status: in-progress
+status: done
 ---
 
 # SPEC-369: A plain-HTTP request through the egress proxy waits a bounded time for its answer
 
-Status: in progress
+Status: implemented
 Date: 2026-11-01
 Owner: Yulius task #352
 Scope authorization: task #352, fixes issue #975 (found by the review of task #337, SPEC-355;
@@ -60,11 +60,11 @@ them; every later `CONNECT` of the sandbox is then refused with `503`.
 
 ## Plan
 
-- [ ] Spec, root cause and a failing regression test for a silent upstream
-- [ ] A plain request answers 504 after a bounded wait for its head and frees its place
-- [ ] A plain request still sending its body, and intercepted requests, are not cut
-- [ ] SPEC-002 bounds, ADR and changes log
-- [ ] Independent review, gates green, delivery
+- [x] Spec, root cause and a failing regression test for a silent upstream
+- [x] A plain request answers 504 after a bounded wait for its head and frees its place
+- [x] A plain request still sending its body, and intercepted requests, are not cut
+- [x] SPEC-002 bounds, ADR and changes log
+- [x] Independent review, gates green, delivery
 
 ## Acceptance criteria
 
@@ -101,6 +101,33 @@ In `crates/yulius-egress/tests/proxy.rs`, over real sockets, with a short `respo
 - **Plain branch only**: intercepted connections already give way when idle and are bounded to
   24 h; a head bound there would change what agents see for slow bound APIs. Recorded in an ADR.
 
+## Review
+
+Independent review in a fresh session (round 1, head e90e04b2): approve, four findings, all own
+code, all answered in this change:
+
+- Low: `Instant + Duration` panics for a bound such as `Duration::MAX` (a public field). Fixed
+  test-first: `an_endless_head_bound_waits_without_overflow` failed (overflow panic), the deadline
+  now uses `checked_add`, and a bound past the clock's range waits with no bound.
+- Low: the slow-body test's `read_to_string` had no deadline and a 5x margin. It now has a 30 s
+  deadline and a 2 s bound against 200 ms frames (10x), 2.4 s in all.
+- Low (process): the spec was still in progress; this section and Evidence complete it.
+- Nit: the 504 said "within N s"; it now says "for N s" (the bound restarts with progress). The
+  expiry stays a `debug!` line: the share's own warnings already name a full share and who holds
+  it (SPEC-353, SPEC-361), and a slow upstream is the agent's to see in its 504, not an operator's.
+
 ## Evidence
 
-To be filled in.
+- Regression first: commit 7d35689d (tests, the config field unused):
+  `cargo nextest run -p yulius-egress --test proxy` → 3 failed, 13 passed;
+  `a_plain_request_to_a_silent_upstream_gets_504_and_frees_its_place` failed with "a plain request
+  to a silent upstream was never answered" (30 s deadline), the plain `/slow` request got 200.
+- Fix (75719e66): `cargo nextest run -p yulius-egress` → 24 passed.
+- Mutation: `within` ignoring progress (a total bound) → `a_plain_request_still_sending_its_body_is_not_cut`
+  failed; restored.
+- Gate at e90e04b2: `scripts/dev ci` exit 0; nextest 2932 passed, 16 skipped; clippy, fmt, docs,
+  doctests, deps and the macOS build passed.
+- After the review fixes: `cargo nextest run -p yulius-egress` → 25 passed;
+  `cargo clippy -p yulius-egress --all-targets -- -D warnings` clean; `cargo fmt --check` clean.
+- Security scan: Vidoc is turned off for this project in Yulius (disabled, not passed).
+- Not tested here: a real 300 s wait (the bound is configurable; the tests use 200 ms–2 s).
