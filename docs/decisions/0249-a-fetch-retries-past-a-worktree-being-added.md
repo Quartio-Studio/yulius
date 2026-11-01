@@ -51,7 +51,8 @@ it under load (#995); production sandbox syncs and integration merges are expose
   adds). The worst case is 5 network timeouts, 1.5 s and 4 lock waits; in practice a retry is quick,
   since the failed attempt already stored the objects. A permanently broken worktree `HEAD` costs
   5 attempts before its error.
-- The fetch is recognised past leading `-c` pairs, so CD mirror fetches are covered too.
+- The fetch is recognised past leading `-c` pairs, so a fetch written with them (a CD mirror's) is
+  covered too; a bare mirror has no worktrees, so it does not meet this failure today.
 - The retry depends on Git's message; a future Git wording falls back to today's behavior (one
   attempt, the error returned), never to hiding another failure.
 - Commands other than fetch that read every worktree's `HEAD` (`gc`, `repack`) are unchanged.

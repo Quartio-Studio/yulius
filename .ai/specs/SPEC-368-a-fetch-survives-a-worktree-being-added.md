@@ -1,11 +1,11 @@
 ---
 yulius-task: 43c627d9-ed04-4265-bc69-a84cf84acc0a
-status: in-progress
+status: done
 ---
 
 # SPEC-368: A fetch survives a worktree being added beside it
 
-Status: in-progress
+Status: done
 Date: 2026-11-01
 Owner: task #351
 Scope authorization: task #351: "Solve GitHub issue #995 … in one pull request whose description
@@ -45,8 +45,9 @@ Confirmed against `dev` at 50f1faf5 with Git 2.43.0.
   `HEAD` and its child setting the commit; only a loaded full suite stretched it into the fetch.
 - **Also exposed.** Every fetch of a repository with linked worktrees: the CI poll's
   `ci_sync_all` (logged and retried at the next poll), `merge_integration`'s fetch in a task
-  worktree (task worktrees share the repository), bundle imports and CD mirror fetches, and the
-  agents' own fetches, which Yulius does not run.
+  worktree (task worktrees share the repository), bundle imports into a repository with worktrees,
+  and the agents' own fetches, which Yulius does not run. A CD mirror is bare and has no
+  worktrees: its fetch was probed passing beside a source with a half-added worktree.
 
 ## Requirements
 
@@ -62,9 +63,9 @@ Confirmed against `dev` at 50f1faf5 with Git 2.43.0.
 - [x] Regression test reproducing the half-added worktree
 - [x] Fetch retries past a worktree add in progress
 - [x] Docs and changes entry
-- [ ] Full gate green
-- [ ] Independent review answered
-- [ ] Merged into dev on green CI
+- [x] Full gate green
+- [x] Independent review answered
+- [x] Merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -117,8 +118,9 @@ Confirmed against `dev` at 50f1faf5 with Git 2.43.0.
   Git 2.43.0), so each retry is quick. One deadline across attempts was considered and not taken:
   it would need a second timeout rule for one rare path, and an attempt cut short would turn a
   recoverable fetch into a timeout.
-- **The subcommand is read past leading `-c` pairs**, so a CD mirror's fetch (`-c
-  transfer.fsckObjects=true -c fetch.fsckObjects=true fetch …`) is covered too. The worktree
+- **The subcommand is read past leading `-c` pairs**, so any fetch written with them (today a CD
+  mirror's `-c transfer.fsckObjects=true -c fetch.fsckObjects=true fetch …`, which cannot meet
+  this failure while mirrors have no worktrees) is covered too. The worktree
   registration predicate keeps reading the first argument: every worktree command starts with it.
 - **Out of scope.** Agents' own fetches meet the same window; their Git is not Yulius's adapter.
   Other commands that read every worktree `HEAD` (`gc`, `repack`, `rev-list --all`) were never
@@ -144,14 +146,19 @@ Confirmed against `dev` at 50f1faf5 with Git 2.43.0.
 - **Passes after.** At 93c0e356, `cargo nextest run -p yulius-git` passed 85 of 85; `cargo clippy
   -p yulius-git --all-targets -- -D warnings` is clean. `local_ci::running_ci_jobs_weigh_on_their_sandbox_until_they_end`
   (the test of #995) passed at bcc042cc.
-- **Full gate.** `scripts/dev ci` at 10a53cc8 exited 0: 2932 tests passed, 16 skipped, lint, deps,
-  macOS build and docs green. The later commits (review answers) are rechecked by Yulius CI on the
+- **Full gate.** `scripts/dev ci` exited 0 at 10a53cc8 (2932 tests passed, 16 skipped) and again
+  at a06b4ef2 after the review answers (2934 passed, 16 skipped; lint, deps, macOS build and docs
+  green). The last commit only raises a test's wait bound and rewords docs; Yulius CI checks the
   pull request head.
+- **Second review.** A fresh read-only review approved a06b4ef2 with no blocker or major finding
+  and confirmed each earlier finding resolved. Its two nits are taken: the lock-wait test's wrapper
+  waits up to 60 s (not 10 s) for the first fetch attempt, so no load can make that attempt succeed
+  early; the docs no longer claim CD mirrors were exposed (probed: a bare mirror's fetch passes).
 - **Security.** Vidoc is turned off for this project in Yulius: the scan reports itself disabled,
   which is not a pass.
 - **Review.** An independent read-only review in a fresh session approved 10a53cc8 with no blocker
-  or major finding. Its minor findings are answered: the CD mirror's `-c … fetch` is now recognised
-  (`subcommand`, unit-tested); the lock wait has a test that fails without it; the real worst-case
+  or major finding. Its minor findings are answered: a fetch written with leading `-c` pairs (a CD
+  mirror's) is now recognised (`subcommand`, unit-tested); the lock wait has a test that fails without it; the real worst-case
   time (attempt timeouts and lock waits) is stated under Decisions and in ADR-0249; the Plan is
   kept current. Its nits: the wrapper now completes the `HEAD` with the clone's own commit; the
   give-up test's 1.5 s of real backoff is accepted.

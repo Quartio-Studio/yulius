@@ -418,7 +418,7 @@ case " $* " in
 *" worktree add "*)
   : > '{m}/adding'
   n=0
-  while [ ! -s '{m}/attempts' ] && [ $n -lt 1000 ]; do sleep 0.01; n=$((n + 1)); done
+  while [ ! -s '{m}/attempts' ] && [ $n -lt 6000 ]; do sleep 0.01; n=$((n + 1)); done
   n=0
   while [ "$(wc -l < '{m}/attempts')" -lt 2 ] && [ $n -lt 200 ]; do sleep 0.01; n=$((n + 1)); done
   echo {own} > '{head}'
