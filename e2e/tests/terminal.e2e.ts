@@ -1018,12 +1018,12 @@ test('the way on sits below a held card over the terminal (#911)', async ({ app,
   await expect(browser.locator('.taskview .held-slot')).toBeVisible();
   await turn(browser, point, -120);
   await expect(offer(browser)).toBeVisible();
-  const boxes = await browser.evaluate(() => {
+  // Measured until the observer has run: the gap from the card's bottom to the button's top.
+  await expect.poll(() => browser.evaluate(() => {
     const card = document.querySelector('.taskview .held-slot')!.getBoundingClientRect();
     const button = document.querySelector('.taskview .term-history-offer')!.getBoundingClientRect();
-    return { cardBottom: card.bottom, buttonTop: button.top };
-  });
-  expect(boxes.buttonTop, 'the button is below the card').toBeGreaterThanOrEqual(boxes.cardBottom);
+    return button.top - card.bottom;
+  }), { message: 'the button is below the card' }).toBeGreaterThanOrEqual(0);
 });
 
 test('a task that never ran offers no earlier messages (#911)', async ({ app, browser }) => {
