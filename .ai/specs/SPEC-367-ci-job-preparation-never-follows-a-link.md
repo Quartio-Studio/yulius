@@ -95,11 +95,14 @@ or the checkout's name. Nothing outside the sandbox is created, removed, checked
   (`repo/.git/worktrees/*/gitdir`) are in the sandbox, so an agent can forge one for any host
   folder holding a regular `.git` file, and checkouts added through a link before this fix are
   registered outside. `ci_checkout` treats a registration as its checkout only when the resolved
-  path is inside `owned_root` with the root's parent resolved and its own name not followed, as
-  `worktree_remove_if_safe` already does; both sides are compared resolved (`canonicalize`), so
+  path is inside `owned_root` with the root's parent resolved and its own name not followed (like
+  `worktree_remove_if_safe`, which resolves the whole root; here a link at `ci` must not count);
+  both sides are compared resolved (`canonicalize`), so
   a registration spelled through a link to the real checkout still matches.
 - **Two lanes replacing one link** (review round 1): the second finds it gone (`ENOENT`) or the
-  other's folder made (`EISDIR`, `EPERM` on macOS) and opens that folder instead of failing.
+  other's folder made (`EISDIR`; `EPERM` on macOS only, review round 2) and opens that folder
+  instead of failing. Preparation errors are conflicts with the OS's reason, and the merge
+  checkout's name its folder (review round 2).
 - **Bounded removal.** A broken checkout is removed with `remove_tree`, which stops at
   `MAX_REMOVED_ENTRIES` (1,000,000) entries: a broken checkout with a larger cache fails the job
   with that reason, and each later run removes the next million until it is gone. The old

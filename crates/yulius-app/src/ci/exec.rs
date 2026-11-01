@@ -1306,10 +1306,11 @@ fn folder_in(dir: &OwnedFd, name: &OsStr) -> Result<OwnedFd, Errno> {
 
 /// Removes the link or file `name` in `dir` and opens the folder made in its place. Another lane
 /// replacing it at the same time may have removed it already (`ENOENT`) or made the folder
-/// (`EISDIR`, `EPERM` on macOS): that folder is opened.
+/// (`EISDIR`; `EPERM` on macOS, which Linux keeps for a real refusal): that folder is opened.
 fn replace_with_folder(dir: &OwnedFd, name: &OsStr) -> Result<OwnedFd, Errno> {
     match unlinkat(dir, name, UnlinkatFlags::NoRemoveDir) {
-        Ok(()) | Err(Errno::ENOENT | Errno::EISDIR | Errno::EPERM) => {}
+        Ok(()) | Err(Errno::ENOENT | Errno::EISDIR) => {}
+        Err(Errno::EPERM) if cfg!(any(target_os = "macos", target_os = "ios")) => {}
         Err(err) => return Err(err),
     }
     crate::files::open_dir_at(dir, name, true)
@@ -1378,7 +1379,10 @@ fn ready_checkout(
     if usable {
         Ok(())
     } else {
-        crate::files::remove_tree(&dir, name)
+        crate::files::remove_tree(&dir, name).map_err(|err| match err {
+            AppError::Internal(reason) => AppError::Conflict(reason),
+            other => other,
+        })
     }
 }
 

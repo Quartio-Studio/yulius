@@ -87,7 +87,14 @@ impl App {
         }
         let ci_dir = self.ci_dir(&sandbox.id);
         // Readied through handles: Git checks out in it by its path (SPEC-367).
-        self.ci_checkout_ready(&sandbox.id, &[], SCRATCH).await?;
+        self.ci_checkout_ready(&sandbox.id, &[], SCRATCH)
+            .await
+            .map_err(|err| {
+                AppError::Conflict(format!(
+                    "readying the CI checkout `ci/{SCRATCH}` failed: {}",
+                    err.public_message()
+                ))
+            })?;
         let built = git
             .build_train(
                 &repo,
