@@ -1,11 +1,11 @@
 ---
 yulius-task: b55cf470-3f26-49a9-9cd4-d6db1df00294
-status: in-progress
+status: done
 ---
 
 # SPEC-374: the vidoc-switch refresh test waits on the refresh, not on an exact read count
 
-Status: in-progress
+Status: done
 Date: 2026-11-01
 Owner: Yulius task #357
 Scope authorization: task #357, Fixes #1002 (found by task #347 in a full local e2e run).
@@ -58,10 +58,11 @@ impossible.
 
 ## Plan
 
-- [ ] Spec with the reproduced root cause
-- [ ] Regression test that clicks after the page's own rereads, failing on the exact-count wait
-- [ ] Wait on the refresh having started and a newer Vidoc read, passing the regression and probe runs
-- [ ] Independent review answered and gates green
+- [x] Spec with the reproduced root cause
+- [x] Regression test that clicks after the page's own rereads, failing on the exact-count wait
+- [x] Wait on the refresh having started and a newer Vidoc read, passing the regression and probe runs
+- [x] Project gate green and review round 1 answered
+- [x] Full e2e run and review of the answered head
 - [ ] Merged into dev and issue #1002 closed
 
 ## Acceptance criteria
@@ -84,3 +85,25 @@ impossible.
 - Keep ambient activity on: the wait no longer depends on how many reads others start, and the
   test keeps covering them.
 - Leave `watchVidocSwitch` as it is (see Context, Product).
+
+## Evidence
+
+- Probe (temporary, removed): a 6 s delay before "Check for commits" failed the old test 3 of 3
+  runs, with and without `ambient=0` (3 held reads before the click); a stack recorded at each CI
+  read named `watchVidocSwitch` (after `loadSandboxes`) and the page's poll (`ci.js` schedule).
+- `8af3b3e4` (regression case, old wait): `npx e2e run tests/vidoc-switch.e2e.ts`: 1 failed, 19
+  passed; the new case failed at the old poll, "expected false to be true".
+- `60b316f5` (new wait): the file 20/20 three times; the probe (6 s delay, ambient on and off,
+  both cases) passed 12 of 12.
+- Mutation (reverted): `vidocStale = false` as a read starts (the round-5 bug) fails both cases.
+- Review round 1 (approve, fresh session): spec wording, toast before counting held reads, README;
+  while verifying, the round-4 test failed once in 3 file runs (`expected 3 to be 2`), reproduced by
+  a probe (hold the read after its change, `resyncNow()`, release: 3 every time) and fixed in
+  `2e3f0707` (REQ-3); the file then 20/20 three times. Review of `2e3f0707`: approve.
+- `scripts/dev ci` (after `python3 scripts/bootstrap.py`, at `08949f91`): exit 0; nextest 2949
+  passed, 16 skipped. The later commits change only the e2e test and docs.
+- Full e2e suite at `2e3f0707`: `E2E_TELEMETRY_DISABLED=1 npx e2e run`: 798 passed, 1 skipped
+  (71 files), 30 m 45 s, load average 39 on 12 CPUs at the start (other tasks' builds);
+  vidoc-switch 20/20.
+- `yulius security-scan`: "Security scan disabled" (Vidoc is turned off for this project in
+  Yulius); nothing was scanned.
