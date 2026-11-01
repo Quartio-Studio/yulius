@@ -773,18 +773,26 @@ impl Logs {
     }
 }
 
+impl Logs {
+    /// Captures this thread's log lines until the guard drops.
+    fn capture() -> (Self, tracing::subscriber::DefaultGuard) {
+        let logs = Self::default();
+        let writer = logs.clone();
+        let guard = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_ansi(false)
+                .with_writer(move || writer.clone())
+                .finish(),
+        );
+        (logs, guard)
+    }
+}
+
 /// SPEC-366 EPB-001 (#964: on 2026-10-30 the journal said the proxy was full, not who held it): a
 /// full proxy's warning names the busiest sandboxes with their counts, once a minute.
 #[tokio::test]
 async fn a_full_proxys_warning_names_the_busiest_sandboxes() -> TestResult {
-    let logs = Logs::default();
-    let writer = logs.clone();
-    let _logging = tracing::subscriber::set_default(
-        tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_writer(move || writer.clone())
-            .finish(),
-    );
+    let (logs, _logging) = Logs::capture();
     let setup = setup_with(yulius_egress::IDLE_FLOOR, 10).await?;
     let mut held = Vec::new();
     for at in 0..10 {
@@ -808,6 +816,34 @@ async fn a_full_proxys_warning_names_the_busiest_sandboxes() -> TestResult {
     assert!(
         warnings[0].contains("holders=s1 (5), s2 (5)"),
         "the busiest first, with their counts: {}",
+        warnings[0]
+    );
+    Ok(())
+}
+
+/// SPEC-366 EPB-001: a full share's warning names the sandbox's busiest runs with their counts.
+#[tokio::test]
+async fn a_full_shares_warning_names_the_busiest_runs() -> TestResult {
+    let (logs, _logging) = Logs::capture();
+    let setup = setup().await?;
+    let mut held = Vec::new();
+    for at in 0..8 {
+        let token = if at % 2 == 0 {
+            "good-token"
+        } else {
+            "sibling-token"
+        };
+        let (stream, status) = tunnel(&setup, token).await?;
+        assert!(status.contains(" 200"), "tunnel {at}: {status}");
+        held.push(stream);
+    }
+    let (_refused, status) = tunnel(&setup, "sibling-token").await?;
+    assert!(status.contains(" 503"), "{status}");
+    let warnings = logs.lines_with("egress proxy: a sandbox holds its share");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("holders=a1 (4), a2 (4)"),
+        "the busiest runs, with their counts: {}",
         warnings[0]
     );
     Ok(())

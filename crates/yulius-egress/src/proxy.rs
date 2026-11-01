@@ -22,7 +22,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use yulius_app::ports::egress::{EgressClient, EgressDecision, EgressPolicy, EgressRequest};
-use yulius_domain::connection_health::{self, ConnectionHealth, Limit, Refusal};
+use yulius_domain::connection_health::{self, ConnectionHealth, Holder, Limit, Refusal};
 use yulius_domain::connections::{self, Activity, Admitted, Busier, Connections};
 use yulius_domain::vault::egress_destination_allowed;
 use yulius_domain::vault::redact::{Matcher, PlainMatcher, StreamRedactor, redact_all};
@@ -145,14 +145,15 @@ impl Slots {
     /// it. A refusal is reported as a trouble, with whose connections they are (SPEC-361
     /// CHR-001), under the table's lock, so a close after it sees the trouble open (review round
     /// 1; the registry never calls back into the proxy). With a refusal at the share, also how
-    /// many `run` holds and the most another run holds (SPEC-357 ESR-004).
+    /// many `run` holds and the most another run holds (SPEC-357 ESR-004). With any refusal, its
+    /// busiest holders, for the proxy's warning (SPEC-366 EPB-001).
     fn admit(
         &self,
         sandbox: &str,
         run: &str,
         held: bool,
         end: oneshot::Sender<()>,
-    ) -> (Answer, Option<(usize, usize)>) {
+    ) -> (Answer, Option<(usize, usize)>, Vec<Holder>) {
         let mut table = self.table.lock().unwrap_or_else(PoisonError::into_inner);
         let (key, owner, now) = (sandbox.to_owned(), run.to_owned(), self.now());
         let admitted = if held {
@@ -183,6 +184,10 @@ impl Slots {
             }),
             Ok(_) => None,
         };
+        let holders = trouble
+            .as_ref()
+            .map(|trouble| trouble.holders.clone())
+            .unwrap_or_default();
         if let Some(trouble) = trouble {
             #[cfg(test)]
             if let Some(pause) = &self.pause {
@@ -190,7 +195,7 @@ impl Slots {
             }
             self.health.refused(trouble, wall_ms());
         }
-        (admitted, counts)
+        (admitted, counts, holders)
     }
 }
 
@@ -566,7 +571,7 @@ impl EgressProxy {
         let sandbox = client.sandbox_id.as_str();
         let run = client.use_key();
         let (end, ended) = oneshot::channel();
-        let (admitted, counts) = self.slots.admit(sandbox, run, held, end);
+        let (admitted, counts, holders) = self.slots.admit(sandbox, run, held, end);
         let mut warned = self.warned.lock().unwrap_or_else(PoisonError::into_inner);
         match admitted {
             Ok(admitted) => {
@@ -620,6 +625,7 @@ impl EgressProxy {
                         run,
                         held = mine,
                         share = self.slots.share,
+                        holders = %connection_health::listed(&holders),
                         "egress proxy: a sandbox holds its share of the connections; \
                          leftover processes may hold them (docs/operations.md)"
                     );
@@ -628,7 +634,12 @@ impl EgressProxy {
             }
             Err(connections::Full::Total) => {
                 if warn_due(&mut warned, "full", None) {
-                    tracing::warn!(sandbox, "egress proxy: every connection is taken");
+                    tracing::warn!(
+                        sandbox,
+                        total = self.slots.total,
+                        holders = %connection_health::listed(&holders),
+                        "egress proxy: every connection is taken"
+                    );
                 }
                 Err("Yulius proxy: too many connections; try again".to_owned())
             }
