@@ -332,6 +332,34 @@ test('the daily chart’s hover tip stays inside its chart on the first and the 
   }
 });
 
+test('the daily chart’s hover tip stays inside its chart on its highest day, too near the top for a tip above', async ({ app, browser, screen }) => {
+  for (const width of [1280, 390]) {
+    await browser.setViewport({ width, height: 900 });
+    await app.open(mock('/s/studio/dashboard?section=pipeline'));
+    const trend = screen.getByRole('region', 'Trend: CI · Run');
+    await expect(trend.getByRole('img', /CI · Run, p50 and p90 by day/)).toBeVisible();
+    await browser.evaluate(() => document.querySelector('.st-chart')?.scrollIntoView({ block: 'center' }));
+    // The highest p90 point: the scale rounds up from it, so it sits close to the plot's top.
+    const peak = await browser.evaluate(() => {
+      const dots = [...document.querySelectorAll('.st-chart .st-dot-p90')].map((dot) => dot.getBoundingClientRect());
+      const top = dots.reduce((best, box) => (box.top < best.top ? box : best));
+      return { x: top.left + top.width / 2, y: top.top + top.height / 2 };
+    });
+    const hit = await browser.locator('.st-chart .chart-hit').boundingBox();
+    if (!hit) throw new Error('the trend chart is not laid out');
+    await hoverAt(browser, '.db-tip', peak.x, hit.y + hit.height / 2);
+    await expect(browser.locator('.db-tip')).toContainText('ended');
+    // A tip above the point would rise past the plot's top.
+    const room = await browser.evaluate((y: number) => {
+      const tip = document.querySelector<HTMLElement>('.db-tip');
+      const plot = tip?.parentElement?.getBoundingClientRect();
+      return tip && plot ? { above: y - plot.top, tall: tip.getBoundingClientRect().height + 8 } : null;
+    }, peak.y);
+    expect(room && room.above < room.tall, `${width} px: ${JSON.stringify(room)}`).toBe(true);
+    expect(await tipFit(browser, '.db-tip'), `${width} px, highest day`).toMatchObject({ pastPlot: 0, pastWindow: 0, cut: false });
+  }
+});
+
 test('a job’s stages fold under it, a failed job opens, and the fold outlives a refresh', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/ci?run=ci_s4'));
   await expect(screen.getByRole('region', 'Stages of this run')).toContainText('engine');

@@ -43,8 +43,9 @@ that answer has come, so it cannot pass before the answer it is about.
 
 ## Plan
 
-- [ ] Spec with the cause and the plan
-- [ ] Mock counts answered GitHub reads and the test waits on them, failing without the epoch guard
+- [x] Spec with the cause and the plan
+- [x] Mock counts answered GitHub reads and the test waits on them, failing without the epoch guard
+- [ ] Daily chart's hover tip flips below a point near the chart's top (unblocks CI's e2e)
 - [ ] Gates green and independent review answered
 - [ ] Pull request merged into dev on green CI
 
