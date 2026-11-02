@@ -2,7 +2,13 @@
 //! `ci_setup` (onboarding: move GitHub Actions into Yulius CI), `repo_hygiene` and
 //! `repo_cleanup`. Agents act as `task:<number>`; every removal is audited.
 
-use std::path::Path;
+use std::ffi::OsStr;
+use std::io::Read as _;
+use std::os::fd::OwnedFd;
+use std::path::{Component, Path};
+
+use nix::fcntl::{OFlag, openat};
+use nix::sys::stat::Mode;
 
 use serde_json::{Value, json};
 use yulius_contracts::api::ci::{HygieneCleanup, HygieneTarget};
@@ -14,6 +20,7 @@ use super::{MAX_WORKFLOW_FILES, WORKFLOWS_DIR, run_view};
 use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::error::{AppError, AppResult};
+use crate::files;
 use crate::model::SandboxRecord;
 
 /// Output tail per job returned to an agent.
@@ -127,17 +134,20 @@ impl App {
     /// its `yulius.toml` and on the integration branch, and the steps.
     ///
     /// # Errors
-    /// A task without a worktree.
+    /// A task without a worktree on disk inside the sandbox directory (`Conflict`), or one that
+    /// cannot be opened from it without following a link.
     pub async fn tool_ci_setup(&self, ctx: &AgentContext) -> AppResult<Value> {
         let sandbox = self.tool_sandbox(ctx).await?;
-        let worktree = ctx
-            .task
-            .worktree_path
-            .as_deref()
-            .map(Path::new)
-            .ok_or_else(|| AppError::Conflict("this task has no worktree yet".into()))?;
-        let workflows = read_workflows(worktree);
-        let config = match read_small(&worktree.join("yulius.toml"), MAX_CONFIG_BYTES) {
+        // Resolved and inside the sandbox directory, then read only through handles from it.
+        let worktree = self
+            .sandbox_worktree(&sandbox, ctx.task.id.as_str(), None)
+            .await?;
+        let sandbox_dir = self.sandbox_dir(&sandbox.id);
+        let (workflows, config) =
+            tokio::task::spawn_blocking(move || read_setup(&sandbox_dir, &worktree))
+                .await
+                .map_err(AppError::internal)??;
+        let config = match config {
             None => json!({"jobs": [], "problem": null, "file": false}),
             Some(text) => match parse_yulius_toml(&text)
                 .map_err(|e| e.to_string())
@@ -208,30 +218,66 @@ impl App {
     }
 }
 
-/// A regular file (not a symlink) of at most `max` bytes.
-fn read_small(path: &Path, max: usize) -> Option<String> {
-    let meta = std::fs::symlink_metadata(path).ok()?;
-    if !meta.is_file() || meta.len() > u64::try_from(max).unwrap_or(u64::MAX) {
-        return None;
-    }
-    std::fs::read_to_string(path).ok()
+/// The workflows and the `yulius.toml` text of the task worktree `worktree` (canonical, inside
+/// the sandbox directory `sandbox_dir`). The server reads them outside containment, and the
+/// contained agent can swap any folder or file there for a link at any moment, so nothing is read
+/// by path: the worktree is opened from the sandbox directory folder by folder with `O_NOFOLLOW`,
+/// and every folder and file below it from its parent's handle the same way (#829, ADR-0174). A
+/// link below the worktree reads nothing; blocks.
+///
+/// # Errors
+/// `Conflict` when the worktree cannot be opened that way (a link or a missing folder on the way,
+/// or it is not inside the sandbox directory).
+fn read_setup(sandbox_dir: &Path, worktree: &Path) -> AppResult<(Vec<Value>, Option<String>)> {
+    let unreadable = || {
+        AppError::Conflict(
+            "the task worktree cannot be read: a link or a missing folder on the way".into(),
+        )
+    };
+    let anchor = std::fs::canonicalize(sandbox_dir).map_err(|_| unreadable())?;
+    let below = worktree.strip_prefix(&anchor).map_err(|_| unreadable())?;
+    let names: Vec<&OsStr> = below.components().map(Component::as_os_str).collect();
+    let dir = files::open_dirs_below(&anchor, &names, false).map_err(|_| unreadable())?;
+    Ok((
+        read_workflows(&dir),
+        read_small(&dir, OsStr::new("yulius.toml"), MAX_CONFIG_BYTES),
+    ))
 }
 
-/// The workflows of a worktree, summarized (bounded; symlinks are skipped).
-fn read_workflows(worktree: &Path) -> Vec<Value> {
-    let dir = worktree.join(WORKFLOWS_DIR);
-    let Ok(meta) = std::fs::symlink_metadata(&dir) else {
+/// The regular file `name` of the folder `dir` (not a link, not waiting on a FIFO), of at most
+/// `max` bytes: checked on its handle and read to at most `max + 1` bytes, so a file grown since
+/// is refused too.
+fn read_small(dir: &OwnedFd, name: &OsStr, max: usize) -> Option<String> {
+    let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+    let file = std::fs::File::from(openat(dir, name, flags, Mode::empty()).ok()?);
+    let max = u64::try_from(max).unwrap_or(u64::MAX);
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() > max {
+        return None;
+    }
+    let mut text = String::new();
+    file.take(max.saturating_add(1))
+        .read_to_string(&mut text)
+        .ok()?;
+    u64::try_from(text.len())
+        .is_ok_and(|len| len <= max)
+        .then_some(text)
+}
+
+/// The workflows of the worktree folder `worktree`, summarized (bounded; links are skipped).
+fn read_workflows(worktree: &OwnedFd) -> Vec<Value> {
+    let Ok(github) = files::open_dir_at(worktree, OsStr::new(".github"), false) else {
         return Vec::new();
     };
-    if !meta.is_dir() {
+    let Ok(dir) = files::open_dir_at(&github, OsStr::new("workflows"), false) else {
         return Vec::new();
-    }
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+    };
+    let Ok(entries) = files::names_in(&dir, files::MAX_ENTRIES) else {
         return Vec::new();
     };
     let mut names: Vec<String> = entries
-        .filter_map(Result::ok)
-        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .into_iter()
+        .map(|name| name.to_string_lossy().into_owned())
         .filter(|n| n.ends_with(".yml") || n.ends_with(".yaml"))
         .collect();
     names.sort();
@@ -239,8 +285,7 @@ fn read_workflows(worktree: &Path) -> Vec<Value> {
         .into_iter()
         .take(MAX_WORKFLOW_FILES)
         .map(|name| {
-            let path = dir.join(&name);
-            let Some(text) = read_small(&path, MAX_WORKFLOW_BYTES) else {
+            let Some(text) = read_small(&dir, OsStr::new(&name), MAX_WORKFLOW_BYTES) else {
                 return json!({"file": format!("{WORKFLOWS_DIR}/{name}"), "problem": "not a regular file or larger than 64 KiB; read it directly"});
             };
             let summary = summarize_workflow(&text);
@@ -261,7 +306,124 @@ fn read_workflows(worktree: &Path) -> Vec<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::CI_SETUP_STEPS;
+    use std::path::{Path, PathBuf};
+
+    use super::{CI_SETUP_STEPS, read_setup};
+
+    const WORKFLOW: &str =
+        "name: host\njobs:\n  leak:\n    runs-on: x\n    steps:\n      - run: cat /secret\n";
+
+    /// A sandbox directory (canonical) with the task worktree `worktrees/t`, and a host folder
+    /// beside it holding a workflow and a `yulius.toml` the sandbox must never get the server to
+    /// read.
+    fn sandbox() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir: {e}"));
+        let base = std::fs::canonicalize(dir.path()).unwrap_or_else(|e| panic!("{e}"));
+        let (anchor, host) = (base.join("sandbox"), base.join("host"));
+        let worktree = anchor.join("worktrees").join("t");
+        for folder in [&worktree, &host.join("workflows")] {
+            std::fs::create_dir_all(folder).unwrap_or_else(|e| panic!("{e}"));
+        }
+        write(&host.join("workflows").join("leak.yml"), WORKFLOW);
+        write(
+            &host.join("yulius.toml"),
+            "[commands]\ngate = \"host secret\"\n",
+        );
+        (dir, anchor, worktree, host)
+    }
+
+    fn write(path: &Path, text: &str) {
+        std::fs::write(path, text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    }
+
+    fn link(target: &Path, at: &Path) {
+        std::os::unix::fs::symlink(target, at).unwrap_or_else(|e| panic!("{e}"));
+    }
+
+    /// What `read_setup` returned, the worktree being readable.
+    fn read(anchor: &Path, worktree: &Path) -> (Vec<serde_json::Value>, Option<String>) {
+        read_setup(anchor, worktree).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// Whether anything `read_setup` returned came from the host folder.
+    fn leaked(read: &(Vec<serde_json::Value>, Option<String>)) -> bool {
+        let (workflows, config) = read;
+        serde_json::to_string(workflows).is_ok_and(|text| text.contains("leak"))
+            || config
+                .as_deref()
+                .is_some_and(|text| text.contains("host secret"))
+    }
+
+    /// SPEC-391 VCT-001 (#829): the worktree's own files are read.
+    #[test]
+    fn ci_setup_reads_the_worktrees_own_files() {
+        let (_dir, anchor, worktree, _host) = sandbox();
+        std::fs::create_dir_all(worktree.join(".github/workflows"))
+            .unwrap_or_else(|e| panic!("{e}"));
+        write(
+            &worktree.join(".github/workflows/ci.yml"),
+            "name: own\njobs:\n  test:\n    runs-on: x\n",
+        );
+        write(
+            &worktree.join("yulius.toml"),
+            "[commands]\ngate = \"cargo test\"\n",
+        );
+        let (workflows, config) = read(&anchor, &worktree);
+        assert_eq!(workflows.len(), 1, "{workflows:?}");
+        assert_eq!(workflows[0]["name"], "own");
+        assert!(config.is_some_and(|text| text.contains("cargo test")));
+    }
+
+    /// SPEC-391 VCT-001 (#829): a folder on the way swapped for a link to a host folder (here
+    /// `.github`, which a check of `workflows` by path did not see) is not followed.
+    #[test]
+    fn ci_setup_follows_no_folder_swapped_for_a_link() {
+        let (_dir, anchor, worktree, host) = sandbox();
+        link(&host, &worktree.join(".github"));
+        let read = read(&anchor, &worktree);
+        assert!(!leaked(&read), "{read:?}");
+        assert!(read.0.is_empty(), "{read:?}");
+    }
+
+    /// SPEC-391 VCT-001 (#829): the worktree folder itself swapped for a link after it was
+    /// resolved reads nothing from where the link leads: the worktree cannot be read.
+    #[test]
+    fn ci_setup_follows_no_worktree_swapped_for_a_link() {
+        let (_dir, anchor, worktree, host) = sandbox();
+        std::fs::create_dir_all(host.join(".github")).unwrap_or_else(|e| panic!("{e}"));
+        std::fs::rename(host.join("workflows"), host.join(".github/workflows"))
+            .unwrap_or_else(|e| panic!("{e}"));
+        std::fs::remove_dir(&worktree).unwrap_or_else(|e| panic!("{e}"));
+        link(&host, &worktree);
+        let read = read_setup(&anchor, &worktree);
+        assert!(
+            matches!(&read, Err(crate::error::AppError::Conflict(_))),
+            "{read:?}"
+        );
+    }
+
+    /// SPEC-391 VCT-001 (#829): a file that is a link or a FIFO yields nothing, without blocking.
+    #[test]
+    fn ci_setup_reads_no_linked_file_and_waits_on_no_fifo() {
+        let (_dir, anchor, worktree, host) = sandbox();
+        std::fs::create_dir_all(worktree.join(".github/workflows"))
+            .unwrap_or_else(|e| panic!("{e}"));
+        link(
+            &host.join("workflows/leak.yml"),
+            &worktree.join(".github/workflows/a.yml"),
+        );
+        link(&host.join("yulius.toml"), &worktree.join("yulius.toml"));
+        nix::unistd::mkfifo(
+            &worktree.join(".github/workflows/b.yml"),
+            nix::sys::stat::Mode::from_bits_truncate(0o600),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        let read = read(&anchor, &worktree);
+        assert!(!leaked(&read), "{read:?}");
+        assert!(read.1.is_none(), "{read:?}");
+        assert_eq!(read.0.len(), 2, "both reported as unreadable: {read:?}");
+        assert!(read.0.iter().all(|w| w["problem"].is_string()), "{read:?}");
+    }
 
     /// SPEC-351 (#963): `ci_setup` no longer sends build outputs to a cache that concurrent runs
     /// share; `HOME` is the shared one.
