@@ -314,7 +314,32 @@ test('the waterfall’s hover tip wraps its figures and stays inside the plot at
   }
 });
 
+/**
+ * Moves the page's clock (the app's and the mock's `Date`) to `at`, still ticking: the mock's
+ * daily trend depends on the day (weekends end nothing, each weekday its own p50 and p90).
+ */
+async function clockAt(browser: Browser, at: number) {
+  await browser.addInitScript((target: number) => {
+    const Real = Date;
+    const shift = target - Real.now();
+    class Shifted extends Real {
+      constructor(...args: ConstructorParameters<DateConstructor> | []) {
+        if (args.length === 0) super(Real.now() + shift);
+        else super(...(args as ConstructorParameters<DateConstructor>));
+      }
+      static now() {
+        return Real.now() + shift;
+      }
+    }
+    window.Date = Shifted as DateConstructor;
+  }, at);
+}
+
+// #643's CI (2026-11-02, a Monday): the last day was a weekday with a p90 near the chart's top,
+// and its tip, drawn above the point, rose 46 px above the plot. Every earlier run of this test
+// had a weekend as its last day, whose tip sits at the bottom. The day is pinned to that Monday.
 test('the daily chart’s hover tip stays inside its chart on the first and the last day', async ({ app, browser, screen }) => {
+  await clockAt(browser, Date.UTC(2026, 10, 2, 12));
   for (const width of [1280, 390]) {
     await browser.setViewport({ width, height: 900 });
     await app.open(mock('/s/studio/dashboard?section=pipeline'));
@@ -324,8 +349,9 @@ test('the daily chart’s hover tip stays inside its chart on the first and the 
     await browser.evaluate(() => document.querySelector('.st-chart')?.scrollIntoView({ block: 'center' }));
     const hit = await browser.locator('.st-chart .chart-hit').boundingBox();
     if (!hit) throw new Error('the trend chart is not laid out');
-    for (const x of [hit.x + 2, hit.x + hit.width - 2]) {
+    for (const [x, day] of [[hit.x + 2, 'Sun, Oct 4'], [hit.x + hit.width - 2, 'Mon, Nov 2']] as const) {
       await hoverAt(browser, '.db-tip', x, hit.y + hit.height / 2);
+      await expect(browser.locator('.db-tip')).toContainText(day);
       await expect(browser.locator('.db-tip')).toContainText('ended');
       expect(await tipFit(browser, '.db-tip'), `${width} px, pointer at ${Math.round(x)}`).toMatchObject({ pastPlot: 0, pastWindow: 0, cut: false });
     }

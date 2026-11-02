@@ -9,6 +9,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - An integration test now asserts that `secret_create_from_file` naming `~/key` in a sandbox whose
   home was removed is refused with "your home does not exist on this machine" and creates nothing
   (SPEC-383, task #365, fixes #643). Test only: the refusal was already there, untested.
+- The Pipeline's daily chart keeps its hover tip inside the plot over a day whose p90 is near the
+  chart's top: `placeTip` moved it in sideways only, and over such a day it rose up to 46 px above
+  the chart (SPEC-383). Its e2e test now runs on a pinned day (2026-11-02, page clock shifted):
+  the mock's weekends end nothing, so it had passed only while its last day was a weekend, and it
+  failed every pull request's e2e job on that Monday.
 
 ## 2026-11-01
 

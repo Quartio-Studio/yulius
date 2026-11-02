@@ -1,11 +1,11 @@
 ---
 yulius-task: 5c1c3de0-e489-454c-af19-e793384e4f3f
-status: done
+status: in-progress
 ---
 
 # SPEC-383: A test asserts "your home does not exist on this machine" (#643)
 
-Status: done
+Status: in-progress
 Date: 2026-11-02
 Owner: Yulius task #365
 Scope authorization: the open-issues automation (task #365): solve GitHub issue #643 in one pull
@@ -16,6 +16,10 @@ request into `dev` saying `Fixes #643`. Create no new GitHub issue; comment on #
 An integration test covers `secret_create_from_file` naming `~/key` in a sandbox whose `home` was
 removed: the call is refused with "your home does not exist on this machine" and no agent secret
 is created. Test only; the behavior is unchanged.
+
+Added on the way (it failed every pull request's e2e job on 2026-11-02, this one's included): the
+Pipeline's daily chart keeps its hover tip inside the plot when the hovered day's p90 is near the
+chart's top, and its e2e test no longer depends on the day it runs.
 
 ## Context
 
@@ -30,6 +34,16 @@ is created. Test only; the behavior is unchanged.
 - Only the link branch is asserted
   (`secrets_create::a_root_swapped_for_a_link_and_reserved_names_are_refused`); the final review
   of #198 left the missing-root branch untested at the round limit (#643).
+- **The e2e failure met on delivery.** This PR's first CI run (f6d16986) and #1011's (7d776c09)
+  failed one e2e test, `pipeline.e2e.ts` › "the daily chart's hover tip stays inside its chart on
+  the first and the last day": `pastPlot: 46` at 1280 px over "Mon, Nov 2". Reproduced locally
+  every run. A probe showed the tip inside the plot horizontally (right edge 1227 = plot's right)
+  but its top at 665 against the plot's 711: `placeTip` (`web/assets/stages.js`) clamps x only,
+  and the tip is drawn above the point (`translate(-50%, calc(-100% - 8px))`) at the day's p90.
+  The mock (`stages/summary` in `mock.js`) ends nothing on weekends and gives each weekday its own
+  p50/p90, over the 30 days to today; the test came with #986 (2026-10-31, a Saturday), so its
+  last day was a weekend (tip at the bottom) on every run until this Monday, whose p90 is near the
+  chart's top.
 
 ## Requirements
 
@@ -37,6 +51,10 @@ is created. Test only; the behavior is unchanged.
   t1 and calls `secret_create_from_file {"name": …, "file": "~/key"}` with the task's token.
 - **RDE-002** It asserts the call is an error whose text contains "your home does not exist on
   this machine", and that the sandbox's agent secrets are unchanged.
+- **RDE-003** A chart tip placed by `placeTip` never rises above its plot: when its top would be
+  above the plot's, it moves down until they meet (the horizontal clamp is unchanged).
+- **RDE-004** The daily chart's e2e test runs on a pinned day (2026-11-02, the failing case), with
+  the page's clock shifted but ticking, and checks the first and the last day's dates.
 
 ## Plan
 
@@ -45,6 +63,8 @@ is created. Test only; the behavior is unchanged.
 - [x] Mutations of the missing-root branch fail the test
 - [x] Independent review approved and findings answered
 - [x] Gates green with evidence in the spec
+- [ ] Daily chart tip stays inside the plot on a pinned tall weekday
+- [ ] Full e2e suite, gate and re-review of the chart fix
 
 ## Acceptance criteria
 
@@ -52,6 +72,8 @@ is created. Test only; the behavior is unchanged.
 - It fails when the `ENOENT` root branch's message is changed, and when that branch stops
   refusing (shown in Evidence).
 - `scripts/dev ci` is green.
+- The pinned daily-chart test fails on dev's `placeTip` (`pastPlot: 46`) and passes with RDE-003;
+  `pipeline.e2e.ts` and the full e2e suite pass.
 
 ## Test plan
 
@@ -59,12 +81,25 @@ is created. Test only; the behavior is unchanged.
 - Three temporary mutations of `open_folder`, each committed nowhere: the message reworded, the
   `ENOENT` root arm removed (the generic `ENOENT` arm answers), and a missing root created before
   the walk instead of refused.
+- e2e `pipeline.e2e.ts`: the daily-chart test pinned to 2026-11-02 (RDE-004), red on dev's
+  `placeTip`, then the file and the full suite with RDE-003.
 
 ## Decisions
 
 - Remove the home outright (`remove_dir_all`) rather than moving it aside: the issue's case is a
   home that is gone, and nothing in the test needs it afterwards.
-- No ADR: a test-only change takes no lasting decision.
+- No ADR: neither the test nor the tip's clamp takes a lasting decision.
+- The chart fix rides in this PR rather than its own: it failed every PR's e2e job, this one's
+  included, and the run must not open issues (#643's comment records it). It is one function and
+  one test.
+- Clamp, not flip below the point: the same rule as the horizontal clamp ("moved in so all of it
+  stays inside"); the tip ignores the pointer (`pointer-events: none`), so covering the dot hides
+  nothing the tip does not say.
+- Pin the clock in the test rather than the mock's data: the test's subject is any day's tip, and
+  a shifted `Date` keeps the app's and the mock's range in step (`period()` and `stageDays` both
+  read it); it still ticks, so timers and "so far" stay sane.
+- The Dashboard's tasks-per-day tip (`pages/dashboard.js`) places itself and has no top clamp
+  either; it does not fail and is outside this change (said on #643).
 
 ## Evidence
 
