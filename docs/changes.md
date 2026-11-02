@@ -4,6 +4,14 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-02
+
+- A test now fails when Yulius's refusal toward Vidoc for a project or instance with Vidoc off
+  (`VIDOC_OFF_REFUSAL`, with its line end) outgrows the part of an error body the scanner keeps,
+  now the named `MESSAGE_LIMIT` (200) in `scripts/vidoc_scan.py`; the scanner's own test checks
+  the whole reason is printed (SPEC-381, task #363, fixes #981). ADR-0242's one unwrapped
+  Consequences line is wrapped.
+
 ## 2026-11-01
 
 - The e2e test of a Vidoc refresh that overtakes the read after a change no longer times out on
