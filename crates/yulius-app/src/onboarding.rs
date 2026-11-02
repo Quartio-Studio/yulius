@@ -1334,8 +1334,9 @@ impl App {
 
     /// What people must know when the agents of `sandbox` could write its production branch
     /// (ADR-0114): GitHub is asked with an agent's own token which rules apply to the branch and
-    /// whether that token may bypass them. A check that fails is said too, never taken as safe.
-    /// `None` for a guarded branch and for a playground (no GitHub repository).
+    /// whether that token may bypass them. A check that fails is said too, never taken as safe,
+    /// with the error's public message (an internal failure's detail is only logged). `None` for
+    /// a guarded branch and for a playground (no GitHub repository).
     pub(crate) async fn production_branch_warning(
         &self,
         sandbox: &SandboxRecord,
@@ -1363,9 +1364,12 @@ impl App {
             )),
             Err(err) => {
                 tracing::info!(sandbox = %sandbox.id, error = %err, "checking the production branch failed");
+                // Everyone who can view the sandbox reads this: an internal failure's detail
+                // stays in the log (#834).
+                let reason = err.public_message();
                 Some(format!(
                     "Yulius could not check whether agents can write the production branch \
-                     `{branch}` ({err}). {fix}"
+                     `{branch}` ({reason}). {fix}"
                 ))
             }
         }
