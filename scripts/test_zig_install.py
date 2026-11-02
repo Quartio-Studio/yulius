@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 import sys
-from zig_install import host_key, install, unpack
+from zig_install import host_key, host_name, install, unpack
 
 VERSION = "0.17.0"
 NAME = f"zig-x86_64-linux-{VERSION}"
@@ -92,6 +92,16 @@ class Install(unittest.TestCase):
     def test_the_host_key_is_the_pinned_one_or_none(self):
         self.assertEqual(host_key("AMD64", self.pins), "x86_64-linux")
         self.assertIsNone(host_key("riscv64", self.pins))
+
+    def test_the_host_name_is_normalized(self):
+        self.assertEqual(host_name("RISCV64"), "riscv64-linux")
+        self.assertEqual(host_name("AMD64"), "x86_64-linux")
+        self.assertEqual(host_name("arm64"), "aarch64-linux")
+
+    def test_an_upper_case_unpinned_machine_is_named_normalized(self):
+        message = self.run_install(Opener(None), machine="RISCV64")
+        self.assertIn("no pinned zig for riscv64-linux ", message)
+        self.assertNotIn("RISCV64", message)
 
     def test_without_the_data_filter_tar_unpacks(self):
         tarball = self.root / "zig.tar.xz"
