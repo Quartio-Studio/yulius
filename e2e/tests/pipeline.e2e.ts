@@ -238,6 +238,12 @@ test('a busy CI run reads one row per job: its wait for a slot and its run on on
   await run.getByRole('button', 'Table').click();
   await expect(run.getByRole('columnheader', 'Waited')).toBeVisible();
   await expect(browser.locator('.st-table tr:has-text("engine") td.st-waited')).toHaveText('6 min');
+  // A job still waiting has its time under Waited, nothing under Took (review round 1).
+  const waitingCells = await browser.evaluate(() => {
+    const row = [...document.querySelectorAll('.st-table tr')].find((r) => r.textContent?.includes('package (mcp/slack)'));
+    return row ? [...row.querySelectorAll('td')].map((td) => td.textContent) : null;
+  });
+  expect([waitingCells?.[0], ...(waitingCells?.slice(2, 5) ?? [])]).toEqual(['package (mcp/slack)', '8 min so far', '—', 'waiting']);
   expect(await axeViolations(browser)).toEqual([]);
 });
 

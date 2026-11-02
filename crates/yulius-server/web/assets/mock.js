@@ -3545,9 +3545,10 @@ function busyTimeline(id) {
     // Still running, but a stage of it already failed.
     if (name === 'package (deployer)') spans.push(s(`${job}/stage:1`, 'stage', 'lint', at - 0.01, 0.5, { parent_key: job, job: name, outcome: 'failed' }));
   });
-  // Asked 8.5 and 8.4 min ago: "waiting 8 min so far", 30 s from either rounding edge.
+  // Asked 8.5 and 8.4 min ago: "waiting 8 min so far", 30 s from either rounding edge. As
+  // `ci::exec` writes it: `job` the matrix job's definition, its display name in `detail.name`.
   BUSY_WAITING.forEach((name, i) => {
-    spans.push(s(`wait:j${BUSY_JOBS.length + i}@1`, 'wait', 'job slot', 8.5 - i * 0.1, null, { job: name, detail: { cpus: 4, memory_mb: 8192 } }));
+    spans.push(s(`wait:j${BUSY_JOBS.length + i}@1`, 'wait', 'job slot', 8.5 - i * 0.1, null, { job: 'package', detail: { cpus: 4, memory_mb: 8192, name } }));
   });
   return { spans, related: [] };
 }
@@ -3563,7 +3564,7 @@ function shortTimeline(id) {
     s('prepare@1', 'prepare', 'commit', 1.95, 0.01),
     s('wait:j0@1', 'wait', 'job slot', 1.94, 0.1, { job: 'quality', outcome: 'started' }),
     s('job:j0@1', 'job', 'quality', 1.84, 0.3, { job: 'quality', outcome: 'error', detail: { reason: 'the job’s process host was lost' } }),
-    s('wait:j9@1', 'wait', 'job slot', 1.94, 0.2, { job: 'e2e', outcome: 'cancelled' }),
+    s('wait:j9@1', 'wait', 'job slot', 1.94, 0.2, { job: 'e2e', outcome: 'cancelled', detail: { name: 'e2e' } }),
     // Checked nothing (exit 78, ADR-0133): skipped, not passed.
     s('wait:j5@1', 'wait', 'job slot', 1.9, 0.05, { job: 'security', outcome: 'started' }),
     s('job:j5@1', 'job', 'security', 1.85, 0.1, { job: 'security', outcome: 'skipped', detail: { exit_code: 78 } }),

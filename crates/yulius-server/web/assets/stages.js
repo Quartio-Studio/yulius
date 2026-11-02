@@ -248,7 +248,7 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
   // A slot free at once still leaves a (0 ms) wait span; only a wait of a second or more is shown.
   const waitShown = (wait) => Boolean(wait && wait.ended_at && time(wait.ended_at) - time(wait.started_at) >= 500);
   const waitOf = (group, span) => { const wait = group.tree.waits.get(span.key); return waitShown(wait) ? wait : null; };
-  const anyWait = groups.some((g) => [...g.tree.waits.values()].some(waitShown));
+  const anyWait = groups.some((g) => [...g.tree.waits.values()].some(waitShown) || (g.jobs && g.roots.some(isSlotWait)));
   // The bar looks in use, folded or not, for the legend.
   const used = {
     wait: anyWait || all.some((s) => WAIT_KINDS.has(s.kind)),
@@ -268,9 +268,12 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
     const to = span.ended_at ? time(span.ended_at) : now;
     if (inJobs && isSlotWait(span)) {
       // A job that has only its wait (SPEC-385 WSL-003): still waiting, or cancelled while it did.
-      const took = span.ended_at ? `waited ${duration(span.duration_ms)}` : `waiting ${duration(to - from)} so far`;
-      const said = `${span.job}: ${took} for a job slot${span.ended_at ? `, ${outcomeWord(span)}` : ''}`;
-      return { from, to, label: span.job, took, waited: null, figures: '', parts: [], said, failed: FAILED.has(span.outcome) };
+      // Named as its run lists the job (a matrix job's "package (gateway)"), else by its definition.
+      const label = (span.detail && typeof span.detail.name === 'string' && span.detail.name) || span.job;
+      const slot = span.ended_at ? duration(span.duration_ms) : `${duration(to - from)} so far`;
+      const took = span.ended_at ? `waited ${slot}` : `waiting ${slot}`;
+      const said = `${label}: ${took} for a job slot${span.ended_at ? `, ${outcomeWord(span)}` : ''}`;
+      return { from, to, label, took, waited: null, slot, figures: '', parts: [], said, failed: FAILED.has(span.outcome) };
     }
     const label = inJobs && span.kind === 'job' ? span.name : stageLabel(span);
     const took = span.ended_at ? duration(span.duration_ms) : `${duration(to - from)} so far`;
@@ -348,8 +351,9 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
     tableRows.push(h('tr', null,
       h('td', null, h('span', { style: { paddingLeft: `${depth * 14}px` } }, d.label)),
       h('td', null, new Date(d.from).toLocaleTimeString()),
-      anyWait ? h('td', { class: 'num st-waited' }, d.waited || '') : null,
-      h('td', { class: 'num' }, d.took),
+      // A job that has only its wait: its time under Waited, nothing under Took.
+      anyWait ? h('td', { class: 'num st-waited' }, d.waited || d.slot || '') : null,
+      h('td', { class: 'num' }, d.slot ? '—' : d.took),
       h('td', null, rowWord(span, Boolean(group.jobs))),
       h('td', null, [d.figures, span.source === 'backfilled' ? 'backfilled' : ''].filter(Boolean).join(' · '))));
     for (const child of group.tree.children.get(span.key) || []) tableRow(group, child, depth + 1);
