@@ -905,7 +905,9 @@ impl StaleReason {
         match self {
             Self::PullMerged(n) => format!("pull request #{n} was merged"),
             Self::PullClosed(n) => format!("pull request #{n} was closed without merging"),
-            Self::Merged => "its commits are already in the integration branch".to_owned(),
+            Self::Merged => {
+                "its commits are already in the integration or production branch".to_owned()
+            }
             Self::LocalCopy => "no worktree uses it and its commits are on GitHub".to_owned(),
             Self::Idle(days) => format!("no pull request and no commit for {days} days"),
             Self::TaskDeleted => "its task was deleted".to_owned(),
@@ -963,8 +965,8 @@ pub fn classify_remote_branch(facts: &RemoteBranchFacts, now_ms: i64) -> Option<
     }
     // A closed or merged pull request keeps the branch's commits only while the branch has
     // nothing after its head; later commits are unmerged work, judged as such below. It is the
-    // reason even for a branch already in the integration branch: `Merged` then means no pull
-    // request had it, which the automatic round leaves to a person (SPEC-269).
+    // reason even for a branch already in the integration or production branch: `Merged` then
+    // means no pull request had it, which the automatic round leaves to a person (SPEC-269).
     if let Some(last) = pulls.first().filter(|p| p.tip_on_pull) {
         return Some(if last.merged {
             StaleReason::PullMerged(last.number)

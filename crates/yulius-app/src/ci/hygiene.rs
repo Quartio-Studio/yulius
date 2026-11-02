@@ -376,7 +376,7 @@ impl App {
                 "branches"
             };
             report.notes.push(format!(
-                "Pull requests of {merged_unread} {branches} already in the integration branch were not looked up (the bound went to unmerged ones): they read merged and stay for you."
+                "Pull requests of {merged_unread} {branches} already in the integration or production branch were not looked up (the bound went to unmerged ones): they read merged and stay for you."
             ));
         }
     }

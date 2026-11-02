@@ -388,7 +388,7 @@ test('a failure reads whatever the clocks say, and a branch no pull request had 
     const db = (window as unknown as { __yuliusMock: { failHygieneCleanup?: string; ci: Record<string, { hygiene: { items: unknown[]; last_cleanup: unknown } }> } }).__yuliusMock;
     const hygiene = db.ci.sb_studio.hygiene;
     hygiene.last_cleanup = { at: new Date(Date.now() + 5 * 60000).toISOString(), by: 'yulius', automatic: true, removed: [], skipped: [] };
-    hygiene.items.push({ kind: 'remote_branch', name: 'release/1.x', reason_code: 'merged', reason: 'its commits are already in the integration branch', safe: true });
+    hygiene.items.push({ kind: 'remote_branch', name: 'release/1.x', reason_code: 'merged', reason: 'its commits are already in the integration or production branch', safe: true });
     db.failHygieneCleanup = 'GitHub is not available';
   });
   await card.getByRole('button', 'Check now').click();

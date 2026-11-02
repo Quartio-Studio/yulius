@@ -56,8 +56,8 @@ last review are gone.
 
 - [x] Read the product context and related work, then write and validate the spec
 - [x] The GitHub fake counts lookups and both bound tests assert the bound
-- [ ] The worktree-name test rejects the three normalised names
-- [ ] The merged note and reason name the integration or production branch
+- [x] The worktree-name test rejects the three normalised names
+- [x] The merged note and reason name the integration or production branch
 - [ ] The e2e title and the ci.js comment use the card's wording
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated

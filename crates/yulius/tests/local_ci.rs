@@ -1018,14 +1018,22 @@ async fn merged_branches_leave_the_lookups_to_unmerged_ones() -> TestResult {
 }
 
 /// SPEC-269 (review round 5): an open pull request's branch takes no lookup, and branches already
-/// in dev whose pull requests the bound left unread are named in a note.
+/// in the integration or production branch whose pull requests the bound left unread are named in
+/// a note (SPEC-379: here one only the production branch has).
 #[tokio::test]
 async fn the_lookup_bound_counts_only_lookups_and_says_what_it_left() -> TestResult {
     let f = fixture().await?;
     let bound = yulius_app::ci::hygiene::MAX_PULL_LOOKUPS;
     git(&f.work, &["fetch", "-q", "origin"])?;
+    // A hotfix on main that dev lacks.
+    git(&f.work, &["checkout", "-q", "-B", "hotfix", "origin/main"])?;
+    std::fs::write(f.work.join("hotfix.txt"), "x\n")?;
+    git(&f.work, &["add", "-A"])?;
+    git(&f.work, &["commit", "-q", "-m", "hotfix"])?;
+    git(&f.work, &["push", "-q", "origin", "hotfix:main"])?;
+    git(&f.work, &["fetch", "-q", "origin"])?;
     // `bound` recent unmerged branches without a pull request (one commit), after feat/one,
-    // whose pull request is open, and one release branch at dev's commit.
+    // whose pull request is open, and one release branch at main's commit only.
     git(&f.work, &["checkout", "-q", "-B", "wip", "origin/dev"])?;
     std::fs::write(f.work.join("wip.txt"), "x\n")?;
     git(&f.work, &["add", "-A"])?;
@@ -1033,7 +1041,7 @@ async fn the_lookup_bound_counts_only_lookups_and_says_what_it_left() -> TestRes
     let refspecs: Vec<String> = (0..bound)
         .map(|n| format!("wip:refs/heads/zz/{n:02}"))
         .chain(std::iter::once(
-            "origin/dev:refs/heads/release/1".to_owned(),
+            "origin/main:refs/heads/release/1".to_owned(),
         ))
         .collect();
     let mut push = vec!["push", "-q", "origin"];
@@ -1066,7 +1074,7 @@ async fn the_lookup_bound_counts_only_lookups_and_says_what_it_left() -> TestRes
     assert!(
         notes
             .iter()
-            .any(|n| n.contains("1 branch already in the integration branch")),
+            .any(|n| n.contains("1 branch already in the integration or production branch")),
         "{notes:?}"
     );
     Ok(())
