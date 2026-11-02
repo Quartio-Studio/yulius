@@ -4,6 +4,16 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-03
+
+- Deleting a task no longer destroys attachments another task still uses: its
+  `attachments/tasks/<id>/` folder stays where it is while a remaining task's request names it
+  (`task_delete` answers `kept_for`), and otherwise waits 7 days in the sandbox's attachments trash;
+  the new `attachments_trash` tool lists the trash and restores an entry's files into a task. The
+  new `task_update` tool changes how a waiting task starts in place (the UI's change, SPEC-126), so
+  an agent never recreates a task to chain it, the workaround that lost quartio-v2's screenshots on
+  2026-11-02 (SPEC-396, task #386, ADR-0253).
+
 ## 2026-11-02
 
 - The egress proxy stops adding agent secrets for a run the moment it ends: the policy checks on

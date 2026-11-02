@@ -200,7 +200,7 @@ export async function deleteTask(ctx, task) {
   const closing = isLive(task.status) ? ' Its finished session is closed first.' : '';
   const ok = await confirmDialog({
     title: `Delete task #${task.number} permanently?`,
-    message: `“${task.title}” and its history, messages, steps and metrics are deleted, and its local worktree and branch are removed, including uncommitted changes. Pushed branches and pull requests on GitHub stay.${closing} This cannot be undone.`,
+    message: `“${task.title}” and its history, messages, steps and metrics are deleted, and its local worktree and branch are removed, including uncommitted changes. Pushed branches and pull requests on GitHub stay. Its attachments stay where they are while another task’s request names them; the others wait 7 days in the trash, from which the Superagent can restore them.${closing} This cannot be undone.`,
     confirmLabel: 'Delete permanently',
     danger: true,
   });
