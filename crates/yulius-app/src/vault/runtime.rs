@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use yulius_contracts::browser::{TabId, TypeParams};
 use yulius_contracts::scrub::{FINGERPRINT_VERSION, Fingerprint, FingerprintSet, RedactionReport};
-use yulius_domain::ids::{SandboxId, TaskId, UserId};
+use yulius_domain::ids::{AttemptId, SandboxId, TaskId, UserId};
 use yulius_domain::vault::hosts::HostPattern;
 use yulius_domain::vault::redact::{Matcher, PlainMatcher, StreamRedactor, rolling_hash};
 use yulius_domain::vault::{
@@ -913,18 +913,44 @@ impl App {
     }
 
     /// The egress client of a CI job's credential, of a task token or of a Superagent's bearer
-    /// (the latter two cached briefly; a Superagent's only while its shell lives, SPEC-186
-    /// SAV-001); digests are compared in constant time.
+    /// (the latter two cached briefly), while its run lives (SPEC-186 SAV-001, SPEC-388 EPL-002);
+    /// digests are compared in constant time.
     async fn cached_egress_client(&self, token: &str) -> Option<EgressClient> {
-        if token.starts_with(crate::shells::COCKPIT_TOKEN_PREFIX) {
-            let client = self.cached_token_client(token).await?;
-            let EgressCaller::Superagent { shell_id, .. } = &client.caller else {
-                return None;
-            };
-            // An ended Superagent's bearer injects nothing, cached or not.
-            return self.shell(shell_id).is_some().then_some(client);
+        let client = self.cached_token_client(token).await?;
+        if token.starts_with(crate::shells::COCKPIT_TOKEN_PREFIX)
+            && !matches!(client.caller, EgressCaller::Superagent { .. })
+        {
+            return None;
         }
-        self.cached_token_client(token).await
+        // An ended run's credential injects nothing, cached or not.
+        self.egress_client_live(&client).await.then_some(client)
+    }
+
+    /// Whether `client`'s run still lives (SPEC-388 EPL-001): an agent run whose attempt is not
+    /// over, a CI job whose credential is open, a Superagent whose shell is running. A client is
+    /// resolved once per proxy connection, which may outlive its run, so each request asks again.
+    async fn egress_client_live(&self, client: &EgressClient) -> bool {
+        match &client.caller {
+            EgressCaller::Agent { attempt_id, .. } => {
+                let Ok(id) = AttemptId::parse(attempt_id) else {
+                    return false;
+                };
+                match self.deps.store.attempt(&id).await {
+                    Ok(attempt) => attempt.is_some_and(|a| !a.state.is_terminal()),
+                    Err(err) => {
+                        tracing::error!(error = %err, "a proxy client's run could not be read");
+                        false
+                    }
+                }
+            }
+            EgressCaller::Ci { .. } => self
+                .vault
+                .ci_clients
+                .0
+                .lock()
+                .is_ok_and(|clients| clients.iter().any(|(_, c)| c == client)),
+            EgressCaller::Superagent { shell_id, .. } => self.shell(shell_id).is_some(),
+        }
     }
 
     /// [`Self::cached_egress_client`] for a CI credential, a task token or a Superagent bearer.
@@ -1034,6 +1060,13 @@ impl EgressPolicy for App {
     }
 
     async fn egress_apply(&self, client: &EgressClient, request: EgressRequest) -> EgressDecision {
+        if !self.egress_client_live(client).await {
+            return EgressDecision::Refuse {
+                status: 403,
+                message: "Yulius: the run behind this proxy credential has ended; nothing was sent"
+                    .into(),
+            };
+        }
         if let Some(refusal) = self
             .vidoc_refusal(client, &request.host, request.port)
             .await
