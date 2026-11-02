@@ -60,8 +60,9 @@ anyone noticing. ADR-0242's one unwrapped Consequences line is wrapped at 100 co
 ## Test plan
 
 - Before `MESSAGE_LIMIT` exists, the extended Rust test fails (no constant in `SCANNER`); after,
-  it passes. A temporary refusal 7 characters longer (in both places) makes it fail, then is reverted.
-- `python3 -m unittest scripts.test_vidoc_scan` (the refusal test and the rest).
+  it passes. A refusal made 7 characters longer (in both places) makes it fail, then is reverted.
+- `python3 -m unittest test_vidoc_scan` in `scripts/` (the refusal test and the rest); with
+  `MESSAGE_LIMIT` lowered to 150 the refusal test fails, then the limit is restored.
 - Run `vidoc_switch::` with nextest, then `scripts/dev ci`.
 
 ## Decisions
