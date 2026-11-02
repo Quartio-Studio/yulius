@@ -456,7 +456,8 @@ reason = "COCKPIT_TOOLS serves them by design (SPEC-037 MGT-006, ADR-0029); cock
 # picks (work folder or home) without following links, and only a regular file is read, by a
 # person who may configure the project. Pinned by secrets_create.rs
 # files_yulius_must_not_read_are_refused and
-# a_root_swapped_for_a_link_and_reserved_names_are_refused.
+# a_root_swapped_for_a_link_and_reserved_names_are_refused, and for the Cockpit
+# cockpit.rs the_superagent_stores_a_key_from_its_persons_home.
 [[ignore]]
 path = "crates/yulius-app/src/mcp.rs"
 title = "secret_create_from_file reads arbitrary host files"
