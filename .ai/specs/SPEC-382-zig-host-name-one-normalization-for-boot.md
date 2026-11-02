@@ -1,11 +1,11 @@
 ---
 yulius-task: 72b41e13-c202-41cb-b8ce-8fcc06885f83
-status: in-progress
+status: done
 ---
 
 # SPEC-382: one zig host name for bootstrap's and doctor's messages
 
-Status: in-progress
+Status: done
 Date: 2026-11-02
 Owner: Yulius task #364
 Scope authorization: task #364, Fixes #645 (nits left at the review round limit of task #201,
@@ -30,7 +30,6 @@ helper that normalizes the machine name.
   is inline in `doctor()` beside subprocess calls.
 - What else the cause could break: nothing else reads the host name; the download URL and the pin
   lookup already use `host_key`'s normalized key.
-
 - Merge blocker met on the way: the PR's e2e job (run 7d776c09) failed "the daily chart's hover tip
   stays inside its chart on the first and the last day" (`e2e/tests/pipeline.e2e.ts`), outside this
   change. The mock's trend figures are hashed from the date, so on 2026-11-02 the last day held the
@@ -47,7 +46,6 @@ helper that normalizes the machine name.
 - **ZHN-002** Doctor's "No pinned zig for <host> in .config/tools.toml" names `host_name`'s result;
   the message is built by `check_repository.zig_pin_error(machine, pins)`, which returns `None` for
   a pinned host, so it is unit-tested without running doctor.
-
 - **ZHN-003** A chart tip with no room above its point (the daily chart's highest day) is moved
   down to the chart's top, so it stays inside; the e2e test hovers the highest day as well as the
   first and the last, so it no longer depends on the date.
@@ -59,7 +57,7 @@ helper that normalizes the machine name.
 - [x] One host_name helper used by bootstrap and doctor
 - [x] Gates, review and delivery
 - [x] Daily chart tip stays inside its chart on its highest day
-- [ ] Gates, re-review and merge on green
+- [x] Gates, re-review and merge on green
 
 ## Acceptance criteria
 
@@ -95,6 +93,9 @@ helper that normalizes the machine name.
   cover the highest point, whose crosshair still shows the day. The dashboard's tasks chart places
   its own tip (`pages/dashboard.js`) and is left as it is: no test or report shows it past its
   chart; noted on #645.
+- **Only the top is clamped.** A tip is shorter than its plot (the daily chart is 220 px, a tip
+  about 70 px), so the move down cannot push it past the bottom; a bottom clamp would cover a case
+  no chart has.
 
 ## Evidence
 
@@ -112,5 +113,15 @@ helper that normalizes the machine name.
   Yulius). Nothing was scanned; this is not a pass.
 - **Review.** Fresh-session `om-code-review` of `a0d156d0..80d6e4e7`: approve, no blocker or major,
   three own-code nits answered in Decisions, no pre-existing findings.
+- **e2e blocker (ZHN-003).** PR #1011's CI e2e (run 7d776c09, 43a4c565) failed the daily chart
+  test with `pastPlot: 46` at 1280 px on Mon, Nov 2; reproduced locally on an idle host. Red: the
+  test hovering the highest day too, at b71cbc2b, failed the same way. Green: at da284ab5,
+  `npx e2e run tests/pipeline.e2e.ts` passed 14/14.
+- **Gates at da284ab5.** `scripts/dev ci` exited 0 (152 Python unit tests, nextest 2951 passed and
+  16 skipped, fmt, lint, macOS compile, deps, doctests, docs); the full e2e suite
+  (`cd e2e && npx e2e run`) passed 800, 1 skipped. Later commits change only this spec.
+- **Review round 3.** Approved da284ab5: `placeTip`'s clamp is correct (`clientTop`, the transform,
+  waterfall tips unchanged when they fit), the test is date-independent; nits answered (bottom
+  clamp in Decisions, list spacing fixed, the title kept: Context explains the second fix).
 - **Not tested.** No host with an unpinned architecture: doctor's raise on such a host is covered
   through `zig_pin_error` only.
