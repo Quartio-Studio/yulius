@@ -496,7 +496,12 @@ async fn onboarding_becomes_ready_when_the_preparation_task_lands() -> TestResul
             exit_reason: None,
         })
         .await?;
-    let worktree = w.scratch.path().join("prep-worktree");
+    // Where Yulius puts a task worktree: in the sandbox directory (SPEC-394).
+    let worktree = w
+        .data_dir()
+        .join("sandboxes")
+        .join(sid.as_str())
+        .join("worktrees/prep-worktree");
     std::fs::create_dir_all(&worktree)?;
     w.h.store
         .update_task(
@@ -716,7 +721,12 @@ async fn a_finished_onboarding_task_is_archived_and_the_sandbox_is_ready() -> Te
             exit_reason: None,
         })
         .await?;
-    let worktree = w.scratch.path().join("prep-worktree");
+    // Where Yulius puts a task worktree: in the sandbox directory (SPEC-394).
+    let worktree = w
+        .data_dir()
+        .join("sandboxes")
+        .join(sid.as_str())
+        .join("worktrees/prep-worktree");
     for (path, contents) in scaffold("product") {
         let target = worktree.join(path);
         std::fs::create_dir_all(target.parent().ok_or("parent")?)?;
@@ -1257,7 +1267,12 @@ async fn a_finished_preparation_turn_makes_the_sandbox_ready_and_starts_waiting_
             exit_reason: None,
         })
         .await?;
-    let worktree = w.scratch.path().join("prep-turn-worktree");
+    // Where Yulius puts a task worktree: in the sandbox directory (SPEC-394).
+    let worktree = w
+        .data_dir()
+        .join("sandboxes")
+        .join(sid.as_str())
+        .join("worktrees/prep-turn-worktree");
     for (path, contents) in scaffold("product") {
         let target = worktree.join(path);
         std::fs::create_dir_all(target.parent().ok_or("parent")?)?;
