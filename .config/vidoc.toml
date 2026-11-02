@@ -438,26 +438,23 @@ reason = "one transaction on the single database thread, and UNIQUE (sandbox_id,
 # 404). Editor upload paths pass relative_components (no `..`, `.git`, NUL or absolute path) and,
 # resolved, files::inside. Tests: import_server::unsafe_manifest_names_never_reach_the_disk,
 # uploads::editor_uploads_stay_in_the_folder_and_never_replace_a_file_silently.
+# The imports.rs and routes entries match by title only: their functions are long (the whole public
+# router; put_import_chunk also holds the chunk race of #845, apply_snapshot the worktree handling),
+# so a place match would hide unrelated findings there. check_components is short enough for one.
 [[ignore]]
 path = "crates/yulius-app/src/imports.rs"
 title = "Upload path built from unvalidated manifest file name"
 reason = "chunk names only select a stored manifest entry, validated by FileRef::validate before the job exists; proven by import_server::unsafe_manifest_names_never_reach_the_disk (SPEC-390)"
-function = "put_import_chunk"
-line = 725
 
 [[ignore]]
 path = "crates/yulius-app/src/imports.rs"
 title = "Manifest file names joined into filesystem paths without path-traversal validation"
 reason = "is_safe_file_name refuses .., .git, absolute and NUL names in create_import before staging; proven by import_server::unsafe_manifest_names_never_reach_the_disk (SPEC-390)"
-function = "stage_job_files"
-line = 1379
 
 [[ignore]]
 path = "crates/yulius-app/src/imports.rs"
 title = "Snapshot archive path built from client-supplied file name"
 reason = "the snapshot name comes from the stored manifest, validated by FileRef::validate before the job exists; proven by import_server::unsafe_manifest_names_never_reach_the_disk (SPEC-390)"
-function = "apply_snapshot"
-line = 1166
 
 [[ignore]]
 path = "crates/yulius-app/src/uploads.rs"
@@ -470,5 +467,3 @@ line = 234
 path = "crates/yulius-server/src/routes/mod.rs"
 title = "Path traversal risk in import file route"
 reason = "put_import_chunk joins only the matching stored manifest entry's validated name, an unknown name is 404; proven by import_server::unsafe_manifest_names_never_reach_the_disk (SPEC-390)"
-function = "public"
-line = 278

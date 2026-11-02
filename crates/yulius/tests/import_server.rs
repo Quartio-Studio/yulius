@@ -338,7 +338,10 @@ fn files_named(dir: &Path, needle: &str) -> Result<Vec<PathBuf>, Error> {
     }
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
-        if path.file_name().is_some_and(|name| name.to_string_lossy().contains(needle)) {
+        if path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().contains(needle))
+        {
             found.push(path.clone());
         }
         if std::fs::symlink_metadata(&path)?.is_dir() {
@@ -409,7 +412,11 @@ async fn unsafe_manifest_names_never_reach_the_disk() -> TestResult {
     let created = create_job(&w, &alice, offer.body()?).await?;
     assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
     let job = text(&created.body["job_id"]).to_owned();
-    for name in ["../../planted.bin", "../planted.bin", "sessions/../../planted.bin"] {
+    for name in [
+        "../../planted.bin",
+        "../planted.bin",
+        "sessions/../../planted.bin",
+    ] {
         let refused = put_chunk(&w, &alice, &job, name, 0, b"x", None).await?;
         assert_eq!(refused.status, StatusCode::NOT_FOUND, "{name}");
     }

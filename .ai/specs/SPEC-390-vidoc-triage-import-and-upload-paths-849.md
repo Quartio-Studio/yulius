@@ -48,8 +48,9 @@ does not reopen the issue on the next scan.
 - VTI-002 (#838, dismissed). Editor uploads refuse `..` (also nested) and `.git`; the existing
   end-to-end test `uploads::…` traversal table pins it, extended with a nested `..`.
 - VTI-003 (#750, dismissed). Covered by VTI-001's chunk half.
-- VTI-004. One narrow `[[ignore]]` per dismissed wording, with its `function` and `line`, and a
-  reason naming the guard and its test.
+- VTI-004. One narrow `[[ignore]]` per dismissed wording with a reason naming the guard and its
+  test; `function` and `line` only where the function is short (`check_components`), so a place
+  match cannot hide an unrelated finding.
 
 ## Plan
 
@@ -85,5 +86,12 @@ does not reopen the issue on the next scan.
   stops validating.
 - #836's wording also names `.git` components and NUL; `is_safe_file_name` refuses both (no
   component may start with `.`, only `[A-Za-z0-9._-]` bytes).
+- The import and route entries match by title only (review round 1): `public` spans the whole
+  public router (lines 47-434), `put_import_chunk` also holds #845's chunk race and
+  `apply_snapshot` the worktree handling, so a place match there would pass any reworded finding
+  in those functions as this dismissal.
+- The link-planting weakness the review found in the import job folder (Evidence) is pre-existing
+  and another concern (handles, not names); this task may not file issues, so the pull request
+  description reports it for a follow-up task instead of widening this change.
 - No issue is a duplicate of another: each has its own wording, place and fingerprint, and each
   gets its own `[[ignore]]` entry (an entry matches one wording).
