@@ -43,21 +43,24 @@ row, ended `cancelled`.
 ## Requirements
 
 - WSL-001. `ci_job` opens the job's `job slot` wait span (`wait:<job id>@<waiting ms>`, kind
-  `wait`, name `job slot`, `job` = the job's key, its budget as `detail`) when the wait begins, open
+  `wait`, name `job slot`, `job` = the job's definition name, as the job span's; its budget and its
+  display name, a matrix job's "package (gateway)", as `detail`) when the wait begins, open
   (`ended_at` none, no outcome).
 - WSL-002. It ends that span when the wait ends: at the job's start with outcome `started`; when
   the run is cancelled while the job waits, at the cancellation with outcome `cancelled`; when it
   gets no permit, outcome `error`; when its move to Running is refused (the job left Queued
-  meanwhile: only a cancellation does that), outcome `cancelled`. A run that ends or is requeued
-  with the span still open ends it through the existing triggers, as before.
+  meanwhile: only a cancellation does that), outcome `cancelled`, and when that move fails in the
+  store, outcome `error`. A run that ends or is requeued with the span still open ends it through
+  the existing triggers, as before.
 - WSL-003. In a CI run's waterfall, a `job slot` wait with no job span of its job id at or after it
-  is drawn as that job's row under "Jobs", named by the span's `job`, in waiting order with the
-  other jobs. Open: a hatched bar reaching "now", an hourglass mark labelled "waiting", the duration
-  column "waiting 4 min so far", the title "<job>: waiting 4 min so far for a job slot". Ended
-  (cancelled, or a lone ended wait of older data): a hatched bar, its outcome's mark when it has
-  one (`cancelled`: the cross), "waited 12 s", and the title "<job>: waited 12 s for a job slot,
-  <outcome>". This amends SPEC-165 STR-001, whose lone wait kept a "Waiting for a job slot" row
-  under "Run". A wait with no `job` keeps that row.
+  is drawn as that job's row under "Jobs", named by its `detail.name` (else its `job`), in waiting
+  order with the other jobs. Open: a hatched bar reaching "now", an hourglass mark labelled
+  "waiting", the duration column "waiting 4 min so far", the title "<job>: waiting 4 min so far
+  for a job slot". Ended (cancelled, or a lone ended wait of older data): a hatched bar, its
+  outcome's mark when it has one (`cancelled`: the cross), "waited 12 s", and the title "<job>:
+  waited 12 s for a job slot, <outcome>". In the table its time is in the Waited column ("8 min so
+  far"), Took "—". This amends SPEC-165 STR-001, whose lone wait kept a "Waiting for a job slot"
+  row under "Run". A wait with no `job` keeps that row.
 - WSL-004. Once the job starts its row is its normal one: the ended wait as the hatched lead of its
   job's bar (SPEC-165 STR-001). A job span whose paired wait is still open (the moment between the
   job's start and the wait's end) leads with the wait up to the job's start.
@@ -118,3 +121,12 @@ row, ended `cancelled`.
 - No ADR: this follows ADR-0112 and SPEC-165's design; SPEC-165 STR-001 is amended in place with a
   pointer here.
 - No migration: the triggers and `end_span` already cover open waits.
+- The display name goes in `detail.name`, not in `job` (review round 1): `job` is the definition
+  name in every span (the job span's comes from `job_key`), and the summaries group by it and the
+  Job filter lists it, so a matrix job's waits still count together.
+- A failed end write (best effort, SPEC-137 STG-003) now leaves the wait open until the run's end,
+  which ends it with the run's outcome and a longer duration, where the old single write left no
+  span. Accepted: a store that refuses one write refuses the job's other writes too, and the wait
+  then still shows.
+- A wait ended `requeued` (a restart while the job waited) is its job's row under "Jobs" with no
+  mark, beside the row of the job's later attempt, as a requeued job's two runs already are.
