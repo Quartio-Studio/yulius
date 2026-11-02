@@ -48,9 +48,9 @@ the next scan; dead code a finding points at is removed instead.
   `control_characters_never_reach_the_first_message`.
 - VSI-002 (#818, duplicate of #752, dismissed). Its premise is wrong: each paste is a bracketed
   paste (`supervisor.rs:756`), so a newline in it is text in the prompt box, not a submit (Enter
-  is written separately, `supervisor.rs:1915`). Control bytes are removed as in VSI-001. The task
-  author is also no outsider: whoever may write a task's prompt may type into its terminal
-  (VSI-003).
+  is written separately, `supervisor.rs:1915`). Control bytes are removed as in VSI-001, whoever wrote
+  the text (the prompt also folds in queued messages of other people, so the guard is the
+  parsing, not who wrote it).
 - VSI-003 (#692, dismissed). `send_input` is the terminal's keyboard: a viewer's keystrokes,
   arrows, Esc and Ctrl+C must reach the TUI unchanged, so sanitizing there would break the
   terminal. Its only route, `terminal_input` (`terminal.rs:176-216`), refuses a viewer without
@@ -59,7 +59,9 @@ the next scan; dead code a finding points at is removed instead.
   task messages (`clean_message`, `task_message.rs:42-52`, `message_paste`
   `task_message.rs:67-71`), the opening (VSI-001), the typed `/goal` (`one_line`,
   `request.rs:356-364`, via `typed_goal_condition` `request.rs:588`), the compaction line
-  (constant text and a task number, `context_full.rs` `after_compaction`), the outage wake
+  (constant text and a task number, `context_full.rs` `after_compaction`), the `/compact` line
+  (`TaskFocus::compact_command`, task title, goal, branch and steps through `clean`, which drops
+  control characters; typed by `type_line`, `context_full.rs:539`), the outage wake
   (constant, `outage.rs:259`) and lone Enters. Pinned by `task_ownership.rs`
   `a_non_owner_watches_the_terminal_read_only`,
   `a_hand_over_refuses_the_previous_owners_next_keystroke` and `task_message.rs`
@@ -87,7 +89,7 @@ the next scan; dead code a finding points at is removed instead.
 - [x] Narrow [[ignore]] entries for the dismissed wordings (#818 #752 #692 #691)
 - [x] transcript_path loses its dead stored-path branch (#693)
 - [x] Gates, changes entry and evidence
-- [ ] Independent review answered
+- [x] Independent review answered
 - [ ] Dismissed issues commented and closed (#818 #752 #692 #691 #693)
 
 ## Acceptance criteria
@@ -144,3 +146,9 @@ the next scan; dead code a finding points at is removed instead.
   `apply_ignores` matches (case-insensitive substring).
 - `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0):
   disabled, nothing scanned, so the ignores are not proven against a live scan.
+- Independent review (fresh read-only session, `om-code-review`, range f416b400..85e8dc6d):
+  APPROVE, no blocker or major; it agreed all five are false positives and that removing #693's
+  dead branch beats an ignore. Answered: VSI-003 now lists the `/compact` line (finding 1),
+  VSI-002 no longer claims the prompt's author may type into the terminal (finding 2). Finding 3
+  (pre-existing): `Refusal::ProviderMismatch` has no test and cannot happen while `Provider` has
+  one variant; the ignore's reason does not rest on it.
