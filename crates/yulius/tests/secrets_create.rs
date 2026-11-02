@@ -447,6 +447,8 @@ async fn a_missing_home_is_refused_as_not_existing() -> TestResult {
     let w = world().await?;
     let before = names(&w).await?;
     std::fs::remove_dir_all(&w.home)?;
+    // The sandbox folder, the walk's anchor, is still there: only the home is missing.
+    assert!(w.home.parent().ok_or("sandbox folder")?.is_dir());
     let refused = create(&w, TOKEN, json!({"name": "SOME_KEY", "file": "~/key"})).await?;
     assert_eq!(refused["isError"], true, "{refused}");
     assert!(
