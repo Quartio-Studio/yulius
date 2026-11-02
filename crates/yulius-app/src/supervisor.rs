@@ -2158,23 +2158,20 @@ impl App {
             .await
     }
 
+    /// The native transcript of `session_id`, which the harness writes below the sandbox home.
     fn transcript_path(
         &self,
         sandbox: &SandboxRecord,
         worktree: &Path,
         harness: Harness,
         session_id: &str,
-        stored: Option<&str>,
-    ) -> AppResult<Option<PathBuf>> {
-        if let Some(path) = stored {
-            return Ok(Some(PathBuf::from(path)));
-        }
+    ) -> PathBuf {
         match harness {
-            Harness::ClaudeCode => Ok(Some(self.deps.harness.claude_transcript(
+            Harness::ClaudeCode => self.deps.harness.claude_transcript(
                 &self.sandbox_home(&sandbox.id),
                 worktree,
                 session_id,
-            ))),
+            ),
         }
     }
 
@@ -3890,8 +3887,7 @@ impl App {
             }
             if watch.is_none()
                 && let Some(id) = &session_id
-                && let Ok(Some(path)) =
-                    self.transcript_path(&sandbox, &worktree, attempt.harness, id, None)
+                && let path = self.transcript_path(&sandbox, &worktree, attempt.harness, id)
                 && path.exists()
             {
                 // A resumed session's transcript holds its earlier runs' lines: the run reads its

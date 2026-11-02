@@ -85,7 +85,7 @@ the next scan; dead code a finding points at is removed instead.
 
 - [x] Spec with the triage of all five findings
 - [x] Narrow [[ignore]] entries for the dismissed wordings (#818 #752 #692 #691)
-- [ ] transcript_path loses its dead stored-path branch (#693)
+- [x] transcript_path loses its dead stored-path branch (#693)
 - [ ] Gates, changes entry and evidence
 - [ ] Independent review answered
 - [ ] Dismissed issues commented and closed (#818 #752 #692 #691 #693)
