@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-02
 
+- `ci_setup` reads a task worktree's workflows and `yulius.toml` only through handles opened from
+  the sandbox directory folder by folder with `O_NOFOLLOW` (ADR-0174), each file checked as a
+  regular file on its handle: a contained agent swapping `.github`, `workflows`, the worktree or a
+  file for a link (before or after a check) no longer makes the server summarize a host file
+  (SPEC-391, task #373, fixes #829). The Vidoc findings #842 (by design), #739, its duplicate #736
+  and #843 (already guarded) are dismissed with narrow `[[ignore]]` entries.
 - A CI job still waiting for a job slot now shows in its run's stages while it waits: `ci::exec`
   opens the job's `job slot` wait span when the wait begins and ends it `started`, `cancelled`
   (cancelled while waiting) or `error`, and the waterfall draws a wait with no job span as that
