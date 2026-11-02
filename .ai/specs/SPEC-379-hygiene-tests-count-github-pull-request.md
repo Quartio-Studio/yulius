@@ -1,11 +1,11 @@
 ---
 yulius-task: a0010f70-991c-43b6-95e6-f397d7431c84
-status: in-progress
+status: done
 ---
 
 # SPEC-379: Hygiene tests count GitHub pull-request lookups against MAX_PULL_LOOKUPS (#847)
 
-Status: in-progress
+Status: done
 Date: 2026-11-02
 Owner: Yulius task #361
 Scope authorization: the open-issues automation (task #360). Fix GitHub issue #847 in one pull
@@ -59,8 +59,8 @@ last review are gone.
 - [x] The worktree-name test rejects the three normalised names
 - [x] The merged note and reason name the integration or production branch
 - [x] The e2e title and the ci.js comment use the card's wording
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -90,3 +90,28 @@ last review are gone.
 - The `merged` reason's wording changes with the note: both describe the same fact
   (`is_ancestor` of the integration or production branch); fixing one would leave the card saying
   the narrower thing. No ADR: test-only hardening and a wording fix, no lasting design choice.
+
+## Evidence
+
+- **Mutation checks** (each on a committed tree, restored with `git checkout`):
+  - `merged_budget` ignored (every merged branch looked up): both bound tests fail, "51 lookups,
+    bound 50".
+  - An open pull request's branch given a lookup (`in_use` forced false): test 2 fails on the
+    `feat/one` assertion, and test 1 fails with 51 lookups, `feat/one` among them.
+  - `name == format!(...)` removed from `task_worktree_path`: the worktree-name unit test fails.
+  - Old note wording, with `release/1` only on `main`: the note test failed, showing "1 branch already
+    in the integration branch". It passes with the new wording.
+- `cargo nextest` over `local_ci::`, `yulius-domain` and the hygiene tests: 480 passed.
+- `npx e2e run tests/ci.e2e.ts`: 19 passed, including the renamed test.
+- `scripts/dev ci` at 42ceec7b: exit 0, including nextest (2951 passed, 16 skipped), check, fmt,
+  clippy (Linux and macOS), deny, shear and doc.
+- `yulius security-scan`: "Security scan disabled". Vidoc is turned off for this project, so this
+  is reported as disabled, not passed.
+- **Independent review** in a fresh session (om-code-review, read-only).
+  - Round 1, REQUEST CHANGES:
+    - Test 1 lacked the open-PR assertion (own code): added, mutation-checked.
+    - The `classify_remote_branch` comment was half reworded (own code): fixed.
+    - Old wording remained in the `repo_cleanup` MCP description and two `hygiene.rs` comments
+      (pre-existing, inside this goal): reworded.
+    - A `docs/api.md` line was too long (own code): re-wrapped.
+  - Round 2: APPROVE at 42ceec7b. Its remaining wrap nit was fixed in a docs-only commit.
