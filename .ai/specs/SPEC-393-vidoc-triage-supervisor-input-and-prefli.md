@@ -1,11 +1,11 @@
 ---
 yulius-task: fd3c7632-5851-4508-b863-eeb4f01b1959
-status: in-progress
+status: done
 ---
 
 # SPEC-393: Triage of the Vidoc findings on supervisor input and preflight (#818 #752 #692 #691 #693)
 
-Status: in-progress
+Status: done
 Date: 2026-11-02
 Owner: Yulius task #375
 Scope authorization: task #375 (a person asked for each of the five issues to end closed, as a
@@ -90,7 +90,7 @@ the next scan; dead code a finding points at is removed instead.
 - [x] transcript_path loses its dead stored-path branch (#693)
 - [x] Gates, changes entry and evidence
 - [x] Independent review answered
-- [ ] Dismissed issues commented and closed (#818 #752 #692 #691 #693)
+- [x] Dismissed issues commented and closed (#818 #752 #692 #691 #693)
 
 ## Acceptance criteria
 
@@ -152,3 +152,6 @@ the next scan; dead code a finding points at is removed instead.
   VSI-002 no longer claims the prompt's author may type into the terminal (finding 2). Finding 3
   (pre-existing): `Refusal::ProviderMismatch` has no test and cannot happen while `Provider` has
   one variant; the ignore's reason does not rest on it.
+- `gh issue view` after closing: #752, #818, #692, #691 and #693 are CLOSED as NOT_PLANNED, each
+  with a comment holding its reason and file:line evidence on `dev` f416b400; #818 says
+  "Duplicate of #752" and carries the `duplicate` label. No issue was created.
