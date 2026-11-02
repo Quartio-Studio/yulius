@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-02
 
+- Five Vidoc findings about client file names becoming paths are triaged as false positives
+  (SPEC-390, task #372, #849 #836 #827 #838 #750): import manifest names pass `FileRef::validate`
+  before the job exists and a chunk only selects a stored manifest entry; editor upload paths pass
+  `relative_components`. `import_server::unsafe_manifest_names_never_reach_the_disk` pins the
+  import side, and `.config/vidoc.toml` ignores each wording at its place.
 - A CI job still waiting for a job slot now shows in its run's stages while it waits: `ci::exec`
   opens the job's `job slot` wait span when the wait begins and ends it `started`, `cancelled`
   (cancelled while waiting) or `error`, and the waterfall draws a wait with no job span as that
