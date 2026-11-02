@@ -98,7 +98,8 @@ extends 40 px left of the plot.
   plot). The test measures the top row's tip against the plot's top and bottom and it fits: the
   rows near the top (queue, run, prepare) carry short figures, and the legend and axis sit above
   them. A flip below the pointer would be untested code for a case no timeline produces, so it is
-  left out; the test guards the bound.
+  left out; the test guards the bound. (Superseded by SPEC-380: the daily trend's highest day
+  sits near the plot's top, and its tip now goes below the point.)
 - **What else the cause touches.** Only these two tips use `.chart-tip`; other floating bars
   (`.tg-node`, menus, toasts) have their own rules and are not changed.
 

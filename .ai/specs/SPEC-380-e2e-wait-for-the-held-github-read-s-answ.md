@@ -29,7 +29,17 @@ that answer has come, so it cannot pass before the answer it is about.
   Without it, the released read, which noticed the 15-minute limit, puts the Check now card back.
 - Today the test passes and fails without the guard only because the evaluate round trips are
   slower than the answer; nothing says so.
-- Product: not a defect; test and mock only.
+- Product (issue #869): not a defect; test and mock only.
+- Found on the way, and blocking every pull request's e2e job on 2026-11-02 (PR #1011's run
+  failed on it too): `pipeline.e2e.ts` › "the daily chart's hover tip stays inside its chart on the
+  first and the last day" fails at 1280 px on the last day, its tip 46 px past the plot's top.
+  Cause: `placeTip` (`assets/stages.js`) always puts the tip above its point
+  (`translate(-50%, calc(-100% - 8px))`), and the trend's scale (`niceMax`) rounds up from the
+  highest p90, so that day's point sits about 20 px under the plot's top, less than the tip's
+  height. The mock's daily values hash the date, so the highest day moves; today it is the last
+  day, which the test hovers. SPEC-360 had left the flip out as "a case no timeline produces"; the
+  daily trend produces it nearly every day, on whichever day is highest. No open issue tracked it,
+  and this run may not open one, so it is fixed here, in its own commits.
 
 ## Requirements
 
@@ -39,7 +49,11 @@ that answer has come, so it cannot pass before the answer it is about.
   goes up past its value before the release, the held read still unanswered then), then asserts
   Check now is absent and the form is shown.
 - REQ-3: With the page's `epoch` guard removed, the test still fails.
-- REQ-4: No product change.
+- REQ-4: No product change for #869.
+- REQ-5: A chart tip whose point is too near the plot's top for the tip above it goes below the
+  point, the same 8 px away (`placeTip`, both the daily trend and the waterfall).
+- REQ-6: A regression test hovers the daily trend's highest day at 1280 and 390 px, checks the tip
+  would not fit above, and requires it inside the plot and the window; it fails without REQ-5.
 
 ## Plan
 
@@ -55,12 +69,15 @@ that answer has come, so it cannot pass before the answer it is about.
 - It fails with the `epoch` guard removed (temporary edit, not committed) and passes with it,
   repeatedly.
 - The onboarding-flow file and the whole e2e suite pass.
+- The daily trend's tip stays inside its chart on its highest day; the new test fails without the
+  flip and passes with it.
 
 ## Test plan
 
 - Run the onboarding-flow file with the `epoch` guard removed (`if (mine !== epoch) return;`
   commented out) and see the test fail at Check now; restore it.
 - Run the test 5 times and the file 3 times; then the full e2e suite and the project gate.
+- Commit the highest-day test first and see it fail; add the flip; run `pipeline.e2e.ts` 3 times.
 
 ## Decisions
 
@@ -72,3 +89,9 @@ that answer has come, so it cannot pass before the answer it is about.
   has the hold, and a counter of every answered GET would be a wider change than the test needs.
   The page still handles the answer after the mock returns it, but within the same few microtasks
   and tasks, before the poll's next browser round trip returns.
+- The chart tip flips below its point rather than being clamped down to the plot's top: clamped,
+  it would cover the point and the line it describes. The flip is decided in `placeTip` from the
+  tip's measured height, so the waterfall's tip gets it too (its top row fits above today, so it
+  does not change there). A mock that never puts a point near the top would only hide the case.
+- Fixed in this pull request, not a separate one: it fails every pull request's e2e job today, this
+  run may not open an issue, and no other task was on it.
