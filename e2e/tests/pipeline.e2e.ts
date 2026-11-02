@@ -323,7 +323,7 @@ async function clockAt(browser: Browser, at: number) {
     const Real = Date;
     const shift = target - Real.now();
     class Shifted extends Real {
-      constructor(...args: ConstructorParameters<DateConstructor> | []) {
+      constructor(...args: [] | [string | number | Date] | ConstructorParameters<DateConstructor>) {
         if (args.length === 0) super(Real.now() + shift);
         else super(...(args as ConstructorParameters<DateConstructor>));
       }
