@@ -45,7 +45,9 @@ Each of the five Vidoc findings about onboarding and delivery is checked against
   that handle; a decisions folder is opened the same way with `O_DIRECTORY` and its entries opened
   from the folder's handle with `O_NOFOLLOW`. A file swapped for a link to a host file after the
   root was resolved yields nothing; a FIFO does not block. Links inside the root that resolve
-  inside it keep working as before.
+  inside it keep working as before. A checkout in a sandbox (its clone, a task worktree) is read
+  with `validate_sandbox_checkout`, only when its resolved root is inside the sandbox directory:
+  a worktree folder swapped for a link to a host folder reads as empty.
 - VOD-002 (#834, real). The production-branch warning carries the error's public message
   (`AppError::public_message`), so an internal error's detail stays in the server log.
 - VOD-003 (#832, false positive). `redact` returns `None` only when it found nothing, so
@@ -74,8 +76,12 @@ Each of the five Vidoc findings about onboarding and delivery is checked against
 - An integration test swaps the checkout's `yulius.toml` for a link to a host file between the
   root's resolution and the read (race point `CheckoutRead`); it fails on `dev` (the host file's
   text is returned) and passes.
-- A unit test shows a FIFO at a layout path is read as missing without blocking, and an in-root
-  link to a folder still reads.
+- The same with a FIFO swapped in: the read on `dev` blocks (the test times out after 20 s); with
+  the fix the file is missing at once.
+- A unit test shows a task worktree that is a link to a host folder reads as empty through
+  `validate_sandbox_checkout` (on an unanchored check it returned the host's `yulius.toml`).
+- A unit test pins that an in-root folder link still reads and that a FIFO or a linked decision
+  is missing.
 - A test shows the production-branch warning for an `Internal` failure does not contain its
   detail and still says the check failed.
 - `.config/vidoc.toml` has one narrow entry per dismissed wording, each with its reason.
@@ -84,9 +90,10 @@ Each of the five Vidoc findings about onboarding and delivery is checked against
 
 ## Test plan
 
-- Unit tests in `crates/yulius-app/src/onboarding.rs` (tempdir checkouts).
-- Integration test in `crates/yulius/tests/projects.rs` with the `CheckoutRead` race point.
-- Test of `production_branch_warning` with a fake GitHub failing with `Internal`.
+- Unit tests in `crates/yulius-app/src/onboarding.rs` (tempdir checkouts and sandboxes).
+- Integration tests in `crates/yulius/tests/projects.rs` with the `CheckoutRead` race point.
+- `import_server::import_resumes_applies_and_reruns_idempotently` with the repository fake's new
+  `fail_branch_guard` failing with `Internal`.
 - `scripts/dev ci` (the full gate) and `yulius security-scan`.
 
 ## Decisions
@@ -99,4 +106,10 @@ Each of the five Vidoc findings about onboarding and delivery is checked against
 - #834 is fixed although it is low: the leak is small (GitHub errors are scrubbed, most failures
   are actionable messages), but `public_message` is the documented contract and the fix is one
   call.
+- The anchor is the sandbox directory, as ADR-0174 says: checking handles against the
+  checkout's own resolved root alone still trusts that root, and the worktree folder is the
+  agent's to swap. The import's first clone, read before any agent runs, keeps
+  `validate_checkout`. Three `projects` tests placed a task worktree in a scratch folder outside
+  the sandbox; they now use the sandbox's `worktrees` folder, where Yulius puts them
+  (`supervisor.rs`).
 - No new ADR: the fix applies ADR-0174 to one more reader.

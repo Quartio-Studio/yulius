@@ -4,6 +4,19 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-03
+
+- The format check of a checkout (`validate_checkout`, used by onboarding, its status and
+  `spec_check`) no longer checks a path and then opens it again: each document and the decisions
+  folder are opened with `O_NOFOLLOW | O_NONBLOCK` and used only when the handle is a regular file
+  (or folder) whose real path is inside the checkout (ADR-0174). A sandbox's clone or task worktree
+  is read only when it resolves inside the sandbox directory. A contained agent swapping a file,
+  or the worktree itself, for a link to a host file, or a file for a FIFO, gets nothing read and
+  blocks nothing (SPEC-394, task #376, fixes #744). The production-branch warning that onboarding
+  shows to everyone with View access gives a failed check's public message, keeping an internal
+  error's detail in the log (fixes #834). Vidoc's #832, #783 and #781 are dismissed as false
+  positives with narrow `[[ignore]]` entries.
+
 ## 2026-11-02
 
 - `ci_setup` reads a task worktree's workflows and `yulius.toml` only through handles opened from
