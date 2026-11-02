@@ -966,7 +966,8 @@ pub fn classify_remote_branch(facts: &RemoteBranchFacts, now_ms: i64) -> Option<
     // A closed or merged pull request keeps the branch's commits only while the branch has
     // nothing after its head; later commits are unmerged work, judged as such below. It is the
     // reason even for a branch already in the integration or production branch: `Merged` then
-    // means no pull request had it, which the automatic round leaves to a person (SPEC-269).
+    // means no merged pull request was found for it (none had it, or its lookup was skipped),
+    // which the automatic round leaves to a person (SPEC-269).
     if let Some(last) = pulls.first().filter(|p| p.tip_on_pull) {
         return Some(if last.merged {
             StaleReason::PullMerged(last.number)

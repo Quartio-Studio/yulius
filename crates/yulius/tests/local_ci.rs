@@ -997,6 +997,10 @@ async fn merged_branches_leave_the_lookups_to_unmerged_ones() -> TestResult {
         "{} lookups, bound {bound}: {looked_up:?}",
         looked_up.len()
     );
+    assert!(
+        !looked_up.iter().any(|b| b == "feat/one"),
+        "an open pull request's branch took a lookup: {looked_up:?}"
+    );
     let items = scan.body["items"].as_array().ok_or("items")?;
     assert!(
         items

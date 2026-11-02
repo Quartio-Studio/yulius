@@ -346,7 +346,8 @@ impl App {
                     .ok()
                     .map(|pulls| pulls_facts(&pulls, &branch.sha))
             } else if merged {
-                // Past the bound, a branch already in dev is still `Merged` (safe for a person).
+                // Past the bound, a branch already in the integration or production branch is
+                // still `Merged` (safe for a person).
                 merged_unread += 1;
                 Some(Vec::new())
             } else {
@@ -526,7 +527,7 @@ impl App {
                 .items
                 .iter()
                 .filter(|i| i.safe || request.force)
-                // A branch already in dev that no pull request had (a release or staging
+                // A merged branch no merged pull request was found for (a release or staging
                 // branch) is a person's call: the round leaves it listed (review round 3).
                 .filter(|i| !(automatic && i.kind == REMOTE && i.reason_code == "merged"))
                 .cloned()
