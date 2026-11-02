@@ -80,6 +80,9 @@ MAX_SPLITS = 3
 HTTP_TIMEOUT_S = 300
 GIT_TIMEOUT_S = 120
 MAX_ANSWER_BYTES = 4 * 1024 * 1024
+# How much of an error body's message is kept; Yulius's own refusal (`VIDOC_OFF_REFUSAL`) fits
+# it, which `vidoc_switch::the_scanner_recognizes_the_proxys_refusal` checks (SPEC-381).
+MESSAGE_LIMIT = 200
 FILE_MARK = "<<<FILE"
 END_MARK = "<<<END FILE"
 SEVERITIES = ("critical", "high", "medium", "low")
@@ -724,9 +727,10 @@ def _message(body):
     try:
         data = json.loads(body)
         error = data.get("error")
-        return str(error.get("message") if isinstance(error, dict) else data.get("message") or error)[:200]
+        message = error.get("message") if isinstance(error, dict) else data.get("message") or error
+        return str(message)[:MESSAGE_LIMIT]
     except (ValueError, AttributeError):
-        return body.decode("utf-8", "replace")[:200]
+        return body.decode("utf-8", "replace")[:MESSAGE_LIMIT]
 
 
 class Client:

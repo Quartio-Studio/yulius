@@ -11,6 +11,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   (`githubAnswered`) and the test polls it up to the asked count, where it polled the asked count,
   which already included the held read (SPEC-380, task #362, fixes #869). Without the page's
   `epoch` guard it still fails. Test and mock only.
+- A test now fails when Yulius's refusal toward Vidoc for a project or instance with Vidoc off
+  (`VIDOC_OFF_REFUSAL`, with its line end) outgrows the part of an error body the scanner keeps,
+  now the named `MESSAGE_LIMIT` (200) in `scripts/vidoc_scan.py`; the scanner's own test checks
+  the whole reason is printed (SPEC-381, task #363, fixes #981). ADR-0242's one unwrapped
+  Consequences line is wrapped.
 - The hygiene scan's bound of `MAX_PULL_LOOKUPS` GitHub pull-request lookups per scan is now held
   by tests: the GitHub fake records every `branch_pulls` call, and both bound tests fail if a scan
   looks up more, or looks up an open pull request's branch (SPEC-379, task #361, fixes #847). The
