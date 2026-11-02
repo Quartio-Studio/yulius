@@ -50,6 +50,9 @@ pub struct FakeGitHub {
     pub hang_permissions: std::sync::atomic::AtomicBool,
     /// Pull requests (delivery tests).
     pub pulls: Mutex<Vec<GhPull>>,
+    /// The branch of every `branch_pulls` call, in order: one GitHub request each (the hygiene
+    /// scan's `MAX_PULL_LOOKUPS` bound).
+    pub branch_pull_lookups: Mutex<Vec<String>>,
     /// Repositories the App installation can access (default: none).
     pub installation_repos: Mutex<Vec<GhRepo>>,
     /// Branches (`owner/name:branch`) whose rules agents' tokens cannot bypass (ADR-0114); every
@@ -563,6 +566,10 @@ impl GitHubPort for FakeGitHub {
         _: &str,
         branch: &str,
     ) -> AppResult<Vec<GhPull>> {
+        self.branch_pull_lookups
+            .lock()
+            .map_err(AppError::internal)?
+            .push(branch.to_owned());
         let mut pulls: Vec<GhPull> = self
             .pulls
             .lock()
