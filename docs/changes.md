@@ -9,6 +9,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - An integration test now asserts that `secret_create_from_file` naming `~/key` in a sandbox whose
   home was removed is refused with "your home does not exist on this machine" and creates nothing
   (SPEC-383, task #365, fixes #643). Test only: the refusal was already there, untested.
+- The onboarding e2e test "Start again during the last read keeps the form" now waits for the held
+  GitHub read's answer before checking that the form stayed: the mock counts answered reads
+  (`githubAnswered`) and the test polls it up to the asked count, where it polled the asked count,
+  which already included the held read (SPEC-380, task #362, fixes #869). Without the page's
+  `epoch` guard it still fails. Test and mock only.
 - A test now fails when Yulius's refusal toward Vidoc for a project or instance with Vidoc off
   (`VIDOC_OFF_REFUSAL`, with its line end) outgrows the part of an error body the scanner keeps,
   now the named `MESSAGE_LIMIT` (200) in `scripts/vidoc_scan.py`; the scanner's own test checks

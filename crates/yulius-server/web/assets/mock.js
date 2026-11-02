@@ -832,9 +832,11 @@ route('POST', '/api/admin/recovery-code', ({ db, body }) => {
   return { recovery_code: '482913' };
 });
 // The instance's GitHub App (ACC-006).
-// A test can hold the reads (`__yuliusMock.holdGithub = promise`) to act while one is on its way (SPEC-283).
+// A test can hold the reads (`__yuliusMock.holdGithub = promise`) to act while one is on its way (SPEC-283);
+// `githubAnswered` counts the reads answered, past the hold, so a test can wait for a held read's answer (SPEC-380).
 route('GET', '/api/admin/github', async ({ db }) => {
   if (db.holdGithub) await db.holdGithub;
+  db.githubAnswered = (db.githubAnswered || 0) + 1;
   return db.me.instance.github_configured
     ? { configured: true, app_slug: 'yulius-quartio-studio', owner_login: db.me.instance.owner_login, install_url: 'https://github.com/apps/yulius-quartio-studio/installations/new', installed: true }
     : { configured: false, app_slug: null, owner_login: null, install_url: null, installed: false };
