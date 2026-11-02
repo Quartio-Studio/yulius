@@ -11,6 +11,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   now the named `MESSAGE_LIMIT` (200) in `scripts/vidoc_scan.py`; the scanner's own test checks
   the whole reason is printed (SPEC-381, task #363, fixes #981). ADR-0242's one unwrapped
   Consequences line is wrapped.
+- `scripts/dev doctor` names an unpinned Linux host the way bootstrap does: a host reporting
+  `RISCV64` read "RISCV64-linux" in doctor and "riscv64-linux" in bootstrap. Both now take the
+  name from `zig_install.host_name`, and doctor's message is built by `zig_pin_error`, which a unit
+  test covers (SPEC-382, task #364, fixes #645).
+- The Pipeline's daily chart keeps its hover tip inside the chart on its highest day: the tip, drawn
+  above its point, ran past the chart's top. The mock's figures follow the date, so the e2e test
+  failed every pull request on 2026-11-02; it now hovers the highest day on any date (SPEC-382).
 
 ## 2026-11-01
 

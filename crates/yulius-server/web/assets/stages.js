@@ -199,7 +199,8 @@ function tickLabel(ms) {
 
 /**
  * Shows a chart tip (its content already set) centred above `x`, `y` in its plot, moved in so all
- * of it stays inside: the CSS caps its width at the plot's and wraps the rest (#986).
+ * of it stays inside: the CSS caps its width at the plot's and wraps the rest (#986), and a tip
+ * with no room above its point comes down to the plot's top.
  */
 function placeTip(tip, x, y) {
   tip.hidden = false;
@@ -207,6 +208,10 @@ function placeTip(tip, x, y) {
   const half = Math.min(tip.getBoundingClientRect().width, room) / 2;
   tip.style.left = `${Math.max(half, Math.min(room - half, x))}px`;
   tip.style.top = `${y}px`;
+  // Above its point, unless that runs past the chart's top (the highest point): then just inside.
+  const parent = tip.parentElement.getBoundingClientRect().top + tip.parentElement.clientTop;
+  const over = parent - tip.getBoundingClientRect().top;
+  if (over > 0) tip.style.top = `${y + over}px`;
 }
 
 /**

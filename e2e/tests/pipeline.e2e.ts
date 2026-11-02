@@ -314,7 +314,7 @@ test('the waterfall’s hover tip wraps its figures and stays inside the plot at
   }
 });
 
-test('the daily chart’s hover tip stays inside its chart on the first and the last day', async ({ app, browser, screen }) => {
+test('the daily chart’s hover tip stays inside its chart on the first, the last and the highest day', async ({ app, browser, screen }) => {
   for (const width of [1280, 390]) {
     await browser.setViewport({ width, height: 900 });
     await app.open(mock('/s/studio/dashboard?section=pipeline'));
@@ -324,7 +324,14 @@ test('the daily chart’s hover tip stays inside its chart on the first and the 
     await browser.evaluate(() => document.querySelector('.st-chart')?.scrollIntoView({ block: 'center' }));
     const hit = await browser.locator('.st-chart .chart-hit').boundingBox();
     if (!hit) throw new Error('the trend chart is not laid out');
-    for (const x of [hit.x + 2, hit.x + hit.width - 2]) {
+    // The highest p90 sits at the plot's top, where a tip above its point has no room. The mock's
+    // figures follow the date, so which day that is changes daily (#645's CI met it on a Monday).
+    const highest = await browser.evaluate(() => {
+      const dots = [...document.querySelectorAll('.st-chart .st-dot-p90')].map((dot) => dot.getBoundingClientRect());
+      const top = dots.reduce((a, b) => (b.top < a.top ? b : a));
+      return top.left + top.width / 2;
+    });
+    for (const x of [hit.x + 2, hit.x + hit.width - 2, highest]) {
       await hoverAt(browser, '.db-tip', x, hit.y + hit.height / 2);
       await expect(browser.locator('.db-tip')).toContainText('ended');
       expect(await tipFit(browser, '.db-tip'), `${width} px, pointer at ${Math.round(x)}`).toMatchObject({ pastPlot: 0, pastWindow: 0, cut: false });
