@@ -218,6 +218,7 @@ async fn editor_uploads_stay_in_the_folder_and_never_replace_a_file_silently() -
     // the folder are refused; nothing is written outside.
     for (path, status) in [
         ("../outside.txt", StatusCode::UNPROCESSABLE_ENTITY),
+        ("src/../../outside.txt", StatusCode::UNPROCESSABLE_ENTITY),
         ("%2Fetc%2Fpasswd", StatusCode::UNPROCESSABLE_ENTITY),
         ("a%0Ab.txt", StatusCode::UNPROCESSABLE_ENTITY),
         ("", StatusCode::UNPROCESSABLE_ENTITY),
