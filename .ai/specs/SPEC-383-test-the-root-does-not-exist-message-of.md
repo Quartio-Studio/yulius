@@ -52,11 +52,12 @@ took `dev`'s `placeTip` and test when it merged `dev`, so it changes neither.
   t1 and calls `secret_create_from_file {"name": …, "file": "~/key"}` with the task's token.
 - **RDE-002** It asserts the call is an error whose text contains "your home does not exist on
   this machine", and that the sandbox's agent secrets are unchanged.
-- **RDE-003** (delivered by #1011, whose version this PR took) A chart tip placed by `placeTip` never rises above its plot: when its top would be
-  above the plot's, it moves down until they meet (the horizontal clamp is unchanged).
+- **RDE-003** (delivered by #1011, whose version this PR took) A chart tip placed by `placeTip`
+  never rises above its plot: when its top would be above the plot's, it moves down until they
+  meet (the horizontal clamp is unchanged).
 - **RDE-004** (superseded by #1011's test, which hovers the highest day found in the page, also
-  date-independent) The daily chart's e2e test runs on a pinned day (2026-11-02, the failing case), with
-  the page's clock shifted but ticking, and checks the first and the last day's dates.
+  date-independent) The daily chart's e2e test runs on a pinned day (2026-11-02, the failing
+  case), with the page's clock shifted but ticking, and checks the first and the last day's dates.
 
 ## Plan
 
@@ -74,8 +75,9 @@ took `dev`'s `placeTip` and test when it merged `dev`, so it changes neither.
 - It fails when the `ENOENT` root branch's message is changed, and when that branch stops
   refusing (shown in Evidence).
 - `scripts/dev ci` is green.
-- The pinned daily-chart test fails on dev's `placeTip` (`pastPlot: 46`) and passes with RDE-003;
-  `pipeline.e2e.ts` and the full e2e suite pass.
+- (Historical, superseded by #1011, see Goal.) The pinned daily-chart test fails on dev's
+  `placeTip` (`pastPlot: 46`) and passes with RDE-003; `pipeline.e2e.ts` and the full e2e suite
+  pass. After the merge of `dev`: `pipeline.e2e.ts` (#1011's) passes.
 
 ## Test plan
 
@@ -83,14 +85,16 @@ took `dev`'s `placeTip` and test when it merged `dev`, so it changes neither.
 - Three temporary mutations of `open_folder`, each committed nowhere: the message reworded, the
   `ENOENT` root arm removed (the generic `ENOENT` arm answers), and a missing root created before
   the walk instead of refused.
-- e2e `pipeline.e2e.ts`: the daily-chart test pinned to 2026-11-02 (RDE-004), red on dev's
-  `placeTip`, then the file and the full suite with RDE-003.
+- (Historical, superseded by #1011.) e2e `pipeline.e2e.ts`: the daily-chart test pinned to
+  2026-11-02 (RDE-004), red on dev's `placeTip`, then the file and the full suite with RDE-003.
 
 ## Decisions
 
 - Remove the home outright (`remove_dir_all`) rather than moving it aside: the issue's case is a
   home that is gone, and nothing in the test needs it afterwards.
 - No ADR: neither the test nor the tip's clamp takes a lasting decision.
+- The three chart decisions below, and the Plan's two chart items, are historical: they describe
+  the fix this PR carried until #1011 landed the same clamp first; the merged PR has none of it.
 - The chart fix rides in this PR rather than its own: it failed every PR's e2e job, this one's
   included, and the run must not open issues (#643's comment records it). It is one function and
   one test.
@@ -153,3 +157,6 @@ took `dev`'s `placeTip` and test when it merged `dev`, so it changes neither.
   entry for the chart was dropped (#1011's describes it). The final diff is the #643 test, this
   spec and its changes entry. After the merge: `secrets_create::` 6 passed;
   `tests/pipeline.e2e.ts` (dev's version) 14 passed.
+- `scripts/dev ci` at 879ca45a (after the merge): exit 0; nextest 2952 passed, 16 skipped;
+  `cargo deny` ok. Review of 879ca45a: APPROVE; its minor (superseded chart items still read as
+  delivered) and nit (two lines over 100 columns) answered in the next commit (spec text only).
