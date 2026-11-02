@@ -562,7 +562,11 @@ fn redacting_body(
                 let out = redactor.push(&chunk);
                 Some((Ok(Frame::data(Bytes::from(out))), (stream, Some(redactor))))
             }
-            Some(Err(error)) => Some((Err(std::io::Error::other(error)), (stream, None))),
+            Some(Err(error)) => Some((
+                // Without the URL, which holds the substituted placeholders (SPEC-388 EPL-003).
+                Err(std::io::Error::other(error.without_url())),
+                (stream, None),
+            )),
             None => {
                 let out = redactor.flush();
                 Some((Ok(Frame::data(Bytes::from(out))), (stream, None)))
@@ -1026,6 +1030,8 @@ impl EgressProxy {
         let response = match sent {
             Ok(response) => response,
             Err(error) => {
+                // The URL holds the substituted placeholders (SPEC-388 EPL-003).
+                let error = error.without_url();
                 let why = if error.is_timeout() {
                     "timed out"
                 } else if error.is_connect() {

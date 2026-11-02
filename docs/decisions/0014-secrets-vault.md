@@ -3,7 +3,9 @@
 ## Status
 
 Accepted. Recorded retroactively from SPEC-002 (ADR-20); the full analysis is in
-[SPEC-002 section 2](../../.ai/specs/SPEC-002-yulius-architecture.md).
+[SPEC-002 section 2](../../.ai/specs/SPEC-002-yulius-architecture.md). Amended by
+[0252](0252-the-egress-policy-checks-a-clients-run-on-every-request.md): the egress policy checks
+that a client's run still lives on every request.
 
 ## Context
 
