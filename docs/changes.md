@@ -17,6 +17,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-02
 
+- The egress proxy stops adding agent secrets for a run the moment it ends: the policy checks on
+  every request that the client's run still lives (an agent run's attempt, a CI job's credential,
+  a Superagent's shell), where a cached client stayed valid for 15 s and an open intercepted
+  connection kept its secrets until it closed. A failed upstream request is logged without its
+  URL, which held substituted secret values. Vidoc's #839, #709 (duplicate) and #708 were false
+  positives and get `[[ignore]]` entries (SPEC-388, task #370, ADR-0252, fixes #757 and #833).
 - `ci_setup` reads a task worktree's workflows and `yulius.toml` only through handles opened from
   the sandbox directory folder by folder with `O_NOFOLLOW` (ADR-0174), each file checked as a
   regular file on its handle: a contained agent swapping `.github`, `workflows`, the worktree or a
