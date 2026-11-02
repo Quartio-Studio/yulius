@@ -707,22 +707,49 @@ async fn device_grant_is_consumed_once() -> R {
     Ok(())
 }
 
-/// #725: approving a device grant inserts its token in the same transaction, and only when the
-/// grant was still pending.
-#[tokio::test]
-async fn approving_a_device_grant_stores_its_token_only_when_pending() -> R {
-    let store = SqliteStore::open_in_memory()?;
-    let (_, uid) = seed(&store).await?;
-    let token = |id: &str| ApiTokenRecord {
+/// A `cli` token `id` of `user`, its hash `hash-{id}`.
+fn cli_token(id: &str, user: &UserId) -> ApiTokenRecord {
+    ApiTokenRecord {
         id: id.into(),
-        user_id: uid.clone(),
+        user_id: user.clone(),
         token_hash: format!("hash-{id}"),
         label: "yulius CLI".into(),
         scope: yulius_domain::permission::TokenScope::Cli,
         created_at: Timestamp(1),
         last_used_at: None,
         revoked_at: None,
-    };
+    }
+}
+
+/// #724: a revoked token is not found by its hash, revoked alone or with all of its user's
+/// credentials (a recovery, a disabled account); `authenticate_bearer` relies on it.
+#[tokio::test]
+async fn revoked_api_tokens_are_not_found() -> R {
+    let store = SqliteStore::open_in_memory()?;
+    let (_, uid) = seed(&store).await?;
+    for id in ["t1", "t2"] {
+        store.insert_api_token(&cli_token(id, &uid)).await?;
+        assert!(
+            store.api_token(&format!("hash-{id}")).await?.is_some(),
+            "{id}"
+        );
+    }
+    assert!(store.revoke_api_token(&uid, "t1", Timestamp(2)).await?);
+    assert!(store.api_token("hash-t1").await?.is_none());
+    assert!(store.api_token("hash-t2").await?.is_some());
+    store.revoke_user_credentials(&uid, Timestamp(3)).await?;
+    assert!(store.api_token("hash-t2").await?.is_none());
+    assert!(store.api_tokens_of(&uid).await?.is_empty());
+    Ok(())
+}
+
+/// #725: approving a device grant inserts its token in the same transaction, and only when the
+/// grant was still pending.
+#[tokio::test]
+async fn approving_a_device_grant_stores_its_token_only_when_pending() -> R {
+    let store = SqliteStore::open_in_memory()?;
+    let (_, uid) = seed(&store).await?;
+    let token = |id: &str| cli_token(id, &uid);
     let sealed = yulius_app::model::Sealed(vec![1]);
     for code in ["A1", "D1"] {
         store
