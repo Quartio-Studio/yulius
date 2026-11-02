@@ -137,7 +137,10 @@ All on Linux, Node 24.21.0, Chromium from `npx e2e-web install chromium`, `E2E_T
 - Merge of `origin/dev` (1a60261c, PR #1011) conflicted in `stages.js`: resolved to dev's
   `stages.js`, `styles.css`, `pipeline.e2e.ts`, `e2e/README.md` and SPEC-360, and this pull
   request's chart entry left `docs/changes.md`; the branch then differs from dev only in the
-  #869 mock and test, this spec and its changes entry. Results after the merge are below.
+  #869 mock and test, this spec and its changes entry. After the merge (40909b55):
+  `tests/onboarding-flow.e2e.ts` 14/14, `tests/pipeline.e2e.ts` 14/14 (dev's chart fix and test),
+  `scripts/dev ci` exit 0 with 2951 passed, 16 skipped. The full e2e suite after the merge is left
+  to Yulius CI on the pull request.
 - Left out, pre-existing, reported on #869 rather than filed (this run opens no issues): the
   timer window before `holdGithub` in the #869 test, and the Overview's "Tasks per day" tip
   (`pages/dashboard.js`), placed above its point without `placeTip`, which can rise past its plot
