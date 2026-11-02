@@ -1,11 +1,11 @@
 ---
 yulius-task: a8788eda-3729-4fbe-92ac-7c1618bc5602
-status: in-progress
+status: done
 ---
 
 # SPEC-395: Triage of the Vidoc findings on the yulius CLI and host setup (#754 #753 #743 #742 #679)
 
-Status: in-progress
+Status: done
 Date: 2026-11-02
 Owner: Yulius task #377
 Scope authorization: task #377 (a person asked for each of the five issues to end closed, as a
@@ -99,9 +99,9 @@ that stops it, the test that pins it, and one narrow `[[ignore]]` entry for its 
 - [x] Spec with the triage of all five findings
 - [x] Host setup test pins that unsafe unit values are refused (#679)
 - [x] Narrow [[ignore]] entries for the five dismissed wordings
-- [ ] Gates, changes entry and evidence
-- [ ] Independent review answered
-- [ ] Issues commented and closed
+- [x] Gates, changes entry and evidence
+- [x] Independent review answered
+- [x] Issues commented and closed
 
 ## Acceptance criteria
 
@@ -139,4 +139,35 @@ that stops it, the test that pins it, and one narrow `[[ignore]]` entry for its 
 
 ## Evidence
 
-To be filled when the gates have run.
+- Mutation: with `unit_safe` returning `true`, `cargo nextest run -p yulius --lib -E
+  'test(/host_setup::tests::unit_values/)'` failed (`host_setup/tests.rs:1055`, the unit was
+  written); restored, it passed.
+- `python3 scripts/bootstrap.py` then `scripts/dev ci` at 60497824 (spec, test, ignores, changes,
+  review fixes): exit 0; nextest "2961 tests run: 2961 passed, 16 skipped". Every test cited above
+  passed, among them `host_setup::tests::unit_values_a_unit_file_cannot_hold_are_refused`,
+  `remove_cli::tests::it_removes_the_tasks_paths_and_refuses_the_rest`,
+  `shared_files_and_other_worktrees_are_refused`, `an_uncontained_runs_tmp_is_refused`,
+  `mount_points_their_holders_and_the_root_links_are_refused`,
+  `secrets_redaction::the_bash_wrapper_redacts_every_form_of_a_value`,
+  `secrets_redaction::the_terminal_and_the_run_environment_hold_no_value` and
+  `identity::tests::the_agent_yulius_shim_offers_wait_and_the_security_scan`. Then `origin/dev`
+  (c1043d15, the egress triage) merged cleanly; it touches no file of this change but
+  `.config/vidoc.toml` and `docs/changes.md`, both checked after the merge (84 entries, no
+  duplicate path and title). Yulius CI runs the gate on the merged head.
+- Ignores added to `.config/vidoc.toml` (title only, Vidoc's exact wording; `parse_config` of
+  `scripts/vidoc_scan.py` accepts the file): `crates/yulius/src/main.rs` "Sandbox exec accepts
+  arbitrary argv without visible authorization check" (#754), "Raw arguments passed to command
+  execution function with environment access" (#753), "Remove command accepts arbitrary paths at a
+  trust boundary without visible validation" (#743), "SecurityScan forwards unrestricted trailing
+  arguments to external scanner" (#742); `crates/yulius/src/host_setup.rs` "Systemd unit file
+  injection via unvalidated public_url and user in unit_text" (#679).
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0):
+  disabled, nothing scanned, so the ignores are not proven against a live scan.
+- Independent review (fresh read-only session, `om-code-review`, head 2140de76): APPROVE, agreeing
+  that all five are false positives; no blocker or major. Answered in 60497824: the Plan and this
+  Evidence are filled (1), "only adding the seccomp filter" now says sandbox-exec hands bwrap the
+  filter (2), the pid-reuse refusal cites `holder_ns` and the options cite where `public_url` is
+  passed (3), the test also tries `'` and `\` (4). Finding 5 (AGENTS.md says an entry names its
+  `function`, which no entry does) is pre-existing documentation drift, outside this triage.
+- Each issue has a comment with the reason and file:line permalinks on `dev` (f416b400) and is
+  closed as not planned (#754, #753, #743, #742, #679); no issue was created.
