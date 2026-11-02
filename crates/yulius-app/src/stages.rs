@@ -1344,6 +1344,39 @@ mod tests {
         assert_eq!(summary.delivery[0].change_failure_rate, None);
     }
 
+    /// SPEC-385 WSL-005: a job still waiting for a slot has an open wait span; the row's
+    /// percentiles, its maximum, its total and the trend count only the ended waits.
+    #[test]
+    fn the_summary_counts_only_ended_waits_for_a_job_slot() {
+        let wait = |start: i64, end: Option<i64>, outcome: Option<&str>| {
+            let mut wait = span("wait", "job slot", start, end, outcome);
+            wait.job = Some("test".into());
+            wait.key = format!("wait:j{start}@{start}");
+            wait
+        };
+        let spans = [
+            wait(DAY_MS, Some(DAY_MS + 60_000), Some("started")),
+            wait(DAY_MS + 1, Some(DAY_MS + 1 + 120_000), Some("cancelled")),
+            wait(DAY_MS + 2, None, None),
+        ];
+        let trend = "ci_run:wait:job slot";
+        let summary = summarize(&spans, &[], &[], (1, 1), Some(trend), false);
+        let row = summary
+            .stages
+            .iter()
+            .find(|r| r.kind == "wait" && r.name == "job slot")
+            .unwrap_or_else(|| unreachable!());
+        assert_eq!((row.count, row.running), (2, 1));
+        assert_eq!(
+            (row.p50_ms, row.p90_ms, row.max_ms, row.total_ms),
+            (Some(60_000), Some(120_000), Some(120_000), 180_000)
+        );
+        assert_eq!(
+            (summary.trend.days[0].count, summary.trend.days[0].p90_ms),
+            (2, Some(120_000))
+        );
+    }
+
     /// SPEC-154 USE-005: a row's CPU time and peak memory percentiles come from its spans that
     /// have them; a row none of whose spans has them leaves them out.
     #[test]
