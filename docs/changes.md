@@ -4,6 +4,17 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-03
+
+- Approving a CLI sign-in (device grant) claims the grant and stores its new `cli` token in one
+  store transaction (`SessionStore::approve_device_grant`): a second approval of a grant already
+  approved or denied, by the same person, another one or at the same moment, answers 409 and
+  leaves no stray live token in anyone's token list, where it used to add one (SPEC-392, task
+  #374, fixes #725). The Vidoc findings #724 (revoked bearer tokens are already filtered by the
+  store), #726 (128-bit one-time setup token), #734 (GitHub App secrets never leave the server in
+  clear) and #837 (the deploy itself refuses production without the typed slug) are dismissed with
+  narrow `[[ignore]]` entries.
+
 ## 2026-11-02
 
 - The egress proxy stops adding agent secrets for a run the moment it ends: the policy checks on
