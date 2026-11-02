@@ -1,11 +1,11 @@
 ---
 yulius-task: 6a31666a-6dc5-4f49-980c-7f43df00e5c1
-status: in-progress
+status: done
 ---
 
 # SPEC-381: the proxy's Vidoc-off refusal stays within the scanner's message cut
 
-Status: in-progress
+Status: done
 Date: 2026-11-02
 Owner: Yulius task #363
 Scope authorization: task #363, Fixes #981 (a nit left at the review round limit of task #338,
@@ -44,10 +44,10 @@ anyone noticing. ADR-0242's one unwrapped Consequences line is wrapped at 100 co
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] Rust test fails when the refusal outgrows the scanner's named cut
-- [ ] Scanner test sees the whole refusal and the ADR-0242 line is wrapped
-- [ ] Gates, review and delivery
+- [x] Read the product context and related work, then write and validate the spec
+- [x] Rust test fails when the refusal outgrows the scanner's named cut
+- [x] Scanner test sees the whole refusal and the ADR-0242 line is wrapped
+- [x] Gates, review and delivery
 
 ## Acceptance criteria
 
@@ -77,4 +77,21 @@ anyone noticing. ADR-0242's one unwrapped Consequences line is wrapped at 100 co
 
 ## Evidence
 
-(filled in at the end)
+- Before `MESSAGE_LIMIT` existed, `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+  test(/^vidoc_switch::the_scanner/)'` failed: "scripts/vidoc_scan.py names its cut
+  `MESSAGE_LIMIT = <n>`". After: passes. With the refusal 7 characters longer in
+  `vidoc_key.rs` and `test_vidoc_scan.py` it failed: "the refusal's body is 202 characters, the
+  scanner keeps 200" (reverted). Five more characters still fit (200 of 200).
+- `cd scripts && python3 -m unittest -q test_vidoc_scan`: OK. With `MESSAGE_LIMIT = 150` the
+  refusal test failed on the cut reason (restored); the reviewer also saw 193 fail, 194 pass.
+- `_message`'s JSON branch keeps its precedence (`a if c else (b or d)`), checked by the reviewer
+  on the AST; the other `[:200]` cuts (finding titles, an incomplete scan's reason) are not on the
+  refusal's path and stay as they are.
+- ADR-0242: the wrapped words are identical (`git diff --word-diff` shows no word change); only
+  the Status line (104 columns) is over 100.
+- `scripts/dev ci`: the first run failed on clippy `expect_used` in the new test (fixed: the test
+  returns an error); the rerun at 9832c273 passed, 2951 tests run, 2951 passed, 16 skipped; the
+  scanner's 148 Python tests OK.
+- `yulius security-scan`: disabled ("Vidoc is turned off in Yulius"), not run, not passed.
+- Independent review (fresh session, `om-code-review`): APPROVE, no blocker or major; one nit (this
+  Evidence was not yet filled in), answered here.
