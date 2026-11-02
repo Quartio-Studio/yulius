@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-02
 
+- An integration test now asserts that `secret_create_from_file` naming `~/key` in a sandbox whose
+  home was removed is refused with "your home does not exist on this machine" and creates nothing
+  (SPEC-383, task #365, fixes #643). Test only: the refusal was already there, untested.
 - The onboarding e2e test "Start again during the last read keeps the form" now waits for the held
   GitHub read's answer before checking that the form stayed: the mock counts answered reads
   (`githubAnswered`) and the test polls it up to the asked count, where it polled the asked count,

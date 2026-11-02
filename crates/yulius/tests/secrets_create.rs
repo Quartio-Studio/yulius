@@ -440,6 +440,27 @@ async fn a_root_swapped_for_a_link_and_reserved_names_are_refused() -> TestResul
     Ok(())
 }
 
+/// #643: a sandbox whose home was removed refuses `~/…` as a home that does not exist (the root
+/// of the walk, not a folder the caller named), and creates nothing.
+#[tokio::test]
+async fn a_missing_home_is_refused_as_not_existing() -> TestResult {
+    let w = world().await?;
+    let before = names(&w).await?;
+    std::fs::remove_dir_all(&w.home)?;
+    // The sandbox folder, the walk's anchor, is still there: only the home is missing.
+    assert!(w.home.parent().ok_or("sandbox folder")?.is_dir());
+    let refused = create(&w, TOKEN, json!({"name": "SOME_KEY", "file": "~/key"})).await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(
+        refused
+            .to_string()
+            .contains("your home does not exist on this machine"),
+        "{refused}"
+    );
+    assert_eq!(names(&w).await?, before, "nothing is created");
+    Ok(())
+}
+
 /// SPEC-211 with SPEC-209: a secret an agent creates is announced to the open Secrets pages of its
 /// sandbox, so it shows without a reload; a refused create announces nothing.
 #[tokio::test]
