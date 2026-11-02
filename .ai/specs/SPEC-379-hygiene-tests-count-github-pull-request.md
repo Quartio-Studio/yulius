@@ -55,7 +55,7 @@ last review are gone.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The GitHub fake counts lookups and both bound tests assert the bound
+- [x] The GitHub fake counts lookups and both bound tests assert the bound
 - [ ] The worktree-name test rejects the three normalised names
 - [ ] The merged note and reason name the integration or production branch
 - [ ] The e2e title and the ci.js comment use the card's wording

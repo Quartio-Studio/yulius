@@ -891,6 +891,11 @@ mod tests {
             "ci/jobs/quality",
             "",
             "worktrees/.",
+            // Forms `Path::components` normalises to `worktrees/x`: only the spelled-out name
+            // check rejects them.
+            "worktrees/./x",
+            "worktrees//x",
+            "worktrees/x/",
         ] {
             assert_eq!(task_worktree_path(sandbox, name), None, "{name:?}");
         }
