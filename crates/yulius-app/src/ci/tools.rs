@@ -134,19 +134,19 @@ impl App {
     /// its `yulius.toml` and on the integration branch, and the steps.
     ///
     /// # Errors
-    /// A task without a worktree.
+    /// A task without a worktree on disk inside the sandbox directory (`Conflict`), or one that
+    /// cannot be opened from it without following a link.
     pub async fn tool_ci_setup(&self, ctx: &AgentContext) -> AppResult<Value> {
         let sandbox = self.tool_sandbox(ctx).await?;
         // Resolved and inside the sandbox directory, then read only through handles from it.
         let worktree = self
             .sandbox_worktree(&sandbox, ctx.task.id.as_str(), None)
             .await?;
-        let anchor = std::fs::canonicalize(self.sandbox_dir(&sandbox.id))
-            .map_err(|_| AppError::Conflict("this task has no worktree yet".into()))?;
+        let sandbox_dir = self.sandbox_dir(&sandbox.id);
         let (workflows, config) =
-            tokio::task::spawn_blocking(move || read_setup(&anchor, &worktree))
+            tokio::task::spawn_blocking(move || read_setup(&sandbox_dir, &worktree))
                 .await
-                .map_err(AppError::internal)?;
+                .map_err(AppError::internal)??;
         let config = match config {
             None => json!({"jobs": [], "problem": null, "file": false}),
             Some(text) => match parse_yulius_toml(&text)
@@ -219,23 +219,29 @@ impl App {
 }
 
 /// The workflows and the `yulius.toml` text of the task worktree `worktree` (canonical, inside
-/// the canonical sandbox directory `anchor`). The server reads them outside containment, and the
+/// the sandbox directory `sandbox_dir`). The server reads them outside containment, and the
 /// contained agent can swap any folder or file there for a link at any moment, so nothing is read
-/// by path: the worktree is opened from `anchor` folder by folder with `O_NOFOLLOW`, and every
-/// folder and file below it from its parent's handle the same way (#829, ADR-0174). A link on the
-/// way reads nothing.
-fn read_setup(anchor: &Path, worktree: &Path) -> (Vec<Value>, Option<String>) {
-    let Ok(below) = worktree.strip_prefix(anchor) else {
-        return (Vec::new(), None);
+/// by path: the worktree is opened from the sandbox directory folder by folder with `O_NOFOLLOW`,
+/// and every folder and file below it from its parent's handle the same way (#829, ADR-0174). A
+/// link below the worktree reads nothing; blocks.
+///
+/// # Errors
+/// `Conflict` when the worktree cannot be opened that way (a link or a missing folder on the way,
+/// or it is not inside the sandbox directory).
+fn read_setup(sandbox_dir: &Path, worktree: &Path) -> AppResult<(Vec<Value>, Option<String>)> {
+    let unreadable = || {
+        AppError::Conflict(
+            "the task worktree cannot be read: a link or a missing folder on the way".into(),
+        )
     };
+    let anchor = std::fs::canonicalize(sandbox_dir).map_err(|_| unreadable())?;
+    let below = worktree.strip_prefix(&anchor).map_err(|_| unreadable())?;
     let names: Vec<&OsStr> = below.components().map(Component::as_os_str).collect();
-    let Ok(dir) = files::open_dirs_below(anchor, &names, false) else {
-        return (Vec::new(), None);
-    };
-    (
+    let dir = files::open_dirs_below(&anchor, &names, false).map_err(|_| unreadable())?;
+    Ok((
         read_workflows(&dir),
         read_small(&dir, OsStr::new("yulius.toml"), MAX_CONFIG_BYTES),
-    )
+    ))
 }
 
 /// The regular file `name` of the folder `dir` (not a link, not waiting on a FIFO), of at most
@@ -334,6 +340,11 @@ mod tests {
         std::os::unix::fs::symlink(target, at).unwrap_or_else(|e| panic!("{e}"));
     }
 
+    /// What `read_setup` returned, the worktree being readable.
+    fn read(anchor: &Path, worktree: &Path) -> (Vec<serde_json::Value>, Option<String>) {
+        read_setup(anchor, worktree).unwrap_or_else(|e| panic!("{e}"))
+    }
+
     /// Whether anything `read_setup` returned came from the host folder.
     fn leaked(read: &(Vec<serde_json::Value>, Option<String>)) -> bool {
         let (workflows, config) = read;
@@ -357,7 +368,7 @@ mod tests {
             &worktree.join("yulius.toml"),
             "[commands]\ngate = \"cargo test\"\n",
         );
-        let (workflows, config) = read_setup(&anchor, &worktree);
+        let (workflows, config) = read(&anchor, &worktree);
         assert_eq!(workflows.len(), 1, "{workflows:?}");
         assert_eq!(workflows[0]["name"], "own");
         assert!(config.is_some_and(|text| text.contains("cargo test")));
@@ -369,13 +380,13 @@ mod tests {
     fn ci_setup_follows_no_folder_swapped_for_a_link() {
         let (_dir, anchor, worktree, host) = sandbox();
         link(&host, &worktree.join(".github"));
-        let read = read_setup(&anchor, &worktree);
+        let read = read(&anchor, &worktree);
         assert!(!leaked(&read), "{read:?}");
         assert!(read.0.is_empty(), "{read:?}");
     }
 
     /// SPEC-391 VCT-001 (#829): the worktree folder itself swapped for a link after it was
-    /// resolved reads nothing from where the link leads.
+    /// resolved reads nothing from where the link leads: the worktree cannot be read.
     #[test]
     fn ci_setup_follows_no_worktree_swapped_for_a_link() {
         let (_dir, anchor, worktree, host) = sandbox();
@@ -385,7 +396,10 @@ mod tests {
         std::fs::remove_dir(&worktree).unwrap_or_else(|e| panic!("{e}"));
         link(&host, &worktree);
         let read = read_setup(&anchor, &worktree);
-        assert!(!leaked(&read), "{read:?}");
+        assert!(
+            matches!(&read, Err(crate::error::AppError::Conflict(_))),
+            "{read:?}"
+        );
     }
 
     /// SPEC-391 VCT-001 (#829): a file that is a link or a FIFO yields nothing, without blocking.
@@ -404,7 +418,7 @@ mod tests {
             nix::sys::stat::Mode::from_bits_truncate(0o600),
         )
         .unwrap_or_else(|e| panic!("{e}"));
-        let read = read_setup(&anchor, &worktree);
+        let read = read(&anchor, &worktree);
         assert!(!leaked(&read), "{read:?}");
         assert!(read.1.is_none(), "{read:?}");
         assert_eq!(read.0.len(), 2, "both reported as unreadable: {read:?}");
