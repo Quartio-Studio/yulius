@@ -6,9 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-02
 
-- ADR-0160's over-long lines are rewrapped to the file's width, with no word changed: the
-  SPEC-201 amendment's bullet "The install brings buildx and compose" (141 characters) and the
-  Status section's ADR-0162 amendment note (143) (SPEC-386, task #368, fixes #612).
+- ADR-0160's over-long lines are rewrapped to the file's width, with no word changed: the SPEC-201
+  amendment's bullet "The install brings buildx and compose" (141 characters) and the Status
+  section's ADR-0162 amendment note (143 characters; SPEC-386, task #368, fixes #612).
 - An integration test now asserts that `secret_create_from_file` naming `~/key` in a sandbox whose
   home was removed is refused with "your home does not exist on this machine" and creates nothing
   (SPEC-383, task #365, fixes #643). Test only: the refusal was already there, untested.
