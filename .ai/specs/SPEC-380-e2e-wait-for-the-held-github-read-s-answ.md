@@ -1,11 +1,11 @@
 ---
 yulius-task: 33e6f7c5-8caf-47ae-9153-d8042402120d
-status: in-progress
+status: done
 ---
 
 # SPEC-380: the Start-again test waits for the held GitHub read's answer
 
-Status: in-progress
+Status: done
 Date: 2026-11-02
 Owner: Yulius task #362
 Scope authorization: task #362, Fixes #869 (a nit left by task #269's review, SPEC-283).
@@ -65,8 +65,7 @@ that answer has come, so it cannot pass before the answer it is about.
 - [x] Mock counts answered GitHub reads and the test waits on them, failing without the epoch guard
 - [x] Daily chart's hover tip flips below a point near the chart's top (unblocks CI's e2e)
 - [x] Gates green and independent review answered
-- [ ] Gate, e2e suite and review green on the final head
-- [ ] Pull request merged into dev on green CI
+- [x] Gate, e2e suite and review green on the final head
 
 ## Acceptance criteria
 
@@ -103,3 +102,33 @@ that answer has come, so it cannot pass before the answer it is about.
   its in-page unit test, as `dom.js` exports `menuMatches`.
 - Fixed in this pull request, not a separate one: it fails every pull request's e2e job today, this
   run may not open an issue, and no other task was on it.
+
+## Evidence
+
+All on Linux, Node 24.21.0, Chromium from `npx e2e-web install chromium`, `E2E_TELEMETRY_DISABLED=1`.
+
+- #869, guard removed (temporary edit, `// if (mine !== epoch) return;` in `pages/admin.js`, then
+  `git checkout`): `npx e2e run tests/onboarding-flow.e2e.ts --grep 'Start again during the last
+  read'` failed 3 of 3, each time at `expect.toHaveCount failed` (Check now came back), after the
+  answered-read poll had passed.
+- #869, with the guard: the test passed 5 of 5 alone; `tests/onboarding-flow.e2e.ts` 14/14 three
+  times.
+- Daily chart tip: the highest-day test failed before the flip (`1280 px, highest day: …"Mon, Oct
+  12…","pastPlot":46`), committed red in 920bf234; after the flip `tests/pipeline.e2e.ts` 15/15
+  three times. The in-page `placeTip` test failed before the room check (`expected true to be
+  false`, the short-plot case), committed red; after it the file 16/16 twice and once more in the
+  full run.
+- Full e2e suite at 6c691b3a: `npx e2e run` 802 passed, 1 skipped (803), 71 files. Before the
+  chart fix the same run at a9a7dbd9 failed only the daily chart test, as PR #1011's CI did.
+- Project gate `scripts/dev ci` (after `python3 scripts/bootstrap.py`): exit 0 at 6cb1908c and at
+  6c691b3a, nextest 2951 passed, 16 skipped.
+- Security: `yulius security-scan` printed "Security scan disabled: Vidoc is turned off in Yulius,
+  for this project or the whole instance; nothing was scanned." Disabled, not passed.
+- Independent review in fresh sessions: round 1 approved 6cb1908c (comment wording nits fixed in
+  a9a7dbd9); round 2 approved 56dbbf93 with a minor (flip without checking room below), fixed
+  test-first; round 3 approved 6c691b3a. Left at the round limit: round 3's nit that the unit
+  test's comment says "about 60 px" for a 70 px tip (no case depends on it).
+- Left out, pre-existing, reported on #869 rather than filed (this run opens no issues): the
+  timer window before `holdGithub` in the #869 test, and the Overview's "Tasks per day" tip
+  (`pages/dashboard.js`), placed above its point without `placeTip`, which can rise past its plot
+  the same way; SPEC-360's "only these two tips use `.chart-tip`" misses it.
