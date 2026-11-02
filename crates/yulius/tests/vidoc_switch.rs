@@ -149,6 +149,19 @@ fn the_scanner_recognizes_the_proxys_refusal() {
         include_str!("../../../scripts/test_vidoc_scan.py").contains(VIDOC_OFF_REFUSAL.trim_end()),
         "the scanner's test uses the proxy's own text"
     );
+    // SPEC-381 (#981): the scanner keeps `MESSAGE_LIMIT` characters of an error body, and the
+    // proxy's body is the refusal with its line end; a longer one would lose its reason's end.
+    let limit: usize = yulius::security_scan::SCANNER
+        .lines()
+        .find_map(|line| line.strip_prefix("MESSAGE_LIMIT = "))
+        .and_then(|value| value.trim().parse().ok())
+        .expect("scripts/vidoc_scan.py names its cut `MESSAGE_LIMIT = <n>`");
+    let body = format!("{VIDOC_OFF_REFUSAL}\n");
+    assert!(
+        body.chars().count() <= limit,
+        "the refusal's body is {} characters, the scanner keeps {limit}",
+        body.chars().count()
+    );
 }
 
 /// The audit entries of `s1`'s Vidoc switch, as "actor detail".
