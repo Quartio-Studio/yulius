@@ -4,6 +4,12 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-02
+
+- An integration test now asserts that `secret_create_from_file` naming `~/key` in a sandbox whose
+  home was removed is refused with "your home does not exist on this machine" and creates nothing
+  (SPEC-383, task #365, fixes #643). Test only: the refusal was already there, untested.
+
 ## 2026-11-01
 
 - The e2e test of a Vidoc refresh that overtakes the read after a change no longer times out on
