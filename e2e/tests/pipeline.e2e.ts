@@ -360,6 +360,35 @@ test('the daily chart’s hover tip stays inside its chart on its highest day, t
   }
 });
 
+test('a chart tip goes below its point only when it has no room above and more room below (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/dashboard?section=pipeline'));
+  const placed = await browser.evaluate(async () => {
+    const url = '/assets/stages.js';
+    const { placeTip } = await import(url);
+    // A plot `height` px tall with a three-line tip (about 60 px) placed at `y`.
+    const place = (height: number, y: number) => {
+      const plot = document.createElement('div');
+      plot.style.cssText = `position: relative; width: 300px; height: ${height}px`;
+      const tip = document.createElement('div');
+      tip.className = 'chart-tip st-tip';
+      tip.innerHTML = '<span>Mon, Oct 12</span><strong>p50 19 min · p90 32 min</strong><span>2 ended</span>';
+      plot.append(tip);
+      document.body.append(plot);
+      placeTip(tip, 150, y);
+      const box = tip.getBoundingClientRect();
+      const outer = plot.getBoundingClientRect();
+      const result = { below: tip.classList.contains('chart-tip-below'), inside: box.top >= outer.top && box.bottom <= outer.bottom };
+      plot.remove();
+      return result;
+    };
+    return { roomAbove: place(220, 150), nearTop: place(220, 20), short: place(70, 40) };
+  });
+  expect(placed.roomAbove).toEqual({ below: false, inside: true });
+  expect(placed.nearTop).toEqual({ below: true, inside: true });
+  // 40 px above and 30 below: neither fits, and above cuts less of it.
+  expect(placed.short.below).toBe(false);
+});
+
 test('a job’s stages fold under it, a failed job opens, and the fold outlives a refresh', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/ci?run=ci_s4'));
   await expect(screen.getByRole('region', 'Stages of this run')).toContainText('engine');

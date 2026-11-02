@@ -202,7 +202,7 @@ function tickLabel(ms) {
  * of it stays inside: the CSS caps its width at the plot's and wraps the rest (#986). A point too
  * near the plot's top for the tip above it (a daily trend's highest day) gets it below (SPEC-380).
  */
-function placeTip(tip, x, y) {
+export function placeTip(tip, x, y) {
   tip.hidden = false;
   const room = tip.parentElement.clientWidth;
   const box = tip.getBoundingClientRect();
