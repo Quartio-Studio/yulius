@@ -1,11 +1,11 @@
 ---
 yulius-task: 5c1c3de0-e489-454c-af19-e793384e4f3f
-status: in-progress
+status: done
 ---
 
 # SPEC-383: A test asserts "your home does not exist on this machine" (#643)
 
-Status: in-progress
+Status: done
 Date: 2026-11-02
 Owner: Yulius task #365
 Scope authorization: the open-issues automation (task #365): solve GitHub issue #643 in one pull
@@ -63,8 +63,8 @@ chart's top, and its e2e test no longer depends on the day it runs.
 - [x] Mutations of the missing-root branch fail the test
 - [x] Independent review approved and findings answered
 - [x] Gates green with evidence in the spec
-- [ ] Daily chart tip stays inside the plot on a pinned tall weekday
-- [ ] Full e2e suite, gate and re-review of the chart fix
+- [x] Daily chart tip stays inside the plot on a pinned tall weekday
+- [x] Full e2e suite, gate and re-review of the chart fix
 
 ## Acceptance criteria
 
@@ -127,3 +127,19 @@ chart's top, and its e2e test no longer depends on the day it runs.
   Answered: minor (Evidence missing, Plan unchecked, status) — this section, Plan and status
   updated; nit (Test plan said "Two … plus one") — reworded to three; nit (state in the test that
   the sandbox folder remains) — assertion added.
+- Chart tip (RDE-003/004): PR #1012's CI run f6d16986 at f8f4daf0 failed only e2e, at the daily
+  chart test (`pastPlot: 46`, "Mon, Nov 2"), as #1011's run 7d776c09 did; reproduced locally with
+  `npx e2e run tests/pipeline.e2e.ts --grep "daily chart"`. A probe read the tip's box (left 1054,
+  right 1227, top 665) against the plot's (right 1227, top 711): inside sideways, 46 px above.
+- The pinned test (`clockAt` 2026-11-02 12:00 UTC) on dev's `placeTip`: exit 1, the same
+  `pastPlot: 46` at 1280 px, after its first-day check ("Sun, Oct 4") passed, so the shifted clock
+  reaches the app and the mock. With the top clamp: `tests/pipeline.e2e.ts` 14/14 passed.
+- Full e2e suite (`npx e2e run`) at e7f8318d: 70 files passed, 1 skipped; 800 tests passed, 1
+  skipped (36 min 42 s). After the typing nit (e544ecc9) the daily-chart test passes again.
+- `scripts/dev ci` at e544ecc9: exit 0; nextest 2952 passed, 16 skipped; `cargo deny` ok.
+- Independent review of e7f8318d (same fresh reviewer, new round): APPROVE, no blocker or major.
+  Answered: minor (Evidence, Plan, status) — this; nit (`clockAt`'s argument type named only one
+  `Date` overload) — typed as `[] | [string | number | Date] | ConstructorParameters<…>`
+  (e544ecc9); pre-existing (the Dashboard's tasks-per-day tip has no top clamp) — out of scope,
+  said on #643; note (two concerns in one PR) — recorded under Decisions; no other PR touches
+  `stages.js` or `pipeline.e2e.ts`.
