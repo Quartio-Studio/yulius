@@ -141,5 +141,8 @@ chart's top, and its e2e test no longer depends on the day it runs.
   Answered: minor (Evidence, Plan, status) — this; nit (`clockAt`'s argument type named only one
   `Date` overload) — typed as `[] | [string | number | Date] | ConstructorParameters<…>`
   (e544ecc9); pre-existing (the Dashboard's tasks-per-day tip has no top clamp) — out of scope,
-  said on #643; note (two concerns in one PR) — recorded under Decisions; no other PR touches
-  `stages.js` or `pipeline.e2e.ts`.
+  said on #643; note (two concerns in one PR) — recorded under Decisions.
+- Final review round (26f18053): APPROVE; its minor corrected here: two parallel PRs fix the same
+  failure in `placeTip` too, #1011 (the same top clamp, with the parent's `clientTop`) and #1015
+  (the tip flips below its point). Whichever merges first wins; the others take `dev`'s
+  `placeTip` and test when they merge it (same lines, so a conflict, not a silent double fix).
