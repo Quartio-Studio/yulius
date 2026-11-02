@@ -456,3 +456,51 @@ reason = "relative_components refuses .git and inside() refuses a real path in .
 path = "crates/yulius-store/src/tasks.rs"
 title = "Non-atomic task number allocation"
 reason = "one transaction on the single database thread, and UNIQUE (sandbox_id, number) refuses a duplicate (SPEC-262)"
+
+# SPEC-389 (task #371): Vidoc's findings on MCP tool authorization, filed as #831, #782, #695, #694
+# and #846 from change scans of code those changes did not touch, triaged as false positives on dev
+# at 4e07ce4e. One entry per wording, title only: a `function` on mcp_call would accept any later
+# finding in the whole dispatch. The guards and the tests that pin them are in SPEC-389.
+
+# #831: mcp_call keeps the McpCaller; its first arm refuses a Cockpit every tool outside
+# COCKPIT_TOOLS, Cockpit-only arms match only McpCaller::Cockpit and task_tool has none of them.
+# Pinned by cockpit.rs the_superagent_lists_its_sandboxs_agent_secrets_without_values and
+# secrets.rs agents_are_not_served_secret_verify.
+[[ignore]]
+path = "crates/yulius-app/src/mcp.rs"
+title = "Caller-type authorization dropped in tools/call dispatch"
+reason = "mcp_call refuses a Cockpit any tool outside COCKPIT_TOOLS before dispatch and matches Cockpit-only tools on McpCaller::Cockpit; tested in cockpit.rs and secrets.rs (SPEC-389, #831)"
+
+# #782: task, session and automation tools are the Cockpit's by design (SPEC-037 MGT-006,
+# ADR-0029); a ck_ token resolves at every call to its live Cockpit's enabled creator with Work
+# access (cockpit_caller), and changing tools check manage_authority again.
+[[ignore]]
+path = "crates/yulius-app/src/mcp.rs"
+title = "Cockpit token grants project-management tools without caller-type check"
+reason = "COCKPIT_TOOLS serves them by design (SPEC-037 MGT-006, ADR-0029); cockpit_caller requires an enabled owner with Work each call and manage_authority re-checks (SPEC-389, #782)"
+
+# #695: source() refuses absolute paths, .., .git and ~user; the file is reached from a root Yulius
+# picks (work folder or home) without following links, and only a regular file is read, by a
+# person who may configure the project. Pinned by secrets_create.rs
+# files_yulius_must_not_read_are_refused and
+# a_root_swapped_for_a_link_and_reserved_names_are_refused, and for the Cockpit
+# cockpit.rs the_superagent_stores_a_key_from_its_persons_home.
+[[ignore]]
+path = "crates/yulius-app/src/mcp.rs"
+title = "secret_create_from_file reads arbitrary host files"
+reason = "source() refuses absolute, .. and .git paths, open_folder walks from the work folder or home without links, read_secret_file reads regular files only; Configure required (SPEC-389, #695)"
+
+# #694: agent_workflow only reads the caller's own project's workflows, which workflows_list gives
+# the same caller in full, and creates nothing; a Cockpit is checked for Work before any tool.
+[[ignore]]
+path = "crates/yulius-app/src/manage.rs"
+title = "workflow resolution before authorization check"
+reason = "agent_workflow is a read of the caller's own project that workflows_list already answers; nothing is created before manage_authority (SPEC-389, #694)"
+
+# #846: the oracle accepted in ADR-0144, reworded (see "Secret value verification oracle" above):
+# Yulius never answers a hash of a stored value, so nothing can be attacked offline from its
+# answers, and a salt would not change an online equality check.
+[[ignore]]
+path = "crates/yulius-app/src/mcp.rs"
+title = "Unsalted SHA-256 equality oracle over secret values"
+reason = "Cockpit-only equality check accepted in ADR-0144: no stored hash is handed out, production secrets refused, each candidate audited (SPEC-389, #846)"
