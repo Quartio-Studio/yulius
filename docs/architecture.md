@@ -682,8 +682,9 @@ attachments, imported transcripts, skill copies, a CI job's log in `ci/logs`, it
 `ci/cache/<checkout>` and the place of its checkout in `ci/jobs`, the workflows and `yulius.toml`
 `ci_setup` reads from a task worktree), it opens the folder once and does everything else through
 that handle; the format check of a sandbox checkout (`onboarding::validate_sandbox_checkout`)
-opens each document with `files::open_inside` against the checkout's resolved root, read only
-when that root is inside the sandbox directory
+opens each document and folder with `files::open_inside` against the checkout's resolved root,
+read only when that root is inside the sandbox directory, and each decision file with `openat`
+from its checked folder's handle
 ([SPEC-220](../.ai/specs/SPEC-220-fix-657-host-writes-into-agent-owned-fol.md),
 [SPEC-285](../.ai/specs/SPEC-285-ci-job-log-created-without-following-pla.md),
 [SPEC-367](../.ai/specs/SPEC-367-ci-job-preparation-never-follows-a-link.md),

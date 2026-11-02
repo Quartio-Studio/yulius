@@ -543,6 +543,27 @@ async fn onboarding_becomes_ready_when_the_preparation_task_lands() -> TestResul
         "preparing",
         "a closed task without the docs is not ready"
     );
+    // #744 (SPEC-394 VOD-001): the agent swaps its worktree for a link to a host folder that
+    // holds the docs: the check reads only inside the sandbox directory, so it stays not ready.
+    let host = tempfile::tempdir()?;
+    for (path, contents) in scaffold("product") {
+        let target = host.path().join(path);
+        std::fs::create_dir_all(target.parent().ok_or("parent")?)?;
+        std::fs::write(target, contents)?;
+    }
+    std::fs::remove_dir(&worktree)?;
+    std::os::unix::fs::symlink(host.path(), &worktree)?;
+    assert!(
+        yulius_app::onboarding::validate_checkout(host.path())
+            .0
+            .is_valid()
+    );
+    assert_eq!(
+        w.h.app.refresh_onboarding(&sid).await?,
+        "preparing",
+        "a worktree linked outside the sandbox is not read"
+    );
+    std::fs::remove_file(&worktree)?;
     for (path, contents) in scaffold("product") {
         let target = worktree.join(path);
         std::fs::create_dir_all(target.parent().ok_or("parent")?)?;
@@ -2018,6 +2039,37 @@ fn a_checkout_file_swapped_for_a_link_after_its_check_is_not_read() -> TestResul
     let problems: Vec<String> = report.problems.iter().map(ToString::to_string).collect();
     assert!(
         problems.contains(&"yulius.toml: is missing".to_owned()),
+        "{problems:?}"
+    );
+    Ok(())
+}
+
+/// #744 (SPEC-394 VOD-001): the checkout folder itself swapped for a link to a host checkout
+/// after its root was resolved: every handle's real path is then outside the resolved root, so
+/// nothing of the host checkout is read.
+#[test]
+fn a_checkout_folder_swapped_for_a_link_after_its_resolution_is_not_read() -> TestResult {
+    let sandbox = tempfile::tempdir()?;
+    let host = tempfile::tempdir()?;
+    let root = sandbox.path().join("worktrees/t1");
+    valid_checkout(&root)?;
+    valid_checkout(host.path())?;
+    std::fs::write(host.path().join("yulius.toml"), "host = \"secret\"\n")?;
+    let (folder, target) = (root.clone(), host.path().to_path_buf());
+    yulius_app::race::on(
+        yulius_app::race::Point::CheckoutRead,
+        &root.join("yulius.toml"),
+        move || {
+            std::fs::rename(&folder, folder.with_extension("aside"))
+                .and_then(|()| std::os::unix::fs::symlink(&target, &folder))
+                .ok();
+        },
+    );
+    let (report, toml) = yulius_app::onboarding::validate_sandbox_checkout(sandbox.path(), &root);
+    assert_eq!(toml, None, "the host checkout was read through the link");
+    let problems: Vec<String> = report.problems.iter().map(ToString::to_string).collect();
+    assert!(
+        problems.contains(&"AGENTS.md: is missing".to_owned()),
         "{problems:?}"
     );
     Ok(())

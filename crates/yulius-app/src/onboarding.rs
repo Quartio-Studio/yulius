@@ -285,8 +285,8 @@ fn read_bounded(file: File, max: u64) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// The regular files of the folder `dir` (by name, links and others left out), each opened from
-/// the folder's handle with `O_NOFOLLOW | O_NONBLOCK`.
+/// The regular files of the folder `dir` (by name, links, other kinds and non-UTF-8 names left
+/// out), each opened from the folder's handle with `O_NOFOLLOW | O_NONBLOCK`.
 fn directory_files(dir: &OwnedFd) -> Vec<(String, String)> {
     let Ok(names) = crate::files::names_in(dir, MAX_DECISION_FILES) else {
         return Vec::new();
@@ -295,9 +295,9 @@ fn directory_files(dir: &OwnedFd) -> Vec<(String, String)> {
     names
         .into_iter()
         .filter_map(|name| {
-            let fd = nix::fcntl::openat(dir, name.as_os_str(), flags, Mode::empty()).ok()?;
-            let contents = read_bounded(File::from(fd), MAX_DOC_BYTES)?;
-            Some((name.into_string().ok()?, contents))
+            let name = name.into_string().ok()?;
+            let fd = nix::fcntl::openat(dir, name.as_str(), flags, Mode::empty()).ok()?;
+            Some((name, read_bounded(File::from(fd), MAX_DOC_BYTES)?))
         })
         .collect()
 }
