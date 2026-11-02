@@ -67,8 +67,8 @@ the line-length check above, plus the full gate (docs checks included).
 
 - `git diff --word-diff=porcelain origin/dev -- docs/decisions/0160-*.md`: no added or removed
   words; the reviewer also found the old and new ADR identical with whitespace collapsed.
-- `awk 'length($0) > 98'` on the ADR: only line 8 (105). Lines 55-56 (141) are now 94, 96 and 35
-  characters; line 9 (143) is now 56 and 86. `git diff --check`: clean.
+- `awk 'length($0) > 98'` on the ADR: only line 8 (105). Lines 55-56 (141 and 83) are now 94, 96
+  and 35 characters; line 9 (143) is now 56 and 86. `git diff --check`: clean.
 - `scripts/dev ci` at 6260e5d4 (after `python3 scripts/bootstrap.py` in this fresh worktree):
   exit 0, 2952 tests run, 2952 passed, 16 skipped.
 - `yulius security-scan`: "Security scan disabled" (Vidoc is off for this project); nothing was
