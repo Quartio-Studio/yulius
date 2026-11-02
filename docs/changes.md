@@ -12,6 +12,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `merged` reason and the bound's note say "already in the integration or production branch",
   since a branch only the production branch has is `merged` too; the worktree-name test rejects
   the forms `Path::components` normalises (`worktrees/./x`, `worktrees//x`, `worktrees/x/`).
+- `scripts/dev doctor` names an unpinned Linux host the way bootstrap does: a host reporting
+  `RISCV64` read "RISCV64-linux" in doctor and "riscv64-linux" in bootstrap. Both now take the
+  name from `zig_install.host_name`, and doctor's message is built by `zig_pin_error`, which a unit
+  test covers (SPEC-382, task #364, fixes #645).
+- The Pipeline's daily chart keeps its hover tip inside the chart on its highest day: the tip, drawn
+  above its point, ran past the chart's top. The mock's figures follow the date, so the e2e test
+  failed every pull request on 2026-11-02; it now hovers the highest day on any date (SPEC-382).
 
 ## 2026-11-01
 
