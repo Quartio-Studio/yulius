@@ -429,3 +429,35 @@ reason = "relative_components refuses .git and inside() refuses a real path in .
 path = "crates/yulius-store/src/tasks.rs"
 title = "Non-atomic task number allocation"
 reason = "one transaction on the single database thread, and UNIQUE (sandbox_id, number) refuses a duplicate (SPEC-262)"
+
+# SPEC-388 (task #370): the egress proxy's substitution of agent secrets, triaged on dev at 4e07ce4e
+# with the evidence on each issue. A value with CR/LF is refused at every write
+# (check_agent_value), set aside by egress_apply before any substitution (transportable), and the
+# proxy drops a header failing HeaderValue::from_bytes; reqwest's URL parser percent-encodes the
+# path. Tests: vault::runtime::tests::values_with_control_characters_are_never_sent,
+# secrets::the_egress_policy_never_sends_a_value_with_a_line_break.
+[[ignore]]
+path = "crates/yulius-app/src/vault/runtime.rs"
+title = "CRLF injection in HTTP headers via secret values"
+reason = "control characters are refused at write (check_agent_value) and set aside before substitution (transportable); HeaderValue::from_bytes refuses CR/LF (#839, SPEC-388)"
+
+[[ignore]]
+path = "crates/yulius-app/src/vault/runtime.rs"
+title = "CRLF injection through secret substitution in headers and the request line"
+reason = "control characters are refused at write and set aside before substitution (transportable); the path goes through reqwest's URL parser (#709, duplicate of #839, SPEC-388)"
+
+# The proxy's prepare() removes HOP_BY_HOP and Connection-listed headers and refuses Upgrade before
+# it calls egress_apply; hyper's server drops Content-Length when Transfer-Encoding is present and
+# refuses conflicting lengths, and its client frames the body itself.
+[[ignore]]
+path = "crates/yulius-app/src/vault/runtime.rs"
+title = "Egress proxy forwards hop-by-hop and framing headers verbatim"
+reason = "proxy.rs prepare() strips hop-by-hop and Connection-listed headers before egress_apply; hyper re-frames the body (#708, SPEC-388)"
+
+# Placeholders in the path and query are a feature (SPEC-121: APIs that take a key in the URL); the
+# value goes only to its bound host, the agent sees the placeholder, no redirect is followed, the
+# response is redacted, and the proxy logs reqwest errors without their URL (ADR-0252).
+[[ignore]]
+path = "crates/yulius-app/src/vault/runtime.rs"
+title = "Secret values substituted into the request URL path and query"
+reason = "URL placeholders are a feature for keys taken in the URL, sent only to the bound host; Yulius logs no upstream URL (#833, ADR-0252, SPEC-388)"

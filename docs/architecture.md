@@ -1174,6 +1174,9 @@ The Superagent uses the agent vault as a task's agent does
 behind the egress proxy with its own `ck_` bearer (`App::vault_superagent_setup`: proxy variables,
 the CA bundle in its run directory, a placeholder per agent secret), and the proxy's policy takes
 a live Superagent's bearer as `EgressCaller::Superagent`, which never uses a production secret.
+The policy asks whether a client's run still lives on every request, not only when the proxy
+resolves it for a connection (`App::egress_client_live`, ADR-0252): an agent run's attempt not
+over, a CI job's credential open, a Superagent's shell running; an ended run's request gets 403.
 `secret_copy_to_env` and `secret_request_hosts` take a `SecretUser` (a task's agent or the
 Superagent): the Superagent's copies go to the sandbox repository's ignored `.env`, and its asks
 are recorded as `<login>'s Superagent`. The copy walks to its `.env` from the canonical sandbox

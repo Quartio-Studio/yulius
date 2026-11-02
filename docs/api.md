@@ -1663,7 +1663,10 @@ task; other hooks answer as usual.
   base64("yulius:" + task token)` (407 otherwise). Hosts bound to an agent secret of the run's
   sandbox are intercepted (credential added, placeholders `yulius-secret-NAME` replaced,
   `X-Yulius-Secret: NAME` chooses between secrets adding the same header, 409 when ambiguous;
-  the response redacted); other hosts are tunneled. Local destinations answer 403.
+  the response redacted); other hosts are tunneled. Local destinations answer 403. Once the run
+  ended (its attempt over, a CI job's credential closed, a Superagent's shell gone), its token is
+  refused (407) and a request on a connection it already holds answers 403 with nothing sent
+  (ADR-0252).
 - `POST /internal/scrub/fingerprints` (task token) → `{version, base, salt, names, needles:
   [{secret, len, rolling, digest}]}`: the run's redaction fingerprints (no values).
 - `POST /internal/scrub/report` (task token) `{channel: "bash"|"tool", names}` → 204; audited
