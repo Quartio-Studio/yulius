@@ -126,4 +126,21 @@ the next scan; dead code a finding points at is removed instead.
 
 ## Evidence
 
-To be filled in once the gates ran.
+- `python3 scripts/bootstrap.py` then `scripts/dev ci` at af5a37c3 (spec, ignores, the
+  `transcript_path` change, changes entry): exit 0; nextest "2960 tests run: 2960 passed (3 slow),
+  16 skipped". Among them every test cited above passed:
+  `request::tests::a_typed_first_message_carries_no_control_character`,
+  `request::tests::control_characters_never_reach_the_first_message`,
+  `rotation::tests::manual_account_choice_rules`,
+  `task_message::tests::escape_sequences_and_control_characters_never_reach_the_session`,
+  `task_ownership::a_non_owner_watches_the_terminal_read_only`,
+  `task_ownership::a_hand_over_refuses_the_previous_owners_next_keystroke`,
+  `task_ownership::only_the_owner_writes_to_a_task`,
+  `http_auth::invisible_sandboxes_answer_like_missing_ones_and_read_users_cannot_change_tasks`;
+  the transcript-watching suites (`supervision::`, `run_metrics::`) passed with the simplified
+  `transcript_path`.
+- `scripts/vidoc_scan.py` `parse_config` accepts `.config/vidoc.toml` (79 entries); each of the
+  four issue titles matches exactly one new entry at `crates/yulius-app/src/supervisor.rs` as
+  `apply_ignores` matches (case-insensitive substring).
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0):
+  disabled, nothing scanned, so the ignores are not proven against a live scan.
