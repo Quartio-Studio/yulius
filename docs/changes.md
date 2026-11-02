@@ -4,6 +4,14 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-02
+
+- The onboarding e2e test "Start again during the last read keeps the form" now waits for the held
+  GitHub read's answer before checking that the form stayed: the mock counts answered reads
+  (`githubAnswered`) and the test polls it up to the asked count, where it polled the asked count,
+  which already included the held read (SPEC-380, task #362, fixes #869). Without the page's
+  `epoch` guard it still fails. Test and mock only.
+
 ## 2026-11-01
 
 - The e2e test of a Vidoc refresh that overtakes the read after a change no longer times out on
