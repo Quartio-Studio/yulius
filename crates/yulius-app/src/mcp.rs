@@ -28,14 +28,16 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 /// browser it has not (SPEC-178, SPEC-186 SAV-002..004, ADR-0150), and messaging tasks for its
 /// person (SPEC-230, ADR-0178), and asking its person to start a task in another of their
 /// sandboxes (SPEC-335, ADR-0227). Everything else belongs to a task.
-pub const COCKPIT_TOOLS: [&str; 23] = [
+pub const COCKPIT_TOOLS: [&str; 25] = [
     "tasks_list",
     "task_get",
     "task_create",
+    "task_update",
     "task_message",
     "task_stop",
     "task_archive",
     "task_delete",
+    "attachments_trash",
     "automation_create",
     "automations_list",
     "automation_update",
@@ -189,9 +191,30 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
             }), &[]),
         },
         ToolDescriptor {
+            name: "task_update".into(),
+            description: "Change how a task of this project that has not started yet (chained or prepared) starts, in place, as the UI's change of its start does: after_task, start_rule, supertask, prepared or start_at as task_create takes them, none of them to start it now. Use it to chain an existing task; never recreate a task (task_create, then task_delete) to change its start. A task that has started is refused. Audited.".into(),
+            input_schema: schema(json!({
+                "task_id": {"type": "string", "description": "Task id"},
+                "number": {"type": "integer", "description": "Task number within this sandbox"},
+                "after_task": {"type": "integer", "description": "Task number to wait for (starts when it is done)"},
+                "start_rule": {"type": "string", "description": "Start when this rule over the project's tasks is true, e.g. \"#12 done\" (not with after_task)"},
+                "supertask": {"type": "boolean", "description": "Start now as a supertask (only when the person asks)"},
+                "prepared": {"type": "boolean", "description": "Wait until the person presses Start now"},
+                "start_at": {"type": "string", "description": "Prepared, starting by itself at this RFC 3339 time"}
+            }), &[]),
+        },
+        ToolDescriptor {
             name: "task_delete".into(),
-            description: "Delete another task of this project permanently (by task_id or number), as Delete in the UI: its local worktree and branch (uncommitted work included), runs and transcripts go; remote branches and pull requests stay. A running task must be stopped first (a Done one is closed first). Not your own task. Audited.".into(),
+            description: "Delete another task of this project permanently (by task_id or number), as Delete in the UI: its local worktree and branch (uncommitted work included), runs and transcripts go; remote branches and pull requests stay. Its attachments stay where they are while another task's request names them (the answer's kept_for), otherwise they wait 7 days in the trash (attachments_trash restores them). A running task must be stopped first (a Done one is closed first). Not your own task. Audited.".into(),
             input_schema: schema(task_ref.clone(), &[]),
+        },
+        ToolDescriptor {
+            name: "attachments_trash".into(),
+            description: "The attachments of this project's deleted tasks (files pasted or dropped onto them), kept 7 days after the deletion: lists each deleted task's files and until when they can be restored. With restore (the deleted task's id or number) it moves that task's files into the attachments of the task into names (your own task by default) and answers their new paths. Restoring is audited.".into(),
+            input_schema: schema(json!({
+                "restore": {"type": ["string", "integer"], "description": "The deleted task's id or number whose files to restore"},
+                "into": {"type": "integer", "description": "Number of the task to restore them into (default: your own task)"}
+            }), &[]),
         },
         ToolDescriptor {
             name: "sessions_search".into(),
@@ -608,6 +631,8 @@ impl App {
                 self.tool_task_change(&project, &args, TaskChange::Delete)
                     .await
             }
+            "task_update" => self.tool_task_update(&project, &args).await,
+            "attachments_trash" => self.tool_attachments_trash(&project, &args).await,
             "sessions_search" => self.tool_sessions_search(&project, &args).await,
             "session_read" => self.tool_session_read(&project, &args).await,
             "automation_create" => self.tool_automation_create(&project, &args).await,

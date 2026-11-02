@@ -75,6 +75,8 @@ pub const MAX_SHELL_NAME_CHARS: usize = 40;
 pub const MAX_SHELL_INPUT_BYTES: usize = 64 * 1024;
 /// Interval of the idle reaper for shells and browsers.
 pub const REAP_INTERVAL: Duration = Duration::from_secs(60);
+/// Reaper rounds between purges of the attachments trash (an hour).
+const TRASH_PURGE_ROUNDS: u64 = 60;
 /// Grace per escalation step of a shutdown request (Ctrl-C, then SIGTERM, then SIGKILL;
 /// interactive shells ignore SIGTERM, so ending a shell takes about two steps).
 const SHUTDOWN_GRACE_MS: u32 = 500;
@@ -1468,6 +1470,7 @@ impl App {
     pub async fn start_workspace_services(self: &Arc<Self>) -> WorkspaceReaper {
         let (adopted, removed) = self.adopt_shells().await;
         self.prune_shell_attachments();
+        self.purge_attachment_trash();
         if adopted + removed > 0 {
             tracing::info!(adopted, removed, "shells of the previous server process");
         }
@@ -1476,12 +1479,18 @@ impl App {
             let mut tick = tokio::time::interval(REAP_INTERVAL);
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             tick.tick().await;
+            let mut rounds: u64 = 0;
             loop {
                 tick.tick().await;
                 let Some(app) = app.upgrade() else {
                     return;
                 };
                 app.reap_idle_shells().await;
+                // Deleted tasks' attachments older than a week go hourly (SPEC-396 ATR-004).
+                rounds = rounds.wrapping_add(1);
+                if rounds % TRASH_PURGE_ROUNDS == 0 {
+                    app.purge_attachment_trash();
+                }
                 for sandbox in app.deps.browser.reap_idle().await {
                     tracing::info!(sandbox = %sandbox, "stopped an idle sandbox browser");
                 }

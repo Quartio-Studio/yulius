@@ -10,13 +10,15 @@
 //! - `task_stop`, `task_archive`, `task_delete`, `automation_delete` and `automation_run_now` run
 //!   the UI's function for that person, never on the caller's own task, and are audited with the
 //!   caller (MGT-008..011); `automation_template_enable` enables a ready-made automation as the
-//!   Automations page does (AUT-012).
+//!   Automations page does (AUT-012);
+//! - `task_update` changes how a waiting task starts as the UI's change does (SPEC-126), so no
+//!   task is recreated to chain it (SPEC-396 ATR-006).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
-use yulius_contracts::api::tasks::CreateTask;
+use yulius_contracts::api::tasks::{ChangeStart, CreateTask};
 use yulius_domain::auto_choice::AUTO;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::Action;
@@ -119,10 +121,23 @@ impl App {
         caller: &ProjectCaller,
         number: &Value,
     ) -> AppResult<TaskRecord> {
+        self.task_number_arg(caller, number, "after_task").await
+    }
+
+    /// The project's task the argument `key` names by its number.
+    ///
+    /// # Errors
+    /// As [`App::after_task_arg`].
+    pub(crate) async fn task_number_arg(
+        &self,
+        caller: &ProjectCaller,
+        number: &Value,
+        key: &str,
+    ) -> AppResult<TaskRecord> {
         let number = number
             .as_u64()
             .and_then(|n| u32::try_from(n).ok())
-            .ok_or_else(|| AppError::Invalid("`after_task` must be a task number".into()))?;
+            .ok_or_else(|| AppError::Invalid(format!("`{key}` must be a task number")))?;
         self.deps
             .store
             .task_by_number(&caller.sandbox, number)
@@ -215,6 +230,46 @@ impl App {
     }
 }
 
+impl App {
+    /// `task_update` (SPEC-396 ATR-006): the UI's change of how a waiting task of the caller's
+    /// project starts (SPEC-126), with `task_create`'s start arguments, for the person it acts
+    /// for; audited by that change.
+    ///
+    /// # Errors
+    /// `Invalid` arguments, `NotFound` outside the project, `Forbidden` without write access, and
+    /// the change's errors (`Conflict` once the task has started).
+    pub async fn tool_task_update(
+        self: &Arc<Self>,
+        caller: &ProjectCaller,
+        args: &Value,
+    ) -> AppResult<Value> {
+        let ctx = self.manage_context(caller).await?;
+        let task = self.agent_task_ref(caller, args).await?;
+        let after_task_id = match args.get("after_task") {
+            None | Some(Value::Null) => None,
+            Some(number) => Some(self.after_task_arg(caller, number).await?.id),
+        };
+        let change = ChangeStart {
+            after_task_id: after_task_id.map(|id| id.as_str().to_owned()),
+            start_rule: opt_str(args, "start_rule")?,
+            supertask: flag_arg(args, "supertask")?,
+            prepared: flag_arg(args, "prepared")?,
+            start_at: opt_str(args, "start_at")?,
+        };
+        let changed = self
+            .change_task_start(&ctx, task.id.as_str(), &change)
+            .await?;
+        tracing::info!(task = %task.id, actor = %caller.actor, status = %changed.status, "task start changed by a tool");
+        let task = self
+            .deps
+            .store
+            .task(&task.id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        Ok(json!({"task": self.task_brief(&task).await?}))
+    }
+}
+
 /// What a task tool does to another task (MGT-008).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskChange {
@@ -283,10 +338,15 @@ impl App {
         let named = json!({"task": format!("#{} {}", task.number, task.title)});
         let action = match change {
             TaskChange::Delete => {
-                self.delete_task_as(&ctx, id, &caller.actor, Some(&caller.detail))
+                let attachments = self
+                    .delete_task_as(&ctx, id, &caller.actor, Some(&caller.detail))
                     .await?;
                 tracing::info!(task = %task.id, actor = %caller.actor, "task deleted by a tool");
-                return Ok(json!({"deleted": {"task_id": id, "number": task.number}}));
+                return Ok(json!({"deleted": {
+                    "task_id": id,
+                    "number": task.number,
+                    "attachments": attachments,
+                }}));
             }
             TaskChange::Stop => {
                 self.stop_task(&ctx, id).await?;
