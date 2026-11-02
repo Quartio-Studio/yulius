@@ -1,11 +1,11 @@
 ---
 yulius-task: 72b41e13-c202-41cb-b8ce-8fcc06885f83
-status: done
+status: in-progress
 ---
 
 # SPEC-382: one zig host name for bootstrap's and doctor's messages
 
-Status: done
+Status: in-progress
 Date: 2026-11-02
 Owner: Yulius task #364
 Scope authorization: task #364, Fixes #645 (nits left at the review round limit of task #201,
@@ -31,6 +31,14 @@ helper that normalizes the machine name.
 - What else the cause could break: nothing else reads the host name; the download URL and the pin
   lookup already use `host_key`'s normalized key.
 
+- Merge blocker met on the way: the PR's e2e job (run 7d776c09) failed "the daily chart's hover tip
+  stays inside its chart on the first and the last day" (`e2e/tests/pipeline.e2e.ts`), outside this
+  change. The mock's trend figures are hashed from the date, so on 2026-11-02 the last day held the
+  range's highest p90; `placeTip` (`stages.js`) keeps a tip inside its chart sideways but not at the
+  top, and the tip, drawn above its point, ran 46 px past the chart's top. `dev` passed the day
+  before, a Sunday without figures. It failed every pull request's e2e that day, so it is fixed
+  here rather than left to block the merge.
+
 ## Requirements
 
 - **ZHN-001** `zig_install.host_name(machine)` returns the normalized `<arch>-linux` name
@@ -40,18 +48,25 @@ helper that normalizes the machine name.
   the message is built by `check_repository.zig_pin_error(machine, pins)`, which returns `None` for
   a pinned host, so it is unit-tested without running doctor.
 
+- **ZHN-003** A chart tip with no room above its point (the daily chart's highest day) is moved
+  down to the chart's top, so it stays inside; the e2e test hovers the highest day as well as the
+  first and the last, so it no longer depends on the date.
+
 ## Plan
 
 - [x] Spec for one zig host name
 - [x] Regression tests for an upper-case machine name
 - [x] One host_name helper used by bootstrap and doctor
 - [x] Gates, review and delivery
+- [x] Daily chart tip stays inside its chart on its highest day
+- [ ] Gates, re-review and merge on green
 
 ## Acceptance criteria
 
 - With machine `RISCV64`, both bootstrap's skip message and doctor's error name `riscv64-linux`
   (ZHN-001, ZHN-002); tests prove it and failed before the change.
 - `install` no longer repeats the normalization (ZHN-001).
+- The daily chart's tip stays inside its chart on its highest day, on any date (ZHN-003).
 
 ## Test plan
 
@@ -59,7 +74,8 @@ helper that normalizes the machine name.
   `x86_64-linux`; the unpinned skip with `RISCV64` names `riscv64-linux` and not `RISCV64`.
 - `test_check_repository`: `zig_pin_error("RISCV64", pins)` names `riscv64-linux` and not
   `RISCV64-linux`; `zig_pin_error("AMD64", pins)` with `x86_64-linux` pinned is `None`.
-- `python3 -m unittest discover -s scripts -p 'test_*.py'`, then `scripts/dev ci`.
+- `pipeline.e2e.ts`: the daily chart test also hovers the topmost p90 dot (ZHN-003).
+- `python3 -m unittest discover -s scripts -p 'test_*.py'`, `scripts/dev ci`, then the e2e suite.
 
 ## Decisions
 
@@ -73,6 +89,12 @@ helper that normalizes the machine name.
   `host_name`): `host_key` stays the one membership check and `host_name` the one name. Doctor's
   `if error:` equals `is not None` (the message is never empty). `doctor()` itself has no test: it
   runs rustup and the pinned tools; its zig check is now the one-line call to `zig_pin_error`.
+
+- **The tip is clamped, not flipped below its point.** Moving it just inside the top keeps every
+  chart tip inside its plot with one rule in `placeTip` (the waterfall's tips use it too); it can
+  cover the highest point, whose crosshair still shows the day. The dashboard's tasks chart places
+  its own tip (`pages/dashboard.js`) and is left as it is: no test or report shows it past its
+  chart; noted on #645.
 
 ## Evidence
 

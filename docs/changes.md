@@ -10,6 +10,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `RISCV64` read "RISCV64-linux" in doctor and "riscv64-linux" in bootstrap. Both now take the
   name from `zig_install.host_name`, and doctor's message is built by `zig_pin_error`, which a unit
   test covers (SPEC-382, task #364, fixes #645).
+- The Pipeline's daily chart keeps its hover tip inside the chart on its highest day: the tip, drawn
+  above its point, ran past the chart's top. The mock's figures follow the date, so the e2e test
+  failed every pull request on 2026-11-02; it now hovers the highest day on any date (SPEC-382).
 
 ## 2026-11-01
 
