@@ -3,7 +3,6 @@
 //! interception and injection for the bound host, opaque tunnels for others, refusals.
 
 use std::collections::HashMap;
-use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -140,6 +139,10 @@ async fn upstream(
                             .path_and_query()
                             .map_or("/", |p| p.as_str())
                             .to_owned();
+                        if path.starts_with("/fail") {
+                            // Closes the connection without an answer.
+                            return Err(std::io::Error::other("no answer"));
+                        }
                         if path.starts_with("/slow") {
                             tokio::time::sleep(SLOW).await;
                         }
@@ -160,7 +163,7 @@ async fn upstream(
                         if let Ok(value) = auth.parse() {
                             response.headers_mut().insert("x-echo-auth", value);
                         }
-                        Ok::<_, Infallible>(response)
+                        Ok::<_, std::io::Error>(response)
                     }
                 });
                 let _ = hyper::server::conn::http1::Builder::new()
@@ -909,6 +912,7 @@ impl Logs {
         let writer = logs.clone();
         let guard = tracing::subscriber::set_default(
             tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::DEBUG)
                 .with_ansi(false)
                 .with_writer(move || writer.clone())
                 .finish(),
@@ -975,5 +979,24 @@ async fn a_full_shares_warning_names_the_busiest_runs() -> TestResult {
         "the busiest runs, with their counts: {}",
         warnings[0]
     );
+    Ok(())
+}
+
+/// SPEC-388 EPL-003 (Vidoc #833): a placeholder in the query is replaced upstream, and when that
+/// request fails, the proxy's log line says so without the URL, which holds the value.
+#[tokio::test]
+async fn a_failed_upstream_request_never_logs_the_secret_in_its_url() -> TestResult {
+    let (logs, _logging) = Logs::capture();
+    let setup = setup().await?;
+    let client = agent(&setup, "good-token")?;
+    let response = client
+        .get(format!("https://{BOUND}/fail?key=yulius-secret-API_KEY"))
+        .send()
+        .await?;
+    assert_eq!(response.status(), 502);
+    let failed = logs.lines_with("upstream request failed");
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    let leaked = logs.lines_with(VALUE);
+    assert!(leaked.is_empty(), "{leaked:?}");
     Ok(())
 }
