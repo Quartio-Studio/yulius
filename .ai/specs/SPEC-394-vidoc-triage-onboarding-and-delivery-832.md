@@ -62,7 +62,7 @@ Each of the five Vidoc findings about onboarding and delivery is checked against
 ## Plan
 
 - [x] Spec SPEC-394 with the triage of all five findings
-- [ ] validate_checkout reads the checkout only through no-follow handles (#744)
+- [x] validate_checkout reads the checkout only through no-follow handles (#744)
 - [ ] The production-branch warning shows only the error's public message (#834)
 - [ ] Narrow [[ignore]] entries for the dismissed wordings (#832 #783 #781)
 - [ ] Gates, docs and changes entry

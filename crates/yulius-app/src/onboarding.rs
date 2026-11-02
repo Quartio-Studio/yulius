@@ -17,8 +17,12 @@
 
 use std::fs::{self, File};
 use std::io::Read;
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use nix::fcntl::OFlag;
+use nix::sys::stat::Mode;
 
 use yulius_contracts::api::sandboxes::{OnboardingPlan, Profile, Sandbox};
 use yulius_contracts::import::{OnboardingStatus, OnboardingTask};
@@ -252,50 +256,53 @@ impl OnboardingState {
     }
 }
 
-/// `root/rel` when it is a regular file (not a link) whose parent resolves inside `root`.
-fn regular_file_inside(root: &Path, canonical_root: &Path, rel: &str) -> Option<PathBuf> {
-    let path = root.join(rel);
-    let meta = fs::symlink_metadata(&path).ok()?;
-    if !meta.is_file() {
-        return None;
-    }
-    let parent = fs::canonicalize(path.parent()?).ok()?;
-    parent.starts_with(canonical_root).then_some(path)
+/// `root/rel` opened as a folder (`O_DIRECTORY`): a link at its end is refused, and the handle is
+/// used only when its real path is inside `canonical_root` and out of `.git`. The checkout belongs
+/// to contained agents, which can swap any path for a link at any moment, so the decision is made
+/// on the handle, never on the path (#744, ADR-0174). Links inside the root on the way are
+/// followed, as before.
+fn directory_inside(root: &Path, canonical_root: &Path, rel: &str) -> Option<OwnedFd> {
+    crate::files::open_inside(
+        canonical_root,
+        &root.join(rel),
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY,
+    )
+    .ok()
 }
 
-/// `root/rel` when it is a real directory (not a link) resolving inside `root`.
-fn directory_inside(root: &Path, canonical_root: &Path, rel: &str) -> Option<PathBuf> {
+/// The text of the regular file `root/rel`, opened like [`directory_inside`] (a link at its end
+/// refused, the real path inside `canonical_root`, without waiting on a FIFO), at most `max`
+/// bytes read through that handle.
+fn read_inside(root: &Path, canonical_root: &Path, rel: &str, max: u64) -> Option<String> {
     let path = root.join(rel);
-    let meta = fs::symlink_metadata(&path).ok()?;
-    if !meta.is_dir() {
-        return None;
-    }
-    let resolved = fs::canonicalize(&path).ok()?;
-    resolved.starts_with(canonical_root).then_some(path)
+    crate::race::reached(crate::race::Point::CheckoutRead, &path);
+    let fd = crate::files::open_inside(canonical_root, &path, OFlag::O_RDONLY).ok()?;
+    read_bounded(File::from(fd), max)
 }
 
-fn read_bounded(path: &Path, max: u64) -> Option<String> {
+/// At most `max` bytes of `file` when it is a regular file.
+fn read_bounded(file: File, max: u64) -> Option<String> {
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
     let mut bytes = Vec::new();
-    File::open(path)
-        .ok()?
-        .take(max)
-        .read_to_end(&mut bytes)
-        .ok()?;
+    file.take(max).read_to_end(&mut bytes).ok()?;
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn directory_files(dir: &Path) -> Vec<(String, String)> {
-    let Ok(entries) = fs::read_dir(dir) else {
+/// The regular files of the folder `dir` (by name, links and others left out), each opened from
+/// the folder's handle with `O_NOFOLLOW | O_NONBLOCK`.
+fn directory_files(dir: &OwnedFd) -> Vec<(String, String)> {
+    let Ok(names) = crate::files::names_in(dir, MAX_DECISION_FILES) else {
         return Vec::new();
     };
-    entries
-        .filter_map(Result::ok)
-        .take(MAX_DECISION_FILES)
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
-        .filter_map(|entry| {
-            let name = entry.file_name().to_str()?.to_owned();
-            let contents = read_bounded(&entry.path(), MAX_DOC_BYTES)?;
-            Some((name, contents))
+    let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let fd = nix::fcntl::openat(dir, name.as_os_str(), flags, Mode::empty()).ok()?;
+            let contents = read_bounded(File::from(fd), MAX_DOC_BYTES)?;
+            Some((name.into_string().ok()?, contents))
         })
         .collect()
 }
@@ -307,14 +314,13 @@ enum OwnedDecisions {
 }
 
 /// Validates the documentation format of a checkout (SPEC-001 §7.2) and returns the report
-/// plus the raw `yulius.toml`. Files are read at the layout's paths, bounded in size; symbolic
-/// links and paths resolving outside `root` count as missing.
+/// plus the raw `yulius.toml`. Files are read at the layout's paths, bounded in size, through
+/// handles checked as they are opened; symbolic links, FIFOs and paths resolving outside `root`
+/// or into `.git` count as missing.
 #[must_use]
 pub fn validate_checkout(root: &Path) -> (ProjectReport, Option<String>) {
     let canonical = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let read = |rel: &str, max: u64| {
-        regular_file_inside(root, &canonical, rel).and_then(|path| read_bounded(&path, max))
-    };
+    let read = |rel: &str, max: u64| read_inside(root, &canonical, rel, max);
     let yulius_toml = read(
         "yulius.toml",
         u64::try_from(MAX_CONFIG_BYTES).unwrap_or(u64::MAX),
@@ -1563,6 +1569,68 @@ mod tests {
         fs::remove_file(root.join("docs/changes.md"))?;
         write(root, "docs/changes.md", "# Changes\n")?;
         assert!(validate_checkout(root).0.is_valid());
+        Ok(())
+    }
+
+    /// #744 (SPEC-394 VOD-001): reads go through handles, yet a folder link that stays inside the
+    /// checkout still reads, as before; a FIFO or a link at a layout path counts as missing, and
+    /// so does a decisions file that is a link.
+    #[test]
+    fn checkout_validation_follows_inner_folder_links_and_skips_fifos() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path();
+        write(root, "AGENTS.md", "# Rules\n\nRun the tests.\n")?;
+        write(root, "CLAUDE.md", "See AGENTS.md.\n")?;
+        write(
+            root,
+            "documentation/product.md",
+            "# Shop\n\nSells things.\n",
+        )?;
+        write(
+            root,
+            "documentation/architecture.md",
+            "# A\n\n```mermaid\nflowchart LR\n  A --> B\n```\n",
+        )?;
+        write(
+            root,
+            "documentation/decisions/0001-use-sqlite.md",
+            "# 1. Use SQLite\n\n## Status\n\nAccepted\n\n## Context\n\nOne VM.\n\n\
+             ## Decision\n\nSQLite.\n\n## Alternatives\n\n- Postgres\n\n## Consequences\n\nSimple.\n",
+        )?;
+        write(root, "documentation/changes.md", "# Changes\n")?;
+        std::os::unix::fs::symlink(root.join("documentation"), root.join("docs"))?;
+        write(root, "yulius.toml", "[docs]\n")?;
+        let problems = |root: &Path| -> Vec<String> {
+            validate_checkout(root)
+                .0
+                .problems
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        };
+        assert_eq!(problems(root), Vec::<String>::new());
+
+        let outside = tempfile::tempdir()?;
+        write(
+            outside.path(),
+            "0002-host.md",
+            "# 2. Host\n\n## Status\n\nAccepted\n",
+        )?;
+        std::os::unix::fs::symlink(
+            outside.path().join("0002-host.md"),
+            root.join("documentation/decisions/0002-host.md"),
+        )?;
+        fs::remove_file(root.join("AGENTS.md"))?;
+        nix::unistd::mkfifo(&root.join("AGENTS.md"), nix::sys::stat::Mode::S_IRWXU)?;
+        let problems = problems(root);
+        assert!(
+            problems.contains(&"AGENTS.md: is missing".to_owned()),
+            "{problems:?}"
+        );
+        assert!(
+            !problems.iter().any(|problem| problem.contains("0002-host")),
+            "the linked decision was read: {problems:?}"
+        );
         Ok(())
     }
 
