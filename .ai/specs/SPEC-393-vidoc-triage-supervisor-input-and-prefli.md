@@ -48,9 +48,9 @@ the next scan; dead code a finding points at is removed instead.
   `control_characters_never_reach_the_first_message`.
 - VSI-002 (#818, duplicate of #752, dismissed). Its premise is wrong: each paste is a bracketed
   paste (`supervisor.rs:756`), so a newline in it is text in the prompt box, not a submit (Enter
-  is written separately, `supervisor.rs:1915`). Control bytes are removed as in VSI-001, whoever wrote
-  the text (the prompt also folds in queued messages of other people, so the guard is the
-  parsing, not who wrote it).
+  is written separately, `supervisor.rs:1915`). Control bytes are removed as in VSI-001,
+  whoever wrote the text (the prompt also folds in queued messages of other people, so the guard
+  is the parsing, not who wrote it).
 - VSI-003 (#692, dismissed). `send_input` is the terminal's keyboard: a viewer's keystrokes,
   arrows, Esc and Ctrl+C must reach the TUI unchanged, so sanitizing there would break the
   terminal. Its only route, `terminal_input` (`terminal.rs:176-216`), refuses a viewer without
