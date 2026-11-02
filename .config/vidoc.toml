@@ -512,12 +512,12 @@ reason = "Cockpit-only equality check accepted in ADR-0144: no stored hash is ha
 # (HST-010), so each subcommand runs with exactly its caller's rights. Detail in SPEC-395.
 
 # #754: sandbox-exec is the internal step Yulius puts before bwrap; run by anyone else it execs the
-# program as the caller, only adding a seccomp filter, and the kernel checks its cgroup move and
-# setns against that caller.
+# program as the caller, only handing bwrap its seccomp filter, and the kernel checks its cgroup
+# move and setns against that caller.
 [[ignore]]
 path = "crates/yulius/src/main.rs"
 title = "Sandbox exec accepts arbitrary argv without visible authorization check"
-reason = "sandbox-exec holds no privilege: it execs bwrap as its caller with an added seccomp filter; cgroup.procs writes and setns are the kernel's checks on that caller (SPEC-395, #754)"
+reason = "sandbox-exec holds no privilege: it execs bwrap as its caller, handing it a seccomp filter; cgroup.procs writes and setns are the kernel's checks on that caller (SPEC-395, #754)"
 
 # #753: `--scrub-exec` is Claude Code's shell prefix in a run: its argument is the agent's own Bash
 # command, run by design through the shell as the agent's user; it only adds redaction and fails

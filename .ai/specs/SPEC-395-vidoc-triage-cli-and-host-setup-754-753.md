@@ -39,11 +39,12 @@ that stops it, the test that pins it, and one narrow `[[ignore]]` entry for its 
   builds its argv (`yulius-ptyhost/src/host.rs:232-234`, `yulius-sandbox/src/manager.rs:904`,
   `yulius-contracts/src/sandbox.rs:166`); no web handler passes request data to it. Run by anyone
   else, it holds no privilege: `exec_bwrap_with` (`yulius-sandbox/src/enter.rs:93-123`) execs the
-  given program as the caller, only *adding* the seccomp filter; `--cgroup` writes the caller's own
+  given program as the caller, only handing it the seccomp filter (`--seccomp FD`, which bwrap
+  installs); `--cgroup` writes the caller's own
   pid to `cgroup.procs` of a directory under `/sys/fs/cgroup` without `..`
   (`yulius-sandbox/src/cgroup.rs:680-688`), which the kernel allows only where the caller may
   write; `--join` does `setns` into namespaces named by inode (a reused pid is refused,
-  `yulius-contracts/src/ptyhost.rs:431-440`), which the kernel allows only with
+  `holder_ns`, `yulius-sandbox/src/enter.rs:43-52`), which the kernel allows only with
   `CAP_SYS_ADMIN` over them. A caller gains nothing it could not do with `bwrap` or `nsenter`
   directly. Not a trust boundary.
 - VCH-002 (#753, dismissed; same reasoning, other code: not a duplicate of #754).
@@ -88,16 +89,16 @@ that stops it, the test that pins it, and one narrow `[[ignore]]` entry for its 
   accepts only printable ASCII other than space, quotes, backslash, `%` and `;`
   (`host_setup.rs:265-270`): no newline, so no directive can be injected, and no systemd
   specifier. The service user is also checked when it is created (`host_setup.rs:957`). The
-  values come from `sudo yulius host setup` options on the server (`main.rs:445-481`,
-  `main.rs:509-522`), typed by the operator who is already root; `public_url` is not taken from
-  web configuration. A unit file that exists is never overwritten. New test (no test pinned the
+  values come from `sudo yulius host setup` options on the server (`main.rs:445-481`, passed at
+  `main.rs:509-530`), typed by the operator who is already root; `public_url` is not taken from web
+  configuration. A unit file that exists is never overwritten. New test (no test pinned the
   guard): `host_setup::tests::unit_values_a_unit_file_cannot_hold_are_refused`.
 
 ## Plan
 
 - [x] Spec with the triage of all five findings
-- [ ] Host setup test pins that unsafe unit values are refused (#679)
-- [ ] Narrow [[ignore]] entries for the five dismissed wordings
+- [x] Host setup test pins that unsafe unit values are refused (#679)
+- [x] Narrow [[ignore]] entries for the five dismissed wordings
 - [ ] Gates, changes entry and evidence
 - [ ] Independent review answered
 - [ ] Issues commented and closed

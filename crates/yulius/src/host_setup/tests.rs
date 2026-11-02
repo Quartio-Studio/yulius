@@ -1038,6 +1038,8 @@ fn unit_values_a_unit_file_cannot_hold_are_refused() {
         "https://yulius.example.com x",
         "https://yulius.example.com/%h",
         "https://yulius.example.com/\"",
+        "https://yulius.example.com/'",
+        "https://yulius.example.com/\\",
         "https://yulius.example.com;id",
     ] {
         let mut fake = Fake::fresh();
