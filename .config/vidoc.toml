@@ -160,6 +160,14 @@ path = "crates/yulius-app/src/disk.rs"
 title = "path traversal via untrusted yulius.toml cache"
 reason = "check_repo_path rejects absolute and .. segments and real_dir_below refuses links (config.rs and tests/disk.rs)"
 
+# #843 (SPEC-391): the same finding reworded, at `find_caches`' `dir.join(&relative)`. Every
+# declared path went through `check_repo_path` (absolute, empty, `.` and `..` segments refused; a
+# bad one fails the whole `[disk]` table), and `cache_paths` drops `.git`.
+[[ignore]]
+path = "crates/yulius-app/src/disk.rs"
+title = "Path traversal via user-controlled declared caches in yulius.toml"
+reason = "parse_yulius_toml_caches refuses absolute paths and .. segments (check_repo_path); tested by spec_format::config::tests::declared_caches_are_repository_relative_paths (SPEC-391)"
+
 [[ignore]]
 path = "crates/yulius-domain/src/disk.rs"
 title = "Unvalidated cache paths"
@@ -347,6 +355,14 @@ path = "crates/yulius-app/src/ci/mod.rs"
 title = "Untrusted pull request CI configuration executes arbitrary shell commands"
 reason = "by design: CI runs the pull request's code inside the sandbox's containment without secrets (SPEC-142, ADR-0116)"
 
+# #842 (SPEC-391): the same finding reworded. A fork's pull request is never tested (`from_fork`,
+# tested by local_ci::a_fork_pull_request_is_never_tested_even_with_its_head_in_the_clone), so
+# whoever reaches it already pushes to the repository or is its agent.
+[[ignore]]
+path = "crates/yulius-app/src/ci/mod.rs"
+title = "CI runs attacker-supplied job commands from pull requests"
+reason = "by design: only pull requests of the sandbox's own repository are tested (from_fork skipped), inside its containment, with no secret their own configuration grants (SPEC-142, SPEC-264, ADR-0116, SPEC-391)"
+
 # A delivery environment's `command` is the sandbox profile's: a repository administrator sets it
 # (`PATCH /api/sandboxes/{sid}`), or it is seeded once from the default branch's `yulius.toml`
 # when a repository admin or maintainer imports the repository (`import_profile`). Since SPEC-219
@@ -401,6 +417,17 @@ reason = "by design every instance administrator may watch any sign-in (SPEC-002
 path = "crates/yulius-app/src/ci/exec.rs"
 title = "Path traversal in the CI checkout directory through an untrusted job key"
 reason = "job keys are [a-z0-9][a-z0-9_-]{0,31} (expand_jobs, valid_job_name) or constants; tested by ci::tests::jobs_expand_matrices_and_reject_bad_definitions"
+
+# #739 and its duplicate #736 (SPEC-391): the same finding in two more wordings.
+[[ignore]]
+path = "crates/yulius-app/src/ci/exec.rs"
+title = "Path traversal via CI job key in checkout directory"
+reason = "job keys are [a-z0-9][a-z0-9_-]{0,31} (expand_jobs, valid_job_name) or constants; tested by ci::tests::jobs_expand_matrices_and_reject_bad_definitions (SPEC-391)"
+
+[[ignore]]
+path = "crates/yulius-app/src/ci/exec.rs"
+title = "Path traversal via unvalidated CI job key in checkout path"
+reason = "job keys are [a-z0-9][a-z0-9_-]{0,31} (expand_jobs, valid_job_name) or constants; tested by ci::tests::jobs_expand_matrices_and_reject_bad_definitions (SPEC-391)"
 
 # #639 (SPEC-262): unconfirmed findings of task #200's change scans in code it did not touch,
 # triaged as false positives. Each holds the wording Vidoc used, so another finding about the same

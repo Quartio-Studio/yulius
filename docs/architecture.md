@@ -679,11 +679,13 @@ The server runs outside containment as the service user, and a sandbox's whole d
 mounted read-write into its runs and shells, so an agent can swap any folder below it for a link
 at any moment. Wherever the server reads or writes there (editor reads and saves, uploads and
 attachments, imported transcripts, skill copies, a CI job's log in `ci/logs`, its `ci/home`,
-`ci/cache/<checkout>` and the place of its checkout in `ci/jobs`), it opens the folder once and
-does everything else through that handle
+`ci/cache/<checkout>` and the place of its checkout in `ci/jobs`, the workflows and `yulius.toml`
+`ci_setup` reads from a task worktree), it opens the folder once and does everything else through
+that handle
 ([SPEC-220](../.ai/specs/SPEC-220-fix-657-host-writes-into-agent-owned-fol.md),
 [SPEC-285](../.ai/specs/SPEC-285-ci-job-log-created-without-following-pla.md),
 [SPEC-367](../.ai/specs/SPEC-367-ci-job-preparation-never-follows-a-link.md),
+[SPEC-391](../.ai/specs/SPEC-391-vidoc-triage-ci-jobs-and-caches-842-739.md),
 [decision 0174](decisions/0174-host-access-to-agent-owned-folders-goes-through-handles.md)). A CI
 checkout is the exception Git imposes: its place is readied through handles, then Git adds, checks
 out and cleans it by path, only when Git registers it at its resolved path inside `ci`. The
@@ -1393,7 +1395,10 @@ reuses a granted name for another command runs it without any secret, and its ou
 ([SPEC-264](../.ai/specs/SPEC-264-ci-grants-agent-secrets-only-to-the-trus.md), ADR-0196). A
 granted job gets the placeholders, the CA bundle and a proxy credential of its own, held in memory
 until its process ended. The proxy's `EgressClient` is then a CI caller, `ci:<run>`, that may use
-only the granted secrets toward their bound hosts; each use is audited under that actor.
+only the granted secrets toward their bound hosts; each use is audited under that actor. A fork's
+pull request is never tested at all: GitHub's word that its head is in another repository decides,
+since an agent that fetched its head to review it puts it in the clone
+([SPEC-391](../.ai/specs/SPEC-391-vidoc-triage-ci-jobs-and-caches-842-739.md)).
 
 ```mermaid
 flowchart LR
