@@ -180,7 +180,7 @@ test('after 15 minutes the waiting card reads once more, then offers Check now',
   await expect(screen.getByText('Connected', { exact: true })).toBeVisible();
 });
 
-type Holding = Window & { __yuliusMock: { holdGithub?: Promise<void> | null }; __releaseGithub?: () => void };
+type Holding = Window & { __yuliusMock: { holdGithub?: Promise<void> | null; githubAnswered?: number }; __releaseGithub?: () => void };
 /** Holds the page's next reads of the connection until `releaseGithub`. */
 const holdGithub = (browser: Browser) => browser.evaluate(() => {
   const w = window as unknown as Holding;
@@ -191,6 +191,8 @@ const releaseGithub = (browser: Browser) => browser.evaluate(() => {
   w.__yuliusMock.holdGithub = null;
   w.__releaseGithub?.();
 });
+/** How many reads of the connection the mock answered (past `holdGithub`). */
+const githubAnswered = (browser: Browser) => browser.evaluate(() => (window as unknown as Holding).__yuliusMock.githubAnswered ?? 0);
 
 test('Start again during the last read keeps the form, and Check now is off while it reads', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/github', '&github=0'));
@@ -206,10 +208,13 @@ test('Start again during the last read keeps the form, and Check now is off whil
   // The last read is on its way; the person starts again meanwhile.
   await screen.getByRole('button', 'Start again').click();
   await expect(screen.getByRole('button', 'Create GitHub App on GitHub')).toBeVisible();
-  await releaseGithub(browser);
-  // The read's answer leaves the form alone (it would put the Check now card back).
   const asked = await githubReads(browser);
-  await expect.poll(() => githubReads(browser)).toBe(asked);
+  expect(await githubAnswered(browser)).toBeLessThan(asked);
+  await releaseGithub(browser);
+  // Once the mock answered every read asked, the held one included (the page takes the answer
+  // within a few microtasks, before the poll's round trip returns), it has left the form alone
+  // (it would put the Check now card back).
+  await expect.poll(() => githubAnswered(browser)).toBe(asked);
   await expect(screen.getByRole('button', 'Check now')).toHaveCount(0);
   await expect(screen.getByRole('button', 'Create GitHub App on GitHub')).toBeVisible();
 
