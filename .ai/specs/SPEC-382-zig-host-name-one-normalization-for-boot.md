@@ -43,8 +43,8 @@ helper that normalizes the machine name.
 ## Plan
 
 - [x] Spec for one zig host name
-- [ ] Regression tests for an upper-case machine name
-- [ ] One host_name helper used by bootstrap and doctor
+- [x] Regression tests for an upper-case machine name
+- [x] One host_name helper used by bootstrap and doctor
 - [ ] Gates, review and delivery
 
 ## Acceptance criteria

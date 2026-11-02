@@ -398,6 +398,15 @@ def output(command):
     return subprocess.check_output(command, cwd=ROOT, text=True).strip()
 
 
+def zig_pin_error(machine, pins):
+    """Why this Linux host has no pinned zig, named as bootstrap names it, or None when it has one."""
+    from zig_install import host_key, host_name
+    if host_key(machine, pins) is None:
+        return (f"No pinned zig for {host_name(machine)} in .config/tools.toml: "
+                "the macOS check cannot run here")
+    return None
+
+
 def doctor():
     channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
     compiler = output(["rustup", "run", channel, "rustc", "--version"])
@@ -414,11 +423,10 @@ def doctor():
     if sys.platform == "linux":
         # The macOS check's C compiler (ADR-0169).
         import platform
-        from zig_install import host_key
         pins = tomllib.loads((ROOT / ".config/tools.toml").read_text())["zig"]
-        if host_key(platform.machine(), pins) is None:
-            raise ValueError(f"No pinned zig for {platform.machine()}-linux in .config/tools.toml: "
-                             "the macOS check cannot run here")
+        error = zig_pin_error(platform.machine(), pins)
+        if error:
+            raise ValueError(error)
         version = pins["version"]
         result = output([str(ROOT / ".tools/bin/zig"), "version"])
         if result != version:
