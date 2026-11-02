@@ -67,9 +67,9 @@ row, ended `cancelled`.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] ci::exec opens the job slot span when the wait begins and ends it started, cancelled or error
-- [ ] Stage summaries proven to count only ended waits
-- [ ] The waterfall draws a job still waiting (or cancelled while waiting) as its row under Jobs
+- [x] ci::exec opens the job slot span when the wait begins and ends it started, cancelled or error
+- [x] Stage summaries proven to count only ended waits
+- [x] The waterfall draws a job still waiting (or cancelled while waiting) as its row under Jobs
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
