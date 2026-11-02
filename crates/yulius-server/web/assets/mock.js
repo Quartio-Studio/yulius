@@ -3515,12 +3515,15 @@ function stageSpan(subjectKind, subjectId, key, kind, name, startMin, tookMin, e
 
 // A busy running run (SPEC-165, the screenshot of task #155): eight jobs waited 6 to 9 min for a
 // job slot (9.1 min in, so the 8 min tick would crowd "now"), as `ci::exec` records it (`wait:<job id>@…` beside the job's `job:<job id>@…`), each
-// with its checkout; four are still running, one of them with a failed stage.
+// with its checkout; four are still running, one of them with a failed stage. Two more still wait
+// for a slot (#536): `ci::exec` opened their waits when they began, and they have no job span yet.
 // Jobs are listed in the order they began waiting: prototypes began before gateway, started after.
 const BUSY_JOBS = [
   ['shared', 6, 0.5], ['engine', 6, null], ['prototypes', 6.5, 0.15], ['package (gateway)', 6.2, null],
   ['package (broker)', 6.8, 0.7], ['package (deployer)', 7.5, null], ['package (mcp/browser)', 8.2, 0.7], ['package (mcp/email)', 8.6, null],
 ];
+
+const BUSY_WAITING = ['package (mcp/slack)', 'package (mcp/github)'];
 
 function busyTimeline(id) {
   const s = (...args) => stageSpan('ci_run', id, ...args);
@@ -3533,19 +3536,25 @@ function busyTimeline(id) {
     const asked = 9.05 - i * 0.01;
     const at = asked - waited;
     const job = `job:j${i}@1`;
-    spans.push(s(`wait:j${i}@1`, 'wait', 'job slot', asked, waited, { job: name, outcome: 'started', detail: { cpus: 4, memory_mb: 8192 } }));
+    // The last one just started: its job span is there, its wait not ended yet (SPEC-385 WSL-004).
+    const just = i === BUSY_JOBS.length - 1;
+    spans.push(s(`wait:j${i}@1`, 'wait', 'job slot', asked, just ? null : waited, { job: name, ...(just ? {} : { outcome: 'started' }), detail: { cpus: 4, memory_mb: 8192 } }));
     spans.push(s(job, 'job', name, at, ran, { job: name, detail: ran === null ? {} : { cpu_ms: Math.round(ran * 3 * MIN), memory_peak_mb: 900 } }));
     spans.push(s(`${job}/checkout`, 'prepare', 'checkout', at, 0.01, { parent_key: job, job: name }));
     if (name === 'engine') spans.push(s(`${job}/stage:1`, 'stage', 'build', at - 0.01, null, { parent_key: job, job: name }));
     // Still running, but a stage of it already failed.
     if (name === 'package (deployer)') spans.push(s(`${job}/stage:1`, 'stage', 'lint', at - 0.01, 0.5, { parent_key: job, job: name, outcome: 'failed' }));
   });
+  // Asked 8.5 and 8.4 min ago: "waiting 8 min so far", 30 s from either rounding edge.
+  BUSY_WAITING.forEach((name, i) => {
+    spans.push(s(`wait:j${BUSY_JOBS.length + i}@1`, 'wait', 'job slot', 8.5 - i * 0.1, null, { job: name, detail: { cpus: 4, memory_mb: 8192 } }));
+  });
   return { spans, related: [] };
 }
 
 // A short run (about 2 min, SPEC-165 review): its axis steps by 30 s, "quality" was requeued after
-// its process host was lost (two waits, two job spans), "e2e"'s wait has no job span and
-// "security" was skipped.
+// its process host was lost (two waits, two job spans), "e2e" was cancelled while it waited (its
+// wait ended `cancelled`, no job span) and "security" was skipped.
 function shortTimeline(id) {
   const s = (...args) => stageSpan('ci_run', id, ...args);
   return { spans: [
@@ -3554,7 +3563,7 @@ function shortTimeline(id) {
     s('prepare@1', 'prepare', 'commit', 1.95, 0.01),
     s('wait:j0@1', 'wait', 'job slot', 1.94, 0.1, { job: 'quality', outcome: 'started' }),
     s('job:j0@1', 'job', 'quality', 1.84, 0.3, { job: 'quality', outcome: 'error', detail: { reason: 'the job’s process host was lost' } }),
-    s('wait:j9@1', 'wait', 'job slot', 1.94, 0.2, { job: 'e2e', outcome: 'started' }),
+    s('wait:j9@1', 'wait', 'job slot', 1.94, 0.2, { job: 'e2e', outcome: 'cancelled' }),
     // Checked nothing (exit 78, ADR-0133): skipped, not passed.
     s('wait:j5@1', 'wait', 'job slot', 1.9, 0.05, { job: 'security', outcome: 'started' }),
     s('job:j5@1', 'job', 'security', 1.85, 0.1, { job: 'security', outcome: 'skipped', detail: { exit_code: 78 } }),

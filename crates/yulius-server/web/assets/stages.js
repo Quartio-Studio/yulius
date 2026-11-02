@@ -6,7 +6,8 @@
 //   how long it took. A span's children fold under it (a failed one opens). Waits are drawn
 //   hatched, failures in the danger colour with a mark and a word, a span still running reaches
 //   "now". A CI run's jobs come under "Jobs", each with its wait for a job slot on its own row
-//   (SPEC-165).
+//   (SPEC-165); a job still waiting for one (or cancelled while it waited) is its wait alone
+//   (SPEC-385).
 // - `trendChart(trend)`: a stage's daily p50 (the series line) and p90 (dashed), both labelled at
 //   their end and in a legend, with a crosshair and a table.
 
@@ -122,6 +123,11 @@ function outcomeWord(span) {
   return span.outcome || 'ended';
 }
 
+/** A row's outcome word: a job that has only its open wait is "waiting" (SPEC-385), not running. */
+function rowWord(span, inJobs) {
+  return inJobs && isSlotWait(span) && !span.ended_at ? 'waiting' : outcomeWord(span);
+}
+
 // A CI job's mark beside its name (SPEC-165 STR-003): its state as an icon with its word.
 const JOB_MARKS = { running: 'refresh', passed: 'check', skipped: 'forward', failed: 'x', error: 'warn', cancelled: 'x' };
 // A job that checked nothing (ADR-0133) ran, but is not drawn as one that passed.
@@ -130,10 +136,14 @@ const SKIPPED = 'skipped';
 const time = (iso) => Date.parse(iso);
 const jobId = (key, prefix) => (key.startsWith(prefix) && key.includes('@') ? key.slice(prefix.length, key.lastIndexOf('@')) : null);
 
+/** A CI job's wait for a job slot, named by its job (SPEC-385: a lone one is the job's row). */
+const isSlotWait = (span) => span.kind === 'wait' && span.name === 'job slot' && span.subject_kind === 'ci_run' && Boolean(span.job);
+
 /**
  * Each CI job's wait for a job slot, by its job span's key (SPEC-165): `ci::exec` records the
  * wait as `wait:<job id>@…` beside the job's `job:<job id>@…`, so they pair by the job id; a job
- * requeued waited more than once and takes its last wait before it started.
+ * requeued waited more than once and takes its last wait before it started. A wait the job's
+ * start has not ended yet (SPEC-385 WSL-004) lasts until that start.
  */
 function slotWaits(spans) {
   const waits = new Map();
@@ -145,14 +155,17 @@ function slotWaits(spans) {
   for (const span of spans) {
     const id = span.kind === 'job' ? jobId(span.key, 'job:') : null;
     const before = (id && waits.get(id) || []).filter((w) => time(w.started_at) <= time(span.started_at));
-    if (before.length) paired.set(span.key, before.reduce((a, b) => (time(b.started_at) > time(a.started_at) ? b : a)));
+    if (!before.length) continue;
+    const wait = before.reduce((a, b) => (time(b.started_at) > time(a.started_at) ? b : a));
+    paired.set(span.key, wait.ended_at ? wait : { ...wait, ended_at: span.started_at });
   }
   return paired;
 }
 
 /**
  * The rows of a list of spans: groups (a CI run's own spans under "Run", its jobs under "Jobs" in
- * the order they began waiting), each a tree by `parent_key` with a job's slot wait on its row.
+ * the order they began waiting), each a tree by `parent_key` with a job's slot wait on its row. A
+ * wait no job span follows (the job still waits, or was cancelled while waiting) is that job's row.
  */
 function grouped(spans, heading) {
   const waits = slotWaits(spans);
@@ -166,7 +179,7 @@ function grouped(spans, heading) {
     else roots.push(span);
   }
   const began = (span) => time((waits.get(span.key) || span).started_at);
-  const jobs = roots.filter((s) => s.kind === 'job' && s.subject_kind === 'ci_run').sort((a, b) => began(a) - began(b));
+  const jobs = roots.filter((s) => (s.kind === 'job' && s.subject_kind === 'ci_run') || isSlotWait(s)).sort((a, b) => began(a) - began(b));
   const tree = { children, waits };
   if (jobs.length === 0) return [{ heading, roots, tree }];
   const isJob = new Set(jobs);
@@ -253,6 +266,12 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
   const describe = (span, inJobs, wait) => {
     const from = time(span.started_at);
     const to = span.ended_at ? time(span.ended_at) : now;
+    if (inJobs && isSlotWait(span)) {
+      // A job that has only its wait (SPEC-385 WSL-003): still waiting, or cancelled while it did.
+      const took = span.ended_at ? `waited ${duration(span.duration_ms)}` : `waiting ${duration(to - from)} so far`;
+      const said = `${span.job}: ${took} for a job slot${span.ended_at ? `, ${outcomeWord(span)}` : ''}`;
+      return { from, to, label: span.job, took, waited: null, figures: '', parts: [], said, failed: FAILED.has(span.outcome) };
+    }
     const label = inJobs && span.kind === 'job' ? span.name : stageLabel(span);
     const took = span.ended_at ? duration(span.duration_ms) : `${duration(to - from)} so far`;
     const waited = wait ? duration(time(wait.ended_at || span.started_at) - time(wait.started_at)) : null;
@@ -279,16 +298,19 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
       const box = tip.parentElement.getBoundingClientRect();
       placeTip(tip, event.clientX - box.left, event.clientY - box.top);
     };
-    const word = outcomeWord(span);
-    const mark = span.kind === 'job' && JOB_MARKS[word] ? icon(JOB_MARKS[word], { size: 12, label: word })
-      : d.failed ? icon('x', { size: 12, label: 'failed' }) : null;
+    const lone = inJobs && isSlotWait(span);
+    const word = rowWord(span, inJobs);
+    // A job still waiting for its slot: the hourglass of a task in line for one (#147).
+    const mark = lone && word === 'waiting' ? icon('st-queued', { size: 12, label: word })
+      : (span.kind === 'job' || lone) && JOB_MARKS[word] ? icon(JOB_MARKS[word], { size: 12, label: word })
+        : d.failed ? icon('x', { size: 12, label: 'failed' }) : null;
     const name = [
       kids ? icon(open ? 'down' : 'right', { size: 12 }) : h('span', { class: 'st-fold-space', 'aria-hidden': 'true' }),
       mark ? h('span', { class: ['st-mark', `st-mark-${d.failed ? 'failed' : word}`] }, mark) : null,
       h('span', { class: 'st-name-text' }, d.label),
       kids ? h('span', { class: 'st-count' }, `${kids} ${kids === 1 ? 'stage' : 'stages'}`) : null,
     ];
-    return h('li', { class: ['st-row', span.kind === 'job' && inJobs && 'st-job'], title: d.said, onPointerMove: show, onPointerLeave: () => { tip.hidden = true; } },
+    return h('li', { class: ['st-row', inJobs && (span.kind === 'job' || lone) && 'st-job'], title: d.said, onPointerMove: show, onPointerLeave: () => { tip.hidden = true; } },
       kids
         ? h('button', { type: 'button', class: 'st-name st-fold', 'aria-expanded': String(open), style: { paddingLeft: `${depth * 14}px` }, onClick: toggle }, name)
         : h('span', { class: 'st-name', style: { paddingLeft: `${depth * 14}px` } }, name),
@@ -328,7 +350,7 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
       h('td', null, new Date(d.from).toLocaleTimeString()),
       anyWait ? h('td', { class: 'num st-waited' }, d.waited || '') : null,
       h('td', { class: 'num' }, d.took),
-      h('td', null, outcomeWord(span)),
+      h('td', null, rowWord(span, Boolean(group.jobs))),
       h('td', null, [d.figures, span.source === 'backfilled' ? 'backfilled' : ''].filter(Boolean).join(' · '))));
     for (const child of group.tree.children.get(span.key) || []) tableRow(group, child, depth + 1);
   };

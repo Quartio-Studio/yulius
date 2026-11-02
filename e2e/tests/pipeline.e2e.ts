@@ -203,8 +203,10 @@ test('a busy CI run reads one row per job: its wait for a slot and its run on on
   // No anonymous "Waiting for a job slot" row: each wait is on its job's row, in waiting order.
   await expect(browser.locator('.st-row:has-text("Waiting for a job slot")')).toHaveCount(0);
   const rows = await jobRows(browser);
-  expect(rows.map((r) => r.name)).toEqual(['shared', 'engine', 'prototypes', 'package (gateway)', 'package (broker)', 'package (deployer)', 'package (mcp/browser)', 'package (mcp/email)']);
-  expect(rows.every((r) => r.touch === true)).toBe(true);
+  expect(rows.map((r) => r.name)).toEqual(['shared', 'engine', 'prototypes', 'package (gateway)', 'package (broker)', 'package (deployer)', 'package (mcp/browser)', 'package (mcp/email)', 'package (mcp/slack)', 'package (mcp/github)']);
+  // The jobs that ran lead with their wait (mcp/email's, not ended yet, up to its start); the two
+  // still waiting have only their wait (#536).
+  expect(rows.map((r) => r.touch)).toEqual([...Array(8).fill(true), null, null]);
   const engine = rows.find((r) => r.name === 'engine');
   expect(engine?.took).toMatch(/^3 min so far\s*waited 6 min$/);
   const engineRow = browser.locator('.st-row.st-job:has-text("engine")');
@@ -213,6 +215,21 @@ test('a busy CI run reads one row per job: its wait for a slot and its run on on
   await expect(browser.locator('.st-row.st-job:has-text("shared") [aria-label="passed"]')).toBeVisible();
   await engineRow.hover();
   await expect(browser.locator('.st-tip')).toContainText('waited 6 min for a job slot');
+  // SPEC-385 WSL-003: a job still waiting is its row under Jobs, hatched up to "now".
+  expect(rows.find((r) => r.name === 'package (mcp/email)')?.took).toMatch(/waited 8 min$/);
+  expect(rows.find((r) => r.name === 'package (mcp/slack)')?.took).toBe('waiting 8 min so far');
+  const waitingRow = browser.locator('.st-row.st-job:has-text("package (mcp/slack)")');
+  await expect(waitingRow).toHaveAttribute('title', 'package (mcp/slack): waiting 8 min so far for a job slot');
+  await expect(browser.locator('.st-row.st-job:has-text("package (mcp/slack)") [aria-label="waiting"]')).toBeVisible();
+  expect(await browser.evaluate(() => {
+    const row = [...document.querySelectorAll('.st-row.st-job')].find((r) => r.textContent?.includes('package (mcp/slack)'));
+    const bars = row ? [...row.querySelectorAll('.st-bar')] : [];
+    const track = row?.querySelector('.st-track')?.getBoundingClientRect();
+    const bar = bars[0]?.getBoundingClientRect();
+    return { bars: bars.map((b) => b.className), reachesNow: Boolean(track && bar && Math.abs(track.right - bar.right) <= 1) };
+  })).toEqual({ bars: ['st-bar st-bar-wait st-bar-running'], reachesNow: true });
+  await waitingRow.hover();
+  await expect(browser.locator('.st-tip')).toContainText('waiting 8 min so far');
   // The plot itself, a fold open, passes axe (its buttons, marks and counts).
   await browser.locator('.st-row.st-job:has-text("shared") .st-fold').click();
   await expect(browser.locator('.st-row[data-key="job:j0@1/checkout"]')).toBeVisible();
@@ -408,21 +425,24 @@ test('every waterfall has a time axis from 0 and a legend of its bars', async ({
   expect(await axeViolations(browser)).toEqual([]);
 });
 
-test('a short run’s axis names each tick once; a requeued job keeps each wait, and a lone wait keeps its row', async ({ app, browser, screen }) => {
+test('a short run’s axis names each tick once; a requeued job keeps each wait, and a job cancelled while waiting keeps its row', async ({ app, browser, screen }) => {
   const axis = () => browser.evaluate(() => [...document.querySelectorAll('.st-waterfall .st-tick')].map((t) => t.textContent));
   await app.open(mock('/s/studio/ci?run=ci_s3'));
   await expect(screen.getByRole('region', 'Stages of this run')).toContainText('quality');
   expect(await axis()).toEqual(['0', '30 s', '1 min', '1 min 30 s']);
   // Requeued after its process host was lost: each attempt with its own wait, in waiting order.
   const rows = await jobRows(browser);
-  expect(rows.map((r) => [r.name, r.took?.replace(/\s+/g, ' ')])).toEqual([['quality', '18 swaited 6 s'], ['security', '6 swaited 3 s'], ['quality', '1 minwaited 18 s']]);
+  expect(rows.map((r) => [r.name, r.took?.replace(/\s+/g, ' ')])).toEqual([['quality', '18 swaited 6 s'], ['e2e', 'waited 12 s'], ['security', '6 swaited 3 s'], ['quality', '1 minwaited 18 s']]);
   await expect(browser.locator('.st-row.st-job[data-key="job:j0@1"] [aria-label="error"]')).toBeVisible();
   // A skipped job (ADR-0133) says so with its mark and its own bar look, named in the legend.
   await expect(browser.locator('.st-row.st-job[data-key="job:j5@1"] [aria-label="skipped"]')).toBeVisible();
   await expect(browser.locator('.st-row.st-job[data-key="job:j5@1"] .st-bar-skipped')).toHaveCount(1);
   expect(await browser.evaluate(() => [...document.querySelectorAll('.st-bars-legend li')].map((t) => t.textContent))).toEqual(['Waiting', 'Ran', 'Skipped', 'Failed']);
-  // A wait with no job span still shows, on its own row, under Run.
-  await expect(browser.locator('.st-row:has-text("Waiting for a job slot")')).toHaveCount(1);
+  // A job cancelled while it waited (no job span) is its row under Jobs, with its outcome
+  // (SPEC-385 WSL-003, amending SPEC-165 STR-001), not a "Waiting for a job slot" row under Run.
+  await expect(browser.locator('.st-row:has-text("Waiting for a job slot")')).toHaveCount(0);
+  await expect(browser.locator('.st-row.st-job[data-key="wait:j9@1"] [aria-label="cancelled"]')).toBeVisible();
+  await expect(browser.locator('.st-row.st-job[data-key="wait:j9@1"]')).toHaveAttribute('title', 'e2e: waited 12 s for a job slot, cancelled');
   // On a phone the CI run's stages fit the width.
   await browser.setViewport({ width: 390, height: 844 });
   await app.open(mock('/s/studio/ci?run=ci_s4'));
