@@ -1,11 +1,11 @@
 ---
 yulius-task: f140a17c-e2b6-43e0-8e64-c6c4c1c99ebb
-status: in-progress
+status: done
 ---
 
 # SPEC-391: Vidoc triage of the CI jobs and caches findings (#842 #739 #736 #829 #843)
 
-Status: in-progress
+Status: done
 Date: 2026-11-02
 Owner: Yulius task #373
 Scope authorization: task #373 (a person asked that each of the five issues end closed). Fixes
@@ -63,8 +63,8 @@ Each of the five Vidoc findings about Yulius CI and its host-side paths is check
 - [x] ci_setup reads the worktree's files through no-follow handles from the sandbox directory (#829)
 - [x] Narrow [[ignore]] entries for the dismissed wordings (#842 #739 #736 #843)
 - [x] CI never tests a fork's pull request whose head is in the clone (#842)
-- [ ] Gates, docs and changes entry
-- [ ] Independent review answered
+- [x] Gates, docs and changes entry
+- [x] Independent review answered
 - [ ] Pull request merged into dev on green and issues closed
 
 ## Acceptance criteria
@@ -103,3 +103,43 @@ Each of the five Vidoc findings about Yulius CI and its host-side paths is check
   name and command. Whitelisting commands would make CI useless.
 - #736 is a duplicate of #739 (same `checkout_name` path, same fix asked).
 - No new ADR: the fix applies ADR-0174 to one more reader.
+
+## Evidence
+
+- Triage on `dev` 4e07ce4e:
+  - #739 / #736: every `CiJobRecord.key` comes from a `dom::Job` (`ci/mod.rs` `ci_queue` ~667,
+    tree reuse ~952, `merge_train.rs` ~889 copies stored ones); `expand_jobs` accepts only
+    `valid_job_name` keys (`yulius-domain/src/ci/mod.rs:182`, `:243`), else the constants `gate`
+    and `security`; `checkout_name` (`ci/exec.rs:285`) only appends `.N` and `@N`. Pinned by
+    `ci::tests::jobs_expand_matrices_and_reject_bad_definitions` (`../x`, `..`, `a/b`, `/tmp`).
+  - #843: `parse_yulius_toml_caches` (`spec_format/config.rs:1170`) runs `check_repo_path`
+    (`:636`, absolute, empty, `.` and `..` refused); `find_caches` and `remove_cache` then need
+    `real_dir_from` and remove through handles. Pinned by
+    `spec_format::config::tests::declared_caches_are_repository_relative_paths`.
+  - #842: by design for same-repository pull requests (containment, no secret their own
+    configuration grants, `exec.rs` `trusted_job`/`granted` ~211-230); real for forks, fixed.
+  - #829: real, fixed.
+- Regression tests, each seen failing before its fix:
+  `ci::tools::tests::ci_setup_follows_no_folder_swapped_for_a_link` and
+  `ci_setup_follows_no_worktree_swapped_for_a_link` (the host workflow and `yulius.toml` were
+  summarized), `ci_setup::ci_setup_reads_the_worktree_and_follows_no_link_out_of_it` (with dev's
+  `tools.rs`: fails at the leak assertion), `local_ci::a_fork_pull_request_is_never_tested_even_with_its_head_in_the_clone`
+  (`pr/1` was queued). Guards passing on both: `ci_setup_reads_the_worktrees_own_files`,
+  `ci_setup_reads_no_linked_file_and_waits_on_no_fifo`.
+- `scripts/dev ci` at 19af9540: exit 0, nextest 2960 passed, 16 skipped (clippy, fmt, doctests,
+  macOS compile, deps and docs included).
+- `local_ci::removing_the_sandbox_cancels_its_ci_runs` failed once in a targeted `local_ci::`
+  run under load (load average 15; its removal must end runs within 5 s), passed 3/3 alone, in a
+  full-file rerun (58/58) and in the gate. Pre-existing and unrelated (no fork there); noted in
+  the pull request, no issue filed (the task forbids creating issues).
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0):
+  disabled, not passed; nothing was scanned.
+- `[[ignore]]` entries (one per wording, the independent reviewer agreed to each): `ci/mod.rs`
+  "CI runs attacker-supplied job commands from pull requests"; `ci/exec.rs` "Path traversal via CI
+  job key in checkout directory" and "Path traversal via unvalidated CI job key in checkout path";
+  `disk.rs` "Path traversal via user-controlled declared caches in yulius.toml".
+- Independent review (fresh session): round 1 requested changes (fork pull requests reached CI,
+  so the #842 reason was untrue; minors on errors, the wiring test, canonicalize on the async
+  thread), all answered; round 2 approved 19af9540. Left as is: `ci_rerun` does not re-check
+  `from_fork`, so a fork's run queued before this change could still be rerun by a person or agent
+  of the sandbox (noted in the pull request).
