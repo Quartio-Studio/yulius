@@ -1990,9 +1990,71 @@ async fn jobs_wait_for_their_cpu_budget_and_are_told_it() -> TestResult {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    // SPEC-385 WSL-001: the other `build` waits for its CPUs, and its wait is a span already, open.
+    let deadline = tokio::time::Instant::now() + WAIT;
+    let open = loop {
+        let mut open = Vec::new();
+        for id in &runs {
+            open.extend(
+                slot_waits(&f, id)
+                    .await?
+                    .into_iter()
+                    .filter(|w| w.ended_at.is_none()),
+            );
+        }
+        if open.iter().any(|w| w.job.as_deref() == Some("build")) {
+            break open;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("no open job slot wait: {open:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(open.iter().all(|w| w.outcome.is_none()), "{open:?}");
+    for wait in &open {
+        let run = f
+            .get(&format!("/api/sandboxes/s1/ci/runs/{}", wait.subject_id))
+            .await?;
+        let job = run["jobs"]
+            .as_array()
+            .ok_or("jobs")?
+            .iter()
+            .find(|j| {
+                wait.key
+                    .starts_with(&format!("wait:{}@", j["id"].as_str().unwrap_or("-")))
+            })
+            .cloned()
+            .ok_or_else(|| format!("no job of {wait:?}"))?;
+        assert_eq!(job["state"], "queued", "{job}");
+    }
     std::fs::write(f.data.join("go"), "")?;
     f.settle().await?;
     f.all_passed(2).await?;
+    // WSL-002, WSL-004: each job's wait ended `started` at its job's start.
+    for id in &runs {
+        let spans = run_spans(&f, id).await?;
+        let jobs: Vec<_> = spans.iter().filter(|s| s.kind == "job").collect();
+        let waits: Vec<_> = spans
+            .iter()
+            .filter(|s| s.kind == "wait" && s.name == "job slot")
+            .collect();
+        assert_eq!((jobs.len(), waits.len()), (2, 2), "{spans:?}");
+        for job in jobs {
+            let job_id = job.key["job:".len()..]
+                .split('@')
+                .next()
+                .unwrap_or_default();
+            let wait = waits
+                .iter()
+                .find(|w| w.key.starts_with(&format!("wait:{job_id}@")))
+                .ok_or_else(|| format!("no wait of {job:?}"))?;
+            assert_eq!(
+                (wait.ended_at, wait.outcome.as_deref(), wait.job.as_deref()),
+                (Some(job.started_at), Some("started"), job.job.as_deref()),
+                "{wait:?}"
+            );
+        }
+    }
     for id in &runs {
         let detail = f.get(&format!("/api/sandboxes/s1/ci/runs/{id}")).await?;
         for job in detail["jobs"].as_array().ok_or("jobs")? {
@@ -2010,6 +2072,115 @@ async fn jobs_wait_for_their_cpu_budget_and_are_told_it() -> TestResult {
             }
         }
     }
+    Ok(())
+}
+
+/// A CI run's spans (SPEC-137).
+async fn run_spans(f: &Fixture, run: &str) -> BoxResult<Vec<yulius_app::stages::SpanRecord>> {
+    use yulius_app::ports::store_ext::SpanStore as _;
+    Ok(f.h
+        .store
+        .subject_spans(
+            &SandboxId::parse("s1")?,
+            yulius_domain::stages::SubjectKind::CiRun,
+            run,
+            1_000,
+        )
+        .await?)
+}
+
+/// A CI run's waits for a job slot (SPEC-385).
+async fn slot_waits(f: &Fixture, run: &str) -> BoxResult<Vec<yulius_app::stages::SpanRecord>> {
+    Ok(run_spans(f, run)
+        .await?
+        .into_iter()
+        .filter(|s| s.kind == "wait" && s.name == "job slot")
+        .collect())
+}
+
+/// SPEC-385 WSL-002: a job cancelled while it waits for a slot (its run superseded by a push)
+/// ends its open wait `cancelled`, and never gets a job span.
+#[tokio::test]
+async fn a_job_cancelled_while_it_waits_for_a_slot_ends_its_wait_cancelled() -> TestResult {
+    let f = fixture_with(false, |data| {
+        let hold = format!(
+            "command = 'while [ ! -e \"{go}\" ]; do sleep 0.05; done'",
+            go = data.join("go").display()
+        );
+        format!(
+            "[[ci.jobs]]\nname = \"a\"\ncpus = 3\n{hold}\n\n\
+             [[ci.jobs]]\nname = \"b\"\ncpus = 3\n{hold}\n"
+        )
+    })
+    .await?;
+    assert!(f.h.app.set_isolation(Arc::new(Limited)));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    // One job at a time holds 3 of the 4 CPUs: the pull request's run has a job waiting.
+    let run = f.running("pr/1").await?;
+    let run = run["id"].as_str().ok_or("run id")?.to_owned();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    let waiting = loop {
+        f.h.app.ci_dispatch().await;
+        let open: Vec<_> = slot_waits(&f, &run)
+            .await?
+            .into_iter()
+            .filter(|w| w.ended_at.is_none())
+            .collect();
+        if let Some(wait) = open.into_iter().next() {
+            break wait;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err("no job of the pull request's run waits".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let job_id = waiting.key["wait:".len()..]
+        .split('@')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    f.push_feature("more.txt", Some("more\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        if f.h.store.ci_run(&run).await?.map(|r| r.state) == Some(RunState::Cancelled) {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err("the superseded run never ended".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    std::fs::write(f.data.join("go"), "")?;
+    f.settle().await?;
+    let job =
+        f.h.store
+            .ci_jobs(&run, false)
+            .await?
+            .into_iter()
+            .find(|j| j.id == job_id)
+            .ok_or("the waiting job")?;
+    assert_eq!((job.state, job.started_at), (RunState::Cancelled, None));
+    let spans = run_spans(&f, &run).await?;
+    let wait = spans
+        .iter()
+        .find(|s| s.key == waiting.key)
+        .ok_or("the wait")?;
+    assert_eq!(
+        (
+            wait.ended_at.is_some(),
+            wait.outcome.as_deref(),
+            wait.job.as_deref()
+        ),
+        (true, Some("cancelled"), waiting.job.as_deref()),
+        "{wait:?}"
+    );
+    assert!(
+        !spans
+            .iter()
+            .any(|s| s.key.starts_with(&format!("job:{job_id}@"))),
+        "{spans:?}"
+    );
     Ok(())
 }
 
