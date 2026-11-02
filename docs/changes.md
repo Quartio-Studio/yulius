@@ -12,6 +12,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   connection kept its secrets until it closed. A failed upstream request is logged without its
   URL, which held substituted secret values. Vidoc's #839, #709 (duplicate) and #708 were false
   positives and get `[[ignore]]` entries (SPEC-388, task #370, ADR-0252, fixes #757 and #833).
+- Vidoc's five findings on MCP tool authorization (#831, #782, #695, #694, #846) are triaged as
+  false positives on `dev`: the Cockpit is refused every tool outside `COCKPIT_TOOLS` before
+  dispatch, its task and automation tools are its by design and re-checked at each call,
+  `secret_create_from_file` reads only regular files below the caller's work folder or home
+  without following links, `task_create`'s workflow lookup discloses nothing `workflows_list` does
+  not, and `secret_verify` is ADR-0144's accepted oracle. Each wording gets one narrow `[[ignore]]`
+  in `.config/vidoc.toml` with the guard and its tests (SPEC-389, task #371). No product change.
 - A CI job still waiting for a job slot now shows in its run's stages while it waits: `ci::exec`
   opens the job's `job slot` wait span when the wait begins and ends it `started`, `cancelled`
   (cancelled while waiting) or `error`, and the waterfall draws a wait with no job span as that
