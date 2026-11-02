@@ -62,6 +62,7 @@ and its refusals (HTTP 429 and 401, 2026-10-22 to 2026-10-30) kept stopping ever
 - Switching off takes effect at once for every request toward Vidoc; a running session's own
   environment and briefing still say "on" until its next run, and its scan ends "not run" with the
   reason. Interception needs the proxy's CA in the session (as for any bound secret): without it
-  the TLS handshake fails, nothing is sent, and the scan ends incomplete. Turning it on takes effect at the next run or CI job; nothing is rescanned by itself.
+  the TLS handshake fails, nothing is sent, and the scan ends incomplete. Turning it on takes effect
+  at the next run or CI job; nothing is rescanned by itself.
 - A store write that finds no instance row fails (409), so the switch is never cached without being
   stored.
