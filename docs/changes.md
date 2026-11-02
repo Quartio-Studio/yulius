@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-02
 
+- A CI job still waiting for a job slot now shows in its run's stages while it waits: `ci::exec`
+  opens the job's `job slot` wait span when the wait begins and ends it `started`, `cancelled`
+  (cancelled while waiting) or `error`, and the waterfall draws a wait with no job span as that
+  job's row under "Jobs", hatched up to "now" ("waiting 4 min so far"), where it fell under "Run"
+  as "Waiting for a job slot" or was missing (SPEC-385, task #367, fixes #536). Stage summaries
+  still count only ended waits.
 - ADR-0160's over-long lines are rewrapped to the file's width, with no word changed: the SPEC-201
   amendment's bullet "The install brings buildx and compose" (141 characters) and the Status
   section's ADR-0162 amendment note (143 characters; SPEC-386, task #368, fixes #612).

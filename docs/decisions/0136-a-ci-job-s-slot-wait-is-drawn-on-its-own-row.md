@@ -5,6 +5,9 @@
 Accepted. Specified in [SPEC-165](../../.ai/specs/SPEC-165-for-very-complex-tests-it-s-not-readable.md)
 (task #155). Refines how [0112](0112-stages-are-spans-written-with-the-state-they-measure.md)'s
 spans are drawn (SPEC-137 STG-403); the spans and the API do not change.
+Amended by [SPEC-385](../../.ai/specs/SPEC-385-ci-a-job-still-waiting-for-a-job-slot-sh.md)
+(task #367, #536): `ci::exec` opens a job's slot wait when it begins, and a wait no job span follows
+(a job still waiting, or cancelled while it waited) is that job's row under "Jobs".
 
 ## Context
 
@@ -44,6 +47,8 @@ the store's trigger opens the job as `job:<job id>@<ms>`.
 
 - The waterfall depends on the `wait:<id>@…` / `job:<id>@…` key shapes; a wait that does not pair
   (another key shape, a missing job span) is still drawn on its own row, so a change there degrades
-  to the old reading rather than losing data.
-- Jobs still waiting for a slot have no span yet (the wait is recorded when it ends), so they do
-  not show in the waterfall until they start; the dialog's job chips list them.
+  to the old reading rather than losing data. Since SPEC-385 such a wait that names its job is that
+  job's row under "Jobs"; one without a job keeps its "Waiting for a job slot" row.
+- (Superseded by SPEC-385.) Jobs still waiting for a slot had no span yet (the wait was recorded
+  when it ended), so they did not show in the waterfall until they started; their wait is now an
+  open span from its start.

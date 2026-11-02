@@ -43,8 +43,9 @@ use crate::model::SandboxRecord;
 use crate::ports::isolation::SandboxJoin;
 use crate::ports::session::{Containment, LaunchPlan, RunEvent, RunExit, RunInspection, RunSignal};
 use crate::resources::repository_templates;
-use crate::stages::{NewSpan, OutputStages};
+use crate::stages::{NewSpan, OutputStages, SpanOp};
 use yulius_domain::stages::SubjectKind;
+use yulius_domain::time::Timestamp;
 
 /// The fixed wrapper: output to the log, stdin closed, then the configured command.
 const WRAPPER: &str = "exec >>\"$1\" 2>&1 </dev/null; exec /bin/sh -c \"$2\"";
@@ -600,6 +601,44 @@ impl App {
         let waiting = self.now();
         let slots = self.ci_slots();
         let budget = self.capacity().ci_job(job.need, share);
+        // Its wait for a slot and its budget is a stage from its start, open while it waits
+        // (SPEC-385 WSL-001), and ends however the wait ends (WSL-002). `job` is its definition
+        // (as the job span's, for the summaries), `name` the job as its run lists it ("a (1)").
+        let wait_key = format!("wait:{}@{}", job.id, waiting.0);
+        self.record_span(NewSpan {
+            sandbox_id: run.sandbox_id.clone(),
+            subject_kind: SubjectKind::CiRun,
+            subject_id: run.id.clone(),
+            key: wait_key.clone(),
+            parent_key: None,
+            kind: "wait".to_owned(),
+            name: "job slot".to_owned(),
+            environment: None,
+            job: Some(job.key.clone()),
+            started_at: waiting,
+            ended_at: None,
+            outcome: None,
+            detail: Some(
+                serde_json::json!({
+                    "cpus": budget.cpus,
+                    "memory_mb": budget.memory_mb,
+                    "name": job.name,
+                })
+                .to_string(),
+            ),
+        })
+        .await;
+        let end_wait = |at: Timestamp, outcome: &str| {
+            self.record_spans(
+                &run.sandbox_id,
+                (SubjectKind::CiRun, &run.id),
+                vec![SpanOp::End {
+                    key: wait_key.clone(),
+                    at,
+                    outcome: Some(outcome.to_owned()),
+                }],
+            )
+        };
         let held = async {
             let slot = slots.acquire_owned().await.ok()?;
             let reservation = self.ci_reserve(budget).await?;
@@ -608,6 +647,7 @@ impl App {
         let permit = tokio::select! {
             permit = held => permit,
             reason = wait_cancel(&mut cancel) => {
+                let cancelled = self.now();
                 let _ = store
                     .transition_ci_job(
                         &job.id,
@@ -615,15 +655,17 @@ impl App {
                         RunState::Cancelled,
                         &CiJobUpdate {
                             reason: Some(reason),
-                            ended_at: Some(self.now()),
+                            ended_at: Some(cancelled),
                             ..CiJobUpdate::default()
                         },
                     )
                     .await;
+                end_wait(cancelled, "cancelled").await;
                 return false;
             }
         };
         let Some(_permit) = permit else {
+            end_wait(self.now(), "error").await;
             return false;
         };
         let started_at = self.now();
@@ -631,43 +673,32 @@ impl App {
             started_at: Some(started_at),
             ..CiJobUpdate::default()
         };
-        if !matches!(
-            store
-                .transition_ci_job(&job.id, &[RunState::Queued], RunState::Running, &started)
-                .await,
-            Ok(true)
-        ) {
-            return false;
+        match store
+            .transition_ci_job(&job.id, &[RunState::Queued], RunState::Running, &started)
+            .await
+        {
+            Ok(true) => {}
+            // It left Queued meanwhile: only a cancellation moves a waiting job (`ci_cancel_jobs`).
+            Ok(false) => {
+                end_wait(started_at, "cancelled").await;
+                return false;
+            }
+            Err(_) => {
+                end_wait(started_at, "error").await;
+                return false;
+            }
         }
+        end_wait(started_at, "started").await;
         // It weighs on its sandbox until its process ended (SPEC-362 CSW-002).
         let weight = super::JobWeight::new(Arc::clone(&self), &run.sandbox_id);
-        // Its stages (SPEC-137): the wait for a slot and its budget, then what its output names,
-        // under the job's span (the store opened it with the start).
+        // Its stages (SPEC-137): what its output names, under the job's span (the store opened
+        // it with the start), after its wait for a slot (ended above).
         let mut stages = OutputStages::ci_job(
             run.sandbox_id.clone(),
             &run.id,
             &format!("job:{}@{}", job.id, started_at.0),
             &job.key,
         );
-        self.record_span(NewSpan {
-            sandbox_id: run.sandbox_id.clone(),
-            subject_kind: SubjectKind::CiRun,
-            subject_id: run.id.clone(),
-            key: format!("wait:{}@{}", job.id, waiting.0),
-            parent_key: None,
-            kind: "wait".to_owned(),
-            name: "job slot".to_owned(),
-            environment: None,
-            job: Some(job.key.clone()),
-            started_at: waiting,
-            ended_at: Some(started_at),
-            outcome: Some("started".to_owned()),
-            detail: Some(
-                serde_json::json!({ "cpus": budget.cpus, "memory_mb": budget.memory_mb })
-                    .to_string(),
-            ),
-        })
-        .await;
         let mut ring = OutputRing::new(OUTPUT_BYTES);
         ring.push_str(&format!(
             "[yulius] budget: {budget} (YULIUS_CPUS={}, YULIUS_MEMORY_MB={})\n",
