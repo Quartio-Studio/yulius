@@ -504,3 +504,42 @@ reason = "agent_workflow is a read of the caller's own project that workflows_li
 path = "crates/yulius-app/src/mcp.rs"
 title = "Unsalted SHA-256 equality oracle over secret values"
 reason = "Cockpit-only equality check accepted in ADR-0144: no stored hash is handed out, production secrets refused, each candidate audited (SPEC-389, #846)"
+
+# SPEC-393 (task #375): the Vidoc findings on supervisor input and preflight, triaged as false
+# positives on dev f416b400; each issue holds the file:line evidence.
+
+# #752: no paste of a typed first message can hold ESC [201~. Request::parse keeps no control
+# character but tab and newline in text (push_text, without_controls) and takes no attachment path
+# holding one (valid_path); Request::opening is the only producer of the pastes. Pinned by
+# request.rs a_typed_first_message_carries_no_control_character (a prompt with ESC [201~).
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "Terminal injection via unescaped paste end delimiter"
+reason = "Request::parse drops every control character but tab and newline from text and refuses paths holding one, so no paste holds ESC; tested by a_typed_first_message_carries_no_control_character (SPEC-393, #752)"
+
+# #818 (duplicate of #752): each paste is bracketed (opening_pastes), so a newline in it is text and
+# Enter is written separately; control bytes are removed as for #752.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "Unvalidated paste bytes typed directly into the agent TUI"
+reason = "each paste is bracketed and Request::parse already dropped its control characters but tab and newline; tested by a_typed_first_message_carries_no_control_character (SPEC-393, #818, #752)"
+
+# #692: send_input is the terminal's keyboard and must pass Esc, arrows and Ctrl+C as typed. Its
+# route, terminal_input, refuses viewers without write access (may_write, SPEC-118); every other
+# caller types text Yulius cleaned (clean_message, one_line, the parsed opening) or wrote.
+# Pinned by task_ownership.rs a_non_owner_watches_the_terminal_read_only and task_message.rs
+# escape_sequences_and_control_characters_never_reach_the_session.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "send_input accepts arbitrary bytes without PTY-level sanitization"
+reason = "raw keystrokes by design for writers only (terminal_input checks may_write); Yulius's own callers type cleaned or constant text (SPEC-393, #692)"
+
+# #691: subscription accounts are one instance-wide pool with no owner; switch_task loads the task
+# with Action::Work (owner only, R3), rotation::manual refuses an account outside the pool, of
+# another provider, unhealthy or exhausted, and preflight_start drops the opened credential.
+# Pinned by rotation.rs manual_account_choice_rules and task_ownership.rs
+# only_the_owner_writes_to_a_task.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "Missing authorization check on requested account in preflight_start"
+reason = "accounts are an ownerless pool; switch_task requires Work on the task, rotation::manual refuses unknown or unusable accounts, and the checked credential is dropped (SPEC-393, #691)"
