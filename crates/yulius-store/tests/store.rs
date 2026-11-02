@@ -2,8 +2,8 @@
 
 use yulius_app::error::AppError;
 use yulius_app::model::{
-    AttemptRecord, DeviceGrantBounds, DeviceGrantInsert, DeviceGrantRecord, LaunchKind,
-    MessageRecord, SandboxRecord, StepRecord, TaskOrigin, TaskRecord, UserRecord,
+    ApiTokenRecord, AttemptRecord, DeviceGrantBounds, DeviceGrantInsert, DeviceGrantRecord,
+    LaunchKind, MessageRecord, SandboxRecord, StepRecord, TaskOrigin, TaskRecord, UserRecord,
 };
 use yulius_app::ports::store::{
     AttemptUpdate, CoordinationStore, InstanceStore, SandboxStore, SessionStore, TaskStore,
@@ -704,6 +704,63 @@ async fn device_grant_is_consumed_once() -> R {
     assert!(!store.consume_device_grant("dh").await?, "single use");
     let grant = store.device_grant_by_device("dh").await?.ok_or("grant")?;
     assert_eq!((grant.status.as_str(), grant.token), ("consumed", None));
+    Ok(())
+}
+
+/// #725: approving a device grant inserts its token in the same transaction, and only when the
+/// grant was still pending.
+#[tokio::test]
+async fn approving_a_device_grant_stores_its_token_only_when_pending() -> R {
+    let store = SqliteStore::open_in_memory()?;
+    let (_, uid) = seed(&store).await?;
+    let token = |id: &str| ApiTokenRecord {
+        id: id.into(),
+        user_id: uid.clone(),
+        token_hash: format!("hash-{id}"),
+        label: "yulius CLI".into(),
+        scope: yulius_domain::permission::TokenScope::Cli,
+        created_at: Timestamp(1),
+        last_used_at: None,
+        revoked_at: None,
+    };
+    let sealed = yulius_app::model::Sealed(vec![1]);
+    for code in ["A1", "D1"] {
+        store
+            .insert_device_grant(&grant(code, code, "client", 1), BOUNDS)
+            .await?;
+    }
+    assert!(
+        store
+            .approve_device_grant("A1", &token("t1"), &sealed)
+            .await?
+    );
+    let approved = store.device_grant_by_user_code("A1").await?.ok_or("A1")?;
+    assert_eq!(
+        (
+            approved.status.as_str(),
+            approved.user_id.as_ref(),
+            approved.token
+        ),
+        ("approved", Some(&uid), Some(sealed.clone()))
+    );
+    assert!(store.api_token("hash-t1").await?.is_some());
+
+    store
+        .resolve_device_grant("D1", "denied", Some(&uid), None)
+        .await?;
+    for (code, id) in [("A1", "t2"), ("D1", "t3"), ("nope", "t4")] {
+        assert!(
+            !store
+                .approve_device_grant(code, &token(id), &sealed)
+                .await?,
+            "{code}"
+        );
+        assert!(
+            store.api_token(&format!("hash-{id}")).await?.is_none(),
+            "{id}"
+        );
+    }
+    assert_eq!(store.api_tokens_of(&uid).await?.len(), 1);
     Ok(())
 }
 

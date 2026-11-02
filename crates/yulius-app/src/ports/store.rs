@@ -144,6 +144,15 @@ pub trait SessionStore: Send + Sync {
         user: Option<&UserId>,
         token: Option<&Sealed>,
     ) -> AppResult<bool>;
+    /// Approves the pending grant `user_code` for `token`'s user with the `sealed` token and
+    /// inserts `token`, in one transaction: the token exists only when this call changed a pending
+    /// grant (#725); `Ok(false)` if not pending.
+    async fn approve_device_grant(
+        &self,
+        user_code: &str,
+        token: &ApiTokenRecord,
+        sealed: &Sealed,
+    ) -> AppResult<bool>;
     /// Marks an approved grant consumed and clears its sealed token; `Ok(false)` if not approved.
     async fn consume_device_grant(&self, device_code_hash: &str) -> AppResult<bool>;
     /// Stores an OAuth state.
