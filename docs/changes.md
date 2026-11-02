@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-02
 
+- A CI job still waiting for a job slot now shows in its run's stages while it waits: `ci::exec`
+  opens the job's `job slot` wait span when the wait begins and ends it `started`, `cancelled`
+  (cancelled while waiting) or `error`, and the waterfall draws a wait with no job span as that
+  job's row under "Jobs", hatched up to "now" ("waiting 4 min so far"), where it fell under "Run"
+  as "Waiting for a job slot" or was missing (SPEC-385, task #367, fixes #536). Stage summaries
+  still count only ended waits.
 - An integration test now asserts that `secret_create_from_file` naming `~/key` in a sandbox whose
   home was removed is refused with "your home does not exist on this machine" and creates nothing
   (SPEC-383, task #365, fixes #643). Test only: the refusal was already there, untested.

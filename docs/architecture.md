@@ -2191,7 +2191,10 @@ days go with the hourly CI upkeep. A waterfall (`stages.js`) draws one subject's
 axis with a legend, folds a span's children (one with a failure opens), and in a CI run puts each
 job's slot wait on the job's own row under "Jobs", paired by the job id in the span keys
 ([SPEC-165](../.ai/specs/SPEC-165-for-very-complex-tests-it-s-not-readable.md),
-[decision 0136](decisions/0136-a-ci-job-s-slot-wait-is-drawn-on-its-own-row.md)).
+[decision 0136](decisions/0136-a-ci-job-s-slot-wait-is-drawn-on-its-own-row.md)). A job's slot
+wait is open from the moment it begins to wait and ends `started`, `cancelled` or `error`, so a job
+still waiting is its wait alone on its row there, hatched up to "now"
+([SPEC-385](../.ai/specs/SPEC-385-ci-a-job-still-waiting-for-a-job-slot-sh.md)).
 
 ```mermaid
 flowchart LR

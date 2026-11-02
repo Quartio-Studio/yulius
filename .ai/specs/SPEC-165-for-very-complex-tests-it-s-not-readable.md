@@ -45,7 +45,8 @@ carry their `job`. This is a presentation change; the API and the spans stay as 
   bar with a hatched part (waiting) followed by the solid part (running). The row is named by the
   job ("engine", "package (gateway)") under a "Jobs" heading. Its duration column says how long it
   ran and, beneath, how long it waited ("waited 6 min"). Hover and the row's title say both. A
-  wait whose job span is not there is still drawn on its own row, named "Waiting for a job slot".
+  wait whose job span is not there is still drawn on its own row, named "Waiting for a job slot"
+  (amended by SPEC-385 WSL-003: such a wait that names its job is that job's row under "Jobs").
   A wait under a second (a slot free at once, which `ci::exec` still records) shows nothing: no
   hatched part, no "waited", no Waited column.
 - STR-002. Jobs are listed in the order they began waiting (or started), and the run's own spans
@@ -130,7 +131,7 @@ carry their `job`. This is a presentation change; the API and the spans stay as 
   legend is computed from every span, so folding never hides a failure or an unexplained colour.
 - **Jobs still waiting with no span stay out.** A job waiting for a slot has no span until it gets
   one (`ci::exec` records the wait when it ends); the dialog's job chips show them. Recording an
-  open wait span is a backend change, filed as #536.
+  open wait span is a backend change, filed as #536 (done in SPEC-385).
 
 ## Evidence
 
