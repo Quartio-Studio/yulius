@@ -932,6 +932,22 @@ async fn a_failed_fetch_never_deletes_what_moved_on_github() -> TestResult {
     Ok(())
 }
 
+/// One hygiene scan of `s1`, with the branches whose pull requests it looked up on GitHub (one
+/// request each) during it.
+async fn scan_counting_lookups(f: &Fixture) -> BoxResult<(support::Resp, Vec<String>)> {
+    let lookups = || {
+        f.h.github
+            .branch_pull_lookups
+            .lock()
+            .map(|l| l.clone())
+            .map_err(|e| e.to_string())
+    };
+    let before = lookups()?.len();
+    let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    let looked_up = lookups()?.split_off(before);
+    Ok((scan, looked_up))
+}
+
 /// SPEC-269 (review round 4): branches already in dev never use up the pull-request lookups an
 /// unmerged branch's verdict needs, however many there are.
 #[tokio::test]
@@ -973,8 +989,18 @@ async fn merged_branches_leave_the_lookups_to_unmerged_ones() -> TestResult {
     git(&f.work, &["push", "-q", "origin", "feat/closed"])?;
     pull(&f, 2, "feat/closed", "dev", false, false)?;
 
-    let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    let (scan, looked_up) = scan_counting_lookups(&f).await?;
     assert_eq!(scan.status, StatusCode::OK, "{}", scan.body);
+    // One GitHub request per lookup: the merged branches got only what feat/closed left.
+    assert!(
+        looked_up.len() <= bound,
+        "{} lookups, bound {bound}: {looked_up:?}",
+        looked_up.len()
+    );
+    assert!(
+        !looked_up.iter().any(|b| b == "feat/one"),
+        "an open pull request's branch took a lookup: {looked_up:?}"
+    );
     let items = scan.body["items"].as_array().ok_or("items")?;
     assert!(
         items
@@ -996,14 +1022,22 @@ async fn merged_branches_leave_the_lookups_to_unmerged_ones() -> TestResult {
 }
 
 /// SPEC-269 (review round 5): an open pull request's branch takes no lookup, and branches already
-/// in dev whose pull requests the bound left unread are named in a note.
+/// in the integration or production branch whose pull requests the bound left unread are named in
+/// a note (SPEC-379: here one only the production branch has).
 #[tokio::test]
 async fn the_lookup_bound_counts_only_lookups_and_says_what_it_left() -> TestResult {
     let f = fixture().await?;
     let bound = yulius_app::ci::hygiene::MAX_PULL_LOOKUPS;
     git(&f.work, &["fetch", "-q", "origin"])?;
+    // A hotfix on main that dev lacks.
+    git(&f.work, &["checkout", "-q", "-B", "hotfix", "origin/main"])?;
+    std::fs::write(f.work.join("hotfix.txt"), "x\n")?;
+    git(&f.work, &["add", "-A"])?;
+    git(&f.work, &["commit", "-q", "-m", "hotfix"])?;
+    git(&f.work, &["push", "-q", "origin", "hotfix:main"])?;
+    git(&f.work, &["fetch", "-q", "origin"])?;
     // `bound` recent unmerged branches without a pull request (one commit), after feat/one,
-    // whose pull request is open, and one release branch at dev's commit.
+    // whose pull request is open, and one release branch at main's commit only.
     git(&f.work, &["checkout", "-q", "-B", "wip", "origin/dev"])?;
     std::fs::write(f.work.join("wip.txt"), "x\n")?;
     git(&f.work, &["add", "-A"])?;
@@ -1011,15 +1045,24 @@ async fn the_lookup_bound_counts_only_lookups_and_says_what_it_left() -> TestRes
     let refspecs: Vec<String> = (0..bound)
         .map(|n| format!("wip:refs/heads/zz/{n:02}"))
         .chain(std::iter::once(
-            "origin/dev:refs/heads/release/1".to_owned(),
+            "origin/main:refs/heads/release/1".to_owned(),
         ))
         .collect();
     let mut push = vec!["push", "-q", "origin"];
     push.extend(refspecs.iter().map(String::as_str));
     git(&f.work, &push)?;
 
-    let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    let (scan, looked_up) = scan_counting_lookups(&f).await?;
     assert_eq!(scan.status, StatusCode::OK, "{}", scan.body);
+    assert!(
+        looked_up.len() <= bound,
+        "{} lookups, bound {bound}: {looked_up:?}",
+        looked_up.len()
+    );
+    assert!(
+        !looked_up.iter().any(|b| b == "feat/one"),
+        "an open pull request's branch took a lookup: {looked_up:?}"
+    );
     let notes: Vec<&str> = scan.body["notes"]
         .as_array()
         .ok_or("notes")?
@@ -1035,7 +1078,7 @@ async fn the_lookup_bound_counts_only_lookups_and_says_what_it_left() -> TestRes
     assert!(
         notes
             .iter()
-            .any(|n| n.contains("1 branch already in the integration branch")),
+            .any(|n| n.contains("1 branch already in the integration or production branch")),
         "{notes:?}"
     );
     Ok(())

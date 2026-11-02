@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-02
 
+- The hygiene scan's bound of `MAX_PULL_LOOKUPS` GitHub pull-request lookups per scan is now held
+  by tests: the GitHub fake records every `branch_pulls` call, and both bound tests fail if a scan
+  looks up more, or looks up an open pull request's branch (SPEC-379, task #361, fixes #847). The
+  `merged` reason and the bound's note say "already in the integration or production branch",
+  since a branch only the production branch has is `merged` too; the worktree-name test rejects
+  the forms `Path::components` normalises (`worktrees/./x`, `worktrees//x`, `worktrees/x/`).
 - `scripts/dev doctor` names an unpinned Linux host the way bootstrap does: a host reporting
   `RISCV64` read "RISCV64-linux" in doctor and "riscv64-linux" in bootstrap. Both now take the
   name from `zig_install.host_name`, and doctor's message is built by `zig_pin_error`, which a unit
