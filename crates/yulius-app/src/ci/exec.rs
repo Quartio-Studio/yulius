@@ -602,7 +602,8 @@ impl App {
         let slots = self.ci_slots();
         let budget = self.capacity().ci_job(job.need, share);
         // Its wait for a slot and its budget is a stage from its start, open while it waits
-        // (SPEC-385 WSL-001), and ends however the wait ends (WSL-002).
+        // (SPEC-385 WSL-001), and ends however the wait ends (WSL-002). `job` is its definition
+        // (as the job span's, for the summaries), `name` the job as its run lists it ("a (1)").
         let wait_key = format!("wait:{}@{}", job.id, waiting.0);
         self.record_span(NewSpan {
             sandbox_id: run.sandbox_id.clone(),
@@ -618,8 +619,12 @@ impl App {
             ended_at: None,
             outcome: None,
             detail: Some(
-                serde_json::json!({ "cpus": budget.cpus, "memory_mb": budget.memory_mb })
-                    .to_string(),
+                serde_json::json!({
+                    "cpus": budget.cpus,
+                    "memory_mb": budget.memory_mb,
+                    "name": job.name,
+                })
+                .to_string(),
             ),
         })
         .await;
@@ -668,15 +673,20 @@ impl App {
             started_at: Some(started_at),
             ..CiJobUpdate::default()
         };
-        if !matches!(
-            store
-                .transition_ci_job(&job.id, &[RunState::Queued], RunState::Running, &started)
-                .await,
-            Ok(true)
-        ) {
+        match store
+            .transition_ci_job(&job.id, &[RunState::Queued], RunState::Running, &started)
+            .await
+        {
+            Ok(true) => {}
             // It left Queued meanwhile: only a cancellation moves a waiting job (`ci_cancel_jobs`).
-            end_wait(started_at, "cancelled").await;
-            return false;
+            Ok(false) => {
+                end_wait(started_at, "cancelled").await;
+                return false;
+            }
+            Err(_) => {
+                end_wait(started_at, "error").await;
+                return false;
+            }
         }
         end_wait(started_at, "started").await;
         // It weighs on its sandbox until its process ended (SPEC-362 CSW-002).
