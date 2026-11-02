@@ -91,7 +91,7 @@ anyone noticing. ADR-0242's one unwrapped Consequences line is wrapped at 100 co
   the Status line (104 columns) is over 100.
 - `scripts/dev ci`: the first run failed on clippy `expect_used` in the new test (fixed: the test
   returns an error); the rerun at 9832c273 passed, 2951 tests run, 2951 passed, 16 skipped; the
-  scanner's 148 Python tests OK.
+  148 Python tests in `scripts/` OK (92 of them the scanner's).
 - `yulius security-scan`: disabled ("Vidoc is turned off in Yulius"), not run, not passed.
 - Independent review (fresh session, `om-code-review`): APPROVE, no blocker or major; one nit (this
   Evidence was not yet filled in), answered here.
