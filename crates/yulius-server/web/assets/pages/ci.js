@@ -458,7 +458,8 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
           badge(kindOf(item.kind), item.safe ? '' : 'warn'), h('code', null, item.name),
           item.safe
             ? h('span', { class: 'muted' }, item.reason_code === 'merged'
-              // The automatic round leaves a branch no pull request had (a release branch).
+              // The automatic round leaves a merged branch no merged pull request was found for (a
+              // release branch, or one whose lookup the scan's bound skipped).
               ? `${item.reason}: no merged pull request was found for it, so ${BRAND.name} leaves it to you`
               : item.reason)
             : [badge('Kept', 'warn'), h('span', { class: 'muted' }, `${item.reason}: unmerged work, which ${BRAND.name} never deletes by itself`)])))]);
