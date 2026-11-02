@@ -932,6 +932,22 @@ async fn a_failed_fetch_never_deletes_what_moved_on_github() -> TestResult {
     Ok(())
 }
 
+/// One hygiene scan of `s1`, with the branches whose pull requests it looked up on GitHub (one
+/// request each) during it.
+async fn scan_counting_lookups(f: &Fixture) -> BoxResult<(support::Resp, Vec<String>)> {
+    let lookups = || {
+        f.h.github
+            .branch_pull_lookups
+            .lock()
+            .map(|l| l.clone())
+            .map_err(|e| e.to_string())
+    };
+    let before = lookups()?.len();
+    let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    let looked_up = lookups()?.split_off(before);
+    Ok((scan, looked_up))
+}
+
 /// SPEC-269 (review round 4): branches already in dev never use up the pull-request lookups an
 /// unmerged branch's verdict needs, however many there are.
 #[tokio::test]
@@ -973,8 +989,14 @@ async fn merged_branches_leave_the_lookups_to_unmerged_ones() -> TestResult {
     git(&f.work, &["push", "-q", "origin", "feat/closed"])?;
     pull(&f, 2, "feat/closed", "dev", false, false)?;
 
-    let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    let (scan, looked_up) = scan_counting_lookups(&f).await?;
     assert_eq!(scan.status, StatusCode::OK, "{}", scan.body);
+    // One GitHub request per lookup: the merged branches got only what feat/closed left.
+    assert!(
+        looked_up.len() <= bound,
+        "{} lookups, bound {bound}: {looked_up:?}",
+        looked_up.len()
+    );
     let items = scan.body["items"].as_array().ok_or("items")?;
     assert!(
         items
@@ -1018,8 +1040,17 @@ async fn the_lookup_bound_counts_only_lookups_and_says_what_it_left() -> TestRes
     push.extend(refspecs.iter().map(String::as_str));
     git(&f.work, &push)?;
 
-    let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    let (scan, looked_up) = scan_counting_lookups(&f).await?;
     assert_eq!(scan.status, StatusCode::OK, "{}", scan.body);
+    assert!(
+        looked_up.len() <= bound,
+        "{} lookups, bound {bound}: {looked_up:?}",
+        looked_up.len()
+    );
+    assert!(
+        !looked_up.iter().any(|b| b == "feat/one"),
+        "an open pull request's branch took a lookup: {looked_up:?}"
+    );
     let notes: Vec<&str> = scan.body["notes"]
         .as_array()
         .ok_or("notes")?
