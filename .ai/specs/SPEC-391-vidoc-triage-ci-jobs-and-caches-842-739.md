@@ -65,7 +65,7 @@ Each of the five Vidoc findings about Yulius CI and its host-side paths is check
 - [x] CI never tests a fork's pull request whose head is in the clone (#842)
 - [x] Gates, docs and changes entry
 - [x] Independent review answered
-- [ ] Pull request merged into dev on green and issues closed
+- [x] Dismissed issues closed with their evidence (#739 #736 #843)
 
 ## Acceptance criteria
 
@@ -143,3 +143,5 @@ Each of the five Vidoc findings about Yulius CI and its host-side paths is check
   thread), all answered; round 2 approved 19af9540. Left as is: `ci_rerun` does not re-check
   `from_fork`, so a fork's run queued before this change could still be rerun by a person or agent
   of the sandbox (noted in the pull request).
+- #739, #736 (labelled `duplicate`) and #843 were closed as not planned with their file:line
+  evidence on `dev`; #829 and #842 close with the pull request (`Fixes`).
