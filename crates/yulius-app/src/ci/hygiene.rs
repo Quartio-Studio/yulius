@@ -346,7 +346,8 @@ impl App {
                     .ok()
                     .map(|pulls| pulls_facts(&pulls, &branch.sha))
             } else if merged {
-                // Past the bound, a branch already in dev is still `Merged` (safe for a person).
+                // Past the bound, a branch already in the integration or production branch is
+                // still `Merged` (safe for a person).
                 merged_unread += 1;
                 Some(Vec::new())
             } else {
@@ -376,7 +377,7 @@ impl App {
                 "branches"
             };
             report.notes.push(format!(
-                "Pull requests of {merged_unread} {branches} already in the integration branch were not looked up (the bound went to unmerged ones): they read merged and stay for you."
+                "Pull requests of {merged_unread} {branches} already in the integration or production branch were not looked up (the bound went to unmerged ones): they read merged and stay for you."
             ));
         }
     }
@@ -526,7 +527,7 @@ impl App {
                 .items
                 .iter()
                 .filter(|i| i.safe || request.force)
-                // A branch already in dev that no pull request had (a release or staging
+                // A merged branch no merged pull request was found for (a release or staging
                 // branch) is a person's call: the round leaves it listed (review round 3).
                 .filter(|i| !(automatic && i.kind == REMOTE && i.reason_code == "merged"))
                 .cloned()
@@ -891,6 +892,11 @@ mod tests {
             "ci/jobs/quality",
             "",
             "worktrees/.",
+            // Forms `Path::components` normalises to `worktrees/x`: only the spelled-out name
+            // check rejects them.
+            "worktrees/./x",
+            "worktrees//x",
+            "worktrees/x/",
         ] {
             assert_eq!(task_worktree_path(sandbox, name), None, "{name:?}");
         }
