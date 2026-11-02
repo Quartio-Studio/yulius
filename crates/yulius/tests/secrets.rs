@@ -2091,6 +2091,82 @@ async fn a_ci_job_uses_only_its_granted_secrets_toward_their_hosts() -> TestResu
     Ok(())
 }
 
+/// SPEC-388 EPL-001, EPL-002 (Vidoc #757): once a run ended, its proxy credential adds no secret:
+/// neither through the cached client (within `CLIENT_CACHE_TTL`) nor through the client an open
+/// intercepted connection already holds, which the proxy resolved once for that connection.
+#[tokio::test]
+async fn an_ended_runs_proxy_client_adds_no_secret() -> TestResult {
+    let w = world().await?;
+    let created = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "STRIPE_KEY", "hosts": ["api.stripe.test"], "injection": "bearer", "value": STRIPE}),
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let app: Arc<dyn EgressPolicy> = w.h.app.clone();
+    let charge = || request("api.stripe.test", "/v1/x?key=yulius-secret-STRIPE_KEY", &[]);
+    let refused = |decision: &EgressDecision| matches!(decision, EgressDecision::Refuse { status: 403, message } if message.contains("ended"));
+
+    // A live run gets its secret; its client is now cached.
+    let held = app.egress_client(TOKEN_S1).await.ok_or("s1 client")?;
+    let live = app.egress_apply(&held, charge()).await;
+    assert_eq!(
+        header(&live, "authorization"),
+        Some(format!("Bearer {STRIPE}").as_str())
+    );
+
+    // The run ends.
+    let update = yulius_app::ports::store::AttemptUpdate {
+        ended_at: Some(w.h.app.now()),
+        exit_reason: Some("exited".into()),
+        ..Default::default()
+    };
+    let ended =
+        w.h.app
+            .deps
+            .store
+            .transition_attempt(
+                &yulius_domain::ids::AttemptId::parse("a-t1")?,
+                yulius_domain::task::AttemptState::Exited,
+                &update,
+            )
+            .await?;
+    assert!(ended);
+    assert!(
+        app.egress_client(TOKEN_S1).await.is_none(),
+        "a cached client of an ended run"
+    );
+    let after = app.egress_apply(&held, charge()).await;
+    assert!(refused(&after), "a held client of an ended run: {after:?}");
+    assert_eq!(header(&after, "authorization"), None);
+    // The other sandbox's live run is not affected.
+    let s2 = app.egress_client(TOKEN_S2).await.ok_or("s2 client")?;
+    assert!(!refused(&app.egress_apply(&s2, charge()).await));
+
+    // A CI job's client held by an open connection ends with its credential.
+    let s1 = yulius_domain::ids::SandboxId::parse("s1")?;
+    let token =
+        w.h.app
+            .ci_egress_open(&s1, "run-9", "job-9a", &["STRIPE_KEY".to_owned()])
+            .ok_or("no CI credential")?;
+    let ci = app.egress_client(&token).await.ok_or("ci client")?;
+    let granted = app.egress_apply(&ci, charge()).await;
+    assert_eq!(
+        header(&granted, "authorization"),
+        Some(format!("Bearer {STRIPE}").as_str())
+    );
+    w.h.app.ci_egress_close(&token);
+    let closed = app.egress_apply(&ci, charge()).await;
+    assert!(
+        refused(&closed),
+        "a held client of an ended CI job: {closed:?}"
+    );
+    assert_eq!(header(&closed, "authorization"), None);
+    Ok(())
+}
+
 /// VLT-005, VLT-007: `secrets_list` gives names only, every MCP result is redacted, the
 /// fingerprints endpoint gives no value but finds one.
 #[tokio::test]
