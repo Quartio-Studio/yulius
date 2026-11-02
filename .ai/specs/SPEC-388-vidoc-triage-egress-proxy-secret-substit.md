@@ -39,7 +39,8 @@ connection). Triage, with the evidence posted on each issue:
 
 - **EPL-001** (#757) `egress_apply` refuses (403, nothing forwarded, nothing injected or audited)
   a request whose client's run has ended: an agent run whose attempt is terminal or missing, a CI
-  job whose credential was closed, a Superagent whose shell is gone.
+  job whose credential was closed, a Superagent whose shell is gone. A run whose state cannot be
+  read gets 503 (a passing failure), never "ended".
 - **EPL-002** (#757) `egress_client` never answers a cached client whose run has ended; the check
   is the same as EPL-001's, so a token of an ended run is refused (407) at once, not after
   `CLIENT_CACHE_TTL`.
@@ -83,7 +84,7 @@ connection). Triage, with the evidence posted on each issue:
 ## Decisions
 
 - **Check liveness per request, not only per connection** (ADR-0252). Alternatives: evicting the
-  cache at each of the five places an attempt ends (fragile: a new end path forgets it, and it
+  cache at each of the four places an attempt ends (fragile: a new end path forgets it, and it
   would not reach clients already held by open connections); closing a run's proxy connections
   when it ends (needs a run-to-connections index in the proxy for the same effect, and still a
   race between the end and the close). One indexed attempt read per proxied request costs less

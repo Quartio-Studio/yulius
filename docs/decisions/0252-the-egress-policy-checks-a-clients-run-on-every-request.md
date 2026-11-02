@@ -33,7 +33,8 @@ upstream request was logged with reqwest's error text, which holds the full URL.
   must still be open (`ci_clients`, in memory), a Superagent's shell must be running (in memory).
   An ended run gets `403` with "the run behind this proxy credential has ended; nothing was sent";
   nothing is injected, substituted or audited. It is a `403`, not a `407`: inside an intercepted
-  connection the client believes it talks to the origin.
+  connection the client believes it talks to the origin. A run whose state cannot be read gets
+  `503` (a passing failure the client may retry), never "ended".
 - **`egress_client` answers a client, cached or not, only while its run lives** (the same check),
   so the token of an ended run is refused (`407`) at once, not when the cache entry expires.
 - **Placeholders stay allowed in the path and query.** The proxy logs and passes on reqwest errors
@@ -41,7 +42,7 @@ upstream request was logged with reqwest's error text, which holds the full URL.
 
 ## Alternatives
 
-- **Evict the cache where an attempt ends.** Rejected: five `transition_attempt` calls in
+- **Evict the cache where an attempt ends.** Rejected: four `transition_attempt` calls in
   `supervisor.rs` end an attempt, and a new one could forget; the eviction would
   also miss the clients that open connections already hold.
 - **Close a run's proxy connections when it ends.** Rejected: it needs a run-to-connections index
@@ -53,5 +54,6 @@ upstream request was logged with reqwest's error text, which holds the full URL.
 ## Consequences
 
 An ended run's credential stops adding secrets at its next request, whatever connection it uses.
-Each proxied request to a bound host of an agent run costs one more indexed attempt read. A
+Each proxied request to a bound host of an agent run, and each cached `egress_client` hit for
+one, costs one more indexed attempt read. A
 failed upstream request is logged with its host and the error's kind, not its URL.

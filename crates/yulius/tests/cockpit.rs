@@ -3737,9 +3737,27 @@ async fn the_superagent_runs_behind_the_egress_proxy_with_its_own_bearer() -> Te
         .await?;
     assert!(f.h.app.egress_client(&daves).await.is_none(), "disabled");
 
-    // Ended, its bearer is refused at once.
+    // Ended, its bearer is refused at once, and a connection it holds adds nothing more
+    // (SPEC-388 EPL-001).
     f.h.app.end_all_shells().await;
     assert!(f.h.app.egress_client(&token).await.is_none());
+    let held =
+        f.h.app
+            .egress_apply(
+                &client,
+                egress_request(
+                    "api.apify.test",
+                    &[("authorization", "Bearer yulius-secret-APIFY_KEY")],
+                ),
+            )
+            .await;
+    assert!(
+        matches!(
+            held,
+            yulius_app::ports::egress::EgressDecision::Refuse { status: 403, .. }
+        ),
+        "{held:?}"
+    );
     Ok(())
 }
 
