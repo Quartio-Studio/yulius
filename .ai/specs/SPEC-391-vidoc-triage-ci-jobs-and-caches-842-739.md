@@ -9,7 +9,8 @@ Status: in-progress
 Date: 2026-11-02
 Owner: Yulius task #373
 Scope authorization: task #373 (a person asked that each of the five issues end closed). Fixes
-#829; #842, #739 and #843 are dismissed as false positives and #736 as a duplicate of #739.
+#829 and #842 (its real part: fork pull requests reached CI, found by the independent review);
+#739 and #843 are dismissed as false positives and #736 as a duplicate of #739.
 
 ## Goal
 
@@ -47,17 +48,21 @@ Each of the five Vidoc findings about Yulius CI and its host-side paths is check
   no content from outside; a FIFO does not block the server.
 - VCT-002 (#739, #736, false positive). The checkout path's key cannot hold `/`, `.` or be empty;
   dismissed with a narrow entry per wording.
-- VCT-003 (#842, false positive, by design). A pull request's own jobs run only for heads of the
-  sandbox's own repository, inside its containment, with no secret its own configuration grants;
-  dismissed with a narrow entry.
+- VCT-003 (#842, real in part). CI never tests a pull request GitHub reports as coming from a fork
+  (`from_fork`), whether or not its head commit is in the sandbox's clone, which a contained agent
+  can fill (`gh pr checkout`, a fetch of `pull/N/head`, a fetch refspec in the clone's config).
+  Running a same-repository pull request's own jobs stays by design (its author pushes to the
+  repository; the jobs run in the sandbox's containment, with no secret its own configuration
+  grants); that wording gets a narrow entry.
 - VCT-004 (#843, false positive). Declared caches cannot escape the worktree; dismissed with a
   narrow entry.
 
 ## Plan
 
 - [x] Spec SPEC-391 with the triage of all five findings
-- [ ] ci_setup reads the worktree's files through no-follow handles from the sandbox directory (#829)
-- [ ] Narrow [[ignore]] entries for the dismissed wordings (#842 #739 #736 #843)
+- [x] ci_setup reads the worktree's files through no-follow handles from the sandbox directory (#829)
+- [x] Narrow [[ignore]] entries for the dismissed wordings (#842 #739 #736 #843)
+- [x] CI never tests a fork's pull request whose head is in the clone (#842)
 - [ ] Gates, docs and changes entry
 - [ ] Independent review answered
 - [ ] Pull request merged into dev on green and issues closed
@@ -67,13 +72,19 @@ Each of the five Vidoc findings about Yulius CI and its host-side paths is check
 - A `ci/tools.rs` unit test where `.github` is a link to a host folder holding a workflow fails on
   `dev` (the host workflow is summarized) and passes; the same for a worktree folder that is a
   link, and a `yulius.toml` or workflow that is a link or a FIFO yields nothing and returns.
+- `local_ci::a_fork_pull_request_is_never_tested_even_with_its_head_in_the_clone` fails on `dev`
+  (`pr/1` queued for a fork whose head is in the clone) and passes.
+- An MCP test (`ci_setup::`) shows `ci_setup` summarizes the worktree's own files and, once
+  `.github` is a link to a host folder, nothing of it; it fails on `dev`.
 - `.config/vidoc.toml` has one narrow entry per dismissed wording, each with its reason.
-- Each issue ends closed: #829 by the merged pull request, the others as not planned with a
-  comment giving the evidence.
+- Each issue ends closed: #829 and #842 by the merged pull request, the others as not planned
+  with a comment giving the evidence.
 
 ## Test plan
 
 - Unit tests in `crates/yulius-app/src/ci/tools.rs` on the blocking reader (tempdir sandbox).
+- Integration tests in `crates/yulius/tests/ci_setup.rs` (the tool through MCP) and
+  `local_ci.rs` (a fork pull request whose head is in the clone).
 - `scripts/dev ci` (the full gate) and `scripts/dev security`.
 
 ## Decisions
@@ -83,7 +94,10 @@ Each of the five Vidoc findings about Yulius CI and its host-side paths is check
   helpers make the fix small. The leaf-only `O_NOFOLLOW` the finding suggests is not enough: a
   folder on the way (`.github`) swapped for a link would still be followed, so the whole path is
   walked by handles.
-- #842 is by design: CI exists to run the pull request's code. Who can reach it already runs code
+- #842 is fixed where it was real and by design elsewhere. The independent review found that the
+  "fork heads are skipped" mitigation relied on the head missing from the clone, which an agent
+  controls; filtering on GitHub's `from_fork` (already on `GhPull`) is the boundary ADR-0116
+  states. Otherwise CI exists to run the pull request's code. Who can reach it already runs code
   in that sandbox (push access to its repository, or its agents), the job runs in the same
   containment as those agents, and secrets come only from the integration branch's entry for that
   name and command. Whitelisting commands would make CI useless.

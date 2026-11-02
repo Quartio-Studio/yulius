@@ -10,8 +10,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   the sandbox directory folder by folder with `O_NOFOLLOW` (ADR-0174), each file checked as a
   regular file on its handle: a contained agent swapping `.github`, `workflows`, the worktree or a
   file for a link (before or after a check) no longer makes the server summarize a host file
-  (SPEC-391, task #373, fixes #829). The Vidoc findings #842 (by design), #739, its duplicate #736
-  and #843 (already guarded) are dismissed with narrow `[[ignore]]` entries.
+  (SPEC-391, task #373, fixes #829). CI never tests a fork's pull request any more, even when its
+  head commit is in the sandbox's clone (an agent fetched `pull/N/head` to review it): GitHub's
+  `from_fork` decides, as ADR-0116 always said, so a fork's code never runs with the integration
+  branch's granted secrets (fixes #842; running a same-repository pull request's own jobs stays by
+  design). The Vidoc findings #739, its duplicate #736 and #843 (already guarded) are dismissed
+  with narrow `[[ignore]]` entries.
 - A CI job still waiting for a job slot now shows in its run's stages while it waits: `ci::exec`
   opens the job's `job slot` wait span when the wait begins and ends it `started`, `cancelled`
   (cancelled while waiting) or `error`, and the waterfall draws a wait with no job span as that

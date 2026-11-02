@@ -355,12 +355,13 @@ path = "crates/yulius-app/src/ci/mod.rs"
 title = "Untrusted pull request CI configuration executes arbitrary shell commands"
 reason = "by design: CI runs the pull request's code inside the sandbox's containment without secrets (SPEC-142, ADR-0116)"
 
-# #842 (SPEC-391): the same finding reworded. Only heads in the sandbox's clone are tested (a
-# fork's are not fetched), so whoever reaches it already pushes to the repository or is its agent.
+# #842 (SPEC-391): the same finding reworded. A fork's pull request is never tested (`from_fork`,
+# tested by local_ci::a_fork_pull_request_is_never_tested_even_with_its_head_in_the_clone), so
+# whoever reaches it already pushes to the repository or is its agent.
 [[ignore]]
 path = "crates/yulius-app/src/ci/mod.rs"
 title = "CI runs attacker-supplied job commands from pull requests"
-reason = "by design: only heads of the sandbox's own repository are tested, inside its containment, with no secret their own configuration grants (SPEC-142, SPEC-264, ADR-0116)"
+reason = "by design: only pull requests of the sandbox's own repository are tested (from_fork skipped), inside its containment, with no secret their own configuration grants (SPEC-142, SPEC-264, ADR-0116, SPEC-391)"
 
 # A delivery environment's `command` is the sandbox profile's: a repository administrator sets it
 # (`PATCH /api/sandboxes/{sid}`), or it is seeded once from the default branch's `yulius.toml`
