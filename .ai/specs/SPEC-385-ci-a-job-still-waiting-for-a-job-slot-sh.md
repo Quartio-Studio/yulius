@@ -1,11 +1,11 @@
 ---
 yulius-task: f43d93db-327d-4b1e-954d-9face3eff69a
-status: in-progress
+status: done
 ---
 
 # SPEC-385: a CI job still waiting for a job slot shows in the run's stages while it waits
 
-Status: in-progress
+Status: done
 Date: 2026-11-02
 Owner: Yulius task #367
 Scope authorization: task #367, Fixes #536 (filed by task #155, SPEC-165).
@@ -73,8 +73,9 @@ row, ended `cancelled`.
 - [x] ci::exec opens the job slot span when the wait begins and ends it started, cancelled or error
 - [x] Stage summaries proven to count only ended waits
 - [x] The waterfall draws a job still waiting (or cancelled while waiting) as its row under Jobs
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review round 1 in a fresh session, findings fixed test-first
+- [x] Independent review round 2 approves the merged head
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -130,3 +131,45 @@ row, ended `cancelled`.
   then still shows.
 - A wait ended `requeued` (a restart while the job waited) is its job's row under "Jobs" with no
   mark, beside the row of the job's later attempt, as a requeued job's two runs already are.
+
+## Evidence
+
+All on Linux, Rust 1.99.0 (pinned), Node 24.21.0, Chromium from `npx e2e-web install chromium`,
+`E2E_TELEMETRY_DISABLED=1`.
+
+- **Tests fail first (Rust).** `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
+  (test(/jobs_wait_for_their_cpu_budget_and_are_told_it/) | test(/a_job_cancelled_while_it_waits/))'`
+  against the old `ci_job`: both failed, "no open job slot wait: []" and "no job of the pull
+  request's run waits" (no span while waiting). After the change: both pass, with
+  `a_run_s_jobs_record_their_stages_and_test_counts`; the whole `local_ci::` file 57/57.
+- **Review round 1, test-first.** With a matrix job (`a (1)`, `a (2)`), the cancel test failed
+  before the fix: `left: (Some("a"), None)`, `right: (Some("a"), Some("a (1)"))` (no display name
+  on the wait). After it: both tests pass, five runs in a row.
+- **Summaries (AC3).** `stages::tests::the_summary_counts_only_ended_waits_for_a_job_slot` passes
+  without a code change: `summarize` already counted open spans as running. It is a regression
+  guard, not a test that failed first.
+- **Tests fail first (web).** `npx e2e run tests/pipeline.e2e.ts` with the new mock against the old
+  `stages.js`: 2 failed (busy run, short run: the waits under "Run" as "Waiting for a job slot").
+  After: 14/14. The open-paired-wait case (WSL-004) failed with its line of `stages.js` reverted
+  (`touch` null for `package (mcp/email)`), then passed restored. Round 1's display-name mock
+  failed against the old label (rows "package"), then passed; the file 14/14 three times.
+- **Full e2e suite.** At ada6fe7c: 800 passed, 1 skipped (801), 70 files passed, 1 skipped. At
+  d80446b1: the same, 800 passed, 1 skipped (801).
+- **Project gate.** `scripts/dev ci` (after `python3 scripts/bootstrap.py`): exit 0 at ada6fe7c and
+  at d80446b1 (after merging `origin/dev` cf635904), nextest 2954 passed, 16 skipped.
+- **Security.** `yulius security-scan` printed "Security scan disabled: Vidoc is turned off in
+  Yulius, for this project or the whole instance; nothing was scanned." Disabled, not passed.
+- **Independent review in fresh sessions.** Round 1 requested changes at ada6fe7c (major: a
+  waiting matrix job read its definition name; minors: two test races, a weak cancel assertion, a
+  store error ended `cancelled`; nits: the table's columns, a failed end write, requeued rows); all
+  fixed test-first or recorded under Decisions. Round 2 approved d80446b1.
+- **Left as is (not fixed, no issue: this task may not open issues).**
+  - Round 1's finding 4, partly: in the cancel test the run's end trigger would end a wait left
+    open with the same time and outcome (the test clock is frozen, the superseded run ends
+    `cancelled`), so the cancel branch's own `end_wait` is not told apart by a test. It is in the
+    code for runs that do not end with their job (a sibling's failure ends the run `failed`), and
+    the reviewer read it as correct.
+  - Round 2's nits: the waiting mark has no colour rule of its own (as `cancelled`), and a lone
+    ended wait under a second still shows its row ("waited 0 s"), where a paired one hides.
+- **Not tested here.** A real busy instance (21 jobs, 9 waiting) was not run; the integration
+  tests drive real `ci_job` waits on a sandbox limited to 4 CPUs, and the e2e tests the mock.
