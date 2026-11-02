@@ -11,7 +11,9 @@ left open (the Superagent behind the proxy). Amends SPEC-037 MGT-006 again. Amen
 [0165](0165-the-superagent-bypasses-approvals-on-contained-servers.md): on a contained server the
 Superagent bypasses approvals, so "Asked before each change" holds only on an uncontained one;
 the server-side checks of the two tools (the person's one-time allowance, Git ignoring the file)
-still apply.
+still apply. Amended by
+[0252](0252-the-egress-policy-checks-a-clients-run-on-every-request.md): the proxy checks that
+the Superagent's shell is running on every request, not only when it resolves its bearer.
 
 ## Context
 
