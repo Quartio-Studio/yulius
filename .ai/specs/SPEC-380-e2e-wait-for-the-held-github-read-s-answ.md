@@ -43,8 +43,8 @@ that answer has come, so it cannot pass before the answer it is about.
 - Superseded on merging `dev` (2026-11-02): task #364 (SPEC-382, PR #1011) merged its own fix of
   the same failure first: `placeTip` brings a tip with no room above down to the plot's top, and
   the daily chart test also hovers the highest day. This pull request takes dev's fix and drops its
-  own flip, its two tests and their docs, so it is back to #869 alone; REQ-5 and REQ-6 below are
-  met by SPEC-382's change instead.
+  own flip, its two tests and their docs, so it is back to #869 alone; REQ-5 below (the old REQ-5 and
+  REQ-6, merged) is met by SPEC-382's change instead.
 
 ## Requirements
 
@@ -67,6 +67,11 @@ that answer has come, so it cannot pass before the answer it is about.
 - [x] Daily chart's hover tip flips below a point near the chart's top (unblocks CI's e2e)
 - [x] Gates green and independent review answered
 - [x] Gate, e2e suite and review green on the final head
+
+Plan notes: the flip of step 3 was done, then withdrawn on merging dev (met by SPEC-382, see
+Context); this pull request does not ship it. Step 5's full e2e suite ran at 6c691b3a, before the
+merge; after the merge the gate and the two affected e2e files ran here, the full suite runs in
+Yulius CI on the pull request, and the merged head was reviewed (Evidence).
 
 ## Acceptance criteria
 
@@ -95,14 +100,14 @@ that answer has come, so it cannot pass before the answer it is about.
   has the hold, and a counter of every answered GET would be a wider change than the test needs.
   The page still handles the answer after the mock returns it, but within the same few microtasks
   and tasks, before the poll's next browser round trip returns.
-- The chart tip flips below its point rather than being clamped down to the plot's top: clamped,
+- (Withdrawn on merging dev, see the last decision.) The chart tip was to flip below its point rather than be clamped down to the plot's top: clamped,
   it would cover the point and the line it describes. The flip is decided in `placeTip` from the
   tip's measured height, so the waterfall's tip gets it too (its top row fits above today, so it
   does not change there). A mock that never puts a point near the top would only hide the case.
   It flips only when there is more room below (review round 2): a short waterfall's tall tip
   would otherwise trade a cut at the top for a bigger one at the bottom. `placeTip` is exported for
   its in-page unit test, as `dom.js` exports `menuMatches`.
-- Fixed in this pull request, not a separate one: it fails every pull request's e2e job today, this
+- (Withdrawn on merging dev.) It was fixed in this pull request, not a separate one: it fails every pull request's e2e job today, this
   run may not open an issue, and no other task was on it.
 - Withdrawn on merging dev: SPEC-382 landed first with a clamp to the plot's top. Two mechanisms
   for one bound would be worse than either, and the clamp keeps the tip inside, which is what the
