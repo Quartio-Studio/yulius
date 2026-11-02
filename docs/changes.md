@@ -4,8 +4,108 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-02
+
+- A CI job still waiting for a job slot now shows in its run's stages while it waits: `ci::exec`
+  opens the job's `job slot` wait span when the wait begins and ends it `started`, `cancelled`
+  (cancelled while waiting) or `error`, and the waterfall draws a wait with no job span as that
+  job's row under "Jobs", hatched up to "now" ("waiting 4 min so far"), where it fell under "Run"
+  as "Waiting for a job slot" or was missing (SPEC-385, task #367, fixes #536). Stage summaries
+  still count only ended waits.
+- ADR-0160's over-long lines are rewrapped to the file's width, with no word changed: the SPEC-201
+  amendment's bullet "The install brings buildx and compose" (141 characters) and the Status
+  section's ADR-0162 amendment note (143 characters; SPEC-386, task #368, fixes #612).
+- An integration test now asserts that `secret_create_from_file` naming `~/key` in a sandbox whose
+  home was removed is refused with "your home does not exist on this machine" and creates nothing
+  (SPEC-383, task #365, fixes #643). Test only: the refusal was already there, untested.
+- The onboarding e2e test "Start again during the last read keeps the form" now waits for the held
+  GitHub read's answer before checking that the form stayed: the mock counts answered reads
+  (`githubAnswered`) and the test polls it up to the asked count, where it polled the asked count,
+  which already included the held read (SPEC-380, task #362, fixes #869). Without the page's
+  `epoch` guard it still fails. Test and mock only.
+- A test now fails when Yulius's refusal toward Vidoc for a project or instance with Vidoc off
+  (`VIDOC_OFF_REFUSAL`, with its line end) outgrows the part of an error body the scanner keeps,
+  now the named `MESSAGE_LIMIT` (200) in `scripts/vidoc_scan.py`; the scanner's own test checks
+  the whole reason is printed (SPEC-381, task #363, fixes #981). ADR-0242's one unwrapped
+  Consequences line is wrapped.
+- The hygiene scan's bound of `MAX_PULL_LOOKUPS` GitHub pull-request lookups per scan is now held
+  by tests: the GitHub fake records every `branch_pulls` call, and both bound tests fail if a scan
+  looks up more, or looks up an open pull request's branch (SPEC-379, task #361, fixes #847). The
+  `merged` reason and the bound's note say "already in the integration or production branch",
+  since a branch only the production branch has is `merged` too; the worktree-name test rejects
+  the forms `Path::components` normalises (`worktrees/./x`, `worktrees//x`, `worktrees/x/`).
+- `scripts/dev doctor` names an unpinned Linux host the way bootstrap does: a host reporting
+  `RISCV64` read "RISCV64-linux" in doctor and "riscv64-linux" in bootstrap. Both now take the
+  name from `zig_install.host_name`, and doctor's message is built by `zig_pin_error`, which a unit
+  test covers (SPEC-382, task #364, fixes #645).
+- The Pipeline's daily chart keeps its hover tip inside the chart on its highest day: the tip, drawn
+  above its point, ran past the chart's top. The mock's figures follow the date, so the e2e test
+  failed every pull request on 2026-11-02; it now hovers the highest day on any date (SPEC-382).
+
 ## 2026-11-01
 
+- The e2e test of a Vidoc refresh that overtakes the read after a change no longer times out on
+  a loaded host: it waited for exactly two held reads, which the page's own rereads (the sandbox
+  list reloaded, its poll) overshot; it now waits for the refresh to start and a read after it
+  (SPEC-374, #1002, task #357). The test that refreshes the runs without rereading the view
+  now allows a second read after its change, for the same reason.
+- Two e2e tests no longer measure a layout a ResizeObserver sets once (SPEC-375, task #358, fixes
+  #1003): the way on below a held card (`terminal.e2e.ts`) and the corner notices below a phone's
+  needs_you bar (`cd.e2e.ts`) are polled until they hold, and both run with every observer 2 s
+  late (`lateResizeObservers` in `tests/support.ts`), which failed the single measure every run.
+  Test only: an observer's callback runs before paint, so nobody sees the old place.
+- The Superagent request e2e tests no longer get the mock's sandbox browser sign-in request
+  (`browserask=0`): on a slow machine its toast moved "Created #N"'s Open button between the
+  click's press and release, and the click was lost (SPEC-376, task #356, #978). A regression case
+  fires that request (`__yuliusMock.askBrowserSignIn()`) while Open is pressed: it must not come.
+- The e2e helper `terminalShown` waits up to `TERMINAL_SHOW_MS` (30 s) for a task terminal's
+  first screen, with a message naming it, instead of an assertion's 5 s, which was shorter than
+  the app may take to show it (its core's load, then up to 5 s until it reveals anyway) and
+  failed a loaded run (SPEC-372, ADR-0251, task #355, fixes #949). A regression test holds the
+  core and the hello so the terminal shows only by that limit.
+- A held prompt's "skip after" that finds none of the chosen steps still open now answers "No open
+  step was left to skip (finished, skipped or removed meanwhile)" instead of "(already finished)",
+  which was false for a step the spec sync or `steps_set` removed, or someone else skipped, while
+  the skip waited for the steps lock (SPEC-377, task #359, #944). With no step checked it answers
+  "No step was chosen to skip".
+- The CI/CD page's Security scan (Vidoc) card puts its switch at the card's right edge, as the
+  Settings rows do, instead of 520 px across a full-width card (SPEC-364, #997, task #347).
+- The task overview offers its changes only when the task's worktree is there (SPEC-370, task
+  #353, #945): "Review changes" waits for the Git overview and stays away for a task not started
+  or whose worktree was removed, and the Changes tile says "No worktree yet" / "Worktree gone"
+  instead of linking "N files · review", as the Git board does (SPEC-343). Both led to
+  "Couldn't load the changes".
+- The egress proxy's own warnings at a full proxy and a full share now name the busiest holders
+  with their counts (`holders=s1 (5), s2 (5)`: sandboxes, or runs of the sandbox), so the journal
+  says who holds the connections (SPEC-366, task #349, closes #964). SPEC-002 §2.7 now states
+  every bound: 256 in all, 128 per sandbox, the longest-idle connection past 300 s giving way at a
+  full limit, then the busiest run or sandbox, the `503` texts, the warnings and the panel's
+  trouble (ADR-0240, 0241, 0243, 0246). A test shows the 300 s floor with an explicit clock:
+  #964's idle reclaim is met as ADR-0241 decided, at a full limit rather than on a timer.
+
+- CI job preparation never follows a link an agent put at `ci`, `ci/jobs` or `ci/home` (SPEC-367,
+  task #350, fixes #969). Before, a link at `ci` made the next job create `home` and its checkout
+  at the link's target, outside the sandbox; a link at `ci/home` became the job's `HOME`; a link at
+  `ci/jobs` made Git add the checkout at the target and every later run remove it there through
+  the link. Now `ci` is opened from the sandbox directory with `O_NOFOLLOW` (a link fails the job,
+  nothing is made), a link or file at `ci/home` or `ci/jobs` is replaced by a folder, and anything
+  at the checkout's name that is not a checkout Git registers there is removed through handles.
+  `ci_checkout` removes and makes nothing by path and matches registrations by resolved path. The
+  merge train's scratch checkouts are readied the same way.
+- A fetch survives a worktree being added beside it (SPEC-368, ADR-0249, task #351, fixes #995).
+  `git worktree add` writes the new registration's `HEAD` as the null id before it sets the
+  commit, and a fetch's connectivity check, which reads every worktree's `HEAD`, failed meanwhile
+  with `bad object worktrees/<name>/HEAD`: a sandbox sync beside a CI job's checkout (seen in the
+  `local_ci` test under load), an integration merge's fetch beside a new task worktree, or an
+  agent's own add. Yulius's Git adapter now runs such a fetch again, at most 5 attempts with a
+  100 to 800 ms backoff, once its own registration changes have ended; any other failure returns
+  at once.
+- A plain-HTTP request through the egress proxy waits a bounded time for its answer (SPEC-369,
+  ADR-0250, task #352, #975). A plain `http://` request keeps its place in its sandbox's proxy
+  share until the answer's head arrives; an upstream that accepted and never answered kept it for
+  good, so leftover processes could fill the share. It now gets `504` naming the host after 5
+  minutes with no progress (each request-body frame sent restarts the wait), and frees its place.
+  Intercepted requests and tunnels are unchanged.
 - `[docs] changes` may name a folder of change notes, one file per pull request (SPEC-363,
   ADR-0248, task #346). Every task added an entry at the top of one changes log, so in quartio-v2
   each merge into `dev` made every other open pull request conflict on GitHub and rerun its CI

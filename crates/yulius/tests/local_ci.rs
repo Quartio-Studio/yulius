@@ -932,6 +932,22 @@ async fn a_failed_fetch_never_deletes_what_moved_on_github() -> TestResult {
     Ok(())
 }
 
+/// One hygiene scan of `s1`, with the branches whose pull requests it looked up on GitHub (one
+/// request each) during it.
+async fn scan_counting_lookups(f: &Fixture) -> BoxResult<(support::Resp, Vec<String>)> {
+    let lookups = || {
+        f.h.github
+            .branch_pull_lookups
+            .lock()
+            .map(|l| l.clone())
+            .map_err(|e| e.to_string())
+    };
+    let before = lookups()?.len();
+    let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    let looked_up = lookups()?.split_off(before);
+    Ok((scan, looked_up))
+}
+
 /// SPEC-269 (review round 4): branches already in dev never use up the pull-request lookups an
 /// unmerged branch's verdict needs, however many there are.
 #[tokio::test]
@@ -973,8 +989,18 @@ async fn merged_branches_leave_the_lookups_to_unmerged_ones() -> TestResult {
     git(&f.work, &["push", "-q", "origin", "feat/closed"])?;
     pull(&f, 2, "feat/closed", "dev", false, false)?;
 
-    let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    let (scan, looked_up) = scan_counting_lookups(&f).await?;
     assert_eq!(scan.status, StatusCode::OK, "{}", scan.body);
+    // One GitHub request per lookup: the merged branches got only what feat/closed left.
+    assert!(
+        looked_up.len() <= bound,
+        "{} lookups, bound {bound}: {looked_up:?}",
+        looked_up.len()
+    );
+    assert!(
+        !looked_up.iter().any(|b| b == "feat/one"),
+        "an open pull request's branch took a lookup: {looked_up:?}"
+    );
     let items = scan.body["items"].as_array().ok_or("items")?;
     assert!(
         items
@@ -996,14 +1022,22 @@ async fn merged_branches_leave_the_lookups_to_unmerged_ones() -> TestResult {
 }
 
 /// SPEC-269 (review round 5): an open pull request's branch takes no lookup, and branches already
-/// in dev whose pull requests the bound left unread are named in a note.
+/// in the integration or production branch whose pull requests the bound left unread are named in
+/// a note (SPEC-379: here one only the production branch has).
 #[tokio::test]
 async fn the_lookup_bound_counts_only_lookups_and_says_what_it_left() -> TestResult {
     let f = fixture().await?;
     let bound = yulius_app::ci::hygiene::MAX_PULL_LOOKUPS;
     git(&f.work, &["fetch", "-q", "origin"])?;
+    // A hotfix on main that dev lacks.
+    git(&f.work, &["checkout", "-q", "-B", "hotfix", "origin/main"])?;
+    std::fs::write(f.work.join("hotfix.txt"), "x\n")?;
+    git(&f.work, &["add", "-A"])?;
+    git(&f.work, &["commit", "-q", "-m", "hotfix"])?;
+    git(&f.work, &["push", "-q", "origin", "hotfix:main"])?;
+    git(&f.work, &["fetch", "-q", "origin"])?;
     // `bound` recent unmerged branches without a pull request (one commit), after feat/one,
-    // whose pull request is open, and one release branch at dev's commit.
+    // whose pull request is open, and one release branch at main's commit only.
     git(&f.work, &["checkout", "-q", "-B", "wip", "origin/dev"])?;
     std::fs::write(f.work.join("wip.txt"), "x\n")?;
     git(&f.work, &["add", "-A"])?;
@@ -1011,15 +1045,24 @@ async fn the_lookup_bound_counts_only_lookups_and_says_what_it_left() -> TestRes
     let refspecs: Vec<String> = (0..bound)
         .map(|n| format!("wip:refs/heads/zz/{n:02}"))
         .chain(std::iter::once(
-            "origin/dev:refs/heads/release/1".to_owned(),
+            "origin/main:refs/heads/release/1".to_owned(),
         ))
         .collect();
     let mut push = vec!["push", "-q", "origin"];
     push.extend(refspecs.iter().map(String::as_str));
     git(&f.work, &push)?;
 
-    let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
+    let (scan, looked_up) = scan_counting_lookups(&f).await?;
     assert_eq!(scan.status, StatusCode::OK, "{}", scan.body);
+    assert!(
+        looked_up.len() <= bound,
+        "{} lookups, bound {bound}: {looked_up:?}",
+        looked_up.len()
+    );
+    assert!(
+        !looked_up.iter().any(|b| b == "feat/one"),
+        "an open pull request's branch took a lookup: {looked_up:?}"
+    );
     let notes: Vec<&str> = scan.body["notes"]
         .as_array()
         .ok_or("notes")?
@@ -1035,7 +1078,7 @@ async fn the_lookup_bound_counts_only_lookups_and_says_what_it_left() -> TestRes
     assert!(
         notes
             .iter()
-            .any(|n| n.contains("1 branch already in the integration branch")),
+            .any(|n| n.contains("1 branch already in the integration or production branch")),
         "{notes:?}"
     );
     Ok(())
@@ -1947,9 +1990,62 @@ async fn jobs_wait_for_their_cpu_budget_and_are_told_it() -> TestResult {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+    // SPEC-385 WSL-001: the other `build` waits for its CPUs (its job still queued), and its wait
+    // is a span already, open. A wait whose job is already running is left out: its start ends it
+    // just after (review round 1).
+    let deadline = tokio::time::Instant::now() + WAIT;
+    let open = loop {
+        let mut open = Vec::new();
+        for id in &runs {
+            let queued: Vec<String> =
+                f.h.store
+                    .ci_jobs(id, false)
+                    .await?
+                    .into_iter()
+                    .filter(|j| j.state == RunState::Queued)
+                    .map(|j| format!("wait:{}@", j.id))
+                    .collect();
+            open.extend(slot_waits(&f, id).await?.into_iter().filter(|w| {
+                w.ended_at.is_none() && queued.iter().any(|prefix| w.key.starts_with(prefix))
+            }));
+        }
+        if open.iter().any(|w| w.job.as_deref() == Some("build")) {
+            break open;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("no open job slot wait of a queued job: {open:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(open.iter().all(|w| w.outcome.is_none()), "{open:?}");
     std::fs::write(f.data.join("go"), "")?;
     f.settle().await?;
     f.all_passed(2).await?;
+    // WSL-002, WSL-004: each job's wait ended `started` at its job's start.
+    for id in &runs {
+        let spans = run_spans(&f, id).await?;
+        let jobs: Vec<_> = spans.iter().filter(|s| s.kind == "job").collect();
+        let waits: Vec<_> = spans
+            .iter()
+            .filter(|s| s.kind == "wait" && s.name == "job slot")
+            .collect();
+        assert_eq!((jobs.len(), waits.len()), (2, 2), "{spans:?}");
+        for job in jobs {
+            let job_id = job.key["job:".len()..]
+                .split('@')
+                .next()
+                .unwrap_or_default();
+            let wait = waits
+                .iter()
+                .find(|w| w.key.starts_with(&format!("wait:{job_id}@")))
+                .ok_or_else(|| format!("no wait of {job:?}"))?;
+            assert_eq!(
+                (wait.ended_at, wait.outcome.as_deref(), wait.job.as_deref()),
+                (Some(job.started_at), Some("started"), job.job.as_deref()),
+                "{wait:?}"
+            );
+        }
+    }
     for id in &runs {
         let detail = f.get(&format!("/api/sandboxes/s1/ci/runs/{id}")).await?;
         for job in detail["jobs"].as_array().ok_or("jobs")? {
@@ -1967,6 +2063,127 @@ async fn jobs_wait_for_their_cpu_budget_and_are_told_it() -> TestResult {
             }
         }
     }
+    Ok(())
+}
+
+/// A CI run's spans (SPEC-137).
+async fn run_spans(f: &Fixture, run: &str) -> BoxResult<Vec<yulius_app::stages::SpanRecord>> {
+    use yulius_app::ports::store_ext::SpanStore as _;
+    Ok(f.h
+        .store
+        .subject_spans(
+            &SandboxId::parse("s1")?,
+            yulius_domain::stages::SubjectKind::CiRun,
+            run,
+            1_000,
+        )
+        .await?)
+}
+
+/// A CI run's waits for a job slot (SPEC-385).
+async fn slot_waits(f: &Fixture, run: &str) -> BoxResult<Vec<yulius_app::stages::SpanRecord>> {
+    Ok(run_spans(f, run)
+        .await?
+        .into_iter()
+        .filter(|s| s.kind == "wait" && s.name == "job slot")
+        .collect())
+}
+
+/// SPEC-385 WSL-002: a job cancelled while it waits for a slot (its run superseded by a push)
+/// ends its open wait `cancelled` when it is cancelled, and never gets a job span. The wait names
+/// the job's definition (`job`) and its display name (`detail.name`, a matrix job's "a (1)";
+/// review round 1).
+#[tokio::test]
+async fn a_job_cancelled_while_it_waits_for_a_slot_ends_its_wait_cancelled() -> TestResult {
+    let f = fixture_with(false, |data| {
+        format!(
+            "[[ci.jobs]]\nname = \"a\"\nmatrix = \"1 2\"\ncpus = 3\n\
+             command = 'while [ ! -e \"{go}\" ]; do sleep 0.05; done'\n",
+            go = data.join("go").display()
+        )
+    })
+    .await?;
+    assert!(f.h.app.set_isolation(Arc::new(Limited)));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    // One job at a time holds 3 of the 4 CPUs until `go`: once one runs, the pull request's run
+    // has a job that waits (queued, its wait open) and cannot start before the push cancels it.
+    let run = f.running("pr/1").await?;
+    let run = run["id"].as_str().ok_or("run id")?.to_owned();
+    let deadline = tokio::time::Instant::now() + WAIT;
+    let (waiting, name) = loop {
+        f.h.app.ci_dispatch().await;
+        let mut jobs = Vec::new();
+        for other in f.h.store.ci_runs(&f.sandbox.id, 10).await? {
+            jobs.extend(f.h.store.ci_jobs(&other.id, false).await?);
+        }
+        let held = jobs.iter().any(|j| j.state == RunState::Running);
+        let open = slot_waits(&f, &run).await?.into_iter().find_map(|w| {
+            let job = jobs.iter().find(|j| {
+                j.run_id == run
+                    && j.state == RunState::Queued
+                    && w.key.starts_with(&format!("wait:{}@", j.id))
+            })?;
+            w.ended_at.is_none().then(|| (w, job.name.clone()))
+        });
+        if let (true, Some(open)) = (held, open) {
+            break open;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err("no job of the pull request's run waits".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(name == "a (1)" || name == "a (2)", "{name}");
+    let detail: Value = serde_json::from_str(waiting.detail.as_deref().unwrap_or("{}"))?;
+    assert_eq!(
+        (waiting.job.as_deref(), detail["name"].as_str()),
+        (Some("a"), Some(name.as_str())),
+        "{waiting:?}"
+    );
+    let job_id = waiting.key["wait:".len()..]
+        .split('@')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    f.push_feature("more.txt", Some("more\n"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        if f.h.store.ci_run(&run).await?.map(|r| r.state) == Some(RunState::Cancelled) {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err("the superseded run never ended".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    std::fs::write(f.data.join("go"), "")?;
+    f.settle().await?;
+    let job =
+        f.h.store
+            .ci_jobs(&run, false)
+            .await?
+            .into_iter()
+            .find(|j| j.id == job_id)
+            .ok_or("the waiting job")?;
+    assert_eq!((job.state, job.started_at), (RunState::Cancelled, None));
+    let spans = run_spans(&f, &run).await?;
+    let wait = spans
+        .iter()
+        .find(|s| s.key == waiting.key)
+        .ok_or("the wait")?;
+    // It ended at the job's cancellation, with its word.
+    assert_eq!(
+        (wait.ended_at, wait.outcome.as_deref()),
+        (job.ended_at, Some("cancelled")),
+        "{wait:?}"
+    );
+    assert!(
+        !spans
+            .iter()
+            .any(|s| s.key.starts_with(&format!("job:{job_id}@"))),
+        "{spans:?}"
+    );
     Ok(())
 }
 
@@ -2190,6 +2407,101 @@ async fn a_linked_ci_cache_folder_never_reaches_outside() -> TestResult {
     let cache = std::fs::symlink_metadata(ci.join("cache"))?;
     assert!(cache.is_dir(), "the link was replaced by a folder");
     assert!(ci.join("cache/build/made").exists());
+    Ok(())
+}
+
+/// The names in `dir`, sorted.
+fn names_in(dir: &Path) -> BoxResult<Vec<String>> {
+    let mut names = std::fs::read_dir(dir)?
+        .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
+        .collect::<BoxResult<Vec<_>>>()?;
+    names.sort();
+    Ok(names)
+}
+
+/// #969 (SPEC-367 CJP-001): a link an agent put at `ci` fails the jobs before Yulius makes
+/// anything: before, `<target>/home` (and the checkout) were made at the link's target.
+#[tokio::test]
+async fn a_linked_ci_folder_fails_the_job_and_makes_nothing_outside() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"build\"\ncommand = 'echo ran'\n".to_owned()
+    })
+    .await?;
+    let outside = f.data.join("outside");
+    std::fs::create_dir_all(&outside)?;
+    std::os::unix::fs::symlink(&outside, f.data.join("sandboxes/s1/ci"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let jobs = all_jobs(&f).await?;
+    assert!(!jobs.is_empty(), "no job was queued");
+    assert!(jobs.iter().all(|job| job["state"] != "passed"), "{jobs:?}");
+    assert_eq!(names_in(&outside)?, Vec::<String>::new(), "made outside");
+    Ok(())
+}
+
+/// #969 (SPEC-367 CJP-002): a link at `ci/home` is replaced by a folder of the sandbox, never the
+/// job's `HOME`: before, the job wrote into the link's target.
+#[tokio::test]
+async fn a_linked_ci_home_is_replaced_by_a_folder() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"build\"\ncommand = 'touch \"$HOME/made\"'\n".to_owned()
+    })
+    .await?;
+    let outside = f.data.join("outside");
+    std::fs::create_dir_all(&outside)?;
+    std::fs::write(outside.join("keep"), "host\n")?;
+    let ci = f.data.join("sandboxes/s1/ci");
+    std::fs::create_dir_all(&ci)?;
+    std::os::unix::fs::symlink(&outside, ci.join("home"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    f.all_passed(2).await?;
+    assert_eq!(
+        names_in(&outside)?,
+        ["keep"],
+        "the target is left as it was"
+    );
+    assert!(std::fs::symlink_metadata(ci.join("home"))?.is_dir());
+    assert!(
+        ci.join("home/made").exists(),
+        "HOME is the sandbox's folder"
+    );
+    Ok(())
+}
+
+/// #969 (SPEC-367 CJP-002, CJP-003): a link at `ci/jobs` to a folder holding the checkouts' names
+/// is replaced by a folder: before, Git added the checkouts at the target, and the next run
+/// removed `<target>/<checkout>` through the link as a broken checkout.
+#[tokio::test]
+async fn a_linked_ci_jobs_folder_is_never_checked_out_or_removed_through() -> TestResult {
+    let f = fixture_with(false, |_| {
+        "[[ci.jobs]]\nname = \"build\"\ncommand = 'echo ran'\n".to_owned()
+    })
+    .await?;
+    let outside = f.data.join("outside");
+    for name in ["build", "build@1"] {
+        std::fs::create_dir_all(outside.join(name))?;
+        std::fs::write(outside.join(name).join("keep"), "host\n")?;
+    }
+    let ci = f.data.join("sandboxes/s1/ci");
+    std::fs::create_dir_all(&ci)?;
+    std::os::unix::fs::symlink(&outside, ci.join("jobs"))?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    f.all_passed(2).await?;
+    for name in ["build", "build@1"] {
+        assert_eq!(names_in(&outside.join(name))?, ["keep"], "{name} outside");
+    }
+    assert!(std::fs::symlink_metadata(ci.join("jobs"))?.is_dir());
+    assert!(ci.join("jobs/build/README.md").exists());
+    let registered = git(
+        &f.data.join("sandboxes/s1/repo"),
+        &["worktree", "list", "--porcelain"],
+    )?;
+    assert!(
+        !registered.contains(&*outside.to_string_lossy()),
+        "{registered}"
+    );
     Ok(())
 }
 

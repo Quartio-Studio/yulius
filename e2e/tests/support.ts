@@ -112,15 +112,27 @@ export async function editorShown(browser: Browser): Promise<void> {
 }
 
 /**
- * Waits until the task view's terminal shows its first screen. The task view asks for the
- * keyboard when it opens, and that request lands when the terminal shows, over a button or link
- * focused meanwhile (SPEC-056 WUI-102). A test that puts the keyboard elsewhere on a task's page
- * waits for this first: before, it raced the terminal, which took the keyboard 30–100 ms after the
- * sidebar showed (SPEC-082 TST-003).
+ * Budget for a task terminal's first screen (ADR-0251). The terminal shows once its core has
+ * loaded (eight modules, xterm's stylesheet and the code font, terminal.js) and its server drew
+ * the first screen, or at the latest `REVEAL_LIMIT_MS` (5 s, terminal-core.js) after it started,
+ * which is after that load: an assertion's 5 s is shorter than the app's own limit, and a starved
+ * runner missed it (#949). It bounds that one condition, not the steps after it.
+ */
+export const TERMINAL_SHOW_MS = 30_000;
+
+/**
+ * Waits until the task view's terminal shows its first screen, within `TERMINAL_SHOW_MS`. The task
+ * view asks for the keyboard when it opens, and that request lands when the terminal shows, over a
+ * button or link focused meanwhile (SPEC-056 WUI-102). A test that puts the keyboard elsewhere on a
+ * task's page waits for this first: before, it raced the terminal, which took the keyboard 30–100 ms
+ * after the sidebar showed (SPEC-082 TST-003).
  */
 export async function terminalShown(browser: Browser): Promise<void> {
   await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .term') !== null
-    && document.querySelector('.taskview .term-pending, .taskview .term-placeholder') === null)).toBe(true);
+    && document.querySelector('.taskview .term-pending, .taskview .term-placeholder') === null), {
+    timeout: TERMINAL_SHOW_MS,
+    message: 'the task view’s terminal never showed its first screen (its core did not load or it never revealed)',
+  }).toBe(true);
 }
 
 /**
@@ -153,6 +165,42 @@ export async function touchTask(browser: Browser, sandbox: string, number: numbe
   type Touching = { __yuliusMock: { touchTask: (sandbox: string, number: number, changes: unknown) => void } };
   await eventsConnected(browser);
   await browser.evaluate(([s, n, c]) => (window as unknown as Touching).__yuliusMock.touchTask(s, n, c), [sandbox, number, changes] as const);
+}
+
+/**
+ * How late `lateResizeObservers` makes every ResizeObserver answer by default. It outlasts a test's
+ * waits for what shows, so a single measure fails every run; a poll of what an observer sets
+ * gives it this much on top of its usual 5 s (`timeout: LATE_OBSERVER_MS + 5_000`).
+ */
+export const LATE_OBSERVER_MS = 2_000;
+
+/**
+ * Makes every ResizeObserver of the next pages answer `ms` late, as a loaded host does when it
+ * delays the rendering update that runs them (#1003): a layout an observer sets is measured by
+ * polling, never once. Entries of a target unobserved (or a disconnect) meanwhile are dropped, as
+ * a real observer would never report them. Call it before `app.open`.
+ */
+export async function lateResizeObservers(browser: Browser, ms = LATE_OBSERVER_MS): Promise<void> {
+  await browser.addInitScript((delay) => {
+    const Native = window.ResizeObserver;
+    window.ResizeObserver = class extends Native {
+      constructor(callback: ResizeObserverCallback) {
+        const watched = new Set<Element>();
+        super((entries, observer) => {
+          setTimeout(() => {
+            const live = entries.filter((entry) => watched.has(entry.target));
+            if (live.length) callback(live, observer);
+          }, delay);
+        });
+        const observe = this.observe.bind(this);
+        const unobserve = this.unobserve.bind(this);
+        const disconnect = this.disconnect.bind(this);
+        this.observe = (target, options) => { watched.add(target); observe(target, options); };
+        this.unobserve = (target) => { watched.delete(target); unobserve(target); };
+        this.disconnect = () => { watched.clear(); disconnect(); };
+      }
+    };
+  }, ms);
 }
 
 /**

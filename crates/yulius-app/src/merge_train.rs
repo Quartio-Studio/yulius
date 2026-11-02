@@ -1020,6 +1020,12 @@ impl App {
             return None;
         }
         let ci_dir = self.ci_dir(&sandbox.id);
+        // Readied through handles: Git checks out in it by its path (SPEC-367).
+        if let Err(err) = self.ci_checkout_ready(&sandbox.id, &[], "train").await {
+            tracing::warn!(sandbox = %sandbox.slug, error = %err, "a merge train could not be built");
+            state.unformed = Some(key);
+            return None;
+        }
         let built = match self
             .deps
             .git

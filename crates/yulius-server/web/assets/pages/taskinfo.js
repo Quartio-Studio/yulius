@@ -14,6 +14,7 @@ import { initials } from '../layout.js';
 import { modelLabel } from '../models.js';
 import { loadWaterfall } from '../stages.js';
 import { pipelineHref } from './pipeline.js';
+import { worktreeMissing } from './git.js';
 
 const ORIGINS = { ui: 'Started here', automation: 'Automation', import: 'Imported', onboarding: 'Onboarding', agent: 'Another task' };
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
@@ -66,16 +67,20 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     stagesHost);
   const body = h('div', { class: 'ti-body' }, placeholder('Loading the task…', 'loading', loadingLayout));
   const titleEl = h('h1', { class: 'page-title gt-title' });
+  // Only a worktree on disk has changes to read (SPEC-370): the button waits for the Git overview's
+  // row and stays away without one, as the Changes tile's link does.
+  const reviewButton = h('a', { class: 'btn', href: href(reviewPath), dataset: { route: reviewPath }, hidden: true }, icon('branch', { size: 14 }), 'Review changes');
+  const reviewable = (git) => Boolean(git && !worktreeMissing(git));
   const head = h('header', { class: 'gt-head' },
     h('a', { class: 'gt-back', href: href(`${base}/tasks`), dataset: { route: `${base}/tasks`, restore: 'page' } }, icon('back', { size: 14 }), 'Tasks'),
-    h('div', { class: 'gt-title-row' }, titleEl,
-      task.branch ? h('a', { class: 'btn', href: href(reviewPath), dataset: { route: reviewPath } }, icon('branch', { size: 14 }), 'Review changes') : null,
+    h('div', { class: 'gt-title-row' }, titleEl, reviewButton,
       h('a', { class: 'btn btn-primary gt-go', href: href(taskPath), dataset: { route: taskPath } }, 'Go to task', icon('forward', { size: 14 }))),
     meta);
 
   function renderHead() {
     const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
     setChildren(titleEl, h('span', { class: 'muted' }, `#${current.number} `), current.title || `Task #${current.number}`);
+    reviewButton.hidden = !reviewable(ctx.store.gitRowOf(sandbox.id, current.id));
     const pr = ctx.store.pullsOf(sandbox.id).get(current.id);
     // The activity line starts with the state's label: show only what it adds.
     const line = activityLine(current, info) || '';
@@ -125,6 +130,8 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     const login = current.created_by && current.created_by.login;
     const ownerLogin = (current.owner && current.owner.login) || login;
     const delivery = detail.delivery || null;
+    const files = git && git.files_changed ? plural(git.files_changed, 'file') : null;
+    const noWorktree = git ? worktreeMissing(git) : null;
 
     // Each time says what it measures (SPEC-087 TIM-003, MET-005): when the task was made, how
     // long it has been in its state, and the agent's work apart from the time its sessions stayed
@@ -137,7 +144,8 @@ export function mountTaskInfoView(ctx, sandbox, task) {
       tile('Plan', stepsCount.total ? `${stepsCount.done}/${stepsCount.total}` : '—', stepsCount.current || (stepsCount.total && stepsCount.done === stepsCount.total ? 'All steps done' : null),
         stepsCount.total ? h('span', { class: 'ti-progress', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': stepsCount.total, 'aria-valuenow': stepsCount.done, 'aria-label': 'Plan steps done' }, h('span', { class: 'ti-progress-fill', style: { width: `${Math.round((stepsCount.done / stepsCount.total) * 100)}%` } })) : null),
       tile('Changes', git && git.files_changed ? h('span', { class: 'gt-stat' }, h('span', { class: 'gt-add' }, `+${git.insertions ?? 0}`), ' ', h('span', { class: 'gt-del' }, `−${git.deletions ?? 0}`)) : '—',
-        git && git.files_changed ? h('a', { href: href(reviewPath), dataset: { route: reviewPath } }, `${plural(git.files_changed, 'file')} · review`) : 'No branch changes yet'),
+        noWorktree ? [files, noWorktree].filter(Boolean).join(' · ')
+          : files ? h('a', { href: href(reviewPath), dataset: { route: reviewPath } }, `${files} · review`) : 'No branch changes yet'),
       tile('Tokens', tokens === null ? 'unknown' : compact(tokens), tokens === null ? null : `in ${compact(m.input_tokens)} · out ${compact(m.output_tokens)} · cache ${compact((m.cache_read_tokens || 0) + (m.cache_write_tokens || 0))}`));
 
     const rows = [

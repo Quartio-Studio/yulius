@@ -402,6 +402,8 @@ class Service(Scanning):
         code, output = self.run_scan(repo, server)
         self.assertEqual(code, 2, output)
         self.assertIn("Security scan not run: Vidoc is turned off in Yulius", output)
+        # SPEC-381 (#981): the whole reason, to its last word, within `MESSAGE_LIMIT`.
+        self.assertIn(refusal.removeprefix("Yulius: "), output)
         self.assertNotIn("refused the key", output)
         self.assertNotIn("\n\n", output, "no blank line from the body's line end")
         self.assertEqual(len(server.requests), 1, "never retried")

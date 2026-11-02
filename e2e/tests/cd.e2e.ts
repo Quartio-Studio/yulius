@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, LATE_OBSERVER_MS, lateResizeObservers, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -700,6 +700,9 @@ test('a needs_you request reads What happened, Problem and To do', async ({ app,
 // terminal's corner notices start below the bar, and an unpaired backtick stays a backtick.
 test('the longest needs_you request keeps its to-do and buttons in view on a phone', async ({ app, browser }) => {
   await browser.setViewport({ width: 360, height: 780 });
+  // The corner moves below the bar when a ResizeObserver sees the bar (taskview.js), at a
+  // rendering update a loaded host delays (#1003).
+  await lateResizeObservers(browser);
   await app.open(mock('/s/studio/t/12'));
   await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {
     needs_you: {
@@ -713,7 +716,9 @@ test('the longest needs_you request keeps its to-do and buttons in view on a pho
   }));
   await expect(browser.locator('.attention-bar .needs-you-todo')).toBeVisible();
   await expect(browser.locator('.taskview-term .term-corner')).toHaveCount(1);
-  const placed = await browser.evaluate(() => {
+  // Read until the bar's observer has run: it places the corner below the bar and makes a list
+  // that scrolls a tab stop.
+  await expect.poll(() => browser.evaluate(() => {
     const inView = (el: Element | null) => {
       if (!el) return false;
       const r = el.getBoundingClientRect();
@@ -733,8 +738,7 @@ test('the longest needs_you request keeps its to-do and buttons in view on a pho
       code: [...document.querySelectorAll('.attention-bar .needs-you-todo code')].map((c) => c.textContent),
       todoText: todo!.querySelector('dd')?.textContent?.slice(0, 50),
     };
-  });
-  expect(placed).toEqual({
+  }), { message: 'the to-do, the buttons and the corner are placed', timeout: LATE_OBSERVER_MS + 5_000 }).toEqual({
     todo: true,
     todoOnTop: true,
     buttons: [true, true],

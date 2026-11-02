@@ -35,3 +35,5 @@ reqwest = { workspace = true, features = ["stream"] }
 
 [dev-dependencies]
 async-trait = { workspace = true }
+# Reads the proxy's warnings in tests (SPEC-366 EPB-001).
+tracing-subscriber = { workspace = true }

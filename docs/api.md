@@ -458,7 +458,8 @@ nothing is checked and nothing is held, and Auto uses its defaults.
   - `after`: a new task chained after this one;
   - `skip_after`: the given steps become `skipped` (with the note "Ruled out by the user: …" by
     `user:<login>`; the agent sees them in its steps, no message is sent, SPEC-028), and a chained
-    task gets the prompt;
+    task gets the prompt; with no step given it skips nothing and still chains the task, and a
+    chosen step finished, skipped or removed meanwhile is left as it is (SPEC-377);
   - `revert`: stops the task (reaped within 30 s, else 409 and nothing changes), commits its work to
     a new branch `yulius/reverted/<number>-<ms>`, resets its worktree to where it forked from the
     integration branch, archives it, and starts a new task with the prompt; `note` names the
@@ -750,12 +751,12 @@ Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force"
 - **Hygiene.** After a merge through Yulius the head branch is deleted (not the integration,
   production or default branch, nor one another open pull request uses). Every 6 hours (first 10
   minutes after start) Yulius removes each sandbox's safe items itself, as `yulius` (SPEC-269,
-  ADR-0199), except `merged` branches (already in the integration branch, no pull request had
-  them: a release branch), which stay for a person; `next_cleanup_at` says when. A branch an open
-  pull request targets is in use, and a branch on GitHub is deleted only while its tip there is
-  the commit the scan judged. `last_cleanup` is the last cleanup since the server
-  started that a person or agent asked for or that removed or kept something (in memory; the
-  audit log `hygiene.cleanup` keeps the history). Cleanup never forces a
+  ADR-0199), except `merged` branches (already in the integration or production branch, no merged
+  pull request found for them: a release branch), which stay for a person; `next_cleanup_at`
+  says when. A branch an open pull request targets is in use, and a branch on GitHub is deleted
+  only while its tip there is the commit the scan judged. `last_cleanup` is the last cleanup since
+  the server started that a person or agent asked for or that removed or kept something (in
+  memory; the audit log `hygiene.cleanup` keeps the history). Cleanup never forces a
   worktree removal, never removes a live task's worktree, a protected branch or one with an open
   pull request, and removes `idle` branches (unmerged, no pull request) only with `force`.
 

@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { editorShown, failOnPageErrors, mock, terminalShown, touchTask } from './support.ts';
+import { editorShown, failOnPageErrors, LATE_OBSERVER_MS, lateResizeObservers, mock, terminalShown, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -148,6 +148,24 @@ async function selectRow(browser: Browser, text: string): Promise<void> {
   await browser.mouse.move(box!.x + 400, y);
   await browser.mouse.up();
 }
+
+test('terminalShown waits out the app’s own reveal limit, counted after the terminal core loaded (#949)', async ({ app, browser }) => {
+  // The core loads only once the wait has begun, and the hello is never answered: the terminal
+  // shows by the app's fallback alone, REVEAL_LIMIT_MS (5 s) after start(), so more than 5 s after
+  // the wait began, as a starved runner can make it.
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  let holds = 0;
+  await browser.route(/\/assets\/terminal-core\.js(\?|$)/, async (route) => { holds += 1; await released; await route.continue(); });
+  await browser.addInitScript(() => {
+    (window as unknown as { __yuliusHoldTerminal: Promise<void> }).__yuliusHoldTerminal = new Promise<void>(() => {});
+  });
+  await app.open(mock('/s/studio/t/12'));
+  const shown = terminalShown(browser);
+  release();
+  await shown;
+  expect(holds, 'the terminal core was held until the wait began').toBe(1);
+});
 
 test('the clipboard keys follow desktop terminals', async ({ app, browser }) => {
   await app.open(mock('/s/studio'));
@@ -1000,17 +1018,20 @@ test('the attention bar’s Reply leaves the whole session for the terminal (#91
 });
 
 test('the way on sits below a held card over the terminal (#911)', async ({ app, browser }) => {
+  // The button moves below the card when a ResizeObserver sees the card (taskview.js), at a
+  // rendering update a loaded host delays (#1003).
+  await lateResizeObservers(browser);
   const point = await classicTask12(app, browser);
   await touchTask(browser, 'sb_studio', 12, { heldPrompt: { id: 'hold_9', class: 'new_scope', excerpt: 'Also add a dark mode to the invoice settings page.', percent: 92, typed_by: 'mkarp', created_at: new Date().toISOString() } });
   await expect(browser.locator('.taskview .held-slot')).toBeVisible();
   await turn(browser, point, -120);
   await expect(offer(browser)).toBeVisible();
-  const boxes = await browser.evaluate(() => {
+  // Measured until the observer has run: the gap from the card's bottom to the button's top.
+  await expect.poll(() => browser.evaluate(() => {
     const card = document.querySelector('.taskview .held-slot')!.getBoundingClientRect();
     const button = document.querySelector('.taskview .term-history-offer')!.getBoundingClientRect();
-    return { cardBottom: card.bottom, buttonTop: button.top };
-  });
-  expect(boxes.buttonTop, 'the button is below the card').toBeGreaterThanOrEqual(boxes.cardBottom);
+    return button.top - card.bottom;
+  }), { message: 'the button is below the card', timeout: LATE_OBSERVER_MS + 5_000 }).toBeGreaterThanOrEqual(0);
 });
 
 test('a task that never ran offers no earlier messages (#911)', async ({ app, browser }) => {

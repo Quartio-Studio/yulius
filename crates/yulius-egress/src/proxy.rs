@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
@@ -22,7 +23,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use yulius_app::ports::egress::{EgressClient, EgressDecision, EgressPolicy, EgressRequest};
-use yulius_domain::connection_health::{self, ConnectionHealth, Limit, Refusal};
+use yulius_domain::connection_health::{self, ConnectionHealth, Holder, Limit, Refusal};
 use yulius_domain::connections::{self, Activity, Admitted, Busier, Connections};
 use yulius_domain::vault::egress_destination_allowed;
 use yulius_domain::vault::redact::{Matcher, PlainMatcher, StreamRedactor, redact_all};
@@ -83,6 +84,10 @@ pub struct EgressConfig {
     /// How long a connection is idle (no byte either way) before it may give way to a new one at
     /// a sandbox's share or the proxy's limit (SPEC-355 SLR-002).
     pub idle_floor: Duration,
+    /// How long a plain `http://` request waits for its upstream's response head with no progress
+    /// (no request-body frame forwarded) before it is answered `504` and frees its place (SPEC-369
+    /// PHT-001).
+    pub response_head_timeout: Duration,
     /// Where a refusing share or proxy is reported as a connection trouble (SPEC-361 CHR-001).
     pub health: Arc<ConnectionHealth>,
 }
@@ -95,6 +100,7 @@ impl Default for EgressConfig {
             max_connections: 256,
             max_per_sandbox: 128,
             idle_floor: IDLE_FLOOR,
+            response_head_timeout: IDLE_FLOOR,
             health: Arc::default(),
         }
     }
@@ -106,6 +112,8 @@ pub struct EgressProxy {
     ca: CertificateAuthority,
     http: reqwest::Client,
     resolve: HashMap<String, SocketAddr>,
+    /// How long a plain request waits for its response head with no progress (SPEC-369).
+    response_head_timeout: Duration,
     /// The open tunnels and intercepted connections by sandbox (LAP-002, SPEC-355 SLR-002).
     slots: Arc<Slots>,
     /// When the proxy last gave each warning (a kind, and a sandbox or `None` for the whole
@@ -121,7 +129,7 @@ type Warned = HashMap<(&'static str, Option<String>), Instant>;
 /// sandbox (SPEC-357). Each holds the sender that ends it.
 struct Slots {
     /// By sandbox and run (`EgressClient::use_key`), SPEC-357.
-    table: Mutex<Connections<String, oneshot::Sender<()>, String>>,
+    table: Mutex<Table>,
     epoch: Instant,
     /// Where a refusing share or proxy is a trouble until it has room (SPEC-361).
     health: Arc<ConnectionHealth>,
@@ -131,6 +139,18 @@ struct Slots {
     /// Runs right before a refusal is reported (tests: a close racing it, review round 2).
     #[cfg(test)]
     pause: Option<Box<dyn Fn() + Send + Sync>>,
+}
+
+/// The connections by sandbox and run, each with what ends it.
+type Table = Connections<String, oneshot::Sender<()>, String>;
+
+/// The table `config` bounds: its total, a sandbox's share and the idle floor (SPEC-366 EPB-003).
+fn table(config: &EgressConfig) -> Table {
+    Connections::with_owners(
+        config.max_connections,
+        config.max_per_sandbox,
+        u64::try_from(config.idle_floor.as_millis()).unwrap_or(u64::MAX),
+    )
 }
 
 /// A place the table gave, or the limit met.
@@ -145,14 +165,15 @@ impl Slots {
     /// it. A refusal is reported as a trouble, with whose connections they are (SPEC-361
     /// CHR-001), under the table's lock, so a close after it sees the trouble open (review round
     /// 1; the registry never calls back into the proxy). With a refusal at the share, also how
-    /// many `run` holds and the most another run holds (SPEC-357 ESR-004).
+    /// many `run` holds and the most another run holds (SPEC-357 ESR-004). With any refusal, its
+    /// busiest holders, for the proxy's warning (SPEC-366 EPB-001).
     fn admit(
         &self,
         sandbox: &str,
         run: &str,
         held: bool,
         end: oneshot::Sender<()>,
-    ) -> (Answer, Option<(usize, usize)>) {
+    ) -> (Answer, Option<(usize, usize)>, Vec<Holder>) {
         let mut table = self.table.lock().unwrap_or_else(PoisonError::into_inner);
         let (key, owner, now) = (sandbox.to_owned(), run.to_owned(), self.now());
         let admitted = if held {
@@ -183,6 +204,10 @@ impl Slots {
             }),
             Ok(_) => None,
         };
+        let holders = trouble
+            .as_ref()
+            .map(|trouble| trouble.holders.clone())
+            .unwrap_or_default();
         if let Some(trouble) = trouble {
             #[cfg(test)]
             if let Some(pause) = &self.pause {
@@ -190,7 +215,7 @@ impl Slots {
             }
             self.health.refused(trouble, wall_ms());
         }
-        (admitted, counts)
+        (admitted, counts, holders)
     }
 }
 
@@ -232,6 +257,55 @@ impl Drop for Slot {
         }
         if health.open(Limit::Proxy, None) {
             health.held(Limit::Proxy, None, table.len());
+        }
+    }
+}
+
+/// When a request last made progress (a request-body frame forwarded upstream), in ms after it
+/// began (SPEC-369 PHT-001).
+#[derive(Clone)]
+struct Progress {
+    start: Instant,
+    last_ms: Arc<AtomicU64>,
+}
+
+impl Default for Progress {
+    fn default() -> Self {
+        Self {
+            start: Instant::now(),
+            last_ms: Arc::default(),
+        }
+    }
+}
+
+impl Progress {
+    fn touch(&self) {
+        let now = u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.last_ms.store(now, Ordering::Relaxed);
+    }
+
+    /// `waiting`'s output, or `None` once `bound` passed with no progress. A bound past the clock's
+    /// range waits with no bound.
+    async fn within<F: Future>(&self, bound: Duration, waiting: F) -> Option<F::Output> {
+        let mut waiting = std::pin::pin!(waiting);
+        loop {
+            let last = self.last_ms.load(Ordering::Relaxed);
+            let Some(deadline) = self
+                .start
+                .checked_add(Duration::from_millis(last))
+                .and_then(|at| at.checked_add(bound))
+            else {
+                return Some(waiting.await);
+            };
+            tokio::select! {
+                biased;
+                output = &mut waiting => return Some(output),
+                () = tokio::time::sleep_until(deadline.into()) => {
+                    if self.last_ms.load(Ordering::Relaxed) == last {
+                        return None;
+                    }
+                }
+            }
         }
     }
 }
@@ -524,17 +598,15 @@ impl EgressProxy {
         if !roots.is_empty() {
             builder = builder.tls_certs_merge(roots);
         }
+        let table = table(&config);
         Ok(Self {
             policy,
             ca,
             http: builder.build()?,
             resolve: config.resolve,
+            response_head_timeout: config.response_head_timeout,
             slots: Arc::new(Slots {
-                table: Mutex::new(Connections::with_owners(
-                    config.max_connections,
-                    config.max_per_sandbox,
-                    u64::try_from(config.idle_floor.as_millis()).unwrap_or(u64::MAX),
-                )),
+                table: Mutex::new(table),
                 epoch: Instant::now(),
                 health: config.health,
                 share: config
@@ -566,7 +638,7 @@ impl EgressProxy {
         let sandbox = client.sandbox_id.as_str();
         let run = client.use_key();
         let (end, ended) = oneshot::channel();
-        let (admitted, counts) = self.slots.admit(sandbox, run, held, end);
+        let (admitted, counts, holders) = self.slots.admit(sandbox, run, held, end);
         let mut warned = self.warned.lock().unwrap_or_else(PoisonError::into_inner);
         match admitted {
             Ok(admitted) => {
@@ -620,6 +692,7 @@ impl EgressProxy {
                         run,
                         held = mine,
                         share = self.slots.share,
+                        holders = %connection_health::listed(&holders),
                         "egress proxy: a sandbox holds its share of the connections; \
                          leftover processes may hold them (docs/operations.md)"
                     );
@@ -628,7 +701,12 @@ impl EgressProxy {
             }
             Err(connections::Full::Total) => {
                 if warn_due(&mut warned, "full", None) {
-                    tracing::warn!(sandbox, "egress proxy: every connection is taken");
+                    tracing::warn!(
+                        sandbox,
+                        total = self.slots.total,
+                        holders = %connection_health::listed(&holders),
+                        "egress proxy: every connection is taken"
+                    );
                 }
                 Err("Yulius proxy: too many connections; try again".to_owned())
             }
@@ -742,13 +820,21 @@ impl EgressProxy {
             Err((status, message)) => return text(status, &message),
         };
         // In flight until its answer's head arrives: it never gives way meanwhile (its bytes pass
-        // through no tracked stream).
+        // through no tracked stream), so its wait for the head is bounded (SPEC-369 PHT-001).
         let (permit, ended) = match self.slot(&client, true) {
             Ok(slot) => slot,
             Err(refused) => return text(503, &refused),
         };
         drop(ended);
-        let response = self.send(&client, &upstream, outgoing, body).await;
+        let response = self
+            .send(
+                &client,
+                &upstream,
+                outgoing,
+                body,
+                Some(self.response_head_timeout),
+            )
+            .await;
         drop(permit);
         response
     }
@@ -819,7 +905,7 @@ impl EgressProxy {
         B::Error: Into<BoxError>,
     {
         match self.prepare(client, upstream, &parts).await {
-            Ok(outgoing) => self.send(client, upstream, outgoing, body).await,
+            Ok(outgoing) => self.send(client, upstream, outgoing, body, None).await,
             Err((status, message)) => text(status, &message),
         }
     }
@@ -884,13 +970,17 @@ impl EgressProxy {
         })
     }
 
-    /// Sends a prepared request upstream and streams the redacted response back.
+    /// Sends a prepared request upstream and streams the redacted response back. With `head_bound`,
+    /// a `504` once the upstream sent no response head for that long after the request's last
+    /// progress (a request-body frame forwarded; SPEC-369 PHT-001); the response's body is not
+    /// bounded.
     async fn send<B>(
         &self,
         client: &EgressClient,
         upstream: &Upstream,
         outgoing: Outgoing,
         body: B,
+        head_bound: Option<Duration>,
     ) -> Response<EgressBody>
     where
         B: Body<Data = Bytes> + Send + 'static,
@@ -910,12 +1000,30 @@ impl EgressProxy {
                 builder = builder.header(name, value);
             }
         }
+        let progress = Progress::default();
         if !(body.is_end_stream() || body.size_hint().exact() == Some(0)) {
+            let forwarded = progress.clone();
             let stream = TryStreamExt::map_err(BodyStream::new(body), Into::<BoxError>::into)
-                .try_filter_map(|frame| async move { Ok(frame.into_data().ok()) });
+                .try_filter_map(|frame| async move { Ok(frame.into_data().ok()) })
+                .inspect_ok(move |_| forwarded.touch());
             builder = builder.body(reqwest::Body::wrap_stream(stream));
         }
-        let response = match builder.send().await {
+        let sent = match head_bound {
+            Some(bound) => progress.within(bound, builder.send()).await,
+            None => Some(builder.send().await),
+        };
+        let Some(sent) = sent else {
+            tracing::debug!(host = %upstream.host, "upstream sent no response head in time");
+            return text(
+                504,
+                &format!(
+                    "Yulius proxy: {} sent no response for {} s",
+                    upstream.host,
+                    head_bound.unwrap_or_default().as_secs_f32()
+                ),
+            );
+        };
+        let response = match sent {
             Ok(response) => response,
             Err(error) => {
                 let why = if error.is_timeout() {
@@ -1021,6 +1129,18 @@ pub async fn serve(listener: TcpListener, proxy: Arc<EgressProxy>) {
 mod tests {
     use super::*;
 
+    /// SPEC-369 PHT-002 (review round 1): a bound too long to add to the clock means no bound,
+    /// not a panic.
+    #[tokio::test]
+    async fn an_endless_head_bound_waits_without_overflow() {
+        assert_eq!(
+            Progress::default()
+                .within(Duration::MAX, async { "answered" })
+                .await,
+            Some("answered")
+        );
+    }
+
     /// SPEC-361 CHR-002 (review round 2): a refusal whose report races every slot of its sandbox
     /// closing still ends its trouble: the closes wait for the report, so the last sees it open.
     #[test]
@@ -1079,6 +1199,48 @@ mod tests {
             health.troubles().is_empty(),
             "the trouble never ends: {:?}",
             health.troubles()
+        );
+        Ok(())
+    }
+
+    /// SPEC-366 EPB-003 (#964 criterion 3, as ADR-0241 decided): at the proxy's default floor, a
+    /// full limit takes a connection idle for `IDLE_FLOOR` and never one idle for less.
+    #[test]
+    fn a_connection_gives_way_once_idle_for_the_floor() -> Result<(), Box<dyn std::error::Error>> {
+        let floor = u64::try_from(IDLE_FLOOR.as_millis())?;
+        assert_eq!(floor, 300_000);
+        let mut table = table(&EgressConfig {
+            max_connections: 2,
+            max_per_sandbox: 2,
+            ..EgressConfig::default()
+        });
+        let mut admit = |run: &str, now| {
+            let (end, ended) = oneshot::channel();
+            let admitted = table.admit_by("s1".to_owned(), run.to_owned(), end, now);
+            (admitted, ended)
+        };
+        let (_old, mut old_ended) = admit("old", 0);
+        let (_young, mut young_ended) = admit("young", 1);
+        assert!(admit("agent", floor - 1).0.is_err(), "idle for less");
+        let (agent, _) = admit("agent", floor);
+        let evicted = agent?.evicted.ok_or("nothing gave way")?;
+        assert_eq!(
+            (evicted.owner.as_str(), evicted.idle_ms, evicted.busier),
+            ("old", floor, None)
+        );
+        drop(evicted.payload);
+        assert_eq!(
+            old_ended.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed),
+            "its tunnel is ended"
+        );
+        assert!(
+            admit("other", floor).0.is_err(),
+            "the young one is idle 1 ms less"
+        );
+        assert_eq!(
+            young_ended.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
         );
         Ok(())
     }

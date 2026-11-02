@@ -678,11 +678,15 @@ flowchart TD
 The server runs outside containment as the service user, and a sandbox's whole directory is
 mounted read-write into its runs and shells, so an agent can swap any folder below it for a link
 at any moment. Wherever the server reads or writes there (editor reads and saves, uploads and
-attachments, imported transcripts, skill copies, a CI job's log in `ci/logs`), it opens the folder
-once and does everything else through that handle
+attachments, imported transcripts, skill copies, a CI job's log in `ci/logs`, its `ci/home`,
+`ci/cache/<checkout>` and the place of its checkout in `ci/jobs`), it opens the folder once and
+does everything else through that handle
 ([SPEC-220](../.ai/specs/SPEC-220-fix-657-host-writes-into-agent-owned-fol.md),
 [SPEC-285](../.ai/specs/SPEC-285-ci-job-log-created-without-following-pla.md),
-[decision 0174](decisions/0174-host-access-to-agent-owned-folders-goes-through-handles.md)). The
+[SPEC-367](../.ai/specs/SPEC-367-ci-job-preparation-never-follows-a-link.md),
+[decision 0174](decisions/0174-host-access-to-agent-owned-folders-goes-through-handles.md)). A CI
+checkout is the exception Git imposes: its place is readied through handles, then Git adds, checks
+out and cleans it by path, only when Git registers it at its resolved path inside `ci`. The
 helpers are `files::open_inside` (a resolved path opened with `O_NOFOLLOW`, the handle's real path
 checked to be inside the root), `files::open_dirs_below` (each folder from the sandbox directory
 with `O_DIRECTORY | O_NOFOLLOW`, made with `mkdirat` when missing) and `files::replace_in` (a
@@ -2014,6 +2018,9 @@ idle for 5 minutes, a full sandbox share takes the oldest connection of its busi
 the full proxy that of the busiest sandbox, if it holds at least 2 more than the asker, so one busy
 run cannot lock the other runs of its sandbox out
 ([decision 0243](decisions/0243-the-busiest-run-gives-way-at-a-full-proxy-share.md)).
+A plain `http://` request never gives way while in flight, so it waits at most 5 minutes with no
+progress for its upstream's response head, then gets `504` and frees its place
+([decision 0250](decisions/0250-a-plain-http-request-waits-a-bounded-time-for-its-answer.md)).
 A refusal that remains (a sandbox's share, its `out.sock`, the proxy's total) is a connection
 trouble in the app's `ConnectionHealth` registry, with the three busiest runs or sandboxes. It
 ends once its limit falls to seven eighths, and only its beginning and end are published
@@ -2184,7 +2191,10 @@ days go with the hourly CI upkeep. A waterfall (`stages.js`) draws one subject's
 axis with a legend, folds a span's children (one with a failure opens), and in a CI run puts each
 job's slot wait on the job's own row under "Jobs", paired by the job id in the span keys
 ([SPEC-165](../.ai/specs/SPEC-165-for-very-complex-tests-it-s-not-readable.md),
-[decision 0136](decisions/0136-a-ci-job-s-slot-wait-is-drawn-on-its-own-row.md)).
+[decision 0136](decisions/0136-a-ci-job-s-slot-wait-is-drawn-on-its-own-row.md)). A job's slot
+wait is open from the moment it begins to wait and ends `started`, `cancelled` or `error`, so a job
+still waiting is its wait alone on its row there, hatched up to "now"
+([SPEC-385](../.ai/specs/SPEC-385-ci-a-job-still-waiting-for-a-job-slot-sh.md)).
 
 ```mermaid
 flowchart LR

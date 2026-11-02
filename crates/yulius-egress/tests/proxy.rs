@@ -29,6 +29,10 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 const VALUE: &str = "sk_test_51NzQ9yulius_value_8f3a";
 const BOUND: &str = "api.test.example";
 const OTHER: &str = "other.test.example";
+/// A plain-HTTP host whose upstream accepts and never answers (SPEC-369).
+const SILENT: &str = "silent.test.example";
+/// How long the echo upstream waits before answering a path starting with `/slow`.
+const SLOW: std::time::Duration = std::time::Duration::from_secs(1);
 
 struct Policy {
     matcher: Arc<PlainMatcher>,
@@ -136,6 +140,9 @@ async fn upstream(
                             .path_and_query()
                             .map_or("/", |p| p.as_str())
                             .to_owned();
+                        if path.starts_with("/slow") {
+                            tokio::time::sleep(SLOW).await;
+                        }
                         let body = request
                             .into_body()
                             .collect()
@@ -165,6 +172,22 @@ async fn upstream(
     Ok(addr)
 }
 
+/// An upstream that accepts every connection, reads what it is sent and never answers.
+async fn silent() -> Result<SocketAddr, Box<dyn std::error::Error>> {
+    use tokio::io::AsyncReadExt as _;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = [0u8; 1024];
+                while matches!(stream.read(&mut buf).await, Ok(n) if n > 0) {}
+            });
+        }
+    });
+    Ok(addr)
+}
+
 struct Setup {
     proxy: SocketAddr,
     health: Arc<ConnectionHealth>,
@@ -183,6 +206,15 @@ async fn setup_with(
     idle_floor: std::time::Duration,
     max_connections: usize,
 ) -> Result<Setup, Box<dyn std::error::Error>> {
+    setup_bounded(idle_floor, max_connections, yulius_egress::IDLE_FLOOR).await
+}
+
+/// [`setup_with`] whose plain requests wait `response_head_timeout` for a response head.
+async fn setup_bounded(
+    idle_floor: std::time::Duration,
+    max_connections: usize,
+    response_head_timeout: std::time::Duration,
+) -> Result<Setup, Box<dyn std::error::Error>> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let mut ca = CertificateParams::default();
     ca.distinguished_name
@@ -196,6 +228,7 @@ async fn setup_with(
     let test_ca = issuer.pem();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let upstream = upstream(&issuer, seen.clone()).await?;
+    let silent = silent().await?;
     let authority = CertificateAuthority::from_material(&generate_ca_material()?)?;
     let egress_ca = authority.cert_pem().to_owned();
     let policy = Arc::new(Policy {
@@ -207,11 +240,16 @@ async fn setup_with(
             policy,
             authority,
             EgressConfig {
-                resolve: HashMap::from([(BOUND.into(), upstream), (OTHER.into(), upstream)]),
+                resolve: HashMap::from([
+                    (BOUND.into(), upstream),
+                    (OTHER.into(), upstream),
+                    (SILENT.into(), silent),
+                ]),
                 extra_roots_pem: vec![test_ca.clone()],
                 max_connections,
                 max_per_sandbox: 8,
                 idle_floor,
+                response_head_timeout,
                 health: Arc::clone(&health),
             },
         )
@@ -383,12 +421,19 @@ async fn ask(
     head: &str,
 ) -> Result<(tokio::net::TcpStream, String), Box<dyn std::error::Error>> {
     use base64::Engine as _;
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::io::AsyncWriteExt as _;
     let mut stream = tokio::net::TcpStream::connect(setup.proxy).await?;
     let auth = base64::engine::general_purpose::STANDARD.encode(format!("yulius:{token}"));
     stream
         .write_all(format!("{head}Proxy-Authorization: Basic {auth}\r\n\r\n").as_bytes())
         .await?;
+    let answer = answer(&mut stream).await?;
+    Ok((stream, answer))
+}
+
+/// The proxy's status line on `stream`, followed by the text of the body its length announces.
+async fn answer(stream: &mut tokio::net::TcpStream) -> Result<String, Box<dyn std::error::Error>> {
+    use tokio::io::AsyncReadExt as _;
     let mut head = Vec::new();
     let mut byte = [0u8; 1];
     while !head.ends_with(b"\r\n\r\n") && head.len() < 8192 {
@@ -411,10 +456,7 @@ async fn ask(
         .unwrap_or(0);
     let mut body = vec![0u8; length.min(8192)];
     stream.read_exact(&mut body).await?;
-    Ok((
-        stream,
-        format!("{status} {}", String::from_utf8_lossy(&body)),
-    ))
+    Ok(format!("{status} {}", String::from_utf8_lossy(&body)))
 }
 
 /// SPEC-353 LAP-002 (2026-10-30: the proxy answered every sandbox "too many connections" while
@@ -643,6 +685,93 @@ async fn refused_plain_requests_take_no_place_from_a_busier_run() -> TestResult 
     Ok(())
 }
 
+/// SPEC-369 PHT-001, PHT-002 (#975): a plain request whose upstream accepts and never answers
+/// waited for its head forever and kept its place, so a sandbox's processes could fill its share
+/// with them. Each is now answered 504 after the bound, and the whole share opens again while the
+/// clients still hold their connections.
+#[tokio::test]
+async fn a_plain_request_to_a_silent_upstream_gets_504_and_frees_its_place() -> TestResult {
+    let bound = std::time::Duration::from_millis(200);
+    let setup = setup_bounded(yulius_egress::IDLE_FLOOR, 16, bound).await?;
+    let head = format!("GET http://{SILENT}/ HTTP/1.1\r\nHost: {SILENT}\r\n");
+    // The sandbox's whole share at once: none of them gives way while in flight.
+    let asked = futures::future::join_all((0..8).map(|_| ask(&setup, "good-token", &head)));
+    let answers = tokio::time::timeout(std::time::Duration::from_secs(30), asked)
+        .await
+        .map_err(|_| "a plain request to a silent upstream was never answered")?;
+    let mut kept = Vec::new();
+    for answer in answers {
+        let (stream, status) = answer?;
+        assert!(status.contains(" 504"), "{status}");
+        assert!(status.contains(SILENT), "names the host: {status}");
+        kept.push(stream);
+    }
+    for at in 0..8 {
+        let (stream, status) = tunnel(&setup, "good-token").await?;
+        assert!(status.contains(" 200"), "tunnel {at}: {status}");
+        kept.push(stream);
+    }
+    Ok(())
+}
+
+/// SPEC-369 PHT-001: the wait restarts with every request-body frame forwarded, so an upload
+/// longer in all than the bound, never silent for as long, gets its answer.
+#[tokio::test]
+async fn a_plain_request_still_sending_its_body_is_not_cut() -> TestResult {
+    use base64::Engine as _;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let bound = std::time::Duration::from_secs(2);
+    let setup = setup_bounded(yulius_egress::IDLE_FLOOR, 16, bound).await?;
+    let mut stream = tokio::net::TcpStream::connect(setup.proxy).await?;
+    let auth = base64::engine::general_purpose::STANDARD.encode("yulius:good-token");
+    stream
+        .write_all(
+            format!(
+                "POST http://{BOUND}/upload HTTP/1.1\r\nHost: {BOUND}\r\n\
+                 Transfer-Encoding: chunked\r\nConnection: close\r\nProxy-Authorization: Basic {auth}\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await?;
+    // The client's own pace: 2.4 s in all, a frame every 200 ms.
+    for _ in 0..12 {
+        tokio::time::sleep(bound / 10).await;
+        stream.write_all(b"1\r\nx\r\n").await?;
+    }
+    stream.write_all(b"0\r\n\r\n").await?;
+    // The body streams chunked; the proxy closes once it ended.
+    let mut answer = String::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        stream.read_to_string(&mut answer),
+    )
+    .await
+    .map_err(|_| "the proxy never ended its answer")??;
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    assert!(answer.contains("body=xxxxxxxxxxxx"), "{answer}");
+    Ok(())
+}
+
+/// SPEC-369 PHT-004: the bound is the plain branch's only. An intercepted request whose upstream
+/// answers after it still gets its answer; the same path as a plain request gets 504.
+#[tokio::test]
+async fn an_intercepted_request_waits_past_the_plain_bound() -> TestResult {
+    let bound = std::time::Duration::from_millis(200);
+    let setup = setup_bounded(yulius_egress::IDLE_FLOOR, 16, bound).await?;
+    let client = agent(&setup, "good-token")?;
+    let response = client.get(format!("https://{BOUND}/slow")).send().await?;
+    assert_eq!(response.status(), 200);
+    assert!(response.text().await?.contains("path=/slow"));
+    let (_plain, status) = ask(
+        &setup,
+        "good-token",
+        &format!("GET http://{BOUND}/slow HTTP/1.1\r\nHost: {BOUND}\r\n"),
+    )
+    .await?;
+    assert!(status.contains(" 504"), "{status}");
+    Ok(())
+}
+
 /// Waits until `health` has no open trouble.
 async fn until_no_trouble(health: &ConnectionHealth) -> TestResult {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -737,4 +866,114 @@ async fn a_full_proxy_is_a_trouble_naming_the_sandboxes_until_it_has_room() -> T
     // Room is seven eighths of 10, 8 (the domain's tests check that 9 is not).
     held.truncate(8);
     until_no_trouble(&setup.health).await
+}
+
+/// The proxy's log lines, written by a subscriber set on this thread (a `tokio::test` runtime
+/// runs the proxy's tasks on it).
+#[derive(Clone, Default)]
+struct Logs(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Logs {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Logs {
+    /// The lines that contain `text`.
+    fn lines_with(&self, text: &str) -> Vec<String> {
+        let logs = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        String::from_utf8_lossy(&logs)
+            .lines()
+            .filter(|line| line.contains(text))
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+impl Logs {
+    /// Captures this thread's log lines until the guard drops.
+    fn capture() -> (Self, tracing::subscriber::DefaultGuard) {
+        let logs = Self::default();
+        let writer = logs.clone();
+        let guard = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_ansi(false)
+                .with_writer(move || writer.clone())
+                .finish(),
+        );
+        (logs, guard)
+    }
+}
+
+/// SPEC-366 EPB-001 (#964: on 2026-10-30 the journal said the proxy was full, not who held it): a
+/// full proxy's warning names the busiest sandboxes with their counts, once a minute.
+#[tokio::test]
+async fn a_full_proxys_warning_names_the_busiest_sandboxes() -> TestResult {
+    let (logs, _logging) = Logs::capture();
+    let setup = setup_with(yulius_egress::IDLE_FLOOR, 10).await?;
+    let mut held = Vec::new();
+    for at in 0..10 {
+        // Evenly: with 2 more, the busiest sandbox would give way (SPEC-357 ESR-003).
+        let token = if at % 2 == 0 {
+            "good-token"
+        } else {
+            "other-sandbox-token"
+        };
+        let (stream, status) = tunnel(&setup, token).await?;
+        assert!(status.contains(" 200"), "tunnel {at}: {status}");
+        held.push(stream);
+    }
+    for _ in 0..2 {
+        let (_refused, status) = tunnel(&setup, "other-sandbox-token").await?;
+        assert!(status.contains("too many connections"), "{status}");
+    }
+    let warnings = logs.lines_with("egress proxy: every connection is taken");
+    assert_eq!(warnings.len(), 1, "once a minute: {warnings:?}");
+    assert!(warnings[0].contains("WARN"), "{}", warnings[0]);
+    assert!(
+        warnings[0].contains("holders=s1 (5), s2 (5)"),
+        "the busiest first, with their counts: {}",
+        warnings[0]
+    );
+    Ok(())
+}
+
+/// SPEC-366 EPB-001: a full share's warning names the sandbox's busiest runs with their counts.
+#[tokio::test]
+async fn a_full_shares_warning_names_the_busiest_runs() -> TestResult {
+    let (logs, _logging) = Logs::capture();
+    let setup = setup().await?;
+    let mut held = Vec::new();
+    for at in 0..8 {
+        let token = if at % 2 == 0 {
+            "good-token"
+        } else {
+            "sibling-token"
+        };
+        let (stream, status) = tunnel(&setup, token).await?;
+        assert!(status.contains(" 200"), "tunnel {at}: {status}");
+        held.push(stream);
+    }
+    let (_refused, status) = tunnel(&setup, "sibling-token").await?;
+    assert!(status.contains(" 503"), "{status}");
+    let warnings = logs.lines_with("egress proxy: a sandbox holds its share");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("holders=a1 (4), a2 (4)"),
+        "the busiest runs, with their counts: {}",
+        warnings[0]
+    );
+    Ok(())
 }
