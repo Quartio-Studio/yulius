@@ -211,7 +211,8 @@ test('Start again during the last read keeps the form, and Check now is off whil
   const asked = await githubReads(browser);
   expect(await githubAnswered(browser)).toBeLessThan(asked);
   await releaseGithub(browser);
-  // Once every read asked is answered, the held one included, its answer has left the form alone
+  // Once the mock answered every read asked, the held one included (the page takes the answer
+  // within a few microtasks, before the poll's round trip returns), it has left the form alone
   // (it would put the Check now card back).
   await expect.poll(() => githubAnswered(browser)).toBe(asked);
   await expect(screen.getByRole('button', 'Check now')).toHaveCount(0);

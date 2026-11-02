@@ -833,7 +833,7 @@ route('POST', '/api/admin/recovery-code', ({ db, body }) => {
 });
 // The instance's GitHub App (ACC-006).
 // A test can hold the reads (`__yuliusMock.holdGithub = promise`) to act while one is on its way (SPEC-283);
-// `githubAnswered` counts the reads answered, past the hold, so it waits for a held read's answer (SPEC-380).
+// `githubAnswered` counts the reads answered, past the hold, so a test can wait for a held read's answer (SPEC-380).
 route('GET', '/api/admin/github', async ({ db }) => {
   if (db.holdGithub) await db.holdGithub;
   db.githubAnswered = (db.githubAnswered || 0) + 1;
