@@ -2156,8 +2156,6 @@ a.dl-task:hover { text-decoration: underline; }
 .chart-tip { position: absolute; z-index: var(--z-float); pointer-events: none; padding: 6px 8px; border-radius: var(--radius-sm); background: var(--surface-3); border: 1px solid var(--border-strong); box-shadow: var(--shadow); font-size: var(--fs-sm); line-height: var(--lh-sm); width: max-content; max-width: min(360px, 100%); overflow-wrap: anywhere; transform: translate(-50%, -100%); }
 .chart-tip strong { display: block; color: var(--text); font-size: var(--fs); line-height: var(--lh); }
 .chart-tip span { color: var(--text-2); }
-/* No room above its point (`placeTip`, SPEC-380): the tip goes below it, the same gap away. */
-.chart-tip.chart-tip-below { transform: translate(-50%, 8px); }
 
 /* ---------------------------------------------------------------- browser panel */
 

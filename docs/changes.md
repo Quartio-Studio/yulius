@@ -11,10 +11,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   (`githubAnswered`) and the test polls it up to the asked count, where it polled the asked count,
   which already included the held read (SPEC-380, task #362, fixes #869). Without the page's
   `epoch` guard it still fails. Test and mock only.
-- A chart's hover tip whose point is too near the top of its chart for the tip above it now goes
-  below the point: the Pipeline's daily trend put its highest day's tip partly above the chart,
-  and its e2e test failed every pull request's run on the days the first or last day was the
-  highest (2026-11-02). A new test hovers the highest day (SPEC-380, task #362).
+- `scripts/dev doctor` names an unpinned Linux host the way bootstrap does: a host reporting
+  `RISCV64` read "RISCV64-linux" in doctor and "riscv64-linux" in bootstrap. Both now take the
+  name from `zig_install.host_name`, and doctor's message is built by `zig_pin_error`, which a unit
+  test covers (SPEC-382, task #364, fixes #645).
+- The Pipeline's daily chart keeps its hover tip inside the chart on its highest day: the tip, drawn
+  above its point, ran past the chart's top. The mock's figures follow the date, so the e2e test
+  failed every pull request on 2026-11-02; it now hovers the highest day on any date (SPEC-382).
 
 ## 2026-11-01
 

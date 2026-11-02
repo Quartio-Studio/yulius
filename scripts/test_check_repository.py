@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import re
 import unittest
-from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors
+from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors, zig_pin_error
 
 
 def package(name, layer, dependencies=()):
@@ -356,6 +356,18 @@ class ModuleTests(unittest.TestCase):
             self.assertEqual(preload_errors(good, root), [])
             self.assertTrue(preload_errors(good.replace("/assets/b.js", "/assets/lazy.js"), root))
         self.assertEqual(preload_errors((ROOT / INDEX).read_text(), (ROOT / STYLESHEET).parent), [])
+
+
+class ZigPin(unittest.TestCase):
+    PINS = {"version": "0.17.0", "x86_64-linux": "0" * 64}
+
+    def test_an_unpinned_upper_case_machine_is_named_as_bootstrap_names_it(self):
+        error = zig_pin_error("RISCV64", self.PINS)
+        self.assertIn("No pinned zig for riscv64-linux in .config/tools.toml", error)
+        self.assertNotIn("RISCV64", error)
+
+    def test_a_pinned_machine_has_no_error(self):
+        self.assertIsNone(zig_pin_error("AMD64", self.PINS))
 
 
 if __name__ == "__main__":

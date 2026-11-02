@@ -40,6 +40,11 @@ that answer has come, so it cannot pass before the answer it is about.
   day, which the test hovers. SPEC-360 had left the flip out as "a case no timeline produces"; the
   daily trend produces it nearly every day, on whichever day is highest. No open issue tracked it,
   and this run may not open one, so it is fixed here, in its own commits.
+- Superseded on merging `dev` (2026-11-02): task #364 (SPEC-382, PR #1011) merged its own fix of
+  the same failure first: `placeTip` brings a tip with no room above down to the plot's top, and
+  the daily chart test also hovers the highest day. This pull request takes dev's fix and drops its
+  own flip, its two tests and their docs, so it is back to #869 alone; REQ-5 and REQ-6 below are
+  met by SPEC-382's change instead.
 
 ## Requirements
 
@@ -50,14 +55,10 @@ that answer has come, so it cannot pass before the answer it is about.
   Check now is absent and the form is shown.
 - REQ-3: With the page's `epoch` guard removed, the test still fails.
 - REQ-4: No product change for #869.
-- REQ-5: A chart tip whose point is too near the plot's top for the tip above it goes below the
-  point, the same 8 px away, when the plot has more room below the point than above it
-  (`placeTip`, both the daily trend and the waterfall); otherwise it stays above.
-- REQ-6: A regression test hovers the daily trend's highest day at 1280 and 390 px, checks the tip
-  would not fit above, and requires it inside the plot and the window; it fails without REQ-5.
-  An in-page unit test of `placeTip` (review round 2) covers a point with room above (above), one
-  near a tall plot's top (below, inside) and one in a plot too short either way with more room
-  above (above).
+- REQ-5 (dropped on merging dev, see Context): the daily trend's tip stays inside its chart on its
+  highest day. Dev's SPEC-382 meets it by bringing the tip down to the plot's top; this pull
+  request's flip below the point, with its highest-day test and in-page `placeTip` unit test, was
+  withdrawn rather than stacked on it.
 
 ## Plan
 
@@ -73,15 +74,16 @@ that answer has come, so it cannot pass before the answer it is about.
 - It fails with the `epoch` guard removed (temporary edit, not committed) and passes with it,
   repeatedly.
 - The onboarding-flow file and the whole e2e suite pass.
-- The daily trend's tip stays inside its chart on its highest day; the new test fails without the
-  flip and passes with it.
+- (Withdrawn, met by SPEC-382) The daily trend's tip stays inside its chart on its highest day.
 
 ## Test plan
 
 - Run the onboarding-flow file with the `epoch` guard removed (`if (mine !== epoch) return;`
   commented out) and see the test fail at Check now; restore it.
 - Run the test 5 times and the file 3 times; then the full e2e suite and the project gate.
-- Commit the highest-day test first and see it fail; add the flip; run `pipeline.e2e.ts` 3 times.
+- Commit the highest-day test first and see it fail; add the flip; run `pipeline.e2e.ts` 3 times
+  (done, then withdrawn on merging dev). After the merge: the onboarding-flow and pipeline files,
+  the full e2e suite and the project gate again.
 
 ## Decisions
 
@@ -102,6 +104,10 @@ that answer has come, so it cannot pass before the answer it is about.
   its in-page unit test, as `dom.js` exports `menuMatches`.
 - Fixed in this pull request, not a separate one: it fails every pull request's e2e job today, this
   run may not open an issue, and no other task was on it.
+- Withdrawn on merging dev: SPEC-382 landed first with a clamp to the plot's top. Two mechanisms
+  for one bound would be worse than either, and the clamp keeps the tip inside, which is what the
+  test requires; the flip's advantage (not covering the point) is not worth reopening a merged
+  fix in a pull request about #869.
 
 ## Evidence
 
@@ -128,6 +134,10 @@ All on Linux, Node 24.21.0, Chromium from `npx e2e-web install chromium`, `E2E_T
   a9a7dbd9); round 2 approved 56dbbf93 with a minor (flip without checking room below), fixed
   test-first; round 3 approved 6c691b3a. Left at the round limit: round 3's nit that the unit
   test's comment says "about 60 px" for a 70 px tip (no case depends on it).
+- Merge of `origin/dev` (1a60261c, PR #1011) conflicted in `stages.js`: resolved to dev's
+  `stages.js`, `styles.css`, `pipeline.e2e.ts`, `e2e/README.md` and SPEC-360, and this pull
+  request's chart entry left `docs/changes.md`; the branch then differs from dev only in the
+  #869 mock and test, this spec and its changes entry. Results after the merge are below.
 - Left out, pre-existing, reported on #869 rather than filed (this run opens no issues): the
   timer window before `holdGithub` in the #869 test, and the Overview's "Tasks per day" tip
   (`pages/dashboard.js`), placed above its point without `placeTip`, which can rise past its plot

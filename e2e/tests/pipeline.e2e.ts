@@ -314,7 +314,7 @@ test('the waterfall’s hover tip wraps its figures and stays inside the plot at
   }
 });
 
-test('the daily chart’s hover tip stays inside its chart on the first and the last day', async ({ app, browser, screen }) => {
+test('the daily chart’s hover tip stays inside its chart on the first, the last and the highest day', async ({ app, browser, screen }) => {
   for (const width of [1280, 390]) {
     await browser.setViewport({ width, height: 900 });
     await app.open(mock('/s/studio/dashboard?section=pipeline'));
@@ -324,69 +324,19 @@ test('the daily chart’s hover tip stays inside its chart on the first and the 
     await browser.evaluate(() => document.querySelector('.st-chart')?.scrollIntoView({ block: 'center' }));
     const hit = await browser.locator('.st-chart .chart-hit').boundingBox();
     if (!hit) throw new Error('the trend chart is not laid out');
-    for (const x of [hit.x + 2, hit.x + hit.width - 2]) {
+    // The highest p90 sits at the plot's top, where a tip above its point has no room. The mock's
+    // figures follow the date, so which day that is changes daily (#645's CI met it on a Monday).
+    const highest = await browser.evaluate(() => {
+      const dots = [...document.querySelectorAll('.st-chart .st-dot-p90')].map((dot) => dot.getBoundingClientRect());
+      const top = dots.reduce((a, b) => (b.top < a.top ? b : a));
+      return top.left + top.width / 2;
+    });
+    for (const x of [hit.x + 2, hit.x + hit.width - 2, highest]) {
       await hoverAt(browser, '.db-tip', x, hit.y + hit.height / 2);
       await expect(browser.locator('.db-tip')).toContainText('ended');
       expect(await tipFit(browser, '.db-tip'), `${width} px, pointer at ${Math.round(x)}`).toMatchObject({ pastPlot: 0, pastWindow: 0, cut: false });
     }
   }
-});
-
-test('the daily chart’s hover tip stays inside its chart on its highest day, too near the top for a tip above', async ({ app, browser, screen }) => {
-  for (const width of [1280, 390]) {
-    await browser.setViewport({ width, height: 900 });
-    await app.open(mock('/s/studio/dashboard?section=pipeline'));
-    const trend = screen.getByRole('region', 'Trend: CI · Run');
-    await expect(trend.getByRole('img', /CI · Run, p50 and p90 by day/)).toBeVisible();
-    await browser.evaluate(() => document.querySelector('.st-chart')?.scrollIntoView({ block: 'center' }));
-    // The highest p90 point: the scale rounds up from it, so it sits close to the plot's top.
-    const peak = await browser.evaluate(() => {
-      const dots = [...document.querySelectorAll('.st-chart .st-dot-p90')].map((dot) => dot.getBoundingClientRect());
-      const top = dots.reduce((best, box) => (box.top < best.top ? box : best));
-      return { x: top.left + top.width / 2, y: top.top + top.height / 2 };
-    });
-    const hit = await browser.locator('.st-chart .chart-hit').boundingBox();
-    if (!hit) throw new Error('the trend chart is not laid out');
-    await hoverAt(browser, '.db-tip', peak.x, hit.y + hit.height / 2);
-    await expect(browser.locator('.db-tip')).toContainText('ended');
-    // A tip above the point would rise past the plot's top.
-    const room = await browser.evaluate((y: number) => {
-      const tip = document.querySelector<HTMLElement>('.db-tip');
-      const plot = tip?.parentElement?.getBoundingClientRect();
-      return tip && plot ? { above: y - plot.top, tall: tip.getBoundingClientRect().height + 8 } : null;
-    }, peak.y);
-    expect(room && room.above < room.tall, `${width} px: ${JSON.stringify(room)}`).toBe(true);
-    expect(await tipFit(browser, '.db-tip'), `${width} px, highest day`).toMatchObject({ pastPlot: 0, pastWindow: 0, cut: false });
-  }
-});
-
-test('a chart tip goes below its point only when it has no room above and more room below (unit, in the page)', async ({ app, browser }) => {
-  await app.open(mock('/s/studio/dashboard?section=pipeline'));
-  const placed = await browser.evaluate(async () => {
-    const url = '/assets/stages.js';
-    const { placeTip } = await import(url);
-    // A plot `height` px tall with a three-line tip (about 60 px) placed at `y`.
-    const place = (height: number, y: number) => {
-      const plot = document.createElement('div');
-      plot.style.cssText = `position: relative; width: 300px; height: ${height}px`;
-      const tip = document.createElement('div');
-      tip.className = 'chart-tip st-tip';
-      tip.innerHTML = '<span>Mon, Oct 12</span><strong>p50 19 min · p90 32 min</strong><span>2 ended</span>';
-      plot.append(tip);
-      document.body.append(plot);
-      placeTip(tip, 150, y);
-      const box = tip.getBoundingClientRect();
-      const outer = plot.getBoundingClientRect();
-      const result = { below: tip.classList.contains('chart-tip-below'), inside: box.top >= outer.top && box.bottom <= outer.bottom };
-      plot.remove();
-      return result;
-    };
-    return { roomAbove: place(220, 150), nearTop: place(220, 20), short: place(70, 40) };
-  });
-  expect(placed.roomAbove).toEqual({ below: false, inside: true });
-  expect(placed.nearTop).toEqual({ below: true, inside: true });
-  // 40 px above and 30 below: neither fits, and above cuts less of it.
-  expect(placed.short.below).toBe(false);
 });
 
 test('a job’s stages fold under it, a failed job opens, and the fold outlives a refresh', async ({ app, browser, screen }) => {
