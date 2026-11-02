@@ -51,16 +51,21 @@ that answer has come, so it cannot pass before the answer it is about.
 - REQ-3: With the page's `epoch` guard removed, the test still fails.
 - REQ-4: No product change for #869.
 - REQ-5: A chart tip whose point is too near the plot's top for the tip above it goes below the
-  point, the same 8 px away (`placeTip`, both the daily trend and the waterfall).
+  point, the same 8 px away, when the plot has more room below the point than above it
+  (`placeTip`, both the daily trend and the waterfall); otherwise it stays above.
 - REQ-6: A regression test hovers the daily trend's highest day at 1280 and 390 px, checks the tip
   would not fit above, and requires it inside the plot and the window; it fails without REQ-5.
+  An in-page unit test of `placeTip` (review round 2) covers a point with room above (above), one
+  near a tall plot's top (below, inside) and one in a plot too short either way with more room
+  above (above).
 
 ## Plan
 
 - [x] Spec with the cause and the plan
 - [x] Mock counts answered GitHub reads and the test waits on them, failing without the epoch guard
-- [ ] Daily chart's hover tip flips below a point near the chart's top (unblocks CI's e2e)
-- [ ] Gates green and independent review answered
+- [x] Daily chart's hover tip flips below a point near the chart's top (unblocks CI's e2e)
+- [x] Gates green and independent review answered
+- [ ] Gate, e2e suite and review green on the final head
 - [ ] Pull request merged into dev on green CI
 
 ## Acceptance criteria
@@ -93,5 +98,8 @@ that answer has come, so it cannot pass before the answer it is about.
   it would cover the point and the line it describes. The flip is decided in `placeTip` from the
   tip's measured height, so the waterfall's tip gets it too (its top row fits above today, so it
   does not change there). A mock that never puts a point near the top would only hide the case.
+  It flips only when there is more room below (review round 2): a short waterfall's tall tip
+  would otherwise trade a cut at the top for a bigger one at the bottom. `placeTip` is exported for
+  its in-page unit test, as `dom.js` exports `menuMatches`.
 - Fixed in this pull request, not a separate one: it fails every pull request's e2e job today, this
   run may not open an issue, and no other task was on it.

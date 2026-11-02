@@ -200,19 +200,21 @@ function tickLabel(ms) {
 /**
  * Shows a chart tip (its content already set) centred above `x`, `y` in its plot, moved in so all
  * of it stays inside: the CSS caps its width at the plot's and wraps the rest (#986). A point too
- * near the plot's top for the tip above it (a daily trend's highest day) gets it below (SPEC-380).
+ * near the plot's top for the tip above it (a daily trend's highest day) gets it below, when there
+ * is more room there (SPEC-380).
  */
 export function placeTip(tip, x, y) {
   tip.hidden = false;
   const room = tip.parentElement.clientWidth;
+  const tall = tip.parentElement.clientHeight;
   const box = tip.getBoundingClientRect();
   const half = Math.min(box.width, room) / 2;
   tip.style.left = `${Math.max(half, Math.min(room - half, x))}px`;
   tip.style.top = `${y}px`;
-  tip.classList.toggle('chart-tip-below', y < box.height + TIP_GAP);
+  tip.classList.toggle('chart-tip-below', y < box.height + TIP_GAP && tall - y > y);
 }
 
-/** The gap between a chart tip and its point, as in the CSS (`.db-tip`, `.st-tip`). */
+/** The gap between a chart tip and its point: keep it the same as the CSS (`.db-tip`, `.st-tip`, `.chart-tip-below`). */
 const TIP_GAP = 8;
 
 /**
