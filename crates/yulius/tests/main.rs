@@ -19,6 +19,7 @@ mod automation_start;
 mod automations;
 mod browser;
 mod cd;
+mod ci_setup;
 mod claude_gate;
 mod cli;
 mod cockpit;

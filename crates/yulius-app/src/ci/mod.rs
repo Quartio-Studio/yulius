@@ -744,12 +744,15 @@ impl App {
             }
             None => Vec::new(),
         };
+        // A fork's pull request is never tested (ADR-0116): its author has no push access, and
+        // its head can still be in the clone (an agent fetched `pull/N/head` to review it), so
+        // GitHub's word that it comes from another repository decides, not the clone (#842).
         for pull in pulls
             .into_iter()
-            .filter(|p| p.state == "open" && p.base == profile.integration_branch)
+            .filter(|p| p.state == "open" && p.base == profile.integration_branch && !p.from_fork)
             .take(MAX_PULLS_TESTED)
         {
-            // Heads of other repositories (forks) are not in the clone: not tested.
+            // A head not in the clone (not fetched yet) is tested at a later round.
             if !matches!(
                 self.deps.git.resolve_commit(&repo, &pull.head_sha).await,
                 Ok(Some(_))
