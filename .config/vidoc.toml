@@ -504,3 +504,51 @@ reason = "agent_workflow is a read of the caller's own project that workflows_li
 path = "crates/yulius-app/src/mcp.rs"
 title = "Unsalted SHA-256 equality oracle over secret values"
 reason = "Cockpit-only equality check accepted in ADR-0144: no stored hash is handed out, production secrets refused, each candidate audited (SPEC-389, #846)"
+
+# SPEC-395 (task #377): Vidoc's findings on the yulius CLI and host setup, filed as #754, #753,
+# #743, #742 and #679 from change scans of code those changes did not touch, triaged as false
+# positives on dev at f416b400. One entry per wording, title only: a `function` on `main` would
+# accept any later finding in the whole dispatch. The binary has no setuid bit or file capability
+# (HST-010), so each subcommand runs with exactly its caller's rights. Detail in SPEC-395.
+
+# #754: sandbox-exec is the internal step Yulius puts before bwrap; run by anyone else it execs the
+# program as the caller, only adding a seccomp filter, and the kernel checks its cgroup move and
+# setns against that caller.
+[[ignore]]
+path = "crates/yulius/src/main.rs"
+title = "Sandbox exec accepts arbitrary argv without visible authorization check"
+reason = "sandbox-exec holds no privilege: it execs bwrap as its caller with an added seccomp filter; cgroup.procs writes and setns are the kernel's checks on that caller (SPEC-395, #754)"
+
+# #753: `--scrub-exec` is Claude Code's shell prefix in a run: its argument is the agent's own Bash
+# command, run by design through the shell as the agent's user; it only adds redaction and fails
+# closed. Pinned by secrets_redaction.rs the_bash_wrapper_redacts_every_form_of_a_value and
+# the_terminal_and_the_run_environment_hold_no_value.
+[[ignore]]
+path = "crates/yulius/src/main.rs"
+title = "Raw arguments passed to command execution function with environment access"
+reason = "--scrub-exec runs the agent's own Bash command as the agent (CLAUDE_CODE_SHELL_PREFIX, SPEC-358) and only adds redaction; the run's environment holds no secret value (SPEC-395, #753)"
+
+# #743: `yulius remove` runs as the agent with the agent's rights, and still canonicalizes the
+# directory, never follows the last component and accepts only untracked worktree paths or the
+# contained run's tmpfs. Pinned by
+# remove_cli::tests::it_removes_the_tasks_paths_and_refuses_the_rest.
+[[ignore]]
+path = "crates/yulius/src/main.rs"
+title = "Remove command accepts arbitrary paths at a trust boundary without visible validation"
+reason = "remove_cli canonicalizes the parent, refuses . and .., removes a link as a link and decide() accepts only the task's paths; it runs with the agent's own rights (SPEC-395, #743)"
+
+# #742: the scanner is Yulius's own scripts/vidoc_scan.py, run as `python3 -I -c` with separate
+# argv entries; its argparse accepts only the documented options, and --report writes with the
+# caller's own rights in the caller's own checkout or contained CI job.
+[[ignore]]
+path = "crates/yulius/src/main.rs"
+title = "SecurityScan forwards unrestricted trailing arguments to external scanner"
+reason = "the scanner is Yulius's embedded vidoc_scan.py, argv without a shell, argparse refuses unknown options, and --report writes with the caller's own rights (SPEC-395, #742)"
+
+# #679: unit_text's only call follows unit_safe on the URL, user, executable and data directory
+# (printable ASCII without space, quotes, backslash, % or ;), all `sudo yulius host setup` options.
+# Pinned by host_setup::tests::unit_values_a_unit_file_cannot_hold_are_refused.
+[[ignore]]
+path = "crates/yulius/src/host_setup.rs"
+title = "Systemd unit file injection via unvalidated public_url and user in unit_text"
+reason = "every value unit_text formats passes unit_safe first (no newline, space, quote, % or ;) and comes from the root operator's options; tested by unit_values_a_unit_file_cannot_hold_are_refused (SPEC-395, #679)"
