@@ -922,8 +922,15 @@ impl App {
         {
             return None;
         }
-        // An ended run's credential injects nothing, cached or not.
-        matches!(self.egress_client_live(&client).await, Ok(true)).then_some(client)
+        // An ended run's credential injects nothing, cached or not. A run whose state cannot be
+        // read is refused too (407): this answer has no passing failure (SPEC-388 EPL-002).
+        match self.egress_client_live(&client).await {
+            Ok(live) => live.then_some(client),
+            Err(err) => {
+                tracing::error!(error = %err, "a proxy client's run could not be read");
+                None
+            }
+        }
     }
 
     /// Whether `client`'s run still lives (SPEC-388 EPL-001): an agent run whose attempt is not

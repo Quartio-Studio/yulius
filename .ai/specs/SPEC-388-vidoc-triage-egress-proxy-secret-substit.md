@@ -1,11 +1,11 @@
 ---
 yulius-task: e6ae5fe5-27d4-4314-ac5d-5d59e56fe88c
-status: in-progress
+status: done
 ---
 
 # SPEC-388: Vidoc triage of the egress proxy's secret substitution (#839 #709 #833 #708 #757)
 
-Status: in-progress
+Status: done
 Date: 2026-11-02
 Owner: Yulius task #370
 Scope authorization: the person's goal for task #370: close the five Vidoc issues #839, #709,
@@ -43,7 +43,8 @@ connection). Triage, with the evidence posted on each issue:
   read gets 503 (a passing failure), never "ended".
 - **EPL-002** (#757) `egress_client` never answers a cached client whose run has ended; the check
   is the same as EPL-001's, so a token of an ended run is refused (407) at once, not after
-  `CLIENT_CACHE_TTL`.
+  `CLIENT_CACHE_TTL`. A run whose state cannot be read is refused too and logged as an error:
+  `egress_client` answers a client or none, with no passing failure.
 - **EPL-003** (#833) No log line of the proxy holds the upstream URL: reqwest errors are logged and
   passed on without it (`reqwest::Error::without_url`).
 - **EPL-004** The four false-positive wordings (#839, #709, #708, and the design part of #833) get
@@ -53,11 +54,11 @@ connection). Triage, with the evidence posted on each issue:
 ## Plan
 
 - [x] Triage the five findings against dev and close the false positives with evidence
-- [ ] Ended runs' proxy clients add no secret, per request and on a cache hit
-- [ ] The proxy never logs a substituted upstream URL
-- [ ] Vidoc ignores, ADR-0252 and docs record the triage
-- [ ] Independent review approved and findings answered
-- [ ] Gates green with evidence in the spec
+- [x] Ended runs' proxy clients add no secret, per request and on a cache hit
+- [x] The proxy never logs a substituted upstream URL
+- [x] Vidoc ignores, ADR-0252 and docs record the triage
+- [x] Independent review approved and findings answered
+- [x] Gates green with evidence in the spec
 
 ## Acceptance criteria
 
@@ -79,7 +80,11 @@ connection). Triage, with the evidence posted on each issue:
   answer for `/fail`; the agent gets 502, and the captured debug log has the failure line without
   the value.
 - The Superagent's liveness check is the existing one (`self.shell(..)`), moved into the shared
-  check; its existing tests (`tests/cockpit.rs`) cover it.
+  check: `tests/cockpit.rs` (the Superagent's egress test) now also asserts that its held client
+  is refused 403 once its shell ended.
+- Unit: `run_refusal` gives none for a live run, 403 "ended" for an ended one and 503 (never
+  "ended") when the run's state could not be read
+  (`vault::runtime::tests::an_ended_run_is_refused_and_an_unread_one_retries`).
 
 ## Decisions
 
@@ -94,3 +99,40 @@ connection). Triage, with the evidence posted on each issue:
   the URL, and the only one in Yulius is fixed by EPL-003.
 - 403 (not 407) for an ended run inside an intercepted connection: the client believes it talks to
   the origin there, and a 407 from an origin is meaningless to it; the message says why.
+
+## Evidence
+
+- **Issues closed as false positives** (comments with permalinks to dev at 4e07ce4e):
+  #839 (not planned), #709 (duplicate of #839, labelled `duplicate`, not planned), #708 (not
+  planned). #757 and #833 are closed by this pull request (`Fixes`).
+- **Tests failing before the fix** (on 4e07ce4e plus the test only):
+  `secrets::an_ended_runs_proxy_client_adds_no_secret` panicked "a cached client of an ended run";
+  `a_failed_upstream_request_never_logs_the_secret_in_its_url` showed the debug line
+  `upstream request failed host=api.test.example error=error sending request for url
+  (https://api.test.example/fail?key=<the value>)`. Both pass with the fix.
+- **Gates**: `scripts/dev ci` exit 0 at a4732412 (2956 tests passed, 16 skipped) and at a3f77d7f,
+  after the round-1 fixes and the merge of `origin/dev` (2957 passed, 16 skipped). After round 2
+  only a log line on `egress_client`'s error path and this spec changed:
+  `cargo nextest run -p yulius-app -E 'test(/vault::runtime/)'` and the `secrets::` and
+  `cockpit::` integration tests were rerun. Yulius CI runs the full gate on the pull request head.
+- **Security scan**: Vidoc is switched off for this project in Yulius; `yulius security-scan`
+  says "Security scan disabled". Not run, not passed.
+- **Independent review**: round 1 (a4732412) approved with minors: a store error answered as
+  "ended" (fixed: 503, unit test), the Superagent's held client untested (test added), the ADR's
+  count of attempt-ending calls (four, corrected), back-references (added to ADR-0014 and
+  ADR-0150), CI clients compared by value (kept: one credential per job execution, `ci/exec.rs`).
+  Round 2 (a3f77d7f) approved; its low finding (a cached client's unreadable run refused without a
+  log line) is fixed by logging it, and its nits by this Evidence and the Test plan.
+- **Vidoc ignores agreed by the reviewer** (both rounds), title-only like every entry in
+  `.config/vidoc.toml`: a `function = "egress_apply"` would hide any finding in that
+  security-critical function: "CRLF injection in HTTP headers via secret values" (#839), "CRLF
+  injection through secret substitution in headers and the request line" (#709), "Egress proxy
+  forwards hop-by-hop and framing headers verbatim" (#708), "Secret values substituted into the
+  request URL path and query" (#833, the design part).
+- **Not tested**: `without_url()` on the response body's error (`redacting_body`) is defensive.
+  The only log that sees that error is "intercepted connection ended", which prints hyper's
+  description only, so no test can fail without it.
+- **Outside this change** (pre-existing, found by the review, reported in the pull request, no
+  issue created as the task asked): a Superagent client held by an open connection is checked for
+  its shell on every request, but not again for its person's access (`cockpit_caller` checks that
+  only when a connection resolves its bearer).
