@@ -679,11 +679,13 @@ The server runs outside containment as the service user, and a sandbox's whole d
 mounted read-write into its runs and shells, so an agent can swap any folder below it for a link
 at any moment. Wherever the server reads or writes there (editor reads and saves, uploads and
 attachments, imported transcripts, skill copies, a CI job's log in `ci/logs`, its `ci/home`,
-`ci/cache/<checkout>` and the place of its checkout in `ci/jobs`), it opens the folder once and
-does everything else through that handle
+`ci/cache/<checkout>` and the place of its checkout in `ci/jobs`, the workflows and `yulius.toml`
+`ci_setup` reads from a task worktree), it opens the folder once and does everything else through
+that handle
 ([SPEC-220](../.ai/specs/SPEC-220-fix-657-host-writes-into-agent-owned-fol.md),
 [SPEC-285](../.ai/specs/SPEC-285-ci-job-log-created-without-following-pla.md),
 [SPEC-367](../.ai/specs/SPEC-367-ci-job-preparation-never-follows-a-link.md),
+[SPEC-391](../.ai/specs/SPEC-391-vidoc-triage-ci-jobs-and-caches-842-739.md),
 [decision 0174](decisions/0174-host-access-to-agent-owned-folders-goes-through-handles.md)). A CI
 checkout is the exception Git imposes: its place is readied through handles, then Git adds, checks
 out and cleans it by path, only when Git registers it at its resolved path inside `ci`. The
