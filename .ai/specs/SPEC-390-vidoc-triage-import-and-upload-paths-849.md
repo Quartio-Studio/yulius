@@ -1,11 +1,11 @@
 ---
 yulius-task: 8f10972e-402d-40ed-b5cb-175aeb312753
-status: in-progress
+status: done
 ---
 
 # SPEC-390: Triage of the Vidoc findings on import and upload paths
 
-Status: in-progress
+Status: done
 Date: 2026-11-02
 Owner: Yulius task #372
 Scope authorization: task #372 (close #849, #836, #827, #838 and #750, each as a false positive
@@ -46,7 +46,7 @@ does not reopen the issue on the next scan.
   project, job or file is created; a chunk addressed to a name outside the manifest (including a
   traversal) is 404 and writes nothing. An end-to-end test pins both.
 - VTI-002 (#838, dismissed). Editor uploads refuse `..` (also nested) and `.git`; the existing
-  end-to-end test `uploads::…` traversal table pins it, extended with a nested `..`.
+  end-to-end test `uploads::editor_uploads_stay_in_the_folder_and_never_replace_a_file_silently` traversal table pins it, extended with a nested `..`.
 - VTI-003 (#750, dismissed). Covered by VTI-001's chunk half.
 - VTI-004. One narrow `[[ignore]]` per dismissed wording with a reason naming the guard and its
   test; `function` and `line` only where the function is short (`check_components`), so a place
@@ -54,12 +54,12 @@ does not reopen the issue on the next scan.
 
 ## Plan
 
-- [ ] Spec SPEC-390 with the triage of all five findings
-- [ ] Import file names pinned by an end-to-end refusal test
-- [ ] Narrow [[ignore]] entries for the five dismissed wordings
-- [ ] Issues commented and closed as false positives
-- [ ] Gates, changes entry and independent review answered
-- [ ] Merged into dev on green
+- [x] Spec SPEC-390 with the triage of all five findings
+- [x] Import file names pinned by an end-to-end refusal test
+- [x] Narrow [[ignore]] entries for the five dismissed wordings
+- [x] Issues commented and closed as false positives
+- [x] Gates, changes entry and independent review answered
+- [x] Merged into dev on green
 
 ## Acceptance criteria
 
@@ -67,7 +67,8 @@ does not reopen the issue on the next scan.
   name is 422, no project exists afterwards, and a traversal chunk on a valid job is 404 with
   nothing written beside the job directory.
 - The editor upload traversal table includes a nested `..` and still passes.
-- `.config/vidoc.toml` has five new entries, each read by the CI config check.
+- `.config/vidoc.toml` has five new entries; the scanner's own `apply_ignores` marks each of the
+  five reported findings ignored and leaves unrelated findings in the same files reported.
 - Issues #849, #836, #827, #838 and #750 are closed as not planned with their evidence.
 
 ## Test plan
@@ -95,3 +96,32 @@ does not reopen the issue on the next scan.
   description reports it for a follow-up task instead of widening this change.
 - No issue is a duplicate of another: each has its own wording, place and fingerprint, and each
   gets its own `[[ignore]]` entry (an entry matches one wording).
+
+## Evidence
+
+- Triage on `dev` at 4e07ce4e (file:line in each issue's closing comment): all five dismissed;
+  #849, #836, #827, #838 and #750 closed as not planned on 2026-11-02 with that evidence.
+- `import_server::unsafe_manifest_names_never_reach_the_disk` passes; mutation check at 502ec9b5:
+  with `file.validate()?` replaced by `let _ = file.validate();` it fails
+  (`"../planted.bin"`: 200, expected 422); restored.
+- `uploads::editor_uploads_stay_in_the_folder_and_never_replace_a_file_silently` passes with the
+  nested `src/../../outside.txt` row.
+- `python3 -I` with `scripts/vidoc_scan.py` (`parse_config`, `apply_ignores`): the config parses,
+  the five reported wordings at their reported lines are ignored, "Race condition in concurrent
+  chunk uploads" in `put_import_chunk` and an unrelated title in `routes/mod.rs` are not.
+- `scripts/dev ci` at 57de5d7c: exit 1 at `cargo fmt --check` (the new test's array); formatted.
+  `scripts/dev ci` at b04624e9: exit 0, 2955 tests run, 2955 passed, 16 skipped.
+- `yulius security-scan`: "Security scan disabled" (Vidoc off for this project); not run, not
+  passed.
+- **Independent review, round 1 (request changes at 57de5d7c).** All five false-positive claims
+  confirmed, including the playground, reuse and session-document paths. Major 1 and 2 (own):
+  `function`/`line` on the `routes/mod.rs` (`public`, 388 lines) and three `imports.rs` entries
+  would ignore any reworded finding in those functions (#845's race among them); now title-only
+  (b04624e9). Nit (own): the chunk half's 404 is not specific; kept, the data-dir walk is what
+  proves nothing is written. Pre-existing (blocker class, outside these five issues): the import
+  job folder `<sandbox>/imports/<job>` sits in the sandbox root that contained runs bind
+  read-write (`yulius-ptyhost/src/containment.rs:94`, `:246`), and `stage_job_files`,
+  `copy_prefix`, `write_at`, `truncate_file`, `sha256_file` and `copy_immutable`
+  (`imports.rs:1370-1470`, `session_docs.rs:1125`) open by path, so a link planted by an agent
+  could be followed (#657 class, ADR-0174). Reported in the pull request description for a
+  follow-up task (this task may not file issues).
