@@ -4,6 +4,15 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-02
+
+- The hygiene scan's bound of `MAX_PULL_LOOKUPS` GitHub pull-request lookups per scan is now held
+  by tests: the GitHub fake records every `branch_pulls` call, and both bound tests fail if a scan
+  looks up more, or looks up an open pull request's branch (SPEC-379, task #361, fixes #847). The
+  `merged` reason and the bound's note say "already in the integration or production branch",
+  since a branch only the production branch has is `merged` too; the worktree-name test rejects
+  the forms `Path::components` normalises (`worktrees/./x`, `worktrees//x`, `worktrees/x/`).
+
 ## 2026-11-01
 
 - The e2e test of a Vidoc refresh that overtakes the read after a change no longer times out on
