@@ -43,10 +43,14 @@ def fetch(url, digest, shared, cache, opener):
         (unpacked / shared.name).rename(shared)
 
 
+def host_name(machine):
+    """This Linux host's name in zig's tarballs and `.config/tools.toml`, pinned or not."""
+    return f"{MACHINES.get(machine.lower(), machine.lower())}-linux"
+
+
 def host_key(machine, pins):
     """The `.config/tools.toml` key of this Linux host's zig tarball, or None when none is pinned."""
-    machine = MACHINES.get(machine.lower(), machine.lower())
-    host = f"{machine}-linux"
+    host = host_name(machine)
     return host if host in pins else None
 
 
@@ -56,8 +60,7 @@ def install(pins, cache, bin_dir, root, machine, opener):
     version = pins["version"]
     host = host_key(machine, pins)
     if host is None:
-        host = f"{MACHINES.get(machine.lower(), machine.lower())}-linux"
-        return (f"zig skipped: no pinned zig for {host} in .config/tools.toml; "
+        return (f"zig skipped: no pinned zig for {host_name(machine)} in .config/tools.toml; "
                 "scripts/dev doctor and ci fail until one is pinned")
     name = f"zig-{host}-{version}"
     shared = cache / f"zig-{version}" / name

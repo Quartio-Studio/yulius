@@ -17,9 +17,10 @@ An integration test covers `secret_create_from_file` naming `~/key` in a sandbox
 removed: the call is refused with "your home does not exist on this machine" and no agent secret
 is created. Test only; the behavior is unchanged.
 
-Added on the way (it failed every pull request's e2e job on 2026-11-02, this one's included): the
-Pipeline's daily chart keeps its hover tip inside the plot when the hovered day's p90 is near the
-chart's top, and its e2e test no longer depends on the day it runs.
+Added on the way, then superseded (it failed every pull request's e2e job on 2026-11-02, this
+one's included): the Pipeline's daily chart keeps its hover tip inside the plot when the hovered
+day's p90 is near the chart's top. #1011 (SPEC-382) landed the same fix on `dev` first; this PR
+took `dev`'s `placeTip` and test when it merged `dev`, so it changes neither.
 
 ## Context
 
@@ -51,9 +52,10 @@ chart's top, and its e2e test no longer depends on the day it runs.
   t1 and calls `secret_create_from_file {"name": …, "file": "~/key"}` with the task's token.
 - **RDE-002** It asserts the call is an error whose text contains "your home does not exist on
   this machine", and that the sandbox's agent secrets are unchanged.
-- **RDE-003** A chart tip placed by `placeTip` never rises above its plot: when its top would be
+- **RDE-003** (delivered by #1011, whose version this PR took) A chart tip placed by `placeTip` never rises above its plot: when its top would be
   above the plot's, it moves down until they meet (the horizontal clamp is unchanged).
-- **RDE-004** The daily chart's e2e test runs on a pinned day (2026-11-02, the failing case), with
+- **RDE-004** (superseded by #1011's test, which hovers the highest day found in the page, also
+  date-independent) The daily chart's e2e test runs on a pinned day (2026-11-02, the failing case), with
   the page's clock shifted but ticking, and checks the first and the last day's dates.
 
 ## Plan
@@ -146,3 +148,8 @@ chart's top, and its e2e test no longer depends on the day it runs.
   failure in `placeTip` too, #1011 (the same top clamp, with the parent's `clientTop`) and #1015
   (the tip flips below its point). Whichever merges first wins; the others take `dev`'s
   `placeTip` and test when they merge it (same lines, so a conflict, not a silent double fix).
+- Merging `dev` at 1a60261c (#1011) conflicted in `stages.js` and `pipeline.e2e.ts`, as planned:
+  both were resolved to `dev`'s version (no diff against `dev` in either), and this PR's changes
+  entry for the chart was dropped (#1011's describes it). The final diff is the #643 test, this
+  spec and its changes entry. After the merge: `secrets_create::` 6 passed;
+  `tests/pipeline.e2e.ts` (dev's version) 14 passed.
