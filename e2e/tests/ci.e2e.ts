@@ -379,7 +379,7 @@ test('a cleanup newer than a failed one replaces its message', async ({ app, bro
   await expect(screen.getByRole('region', 'Repository hygiene').getByRole('status')).toHaveText(/^Cleaned up .* by Yulius: 1 removed\.$/);
 });
 
-test('a failure reads whatever the clocks say, and a branch no pull request had is left to the person', async ({ app, browser, screen }) => {
+test('a failure reads whatever the clocks say, and a merged branch no merged pull request was found for is left to the person', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/ci'));
   const card = screen.getByRole('region', 'Repository hygiene');
   await expect(card.getByText('spike/websocket-pool')).toBeVisible();
