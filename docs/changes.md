@@ -11,12 +11,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   opened with `O_NOFOLLOW`, and the worktree's `.git` is read through that handle; a shell's
   folder (a terminal's, the Superagent's) resolves only the sandbox directory too, so neither a
   `.claude.json` nor a shell says where a link below the sandbox leads (SPEC-398, task #381, fixes
-  #801). `yulius host
-  setup` and `host check` refuse a data directory that is not absolute before running anything, so
-  it cannot reach `install`, `useradd` or `chmod` as an option (fixes #677). The Vidoc findings
-  #813 (ids are UUID v4 from the OS CSPRNG), #696 (profile branches validated on write and by each
-  Git call), #728 (a session updates only its own attempt's account, bounded) and the service-name
-  part of #677 are dismissed with narrow `[[ignore]]` entries and pinning tests.
+  #801). `yulius host setup` and `host check` refuse a data directory that is not absolute before
+  running anything, so it cannot reach `install`, `useradd` or `chmod` as an option (fixes #677).
+  The Vidoc findings #813 (ids are UUID v4 from the OS CSPRNG), #696 (profile branches validated on
+  write and by each Git call), #728 (a session updates only its own attempt's account, bounded) and
+  the service-name part of #677 are dismissed with narrow `[[ignore]]` entries and pinning tests.
 - Approving a CLI sign-in (device grant) claims the grant and stores its new `cli` token in one
   store transaction (`SessionStore::approve_device_grant`): a second approval of a grant already
   approved or denied, by the same person, another one or at the same moment, answers 409 and

@@ -53,8 +53,8 @@ test that pins that guard. A dismissed wording gets one narrow `[[ignore]]` entr
   `DeliveryProfile::validate` (`yulius-domain` `delivery.rs:360-362`, `validate_branch`
   `delivery.rs:430-452`: no leading `-`, whitespace, control character or `~^:?*[\`). The
   sandbox's `default_branch` (GitHub's answer, not a profile field) reaches Git only as
-  `origin/<default_branch>` through `rev_parse`. At use, `branch_exists` validates the name (`repo.rs:383`), `rev_parse` refuses a
-  revision starting with `-` (`validate.rs:244-248`) and passes `--end-of-options`
+  `origin/<default_branch>` through `rev_parse`. At use, `branch_exists` validates the name
+  (`repo.rs:383`), `rev_parse` refuses a revision starting with `-` (`validate.rs:244-248`) and passes `--end-of-options`
   (`repo.rs:362`), `worktree add` passes `--` before its path (`worktree.rs:77`), and the push
   guard validates every protected branch (`hooks.rs:164-166`) and single-quotes it in the hook
   script (`hooks.rs:74`). Git runs with an argv, never a shell. Pinned by `profile_validation`
@@ -72,9 +72,10 @@ test that pins that guard. A dismissed wording gets one narrow `[[ignore]]` entr
   still finds its trust by the real path of its working directory, also behind a host link above
   the anchor (macOS `/var`). The Superagent's working directory is its shell's folder, which
   `new_shell_runtime` resolved in full when the shell was made (`shells.rs:819`): a shell's folder
-  now resolves only the sandbox directory the same way (`shell_folder`), so a link at the sandbox
-  repository or a task worktree is named, never resolved, for terminals and the Superagent alike
-  (review round 1). A worktree path stored under an older data-directory path (a moved data
+  now resolves only the sandbox directory the same way (`named_folder`), when it is made and when
+  it is adopted again after a restart (`App::shell_folder`), so a link at the sandbox repository or
+  a task worktree is named, never resolved, for terminals and the Superagent alike (review rounds
+  1 and 2). A worktree path stored under an older data-directory path (a moved data
   directory) is keyed as given and its main repository not trusted; an instance import keeps the
   data directory (`instance/import.rs:139`), so this needs a hand move.
 - VSH-004 (#677, fixed for the data directory; dismissed for the service name). `host setup`,
@@ -108,8 +109,8 @@ test that pins that guard. A dismissed wording gets one narrow `[[ignore]]` entr
 ## Acceptance criteria
 
 - A terminal opened in a sandbox whose repository was swapped for a link to a host folder reports
-  the link's path (the sandbox directory's real path and `repo`), not the target; the test fails
-  on `dev`.
+  the link's path (the sandbox directory's real path and `repo`), not the target, also once it is
+  adopted again after a server restart; the test fails on `dev`.
 - With the worktree folder (or the `worktrees` folder above it) swapped for a link to a folder
   outside the sandbox that holds a linked worktree's `.git`, `.claude.json` holds no key naming the
   link's target or the main repository its `.git` names, and the link's own path is trusted; the
@@ -128,8 +129,9 @@ test that pins that guard. A dismissed wording gets one narrow `[[ignore]]` entr
 - `cargo nextest run -p yulius-harness -E 'test(/claude_config::/)'`: the new link test and every
   existing one (trust keys, linked worktrees, config dir links).
 - `cargo nextest run -p yulius -E 'test(/host_setup::/)'`: the new refusal test and the others.
-- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^shells::/) | test(/^cockpit::/))'`:
-  the new shell-folder test, terminals and the Superagent.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^shells::/) |
+  test(/^cockpit::/))'`: the new shell-folder test (new and adopted shells), terminals and the
+  Superagent.
 - The new `yulius-store` crypto test and `yulius-app` capacity test.
 - `scripts/vidoc_scan.py`'s config parser accepts `.config/vidoc.toml`.
 - `scripts/dev ci`: the full gate.
