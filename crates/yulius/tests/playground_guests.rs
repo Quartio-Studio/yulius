@@ -344,10 +344,10 @@ async fn a_guest_joins_with_a_name_and_gets_a_session() -> TestResult {
 async fn a_dead_link_lets_nobody_in() -> TestResult {
     let w = world().await?;
     let unknown = "0".repeat(64);
-    assert_eq!(peek(&w, &unknown).await?.status, StatusCode::NOT_FOUND);
+    assert_eq!(peek(&w, &unknown).await?.status, StatusCode::GONE);
     assert_eq!(
         join_raw(&w, &unknown, "Eve").await?.status,
-        StatusCode::NOT_FOUND
+        StatusCode::GONE
     );
 
     // Revoked.
@@ -363,36 +363,27 @@ async fn a_dead_link_lets_nobody_in() -> TestResult {
     )
     .await?;
     assert_eq!(revoked.status, StatusCode::NO_CONTENT);
-    assert_eq!(peek(&w, &code).await?.status, StatusCode::NOT_FOUND);
-    assert_eq!(
-        join_raw(&w, &code, "Eve").await?.status,
-        StatusCode::NOT_FOUND
-    );
+    assert_eq!(peek(&w, &code).await?.status, StatusCode::GONE);
+    assert_eq!(join_raw(&w, &code, "Eve").await?.status, StatusCode::GONE);
 
     // Expired.
     let code = link(&w, 1).await?;
     advance(&w.h, DAY_MS);
-    assert_eq!(peek(&w, &code).await?.status, StatusCode::NOT_FOUND);
-    assert_eq!(
-        join_raw(&w, &code, "Eve").await?.status,
-        StatusCode::NOT_FOUND
-    );
+    assert_eq!(peek(&w, &code).await?.status, StatusCode::GONE);
+    assert_eq!(join_raw(&w, &code, "Eve").await?.status, StatusCode::GONE);
 
     // Its playground moved to GitHub, or removed.
     let code = link(&w, 7).await?;
     w.h.store
         .move_to_github(&SandboxId::parse("p1")?, "acme", "lab", Some(9))
         .await?;
-    assert_eq!(peek(&w, &code).await?.status, StatusCode::NOT_FOUND);
+    assert_eq!(peek(&w, &code).await?.status, StatusCode::GONE);
     let made = invite(&w, &w.bob, "p2", json!({})).await?;
     let code = code_of(&made.body)?;
     w.h.store
         .remove_sandbox(&SandboxId::parse("p2")?, now(&w.h))
         .await?;
-    assert_eq!(
-        join_raw(&w, &code, "Eve").await?.status,
-        StatusCode::NOT_FOUND
-    );
+    assert_eq!(join_raw(&w, &code, "Eve").await?.status, StatusCode::GONE);
     Ok(())
 }
 
@@ -423,10 +414,7 @@ async fn joining_is_rate_limited_per_client() -> TestResult {
         assert_eq!(peek(&w, &code).await?.status, StatusCode::OK);
     }
     for _ in 0..5 {
-        assert_eq!(
-            peek(&w, &"0".repeat(64)).await?.status,
-            StatusCode::NOT_FOUND
-        );
+        assert_eq!(peek(&w, &"0".repeat(64)).await?.status, StatusCode::GONE);
     }
     assert_eq!(
         join_raw(&w, &code, "Frank").await?.status,
@@ -497,6 +485,18 @@ async fn a_guest_never_configures_the_playground() -> TestResult {
     )
     .await?;
     assert_eq!(removed.status, StatusCode::FORBIDDEN, "{}", removed.body);
+    // Its workflows are offered for a new task, but a guest makes none.
+    let workflows = get(&w, "/api/sandboxes/p1/workflows", &guest).await?;
+    assert_eq!(workflows.status, StatusCode::OK, "{}", workflows.body);
+    let made = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/p1/workflows",
+        Some(json!({"name": "mine", "steps": ["one"]})),
+        &guest,
+    )
+    .await?;
+    assert_eq!(made.status, StatusCode::FORBIDDEN, "{}", made.body);
     // The maker still configures it.
     assert!(
         w.h.app
@@ -528,7 +528,6 @@ async fn a_guest_reaches_no_secret_or_setting() -> TestResult {
         (Method::GET, "/api/sandboxes/p1/mcp", None),
         (Method::GET, "/api/sandboxes/p1/skills", None),
         (Method::GET, "/api/sandboxes/p1/automations", None),
-        (Method::GET, "/api/sandboxes/p1/workflows", None),
         (Method::GET, "/api/sandboxes/p1/agent-states", None),
         (Method::POST, "/api/sandboxes/p1/cockpit", Some(json!({}))),
         (Method::GET, "/api/sandboxes/p1/cockpit/link", None),

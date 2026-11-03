@@ -7,7 +7,7 @@ import { sparkline, usd } from './charts.js';
 import { taskTime } from './tasktime.js';
 import { taskInfo, taskActions, activityLine, allows, otherOwner } from './status.js';
 import { href, placeFor } from './router.js';
-import { openSandboxDialog, confirmRemoveSandbox, openMoveToGitHubDialog, openTaskMenu, archiveTask, archiveAll } from './actions.js';
+import { openSandboxDialog, confirmRemoveSandbox, openMoveToGitHubDialog, openGuestInvitesDialog, openTaskMenu, archiveTask, archiveAll } from './actions.js';
 import { createNotificationCenter } from './notifications.js';
 import { BRAND } from './brand.js';
 import { readJson, writeJson } from './store.js';
@@ -95,12 +95,16 @@ export function createTabRow(ctx) {
   statusButton.addEventListener('click', () => statusPanel.toggle());
   ctx.openStatus = () => statusPanel.open();
 
+  // A playground's guest (SPEC-410) adds no sandbox and reads no instance status; a badge says
+  // their access is a guest's, and until when.
+  const guest = ctx.guest && ctx.guest();
+  const guestBadge = guest ? h('span', { class: 'chip chip-guest', title: `Guest access to ${guest.slug} until ${dateTime(guest.expires_at)}` }, icon('user', { size: 12 }), h('span', { class: 'chip-text' }, 'Guest')) : null;
   const el = h('header', { class: 'tabrow' },
     hamburger,
     tabs,
     select,
-    addButton,
-    h('div', { class: 'tabrow-right' }, contained, statusButton, notifications.button, toolsButton),
+    guest ? null : addButton,
+    h('div', { class: 'tabrow-right' }, contained, guestBadge, guest ? null : statusButton, notifications.button, toolsButton),
   );
 
   let currentSlug = null;
@@ -167,6 +171,8 @@ export function createTabRow(ctx) {
           sandbox.repo && sandbox.repo.url ? { label: 'Open on GitHub', onSelect: () => window.open(sandbox.repo.url, '_blank', 'noopener,noreferrer') } : null,
           // A playground becomes a GitHub sandbox once GitHub is connected (SPEC-176).
           sandbox.playground && githubConnected(ctx) && allows(sandbox.access, 'admin') ? { label: 'Move to GitHub…', onSelect: () => openMoveToGitHubDialog(ctx, sandbox) } : null,
+          // Teammates try it without GitHub through an expiring link (SPEC-410).
+          sandbox.playground && allows(sandbox.access, 'admin') && !(ctx.guest && ctx.guest()) ? { label: 'Invite guests…', onSelect: () => openGuestInvitesDialog(ctx, sandbox) } : null,
           { separator: true },
           // Reordering without dragging (WCAG 2.5.7): the menu moves a tab one place.
           { label: 'Move left', icon: 'left', disabled: index === 0, onSelect: () => move(-1) },
@@ -188,7 +194,7 @@ export function createTabRow(ctx) {
       h('option', { value: '__home' }, 'All sandboxes'),
       currentSlug || home ? null : h('option', { value: '' }, 'Choose sandbox…'),
       sandboxes.map((s) => h('option', { value: s.slug }, `${s.name}${s.counts && s.counts.needs_attention ? ' (!)' : ''}`)),
-      h('option', { value: '__add' }, '+ Add sandbox…'));
+      guest ? null : h('option', { value: '__add' }, '+ Add sandbox…'));
     select.value = currentSlug || (home ? '__home' : '');
   }
 
@@ -232,6 +238,15 @@ export function initials(name) {
 function openUserMenu(ctx, anchor) {
   const me = ctx.store.state.me || { user: {} };
   const user = me.user || {};
+  // A playground's guest has no account here beyond their visit (SPEC-410): who and until when.
+  const guest = ctx.guest && ctx.guest();
+  if (guest) {
+    openMenu(anchor, [
+      { header: `${user.display_name} · guest until ${dateTime(guest.expires_at)}` },
+      { label: 'Sign out', icon: 'logout', onSelect: () => ctx.signOut() },
+    ]);
+    return;
+  }
   const superadmin = Boolean(user.is_superadmin);
   const instanceAdmin = superadmin || Boolean(user.is_instance_admin);
   // Outside a sandbox (Home, Settings…) the per-sandbox entries use the sandbox used last.
@@ -695,8 +710,10 @@ export function createSidebar(ctx) {
   const nav = h('nav', { class: 'nav', 'aria-label': 'Sandbox' });
   // Links are built once and updated in place, so a focused link keeps focus across routes.
   const navLink = ([page, label, iconName]) => ({ page, el: h('a', { class: 'nav-item' }, h('span', { class: 'nav-slot' }, icon(iconName, { size: 20 })), h('span', null, label)) });
-  const primaryLinks = NAV.map(navLink);
-  const moreLinks = NAV_MORE.map(navLink);
+  // A playground's guest (SPEC-410) sees its work only: Tasks, Git and Sessions.
+  const forGuest = ctx.guest && ctx.guest() ? ([page]) => ['tasks', 'git', 'sessions'].includes(page) : () => true;
+  const primaryLinks = NAV.filter(forGuest).map(navLink);
+  const moreLinks = NAV_MORE.filter(forGuest).map(navLink);
   const moreGroup = h('div', { class: 'nav-more', id: 'nav-more' }, moreLinks.map((link) => link.el));
   const moreChevron = h('span', { class: 'nav-more-chevron' });
   let moreOpen = readJson(MORE_OPEN_KEY, false) === true; // the user's choice, kept

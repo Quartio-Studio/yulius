@@ -15,6 +15,9 @@
 // failpost=<path> (POSTs of that path answer 500), holdpost=<path> (POSTs and PATCHes of that path wait for
 // `__yuliusMock.release()`, as hold= does for GETs; `heldWaiting` counts those waiting), as=<login> (signed in as another member, a
 // teammate in a second window: mock pages of one origin relay presence to each other, SPEC-127).
+// guestlink=1|dead (signed out, holding a live or an ended guest link to the playground `lab`, SPEC-410;
+// guestlink=mine: signed in as its maker),
+// guest=1 (signed in as Carol, a guest of the playground `lab`: the server's guest fence applies).
 
 import { counter, taskInfo } from './status.js';
 import { parsePrompt } from './promptparts.js';
@@ -387,6 +390,17 @@ function seed(params) {
     }
   }
   recount(db);
+  // A playground's guests (SPEC-410). `guestlink=1|dead`: signed out, holding a link to `lab`;
+  // `guest=1`: signed in as a guest of `lab`, who sees nothing else.
+  db.guestInvites = [];
+  if (params.get('guestlink') || params.get('guest') === '1') {
+    const lab = guestPlayground(db);
+    if (params.get('guestlink') !== 'dead') {
+      db.guestInvites.push({ id: 'inv_seed', sandbox_id: lab.id, code: MOCK_GUEST_CODE, created_by: 'mkarp', created_at: iso(HOUR), expires_at: isoIn(7 * DAY), guests: [] });
+    }
+    if (['1', 'dead'].includes(params.get('guestlink'))) db.signedIn = false;
+    if (params.get('guest') === '1') becomeGuest(db, db.guestInvites[0], 'Carol');
+  }
   return db;
 }
 
@@ -1177,6 +1191,102 @@ route('POST', `/api/sandboxes/${ID}/purge`, ({ db, p }) => {
   resync(db);
   const waiting = db.purgeWaitsFor || [];
   return { state: waiting.length ? 'waiting' : 'purged', waiting_for: waiting };
+});
+
+// A playground's guests (SPEC-410): its admins' expiring links (`__yuliusMock.guestInvites`, each with
+// its `code` and `guests`), and joining through one, which signs the page in as that guest.
+const MOCK_GUEST_CODE = 'c0ffee'.repeat(10) + 'c0de';
+const GUEST_FENCE = 'a guest reaches only the playground they were let into';
+const GUEST_PAGES = ['attachments', 'browser', 'ci', 'files', 'git', 'intake', 'notes', 'previews', 'sessions', 'shells', 'stages', 'tasks', 'workflows'];
+
+/** The server's `guest_may_reach` (crates/yulius-server/src/auth.rs). */
+function guestMayReach(method, path) {
+  path = path.replace(/\/$/, '');
+  if (['/api/me', '/api/me/notes', '/api/auth/logout', '/api/events', '/api/archived-tasks', '/api/previews/authorize'].includes(path)) return true;
+  if (path === '/api/sandboxes') return method === 'GET';
+  if (/^\/api\/(tasks|sessions|shells)\/.+/.test(path)) return true;
+  const match = /^\/api\/sandboxes\/([^/]+)(?:\/([^/]+))?/.exec(path);
+  return Boolean(match) && (!match[2] || GUEST_PAGES.includes(match[2]));
+}
+
+/** The playground `lab`, made by mkarp, that guest links open. */
+function guestPlayground(db) {
+  let lab = db.sandboxes.find((s) => s.slug === 'lab');
+  if (!lab) {
+    lab = {
+      id: 'sb_lab', slug: 'lab', name: 'lab', playground: true, repo: { owner: '', name: 'lab', url: '' },
+      access: 'admin', default_branch: 'main', profile: clone(PRESETS.standard), onboarding: 'not_needed',
+      port_base: 20000 + db.sandboxes.length * 20, port_count: 20, counts: { running: 0, needs_attention: 0, queued: 0 },
+    };
+    db.sandboxes.push(lab);
+  }
+  return lab;
+}
+
+const liveInvite = (invite) => !invite.revoked && Date.parse(invite.expires_at) > Date.now();
+const inviteView = (invite) => ({ id: invite.id, created_by: invite.created_by, created_at: invite.created_at, expires_at: invite.expires_at, guests: invite.guests.map((g) => ({ ...g })) });
+const ended = () => fail(410, 'gone', 'this guest link has ended; ask whoever sent it for a new one');
+
+/** The page signs in as `name`, a guest of `invite`'s playground, as the server's join answers. */
+function becomeGuest(db, invite, name) {
+  const lab = db.sandboxes.find((s) => s.id === invite.sandbox_id);
+  invite.guests.push({ name, joined_at: new Date().toISOString() });
+  db.signedIn = true;
+  db.me = {
+    ...db.me,
+    user: { id: `usr_guest_${invite.guests.length}`, login: 'guest', display_name: name, avatar_url: null, is_superadmin: false, is_instance_admin: false, github_linked: false, guest: { sandbox_id: lab.id, slug: lab.slug, expires_at: invite.expires_at } },
+  };
+  lab.access = 'write';
+  db.sandboxes = [lab];
+  db.tasks = db.tasks.filter((t) => t.sandbox_id === lab.id);
+  return lab;
+}
+
+function playgroundAdmin(db, sid) {
+  const sandbox = sandboxOf(db, sid);
+  if (db.me.user.guest) fail(403, 'forbidden', 'a guest works on this playground\u2019s tasks; its settings are its admins\u2019');
+  need(sandbox, 'admin');
+  return sandbox;
+}
+
+route('GET', `/api/sandboxes/${ID}/guest-invites`, ({ db, p }) => {
+  const sandbox = playgroundAdmin(db, p[0]);
+  return { invites: db.guestInvites.filter((i) => i.sandbox_id === sandbox.id && liveInvite(i)).map(inviteView), max_live: 5, max_guests: 20 };
+});
+route('POST', `/api/sandboxes/${ID}/guest-invites`, ({ db, p, body }) => {
+  const sandbox = playgroundAdmin(db, p[0]);
+  if (!sandbox.playground) fail(409, 'conflict', 'only a playground takes guests; this project\u2019s access mirrors GitHub');
+  const days = body.days === undefined ? 7 : body.days;
+  if (![1, 7, 30].includes(days)) fail(422, 'invalid', 'a guest link lasts 1, 7 or 30 days');
+  if (db.guestInvites.filter((i) => i.sandbox_id === sandbox.id && liveInvite(i)).length >= 5) fail(409, 'conflict', 'this playground already has 5 live guest links; revoke one first');
+  db.nextId += 1;
+  const code = Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, '0')).join('');
+  const invite = { id: `inv_${db.nextId}`, sandbox_id: sandbox.id, code, created_by: db.me.user.login, created_at: new Date().toISOString(), expires_at: isoIn(days * DAY), guests: [] };
+  db.guestInvites.push(invite);
+  return json(201, { invite: inviteView(invite), url: `${ORIGIN}/join?code=${code}` });
+});
+route('DELETE', `/api/sandboxes/${ID}/guest-invites/${ID}`, ({ db, p }) => {
+  const sandbox = playgroundAdmin(db, p[0]);
+  const invite = db.guestInvites.find((i) => i.id === p[1] && i.sandbox_id === sandbox.id && liveInvite(i));
+  if (!invite) fail(404, 'not_found', 'not found');
+  invite.revoked = true;
+  return json(204);
+});
+route('GET', `/api/guest-invites/${ID}`, ({ db, p }) => {
+  const invite = db.guestInvites.find((i) => i.code === p[0] && liveInvite(i));
+  const sandbox = invite && db.sandboxes.find((s) => s.id === invite.sandbox_id && s.playground);
+  if (!sandbox) ended();
+  return { playground: sandbox.slug, invited_by: invite.created_by, expires_at: invite.expires_at };
+});
+route('POST', `/api/guest-invites/${ID}/join`, ({ db, p, body }) => {
+  const invite = db.guestInvites.find((i) => i.code === p[0] && liveInvite(i));
+  if (!invite || !db.sandboxes.some((s) => s.id === invite.sandbox_id && s.playground)) ended();
+  const name = String(body.name || '').trim();
+  if (!name) fail(422, 'invalid', 'type your name to join');
+  if ([...name].length > 60) fail(422, 'invalid', 'a name has at most 60 characters');
+  if (invite.guests.length >= 20) fail(409, 'conflict', 'this link already let in 20 guests; ask for a new one');
+  const lab = becomeGuest(db, invite, name);
+  return json(201, { ...db.me, slug: lab.slug });
 });
 
 // Moving a playground to GitHub (SPEC-176): the mock keeps the moves (`__yuliusMock.moves`), and
@@ -4348,6 +4458,8 @@ route('DELETE', `/api/sessions/${ID}`, ({ db, p }) => {
 // ------------------------------------------------------------------ fetch
 
 const PUBLIC = ['/api/setup/status', '/api/setup', '/api/auth/password', '/api/auth/mock-github', '/api/auth/recovery', '/api/auth/recover'];
+// A guest link is its own credential (SPEC-410).
+const isPublic = (path) => PUBLIC.includes(path) || /^\/api\/guest-invites\//.test(path);
 
 async function handleFetch(db, url, init = {}) {
   // Counted as the page asks, before the simulated latency (SPEC-108 tests); `asked` counts every
@@ -4399,7 +4511,13 @@ async function handleFetchAfterLatency(db, url, init) {
     db.heldWaiting = (db.heldWaiting || 0) + 1;
     try { await db.held; } finally { db.heldWaiting -= 1; }
   }
-  if (!PUBLIC.includes(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
+  if (!isPublic(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
+  // The server's guest fence (SPEC-410 GST-004): a guest reaches only their playground's routes.
+  // `guestRefusals` lists what was refused, so a test sees a guest's page ask for nothing fenced.
+  if (!isPublic(u.pathname) && db.me.user.guest && !guestMayReach(method, u.pathname)) {
+    (db.guestRefusals = db.guestRefusals || []).push(`${method} ${u.pathname}`);
+    return json(403, { error: { code: 'forbidden', message: GUEST_FENCE } });
+  }
   if (db.failPath && method === 'GET' && u.pathname === db.failPath) {
     db.failedReads += 1;
     return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
@@ -4414,7 +4532,7 @@ async function handleFetchAfterLatency(db, url, init) {
   // Like the server, a stale token has its own code (SPEC-337 CSR-001). A test changes the token
   // under an open page (`__yuliusMock.me.csrf_token`), as another tab's sign-in does, or makes every
   // token wrong (`refuseCsrf`); `csrfRefusals` counts the refusals.
-  if (method !== 'GET' && !PUBLIC.includes(u.pathname) && (db.refuseCsrf || headers['X-Yulius-CSRF'] !== db.me.csrf_token)) {
+  if (method !== 'GET' && !isPublic(u.pathname) && (db.refuseCsrf || headers['X-Yulius-CSRF'] !== db.me.csrf_token)) {
     db.csrfRefusals = (db.csrfRefusals || 0) + 1;
     return json(403, { error: { code: 'csrf_invalid', message: 'missing or invalid CSRF token' } });
   }

@@ -115,8 +115,8 @@ async fn refuse_guests_outside(
 }
 
 /// The pages of a sandbox a guest may use: its tasks and what working on them needs. Never its
-/// secrets, variables, MCP servers, skills, automations, workflows, saved agent states, Superagent,
-/// guest links or delivery settings.
+/// secrets, variables, MCP servers, skills, automations, saved agent states, Superagent, guest
+/// links or delivery settings.
 const GUEST_SANDBOX_PAGES: &[&str] = &[
     "attachments",
     "browser",
@@ -130,6 +130,8 @@ const GUEST_SANDBOX_PAGES: &[&str] = &[
     "shells",
     "stages",
     "tasks",
+    // Read to offer a workflow for a new task; changing one needs Configure, refused to guests.
+    "workflows",
 ];
 
 /// Whether a playground's guest may send `method` to `path` (an allowlist, so a route added later
@@ -237,6 +239,7 @@ mod tests {
             "/api/sandboxes/p1/git",
             "/api/sandboxes/p1/shells/s1/attachments",
             "/api/sandboxes/p1/stages/timeline",
+            "/api/sandboxes/p1/workflows",
             "/api/tasks/t1",
             "/api/tasks/t1/terminal",
             "/api/sessions/x/transcript",
@@ -254,7 +257,6 @@ mod tests {
             "/api/sandboxes/p1/skills",
             "/api/sandboxes/p1/automations",
             "/api/sandboxes/p1/automation-templates",
-            "/api/sandboxes/p1/workflows",
             "/api/sandboxes/p1/agent-states",
             "/api/sandboxes/p1/cockpit",
             "/api/sandboxes/p1/superagent/requests",

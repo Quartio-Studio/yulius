@@ -7,7 +7,7 @@
 import { enc } from './api.js';
 import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, invalid, badge, setChildren, icon, iconButton, placeholder, bar } from './dom.js';
 import { taskActions, taskInfo, allows, isLive, otherOwner } from './status.js';
-import { relLong, whenLabel, localInputValue, fromLocalInput } from './format.js';
+import { relLong, whenLabel, localInputValue, fromLocalInput, dateTime } from './format.js';
 import { BRAND } from './brand.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { openAttachment } from './filedrop.js';
@@ -915,6 +915,90 @@ export function openMoveToGitHubDialog(ctx, sandbox) {
   });
   const hint = nameInput.closest('.field').querySelector('.field-hint');
   nameInput.addEventListener('input', () => { hint.textContent = `${owner}/${nameInput.value.trim()}`; });
+}
+
+/**
+ * A playground's guests (SPEC-410 GST-007): its admin creates an expiring link (1, 7 or 30 days),
+ * copies it once, and sees and revokes the live links with the guests each let in. A guest types a
+ * name and works on the playground's tasks without GitHub, and reaches nothing else.
+ */
+export function openGuestInvitesDialog(ctx, sandbox) {
+  const path = `/api/sandboxes/${enc(sandbox.id)}/guest-invites`;
+  const days = h('select', { class: 'select' }, [1, 7, 30].map((d) => h('option', { value: String(d) }, d === 1 ? '1 day' : `${d} days`)));
+  days.value = '7';
+  const created = h('div', { class: 'stack-sm guest-link', hidden: true });
+  const list = h('div', { class: 'stack-sm guest-links' }, placeholder('Loading guest links…', 'loading'));
+  const createButton = h('button', { type: 'button', class: 'btn btn-primary' }, 'Create link');
+  const showLink = (url, invite) => {
+    const input = h('input', { type: 'text', class: 'input', readOnly: true, value: url, 'aria-label': 'Guest link' });
+    const copy = h('button', { type: 'button', class: 'btn' }, icon('copy', { size: 14 }), 'Copy link');
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(url);
+        toast('Guest link copied.', { kind: 'ok' });
+      } catch {
+        input.select();
+        toast('The browser blocked the clipboard: copy the selected link.', { kind: 'warn' });
+      }
+    });
+    setChildren(created,
+      h('div', { class: 'row' }, input, copy),
+      h('p', { class: 'muted small' }, `Shown only now. Whoever holds it joins until ${dateTime(invite.expires_at)}: send it to your teammates only.`));
+    created.hidden = false;
+    input.select();
+  };
+  const render = (data) => {
+    const invites = data.invites || [];
+    createButton.disabled = invites.length >= data.max_live;
+    createButton.title = createButton.disabled ? `At most ${data.max_live} live links: revoke one first` : '';
+    if (!invites.length) { setChildren(list, h('p', { class: 'muted small' }, 'No live guest link.')); return; }
+    setChildren(list, h('ul', { class: 'guest-invite-list', 'aria-label': 'Live guest links' }, invites.map((invite) => {
+      const names = invite.guests.map((g) => g.name);
+      const revoke = h('button', { type: 'button', class: 'btn btn-danger btn-sm', 'aria-label': `Revoke the link ending ${dateTime(invite.expires_at)}` }, 'Revoke');
+      revoke.addEventListener('click', async () => {
+        revoke.disabled = true;
+        try {
+          await ctx.api.del(`${path}/${enc(invite.id)}`);
+          toast(names.length ? `Link revoked: ${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} signed out.` : 'Link revoked.', { kind: 'ok' });
+          await reload();
+        } catch (error) {
+          revoke.disabled = false;
+          errorToast(error, 'Couldn’t revoke the link');
+        }
+      });
+      return h('li', { class: 'guest-invite' },
+        h('div', { class: 'grow' },
+          h('div', null, `Ends ${dateTime(invite.expires_at)}`),
+          h('div', { class: 'muted small' }, `${names.length ? `${names.length} guest${names.length === 1 ? '' : 's'}: ${names.join(', ')}` : 'No guest yet'} · made by ${invite.created_by}`)),
+        revoke);
+    })));
+  };
+  const reload = async () => {
+    try { render(await ctx.api.get(path)); } catch (error) { setChildren(list, placeholder(error.message, 'error')); }
+  };
+  createButton.addEventListener('click', async () => {
+    createButton.disabled = true;
+    try {
+      const made = await ctx.api.post(path, { days: Number(days.value) });
+      showLink(made.url, made.invite);
+      await reload();
+    } catch (error) {
+      createButton.disabled = false;
+      errorToast(error, 'Couldn’t create the link');
+    }
+  });
+  openModal({
+    title: `Invite guests to ${sandbox.name}`,
+    wide: true,
+    body: h('div', { class: 'stack' },
+      h('p', null, `Teammates without GitHub try this playground through a link: they type a name and work on its tasks, terminals and files until the link ends. They reach nothing else in ${BRAND.name}: no other sandbox, secret or setting.`),
+      h('div', { class: 'guest-new' }, field('Link lasts', days), createButton),
+      created,
+      h('h3', { class: 'section-title' }, 'Live links'),
+      list),
+    actions: [{ label: 'Close', value: false }],
+  });
+  reload();
 }
 
 /**

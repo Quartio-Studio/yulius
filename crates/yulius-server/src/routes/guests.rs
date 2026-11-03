@@ -13,7 +13,9 @@ use yulius_contracts::api::guests::{
 use crate::AppState;
 use crate::auth::{Auth, session_cookie};
 use crate::client::ClientAddress;
-use crate::error::ApiResult;
+use yulius_app::error::AppError;
+
+use crate::error::{ApiError, ApiResult};
 
 /// Public routes of a playground's guests.
 pub fn public() -> Router<AppState> {
@@ -52,14 +54,28 @@ async fn revoke(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// A link that is unknown, revoked or expired, or whose playground is gone, is one answer (410),
+/// so the page can say the link ended and no code is told apart from another.
+fn ended(err: AppError) -> Response {
+    if matches!(err, AppError::NotFound) {
+        let body = serde_json::json!({"error": {
+            "code": "gone",
+            "message": "this guest link has ended; ask whoever sent it for a new one",
+        }});
+        return (StatusCode::GONE, Json(body)).into_response();
+    }
+    ApiError::from(err).into_response()
+}
+
 async fn peek(
     State(app): State<AppState>,
     client: ClientAddress,
     Path(code): Path<String>,
-) -> ApiResult<Json<GuestInvitePeek>> {
-    Ok(Json(
-        app.peek_guest_invite(&code, &client.limit_key()).await?,
-    ))
+) -> Response {
+    match app.peek_guest_invite(&code, &client.limit_key()).await {
+        Ok(peek) => Json::<GuestInvitePeek>(peek).into_response(),
+        Err(err) => ended(err),
+    }
 }
 
 /// Joins as a guest: the answer is the new session's `Me` with the playground's `slug`, and its
@@ -69,10 +85,14 @@ async fn join(
     client: ClientAddress,
     Path(code): Path<String>,
     Json(input): Json<GuestJoinRequest>,
-) -> ApiResult<Response> {
-    let (session, slug) = app
+) -> Response {
+    let (session, slug) = match app
         .join_as_guest(&code, &input.name, &client.limit_key())
-        .await?;
+        .await
+    {
+        Ok(joined) => joined,
+        Err(err) => return ended(err),
+    };
     let mut body = serde_json::to_value(&session.me).unwrap_or_default();
     if let Some(object) = body.as_object_mut() {
         object.insert("slug".into(), slug.into());
@@ -86,5 +106,5 @@ async fn join(
     if let Ok(value) = HeaderValue::from_str(&cookie) {
         response.headers_mut().insert(header::SET_COOKIE, value);
     }
-    Ok(response)
+    response
 }

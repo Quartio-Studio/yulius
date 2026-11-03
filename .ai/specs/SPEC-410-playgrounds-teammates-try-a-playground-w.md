@@ -43,7 +43,7 @@ reaches nothing else: no other sandbox, no secret, no instance setting, no accou
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | GST-001 | An admin of a playground (its maker, the superadmin) creates a guest link from a browser session or an `operate` token: `POST /api/sandboxes/{sid}/guest-invites` `{days}` with `days` 1, 7 (default) or 30. The answer (201) carries the link `<public_url>/join?code=<code>` once; only the code's SHA-256 is stored. A sandbox that is not a playground is a 409; a non-admin a 403 (a guest included); at most 5 live links per playground (a 6th is a 409). Audited `playground.invite.create`. | `playground_guests::a_maker_creates_an_expiring_link_shown_once`, `only_a_playgrounds_admin_creates_links` |
-| GST-002 | `GET /api/guest-invites/{code}` (no session) answers the playground's name, its maker's name and the link's expiry; an unknown, expired or revoked code, or a playground removed or moved to GitHub, is a 404. `POST /api/guest-invites/{code}/join` `{name}` (no session) creates a guest: an account with no GitHub link and no password, named `name` (trimmed, 1–60 characters, no control characters), and a browser session that ends when the link expires (or earlier, at the session lifetime). At most 20 guests join one link (the 21st is a 409). Both routes count against a per-client limit of 10 a minute (ACC-013's client key). Audited `playground.guest.join`. | `playground_guests::a_guest_joins_with_a_name_and_gets_a_session`, `a_dead_link_lets_nobody_in`, `a_link_lets_in_at_most_twenty_guests`, `joining_is_rate_limited_per_client` |
+| GST-002 | `GET /api/guest-invites/{code}` (no session) answers the playground's name, its maker's name and the link's expiry; an unknown, expired or revoked code, or a playground removed or moved to GitHub, is one answer, 410 "this guest link has ended" (so no code is told apart from another). `POST /api/guest-invites/{code}/join` `{name}` (no session) creates a guest: an account with no GitHub link and no password, named `name` (trimmed, 1–60 characters, no control characters), and a browser session that ends when the link expires (or earlier, at the session lifetime). At most 20 guests join one link (the 21st is a 409). Both routes count against a per-client limit of 10 a minute (ACC-013's client key). Audited `playground.guest.join`. | `playground_guests::a_guest_joins_with_a_name_and_gets_a_session`, `a_dead_link_lets_nobody_in`, `a_link_lets_in_at_most_twenty_guests`, `joining_is_rate_limited_per_client` |
 | GST-003 | A guest has write access to the playground of their link while it lives (not revoked, not expired, the sandbox still a playground and not removed) and no access to any other sandbox. In it they work (tasks, terminals, editor, browser, files, Git page, merging its tasks) but never configure or administer it: `Action::Configure` and `Action::Administer` answer 403. | `playground_guests::a_guest_works_only_in_their_playground`, `a_guest_never_configures_the_playground` |
 | GST-004 | A guest reaches no secret and no setting: the agent-secret, variable and vault routes, API tokens, CLI device approval, making sandboxes or playgrounds, imports, onboarding, Claude accounts, instance administration and every other route outside their playground answer 403 "a guest reaches only the playground they were let into" (an allowlist, so a new route is closed to guests until allowed). Runs of a task a guest owns get no agent secret. | `playground_guests::a_guest_reaches_no_secret_or_setting`, `a_guests_task_gets_no_agent_secret` |
 | GST-005 | The playground's admins list its live links (`GET /api/sandboxes/{sid}/guest-invites`: expiry, who made it, and each guest's name and join time; never the code) and revoke one (`DELETE /api/sandboxes/{sid}/guest-invites/{id}`). Revoking ends at once every guest it let in: their sessions are revoked, their requests answer 401 and their open sockets close at the next re-check (ACC-008). An expired link does the same at its expiry. Audited `playground.invite.revoke`. | `playground_guests::revoking_a_link_ends_its_guests_at_once`, `an_expired_link_ends_its_guests` |
@@ -53,12 +53,12 @@ reaches nothing else: no other sandbox, no secret, no instance setting, no accou
 ## Plan
 
 - [x] Spec and ADR amending ACC-005 for playground guests
-- [ ] Guest links: stored, created, listed and revoked by a playground admin
-- [ ] Joining: a guest account and session from a live link
-- [ ] Guest access: only the invited playground, fenced routes, no secrets
-- [ ] Revocation and expiry end a guest's sessions and sockets
-- [ ] Web UI: Invite guests dialog for the playground admin
-- [ ] Web UI: join page and guest mode
+- [x] Guest links: stored, created, listed and revoked by a playground admin
+- [x] Joining: a guest account and session from a live link
+- [x] Guest access: only the invited playground, fenced routes, no secrets
+- [x] Revocation and expiry end a guest's sessions and sockets
+- [x] Web UI: Invite guests dialog for the playground admin
+- [x] Web UI: join page and guest mode
 - [ ] Docs: SPEC-001, SPEC-099, architecture, product and changes
 - [ ] Independent review answered and gates green
 
