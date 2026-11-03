@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
+- Deleting a task no longer destroys attachments another task still uses: its
+  `attachments/tasks/<id>/` folder stays where it is while a remaining task's request or an
+  automation's prompt names it (`task_delete` answers `kept_for`), and otherwise waits 7 days in the
+  sandbox's attachments trash; the new `attachments_trash` tool lists the trash and restores an
+  entry's files into a task (also on the remote MCP). The
+  new `task_update` tool changes how a waiting task starts in place (the UI's change, SPEC-126), so
+  an agent never recreates a task to chain it, the workaround that lost quartio-v2's screenshots on
+  2026-11-02 (SPEC-396, task #386, ADR-0253).
 - Vidoc's five findings on supervisor input and session start (#818, #752, #692, #691, #693) are
   triaged as false positives on `dev`: a typed first message's pastes never hold an ESC
   (`Request::parse` drops control characters from text and refuses paths holding one), so the

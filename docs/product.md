@@ -105,9 +105,11 @@ watching, steering and unblocking.
   (SPEC-355). On a contained server it runs in Claude Code's
   bypass-permissions mode, as tasks do, not auto mode (SPEC-208). It manages the project for its owner: asked to
   "create a task from that" or to do something "every day at 4am", it creates the task or the
-  automation through Yulius's tools, and it stops, archives or deletes tasks, runs or deletes
-  automations and enables the ready-made ones (asking the person before each change only on an
-  uncontained server). Task agents
+  automation through Yulius's tools, and it changes how a waiting task starts, stops, archives or
+  deletes tasks, runs or deletes automations and enables the ready-made ones (asking the person
+  before each change only on an uncontained server). A deleted task's attachments stay while
+  another task's request names them and otherwise wait 7 days in a trash it restores them from
+  (SPEC-396). Task agents
   can do the same for their task's owner, except to their own task. Told "tell #5 it may use the
   DO budget", the Superagent passes the message on (task agents cannot): a task that has not
   started gets it in its request, a running one gets it typed into its session as "Message from

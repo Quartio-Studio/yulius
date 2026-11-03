@@ -14,6 +14,7 @@ mod accounts;
 mod agent_hooks;
 mod agent_states;
 mod analytics;
+mod attachment_trash;
 mod auto_choice;
 mod automation_start;
 mod automations;

@@ -218,6 +218,8 @@ the Secrets page's Variables tab, or `yulius vars`.
 | "Tell #12 it may use the staging database" | `task_message` | `yulius task message 12 "…"` |
 | "Restart #12" | `task_restart` (Continue; stop it first if it runs) | `yulius task restart 12` |
 | "Stop #12" / "archive it" / "delete it" | `task_stop`, `task_archive`, `task_delete` | `yulius task stop 12`, `archive`, `delete` |
+| "Run #13 after #12" | `task_update` (a task that has not started) | `yulius remote call task_update '{"number": 13, "after_task": 12}'` |
+| "Get back #13's deleted screenshots" | `attachments_trash` (`restore`, `into`) | `yulius remote call attachments_trash '{"restore": 13, "into": 14}'` |
 | "Pause #12" / "resume it" / "start #13 now" | `task_pause`, `task_unpause`, `task_start_now` | `yulius remote call task_pause '{"number": 12}'` |
 | "What's #12's pull request and checks?" | `task_delivery` | `yulius task delivery 12` |
 | "Why did CI fail?" | `ci_runs`, `ci_run`, `ci_rerun` | `yulius ci runs`, `yulius ci run <id>`, `yulius ci rerun <id>` |
