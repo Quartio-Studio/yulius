@@ -678,6 +678,33 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-405 VEV-002 (#835): Yulius rewrites the fingerprint file in place (a contained
+    /// session binds its inode). A read that meets the rewrite half done (empty, or any part of
+    /// the new set) holds no set: the command is not run, never run unredacted.
+    #[test]
+    fn a_partly_written_fingerprint_file_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("scrub.json");
+        let path = file.to_string_lossy().into_owned();
+        let env = run_env(nobody()?, Some(path.clone()));
+        let bytes = serde_json::to_vec(&set())?;
+        std::fs::write(&file, &bytes)?;
+        assert!(matches!(load_fingerprints(&env), Fingerprints::Set(_)));
+        for len in 0..bytes.len() {
+            std::fs::write(&file, &bytes[..len])?;
+            assert_eq!(
+                unavailable(load_fingerprints(&env))?.file,
+                FileState::Invalid(path.clone()),
+                "the first {len} bytes"
+            );
+        }
+        let marker = dir.path().join("ran");
+        let command = format!("touch '{}'", marker.display());
+        assert_eq!(run_scrub_exec(&[command], &env), NOT_RUN);
+        assert!(!marker.exists());
+        Ok(())
+    }
+
     /// LAP-001: an unreachable Yulius may be restarting, or this sandbox's connections to it may
     /// be used up by leftover processes; the message says both and what is wrong with the file.
     #[test]
