@@ -79,7 +79,7 @@ how a waiting task starts in place instead of deleting and recreating it.
 - [x] Delete confirmation, tool descriptions and docs say where attachments go
 - [x] Independent review approved and findings answered
 - [x] Gates green with evidence in the spec
-- [ ] Final review approves the evidenced head
+- [x] Final review approves the evidenced head
 
 ## Acceptance criteria
 
