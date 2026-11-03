@@ -803,6 +803,15 @@ impl App {
                 super::PERSONAL_SECRET_BROWSER
             )));
         }
+        // A page is in the agent's hands, unlike a request the proxy completes: not even the
+        // hosts a production secret kept from before it became exclusive (SPEC-405 VEV-001).
+        if record.cd_prod {
+            return Err(AppError::Forbidden(format!(
+                "{}: {}",
+                record.name,
+                super::PRODUCTION_SECRET
+            )));
+        }
         let browser = self.browser_session(&ctx.task.sandbox_id).await?;
         let tab = browser
             .tabs()
