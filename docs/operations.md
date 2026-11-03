@@ -1220,7 +1220,7 @@ task that started working again keeps its files. Every deletion is audited as `l
 | A closed or cancelled task's clean worktree | after 10 minutes (its branch keeps the work) | yes |
 | Git's record of a worktree inside the sandbox directory whose directory is gone (`.git/worktrees/<name>`), not locked | always (that record only; a worktree an agent keeps in its own `/tmp` keeps its record) | yes |
 | A CI checkout of a job or lane no run used for 14 days, and its cache (`ci/cache/<job>[.<n>][@<lane>]`); an entry of `ci/cache` named like no job (what the cache every job shared held before SPEC-351) | while no CI run of that sandbox runs | yes |
-| A draft attachment older than 7 days | always | yes |
+| A draft attachment older than 7 days that no task's request or automation's prompt names (SPEC-413) | always | yes |
 | `<data>/runs/<name>` that no attempt record, live run, active CI job, running deploy or running delivery environment run owns, untouched for a day (an ended task's last run, with its final terminal screen, stays) | always | yes |
 | Transcripts of a deleted task; a Docker smoke test's sandbox whose process is gone | always | yes |
 | An unused sandbox base (not current, no live holder mounts it) | always | yes |

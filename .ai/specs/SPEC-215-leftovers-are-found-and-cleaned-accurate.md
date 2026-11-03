@@ -77,7 +77,7 @@ the automatic rounds. "Manual" means it is listed and deleted only by a person.
 | `sandboxes/<sid>/worktrees/<name>` with no task record | none | always (may hold uncommitted work) | `orphan-worktree` (manual) |
 | `repo/.git/worktrees/<name>` whose worktree, inside the sandbox directory, is gone | git | not locked | `git-metadata` (auto, that record only) |
 | `sandboxes/<sid>/ci/jobs/<name>` whose job no run used in 14 days | sandbox (CI) | no CI run in its sandbox | `stale-ci-checkout` (auto, under the CI claim) |
-| `sandboxes/<sid>/attachments/drafts/<user>/<file>` | user's draft | older than 7 days (`DRAFT_MAX_AGE`) | `old-draft` (auto) |
+| `sandboxes/<sid>/attachments/drafts/<user>/<file>` | user's draft | older than 7 days (`DRAFT_MAX_AGE`) and named by no task's request or automation's prompt (SPEC-413; checked again before deletion; unreadable tasks keep it) | `old-draft` (auto) |
 | `runs/<attempt>` | attempt record | no attempt record owns it (an ended task's last run holds the final screen), untouched for a day | `ended-run` (auto) |
 | `runs/ci-<job>`, `runs/cd-<run>` | CI job / CD run | no active CI run has the job, no running deploy is the run, untouched for a day | `ended-run` (auto) |
 | `transcripts/<task>` with no task record | none | always (task deletion failed half-way) | `orphan-transcripts` (auto) |
