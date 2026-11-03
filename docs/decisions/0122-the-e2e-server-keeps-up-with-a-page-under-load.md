@@ -6,7 +6,9 @@ Accepted. Specified in [SPEC-148](../../.ai/specs/SPEC-148-fix-354-349-356-394-t
 task #134, issues #354, #349, #356 and #394. Keeps [ADR-0039](0039-ci-jobs-get-the-cpu-first.md)
 (CI's CPU weight) and SPEC-082's worker bound.
 Amended by [ADR-0251](0251-the-terminals-first-show-wait-outlasts-the-apps-reveal-limit.md): a task
-terminal's first screen has its own budget too (`TERMINAL_SHOW_MS`).
+terminal's first screen has its own budget too (`TERMINAL_SHOW_MS`). Amended by
+[ADR-0262](0262-an-e2e-tests-first-look-at-a-page-has-a-first-load-budget.md): a test's first look
+at a page has one too (`FIRST_LOAD_MS`, `firstShown`), the decision this record left open (#354).
 
 ## Context
 

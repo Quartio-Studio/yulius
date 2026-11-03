@@ -54,7 +54,10 @@ test('a person pauses a task from its menu and resumes it from its view', async 
 });
 
 test('the Tasks list row menu pauses and resumes a task', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/tasks'));
+  // Without the mock's ambient activity (`ambient=0`): it starts the queued #8 and regroups the
+  // list every few seconds, so a row moved from under the pointer between the hover and the click,
+  // its actions hid again and the click waited out its 30 s; and #8 must stay queued (#354).
+  await app.open(mock('/s/studio/tasks', '&ambient=0'));
   const row = '.tl-row[data-task-id="tsk_studio_12"]';
   const menuOf = async (css: string) => { await browser.locator(css).hover(); await browser.locator(`${css} .tl-actions .tl-action:last-child`).click(); };
   await menuOf(row);

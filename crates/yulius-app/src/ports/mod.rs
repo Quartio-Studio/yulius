@@ -4,6 +4,7 @@ pub mod browser;
 pub mod egress;
 pub mod git;
 pub mod github;
+pub mod guests;
 pub mod harness;
 pub mod intake;
 pub mod isolation;

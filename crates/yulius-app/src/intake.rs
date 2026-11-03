@@ -528,11 +528,7 @@ impl App {
         if hold.state != hold_state::PENDING {
             return Err(AppError::Conflict("this prompt was already handled".into()));
         }
-        let login = ctx
-            .user
-            .github_login
-            .clone()
-            .unwrap_or_else(|| "superadmin".into());
+        let login = ctx.user.label();
         let decision = Decision {
             task: &task,
             hold: &hold,

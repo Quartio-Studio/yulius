@@ -6,6 +6,47 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
+- The e2e suite gives a test's first look at a page its own budget: `firstShown(locator, text?)`
+  waits within `FIRST_LOAD_MS` (30 s), and `app.open`/`browser.reload` wait as long for the mock's
+  install, while every later wait keeps its budget and `retries: 0` stays (SPEC-412, task #394,
+  ADR-0262, the person's decision on #354). The tests #354, #525 and #510 list use it, all but
+  onboarding's repository radio (already a 30 s wait, not reproduced) and editor presence (a later
+  wait), and the races behind some of their failures are fixed: the rail test reads the Browser
+  item without the mock's sign-in request (`browserask=0`), the Tasks list pause test without the
+  ambient regroup under its pointer (`ambient=0`), terminal tests wait for the terminal's first
+  screen with a transcript that stays still from the start (mock `still=1`), and the notes tests
+  no longer wait out the pad's doubled back-off or let its own retry settle a lost save first. A
+  running CI run's waterfall keeps the hover tip of the row under the pointer through its redraw
+  at every poll (it vanished until the pointer moved). Fixes #354, #525 and #510.
+- The Editor's text is shared live: teammates who have a file open see each other's keystrokes
+  and carets before anyone saves, and concurrent typing converges (server-ordered operational
+  transformation over the event stream; the text held in the server's memory for the sandbox's
+  writers only). The Editor saves by itself about a second after typing stops and when the person
+  leaves the file; an agent's write over unsaved text shows "Changed on disk" in every Editor with
+  Keep mine and Take disk version (SPEC-411, task #393, ADR-0261, fixes #566). This reverses
+  EDT-003's "unsaved text is neither stored nor shared", by the person's decision of 2026-11-03.
+- Teammates try a playground without signing in with GitHub (SPEC-410, task #392, ADR-0260,
+  fixes #412; the product owner's decision amends ACC-005 for playgrounds only). A playground's
+  admin picks "Invite guests…" in its tab menu and creates a link that lasts 1, 7 or 30 days; a
+  teammate opens it, types a name and works on that playground's tasks, terminals and files. A
+  guest reaches no other sandbox, secret or setting (an allowlist of routes, no Configure or
+  Administer, for their agents too). They share the playground's workspace (files, terminals,
+  browser, the Claude account its tasks use, whose token a guest's task can copy, as the dialog
+  says), so once a guest joined its runs get no agent secret or saved agent state. Revoking the
+  link, its expiry, or moving the playground to GitHub or removing it signs its guests out and
+  stops what they run.
+- The editor's explorer keeps a file drag's folder marked when it draws its rows again during the
+  drag, for example when the folder list answers after the listing. The mark is drawn by path
+  with the rows, not kept on a row element that a redraw replaces. The filedrop e2e test waits for
+  the mark instead of reading it once, and a new test redraws the tree mid-drag (SPEC-414, task
+  #396, fixes #1029).
+- Attachments a task's request or an automation's prompt names are no longer removed by the older
+  clean-ups: a shell's folder (a screenshot pasted into the Superagent and named in `task_create`)
+  stays when the shell ends and at start-up, and a composer draft older than a week stays at its
+  owner's next upload and in the leftovers round (and no longer counts toward the drafts folder's
+  500); when the tasks cannot be read nothing is removed (SPEC-413, task #395,
+  ADR-0259, fixes #1027 and #1023). `task_delete` settles the deleted task's folder even when
+  `attachments/tasks/` holds more than 10,000 entries, instead of answering `{}` (fixes #1031).
 - Test fixtures under `crates/yulius/tests` no longer commit credentials in a provider's shape.
   26 synthetic values with real prefixes (`sk-ant-oat01-`, `sk_test_`, `sk_live_`) are now put
   together from the prefix and a body, with the same value. `fixture_hygiene` fails on any

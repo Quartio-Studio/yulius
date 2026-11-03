@@ -86,7 +86,7 @@ watching, steering and unblocking.
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server
   and nothing is pushed anywhere; its tasks merge into its own `dev` with `delivery_merge` (no
-  pull request), on green Yulius CI when the project has CI (SPEC-163). It is its maker's and the superadmin's. Connecting GitHub is
+  pull request), on green Yulius CI when the project has CI (SPEC-163). It is its maker's and the superadmin's, and its admins let teammates without GitHub try it: "Invite guests…" in its sandbox menu makes a link that lasts 1, 7 or 30 days, a teammate opens it and joins with a name, works on that playground's tasks only, sharing its workspace (so its runs get no agent secret from then on, while a guest's task can copy the Claude account's sign-in token, as the Invite dialog says), and is signed out and stopped when the link is revoked or ends (SPEC-410, the one exception to signing in with GitHub). Connecting GitHub is
   optional and can wait (SPEC-099). A local checkout without GitHub, with its Claude Code
   sessions, comes in with `yulius onboard --playground`, and removing a playground can delete its
   code from the server for good, which frees its place among its maker's 10 (SPEC-171). Once GitHub
@@ -293,11 +293,12 @@ watching, steering and unblocking.
   teammates who have a shared notepad open show as a caret with their name and their selection
   in their own colour.
 - **Editor**: Monaco over the sandbox's files for people with write access. Like Notes, its
-  selection is drawn rounded and glides, people who have the same file open see each other's
-  caret, name and selection in their Notes colour (awareness only: unsaved text stays each
-  person's own), and its tabs go in any order. The file in front follows the disk: what
-  teammates, agents and shells write shows within about 2 s while the person has not edited it
-  (SPEC-181). Its folder picker opens any branch the sandbox has checked out, named by its branch:
+  selection is drawn rounded and glides, people who have the same file open edit one shared
+  text and see each other's keystrokes, caret, name and selection in their Notes colour before
+  anything is saved, and its tabs go in any order. It saves by itself about a second after typing
+  stops and when the person leaves the file (SPEC-411). The file in front follows the disk: what
+  agents and shells write shows within about 2 s; over unsaved text every Editor offers Keep mine
+  or Take disk version (SPEC-181, SPEC-411). Its folder picker opens any branch the sandbox has checked out, named by its branch:
   the sandbox repository or any task's worktree, also with no task selected; another person's
   worktree opens read-only and says why (SPEC-340).
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit

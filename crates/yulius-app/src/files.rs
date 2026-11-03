@@ -11,9 +11,9 @@
 //! - writes are atomic (temporary file + rename, permissions kept) and refused with `Conflict`
 //!   when the file changed since the editor read it (agents edit the same files) or, for a new
 //!   file, when it already exists;
-//! - each user's editor view (open files, unsaved text) lives only in their browser; nothing
-//!   of it is stored, and only where their selection is in a file is relayed to the sandbox's
-//!   other writers (SPEC-127).
+//! - each user's editor view (open files, tabs, cursor) lives in their browser; where their
+//!   selection is in a file is relayed to the sandbox's other writers (SPEC-127), and the text of
+//!   open files is shared live in memory (`live_files.rs`, SPEC-411).
 
 use std::ffi::{OsStr, OsString};
 use std::os::fd::OwnedFd;
@@ -384,7 +384,7 @@ fn checked_out_branch(anchor: &Path) -> Result<Option<String>, Errno> {
 }
 
 /// A SHA-256 as the files API writes it: 64 lowercase hex digits.
-fn is_sha256_hex(sha: &str) -> bool {
+pub(crate) fn is_sha256_hex(sha: &str) -> bool {
     sha.len() == 64
         && sha
             .bytes()
@@ -964,6 +964,13 @@ impl App {
         // A UTF-16 offset never exceeds the UTF-8 length of the text.
         let max_offset = u32::try_from(MAX_FILE_BYTES).unwrap_or(u32::MAX);
         check_presence(input.selection, max_offset, &input.client)?;
+        if input
+            .session
+            .as_deref()
+            .is_some_and(|session| !crate::live_files::is_session_id(session))
+        {
+            return Err(AppError::Invalid("session is a live document's id".into()));
+        }
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         self.count_presence(&format!(
             "{}|file:{sid}:{root}:{}",
@@ -982,6 +989,8 @@ impl App {
                 selection: input.selection,
                 hello: input.hello,
                 seq: input.seq,
+                session: input.session.clone(),
+                revision: input.revision,
             },
         );
         Ok(())

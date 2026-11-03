@@ -105,7 +105,12 @@ The e2e suite (`e2e/`, test-only) shares that CPU with the agents when an agent 
 them, so a page's burst of module requests waits for a busy server instead of having its SYNs
 dropped; the runner's workers stay bounded by the CPU budget
 ([SPEC-148](../.ai/specs/SPEC-148-fix-354-349-356-394-the-e2e-suite-holds.md),
-[decision 0122](decisions/0122-the-e2e-server-keeps-up-with-a-page-under-load.md)).
+[decision 0122](decisions/0122-the-e2e-server-keeps-up-with-a-page-under-load.md)). Three waits
+have their own named budgets, each for one first-load condition: a test's first look at a page
+(`FIRST_LOAD_MS`, [decision 0262](decisions/0262-an-e2e-tests-first-look-at-a-page-has-a-first-load-budget.md)),
+a task terminal's first screen (`TERMINAL_SHOW_MS`, 0251) and Monaco's cold load
+(`MONACO_LOAD_MS`, 0122); the other waits keep the budgets they had (the runner's defaults or a
+test's own), with no retries.
 
 ```mermaid
 flowchart LR
@@ -444,6 +449,39 @@ commit) and tests it as `task/<n>`; while that run goes the merge is armed, and 
 run passed. Nothing is published to GitHub. Hygiene, the automatic pull request and reconciliation
 skip playgrounds.
 
+A playground's admins let teammates without GitHub in as guests
+([SPEC-410](../.ai/specs/SPEC-410-playgrounds-teammates-try-a-playground-w.md),
+[decision 0260](decisions/0260-a-playgrounds-guests-come-in-through-an-expiring-link.md)): a link
+holds a 256-bit code, only its hash is kept in `playground_invites`, and joining through it makes
+a user with no GitHub link and no password, tied to the link in `playground_guests`, with a browser
+session that ends with the link. `App::access_level` gives a guest write on that playground while
+the link lives and none elsewhere, and `App::require` refuses them `Configure` and `Administer`.
+The server's `Auth` extractor lets a guest's request through only on an allowlist of routes
+(`guest_may_reach`); the event stream gives them only their playground's events, and their
+agents' configuring tools need `Configure` (`App::configure_authority`). A guest shares the
+playground's sandbox, so once one joined, `resolved_agent_secrets` gives none of its runs an agent
+secret and its saved agent states are refused (`playground_has_guests`). Revoking the link revokes
+its guests' sessions in the same transaction, an access write that the open sockets' re-checks
+see, and then stops their tasks and terminals; the background tick does the same for links that
+expired (`ended_at`).
+
+```mermaid
+sequenceDiagram
+  participant A as Playground admin
+  participant S as Yulius server
+  participant G as Guest's browser
+  A->>S: POST /api/sandboxes/{sid}/guest-invites {days}
+  S-->>A: link /join?code=… (shown once; hash stored)
+  A-->>G: sends the link
+  G->>S: GET /api/guest-invites/{code}
+  S-->>G: playground, invited by, ends at
+  G->>S: POST /api/guest-invites/{code}/join {name}
+  S-->>G: Me + session cookie (ends with the link)
+  G->>S: their playground's routes only (Auth allowlist, require)
+  A->>S: DELETE …/guest-invites/{id}
+  S-->>G: 401 on the next request; sockets close at their re-check
+```
+
 A local checkout without GitHub comes in from the command line too
 ([SPEC-171](../.ai/specs/SPEC-171-fix-409-420-yulius-onboard-uploads-a-che.md)): `yulius onboard
 --playground` sends a bundle of every branch and tag, the uncommitted work and the chosen sessions
@@ -702,7 +740,8 @@ checked to be inside the root), `files::open_dirs_below` (each folder from the s
 with `O_DIRECTORY | O_NOFOLLOW`, made with `mkdirat` when missing) and `files::replace_in` (a
 random `O_EXCL | O_NOFOLLOW` temporary file renamed within the handle). The editor's listing,
 folder creation and deletion, the removal of shell and draft attachments, and a deleted task's
-attachments moved to the trash, purged or restored (SPEC-396, `attachment_trash`), walk the
+attachments moved to the trash, purged or restored (SPEC-396, `attachment_trash`; a shell's folder
+or an old draft that a task's request or an automation's prompt names is kept, SPEC-413), walk the
 resolved folder from the sandbox directory with `open_dirs_below` (no real-path check, so no
 `/proc`) and list, `mkdirat`, or remove through `files::remove_tree` (bounded, handle by handle,
 a link unlinked, never followed)
@@ -1315,6 +1354,7 @@ flowchart LR
   MCP -->|"task_update"| SC["App::change_task_start (as the UI's change of a waiting task's start)"]
   TU -->|"delete: settle_attachments"| TR["attachments: named by a request → stay; else → attachments/trash (7 days)"]
   MCP -->|"attachments_trash: list, restore into a task"| TR
+  SH -->|"ends, start-up prune: shell attachments named by a request → stay; else removed (SPEC-413)"| SA["attachments/shells/id"]
   MCP -->|"automation_*, automation_template_enable"| AU["Automations and ready-made ones"]
 ```
 
@@ -2236,7 +2276,9 @@ job's slot wait on the job's own row under "Jobs", paired by the job id in the s
 [decision 0136](decisions/0136-a-ci-job-s-slot-wait-is-drawn-on-its-own-row.md)). A job's slot
 wait is open from the moment it begins to wait and ends `started`, `cancelled` or `error`, so a job
 still waiting is its wait alone on its row there, hatched up to "now"
-([SPEC-385](../.ai/specs/SPEC-385-ci-a-job-still-waiting-for-a-job-slot-sh.md)).
+([SPEC-385](../.ai/specs/SPEC-385-ci-a-job-still-waiting-for-a-job-slot-sh.md)). A running
+subject's waterfall is drawn again at every poll; the row under a still pointer shows its tip again
+after the redraw ([SPEC-412](../.ai/specs/SPEC-412-e2e-a-named-longer-wait-for-first-loads.md)).
 
 ```mermaid
 flowchart LR
@@ -2354,6 +2396,43 @@ sequenceDiagram
             S-->>E: {content, sha256}
             E-->>E: unedited: one edit of the changed part, edited: "Changed on disk"
         end
+    end
+```
+
+The Editor's text is shared live and saves itself
+([SPEC-411](../.ai/specs/SPEC-411-editor-live-co-editing-of-unsaved-text-a.md),
+[decision 0261](decisions/0261-the-editors-text-is-shared-live-and-saved-by-the-server.md)).
+`App::live_*` (`live_files.rs`) keeps one document per sandbox, folder and path in memory, each
+behind its own lock (at most 256, each up to 2 MiB with its last 256 steps); `live_text.rs` applies and transforms operations
+over UTF-16 units. Each browser tab (`livedoc.js`, ops in `livetext.js`) keeps one operation in
+flight and composes the rest; the server transforms an edit past the steps since its revision,
+applies it and publishes `file.live` to the sandbox's writers in the same critical section, so
+every stream sees one order; the tab recognises its own step as the acknowledgement and catches up
+by `GET files/live?since=` after a gap or `resync`. The server writes the text to the file when a
+tab asks (1 s after its person's typing, on blur and leaving), with that person's access and the
+document's `sha256` as base; the 2 s look at the disk asks the server to take a newer version,
+which becomes a step when the text is saved and a conflict (Keep mine, Take disk version) when not.
+
+```mermaid
+sequenceDiagram
+    participant A as Alice's Editor (livedoc.js)
+    participant S as Server (App::live_*)
+    participant B as Bob's Editor
+    participant D as Sandbox disk
+    A->>S: POST files/live/edit {session, revision r, op}
+    S-->>S: transform past steps > r, apply, revision + 1
+    S-->>A: file.live {revision, client: A, op} (her acknowledgement)
+    S-->>B: file.live (writers only): transformed past his unconfirmed typing, applied
+    Note over A: 1 s after typing stops, on blur
+    A->>S: POST files/live/save {session}
+    S->>D: atomic write, base = document's sha256
+    S-->>B: file.live {saved: true, sha256}
+    Note over D: an agent writes the file
+    B->>S: POST files/live/disk (his 2 s look saw a new sha256)
+    alt text saved
+        S-->>A: file.live {op: the disk's change}
+    else unsaved text
+        S-->>A: file.live {disk_sha256}: Keep mine / Take disk version
     end
 ```
 

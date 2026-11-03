@@ -489,51 +489,68 @@ test('two people in one file see each other’s caret, name and selection in the
   await browser.evaluate(() => (window as unknown as { __bob: Window }).__bob.close());
 });
 
-type FileMock = { __yuliusMock: { filePresence(event: Record<string, unknown>): void; filePresenceSent?: { path: string; sha256: string; selection: { anchor: number; head: number } | null; hello: boolean }[] } };
+type FileMock = { __yuliusMock: {
+  filePresence(event: Record<string, unknown>): void;
+  filePresenceSent?: { path: string; sha256: string; session?: string; revision?: number; selection: { anchor: number; head: number } | null; hello: boolean }[];
+  liveDoc(path: string): { session: string; revision: number } | null;
+  live: { holdEdits: boolean };
+  releaseEdits(): void;
+} };
 const teammateInFile = (browser: Browser, event: Record<string, unknown>) =>
   browser.evaluate((e) => (window as unknown as FileMock).__yuliusMock.filePresence(e), event);
 const fileSent = (browser: Browser) => browser.evaluate(() => (window as unknown as FileMock).__yuliusMock.filePresenceSent ?? []);
+const liveOf = (browser: Browser, path: string) => browser.evaluate((p) => (window as unknown as FileMock).__yuliusMock.liveDoc(p), path);
 
-test('a teammate in a file follows the person’s unsaved typing, hides at another saved version, and is answered', async ({ app, browser, screen }) => {
+// SPEC-411 EDT-021: offsets are in the shared text at a revision; a teammate is placed through the
+// steps since and the person's typing not confirmed yet.
+test('a teammate in a file follows the shared text’s steps and the person’s typing, hides at another revision, and is answered', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();
   await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
   await editorShown(browser);
   await expect.poll(() => inEditor<number>(browser, 'me', 'return ed.getModel()?.getValue().length ?? 0')).toBeGreaterThan(0);
-  // Shown: a hello with the file's saved version.
-  await expect.poll(async () => (await fileSent(browser)).some((u) => u.path === 'README.md' && u.hello && /^[0-9a-f]{64}$/.test(u.sha256))).toBe(true);
-  const sha = (await fileSent(browser))[0].sha256;
+  // Shown: a hello naming the live document and its revision.
+  const doc = await liveOf(browser, 'README.md');
+  await expect.poll(async () => (await fileSent(browser)).some((u) => u.path === 'README.md' && u.hello && u.session === doc?.session && u.revision === 0)).toBe(true);
+  const at = { session: doc?.session, revision: 0 };
 
-  // Alice selects "studio" in the saved text ("# studio\n…"): drawn there, in her colour.
+  // Alice selects "studio" in the text ("# studio\n…"): drawn there, in her colour.
   const before = (await fileSent(browser)).length;
-  await teammateInFile(browser, { path: 'README.md', user_id: 'usr_alice', name: 'alice', sha256: sha, selection: { anchor: 2, head: 8 }, hello: true });
+  await teammateInFile(browser, { path: 'README.md', user_id: 'usr_alice', name: 'alice', ...at, selection: { anchor: 2, head: 8 }, hello: true });
   await expect.poll(() => peersIn(browser, 'me')).toEqual([expect.objectContaining({ name: 'alice', shapes: 1, caret: true, start: '2', end: '8', head: '8' })]);
   const alice = (await peersIn(browser, 'me'))[0];
   expect(alice.colour).toBe(alice.expected);
   // Her hello is answered with where the person is.
   await expect.poll(async () => (await fileSent(browser)).slice(before).some((u) => u.selection !== null && !u.hello)).toBe(true);
 
-  // The person types before her selection (unsaved): it moves with the text.
+  // The person types before her selection, still unconfirmed: it moves with the text…
+  await browser.evaluate(() => { (window as unknown as FileMock).__yuliusMock.live.holdEdits = true; });
   await inEditor(browser, 'me', "ed.executeEdits('t', [{ range: { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1 }, text: '>> ' }])");
   await expect.poll(() => peersIn(browser, 'me')).toEqual([expect.objectContaining({ name: 'alice', start: '5', end: '11' })]);
+  // …and stays there once it is a step of the shared text, she still at revision 0.
+  await browser.evaluate(() => (window as unknown as FileMock).__yuliusMock.releaseEdits());
+  await expect.poll(async () => (await liveOf(browser, 'README.md'))?.revision).toBe(1);
+  await expect.poll(() => peersIn(browser, 'me')).toEqual([expect.objectContaining({ name: 'alice', start: '5', end: '11' })]);
 
-  // Her offsets in another saved version: hidden until both have the same.
-  await teammateInFile(browser, { path: 'README.md', user_id: 'usr_alice', name: 'alice', sha256: 'f'.repeat(64), selection: { anchor: 0, head: 1 } });
+  // A revision the person has not had yet, or another document: hidden until it matches.
+  await teammateInFile(browser, { path: 'README.md', user_id: 'usr_alice', name: 'alice', session: at.session, revision: 9, selection: { anchor: 0, head: 1 } });
   await expect.poll(() => peersIn(browser, 'me')).toEqual([]);
-  await teammateInFile(browser, { path: 'README.md', user_id: 'usr_alice', name: 'alice', sha256: sha, selection: { anchor: 0, head: 0 } });
+  await teammateInFile(browser, { path: 'README.md', user_id: 'usr_alice', name: 'alice', session: 'other', revision: 1, selection: { anchor: 0, head: 1 } });
+  await expect.poll(() => peersIn(browser, 'me')).toEqual([]);
+  await teammateInFile(browser, { path: 'README.md', user_id: 'usr_alice', name: 'alice', session: at.session, revision: 1, selection: { anchor: 0, head: 0 } });
   await expect.poll(() => peersIn(browser, 'me')).toEqual([expect.objectContaining({ name: 'alice', shapes: 0, head: '0' })]);
 
   // The person's own echo (another tab of theirs), another file and another folder draw nothing.
-  await teammateInFile(browser, { path: 'README.md', user_id: 'usr_1', name: 'mkarp', client: 'other', sha256: sha, selection: { anchor: 1, head: 3 } });
-  await teammateInFile(browser, { path: 'AGENTS.md', user_id: 'usr_bob', name: 'bob', sha256: sha, selection: { anchor: 1, head: 3 } });
-  await teammateInFile(browser, { path: 'README.md', root: 'task:t_12', user_id: 'usr_carol', name: 'carol', sha256: sha, selection: { anchor: 1, head: 3 } });
+  await teammateInFile(browser, { path: 'README.md', user_id: 'usr_1', name: 'mkarp', client: 'other', ...at, selection: { anchor: 1, head: 3 } });
+  await teammateInFile(browser, { path: 'AGENTS.md', user_id: 'usr_bob', name: 'bob', ...at, selection: { anchor: 1, head: 3 } });
+  await teammateInFile(browser, { path: 'README.md', root: 'task:t_12', user_id: 'usr_carol', name: 'carol', ...at, selection: { anchor: 1, head: 3 } });
   // A teammate shown passes WCAG A/AA (the name tag's contrast, the drawn marks hidden from it).
   expect(await axeViolations(browser)).toEqual([]);
   expect((await peersIn(browser, 'me')).map((p) => p.name)).toEqual(['alice']);
 
   // She leaves: gone.
-  await teammateInFile(browser, { path: 'README.md', user_id: 'usr_alice', name: 'alice', sha256: sha, selection: null });
+  await teammateInFile(browser, { path: 'README.md', user_id: 'usr_alice', name: 'alice', ...at, selection: null });
   await expect.poll(() => peersIn(browser, 'me')).toEqual([]);
 });
 
@@ -999,91 +1016,70 @@ test('the file in front shows what others write on disk, with the cursor on its 
   expect(await editorText(browser)).toBe(ON_DISK);
 });
 
-test('unsaved edits are kept when the disk moves on, and saving asks to overwrite or reload', async ({ app, browser, screen }) => {
-  await openLiveFile(app, browser, screen);
-  await browser.evaluate(() => { const ed = (window as unknown as LiveWindow).monaco.editor.getEditors()[0]; ed.focus(); ed.setPosition({ lineNumber: 1, column: 1 }); ed.trigger('keyboard', 'type', { text: 'mine ' }); });
-  await expect.poll(() => editorText(browser)).toBe(`mine ${ON_DISK}`);
-  await writeDisk(browser, 'theirs\n');
-  await expect.poll(() => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? ''), { timeout: LOOKS_MS }).toContain('Changed on disk');
-  expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
-  await browser.keyboard.press('Control+s');
-  const dialog = screen.getByRole('dialog', /changed on disk/);
-  await expect(dialog.getByRole('button', 'Overwrite')).toBeVisible();
-  await dialog.getByRole('button', 'Reload from disk').click();
-  await expect.poll(() => editorText(browser)).toBe('theirs\n');
-  await expect.poll(() => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? '')).not.toContain('Changed on disk');
-});
-
-// #571: "Reload from disk" cleared the modified mark before it read the disk, so a read that found
-// nothing to load left the person's text in the editor, marked Saved.
+type HeldSaves = { __yuliusMock: { live: { holdSaves: boolean; saves: { path: string }[] }; releaseSaves(): void } };
+const holdSaves = (browser: Browser) => browser.evaluate(() => { (window as unknown as HeldSaves).__yuliusMock.live.holdSaves = true; });
 const editorStatus = (browser: Browser) => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? '');
+const typeMine = (browser: Browser) => browser.evaluate(() => { const ed = (window as unknown as LiveWindow).monaco.editor.getEditors()[0]; ed.focus(); ed.setPosition({ lineNumber: 1, column: 1 }); ed.trigger('keyboard', 'type', { text: 'mine ' }); });
 
-/** Types into the file in front, has the disk move on, and saves: the conflict dialog opens. */
-async function conflictDialog(app: { open(url: string): Promise<void> }, browser: Browser, screen: import('@e2e-dev/web').Screen) {
+/**
+ * SPEC-411 EDT-020: the person types (the save held, so the text stays unsaved) and the disk moves
+ * on: the Editor says so and nothing is saved until a choice.
+ */
+async function conflictOn(app: { open(url: string): Promise<void> }, browser: Browser, screen: import('@e2e-dev/web').Screen, disk: (b: Browser) => Promise<unknown> = (b) => writeDisk(b, 'theirs\n')) {
   await openLiveFile(app, browser, screen);
-  await browser.evaluate(() => { const ed = (window as unknown as LiveWindow).monaco.editor.getEditors()[0]; ed.focus(); ed.setPosition({ lineNumber: 1, column: 1 }); ed.trigger('keyboard', 'type', { text: 'mine ' }); });
+  await holdSaves(browser);
+  await typeMine(browser);
   await expect.poll(() => editorText(browser)).toBe(`mine ${ON_DISK}`);
-  await writeDisk(browser, 'theirs\n');
-  await browser.keyboard.press('Control+s');
-  const dialog = screen.getByRole('dialog', /changed on disk/);
-  await expect(dialog.getByRole('button', 'Reload from disk')).toBeVisible();
-  return dialog;
+  await disk(browser);
+  await expect.poll(() => editorStatus(browser), { timeout: LOOKS_MS }).toMatch(/(Changed|Deleted) on disk/);
+  await browser.evaluate(() => (window as unknown as HeldSaves).__yuliusMock.releaseSaves());
 }
 
-test('reloading a file deleted after a save conflict keeps the text modified and says it is gone', async ({ app, browser, screen }) => {
-  const dialog = await conflictDialog(app, browser, screen);
-  await browser.evaluate(() => (window as unknown as LiveWindow).__yuliusMock.removeRepoFile('sb_studio', 'notes.txt'));
-  await dialog.getByRole('button', 'Reload from disk').click();
-  await expect(browser.locator('.toast-msg:has-text("The file was deleted")')).toBeVisible();
+test('unsaved text is kept when the disk moves on, and Ctrl+S asks to keep it or take the disk’s', async ({ app, browser, screen }) => {
+  await conflictOn(app, browser, screen);
   expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
-  await expect.poll(() => editorStatus(browser)).toContain('Modified');
-  await expect(screen.getByRole('tab', /^notes\.txt ?, modified/)).toBeVisible();
-});
-
-test('reloading a file back at the tab\'s version after a save conflict shows the disk\'s text, saved, undoably', async ({ app, browser, screen }) => {
-  const dialog = await conflictDialog(app, browser, screen);
-  await writeDisk(browser, ON_DISK);
-  await dialog.getByRole('button', 'Reload from disk').click();
-  await expect.poll(() => editorText(browser)).toBe(ON_DISK);
+  await expect(screen.getByRole('button', 'Keep mine')).toBeVisible();
+  await expect(screen.getByRole('button', 'Take disk version')).toBeVisible();
+  await expect(screen.getByRole('tab', /^notes\.txt\s*, modified/)).toBeVisible();
+  await browser.keyboard.press('Control+s');
+  const dialog = screen.getByRole('dialog', /changed on disk/);
+  await expect(dialog.getByRole('button', 'Keep mine')).toBeVisible();
+  await dialog.getByRole('button', 'Take disk version').click();
+  await expect.poll(() => editorText(browser)).toBe('theirs\n');
+  await expect.poll(() => editorStatus(browser)).not.toContain('Changed on disk');
   await expect.poll(() => editorStatus(browser)).toContain('Saved');
-  expect(await editorStatus(browser)).not.toContain('Modified');
-  // The reload is one undo step: the person's text comes back, modified again.
+  // The disk's version is one undo step.
   await browser.evaluate(() => { const ed = (window as unknown as LiveWindow).monaco.editor.getEditors()[0]; ed.focus(); ed.trigger('keyboard', 'undo', null); });
   expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
-  await expect.poll(() => editorStatus(browser)).toContain('Modified');
 });
 
-test('reloading a file grown too large after a save conflict keeps the text modified and says so', async ({ app, browser, screen }) => {
-  const dialog = await conflictDialog(app, browser, screen);
-  await browser.evaluate(() => (window as unknown as LiveWindow).__yuliusMock.repoFileTooLarge('sb_studio', 'notes.txt'));
-  await dialog.getByRole('button', 'Reload from disk').click();
-  await expect(browser.locator('.toast-msg:has-text("notes.txt is too large for the editor")')).toBeVisible();
+// #571, SPEC-298: a file gone or no longer text keeps the person's text, and says why.
+test('a file deleted under unsaved text offers Keep mine, which writes it again', async ({ app, browser, screen }) => {
+  await conflictOn(app, browser, screen, (b) => b.evaluate(() => (window as unknown as LiveWindow).__yuliusMock.removeRepoFile('sb_studio', 'notes.txt')));
+  await expect.poll(() => editorStatus(browser)).toContain('Deleted on disk');
   expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
-  await expect.poll(() => editorStatus(browser)).toContain('Modified');
+  await expect(screen.getByRole('button', 'Take disk version')).toHaveCount(0);
+  await screen.getByRole('button', 'Keep mine').click();
+  await expect.poll(() => editorStatus(browser)).toContain('Saved');
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { repoTrees: Record<string, { files: Map<string, string> }> } }).__yuliusMock.repoTrees['sb_studio|sandbox'].files.get('notes.txt'))).toBe(`mine ${ON_DISK}`);
 });
 
-// Review of SPEC-298: a look started while the reload was on its way (the page back in front) made
-// the reload moot, so the person's text stayed without the disk's and without a word.
-test('a look started while "Reload from disk" is on its way reloads in its place', async ({ app, browser, screen }) => {
-  const dialog = await conflictDialog(app, browser, screen);
-  const reads = () => browser.evaluate(() => ((window as unknown as LiveWindow).__yuliusMock.fileReads ?? []).filter((read) => read.path === 'notes.txt'));
-  await browser.evaluate(() => { (window as unknown as LiveWindow).__yuliusMock.holdReads = []; });
-  const before = (await reads()).length;
-  await dialog.getByRole('button', 'Reload from disk').click();
-  await expect.poll(async () => (await reads()).length).toBe(before + 1);
-  await browser.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-  await expect.poll(async () => (await reads()).length).toBe(before + 2);
-  // The newer look asks for the whole file, as the reload did.
-  expect((await reads()).slice(before).map((read) => read.known)).toEqual([null, null]);
-  // The reload's answer comes first, moot: the save ends and draws the tab strip, still modified.
-  await browser.evaluate(() => { (document.querySelector('[role="tab"][data-path="notes.txt"]') as HTMLElement).dataset.before = 'reload'; });
-  await browser.evaluate(() => (window as unknown as LiveWindow).__yuliusMock.holdReads?.[0]());
-  await expect.poll(() => browser.evaluate(() => (document.querySelector('[role="tab"][data-path="notes.txt"]') as HTMLElement | null)?.dataset.before ?? 'redrawn')).toBe('redrawn');
-  // Then the newer look's: the disk's text, and the status bar and the tab say it is saved.
-  await browser.evaluate(() => { const held = (window as unknown as LiveWindow).__yuliusMock; const release = held.holdReads?.[1]; held.holdReads = null; release?.(); });
-  await expect.poll(() => editorText(browser)).toBe('theirs\n');
-  await expect.poll(() => editorStatus(browser)).toContain('Saved');
-  await expect(screen.getByRole('tab', /^notes\.txt$/)).toBeVisible();
+test('a disk back at the text’s version ends the conflict by itself', async ({ app, browser, screen }) => {
+  await conflictOn(app, browser, screen);
+  await writeDisk(browser, ON_DISK);
+  await expect.poll(() => editorStatus(browser), { timeout: LOOKS_MS }).not.toContain('Changed on disk');
+  // Unsaved, no longer in conflict: it saves itself.
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { repoTrees: Record<string, { files: Map<string, string> }> } }).__yuliusMock.repoTrees['sb_studio|sandbox'].files.get('notes.txt')), { timeout: LOOKS_MS }).toBe(`mine ${ON_DISK}`);
+  expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
+});
+
+test('taking the disk’s version of a file grown too large keeps the text and says why', async ({ app, browser, screen }) => {
+  await conflictOn(app, browser, screen);
+  await browser.evaluate(() => (window as unknown as LiveWindow).__yuliusMock.repoFileTooLarge('sb_studio', 'notes.txt'));
+  await screen.getByRole('button', 'Take disk version').click();
+  await expect(browser.locator('.toast-msg:has-text("no longer text the editor opens")')).toBeVisible();
+  expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
+  await expect(screen.getByRole('tab', /^notes\.txt\s*, modified/)).toBeVisible();
 });
 
 test('the Editor looks at the disk only while it is shown', async ({ app, browser, screen }) => {
@@ -1126,28 +1122,6 @@ test('the Editor looks at the disk only while it is shown', async ({ app, browse
   expect(await reads()).toBe(hidden + 1);
 });
 
-// Review of SPEC-181: a look started while the file saves (its tab clicked) could be answered with
-// the text from before the save after the save ended, and put that text back as if saved.
-test('no look at the disk starts while the file in front saves, whichever way it is asked for', async ({ app, browser, screen }) => {
-  await openLiveFile(app, browser, screen);
-  await browser.evaluate(() => { const ed = (window as unknown as LiveWindow).monaco.editor.getEditors()[0]; ed.focus(); ed.setPosition({ lineNumber: 1, column: 1 }); ed.trigger('keyboard', 'type', { text: 'mine ' }); });
-  await browser.evaluate(() => {
-    const w = window as unknown as LiveWindow & { __releaseSave(): void };
-    const m = w.__yuliusMock;
-    m.holdSave = new Promise((resolve) => { w.__releaseSave = () => { m.holdSave = null; resolve(); }; });
-  });
-  await browser.keyboard.press('Control+s');
-  await expect.poll(() => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? '')).toContain('Saving');
-  await screen.getByRole('tab', /^notes\.txt/).click();
-  await screen.getByRole('tree', 'Files').getByRole('treeitem', 'notes.txt').click();
-  await browser.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-  await browser.evaluate(() => (window as unknown as LiveWindow & { __releaseSave(): void }).__releaseSave());
-  await expect.poll(() => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? '')).toContain('Saved');
-  const during = await browser.evaluate(() => ((window as unknown as LiveWindow).__yuliusMock.fileReads ?? []).filter((read) => read.path === 'notes.txt' && read.whileSaving).length);
-  expect(during).toBe(0);
-  expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
-});
-
 // Review of SPEC-181: Monaco gives inserted text the model's line ending, so a file that went from
 // LF to CRLF on disk kept LF in the editor, and its next save rewrote every line ending.
 test('a change of line endings on disk reaches the editor, and a BOM file keeps its cursor', async ({ app, browser, screen }) => {
@@ -1166,30 +1140,6 @@ test('a change of line endings on disk reaches the editor, and a BOM file keeps 
   await writeDisk(browser, '\uFEFFzero\none\ntwo\n');
   await expect.poll(() => editorText(browser), { timeout: LOOKS_MS }).toBe('zero\none\ntwo\n');
   expect(await browser.evaluate(() => (window as unknown as LiveWindow).monaco.editor.getEditors()[0].getPosition())).toEqual({ lineNumber: 3, column: 2 });
-});
-
-// Review round 2 of SPEC-181: an Overwrite after a conflict saved with `saving` already cleared, so
-// a look could start while its write was on its way and put the other text back as saved.
-test('no look at the disk starts while an Overwrite after a conflict saves', async ({ app, browser, screen }) => {
-  await openLiveFile(app, browser, screen);
-  await browser.evaluate(() => { const ed = (window as unknown as LiveWindow).monaco.editor.getEditors()[0]; ed.focus(); ed.setPosition({ lineNumber: 1, column: 1 }); ed.trigger('keyboard', 'type', { text: 'mine ' }); });
-  await writeDisk(browser, 'theirs\n');
-  await browser.keyboard.press('Control+s');
-  const dialog = screen.getByRole('dialog', /changed on disk/);
-  await expect(dialog.getByRole('button', 'Overwrite')).toBeVisible();
-  await browser.evaluate(() => {
-    const w = window as unknown as LiveWindow & { __releaseSave(): void };
-    const m = w.__yuliusMock;
-    m.holdSave = new Promise((resolve) => { w.__releaseSave = () => { m.holdSave = null; resolve(); }; });
-  });
-  await dialog.getByRole('button', 'Overwrite').click();
-  await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { savesOnTheirWay?: number } }).__yuliusMock.savesOnTheirWay ?? 0)).toBe(1);
-  await screen.getByRole('tab', /^notes\.txt/).click();
-  await browser.evaluate(() => (window as unknown as LiveWindow & { __releaseSave(): void }).__releaseSave());
-  await expect.poll(() => browser.evaluate(() => document.querySelector('.ed-status')?.textContent ?? '')).toContain('Saved');
-  const during = await browser.evaluate(() => ((window as unknown as LiveWindow).__yuliusMock.fileReads ?? []).filter((read) => read.path === 'notes.txt' && read.whileSaving).length);
-  expect(during).toBe(0);
-  expect(await editorText(browser)).toBe(`mine ${ON_DISK}`);
 });
 
 // SPEC-340: the folder picker offers the sandbox and every task worktree, each named by its branch,
@@ -1308,17 +1258,21 @@ test('another person’s worktree saves nothing, offers no writing menu items an
 });
 
 // Review of SPEC-340: the folder list arriving while "Switch folder?" is asked must not turn the
-// answer into a switch to the folder already open (the edits discarded, nothing switched).
+// answer into a switch to the folder already open. Asked now only for a file whose unsaved text met
+// a change on disk (SPEC-411).
 test('a folder chosen while the worktrees are read switches to it once the question is answered', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/files/roots'));
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();
   await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
   await editorShown(browser);
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { live: { holdSaves: boolean } } }).__yuliusMock.live.holdSaves = true; });
   const content = screen.getByRole('textbox', 'Editor content');
   await content.focus();
   await browser.keyboard.type('unsaved ');
   await expect(screen.getByRole('tab', /^README\.md\s*, modified/)).toBeVisible();
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { repoFile(s: string, p: string, t: string): void } }).__yuliusMock.repoFile('sb_studio', 'README.md', 'theirs\n'));
+  await expect.poll(() => statusText(browser), { timeout: 10_000 }).toContain('Changed on disk');
   expect(await folderOptions(browser)).toEqual(['Sandbox', 'Task #12 worktree']);
 
   await chooseFolder(browser, 'Task #12 worktree');
@@ -1326,7 +1280,7 @@ test('a folder chosen while the worktrees are read switches to it once the quest
   await expect(dialog).toBeVisible();
   await browser.evaluate(() => (window as unknown as HeldMock).__yuliusMock.release());
   await expect.poll(async () => (await folderOptions(browser))[0]).toBe('Sandbox · quartio');
-  await dialog.getByRole('button', 'Discard and switch').click();
+  await dialog.getByRole('button', 'Switch anyway').click();
   await expect.poll(() => statusText(browser)).toBe('Task #12 worktree · feat/checkout-api');
   expect(await browser.evaluate(() => (document.querySelector('select[aria-label="Folder"]') as HTMLSelectElement).value)).toMatch(/^task:/);
 });

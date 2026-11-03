@@ -1902,3 +1902,200 @@ async fn a_session_of_another_task_is_not_reordered_or_taken() -> R {
     assert!(store.provider_sessions(&a.id).await?.is_empty());
     Ok(())
 }
+
+/// A playground's guest links (SPEC-410): bounded live links and guests per link, a guest only
+/// through a live link, a revoke that ends its guests' sessions once, the expiry sweep's list, and
+/// whether a playground ever had a guest (no longer once it is a GitHub sandbox).
+#[tokio::test]
+async fn playground_guest_links_are_bounded_and_end_once() -> R {
+    use yulius_app::model::WebSessionRecord;
+    use yulius_app::ports::guests::{GuestJoin, PlaygroundGuestStore, PlaygroundInviteRecord};
+    let store = SqliteStore::open_in_memory()?;
+    let (studio, alice) = seed(&store).await?;
+    let lab = SandboxId::parse("s2")?;
+    let mut playground = store.sandbox(&studio).await?.ok_or("seeded")?;
+    playground.id = lab.clone();
+    playground.slug = "lab".into();
+    playground.repo_owner = String::new();
+    playground.repo_name = "lab".into();
+    playground.github_repo_id = None;
+    playground.port_base = 20020;
+    store.insert_sandbox(&playground).await?;
+    let link = |id: &str, expires: i64| PlaygroundInviteRecord {
+        id: id.into(),
+        sandbox_id: lab.clone(),
+        code_hash: format!("hash-{id}"),
+        created_by: alice.clone(),
+        created_at: Timestamp(10),
+        expires_at: Timestamp(expires),
+        revoked_at: None,
+    };
+    assert!(store.insert_playground_invite(&link("i1", 100), 2).await?);
+    assert!(store.insert_playground_invite(&link("i2", 50), 2).await?);
+    assert!(
+        !store.insert_playground_invite(&link("i3", 100), 2).await?,
+        "at most two live links"
+    );
+    assert!(!store.playground_has_guests(&lab).await?);
+
+    let guest = |id: &str| user(id, None, false);
+    assert_eq!(
+        store
+            .insert_playground_guest("i1", &guest("g1")?, Timestamp(20), 1)
+            .await?,
+        GuestJoin::Joined
+    );
+    assert_eq!(
+        store
+            .insert_playground_guest("i1", &guest("g2")?, Timestamp(20), 1)
+            .await?,
+        GuestJoin::Full
+    );
+    assert_eq!(
+        store
+            .insert_playground_guest("i2", &guest("g3")?, Timestamp(60), 1)
+            .await?,
+        GuestJoin::Dead,
+        "an expired link lets nobody in"
+    );
+    assert!(
+        store.user(&UserId::parse("g2")?).await?.is_none(),
+        "nothing was written"
+    );
+    assert!(store.playground_has_guests(&lab).await?);
+    assert_eq!(
+        store
+            .guest_invite_of(&UserId::parse("g1")?)
+            .await?
+            .map(|i| i.id),
+        Some("i1".into())
+    );
+    assert_eq!(store.invite_guest_ids("i1").await?, [UserId::parse("g1")?]);
+
+    store
+        .insert_web_session(&WebSessionRecord {
+            id_hash: "session-g1".into(),
+            user_id: UserId::parse("g1")?,
+            csrf_token: "csrf".into(),
+            created_at: Timestamp(20),
+            expires_at: Timestamp(100),
+            revoked_at: None,
+        })
+        .await?;
+    // The sweep lists the expired link that nothing ended yet, once.
+    let expired = store.unended_expired_invites(Timestamp(60), 10).await?;
+    assert_eq!(
+        expired.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+        ["i2"]
+    );
+    store.mark_invite_swept("i2", Timestamp(60), false).await?;
+    assert_eq!(
+        store
+            .unended_expired_invites(Timestamp(60), 10)
+            .await?
+            .len(),
+        1,
+        "a try that did not end it keeps it listed"
+    );
+    store.mark_invite_swept("i2", Timestamp(61), true).await?;
+    assert!(
+        store
+            .unended_expired_invites(Timestamp(60), 10)
+            .await?
+            .is_empty()
+    );
+
+    assert!(
+        !store
+            .revoke_playground_invite(&studio, "i1", Timestamp(30))
+            .await?,
+        "another sandbox's"
+    );
+    assert!(
+        store
+            .revoke_playground_invite(&lab, "i1", Timestamp(30))
+            .await?
+    );
+    assert!(
+        !store
+            .revoke_playground_invite(&lab, "i1", Timestamp(31))
+            .await?,
+        "once"
+    );
+    let session = store.web_session("session-g1").await?.ok_or("session")?;
+    assert_eq!(session.revoked_at, Some(Timestamp(30)));
+    let listed = store.unended_expired_invites(Timestamp(30), 10).await?;
+    assert_eq!(
+        listed.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+        ["i1"],
+        "a revoked link waits for its guests' work to end"
+    );
+    store.mark_invite_swept("i1", Timestamp(31), true).await?;
+    assert!(
+        store
+            .unended_expired_invites(Timestamp(200), 10)
+            .await?
+            .is_empty()
+    );
+    assert!(
+        store
+            .live_playground_invites(&lab, Timestamp(60))
+            .await?
+            .is_empty()
+    );
+
+    store
+        .move_to_github(&lab, "Quartio-Studio", "lab", Some(7))
+        .await?;
+    assert!(
+        store.playground_has_guests(&lab).await?,
+        "what guests left stays after a move to GitHub"
+    );
+    Ok(())
+}
+
+/// The guest-link sweep (SPEC-410 GST-005) takes the least recently swept dead links first, so
+/// links whose guests' work will not stop never hold its batch.
+#[tokio::test]
+async fn the_guest_link_sweep_takes_the_least_recently_swept_first() -> R {
+    use yulius_app::ports::guests::{PlaygroundGuestStore, PlaygroundInviteRecord};
+    let store = SqliteStore::open_in_memory()?;
+    let (studio, alice) = seed(&store).await?;
+    for (id, expires) in [("a", 10), ("b", 20), ("c", 30)] {
+        let link = PlaygroundInviteRecord {
+            id: id.into(),
+            sandbox_id: studio.clone(),
+            code_hash: format!("hash-{id}"),
+            created_by: alice.clone(),
+            created_at: Timestamp(1),
+            expires_at: Timestamp(expires),
+            revoked_at: None,
+        };
+        assert!(store.insert_playground_invite(&link, 5).await?);
+    }
+    let first = |list: Vec<PlaygroundInviteRecord>| list.first().map(|i| i.id.clone());
+    assert_eq!(
+        first(store.unended_expired_invites(Timestamp(40), 1).await?),
+        Some("a".into())
+    );
+    // "a" and "b" will not stop: tried, not ended.
+    store.mark_invite_swept("a", Timestamp(41), false).await?;
+    store.mark_invite_swept("b", Timestamp(42), false).await?;
+    assert_eq!(
+        first(store.unended_expired_invites(Timestamp(50), 1).await?),
+        Some("c".into())
+    );
+    store.mark_invite_swept("c", Timestamp(51), true).await?;
+    assert_eq!(
+        first(store.unended_expired_invites(Timestamp(60), 1).await?),
+        Some("a".into())
+    );
+    assert_eq!(
+        store
+            .unended_expired_invites(Timestamp(60), 10)
+            .await?
+            .len(),
+        2
+    );
+    Ok(())
+}

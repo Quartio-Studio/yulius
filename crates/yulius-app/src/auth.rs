@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use yulius_contracts::api::auth::{DevicePoll, DeviceStart, InstanceInfo, Me, MeUser};
+use yulius_contracts::api::auth::{DevicePoll, DeviceStart, InstanceInfo, Me, MeGuest, MeUser};
 use yulius_domain::ids::UserId;
 use yulius_domain::permission::TokenScope;
 use yulius_domain::time::Timestamp;
@@ -342,22 +342,34 @@ impl App {
     }
 
     async fn new_session(&self, user: &UserRecord) -> AppResult<NewSession> {
+        let until = self.now().plus_millis(self.config.session_ttl_ms);
+        self.new_session_until(user, until).await
+    }
+
+    /// A browser session for `user` that ends at `until` or at the session lifetime, whichever
+    /// comes first (a playground guest's ends with their link, SPEC-410).
+    pub(crate) async fn new_session_until(
+        &self,
+        user: &UserRecord,
+        until: Timestamp,
+    ) -> AppResult<NewSession> {
         let now = self.now();
         let cookie = hex_token(&self.deps.crypto.random_bytes());
         let csrf = hex_token(&self.deps.crypto.random_bytes()[..16]);
+        let expires_at = until.min(now.plus_millis(self.config.session_ttl_ms));
         let record = WebSessionRecord {
             id_hash: self.deps.crypto.sha256_hex(cookie.as_bytes()),
             user_id: user.id.clone(),
             csrf_token: csrf.clone(),
             created_at: now,
-            expires_at: now.plus_millis(self.config.session_ttl_ms),
+            expires_at,
             revoked_at: None,
         };
         self.deps.store.insert_web_session(&record).await?;
         let me = self.me(user, Some(csrf)).await?;
         Ok(NewSession {
             cookie: Secret(cookie),
-            max_age_s: self.config.session_ttl_ms / 1000,
+            max_age_s: expires_at.millis_since(now).max(0) / 1000,
             me,
             recovery_code: None,
         })
@@ -468,18 +480,34 @@ impl App {
     /// Store failures.
     pub async fn me(&self, user: &UserRecord, csrf: Option<String>) -> AppResult<Me> {
         let instance = self.deps.store.instance().await?;
+        let guest = match self.guest_link_of(user).await? {
+            Some(link) => {
+                let slug = self
+                    .deps
+                    .store
+                    .sandbox(&link.sandbox_id)
+                    .await?
+                    .map(|s| s.slug)
+                    .unwrap_or_default();
+                Some(MeGuest {
+                    sandbox_id: link.sandbox_id.to_string(),
+                    slug,
+                    expires_at: rfc3339(link.expires_at),
+                })
+            }
+            None => None,
+        };
         Ok(Me {
             user: MeUser {
                 id: user.id.to_string(),
-                login: user
-                    .github_login
-                    .clone()
-                    .unwrap_or_else(|| "superadmin".into()),
+                // A guest is named as everywhere else, so their own tasks' requests read as theirs.
+                login: user.label(),
                 display_name: user.display_name.clone(),
                 avatar_url: user.avatar_url.clone(),
                 is_superadmin: user.is_superadmin,
                 is_instance_admin: user.is_instance_admin || user.is_superadmin,
                 github_linked: user.github_id.is_some(),
+                guest,
             },
             csrf_token: csrf.unwrap_or_default(),
             instance: InstanceInfo {

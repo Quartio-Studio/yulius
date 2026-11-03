@@ -48,13 +48,44 @@ test('files dropped on a folder of the explorer are added to it', async ({ app, 
   // While the files are over the folder, the overlay names it and the row is marked.
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.ed-row[data-path="src"]', [['notes.txt', 'hello from a drop\n', 'text/plain']], ['dragenter', 'dragover']));
   await expect(browser.locator('.ed-side .drop-overlay')).toHaveText('Drop to add to src/');
-  expect(await browser.evaluate(() => document.querySelector('.ed-row[data-path="src"]')!.classList.contains('ed-drop-target'))).toBe(true);
+  await expect(browser.locator('.ed-row[data-path="src"]')).toHaveAttribute('class', /\bed-drop-target\b/);
 
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.ed-row[data-path="src"]', [['notes.txt', 'hello from a drop\n', 'text/plain']], ['drop']));
   await expect(browser.locator('.drop-overlay')).toBeHidden();
   await expect(tree.getByRole('treeitem', 'notes.txt')).toBeVisible();
   await expect(browser.locator('.ed-side .upload-text')).toHaveText('Added src/notes.txt');
   await expect.poll(() => repoFile(browser, 'src/notes.txt')).toBe('hello from a drop\n');
+});
+
+type Held = Window & { __yuliusMock: { heldWaiting?: number; release(): void }; __e2eSrcRow?: Element | null };
+
+// #1029 (SPEC-414): the explorer draws its rows again when the folder list (`files/roots`)
+// answers after the listing. A folder under a file drag stays marked through that redraw, though
+// no other dragover comes, and the drop leaves no row marked once the tree is drawn again.
+test('a folder under a file drag stays marked when the explorer redraws', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/files/roots'));
+  await openEditor(screen);
+  const tree = screen.getByRole('tree', 'Files');
+  await expect(tree.getByRole('treeitem', /src$/)).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Held).__yuliusMock.heldWaiting || 0)).toBe(1);
+  await installDrop(browser);
+  const src = browser.locator('.ed-row[data-path="src"]');
+
+  await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.ed-row[data-path="src"]', [['notes.txt', 'hello from a drop\n', 'text/plain']], ['dragenter', 'dragover']));
+  await expect(src).toHaveAttribute('class', /\bed-drop-target\b/);
+  await browser.evaluate(() => { (window as unknown as Held).__e2eSrcRow = document.querySelector('.ed-row[data-path="src"]'); });
+
+  // The folder list answers: the picker lists the folders and the tree is drawn again.
+  await browser.evaluate(() => (window as unknown as Held).__yuliusMock.release());
+  await expect.poll(() => browser.evaluate(() => (document.querySelector('select[aria-label="Folder"]') as HTMLSelectElement).options[0]?.textContent ?? '')).toMatch(/^Sandbox · /);
+  expect(await browser.evaluate(() => document.querySelector('.ed-row[data-path="src"]') !== (window as unknown as Held).__e2eSrcRow)).toBe(true);
+  await expect(src).toHaveAttribute('class', /\bed-drop-target\b/);
+  await expect(browser.locator('.ed-row.ed-drop-target')).toHaveCount(1);
+
+  await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.ed-row[data-path="src"]', [['notes.txt', 'hello from a drop\n', 'text/plain']], ['drop']));
+  await expect(browser.locator('.ed-side .upload-text')).toHaveText('Added src/notes.txt');
+  await expect(tree.getByRole('treeitem', 'notes.txt')).toBeVisible();
+  await expect(browser.locator('.ed-row.ed-drop-target')).toHaveCount(0);
 });
 
 test('dropping a file that exists asks before replacing it', async ({ app, browser, screen }) => {

@@ -18,7 +18,7 @@ use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use support::{
     Creds, HarnessOptions, admit_and_sign_in, call, configure_github_app, harness_with,
-    seed_github_user, seed_sandbox, seed_task, setup_superadmin_creds,
+    seed_github_user, seed_sandbox, seed_task, seed_task_with_prompt, setup_superadmin_creds,
 };
 use yulius::wiring::git::GitAdapter;
 use yulius_app::error::AppResult;
@@ -565,6 +565,71 @@ async fn the_rule_is_checked_again_at_deletion() -> BoxResult<()> {
     let report = w.h.app.delete_leftovers(&items, "root").await;
     assert!(report.failed.is_empty(), "{report:?}");
     assert!(!w.at("sysroots/old").exists() && !old.join("ci").exists());
+    Ok(())
+}
+
+/// SPEC-413 ANR-002 (#1023): an old composer draft that a waiting task's request names is no
+/// leftover, and one a request names by the time it would be deleted stays; an unnamed one goes.
+#[tokio::test]
+async fn old_drafts_a_request_names_are_no_leftovers() -> BoxResult<()> {
+    let w = world().await?;
+    let live = w.sandbox("live").await?;
+    let drafts = live.join("attachments/drafts/u-alice");
+    for name in ["named.png", "later.png", "unnamed.png"] {
+        write(&drafts.join(name), name)?;
+    }
+    let prompt = format!("Next month: fix {}", drafts.join("named.png").display());
+    seed_task_with_prompt(
+        &w.h,
+        "t-wait",
+        "live",
+        "u-alice",
+        TaskStatus::Prepared,
+        None,
+        &prompt,
+    )
+    .await?;
+    w.h.clock
+        .0
+        .store(real_now_ms()? + 8 * 24 * 60 * 60 * 1000, Ordering::SeqCst);
+
+    let items: Vec<Leftover> = w
+        .scan()
+        .await?
+        .into_iter()
+        .filter(|i| i.kind == Kind::OldDraft)
+        .collect();
+    let listed: Vec<PathBuf> = items.iter().map(|i| i.path.clone()).collect();
+    assert_eq!(
+        listed,
+        [drafts.join("later.png"), drafts.join("unnamed.png")],
+        "a named draft is no leftover"
+    );
+    // A request names `later.png` between the scan and the deletion: checked again, it stays.
+    let prompt = format!("Also see {}", drafts.join("later.png").display());
+    seed_task_with_prompt(
+        &w.h,
+        "t-later",
+        "live",
+        "u-alice",
+        TaskStatus::Prepared,
+        None,
+        &prompt,
+    )
+    .await?;
+    let report = w.h.app.delete_leftovers(&items, "root").await;
+    assert!(report.failed.is_empty(), "{report:?}");
+    let report = w.h.app.run_leftovers_round().await.ok_or("round")?;
+    assert!(report.failed.is_empty(), "{report:?}");
+    assert_eq!(
+        std::fs::read_to_string(drafts.join("named.png"))?,
+        "named.png"
+    );
+    assert_eq!(
+        std::fs::read_to_string(drafts.join("later.png"))?,
+        "later.png"
+    );
+    assert!(!drafts.join("unnamed.png").exists(), "nothing names it");
     Ok(())
 }
 

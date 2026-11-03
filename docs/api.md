@@ -49,7 +49,9 @@ Other frontends (for example a desktop app, OPS-002) use bearer tokens from the 
 | GET | `/api/auth/github/start?next=/[&prompt=select_account]` | → 303 to GitHub; `prompt=select_account` makes GitHub show its account picker (sign in with another GitHub account) |
 | GET | `/api/auth/github/callback?code&state` | → 303 to `next`, sets cookie. Never answers with an error body: a refusal → 303 to `/signin?error=<reason>&next=…`, where `reason` is `not_admitted` (with `&login=<refused GitHub login>`), `disabled`, `expired` (unknown, used or expired state — e.g. a reload of the callback), `denied` (GitHub `error=access_denied`) or `failed` (GitHub or server error, logged) |
 | POST | `/api/auth/logout` | → 204 |
-| GET | `/api/me` | → `Me` |
+| GET | `/api/me` | → `Me`; a playground's guest's `user` has `"login": "<name> (guest)"` and `"guest": {"sandbox_id", "slug", "expires_at"}` (SPEC-410) |
+| GET | `/api/guest-invites/{code}` | no session; a playground's guest link (SPEC-410, ADR-0260) → `{"playground", "invited_by", "expires_at"}`; 410 `gone` for an unknown, revoked or expired link or a playground removed or moved to GitHub (one answer); counts against 10 looks and joins per client a minute (429) |
+| POST | `/api/guest-invites/{code}/join` | no session; `{"name": "1-60 characters, no control character"}` → 201 `Me` with `"slug"` of the playground + cookie: a new guest account (no GitHub link, no password) whose session ends with the link; 410 as above, 409 once the link let in 20 guests, 422 for the name, 429 as above. A guest then reaches only `/api/me`, sign-out, the event stream (their playground's events), the sandbox list, their playground and its tasks, sessions, shells, files, Git, browser, attachments, notes, previews, stages, CI, intake and workflows, and the task, session and shell routes; everything else is 403 "a guest reaches only the playground they were let into", and Configure and Administer in the playground are 403 (their agents' `automation_*` tools too). Once a guest joined, no run of the playground gets an agent secret and `secret_state_restore`/`secret_state_save` there are refused |
 
 ```json
 Me = {
@@ -121,6 +123,9 @@ true}` adds the tool's record as `structuredContent`. `initialize` answers
 | POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`); an operator's recovery path for an onboarding that cannot finish: the web UI offers no skip (ADR-0076) |
 | POST | `/api/sandboxes/{sid}/onboarding/approve` | write, browser session or `operate` token | Optional body `{notes?}`: the hand-over of the person's agent (≤ 24 KiB, 422 beyond; redacted) added to the onboarding task's request before it starts; 409 with notes once onboarding started (SPEC-256). Start onboarding → `Sandbox`; creates the onboarding task if it has none and starts it (`pending` → `preparing`); idempotent while `preparing` without notes; 403 for a `cli` token (`yulius onboard` only uploads, SPEC-051; an `operate` token is the person's own agent, SPEC-247); 409 when nothing awaits preparation or the task cannot start |
 | DELETE | `/api/sandboxes/{sid}` | admin | → 204; stops live and queued tasks, cancels its CI runs, ends its Superagents, Shells and browser, and retires its holder (stopped a minute later, SPEC-206); GitHub repository, clone and task records kept; disposable files go as [leftovers](operations.md#leftovers-what-is-kept-what-is-cleaned-and-when) |
+| GET | `/api/sandboxes/{sid}/guest-invites` | admin of the sandbox (not a guest) → `{"invites": [{"id", "created_by", "created_at", "expires_at", "guests": [{"name", "joined_at"}]}], "max_live": 5, "max_guests": 20}`: the live guest links, never their codes (SPEC-410) |
+| POST | `/api/sandboxes/{sid}/guest-invites` | admin of a playground, a browser session or an `operate` token, `{"days": 1|7|30}` (7 by default) → 201 `{"invite", "url": "<public_url>/join?code=<code>"}`, the URL shown only now; 409 for a sandbox that is not a playground or past 5 live links, 422 for other days, 403 for a `cli` token; audited `playground.invite.create` |
+| DELETE | `/api/sandboxes/{sid}/guest-invites/{id}` | admin → 204: revokes the live link and every session of its guests (their next request is 401, open sockets close at their next re-check) and stops their live and waiting tasks and terminals (the background sweep stops them for an expired link, and revokes and stops them for the live links of a playground moved to GitHub or removed); 404 for no such live link; audited `playground.invite.revoke` |
 | POST | `/api/sandboxes/{sid}/move-to-github` | admin of a live playground, who could import the repository (`admin`/`maintain` on GitHub; the superadmin: a repository the App can access) | `{"name"}` → `Sandbox` (now a GitHub sandbox, same id and slug). Pushes every branch and tag of the playground to the empty repository `<instance owner>/<name>` in one atomic push, points the clone's `origin` at it, records the repository and deletes the playground's bare `origin`; tasks, sessions and steps stay, access then mirrors GitHub. 409 without the GitHub App, for a GitHub sandbox, while a task is live or queued or a CI run of it is active, for a repository that is a sandbox or holds anything but this playground's refs (at or behind its commits); 403/422 as an import; a failure leaves the playground as it was (SPEC-176, ADR-0142) |
 | POST | `/api/sandboxes/{sid}/purge` | admin of a live playground; the superadmin for a removed one | → `{"state": "purged"\|"waiting", "waiting_for": ["1 agent run", …]}`; removes the playground as `DELETE` does (when still live) and asks for its code to be deleted for good: its `origin` and sandbox directory go once no agent run, shell, browser, CI run or other process of its sandbox is left (at once, else with the disk upkeep); task records, the export and the audit stay, and the quota no longer counts it; 409 for a GitHub sandbox (SPEC-171, ADR-0139) |
 
@@ -306,7 +311,7 @@ limited to the agent's sandbox.
 | POST | `/api/tasks/{tid}/held-prompts/{hid}` | write | `{"action":"parallel|after|send|skip_after|revert|dismiss","skip_step_ids?":[…],"confirm?":bool}` → `{"task":TaskSummary,"created":TaskSummary|null,"note"}`; one decision per held prompt (409 for a second). `send` needs a running task; `skip_after` marks the given open steps `skipped`; `revert` needs `"confirm":true` (422 otherwise) — see "Task intake" below |
 | POST | `/api/tasks/{tid}/queued-messages` | write | `{"text"}` → `{"request"}`; adds the message to the request of a task that has never started (`queued`, `chained`, `prepared` or `waiting_capacity`, no run, no provider session) under "**Added by {login} before the task started ({UTC time}):**", so the agent gets it when the task starts (SPEC-052 / SPEC-001 TSK-017, ADR-0035). 409 once the task has started (type into its session instead), or, rarely, when it changed between the check and the update (try again); 422 for an empty message or a request past 64 KiB; publishes `task.updated` |
 | GET | `/api/tasks/{tid}` | read | → `TaskDetail` |
-| GET | `/api/tasks/{tid}/prompt` | read | → `{"text","attachments":[{"name","image":bool,"available":bool}],"parts":[{"text"}\|{"attachment":n}]}`: the prompt the task started with, without its attached files (an inline `@'path'` mention or an `@path` line each), its attached files in order (SPEC-043), and `parts`, the prompt in order with each file where it sits (`n` indexes `attachments`; SPEC-124). `available` is false for a file that is gone (composer drafts are removed after a week) or not in the task's own attachment folders (a path mentioned by hand, another task's or user's file); at most 500 are checked |
+| GET | `/api/tasks/{tid}/prompt` | read | → `{"text","attachments":[{"name","image":bool,"available":bool}],"parts":[{"text"}\|{"attachment":n}]}`: the prompt the task started with, without its attached files (an inline `@'path'` mention or an `@path` line each), its attached files in order (SPEC-043), and `parts`, the prompt in order with each file where it sits (`n` indexes `attachments`; SPEC-124). `available` is false for a file that is gone (composer drafts no request names are removed after a week) or not in the task's own attachment folders (a path mentioned by hand, another task's or user's file); at most 500 are checked |
 | GET | `/api/tasks/{tid}/prompt/attachments/{n}` | read | → the bytes of attachment `n` (from 0) of that list, only when the prompt names it directly in one of the task's own attachment folders (its creator's composer drafts, `attachments/drafts/<user>/`, or the task's own attachments, dropped on its terminal or queued with a message, `attachments/tasks/<task>/`), reached without a link, a regular file within the upload limit and, on Linux, opened at its real path as `/proc/self/fd` says (404 otherwise, also out of range or not a number; 429 when none of the 16 read slots frees within 30 s; uploads have their own bound). The body is streamed in chunks of at most 64 KiB with its `Content-Length`, holding its read slot; left unread for 60 s it gives the slot back and closes the file, and the response breaks off at the client's next read (SPEC-080, ADR-0064). An image (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) is served with its image type, any other file as `application/octet-stream` with `Content-Disposition: attachment` (a non-ASCII name as `filename*`, RFC 6266, beside an ASCII `filename`); the content security policy includes `sandbox` (ADR-0033). `HEAD` answers the same without the body: the web UI asks it before the browser downloads another file from this link (ADR-0219) |
 | GET | `/api/tasks/{tid}/transcript?from=<line>&limit=N&seen=<bytes>&session=<id>` | read | → `TaskTranscript`: the task's latest Claude Code session as the people watching someone else's task read it (SPEC-179). Without `from` the tail: the last `limit` entries (≤ 500, default 200, about 2 MiB of text; `earlier` when entries were left out) and `doc_id`, the session's document; with `from` the entries from that line (`next` when the page is full). `end` is the line after the last complete line (a line still being written waits), `bytes` the transcript's size: a reader continues with `from=end&seen=bytes&session=session_id`, answered without reading the file while that session's size is unchanged. Redacted as session pages are. No session yet: `session_id` null, no entries |
 | POST | `/api/tasks/{tid}/pause` | write | → `TaskSummary`; its owner pauses a `running` task (SPEC-191, ADR-0154): its run is frozen, or held at its turn boundary when it cannot be (`pause.pending` until then); `pause: {"by":"person","user","since","pending"}`; pausing again changes nothing; 409 for any other state; audited `task.paused_by_person`; publishes `task.updated` |
@@ -1142,11 +1147,41 @@ resolves to nothing, the run gets the server without that variable or token.
   a base, when it exists. `POST /api/sandboxes/{sid}/files` `{"root?","path","kind":"file|dir"}`
   → 201 entry (409 when it exists). `DELETE /api/sandboxes/{sid}/files?root&path` → 204 (files,
   links and directory trees; never the folder itself). 409 before the repository is cloned.
-  The editor UI (Monaco) keeps each user's open files and unsaved text in their browser only.
+  The editor UI (Monaco) keeps each user's open files in their browser; their text is shared live
+  (SPEC-411, below).
+- The Editor's shared text (SPEC-411; write access to the sandbox, as reading files; a task
+  worktree's text is changed only by its owner, 403 for the others). One document per sandbox,
+  folder and path, held in the server's memory only. An operation is a JSON array over UTF-16
+  units: a positive number keeps that many, a negative one deletes that many, a string inserts
+  itself. `POST /api/sandboxes/{sid}/files/live` `{"root?","path","client?","text?","sha256?",
+  "saved?","eol?"}` → `{"session","revision","text","steps":null,"eol","sha256","saved",
+  "disk_sha256"}`: the file's document; when nobody edits it, a caller who may change the folder
+  starts it from `text` (the disk's version it was read from `sha256`, `saved` when unchanged since,
+  in `eol` `\n` or `\r\n`), anyone else from the disk (422 for a file that is not text, a bad
+  `sha256`, `eol` or `client`, text over 2 MiB; 429 when 256 documents hold unsaved text).
+  `GET …/files/live?root&path&session&since` → the same with `"text":null` and `"steps":[{"revision",
+  "client","op"}]` after `since`, or the whole text when the steps are no longer kept (256) or the
+  session differs; 409 when nobody edits the file. `POST …/files/live/edit` `{"root?","path",
+  "session","client","revision","op","save?"}` → `{"revision"}` (`save`: then save the text, as
+  a page that goes asks): the operation made at `revision`,
+  transformed past the steps since (the same edit sent again by that person's tab is answered with
+  its step, not applied twice); 409 for another or an ended session or a revision older than the
+  kept steps (256, costing at most 1 Mi inserted units plus 16 per part), 422 for a count above 2 Mi,
+  more than 10 000 parts, an operation that does not fit, cuts a character outside the BMP, inserts
+  another line ending than the text's or makes the text larger than 2 MiB, 429 past 30 a second per
+  person and file. Steps carry `user_id` and `client`. `POST …/files/live/save`
+  `{"root?","path","session","force?"}` → `{"session","revision","sha256","saved","disk_sha256"}`:
+  writes the text with the caller's access and the document's `sha256` as base (nothing when it is
+  saved); a disk that moved on sets `disk_sha256` (`""`: deleted) and writes nothing unless `force`
+  (Keep mine). `POST …/files/live/disk` (same body) takes a newer version on disk: as a step when
+  the text is saved or with `force` (Take disk version, which needs write), else it sets
+  `disk_sha256`; 422 when the file is no longer text. A saved document untouched for 10 minutes is
+  dropped, an unsaved one after 24 hours.
   `PUT /api/sandboxes/{sid}/files/presence` (write) `{"root?","path","sha256?","selection":
-  {"anchor","head"}|null,"hello"?,"client"?,"seq"?}` → 204 (SPEC-127): the caller's selection in
-  UTF-16 offsets of the file's text as saved at `sha256` (64 lowercase hex digits, empty when
-  unknown), or `null` when they left the file; `hello`, `client` and `seq` as for notepad presence. Relayed as
+  {"anchor","head"}|null,"hello"?,"client"?,"seq"?,"session"?,"revision"?}` → 204 (SPEC-127): the
+  caller's selection in UTF-16 offsets of the file's text as saved at `sha256` (64 lowercase hex
+  digits, empty when unknown) or, with `session` (1 to 32 letters and digits) and `revision`, of
+  the live document's text at that revision (SPEC-411), or `null` when they left the file; `hello`, `client` and `seq` as for notepad presence. Relayed as
   `file.presence` to the sandbox's writers only, stored nowhere. The path is checked like the
   other file requests (403 for `.git`, 422 for an empty or escaping path, a folder or a path over
   4096 bytes); a selection needs an existing regular file (404; leaving a deleted one is fine);
@@ -1180,10 +1215,11 @@ resolves to nothing, the run gets the server without that variable or token.
     dot or dash), so the path needs no quoting; an existing name gets `-2`, `-3`, … before its
     extension. At most 500 per task or shell (409). A deleted task's (`DELETE /api/tasks/{tid}`) stay while
     another task's request or an automation's prompt names them, and otherwise wait 7 days in
-    `…/attachments/trash/` (SPEC-396, `attachments_trash`); a shell's go when the shell ends. `POST /api/sandboxes/{sid}/attachments?name` (work
+    `…/attachments/trash/` (SPEC-396, `attachments_trash`); a shell's go when the shell ends, unless
+    a task's request or an automation's prompt names the shell's folder (SPEC-413). `POST /api/sandboxes/{sid}/attachments?name` (work
     access) takes a file dropped on the new-task composer the same way: it waits in the caller's
     drafts folder of the sandbox until the prompt that names its path starts a task; drafts older
-    than a week are removed.
+    than a week that no task's request or automation's prompt names are removed (SPEC-413).
 - Terminals (sandbox shells; UI-015, UI-016): each is private to the user who opened it and to its
   sandbox. `Shell = {"id","name","task_id|null","folder","created_at"}`; `folder` is the absolute
   path it started in (the repository or the task's worktree) as its processes see it: the web
@@ -1594,8 +1630,12 @@ notepad was saved; a sandbox note's event reaches only that sandbox's viewers, a
 only its owner), `{"type":"note.presence","scope":"team|sandbox","sandbox_id","user_id","client","name",
 "revision","selection":{"anchor","head"}|null,"hello","seq"}` (someone's selection in a shared notepad, to
 the people who may read it; SPEC-112), `{"type":"file.presence","sandbox_id","root","path","user_id",
-"client","name","sha256","selection":{"anchor","head"}|null,"hello","seq"}` (someone's selection in a file
-open in the editor, only to people with write access to that sandbox; SPEC-127),
+"client","name","sha256","selection":{"anchor","head"}|null,"hello","seq","session"?,"revision"?}` (someone's
+selection in a file open in the editor, only to people with write access to that sandbox; SPEC-127),
+`{"type":"file.live","sandbox_id","root","path","session","revision","user_id","client","op":[…]|null,
+"sha256","saved","disk_sha256","eol"}` (a step of a file's shared text, or its saved state, only to
+people with write access to that sandbox; a step inserting more than 64 KiB comes with `op: null` and
+its new `revision`, to be caught up; SPEC-411),
 `{"type":"pulls.updated","sandbox_id"}` (the sandbox's pull requests may have
 changed: a delivery stage moved or a Yulius CI run was queued, started or ended; clients watching
 it read `GET /api/sandboxes/{sid}/git` again; SPEC-108), `{"type":"secrets.updated","sandbox_id"|null}`

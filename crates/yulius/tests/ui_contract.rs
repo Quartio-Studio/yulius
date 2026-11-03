@@ -36,6 +36,9 @@ const PUBLIC_PATHS: &[&str] = &[
     "/api/auth/github/callback",
     "/api/device/start",
     "/api/device/poll",
+    // A playground's guest link (SPEC-410): the link is the credential.
+    "/api/guest-invites/{}",
+    "/api/guest-invites/{}/join",
 ];
 
 /// Mock-only endpoints: stand-ins for flows the mock cannot run (the GitHub OAuth redirect).

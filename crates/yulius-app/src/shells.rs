@@ -485,6 +485,19 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// The live shells and Cockpits of `sandbox` that one of `users` started (a playground's
+    /// guests, whose work ends with their link, SPEC-410).
+    pub(crate) fn shells_created_by(
+        &self,
+        sandbox: &SandboxId,
+        users: &[UserId],
+    ) -> Vec<Arc<ShellRuntime>> {
+        self.sandbox_shells(sandbox)
+            .into_iter()
+            .filter(|shell| users.contains(&shell.creator))
+            .collect()
+    }
+
     /// The caller's live shells in `sandbox`, oldest first.
     fn own_shells(&self, user: &UserId, sandbox: &SandboxId) -> Vec<Arc<ShellRuntime>> {
         let mut own: Vec<Arc<ShellRuntime>> = self
@@ -1024,7 +1037,8 @@ impl App {
             map.remove(&runtime.id);
         }
         let _ = std::fs::remove_dir_all(&runtime.run_dir);
-        self.remove_shell_attachments(&runtime.sandbox, &runtime.id);
+        self.remove_shell_attachments(&runtime.sandbox, &runtime.id)
+            .await;
         tracing::info!(shell = %runtime.id, sandbox = %runtime.sandbox, code = ?exit.and_then(|e| e.code), "sandbox shell ended");
     }
 
@@ -1470,7 +1484,7 @@ impl App {
     /// requests. The reaper stops when the handle is dropped or the app is gone.
     pub async fn start_workspace_services(self: &Arc<Self>) -> WorkspaceReaper {
         let (adopted, removed) = self.adopt_shells().await;
-        self.prune_shell_attachments();
+        self.prune_shell_attachments().await;
         self.purge_attachment_trash().await;
         if adopted + removed > 0 {
             tracing::info!(adopted, removed, "shells of the previous server process");

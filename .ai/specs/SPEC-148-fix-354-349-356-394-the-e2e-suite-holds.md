@@ -147,6 +147,11 @@ runner's own reads were starved (Evidence). No product defect was found behind t
 them needs a longer budget for first loads, which this task ruled out; #354 stays open for that
 decision.
 
+Follow-up (2026-11-03): the person decided #354 for option (a), one named, longer wait for first
+loads only. [SPEC-412](SPEC-412-e2e-a-named-longer-wait-for-first-loads.md) adds it
+(`FIRST_LOAD_MS`, `firstShown`, ADR-0262); every other wait keeps its budget and `retries: 0`
+stays.
+
 ## Test plan
 
 - `python3 -m unittest discover -s scripts -p 'test_*.py'` (part of `scripts/dev check`).

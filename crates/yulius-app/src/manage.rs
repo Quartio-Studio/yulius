@@ -111,6 +111,32 @@ impl App {
         Ok(user)
     }
 
+    /// [`App::manage_authority`] for a tool that configures the project (its automations): the
+    /// person also needs `Action::Configure`, which a playground's guest never has (SPEC-410
+    /// GST-003), as on the remote MCP and over HTTP.
+    ///
+    /// # Errors
+    /// As [`App::manage_authority`]; `Forbidden` for a guest.
+    pub(crate) async fn configure_authority(
+        &self,
+        caller: &ProjectCaller,
+    ) -> AppResult<UserRecord> {
+        let user = self.manage_authority(caller).await?;
+        self.require(&user, &caller.sandbox, Action::Configure)
+            .await?;
+        Ok(user)
+    }
+
+    /// [`App::manage_context`] for a configuring tool ([`App::configure_authority`]).
+    pub(crate) async fn configure_context(&self, caller: &ProjectCaller) -> AppResult<AuthContext> {
+        Ok(AuthContext {
+            user: self.configure_authority(caller).await?,
+            csrf_token: None,
+            session_hash: None,
+            token: None,
+        })
+    }
+
     /// The project's task an `after_task` argument names by its number (`task_create`,
     /// `automation_create`, `automation_update`).
     ///
@@ -402,7 +428,7 @@ impl App {
         caller: &ProjectCaller,
         args: &Value,
     ) -> AppResult<Value> {
-        let ctx = self.manage_context(caller).await?;
+        let ctx = self.configure_context(caller).await?;
         let record = self.agent_automation(caller, args).await?;
         self.delete_automation_as(&ctx, &record.id, &caller.actor, Some(&caller.detail))
             .await?;
@@ -419,7 +445,7 @@ impl App {
         caller: &ProjectCaller,
         args: &Value,
     ) -> AppResult<Value> {
-        let ctx = self.manage_context(caller).await?;
+        let ctx = self.configure_context(caller).await?;
         let record = self.agent_automation(caller, args).await?;
         let run = self
             .run_automation_now_as(&ctx, &record.id, None, &caller.actor, Some(&caller.detail))
@@ -451,7 +477,7 @@ impl App {
                 known.join(", ")
             )));
         }
-        let user = self.manage_authority(caller).await?;
+        let user = self.configure_authority(caller).await?;
         let (automation, created) = self
             .enable_template_as(
                 &caller.sandbox,

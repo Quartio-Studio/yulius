@@ -40,7 +40,8 @@
 //!   folder. Files dropped on the new-task composer wait in `…/attachments/drafts/<user>/` and are
 //!   removed after a week; a deleted task's folder stays while another task's request names it and
 //!   otherwise waits a week in the trash (crate::attachment_trash, SPEC-396), a shell's goes when the shell ends and
-//!   at start-up for shells that are gone;
+//!   at start-up for shells that are gone. A draft or a shell's folder that a task's request or
+//!   an automation's prompt names stays (SPEC-413, ADR-0259);
 //! - every upload is audited (`file.uploaded`, `attachment.uploaded`).
 
 use std::ffi::OsStr;
@@ -533,6 +534,24 @@ pub(crate) fn count_entries(folder: &OwnedFd, limit: usize) -> AppResult<usize> 
         .count())
 }
 
+/// Whether `stat` is a regular file older than [`DRAFT_MAX_AGE`] (a draft the prune may take).
+fn old_draft(kind: SFlag, stat: &nix::sys::stat::FileStat) -> bool {
+    let modified =
+        std::time::UNIX_EPOCH + Duration::from_secs(u64::try_from(stat.st_mtime).unwrap_or(0));
+    kind == SFlag::S_IFREG && modified.elapsed().is_ok_and(|age| age > DRAFT_MAX_AGE)
+}
+
+/// The entries of a drafts folder other than drafts older than a week, at most `limit`, among the
+/// first [`MAX_PRUNED_ENTRIES`] listed (past that the count is partial). Blocks.
+fn count_waiting_drafts(folder: &OwnedFd, limit: usize) -> AppResult<usize> {
+    Ok(names_in(folder, MAX_PRUNED_ENTRIES)
+        .map_err(errno_error)?
+        .iter()
+        .filter(|name| !kind_at(folder, name).is_ok_and(|(kind, stat)| old_draft(kind, &stat)))
+        .take(limit)
+        .count())
+}
+
 /// Makes a rename or link durable (best effort: not every file system syncs directories).
 fn sync_dir(folder: &OwnedFd) {
     let _ = nix::unistd::fsync(folder);
@@ -566,10 +585,7 @@ impl Owner<'_> {
 
 impl App {
     fn upload_actor(ctx: &AuthContext) -> String {
-        ctx.user
-            .github_login
-            .clone()
-            .unwrap_or_else(|| "superadmin".into())
+        ctx.user.label()
     }
 
     /// Refuses a declared length above the limit, or one that would bring the data disk to its
@@ -780,7 +796,8 @@ impl App {
 
     /// Starts an attachment for the new-task composer of `sandbox` (write access to it): the
     /// file waits in the caller's drafts folder, outside every worktree, until the prompt that
-    /// names its path starts a task. Drafts older than a week are removed first.
+    /// names its path starts a task. Drafts older than a week that no request names are removed
+    /// first (SPEC-413).
     ///
     /// # Errors
     /// As [`App::begin_task_attachment`], with `NotFound`/`Forbidden` for the sandbox.
@@ -802,7 +819,7 @@ impl App {
             return Err(AppError::Forbidden("this account is disabled".into()));
         }
         let user = ctx.user.id.as_str();
-        self.prune_old_drafts(&sandbox_id, user);
+        self.prune_old_drafts(&sandbox_id, user).await;
         self.begin_attachment(
             Self::upload_actor(ctx),
             &sandbox_id,
@@ -813,8 +830,10 @@ impl App {
         .await
     }
 
-    /// Removes the files of a user's drafts folder that are older than [`DRAFT_MAX_AGE`].
-    fn prune_old_drafts(&self, sandbox: &SandboxId, user: &str) {
+    /// Removes the files of a user's drafts folder that are older than [`DRAFT_MAX_AGE`] and that
+    /// no task's request or automation's prompt names (SPEC-413 ANR-002); keeps them all when
+    /// those cannot be read.
+    async fn prune_old_drafts(&self, sandbox: &SandboxId, user: &str) {
         let Ok(dir) = std::fs::canonicalize(self.sandbox_dir(sandbox)) else {
             return;
         };
@@ -832,14 +851,26 @@ impl App {
         let Ok(entries) = names_in(&folder, MAX_PRUNED_ENTRIES) else {
             return;
         };
-        for name in entries {
-            let Ok((kind, stat)) = kind_at(&folder, &name) else {
-                continue;
-            };
-            let modified = std::time::UNIX_EPOCH
-                + Duration::from_secs(u64::try_from(stat.st_mtime).unwrap_or(0));
-            let old = modified.elapsed().is_ok_and(|age| age > DRAFT_MAX_AGE);
-            if old && kind == SFlag::S_IFREG {
+        let old: Vec<_> = entries
+            .into_iter()
+            .filter(|name| kind_at(&folder, name).is_ok_and(|(kind, stat)| old_draft(kind, &stat)))
+            .collect();
+        if old.is_empty() {
+            return;
+        }
+        let namers = match self.namers(sandbox).await {
+            Ok(namers) => namers,
+            Err(err) => {
+                tracing::warn!(%sandbox, error = %err, "old drafts kept: tasks unreadable");
+                return;
+            }
+        };
+        for name in old {
+            // A name that is not UTF-8 cannot be in a request.
+            let named = name.to_str().is_some_and(|name| {
+                namers.name(&format!("{ATTACHMENTS_DIR}/drafts/{user}/{name}"))
+            });
+            if !named {
                 let _ = unlinkat(&folder, name.as_os_str(), UnlinkatFlags::NoRemoveDir);
             }
         }
@@ -910,10 +941,16 @@ impl App {
         let dir = ensure_plain_dirs(&sandbox_dir, &owner.parts())?;
         // A name that replaces a regular file adds none, so a full folder still takes it.
         let replacing = replaces && kind_in(&dir.1, &name)? == Some(SFlag::S_IFREG);
-        let count = count_entries(&dir.1, MAX_ATTACHMENTS_PER_FOLDER + 1)?;
+        let count = match owner {
+            // Drafts older than a week stay only while a request names them (SPEC-413): they are
+            // tasks' files now, so the bound counts the ones still waiting for a task.
+            Owner::Draft(_) => count_waiting_drafts(&dir.1, MAX_ATTACHMENTS_PER_FOLDER + 1)?,
+            _ => count_entries(&dir.1, MAX_ATTACHMENTS_PER_FOLDER + 1)?,
+        };
         if !replacing && count >= MAX_ATTACHMENTS_PER_FOLDER {
             return Err(AppError::Conflict(format!(
-                "at most {MAX_ATTACHMENTS_PER_FOLDER} attachments are kept per terminal or draft"
+                "at most {MAX_ATTACHMENTS_PER_FOLDER} attachments are kept per terminal, or drafts \
+                 waiting for a task"
             )));
         }
         let shown_dir = owner
@@ -1027,14 +1064,48 @@ impl App {
         }
     }
 
-    /// Removes an ended shell's attachments.
-    pub(crate) fn remove_shell_attachments(&self, sandbox: &SandboxId, shell: &str) {
+    /// Removes an ended shell's attachments, unless a task's request or an automation's prompt
+    /// names its folder (SPEC-413 ANR-001): then, or when those cannot be read, they stay.
+    pub(crate) async fn remove_shell_attachments(&self, sandbox: &SandboxId, shell: &str) {
+        // Most shells never got a file: nothing to remove, nothing to read. Only a gate: the
+        // removal itself goes through handles.
+        let folder = [ATTACHMENTS_DIR, "shells", shell]
+            .iter()
+            .fold(self.sandbox_dir(sandbox), |path, part| path.join(part));
+        if std::fs::symlink_metadata(&folder)
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        {
+            return;
+        }
+        let namers = match self.namers(sandbox).await {
+            Ok(namers) => namers,
+            Err(err) => {
+                tracing::warn!(%sandbox, error = %err, "shell attachments kept: tasks unreadable");
+                return;
+            }
+        };
+        self.remove_unnamed_shell_attachments(sandbox, shell, &namers);
+    }
+
+    /// Removes `shell`'s attachments unless `namers` name its folder; whether it removed them.
+    fn remove_unnamed_shell_attachments(
+        &self,
+        sandbox: &SandboxId,
+        shell: &str,
+        namers: &crate::attachment_trash::Namers,
+    ) -> bool {
+        if namers.name(&format!("{ATTACHMENTS_DIR}/shells/{shell}/")) {
+            tracing::info!(%sandbox, shell, "shell attachments kept: a request names them");
+            return false;
+        }
         self.remove_attachments(sandbox, &Owner::Shell(shell));
+        true
     }
 
     /// Removes the attachment folders of shells that no longer run (they ended while no server
-    /// was there to see it). Returns how many were removed. Bounded by [`MAX_PRUNED_ENTRIES`].
-    pub(crate) fn prune_shell_attachments(&self) -> usize {
+    /// was there to see it) and that nothing names (SPEC-413 ANR-001). Returns how many were
+    /// removed. Bounded by [`MAX_PRUNED_ENTRIES`].
+    pub(crate) async fn prune_shell_attachments(&self) -> usize {
         let sandboxes = self.config.data_dir.join("sandboxes");
         let Ok(entries) = std::fs::read_dir(&sandboxes) else {
             return 0;
@@ -1061,12 +1132,23 @@ impl App {
             let Ok(shells) = names_in(&folder, MAX_PRUNED_ENTRIES) else {
                 continue;
             };
-            for shell in shells {
-                let Some(name) = shell.to_str().map(str::to_owned) else {
+            let gone: Vec<String> = shells
+                .into_iter()
+                .filter_map(|shell| shell.into_string().ok())
+                .filter(|name| !live.contains(name))
+                .collect();
+            if gone.is_empty() {
+                continue;
+            }
+            let namers = match self.namers(&id).await {
+                Ok(namers) => namers,
+                Err(err) => {
+                    tracing::warn!(sandbox = %id, error = %err, "shell attachments kept: tasks unreadable");
                     continue;
-                };
-                if !live.contains(&name) {
-                    self.remove_shell_attachments(&id, &name);
+                }
+            };
+            for name in gone {
+                if self.remove_unnamed_shell_attachments(&id, &name, &namers) {
                     removed += 1;
                 }
             }

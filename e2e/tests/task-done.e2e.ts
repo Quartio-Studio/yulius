@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, touchTask } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -60,7 +60,7 @@ const touchStudioTask = (browser: Browser, number: number, changes: Record<strin
 
 test('an idle agent with a background shell running is Working, not your turn', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
 
   // The turn ended while the agent's build runs in the background: it wakes by itself.
   await touchStudioTask(browser, 12, { activity: 'waiting', background_shells: 1 });

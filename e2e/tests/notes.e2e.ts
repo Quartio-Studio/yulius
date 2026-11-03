@@ -175,15 +175,32 @@ const confirmLeaving = (browser: Browser) => browser.evaluate(() => { (window as
 const setMock = (browser: Browser, key: 'failNoteSaves' | 'failNoteLoads' | 'loseNoteResponse', value: boolean) =>
   browser.evaluate(([k, v]) => { ((window as unknown as MockNotes).__yuliusMock as Record<string, unknown>)[k as string] = v; }, [key, value] as const);
 
+/** How many times the notepads have read their notes from the mock server. */
+const noteLoads = (browser: Browser) => browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.noteLoads ?? 0);
+
+/**
+ * Loads the sandbox notepad again at once, as coming back to its tab does. After the mock fails
+ * loads, the pad's own next try waits a pause that doubles with each failure (1, 2, 4… s, up to
+ * 30 s): a starved run that took long to turn the failure off waits past 5 s for it (#510).
+ */
+async function loadAgain(screen: Screen): Promise<void> {
+  await screen.getByRole('tab', 'Team').click();
+  await screen.getByRole('tab', 'This sandbox').click();
+}
+
 test('a notepad is read-only until it is loaded; a failed load says so and retries', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   await editAs(browser, 'sandbox:sb_studio', 'already here');
   await setMock(browser, 'failNoteLoads', true);
+  const before = await noteLoads(browser);
   await openNotes(screen);
   const notes = screen.getByRole('textbox', 'Sandbox notes');
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Couldn’t load the notes, retrying…');
   await expect(notes).toHaveAttribute('readonly', '');
+  // It tries again by itself: the opening's load and the Sandbox tab's, then at least one retry.
+  await expect.poll(() => noteLoads(browser)).toBeGreaterThan(before + 2);
   await setMock(browser, 'failNoteLoads', false);
+  await loadAgain(screen);
   await expect(notes).toHaveValue('already here');
   await expect(notes).not.toHaveAttribute('readonly', '');
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
@@ -252,16 +269,22 @@ test('a save made while a refused one is looked into is not a conflict with ones
   await openNotes(screen);
   const notes = screen.getByRole('textbox', 'Sandbox notes');
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
-  await setMock(browser, 'loseNoteResponse', true);
-  await notes.fill('stored, answer lost');
-  await expect(screen.getByRole('status', 'Save state')).toHaveText('Not saved, retrying…');
-  await setMock(browser, 'loseNoteResponse', false);
+  // Both notepads' opening loads have been answered (the Team pad's too), so the hold below holds
+  // only a look after a refusal.
+  await expect.poll(() => noteLoads(browser)).toBeGreaterThanOrEqual(2);
+  // The look at the server after a refusal is held from here, whichever save is refused first: the
+  // blur below, or the pad's own retry of the lost save 1 s after it, which a starved run is slower
+  // than (#510); unheld, that retry's look settled the lost save before the blur.
   const loads = await browser.evaluate(() => {
     const mockDb = (window as unknown as { __yuliusMock: { holdNoteLoad: Promise<void> | null; noteLoads: number } }).__yuliusMock;
     mockDb.holdNoteLoad = new Promise((resolve) => { (window as unknown as { releaseLoads: () => void }).releaseLoads = resolve; });
     return mockDb.noteLoads;
   });
-  // Saved at once (a blur): refused, and the look at the server is held.
+  await setMock(browser, 'loseNoteResponse', true);
+  await notes.fill('stored, answer lost');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Not saved, retrying…');
+  await setMock(browser, 'loseNoteResponse', false);
+  // Saved at once (a blur), or retried: refused, and the look at the server is held.
   const blur = () => browser.evaluate(() => (document.querySelector('.notes-pane:not([hidden]) textarea') as HTMLElement).dispatchEvent(new Event('blur')));
   await browser.evaluate(() => typeInto('stored, answer lost, and more'));
   await blur();
@@ -324,7 +347,10 @@ test("a failed reload after a teammate's edit backs off", async ({ app, browser,
   await browser.evaluate(() => new Promise((resolve) => setTimeout(resolve, 2500)));
   const tries = await browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.noteLoads);
   expect(tries - before).toBeLessThanOrEqual(3);
+  // It does try again by itself: the load the edit's event asked for, then its first retry 1 s later.
+  await expect.poll(() => noteLoads(browser)).toBeGreaterThanOrEqual(before + 2);
   await setMock(browser, 'failNoteLoads', false);
+  await loadAgain(screen);
   await expect(screen.getByRole('textbox', 'Sandbox notes')).toHaveValue('from alice');
 });
 
@@ -396,11 +422,8 @@ test('text kept over a reload survives hides and tab switches while the notes ca
   await screen.getByRole('tab', 'Team').click();
   await screen.getByRole('tab', 'This sandbox').click();
   await setMock(browser, 'failNoteLoads', false);
-  // Until a load succeeds the notepad is empty; each failed load doubles the pause before the next
-  // (up to 30 s), so on a busy machine the next retry can come long after 5 s (#349). Coming back
-  // to the tab loads it at once.
-  await screen.getByRole('tab', 'Team').click();
-  await screen.getByRole('tab', 'This sandbox').click();
+  // Until a load succeeds the notepad is empty (#349).
+  await loadAgain(screen);
   await expect(screen.getByRole('textbox', 'Sandbox notes')).toHaveValue('written during a deploy');
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
   expect(await stored(browser, 'sandbox:sb_studio')).toBe('written during a deploy');
@@ -411,12 +434,14 @@ test('an undo after a lost answer is not Saved until the server is checked', asy
   await openNotes(screen);
   const notes = screen.getByRole('textbox', 'Sandbox notes');
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  // Loads fail from here: the pad's own retry of the lost save (refused, then a look at the server)
+  // cannot settle it before the undo below, however slow the run (#510).
+  await setMock(browser, 'failNoteLoads', true);
   await setMock(browser, 'loseNoteResponse', true);
   await notes.fill('typed by mistake');
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Not saved, retrying…');
   await setMock(browser, 'loseNoteResponse', false);
-  await setMock(browser, 'failNoteLoads', true);
-  const loads = await browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.noteLoads);
+  const loads = await noteLoads(browser);
   await notes.fill('');
   // Past the save delay: the undo looked at the server, and that look failed.
   await expect.poll(() => browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.noteLoads)).toBeGreaterThan(loads);
@@ -427,6 +452,7 @@ test('an undo after a lost answer is not Saved until the server is checked', asy
     return event.defaultPrevented;
   })).toBe(true);
   await setMock(browser, 'failNoteLoads', false);
+  await loadAgain(screen);
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
   await expect.poll(() => stored(browser, 'sandbox:sb_studio')).toBe('');
 });
