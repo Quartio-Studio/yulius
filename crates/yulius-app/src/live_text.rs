@@ -48,10 +48,10 @@ impl Op {
         if n == 0 {
             return self;
         }
-        self.base += n;
-        self.target += n;
+        self.base = self.base.saturating_add(n);
+        self.target = self.target.saturating_add(n);
         if let Some(Part::Retain(last)) = self.parts.last_mut() {
-            *last += n;
+            *last = last.saturating_add(n);
         } else {
             self.parts.push(Part::Retain(n));
         }
@@ -62,7 +62,7 @@ impl Op {
         if text.is_empty() {
             return self;
         }
-        self.target += text.len();
+        self.target = self.target.saturating_add(text.len());
         let len = self.parts.len();
         match self.parts.as_mut_slice() {
             [.., Part::Insert(last)] => last.extend_from_slice(text),
@@ -78,9 +78,9 @@ impl Op {
         if n == 0 {
             return self;
         }
-        self.base += n;
+        self.base = self.base.saturating_add(n);
         if let Some(Part::Delete(last)) = self.parts.last_mut() {
-            *last += n;
+            *last = last.saturating_add(n);
         } else {
             self.parts.push(Part::Delete(n));
         }
@@ -117,16 +117,38 @@ impl Op {
             .sum()
     }
 
-    /// Reads an operation from the wire; `None` for a count beyond any text.
-    pub(crate) fn from_wire(parts: &[OpPart]) -> Option<Self> {
+    /// What keeping it costs: the units it inserts and one per part.
+    pub(crate) fn cost(&self) -> usize {
+        self.inserted() + self.parts.len()
+    }
+
+    /// Whether every insert uses `eol` (`\n` or `\r\n`) for its line breaks, as the text does.
+    pub(crate) fn fits_eol(&self, eol: &str) -> bool {
+        let crlf = eol == "\r\n";
+        self.parts.iter().all(|part| match part {
+            Part::Insert(text) => text.iter().enumerate().all(|(at, &unit)| match unit {
+                0x0d => crlf && text.get(at + 1) == Some(&0x0a),
+                0x0a => !crlf || (at > 0 && text[at - 1] == 0x0d),
+                _ => true,
+            }),
+            _ => true,
+        })
+    }
+
+    /// Reads an operation from the wire; `None` for a count above `max` (no text is longer).
+    pub(crate) fn from_wire(parts: &[OpPart], max: usize) -> Option<Self> {
         let mut op = Self::default();
         for part in parts {
             match part {
                 OpPart::Count(n) if *n >= 0 => {
-                    op.retain(usize::try_from(*n).ok()?);
+                    op.retain(usize::try_from(*n).ok().filter(|n| *n <= max)?);
                 }
                 OpPart::Count(n) => {
-                    op.delete(usize::try_from(n.unsigned_abs()).ok()?);
+                    op.delete(
+                        usize::try_from(n.unsigned_abs())
+                            .ok()
+                            .filter(|n| *n <= max)?,
+                    );
                 }
                 OpPart::Insert(text) => {
                     op.insert(&text.encode_utf16().collect::<Vec<_>>());
@@ -168,7 +190,7 @@ impl Op {
         for part in &self.parts {
             match part {
                 Part::Retain(n) => {
-                    out.extend_from_slice(&text[at..at + n]);
+                    out.extend_from_slice(text.get(at..at + n).ok_or(OpError::Misfit)?);
                     at += n;
                 }
                 Part::Insert(inserted) => {
@@ -392,7 +414,7 @@ mod tests {
             OpPart::Count(1),
             OpPart::Count(1),
         ];
-        let op = Op::from_wire(&wire).unwrap_or_default();
+        let op = Op::from_wire(&wire, 100).unwrap_or_default();
         assert_eq!(op.base_len(), 5);
         assert_eq!(op.target_len(), 7);
         assert_eq!(op.inserted(), 3);
@@ -406,7 +428,14 @@ mod tests {
             ]
         );
         assert!(!op.is_noop());
-        assert!(Op::from_wire(&[OpPart::Count(3)]).is_some_and(|op| op.is_noop()));
-        assert!(Op::from_wire(&[OpPart::Count(i64::MIN)]).is_some());
+        assert!(Op::from_wire(&[OpPart::Count(3)], 100).is_some_and(|op| op.is_noop()));
+        assert!(Op::from_wire(&[OpPart::Count(i64::MIN)], 100).is_none());
+        assert!(Op::from_wire(&[OpPart::Count(101)], 100).is_none());
+        let mut crlf = Op::default();
+        crlf.insert(&units("a\r\nb"));
+        assert!(crlf.fits_eol("\r\n") && !crlf.fits_eol("\n"));
+        let mut lf = Op::default();
+        lf.insert(&units("a\nb"));
+        assert!(lf.fits_eol("\n") && !lf.fits_eol("\r\n"));
     }
 }

@@ -14,11 +14,10 @@
 //!   [`SAVED_IDLE_MS`] untouched, an unsaved one after [`UNSAVED_IDLE_MS`].
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use yulius_contracts::api::files::{
-    LiveApplied, LiveDoc, LiveEdit, LiveFileAction, LiveJoin, LiveState, LiveStep, OpPart,
-    WriteFile,
+    LiveApplied, LiveDoc, LiveEdit, LiveFileAction, LiveJoin, LiveState, LiveStep, WriteFile,
 };
 use yulius_contracts::events::UiEvent;
 use yulius_domain::ids::SandboxId;
@@ -33,8 +32,14 @@ use crate::live_text::{Op, OpError};
 pub const MAX_DOCS: usize = 256;
 /// Steps kept per document for catching up and transforming late edits.
 pub const MAX_STEPS: usize = 256;
-/// Units the kept steps of one document may insert in all (a paste is kept while it fits).
+/// What the kept steps of one document may cost in all: units inserted plus parts (a paste is
+/// kept while it fits).
 const MAX_KEPT_UNITS: usize = 1024 * 1024;
+/// Parts one operation may have (a multi-cursor edit has a few per cursor).
+pub const MAX_PARTS: usize = 10_000;
+/// Units a step may insert and still be published with its operation; a larger one is announced
+/// without it, and the tabs catch it up (the bus is shared by every stream).
+const MAX_PUBLISHED_UNITS: usize = 64 * 1024;
 /// A saved document untouched this long is dropped: the disk has its text.
 pub const SAVED_IDLE_MS: i64 = 10 * 60 * 1000;
 /// An unsaved document (a conflict nobody resolved) untouched this long is dropped.
@@ -51,10 +56,24 @@ pub(crate) fn is_session_id(session: &str) -> bool {
         && session.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
-/// The documents.
+/// The documents, each behind its own lock: one document's work never waits for another's.
 #[derive(Default)]
 pub(crate) struct LiveDocs {
-    docs: Mutex<HashMap<String, Doc>>,
+    docs: Mutex<HashMap<String, Arc<Mutex<Doc>>>>,
+}
+
+/// A lock whose holder panicked still guards consistent data here (every change is made whole
+/// before anything can panic): taken as it is rather than failing every later request.
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// One applied operation and who sent it.
+struct Step {
+    revision: u64,
+    user: String,
+    client: String,
+    op: Op,
 }
 
 struct Doc {
@@ -62,8 +81,8 @@ struct Doc {
     text: Vec<u16>,
     eol: String,
     revision: u64,
-    /// `(revision made, client, operation)`, oldest first.
-    steps: VecDeque<(u64, String, Op)>,
+    /// Oldest first.
+    steps: VecDeque<Step>,
     kept_units: usize,
     sha256: String,
     /// The revision whose text is the disk's at `sha256`.
@@ -106,8 +125,15 @@ impl Doc {
         }
     }
 
-    /// Applies `op` (at the current revision) as `client`'s step.
-    fn step(&mut self, client: &str, op: Op, text: Vec<u16>) {
+    /// The revision the oldest kept step was made at (the oldest one an edit may be made at).
+    fn oldest(&self) -> u64 {
+        self.steps
+            .front()
+            .map_or(self.revision, |step| step.revision - 1)
+    }
+
+    /// Applies `op` (at the current revision) as the step of `user`'s tab `client`.
+    fn step(&mut self, user: &str, client: &str, op: Op, text: Vec<u16>) {
         // A step that changes nothing (both deleted the same text) leaves saved text saved.
         let still_saved = op.is_noop() && self.saved();
         self.text = text;
@@ -115,13 +141,18 @@ impl Doc {
         if still_saved {
             self.saved_revision = Some(self.revision);
         }
-        self.kept_units += op.inserted();
-        self.steps.push_back((self.revision, client.to_owned(), op));
+        self.kept_units += op.cost();
+        self.steps.push_back(Step {
+            revision: self.revision,
+            user: user.to_owned(),
+            client: client.to_owned(),
+            op,
+        });
         while self.steps.len() > MAX_STEPS
             || (self.kept_units > MAX_KEPT_UNITS && self.steps.len() > 1)
         {
-            if let Some((_, _, old)) = self.steps.pop_front() {
-                self.kept_units -= old.inserted();
+            if let Some(old) = self.steps.pop_front() {
+                self.kept_units -= old.op.cost();
             }
         }
     }
@@ -231,11 +262,21 @@ fn ended() -> AppError {
 }
 
 impl App {
-    fn live_lock(&self) -> AppResult<std::sync::MutexGuard<'_, HashMap<String, Doc>>> {
-        self.live_docs
-            .docs
-            .lock()
-            .map_err(|_| AppError::Internal("live documents poisoned".into()))
+    fn live_lock(&self) -> MutexGuard<'_, HashMap<String, Arc<Mutex<Doc>>>> {
+        locked(&self.live_docs.docs)
+    }
+
+    /// The document of `place` when it is `session` (any, with `None`).
+    fn live_doc(&self, place: &Place, session: Option<&str>) -> AppResult<Arc<Mutex<Doc>>> {
+        let doc = self
+            .live_lock()
+            .get(&place.key)
+            .cloned()
+            .ok_or_else(ended)?;
+        if session.is_some_and(|session| locked(&doc).session != session) {
+            return Err(ended());
+        }
+        Ok(doc)
     }
 
     /// Resolves a file of the folder for a live request (`write`: the caller must be able to
@@ -267,7 +308,12 @@ impl App {
         })
     }
 
-    fn live_publish(&self, place: &Place, doc: &Doc, client: &str, op: Option<Vec<OpPart>>) {
+    /// Publishes the document's state, with the step just made by `user`'s tab `client` (`op`;
+    /// a large one without its text, caught up by the tabs).
+    fn live_publish(&self, place: &Place, doc: &Doc, user: &str, client: &str, op: Option<&Op>) {
+        let op = op
+            .filter(|op| op.inserted() <= MAX_PUBLISHED_UNITS)
+            .map(Op::to_wire);
         self.events.publish_to_writers(
             place.sid.clone(),
             UiEvent::FileLive {
@@ -276,6 +322,7 @@ impl App {
                 path: place.path.clone(),
                 session: doc.session.clone(),
                 revision: doc.revision,
+                user_id: user.to_owned(),
                 client: client.to_owned(),
                 op,
                 sha256: doc.sha256.clone(),
@@ -287,21 +334,23 @@ impl App {
     }
 
     /// Drops documents left alone (saved for [`SAVED_IDLE_MS`], any for [`UNSAVED_IDLE_MS`]).
-    fn live_prune(docs: &mut HashMap<String, Doc>, now: i64) {
+    fn live_prune(docs: &mut HashMap<String, Arc<Mutex<Doc>>>, now: i64) {
         docs.retain(|_, doc| {
+            let doc = locked(doc);
             let idle = now - doc.touched;
             idle < UNSAVED_IDLE_MS && !(doc.saved() && idle >= SAVED_IDLE_MS)
         });
     }
 
     /// Makes room for a new document: at [`MAX_DOCS`], the least recently touched saved one goes.
-    fn live_room(docs: &mut HashMap<String, Doc>, now: i64) -> AppResult<()> {
+    fn live_room(docs: &mut HashMap<String, Arc<Mutex<Doc>>>, now: i64) -> AppResult<()> {
         Self::live_prune(docs, now);
         if docs.len() < MAX_DOCS {
             return Ok(());
         }
         let oldest = docs
             .iter()
+            .map(|(key, doc)| (key, locked(doc)))
             .filter(|(_, doc)| doc.saved())
             .min_by_key(|(_, doc)| doc.touched)
             .map(|(key, _)| key.clone());
@@ -359,9 +408,10 @@ impl App {
             .await?;
         let now = self.now().0;
         {
-            let mut docs = self.live_lock()?;
+            let mut docs = self.live_lock();
             Self::live_prune(&mut docs, now);
-            if let Some(doc) = docs.get_mut(&place.key) {
+            if let Some(doc) = docs.get(&place.key) {
+                let mut doc = locked(doc);
                 doc.touched = now;
                 return Ok(doc.whole());
             }
@@ -401,9 +451,10 @@ impl App {
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
-        let mut docs = self.live_lock()?;
+        let mut docs = self.live_lock();
         // Someone else started it meanwhile: theirs.
-        if let Some(doc) = docs.get_mut(&place.key) {
+        if let Some(doc) = docs.get(&place.key) {
+            let mut doc = locked(doc);
             doc.touched = now;
             return Ok(doc.whole());
         }
@@ -422,7 +473,7 @@ impl App {
             writes: Arc::default(),
         };
         let whole = doc.whole();
-        docs.insert(place.key, doc);
+        docs.insert(place.key, Arc::new(Mutex::new(doc)));
         Ok(whole)
     }
 
@@ -441,36 +492,36 @@ impl App {
         since: u64,
     ) -> AppResult<LiveDoc> {
         let place = self.live_place(ctx, sandbox, root, path, false).await?;
-        let mut docs = self.live_lock()?;
-        let doc = docs.get_mut(&place.key).ok_or_else(ended)?;
+        let doc = self.live_doc(&place, None)?;
+        let mut doc = locked(&doc);
         doc.touched = self.now().0;
-        let oldest = doc
-            .steps
-            .front()
-            .map_or(doc.revision, |(made, _, _)| made - 1);
-        if doc.session != session || since > doc.revision || since < oldest {
+        if doc.session != session || since > doc.revision || since < doc.oldest() {
             return Ok(doc.whole());
         }
         let steps = doc
             .steps
             .iter()
-            .filter(|(made, _, _)| *made > since)
-            .map(|(made, client, op)| LiveStep {
-                revision: *made,
-                client: client.clone(),
-                op: op.to_wire(),
+            .filter(|step| step.revision > since)
+            .map(|step| LiveStep {
+                revision: step.revision,
+                user_id: step.user.clone(),
+                client: step.client.clone(),
+                op: step.op.to_wire(),
             })
             .collect();
         Ok(doc.answer(None, Some(steps)))
     }
 
     /// `POST /api/sandboxes/{sid}/files/live/edit`: applies an operation made at `revision`,
-    /// transformed past the steps since, and publishes it to the sandbox's writers.
+    /// transformed past the steps since, and publishes it to the sandbox's writers. The same edit
+    /// sent again (its answer lost) is answered with the step it made: a tab has one edit on its
+    /// way, so a kept step of that tab after `revision` can only be it.
     ///
     /// # Errors
     /// `Forbidden` for a folder the caller may not change; `Conflict` for another or an ended
-    /// document, or a revision older than the kept steps; `Invalid` for an operation that does
-    /// not fit, cuts a character or makes the text too large; `Capacity` past
+    /// document, or a revision older than the kept steps; `Invalid` for an operation with a count
+    /// beyond any text or more than [`MAX_PARTS`] parts, one that does not fit, cuts a character,
+    /// inserts another line ending than the text's or makes the text too large; `Capacity` past
     /// [`EDITS_PER_SECOND`].
     pub async fn live_edit(
         &self,
@@ -482,6 +533,11 @@ impl App {
         if !is_session_id(&req.session) {
             return Err(AppError::Invalid("session is a live document's id".into()));
         }
+        if req.op.len() > MAX_PARTS {
+            return Err(AppError::Invalid(format!(
+                "an edit has at most {MAX_PARTS} parts"
+            )));
+        }
         let place = self
             .live_place(ctx, sandbox, req.root.as_deref(), &req.path, true)
             .await?;
@@ -489,19 +545,29 @@ impl App {
             &format!("{}|live:{}", ctx.user.id, place.key),
             EDITS_PER_SECOND,
         )?;
-        let mut op = Op::from_wire(&req.op)
+        let max = usize::try_from(MAX_FILE_BYTES).unwrap_or(usize::MAX);
+        let mut op = Op::from_wire(&req.op, max)
             .ok_or_else(|| AppError::Invalid("a count is beyond any text".into()))?;
-        let mut docs = self.live_lock()?;
-        let doc = docs.get_mut(&place.key).ok_or_else(ended)?;
-        let oldest = doc
-            .steps
-            .front()
-            .map_or(doc.revision, |(made, _, _)| made - 1);
-        if doc.session != req.session || req.revision > doc.revision || req.revision < oldest {
+        let user = ctx.user.id.to_string();
+        let doc = self.live_doc(&place, Some(&req.session))?;
+        let mut doc = locked(&doc);
+        if req.revision > doc.revision || req.revision < doc.oldest() {
             return Err(ended());
         }
-        for (_, _, step) in doc.steps.iter().filter(|(made, _, _)| *made > req.revision) {
-            op = Op::transform(&op, step).map_err(refused)?.0;
+        if let Some(sent) = doc.steps.iter().find(|step| {
+            step.revision > req.revision && step.user == user && step.client == req.client
+        }) {
+            return Ok(LiveApplied {
+                revision: sent.revision,
+            });
+        }
+        if !op.fits_eol(&doc.eol) {
+            return Err(AppError::Invalid(
+                "an edit inserts the text's own line ending".into(),
+            ));
+        }
+        for step in doc.steps.iter().filter(|step| step.revision > req.revision) {
+            op = Op::transform(&op, &step.op).map_err(refused)?.0;
         }
         let text = op.apply(&doc.text).map_err(refused)?;
         if u64::try_from(utf8_len(&text)).unwrap_or(u64::MAX) > MAX_FILE_BYTES {
@@ -509,20 +575,18 @@ impl App {
                 "files are limited to {MAX_FILE_BYTES} bytes in the editor"
             )));
         }
-        let wire = op.to_wire();
-        doc.step(&req.client, op, text);
+        doc.step(&user, &req.client, op, text);
         doc.touched = self.now().0;
-        self.live_publish(&place, doc, &req.client, Some(wire));
+        self.live_publish(
+            &place,
+            &doc,
+            &user,
+            &req.client,
+            doc.steps.back().map(|step| &step.op),
+        );
         Ok(LiveApplied {
             revision: doc.revision,
         })
-    }
-
-    /// The document's write lock, so saves and takes of the disk run one at a time.
-    fn live_writes(&self, place: &Place, session: &str) -> AppResult<Arc<tokio::sync::Mutex<()>>> {
-        let docs = self.live_lock()?;
-        let doc = docs.get(&place.key).filter(|doc| doc.session == session);
-        Ok(doc.ok_or_else(ended)?.writes.clone())
     }
 
     /// The disk's `sha256` now (`""`: the file is gone).
@@ -557,14 +621,11 @@ impl App {
         let place = self
             .live_place(ctx, sandbox, req.root.as_deref(), &req.path, true)
             .await?;
-        let writes = self.live_writes(&place, &req.session)?;
+        let doc = self.live_doc(&place, Some(&req.session))?;
+        let writes = locked(&doc).writes.clone();
         let _one = writes.lock().await;
         let (content, revision, base) = {
-            let mut docs = self.live_lock()?;
-            let doc = docs
-                .get_mut(&place.key)
-                .filter(|doc| doc.session == req.session)
-                .ok_or_else(ended)?;
+            let mut doc = locked(&doc);
             doc.touched = self.now().0;
             let conflict = doc.disk_sha256.is_some();
             if (doc.saved() && !conflict) || (conflict && !req.force) {
@@ -595,11 +656,7 @@ impl App {
             Err(AppError::Conflict(_)) => Some(self.live_disk_sha(ctx, sandbox, &place).await?),
             Err(error) => return Err(error),
         };
-        let mut docs = self.live_lock()?;
-        let doc = docs
-            .get_mut(&place.key)
-            .filter(|doc| doc.session == req.session)
-            .ok_or_else(ended)?;
+        let mut doc = locked(&doc);
         match (written, moved) {
             (Ok(file), _) => {
                 doc.sha256 = file.sha256;
@@ -608,7 +665,7 @@ impl App {
             }
             (_, moved) => doc.disk_sha256 = moved,
         }
-        self.live_publish(&place, doc, "", None);
+        self.live_publish(&place, &doc, "", "", None);
         Ok(doc.state())
     }
 
@@ -628,16 +685,10 @@ impl App {
         let place = self
             .live_place(ctx, sandbox, req.root.as_deref(), &req.path, req.force)
             .await?;
-        let writes = self.live_writes(&place, &req.session)?;
+        let doc = self.live_doc(&place, Some(&req.session))?;
+        let writes = locked(&doc).writes.clone();
         let _one = writes.lock().await;
-        let known = {
-            let docs = self.live_lock()?;
-            let doc = docs
-                .get(&place.key)
-                .filter(|doc| doc.session == req.session)
-                .ok_or_else(ended)?;
-            (!req.force).then(|| doc.sha256.clone())
-        };
+        let known = (!req.force).then(|| locked(&doc).sha256.clone());
         let read = self
             .file_read(
                 ctx,
@@ -650,29 +701,21 @@ impl App {
         let disk = match read {
             Ok(disk) => disk,
             Err(AppError::NotFound) if !req.force => {
-                let mut docs = self.live_lock()?;
-                let doc = docs
-                    .get_mut(&place.key)
-                    .filter(|doc| doc.session == req.session)
-                    .ok_or_else(ended)?;
+                let mut doc = locked(&doc);
                 if doc.disk_sha256.as_deref() != Some("") {
                     doc.disk_sha256 = Some(String::new());
-                    self.live_publish(&place, doc, "", None);
+                    self.live_publish(&place, &doc, "", "", None);
                 }
                 return Ok(doc.state());
             }
             Err(error) => return Err(error),
         };
-        let mut docs = self.live_lock()?;
-        let doc = docs
-            .get_mut(&place.key)
-            .filter(|doc| doc.session == req.session)
-            .ok_or_else(ended)?;
+        let mut doc = locked(&doc);
         doc.touched = self.now().0;
         // Unchanged since the text's version.
         let Some(disk) = disk else {
             if doc.disk_sha256.take().is_some() {
-                self.live_publish(&place, doc, "", None);
+                self.live_publish(&place, &doc, "", "", None);
             }
             return Ok(doc.state());
         };
@@ -684,7 +727,7 @@ impl App {
         if !(doc.saved() || req.force) {
             if doc.disk_sha256.as_deref() != Some(disk.sha256.as_str()) {
                 doc.disk_sha256 = Some(disk.sha256);
-                self.live_publish(&place, doc, "", None);
+                self.live_publish(&place, &doc, "", "", None);
             }
             return Ok(doc.state());
         }
@@ -697,12 +740,11 @@ impl App {
         doc.disk_sha256 = None;
         if op.is_noop() {
             doc.saved_revision = Some(doc.revision);
-            self.live_publish(&place, doc, "", None);
+            self.live_publish(&place, &doc, "", "", None);
         } else {
-            let wire = op.to_wire();
-            doc.step("", op, theirs);
+            doc.step("", "", op, theirs);
             doc.saved_revision = Some(doc.revision);
-            self.live_publish(&place, doc, "", Some(wire));
+            self.live_publish(&place, &doc, "", "", doc.steps.back().map(|step| &step.op));
         }
         Ok(doc.state())
     }
@@ -711,6 +753,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use yulius_contracts::api::files::OpPart;
 
     #[test]
     fn line_endings_follow_most_of_the_text_as_monaco_takes_them() {

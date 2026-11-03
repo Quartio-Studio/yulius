@@ -228,6 +228,8 @@ pub struct LiveDoc {
 pub struct LiveStep {
     /// The revision this step made.
     pub revision: u64,
+    /// The person whose tab sent it (`""`: the disk).
+    pub user_id: String,
     /// The tab that sent it (`""`: the disk).
     pub client: String,
     /// The operation, at the revision before.

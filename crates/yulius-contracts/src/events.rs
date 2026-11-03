@@ -154,7 +154,8 @@ pub enum UiEvent {
         revision: Option<u64>,
     },
     /// A file's shared text moved (SPEC-411 EDT-017..020): a step (`op`) made `revision`, or its
-    /// saved state changed (`op: null`, `revision` unchanged). Only the sandbox's writers get it.
+    /// saved state changed (`op: null`, `revision` unchanged); a step too large to carry comes
+    /// with `op: null` and the new `revision`, to be caught up. Only the sandbox's writers get it.
     #[serde(rename = "file.live")]
     FileLive {
         /// The sandbox.
@@ -167,6 +168,8 @@ pub enum UiEvent {
         session: String,
         /// Its revision after this event.
         revision: u64,
+        /// The person whose tab made the step (`""`: the disk, or no step).
+        user_id: String,
         /// The tab whose operation this is (`""`: the disk, or no step).
         client: String,
         /// The operation, at `revision - 1`; `None` for a change of the saved state only.

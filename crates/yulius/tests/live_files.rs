@@ -165,7 +165,7 @@ async fn concurrent_edits_of_two_writers_land_in_one_order_for_writers_only() ->
     assert_eq!(since.body["text"], Value::Null);
     assert_eq!(
         since.body["steps"],
-        json!([{"revision": 2, "client": "tab1", "op": [18, "// d\n"]}])
+        json!([{"revision": 2, "user_id": "u-dave", "client": "tab1", "op": [18, "// d\n"]}])
     );
     let whole = call(
         &h.router,
@@ -616,5 +616,244 @@ async fn presence_carries_the_live_revision() -> TestResult {
     )
     .await?;
     assert_eq!(bad.status, StatusCode::UNPROCESSABLE_ENTITY);
+    Ok(())
+}
+
+/// Review round 1 (B1): counts past any text are refused before they can wrap, and the document
+/// keeps working after a refused edit.
+#[tokio::test]
+async fn an_edit_with_counts_beyond_any_text_is_refused_and_the_document_keeps_working()
+-> TestResult {
+    let (h, alice, dave, _) = fixture().await?;
+    let session = session_of(&join(&h, &alice, json!({"path": "src/main.rs"})).await?);
+    let crafted = edit(&h, &alice, &session, 0, json!([i64::MAX, -i64::MAX, 15])).await?;
+    assert_eq!(
+        crafted.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        crafted.body
+    );
+    let many = edit(
+        &h,
+        &alice,
+        &session,
+        0,
+        Value::Array(
+            (0..13)
+                .map(|_| json!(1))
+                .chain((0..20_000).map(|_| json!("x")))
+                .collect(),
+        ),
+    )
+    .await?;
+    assert_eq!(
+        many.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "too many parts: {:?}",
+        many.status
+    );
+    // Another writer, another document: all still live.
+    assert_eq!(
+        edit(&h, &dave, &session, 0, json!(["ok ", 13]))
+            .await?
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        join(&h, &dave, json!({"path": "README.md"})).await?.status,
+        StatusCode::NOT_FOUND
+    );
+    Ok(())
+}
+
+/// Review round 1 (M1): an edit sent again (its answer lost) is applied once.
+#[tokio::test]
+async fn an_edit_sent_twice_is_applied_once() -> TestResult {
+    let (h, alice, dave, _) = fixture().await?;
+    let session = session_of(&join(&h, &alice, json!({"path": "src/main.rs"})).await?);
+    let first = edit(&h, &alice, &session, 0, json!(["X", 13])).await?;
+    let again = edit(&h, &alice, &session, 0, json!(["X", 13])).await?;
+    assert_eq!(first.body["revision"], 1);
+    assert_eq!(again.status, StatusCode::OK, "{:?}", again.body);
+    assert_eq!(again.body["revision"], 1, "answered with the step it made");
+    // The same tab id of another person is another tab.
+    assert_eq!(
+        edit(&h, &dave, &session, 0, json!(["X", 13])).await?.body["revision"],
+        2
+    );
+    let whole = call(
+        &h.router,
+        Method::GET,
+        &format!("{LIVE}?path=src/main.rs&session=x&since=0"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(whole.body["text"], "XXfn main() {}\n");
+    Ok(())
+}
+
+/// Review round 1 (M3, minors 3 and 5): a large step is announced without its text (the tabs catch
+/// up), steps name their person, and an insert in another line ending is refused.
+#[tokio::test]
+async fn large_steps_are_announced_without_their_text_and_steps_name_their_person() -> TestResult {
+    let (h, alice, _, _) = fixture().await?;
+    let session = session_of(&join(&h, &alice, json!({"path": "src/main.rs"})).await?);
+    let mut events = h.app.events.subscribe();
+    let big = "y".repeat(100 * 1024);
+    assert_eq!(
+        edit(&h, &alice, &session, 0, json!([13, big]))
+            .await?
+            .status,
+        StatusCode::OK
+    );
+    let published = live_events(&mut events);
+    assert_eq!(published.len(), 1);
+    assert_eq!(published[0].1["op"], Value::Null, "too large to carry");
+    assert_eq!(published[0].1["revision"], 1);
+    assert_eq!(published[0].1["user_id"], "u-alice");
+    let steps = call(
+        &h.router,
+        Method::GET,
+        &format!("{LIVE}?path=src/main.rs&session={session}&since=0"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(steps.body["steps"][0]["user_id"], "u-alice");
+    assert_eq!(
+        steps.body["steps"][0]["op"][1].as_str().map(str::len),
+        Some(100 * 1024)
+    );
+    let crlf = edit(&h, &alice, &session, 1, json!(["a\r\nb", 13 + 100 * 1024])).await?;
+    assert_eq!(
+        crlf.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        crlf.body
+    );
+    Ok(())
+}
+
+/// Review round 1 (minor 2): a worktree's owner alone saves or takes the disk there; a reader of
+/// the sandbox reaches nothing.
+#[tokio::test]
+async fn only_a_worktrees_owner_saves_or_takes_the_disk_there() -> TestResult {
+    let (h, alice, dave, bob) = fixture().await?;
+    let worktree = h.app.config.data_dir.join("sandboxes/s1/worktrees/t1");
+    std::fs::create_dir_all(&worktree)?;
+    std::fs::write(worktree.join("task.txt"), "task file\n")?;
+    seed_task(
+        &h,
+        "t1",
+        "s1",
+        "u-alice",
+        TaskStatus::Running,
+        Some(&worktree),
+    )
+    .await?;
+    let joined = join(&h, &alice, json!({"root": "task:t1", "path": "task.txt"})).await?;
+    let session = session_of(&joined);
+    let body = |force: bool| {
+        Some(json!({"root": "task:t1", "path": "task.txt", "session": session, "force": force}))
+    };
+    for (what, force) in [("save", false), ("save", true), ("disk", true)] {
+        let refused = call(
+            &h.router,
+            Method::POST,
+            &format!("/api/sandboxes/s1/files/live/{what}"),
+            body(force),
+            &dave,
+        )
+        .await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::FORBIDDEN,
+            "{what} {force}: {:?}",
+            refused.body
+        );
+    }
+    let look = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/files/live/disk",
+        body(false),
+        &bob,
+    )
+    .await?;
+    assert!(
+        matches!(look.status, StatusCode::FORBIDDEN | StatusCode::NOT_FOUND),
+        "{:?}",
+        look.status
+    );
+    let own = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/files/live/disk",
+        body(false),
+        &dave,
+    )
+    .await?;
+    assert_eq!(
+        own.status,
+        StatusCode::OK,
+        "a reader of the folder may look: {:?}",
+        own.body
+    );
+    Ok(())
+}
+
+/// Review round 1 (minor 1): saves of one document run one at a time, and a take of the disk that
+/// meets unsaved text keeps the conflict whichever runs first.
+#[tokio::test]
+async fn concurrent_saves_write_once_and_a_concurrent_disk_change_stays_a_conflict() -> TestResult {
+    let (h, alice, dave, _) = fixture().await?;
+    let session = session_of(&join(&h, &alice, json!({"path": "src/main.rs"})).await?);
+    assert_eq!(
+        edit(&h, &alice, &session, 0, json!(["a", 13]))
+            .await?
+            .status,
+        StatusCode::OK
+    );
+    let mut events = h.app.events.subscribe();
+    let (one, two) = tokio::join!(
+        act(&h, &alice, "save", &session, false),
+        act(&h, &dave, "save", &session, false)
+    );
+    assert_eq!((one?.status, two?.status), (StatusCode::OK, StatusCode::OK));
+    let saved: Vec<_> = live_events(&mut events)
+        .into_iter()
+        .filter(|(_, e)| e["saved"] == true)
+        .collect();
+    assert_eq!(saved.len(), 1, "written once: {saved:?}");
+    assert_eq!(on_disk(&h), "afn main() {}\n");
+
+    assert_eq!(
+        edit(&h, &alice, &session, 1, json!(["b", 14]))
+            .await?
+            .status,
+        StatusCode::OK
+    );
+    std::fs::write(repo(&h).join("src/main.rs"), "agent\n")?;
+    let (save, disk) = tokio::join!(
+        act(&h, &alice, "save", &session, false),
+        act(&h, &dave, "disk", &session, false)
+    );
+    assert_eq!(
+        (save?.status, disk?.status),
+        (StatusCode::OK, StatusCode::OK)
+    );
+    assert_eq!(on_disk(&h), "agent\n");
+    let whole = call(
+        &h.router,
+        Method::GET,
+        &format!("{LIVE}?path=src/main.rs&session=x&since=0"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(whole.body["text"], "bafn main() {}\n");
+    assert_eq!(whole.body["saved"], false);
+    assert!(whole.body["disk_sha256"].is_string());
     Ok(())
 }
