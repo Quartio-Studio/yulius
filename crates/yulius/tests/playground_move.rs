@@ -211,6 +211,11 @@ async fn a_playground_moves_into_an_empty_github_repository() -> TestResult {
     assert_eq!(moved.body["id"], sid.as_str());
     assert_eq!(moved.body["repo"]["owner"], OWNER);
     assert_eq!(moved.body["repo"]["name"], "alices-lab");
+    // Built by the server, never stored: the UI's "Open on GitHub" opens only this (#741).
+    assert_eq!(
+        moved.body["repo"]["url"],
+        format!("https://github.com/{OWNER}/alices-lab")
+    );
     assert_eq!(moved.body["access"], "admin", "alice's GitHub permission");
 
     assert_eq!(refs(&github)?, before, "every branch and tag is on GitHub");
