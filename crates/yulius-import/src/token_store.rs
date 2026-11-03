@@ -254,19 +254,13 @@ impl TokenStore {
             .filter(|dir| !dir.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         create_private_dir(dir).map_err(self.io_error(dir))?;
-        let temp = dir.join(format!(".credentials.json.tmp-{}", std::process::id()));
-        // A stale temporary file from a crashed run is replaced.
-        match fs::remove_file(&temp) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(self.io_error(&temp)(error)),
-        }
-        let result = write_private_file(&temp, file).and_then(|()| fs::rename(&temp, &self.path));
-        if let Err(error) = result {
-            // Best effort: do not leave a token copy behind.
-            let _ = fs::remove_file(&temp);
-            return Err(self.io_error(&self.path)(error));
-        }
+        // A fresh random name, created with O_EXCL and 0600: nothing left at a fixed name blocks
+        // the save or is written through (SPEC-407 TKS-003, #771). Dropped on a failure, the
+        // temporary file is removed, so no token copy stays behind.
+        let mut temp = private_temp_file(dir).map_err(self.io_error(dir))?;
+        write_private_file(temp.as_file_mut(), file).map_err(self.io_error(temp.path()))?;
+        temp.persist(&self.path)
+            .map_err(|error| self.io_error(&self.path)(error.error))?;
         set_private_permissions(&self.path).map_err(self.io_error(&self.path))?;
         if let Ok(directory) = File::open(dir) {
             // Directory fsync makes the rename durable where supported.
@@ -305,18 +299,22 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
     fs::create_dir_all(dir)
 }
 
-/// Creates `path` owner-only and writes `contents` to it unbuffered: the tokens go to the file
-/// only, never to a growing buffer that would free unzeroed copies (SPEC-407 TKS-002, #769).
-fn write_private_file(path: &Path, contents: &CredentialsFile) -> io::Result<()> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
+/// An owner-only (`0600`) file with a random name in `dir`, created with `O_EXCL`.
+fn private_temp_file(dir: &Path) -> io::Result<tempfile::NamedTempFile> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".credentials.json.tmp-");
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o600));
     }
-    let mut file = options.open(path)?;
-    serde_json::to_writer_pretty(&mut file, contents).map_err(io::Error::other)?;
+    builder.tempfile_in(dir)
+}
+
+/// Writes `contents` to `file` unbuffered and syncs it: the tokens go to the file only, never to a
+/// growing buffer that would free unzeroed copies (SPEC-407 TKS-002, #769).
+fn write_private_file(file: &mut File, contents: &CredentialsFile) -> io::Result<()> {
+    serde_json::to_writer_pretty(&mut *file, contents).map_err(io::Error::other)?;
     file.sync_all()
 }
 
@@ -398,6 +396,35 @@ mod tests {
             store
                 .save(&Url::parse("https://y.example")?, &Secret::new("t"))
                 .is_err()
+        );
+        Ok(())
+    }
+
+    /// SPEC-407 TKS-003 (#771): the temporary file has a fresh random name, so nothing left at a
+    /// predictable name (here a folder, which no removal clears) blocks a save or is written
+    /// through, and no temporary file of the save remains.
+    #[test]
+    fn a_squatted_temporary_name_does_not_block_a_save() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let squatted = dir
+            .path()
+            .join(format!(".credentials.json.tmp-{}", std::process::id()));
+        fs::create_dir(&squatted)?;
+        let store = TokenStore::new(dir.path().join("credentials.json"));
+        let server = Url::parse("https://y.example")?;
+        store.save(&server, &Secret::new("yul_x"))?;
+        assert_eq!(store.load(&server)?, Some(Secret::new("yul_x")));
+        assert!(fs::read_dir(&squatted)?.next().is_none());
+        let mut names: Vec<_> = fs::read_dir(dir.path())?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<Result<_, _>>()?;
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                squatted.file_name().ok_or("name")?,
+                "credentials.json".as_ref()
+            ]
         );
         Ok(())
     }

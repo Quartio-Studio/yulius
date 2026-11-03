@@ -89,7 +89,7 @@ are never built.
 - [x] Spec SPEC-407 with the triage of all five findings
 - [x] Credentials read bounded on one handle (#770)
 - [x] Stored tokens held in Secret, buffers zeroized (#769)
-- [ ] Credentials written through a random-name temp file (#771)
+- [x] Credentials written through a random-name temp file (#771)
 - [ ] Narrow [[ignore]] entries for #802 and #684
 - [ ] Gates, docs and changes entry green
 - [ ] Independent review approved on the final head
@@ -127,5 +127,10 @@ are never built.
 - **#769: `#[serde(with)]` around `Secret` instead of `Serialize` on `Secret`.** `Secret` has no
   `Serialize` on purpose, so it cannot reach output by accident (`secret.rs:9-11`); the token
   store is the one place that persists it, so the conversion lives there.
+- **Residual, accepted.** A save killed between creating and renaming its temporary file (a
+  `SIGKILL`, a power loss) leaves that owner-only file, now under a random name nothing reuses.
+  `dev`'s code removed such a file only when a later save happened to get the same process id, so
+  it was effectively never removed either. A string with JSON escapes passes through
+  `serde_json`'s parsing scratch buffer, which is not zeroized; Yulius tokens (`yul_…`) have none.
 - No ADR: these are local hardening choices inside one module with no lasting cross-cutting
   consequence.
