@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
+- The Vidoc findings on CD environments and CI lanes are dismissed as false positives, each with a
+  narrow `[[ignore]]` entry (SPEC-403, task #384). They are #784 (the agent's `cd_deploy`
+  validates the name before `cd_deploy_for_task`), #718 (a duplicate of #780), #716 (the
+  installed unit pins the server's PATH to the host's read-only system), #715 (uncontained is
+  the development mode) and #738 (a lane is checked again, then taken, under the lock that
+  registers the run). New tests pin #784 and the unit's PATH.
 - A task worktree that a contained agent swaps for a link after Yulius's checks no longer makes
   the host delete the folder behind the link. On Linux, the disk upkeep, the hygiene cleanup,
   snapshot imports and task deletion let Git only check the worktree. The server then removes its
