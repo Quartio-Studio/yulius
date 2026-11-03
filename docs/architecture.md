@@ -681,11 +681,15 @@ at any moment. Wherever the server reads or writes there (editor reads and saves
 attachments, imported transcripts, skill copies, a CI job's log in `ci/logs`, its `ci/home`,
 `ci/cache/<checkout>` and the place of its checkout in `ci/jobs`, the workflows and `yulius.toml`
 `ci_setup` reads from a task worktree), it opens the folder once and does everything else through
-that handle
+that handle; the format check of a sandbox checkout (`onboarding::validate_sandbox_checkout`)
+opens each document and folder with `files::open_inside` against the checkout's resolved root,
+read only when that root is inside the sandbox directory, and each decision file with `openat`
+from its checked folder's handle
 ([SPEC-220](../.ai/specs/SPEC-220-fix-657-host-writes-into-agent-owned-fol.md),
 [SPEC-285](../.ai/specs/SPEC-285-ci-job-log-created-without-following-pla.md),
 [SPEC-367](../.ai/specs/SPEC-367-ci-job-preparation-never-follows-a-link.md),
 [SPEC-391](../.ai/specs/SPEC-391-vidoc-triage-ci-jobs-and-caches-842-739.md),
+[SPEC-394](../.ai/specs/SPEC-394-vidoc-triage-onboarding-and-delivery-832.md),
 [decision 0174](decisions/0174-host-access-to-agent-owned-folders-goes-through-handles.md)). A CI
 checkout is the exception Git imposes: its place is readied through handles, then Git adds, checks
 out and cleans it by path, only when Git registers it at its resolved path inside `ci`. The

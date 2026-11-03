@@ -86,6 +86,9 @@ pub enum Point {
     /// A prompt hook (SPEC-346) passed its turn-end check under the turn lock; it has not set
     /// Working yet. The path is the task id.
     PromptTurnChecked,
+    /// `validate_checkout` (SPEC-394): the checkout's root was resolved and the file's path
+    /// worked out; the file is not opened yet. The path is the file's.
+    CheckoutRead,
 }
 
 #[cfg(feature = "test-support")]

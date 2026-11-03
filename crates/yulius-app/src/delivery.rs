@@ -4424,10 +4424,12 @@ impl App {
             .worktree_path
             .as_ref()
             .map_or_else(|| self.sandbox_repo(&task.sandbox_id), PathBuf::from);
-        let (docs, _) =
-            tokio::task::spawn_blocking(move || crate::onboarding::validate_checkout(&root))
-                .await
-                .map_err(AppError::internal)?;
+        let sandbox_dir = self.sandbox_dir(&task.sandbox_id);
+        let (docs, _) = tokio::task::spawn_blocking(move || {
+            crate::onboarding::validate_sandbox_checkout(&sandbox_dir, &root)
+        })
+        .await
+        .map_err(AppError::internal)?;
         let message = if spec.required {
             message
         } else {

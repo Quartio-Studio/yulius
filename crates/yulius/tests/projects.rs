@@ -496,7 +496,12 @@ async fn onboarding_becomes_ready_when_the_preparation_task_lands() -> TestResul
             exit_reason: None,
         })
         .await?;
-    let worktree = w.scratch.path().join("prep-worktree");
+    // Where Yulius puts a task worktree: in the sandbox directory (SPEC-394).
+    let worktree = w
+        .data_dir()
+        .join("sandboxes")
+        .join(sid.as_str())
+        .join("worktrees/prep-worktree");
     std::fs::create_dir_all(&worktree)?;
     w.h.store
         .update_task(
@@ -538,6 +543,27 @@ async fn onboarding_becomes_ready_when_the_preparation_task_lands() -> TestResul
         "preparing",
         "a closed task without the docs is not ready"
     );
+    // #744 (SPEC-394 VOD-001): the agent swaps its worktree for a link to a host folder that
+    // holds the docs: the check reads only inside the sandbox directory, so it stays not ready.
+    let host = tempfile::tempdir()?;
+    for (path, contents) in scaffold("product") {
+        let target = host.path().join(path);
+        std::fs::create_dir_all(target.parent().ok_or("parent")?)?;
+        std::fs::write(target, contents)?;
+    }
+    std::fs::remove_dir(&worktree)?;
+    std::os::unix::fs::symlink(host.path(), &worktree)?;
+    assert!(
+        yulius_app::onboarding::validate_checkout(host.path())
+            .0
+            .is_valid()
+    );
+    assert_eq!(
+        w.h.app.refresh_onboarding(&sid).await?,
+        "preparing",
+        "a worktree linked outside the sandbox is not read"
+    );
+    std::fs::remove_file(&worktree)?;
     for (path, contents) in scaffold("product") {
         let target = worktree.join(path);
         std::fs::create_dir_all(target.parent().ok_or("parent")?)?;
@@ -716,7 +742,12 @@ async fn a_finished_onboarding_task_is_archived_and_the_sandbox_is_ready() -> Te
             exit_reason: None,
         })
         .await?;
-    let worktree = w.scratch.path().join("prep-worktree");
+    // Where Yulius puts a task worktree: in the sandbox directory (SPEC-394).
+    let worktree = w
+        .data_dir()
+        .join("sandboxes")
+        .join(sid.as_str())
+        .join("worktrees/prep-worktree");
     for (path, contents) in scaffold("product") {
         let target = worktree.join(path);
         std::fs::create_dir_all(target.parent().ok_or("parent")?)?;
@@ -1257,7 +1288,12 @@ async fn a_finished_preparation_turn_makes_the_sandbox_ready_and_starts_waiting_
             exit_reason: None,
         })
         .await?;
-    let worktree = w.scratch.path().join("prep-turn-worktree");
+    // Where Yulius puts a task worktree: in the sandbox directory (SPEC-394).
+    let worktree = w
+        .data_dir()
+        .join("sandboxes")
+        .join(sid.as_str())
+        .join("worktrees/prep-turn-worktree");
     for (path, contents) in scaffold("product") {
         let target = worktree.join(path);
         std::fs::create_dir_all(target.parent().ok_or("parent")?)?;
@@ -1946,5 +1982,123 @@ async fn a_scheduled_start_without_claude_waits_and_says_why() -> TestResult {
     .await??;
     assert!(said.contains("no Claude account is connected"), "{said}");
     assert!(said.contains("/admin/accounts"), "{said}");
+    Ok(())
+}
+
+/// A checkout `validate_checkout` accepts: `yulius.toml` plus the default documents.
+fn valid_checkout(root: &std::path::Path) -> std::io::Result<()> {
+    for (path, contents) in [
+        ("yulius.toml", "[docs]\nproduct = \"docs/product.md\"\n"),
+        ("AGENTS.md", "# Rules\n\nRun the tests.\n"),
+        ("CLAUDE.md", "See AGENTS.md.\n"),
+        ("docs/product.md", "# Shop\n\nSells things.\n"),
+        (
+            "docs/architecture.md",
+            "# A\n\n```mermaid\nflowchart LR\n  A --> B\n```\n",
+        ),
+        (
+            "docs/decisions.md",
+            "# Decisions\n\n## Use SQLite\n\nYes.\n",
+        ),
+        ("docs/changes.md", "# Changes\n"),
+    ] {
+        let file = root.join(path);
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(file, contents)?;
+    }
+    Ok(())
+}
+
+/// #744 (SPEC-394 VOD-001): the server reads a checkout a contained agent can change. A file
+/// checked as a regular file and swapped for a link to a host file before it is read yields
+/// nothing of the host file.
+#[test]
+fn a_checkout_file_swapped_for_a_link_after_its_check_is_not_read() -> TestResult {
+    let checkout = tempfile::tempdir()?;
+    let host = tempfile::tempdir()?;
+    let root = checkout.path().to_path_buf();
+    valid_checkout(&root)?;
+    std::fs::write(host.path().join("secret.toml"), "host = \"secret\"\n")?;
+    assert_eq!(
+        yulius_app::onboarding::validate_checkout(&root)
+            .1
+            .as_deref(),
+        Some("[docs]\nproduct = \"docs/product.md\"\n")
+    );
+    let (file, target) = (root.join("yulius.toml"), host.path().join("secret.toml"));
+    let below = file.clone();
+    yulius_app::race::on(yulius_app::race::Point::CheckoutRead, &below, move || {
+        std::fs::remove_file(&file)
+            .and_then(|()| std::os::unix::fs::symlink(&target, &file))
+            .ok();
+    });
+    let (report, toml) = yulius_app::onboarding::validate_checkout(&root);
+    assert_eq!(toml, None, "the host file was read through the link");
+    let problems: Vec<String> = report.problems.iter().map(ToString::to_string).collect();
+    assert!(
+        problems.contains(&"yulius.toml: is missing".to_owned()),
+        "{problems:?}"
+    );
+    Ok(())
+}
+
+/// #744 (SPEC-394 VOD-001): the checkout folder itself swapped for a link to a host checkout
+/// after its root was resolved: every handle's real path is then outside the resolved root, so
+/// nothing of the host checkout is read.
+#[test]
+fn a_checkout_folder_swapped_for_a_link_after_its_resolution_is_not_read() -> TestResult {
+    let sandbox = tempfile::tempdir()?;
+    let host = tempfile::tempdir()?;
+    let root = sandbox.path().join("worktrees/t1");
+    valid_checkout(&root)?;
+    valid_checkout(host.path())?;
+    std::fs::write(host.path().join("yulius.toml"), "host = \"secret\"\n")?;
+    let (folder, target) = (root.clone(), host.path().to_path_buf());
+    yulius_app::race::on(
+        yulius_app::race::Point::CheckoutRead,
+        &root.join("yulius.toml"),
+        move || {
+            std::fs::rename(&folder, folder.with_extension("aside"))
+                .and_then(|()| std::os::unix::fs::symlink(&target, &folder))
+                .ok();
+        },
+    );
+    let (report, toml) = yulius_app::onboarding::validate_sandbox_checkout(sandbox.path(), &root);
+    assert_eq!(toml, None, "the host checkout was read through the link");
+    let problems: Vec<String> = report.problems.iter().map(ToString::to_string).collect();
+    assert!(
+        problems.contains(&"AGENTS.md: is missing".to_owned()),
+        "{problems:?}"
+    );
+    Ok(())
+}
+
+/// #744 (SPEC-394 VOD-001): a checkout file swapped for a FIFO after its check is read as
+/// missing; the server does not wait on it. A thread, not `spawn_blocking`: a runtime would wait
+/// on a blocked read at its end.
+#[test]
+fn a_checkout_file_swapped_for_a_fifo_after_its_check_does_not_block() -> TestResult {
+    let checkout = tempfile::tempdir()?;
+    let root = checkout.path().to_path_buf();
+    valid_checkout(&root)?;
+    let file = root.join("AGENTS.md");
+    let fifo = file.clone();
+    yulius_app::race::on(yulius_app::race::Point::CheckoutRead, &file, move || {
+        std::fs::remove_file(&fifo).ok();
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).ok();
+    });
+    let (sent, validated) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        sent.send(yulius_app::onboarding::validate_checkout(&root).0)
+            .ok();
+    });
+    let report = validated.recv_timeout(std::time::Duration::from_secs(20))?;
+    let problems: Vec<String> = report.problems.iter().map(ToString::to_string).collect();
+    assert!(
+        problems.contains(&"AGENTS.md: is missing".to_owned()),
+        "{problems:?}"
+    );
     Ok(())
 }

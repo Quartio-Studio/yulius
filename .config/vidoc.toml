@@ -331,6 +331,23 @@ path = "crates/yulius-app/src/onboarding.rs"
 title = "Vidoc API key granted to CI jobs"
 reason = "a granted job gets only the placeholder yulius-secret-VIDOC_API_KEY, which the egress proxy replaces toward model.vidocsecurity.com alone (ADR-0116, VDK-005): a job can spend the key's quota at Vidoc but never read or send the key elsewhere"
 
+# #832 (SPEC-394): `redact` cannot fail. It returns `None` only when it found nothing to redact
+# (`yulius-domain/src/redact.rs` `redact`, `apply`), so `add_handover`'s `unwrap_or(notes)` keeps a
+# hand-over that holds no secret. One entry for this wording, title only.
+[[ignore]]
+path = "crates/yulius-app/src/onboarding.rs"
+title = "Secrets kept unredacted in hand-over when redaction fails"
+reason = "redact() is infallible: None means nothing was found, so the raw text holds no secret it detects (SPEC-394, #832)"
+
+# #783 (SPEC-394): the problem lines are fixed messages and repository paths, and the same prompt
+# tells the agent to read and follow the repository's own AGENTS.md and CLAUDE.md as authoritative:
+# repository text is the onboarding agent's input by design, and the agent runs in the sandbox's
+# containment. Title only: a `function` on onboarding_prompt would accept any later finding there.
+[[ignore]]
+path = "crates/yulius-app/src/onboarding.rs"
+title = "Untrusted repository content interpolated into the onboarding agent's prompt"
+reason = "the agent reads and follows the repository's own instructions by design, contained; problem lines add nothing beyond them (SPEC-394, #783)"
+
 # CI exists to run a pull request's code: its tests and build scripts execute whatever the branch
 # says, so a job command from the branch's own `yulius.toml` (SPEC-142, F 2026-10-12) adds no
 # power. The job runs inside the sandbox's containment, with no agent secret unless the
@@ -384,6 +401,15 @@ reason = "the profile's command (admin-set, or seeded at import) runs contained 
 path = "crates/yulius-app/src/delivery.rs"
 title = "Environment command seeded from attacker-controlled repository content"
 reason = "seeded only when a repository admin or maintainer imports the repository; it runs contained from a Yulius-only mirror without secrets (SPEC-219, ADR-0175)"
+
+# #781 (SPEC-394): the command changes only with Administer (`update_sandbox_profile`) or the
+# importer's seed, and every read revalidates it (`delivery_profile` → `DeliveryProfile::validate`:
+# at most MAX_COMMAND_BYTES, no `\n`, `\r` or `\0`). The run's own output reaches the same log
+# anyway, so its one `[yulius] $` line adds nothing.
+[[ignore]]
+path = "crates/yulius-app/src/delivery.rs"
+title = "Environment command logged with unbounded command text"
+reason = "admin-set and revalidated on every read: at most 2000 bytes, one line; the command's own output reaches the run log anyway (SPEC-394, #781)"
 
 # `contained = false` is the development mode (SPEC-002 NFR-007): every agent run and shell then
 # runs on the host as the service user, which can read the data directory and its keys, so an
@@ -584,3 +610,42 @@ reason = "the scanner is Yulius's embedded vidoc_scan.py, argv without a shell, 
 path = "crates/yulius/src/host_setup.rs"
 title = "Systemd unit file injection via unvalidated public_url and user in unit_text"
 reason = "every value unit_text formats passes unit_safe first (no newline, space, quote, % or ;) and comes from the root operator's options; tested by unit_values_a_unit_file_cannot_hold_are_refused (SPEC-395, #679)"
+
+# SPEC-393 (task #375): the Vidoc findings on supervisor input and preflight, triaged as false
+# positives on dev f416b400; each issue holds the file:line evidence.
+
+# #752: no paste of a typed first message can hold ESC [201~. Request::parse keeps no control
+# character but tab and newline in text (push_text, without_controls) and takes no attachment path
+# holding one (valid_path); Request::opening is the only producer of the pastes. Pinned by
+# request.rs a_typed_first_message_carries_no_control_character (a prompt with ESC [201~).
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "Terminal injection via unescaped paste end delimiter"
+reason = "Request::parse drops every control character but tab and newline from text and refuses paths holding one, so no paste holds ESC; tested by a_typed_first_message_carries_no_control_character (SPEC-393, #752)"
+
+# #818 (duplicate of #752): each paste is bracketed (opening_pastes), so a newline in it is text and
+# Enter is written separately; control bytes are removed as for #752.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "Unvalidated paste bytes typed directly into the agent TUI"
+reason = "each paste is bracketed and Request::parse already dropped its control characters but tab and newline; tested by a_typed_first_message_carries_no_control_character (SPEC-393, #818, #752)"
+
+# #692: send_input is the terminal's keyboard and must pass Esc, arrows and Ctrl+C as typed. Its
+# route, terminal_input, refuses viewers without write access (may_write, SPEC-118); every other
+# caller types text Yulius cleaned (clean_message, one_line, the parsed opening) or wrote.
+# Pinned by task_ownership.rs a_non_owner_watches_the_terminal_read_only and task_message.rs
+# escape_sequences_and_control_characters_never_reach_the_session.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "send_input accepts arbitrary bytes without PTY-level sanitization"
+reason = "raw keystrokes by design for writers only (terminal_input checks may_write); Yulius's own callers type cleaned or constant text (SPEC-393, #692)"
+
+# #691: subscription accounts are one instance-wide pool with no owner; switch_task loads the task
+# with Action::Work (owner only, R3), rotation::manual refuses an account outside the pool, of
+# another provider, unhealthy or exhausted, and preflight_start drops the opened credential.
+# Pinned by rotation.rs manual_account_choice_rules and task_ownership.rs
+# only_the_owner_writes_to_a_task.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "Missing authorization check on requested account in preflight_start"
+reason = "accounts are an ownerless pool; switch_task requires Work on the task, rotation::manual refuses unknown or unusable accounts, and the checked credential is dropped (SPEC-393, #691)"
