@@ -905,6 +905,27 @@ path = "crates/yulius-app/src/ci/cd.rs"
 title = "Agent can read production run output (potential secret disclosure)"
 reason = "stored CD output is redacted of every agent secret of the sandbox, production's included; tested by production_secrets_need_their_own_allowance (SPEC-401, #717)"
 
+# #758: asker names are `#N`, `<login>'s Superagent` (logins: letters, digits, hyphens), with
+# ` in <slug>` for a secret of every sandbox (slugs: [a-z0-9-]): none holds ", ". The list only
+# says who asked and whether a task's waiting flag stays; the person who manages the secret allows
+# a request, never an asker.
+[[ignore]]
+path = "crates/yulius-app/src/vault/requests.rs"
+title = "Askers compared by naive comma-split"
+function = "among_askers"
+line = 428
+reason = "no asker name can hold \", \" (#N, GitHub logins, [a-z0-9-] slugs) and the list authorizes nothing: it shows the askers and keeps a task's waiting flag (SPEC-405, #758)"
+
+# #815: open_credential is crate-private; its four callers (task start and its switch preflight,
+# the Superagent after require(Work), split proposals) take the account from the server's own pool
+# choice (choose_account, pool_account), and the token only starts the agent process.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "Sealed credential decrypted without additional access control check"
+function = "open_credential"
+line = 2087
+reason = "every caller gets the account from the server's pool choice after its own authorization; the token is never returned to a caller (SPEC-405, #815)"
+
 # SPEC-403 (task #384): the Vidoc findings on CD environments and CD run environments, triaged as
 # false positives on dev ffbc2e91; each issue holds the file:line evidence. (#738, the CI lane
 # finding, led to a real double dispatch, which is fixed.)

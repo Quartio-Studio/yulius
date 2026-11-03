@@ -493,7 +493,9 @@ impl App {
     /// (SPEC-248 FUP-002): after a hand-over (SPEC-070) the Bash wrapper's fallback holds no
     /// hashes of the previous owner's personal values. One rewrite at a time, each reading the
     /// task afresh, so the last one is always the latest holder's. In place, as a contained
-    /// session binds the file read-only; a run without one, or a task that is gone, is left alone.
+    /// session binds the file read-only; the Bash wrapper and the tool hook use only what two
+    /// reads in a row agree on (SPEC-405 VEV-002). A run without one, or a task that is gone, is
+    /// left alone.
     ///
     /// # Errors
     /// Store, decryption and file failures; `Internal` for a link or a path that is no regular
@@ -801,6 +803,15 @@ impl App {
                 "{}: {}",
                 record.name,
                 super::PERSONAL_SECRET_BROWSER
+            )));
+        }
+        // A page is in the agent's hands, unlike a request the proxy completes: not even the
+        // hosts a production secret kept from before it became exclusive (SPEC-405 VEV-001).
+        if record.cd_prod {
+            return Err(AppError::Forbidden(format!(
+                "{}: {}",
+                record.name,
+                super::PRODUCTION_SECRET
             )));
         }
         let browser = self.browser_session(&ctx.task.sandbox_id).await?;
