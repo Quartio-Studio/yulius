@@ -40,7 +40,6 @@ pub use project::{
 };
 pub use templates::{TemplateKind, scaffold_files, spec_template};
 
-use crate::cron::CivilDate;
 use crate::delivery::DeliveryProfile;
 use crate::ids::TaskId;
 use markdown::{Line, checklist_item, heading, is_meaningful, normalize_title};
@@ -724,15 +723,6 @@ pub fn is_documentation_path(path: &str) -> bool {
     })
 }
 
-/// `<specs_dir>/<YYYY-MM-DD>-<slug>.md`.
-#[must_use]
-pub fn spec_path(layout: &DocsLayout, date: CivilDate, slug: &str) -> String {
-    format!(
-        "{}/{date}-{slug}.md",
-        layout.specs_dir.trim_end_matches('/')
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1047,23 +1037,5 @@ mod tests {
         assert!(long.len() <= MAX_SLUG_LEN);
         let unbroken = spec_slug(&"a".repeat(80));
         assert_eq!(unbroken.len(), MAX_SLUG_LEN);
-    }
-
-    #[test]
-    fn spec_paths() -> TestResult {
-        let date = CivilDate::new(2026, 10, 7).ok_or("date")?;
-        assert_eq!(
-            spec_path(&DocsLayout::default(), date, "checkout-api"),
-            "docs/specs/2026-10-07-checkout-api.md"
-        );
-        let custom = DocsLayout {
-            specs_dir: "knowledge/specs/".to_owned(),
-            ..DocsLayout::default()
-        };
-        assert_eq!(
-            spec_path(&custom, date, "x"),
-            "knowledge/specs/2026-10-07-x.md"
-        );
-        Ok(())
     }
 }

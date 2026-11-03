@@ -207,7 +207,12 @@ async fn fixture(
             id: AccountId::parse("a1")?,
             provider: Provider::Anthropic,
             label: "Claude".into(),
-            credential: Some(h.app.deps.crypto.seal(b"sk-ant-oat01-isolation-test")?),
+            credential: Some(
+                h.app
+                    .deps
+                    .crypto
+                    .seal(concat!("sk-ant-oat01-", "isolation-test").as_bytes())?,
+            ),
             status: AccountStatus::Ok,
             usage_json: None,
             last_error: None,

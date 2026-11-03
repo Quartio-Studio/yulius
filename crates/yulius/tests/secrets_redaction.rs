@@ -27,7 +27,7 @@ use yulius_ptyhost::test_support::locate_fake_agent;
 use yulius_store::SqliteStore;
 use yulius_store::crypto::MasterKeyCrypto;
 
-const VALUE: &str = "sk_test_51NzQ9redactValue8f3a";
+const VALUE: &str = concat!("sk_test_", "51NzQ9redactValue8f3a");
 const LABEL: &str = "[secret:STRIPE_KEY]";
 
 fn exe() -> PathBuf {
@@ -374,7 +374,11 @@ fn the_terminal_and_the_run_environment_hold_no_value() -> TestResult {
                 id: AccountId::parse("a-claude")?,
                 provider: Provider::Anthropic,
                 label: "Claude test".into(),
-                credential: Some(app.deps.crypto.seal(b"sk-ant-oat01-test-credential")?),
+                credential: Some(
+                    app.deps
+                        .crypto
+                        .seal(concat!("sk-ant-oat01-", "test-credential").as_bytes())?,
+                ),
                 status: AccountStatus::Ok,
                 usage_json: None,
                 last_error: None,

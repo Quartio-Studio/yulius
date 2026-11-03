@@ -884,6 +884,8 @@ fn a_fresh_host_gets_the_service_and_a_base_with_docker() {
         "User=yulius",
         "YULIUS_PUBLIC_URL=https://yulius.example.com",
         "YULIUS_CONTAINED=true",
+        // #716: production CD runs inherit this PATH and see it as the host's read-only system.
+        "\nEnvironment=PATH=/usr/local/bin:/usr/bin:/bin\n",
         "Delegate=yes",
         "DelegateSubgroup=server",
         "KillMode=process",
@@ -1026,6 +1028,42 @@ fn the_unit_gets_a_drop_in_and_its_restart_is_manual() {
     assert_eq!(unit.outcome, HostOutcome::Manual);
     assert!(unit.detail.contains("--public-url"), "{}", unit.detail);
     assert!(!fake.has(UNIT_FILE));
+}
+
+/// SPEC-395 VCH-005 (#679): a value that could add a directive or a specifier to the unit (a
+/// newline, a space, a quote, `%`, `;`) is refused before anything is written.
+#[test]
+fn unit_values_a_unit_file_cannot_hold_are_refused() {
+    for url in [
+        "https://yulius.example.com\nExecStartPre=/bin/sh -c id",
+        "https://yulius.example.com\rUser=root",
+        "https://yulius.example.com x",
+        "https://yulius.example.com/%h",
+        "https://yulius.example.com/\"",
+        "https://yulius.example.com/'",
+        "https://yulius.example.com/\\",
+        "https://yulius.example.com;id",
+    ] {
+        let mut fake = Fake::fresh();
+        let lines = Run::new(
+            &mut fake,
+            Mode::Setup,
+            Options {
+                public_url: Some(url.into()),
+                ..options()
+            },
+            &mut |_| {},
+        )
+        .all();
+        let unit = line(&lines, "yulius.service");
+        assert_eq!(unit.outcome, HostOutcome::Failed, "{url:?}: {lines:#?}");
+        assert!(
+            unit.detail.contains("characters a unit file cannot hold"),
+            "{url:?}: {}",
+            unit.detail
+        );
+        assert!(!fake.has(UNIT_FILE), "{url:?}");
+    }
 }
 
 /// A data directory root owns is refused: sandboxes need the service user's id range.
@@ -1364,4 +1402,59 @@ fn an_import_makes_only_the_user_and_its_ids() {
     assert!(fake.ran("usermod"), "{:#?}", fake.log);
     assert!(!fake.ran("apt-get"), "{:#?}", fake.log);
     assert!(!fake.ran("systemctl"), "{:#?}", fake.log);
+}
+
+/// SPEC-398 VSH-004 (#677): the setup hands the data directory and the service name to privileged
+/// commands as arguments, so a value that could read as an option is refused before anything runs:
+/// a data directory that is not absolute (setup, check and the import's user step) and a service
+/// name starting with `-`.
+#[test]
+fn values_that_could_read_as_options_run_nothing() {
+    let relative = |data: &str| Options {
+        data_dir: PathBuf::from(data),
+        ..options()
+    };
+    let cases = [
+        (Mode::Setup, relative("-x"), "data directory"),
+        (Mode::Check, relative("var/lib/yulius"), "data directory"),
+        (
+            Mode::Setup,
+            Options {
+                service: "--user.service".into(),
+                ..options()
+            },
+            "yulius.service",
+        ),
+    ];
+    for (mode, opts, item) in cases {
+        let mut fake = Fake::fresh();
+        let lines = Run::new(&mut fake, mode, opts, &mut |_| {}).all();
+        assert_eq!(lines.len(), 1, "{lines:#?}");
+        assert_eq!(outcome(&lines, item), HostOutcome::Failed, "{lines:#?}");
+        assert!(fake.log.is_empty(), "{:#?}", fake.log);
+    }
+    let mut fake = Fake::fresh();
+    let lines = Run::new(&mut fake, Mode::Setup, relative("-x"), &mut |_| {}).user_and_ids();
+    assert_eq!(lines.len(), 1, "{lines:#?}");
+    assert_eq!(
+        line(&lines, "data directory").outcome,
+        HostOutcome::Failed,
+        "{lines:#?}"
+    );
+    assert!(fake.log.is_empty(), "{:#?}", fake.log);
+}
+
+/// #678: the rule's Perl regex matches the unit name literally on its own, whatever
+/// `service_name_ok` accepts: every character but a letter, a digit, `_` or `-` is escaped.
+#[test]
+fn the_needrestart_rule_matches_the_name_literally() {
+    assert!(
+        super::needrestart_rule("yulius.service").contains(r"qr(^yulius\.service$)"),
+        "the rule for the default unit keeps its text"
+    );
+    assert!(
+        super::needrestart_rule("yulius-dev@1.service").contains(r"qr(^yulius-dev\@1\.service$)")
+    );
+    let rule = super::needrestart_rule("a+b(c)$x|y*.service");
+    assert!(rule.contains(r"qr(^a\+b\(c\)\$x\|y\*\.service$)"), "{rule}");
 }

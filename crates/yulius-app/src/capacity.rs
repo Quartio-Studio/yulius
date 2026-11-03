@@ -929,6 +929,46 @@ fn pool_view(pool: &PoolTokens) -> PoolTokensView {
 mod tests {
     use super::*;
 
+    /// SPEC-398 VSH-005 (#728): a session's reading is bounded before it is stored: a percentage
+    /// that is not finite or outside 0..=1000 drops the window, and a reset time in the past or
+    /// more than a week and a day ahead is unknown.
+    #[test]
+    fn session_readings_are_bounded() {
+        let now = Timestamp(100 * WEEK_MS);
+        let reading = |used: f64, resets_at: Option<i64>| {
+            session_window(
+                Some(RateLimitWindow {
+                    used_percentage: Some(used),
+                    resets_at,
+                }),
+                300,
+                now,
+            )
+        };
+        let in_an_hour = (now.0 + 3_600_000) / 1_000;
+        assert_eq!(
+            reading(42.5, Some(in_an_hour)),
+            Some(UsageWindow {
+                used_percent: Some(42.5),
+                window_minutes: Some(300),
+                resets_at: Some(Timestamp(in_an_hour * 1_000)),
+            })
+        );
+        for used in [f64::NAN, f64::INFINITY, -0.5, 1_000.5] {
+            assert_eq!(reading(used, Some(in_an_hour)), None, "{used}");
+        }
+        let past = (now.0 - 1_000) / 1_000;
+        let too_far = (now.0 + SESSION_RESET_MAX_MS + 1_000) / 1_000;
+        for resets_at in [Some(past), Some(too_far), Some(i64::MAX), None] {
+            assert_eq!(
+                reading(100.0, resets_at).and_then(|w| w.resets_at),
+                None,
+                "{resets_at:?}"
+            );
+        }
+        assert_eq!(session_window(None, 300, now), None);
+    }
+
     #[test]
     fn weekly_resets_roll_forward_by_whole_weeks() {
         let now = Timestamp(100 * WEEK_MS);

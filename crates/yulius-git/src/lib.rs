@@ -25,6 +25,7 @@ mod bundle;
 mod cd;
 mod ci;
 mod commit;
+mod config_scrub;
 pub mod credential;
 mod error;
 mod hooks;
@@ -53,7 +54,7 @@ pub use review::{
 pub use status::{AheadBehind, Commit, DiffStat, MAX_LOG_ENTRIES, StatusEntry};
 pub use train::{TrainBuild, TrainInput, TrainLanding, TrainStep};
 pub use validate::{MAX_BRANCH_LEN, validate_branch_name, validate_relative_path};
-pub use worktree::{RemovalRefusal, Worktree, WorktreeRemoval};
+pub use worktree::{RemovalRefusal, RemoveBelow, Worktree, WorktreeRemoval};
 
 /// Default deadline for local commands.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);

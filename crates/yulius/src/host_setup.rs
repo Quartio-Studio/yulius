@@ -195,14 +195,15 @@ pub const DOCKER_KEY: &str = "/etc/apt/keyrings/docker.asc";
 pub const NEEDRESTART_RULE_FILE: &str = "/etc/needrestart/conf.d/yulius.conf";
 
 /// The needrestart rule's content for the unit `service` (HST-006): its name is a regular
-/// expression in Perl, so `.` and `@` are escaped.
+/// expression in Perl, so every character but a letter, a digit, `_` or `-` (literal outside a
+/// class) is escaped: it matches the name literally whatever `service_name_ok` accepts (#678).
 #[must_use]
 pub fn needrestart_rule(service: &str) -> String {
     let pattern: String = service
         .chars()
         .flat_map(|c| match c {
-            '.' | '@' => vec!['\\', c],
-            c => vec![c],
+            c if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') => vec![c],
+            c => vec!['\\', c],
         })
         .collect();
     format!(
@@ -451,6 +452,9 @@ impl<'a> Run<'a> {
 
     /// Every item in order; the verdict last. Returns the lines.
     pub fn all(mut self) -> Vec<HostLine> {
+        if !self.data_dir_ok() {
+            return self.lines;
+        }
         if !service_name_ok(&self.opts.service) {
             let service = self.opts.service.clone();
             self.failed("yulius.service", format!("{service:?} is not a unit name"));
@@ -480,9 +484,27 @@ impl<'a> Run<'a> {
     /// Only the service user and its subordinate ids, for `yulius instance import` (SPEC-329
     /// IMP-002): the copy fills the data directory next, and the full setup follows it.
     pub fn user_and_ids(mut self) -> Vec<HostLine> {
+        if !self.data_dir_ok() {
+            return self.lines;
+        }
         self.service_user();
         self.subordinate_ids();
         self.lines
+    }
+
+    /// Whether the data directory is absolute, else a failed line: the setup passes it to
+    /// `install`, `useradd`, `chmod` and the helper commands as an argument, where a relative path
+    /// such as `-x` would read as an option (SPEC-398 VSH-004, #677).
+    fn data_dir_ok(&mut self) -> bool {
+        if self.opts.data_dir.is_absolute() {
+            return true;
+        }
+        let data = self.opts.data_dir.display().to_string();
+        self.failed(
+            "data directory",
+            format!("{data:?} is not an absolute path"),
+        );
+        false
     }
 
     /// The server's unit file when the setup writes it.

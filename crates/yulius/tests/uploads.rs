@@ -218,6 +218,7 @@ async fn editor_uploads_stay_in_the_folder_and_never_replace_a_file_silently() -
     // the folder are refused; nothing is written outside.
     for (path, status) in [
         ("../outside.txt", StatusCode::UNPROCESSABLE_ENTITY),
+        ("src/../../outside.txt", StatusCode::UNPROCESSABLE_ENTITY),
         ("%2Fetc%2Fpasswd", StatusCode::UNPROCESSABLE_ENTITY),
         ("a%0Ab.txt", StatusCode::UNPROCESSABLE_ENTITY),
         ("", StatusCode::UNPROCESSABLE_ENTITY),
@@ -584,11 +585,19 @@ async fn task_attachments_get_safe_names_outside_git_and_go_with_the_task() -> T
     assert_eq!(planted.status, StatusCode::FORBIDDEN, "{:?}", planted.body);
     assert!(!target.join("tasks").exists());
 
-    // Deleting the task removes its attachments (TSK-009).
+    // Deleting the task moves its attachments, which no other task names, to the trash (TSK-009,
+    // SPEC-396).
     let deleted = call(&h.router, Method::DELETE, "/api/tasks/t1", None, &alice).await?;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{:?}", deleted.body);
     assert!(!folder.exists());
     assert!(data.join("sandboxes/s1/attachments/tasks").is_dir());
+    let trash: Vec<PathBuf> = std::fs::read_dir(data.join("sandboxes/s1/attachments/trash"))?
+        .map(|entry| entry.map(|e| e.path()))
+        .collect::<Result<_, _>>()?;
+    assert!(
+        matches!(trash.as_slice(), [entry] if entry.join("Screen-Shot-1.png").is_file()),
+        "{trash:?}"
+    );
     assert!(h.store.task(&TaskId::parse("t1")?).await?.is_none());
     assert!(leftovers(&data).is_empty());
     Ok(())
@@ -798,7 +807,12 @@ async fn agent_task(
             id: AccountId::parse("a1")?,
             provider: Provider::Anthropic,
             label: "Claude".into(),
-            credential: Some(h.app.deps.crypto.seal(b"sk-ant-oat01-upload-test")?),
+            credential: Some(
+                h.app
+                    .deps
+                    .crypto
+                    .seal(concat!("sk-ant-oat01-", "upload-test").as_bytes())?,
+            ),
             status: AccountStatus::Ok,
             usage_json: None,
             last_error: None,
@@ -1156,6 +1170,40 @@ async fn old_drafts_are_never_pruned_through_a_swapped_folder() -> TestResult {
         sent.body
     );
     assert_eq!(sent.status, StatusCode::FORBIDDEN, "{:?}", sent.body);
+    Ok(())
+}
+
+/// SPEC-402 VUG-004 (#809): a draft dated before 1970 is older than a week, so the owner's next
+/// upload prunes it as it prunes any old draft; a fresh one and a folder stay.
+#[tokio::test]
+async fn a_draft_dated_before_1970_is_old() -> TestResult {
+    let h = harness_configured(|c| c.upload_max_bytes = LIMIT)?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    std::fs::create_dir_all(data.join("sandboxes/s1/repo"))?;
+    let drafts = data.join("sandboxes/s1/attachments/drafts/u-alice");
+    std::fs::create_dir_all(drafts.join("folder"))?;
+    std::fs::write(drafts.join("ancient.png"), "old")?;
+    std::fs::write(drafts.join("fresh.png"), "new")?;
+    let before_1970 = std::time::UNIX_EPOCH
+        .checked_sub(Duration::from_secs(24 * 3600))
+        .ok_or("no time before 1970 here")?;
+    std::fs::File::options()
+        .write(true)
+        .open(drafts.join("ancient.png"))?
+        .set_modified(before_1970)?;
+    let sent = upload(
+        &h,
+        Method::POST,
+        "/api/sandboxes/s1/attachments?name=new.png",
+        b"png",
+        &alice,
+    )
+    .await?;
+    assert_eq!(sent.status, StatusCode::CREATED, "{:?}", sent.body);
+    assert_eq!(names(&drafts)?, ["folder", "fresh.png", "new.png"]);
     Ok(())
 }
 

@@ -558,6 +558,31 @@ async fn a_run_announces_its_pull_requests() -> TestResult {
     Ok(())
 }
 
+/// SPEC-391 VCT-003 (#842): a pull request from a fork is never tested, even when its head commit
+/// is in the sandbox's clone (an agent fetched it to review it), with its own jobs or with the
+/// integration branch's and their secrets.
+#[tokio::test]
+async fn a_fork_pull_request_is_never_tested_even_with_its_head_in_the_clone() -> TestResult {
+    let f = fixture().await?;
+    if let Ok(mut pulls) = f.h.github.pulls.lock() {
+        for pull in pulls.iter_mut() {
+            pull.from_fork = true;
+        }
+    }
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let overview = f.get("/api/sandboxes/s1/ci").await?;
+    let runs = overview["runs"].as_array().ok_or("runs")?;
+    assert!(
+        runs.iter().all(|r| r["reference"] != "pr/1"),
+        "the fork's head was queued: {overview}"
+    );
+    assert!(
+        runs.iter().any(|r| r["reference"] == "branch/dev"),
+        "the integration branch is still tested: {overview}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn without_the_status_permission_runs_still_gate() -> TestResult {
     let f = fixture().await?;

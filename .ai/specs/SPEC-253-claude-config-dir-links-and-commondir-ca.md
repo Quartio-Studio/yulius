@@ -66,7 +66,8 @@ agent put in that dir's path, and never resolves agent-written git files on the 
 - CFG-006. The worktree's own trust key stays its real path: Claude Code keys trust by the real
   path of its working directory, and the data directory may sit behind a host link. No other
   path is canonicalized. Residual (pre-existing, noted on #634): the worktree folder is the
-  agent's, so a link it puts there is resolved for that key.
+  agent's, so a link it puts there is resolved for that key. (Superseded by SPEC-398 VSH-003:
+  only the sandbox directory is resolved now, #801.)
 - CFG-007. The two `.config/vidoc.toml` ignores citing #634 are removed.
 
 ## Plan

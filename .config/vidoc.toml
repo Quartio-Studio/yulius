@@ -160,6 +160,14 @@ path = "crates/yulius-app/src/disk.rs"
 title = "path traversal via untrusted yulius.toml cache"
 reason = "check_repo_path rejects absolute and .. segments and real_dir_below refuses links (config.rs and tests/disk.rs)"
 
+# #843 (SPEC-391): the same finding reworded, at `find_caches`' `dir.join(&relative)`. Every
+# declared path went through `check_repo_path` (absolute, empty, `.` and `..` segments refused; a
+# bad one fails the whole `[disk]` table), and `cache_paths` drops `.git`.
+[[ignore]]
+path = "crates/yulius-app/src/disk.rs"
+title = "Path traversal via user-controlled declared caches in yulius.toml"
+reason = "parse_yulius_toml_caches refuses absolute paths and .. segments (check_repo_path); tested by spec_format::config::tests::declared_caches_are_repository_relative_paths (SPEC-391)"
+
 [[ignore]]
 path = "crates/yulius-domain/src/disk.rs"
 title = "Unvalidated cache paths"
@@ -255,6 +263,19 @@ path = "crates/yulius/src/wiring/git.rs"
 title = "Refspec injection"
 reason = "validate_push_refspec requires unforced refs/heads/ names on both sides, checked by check-ref-format rules, after --"
 
+# #811: the token lives only in that one Git command's environment (cleared otherwise, runner.rs);
+# /proc/<pid>/environ needs the service user's uid or root, and every contained agent has its own
+# PID namespace and /proc (an isolated one is also another uid). Git's children are its own
+# helpers (no hooks, no fsmonitor). A configuration-driven command is ADR-0114's #54 part B, set
+# aside by a person; a credential helper or askpass would answer such a child the same token
+# (`git credential fill`).
+[[ignore]]
+path = "crates/yulius/src/wiring/git.rs"
+title = "GitHub token placed in the git subprocess environment"
+reason = "only the service user or root can read the command's environment; contained agents have their own PID namespace and /proc (isolated: also other uids); config-driven commands are ADR-0114's #54 part B (SPEC-402, #811)"
+function = "git_with_token"
+line = 78
+
 [[ignore]]
 path = "crates/yulius/src/wiring/harness.rs"
 title = "MCP environment variable names"
@@ -303,6 +324,57 @@ path = "crates/yulius/tests/support/repos.rs"
 title = "Hardcoded crypto master key in test code"
 reason = "a test fixture: in-memory stores in temporary directories"
 
+# SPEC-406 (task #388): the Vidoc findings in crates/yulius/tests, triaged on dev d51b98ae; each
+# issue holds the file:line evidence. (#822 and #797 had real provider prefixes, sk-ant-oat01- and
+# sk_test_: fixtures are now put together from prefix and body, and fixture_hygiene fails on a
+# provider-shaped literal there, ADR-0258. #772 is fixed: sourced passes the name as $1.)
+
+# #821, #773, #746: fixed master keys of test stores. Production's key is 32 random bytes that
+# serve.rs creates with MasterKeyCrypto::load_or_create (mode 0600); from_key has no caller outside
+# test code, and these keys seal only synthetic fixtures in temporary or in-memory stores.
+[[ignore]]
+path = "crates/yulius/tests/supervision.rs"
+function = "build_custom"
+title = "Hardcoded crypto master key in test code"
+reason = "a test fixture key for a temporary store; production generates its key at random (MasterKeyCrypto::load_or_create in serve.rs), and from_key has no caller outside tests (SPEC-406, #821)"
+
+[[ignore]]
+path = "crates/yulius/tests/task_done.rs"
+function = "start_holding"
+title = "Hardcoded master encryption key in test code"
+reason = "a test fixture key for a temporary store sealing synthetic credentials; production generates its key at random (load_or_create in serve.rs) (SPEC-406, #773)"
+
+[[ignore]]
+path = "crates/yulius/tests/support/repos.rs"
+function = "without_claude"
+title = "Hardcoded weak encryption key for test crypto"
+reason = "a test fixture key for the in-memory test store; production generates its key at random (load_or_create in serve.rs), and from_key has no caller outside tests (SPEC-406, #746)"
+
+# #747: World::remote writes into its own temporary scratch folder, and every caller passes literal
+# relative paths or the product's own scaffold (scaffold_files): no input crosses a trust boundary.
+# (`remote` also names LocalGit's URL lookup in that file, another test fake.)
+[[ignore]]
+path = "crates/yulius/tests/support/repos.rs"
+function = "remote"
+title = "Path traversal in test remote seeding"
+reason = "the test's own literal paths (or the product's scaffold) written into the helper's own temporary folder; nothing untrusted reaches it (SPEC-406, #747)"
+
+# #797 and #822, what stays after the fix: synthetic fixtures with no provider shape (a password,
+# RFC 4226's test seed in base32, vault task tokens) and fixtures put together from a prefix and a
+# synthetic body. They reach only the test's own stores and fake hosts; fixture_hygiene keeps any
+# provider-shaped literal out of crates/yulius/tests.
+[[ignore]]
+path = "crates/yulius/tests/secrets.rs"
+title = "Hardcoded credentials in test code"
+reason = "synthetic fixtures without a provider shape, for the test's own store and fake hosts; provider-shaped literals fail fixture_hygiene (SPEC-406, ADR-0258, #797)"
+line = 22
+
+[[ignore]]
+path = "crates/yulius/tests/supervision.rs"
+function = "fetch"
+title = "Hardcoded credential in test code"
+reason = "a synthetic account credential put together from the prefix and a body, for the fake usage probe; provider-shaped literals fail fixture_hygiene (SPEC-406, ADR-0258, #822)"
+
 [[ignore]]
 path = "scripts/test_vidoc_scan.py"
 title = "Hardcoded fake API key constant"
@@ -322,6 +394,23 @@ reason = "the in-process fake GitHub for tests (feature fake); its constants are
 path = "crates/yulius-app/src/onboarding.rs"
 title = "Vidoc API key granted to CI jobs"
 reason = "a granted job gets only the placeholder yulius-secret-VIDOC_API_KEY, which the egress proxy replaces toward model.vidocsecurity.com alone (ADR-0116, VDK-005): a job can spend the key's quota at Vidoc but never read or send the key elsewhere"
+
+# #832 (SPEC-394): `redact` cannot fail. It returns `None` only when it found nothing to redact
+# (`yulius-domain/src/redact.rs` `redact`, `apply`), so `add_handover`'s `unwrap_or(notes)` keeps a
+# hand-over that holds no secret. One entry for this wording, title only.
+[[ignore]]
+path = "crates/yulius-app/src/onboarding.rs"
+title = "Secrets kept unredacted in hand-over when redaction fails"
+reason = "redact() is infallible: None means nothing was found, so the raw text holds no secret it detects (SPEC-394, #832)"
+
+# #783 (SPEC-394): the problem lines are fixed messages and repository paths, and the same prompt
+# tells the agent to read and follow the repository's own AGENTS.md and CLAUDE.md as authoritative:
+# repository text is the onboarding agent's input by design, and the agent runs in the sandbox's
+# containment. Title only: a `function` on onboarding_prompt would accept any later finding there.
+[[ignore]]
+path = "crates/yulius-app/src/onboarding.rs"
+title = "Untrusted repository content interpolated into the onboarding agent's prompt"
+reason = "the agent reads and follows the repository's own instructions by design, contained; problem lines add nothing beyond them (SPEC-394, #783)"
 
 # CI exists to run a pull request's code: its tests and build scripts execute whatever the branch
 # says, so a job command from the branch's own `yulius.toml` (SPEC-142, F 2026-10-12) adds no
@@ -347,6 +436,14 @@ path = "crates/yulius-app/src/ci/mod.rs"
 title = "Untrusted pull request CI configuration executes arbitrary shell commands"
 reason = "by design: CI runs the pull request's code inside the sandbox's containment without secrets (SPEC-142, ADR-0116)"
 
+# #842 (SPEC-391): the same finding reworded. A fork's pull request is never tested (`from_fork`,
+# tested by local_ci::a_fork_pull_request_is_never_tested_even_with_its_head_in_the_clone), so
+# whoever reaches it already pushes to the repository or is its agent.
+[[ignore]]
+path = "crates/yulius-app/src/ci/mod.rs"
+title = "CI runs attacker-supplied job commands from pull requests"
+reason = "by design: only pull requests of the sandbox's own repository are tested (from_fork skipped), inside its containment, with no secret their own configuration grants (SPEC-142, SPEC-264, ADR-0116, SPEC-391)"
+
 # A delivery environment's `command` is the sandbox profile's: a repository administrator sets it
 # (`PATCH /api/sandboxes/{sid}`), or it is seeded once from the default branch's `yulius.toml`
 # when a repository admin or maintainer imports the repository (`import_profile`). Since SPEC-219
@@ -368,6 +465,15 @@ reason = "the profile's command (admin-set, or seeded at import) runs contained 
 path = "crates/yulius-app/src/delivery.rs"
 title = "Environment command seeded from attacker-controlled repository content"
 reason = "seeded only when a repository admin or maintainer imports the repository; it runs contained from a Yulius-only mirror without secrets (SPEC-219, ADR-0175)"
+
+# #781 (SPEC-394): the command changes only with Administer (`update_sandbox_profile`) or the
+# importer's seed, and every read revalidates it (`delivery_profile` → `DeliveryProfile::validate`:
+# at most MAX_COMMAND_BYTES, no `\n`, `\r` or `\0`). The run's own output reaches the same log
+# anyway, so its one `[yulius] $` line adds nothing.
+[[ignore]]
+path = "crates/yulius-app/src/delivery.rs"
+title = "Environment command logged with unbounded command text"
+reason = "admin-set and revalidated on every read: at most 2000 bytes, one line; the command's own output reaches the run log anyway (SPEC-394, #781)"
 
 # `contained = false` is the development mode (SPEC-002 NFR-007): every agent run and shell then
 # runs on the host as the service user, which can read the data directory and its keys, so an
@@ -402,6 +508,17 @@ path = "crates/yulius-app/src/ci/exec.rs"
 title = "Path traversal in the CI checkout directory through an untrusted job key"
 reason = "job keys are [a-z0-9][a-z0-9_-]{0,31} (expand_jobs, valid_job_name) or constants; tested by ci::tests::jobs_expand_matrices_and_reject_bad_definitions"
 
+# #739 and its duplicate #736 (SPEC-391): the same finding in two more wordings.
+[[ignore]]
+path = "crates/yulius-app/src/ci/exec.rs"
+title = "Path traversal via CI job key in checkout directory"
+reason = "job keys are [a-z0-9][a-z0-9_-]{0,31} (expand_jobs, valid_job_name) or constants; tested by ci::tests::jobs_expand_matrices_and_reject_bad_definitions (SPEC-391)"
+
+[[ignore]]
+path = "crates/yulius-app/src/ci/exec.rs"
+title = "Path traversal via unvalidated CI job key in checkout path"
+reason = "job keys are [a-z0-9][a-z0-9_-]{0,31} (expand_jobs, valid_job_name) or constants; tested by ci::tests::jobs_expand_matrices_and_reject_bad_definitions (SPEC-391)"
+
 # #639 (SPEC-262): unconfirmed findings of task #200's change scans in code it did not touch,
 # triaged as false positives. Each holds the wording Vidoc used, so another finding about the same
 # code is still reported. The real ones of that triage were fixed instead.
@@ -429,3 +546,650 @@ reason = "relative_components refuses .git and inside() refuses a real path in .
 path = "crates/yulius-store/src/tasks.rs"
 title = "Non-atomic task number allocation"
 reason = "one transaction on the single database thread, and UNIQUE (sandbox_id, number) refuses a duplicate (SPEC-262)"
+
+# #849, #836, #827, #750, #838 (SPEC-390): client file names that become paths, reported in code
+# the scanned changes did not touch. Every import manifest name passes FileRef::validate
+# (is_safe_file_name: [A-Za-z0-9._-] components, none empty or starting with `.`, so no `..`,
+# `.git`, absolute path, backslash or NUL) in create_import before the job's only insert, and
+# import_jobs.manifest is never updated; a chunk's URL name only selects a manifest entry (else
+# 404). Editor upload paths pass relative_components (no `..`, `.git`, NUL or absolute path) and,
+# resolved, files::inside. Tests: import_server::unsafe_manifest_names_never_reach_the_disk,
+# uploads::editor_uploads_stay_in_the_folder_and_never_replace_a_file_silently.
+# The imports.rs and routes entries match by title only: their functions are long (the whole public
+# router; put_import_chunk also holds the chunk race of #845, apply_snapshot the worktree handling),
+# so a place match would hide unrelated findings there. check_components is short enough for one.
+[[ignore]]
+path = "crates/yulius-app/src/imports.rs"
+title = "Upload path built from unvalidated manifest file name"
+reason = "chunk names only select a stored manifest entry, validated by FileRef::validate before the job exists; proven by import_server::unsafe_manifest_names_never_reach_the_disk (SPEC-390)"
+
+[[ignore]]
+path = "crates/yulius-app/src/imports.rs"
+title = "Manifest file names joined into filesystem paths without path-traversal validation"
+reason = "is_safe_file_name refuses .., .git, absolute and NUL names in create_import before staging; proven by import_server::unsafe_manifest_names_never_reach_the_disk (SPEC-390)"
+
+[[ignore]]
+path = "crates/yulius-app/src/imports.rs"
+title = "Snapshot archive path built from client-supplied file name"
+reason = "the snapshot name comes from the stored manifest, validated by FileRef::validate before the job exists; proven by import_server::unsafe_manifest_names_never_reach_the_disk (SPEC-390)"
+
+[[ignore]]
+path = "crates/yulius-app/src/uploads.rs"
+title = "Path component validation misses"
+reason = "check_components only sees target.relative, built by relative_components (no .., .git, NUL, absolute), and ensure_dirs re-checks with files::inside; proven by uploads::editor_uploads_stay_in_the_folder_and_never_replace_a_file_silently (SPEC-390)"
+function = "check_components"
+line = 234
+
+# #809: a draft whose mtime lies before 1970 is older than DRAFT_MAX_AGE, so reading it as the
+# epoch prunes it exactly as its real date would; the drafts folder is the sandbox's own, which its
+# agents can already change, and only regular files are removed, through its handle. Pinned by
+# uploads.rs a_draft_dated_before_1970_is_old.
+[[ignore]]
+path = "crates/yulius-app/src/uploads.rs"
+title = "Negative file mtime treated as epoch age"
+reason = "a pre-1970 draft is older than a week, so pruning it is the intended outcome; the folder is the sandbox's own; tested by a_draft_dated_before_1970_is_old (SPEC-402, #809)"
+function = "prune_old_drafts"
+line = 844
+
+[[ignore]]
+path = "crates/yulius-server/src/routes/mod.rs"
+title = "Path traversal risk in import file route"
+reason = "put_import_chunk joins only the matching stored manifest entry's validated name, an unknown name is 404; proven by import_server::unsafe_manifest_names_never_reach_the_disk (SPEC-390)"
+
+# SPEC-388 (task #370): the egress proxy's substitution of agent secrets, triaged on dev at 4e07ce4e
+# with the evidence on each issue. A value with CR/LF is refused at every write
+# (check_agent_value), set aside by egress_apply before any substitution (transportable), and the
+# proxy drops a header failing HeaderValue::from_bytes; reqwest's URL parser percent-encodes the
+# path. Tests: vault::runtime::tests::values_with_control_characters_are_never_sent,
+# secrets::the_egress_policy_never_sends_a_value_with_a_line_break.
+[[ignore]]
+path = "crates/yulius-app/src/vault/runtime.rs"
+title = "CRLF injection in HTTP headers via secret values"
+reason = "control characters are refused at write (check_agent_value) and set aside before substitution (transportable); HeaderValue::from_bytes refuses CR/LF (#839, SPEC-388)"
+
+[[ignore]]
+path = "crates/yulius-app/src/vault/runtime.rs"
+title = "CRLF injection through secret substitution in headers and the request line"
+reason = "control characters are refused at write and set aside before substitution (transportable); the path goes through reqwest's URL parser (#709, duplicate of #839, SPEC-388)"
+
+# The proxy's prepare() removes HOP_BY_HOP and Connection-listed headers and refuses Upgrade before
+# it calls egress_apply; hyper's server drops Content-Length when Transfer-Encoding is present and
+# refuses conflicting lengths, and its client frames the body itself.
+[[ignore]]
+path = "crates/yulius-app/src/vault/runtime.rs"
+title = "Egress proxy forwards hop-by-hop and framing headers verbatim"
+reason = "proxy.rs prepare() strips hop-by-hop and Connection-listed headers before egress_apply; hyper re-frames the body (#708, SPEC-388)"
+
+# Placeholders in the path and query are a feature (SPEC-121: APIs that take a key in the URL); the
+# value goes only to its bound host, the agent sees the placeholder, no redirect is followed, the
+# response is redacted, and the proxy logs reqwest errors without their URL (ADR-0252).
+[[ignore]]
+path = "crates/yulius-app/src/vault/runtime.rs"
+title = "Secret values substituted into the request URL path and query"
+reason = "URL placeholders are a feature for keys taken in the URL, sent only to the bound host; Yulius logs no upstream URL (#833, ADR-0252, SPEC-388)"
+
+# SPEC-389 (task #371): Vidoc's findings on MCP tool authorization, filed as #831, #782, #695, #694
+# and #846 from change scans of code those changes did not touch, triaged as false positives on dev
+# at 4e07ce4e. One entry per wording, title only: a `function` on mcp_call would accept any later
+# finding in the whole dispatch. The guards and the tests that pin them are in SPEC-389.
+
+# #831: mcp_call keeps the McpCaller; its first arm refuses a Cockpit every tool outside
+# COCKPIT_TOOLS, Cockpit-only arms match only McpCaller::Cockpit and task_tool has none of them.
+# Pinned by cockpit.rs the_superagent_lists_its_sandboxs_agent_secrets_without_values and
+# secrets.rs agents_are_not_served_secret_verify.
+[[ignore]]
+path = "crates/yulius-app/src/mcp.rs"
+title = "Caller-type authorization dropped in tools/call dispatch"
+reason = "mcp_call refuses a Cockpit any tool outside COCKPIT_TOOLS before dispatch and matches Cockpit-only tools on McpCaller::Cockpit; tested in cockpit.rs and secrets.rs (SPEC-389, #831)"
+
+# #782: task, session and automation tools are the Cockpit's by design (SPEC-037 MGT-006,
+# ADR-0029); a ck_ token resolves at every call to its live Cockpit's enabled creator with Work
+# access (cockpit_caller), and changing tools check manage_authority again.
+[[ignore]]
+path = "crates/yulius-app/src/mcp.rs"
+title = "Cockpit token grants project-management tools without caller-type check"
+reason = "COCKPIT_TOOLS serves them by design (SPEC-037 MGT-006, ADR-0029); cockpit_caller requires an enabled owner with Work each call and manage_authority re-checks (SPEC-389, #782)"
+
+# #695: source() refuses absolute paths, .., .git and ~user; the file is reached from a root Yulius
+# picks (work folder or home) without following links, and only a regular file is read, by a
+# person who may configure the project. Pinned by secrets_create.rs
+# files_yulius_must_not_read_are_refused and
+# a_root_swapped_for_a_link_and_reserved_names_are_refused, and for the Cockpit
+# cockpit.rs the_superagent_stores_a_key_from_its_persons_home.
+[[ignore]]
+path = "crates/yulius-app/src/mcp.rs"
+title = "secret_create_from_file reads arbitrary host files"
+reason = "source() refuses absolute, .. and .git paths, open_folder walks from the work folder or home without links, read_secret_file reads regular files only; Configure required (SPEC-389, #695)"
+
+# #694: agent_workflow only reads the caller's own project's workflows, which workflows_list gives
+# the same caller in full, and creates nothing; a Cockpit is checked for Work before any tool.
+[[ignore]]
+path = "crates/yulius-app/src/manage.rs"
+title = "workflow resolution before authorization check"
+reason = "agent_workflow is a read of the caller's own project that workflows_list already answers; nothing is created before manage_authority (SPEC-389, #694)"
+
+# #846: the oracle accepted in ADR-0144, reworded (see "Secret value verification oracle" above):
+# Yulius never answers a hash of a stored value, so nothing can be attacked offline from its
+# answers, and a salt would not change an online equality check.
+[[ignore]]
+path = "crates/yulius-app/src/mcp.rs"
+title = "Unsalted SHA-256 equality oracle over secret values"
+reason = "Cockpit-only equality check accepted in ADR-0144: no stored hash is handed out, production secrets refused, each candidate audited (SPEC-389, #846)"
+
+# SPEC-392 (task #374): Vidoc's findings on sign-in, API tokens and credentials, filed as #724,
+# #726, #734 and #837 from change scans of code those changes did not touch, triaged as false
+# positives on dev at f416b400 (#725 was real and is fixed). One entry per wording, title only.
+# The guards and the tests that pin them are in SPEC-392.
+
+# #724: a reworded repeat of "Revoked API tokens still authenticate" above. The store's api_token
+# selects only revoked_at IS NULL, as its port documents, so a token revoked alone or by
+# revoke_user_credentials resolves to no record. Pinned by store.rs revoked_api_tokens_are_not_found
+# and remote_mcp.rs tokens_are_made_in_the_browser_listed_and_revoked.
+[[ignore]]
+path = "crates/yulius-app/src/auth.rs"
+title = "authenticate_bearer does not check token revocation"
+reason = "api_token selects only revoked_at IS NULL (yulius-store sessions.rs, port doc 'not revoked'); tested by store.rs revoked_api_tokens_are_not_found (SPEC-392, #724)"
+
+# #726: the setup token is 128 random bits, accepted only while no superadmin exists, compared as
+# SHA-256 hex in constant time; Argon2 runs only after it matches, so a guess costs a row read and
+# one hash. Pinned by http_auth.rs setup_requires_token_confirmation_and_happens_once.
+[[ignore]]
+path = "crates/yulius-app/src/auth.rs"
+title = "No rate limiting on setup token verification"
+reason = "a 128-bit one-time token, only before the superadmin exists, compared in constant time before any Argon2 work; a limit adds nothing guessable (SPEC-392, #726)"
+
+# #734: GitHubAppConfig's Debug prints only app_id and slug; it is serialized only to be sealed
+# (github_admin.rs), and the wiring wraps each secret in yulius-github's Secret at once
+# (github_client.rs). No view, log or error carries it. Giving the app's Secret Serialize to hold
+# these would make every Secret serializable: weaker.
+[[ignore]]
+path = "crates/yulius-app/src/ports/github.rs"
+title = "GitHub App secrets stored as plain strings rather than Secret wrapper"
+reason = "redacting Debug, serialized only into the sealed instance row, wrapped in yulius-github's Secret at the client; never in a view, log or error (SPEC-392, #734)"
+
+# #837: the remote cd_deploy sends no confirmation, so the deploy itself refuses every
+# production-stage environment (cd.rs cd_prepare -> may_deploy), and a name whose stage cannot be
+# resolved is refused as not defined; the outer check only words the refusal. Pinned by
+# remote_mcp.rs (prod refused), cd.rs production_is_deployed_by_an_administrator_who_types_the_slug
+# and named_environments_deploy_by_their_stage (no slug: 422).
+[[ignore]]
+path = "crates/yulius-app/src/remote.rs"
+title = "Production deployment check fails open on transient errors"
+reason = "the remote call passes confirm None, so cd_prepare's may_deploy refuses any production-stage environment and an unresolved stage is not defined (SPEC-392, #837)"
+
+# SPEC-395 (task #377): Vidoc's findings on the yulius CLI and host setup, filed as #754, #753,
+# #743, #742 and #679 from change scans of code those changes did not touch, triaged as false
+# positives on dev at f416b400. One entry per wording, title only: a `function` on `main` would
+# accept any later finding in the whole dispatch. The binary has no setuid bit or file capability
+# (HST-010), so each subcommand runs with exactly its caller's rights. Detail in SPEC-395.
+
+# #754: sandbox-exec is the internal step Yulius puts before bwrap; run by anyone else it execs the
+# program as the caller, only handing bwrap its seccomp filter, and the kernel checks its cgroup
+# move and setns against that caller.
+[[ignore]]
+path = "crates/yulius/src/main.rs"
+title = "Sandbox exec accepts arbitrary argv without visible authorization check"
+reason = "sandbox-exec holds no privilege: it execs bwrap as its caller, handing it a seccomp filter; cgroup.procs writes and setns are the kernel's checks on that caller (SPEC-395, #754)"
+
+# #753: `--scrub-exec` is Claude Code's shell prefix in a run: its argument is the agent's own Bash
+# command, run by design through the shell as the agent's user; it only adds redaction and fails
+# closed. Pinned by secrets_redaction.rs the_bash_wrapper_redacts_every_form_of_a_value and
+# the_terminal_and_the_run_environment_hold_no_value.
+[[ignore]]
+path = "crates/yulius/src/main.rs"
+title = "Raw arguments passed to command execution function with environment access"
+reason = "--scrub-exec runs the agent's own Bash command as the agent (CLAUDE_CODE_SHELL_PREFIX, SPEC-358) and only adds redaction; the run's environment holds no secret value (SPEC-395, #753)"
+
+# #743: `yulius remove` runs as the agent with the agent's rights, and still canonicalizes the
+# directory, never follows the last component and accepts only untracked worktree paths or the
+# contained run's tmpfs. Pinned by
+# remove_cli::tests::it_removes_the_tasks_paths_and_refuses_the_rest.
+[[ignore]]
+path = "crates/yulius/src/main.rs"
+title = "Remove command accepts arbitrary paths at a trust boundary without visible validation"
+reason = "remove_cli canonicalizes the parent, refuses . and .., removes a link as a link and decide() accepts only the task's paths; it runs with the agent's own rights (SPEC-395, #743)"
+
+# #742: the scanner is Yulius's own scripts/vidoc_scan.py, run as `python3 -I -c` with separate
+# argv entries; its argparse accepts only the documented options, and --report writes with the
+# caller's own rights in the caller's own checkout or contained CI job.
+[[ignore]]
+path = "crates/yulius/src/main.rs"
+title = "SecurityScan forwards unrestricted trailing arguments to external scanner"
+reason = "the scanner is Yulius's embedded vidoc_scan.py, argv without a shell, argparse refuses unknown options, and --report writes with the caller's own rights (SPEC-395, #742)"
+
+# #679: unit_text's only call follows unit_safe on the URL, user, executable and data directory
+# (printable ASCII without space, quotes, backslash, % or ;), all `sudo yulius host setup` options.
+# Pinned by host_setup::tests::unit_values_a_unit_file_cannot_hold_are_refused.
+[[ignore]]
+path = "crates/yulius/src/host_setup.rs"
+title = "Systemd unit file injection via unvalidated public_url and user in unit_text"
+reason = "every value unit_text formats passes unit_safe first (no newline, space, quote, % or ;) and comes from the root operator's options; tested by unit_values_a_unit_file_cannot_hold_are_refused (SPEC-395, #679)"
+
+# SPEC-393 (task #375): the Vidoc findings on supervisor input and preflight, triaged as false
+# positives on dev f416b400; each issue holds the file:line evidence.
+
+# #752: no paste of a typed first message can hold ESC [201~. Request::parse keeps no control
+# character but tab and newline in text (push_text, without_controls) and takes no attachment path
+# holding one (valid_path); Request::opening is the only producer of the pastes. Pinned by
+# request.rs a_typed_first_message_carries_no_control_character (a prompt with ESC [201~).
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "Terminal injection via unescaped paste end delimiter"
+reason = "Request::parse drops every control character but tab and newline from text and refuses paths holding one, so no paste holds ESC; tested by a_typed_first_message_carries_no_control_character (SPEC-393, #752)"
+
+# #818 (duplicate of #752): each paste is bracketed (opening_pastes), so a newline in it is text and
+# Enter is written separately; control bytes are removed as for #752.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "Unvalidated paste bytes typed directly into the agent TUI"
+reason = "each paste is bracketed and Request::parse already dropped its control characters but tab and newline; tested by a_typed_first_message_carries_no_control_character (SPEC-393, #818, #752)"
+
+# #692: send_input is the terminal's keyboard and must pass Esc, arrows and Ctrl+C as typed. Its
+# route, terminal_input, refuses viewers without write access (may_write, SPEC-118); every other
+# caller types text Yulius cleaned (clean_message, one_line, the parsed opening) or wrote.
+# Pinned by task_ownership.rs a_non_owner_watches_the_terminal_read_only and task_message.rs
+# escape_sequences_and_control_characters_never_reach_the_session.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "send_input accepts arbitrary bytes without PTY-level sanitization"
+reason = "raw keystrokes by design for writers only (terminal_input checks may_write); Yulius's own callers type cleaned or constant text (SPEC-393, #692)"
+
+# #691: subscription accounts are one instance-wide pool with no owner; switch_task loads the task
+# with Action::Work (owner only, R3), rotation::manual refuses an account outside the pool, of
+# another provider, unhealthy or exhausted, and preflight_start drops the opened credential.
+# Pinned by rotation.rs manual_account_choice_rules and task_ownership.rs
+# only_the_owner_writes_to_a_task.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "Missing authorization check on requested account in preflight_start"
+reason = "accounts are an ownerless pool; switch_task requires Work on the task, rotation::manual refuses unknown or unusable accounts, and the checked credential is dropped (SPEC-393, #691)"
+
+# SPEC-399 (task #380): the Vidoc findings on the web UI's terminal clipboard and links and on two
+# sandbox host paths, triaged as false positives on dev 88a485ca; each issue holds the file:line
+# evidence.
+
+# #819: ADR-0130's decision. A program's OSC 52 write reaches only a viewer who can write and
+# pressed a key or mouse button in that terminal in the last 5 s, and a query is never answered;
+# the program draws its own selection, so xterm has none to match. Pinned by terminal.e2e.ts "a
+# selection the program copies (OSC 52)…" (an unasked copy writes nothing) and "a read-only
+# viewer's clipboard is never written by the program".
+[[ignore]]
+path = "crates/yulius-server/web/assets/terminal-core.js"
+title = "OSC 52 clipboard write can poison the user's clipboard"
+reason = "accepted by ADR-0130: writers who used the terminal in the last 5 s only, never a query; xterm has no selection to match since the program draws its own (SPEC-158, SPEC-399, #819)"
+
+# #741: sandbox.repo.url is not stored data: sandboxes.rs builds it as
+# https://github.com/{owner}/{name} (empty for a playground). Pinned by playground_move.rs.
+[[ignore]]
+path = "crates/yulius-server/web/assets/layout.js"
+title = "Untrusted URL passed to window.open"
+reason = "the server builds repo.url as https://github.com/{owner}/{name}, a fixed scheme and host; tested in playground_move.rs (SPEC-399, #741)"
+
+# #701: needs_you refuses a link that is not public_url or a page below it, so no javascript: link
+# is stored. Pinned by cd.rs a_needs_you_request_reads_what_happened_problem_and_to_do.
+[[ignore]]
+path = "crates/yulius-server/web/assets/taskview.js"
+title = "Unvalidated external link in href"
+reason = "needs_you stores only links to this instance's public_url and below; javascript: and other origins are refused, tested in cd.rs (SPEC-399, #701)"
+
+# #683: the server passes a SandboxId, which only SandboxId::parse makes ([A-Za-z0-9_-], at most
+# 64); below it, state_dir and sysroot join path_name(sandbox), which maps any name that is not a
+# holder name to the fixed component .invalid, and HolderSpec::validate refuses such a name
+# before a holder starts (since #651). Pinned by manager.rs
+# a_production_holder_has_its_own_trees_and_is_retired_with_its_sandbox (x.y is .invalid).
+[[ignore]]
+path = "crates/yulius-sandbox/src/manager.rs"
+title = "Unvalidated sandbox identifier used in filesystem paths"
+reason = "ids arrive as SandboxId (validated by SandboxId::parse), state_dir and sysroot also go through path_name (an invalid name becomes .invalid) and HolderSpec::validate refuses one; tested by a_production_holder_has_its_own_trees_and_is_retired_with_its_sandbox (SPEC-399, #683)"
+
+# #682: the path-based make_writable serves only base::remove_tree, which ADR-0176 keeps for trees
+# no sandbox run can change then: bases (the service user's build, read-only lower layers) and
+# system trees removed once holder_live is false, which also counts a stopped holder's runs still
+# in its network namespace (runs join its user, net and mount namespaces). Trees runs rearrange go
+# through the O_NOFOLLOW walk (reachable_by_runs). Pinned by leftovers.rs
+# the_system_layer_waits_for_the_holder_to_stop and manager.rs only_a_sandbox_s_system_tree_is_removed.
+[[ignore]]
+path = "crates/yulius-sandbox/src/base.rs"
+title = "TOCTOU in make_writable chmod by path"
+reason = "only trees no sandbox run can change at that time (bases, system trees once no holder or run of it lives) are removed by path; run-reachable trees use the O_NOFOLLOW walk (ADR-0176, SPEC-399, #682)"
+
+# SPEC-398 (task #381): the Vidoc findings on the supervisor, harness and host setup, triaged on dev
+# 88a485ca; each issue holds the file:line evidence. #801 and the data directory of #677 were fixed.
+
+# #813: Crypto::new_id's only production implementation (MasterKeyCrypto, serve.rs) is
+# Uuid::new_v4 from getrandom (the OS CSPRNG), and random_bytes is rand::rng(), a CSPRNG seeded from
+# the OS. Pinned by crypto.rs ids_and_random_bytes_are_random.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "Entropy source unspecified for session IDs"
+reason = "new_id is Uuid::new_v4 from getrandom (OS CSPRNG) and random_bytes is rand::rng(); tested by ids_and_random_bytes_are_random (SPEC-398, #813)"
+
+# #696: a profile's branches are validated when written (DeliveryProfile::validate: no leading -,
+# whitespace, control or ~^:?*[\) and again by every Git call (branch_exists, rev_parse with
+# --end-of-options, worktree add with --, the push guard validates and single-quotes); Git runs with
+# an argv. Pinned by profile_validation, revisions_cannot_be_options and
+# protected_names_are_single_quoted.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "Unvalidated deserialization of sandbox profile used in Git commands"
+reason = "profile branches are validated on write (DeliveryProfile::validate) and by each Git call, which runs with an argv; tested by profile_validation and revisions_cannot_be_options (SPEC-398, #696)"
+
+# #677: Run::all refuses a service name that is not [A-Za-z0-9@._-]+.service or starts with - before
+# any systemctl call (service_name_ok), and user_and_ids runs no systemctl; the data directory part
+# of the finding was fixed (an absolute path is required). Pinned by host_setup
+# values_that_could_read_as_options_run_nothing.
+[[ignore]]
+path = "crates/yulius/src/host_setup.rs"
+title = "Unvalidated service name passed to systemctl as an argument"
+reason = "service_name_ok refuses a leading - or any character outside [A-Za-z0-9@._-] before any systemctl call, and the data directory must be absolute; tested by values_that_could_read_as_options_run_nothing (SPEC-398, #677)"
+
+# #728: the status line hook authenticates the run by its bearer and updates only the account the
+# server recorded for that attempt (ctx.attempt.account_id); session_window bounds the values. The
+# session spends that account's quota itself, and a setup-token sign-in has no other source of usage
+# (ADR-17). Pinned by capacity.rs session_readings_are_bounded.
+[[ignore]]
+path = "crates/yulius-app/src/capacity.rs"
+title = "Session-reported usage accepted without validation at the trust boundary"
+reason = "only the attempt's own server-recorded account is updated, values are bounded by session_window, and the session spends that quota itself (ADR-17); tested by session_readings_are_bounded (SPEC-398, #728)"
+
+# SPEC-400 (task #379): the Vidoc findings on the vault and recovery, triaged as false positives on
+# dev 88a485ca (#845, the import chunk race, was real and is fixed). One entry per wording; the
+# evidence is in SPEC-400 and in each issue's closing comment.
+
+# #841: the in-sandbox redactors must test output against a needle without the server, so any
+# matcher they get is an equality test for a guess (offline while a run holds the set; the rolling
+# hash alone already is), and redaction gives the same test online: a printed guess comes back as
+# [secret:NAME] over exactly its bytes. SPEC-002 ADR-20 and ADR-0014 accept
+# "redaction is an oracle for weak values" with the 8-character minimum (MIN_AGENT_VALUE_CHARS);
+# ADR-0144 and ADR-0186 name the salted fingerprints. A server-held key would move the same test
+# online and send the run's output to Yulius.
+[[ignore]]
+path = "crates/yulius-app/src/vault/runtime.rs"
+title = "Salted secret digests and lengths exposed to the sandbox form a guessing oracle"
+reason = "the redaction oracle accepted in SPEC-002 ADR-20/ADR-0014 (8-character minimum): sandbox-side redactors need a local matcher, and redaction itself confirms a printed guess and its length (SPEC-400, #841)"
+function = "scrub_fingerprints_for"
+line = 365
+
+# #840: the host comes from hyper's parsed Uri (connect_target, uri().host()), whose URI_CHARS
+# refuse |, space and every control byte, so no field or line can be added; the caller's part is
+# the key's last field after the fixed action|run|id, so it cannot collide with another run's or
+# secret's key; and it is audited only for secrets bound to that host by a person. Pinned by
+# yulius-egress proxy::tests::proxy_targets_with_delimiters_are_no_uri.
+[[ignore]]
+path = "crates/yulius-app/src/vault/runtime.rs"
+title = "Attacker-controlled host flows into audit keys and detail text"
+reason = "the host is a parsed Uri host (no |, space or control byte) and the key's last field after a fixed prefix; tested by proxy_targets_with_delimiters_are_no_uri (SPEC-400, #840)"
+function = "note_agent_use"
+line = 332
+
+# #740: users/<id>/home is the Superagent's own $HOME (identity.rs user_space: HOME uncontained,
+# bound as /home/<login> contained), so it already reads every file there; storing one as a secret
+# with no hosts and no .env allowance, by a person with write access, is the safer path ADR-0167
+# chose for a key in the person's own files. A task's agent gets the sandbox home only.
+[[ignore]]
+path = "crates/yulius-app/src/vault/create.rs"
+title = "Superagent home-root exposes the person's whole shared home to project agents"
+reason = "that home is the Superagent's own $HOME (user_space), which it reads anyway; the secret gets no hosts or .env until a person allows each (ADR-0167, SPEC-400, #740)"
+function = "secret_source_root"
+line = 388
+
+# #749: recover_password is stricter than a rate limit: one process-wide lock, the failure counted
+# in the database before the answer, and recovery erased and locked for good after 3 wrong 6-digit
+# codes (ADR-0011). Pinned by recovery::the_recovery_code_resets_the_password_and_three_wrong_codes_lock_it
+# (ten parallel guesses included). Title only: the public router spans hundreds of lines.
+[[ignore]]
+path = "crates/yulius-server/src/routes/mod.rs"
+title = "Public recovery endpoint without visible rate limiting"
+reason = "recover_password locks recovery permanently after 3 wrong codes under one lock, counted before the answer (ADR-0011); tested by the_recovery_code_resets_the_password_and_three_wrong_codes_lock_it (SPEC-400, #749)"
+
+# SPEC-401 (task #378): the Vidoc findings on CI run output, declared caches and CD, triaged as
+# false positives on dev 88a485ca; each issue holds the file:line evidence. (#844 was real and is
+# fixed: worktrees are removed through no-follow handles, ADR-0255.)
+
+# #848: a task is no confidentiality boundary inside its sandbox. Every run of the sandbox mounts
+# the whole sandbox directory, CI job logs included (<sandbox>/ci/logs, containment.rs --bind of
+# the root); session_read hands any task every other task's transcript; CI jobs get secret
+# placeholders, never values (SPEC-142); ci_rerun only queues the same commit again.
+[[ignore]]
+path = "crates/yulius-app/src/ci/tools.rs"
+title = "Task-scoped agent can read any run's output in the sandbox"
+reason = "runs are the sandbox's, not one task's: every run of the sandbox mounts its CI logs and reads its other tasks' transcripts (session_read); CI output holds placeholders, not secret values (SPEC-401, #848)"
+
+# #795: declared caches stay inside the declaring worktree (check_repo_path, #843), are removed
+# only when Git ignores them and they hold no tracked file, through handles; the agent that writes
+# yulius.toml can already delete those folders itself (it mounts the sandbox read-write).
+[[ignore]]
+path = "crates/yulius-app/src/disk.rs"
+title = "Attacker-controlled cache declarations steer host deletions"
+reason = "a declaration only names ignored, untracked folders of the sandbox's own worktree, which its agent can delete itself; no path leaves it (#843) (SPEC-401, #795)"
+
+# #780: the guard reads !(len >= 7 && starts_with): a value shorter than 7 is refused (409), not
+# let through. Pinned by cd.rs production_is_deployed_by_an_administrator_who_types_the_slug (1
+# and 6 characters of the real commit are refused).
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "Weak deploy confirmation check"
+reason = "a confirmation under 7 characters fails the guard and is refused with 409; tested by production_is_deployed_by_an_administrator_who_types_the_slug (SPEC-401, #780)"
+
+# #717: a CD run's stored output is redacted of every agent secret of the sandbox (raw, hex,
+# base64, percent forms), and production's values are such secrets (cd_prod or auto_allow), so
+# cd_status never shows them. Pinned by cd.rs production_secrets_need_their_own_allowance (an
+# agent's cd_status of a production run that printed the value).
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "Agent can read production run output (potential secret disclosure)"
+reason = "stored CD output is redacted of every agent secret of the sandbox, production's included; tested by production_secrets_need_their_own_allowance (SPEC-401, #717)"
+
+# SPEC-404 (task #383): the Vidoc findings on the subscription sign-in, triaged as false positives
+# on dev ffbc2e91; each issue holds the file:line evidence. (#731 was real and is fixed: the raw
+# output is one allocation, wiped whole, ADR-0256.)
+
+# #806 (and #729, its other wording): the sign-in runs `claude setup-token` on the host by design
+# (ADR-0256). PATH is the server's own environment, which only the operator sets: whoever can change
+# it already controls the server, and a fixed PATH would miss the operator's `claude` install. The
+# argv is fixed, HOME and CLAUDE_CONFIG_DIR are new empty private folders (no settings, no hooks),
+# and only instance administrators type into it; bubblewrap containment is a sandbox's, and a
+# sign-in has none. tests/accounts.rs claude_login_masks_the_token_for_viewers_and_seals_it pins the plan.
+[[ignore]]
+path = "crates/yulius-app/src/accounts.rs"
+function = "login_plan"
+title = "Login process launched with inherited PATH and no containment"
+reason = "the sign-in is a host operation by design (ADR-0256): PATH is the operator's own server environment, the argv fixed, HOME and config new empty folders, input from instance administrators only (SPEC-404, #806)"
+
+[[ignore]]
+path = "crates/yulius-app/src/accounts.rs"
+function = "login_plan"
+title = "Login process spawned without containment on the host"
+reason = "duplicate of #806: the sign-in runs on the host by design (ADR-0256), with a fixed argv, new empty HOME and config folders and input from instance administrators only (SPEC-404, #729)"
+
+# #751: a prune between prune_logins and the lookup drops only a finished sign-in, so the answer is
+# the NotFound a moment later would give; a replaced sign-in keeps its own id, Notify and phase;
+# `ended` is notify_waiters, so every cancel waiting on it wakes; a second administrator's cancel
+# is their own audited request. All of it needs an instance administrator. tests/accounts.rs
+# a_running_sign_in_can_be_cancelled pins a second cancel of an ended sign-in changing nothing.
+[[ignore]]
+path = "crates/yulius-app/src/accounts.rs"
+function = "login_terminal"
+title = "TOCTOU between prune and login lookup"
+reason = "a prune in between drops only a finished sign-in (NotFound, as a moment later); a replaced one keeps its own id and state; a second cancel is a second administrator's own audited request (SPEC-404, #751)"
+
+# #730: the masker restarts only on RunEvent::Snapshot, and the PTY host sends a snapshot only in
+# the handshake of an attach (ptyhost host.rs attach; client.rs handshake reads it), which
+# start_login makes right after the spawn, before a viewer can paste the code that makes the CLI
+# print a token. Within the stream, TokenMasker holds a split token back across chunks (pinned by
+# tests/accounts.rs claude_login_masks_the_token_for_viewers_and_seals_it, which splits it).
+[[ignore]]
+path = "crates/yulius-app/src/accounts.rs"
+function = "login_event"
+title = "Masking state reset on snapshots can split a masked token across chunks"
+reason = "the only snapshot comes in the attach handshake right after the spawn, before a token can be printed; output chunks share one masker that holds a split token back (SPEC-404, #730)"
+
+# #758: asker names are `#N`, `<login>'s Superagent` (logins: letters, digits, hyphens), with
+# ` in <slug>` for a secret of every sandbox (slugs: [a-z0-9-]): none holds ", ". The list only
+# says who asked and whether a task's waiting flag stays; the person who manages the secret allows
+# a request, never an asker.
+[[ignore]]
+path = "crates/yulius-app/src/vault/requests.rs"
+title = "Askers compared by naive comma-split"
+function = "among_askers"
+line = 428
+reason = "no asker name can hold \", \" (#N, GitHub logins, [a-z0-9-] slugs) and the list authorizes nothing: it shows the askers and keeps a task's waiting flag (SPEC-405, #758)"
+
+# #815: open_credential is crate-private; its four callers (task start and its switch preflight,
+# the Superagent after require(Work), split proposals) take the account from the server's own pool
+# choice (choose_account, pool_account), and the token only starts the agent process.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "Sealed credential decrypted without additional access control check"
+function = "open_credential"
+line = 2087
+reason = "every caller gets the account from the server's pool choice after its own authorization; the token is never returned to a caller (SPEC-405, #815)"
+
+# SPEC-403 (task #384): the Vidoc findings on CD environments and CD run environments, triaged as
+# false positives on dev ffbc2e91; each issue holds the file:line evidence. (#738, the CI lane
+# finding, led to a real double dispatch, which is fixed.)
+
+# #784: the agent tool cd_deploy (tool_cd_deploy) applies dom::env_name before it calls
+# cd_deploy_for_task, its only caller, as the person's route does in cd_deploy. Pinned by cd.rs
+# named_environments_deploy_by_their_stage (malformed names refused with the name rule).
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "Agent deploy path skips environment name validation"
+reason = "tool_cd_deploy, the only caller of cd_deploy_for_task, validates with dom::env_name first, as cd_deploy does; tested by named_environments_deploy_by_their_stage (SPEC-403, #784)"
+
+# #718 (duplicate of #780): the same guard, !(len >= 7 && starts_with(lowercased)), refuses a
+# value under 7 characters with 409.
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "Weak commit confirmation check accepts short inputs"
+reason = "a confirmation under 7 characters fails the guard and is refused with 409; tested by production_is_deployed_by_an_administrator_who_types_the_slug (SPEC-401, SPEC-403, #718, #780)"
+
+# #716: the server's PATH is the operator's, which no agent sets; `yulius host setup` writes
+# PATH=/usr/local/bin:/usr/bin:/bin into yulius.service, the fallback itself. In a production run
+# those are the host's read-only system, with empty /home, /root and /var, and only the run's
+# directory and cache bound in (production_containment). Pinned by host_setup::tests
+# a_fresh_host_gets_the_service_and_a_base_with_docker.
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "Host PATH inherited into CD run environments"
+reason = "the operator sets the server's PATH (the installed unit pins /usr/local/bin:/usr/bin:/bin); a production run sees those as the host's read-only system with nothing an agent wrote (SPEC-403, #716)"
+
+# #715: the same accepted risk as the two uncontained-production entries above, reworded.
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "Containment silently disabled without isolation"
+reason = "uncontained is the documented development mode: agents and shells already run on the host as the service user, which reads the data directory and master.key; runs are marked not contained (docs/operations.md, SPEC-403, #715)"
+
+# #817: a draft's `thumb` is a data URL that this page draws from the person's own file
+# (drafts.js `thumbnail`, canvas.toDataURL), and is restored from this browser's localStorage only
+# when it starts with `data:image/` (drafts.js `restore`). No server or draft-sync response sets it,
+# and `imageOf` otherwise returns this view's own blob: URL.
+[[ignore]]
+path = "crates/yulius-server/web/assets/taskview.js"
+title = "Image source taken from untrusted attachment data"
+reason = "thumb is a data:image/ URL drawn by this page from the person's own file, restored from localStorage only when it starts with data:image/; no server value reaches it (SPEC-409, #817)"
+function = "mountComposer"
+line = 992
+
+# #816: a shell has one kind of viewer, its creator with Work access who owns the shell's task
+# (shell_open). Every socket that reaches pump may write and controls its own shell until the
+# periodic re-check closes it on a change of access; shell_input checks again.
+[[ignore]]
+path = "crates/yulius-server/src/routes/shells.rs"
+title = "Terminal state reports can_write and controller as always true"
+reason = "shell_open admits only the shell's creator with Work access owning its task, so every attached viewer can write; the re-check closes the socket on revocation and shell_input re-checks (SPEC-409, #816)"
+function = "send_state"
+
+# #737: every part of the commit status target_url is server-made: public_url is operator
+# configuration, the slug is [a-z0-9-] (projects::slug_base, numeric suffix), the run id a UUID v4
+# (crypto.new_id). It goes into a JSON body that create_commit_status checks to be http(s).
+[[ignore]]
+path = "crates/yulius-app/src/ci/mod.rs"
+title = "Unencoded URL components in commit status target_url"
+reason = "public_url is operator config, the slug [a-z0-9-] (slug_base), the run id a UUID; sent in a JSON body checked to be http(s), never a header (SPEC-409, #737)"
+function = "ci_try_publish"
+
+# #732: the interpolated LIMIT is AnalyticsQuery::limit, a u32: an integer by type.
+[[ignore]]
+path = "crates/yulius-store/src/analytics.rs"
+title = "Limit interpolated into SQL"
+reason = "the LIMIT is AnalyticsQuery::limit: u32, formatted as an integer; every other value is a bound parameter (SPEC-409, #732)"
+function = "read"
+
+# The triage of task #390 (SPEC-408) on dev d51b98ae.
+# #814: the run directory is under the data directory, which build_app makes 0700 at every start
+# (serve.rs prepare_data_dir), and the process host sets the run directory itself to 0700 before
+# it writes launch.json (yulius-ptyhost spawn.rs prepare_run_dir, tested by its 0700 assertion).
+# Its secret-bearing files are 0600 (write_private_file); the scrub wrapper (0755) holds only the
+# executable's path.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+line = 1362
+title = "Run directory created with filesystem default permissions"
+reason = "the data directory above it is 0700 (prepare_data_dir) and the process host makes the run directory 0700 before the launch (prepare_run_dir); its secret-bearing files are 0600 (SPEC-408, #814)"
+
+# #755: the same decision as #716. The server's PATH is the operator's (the installed unit pins
+# /usr/local/bin:/usr/bin:/bin); a run in an isolated sandbox gets the fixed SANDBOX_PATH instead,
+# and a contained run without isolation sees the host's system directories read-only.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+function = "base_env"
+title = "Host PATH propagated into agent environment"
+reason = "the operator sets the server's PATH, which no agent can; isolated runs get the fixed SANDBOX_PATH and contained ones see the host's system read-only (SPEC-403, SPEC-408, #716, #755)"
+
+# #698: nobody but the server can plant a link in a run directory: it is 0700 under a 0700 data
+# directory, a contained run sees only its generated files bound read-only, and an uncontained
+# agent already runs as the service user (#715).
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+function = "save_screen"
+title = "Predictable temporary file name in save_screen"
+reason = "the run directory is 0700 under a 0700 data directory and hidden from contained runs; an uncontained agent already is the service user (SPEC-408, #698)"
+
+# #756: a positive oom_score_adj makes the agent's command, not a co-located service, the kernel's
+# preferred victim; an unprivileged process can only raise its own. Best effort on purpose: a
+# failed write (no /proc, as on macOS) must not stop the agent's command.
+[[ignore]]
+path = "crates/yulius/src/main.rs"
+line = 565
+title = "Unconditional kernel OOM score modification with ignored error"
+reason = "raising one's own oom_score_adj only makes the agent's command the first victim, protecting other services; the write is best effort so a host without /proc still runs the command (SPEC-408, #756)"
+
+# #690: MGT-003 (SPEC-037) keeps the window in memory by design: one server per data directory,
+# restarted only by its operator, and a rolling hour pruned at every reservation, tested by
+# manage::tests::the_window_holds_twenty_an_hour_and_frees_slots_as_they_age.
+[[ignore]]
+path = "crates/yulius-app/src/manage.rs"
+function = "ToolTaskWindow"
+title = "Task-creation rate limit is in-memory only"
+reason = "one server per data directory, restarted only by its operator; the rolling window is pruned at every reservation (MGT-003, SPEC-037, SPEC-408, #690)"
+
+# SPEC-407 (task #389): the Vidoc findings on the CLI token store, the harness and the Docker smoke,
+# triaged on dev d51b98ae; #771, #770 and #769 (token store) were fixed. Each issue holds the
+# file:line evidence.
+
+# #802: main_repository reads the worktree's .git through a folder opened from the sandbox
+# directory with O_NOFOLLOW (worktree_key, #801) and as a regular file only, resolves the gitdir:
+# path lexically and opens nothing below it (not even commondir, SPEC-253 CFG-005), so the host does
+# no filesystem operation on the agent's path. The only effect is a trust key in the agent's own
+# Claude config, which it can write itself (SPEC-106); a key outside the worktree is the point (a
+# linked worktree's main repository lies beside it). Pinned by claude_config.rs
+# the_main_repository_comes_from_the_gitdir_path_alone and
+# host_reads_never_follow_a_link_or_wait_on_a_fifo.
+[[ignore]]
+path = "crates/yulius-harness/src/claude_config.rs"
+title = "Agent-controlled .git file used to derive trust paths outside worktree"
+function = "main_repository"
+reason = "the gitdir: path is resolved lexically and nothing below it is opened; the only effect is a trust key in the agent's own config, which it can write itself (SPEC-253 CFG-005, SPEC-106); tested by the_main_repository_comes_from_the_gitdir_path_alone (SPEC-407, #802)"
+
+# #684: stale_smokes considers only runtime/sandboxes/docker-smoke-<pid>; real sandbox ids are UUID
+# v4 (crypto.new_id), so no real sandbox has such a name, and remove_sandbox removes only that smoke
+# name's trees. runtime/sandboxes itself is written only by the service user (holders get binds of
+# subfolders of their own state dir), who owns every tree the smoke could remove; a reused PID only
+# keeps a stale smoke sandbox. Pinned by docker_smoke.rs
+# only_sandboxes_of_finished_smoke_tests_are_stale.
+[[ignore]]
+path = "crates/yulius/src/docker_smoke.rs"
+title = "PID liveness probe from attacker-influenced directory name"
+function = "stale_smokes"
+reason = "only docker-smoke-<pid> names count, real sandbox ids are UUIDs, and only the service user can create entries in runtime/sandboxes; tested by only_sandboxes_of_finished_smoke_tests_are_stale (SPEC-407, #684)"

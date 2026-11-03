@@ -735,7 +735,10 @@ impl App {
         }
         match self.deps.git.remove_worktree(repo, &path, &owned).await {
             Ok(true) => Ok(()),
-            Ok(false) => Err("it has uncommitted changes or is locked".into()),
+            Ok(false) => Err(
+                "it has uncommitted changes, is locked, holds submodules or its Git record does not match it"
+                    .into(),
+            ),
             Err(err) => Err(err.public_message()),
         }
     }

@@ -1468,6 +1468,7 @@ fn a_contained_superagent_starts_with_the_approval_bypass_accepted() -> TestResu
     );
     let launch = |home: &str, contained: bool| CockpitLaunch {
         cwd: cwd.clone(),
+        sandbox_dir: dir.path().to_path_buf(),
         config_dir: PathBuf::from("/home/alice/.claude"),
         config_dir_host: dir.path().join(home),
         resume: None,
@@ -1609,6 +1610,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
     assert_eq!(
         names,
         [
+            "attachments_trash",
             "automation_create",
             "automation_delete",
             "automation_run_now",
@@ -1630,6 +1632,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "task_get",
             "task_message",
             "task_stop",
+            "task_update",
             "tasks_list",
             "workflows_list",
         ]
@@ -3737,9 +3740,27 @@ async fn the_superagent_runs_behind_the_egress_proxy_with_its_own_bearer() -> Te
         .await?;
     assert!(f.h.app.egress_client(&daves).await.is_none(), "disabled");
 
-    // Ended, its bearer is refused at once.
+    // Ended, its bearer is refused at once, and a connection it holds adds nothing more
+    // (SPEC-388 EPL-001).
     f.h.app.end_all_shells().await;
     assert!(f.h.app.egress_client(&token).await.is_none());
+    let held =
+        f.h.app
+            .egress_apply(
+                &client,
+                egress_request(
+                    "api.apify.test",
+                    &[("authorization", "Bearer yulius-secret-APIFY_KEY")],
+                ),
+            )
+            .await;
+    assert!(
+        matches!(
+            held,
+            yulius_app::ports::egress::EgressDecision::Refuse { status: 403, .. }
+        ),
+        "{held:?}"
+    );
     Ok(())
 }
 

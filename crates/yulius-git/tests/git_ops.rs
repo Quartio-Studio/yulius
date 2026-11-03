@@ -7,8 +7,9 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use yulius_git::{
-    Author, BundleSpec, DiffStat, Git, GitError, ImportRef, MergeInto, RemovalRefusal, SquashInput,
-    SquashLanding, TrainInput, TrainLanding, TrainStep, WorktreeRemoval, validate_branch_name,
+    Author, BundleSpec, DiffStat, Git, GitError, ImportRef, MergeInto, RemovalRefusal, RemoveBelow,
+    SquashInput, SquashLanding, TrainInput, TrainLanding, TrainStep, WorktreeRemoval,
+    validate_branch_name,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -566,6 +567,105 @@ fn a_fetch_retries_only_a_half_added_worktree_and_gives_up() -> TestResult {
     let missing = fx.path("missing.git");
     assert!(git.fetch(&repo, path_str(&missing)?).is_err());
     assert_eq!(fs::read_to_string(&attempts)?.lines().count(), 1);
+    Ok(())
+}
+
+/// SPEC-401 (#844): `worktree_remove_if_safe_below` hands the folder and then its record to the
+/// caller's removal, and refuses, removing nothing, what Git would refuse (submodules: a record
+/// with `modules/`, a populated gitlink) and what it cannot verify (a worktree naming another
+/// record, an owned root that resolves outside its parent).
+#[test]
+fn removal_below_hands_over_only_verified_worktrees() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let owned = fx.path("worktrees");
+    fs::create_dir(&owned)?;
+    let calls = std::cell::RefCell::new(Vec::<(PathBuf, PathBuf)>::new());
+    let record_and_remove = |root: &Path, path: &Path| -> std::io::Result<()> {
+        calls
+            .borrow_mut()
+            .push((root.to_path_buf(), path.to_path_buf()));
+        fs::remove_dir_all(path)
+    };
+    let remove: RemoveBelow<'_> = &record_and_remove;
+    let below = |path: &Path, root: &Path| {
+        fx.git
+            .worktree_remove_if_safe_below(&repo, path, root, remove)
+    };
+    let add = |name: &str| -> Result<PathBuf, Box<dyn Error>> {
+        let wt = owned.join(name);
+        fx.git
+            .worktree_add(&repo, &wt, &format!("task/{name}"), "main")?;
+        Ok(wt)
+    };
+
+    // A record with modules/.
+    let t1 = add("t1")?;
+    fs::create_dir(repo.join(".git/worktrees/t1/modules"))?;
+    assert_eq!(
+        below(&t1, &owned)?,
+        WorktreeRemoval::Refused(RemovalRefusal::Submodules)
+    );
+    // A populated gitlink in the index, committed (the worktree is clean).
+    let t2 = add("t2")?;
+    let lib = t2.join("vendor/lib");
+    fs::create_dir_all(&lib)?;
+    fx.raw(&lib, &["init", "-q", "-b", "main"])?;
+    fx.raw(&lib, &["commit", "-q", "--allow-empty", "-m", "lib"])?;
+    fx.raw(&t2, &["add", "vendor/lib"])?;
+    fx.raw(&t2, &["commit", "-q", "-m", "vendor lib"])?;
+    assert!(fx.git.status_porcelain(&t2)?.is_empty());
+    assert_eq!(
+        below(&t2, &owned)?,
+        WorktreeRemoval::Refused(RemovalRefusal::Submodules)
+    );
+    // A worktree whose .git names another worktree's record.
+    let (t3, t4) = (add("t3")?, add("t4")?);
+    fs::write(
+        t3.join(".git"),
+        format!("gitdir: {}\n", repo.join(".git/worktrees/t4").display()),
+    )?;
+    assert_eq!(
+        below(&t3, &owned)?,
+        WorktreeRemoval::Refused(RemovalRefusal::NotRegistered)
+    );
+    assert!(t4.exists() && repo.join(".git/worktrees/t4").exists());
+    // An owned root that is a link resolving outside its parent.
+    #[cfg(unix)]
+    {
+        let elsewhere = fx.path("elsewhere");
+        fs::create_dir(&elsewhere)?;
+        let t5 = elsewhere.join("t5");
+        fx.git.worktree_add(&repo, &t5, "task/t5", "main")?;
+        let linked = fx.path("sandbox/worktrees");
+        fs::create_dir(fx.path("sandbox"))?;
+        std::os::unix::fs::symlink(&elsewhere, &linked)?;
+        assert_eq!(
+            below(&linked.join("t5"), &linked)?,
+            WorktreeRemoval::Refused(RemovalRefusal::OutsideOwnedRoot)
+        );
+        assert!(t5.exists());
+    }
+    assert!(calls.borrow().is_empty(), "nothing refused was handed over");
+    assert!(t1.exists() && t2.exists() && t3.exists());
+
+    // A clean worktree: its folder, then its record, each below the folder above its root.
+    let t6 = add("t6")?;
+    assert_eq!(below(&t6, &owned)?, WorktreeRemoval::Removed);
+    assert_eq!(
+        *calls.borrow(),
+        vec![
+            (fx.root.clone(), t6.clone()),
+            (fx.root.clone(), repo.join(".git/worktrees/t6")),
+        ]
+    );
+    assert!(
+        !fx.git
+            .worktree_list(&repo)?
+            .iter()
+            .any(|w| w.path.ends_with("t6"))
+    );
+    assert!(fx.git.branch_exists(&repo, "task/t6")?);
     Ok(())
 }
 
@@ -2189,6 +2289,145 @@ fn a_redirected_clone_git_directory_is_refused() -> TestResult {
     let before = fs::read_to_string(&outside)?;
     assert!(fx.git.scrub_transport_config(&repo).is_err());
     assert_eq!(fs::read_to_string(&outside)?, before);
+    Ok(())
+}
+
+/// SPEC-402 VUG-001 (#810): a `config` an agent swaps for a link after the scrub's checks (here
+/// at Git's first `config` call) is never written through: the file it points at keeps its
+/// settings, and the repository's own name holds the scrubbed configuration.
+#[test]
+fn a_clone_configuration_swapped_for_a_link_during_the_scrub_is_never_written_through() -> TestResult
+{
+    use std::os::unix::fs::PermissionsExt as _;
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    fx.raw(
+        &repo,
+        &["config", "--local", "http.proxy", "http://127.0.0.1:9"],
+    )?;
+    let outside = fx.path("outside.cfg");
+    let planted = "[http]\n\tproxy = http://127.0.0.1:9\n[user]\n\tname = Outside\n";
+    fs::write(&outside, planted)?;
+    let config = repo.join(".git/config");
+    let swapper = fx.path("swapping-git");
+    fs::write(
+        &swapper,
+        format!(
+            "#!/bin/sh\nif [ \"$7\" = config ] && [ ! -e '{mark}' ]; then\n  : > '{mark}'\n  \
+             mv '{config}' '{config}.aside' && ln -s '{outside}' '{config}'\nfi\nexec git \"$@\"\n",
+            mark = fx.path("swapped").display(),
+            config = config.display(),
+            outside = outside.display(),
+        ),
+    )?;
+    fs::set_permissions(&swapper, fs::Permissions::from_mode(0o755))?;
+    let git = isolated(Git::new(&swapper), &fx.home);
+    git.scrub_transport_config(&repo)?;
+    assert!(fx.path("swapped").exists(), "the wrapper swapped the file");
+    assert_eq!(
+        fs::read_to_string(&outside)?,
+        planted,
+        "the file the link points at is untouched"
+    );
+    assert!(
+        !fs::symlink_metadata(&config)?.is_symlink(),
+        "the link was replaced"
+    );
+    assert!(!repo.join(".git/config.lock").exists(), "the lock is gone");
+    let left = fx.raw(&repo, &["config", "--local", "--list", "--name-only"])?;
+    assert!(!left.lines().any(|k| k == "http.proxy"), "{left}");
+    assert!(left.lines().any(|k| k == "remote.origin.url"), "{left}");
+    Ok(())
+}
+
+/// A `git` at `path` that runs `script` (sh, `$7` is the subcommand after the three fixed `-c`
+/// pairs) before the real Git.
+fn wrapped_git(fx: &Fixture, path: &Path, script: &str) -> Result<Git, Box<dyn Error>> {
+    use std::os::unix::fs::PermissionsExt as _;
+    fs::write(path, format!("#!/bin/sh\n{script}\nexec git \"$@\"\n"))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+    Ok(isolated(Git::new(path), &fx.home))
+}
+
+/// SPEC-402 VUG-001 (#810): Git's own lock held by another writer refuses the scrub and stays
+/// that writer's; a lock the scrub took is removed when Git fails, and nothing is written.
+#[test]
+fn the_scrub_keeps_another_writer_s_lock_and_drops_its_own_on_failure() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    fx.raw(
+        &repo,
+        &["config", "--local", "http.proxy", "http://127.0.0.1:9"],
+    )?;
+    let lock = repo.join(".git/config.lock");
+    fs::write(&lock, "another writer's")?;
+    assert!(fx.git.scrub_transport_config(&repo).is_err());
+    assert_eq!(fs::read_to_string(&lock)?, "another writer's");
+    fs::remove_file(&lock)?;
+
+    let failing = wrapped_git(
+        &fx,
+        &fx.path("failing-git"),
+        "case \"$*\" in *--unset-all*) exit 1;; esac",
+    )?;
+    assert!(failing.scrub_transport_config(&repo).is_err());
+    assert!(!lock.exists(), "the scrub's own lock is gone");
+    assert_eq!(
+        fx.raw(&repo, &["config", "--local", "http.proxy"])?,
+        "http://127.0.0.1:9",
+        "nothing was written"
+    );
+    Ok(())
+}
+
+/// SPEC-402 VUG-001 (#810): a `config.worktree` swapped for a FIFO after the checks (here at Git's
+/// first `config` call) is refused without blocking the open.
+#[test]
+fn a_clone_configuration_swapped_for_a_fifo_is_refused_without_blocking() -> TestResult {
+    use std::os::unix::fs::FileTypeExt as _;
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let worktree_config = repo.join(".git/config.worktree");
+    fs::write(&worktree_config, "[http]\n\tproxy = http://127.0.0.1:9\n")?;
+    let swapping = wrapped_git(
+        &fx,
+        &fx.path("fifo-git"),
+        &format!(
+            "if [ \"$7\" = config ] && [ ! -p '{file}' ]; then rm '{file}' && mkfifo '{file}'; fi",
+            file = worktree_config.display()
+        ),
+    )?;
+    assert!(swapping.scrub_transport_config(&repo).is_err());
+    assert!(
+        fs::symlink_metadata(&worktree_config)?
+            .file_type()
+            .is_fifo(),
+        "the wrapper swapped the file"
+    );
+    assert!(!repo.join(".git/config.worktree.lock").exists());
+    Ok(())
+}
+
+/// SPEC-402 VUG-001 (#810): a configuration file that is not a regular file is refused before
+/// anything is written.
+#[test]
+fn a_clone_configuration_that_is_not_a_file_is_refused() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    fx.raw(
+        &repo,
+        &["config", "--local", "http.proxy", "http://127.0.0.1:9"],
+    )?;
+    nix::unistd::mkfifo(
+        &repo.join(".git/config.worktree"),
+        nix::sys::stat::Mode::from_bits_truncate(0o600),
+    )?;
+    assert!(fx.git.scrub_transport_config(&repo).is_err());
+    assert_eq!(
+        fx.raw(&repo, &["config", "--local", "http.proxy"])?,
+        "http://127.0.0.1:9",
+        "nothing was written"
+    );
     Ok(())
 }
 

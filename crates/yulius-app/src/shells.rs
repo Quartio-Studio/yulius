@@ -75,6 +75,8 @@ pub const MAX_SHELL_NAME_CHARS: usize = 40;
 pub const MAX_SHELL_INPUT_BYTES: usize = 64 * 1024;
 /// Interval of the idle reaper for shells and browsers.
 pub const REAP_INTERVAL: Duration = Duration::from_secs(60);
+/// Reaper rounds between purges of the attachments trash (an hour).
+const TRASH_PURGE_ROUNDS: u64 = 60;
 /// Grace per escalation step of a shutdown request (Ctrl-C, then SIGTERM, then SIGKILL;
 /// interactive shells ignore SIGTERM, so ending a shell takes about two steps).
 const SHUTDOWN_GRACE_MS: u32 = 500;
@@ -814,7 +816,7 @@ impl App {
             sandbox: sandbox.clone(),
             creator: creator.clone(),
             task,
-            folder: std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()),
+            folder: named_folder(&self.sandbox_dir(sandbox), cwd),
             name: Mutex::new(name),
             created_at: self.now(),
             seq: self.shells.next_seq.fetch_add(1, Ordering::SeqCst),
@@ -1348,7 +1350,8 @@ impl App {
         (adopted, removed)
     }
 
-    /// The folder an adopted shell started in: its task's worktree, else the repository.
+    /// The folder an adopted shell started in: its task's worktree, else the repository, with only
+    /// the sandbox directory resolved ([`named_folder`]).
     async fn shell_folder(&self, sandbox: &SandboxId, task: Option<&TaskId>) -> PathBuf {
         let worktree = match task {
             Some(task) => self
@@ -1363,7 +1366,7 @@ impl App {
             None => None,
         };
         let folder = worktree.unwrap_or_else(|| self.sandbox_repo(sandbox));
-        std::fs::canonicalize(&folder).unwrap_or(folder)
+        named_folder(&self.sandbox_dir(sandbox), &folder)
     }
 
     async fn adopt_shell(self: &Arc<Self>, dir_name: &str, run_dir: &Path) -> AppResult<()> {
@@ -1468,6 +1471,7 @@ impl App {
     pub async fn start_workspace_services(self: &Arc<Self>) -> WorkspaceReaper {
         let (adopted, removed) = self.adopt_shells().await;
         self.prune_shell_attachments();
+        self.purge_attachment_trash().await;
         if adopted + removed > 0 {
             tracing::info!(adopted, removed, "shells of the previous server process");
         }
@@ -1476,12 +1480,18 @@ impl App {
             let mut tick = tokio::time::interval(REAP_INTERVAL);
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             tick.tick().await;
+            let mut rounds: u64 = 0;
             loop {
                 tick.tick().await;
                 let Some(app) = app.upgrade() else {
                     return;
                 };
                 app.reap_idle_shells().await;
+                // Deleted tasks' attachments older than a week go hourly (SPEC-396 ATR-004).
+                rounds = rounds.wrapping_add(1);
+                if rounds.is_multiple_of(TRASH_PURGE_ROUNDS) {
+                    app.purge_attachment_trash().await;
+                }
                 for sandbox in app.deps.browser.reap_idle().await {
                     tracing::info!(sandbox = %sandbox, "stopped an idle sandbox browser");
                 }
@@ -1527,4 +1537,26 @@ impl App {
             .unwrap_or_default();
         self.end_shells(&shells).await;
     }
+}
+
+/// The folder a shell starts in, `cwd` with only `sandbox_dir` resolved: its real path (the data
+/// directory may sit behind a host link, macOS `/var`) joined with the rest of `cwd` as named.
+/// Every folder below the sandbox directory is the agent's to swap for a link, which the host never
+/// resolves: the Superagent's launch keys its Claude Code trust by this folder (SPEC-398 VSH-003,
+/// #801). A `cwd` outside the sandbox directory, or naming `..`, is resolved as before.
+fn named_folder(sandbox_dir: &Path, cwd: &Path) -> PathBuf {
+    let resolved = || std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let (Ok(real), Ok(rest)) = (
+        std::fs::canonicalize(sandbox_dir),
+        cwd.strip_prefix(sandbox_dir),
+    ) else {
+        return resolved();
+    };
+    if rest
+        .components()
+        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return resolved();
+    }
+    real.join(rest)
 }

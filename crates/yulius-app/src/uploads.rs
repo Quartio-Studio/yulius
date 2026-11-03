@@ -38,7 +38,8 @@
 //!   keep letters, digits, `.`, `-`, `_` and `+` (anything else becomes `-`; no leading dot or
 //!   dash), so a path needs no quoting in a terminal; at most [`MAX_ATTACHMENTS_PER_FOLDER`] per
 //!   folder. Files dropped on the new-task composer wait in `…/attachments/drafts/<user>/` and are
-//!   removed after a week; a task's folder is removed with the task (TSK-009), a shell's when the shell ends and
+//!   removed after a week; a deleted task's folder stays while another task's request names it and
+//!   otherwise waits a week in the trash (crate::attachment_trash, SPEC-396), a shell's goes when the shell ends and
 //!   at start-up for shells that are gone;
 //! - every upload is audited (`file.uploaded`, `attachment.uploaded`).
 
@@ -83,11 +84,11 @@ const MAX_NAME_BYTES: usize = 255;
 /// Longest attachment name, in characters (the extension is kept).
 const MAX_ATTACHMENT_NAME_CHARS: usize = 100;
 /// Names tried for an attachment before giving up (`name`, `name-2`, …).
-const MAX_FREE_NAME_ATTEMPTS: u32 = 1000;
+pub(crate) const MAX_FREE_NAME_ATTEMPTS: u32 = 1000;
 /// Folder of every attachment in a sandbox directory.
 pub(crate) const ATTACHMENTS_DIR: &str = "attachments";
 /// Shell attachment folders inspected at start-up.
-const MAX_PRUNED_ENTRIES: usize = 10_000;
+pub(crate) const MAX_PRUNED_ENTRIES: usize = 10_000;
 
 /// How long a file dropped on the composer waits for its task before it is removed.
 const DRAFT_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
@@ -303,7 +304,7 @@ fn split_extension(name: &str) -> (&str, &str) {
 }
 
 /// The `n`-th candidate for a free name: `photo.png`, `photo-2.png`, `photo-3.png`, …
-fn candidate(name: &str, n: u32) -> String {
+pub(crate) fn candidate(name: &str, n: u32) -> String {
     if n <= 1 {
         return name.to_owned();
     }
@@ -314,7 +315,7 @@ fn candidate(name: &str, n: u32) -> String {
 /// Opens `parts` below `base` as real directories, creating the missing ones: a link or a file
 /// on the way is refused, so nothing is ever written through a link a sandbox process planted.
 /// Returns the folder's path and its handle.
-fn ensure_plain_dirs(base: &Path, parts: &[&str]) -> AppResult<(PathBuf, OwnedFd)> {
+pub(crate) fn ensure_plain_dirs(base: &Path, parts: &[&str]) -> AppResult<(PathBuf, OwnedFd)> {
     let names: Vec<&OsStr> = parts.iter().map(OsStr::new).collect();
     let fd = open_dirs_below(base, &names, true).map_err(|err| match err {
         Errno::ELOOP | Errno::ENOTDIR => {
@@ -352,9 +353,7 @@ fn ensure_dirs(root: &Path, dirs: &[&str]) -> AppResult<(PathBuf, OwnedFd)> {
             Ok(_) => {
                 let resolved = std::fs::canonicalize(&next).map_err(|e| io_error(&e))?;
                 if !inside(root, &resolved) {
-                    return Err(AppError::Forbidden(
-                        "the path leads outside the folder".into(),
-                    ));
+                    return Err(AppError::Forbidden(crate::files::OUTSIDE.into()));
                 }
                 if !resolved.is_dir() {
                     return Err(AppError::Conflict(format!(
@@ -377,29 +376,76 @@ fn ensure_dirs(root: &Path, dirs: &[&str]) -> AppResult<(PathBuf, OwnedFd)> {
         };
         current = real_path(&fd)?;
         if !inside(root, &current) {
-            return Err(AppError::Forbidden(
-                "the path leads outside the folder".into(),
-            ));
+            return Err(AppError::Forbidden(crate::files::OUTSIDE.into()));
         }
     }
     Ok((current, fd))
 }
 
 /// Links `temp` as `name` in `folder` unless `name` exists. Returns whether it was placed. Where
-/// the file system has no hard links, it checks and renames instead (not atomic against a racing
-/// writer).
+/// the link fails (a file system without hard links), it renames with `RENAME_NOREPLACE` instead,
+/// as atomic as the link (SPEC-402).
 fn link_new(folder: &OwnedFd, temp: &str, name: &str) -> std::io::Result<bool> {
-    match linkat(folder, temp, folder, name, AtFlags::empty()) {
+    link_new_in((folder, temp), folder, name)
+}
+
+/// [`link_new`] from the folder `from` into the folder `to` (a link is never followed).
+pub(crate) fn link_new_in(
+    (from, source): (&OwnedFd, &str),
+    to: &OwnedFd,
+    name: &str,
+) -> std::io::Result<bool> {
+    match linkat(from, source, to, name, AtFlags::empty()) {
         Ok(()) => Ok(true),
         Err(Errno::EEXIST) => Ok(false),
-        Err(_) => match fstatat(folder, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
-            Ok(_) => Ok(false),
-            Err(Errno::ENOENT) => {
-                renameat(folder, temp, folder, name)?;
-                Ok(true)
-            }
-            Err(err) => Err(err.into()),
-        },
+        Err(link) => {
+            fallback_placing();
+            rename_new((from, source), to, name, link)
+        }
+    }
+}
+
+/// Renames `source` of `from` to `name` of `to` unless `name` exists, in one step
+/// (`RENAME_NOREPLACE`): whether it was placed. A file system without the flag fails the
+/// placement; nothing checks and then renames (#808).
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn rename_new(
+    (from, source): (&OwnedFd, &str),
+    to: &OwnedFd,
+    name: &str,
+    _link: Errno,
+) -> std::io::Result<bool> {
+    use nix::fcntl::{RenameFlags, renameat2};
+    match renameat2(from, source, to, name, RenameFlags::RENAME_NOREPLACE) {
+        Ok(()) => Ok(true),
+        Err(Errno::EEXIST) => Ok(false),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Without an atomic no-replace rename (development hosts), the link's error stands.
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn rename_new(
+    _source: (&OwnedFd, &str),
+    _to: &OwnedFd,
+    _name: &str,
+    link: Errno,
+) -> std::io::Result<bool> {
+    Err(link.into())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only pause point: runs once where [`link_new_in`]'s fallback places the file.
+    static FALLBACK_PLACING: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// [`link_new_in`]'s fallback is about to place the file (a pause point for this thread's test).
+fn fallback_placing() {
+    #[cfg(test)]
+    if let Some(hook) = FALLBACK_PLACING.with(|hook| hook.borrow_mut().take()) {
+        hook();
     }
 }
 
@@ -475,7 +521,7 @@ fn place(
 }
 
 /// Entries of `folder` (`.` and `..` left out), counted through its handle up to `limit`.
-fn count_entries(folder: &OwnedFd, limit: usize) -> AppResult<usize> {
+pub(crate) fn count_entries(folder: &OwnedFd, limit: usize) -> AppResult<usize> {
     let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC;
     let mut listing =
         nix::dir::Dir::openat(folder, ".", flags, Mode::empty()).map_err(errno_error)?;
@@ -981,11 +1027,6 @@ impl App {
         }
     }
 
-    /// Removes a deleted task's attachments (TSK-009).
-    pub(crate) fn remove_task_attachments(&self, sandbox: &SandboxId, task: &TaskId) {
-        self.remove_attachments(sandbox, &Owner::Task(task));
-    }
-
     /// Removes an ended shell's attachments.
     pub(crate) fn remove_shell_attachments(&self, sandbox: &SandboxId, shell: &str) {
         self.remove_attachments(sandbox, &Owner::Shell(shell));
@@ -1059,6 +1100,35 @@ mod tests {
         let long = format!("{}.png", "x".repeat(300));
         let short = attachment_name(&long);
         assert!(short.ends_with(".png") && short.chars().count() <= MAX_ATTACHMENT_NAME_CHARS);
+    }
+
+    /// SPEC-402 VUG-002 (#808): where the link fails (here a folder, which `linkat` refuses), a
+    /// name another writer takes just before the fallback places the file is kept, and the call
+    /// says the file was not placed.
+    #[test]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    fn a_name_taken_while_the_fallback_places_is_never_replaced()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let base = dir.path().to_path_buf();
+        std::fs::create_dir(base.join("upload.tmp"))?;
+        std::fs::write(base.join("upload.tmp/ours"), "ours")?;
+        let folder = crate::files::open_dirs_below(&base, &[], false)?;
+        let taken = base.join("photo.png");
+        FALLBACK_PLACING.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let _ = std::fs::create_dir(&taken);
+            }));
+        });
+        let placed = link_new_in((&folder, "upload.tmp"), &folder, "photo.png");
+        assert!(base.join("photo.png").is_dir(), "the racer took the name");
+        assert_eq!(placed.ok(), Some(false));
+        assert!(
+            !base.join("photo.png/ours").exists(),
+            "the racer's entry was not replaced"
+        );
+        assert!(base.join("upload.tmp/ours").exists());
+        Ok(())
     }
 
     #[test]

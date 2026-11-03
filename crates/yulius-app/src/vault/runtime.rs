@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use yulius_contracts::browser::{TabId, TypeParams};
 use yulius_contracts::scrub::{FINGERPRINT_VERSION, Fingerprint, FingerprintSet, RedactionReport};
-use yulius_domain::ids::{SandboxId, TaskId, UserId};
+use yulius_domain::ids::{AttemptId, SandboxId, TaskId, UserId};
 use yulius_domain::vault::hosts::HostPattern;
 use yulius_domain::vault::redact::{Matcher, PlainMatcher, StreamRedactor, rolling_hash};
 use yulius_domain::vault::{
@@ -493,7 +493,9 @@ impl App {
     /// (SPEC-248 FUP-002): after a hand-over (SPEC-070) the Bash wrapper's fallback holds no
     /// hashes of the previous owner's personal values. One rewrite at a time, each reading the
     /// task afresh, so the last one is always the latest holder's. In place, as a contained
-    /// session binds the file read-only; a run without one, or a task that is gone, is left alone.
+    /// session binds the file read-only; the Bash wrapper and the tool hook use only what two
+    /// reads in a row agree on (SPEC-405 VEV-002). A run without one, or a task that is gone, is
+    /// left alone.
     ///
     /// # Errors
     /// Store, decryption and file failures; `Internal` for a link or a path that is no regular
@@ -803,6 +805,15 @@ impl App {
                 super::PERSONAL_SECRET_BROWSER
             )));
         }
+        // A page is in the agent's hands, unlike a request the proxy completes: not even the
+        // hosts a production secret kept from before it became exclusive (SPEC-405 VEV-001).
+        if record.cd_prod {
+            return Err(AppError::Forbidden(format!(
+                "{}: {}",
+                record.name,
+                super::PRODUCTION_SECRET
+            )));
+        }
         let browser = self.browser_session(&ctx.task.sandbox_id).await?;
         let tab = browser
             .tabs()
@@ -913,18 +924,52 @@ impl App {
     }
 
     /// The egress client of a CI job's credential, of a task token or of a Superagent's bearer
-    /// (the latter two cached briefly; a Superagent's only while its shell lives, SPEC-186
-    /// SAV-001); digests are compared in constant time.
+    /// (the latter two cached briefly), while its run lives (SPEC-186 SAV-001, SPEC-388 EPL-002);
+    /// digests are compared in constant time.
     async fn cached_egress_client(&self, token: &str) -> Option<EgressClient> {
-        if token.starts_with(crate::shells::COCKPIT_TOKEN_PREFIX) {
-            let client = self.cached_token_client(token).await?;
-            let EgressCaller::Superagent { shell_id, .. } = &client.caller else {
-                return None;
-            };
-            // An ended Superagent's bearer injects nothing, cached or not.
-            return self.shell(shell_id).is_some().then_some(client);
+        let client = self.cached_token_client(token).await?;
+        if token.starts_with(crate::shells::COCKPIT_TOKEN_PREFIX)
+            && !matches!(client.caller, EgressCaller::Superagent { .. })
+        {
+            return None;
         }
-        self.cached_token_client(token).await
+        // An ended run's credential injects nothing, cached or not. A run whose state cannot be
+        // read is refused too (407): this answer has no passing failure (SPEC-388 EPL-002).
+        match self.egress_client_live(&client).await {
+            Ok(live) => live.then_some(client),
+            Err(err) => {
+                tracing::error!(error = %err, "a proxy client's run could not be read");
+                None
+            }
+        }
+    }
+
+    /// Whether `client`'s run still lives (SPEC-388 EPL-001): an agent run whose attempt is not
+    /// over, a CI job whose credential is open, a Superagent whose shell is running. A client is
+    /// resolved once per proxy connection, which may outlive its run, so each request asks again.
+    ///
+    /// # Errors
+    /// The agent run's attempt could not be read.
+    async fn egress_client_live(&self, client: &EgressClient) -> AppResult<bool> {
+        Ok(match &client.caller {
+            EgressCaller::Agent { attempt_id, .. } => {
+                let Ok(id) = AttemptId::parse(attempt_id) else {
+                    return Ok(false);
+                };
+                self.deps
+                    .store
+                    .attempt(&id)
+                    .await?
+                    .is_some_and(|a| !a.state.is_terminal())
+            }
+            EgressCaller::Ci { .. } => self
+                .vault
+                .ci_clients
+                .0
+                .lock()
+                .is_ok_and(|clients| clients.iter().any(|(_, c)| c == client)),
+            EgressCaller::Superagent { shell_id, .. } => self.shell(shell_id).is_some(),
+        })
     }
 
     /// [`Self::cached_egress_client`] for a CI credential, a task token or a Superagent bearer.
@@ -1034,6 +1079,9 @@ impl EgressPolicy for App {
     }
 
     async fn egress_apply(&self, client: &EgressClient, request: EgressRequest) -> EgressDecision {
+        if let Some(refusal) = run_refusal(self.egress_client_live(client).await) {
+            return refusal;
+        }
         if let Some(refusal) = self
             .vidoc_refusal(client, &request.host, request.port)
             .await
@@ -1168,6 +1216,27 @@ impl EgressPolicy for App {
     }
 }
 
+/// The refusal of a request whose client's run ended (403), or whose run's state could not be read
+/// (503, a passing failure: the client may retry), or None for a live run (SPEC-388 EPL-001).
+fn run_refusal(live: AppResult<bool>) -> Option<EgressDecision> {
+    match live {
+        Ok(true) => None,
+        Ok(false) => Some(EgressDecision::Refuse {
+            status: 403,
+            message: "Yulius: the run behind this proxy credential has ended; nothing was sent"
+                .into(),
+        }),
+        Err(err) => {
+            tracing::error!(error = %err, "a proxy client's run could not be read");
+            Some(EgressDecision::Refuse {
+                status: 503,
+                message: "Yulius could not read whether this run is still going; nothing was sent"
+                    .into(),
+            })
+        }
+    }
+}
+
 /// Whether a secret's value and user name can go into a proxied request: no line breaks or other
 /// control characters, which could add headers or split the request line.
 fn transportable(payload: &AgentPayload) -> bool {
@@ -1199,6 +1268,23 @@ mod tests {
         ] {
             assert!(!transportable(&payload(username, value)), "{value:?}");
         }
+    }
+
+    /// SPEC-388 EPL-001 (review round 1): an ended run is refused for good (403); a run whose
+    /// state could not be read gets a passing failure (503), never "ended".
+    #[test]
+    fn an_ended_run_is_refused_and_an_unread_one_retries() {
+        assert_eq!(run_refusal(Ok(true)), None);
+        let ended = run_refusal(Ok(false));
+        assert!(
+            matches!(&ended, Some(EgressDecision::Refuse { status: 403, message }) if message.contains("ended")),
+            "{ended:?}"
+        );
+        let unread = run_refusal(Err(AppError::Conflict("database is locked".into())));
+        assert!(
+            matches!(&unread, Some(EgressDecision::Refuse { status: 503, message }) if !message.contains("ended")),
+            "{unread:?}"
+        );
     }
 
     #[test]

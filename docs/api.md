@@ -201,7 +201,7 @@ in `crates/yulius-contracts/src/import.rs`.
 | --- | --- | --- |
 | POST | `/api/onboard/plan` | `{"owner","name","sessions":[{"harness":"claude","session_id","sha256","size"}]}` (≤ 2000) → `OnboardPlan`. Changes nothing. With `"playground": true` (and an empty `owner`), the caller's playground named `name` (or a taken-name variant, `name-2`), else whether they may make one (the limit of 10, SPEC-171). |
 | POST | `/api/import` | `{"manifest": ImportManifest}` → `{"job_id", "missing": [{"name", "received_bytes"}]}`. Links the repository as a sandbox when needed (admin/maintain; owner repositories only; write for an existing sandbox); an unfinished job with the same manifest is reused; files already stored for the sandbox (same `sha256`) are not listed. A session file is at most 128 MiB; at most 2000 sessions, each once. A manifest with `"playground": true` (empty owner and remote URL, `bundle` every branch) goes to the caller's playground of that name, else to a new one made when the job completes (its branches as they are, the snapshot one commit on `head_branch`; 422 without a bundle or a branch, 409 at the limit of 10). A person has one such upload open at a time: the same manifest resumes it, another one supersedes it (its files go, and completing it is 409). Without that flag an empty owner is refused (SPEC-171). |
-| PUT | `/api/import/{job}/files/{name}?offset=N` | raw chunk (≤ 8 MiB) with `X-Chunk-Sha256` → `{"name", "received_bytes"}`. `name` is one percent-encoded segment. Repeats are acknowledged; an offset beyond the received length is 409; a wrong digest is 422 (a wrong whole-file digest resets the file to 0). |
+| PUT | `/api/import/{job}/files/{name}?offset=N` | raw chunk (≤ 8 MiB) with `X-Chunk-Sha256` → `{"name", "received_bytes"}`. `name` is one percent-encoded segment. Repeats are acknowledged; an offset beyond the received length is 409; a wrong digest is 422 (a wrong whole-file digest resets the file to 0). Chunks of one file are applied one at a time, each from the received length as it is then, so a chunk another one already covered is acknowledged, never written over it (SPEC-400). |
 | POST | `/api/import/{job}/complete` | → `ImportResult`; 409 while files are incomplete. Idempotent. |
 
 ```json
@@ -315,7 +315,7 @@ limited to the agent's sandbox.
 | POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is an operator override the web UI never sends); 403 for a `cli` token on a `pending` sandbox's onboarding task (starting onboarding is a person's action: the browser or an `operate` token, SPEC-051, SPEC-247) |
 | POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`; operator override: moves a running task to another Claude subscription with a native resume. Tasks are subscription-agnostic (F 2026-10-10): the web UI offers no account choice; the pool switches by itself |
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
-| DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); a Done running task (TSK-014) is closed first and deleted once its run has ended; the close and its wait take at most ~25 s (SPEC-039); 409 while any other task runs (at once, also for a task that turned switching meanwhile), if a Done task's session is still closing then, or if its session could not be ended (its processes survived termination; SPEC-065) |
+| DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); its attachments stay while another task's request or an automation's prompt names them, otherwise they wait 7 days in the trash (SPEC-396, `attachments_trash`); a Done running task (TSK-014) is closed first and deleted once its run has ended; the close and its wait take at most ~25 s (SPEC-039); 409 while any other task runs (at once, also for a task that turned switching meanwhile), if a Done task's session is still closing then, or if its session could not be ended (its processes survived termination; SPEC-065) |
 | POST | `/api/tasks/{tid}/control-request` | write | → `TaskSummary`; asks the task's owner for control (SPEC-070, ADR-0060): it would act on GitHub as you. One request waits per task: 409 for the owner and while another person's request waits (naming them); asking again changes nothing. With the owner disabled, deleted or without write access, control passes at once (`owner` is you), whatever request waits; a waiting asker who can no longer work gives way (their request dropped, `task.control_dropped`). Audited `task.control_requested` |
 | DELETE | `/api/tasks/{tid}/control-request` | read (asker) · write (owner) | → `TaskSummary`; the asker withdraws (`task.control_withdrawn`) or the owner declines (`task.control_declined`); 409 when no request waits, 403 for anyone else |
 | POST | `/api/tasks/{tid}/control-request/accept` | write (owner) | → `TaskSummary` with the asker as `owner`; the task acts on GitHub as them from its next call, its worktree commits as them, its terminal says so, audited `task.control_passed`; 409 when no request waits, when the asker can no longer work in the project (the request is dropped), or while a task holding the owner's personal MCP servers is starting or switching (SPEC-332); a live run holding them resumes for the new owner (same conversation and subscription, nothing typed), or stops if it cannot |
@@ -990,7 +990,9 @@ write access; every changing call is audited with the caller (`task:<n>` or `coc
 | `task_create` | New task | origin `agent`; at most 20 per project and rolling hour |
 | `task_message` (the Cockpit and the remote MCP, never task agents; SPEC-230, SPEC-247) | `POST /api/tasks/{tid}/queued-messages`, or typing into the task's terminal | `{task_id \| number, text}` → `{"task","delivered":"queued"\|"sent","note"}`; queued into a task that never started, typed into a `running` one as one bracketed paste `Message from <login> (through their Superagent):` from the Cockpit, `Message from <login> (through their own agent):` from the remote MCP (SPEC-322), + Enter; refused before Claude Code's session started there, while a person typed there in the last minute, while its folder-trust dialog shows, while the first message or another message is typed, and in every other state; 403 for anyone but the owner on a task holding its owner's personal secrets (SPEC-245) or personal MCP servers, configured or in its live run (SPEC-332); a sent message ends the task's `needs_you`; control characters but LF and tab removed, at most 64 KiB; audited `task.messaged` without the text |
 | `sandboxes_list`, `sandbox_task_create` (the Cockpit only; SPEC-335, ADR-0227) | `GET`/`POST /api/sandboxes/{sid}/superagent/requests` | `sandboxes_list` → `{"sandboxes":[{"sandbox","repository","onboarding"}]}`: the other live sandboxes the person can work in (pre-allowed). `sandbox_task_create {sandbox, prompt, …task_create's arguments}` asks the person and waits at most 4 minutes (`CROSS_REQUEST_WAIT`): `{"outcome":"approved","sandbox","task"}`, `{"outcome":"declined"}` or `{"outcome":"unanswered"}`; refused at once for its own sandbox, one the person cannot work in (not found), unknown arguments, an empty prompt, a text holding a character a person cannot see (tag, bidirectional, zero-width, filler, variation selector, private use), and beyond 3 waiting per person and sandbox; a dropped call, or `notifications/cancelled` with the call's id, takes its request with it (`{"outcome":"cancelled"}`) |
-| `task_stop`, `task_archive` (`archived`: false restores), `task_delete` | `POST /api/tasks/{tid}/stop`, `…/archive` (`…/restore`), `DELETE /api/tasks/{tid}` | by `task_id` or `number`; never the caller's own task; audited `task.stopped`, `task.archived`/`task.unarchived`, `task.deleted` |
+| `task_stop`, `task_archive` (`archived`: false restores), `task_delete` | `POST /api/tasks/{tid}/stop`, `…/archive` (`…/restore`), `DELETE /api/tasks/{tid}` | by `task_id` or `number`; never the caller's own task; audited `task.stopped`, `task.archived`/`task.unarchived`, `task.deleted`; `task_delete` → `{"deleted":{"task_id","number","attachments":{"kept_for":[numbers],"kept_for_automations":[names],"trash":{"task_id","number","deleted_at","restorable_until","files"},"not_moved":true}}}` (each only when it applies; `not_moved`: the folder stayed where it is because the move to the trash failed or settling stopped before it, an `attachments` or `tasks` link never being looked behind, a `tasks` folder that cannot be opened or the tasks unreadable, SPEC-397): its attachment folder stays while a remaining task's request or an automation's prompt names `attachments/tasks/<id>/` (`kept_for`, `kept_for_automations`), otherwise it waits 7 days in `attachments/trash/<secs>-<number>-<id>/` (SPEC-396) |
+| `task_update` (SPEC-396; also the remote MCP) | `PUT /api/tasks/{tid}/start` (SPEC-126) | by `task_id` or `number`; `after_task`, `start_rule`, `supertask`, `prepared`, `start_at` as `task_create` takes them (none: start now); only a `chained` or `prepared` task; → `{"task"}`; audited `task.start_changed` |
+| `attachments_trash` (SPEC-396) | none | → `{"trash":[{"task_id","number","deleted_at","restorable_until","files"}],"note"}`, entries older than 7 days removed first; `{restore: id \| number, into?: number}` (write access) moves that entry's regular files into the `into` task's attachments (the caller's own task by default; the Superagent and the remote MCP name it) under free names → `"restored":{"into","paths","left_in_trash"?}`; the entry goes once empty (a folder or a file it could not move keeps it); at most 100 old entries removed a round; audited `attachment.restored` (also the remote MCP) |
 | `automation_create`, `automation_update` | `POST …/automations`, `PUT /api/automations/{id}` | `created_via: agent` |
 | `automation_delete`, `automation_run_now` | `DELETE /api/automations/{id}`, `POST /api/automations/{id}/run` | audited `automation.deleted`, `automation.run_now` |
 | `automations_list` | `GET …/automations` and `GET …/automation-templates` | `{"automations":[Automation],"ready_made":[AutomationTemplate without "prompt"]}` |
@@ -1176,8 +1178,9 @@ resolves to nothing, the run gets the server without that variable or token.
     outside every worktree, so never in `git status` or a pull request. `name` is reduced to its
     last component with letters, digits, `.`, `_`, `+` (other characters become `-`; no leading
     dot or dash), so the path needs no quoting; an existing name gets `-2`, `-3`, … before its
-    extension. At most 500 per task or shell (409). Removed with the task (`DELETE
-    /api/tasks/{tid}`) or when the shell ends. `POST /api/sandboxes/{sid}/attachments?name` (work
+    extension. At most 500 per task or shell (409). A deleted task's (`DELETE /api/tasks/{tid}`) stay while
+    another task's request or an automation's prompt names them, and otherwise wait 7 days in
+    `…/attachments/trash/` (SPEC-396, `attachments_trash`); a shell's go when the shell ends. `POST /api/sandboxes/{sid}/attachments?name` (work
     access) takes a file dropped on the new-task composer the same way: it waits in the caller's
     drafts folder of the sandbox until the prompt that names its path starts a task; drafts older
     than a week are removed.
@@ -1223,7 +1226,8 @@ resolves to nothing, the run gets the server without that variable or token.
     `<internal URL>/mcp` with `Authorization: Bearer ${YULIUS_COCKPIT_TOKEN}` (the `ck_…` bearer
     in the secret environment, valid while that Cockpit is live and its owner may work), and
     `--allowedTools` for the read-only tools. It is served `tasks_list`, `task_get`,
-    `task_create`, `task_message` (SPEC-230), `task_stop`, `task_archive`, `task_delete`, `automation_create`,
+    `task_create`, `task_update` (SPEC-396), `task_message` (SPEC-230), `task_stop`, `task_archive`, `task_delete`,
+    `attachments_trash` (SPEC-396), `automation_create`,
     `automations_list`, `automation_update`, `automation_delete`, `automation_run_now`,
     `automation_template_enable`, `workflows_list`, `sessions_search`, `session_read` and the vault
     tools `secrets_list`, `secret_verify`, `secret_copy_to_env`, `secret_request_hosts` and
@@ -1663,7 +1667,10 @@ task; other hooks answer as usual.
   base64("yulius:" + task token)` (407 otherwise). Hosts bound to an agent secret of the run's
   sandbox are intercepted (credential added, placeholders `yulius-secret-NAME` replaced,
   `X-Yulius-Secret: NAME` chooses between secrets adding the same header, 409 when ambiguous;
-  the response redacted); other hosts are tunneled. Local destinations answer 403.
+  the response redacted); other hosts are tunneled. Local destinations answer 403. Once the run
+  ended (its attempt over, a CI job's credential closed, a Superagent's shell gone), its token is
+  refused (407) and a request on a connection it already holds answers 403 with nothing sent
+  (503 when its state cannot be read; ADR-0252).
 - `POST /internal/scrub/fingerprints` (task token) → `{version, base, salt, names, needles:
   [{secret, len, rolling, digest}]}`: the run's redaction fingerprints (no values).
 - `POST /internal/scrub/report` (task token) `{channel: "bash"|"tool", names}` → 204; audited
@@ -1684,7 +1691,10 @@ task; other hooks answer as usual.
   the egress proxy accepts its bearer as `yulius:ck_…`. A personal secret is sent only by the
   egress proxy: `browser_fill_secret` and `secret_copy_to_env` refuse it (403) and a
   `${secret:NAME}` reference never resolves to it
-  ([ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.md)).
+  ([ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.md)). A production
+  secret (`cd_prod`) is never typed either: `browser_fill_secret` refuses it (403), also on hosts
+  it kept from before production secrets became exclusive, which only the egress proxy still uses
+  (SPEC-405).
 - MCP `secret_create_from_file {name, file, description?, delete_file?}` (SPEC-211, tasks and the
   Superagent, not run without asking where approvals apply) → `{created, file, deleted, hosts: [], link, next, warning?}`:
   Yulius reads `file` (relative to the folder the caller works in, or `~/…` in its home), anchored

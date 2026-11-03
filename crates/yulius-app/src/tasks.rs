@@ -615,11 +615,12 @@ impl App {
             .github_login
             .clone()
             .unwrap_or_else(|| "superadmin".into());
-        self.delete_task_as(ctx, id, &actor, None).await
+        self.delete_task_as(ctx, id, &actor, None).await.map(|_| ())
     }
 
     /// [`App::delete_task`] audited as `actor`; a management tool passes its caller and the
-    /// caller's audit detail (SPEC-066 MGT-010).
+    /// caller's audit detail (SPEC-066 MGT-010). Answers what became of the task's attachments:
+    /// kept while another task's request names them, otherwise in the trash (SPEC-396).
     ///
     /// # Errors
     /// As [`App::delete_task`].
@@ -629,7 +630,7 @@ impl App {
         id: &str,
         actor: &str,
         caller_detail: Option<&serde_json::Value>,
-    ) -> AppResult<()> {
+    ) -> AppResult<crate::attachment_trash::DeletedAttachments> {
         let mut task = self.load_task(ctx, id, Action::Work).await?;
         if task.status == TaskStatus::Running && self.task_is_done(&task).await {
             self.close_task_and_wait(&task.id).await?;
@@ -701,7 +702,7 @@ impl App {
                 .join("transcripts")
                 .join(task.id.as_str()),
         );
-        self.remove_task_attachments(&task.sandbox_id, &task.id);
+        let attachments = self.settle_attachments(&task).await;
         self.forget_runtime(&task.id);
         let named = format!("#{} {}", task.number, task.title);
         let detail = match caller_detail {
@@ -730,7 +731,7 @@ impl App {
                 task_id: task.id.as_str().to_owned(),
             },
         );
-        Ok(())
+        Ok(attachments)
     }
 
     /// Records the caller's feedback (ANL-002). Read access suffices.

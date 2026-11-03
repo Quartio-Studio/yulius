@@ -9,9 +9,11 @@ use support::{
     Creds, TestResult, call, harness, perms, seed_github_user, seed_sandbox, seed_task,
     session_from,
 };
-use yulius_app::auth::{DEVICE_STARTS_PER_MINUTE, MAX_DEVICE_GRANTS, MAX_DEVICE_GRANTS_PER_CLIENT};
+use yulius_app::auth::{
+    AuthContext, DEVICE_STARTS_PER_MINUTE, MAX_DEVICE_GRANTS, MAX_DEVICE_GRANTS_PER_CLIENT,
+};
 use yulius_app::error::AppError;
-use yulius_app::model::SandboxRecord;
+use yulius_app::model::{SandboxRecord, UserRecord};
 use yulius_app::ports::store::{InstanceStore, SandboxStore, SessionStore, UserStore};
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::permission::GitHubPermissions;
@@ -758,6 +760,76 @@ async fn device_approval_issues_a_single_use_cli_token() -> TestResult {
     )
     .await?;
     assert_eq!(me.status, StatusCode::OK);
+    Ok(())
+}
+
+/// A browser session of `user` (device approval needs one).
+fn in_browser(user: &UserRecord) -> AuthContext {
+    AuthContext {
+        user: user.clone(),
+        csrf_token: Some("csrf".into()),
+        session_hash: None,
+        token: None,
+    }
+}
+
+async fn live_tokens(h: &support::Harness, user: &UserRecord) -> Result<usize, AppError> {
+    Ok(h.store.api_tokens_of(&user.id).await?.len())
+}
+
+/// #725 (SPEC-392 VAT-001): approving a grant that is no longer pending, by the same person or
+/// another, answers `Conflict` and issues no token; of two approvals at once exactly one wins and
+/// only its token exists.
+#[tokio::test]
+async fn a_second_device_approval_leaves_no_token() -> TestResult {
+    let h = harness()?;
+    setup_superadmin(&h).await?;
+    seed_github_user(&h, "u-bob", "bob").await?;
+    let admin = h.store.superadmin().await?.ok_or("superadmin")?;
+    let bob = h.store.user(&UserId::parse("u-bob")?).await?.ok_or("bob")?;
+    let (admin_before, bob_before) = (live_tokens(&h, &admin).await?, live_tokens(&h, &bob).await?);
+
+    let grant = h.app.device_start("cli").await?;
+    h.app
+        .device_approve(&in_browser(&admin), &grant.user_code, true)
+        .await?;
+    assert_eq!(live_tokens(&h, &admin).await?, admin_before + 1);
+    for (who, approve) in [(&admin, true), (&bob, true), (&admin, false)] {
+        let again = h
+            .app
+            .device_approve(&in_browser(who), &grant.user_code, approve)
+            .await;
+        assert!(matches!(again, Err(AppError::Conflict(_))), "{again:?}");
+    }
+    assert_eq!(
+        live_tokens(&h, &admin).await?,
+        admin_before + 1,
+        "a second approval issued no token"
+    );
+    assert_eq!(live_tokens(&h, &bob).await?, bob_before);
+    let got = h.app.device_poll(&grant.device_code).await?;
+    assert_eq!(got.status, "approved");
+    assert!(
+        got.token.is_some(),
+        "the first approval's token reaches the CLI"
+    );
+
+    let raced = h.app.device_start("cli").await?;
+    let (as_admin, as_bob) = (in_browser(&admin), in_browser(&bob));
+    let (first, second) = tokio::join!(
+        h.app.device_approve(&as_admin, &raced.user_code, true),
+        h.app.device_approve(&as_bob, &raced.user_code, true),
+    );
+    assert_eq!(
+        usize::from(first.is_ok()) + usize::from(second.is_ok()),
+        1,
+        "{first:?} {second:?}"
+    );
+    assert_eq!(
+        live_tokens(&h, &admin).await? + live_tokens(&h, &bob).await?,
+        admin_before + 1 + bob_before + 1,
+        "only the winner's token exists"
+    );
     Ok(())
 }
 

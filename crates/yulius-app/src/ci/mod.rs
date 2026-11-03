@@ -345,6 +345,23 @@ fn take_lane(busy: &mut HashSet<String>, sandbox: &str, lanes: u32) -> Option<u3
     Some(lane)
 }
 
+/// Takes a lane of `sandbox` for `run_id` and registers its executor, under the caller's locks;
+/// `None` for a run that already has an executor (#738): a dispatch can read it still queued
+/// before that executor marks it running, and a second one would replace its cancellation.
+fn reserve_run<T>(
+    busy: &mut HashSet<String>,
+    executing: &mut HashMap<String, T>,
+    (run_id, sandbox, lanes): (&str, &str, u32),
+    executor: T,
+) -> Option<u32> {
+    if executing.contains_key(run_id) {
+        return None;
+    }
+    let lane = take_lane(busy, sandbox, lanes)?;
+    executing.insert(run_id.to_owned(), executor);
+    Some(lane)
+}
+
 fn job_view(job: &CiJobRecord, with_output: bool) -> CiJob {
     CiJob {
         id: job.id.clone(),
@@ -744,12 +761,15 @@ impl App {
             }
             None => Vec::new(),
         };
+        // A fork's pull request is never tested (ADR-0116): its author has no push access, and
+        // its head can still be in the clone (an agent fetched `pull/N/head` to review it), so
+        // GitHub's word that it comes from another repository decides, not the clone (#842).
         for pull in pulls
             .into_iter()
-            .filter(|p| p.state == "open" && p.base == profile.integration_branch)
+            .filter(|p| p.state == "open" && p.base == profile.integration_branch && !p.from_fork)
             .take(MAX_PULLS_TESTED)
         {
-            // Heads of other repositories (forks) are not in the clone: not tested.
+            // A head not in the clone (not fetched yet) is tested at a later round.
             if !matches!(
                 self.deps.git.resolve_commit(&repo, &pull.head_sha).await,
                 Ok(Some(_))
@@ -1251,15 +1271,16 @@ impl App {
             let sandbox = run.sandbox_id.as_str().to_owned();
             let (tx, rx) = watch::channel(None);
             let lane = {
-                let Ok(mut busy) = self.ci.busy.lock() else {
+                let (Ok(mut busy), Ok(mut executing)) =
+                    (self.ci.busy.lock(), self.ci.executing.lock())
+                else {
                     return;
                 };
-                let Some(lane) = take_lane(&mut busy, &sandbox, lanes) else {
+                let Some(lane) =
+                    reserve_run(&mut busy, &mut executing, (&run.id, &sandbox, lanes), tx)
+                else {
                     continue;
                 };
-                if let Ok(mut executing) = self.ci.executing.lock() {
-                    executing.insert(run.id.clone(), tx);
-                }
                 lane
             };
             let app = Arc::clone(self);
@@ -1517,7 +1538,7 @@ impl App {
 
 #[cfg(test)]
 mod lane_tests {
-    use super::{busy_in, own_jobs_apply, take_lane};
+    use super::{busy_in, own_jobs_apply, reserve_run, take_lane};
 
     /// CI-110: a stale branch is not tested with the integration branch's old jobs it still
     /// carries; a pull request that changed the jobs is tested with its own.
@@ -1535,7 +1556,7 @@ mod lane_tests {
         assert!(!own_jobs_apply(&new, Some(&old[..]), &new), "same as dev's");
         assert!(own_jobs_apply(&old, None, &new), "base unknown: as before");
     }
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     #[test]
     fn a_sandbox_runs_as_many_runs_as_it_has_lanes_and_never_while_claimed() {
@@ -1563,6 +1584,42 @@ mod lane_tests {
             take_lane(&mut claimed, "s3", 2),
             None,
             "a disk claim holds every lane"
+        );
+    }
+
+    /// #738: a dispatch that reads the run still queued before its executor marked it running
+    /// takes no second lane and keeps the first executor's cancellation.
+    #[test]
+    fn a_run_with_an_executor_is_not_reserved_again() {
+        let (mut busy, mut executing) = (HashSet::new(), HashMap::new());
+        assert_eq!(
+            reserve_run(&mut busy, &mut executing, ("r1", "s1", 2), "first"),
+            Some(0)
+        );
+        assert_eq!(
+            reserve_run(&mut busy, &mut executing, ("r1", "s1", 2), "second"),
+            None,
+            "the run already executes"
+        );
+        assert_eq!(
+            executing.get("r1"),
+            Some(&"first"),
+            "its cancellation stays"
+        );
+        assert!(!busy.contains("s1/1"), "no second lane: {busy:?}");
+        assert_eq!(
+            reserve_run(&mut busy, &mut executing, ("r2", "s1", 2), "other"),
+            Some(1),
+            "another run takes the free lane"
+        );
+        busy.insert("s2".to_owned());
+        assert_eq!(
+            reserve_run(&mut busy, &mut executing, ("r3", "s2", 2), "claimed"),
+            None
+        );
+        assert!(
+            !executing.contains_key("r3"),
+            "a refused run registers nothing"
         );
     }
 }

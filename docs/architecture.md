@@ -297,6 +297,10 @@ The dialog follows the terminal's ending. On `ok` it closes by itself and a toas
 subscription. On `error`, `cancelled` or a lost terminal it shows why, with Try again (a new
 sign-in in the same dialog). Closing it while the sign-in runs cancels that sign-in. The cancel
 waits for the end and keeps a token already printed, so a sign-in that succeeded is never lost.
+The sign-in runs on the host, not in a sandbox. It has a fixed argv, new empty HOME and config
+folders, and input from instance administrators only. Its raw output is one allocation that never
+grows and is zeroed whole once the token is extracted
+([decision 0256](decisions/0256-a-sign-in-runs-on-the-host-and-its-raw-output-is-one-wiped-allocation.md)).
 
 ```mermaid
 stateDiagram-v2
@@ -679,11 +683,17 @@ The server runs outside containment as the service user, and a sandbox's whole d
 mounted read-write into its runs and shells, so an agent can swap any folder below it for a link
 at any moment. Wherever the server reads or writes there (editor reads and saves, uploads and
 attachments, imported transcripts, skill copies, a CI job's log in `ci/logs`, its `ci/home`,
-`ci/cache/<checkout>` and the place of its checkout in `ci/jobs`), it opens the folder once and
-does everything else through that handle
+`ci/cache/<checkout>` and the place of its checkout in `ci/jobs`, the workflows and `yulius.toml`
+`ci_setup` reads from a task worktree), it opens the folder once and does everything else through
+that handle; the format check of a sandbox checkout (`onboarding::validate_sandbox_checkout`)
+opens each document and folder with `files::open_inside` against the checkout's resolved root,
+read only when that root is inside the sandbox directory, and each decision file with `openat`
+from its checked folder's handle
 ([SPEC-220](../.ai/specs/SPEC-220-fix-657-host-writes-into-agent-owned-fol.md),
 [SPEC-285](../.ai/specs/SPEC-285-ci-job-log-created-without-following-pla.md),
 [SPEC-367](../.ai/specs/SPEC-367-ci-job-preparation-never-follows-a-link.md),
+[SPEC-391](../.ai/specs/SPEC-391-vidoc-triage-ci-jobs-and-caches-842-739.md),
+[SPEC-394](../.ai/specs/SPEC-394-vidoc-triage-onboarding-and-delivery-832.md),
 [decision 0174](decisions/0174-host-access-to-agent-owned-folders-goes-through-handles.md)). A CI
 checkout is the exception Git imposes: its place is readied through handles, then Git adds, checks
 out and cleans it by path, only when Git registers it at its resolved path inside `ci`. The
@@ -691,21 +701,41 @@ helpers are `files::open_inside` (a resolved path opened with `O_NOFOLLOW`, the 
 checked to be inside the root), `files::open_dirs_below` (each folder from the sandbox directory
 with `O_DIRECTORY | O_NOFOLLOW`, made with `mkdirat` when missing) and `files::replace_in` (a
 random `O_EXCL | O_NOFOLLOW` temporary file renamed within the handle). The editor's listing,
-folder creation and deletion, and the removal of task, shell and draft attachments, walk the
+folder creation and deletion, the removal of shell and draft attachments, and a deleted task's
+attachments moved to the trash, purged or restored (SPEC-396, `attachment_trash`), walk the
 resolved folder from the sandbox directory with `open_dirs_below` (no real-path check, so no
 `/proc`) and list, `mkdirat`, or remove through `files::remove_tree` (bounded, handle by handle,
 a link unlinked, never followed)
 ([SPEC-265](../.ai/specs/SPEC-265-editor-delete-folder-create-and-listing.md)); the harness's skill copies
 do the same and remove trees with `unlinkat`, and the launch preparation of the Claude config dir
-(`claude_config::ensure_claude_config`) opens `<home>/.claude` from the folder above the home and
-reads paths the agent wrote in a worktree's git files lexically, never on the host filesystem
+(`claude_config::ensure_claude_config`) opens `<home>/.claude` from the folder above the home,
+keys the worktree's trust by the sandbox directory's real path and the rest of the worktree's path
+as named (a link below the sandbox directory is never resolved, and the worktree's `.git` is read
+through folders opened with `O_NOFOLLOW`; a shell's folder, the Superagent's working directory,
+resolves only the sandbox directory the same way,
+[SPEC-398](../.ai/specs/SPEC-398-vidoc-triage-supervisor-harness-and-host.md)), and reads paths the
+agent wrote in a worktree's git files lexically, never on the host filesystem
 ([SPEC-253](../.ai/specs/SPEC-253-claude-config-dir-links-and-commondir-ca.md),
 [decision 0193](decisions/0193-the-claude-config-dir-is-walked-from-above-home-and-the-main-repository-is-read-from-the-git-layout.md)).
 The disk upkeep counts a worktree, a CI job checkout or a cache only when every folder from the
 sandbox directory down to it is a real directory (`leftovers::no_link_between`), checks a cache
 again right before removing it through `leftovers::remove_below`'s `O_NOFOLLOW` handles, and an
-ended worktree again before Git removes it
-([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)).
+ended worktree again before its removal
+([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)). A task worktree
+is removed, or discarded at a task's deletion, by Git's checks only (registered, clean, unlocked);
+on Linux the server then removes its folder and its `.git/worktrees/<id>` record with
+`remove_below` from the folder above each (the sandbox directory; for a snapshot import the
+server's `import-worktrees`), because Git's own removal resolves the path again and
+follows a link swapped in after the checks
+([SPEC-401](../.ai/specs/SPEC-401-vidoc-triage-ci-disk-and-cd-848-844-795.md),
+[decision 0255](decisions/0255-git-checks-a-worktree-and-the-server-removes-it-through-handles.md)).
+The scrub of a clone's transport settings (SPEC-176) opens `.git`, `config` and `config.worktree`
+with `O_NOFOLLOW` under Git's own `<file>.lock`, lets Git edit a copy in a 0700 folder of the
+service user, and renames the result over the name through the `.git` handle; an upload places a
+new name with a link or `RENAME_NOREPLACE`, never a check then a rename; and the folders the server
+creates in a sandbox tree are 0755 whatever the umask
+([SPEC-402](../.ai/specs/SPEC-402-vidoc-triage-uploads-files-and-git-809-8.md),
+[decision 0257](decisions/0257-the-config-scrub-and-new-names-never-go-through-a-checked-path.md)).
 Where Git, not the server, would write (it resolves the path it is given and follows links), the
 work moves out of the sandbox instead: an import's snapshot is checked out, filled and committed
 in `<data>/import-worktrees/<sandbox>/import-<job>[-<n>]` (0700, the name taken with a create-new
@@ -1051,7 +1081,8 @@ from the shell's persisted host token, and it is served the management tools (ta
 automations, workflows, sessions), `task_message` and the vault tools (below). Those tools act for a person (`ProjectCaller`, which names its
 `Channel`: task agent, Superagent or remote MCP): the Cockpit's owner, the remote MCP token's
 person, or a task's owner when a task's agent calls them. `task_create` takes the same path as
-New task; `task_stop`, `task_archive`, `task_delete`, `automation_delete`, `automation_run_now`
+New task; `task_update` is the UI's change of a waiting task's start (SPEC-126, SPEC-396);
+`task_stop`, `task_archive`, `task_delete`, `automation_delete`, `automation_run_now`
 and `automation_template_enable` call the UI's own functions with that person and the caller as
 the audit actor, never on the caller's own task
 ([SPEC-066](../.ai/specs/SPEC-066-fix-275-293-cockpit-and-agents-manage-ta.md),
@@ -1174,6 +1205,9 @@ The Superagent uses the agent vault as a task's agent does
 behind the egress proxy with its own `ck_` bearer (`App::vault_superagent_setup`: proxy variables,
 the CA bundle in its run directory, a placeholder per agent secret), and the proxy's policy takes
 a live Superagent's bearer as `EgressCaller::Superagent`, which never uses a production secret.
+The policy asks whether a client's run still lives on every request, not only when the proxy
+resolves it for a connection (`App::egress_client_live`, ADR-0252): an agent run's attempt not
+over, a CI job's credential open, a Superagent's shell running; an ended run's request gets 403.
 `secret_copy_to_env` and `secret_request_hosts` take a `SecretUser` (a task's agent or the
 Superagent): the Superagent's copies go to the sandbox repository's ignored `.env`, and its asks
 are recorded as `<login>'s Superagent`. The copy walks to its `.env` from the canonical sandbox
@@ -1278,6 +1312,9 @@ flowchart LR
   AG["Task agent"] -->|"Bearer task token"| MCP
   MCP -->|"task_create"| NT["App::create_task_as (as New task)"]
   MCP -->|"task_stop / task_archive / task_delete"| TU["The UI's stop, archive, delete (never the caller's own task)"]
+  MCP -->|"task_update"| SC["App::change_task_start (as the UI's change of a waiting task's start)"]
+  TU -->|"delete: settle_attachments"| TR["attachments: named by a request → stay; else → attachments/trash (7 days)"]
+  MCP -->|"attachments_trash: list, restore into a task"| TR
   MCP -->|"automation_*, automation_template_enable"| AU["Automations and ready-made ones"]
 ```
 
@@ -1295,7 +1332,9 @@ request waits on the secret (`requested_hosts`) until a person who manages it al
 agent misled by injected content cannot send that secret to another server; and production gets
 it only through the production-only allowance (`cd_prod`), which excludes `auto_allow`, `.env`
 copies and bound hosts: each compare-and-set of the store refuses the pair itself, so two people
-answering at once cannot end with both (SPEC-134 M-B, SPEC-262).
+answering at once cannot end with both (SPEC-134 M-B, SPEC-262). Hosts a production secret kept
+from before that are used by the egress proxy only: `browser_fill_secret` never types a production
+secret into a page the agent drives (SPEC-405).
 
 Every team secret belongs to one sandbox (`sandbox_id`, the default) or is team-wide
 (`NULL`). A sandbox's team secret is read by the people who can view that sandbox
@@ -1393,7 +1432,10 @@ reuses a granted name for another command runs it without any secret, and its ou
 ([SPEC-264](../.ai/specs/SPEC-264-ci-grants-agent-secrets-only-to-the-trus.md), ADR-0196). A
 granted job gets the placeholders, the CA bundle and a proxy credential of its own, held in memory
 until its process ended. The proxy's `EgressClient` is then a CI caller, `ci:<run>`, that may use
-only the granted secrets toward their bound hosts; each use is audited under that actor.
+only the granted secrets toward their bound hosts; each use is audited under that actor. A fork's
+pull request is never tested at all: GitHub's word that its head is in another repository decides,
+since an agent that fetched its head to review it puts it in the clone
+([SPEC-391](../.ai/specs/SPEC-391-vidoc-triage-ci-jobs-and-caches-842-739.md)).
 
 ```mermaid
 flowchart LR

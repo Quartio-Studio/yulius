@@ -328,10 +328,20 @@ impl GitPort for GitAdapter {
             owned_root.to_path_buf(),
         );
         blocking(move || {
-            Ok(matches!(
-                git.worktree_remove_if_safe(&repo, &path, &root)?,
-                WorktreeRemoval::Removed
-            ))
+            // On Linux the server removes the folders through handles after Git's checks: Git's
+            // own removal resolves the path again and follows a link a contained agent swapped
+            // in (#844, SPEC-401). Elsewhere runs are not contained and Git removes it.
+            let removal = if cfg!(target_os = "linux") {
+                git.worktree_remove_if_safe_below(
+                    &repo,
+                    &path,
+                    &root,
+                    &yulius_app::leftovers::remove_worktree_part,
+                )?
+            } else {
+                git.worktree_remove_if_safe(&repo, &path, &root)?
+            };
+            Ok(matches!(removal, WorktreeRemoval::Removed))
         })
         .await
     }
@@ -350,7 +360,21 @@ impl GitPort for GitAdapter {
             owned_root.to_path_buf(),
             branch.map(str::to_owned),
         );
-        blocking(move || git.worktree_discard(&repo, &path, &root, branch.as_deref())).await
+        blocking(move || {
+            // As for `remove_worktree` (#844, SPEC-401).
+            if cfg!(target_os = "linux") {
+                git.worktree_discard_below(
+                    &repo,
+                    &path,
+                    &root,
+                    branch.as_deref(),
+                    &yulius_app::leftovers::remove_worktree_part,
+                )
+            } else {
+                git.worktree_discard(&repo, &path, &root, branch.as_deref())
+            }
+        })
+        .await
     }
 
     async fn is_disposable(&self, worktree: &Path, relative: &str) -> AppResult<bool> {

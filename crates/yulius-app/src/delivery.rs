@@ -815,8 +815,9 @@ fn safe_relative(path: &str) -> bool {
 }
 
 /// Reads a repository file below `root`, refusing paths that escape it (also through
-/// symlinks) and files larger than `max` bytes. Errors are user-facing and never contain
-/// server paths.
+/// symlinks, including one swapped in after the check: the file is read through a handle whose
+/// real path is inside `root`) and files larger than `max` bytes. Errors are user-facing and never
+/// contain server paths.
 pub(crate) async fn read_repo_file(
     root: &Path,
     relative: &str,
@@ -837,7 +838,22 @@ pub(crate) async fn read_repo_file(
     if !path.starts_with(&root) {
         return Err(format!("`{relative}` points outside the task worktree"));
     }
-    let meta = tokio::fs::metadata(&path)
+    crate::race::reached(crate::race::Point::RepoFileRead, &path);
+    // The worktree is the agent's, which can swap a folder on the way, or the file, for a link at
+    // any moment: what is read is the handle, opened without following a link at its end and
+    // kept only while its real path is still inside the worktree (#745, ADR-0174).
+    let opened =
+        crate::files::open_inside(&root, &path, nix::fcntl::OFlag::O_RDONLY).map_err(|err| {
+            match err {
+                AppError::Forbidden(message) if message == crate::files::OUTSIDE => {
+                    format!("`{relative}` points outside the task worktree")
+                }
+                _ => format!("`{relative}` cannot be read"),
+            }
+        })?;
+    let file = tokio::fs::File::from_std(std::fs::File::from(opened));
+    let meta = file
+        .metadata()
         .await
         .map_err(|_| format!("`{relative}` cannot be read"))?;
     if !meta.is_file() {
@@ -846,7 +862,8 @@ pub(crate) async fn read_repo_file(
     if meta.len() > max {
         return Err(format!("`{relative}` is larger than {max} bytes"));
     }
-    let bytes = tokio::fs::read(&path)
+    let mut bytes = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut tokio::io::AsyncReadExt::take(file, max), &mut bytes)
         .await
         .map_err(|_| format!("`{relative}` cannot be read"))?;
     String::from_utf8(bytes).map_err(|_| format!("`{relative}` is not UTF-8 text"))
@@ -4424,10 +4441,12 @@ impl App {
             .worktree_path
             .as_ref()
             .map_or_else(|| self.sandbox_repo(&task.sandbox_id), PathBuf::from);
-        let (docs, _) =
-            tokio::task::spawn_blocking(move || crate::onboarding::validate_checkout(&root))
-                .await
-                .map_err(AppError::internal)?;
+        let sandbox_dir = self.sandbox_dir(&task.sandbox_id);
+        let (docs, _) = tokio::task::spawn_blocking(move || {
+            crate::onboarding::validate_sandbox_checkout(&sandbox_dir, &root)
+        })
+        .await
+        .map_err(AppError::internal)?;
         let message = if spec.required {
             message
         } else {

@@ -4,8 +4,185 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-03
+
+- Test fixtures under `crates/yulius/tests` no longer commit credentials in a provider's shape.
+  26 synthetic values with real prefixes (`sk-ant-oat01-`, `sk_test_`, `sk_live_`) are now put
+  together from the prefix and a body, with the same value. `fixture_hygiene` fails on any
+  provider-shaped literal there, so a real token pasted into a test fails the gate (SPEC-406,
+  task #388, ADR-0258, fixes #822 and #797). The `.env` helper `sourced` passes the variable name
+  to `sh` as an argument instead of script text (fixes #772). The Vidoc findings #821, #773 and
+  #746 (fixed master keys of test stores; production's key is random) and #747 (the test's own
+  paths in its own temporary folder) are dismissed with narrow `[[ignore]]` entries.
+- A task's spec and `yulius.toml` are no longer read through a link an agent swaps in after the
+  containment check: the server reads them through a handle opened without following a link at
+  its end and kept only while its real path is inside the worktree (SPEC-409, task #391, fixes
+  #745). The unused `spec_format::spec_path` is removed (#820). The Vidoc findings #817 (draft
+  thumbnails are this page's own data URLs), #816 (every shell viewer is its writing creator),
+  #737 (the status link's parts are server-made) and #732 (the `LIMIT` is a `u32`) are dismissed
+  with narrow `[[ignore]]` entries.
+- The needrestart rule `yulius host setup` writes escapes every character of the unit name but
+  letters, digits, `_` and `-`, so its Perl regex matches the name literally on its own, not only
+  because the setup validated the name first (SPEC-408, task #390, fixes #678). The Vidoc findings
+  #814 (the run directory is 0700, under a 0700 data directory), #755 (the operator's `PATH`, as
+  #716), #698 (no one but the server can write in a run directory), #756 (a raised OOM score only
+  makes the agent's command the first victim) and #690 (the in-memory window is MGT-003's design)
+  are dismissed with narrow `[[ignore]]` entries.
+- The CLI token store (`yulius login`, `yulius remote login`) reads its credentials file through
+  one handle, a regular file only, and never more than 1 MiB of it: a FIFO or a file that grew after
+  its size was checked was read whole (fixes #770). Saved tokens stay a zeroizing `Secret` from
+  parsing to drop, and the file is written without an intermediate buffer (fixes #769). It is
+  written through an owner-only temporary file with a random name, so nothing left at the old
+  fixed name can block a save (fixes #771) (SPEC-407, task #389). The Vidoc findings #802 (the
+  `gitdir:` path only names a trust key in the agent's own config, nothing is opened) and #684 (only
+  the service user can create a `docker-smoke-<pid>` entry) are dismissed with narrow `[[ignore]]`
+  entries.
+- The scrub of a clone's transport settings no longer writes through a link an agent swaps in
+  after its checks: `.git`, `config` and `config.worktree` are opened with `O_NOFOLLOW` under Git's
+  own lock, Git edits a private copy, and the result is renamed over the name through the `.git`
+  handle (SPEC-402, task #385, ADR-0257, fixes #810). An upload whose link fails places its new
+  name with `RENAME_NOREPLACE` instead of a check then a rename (fixes #808), and the folders the
+  server creates in a sandbox tree are 0755 whatever the umask (fixes #800). The Vidoc findings
+  #809 (a pre-1970 draft is old, so pruning it is right) and #811 (only the service user or root
+  can read the Git command's environment) are dismissed with narrow `[[ignore]]` entries; a test
+  pins #809.
+- A subscription sign-in no longer frees copies of its token unzeroed in its raw output. That
+  output, kept to read the token, was a growing buffer, and each growth freed the previous copy
+  unzeroed. It is now one allocation that never grows, and it is zeroed whole once the token is
+  read. The extraction's temporary copy, each output chunk and, once sealed, the extracted token
+  are zeroed too (SPEC-404, task #383, ADR-0256, fixes #731).
+  The Vidoc findings #806 and its duplicate #729 (the sign-in runs on the host by design, with the
+  server's own `PATH`), #751 (a prune between two locks only drops a finished sign-in) and #730
+  (the only snapshot comes before a token can be printed) are dismissed with narrow `[[ignore]]`
+  entries.
+- `browser_fill_secret` no longer types a production secret (`cd_prod`) into a page: one that
+  kept a bound host from before production secrets became exclusive was typed into that host's
+  pages by an agent run, though production secrets never reach agents (SPEC-405, task #382, fixes
+  #710). The Bash wrapper and the tool hook use the run's fingerprint file only once two reads in a
+  row agree: a read that overlapped its in-place rewrite could join the old file to the new one
+  into a set that parses but redacts the wrong values, or none (fixes #835). Vidoc's #711 (the egress client cache)
+  is a duplicate of #757, fixed by #1022. The findings #758 (no asker name holds `", "`, and the
+  list authorizes nothing) and #815 (every caller of `open_credential` gets the account from the
+  server's own pool choice) are dismissed with narrow `[[ignore]]` entries.
+- A queued CI run is no longer started twice. The dispatcher could read a run as still queued
+  before its executor marked it running. With two lanes, the run then took a second lane and
+  dropped the first executor's cancellation, so a later cancel left its jobs running. A run that
+  already has an executor is now never reserved again (SPEC-403, task #384, fixes #738).
+  - The Vidoc findings #784, #718, #716 and #715 are dismissed as false positives, each with a
+    narrow `[[ignore]]` entry. For #784, the agent's `cd_deploy` validates the name before
+    `cd_deploy_for_task`. #718 duplicates #780. For #716, the installed unit pins the server's
+    PATH to the host's read-only system. For #715, uncontained is the development mode.
+  - New tests pin #784 and the unit's PATH.
+- A task worktree that a contained agent swaps for a link after Yulius's checks no longer makes
+  the host delete the folder behind the link. On Linux, the disk upkeep, the hygiene cleanup,
+  snapshot imports and task deletion let Git only check the worktree. The server then removes its
+  folder and its Git record through `O_NOFOLLOW` handles from the folder above them, where Git's
+  own `worktree remove` resolved the path again (SPEC-401, task #378, ADR-0255, fixes #844). The
+  Vidoc findings #848 (a task's agent reads its sandbox's CI runs, which every run of the sandbox
+  already mounts), #795 (declared caches stay inside the sandbox's own worktree), #780 (a
+  confirmation under 7 characters is refused) and #717 (CD output is redacted of production's
+  secrets) are dismissed with narrow `[[ignore]]` entries; tests pin #780 and #717.
+- Import chunks of one file are applied one at a time, each from the received length read once
+  nothing else writes that file: two chunks that read the same length used to both truncate and
+  write it, so the later one could overwrite the earlier, leave the file shorter than its
+  recorded length (every later chunk then failed for good) or replace verified bytes (SPEC-400,
+  task #379, fixes #845). The Vidoc findings #841 (the redaction fingerprints are the accepted
+  redaction oracle, ADR-0014), #840 (the audited host is a parsed URI host), #740 (the
+  Superagent's home is its own `$HOME`) and #749 (recovery locks for good after three wrong codes)
+  are dismissed with narrow `[[ignore]]` entries.
+- The Claude config's trust key no longer resolves a link the agent puts at its worktree or the
+  `worktrees` folder: only the sandbox directory is resolved, the rest of the path is named and
+  opened with `O_NOFOLLOW`, and the worktree's `.git` is read through that handle; a shell's
+  folder (a terminal's, the Superagent's) resolves only the sandbox directory too, so neither a
+  `.claude.json` nor a shell says where a link below the sandbox leads (SPEC-398, task #381, fixes
+  #801). `yulius host setup` and `host check` refuse a data directory that is not absolute before
+  running anything, so it cannot reach `install`, `useradd` or `chmod` as an option (fixes #677).
+  The Vidoc findings #813 (ids are UUID v4 from the OS CSPRNG), #696 (profile branches validated on
+  write and by each Git call), #728 (a session updates only its own attempt's account, bounded) and
+  the service-name part of #677 are dismissed with narrow `[[ignore]]` entries and pinning tests.
+- The Vidoc findings #819 (OSC 52 copies, ADR-0130), #741 (`repo.url` is built by the server as
+  `https://github.com/{owner}/{name}`), #701 (`needs_you` stores only links to this instance),
+  #683 (sandbox names map to `.invalid` in host paths) and #682 (path-based `make_writable` only
+  for trees no sandbox run can change, ADR-0176) are dismissed as false positives with narrow
+  `[[ignore]]` entries; new assertions pin the two link guards (SPEC-399, task #380).
+- Approving a CLI sign-in (device grant) claims the grant and stores its new `cli` token in one
+  store transaction (`SessionStore::approve_device_grant`): a second approval of a grant already
+  approved or denied, by the same person, another one or at the same moment, answers 409 and
+  leaves no stray live token in anyone's token list, where it used to add one (SPEC-392, task
+  #374, fixes #725). The Vidoc findings #724 (revoked bearer tokens are already filtered by the
+  store), #726 (128-bit one-time setup token), #734 (GitHub App secrets never leave the server in
+  clear) and #837 (the deploy itself refuses production without the typed slug) are dismissed with
+  narrow `[[ignore]]` entries.
+- `task_delete` no longer answers as if a deleted task had no attachments when settling left its
+  folder in place: with `attachments` or its `tasks` folder swapped for a link (never looked
+  behind), a `tasks` folder that cannot be opened, or the sandbox's tasks unreadable while the
+  folder is there, the answer says
+  `not_moved: true`; the tool description and SPEC-396's ATR-003 now name the field (SPEC-397,
+  task #387).
+- Deleting a task no longer destroys attachments another task still uses: its
+  `attachments/tasks/<id>/` folder stays where it is while a remaining task's request or an
+  automation's prompt names it (`task_delete` answers `kept_for`), and otherwise waits 7 days in the
+  sandbox's attachments trash; the new `attachments_trash` tool lists the trash and restores an
+  entry's files into a task (also on the remote MCP). The
+  new `task_update` tool changes how a waiting task starts in place (the UI's change, SPEC-126), so
+  an agent never recreates a task to chain it, the workaround that lost quartio-v2's screenshots on
+  2026-11-02 (SPEC-396, task #386, ADR-0253).
+- Vidoc's five findings on supervisor input and session start (#818, #752, #692, #691, #693) are
+  triaged as false positives on `dev`: a typed first message's pastes never hold an ESC
+  (`Request::parse` drops control characters from text and refuses paths holding one), so the
+  paste end delimiter cannot be typed; `send_input` is the terminal's keyboard, used only by
+  viewers with write access and by Yulius with cleaned text; subscription accounts are an
+  ownerless pool and a switch needs write access to the task. Four wordings get a narrow
+  `[[ignore]]`; `transcript_path`'s never-used stored-path branch is removed instead (SPEC-393,
+  task #375). No behaviour change.
+- The format check of a checkout (`validate_checkout`, used by onboarding, its status and
+  `spec_check`) no longer checks a path and then opens it again: each document and the decisions
+  folder are opened with `O_NOFOLLOW | O_NONBLOCK` and used only when the handle is a regular file
+  (or folder) whose real path is inside the checkout (ADR-0174). A sandbox's clone or task worktree
+  is read only when it resolves inside the sandbox directory. A contained agent swapping a file,
+  or the worktree itself, for a link to a host file, or a file for a FIFO, gets nothing read and
+  blocks nothing (SPEC-394, task #376, fixes #744). The production-branch warning that onboarding
+  shows to everyone with View access gives a failed check's public message, keeping an internal
+  error's detail in the log (fixes #834). Vidoc's #832, #783 and #781 are dismissed as false
+  positives with narrow `[[ignore]]` entries.
+- Vidoc's five findings on the `yulius` CLI and host setup (#754, #753, #743, #742, #679) are
+  triaged as false positives on `dev`: the binary holds no privilege beyond its caller's, so
+  `sandbox-exec`, `--scrub-exec`, `remove` and `security-scan` give no caller anything it could
+  not already do (and `remove` still canonicalizes and refuses what is not the task's), and
+  `yulius host setup` writes the systemd unit only after `unit_safe` checked every value it
+  formats. A new test pins that refusal (`unit_values_a_unit_file_cannot_hold_are_refused`); each
+  wording gets one narrow `[[ignore]]` (SPEC-395, task #377). No product change.
+
 ## 2026-11-02
 
+- Five Vidoc findings about client file names becoming paths are triaged as false positives
+  (SPEC-390, task #372, #849 #836 #827 #838 #750): import manifest names pass `FileRef::validate`
+  before the job exists and a chunk only selects a stored manifest entry; editor upload paths pass
+  `relative_components`. `import_server::unsafe_manifest_names_never_reach_the_disk` pins the
+  import side, and `.config/vidoc.toml` ignores each wording.
+- The egress proxy stops adding agent secrets for a run the moment it ends: the policy checks on
+  every request that the client's run still lives (an agent run's attempt, a CI job's credential,
+  a Superagent's shell), where a cached client stayed valid for 15 s and an open intercepted
+  connection kept its secrets until it closed. A failed upstream request is logged without its
+  URL, which held substituted secret values. Vidoc's #839, #709 (duplicate) and #708 were false
+  positives and get `[[ignore]]` entries (SPEC-388, task #370, ADR-0252, fixes #757 and #833).
+- `ci_setup` reads a task worktree's workflows and `yulius.toml` only through handles opened from
+  the sandbox directory folder by folder with `O_NOFOLLOW` (ADR-0174), each file checked as a
+  regular file on its handle: a contained agent swapping `.github`, `workflows`, the worktree or a
+  file for a link (before or after a check) no longer makes the server summarize a host file
+  (SPEC-391, task #373, fixes #829). CI never tests a fork's pull request any more, even when its
+  head commit is in the sandbox's clone (an agent fetched `pull/N/head` to review it): GitHub's
+  `from_fork` decides, as ADR-0116 always said, so a fork's code never runs with the integration
+  branch's granted secrets (fixes #842; running a same-repository pull request's own jobs stays by
+  design). The Vidoc findings #739, its duplicate #736 and #843 (already guarded) are dismissed
+  with narrow `[[ignore]]` entries.
+- Vidoc's five findings on MCP tool authorization (#831, #782, #695, #694, #846) are triaged as
+  false positives on `dev`: the Cockpit is refused every tool outside `COCKPIT_TOOLS` before
+  dispatch, its task and automation tools are its by design and re-checked at each call,
+  `secret_create_from_file` reads only regular files below the caller's work folder or home
+  without following links, `task_create`'s workflow lookup discloses nothing `workflows_list` does
+  not, and `secret_verify` is ADR-0144's accepted oracle. Each wording gets one narrow `[[ignore]]`
+  in `.config/vidoc.toml` with the guard and its tests (SPEC-389, task #371). No product change.
 - A CI job still waiting for a job slot now shows in its run's stages while it waits: `ci::exec`
   opens the job's `job slot` wait span when the wait begins and ends it `started`, `cancelled`
   (cancelled while waiting) or `error`, and the waterfall draws a wait with no job span as that

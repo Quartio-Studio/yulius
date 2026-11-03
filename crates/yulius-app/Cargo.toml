@@ -50,3 +50,5 @@ tempfile = { workspace = true }
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # The leftovers test of an unreadable directory drops its thread's DAC capabilities (#680).
 rustix = { workspace = true, features = ["thread"] }
+# The folder-mode test sets a umask on a thread of its own (`unshare(CLONE_FS)`, SPEC-402).
+nix = { workspace = true, features = ["sched"] }
