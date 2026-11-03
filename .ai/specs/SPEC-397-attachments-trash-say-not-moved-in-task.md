@@ -37,16 +37,17 @@ the deleted task's attachment folder where it is never answers as if there were 
     "missing" or "not a folder"): what is behind it is never looked into, so the folder may be
     there and nothing moved it;
   - the sandbox's tasks cannot be read and `attachments/tasks/<id>/` is a folder (looked up
-    without following a link).
+    without following a link);
+  - `attachments/tasks` is a link (the same reasoning as a linked `attachments`).
   A missing `attachments` or `tasks` folder, or an `attachments` that is a plain file, still
   answers nothing (no folder can exist).
 
 ## Plan
 
 - [x] Spec SPEC-397 written
-- [ ] task_delete's tool description and ATR-003 name not_moved
-- [ ] A deletion through a linked attachments folder answers not_moved
-- [ ] A deletion whose tasks cannot be read answers not_moved
+- [x] task_delete's tool description and ATR-003 name not_moved
+- [x] A deletion through a linked attachments folder answers not_moved
+- [x] A deletion whose tasks cannot be read answers not_moved
 - [ ] Independent review approved and evidence recorded
 
 ## Acceptance criteria
@@ -73,5 +74,6 @@ the deleted task's attachment folder where it is never answers as if there were 
   "may still be there" when nothing is there costs an agent one look; saying "nothing" when the
   files are there is the misreading this task fixes.
 - An `attachments` that is a plain file, or a missing `tasks` folder, answers nothing: no folder
-  of the task can exist there.
+  of the task can exist there. A link opened with `O_NOFOLLOW | O_DIRECTORY` fails with `ENOTDIR`
+  as a plain file does, so the two are told apart by an `lstat` (`kind_at`) of `attachments`.
 - No ADR: this refines the answer of ADR-0253's settling, no new lasting decision.
