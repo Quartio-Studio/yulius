@@ -66,7 +66,7 @@ wording, so that a repeat scan does not reopen it.
 ## Plan
 
 - [x] Spec SPEC-404 with the triage of all five findings
-- [ ] The raw sign-in buffer is one allocation, wiped whole when the sign-in ends (#731)
+- [x] The raw sign-in buffer is one allocation, wiped whole when the sign-in ends (#731)
 - [ ] Narrow [[ignore]] entries for the dismissed wordings (#806 #729 #751 #730)
 - [ ] ADR, changes entry and gates
 - [ ] Independent review answered
