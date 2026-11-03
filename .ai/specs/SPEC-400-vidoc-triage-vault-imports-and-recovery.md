@@ -166,3 +166,48 @@ not reopen the issue on the next scan.
   nothing.
 - No issue is a duplicate of another. Each has its own wording, place and fingerprint, and each
   dismissed one gets its own `[[ignore]]` entry.
+
+## Evidence
+
+- Triage on `dev` at 88a485ca (file:line in Context and in each issue's comment): #845 is real
+  and fixed; #841, #840, #740 and #749 are dismissed as false positives; none is a duplicate.
+- **#845, red then green.**
+  - `import_server::racing_chunks_of_one_file_never_overwrite_each_other` failed on `dev`'s code
+    ("nothing written over the longer chunk: 111 bytes stored, 223 received", then 409 for the
+    stale chunk). It passes with the lock at 593b8f58.
+  - `import_server::a_chunk_whose_request_goes_away_keeps_its_file_until_it_is_stored` failed with
+    the hold dropped along with the handler ("the longer chunk was applied beside a write still
+    under way"). It passes with the spawned locked section at 1635da59.
+  - Mutation at 1635da59: with the `hold` line deleted, the second test fails with that same
+    message (the first still passes, as review round 1 predicted). Restored.
+  - `imports::tests::chunk_locks_live_only_while_a_chunk_needs_them` passes. Mutation: with
+    `retain(|_, _| true)` it fails ("nothing left once every chunk is done", 2 entries). Restored.
+- **#840.** `yulius-egress` `proxy::tests::proxy_targets_with_delimiters_are_no_uri` passes.
+- **`[[ignore]]` entries.** Four new entries in `.config/vidoc.toml`:
+  - `scrub_fingerprints_for`, line 365 (#841)
+  - `note_agent_use`, line 332 (#840)
+  - `secret_source_root`, line 388 (#740)
+  - the title of the route `Public recovery endpoint without visible rate limiting` (#749)
+
+  `python3 -I` with `scripts/vidoc_scan.py` (`parse_config`, `apply_ignores`): the config parses
+  (109 entries after merging `dev`). The four reported wordings at their reported lines are
+  ignored, and so is a reworded repeat inside `scrub_fingerprints_for` or `note_agent_use`. These
+  stay reported: #845's "Race condition in concurrent chunk uploads" in `put_import_chunk`, a CSRF
+  title in `routes/mod.rs`, an unrelated title in `egress_apply`, and a reworded repeat on a line
+  the branch changed. Review round 1 agreed to each dismissal and judged each entry narrow enough.
+- **Gate.** `scripts/dev ci` at 8d7f1178: exit 0, 2991 tests passed, 16 skipped. At 56f39ac3
+  (round-1 fixes, `origin/dev` 4a16b370 merged): exit 0, 2992 tests passed, 16 skipped.
+- **Security scan.** `yulius security-scan`: "Security scan disabled" (Vidoc is off for this
+  project in Yulius). Not run, not passed.
+- **Not tested.** Two Yulius server processes sharing one data directory. The lock is in-process
+  by design: one binary owns the data directory (ADR-0001).
+- **Independent review, round 1 (APPROVE at 8d7f1178).** All four dismissals were agreed, with
+  every citation checked. Findings, all own code, each answered:
+  - Minor: the lock was never contended in a test. Answered by the second test and
+    `race::Point::ImportChunkWait`, which is reached only after a failed `try_lock`.
+  - Minor: the locked section was not atomic when the request is dropped. Answered by running it in
+    a spawned task that owns the hold (1635da59).
+  - Minor: no Evidence section, and Plan boxes unticked. Answered here.
+  - Nit: VTV-002 wording. Aligned.
+  - Nit: #841 is an offline test while a run holds the set, not only redaction's online test. The
+    Context, the ignore comment and the issue comment now say so; the verdict is unchanged.
