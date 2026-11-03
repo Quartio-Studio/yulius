@@ -848,7 +848,7 @@ pub(crate) fn sourced(dir: &Path, name: &str) -> Result<String, Box<dyn std::err
         .output()?;
     if !out.status.success() {
         return Err(format!(
-            "{name} is not set: {}",
+            "sourcing .env for {name} failed (or it is unset): {}",
             String::from_utf8_lossy(&out.stderr)
         )
         .into());

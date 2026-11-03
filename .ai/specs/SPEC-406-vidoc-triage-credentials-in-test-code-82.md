@@ -29,7 +29,7 @@ Each of the seven low Vidoc findings in `crates/yulius/tests` is checked against
   (`sk-ant-`, `sk_live_`, `sk_test_`, `ghp_`, …) and the sign-in's
   `yulius-harness/src/login.rs` `CLAUDE_TOKEN_PREFIX` (`sk-ant-oat01-`). So the tests need
   values of those shapes at run time.
-- 26 literals in 18 files under `crates/yulius/tests` carry a real provider prefix and a body
+- 26 literals in 17 files under `crates/yulius/tests` carry a real provider prefix and a body
   (`sk-ant-oat01-test-credential`, `sk_test_51NzQ9vaultValue8f3a`, `sk_live_51EnvCopyValue9q2w`,
   …). All are synthetic, but the shape is what secret scanners and GitHub push protection match,
   and a real token pasted into a fixture looks like the rest. `secrets_env.rs` already builds PEM
@@ -41,13 +41,18 @@ Each of the seven low Vidoc findings in `crates/yulius/tests` is checked against
 - `World::remote` (`support/repos.rs:1093-1110`) writes `files` under its own temporary
   `scratch` folder. Every caller passes literal relative paths or the product's own scaffold
   (`scaffold_files`, `templates.rs:741`).
-- `[[ignore]]` matches the path exactly and the title as a case-insensitive substring, narrowed
-  by `function`; one narrow entry per wording (SPEC-273, ADR-0202).
+- `[[ignore]]` (`scripts/vidoc_scan.py` `apply_ignores`) matches a finding whose path fits the
+  entry's `fnmatch` pattern and whose title contains the entry's title (case-insensitive),
+  anywhere in the file. On untouched code, `function` and `line` widen that to a reworded repeat
+  in the same function or within a few lines; they never narrow it. One entry per wording
+  (SPEC-273, ADR-0202).
 
 ## Requirements
 
 - TCF-001 (#822, #797, real). No file under `crates/yulius/tests` holds a provider-prefixed
-  credential literal: a known prefix followed by 8 or more token characters. Fixtures that need
+  credential literal: a word that starts with one of the redaction rules' prefixes and goes on
+  with 8 or more token characters (for prefixes that are also common words, such as `npm_`,
+  `hf_` or `secret_`, the rule's own minimum). Fixtures that need
   the shape put it together from the prefix and a synthetic body (`concat!`), so the value at
   run time and every test's behavior stay the same. A test reads every source file there and
   fails naming each such literal, so a real token pasted into a fixture fails the gate.

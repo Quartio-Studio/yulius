@@ -12,7 +12,7 @@ The product finds credentials by their provider prefix: transcript and output re
 extraction (`CLAUDE_TOKEN_PREFIX`, `sk-ant-oat01-`). So tests need values of those shapes at run
 time.
 
-Before this change, 26 literals in 18 files under `crates/yulius/tests` held a real provider
+Before this change, 26 literals in 17 files under `crates/yulius/tests` held a real provider
 prefix and a body, such as an Anthropic OAuth prefix with `test-credential` or a Stripe test key
 prefix with a made-up body. All of them were synthetic. Vidoc reported two of them (#822, #797),
 and the person who asked for the triage said to treat a real token prefix as real. The values are
@@ -28,10 +28,13 @@ not live, so the risk is their shape:
   `concat!` of the prefix and a synthetic body, for example `concat!("sk_test_", "51NzQ9…")`. The
   value, and each test's behavior, stay the same. Fixtures stay `const`.
 - **A test keeps it that way.** `fixture_hygiene::test_fixtures_hold_no_provider_shaped_credential`
-  reads every source file under `crates/yulius/tests`. It fails on a known prefix followed by 8 or
-  more token characters (16 upper-case letters or digits for AWS key ids). It names the file, the
-  line, the prefix and the body's length, never the body. A prefix alone, a `format!` template
-  (`"ghp_{}"`) and a mask (`…[REDACTED]`) pass.
+  reads every file under `crates/yulius/tests`. It fails on a word that starts with a prefix of
+  the redaction rules (`redact.rs` `TOKEN_RULES`) and goes on with 8 or more token characters. For
+  prefixes that are also parts of common words (`npm_`, `hf_`, `secret_`, `yul_`, legacy `sk-`, …)
+  it takes the rule's own minimum, and AWS key ids need 16 upper-case letters or digits. It names
+  the file, the line, the prefix and the body's length, never the body. A prefix alone, a
+  `format!` template (`"ghp_{}"`), a mask (`…[REDACTED]`) and a prefix inside a word
+  (`network_test_…`) pass.
 
 ## Alternatives
 
