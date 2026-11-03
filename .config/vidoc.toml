@@ -728,3 +728,41 @@ reason = "raw keystrokes by design for writers only (terminal_input checks may_w
 path = "crates/yulius-app/src/supervisor.rs"
 title = "Missing authorization check on requested account in preflight_start"
 reason = "accounts are an ownerless pool; switch_task requires Work on the task, rotation::manual refuses unknown or unusable accounts, and the checked credential is dropped (SPEC-393, #691)"
+
+# SPEC-401 (task #378): the Vidoc findings on CI run output, declared caches and CD, triaged as
+# false positives on dev 88a485ca; each issue holds the file:line evidence. (#844 was real and is
+# fixed: worktrees are removed through no-follow handles, ADR-0255.)
+
+# #848: a task is no confidentiality boundary inside its sandbox. Every run of the sandbox mounts
+# the whole sandbox directory, CI job logs included (<sandbox>/ci/logs, containment.rs --bind of
+# the root); session_read hands any task every other task's transcript; CI jobs get secret
+# placeholders, never values (SPEC-142); ci_rerun only queues the same commit again.
+[[ignore]]
+path = "crates/yulius-app/src/ci/tools.rs"
+title = "Task-scoped agent can read any run's output in the sandbox"
+reason = "runs are the sandbox's, not one task's: every run of the sandbox mounts its CI logs and reads its other tasks' transcripts (session_read); CI output holds placeholders, not secret values (SPEC-401, #848)"
+
+# #795: declared caches stay inside the declaring worktree (check_repo_path, #843), are removed
+# only when Git ignores them and they hold no tracked file, through handles; the agent that writes
+# yulius.toml can already delete those folders itself (it mounts the sandbox read-write).
+[[ignore]]
+path = "crates/yulius-app/src/disk.rs"
+title = "Attacker-controlled cache declarations steer host deletions"
+reason = "a declaration only names ignored, untracked folders of the sandbox's own worktree, which its agent can delete itself; no path leaves it (#843) (SPEC-401, #795)"
+
+# #780: the guard reads !(len >= 7 && starts_with): a value shorter than 7 is refused (409), not
+# let through. Pinned by cd.rs production_is_deployed_by_an_administrator_who_types_the_slug (1
+# and 6 characters of the real commit are refused).
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "Weak deploy confirmation check"
+reason = "a confirmation under 7 characters fails the guard and is refused with 409; tested by production_is_deployed_by_an_administrator_who_types_the_slug (SPEC-401, #780)"
+
+# #717: a CD run's stored output is redacted of every agent secret of the sandbox (raw, hex,
+# base64, percent forms), and production's values are such secrets (cd_prod or auto_allow), so
+# cd_status never shows them. Pinned by cd.rs production_secrets_need_their_own_allowance (an
+# agent's cd_status of a production run that printed the value).
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "Agent can read production run output"
+reason = "stored CD output is redacted of every agent secret of the sandbox, production's included; tested by production_secrets_need_their_own_allowance (SPEC-401, #717)"
