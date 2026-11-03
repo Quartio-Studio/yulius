@@ -660,7 +660,6 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
 /// one of the hosts it kept from before production secrets became exclusive (SPEC-308 R2).
 #[tokio::test]
 async fn a_production_secret_is_never_typed_into_a_page() -> TestResult {
-    use yulius_app::ports::vault::VaultStore as _;
     const VALUE: &str = "prod-pass-5512-qrs";
     with_fixture(|f| async move {
         let created = support::call(
@@ -671,7 +670,12 @@ async fn a_production_secret_is_never_typed_into_a_page() -> TestResult {
             &f.writer,
         )
         .await?;
-        assert_eq!(created.status, axum::http::StatusCode::CREATED, "{}", created.body);
+        assert_eq!(
+            created.status,
+            axum::http::StatusCode::CREATED,
+            "{}",
+            created.body
+        );
         let id = created.body["id"].as_str().ok_or("id")?;
         // The store refuses the pair now; older versions left it.
         let store = &f.h.app.deps.store;
