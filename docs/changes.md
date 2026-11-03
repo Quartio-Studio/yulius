@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
+- Teammates try a playground without signing in with GitHub (SPEC-410, task #392, ADR-0260,
+  fixes #412; the product owner's decision amends ACC-005 for playgrounds only). A playground's
+  admin picks "Invite guests…" in its tab menu and creates a link that lasts 1, 7 or 30 days; a
+  teammate opens it, types a name and works on that playground's tasks, terminals and files. A
+  guest reaches no other sandbox, secret or setting (an allowlist of routes, no Configure or
+  Administer, no agent secret in their tasks' runs), and revoking the link or its expiry signs its
+  guests out at once.
+
 - Test fixtures under `crates/yulius/tests` no longer commit credentials in a provider's shape.
   26 synthetic values with real prefixes (`sk-ant-oat01-`, `sk_test_`, `sk_live_`) are now put
   together from the prefix and a body, with the same value. `fixture_hygiene` fails on any
