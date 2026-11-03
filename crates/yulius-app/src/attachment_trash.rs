@@ -175,20 +175,49 @@ fn purge(attachments: &OwnedFd, now: i64) {
     }
 }
 
-/// The sandbox's `attachments` folder and its `tasks` folder (each `None` when missing), opened
-/// from the sandbox directory without following a link. Blocks.
-fn open_attachments(sandbox_dir: &Path) -> Option<(OwnedFd, Option<OwnedFd>)> {
-    let dir = std::fs::canonicalize(sandbox_dir).ok()?;
-    let attachments = match open_dirs_below(&dir, &[OsStr::new(ATTACHMENTS_DIR)], false) {
+/// The sandbox's `attachments` folder and its `tasks` folder (`None` when it cannot be opened),
+/// opened from the sandbox directory without following a link; `Ok(None)` when no task's folder
+/// can be there (no `attachments`, or a plain file), an error when one may be behind it (a link,
+/// never followed). Blocks.
+fn open_attachments(sandbox_dir: &Path) -> Result<Option<(OwnedFd, Option<OwnedFd>)>, Errno> {
+    let Ok(dir) = std::fs::canonicalize(sandbox_dir) else {
+        return Ok(None);
+    };
+    let Ok(sandbox) = open_dirs_below(&dir, &[], false) else {
+        return Ok(None);
+    };
+    let name = OsStr::new(ATTACHMENTS_DIR);
+    let attachments = match open_dir_at(&sandbox, name, false) {
         Ok(folder) => folder,
-        Err(Errno::ENOENT) => return None,
+        Err(Errno::ENOENT) => return Ok(None),
+        // A link opened with `O_NOFOLLOW | O_DIRECTORY` fails as a plain file does.
+        Err(Errno::ENOTDIR)
+            if kind_at(&sandbox, name).is_ok_and(|(kind, _)| kind != SFlag::S_IFLNK) =>
+        {
+            return Ok(None);
+        }
         Err(err) => {
             tracing::warn!(error = %err, "attachments folder is not a plain folder");
-            return None;
+            return Err(err);
         }
     };
     let tasks = open_dir_at(&attachments, OsStr::new("tasks"), false).ok();
-    Some((attachments, tasks))
+    Ok(Some((attachments, tasks)))
+}
+
+/// The deleted task's fate when settling stopped before moving anything: `not_moved` when its
+/// folder is in `folders`, or `tasks` is a link it may be behind (never followed). Blocks.
+fn left_in_place(attachments: &OwnedFd, folders: Option<&OwnedFd>, id: &str) -> DeletedAttachments {
+    let is = |dir: &OwnedFd, name: &str, wanted: SFlag| {
+        kind_at(dir, OsStr::new(name)).is_ok_and(|(kind, _)| kind == wanted)
+    };
+    DeletedAttachments {
+        not_moved: match folders {
+            Some(folders) => is(folders, id, SFlag::S_IFDIR),
+            None => is(attachments, "tasks", SFlag::S_IFLNK),
+        },
+        ..DeletedAttachments::default()
+    }
 }
 
 /// What settling needs to know about the sandbox: the live tasks, and every text that may name a
@@ -370,8 +399,10 @@ impl App {
         let now = self.now_secs();
         // Listed before the tasks are read: a task created meanwhile is then among them.
         let listed = blocking(move || {
-            let Some((attachments, folders)) = open_attachments(&sandbox_dir) else {
-                return Ok(None);
+            let (attachments, folders) = match open_attachments(&sandbox_dir) {
+                Ok(Some(opened)) => opened,
+                Ok(None) => return Ok(Ok(None)),
+                Err(err) => return Ok(Err(err)),
             };
             purge(&attachments, now);
             let names = folders
@@ -386,20 +417,30 @@ impl App {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            Ok(Some((attachments, folders, names)))
+            Ok(Ok(Some((attachments, folders, names))))
         })
         .await;
-        let Ok(Some((attachments, folders, names))) = listed else {
-            return DeletedAttachments::default();
+        let (attachments, folders, names) = match listed {
+            Ok(Ok(Some(listed))) => listed,
+            // Never looked behind (ADR-0174): the task's folder may be there, and nothing moved it.
+            Ok(Err(_)) => {
+                return DeletedAttachments {
+                    not_moved: true,
+                    ..DeletedAttachments::default()
+                };
+            }
+            Ok(Ok(None)) | Err(_) => return DeletedAttachments::default(),
         };
+        let (id, number) = (deleted.id.as_str().to_owned(), deleted.number);
         let namers = match self.namers(sandbox).await {
             Ok(namers) => namers,
             Err(err) => {
                 tracing::warn!(%sandbox, error = %err, "attachments kept: tasks unreadable");
-                return DeletedAttachments::default();
+                return blocking(move || Ok(left_in_place(&attachments, folders.as_ref(), &id)))
+                    .await
+                    .unwrap_or_default();
             }
         };
-        let (id, number) = (deleted.id.as_str().to_owned(), deleted.number);
         let (store, runtime) = (
             Arc::clone(&self.deps.store),
             tokio::runtime::Handle::current(),
@@ -410,7 +451,7 @@ impl App {
             .join("tasks");
         blocking(move || {
             let Some(folders) = folders else {
-                return Ok(DeletedAttachments::default());
+                return Ok(left_in_place(&attachments, None, &id));
             };
             crate::race::reached(crate::race::Point::AttachmentsSettle, &tasks_dir);
             // Asked again for each folder about to move: an unreadable answer keeps it.
@@ -461,7 +502,7 @@ impl App {
                 if SandboxId::parse(&sandbox.file_name().to_string_lossy()).is_err() {
                     continue;
                 }
-                if let Some((attachments, _)) = open_attachments(&sandbox.path()) {
+                if let Ok(Some((attachments, _))) = open_attachments(&sandbox.path()) {
                     purge(&attachments, now);
                 }
             }
@@ -603,6 +644,8 @@ impl App {
         let dir = self.sandbox_dir(sandbox);
         blocking(move || {
             Ok(open_attachments(&dir)
+                .ok()
+                .flatten()
                 .and_then(|(attachments, _)| {
                     open_dir_at(&attachments, OsStr::new(TRASH_DIR), false).ok()
                 })
@@ -615,7 +658,40 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_entry;
+    use super::{DeletedAttachments, left_in_place, parse_entry};
+    use crate::files::open_dirs_below;
+
+    /// SPEC-397 NMV-002: settling stopped early (the tasks unreadable) says the deleted task's
+    /// folder stayed only when it is there as a folder.
+    #[test]
+    fn settling_stopped_early_says_whether_the_folder_stayed()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let tasks = dir.path().join("tasks");
+        std::fs::create_dir_all(tasks.join("t1"))?;
+        std::fs::write(tasks.join("t2"), "")?;
+        std::os::unix::fs::symlink(tasks.join("t1"), tasks.join("t3"))?;
+        let attachments = open_dirs_below(dir.path(), &[], false)?;
+        let folders = open_dirs_below(&tasks, &[], false)?;
+        let stayed = |id| left_in_place(&attachments, Some(&folders), id).not_moved;
+        assert!(stayed("t1"));
+        for id in ["t2", "t3", "t4"] {
+            assert!(!stayed(id), "{id}");
+        }
+        assert_eq!(
+            left_in_place(&attachments, None, "t1"),
+            DeletedAttachments::default(),
+            "a plain `tasks` folder that could not be opened holds nothing to say"
+        );
+        let linked = tempfile::tempdir()?;
+        std::os::unix::fs::symlink(&tasks, linked.path().join("tasks"))?;
+        let linked = open_dirs_below(linked.path(), &[], false)?;
+        assert!(
+            left_in_place(&linked, None, "t1").not_moved,
+            "a linked `tasks` may hold it"
+        );
+        Ok(())
+    }
 
     #[test]
     fn entries_read_back_their_time_number_and_task() {

@@ -452,6 +452,50 @@ async fn a_trash_swapped_for_a_link_receives_nothing() -> TestResult {
     Ok(())
 }
 
+/// SPEC-397 NMV-002: deleting a task while `attachments` or its `tasks` is a link answers
+/// `not_moved` (what is behind a link is never looked into, so the folder may still be there) and
+/// changes nothing outside; an `attachments` that is a plain file answers nothing.
+#[tokio::test]
+async fn a_deletion_through_a_linked_attachments_folder_says_not_moved() -> TestResult {
+    let (h, attachments) = world().await?;
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let outside = h.app.config.data_dir.join("host");
+    let file = attach(&outside, "t1", "a.txt", "a")?;
+    std::fs::remove_dir(&attachments)?;
+    std::os::unix::fs::symlink(&outside, &attachments)?;
+    let (deleted, is_error) = tool(&h, "task_delete", json!({"task_id": "t1"})).await?;
+    assert!(!is_error, "{deleted}");
+    assert_eq!(
+        deleted["deleted"]["attachments"],
+        json!({"not_moved": true}),
+        "the answer says they stayed: {deleted}"
+    );
+    assert_eq!(std::fs::read_to_string(&file)?, "a", "nothing outside moved");
+    assert_eq!(std::fs::read_dir(&outside)?.count(), 1, "no trash outside");
+
+    seed_task(&h, "t3", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    attach(&outside, "t3", "c.txt", "c")?;
+    std::fs::remove_file(&attachments)?;
+    std::fs::create_dir(&attachments)?;
+    std::os::unix::fs::symlink(outside.join("tasks"), attachments.join("tasks"))?;
+    let (deleted, is_error) = tool(&h, "task_delete", json!({"task_id": "t3"})).await?;
+    assert!(!is_error, "{deleted}");
+    assert_eq!(
+        deleted["deleted"]["attachments"],
+        json!({"not_moved": true}),
+        "{deleted}"
+    );
+    assert!(outside.join("tasks/t3/c.txt").is_file(), "nothing outside moved");
+
+    seed_task(&h, "t2", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    std::fs::remove_dir_all(&attachments)?;
+    std::fs::write(&attachments, "")?;
+    let (deleted, is_error) = tool(&h, "task_delete", json!({"task_id": "t2"})).await?;
+    assert!(!is_error, "{deleted}");
+    assert_eq!(deleted["deleted"]["attachments"], json!({}), "{deleted}");
+    Ok(())
+}
+
 /// AC ATR-002: while a deletion settles, a task its first reading missed (created or unarchived
 /// meanwhile) keeps its folder, and the deleted task's folder moved by a parallel deletion first
 /// gets its number back.
