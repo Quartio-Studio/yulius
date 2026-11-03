@@ -852,12 +852,13 @@ export function createEditorView(ctx, sandbox, getTask) {
     tab.look = look;
     tab.looking = true;
     try {
+      // What the server knows of the disk: the conflict's version, else the text's.
       const { sha, diskSha } = tab.live.state;
-      const known = diskSha || sha;
+      const known = diskSha ?? sha;
       let moved = true;
       try {
         const file = await api.get(`/api/sandboxes/${sid}/files/content?${query(tab.path)}${known ? `&known=${known}` : ''}`);
-        moved = Boolean(file) && file.sha256 !== sha && file.sha256 !== diskSha;
+        moved = Boolean(file) && file.sha256 !== known;
       } catch (error) {
         // Deleted: the server keeps the text and says so; unreachable: the next look.
         moved = error.status === 404 && diskSha !== '';
