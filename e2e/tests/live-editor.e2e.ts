@@ -311,6 +311,83 @@ test('leaving the page sends the typing with a request to save it', async ({ app
   expect(await inWindow<string>(browser, 'me', `return mock.liveDoc('${FILE}').text`)).toBe(`Z${ON_DISK}`);
 });
 
+// Review round 3 (minor 2): a closed file still saving when the page goes sends its typing too.
+test('a closed file still saving when the page goes sends its typing with a request to save it', async ({ app, browser, screen }) => {
+  await openHere(app, browser, screen);
+  await inWindow(browser, 'me', 'mock.live.holdEdits = true');
+  await typeAt(browser, 'me', 1, 1, 'Q');
+  await expect.poll(() => inWindow<number>(browser, 'me', 'return mock.live.edits.length')).toBe(1);
+  await screen.getByRole('tab', /^notes\.txt/).getByText('●').click();
+  await expect(screen.getByRole('tab', /^notes\.txt/)).toHaveCount(0);
+  await browser.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  await expect.poll(() => inWindow<boolean>(browser, 'me', 'return mock.live.edits.some((e) => e.save)')).toBe(true);
+  await inWindow(browser, 'me', 'mock.releaseEdits()');
+  await expect.poll(() => onDisk(browser)).toBe(`Q${ON_DISK}`);
+});
+
+// Review round 3 (minors 1 and 3), the browser's document alone against a scripted server: a
+// whole-text catch-up keeps typing never sent, and an edit refused as too old is caught up, not
+// put on top again (it may be in the text already).
+test('a whole-text catch-up keeps unsent typing, and a refused old edit is not applied twice', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const { createLiveDoc, SEND_GAP_MS } = await import('/assets/livedoc.js' as string) as { createLiveDoc(o: unknown): Record<string, any>; SEND_GAP_MS: number };
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const until = async (test: () => boolean) => { for (let i = 0; i < 200 && !test(); i += 1) await wait(10); return test(); };
+    const out: Record<string, unknown> = {};
+    // 1. Unsent typing (in the send gap) survives a catch-up answered with the whole text.
+    {
+      let text = 'abc';
+      const posts: { op: unknown }[] = [];
+      let answer: (v: unknown) => void = () => {};
+      const api = {
+        post: async (url: string, body: { op: unknown }) => {
+          if (url.endsWith('/files/live')) return { session: 's1', revision: 0, text: 'abc', steps: null, eol: '\n', sha256: 'x', saved: true, disk_sha256: null };
+          if (url.endsWith('/edit')) { posts.push(body); return new Promise((r) => { answer = r; }); }
+          return { session: 's1', revision: 5, sha256: 'x', saved: false, disk_sha256: null };
+        },
+        get: async () => ({ session: 's1', revision: 5, text: 'Xabc!', steps: null, eol: '\n', sha256: 'x', saved: false, disk_sha256: null }),
+      };
+      const doc = createLiveDoc({ api, sid: 'sb', root: 'sandbox', path: 'a', client: 'page', user: 'u', canWrite: () => true, getText: () => text, onRemote() {}, onReset: (t: string) => { text = t; }, onState() {}, onSynced() {} });
+      await doc.join();
+      text = 'abcd'; doc.local([3, 'd']);
+      await until(() => posts.length === 1);
+      doc.event({ session: 's1', revision: 1, user_id: 'u', client: (posts[0] as unknown as { client: string }).client, op: [3, 'd'], sha256: 'x', saved: false, disk_sha256: null, eol: '\n' });
+      answer({ revision: 1 });
+      text = 'abcde'; doc.local([4, 'e']); // within the send gap: kept, not sent yet
+      doc.lost(); // the catch-up answers the whole text (steps no longer kept)
+      await until(() => text !== 'abcde');
+      await wait(SEND_GAP_MS * 3);
+      out.kept = text;
+      doc.destroy();
+    }
+    // 2. An edit refused as older than the kept steps, though it landed: caught up, not doubled.
+    {
+      let text = 'abc';
+      let edits = 0;
+      const api = {
+        post: async (url: string) => {
+          if (url.endsWith('/files/live')) return { session: 's2', revision: 0, text: 'abc', steps: null, eol: '\n', sha256: 'x', saved: true, disk_sha256: null };
+          if (url.endsWith('/edit')) { edits += 1; throw Object.assign(new Error('ended'), { status: 409 }); }
+          return { session: 's2', revision: 9, sha256: 'x', saved: false, disk_sha256: null };
+        },
+        // The same document, its text with this tab's edit and a teammate's.
+        get: async () => ({ session: 's2', revision: 9, text: 'Tabcd', steps: null, eol: '\n', sha256: 'x', saved: false, disk_sha256: null }),
+      };
+      const doc = createLiveDoc({ api, sid: 'sb', root: 'sandbox', path: 'b', client: 'page', user: 'u', canWrite: () => true, getText: () => text, onRemote() {}, onReset: (t: string) => { text = t; }, onState() {}, onSynced() {} });
+      await doc.join();
+      text = 'abcd'; doc.local([3, 'd']);
+      await until(() => text !== 'abcd');
+      await wait(SEND_GAP_MS * 3);
+      out.once = text;
+      out.edits = edits;
+      doc.destroy();
+    }
+    return out;
+  });
+  expect(result).toEqual({ kept: 'Xabc!e', once: 'Tabcd', edits: 1 });
+});
+
 // EDT-016: the browser's operations converge as the server's do (the mock uses them as the server).
 test('text operations converge in either order, compose, and place a caret through them', async ({ app, browser }) => {
   await app.open(mock('/s/studio'));

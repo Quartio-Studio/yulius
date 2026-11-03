@@ -58,14 +58,16 @@ Decisions, ADR-0146 "Co-editing of unsaved text", ADR-0091 "Operational transfor
 ## Plan
 
 - [x] Read the product context, the issue and related decisions, then write and validate the spec
-- [ ] Text operations in Rust: apply and transform UTF-16 operations, with unit tests
-- [ ] Live documents on the server: join, catch-up, edits and file.live to writers only
-- [ ] The server saves the shared text and follows the disk, with conflicts kept for a choice
-- [ ] Text operations in the browser and live documents in the mock, shared by two windows
-- [ ] The Editor edits the shared text: teammates' keystrokes and carets show live
-- [ ] The Editor saves by itself and offers Keep mine or Take disk version on a conflict
-- [ ] Earlier Editor tests follow live saving; docs, ADR and EDT-003 updated
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Text operations in Rust: apply and transform UTF-16 operations, with unit tests
+- [x] Live documents on the server: join, catch-up, edits and file.live to writers only
+- [x] The server saves the shared text and follows the disk, with conflicts kept for a choice
+- [x] Text operations in the browser and live documents in the mock, shared by two windows
+- [x] The Editor edits the shared text: teammates' keystrokes and carets show live
+- [x] The Editor saves by itself and offers Keep mine or Take disk version on a conflict
+- [x] Earlier Editor tests follow live saving; docs, ADR and EDT-003 updated
+- [x] Review round 1 findings fixed test-first: bounded edits, per-document locks, closing saves
+- [x] Review round 2 findings fixed test-first: rejoin merge, per-document tab ids, leaving saves
+- [ ] The final review approves the exact head
 - [ ] Every gate green, evidence recorded and the changes log updated
 
 ## Acceptance criteria

@@ -942,9 +942,9 @@ export function createEditorView(ctx, sandbox, getTask) {
     if (active && active.model && !active.looking) refreshFromDisk(active);
   }, LOOK_MS);
 
-  /** Saves every open file now (EDT-019); `keepalive` as the page goes. */
+  /** Saves every open file now (EDT-019); `keepalive` as the page goes, closed ones still saving too. */
   function flushAll({ keepalive = false } = {}) {
-    for (const tab of tabs) tab.live.flush({ keepalive });
+    for (const tab of keepalive ? [...tabs, ...closing] : tabs) tab.live.flush({ keepalive });
   }
 
   /** Open files that changed on disk under unsaved text, waiting for a choice. */

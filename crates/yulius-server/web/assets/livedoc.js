@@ -100,17 +100,17 @@ export function createLiveDoc({ api, sid, root, path, client: page, user, canWri
    * A whole document: this tab's text becomes its text, with this tab's typing on top where it is
    * known not to be in it. `sent`: the text a join sent (the document may have started from it:
    * then only the typing since); else the typing not confirmed yet goes on top, transformed past
-   * the change from `shadow`, unless an edit of it is on its way and may have landed already
-   * (`keep: false`, or a catch-up's whole text): that typing is given up.
+   * the change from `shadow`, unless (outside a join) an edit of it is on its way and may have
+   * landed already: that typing is given up.
    */
-  function takeWhole(doc, { sent = null, keep = true } = {}) {
+  function takeWhole(doc, { sent = null } = {}) {
     let mine = null;
     let before = shadow;
     if (doc.text != null && doc.text !== getText()) {
       if (sent != null && doc.text === sent) {
         before = sent;
         mine = replacement(sent, getText());
-      } else if (sent != null || (keep && !outstanding)) {
+      } else if (sent != null || !outstanding) {
         mine = unconfirmed();
       }
     }
@@ -225,7 +225,9 @@ export function createLiveDoc({ api, sid, root, path, client: page, user, canWri
     api.post(`/api/sandboxes/${sid}/files/live/edit`, body, keepalive ? { keepalive: true } : undefined).catch((error) => {
       if (destroyed || outstanding !== sent || session !== at) return;
       const status = error && error.status;
-      if (status === 409) rejoin();
+      // An ended document, or a revision older than the kept steps (the edit may be in the text
+      // already): the catch-up tells, and joins again only for an ended one.
+      if (status === 409) recheck(sent);
       else if (status === 403) { readOnly = true; onState(); settle(); } else if (status === 422) resync();
       // Lost or refused for now: the steps say whether it landed; sent again if not.
       else retryTimer = setTimeout(() => recheck(sent), RETRY_MS);
@@ -235,7 +237,7 @@ export function createLiveDoc({ api, sid, root, path, client: page, user, canWri
   /** This tab's text is out of step: the server's text replaces it. */
   function resync() {
     api.get(`/api/sandboxes/${sid}/files/live?${new URLSearchParams({ ...base(), session: '-', since: '0' })}`)
-      .then((doc) => { if (!destroyed) takeWhole(doc, { keep: false }); }, () => rejoin());
+      .then((doc) => { if (!destroyed) takeWhole(doc); }, () => rejoin());
   }
 
   /**
@@ -248,7 +250,7 @@ export function createLiveDoc({ api, sid, root, path, client: page, user, canWri
     catching = api.get(`/api/sandboxes/${sid}/files/live?${new URLSearchParams({ ...base(), session, since: String(revision) })}`).then((doc) => {
       if (destroyed) return false;
       if (doc.session !== session) { rejoin(); return false; }
-      if (!doc.steps) { takeWhole(doc, { keep: false }); return true; }
+      if (!doc.steps) { takeWhole(doc); return true; }
       for (const each of doc.steps) step(each);
       takeState(doc);
       return true;
