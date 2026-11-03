@@ -181,8 +181,9 @@ test('an agent’s write shows for both, and over unsaved text waits for Keep mi
   await write('theirs\n');
   await expect.poll(() => statusOf(browser, 'me'), { timeout: 10_000 }).toContain('Changed on disk');
   await expect.poll(() => statusOf(browser, 'bob')).toContain('Changed on disk');
+  // A save asked before the conflict (if the autosave came first) finds it and writes nothing.
   await inWindow(browser, 'me', 'mock.releaseSaves()');
-  await expect.poll(() => inWindow<number>(browser, 'me', 'return mock.live.holdSaves ? -1 : mock.live.saveAsks.length')).toBeGreaterThan(0);
+  expect(await inWindow<number>(browser, 'me', 'return mock.live.saves.length')).toBe(0);
   expect(await onDisk(browser)).toBe('theirs\n');
   expect(await textOf(browser, 'bob')).toBe('mine zero\nalpha\nbeta\ngamma\n');
 

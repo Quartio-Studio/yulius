@@ -67,8 +67,9 @@ Decisions, ADR-0146 "Co-editing of unsaved text", ADR-0091 "Operational transfor
 - [x] Earlier Editor tests follow live saving; docs, ADR and EDT-003 updated
 - [x] Review round 1 findings fixed test-first: bounded edits, per-document locks, closing saves
 - [x] Review round 2 findings fixed test-first: rejoin merge, per-document tab ids, leaving saves
-- [ ] The final review approves the exact head
+- [x] Review round 3 findings fixed test-first: unsent typing kept, refused edits caught up
 - [ ] Every gate green, evidence recorded and the changes log updated
+- [ ] The final review approves the exact head
 
 ## Acceptance criteria
 
