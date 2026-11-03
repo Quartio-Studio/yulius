@@ -1,11 +1,11 @@
 ---
 yulius-task: 39de4bf4-ebc4-4330-929b-9a885da7f2ad
-status: in-progress
+status: done
 ---
 
 # SPEC-407: Triage of the Vidoc findings on the CLI token store, the harness and the Docker smoke
 
-Status: in-progress
+Status: done
 Date: 2026-11-03
 Owner: Yulius task #389
 Scope authorization: task #389 (close #771, #770, #769, #802 and #684, each as a false positive
@@ -91,9 +91,9 @@ are never built.
 - [x] Stored tokens held in Secret, buffers zeroized (#769)
 - [x] Credentials written through a random-name temp file (#771)
 - [x] Narrow [[ignore]] entries for #802 and #684
-- [ ] Gates, docs and changes entry green
-- [ ] Independent review approved on the final head
-- [ ] Issues commented and closed or linked to the pull request
+- [x] Gates, docs and changes entry green
+- [x] Independent review approved on the final head
+- [x] Issues commented and closed or linked to the pull request
 
 ## Acceptance criteria
 
@@ -143,3 +143,25 @@ are never built.
   call), and a folder at the credentials path reads as corrupt, which asks to remove it.
 - No ADR: these are local hardening choices inside one module with no lasting cross-cutting
   consequence.
+
+## Evidence
+
+- Each regression test was run on `dev`'s code first (`cargo nextest run -p yulius-import -E
+  'test(/token_store::/)'`): `an_oversized_or_special_credentials_file_is_refused` failed with
+  `a FIFO: expected Corrupt, got Ok(None)`; `stored_tokens_are_secrets` did not build (E0277, the
+  token is a `String`); `a_squatted_temporary_name_does_not_block_a_save` failed with
+  `IsADirectory`. With the fixes all 9 token store tests pass and the crate's 114 tests pass.
+  `reads_stop_at_the_bound` fails with the final length check replaced by `Ok(Some(bytes))`
+  (mutation check, reverted).
+- `cargo clippy -p yulius-import --all-targets -- -D warnings`: clean.
+- The scanner's own `apply_ignores` (`scripts/vidoc_scan.py`, run from a scratch script) marks
+  both reported wordings ignored, and leaves an unrelated title in each file reported.
+- `scripts/dev ci` on 082a0e0d (the fixes merged with `dev` ea39cb55): exit 0, 3018 tests passed,
+  16 skipped.
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius"; nothing was
+  scanned (disabled, not passed).
+- Independent review (fresh session, read-only): round 1 approved 0315a004 with one low
+  own-code finding (the bound on what is read had no test), fixed test-first in 48b88d4d; round 2
+  approved 082a0e0d and agreed both dismissals are false positives.
+- #802 and #684 commented with their evidence and closed as not planned; #770, #769 and #771
+  commented with a link to #1041, whose `Fixes` lines close them on merge.
