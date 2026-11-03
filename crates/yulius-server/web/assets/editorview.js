@@ -1080,8 +1080,8 @@ export function createEditorView(ctx, sandbox, getTask) {
       h('span', null, active.path),
       h('span', { class: 'muted ed-saved' }, readOnly || (live.saving ? 'Saving…' : live.saved ? 'Saved' : 'Unsaved')),
       conflict ? h('span', { class: 'ed-disk-changed', title: 'Someone (or an agent) changed this file on disk while its text was being edited. Nothing is saved until someone chooses.' }, conflict === 'deleted' ? 'Deleted on disk' : 'Changed on disk') : null,
-      conflict && writable() ? h('button', { type: 'button', class: 'btn btn-sm ed-keep-mine', onClick: () => keepMine(active) }, 'Keep mine') : null,
-      conflict === 'changed' && writable() ? h('button', { type: 'button', class: 'btn btn-sm ed-take-disk', onClick: () => takeDisk(active) }, 'Take disk version') : null,
+      conflict && writable() ? h('button', { type: 'button', class: 'link-btn ed-keep-mine', onClick: () => keepMine(active) }, 'Keep mine') : null,
+      conflict === 'changed' && writable() ? h('button', { type: 'button', class: 'link-btn ed-take-disk', onClick: () => takeDisk(active) }, 'Take disk version') : null,
       h('span', { class: 'muted' }, position ? `Ln ${position.lineNumber}, Col ${position.column}` : ''),
       h('span', { class: 'muted' }, active.model.getLanguageId()),
       LANGUAGE_SERVICES.has(active.model.getLanguageId()) ? h('span', { class: 'muted', title: 'Type-aware suggestions run in the browser' }, 'IntelliSense') : null);

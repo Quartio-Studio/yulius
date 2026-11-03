@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
+- The Editor's text is shared live: teammates who have a file open see each other's keystrokes
+  and carets before anyone saves, and concurrent typing converges (server-ordered operational
+  transformation over the event stream; the text held in the server's memory for the sandbox's
+  writers only). The Editor saves by itself about a second after typing stops and when the person
+  leaves the file; an agent's write over unsaved text shows "Changed on disk" in every Editor with
+  Keep mine and Take disk version (SPEC-411, task #393, ADR-0261, fixes #566). This reverses
+  EDT-003's "unsaved text is neither stored nor shared", by the person's decision of 2026-11-03.
 - Test fixtures under `crates/yulius/tests` no longer commit credentials in a provider's shape.
   26 synthetic values with real prefixes (`sk-ant-oat01-`, `sk_test_`, `sk_live_`) are now put
   together from the prefix and a body, with the same value. `fixture_hygiene` fails on any

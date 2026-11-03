@@ -3,7 +3,9 @@
 ## Status
 
 Accepted. Specified in
-[SPEC-112](../../.ai/specs/SPEC-112-i-want-to-be-able-to-move-those-3-bars-t.md).
+[SPEC-112](../../.ai/specs/SPEC-112-i-want-to-be-able-to-move-those-3-bars-t.md). For the Editor,
+its rejection of operational transforms is superseded by
+[0261](0261-the-editors-text-is-shared-live-and-saved-by-the-server.md) (the notepads keep it).
 
 ## Context
 

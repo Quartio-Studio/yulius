@@ -11,9 +11,9 @@
 //! - writes are atomic (temporary file + rename, permissions kept) and refused with `Conflict`
 //!   when the file changed since the editor read it (agents edit the same files) or, for a new
 //!   file, when it already exists;
-//! - each user's editor view (open files, unsaved text) lives only in their browser; nothing
-//!   of it is stored, and only where their selection is in a file is relayed to the sandbox's
-//!   other writers (SPEC-127).
+//! - each user's editor view (open files, tabs, cursor) lives in their browser; where their
+//!   selection is in a file is relayed to the sandbox's other writers (SPEC-127), and the text of
+//!   open files is shared live in memory (`live_files.rs`, SPEC-411).
 
 use std::ffi::{OsStr, OsString};
 use std::os::fd::OwnedFd;
