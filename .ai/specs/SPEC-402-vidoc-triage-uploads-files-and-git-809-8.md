@@ -79,10 +79,10 @@ it.
 ## Plan
 
 - [x] Spec SPEC-402 with the triage of all five findings
-- [ ] Configuration scrub through no-follow handles and Git's lock (#810)
-- [ ] Atomic no-replace fallback for new names (#808)
-- [ ] Folders created 0755 whatever the umask (#800)
-- [ ] Old-draft pin and narrow [[ignore]] entries (#809 #811)
+- [x] Configuration scrub through no-follow handles and Git's lock (#810)
+- [x] Atomic no-replace fallback for new names (#808)
+- [x] Folders created 0755 whatever the umask (#800)
+- [x] Old-draft pin and narrow [[ignore]] entries (#809 #811)
 - [ ] ADR, architecture, changes entry and gates
 - [ ] Independent review answered
 - [ ] Dismissed issues commented and closed (#809 #811)
