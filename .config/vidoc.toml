@@ -764,5 +764,5 @@ reason = "a confirmation under 7 characters fails the guard and is refused with 
 # agent's cd_status of a production run that printed the value).
 [[ignore]]
 path = "crates/yulius-app/src/ci/cd.rs"
-title = "Agent can read production run output"
+title = "Agent can read production run output (potential secret disclosure)"
 reason = "stored CD output is redacted of every agent secret of the sandbox, production's included; tested by production_secrets_need_their_own_allowance (SPEC-401, #717)"

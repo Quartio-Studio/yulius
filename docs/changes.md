@@ -9,7 +9,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - A task worktree that a contained agent swaps for a link after Yulius's checks no longer makes
   the host delete the folder behind the link. On Linux, the disk upkeep, the hygiene cleanup,
   snapshot imports and task deletion let Git only check the worktree. The server then removes its
-  folder and its Git record through `O_NOFOLLOW` handles from the sandbox directory, where Git's
+  folder and its Git record through `O_NOFOLLOW` handles from the folder above them, where Git's
   own `worktree remove` resolved the path again (SPEC-401, task #378, ADR-0255, fixes #844). The
   Vidoc findings #848 (a task's agent reads its sandbox's CI runs, which every run of the sandbox
   already mounts), #795 (declared caches stay inside the sandbox's own worktree), #780 (a

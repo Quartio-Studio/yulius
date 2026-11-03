@@ -715,7 +715,8 @@ ended worktree again before its removal
 ([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)). A task worktree
 is removed, or discarded at a task's deletion, by Git's checks only (registered, clean, unlocked);
 on Linux the server then removes its folder and its `.git/worktrees/<id>` record with
-`remove_below` from the sandbox directory, because Git's own removal resolves the path again and
+`remove_below` from the folder above each (the sandbox directory; for a snapshot import the
+server's `import-worktrees`), because Git's own removal resolves the path again and
 follows a link swapped in after the checks
 ([SPEC-401](../.ai/specs/SPEC-401-vidoc-triage-ci-disk-and-cd-848-844-795.md),
 [decision 0255](decisions/0255-git-checks-a-worktree-and-the-server-removes-it-through-handles.md)).

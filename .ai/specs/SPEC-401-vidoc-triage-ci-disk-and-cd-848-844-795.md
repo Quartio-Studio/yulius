@@ -50,7 +50,9 @@ does not reopen it.
     folder (the sandbox directory), with `leftovers::remove_below`.
   - A worktree swapped for a link after the checks has only the link removed. Nothing behind the
     link is touched.
-  - A worktree whose Git record holds submodules (`modules/`) is refused, as Git refuses it.
+  - A worktree holding submodules (`modules/` in its record, or a gitlink in its index whose
+    folder holds a `.git`) is refused, as Git refuses it. So is a worktree whose `.git` names a
+    record that does not name it back (its `gitdir`).
   - Off Linux (development hosts, whose runs are not contained) Git removes it as before.
 - VCD-002 (#848, false positive). The agent tools `ci_status {run_id}` and `ci_rerun` stay
   scoped to the task's sandbox, not to its task; this is dismissed with a narrow entry.
@@ -75,11 +77,14 @@ does not reopen it.
 
 ## Acceptance criteria
 
-- `disk::an_ended_worktree_swapped_for_a_link_during_its_removal_touches_nothing_behind_it`
-  fails on `dev`, where Git deletes the other sandbox's worktree behind the link, and passes with
-  the fix.
-- A task-deletion test, where the worktree is swapped for a link after the checks, keeps what is
-  behind the link. It fails on `dev` and passes with the fix.
+- `git_adapter::a_worktree_swapped_for_a_link_during_its_removal_touches_nothing_behind_it`
+  (clean removal) and `git_adapter::a_discarded_worktree_swapped_for_a_link_touches_nothing_behind_it`
+  (task deletion) fail with dev's removal (Git deletes the folder behind the link) and pass with
+  the fix. Each asserts that its swap really ran.
+- `git_ops::removal_below_hands_over_only_verified_worktrees` shows that each refusal (submodules
+  either way, a record that does not name the worktree back, an owned root resolving outside its
+  parent) hands nothing to the removal, and a clean worktree hands over its folder, then its
+  record.
 - The existing worktree removal tests (`git_ops`, `git_adapter`, `disk::`, `hygiene`) pass
   unchanged, and the Git record of a removed worktree is gone (`git worktree list`).
 - `cd::production_is_deployed_by_an_administrator_who_types_the_slug` refuses a 6-character
@@ -91,8 +96,10 @@ does not reopen it.
 
 ## Test plan
 
-- Integration tests in `crates/yulius/tests/disk.rs` (the real Git adapter, a race point between
-  Git's checks and the removal) and in the task deletion tests.
+- Integration tests in `crates/yulius/tests/git_adapter.rs`: the real Git adapter, with the race
+  point `WorktreeRemove` between Git's checks and the removal; `disk::`, hygiene and imports
+  tests keep passing unchanged.
+- `crates/yulius-git/tests/git_ops.rs` for the refusals of `worktree_remove_if_safe_below`.
 - Additions to `crates/yulius/tests/cd.rs`.
 - `scripts/dev ci` (the full gate) and `yulius security-scan`.
 
@@ -123,4 +130,45 @@ does not reopen it.
 
 ## Evidence
 
-(filled in at the end)
+- Triage on `dev` 88a485ca (the file:line evidence is in each issue's closing comment):
+  - #848: `tool_ci_status`/`ci_rerun` are scoped to the sandbox (`ci/tools.rs:65-75`,
+    `ci/mod.rs:1335-1342`). Job logs are in `<sandbox>/ci/logs` (`ci/exec.rs:1286-1296`), which
+    every run mounts (`containment.rs:94`, `:246`). `session_read` serves any task of the sandbox
+    (`session_docs.rs:1294-1320`). CI jobs get placeholders (`ci/exec.rs:862`, `:925`).
+  - #795: `check_repo_path` keeps declarations inside the worktree (#843); `find_caches`
+    (`disk.rs:352-395`) and `remove_cache` (`disk.rs:138-152`) act only on ignored, untracked
+    real folders, through handles.
+  - #780: `ci/cd.rs:991-992` refuses any non-empty confirmation under 7 characters (409).
+  - #717: `ci/cd.rs:1288-1289` (and the live tail, `ci/exec.rs:1214-1216`) redact every agent
+    secret of the sandbox (`vault/mod.rs:402-415`, `:458-495`; forms in `vault/encode.rs:94`).
+    Production's values are such secrets (`vault/env_files.rs:850-855`).
+  - #844: real; SPEC-263 had recorded the window as out of scope.
+- Regression tests, seen failing on dev-equivalent code (Git's removal, with the pause point
+  after the checks): both `git_adapter::` swap tests failed with the victim's folder deleted
+  ("the folder behind the link was deleted (... failed to delete '.../worktrees/t1': Not a
+  directory)"). They pass with the fix. Mutation checks after review round 1: both fail when the
+  adapter is put back to Git's removal (the swap never runs), and `removal_below_hands_over_only_
+  verified_worktrees` fails without the gitlink check or the `gitdir` back-reference.
+- The #780 pin fails when the length check is removed (`cd::production_is_deployed_by_an_
+  administrator_who_types_the_slug`).
+- `[[ignore]]` entries are title-only with the exact path, one per wording, like most entries in
+  `.config/vidoc.toml`. The `function` field is optional and left out (a title-only entry is
+  narrower than the function would make it). The independent reviewer agreed to all four: `ci/tools.rs` "Task-scoped agent can read
+  any run's output in the sandbox"; `disk.rs` "Attacker-controlled cache declarations steer host
+  deletions"; `ci/cd.rs` "Weak deploy confirmation check" and "Agent can read production run
+  output (potential secret disclosure)".
+- `scripts/dev ci` at bd7390fc: exit 0, nextest 2990 passed, 16 skipped. The first run failed
+  macOS clippy (Linux-only test helpers unused there), which was fixed by `cfg(target_os = "linux")`.
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0). This
+  is disabled, not passed; nothing was scanned.
+- Independent review, round 1 (fresh session, bd7390fc): request changes. It found no remaining
+  delete through a link and agreed to the four dismissals. Findings answered:
+  - The swap tests did not fail without the fix; they now assert that the race ran.
+  - The refusal branches had no tests; `git_ops` now covers them.
+  - Git also refuses populated gitlinks; now refused too.
+  - The record is checked to name the worktree back.
+  - Stale comments and the hygiene refusal message were updated.
+  - ADR-0255's context was inaccurate: a discard needs the race too.
+  - The docs wrongly said "sandbox directory" for imports.
+  - Spec test names were wrong.
+  - The #717 title was widened to Vidoc's full wording.

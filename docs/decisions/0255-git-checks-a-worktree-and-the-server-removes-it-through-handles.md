@@ -14,19 +14,22 @@ worktree with `git worktree remove`, and task deletion with `git worktree remove
 Yulius checked the path first (`canonicalize`, inside the owned root, registered, clean). Git then
 resolved it again, and it deletes the folder through `opendir` on the path. So a worktree that a
 contained agent swapped for a link after Yulius's check had the folder behind the link deleted by
-the host: another sandbox's, or one of Yulius's own (#844, Vidoc). Task deletion does not check
-`git status`, so there one swap is enough; the clean removal needs the swap during Git's own
-checks. `git worktree prune` cannot replace Git's removal of the record: it would also drop the
+the host: another sandbox's, or one of Yulius's own (#844, Vidoc). Git first checks through the
+path that `<path>/.git` names the worktree's record (and, without `--force`, that `git status` is
+clean), so an agent has to swap the folder again during Git's own run, between those checks and
+the deletion: a race, but one a looping agent can win. Task deletion skips only the status check. `git worktree prune` cannot replace Git's removal of the record: it would also drop the
 records of worktrees that agents keep in places the server does not see (SPEC-215).
 
 ## Decision
 
 - On Linux, Git only checks: inside the owned root, registered, not the main worktree, not locked,
-  clean (`git status`), and no `modules/` in its record. A discard skips the cleanliness check,
-  as before. Git also names the worktree's record (`rev-parse --absolute-git-dir`), which must lie
-  in the repository's `worktrees/`.
+  clean (`git status`), and no submodules (`modules/` in its record, or a gitlink in its index
+  whose folder holds a `.git`, as `git worktree remove` refuses). A discard skips the cleanliness
+  and submodule checks, as `--force --force` did. Git also names the worktree's record
+  (`rev-parse --absolute-git-dir`), which must lie in the repository's `worktrees/` and name the
+  worktree back (its `gitdir`).
 - The server then removes the worktree folder below the parent of the owned root (the sandbox
-  directory). After that, while no other worktree registration changes in this process, it
+  directory, or the server's own `import-worktrees` for a snapshot import). After that, while no other worktree registration changes in this process, it
   removes the record below the parent of the clone. Both go through `leftovers::remove_below`:
   `O_NOFOLLOW` from the trusted folder down, then handle by handle. A worktree swapped for a link
   has only the link removed.
@@ -50,7 +53,7 @@ records of worktrees that agents keep in places the server does not see (SPEC-21
 
 - The server, not Git, deletes a worktree's files. Git's other side effects of a removal (an
   empty `worktrees/` folder removed) no longer happen; Git ignores an empty `worktrees/` folder.
-- A worktree whose record holds submodules is not removed by the upkeep or the cleanup, as Git
-  refused it before. A discard removes it anyway.
+- A worktree holding submodules is not removed by the upkeep or the cleanup, as Git refused it
+  before. A discard removes it anyway, as before.
 - The same handle walk serves caches, leftovers and worktrees, so there is one removal to keep
   right.
