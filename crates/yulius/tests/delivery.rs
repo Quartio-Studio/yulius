@@ -592,7 +592,9 @@ async fn a_spec_folder_swapped_for_a_link_after_its_check_is_not_read() -> TestR
     let d = f.delivery("t1").await?;
     assert_eq!(d["spec_valid"], false, "{d}");
     assert!(
-        d["spec_problems"].to_string().contains("points outside the task worktree"),
+        d["spec_problems"]
+            .to_string()
+            .contains("points outside the task worktree"),
         "{d}"
     );
     Ok(())
@@ -622,7 +624,9 @@ async fn a_spec_swapped_for_a_link_after_its_check_is_not_read() -> TestResult {
     let d = f.delivery("t1").await?;
     assert_eq!(d["spec_valid"], false, "{d}");
     assert!(
-        d["spec_problems"].to_string().contains("points outside the task worktree"),
+        d["spec_problems"]
+            .to_string()
+            .contains("points outside the task worktree"),
         "{d}"
     );
     Ok(())
