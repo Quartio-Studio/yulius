@@ -1,11 +1,11 @@
 ---
 yulius-task: 103e3870-8384-4b50-9f9e-08314022b36f
-status: in-progress
+status: done
 ---
 
 # SPEC-403: Vidoc triage of the CD environment and CI lane findings (#784 #718 #716 #715 #738)
 
-Status: in-progress
+Status: done
 Date: 2026-11-03
 Owner: Yulius task #384
 Scope authorization: task #384 (a person asked that each of the five issues end closed). Fixes
@@ -80,8 +80,8 @@ repeat scan does not reopen it.
 - [x] Pin the agent deploy's environment name check (#784) with a test
 - [x] Accept the five false positives in .config/vidoc.toml
 - [x] Reserve a CI lane only for a run without an executor (#738)
-- [ ] Independent review and gates green
-- [ ] Close the four dismissed issues and link #738 to the pull request
+- [x] Independent review and gates green
+- [x] Close the four dismissed issues and link #738 to the pull request
 
 ## Acceptance criteria
 
@@ -121,3 +121,32 @@ repeat scan does not reopen it.
 - Two related open findings on the inherited PATH, #755 (`supervisor.rs`) and #806
   (`accounts.rs`), belong to other triage groups. They are left to those groups and mentioned in
   the pull request.
+
+## Evidence
+
+- `scripts/dev ci` at 688d777a passed with exit 0. It ran the repository contracts, fmt, clippy,
+  the macOS check, deps, doctests and nextest. Nextest reported 3001 tests passed and 16
+  skipped. The run before it, at 1ac54c97, failed only on `cargo fmt --check`, in the new lane
+  test, which was then reformatted.
+- `cargo nextest run -p yulius-app -E 'test(/lane_tests::/)'`:
+  `a_run_with_an_executor_is_not_reserved_again` failed with dev's reservation (`left: Some(1)`,
+  `right: None`, "the run already executes") and passes with the fix.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^(ci|ci_[a-z_]+|local_ci|disk|cd|merge_train|ci_lanes)::/)'`
+  with the fix passed: 125 of 125 tests.
+- Mutation checks:
+  - When `tool_cd_deploy` passes the name through without `dom::env_name`,
+    `cd::named_environments_deploy_by_their_stage` fails (`tests/cd.rs:1776`).
+  - When the unit's `Environment=PATH` line is removed,
+    `host_setup::tests::a_fresh_host_gets_the_service_and_a_base_with_docker` fails.
+  - Both tests pass on the real code.
+- `yulius security-scan` reported "Security scan disabled: Vidoc is turned off in Yulius". The
+  scan is disabled for this project. It did not run, and it is not reported as passed.
+- Independent review, two rounds in fresh sessions:
+  - The first round, at 02248a01, approved and agreed with the four dismissals and their
+    `[[ignore]]` entries. It found the double dispatch next to #738, which was already on dev,
+    plus two nits: a test comment and the spec's citations. Those are fixed in a22ff69a.
+  - The second round, at 1ac54c97, approved the fix. It found no lock-order inversion, no guard
+    held across an `.await`, and no stuck disk-requeued run.
+- Not tested: the double dispatch with real timing (two dispatches racing an executor's
+  transition). The helper test covers the reservation decision without sleeps.
+
