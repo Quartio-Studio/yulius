@@ -14,11 +14,14 @@ type LiveHub = {
   edits: { path: string; client: string; at: number }[];
   saveAsks: { path: string; force: boolean; at: number }[];
   saves: { path: string; text: string; force: boolean }[];
+  diskAsks: { path: string; force: boolean }[];
 };
 type LiveMock = {
   live: LiveHub;
   liveMuted?: boolean;
   repoFile(sandbox: string, path: string, text: string): void;
+  repoFileTooLarge(sandbox: string, path: string): void;
+  fileReads?: { path: string }[];
   repoTrees: Record<string, { files: Map<string, string> }>;
   liveDoc(path: string): { session: string; revision: number; text: string; saved: boolean; disk_sha256: string | null } | null;
   dropLive(): void;
@@ -232,6 +235,45 @@ test('lost events are caught up and a lost document is started again from the pe
   expect(await textOf(browser, 'me')).toBe(expected);
   await inWindow(browser, 'me', 'mock.releaseSaves()');
   await expect.poll(() => onDisk(browser)).toBe(expected);
+});
+
+// Review round 1 (M2): a file closed while its typing is still on its way keeps its document
+// until the typing is confirmed and written.
+test('a file closed right after typing still saves all of it', async ({ app, browser, screen }) => {
+  await openHere(app, browser, screen);
+  await inWindow(browser, 'me', 'mock.live.holdEdits = true');
+  await typeAt(browser, 'me', 1, 1, 'X');
+  await typeAt(browser, 'me', 1, 2, 'Y');
+  await screen.getByRole('tab', /^notes\.txt/).getByText('●').click();
+  await expect(screen.getByRole('tab', /^notes\.txt/)).toHaveCount(0);
+  await inWindow(browser, 'me', 'mock.releaseEdits()');
+  await expect.poll(() => onDisk(browser)).toBe(`XY${ON_DISK}`);
+});
+
+// Review round 1 (minor 4): a document the server lost and someone else started again keeps the
+// typing this tab had not had confirmed, on top of the text it now has.
+test('a document started again by someone else keeps the person’s unconfirmed typing on top', async ({ app, browser, screen }) => {
+  await openHere(app, browser, screen);
+  await inWindow(browser, 'me', 'mock.live.holdSaves = true; mock.live.holdEdits = true');
+  await typeAt(browser, 'me', 1, 1, 'kept ');
+  // The server restarts; a teammate's Editor starts the document again from its own text.
+  await inWindow(browser, 'me', `mock.dropLive(); return mock.request('POST', '/api/sandboxes/sb_studio/files/live', { path: '${FILE}', client: 'teammate', text: 'alpha\\nbeta\\ngamma\\ndelta\\n', saved: false })`);
+  await inWindow(browser, 'me', 'mock.releaseEdits()');
+  const expected = 'kept alpha\nbeta\ngamma\ndelta\n';
+  await expect.poll(() => inWindow<string | null>(browser, 'me', `return mock.liveDoc('${FILE}')?.text ?? null`)).toBe(expected);
+  await expect.poll(() => textOf(browser, 'me')).toBe(expected);
+});
+
+// Review round 1 (minor 7): a version on disk the server refuses to take is asked for once.
+test('a disk version that is no longer text is asked for once, and says so', async ({ app, browser, screen }) => {
+  await openHere(app, browser, screen);
+  await inWindow(browser, 'me', `mock.repoFile('sb_studio', '${FILE}', 'grown'); mock.repoFileTooLarge('sb_studio', '${FILE}')`);
+  await expect(browser.locator('.toast-msg:has-text("no longer text the editor opens")')).toBeVisible();
+  const reads = () => inWindow<number>(browser, 'me', `return (mock.fileReads ?? []).filter((r) => r.path === '${FILE}').length`);
+  const after = await reads();
+  await expect.poll(reads, { timeout: 10_000 }).toBeGreaterThanOrEqual(after + 2);
+  expect(await inWindow<number>(browser, 'me', `return mock.live.diskAsks.filter((a) => a.path === '${FILE}').length`)).toBe(1);
+  expect(await textOf(browser, 'me')).toBe(ON_DISK);
 });
 
 // EDT-016: the browser's operations converge as the server's do (the mock uses them as the server).

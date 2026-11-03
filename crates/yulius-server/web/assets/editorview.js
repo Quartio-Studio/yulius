@@ -591,12 +591,36 @@ export function createEditorView(ctx, sandbox, getTask) {
       const revision = event.session ? { session: event.session, revision: event.revision } : null;
       for (const tab of tabs) if (tab.root === event.root && tab.path === event.path) tab.presence.peer({ ...event, revision });
     }),
-    ctx.store.on('file-live', (event) => {
-      if (event.sandbox_id !== sandbox.id) return;
-      for (const tab of tabs) if (tab.root === event.root && tab.path === event.path) tab.live.event(event);
+    ctx.store.on('resync', () => {
+      for (const tab of tabs) tab.presence.lost();
+      for (const tab of [...tabs, ...closing]) tab.live.lost();
     }),
-    ctx.store.on('resync', () => { for (const tab of tabs) { tab.presence.lost(); tab.live.lost(); } }),
   ];
+  // Closed files whose typing is still being confirmed and saved (`close()`): they hear their
+  // steps until then, also after this view is gone.
+  const closing = new Set();
+  const offLive = ctx.store.on('file-live', (event) => {
+    if (event.sandbox_id !== sandbox.id) return;
+    for (const tab of [...tabs, ...closing]) if (tab.root === event.root && tab.path === event.path) tab.live.event(event);
+  });
+  /** `tab` leaves the Editor: its text stays in memory until its typing is confirmed and saved. */
+  function retire(tab) {
+    tab.presence.destroy({ going: false });
+    if (tab.model) { tab.text = tab.model.getValue(); tab.model.dispose(); tab.model = null; }
+    closing.add(tab);
+    tab.live.close().then(() => {
+      tab.live.destroy();
+      closing.delete(tab);
+      if (destroyed && !closing.size) offLive();
+    });
+  }
+  // Leaving the page while typing is still on its way would lose it: the browser asks first.
+  const onBeforeUnload = (event) => {
+    if (![...tabs, ...closing].some((tab) => tab.live.busy)) return;
+    event.preventDefault();
+    event.returnValue = '';
+  };
+  window.addEventListener('beforeunload', onBeforeUnload);
   // People who went quiet fade out; the file in front says it is still there now and then.
   const sweep = setInterval(() => { for (const tab of tabs) tab.presence.tick(); }, PRESENCE_SWEEP_MS);
   // A hidden page has left its file for the others (with a request that outlives a closing page),
@@ -699,6 +723,7 @@ export function createEditorView(ctx, sandbox, getTask) {
       root: tab.root,
       path: tab.path,
       client: CLIENT_ID,
+      user: myId,
       canWrite: writable,
       getText: () => (tab.model ? tab.model.getValue() : tab.text),
       onRemote: (op) => applyRemote(tab, op),
@@ -856,14 +881,27 @@ export function createEditorView(ctx, sandbox, getTask) {
       const { sha, diskSha } = tab.live.state;
       const known = diskSha ?? sha;
       let moved = true;
+      let seen = null;
       try {
         const file = await api.get(`/api/sandboxes/${sid}/files/content?${query(tab.path)}${known ? `&known=${known}` : ''}`);
-        moved = Boolean(file) && file.sha256 !== known;
+        seen = file ? file.sha256 : null;
+        // A version the server refused to take (no longer text) is not asked for again.
+        moved = Boolean(file) && file.sha256 !== known && file.sha256 !== tab.refusedSha;
       } catch (error) {
         // Deleted: the server keeps the text and says so; unreachable: the next look.
         moved = error.status === 404 && diskSha !== '';
       }
-      if (moved && tab.look === look && tabs.includes(tab)) await tab.live.disk();
+      if (moved && tab.look === look && tabs.includes(tab)) {
+        try {
+          await tab.live.disk();
+        } catch (error) {
+          if (error.status !== 422) throw error;
+          tab.refusedSha = seen;
+          toast(`${tab.path} on disk is no longer text the editor opens; the text here is kept.`, { kind: 'info' });
+        }
+      }
+    } catch {
+      // Unreachable or refused: the next look tries again.
     } finally {
       if (tab.look === look) tab.looking = false;
     }
@@ -929,10 +967,10 @@ export function createEditorView(ctx, sandbox, getTask) {
     const index = tabs.indexOf(tab);
     if (index < 0) return;
     tabs.splice(index, 1);
-    tab.presence.destroy({ going: false });
-    tab.live.destroy();
-    if (tab.model) tab.model.dispose();
-    if (active === tab) {
+    const wasActive = active === tab;
+    if (wasActive && editor) editor.setModel(null);
+    retire(tab);
+    if (wasActive) {
       active = null;
       const next = tabs[index] || tabs[index - 1];
       if (next && suspended) active = next; // shown by resume()
@@ -945,11 +983,10 @@ export function createEditorView(ctx, sandbox, getTask) {
   }
 
   function closeAll() {
-    for (const tab of tabs) { tab.presence.destroy({ going: false }); tab.live.destroy(); }
-    for (const tab of tabs) if (tab.model) tab.model.dispose();
+    if (editor) editor.setModel(null);
+    for (const tab of tabs) retire(tab);
     tabs.length = 0;
     active = null;
-    if (editor) editor.setModel(null);
     host.hidden = true;
     empty.hidden = false;
     renderTabs();
@@ -1146,7 +1183,10 @@ export function createEditorView(ctx, sandbox, getTask) {
     destroy() {
       destroyed = true;
       tabDrag.cancel();
-      for (const tab of tabs) { tab.live.flush(); tab.presence.destroy({ going: false }); tab.live.destroy(); }
+      if (editor) editor.setModel(null);
+      for (const tab of tabs) retire(tab);
+      if (!closing.size) offLive();
+      window.removeEventListener('beforeunload', onBeforeUnload);
       clearInterval(sweep);
       clearInterval(looker);
       offs.forEach((off) => off());

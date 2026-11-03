@@ -2366,8 +2366,8 @@ route('POST', `/api/sandboxes/${ID}/files`, ({ db, p, body }) => {
 // `db.live.holdSaves = true` saves until `releaseSaves()`; `db.live.edits`, `saveAsks` and
 // `saves` (the writes) record what was asked.
 function liveKey(sid, root, path) { return `${sid}|${root}|${path}`; }
-function livePublish(db, sid, root, path, doc, client, op) {
-  const event = { type: 'file.live', sandbox_id: sid, root, path, session: doc.session, revision: doc.revision, client, op, sha256: doc.sha, saved: doc.savedRevision === doc.revision, disk_sha256: doc.diskSha, eol: doc.eol };
+function livePublish(db, sid, root, path, doc, client, op, userId = '') {
+  const event = { type: 'file.live', sandbox_id: sid, root, path, session: doc.session, revision: doc.revision, user_id: userId, client, op, sha256: doc.sha, saved: doc.savedRevision === doc.revision, disk_sha256: doc.diskSha, eol: doc.eol };
   for (const sink of [...db.live.sinks]) { try { sink(event); } catch { db.live.sinks.delete(sink); } }
 }
 function liveEol(text, fallback) {
@@ -2434,6 +2434,10 @@ route('POST', `/api/sandboxes/${ID}/files/live/edit`, async ({ db, p, body }) =>
   const doc = liveDocOf(db, place, body.session);
   const oldest = doc.steps.length ? doc.steps[0].revision - 1 : doc.revision;
   if (body.revision > doc.revision || body.revision < oldest) fail(409, 'conflict', 'the live document ended; join it again');
+  // The same edit sent again (its answer lost): its step, as the server answers it.
+  const userId = db.me.user.id;
+  const sent = doc.steps.find((step) => step.revision > body.revision && step.user_id === userId && step.client === body.client);
+  if (sent) return { revision: sent.revision };
   let op = body.op;
   let text;
   try {
@@ -2444,9 +2448,9 @@ route('POST', `/api/sandboxes/${ID}/files/live/edit`, async ({ db, p, body }) =>
   doc.text = text;
   doc.revision += 1;
   if (wasSaved && noopOp(op)) doc.savedRevision = doc.revision;
-  doc.steps.push({ revision: doc.revision, client: body.client, op });
+  doc.steps.push({ revision: doc.revision, user_id: userId, client: body.client, op });
   if (doc.steps.length > 256) doc.steps.shift();
-  livePublish(db, place.sid, place.root, place.path, doc, body.client, op);
+  livePublish(db, place.sid, place.root, place.path, doc, body.client, op, userId);
   return { revision: doc.revision };
 });
 route('POST', `/api/sandboxes/${ID}/files/live/save`, async ({ db, p, body }) => {
@@ -2473,6 +2477,7 @@ route('POST', `/api/sandboxes/${ID}/files/live/save`, async ({ db, p, body }) =>
 });
 route('POST', `/api/sandboxes/${ID}/files/live/disk`, ({ db, p, body }) => {
   const place = livePlace(db, p[0], body, Boolean(body.force));
+  db.live.diskAsks.push({ path: place.path, force: Boolean(body.force) });
   const doc = liveDocOf(db, place, body.session);
   if (!place.tree.files.has(place.path)) {
     if (body.force) fail(404, 'not_found', 'not found');
@@ -2504,7 +2509,7 @@ route('POST', `/api/sandboxes/${ID}/files/live/disk`, ({ db, p, body }) => {
   doc.text = theirs;
   doc.revision += 1;
   doc.savedRevision = doc.revision;
-  doc.steps.push({ revision: doc.revision, client: '', op: ordered });
+  doc.steps.push({ revision: doc.revision, user_id: '', client: '', op: ordered });
   livePublish(db, place.sid, place.root, place.path, doc, '', ordered);
   return liveState(doc);
 });
@@ -5666,7 +5671,7 @@ export function createMockTransport(params) {
     db.repoTrees = opener.repoTrees;
     db.live = opener.live;
   } else {
-    db.live = { docs: new Map(), sinks: new Set(), next: 0, joins: [], edits: [], saves: [], saveAsks: [], held: [], holdEdits: false, heldSaves: [], holdSaves: false };
+    db.live = { docs: new Map(), sinks: new Set(), next: 0, joins: [], edits: [], saves: [], saveAsks: [], diskAsks: [], held: [], holdEdits: false, heldSaves: [], holdSaves: false };
   }
   // `liveMuted = true`: this window's stream loses the shared text's events (a lost connection).
   const liveSink = (event) => { if (!db.liveMuted) emit(db, event); };
