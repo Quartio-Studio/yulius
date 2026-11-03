@@ -44,8 +44,8 @@ three issues found behind other timeouts are fixed, so these tests fail only for
     still as soon as it shows (`holdStill`, as now).
   - `queued-messages.e2e.ts` "a waiting task takes a message…": the first wait after `app.open`.
   - `onboarding.e2e.ts`: the Add sandbox dialog's repository radio did not show within the
-    action's 30 s, at load 15 too (task #136). No race was found by task #297; this task looks
-    again (Plan).
+    action's 30 s, at load 15 too (task #136). No race was found by task #297, nor by this task
+    (Evidence): its wait is already 30 s, so the first-load budget does not apply to it.
 - **#510.** At load ~78:
   - `consistency.e2e.ts`, `places.e2e.ts` (three tests) and `pipeline.e2e.ts` (three tests):
     first waits after `app.open` (a heading, a closed-task banner, the Superagent's first screen,
@@ -83,18 +83,22 @@ three issues found behind other timeouts are fixed, so these tests fail only for
 | FLD-003 | A regression test holds a page's first content past 5 s: `firstShown` passes and a default wait for the same thing fails. | `mock-ready.e2e.ts` |
 | FLD-004 | The tests the three issues list wait for their first screen with `firstShown`, or with `terminalShown` where it is a task terminal's first screen. | the listed files |
 | FLD-005 | The rail test opens the mock without the sandbox browser's sign-in request (`browserask=0`); the Tasks list pause test without ambient activity (`ambient=0`). | `rail.e2e.ts`, `pause.e2e.ts` |
-| FLD-006 | The notes tests that turn a failure off then trigger the next load at once (a tab switch, which loads), instead of waiting out a back-off a starved run stretches; tests that need the test's own save to be the refused one hold the server's answer to the pad's look from before the lost answer, so the pad's own retry cannot settle it first. Each passes with the probe delay that failed it before. | `notes.e2e.ts` |
+| FLD-006 | The notes tests that turn a failure off then trigger the next load at once (a tab switch, which loads), instead of waiting out a back-off a starved run stretches; tests that need the test's own save to be the refused one hold the server's answer to the pad's look from before the lost answer, so the pad's own retry cannot settle it first. Each passes with the probe delay that failed it before, and the back-off test still proves the pad retries by itself. | `notes.e2e.ts` (removing the retry after a teammate's edit fails "…backs off") |
+| FLD-007 | A running subject's waterfall, drawn again at every poll, shows the tip of the row under a still pointer again after the redraw (`stages.js` `loadWaterfall`). | `pipeline.e2e.ts` "the hover tip of a running run stays through the waterfall's redraw" (fails without it: the tip hidden) |
+| FLD-008 | Terminal tests that look at a task terminal's rows right after `app.open` wait for its first screen first (`terminalShown`). | `terminal.e2e.ts` |
 
 ## Plan
 
 - [x] Spec, and the notes races reproduced with probe delays
-- [ ] A named first-load wait with its regression test
-- [ ] Notes back-off races fixed
-- [ ] Rail, pause and terminal races fixed
-- [ ] #354's listed tests wait for their first load
-- [ ] #510's and #525's listed tests wait for their first load
-- [ ] ADR, e2e README, architecture and changes
-- [ ] Affected files repeated under load, numbers recorded
+- [x] A named first-load wait with its regression test
+- [x] Notes back-off races fixed
+- [x] Rail, pause and terminal races fixed
+- [x] #354's listed tests wait for their first load
+- [x] #510's and #525's listed tests wait for their first load
+- [x] ADR, e2e README, architecture and changes
+- [x] Affected files repeated under load, numbers recorded
+- [x] Load-run findings fixed: waterfall tip, terminal first screens
+- [ ] Changed files repeated under load again
 - [ ] Independent review findings resolved
 - [ ] Gates green
 

@@ -14,7 +14,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   mock's sign-in request (`browserask=0`), the Tasks list pause test without the ambient regroup
   under its pointer (`ambient=0`), terminal tests wait for the terminal's first screen, and the
   notes tests no longer wait out the pad's doubled back-off or let its own retry settle a lost save
-  first. Fixes #354, #525 and #510.
+  first. A running CI run's waterfall keeps the hover tip of the row under the pointer through its
+  redraw at every poll (it vanished until the pointer moved). Fixes #354, #525 and #510.
 - Test fixtures under `crates/yulius/tests` no longer commit credentials in a provider's shape.
   26 synthetic values with real prefixes (`sk-ant-oat01-`, `sk_test_`, `sk_live_`) are now put
   together from the prefix and a body, with the same value. `fixture_hygiene` fails on any

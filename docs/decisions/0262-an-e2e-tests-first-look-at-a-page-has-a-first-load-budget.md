@@ -22,8 +22,9 @@ loads only, over accepting the residual rate (option (b)).
 
 - **One budget, `FIRST_LOAD_MS` (30 s, `e2e/tests/support.ts`), and one helper,
   `firstShown(locator, text?)`.** A test calls it for its first look at a page after `app.open` or
-  a reload; it waits until the locator shows (with `text`, until it has that text). Everything
-  after it keeps the runner's budgets: a slow step after the first load still fails.
+  a reload; it waits until the locator shows (with `text`, until it has that text). An `app.open`
+  to another route of a page already open counts too: it draws that route's first screen and reads
+  its data. Everything after it keeps its budget: a slow step after the first load still fails.
 - **`app.open` and `browser.reload` wait for the mock's install within `FIRST_LOAD_MS`**, since
   that install is part of every first load (`waitForTheMockOnEveryLoad`).
 - **30 s**, the runner's action budget and `TERMINAL_SHOW_MS`: a page's first load is lighter
@@ -32,7 +33,8 @@ loads only, over accepting the residual rate (option (b)).
   a back-off a starved run stretches) is reproduced with probe delays and removed in the test;
   the budget is not stretched for it.
 - **Regression tests** (`mock-ready.e2e.ts`) hold mock.js 6 s and hold a page's first read 6 s:
-  both fail with a 5 s budget and pass with this one.
+  on an idle machine both fail with a 5 s budget and pass with this one (on a loaded one the
+  page's own load adds to the hold, so the first could pass at 5 s too; neither can fail falsely).
 
 ## Alternatives
 
