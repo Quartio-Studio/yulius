@@ -60,7 +60,7 @@ so that a repeat scan does not reopen it.
 ## Plan
 
 - [x] Spec SPEC-409 with the triage of all six findings
-- [ ] Spec and config reads go through a handle checked inside the worktree (#745)
+- [x] Spec and config reads go through a handle checked inside the worktree (#745)
 - [ ] Unused spec_path removed (#820)
 - [ ] Narrow [[ignore]] entries for the dismissed wordings (#817 #816 #737 #732)
 - [ ] Changes entry and gates
@@ -72,8 +72,10 @@ so that a repeat scan does not reopen it.
 - `delivery::a_spec_folder_swapped_for_a_link_after_its_check_is_not_read` fails on dev, where
   the host spec is read through the link and judged valid. It passes with the fix: the spec is
   refused as pointing outside the worktree.
-- `delivery::a_spec_swapped_for_a_fifo_after_its_check_does_not_block` shows that a FIFO swapped
-  in reads as an error within the timeout.
+- `delivery::a_spec_swapped_for_a_link_after_its_check_is_not_read` fails on dev, where the link
+  at the end is followed and the host file is read as the spec. It passes with the fix. (A FIFO
+  swapped in already read as "not a file" on dev; `open_inside` opens with `O_NONBLOCK`, so it
+  still does not block.)
 - The existing delivery spec tests pass unchanged.
 - `.config/vidoc.toml` has one narrow entry per dismissed wording, each with its reason.
 - Each issue ends closed: #745 by the merged pull request, and the others as not planned, each
