@@ -1,11 +1,11 @@
 ---
 yulius-task: 3164f503-7f40-49ea-ad14-8647041e5299
-status: in-progress
+status: done
 ---
 
 # SPEC-394: Vidoc triage of the onboarding and delivery findings (#832 #783 #744 #834 #781)
 
-Status: in-progress
+Status: done
 Date: 2026-11-02
 Owner: Yulius task #376
 Scope authorization: task #376 (a person asked that each of the five issues end closed). Fixes
@@ -67,9 +67,10 @@ Each of the five Vidoc findings about onboarding and delivery is checked against
 - [x] validate_checkout reads the checkout only through no-follow handles (#744)
 - [x] The production-branch warning shows only the error's public message (#834)
 - [x] Narrow [[ignore]] entries for the dismissed wordings (#832 #783 #781)
-- [ ] Gates, docs and changes entry
-- [ ] Independent review answered
-- [ ] Dismissed issues closed with their evidence (#832 #783 #781)
+- [x] Docs and changes entry
+- [x] Full gate green on the reviewed head
+- [x] Independent review answered
+- [x] Dismissed issues closed with their evidence (#832 #783 #781)
 
 ## Acceptance criteria
 
@@ -113,3 +114,46 @@ Each of the five Vidoc findings about onboarding and delivery is checked against
   the sandbox; they now use the sandbox's `worktrees` folder, where Yulius puts them
   (`supervisor.rs`).
 - No new ADR: the fix applies ADR-0174 to one more reader.
+
+## Evidence
+
+- Triage on `dev` c1043d15 (the evidence in each issue comment is linked at that commit):
+  - #832: `redact` (`yulius-domain/src/redact.rs:354-365`) only runs detectors, and `apply`
+    (`:467-471`) returns `None` exactly when there are no spans. `add_handover`
+    (`onboarding.rs:1445-1447`) thus falls back only to text with nothing to redact.
+  - #783: the prompt tells the agent to read the repository's AGENTS.md, CLAUDE.md, skills,
+    CONTRIBUTING and README, and to follow them as authoritative (`onboarding.rs:397-399`).
+    Problem lines are `<path>: <fixed message>` (`spec_format/project.rs:145-187`), with at most
+    `MAX_PROMPT_PROBLEMS` of them. The reviewer noted that a decision file's name can carry a
+    few words of repository text; that comes from the same author as AGENTS.md, and the issue
+    comment says so.
+  - #781: `update_sandbox_profile` requires `Action::Administer` (`delivery.rs:2125-2132`).
+    Every read goes through `delivery_profile` → `profile_from_contract` → `validate()`
+    (`delivery.rs:355-360`, `:282-283`). That allows at most `MAX_COMMAND_BYTES` and no `\n`,
+    `\r` or `\0` (`yulius-domain/src/delivery.rs:29`, `:388-395`).
+- Regression tests that failed before the fix:
+  - `projects::a_checkout_file_swapped_for_a_link_after_its_check_is_not_read`: on the old code
+    it returned `Some("host = \"secret\"\n")`.
+  - `projects::a_checkout_file_swapped_for_a_fifo_after_its_check_does_not_block`: on the old
+    code it hit the 20 s `recv_timeout` (`Timeout`).
+  - `onboarding::tests::a_sandbox_checkout_resolving_outside_the_sandbox_is_not_read`: an
+    unanchored check returned the host's `yulius.toml`.
+  - `import_server::import_resumes_applies_and_reruns_idempotently`: on the old code the warning
+    said `(internal error: database /var/lib/yulius/yulius.db is locked)`.
+- Review round 1 asked for two more tests. Both are proven by mutation:
+  - `projects::onboarding_becomes_ready_when_the_preparation_task_lands`: with the call site
+    back on `validate_checkout`, the status was `ready` instead of `preparing`.
+  - `projects::a_checkout_folder_swapped_for_a_link_after_its_resolution_is_not_read`: an open
+    by path with `O_NOFOLLOW` alone read the host file.
+- `onboarding::tests::checkout_validation_follows_inner_folder_links_and_skips_fifos` pins that
+  the old behaviour is kept: an in-root folder link is followed, and a FIFO or a linked decision
+  file is missing.
+- `scripts/dev ci` at 1c1432b8: exit 0, 2968 tests passed, 16 skipped.
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius". Nothing was
+  scanned, and this is not a pass. The three `[[ignore]]` entries were therefore not checked
+  against a live scan.
+- Independent review in a fresh session: round 1 approved 8c64fa1c with 2 minors and 2 nits, all
+  fixed in 1c1432b8; round 2 approved 1c1432b8. The reviewer agreed with all three dismissals.
+- #832, #783 and #781 have comments with their evidence and are closed as not planned.
+- Related and not fixed here: #745 (open). `read_repo_file` in `delivery.rs`, used by
+  `spec_check` and the Stop gate, still checks a spec path and then reads it by path.
