@@ -194,8 +194,8 @@ task terminal…" (1 of 5), waited 5 s for xterm to report a hovered OSC 8 link,
 read a ticking transcript got `still=1` too (review round 3): terminal and pipeline 45 of 45
 without load.
 
-So the affected files ran 1881 times under the held load: 1251 + 399 + 225 passed, 15 failed in
-runs 1 and 2, each traced to a cause fixed afterwards (FLD-007, FLD-008, FLD-009) or a later wait
+So the affected files ran 1890 times under the held load: 1875 passed (1251 + 399 + 225), 15
+failed in runs 1 and 2, each traced to a cause fixed afterwards (FLD-007, FLD-008, FLD-009) or a later wait
 named below; run 3 of the files those fixes touched had no failure.
 
 **Review** (fresh sessions, read-only, no test runs while the load ran).
