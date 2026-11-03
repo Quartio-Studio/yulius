@@ -699,8 +699,10 @@ impl App {
         if !self.worktree_only_caches(worktree).await {
             return false;
         }
-        // Checked again right before Git removes it: a link on the way would hand Git another
-        // sandbox's folder (SPEC-263 DUL-003). Git resolves the path itself once more.
+        // Checked again right before Git checks it: a link on the way would hand Git another
+        // sandbox's folder (SPEC-263 DUL-003). The removal itself goes through handles from the
+        // sandbox directory, so a link swapped in after the checks is removed, never followed
+        // (SPEC-401, ADR-0255).
         if !real_dir_from(&self.sandbox_dir(&sandbox.id), worktree) {
             return false;
         }

@@ -7,8 +7,9 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use yulius_git::{
-    Author, BundleSpec, DiffStat, Git, GitError, ImportRef, MergeInto, RemovalRefusal, SquashInput,
-    SquashLanding, TrainInput, TrainLanding, TrainStep, WorktreeRemoval, validate_branch_name,
+    Author, BundleSpec, DiffStat, Git, GitError, ImportRef, MergeInto, RemovalRefusal, RemoveBelow,
+    SquashInput, SquashLanding, TrainInput, TrainLanding, TrainStep, WorktreeRemoval,
+    validate_branch_name,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -566,6 +567,105 @@ fn a_fetch_retries_only_a_half_added_worktree_and_gives_up() -> TestResult {
     let missing = fx.path("missing.git");
     assert!(git.fetch(&repo, path_str(&missing)?).is_err());
     assert_eq!(fs::read_to_string(&attempts)?.lines().count(), 1);
+    Ok(())
+}
+
+/// SPEC-401 (#844): `worktree_remove_if_safe_below` hands the folder and then its record to the
+/// caller's removal, and refuses, removing nothing, what Git would refuse (submodules: a record
+/// with `modules/`, a populated gitlink) and what it cannot verify (a worktree naming another
+/// record, an owned root that resolves outside its parent).
+#[test]
+fn removal_below_hands_over_only_verified_worktrees() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let owned = fx.path("worktrees");
+    fs::create_dir(&owned)?;
+    let calls = std::cell::RefCell::new(Vec::<(PathBuf, PathBuf)>::new());
+    let record_and_remove = |root: &Path, path: &Path| -> std::io::Result<()> {
+        calls
+            .borrow_mut()
+            .push((root.to_path_buf(), path.to_path_buf()));
+        fs::remove_dir_all(path)
+    };
+    let remove: RemoveBelow<'_> = &record_and_remove;
+    let below = |path: &Path, root: &Path| {
+        fx.git
+            .worktree_remove_if_safe_below(&repo, path, root, remove)
+    };
+    let add = |name: &str| -> Result<PathBuf, Box<dyn Error>> {
+        let wt = owned.join(name);
+        fx.git
+            .worktree_add(&repo, &wt, &format!("task/{name}"), "main")?;
+        Ok(wt)
+    };
+
+    // A record with modules/.
+    let t1 = add("t1")?;
+    fs::create_dir(repo.join(".git/worktrees/t1/modules"))?;
+    assert_eq!(
+        below(&t1, &owned)?,
+        WorktreeRemoval::Refused(RemovalRefusal::Submodules)
+    );
+    // A populated gitlink in the index, committed (the worktree is clean).
+    let t2 = add("t2")?;
+    let lib = t2.join("vendor/lib");
+    fs::create_dir_all(&lib)?;
+    fx.raw(&lib, &["init", "-q", "-b", "main"])?;
+    fx.raw(&lib, &["commit", "-q", "--allow-empty", "-m", "lib"])?;
+    fx.raw(&t2, &["add", "vendor/lib"])?;
+    fx.raw(&t2, &["commit", "-q", "-m", "vendor lib"])?;
+    assert!(fx.git.status_porcelain(&t2)?.is_empty());
+    assert_eq!(
+        below(&t2, &owned)?,
+        WorktreeRemoval::Refused(RemovalRefusal::Submodules)
+    );
+    // A worktree whose .git names another worktree's record.
+    let (t3, t4) = (add("t3")?, add("t4")?);
+    fs::write(
+        t3.join(".git"),
+        format!("gitdir: {}\n", repo.join(".git/worktrees/t4").display()),
+    )?;
+    assert_eq!(
+        below(&t3, &owned)?,
+        WorktreeRemoval::Refused(RemovalRefusal::NotRegistered)
+    );
+    assert!(t4.exists() && repo.join(".git/worktrees/t4").exists());
+    // An owned root that is a link resolving outside its parent.
+    #[cfg(unix)]
+    {
+        let elsewhere = fx.path("elsewhere");
+        fs::create_dir(&elsewhere)?;
+        let t5 = elsewhere.join("t5");
+        fx.git.worktree_add(&repo, &t5, "task/t5", "main")?;
+        let linked = fx.path("sandbox/worktrees");
+        fs::create_dir(fx.path("sandbox"))?;
+        std::os::unix::fs::symlink(&elsewhere, &linked)?;
+        assert_eq!(
+            below(&linked.join("t5"), &linked)?,
+            WorktreeRemoval::Refused(RemovalRefusal::OutsideOwnedRoot)
+        );
+        assert!(t5.exists());
+    }
+    assert!(calls.borrow().is_empty(), "nothing refused was handed over");
+    assert!(t1.exists() && t2.exists() && t3.exists());
+
+    // A clean worktree: its folder, then its record, each below the folder above its root.
+    let t6 = add("t6")?;
+    assert_eq!(below(&t6, &owned)?, WorktreeRemoval::Removed);
+    assert_eq!(
+        *calls.borrow(),
+        vec![
+            (fx.root.clone(), t6.clone()),
+            (fx.root.clone(), repo.join(".git/worktrees/t6")),
+        ]
+    );
+    assert!(
+        !fx.git
+            .worktree_list(&repo)?
+            .iter()
+            .any(|w| w.path.ends_with("t6"))
+    );
+    assert!(fx.git.branch_exists(&repo, "task/t6")?);
     Ok(())
 }
 

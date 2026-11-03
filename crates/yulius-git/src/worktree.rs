@@ -223,7 +223,7 @@ impl Git {
         if !target.starts_with(&tree_root) {
             return Ok(WorktreeRemoval::Refused(RemovalRefusal::OutsideOwnedRoot));
         }
-        if admin.join("modules").exists() {
+        if self.holds_submodules(&admin, &target)? {
             return Ok(WorktreeRemoval::Refused(RemovalRefusal::Submodules));
         }
         self.remove_tree_and_record(repo, (&tree_root, &target), Some(&admin), remove)?;
@@ -333,8 +333,32 @@ impl Git {
         Ok(())
     }
 
+    /// Whether the worktree `target` holds submodules, as `git worktree remove` refuses them: its
+    /// record has `modules/`, or its index has a gitlink whose folder holds a `.git`.
+    fn holds_submodules(&self, admin: &Path, target: &Path) -> Result<bool, GitError> {
+        if admin.join("modules").exists() {
+            return Ok(true);
+        }
+        let output = self.run_ok(
+            Invocation::new(self, "ls-files", Some(target)).args(["ls-files", "--stage", "-z"]),
+        )?;
+        Ok(output.stdout.split(|byte| *byte == 0).any(|entry| {
+            entry.starts_with(b"160000 ")
+                && entry
+                    .iter()
+                    .position(|byte| *byte == b'\t')
+                    .is_some_and(|tab| {
+                        target
+                            .join(bytes_to_path(&entry[tab + 1..]))
+                            .join(".git")
+                            .exists()
+                    })
+        }))
+    }
+
     /// The Git record (`<common dir>/worktrees/<id>`) of the registered worktree `target`, or
-    /// `None` when the worktree names another folder as its record.
+    /// `None` when the worktree names another folder as its record or the record does not name
+    /// the worktree back (its `gitdir`).
     fn worktree_record(&self, repo: &Path, target: &Path) -> Result<Option<PathBuf>, GitError> {
         let resolved = |dir: &Path, arg: &str| -> Result<PathBuf, GitError> {
             let output = self
@@ -349,7 +373,16 @@ impl Git {
         };
         let records = resolved(repo, "--git-common-dir")?.join("worktrees");
         let record = resolved(target, "--absolute-git-dir")?;
-        Ok((record.parent() == Some(records.as_path())).then_some(record))
+        if record.parent() != Some(records.as_path()) {
+            return Ok(None);
+        }
+        let names_back = std::fs::read(record.join("gitdir"))
+            .ok()
+            .is_some_and(|text| {
+                let text = text.strip_suffix(b"\n").unwrap_or(&text);
+                bytes_to_path(text).canonicalize().ok() == target.join(".git").canonicalize().ok()
+            });
+        Ok(names_back.then_some(record))
     }
 
     /// Removes the worktree folder `tree.1` below `tree.0`, then its Git record `admin` below the

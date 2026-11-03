@@ -219,8 +219,11 @@ fn swapped() -> Result<Swapped, Box<dyn std::error::Error>> {
 #[cfg(target_os = "linux")]
 impl Swapped {
     /// Swaps the worktree for a link to the victim once the server's checks passed and nothing
-    /// is removed yet, as a contained agent of the sandbox can.
-    fn swap_after_the_checks(&self) {
+    /// is removed yet, as a contained agent of the sandbox can. The flag says the swap happened:
+    /// a removal that never reaches the pause point (Git's own) must fail the test too.
+    fn swap_after_the_checks(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        let swapped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = swapped.clone();
         let (wt, aside, victim) = (
             self.wt.clone(),
             self.worktrees.join("t1.aside"),
@@ -232,8 +235,10 @@ impl Swapped {
             move || {
                 std::fs::rename(&wt, &aside).ok();
                 std::os::unix::fs::symlink(&victim, &wt).ok();
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
             },
         );
+        swapped
     }
 }
 
@@ -245,12 +250,16 @@ async fn a_worktree_swapped_for_a_link_during_its_removal_touches_nothing_behind
 {
     let s = swapped()?;
     let record = s.repo.join(".git/worktrees/t1");
-    s.swap_after_the_checks();
+    let swapped = s.swap_after_the_checks();
     let adapter = GitAdapter::new("git");
     let removed = adapter.remove_worktree(&s.repo, &s.wt, &s.worktrees).await;
     assert!(
         s.victim.join("src/work.txt").exists(),
         "the folder behind the link was deleted ({removed:?})"
+    );
+    assert!(
+        swapped.load(std::sync::atomic::Ordering::SeqCst),
+        "the race was not run"
     );
     assert!(removed?, "the worktree (now the link) and its record go");
     assert!(!s.wt.exists() && !record.exists());
@@ -266,7 +275,7 @@ async fn a_worktree_swapped_for_a_link_during_its_removal_touches_nothing_behind
 async fn a_discarded_worktree_swapped_for_a_link_touches_nothing_behind_it() -> TestResult {
     let s = swapped()?;
     std::fs::write(s.wt.join("draft.txt"), "uncommitted\n")?;
-    s.swap_after_the_checks();
+    let swapped = s.swap_after_the_checks();
     let adapter = GitAdapter::new("git");
     let discarded = adapter
         .discard_worktree(&s.repo, &s.wt, &s.worktrees, Some("feat/1"))
@@ -274,6 +283,10 @@ async fn a_discarded_worktree_swapped_for_a_link_touches_nothing_behind_it() -> 
     assert!(
         s.victim.join("src/work.txt").exists(),
         "the folder behind the link was deleted ({discarded:?})"
+    );
+    assert!(
+        swapped.load(std::sync::atomic::Ordering::SeqCst),
+        "the race was not run"
     );
     discarded?;
     assert!(!s.wt.exists() && !s.repo.join(".git/worktrees/t1").exists());
