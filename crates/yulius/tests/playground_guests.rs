@@ -871,8 +871,7 @@ async fn revoking_or_expiry_stops_the_guests_tasks() -> TestResult {
     };
 
     // Stopped: asked to stop (its run ends as the supervisor reaps it) or ended.
-    let stopped =
-        |s: TaskStatus| s == TaskStatus::Stopping || !(s.is_live() || s == TaskStatus::Queued);
+    let stopped = |s: TaskStatus| matches!(s, TaskStatus::Stopping | TaskStatus::Stopped(_));
     let revoked = call(
         &w.h.router,
         Method::DELETE,
@@ -905,32 +904,50 @@ async fn revoking_or_expiry_stops_the_guests_tasks() -> TestResult {
     Ok(())
 }
 
-/// A revoke that lands while a guest joins leaves no live session behind (the join is refused).
-#[tokio::test]
+/// A revoke that lands after a guest's account exists and before their session (the server held
+/// there) leaves no live session behind: the join is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_join_racing_a_revoke_leaves_no_session() -> TestResult {
     let w = world().await?;
     let made = invite(&w, &w.alice, "p1", json!({"days": 7})).await?;
     let code = code_of(&made.body)?;
     let id = made.body["invite"]["id"].as_str().ok_or("id")?.to_owned();
-    let path = format!("/api/sandboxes/p1/guest-invites/{id}");
-    let (joined, revoked) = tokio::join!(
-        join_raw(&w, &code, "Carol"),
-        call(&w.h.router, Method::DELETE, &path, None, &w.alice)
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (release, release_rx) = std::sync::mpsc::channel::<()>();
+    yulius_app::race::on(
+        yulius_app::race::Point::GuestJoined,
+        std::path::Path::new(&id),
+        move || {
+            let _ = entered_tx.send(());
+            let _ = release_rx.recv_timeout(std::time::Duration::from_secs(60));
+        },
     );
-    let (joined, revoked) = (joined?, revoked?);
+    let router = w.h.router.clone();
+    let joining = tokio::spawn(async move {
+        call(
+            &router,
+            Method::POST,
+            &format!("/api/guest-invites/{code}/join"),
+            Some(json!({"name": "Carol"})),
+            &Creds::default(),
+        )
+        .await
+        .map_err(|e| e.to_string())
+    });
+    tokio::task::spawn_blocking(move || entered.recv_timeout(std::time::Duration::from_secs(60)))
+        .await??;
+    let revoked = call(
+        &w.h.router,
+        Method::DELETE,
+        &format!("/api/sandboxes/p1/guest-invites/{id}"),
+        None,
+        &w.alice,
+    )
+    .await?;
     assert_eq!(revoked.status, StatusCode::NO_CONTENT);
-    if joined.status == StatusCode::CREATED {
-        let creds = Creds {
-            cookie: Some(session_from(&joined.set_cookie).ok_or("cookie")?),
-            ..Creds::default()
-        };
-        assert_eq!(
-            get(&w, "/api/me", &creds).await?.status,
-            StatusCode::UNAUTHORIZED
-        );
-    } else {
-        assert_eq!(joined.status, StatusCode::GONE, "{}", joined.body);
-    }
+    release.send(())?;
+    let joined = joining.await??;
+    assert_eq!(joined.status, StatusCode::GONE, "{}", joined.body);
     Ok(())
 }
 

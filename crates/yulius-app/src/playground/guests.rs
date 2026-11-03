@@ -101,16 +101,17 @@ impl App {
 
     /// Stops what the guests of `invite` still run in its playground (GST-005): their live and
     /// waiting tasks and their terminals, once the link is revoked or expired.
-    async fn end_guests_work(self: &Arc<Self>, invite: &str, sandbox: &SandboxId) {
+    async fn end_guests_work(self: &Arc<Self>, invite: &str, sandbox: &SandboxId) -> bool {
         let store = &self.deps.store;
         let guests = match store.invite_guest_ids(invite).await {
             Ok(guests) if !guests.is_empty() => guests,
-            Ok(_) => return,
+            Ok(_) => return true,
             Err(err) => {
                 tracing::warn!(error = %err, "a guest link's guests could not be read");
-                return;
+                return false;
             }
         };
+        let mut ended = true;
         match store.tasks(sandbox, false).await {
             Ok(tasks) => {
                 for task in tasks
@@ -119,19 +120,34 @@ impl App {
                 {
                     if let Err(err) = self.stop_task_now(&task.id).await {
                         tracing::warn!(task = %task.id, error = %err, "a guest's task did not stop");
+                        ended = false;
                     }
                 }
             }
-            Err(err) => tracing::warn!(error = %err, "a playground's tasks could not be read"),
+            Err(err) => {
+                tracing::warn!(error = %err, "a playground's tasks could not be read");
+                ended = false;
+            }
         }
         let shells = self.shells_created_by(sandbox, &guests);
         if !shells.is_empty() {
-            self.end_shells(&shells).await;
+            ended &= self.end_shells(&shells).await;
+        }
+        ended
+    }
+
+    /// Ends what the guests of `invite` run and, once nothing is left, marks the link ended, so
+    /// the sweep tries again after a failed stop or a restart.
+    async fn end_link(self: &Arc<Self>, invite: &str, sandbox: &SandboxId) {
+        if self.end_guests_work(invite, sandbox).await
+            && let Err(err) = self.deps.store.mark_invite_ended(invite, self.now()).await
+        {
+            tracing::warn!(error = %err, "a guest link could not be marked ended");
         }
     }
 
-    /// The background sweep (GST-005): ends what the guests of each link expired since the last
-    /// sweep still run, at most a bounded batch at a time.
+    /// The background sweep (GST-005): ends what the guests of each revoked or expired link not
+    /// ended yet still run, at most a bounded batch at a time.
     pub async fn end_expired_guest_links(self: &Arc<Self>) {
         let now = self.now();
         let expired = match self
@@ -147,10 +163,7 @@ impl App {
             }
         };
         for invite in expired {
-            self.end_guests_work(&invite.id, &invite.sandbox_id).await;
-            if let Err(err) = self.deps.store.mark_invite_ended(&invite.id, now).await {
-                tracing::warn!(error = %err, "an expired guest link could not be marked ended");
-            }
+            self.end_link(&invite.id, &invite.sandbox_id).await;
         }
     }
 
@@ -265,7 +278,7 @@ impl App {
         }
         // What its guests still run stops too; the answer does not wait for the stops.
         let (app, link, playground) = (Arc::clone(self), invite.to_owned(), sid.clone());
-        tokio::spawn(async move { app.end_guests_work(&link, &playground).await });
+        tokio::spawn(async move { app.end_link(&link, &playground).await });
         store
             .audit(
                 now,
@@ -347,6 +360,10 @@ impl App {
                 Some(&invite.id),
             )
             .await?;
+        crate::race::reached(
+            crate::race::Point::GuestJoined,
+            std::path::Path::new(&invite.id),
+        );
         let session = self.new_session_until(&user, invite.expires_at).await?;
         // A revoke that landed between the guest row and the session revoked no session: look at
         // the link again, and end this one if it died meanwhile.

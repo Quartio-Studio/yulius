@@ -7,7 +7,10 @@ task #392, issue [#412](https://github.com/Quartio-Studio/yulius/issues/412). **
 ACC-005 for playgrounds only**, by the product owner's decision of 2026-11-03 ("#412 - ok"), and
 PRJ-012 / [SPEC-099](../../.ai/specs/SPEC-099-on-onboarding-we-want-a-mode-to-play-aro.md) PLY-005
 (a playground was its maker's and the superadmin's alone). Builds on
-[ADR-0081](0081-a-playground-keeps-its-git-on-the-server.md).
+[ADR-0081](0081-a-playground-keeps-its-git-on-the-server.md). The exposure of the instance's
+Claude token to a guest's own runs (Consequences) was put to the product owner, who left it to the
+task on 2026-11-03 ("decide what's better"): guests ship with it stated, and hiding the token from
+runs is a follow-up.
 
 ## Context
 
@@ -83,7 +86,14 @@ API tokens) are open to any signed-in person. So a guest is not simply a writer.
   test lists it.
 - A guest's tasks use the instance's Claude accounts like the maker's, and every agent run's
   environment carries that account's token (as before this change, ADR-0005), so a guest's task can
-  read it and it outlives the link. Hiding it behind the egress proxy is a separate change.
+  read it and it outlives the link. Chosen over blocking guests' tasks until the token is hidden
+  (which would leave guests nothing to try): only people the maker sends a link reach it, links
+  end within 30 days and can be revoked, and the Invite dialog says so. Hiding the token behind the
+  egress proxy is a follow-up change for every run.
+- A guest's change in the sandbox (a hook, a shell profile) can run in the maker's later runs,
+  which act with the maker's authority in the playground; it stays inside the playground (the
+  cross-sandbox and GitHub tools refuse there), and the no-secret rule holds after a move to
+  GitHub for the same reason.
 - A guest reaches what the playground's workspace holds: its files (a `.env` written earlier), its
   browser's signed-in sites. Make links only for people you would let work in it, and keep nothing
   there you would not show them. Its agent secrets stop applying once a guest joined.

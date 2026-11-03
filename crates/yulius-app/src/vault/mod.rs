@@ -360,9 +360,11 @@ impl App {
         holder: Holder<'_>,
     ) -> AppResult<Vec<VaultSecretRecord>> {
         let mut records = self.resolved_agent_secrets(sandbox, holder).await?;
+        // The instance key neither: a guest's runs would spend it (SPEC-410 GST-004).
         if self.vidoc_key().is_some()
             && !records.iter().any(|r| r.name == VIDOC_SECRET)
             && self.sandbox_vidoc_on(sandbox).await?
+            && !self.playground_had_guests(sandbox).await
         {
             records.push(instance_vidoc_record());
         }

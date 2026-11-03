@@ -217,7 +217,7 @@ impl PlaygroundGuestStore for SqliteStore {
             let revoked = tx
                 .execute(
                     &format!(
-                        "UPDATE playground_invites SET revoked_at = ?2, ended_at = ?2 \
+                        "UPDATE playground_invites SET revoked_at = ?2 \
                          WHERE id = ?1 AND sandbox_id = ?3 AND {LIVE}"
                     ),
                     params![invite, at.0, sandbox],
@@ -271,7 +271,8 @@ impl PlaygroundGuestStore for SqliteStore {
             let mut stmt = c
                 .prepare(&format!(
                     "SELECT {COLS} FROM playground_invites WHERE ended_at IS NULL \
-                     AND expires_at <= ?1 ORDER BY expires_at, id LIMIT ?2"
+                     AND (expires_at <= ?1 OR revoked_at IS NOT NULL) \
+                     ORDER BY expires_at, id LIMIT ?2"
                 ))
                 .map_err(db)?;
             let rows = stmt
@@ -301,8 +302,7 @@ impl PlaygroundGuestStore for SqliteStore {
             c.query_row(
                 "SELECT EXISTS (SELECT 1 FROM playground_guests g \
                  JOIN playground_invites i ON i.id = g.invite_id \
-                 JOIN sandboxes s ON s.id = i.sandbox_id \
-                 WHERE i.sandbox_id = ?1 AND s.repo_owner = '')",
+                 WHERE i.sandbox_id = ?1)",
                 [sandbox],
                 |row| row.get(0),
             )

@@ -2015,12 +2015,18 @@ async fn playground_guest_links_are_bounded_and_end_once() -> R {
     );
     let session = store.web_session("session-g1").await?.ok_or("session")?;
     assert_eq!(session.revoked_at, Some(Timestamp(30)));
+    let listed = store.unended_expired_invites(Timestamp(30), 10).await?;
+    assert_eq!(
+        listed.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+        ["i1"],
+        "a revoked link waits for its guests' work to end"
+    );
+    store.mark_invite_ended("i1", Timestamp(31)).await?;
     assert!(
         store
             .unended_expired_invites(Timestamp(200), 10)
             .await?
-            .is_empty(),
-        "a revoked link was ended at its revoke"
+            .is_empty()
     );
     assert!(
         store
@@ -2033,8 +2039,8 @@ async fn playground_guest_links_are_bounded_and_end_once() -> R {
         .move_to_github(&lab, "Quartio-Studio", "lab", Some(7))
         .await?;
     assert!(
-        !store.playground_has_guests(&lab).await?,
-        "a GitHub sandbox is no playground"
+        store.playground_has_guests(&lab).await?,
+        "what guests left stays after a move to GitHub"
     );
     Ok(())
 }

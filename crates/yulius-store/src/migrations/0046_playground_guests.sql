@@ -12,6 +12,8 @@ CREATE TABLE playground_invites (
     ended_at INTEGER
 );
 CREATE INDEX playground_invites_sandbox ON playground_invites(sandbox_id);
+-- The sweep's links: revoked or expired, their guests' work not ended yet.
+CREATE INDEX playground_invites_unended ON playground_invites(expires_at) WHERE ended_at IS NULL;
 
 CREATE TABLE playground_guests (
     user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,

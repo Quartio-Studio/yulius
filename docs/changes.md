@@ -12,8 +12,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   teammate opens it, types a name and works on that playground's tasks, terminals and files. A
   guest reaches no other sandbox, secret or setting (an allowlist of routes, no Configure or
   Administer, for their agents too). They share the playground's workspace (files, terminals,
-  browser, the Claude account its tasks use), so once a guest joined its runs get no agent secret
-  or saved agent state. Revoking the link or its expiry signs its guests out and stops what they
+  browser, the Claude account its tasks use, whose token a guest's task can copy, as the dialog
+  says), so once a guest joined its runs get no agent secret or saved agent state. Revoking the link or its expiry signs its guests out and stops what they
   run.
 
 - Test fixtures under `crates/yulius/tests` no longer commit credentials in a provider's shape.
