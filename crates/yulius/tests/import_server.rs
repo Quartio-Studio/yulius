@@ -330,6 +330,104 @@ async fn foreign_and_non_github_repositories_are_refused() -> TestResult {
     Ok(())
 }
 
+/// Every file below `dir` whose name holds `needle`.
+fn files_named(dir: &Path, needle: &str) -> Result<Vec<PathBuf>, Error> {
+    let mut found = Vec::new();
+    if !dir.is_dir() {
+        return Ok(found);
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().contains(needle))
+        {
+            found.push(path.clone());
+        }
+        if std::fs::symlink_metadata(&path)?.is_dir() {
+            found.extend(files_named(&path, needle)?);
+        }
+    }
+    Ok(found)
+}
+
+/// SPEC-390 VTI-001 (#849, #836, #827, #750): a manifest file name becomes a path only after
+/// `FileRef::validate`, so one leading out of the job directory (or into `.git`) is refused before
+/// anything exists, and a chunk can address only a name of the stored manifest.
+#[tokio::test]
+async fn unsafe_manifest_names_never_reach_the_disk() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", false).await?;
+    let remote = w.remote(
+        OWNER,
+        "shop",
+        &[
+            ("README.md", "# Shop\n"),
+            ("src/app.txt", "v1\n"),
+            ("old.txt", "x\n"),
+        ],
+        &[],
+    )?;
+    w.grant("alice", "shop", "admin");
+    let offer = laptop_offer(&w, &remote)?;
+
+    for bad in [
+        "../planted.bin",
+        "sessions/../../planted.bin",
+        "/tmp/planted.bin",
+        ".git/hooks/planted",
+        "sessions/.git/planted",
+        "..\\planted.bin",
+        "planted\0.bin",
+    ] {
+        let mut bundle = offer.manifest.clone();
+        if let Some(file) = bundle.bundle.as_mut() {
+            file.name = bad.to_owned();
+        }
+        let mut session = offer.manifest.clone();
+        session.sessions[0].files[0].name = bad.to_owned();
+        for manifest in [bundle, session] {
+            let refused = create_job(
+                &w,
+                &alice,
+                serde_json::to_value(CreateImportRequest { manifest })?,
+            )
+            .await?;
+            assert_eq!(
+                refused.status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{bad:?}: {:?}",
+                refused.body
+            );
+            assert!(
+                text(&refused.body["error"]["message"]).contains("unsafe file name"),
+                "{bad:?}: {:?}",
+                refused.body
+            );
+        }
+    }
+    assert!(w.h.store.sandboxes().await?.is_empty(), "nothing linked");
+
+    // A valid job: a chunk for a traversal name is no manifest entry, so nothing is written.
+    let created = create_job(&w, &alice, offer.body()?).await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    let job = text(&created.body["job_id"]).to_owned();
+    for name in [
+        "../../planted.bin",
+        "../planted.bin",
+        "sessions/../../planted.bin",
+    ] {
+        let refused = put_chunk(&w, &alice, &job, name, 0, b"x", None).await?;
+        assert_eq!(refused.status, StatusCode::NOT_FOUND, "{name}");
+    }
+    assert_eq!(
+        files_named(&w.data_dir(), "planted")?,
+        Vec::<PathBuf>::new(),
+        "nothing written for an unsafe name"
+    );
+    Ok(())
+}
+
 /// OBD-002: the CLI uploads; only a person (the browser, or their operate token) starts
 /// onboarding; a `yulius login` token is refused and told both ways (SPEC-313).
 #[tokio::test]
