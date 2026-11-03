@@ -145,6 +145,38 @@ pub enum UiEvent {
         /// Their tab's update number, as they sent it: an older one arriving late is dropped
         /// (SPEC-170 TKS-003). 0: not numbered.
         seq: u64,
+        /// The live document the offsets are in, when they are (SPEC-411 EDT-021); `None`: the
+        /// text saved at `sha256`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+        /// The live document's revision the offsets are in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revision: Option<u64>,
+    },
+    /// A file's shared text moved (SPEC-411 EDT-017..020): a step (`op`) made `revision`, or its
+    /// saved state changed (`op: null`, `revision` unchanged). Only the sandbox's writers get it.
+    #[serde(rename = "file.live")]
+    FileLive {
+        /// The sandbox.
+        sandbox_id: String,
+        /// `sandbox` or `task:<task id>`.
+        root: String,
+        /// The file, relative to the root (normalized).
+        path: String,
+        /// The document.
+        session: String,
+        /// Its revision after this event.
+        revision: u64,
+        /// The tab whose operation this is (`""`: the disk, or no step).
+        client: String,
+        /// The operation, at `revision - 1`; `None` for a change of the saved state only.
+        op: Option<Vec<crate::api::files::OpPart>>,
+        /// SHA-256 of the disk's version the text was last saved as or taken from.
+        sha256: String,
+        /// The text at `revision` is saved.
+        saved: bool,
+        /// The disk's newer version while unsaved text is kept (a conflict).
+        disk_sha256: Option<String>,
     },
     /// The sandbox's pull requests may have changed (a delivery stage moved, a Yulius CI run was
     /// queued, started or ended): watching clients read the Git overview again (SPEC-108).

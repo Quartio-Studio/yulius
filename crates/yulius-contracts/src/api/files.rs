@@ -155,6 +155,141 @@ pub struct FilePresence {
     /// one (a leave sent as the page goes may overtake it; SPEC-170 TKS-003). 0: not numbered.
     #[serde(default)]
     pub seq: u64,
+    /// The live document the offsets are in (SPEC-411 EDT-021); `None`: the text saved at
+    /// `sha256`.
+    #[serde(default)]
+    pub session: Option<String>,
+    /// The live document's revision the offsets are in.
+    #[serde(default)]
+    pub revision: Option<u64>,
+}
+
+/// One part of a text operation over UTF-16 units (SPEC-411 EDT-017): a positive count keeps
+/// that many units, a negative one deletes that many, a string inserts itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OpPart {
+    /// Keep (`n > 0`) or delete (`n < 0`) that many UTF-16 units.
+    Count(i64),
+    /// Insert this text.
+    Insert(String),
+}
+
+/// `POST /api/sandboxes/{sid}/files/live`: join a file's shared text (SPEC-411 EDT-017).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveJoin {
+    /// `sandbox` (default) or `task:<task id>`.
+    #[serde(default)]
+    pub root: Option<String>,
+    /// The file, relative to the root.
+    pub path: String,
+    /// The browser tab (as in presence).
+    #[serde(default)]
+    pub client: String,
+    /// The caller's text, to start the document from when none exists (only a caller who may
+    /// change the folder; else the disk's text is taken).
+    #[serde(default)]
+    pub text: Option<String>,
+    /// SHA-256 of the file on disk `text` was read from or edited from.
+    #[serde(default)]
+    pub sha256: Option<String>,
+    /// `text` is still the disk's text at `sha256` (nothing unsaved).
+    #[serde(default)]
+    pub saved: bool,
+    /// The line ending the text uses (`\n` or `\r\n`); the disk's text is taken in it.
+    #[serde(default)]
+    pub eol: Option<String>,
+}
+
+/// A file's shared text, as joined or caught up (SPEC-411 EDT-017).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveDoc {
+    /// This document's id: a revision is meaningful only within it.
+    pub session: String,
+    /// The number of steps applied so far.
+    pub revision: u64,
+    /// The text at `revision` (`None` in a catch-up that answers `steps`).
+    pub text: Option<String>,
+    /// The steps after the asked revision, oldest first (`None` when the text is answered).
+    pub steps: Option<Vec<LiveStep>>,
+    /// The line ending of the text.
+    pub eol: String,
+    /// SHA-256 of the disk's version the text was last saved as or taken from.
+    pub sha256: String,
+    /// The text at `revision` is what the disk has at `sha256`.
+    pub saved: bool,
+    /// The disk's newer version while unsaved text is kept (a conflict, EDT-020).
+    pub disk_sha256: Option<String>,
+}
+
+/// One applied operation (SPEC-411 EDT-017).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveStep {
+    /// The revision this step made.
+    pub revision: u64,
+    /// The tab that sent it (`""`: the disk).
+    pub client: String,
+    /// The operation, at the revision before.
+    pub op: Vec<OpPart>,
+}
+
+/// `POST /api/sandboxes/{sid}/files/live/edit` (SPEC-411 EDT-017).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveEdit {
+    /// `sandbox` (default) or `task:<task id>`.
+    #[serde(default)]
+    pub root: Option<String>,
+    /// The file, relative to the root.
+    pub path: String,
+    /// The document the operation was made in.
+    pub session: String,
+    /// The browser tab.
+    pub client: String,
+    /// The revision the operation was made at.
+    pub revision: u64,
+    /// The operation.
+    pub op: Vec<OpPart>,
+}
+
+/// The answer to an edit: the revision its step made.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveApplied {
+    /// The revision.
+    pub revision: u64,
+}
+
+/// `POST …/files/live/save` and `POST …/files/live/disk` (SPEC-411 EDT-019, EDT-020).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveFileAction {
+    /// `sandbox` (default) or `task:<task id>`.
+    #[serde(default)]
+    pub root: Option<String>,
+    /// The file, relative to the root.
+    pub path: String,
+    /// The document.
+    pub session: String,
+    /// Save: write over a disk that moved on (Keep mine). Disk: take the disk's text even over
+    /// unsaved text (Take disk version).
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// What a save or a look at the disk left (SPEC-411 EDT-019, EDT-020).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveState {
+    /// The document.
+    pub session: String,
+    /// Its revision.
+    pub revision: u64,
+    /// SHA-256 of the disk's version the text was last saved as or taken from.
+    pub sha256: String,
+    /// The text at `revision` is saved.
+    pub saved: bool,
+    /// The disk's newer version while unsaved text is kept (a conflict).
+    pub disk_sha256: Option<String>,
 }
 
 #[cfg(test)]

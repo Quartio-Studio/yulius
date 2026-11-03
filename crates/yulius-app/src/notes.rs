@@ -245,6 +245,27 @@ impl App {
             ))
         }
     }
+
+    /// Counts one edit of a file's shared text under `key`, refusing it past `per_second`
+    /// (SPEC-411 EDT-017), in the presence limiter's counters.
+    pub(crate) fn count_live_edit(&self, key: &str, per_second: usize) -> AppResult<()> {
+        let mut counters = self
+            .note_presence
+            .lock()
+            .map_err(|_| AppError::Internal("presence limiter poisoned".into()))?;
+        if count_in_window(
+            &mut counters,
+            key,
+            self.now(),
+            per_second,
+            MAX_PRESENCE_COUNTERS,
+            MAX_PRESENCE_COUNTERS_PER_PERSON,
+        ) {
+            Ok(())
+        } else {
+            Err(AppError::Capacity("too many edits; slow down".into()))
+        }
+    }
 }
 
 /// Refuses a presence update whose selection reaches past `max_offset` or whose `client` is not

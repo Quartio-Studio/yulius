@@ -34,6 +34,8 @@ mod empty_repo;
 pub mod error;
 pub mod events;
 pub mod files;
+pub mod live_files;
+pub(crate) mod live_text;
 pub mod finish;
 pub mod github_admin;
 pub mod goal_retry;
