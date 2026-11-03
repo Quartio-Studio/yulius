@@ -1,11 +1,11 @@
 ---
 yulius-task: a744e168-9f13-4bf5-a042-95b633ed9f66
-status: in-progress
+status: done
 ---
 
 # SPEC-402: Vidoc triage of the uploads, files and Git findings (#809 #808 #800 #811 #810)
 
-Status: in-progress
+Status: done
 Date: 2026-11-03
 Owner: Yulius task #385
 Scope authorization: task #385 (a person asked that each of the five issues end closed). Fixes
@@ -85,9 +85,9 @@ it.
 - [x] Atomic no-replace fallback for new names (#808)
 - [x] Folders created 0755 whatever the umask (#800)
 - [x] Old-draft pin and narrow [[ignore]] entries (#809 #811)
-- [ ] ADR, architecture, changes entry and gates
-- [ ] Independent review answered
-- [ ] Dismissed issues commented and closed (#809 #811)
+- [x] ADR, architecture, changes entry and gates
+- [x] Independent review answered
+- [x] Dismissed issues commented and closed (#809 #811)
 
 ## Acceptance criteria
 
@@ -125,3 +125,33 @@ it.
   is better than replacing an entry the person did not ask to replace.
 - 0o755 rather than 0o700 for created folders: it is what production creates today; 0o700 could
   hide folders from whoever reads the sandbox tree as another uid.
+
+## Evidence
+
+- Reproduced on `dev` (ffbc2e91) before each fix:
+  - #810: `a_clone_configuration_swapped_for_a_link_during_the_scrub_is_never_written_through`
+    failed: the outside file lost its `http.proxy` (left `"[user]\n\tname = Outside\n"`).
+    `a_clone_configuration_that_is_not_a_file_is_refused` failed: dev skipped the FIFO and
+    returned `Ok`.
+  - #808: with the pause point placed between dev's `fstatat` and `renameat`,
+    `a_name_taken_while_the_fallback_places_is_never_replaced` failed (`Some(true)`, the racer's
+    folder replaced). The fix removed that check, so the point now sits before `rename_new`.
+  - #800: `created_folders_are_never_writable_by_others_whatever_the_umask` failed (mode 511 =
+    0o777 under umask 0).
+- After the fixes: `cargo nextest run -p yulius-git` passed 93 of 93. `cargo nextest run -p yulius-app
+  --lib` passed 419 of 419. The `yulius` `uploads::` tests passed 14 of 14, including
+  `a_draft_dated_before_1970_is_old`.
+- `scripts/dev ci` at 107e61b8: exit 0. nextest passed 3007 tests and skipped 16. It covers format,
+  lint, macOS compile, deps, doctests and docs.
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius"; nothing was
+  scanned. This is not a pass.
+- Independent review in a fresh session: round 1 (0091ead9) requested changes, and all of them
+  were answered in 107e61b8. Changes made: only files present at the check are locked, tests
+  cover another writer's lock, a failed Git and a FIFO swapped in after the checks, the #811
+  wording was corrected, and so was the port doc comment. Round 2 approved 107e61b8.
+- `[[ignore]]` entries the reviewer agreed to: `crates/yulius-app/src/uploads.rs` "Negative file
+  mtime treated as epoch age" (`prune_old_drafts`, #809) and `crates/yulius/src/wiring/git.rs`
+  "GitHub token placed in the git subprocess environment" (`git_with_token`, #811). Both issues
+  are closed as not planned, each with file:line evidence.
+- Not changed, pre-existing: `yulius-harness` `skills.rs` still asks `mkdirat` for 0o777, and the
+  server's `create_dir_all` folders follow the process umask (ADR-0257 Consequences).
