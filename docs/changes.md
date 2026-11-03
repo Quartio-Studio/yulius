@@ -14,6 +14,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   ownerless pool and a switch needs write access to the task. Four wordings get a narrow
   `[[ignore]]`; `transcript_path`'s never-used stored-path branch is removed instead (SPEC-393,
   task #375). No behaviour change.
+- Vidoc's five findings on the `yulius` CLI and host setup (#754, #753, #743, #742, #679) are
+  triaged as false positives on `dev`: the binary holds no privilege beyond its caller's, so
+  `sandbox-exec`, `--scrub-exec`, `remove` and `security-scan` give no caller anything it could
+  not already do (and `remove` still canonicalizes and refuses what is not the task's), and
+  `yulius host setup` writes the systemd unit only after `unit_safe` checked every value it
+  formats. A new test pins that refusal (`unit_values_a_unit_file_cannot_hold_are_refused`); each
+  wording gets one narrow `[[ignore]]` (SPEC-395, task #377). No product change.
 
 ## 2026-11-02
 
