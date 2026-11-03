@@ -1166,7 +1166,7 @@ async fn moving_or_removing_the_playground_ends_guest_access() -> TestResult {
     .await?;
 
     let made = invite(&w, &w.bob, "p2", json!({})).await?;
-    let (_, bobs) = join(&w, &code_of(&made.body)?, "Dana").await?;
+    let (dana, bobs) = join(&w, &code_of(&made.body)?, "Dana").await?;
     let p2 = SandboxId::parse("p2")?;
     assert!(w.h.app.can_work_in(&bobs, &p2).await);
     w.h.store.remove_sandbox(&p2, now(&w.h)).await?;
@@ -1177,6 +1177,19 @@ async fn moving_or_removing_the_playground_ends_guest_access() -> TestResult {
         listed.is_empty(),
         "a removed playground's links end: {listed:?}"
     );
+    assert_eq!(
+        get(&w, "/api/me", &dana).await?.status,
+        StatusCode::UNAUTHORIZED
+    );
+    // The sweep's revocations are audited like an admin's.
+    for sandbox in ["p1", "p2"] {
+        let audited =
+            w.h.store
+                .last_audit(sandbox, "playground.invite.revoke", Timestamp(0))
+                .await?
+                .ok_or("revocation audited")?;
+        assert_eq!(audited.actor, "system", "{sandbox}");
+    }
     Ok(())
 }
 

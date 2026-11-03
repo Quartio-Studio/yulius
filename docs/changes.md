@@ -14,8 +14,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Administer, for their agents too). They share the playground's workspace (files, terminals,
   browser, the Claude account its tasks use, whose token a guest's task can copy, as the dialog
   says), so once a guest joined its runs get no agent secret or saved agent state. Revoking the
-  link or its expiry signs its guests out and stops what they run.
-
+  link, its expiry, or moving the playground to GitHub or removing it signs its guests out and
+  stops what they run.
 - The editor's explorer keeps a file drag's folder marked when it draws its rows again during the
   drag, for example when the folder list answers after the listing. The mark is drawn by path
   with the rows, not kept on a row element that a redraw replaces. The filedrop e2e test waits for

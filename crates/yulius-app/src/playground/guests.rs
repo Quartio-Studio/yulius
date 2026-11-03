@@ -154,7 +154,28 @@ impl App {
                 .revoke_playground_invite(&invite.sandbox_id, &invite.id, now)
                 .await
             {
-                Ok(_) => invite.revoked_at = Some(now),
+                // `false`: an admin's revoke won the race; it was audited then.
+                Ok(revoked) => {
+                    invite.revoked_at = Some(now);
+                    if revoked
+                        && let Err(err) = self
+                            .deps
+                            .store
+                            .audit(
+                                now,
+                                "system",
+                                "playground.invite.revoke",
+                                Some(invite.sandbox_id.as_str()),
+                                Some(&format!(
+                                    "{}: the playground moved to GitHub or was removed",
+                                    invite.id
+                                )),
+                            )
+                            .await
+                    {
+                        tracing::warn!(error = %err, "a guest link's end could not be audited");
+                    }
+                }
                 Err(err) => {
                     tracing::warn!(error = %err, "a moved playground's guest link could not end");
                     return;
