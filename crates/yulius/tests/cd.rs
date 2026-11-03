@@ -1017,7 +1017,11 @@ async fn a_needs_you_request_reads_what_happened_problem_and_to_do() -> TestResu
     .await?;
     assert_eq!(script["isError"], true, "{script}");
     let kept = summary().await?;
-    assert_eq!(kept["link"], serde_json::Value::Null, "the open request keeps no link: {kept}");
+    assert_eq!(
+        kept["link"],
+        serde_json::Value::Null,
+        "the open request keeps no link: {kept}"
+    );
     assert_eq!(kept["problem"], "the free plan has 2 runners", "{kept}");
     Ok(())
 }
