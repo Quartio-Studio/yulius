@@ -3,11 +3,12 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::secret::Secret;
 
@@ -187,12 +188,12 @@ impl TokenStore {
         move |source| TokenStoreError::Io { path, source }
     }
 
+    /// Reads the file through one handle: a regular file only, at most
+    /// `MAX_CREDENTIALS_BYTES` read from it, whatever its length was when opened (SPEC-407
+    /// TKS-001, #770).
     fn read(&self) -> Result<CredentialsFile, TokenStoreError> {
-        let bytes = match fs::metadata(&self.path) {
-            Ok(meta) if meta.len() > MAX_CREDENTIALS_BYTES => {
-                return Err(TokenStoreError::Corrupt(self.path.clone()));
-            }
-            Ok(_) => fs::read(&self.path).map_err(self.io_error(&self.path))?,
+        let file = match open_for_read(&self.path) {
+            Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok(CredentialsFile {
                     version: CREDENTIALS_VERSION,
@@ -201,6 +202,20 @@ impl TokenStore {
             }
             Err(error) => return Err(self.io_error(&self.path)(error)),
         };
+        let meta = file.metadata().map_err(self.io_error(&self.path))?;
+        if !meta.is_file() || meta.len() > MAX_CREDENTIALS_BYTES {
+            return Err(TokenStoreError::Corrupt(self.path.clone()));
+        }
+        // Sized once for the bound, so the buffer never grows and leaves no unzeroed copy.
+        let mut bytes = Zeroizing::new(Vec::with_capacity(
+            usize::try_from(MAX_CREDENTIALS_BYTES + 1).unwrap_or(usize::MAX),
+        ));
+        file.take(MAX_CREDENTIALS_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(self.io_error(&self.path))?;
+        if bytes.len() as u64 > MAX_CREDENTIALS_BYTES {
+            return Err(TokenStoreError::Corrupt(self.path.clone()));
+        }
         let file: CredentialsFile = serde_json::from_slice(&bytes)
             .map_err(|_| TokenStoreError::Corrupt(self.path.clone()))?;
         if file.version != CREDENTIALS_VERSION {
@@ -238,6 +253,21 @@ impl TokenStore {
         }
         Ok(())
     }
+}
+
+/// Opens `path` to read without waiting: a FIFO with no writer would block the open.
+#[cfg(unix)]
+fn open_for_read(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::fcntl::OFlag::O_NONBLOCK.bits())
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_for_read(path: &Path) -> io::Result<File> {
+    File::open(path)
 }
 
 #[cfg(unix)]
@@ -346,6 +376,51 @@ mod tests {
                 .save(&Url::parse("https://y.example")?, &Secret::new("t"))
                 .is_err()
         );
+        Ok(())
+    }
+
+    /// SPEC-407 TKS-001 (#770): the size bound holds for what is read, not for a length looked up
+    /// before: a FIFO (length 0) fed more than 1 MiB of valid JSON is refused, without waiting
+    /// for a writer, and so is a regular file over the bound.
+    #[cfg(unix)]
+    #[test]
+    fn an_oversized_or_special_credentials_file_is_refused() -> TestResult {
+        use std::io::Read as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("credentials.json");
+        let server = Url::parse("https://y.example")?;
+        let padded = |len: usize| {
+            let mut json = vec![b' '; len];
+            json.extend_from_slice(br#"{"version":1,"servers":{}}"#);
+            json
+        };
+        nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRWXU)?;
+        // Read and write: the open neither waits for a reader nor ends the stream for one.
+        let mut fifo = OpenOptions::new().read(true).write(true).open(&path)?;
+        let json = padded(usize::try_from(MAX_CREDENTIALS_BYTES)? + 1);
+        let writer = std::thread::spawn(move || {
+            // Refused or read whole, the stream ends when this end closes.
+            let _ = fifo.write_all(&json);
+        });
+        match TokenStore::new(path.clone()).load(&server) {
+            Err(TokenStoreError::Corrupt(_)) => {}
+            other => return Err(format!("a FIFO: expected Corrupt, got {other:?}").into()),
+        }
+        // Drain what the refused read left, so the writer ends.
+        let mut rest = Vec::new();
+        File::open(&path)?.read_to_end(&mut rest)?;
+        writer.join().map_err(|_| "writer panicked")?;
+        // No writer at all: refused at once.
+        assert!(matches!(
+            TokenStore::new(path.clone()).load(&server),
+            Err(TokenStoreError::Corrupt(_))
+        ));
+        fs::remove_file(&path)?;
+        fs::write(&path, padded(usize::try_from(MAX_CREDENTIALS_BYTES)?))?;
+        assert!(matches!(
+            TokenStore::new(path).load(&server),
+            Err(TokenStoreError::Corrupt(_))
+        ));
         Ok(())
     }
 

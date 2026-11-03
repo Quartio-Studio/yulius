@@ -87,7 +87,7 @@ are never built.
 ## Plan
 
 - [x] Spec SPEC-407 with the triage of all five findings
-- [ ] Credentials read bounded on one handle (#770)
+- [x] Credentials read bounded on one handle (#770)
 - [ ] Stored tokens held in Secret, buffers zeroized (#769)
 - [ ] Credentials written through a random-name temp file (#771)
 - [ ] Narrow [[ignore]] entries for #802 and #684
