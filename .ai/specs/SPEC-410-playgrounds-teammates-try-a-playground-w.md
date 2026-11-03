@@ -133,14 +133,16 @@ Run on 2026-11-03 in the task worktree (head `eca36631` plus two doc-comment fix
   fence refuses, no WCAG violations); with `playground`, `git` and `sign-in` 21 passed.
 - `python3 scripts/check_repository.py`: passed. `yulius security-scan`: **disabled** (Vidoc is
   switched off for this project in Yulius; nothing scanned, not a pass).
-- Independent review: six rounds in fresh read-only sessions. Rounds 1-4 requested changes (the
+- Independent review: six rounds in fresh read-only sessions. Rounds 1-3 requested changes (the
   shared workspace, configuring tools, saved states, revoke stopping work, the Claude token, the
   move to GitHub, sweep retries and grace, the Vidoc key, tests); all were fixed test-first.
   Rounds 4-6 approved. The Claude token exposure was put to the product owner (needs_you), who
   answered "decide what's better": shipped stated (ADR-0260).
 - Left as is, with reasons: an audit entry of a sweep revocation is lost if the audit write fails
   after the revoke (the admin path has the same order; logged as a warning); the move dialog does
-  not warn about a playground that had guests (ADR-0260 says to look it over).
+  not warn about a playground that had guests (ADR-0260 says to look it over); two round-6 nits:
+  the race comment in `sweep_link` and the move test checking each sweep audit's actor but not that
+  there is exactly one.
 - Not testable here: a real browser against `yulius serve` (the e2e suite uses the mock, which
   applies the same fence); a guest's real Claude run (no account in tests); the token exposure
   itself is documented, not mitigated.
