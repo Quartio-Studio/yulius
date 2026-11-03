@@ -1,11 +1,11 @@
 ---
 yulius-task: 9fafa37e-306c-42a1-ad23-c5541257a22e
-status: in-progress
+status: done
 ---
 
 # SPEC-404: Vidoc triage of the account login findings (#806 #729 #751 #731 #730)
 
-Status: in-progress
+Status: done
 Date: 2026-11-03
 Owner: Yulius task #383
 Scope authorization: task #383 (a person asked that each of the five issues end closed). Fixes
@@ -70,9 +70,9 @@ wording, so that a repeat scan does not reopen it.
 - [x] Spec SPEC-404 with the triage of all five findings
 - [x] The raw sign-in buffer is one allocation, wiped whole when the sign-in ends (#731)
 - [x] Narrow [[ignore]] entries for the dismissed wordings (#806 #729 #751 #730)
-- [ ] ADR, changes entry and gates
-- [ ] Independent review answered
-- [ ] Dismissed issues commented and closed (#806 #729 #751 #730)
+- [x] ADR, changes entry and gates
+- [x] Independent review answered
+- [x] Dismissed issues commented and closed (#806 #729 #751 #730)
 
 ## Acceptance criteria
 
@@ -114,4 +114,51 @@ wording, so that a repeat scan does not reopen it.
 
 ## Evidence
 
-(Filled in as the work is verified.)
+- Triage on `dev` ffbc2e91 (the file:line evidence is in each issue's closing comment):
+  - #806: `PATH` from the server's environment (`accounts.rs:1170`). The argv is fixed
+    (`login.rs:21-23`), HOME and the config folder are new private folders (`accounts.rs:1098-1107`)
+    and only administrators reach it (`:932`, `:977`). Containment is per sandbox
+    (`supervisor.rs:1427-1449`). `tests/accounts.rs:395` pins `Containment::None`.
+  - #729: the same code (`login_plan`, `accounts.rs:1169-1195`) and the same finding.
+  - #751: `prune_logins` (`accounts.rs:1053-1071`) keeps running sign-ins. The lookups are at
+    `:934-941` and `:979-986`. A cancel enables its wait before `is_running` (`:987-990`), and
+    `notify_waiters` (`:1434`) comes after the final phase.
+  - #730: the PTY host queues a snapshot only in `attach` (`host.rs:922-950`). The client reads
+    it in the handshake (`client.rs:125-132`), so the reset arm (`accounts.rs:1299-1310`) is not
+    reached by a sign-in.
+  - #731: real. Growth freed earlier copies unzeroed, and the extracted `Secret` was dropped
+    unzeroed.
+- Regression tests:
+  - `accounts::tests::raw_output_never_reallocates` failed on dev's `RawOutput` ("after a chunk of
+    1 bytes": the pointer moved) and passes with the fix.
+  - `accounts::tests::wiping_raw_output_zeroes_its_whole_allocation` fails when `wipe` does not
+    zero, both with `fill(0)` removed and with `zeroize` removed (mutation checks), and passes
+    with the fix.
+  - The 12 `accounts::` integration tests pass unchanged.
+- `[[ignore]]` entries in `.config/vidoc.toml`, each with the exact path, Vidoc's exact title and
+  the function it is in:
+  - `login_plan` "Login process launched with inherited PATH and no containment" (#806);
+  - `login_plan` "Login process spawned without containment on the host" (#729);
+  - `login_terminal` "TOCTOU between prune and login lookup" (#751);
+  - `login_event` "Masking state reset on snapshots can split a masked token across chunks"
+    (#730).
+
+  The independent reviewer agreed to all four in round 1.
+- `scripts/dev ci` at 35ec40e6: exit 0, nextest 3002 passed, 16 skipped. The run before it, at
+  17e2e0ea, failed `cargo fmt --check`, and that was fixed by formatting.
+- `scripts/dev ci` at e61175d9 (review round 1 answered): exit 0, nextest 3002 passed, 16 skipped.
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0). This
+  is disabled, not passed; nothing was scanned.
+- Independent review, round 1 (fresh session, 35ec40e6): approved, with no blockers and no majors.
+  It agreed to all four dismissals and entries. Its own-code minors were answered in e61175d9:
+  - The `zeroize` rationale was wrong: the crate was already a dependency. The wipe now uses it.
+  - The extracted `Secret` is now zeroized after sealing, and the docs no longer overclaim.
+  - The wipe test now pushes the token's start out.
+  - An oversized chunk now has to keep its newest bytes.
+  - Each entry names its function, as `docs/engineering/development.md` asks.
+  - The nits: a poisoned lock is still wiped, the "failed start" wording is fixed, the test
+    paths in the comments are fixed, and so are the line numbers in the #751 comment.
+- #806, #729 (labelled `duplicate`), #751 and #730 were closed as not planned, each with its
+  file:line evidence on ffbc2e91. #731 closes with the pull request.
+- Not tested: zeroing on `Drop` and the zeroing of the `Secret`. Safe code cannot observe freed
+  memory (`unsafe` is forbidden). A sign-in's memory was not inspected on a real host either.
