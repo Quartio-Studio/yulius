@@ -105,7 +105,12 @@ The e2e suite (`e2e/`, test-only) shares that CPU with the agents when an agent 
 them, so a page's burst of module requests waits for a busy server instead of having its SYNs
 dropped; the runner's workers stay bounded by the CPU budget
 ([SPEC-148](../.ai/specs/SPEC-148-fix-354-349-356-394-the-e2e-suite-holds.md),
-[decision 0122](decisions/0122-the-e2e-server-keeps-up-with-a-page-under-load.md)).
+[decision 0122](decisions/0122-the-e2e-server-keeps-up-with-a-page-under-load.md)). Three waits
+have their own named budgets, each for one first-load condition: a test's first look at a page
+(`FIRST_LOAD_MS`, [decision 0262](decisions/0262-an-e2e-tests-first-look-at-a-page-has-a-first-load-budget.md)),
+a task terminal's first screen (`TERMINAL_SHOW_MS`, 0251) and Monaco's cold load
+(`MONACO_LOAD_MS`, 0122); the other waits keep the budgets they had (the runner's defaults or a
+test's own), with no retries.
 
 ```mermaid
 flowchart LR
@@ -2271,7 +2276,9 @@ job's slot wait on the job's own row under "Jobs", paired by the job id in the s
 [decision 0136](decisions/0136-a-ci-job-s-slot-wait-is-drawn-on-its-own-row.md)). A job's slot
 wait is open from the moment it begins to wait and ends `started`, `cancelled` or `error`, so a job
 still waiting is its wait alone on its row there, hatched up to "now"
-([SPEC-385](../.ai/specs/SPEC-385-ci-a-job-still-waiting-for-a-job-slot-sh.md)).
+([SPEC-385](../.ai/specs/SPEC-385-ci-a-job-still-waiting-for-a-job-slot-sh.md)). A running
+subject's waterfall is drawn again at every poll; the row under a still pointer shows its tip again
+after the redraw ([SPEC-412](../.ai/specs/SPEC-412-e2e-a-named-longer-wait-for-first-loads.md)).
 
 ```mermaid
 flowchart LR

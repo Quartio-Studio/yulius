@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, touchTask } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock, terminalShown, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -10,7 +10,7 @@ failOnPageErrors();
 
 test("someone else's task is read-only, and its owner can hand it over", async ({ app, browser, screen }) => {
   await app.open(mock('/s/product/t/3'));
-  await expect(screen.getByText("You are watching @anna-q's task.")).toBeVisible();
+  await firstShown(screen.getByText("You are watching @anna-q's task."));
   await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
   // Disabled, saying why.
   await expect(screen.getByRole('menuitem', 'Continue @anna-q owns this task')).toBeDisabled();
@@ -32,6 +32,7 @@ test("someone else's task is read-only, and its owner can hand it over", async (
 
 test('the owner is asked for control and hands the task over', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
   // xterm marks a terminal whose mouse it reports to the program (SPEC-098): the owner's is.
   const programMouse = () => browser.evaluate(() => Boolean(document.querySelector('.taskview .xterm.enable-mouse-events')));
   await expect.poll(programMouse, { message: 'the writer hands the program its mouse' }).toBe(true);

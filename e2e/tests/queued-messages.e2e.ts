@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, promptText } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock, promptText } from './support.ts';
 
 failOnPageErrors();
 
@@ -18,7 +18,7 @@ test('a waiting task takes a message into its request', async ({ app, browser, s
   await app.open(mock('/s/product/t/7'));
 
   const card = screen.getByRole('region', 'Queued messages');
-  await expect(card).toBeVisible();
+  await firstShown(card);
   const request = card.getByRole('region', 'Request');
   await expect(request).toContainText('Invoice emails');
   expect(await axeViolations(browser)).toEqual([]);
@@ -152,7 +152,7 @@ const touchProduct7 = (browser: Browser, changes: object) => browser.evaluate((c
 test('an older detail read that lands last does not bring back an older status (#316)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/product/t/7'));
   const card = screen.getByRole('region', 'Queued messages');
-  await expect(card).toBeVisible();
+  await firstShown(card);
   const reads = () => browser.evaluate(() => (window as unknown as Touching).__yuliusMock.detailReads?.tsk_product_7 ?? 0);
   // The next detail read answers what the server had when it was asked, once released.
   await browser.evaluate(() => {
@@ -178,6 +178,7 @@ test('an older detail read that lands last does not bring back an older status (
 test('text typed into the queue box stays, with Queue off, when the task starts (#324)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/product/t/7'));
   const card = screen.getByRole('region', 'Queued messages');
+  await firstShown(card);
   const box = card.getByRole('textbox', 'Message for the agent');
   await box.click();
   await browser.keyboard.type('Only for paid invoices.');
@@ -194,7 +195,7 @@ test('text typed into the queue box stays, with Queue off, when the task starts 
 test('a refusal stays in place with its text when the task starts (#324)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/product/t/7'));
   const card = screen.getByRole('region', 'Queued messages');
-  await expect(card).toBeVisible();
+  await firstShown(card);
   await browser.evaluate(() => {
     const task = (window as unknown as MockTasks).__yuliusMock.tasks.find((t) => t.id === 'tsk_product_7');
     if (task) task.started = true;
@@ -215,6 +216,7 @@ test('a refusal stays in place with its text when the task starts (#324)', async
 test('an older read is still applied when the newer one fails (#316)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/product/t/7'));
   const card = screen.getByRole('region', 'Queued messages');
+  await firstShown(card);
   const request = card.getByRole('region', 'Request');
   await expect(request).toContainText('Invoice emails');
   type Failing = Touching & { __yuliusMock: { failNextDetail?: boolean; tasks: { id: string; prompt?: string }[] } };

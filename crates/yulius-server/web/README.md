@@ -278,7 +278,8 @@ archive it got in `__yuliusMock.playgroundUploads`; `POST /api/sandboxes/{sid}/p
 N×M until this one types or clicks into the terminal), `update=1` (a newer `main` is on offer; Update
 now walks through its phases in about six seconds) or `update=fail` (the same, rolled back),
 `helper=0` (no update helper), `jev=config` (a Jev key file is configured), `vidoc=config` (a Vidoc key file is configured), `docker=rebuild` (the base lacks the host's `dockerd` and is rebuilt; a sandbox on its own docker.io; the update's re-check found a problem), `docker=kept` (the last host check failed items but kept Docker), `docker=legacy` (sandboxes not isolated), `smoke=fail` (the Docker smoke test's pull fails), `leftovers=none` (a scan finds nothing), `browserask=0` (no
-sign-in request from studio's browser 5 s after the start, nor its toast), `ambient=0` (no ambient
+sign-in request from studio's browser 5 s after the start, nor its toast), `still=1` (a task
+terminal's mock agent prints no more of its script after the first screen), `ambient=0` (no ambient
 activity at all: neither that request, which also moves #10 into "Needs you", nor studio's tasks
 changing by themselves, #8 starting after about 12 s; a test that hovers a sidebar row needs it), `sessionlimit=<n>` (the session limit the Status panel
 shows, default 8; studio runs 7 tasks with `ambient=0`), `sessionqueue=<n>` (that many more queued tasks in

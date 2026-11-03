@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -254,11 +254,11 @@ test('the task overview fits a 390 px phone: no part of it scrolls sideways', as
 
 test('an ended task offers what its menu offers: no Continue when archived; Check subscriptions opens them', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/1'));
-  await expect(screen.getByText('This task is closed. Its branch and changes are kept.')).toBeVisible();
+  await firstShown(screen.getByText('This task is closed. Its branch and changes are kept.'));
   await expect(screen.getByRole('button', 'Continue')).toBeHidden();
 
   await app.open(mock('/s/studio/t/2'));
-  await expect(screen.getByText(/usually a subscription must sign in again/)).toBeVisible();
+  await firstShown(screen.getByText(/usually a subscription must sign in again/));
   await screen.getByRole('button', 'Check subscriptions').click();
   await expect(browser).toHaveURL(/#\/admin\/accounts$/);
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Subscriptions');

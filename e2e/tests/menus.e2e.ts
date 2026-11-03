@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -101,7 +101,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
 
 const openRunAfter = async ({ app, screen }: { app: { open: (url: string) => Promise<unknown> }; screen: any }) => {
   await app.open(mock('/s/studio'));
-  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await firstShown(screen.getByRole('link', /Checkout API/).first());
   await screen.getByRole('button', /Run after: Start now/).click();
 };
 

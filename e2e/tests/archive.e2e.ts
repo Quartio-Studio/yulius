@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, terminalShown } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock, terminalShown } from './support.ts';
 
 failOnPageErrors();
 
@@ -29,7 +29,7 @@ const archiveRequests = (browser: Browser) => browser.evaluate(() => (window as 
 
 test('a row’s quick Archive button archives its task, with Undo', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/13'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#13 Improve the code');
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#13 Improve the code');
   const done = screen.getByRole('region', 'Done');
 
   // A working task cannot be archived: its row has no such button.

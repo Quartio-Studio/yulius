@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, openSuperagent } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock, openSuperagent } from './support.ts';
 
 failOnPageErrors();
 
@@ -33,7 +33,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
 
 test('the Superagent opens on the right beside the page, says what it is for and keeps its session', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
 
   await openSuperagent(browser, screen);
   const panel = screen.getByRole('region', 'Tool panel');
