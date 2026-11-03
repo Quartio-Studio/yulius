@@ -90,7 +90,7 @@ are never built.
 - [x] Credentials read bounded on one handle (#770)
 - [x] Stored tokens held in Secret, buffers zeroized (#769)
 - [x] Credentials written through a random-name temp file (#771)
-- [ ] Narrow [[ignore]] entries for #802 and #684
+- [x] Narrow [[ignore]] entries for #802 and #684
 - [ ] Gates, docs and changes entry green
 - [ ] Independent review approved on the final head
 - [ ] Issues commented and closed or linked to the pull request
