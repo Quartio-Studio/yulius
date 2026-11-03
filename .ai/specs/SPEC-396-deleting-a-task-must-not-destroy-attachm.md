@@ -73,12 +73,13 @@ how a waiting task starts in place instead of deleting and recreating it.
 ## Plan
 
 - [x] Spec and ADR for keeping named attachments and a week's trash
-- [ ] A deleted task's attachments go to the trash unless another task's request names them
-- [ ] The trash is purged after 7 days and its files are restored into a task
-- [ ] task_update changes a waiting task's start in place
-- [ ] Delete confirmation, tool descriptions and docs say where attachments go
-- [ ] Independent review approved and findings answered
+- [x] A deleted task's attachments go to the trash unless another task's request names them
+- [x] The trash is purged after 7 days and its files are restored into a task
+- [x] task_update changes a waiting task's start in place
+- [x] Delete confirmation, tool descriptions and docs say where attachments go
+- [x] Independent review approved and findings answered
 - [ ] Gates green with evidence in the spec
+- [ ] Final review approves the evidenced head
 
 ## Acceptance criteria
 

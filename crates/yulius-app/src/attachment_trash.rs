@@ -86,7 +86,7 @@ pub struct TrashEntry {
     pub deleted_at: String,
     /// When it is removed (RFC 3339).
     pub restorable_until: String,
-    /// Its files (at most [`MAX_LISTED_FILES`] names).
+    /// Its files (at most 100 names).
     pub files: Vec<String>,
     #[serde(skip)]
     name: String,
