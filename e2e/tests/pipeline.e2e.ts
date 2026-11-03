@@ -312,6 +312,24 @@ async function hoverAt(browser: Browser, tip: string, x: number, y: number) {
   await expect(browser.locator(tip)).toBeVisible();
 }
 
+// SPEC-412 (#510): a running run's waterfall is drawn again at every poll (3 s); the tip of the
+// row under a still pointer went with the old rows, so a slower run read an empty tip.
+test('the hover tip of a running run stays through the waterfall’s redraw', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci?run=ci_s4'));
+  const run = screen.getByRole('region', 'Stages of this run');
+  await firstShown(run);
+  await expect(run).toContainText('Jobs');
+  await browser.locator('.st-row.st-job:has-text("engine")').hover();
+  await expect(browser.locator('.st-tip')).toContainText('waited 6 min for a job slot');
+  // The rows drawn now are marked; the next poll draws new ones under the pointer.
+  await browser.evaluate(() => { document.querySelector('.st-rows')!.setAttribute('data-before', ''); });
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.st-rows:not([data-before])') !== null), {
+    message: 'the waterfall was drawn again',
+  }).toBe(true);
+  await expect(browser.locator('.st-tip')).toBeVisible();
+  await expect(browser.locator('.st-tip')).toContainText('waited 6 min for a job slot');
+});
+
 test('the waterfall’s hover tip wraps its figures and stays inside the plot at every edge', async ({ app, browser, screen }) => {
   for (const width of [1280, 390]) {
     await browser.setViewport({ width, height: 900 });

@@ -394,6 +394,15 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
 
 const drawn = new WeakMap(); // host → the timeline it shows, so a poll that changed nothing keeps it
 const views = new WeakMap(); // host → what a person opened, closed and toggled there
+const pointers = new WeakMap(); // host → where the pointer rests over it, for the tip after a redraw
+
+/** Follows the pointer over `host` once, so a redraw can show the tip of the row under it again. */
+function followPointer(host) {
+  if (pointers.has(host)) return;
+  pointers.set(host, null);
+  host.addEventListener('pointermove', (event) => { pointers.set(host, { x: event.clientX, y: event.clientY }); });
+  host.addEventListener('pointerleave', () => { pointers.set(host, null); });
+}
 
 /**
  * Loads and draws one subject's waterfall into `host` (`subject`: `ci_run:<id>`, …). A timeline
@@ -415,6 +424,12 @@ export async function loadWaterfall(ctx, sandbox, subject, host, options = {}) {
     const row = focused?.closest('.st-row')?.dataset.key;
     const wasToggle = Boolean(focused?.closest('.db-table-toggle'));
     setChildren(host, waterfall(timeline, { ...options, view: views.get(host) }));
+    // A running run is drawn again at every poll: the row under a still pointer shows its tip
+    // again, as it did before the redraw (SPEC-412).
+    followPointer(host);
+    const pointer = pointers.get(host);
+    const under = pointer && document.elementFromPoint(pointer.x, pointer.y)?.closest('.st-row');
+    if (under && host.contains(under)) under.dispatchEvent(new PointerEvent('pointermove', { clientX: pointer.x, clientY: pointer.y }));
     const again = row ? [...host.querySelectorAll('.st-row')].find((r) => r.dataset.key === row)?.querySelector('.st-fold')
       : wasToggle ? host.querySelector('.db-table-toggle') : null;
     again?.focus();
