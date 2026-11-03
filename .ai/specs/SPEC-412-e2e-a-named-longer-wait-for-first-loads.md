@@ -86,7 +86,7 @@ three issues found behind other timeouts are fixed, so these tests fail only for
 | FLD-006 | The notes tests that turn a failure off then trigger the next load at once (a tab switch, which loads), instead of waiting out a back-off a starved run stretches; tests that need the test's own save to be the refused one hold the server's answer to the pad's look from before the lost answer, so the pad's own retry cannot settle it first. Each passes with the probe delay that failed it before, and the back-off test still proves the pad retries by itself. | `notes.e2e.ts` (removing the retry after a teammate's edit fails "…backs off") |
 | FLD-007 | A running subject's waterfall, drawn again at every poll, shows the tip of the row under a still pointer again after the redraw (`stages.js` `loadWaterfall`). | `pipeline.e2e.ts` "the hover tip of a running run stays through the waterfall's redraw" (fails without it: the tip hidden) |
 | FLD-008 | Terminal tests that look at a task terminal's rows right after `app.open` wait for its first screen first (`terminalShown`). | `terminal.e2e.ts` |
-| FLD-009 | Terminal tests hold the mock transcript still inside the page the moment their line is printed (`holdStillAt`), not after the runner's next read: a classic run whose transcript scrolled on has scrollback, and its first turn up offers no whole session. | `terminal.e2e.ts` (#911's tests: a 15 s probe before the old `holdStill` fails 2 of 2, passes with `holdStillAt`) |
+| FLD-009 | Terminal tests that read or point at the transcript open the mock with `still=1`: the task transcript prints nothing after its first screen (`mock.js` `TermSession.ensureTicking`), instead of being stopped after the runner's next read. Stopped late, a starved run's transcript had scrolled on, so a classic run had scrollback and its first turn up offered no whole session. | `terminal.e2e.ts` (#911's tests: a 15 s probe right after `app.open` fails 2 of 2 with a hold after the first screen, passes 2 of 2 with `still=1`) |
 
 ## Plan
 
@@ -164,8 +164,11 @@ so that a 2 s CPU-bound probe gets about 0.2 of a CPU (SPEC-148's method), logge
   the `stages.js` change, 3 of 3; a 6 s probe before "a busy CI run…"'s hover failed 2 of 2 before
   and passes 2 of 2 after (`browserask=0` did not help, so it was not kept).
 - Whole-session offer (FLD-009): a 15 s probe before the old `holdStill` in `classicTask12` failed
-  "the attention bar's Reply…" 2 of 2 ("tap did not become actionable", the offer never shown);
-  with `holdStillAt`, 2 of 2 pass with the same probe.
+  "the attention bar's Reply…" 2 of 2 ("tap did not become actionable", the offer never shown).
+  An in-page hold after the first screen (round 2 of the review) still failed with a 15 s probe
+  right after `app.open` ("the whole session is read page by page…" and "…Reply…", 2 of 2): the
+  hello starts the printing before any hold from the runner. With `still=1`, 2 of 2 pass with that
+  probe, and `terminal.e2e.ts` 30 of 30.
 
 **Loaded run 1** (head `291a79fd`, 14:09–15:10): the 15 affected files `--repeat-each 5`; probe
 median 0.181 (10th–90th percentile 0.09–0.36), load 13–77. **1251 of 1260 passed**, 3661 s.
