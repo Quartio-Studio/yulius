@@ -15,6 +15,7 @@ mod ci;
 mod coordination;
 pub mod crypto;
 mod delivery;
+mod guests;
 mod imports;
 mod instance;
 mod intake;
@@ -116,6 +117,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0044_mcp_server_owner.sql"),
     // Schema version 45 (SPEC-356).
     include_str!("migrations/0045_instance_vidoc_off.sql"),
+    // Schema version 46 (SPEC-410).
+    include_str!("migrations/0046_playground_guests.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;

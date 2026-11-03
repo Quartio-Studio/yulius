@@ -449,6 +449,39 @@ commit) and tests it as `task/<n>`; while that run goes the merge is armed, and 
 run passed. Nothing is published to GitHub. Hygiene, the automatic pull request and reconciliation
 skip playgrounds.
 
+A playground's admins let teammates without GitHub in as guests
+([SPEC-410](../.ai/specs/SPEC-410-playgrounds-teammates-try-a-playground-w.md),
+[decision 0260](decisions/0260-a-playgrounds-guests-come-in-through-an-expiring-link.md)): a link
+holds a 256-bit code, only its hash is kept in `playground_invites`, and joining through it makes
+a user with no GitHub link and no password, tied to the link in `playground_guests`, with a browser
+session that ends with the link. `App::access_level` gives a guest write on that playground while
+the link lives and none elsewhere, and `App::require` refuses them `Configure` and `Administer`.
+The server's `Auth` extractor lets a guest's request through only on an allowlist of routes
+(`guest_may_reach`); the event stream gives them only their playground's events, and their
+agents' configuring tools need `Configure` (`App::configure_authority`). A guest shares the
+playground's sandbox, so once one joined, `resolved_agent_secrets` gives none of its runs an agent
+secret and its saved agent states are refused (`playground_has_guests`). Revoking the link revokes
+its guests' sessions in the same transaction, an access write that the open sockets' re-checks
+see, and then stops their tasks and terminals; the background tick does the same for links that
+expired (`ended_at`).
+
+```mermaid
+sequenceDiagram
+  participant A as Playground admin
+  participant S as Yulius server
+  participant G as Guest's browser
+  A->>S: POST /api/sandboxes/{sid}/guest-invites {days}
+  S-->>A: link /join?code=… (shown once; hash stored)
+  A-->>G: sends the link
+  G->>S: GET /api/guest-invites/{code}
+  S-->>G: playground, invited by, ends at
+  G->>S: POST /api/guest-invites/{code}/join {name}
+  S-->>G: Me + session cookie (ends with the link)
+  G->>S: their playground's routes only (Auth allowlist, require)
+  A->>S: DELETE …/guest-invites/{id}
+  S-->>G: 401 on the next request; sockets close at their re-check
+```
+
 A local checkout without GitHub comes in from the command line too
 ([SPEC-171](../.ai/specs/SPEC-171-fix-409-420-yulius-onboard-uploads-a-che.md)): `yulius onboard
 --playground` sends a bundle of every branch and tag, the uncommitted work and the chosen sessions

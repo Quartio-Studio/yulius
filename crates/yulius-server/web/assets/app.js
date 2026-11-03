@@ -17,7 +17,7 @@ import { notFound } from './pages/common.js';
 import { createTabRow, createSidebar } from './layout.js';
 import { createPanelHost } from './panels.js';
 import { mountTaskView, mountComposer } from './taskview.js';
-import { mountSetup, mountSignIn, signInProblem } from './pages/auth.js';
+import { mountSetup, mountSignIn, mountJoin, signInProblem } from './pages/auth.js';
 import { mountTasksPage, mountArchivedPage, mountDevicePage } from './pages/tasks.js';
 import { mountGitPage } from './pages/git.js';
 import { mountCiCdPage } from './pages/cicd.js';
@@ -52,6 +52,8 @@ const params = new URLSearchParams(window.location.search);
 const NOT_FOUND = { title: 'Page not found', text: 'There is nothing at this address. The link may be old or mistyped.', back: ['All sandboxes', '/'] };
 const MOCK = params.get('mock') === '1';
 const LAST_SANDBOX_KEY = 'yulius.lastSandbox';
+// The pages of their playground a guest uses (SPEC-410): its work, never its settings.
+const GUEST_PAGES = new Set(['tasks', 'sessions', 'git']);
 
 const SANDBOX_PAGES = {
   tasks: (ctx, sandbox) => mountTasksPage(ctx, sandbox),
@@ -100,6 +102,9 @@ function createApp(root, transport) {
     signOut,
     isSuperadmin: () => Boolean(store.state.me && store.state.me.user && store.state.me.user.is_superadmin),
     isInstanceAdmin: () => Boolean(store.state.me && store.state.me.user && (store.state.me.user.is_superadmin || store.state.me.user.is_instance_admin)),
+    // A playground's guest (SPEC-410): `{sandbox_id, slug, expires_at}` of the one playground they
+    // reach, else null. The shell then offers that playground's work and nothing else.
+    guest: () => (store.state.me && store.state.me.user && store.state.me.user.guest) || null,
   };
 
   // ------------------------------------------------------------ boot
@@ -119,6 +124,13 @@ function createApp(root, transport) {
     }
     if (setup && setup.setup_required) {
       renderSetup();
+      return;
+    }
+    // A playground's guest link opens its join page, signed in or not (SPEC-410 GST-007).
+    if (currentLocation().path === '/join') {
+      let me = null;
+      try { me = await meRead; } catch { /* signed out: the page offers to join */ }
+      renderJoin(me);
       return;
     }
     try {
@@ -156,6 +168,21 @@ function createApp(root, transport) {
     const problem = reason ? signInProblem(reason, loc.query.get('login')) : null;
     navigate(`/signin?next=${encodeURIComponent(next)}`, { replace: true });
     setChildren(root, mountSignIn(ctx, { next, problem, onDone: (me, target) => signedIn(me, target) }).el);
+  }
+
+  function renderJoin(me) {
+    const code = currentLocation().query.get('code') || '';
+    setChildren(root, mountJoin(ctx, {
+      code,
+      me,
+      // The page joined: its session is the guest's, and the shell opens their playground.
+      onDone: (joined, target) => signedIn(joined, target),
+      onSignOut: async () => {
+        try { await api.post('/api/auth/logout'); } catch { /* signed out already */ }
+        store.state.me = null;
+        renderJoin(null);
+      },
+    }).el);
   }
 
   async function signedIn(me, next) {
@@ -282,15 +309,18 @@ function createApp(root, transport) {
     const updates = createUpdateBanner(ctx);
     ctx.updates = updates;
     setChildren(root, skip, appEl, backdrop, connBanner);
-    // The server's disk running low (SPEC-276 RDA-007): a warning pill beside it, for everyone.
-    const diskAlert = createDiskAlert(ctx);
-    ctx.diskAlert = diskAlert;
-    // A full egress proxy share or relay (SPEC-361): a warning pill for the sandbox's people.
-    const connectionAlert = createConnectionAlert(ctx);
-    ctx.connectionAlert = connectionAlert;
-    const tabRight = tabRow.el.querySelector('.tabrow-right');
-    if (tabRight) tabRight.prepend(connectionAlert.el, diskAlert.el, updates.el);
-    else root.append(connectionAlert.el, diskAlert.el, updates.el);
+    // A playground's guest reaches no instance state (SPEC-410): no disk, relay or update pills.
+    if (!ctx.guest()) {
+      // The server's disk running low (SPEC-276 RDA-007): a warning pill beside it, for everyone.
+      const diskAlert = createDiskAlert(ctx);
+      ctx.diskAlert = diskAlert;
+      // A full egress proxy share or relay (SPEC-361): a warning pill for the sandbox's people.
+      const connectionAlert = createConnectionAlert(ctx);
+      ctx.connectionAlert = connectionAlert;
+      const tabRight = tabRow.el.querySelector('.tabrow-right');
+      if (tabRight) tabRight.prepend(connectionAlert.el, diskAlert.el, updates.el);
+      else root.append(connectionAlert.el, diskAlert.el, updates.el);
+    }
     // The superadmin's Update button, beside the account button (SPEC-133).
     const sidebarFoot = sidebar.el.querySelector('.sidebar-foot');
     if (sidebarFoot) sidebarFoot.append(createUpdateButton(ctx, updates).el);
@@ -531,6 +561,11 @@ function createApp(root, transport) {
     currentRoute = route;
     document.body.classList.remove('drawer-open');
     if (route.name === 'setup' || route.name === 'signin') { navigate('/', { replace: true }); return; }
+    // A guest link opened in a signed-in page: its join page says what joining does (SPEC-410).
+    if (route.name === 'join') { teardown(); renderJoin(store.state.me); return; }
+    // A guest stays in their playground's work (SPEC-410 GST-007): anything else opens it.
+    const guest = ctx.guest();
+    if (guest && !guestRoute(route, guest)) { navigate(`/s/${encodeURIComponent(guest.slug)}`, { replace: true }); return; }
 
     // Home (UI-045) and the other pages outside a sandbox (leaveSandbox).
     if (!route.slug) {
@@ -662,6 +697,13 @@ function createApp(root, transport) {
     shell.sidebar.update(route, null);
     shell.panels.setContext(null, null);
     if (wasInside && ctx.fitSidebar) ctx.fitSidebar();
+  }
+
+  /** Whether a guest may be at `route`: their playground's composer, tasks, sessions and Git. */
+  function guestRoute(route, guest) {
+    if (route.slug !== guest.slug) return false;
+    if (['composer', 'task', 'taskInfo', 'session', 'gitTask'].includes(route.name)) return true;
+    return route.name === 'page' && GUEST_PAGES.has(route.page);
   }
 
   /** Task #n of a sandbox does not exist (deleted, or a wrong link). */

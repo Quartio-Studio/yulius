@@ -270,7 +270,7 @@ can reload deep links. The protocol code
 (request building, error parsing, binary frames, reconnect) is the same code used against
 the real server. Options (combine with `&`): `setup=1` (setup required; token
 `YUL-SETUP-1234`; with `recovery=1` setup issues a recovery code, as the server does), `signedout=1` (password `correct horse battery`), `role=member|admin`,
-`role=superadmin` (the default), `contained=0` (shows "Not isolated"), `github=0` (GitHub App not configured), `github_linked=0`
+`role=superadmin` (the default), `contained=0` (shows "Not isolated"), `github=0` (GitHub App not configured), `guestlink=1|dead|mine` (a guest link to the playground `lab`, SPEC-410: signed out holding a live or an ended one, or signed in as its maker), `guest=1` (signed in as Carol, a guest of `lab`: the mock applies the server's guest fence and lists what it refused in `__yuliusMock.guestRefusals`), `github_linked=0`
 (the account has no GitHub link: the superadmin still sees every sandbox, other roles see none and
 the home page asks them to sign in with GitHub), `sandboxes=0` (a fresh instance without sandboxes: the
 home screen's first steps, a playground first; `POST /api/playgrounds` keeps the names of the

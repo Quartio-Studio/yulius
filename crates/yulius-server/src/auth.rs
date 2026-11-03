@@ -5,6 +5,7 @@ use axum::http::request::Parts;
 use axum::http::{Method, header};
 use yulius_app::auth::AuthContext;
 use yulius_app::error::AppError;
+use yulius_app::playground::GUEST_FENCE;
 
 use crate::AppState;
 use crate::error::ApiError;
@@ -75,6 +76,7 @@ impl FromRequestParts<AppState> for Auth {
                 )
                 .into());
             }
+            refuse_guests_outside(app, parts, &ctx).await?;
             return Ok(Self(ctx));
         }
         let cookie = cookie_value(parts, session_cookie_name(app.config.secure_cookies))
@@ -94,7 +96,78 @@ impl FromRequestParts<AppState> for Auth {
                 return Err(AppError::CsrfInvalid.into());
             }
         }
+        refuse_guests_outside(app, parts, &ctx).await?;
         Ok(Self(ctx))
+    }
+}
+
+/// A playground's guest reaches only the routes of [`guest_may_reach`] (SPEC-410 GST-004);
+/// access then decides which sandbox, and `App::require` refuses them its configuration.
+async fn refuse_guests_outside(
+    app: &AppState,
+    parts: &Parts,
+    ctx: &AuthContext,
+) -> Result<(), AppError> {
+    if guest_may_reach(&parts.method, parts.uri.path()) || !app.is_guest(&ctx.user) {
+        return Ok(());
+    }
+    Err(AppError::Forbidden(GUEST_FENCE.into()))
+}
+
+/// The pages of a sandbox a guest may use: its tasks and what working on them needs. Never its
+/// secrets, variables, MCP servers, skills, automations, saved agent states, Superagent, guest
+/// links or delivery settings.
+const GUEST_SANDBOX_PAGES: &[&str] = &[
+    "attachments",
+    "browser",
+    "ci",
+    "files",
+    "git",
+    "intake",
+    "notes",
+    "previews",
+    "sessions",
+    "shells",
+    "stages",
+    "tasks",
+    // Read to offer a workflow for a new task; changing one needs Configure, refused to guests.
+    "workflows",
+];
+
+/// Whether a playground's guest may send `method` to `path` (an allowlist, so a route added later
+/// stays closed to guests until it is listed): their account (`/api/me`, sign-out, their own notes),
+/// the event stream, the sandbox list, a sandbox and its `GUEST_SANDBOX_PAGES`, tasks,
+/// sessions and shells (each decided by the sandbox's access) and preview authorization.
+#[must_use]
+pub fn guest_may_reach(method: &Method, path: &str) -> bool {
+    let path = path.strip_suffix('/').unwrap_or(path);
+    match path {
+        "/api/me"
+        | "/api/me/notes"
+        | "/api/auth/logout"
+        | "/api/events"
+        | "/api/archived-tasks"
+        | "/api/previews/authorize" => return true,
+        "/api/sandboxes" => return *method == Method::GET,
+        _ => {}
+    }
+    if ["/api/tasks/", "/api/sessions/", "/api/shells/"]
+        .iter()
+        .any(|prefix| {
+            path.strip_prefix(prefix)
+                .is_some_and(|rest| !rest.is_empty())
+        })
+    {
+        return true;
+    }
+    let Some(rest) = path.strip_prefix("/api/sandboxes/") else {
+        return false;
+    };
+    let mut segments = rest.split('/');
+    match (segments.next(), segments.next()) {
+        (Some(sid), None) => !sid.is_empty(),
+        (Some(sid), Some(page)) => !sid.is_empty() && GUEST_SANDBOX_PAGES.contains(&page),
+        _ => false,
     }
 }
 
@@ -143,4 +216,90 @@ pub fn session_cookie(value: &str, max_age_s: i64, secure: bool) -> String {
 #[must_use]
 pub fn clear_cookie(secure: bool) -> String {
     session_cookie("", 0, secure)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_guest_reaches_only_their_playgrounds_work() {
+        let get = |path: &str| guest_may_reach(&Method::GET, path);
+        for path in [
+            "/api/me",
+            "/api/me/notes",
+            "/api/events",
+            "/api/archived-tasks",
+            "/api/previews/authorize",
+            "/api/sandboxes",
+            "/api/sandboxes/p1",
+            "/api/sandboxes/p1/",
+            "/api/sandboxes/p1/tasks",
+            "/api/sandboxes/p1/files/content",
+            "/api/sandboxes/p1/git",
+            "/api/sandboxes/p1/shells/s1/attachments",
+            "/api/sandboxes/p1/stages/timeline",
+            "/api/sandboxes/p1/workflows",
+            "/api/tasks/t1",
+            "/api/tasks/t1/terminal",
+            "/api/sessions/x/transcript",
+            "/api/shells/x/terminal",
+        ] {
+            assert!(get(path), "{path}");
+        }
+        assert!(guest_may_reach(&Method::POST, "/api/auth/logout"));
+        assert!(guest_may_reach(&Method::POST, "/api/sandboxes/p1/tasks"));
+        for path in [
+            "/api/sandboxes/p1/agent-secrets",
+            "/api/sandboxes/p1/variables",
+            "/api/sandboxes/p1/team-secrets",
+            "/api/sandboxes/p1/mcp",
+            "/api/sandboxes/p1/skills",
+            "/api/sandboxes/p1/automations",
+            "/api/sandboxes/p1/automation-templates",
+            "/api/sandboxes/p1/agent-states",
+            "/api/sandboxes/p1/cockpit",
+            "/api/sandboxes/p1/superagent/requests",
+            "/api/sandboxes/p1/guest-invites",
+            "/api/sandboxes/p1/delivery/runs",
+            "/api/sandboxes/p1/cd",
+            "/api/sandboxes/p1/hygiene",
+            "/api/sandboxes/p1/vidoc",
+            "/api/sandboxes/p1/onboarding/plan",
+            "/api/sandboxes/p1/move-to-github",
+            "/api/sandboxes/p1/purge",
+            "/api/sandboxes//tasks",
+            "/api/tasks/",
+            "/api/team-secrets",
+            "/api/secrets/activity",
+            "/api/agent-secrets/x",
+            "/api/me/tokens",
+            "/api/device/approve",
+            "/api/playgrounds",
+            "/api/import",
+            "/api/onboard/plan",
+            "/api/github/repositories",
+            "/api/status",
+            "/api/disk",
+            "/api/capacity",
+            "/api/connections",
+            "/api/update",
+            "/api/notes",
+            "/api/notes/presence",
+            "/api/analytics/summary",
+            "/api/admin/users",
+            "/api/mcp/x/test",
+            "/api/workflows/x",
+            "/api/automations/x",
+            "/api/auth/reauth",
+            "/api/templates",
+            "/mcp",
+            "/api/me/tokensx",
+        ] {
+            assert!(!get(path), "{path}");
+            assert!(!guest_may_reach(&Method::POST, path), "{path}");
+        }
+        // A guest makes no sandbox or playground.
+        assert!(!guest_may_reach(&Method::POST, "/api/sandboxes"));
+    }
 }

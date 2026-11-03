@@ -1,11 +1,13 @@
 // Standalone pages shown before a session exists: setup wizard (J1, ACC-001..003) and
 // sign-in (GitHub OAuth + superadmin password, ACC-005), with the superadmin recovery code
-// (ACC-002/011): shown once at setup and after a recovery; "Forgot password?" uses it.
+// (ACC-002/011): shown once at setup and after a recovery; "Forgot password?" uses it. A
+// playground's guest link opens the join page (SPEC-410, the one exception to ACC-005).
 
 import { h, icon, field, setChildren, toast, skeleton } from '../dom.js';
 import { BRAND } from '../brand.js';
 import { keySetupCard } from '../instancekeys.js';
 import { CONNECT_PATH } from '../claude.js';
+import { dateTime } from '../format.js';
 
 /** The product's mark and name (brand.js) at the top of the sign-in and setup cards. */
 function brandLockup() {
@@ -369,5 +371,66 @@ export function mountSignIn(ctx, { next, onDone, problem }) {
       })),
     }));
   }
+  return { el: root };
+}
+
+/**
+ * The page a playground's guest link opens (`/join?code=…`, SPEC-410 GST-007): who invited them to
+ * which playground and until when, a name, and "Join as guest". No GitHub account and no password:
+ * the link is the credential. A dead link says so; a browser already signed in is told to sign out
+ * first, since joining would replace its session.
+ */
+export function mountJoin(ctx, { code, me, onDone, onSignOut }) {
+  const root = h('main', { class: 'auth' });
+  const card = (...children) => setChildren(root, h('div', { class: 'auth-card join-card' }, brandLockup(), ...children));
+  const ended = (message) => card(
+    h('h1', { class: 'auth-title' }, 'This guest link has ended'),
+    h('p', { class: 'text-2' }, message || 'It was revoked or it expired. Ask whoever sent it for a new one.'));
+  if (!code) { ended('The link has no code. Open the whole link you were sent.'); return { el: root }; }
+  card(skeleton(3));
+  const signedIn = me && me.user;
+  (async () => {
+    let invite;
+    try {
+      invite = await ctx.api.get(`/api/guest-invites/${encodeURIComponent(code)}`, { allow401: true });
+    } catch (err) {
+      if (err.status === 410) ended();
+      else card(h('h1', { class: 'auth-title' }, 'Couldn’t open the guest link'), h('div', { class: 'field-error', role: 'alert' }, err.message));
+      return;
+    }
+    const intro = h('p', { class: 'text-2' },
+      `${invite.invited_by} invited you to try the playground `, h('strong', null, invite.playground),
+      ` on ${BRAND.name} until ${dateTime(invite.expires_at)}. No GitHub account needed: you work on its tasks, and nothing else of ${BRAND.name}.`);
+    if (signedIn) {
+      card(h('h1', { class: 'auth-title' }, `Try ${invite.playground}`), intro,
+        h('p', { class: 'text-2' }, `This browser is signed in as ${me.user.display_name}. Joining as a guest signs it out first.`),
+        h('button', { type: 'button', class: 'btn btn-primary', onClick: onSignOut }, 'Sign out to join'));
+      return;
+    }
+    const name = h('input', { class: 'input', type: 'text', autocomplete: 'name', maxlength: '60', 'aria-describedby': 'join-error' });
+    const errorBox = h('div', { class: 'field-error', id: 'join-error', role: 'alert' });
+    const submit = h('button', { type: 'submit', class: 'btn btn-primary' }, 'Join as guest');
+    const form = h('form', { class: 'stack-sm' }, field('Your name', name, 'Others in the playground see it on your tasks.'), errorBox, submit);
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!name.value.trim()) { errorBox.textContent = 'Type your name to join.'; name.focus(); return; }
+      submit.disabled = true;
+      submit.classList.add('busy');
+      errorBox.textContent = '';
+      try {
+        const joined = await ctx.api.post(`/api/guest-invites/${encodeURIComponent(code)}/join`, { name: name.value.trim() }, { allow401: true });
+        onDone(joined, `/s/${encodeURIComponent(joined.slug)}`);
+      } catch (err) {
+        if (err.status === 410) { ended(); return; }
+        errorBox.textContent = err.message;
+        name.focus();
+      } finally {
+        submit.disabled = false;
+        submit.classList.remove('busy');
+      }
+    });
+    card(h('h1', { class: 'auth-title' }, `Try ${invite.playground}`), intro, form);
+    name.focus();
+  })();
   return { el: root };
 }

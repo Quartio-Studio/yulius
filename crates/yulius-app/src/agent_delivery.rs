@@ -360,7 +360,7 @@ impl App {
                 } else {
                     summary.as_str()
                 },
-                auth.user.github_login.as_deref().unwrap_or("superadmin")
+                auth.user.label()
             ),
         )
         .await;

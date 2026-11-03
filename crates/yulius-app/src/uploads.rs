@@ -585,10 +585,7 @@ impl Owner<'_> {
 
 impl App {
     fn upload_actor(ctx: &AuthContext) -> String {
-        ctx.user
-            .github_login
-            .clone()
-            .unwrap_or_else(|| "superadmin".into())
+        ctx.user.label()
     }
 
     /// Refuses a declared length above the limit, or one that would bring the data disk to its
