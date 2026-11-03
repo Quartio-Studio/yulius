@@ -54,13 +54,15 @@ const DIR_FLAGS: OFlag = OFlag::O_RDONLY
 /// `config_dir` is `<anchor>/<home>/<config>`: the agent's home and its config dir below the
 /// folder above that home (a task's sandbox directory, a person's user folder), which the agent
 /// cannot replace. Home and config dir are opened from it without following links and made 0700
-/// when missing (SPEC-253 CFG-001).
+/// when missing (SPEC-253 CFG-001). `worktree` lies below `sandbox_dir`, the sandbox directory the
+/// agent cannot replace either; it is reached from there without following links (#801).
 ///
 /// # Errors
 /// I/O failures; a home or config dir that is a link or not a folder; an existing config that is
 /// not a regular file (a link, a FIFO), not a JSON object, or larger than 8 MiB.
 pub fn ensure_claude_config(
     config_dir: &Path,
+    sandbox_dir: &Path,
     worktree: &Path,
     bypass_permissions: bool,
 ) -> io::Result<()> {
@@ -84,15 +86,13 @@ pub fn ensure_claude_config(
         }
         None => Map::new(),
     };
-    // Claude Code keys trust by the real path of its working directory, so the worktree's key is
-    // its real path: the data directory may sit behind a host link (macOS `/var`). The worktree
-    // folder itself is the agent's to replace with a link, which this then resolves (SPEC-253
-    // CFG-006, a residual noted on #634); its git files are read lexically (CFG-005).
-    let worktree = worktree
-        .canonicalize()
-        .unwrap_or_else(|_| worktree.to_path_buf());
+    // Claude Code keys trust by the real path of its working directory, and the data directory may
+    // sit behind a host link (macOS `/var`). Below the sandbox directory every folder is the
+    // agent's to replace with a link, so only the sandbox directory is resolved (SPEC-398 VSH-003,
+    // #801); the worktree's git files are read lexically (SPEC-253 CFG-005).
+    let (worktree, folder) = worktree_key(sandbox_dir, worktree);
     let keys: Vec<String> = std::iter::once(worktree.clone())
-        .chain(main_repository(&worktree))
+        .chain(folder.and_then(|folder| main_repository(&folder, &worktree)))
         .map(|path| path.to_string_lossy().into_owned())
         .collect();
     let before = root.clone();
@@ -267,9 +267,9 @@ fn default_output_style(config: &OwnedFd) {
     }
 }
 
-/// The main repository of a linked git worktree, read as Git lays it out (no `git` process):
-/// `<worktree>/.git` is a file `gitdir: <admin dir>`, and the admin dir is
-/// `<common>/worktrees/<name>`, `<common>` being the common git directory. That directory's parent
+/// The main repository of the linked git worktree `worktree` (open as `folder`), read as Git lays
+/// it out (no `git` process): `<worktree>/.git` is a file `gitdir: <admin dir>`, and the admin dir
+/// is `<common>/worktrees/<name>`, `<common>` being the common git directory. That directory's parent
 /// when it is a `.git`, else the directory itself (a bare repository). `None` for a main checkout,
 /// a plain directory or a `.git` file that does not read like that.
 ///
@@ -279,12 +279,10 @@ fn default_output_style(config: &OwnedFd) {
 /// to the worktree, and `commondir` is always `../..` there, so the result is the same for every
 /// layout Git makes. A trust entry this yields for a path that is not a repository only lands in
 /// the agent's own config, which it can edit anyway (SPEC-106).
-fn main_repository(worktree: &Path) -> Option<PathBuf> {
+fn main_repository(folder: &OwnedFd, worktree: &Path) -> Option<PathBuf> {
     // A regular file only (`read_small`): a link would make the host read a file outside the
     // worktree, a FIFO block the launch.
-    let dot_git = read_small(nix::fcntl::AT_FDCWD, &worktree.join(".git"))
-        .ok()
-        .flatten()?;
+    let dot_git = read_small(folder, ".git").ok().flatten()?;
     let admin = dot_git.lines().next()?.strip_prefix("gitdir:")?.trim();
     let admin = lexical(&worktree.join(admin))?;
     let worktrees = admin.parent()?;
@@ -297,6 +295,45 @@ fn main_repository(worktree: &Path) -> Option<PathBuf> {
     } else {
         Some(common.to_path_buf())
     }
+}
+
+/// The trust key of `worktree` and the folder it names, reached from `sandbox_dir` (which the agent
+/// cannot replace) one name at a time with `O_NOFOLLOW`: `sandbox_dir`'s real path joined with the
+/// rest of `worktree` below it as named. A link the agent put on the way is never resolved: the key
+/// names it, and no folder is opened, so its git files are not read (SPEC-398 VSH-003, #801). A
+/// worktree outside `sandbox_dir`, or one naming `..`, is keyed as given and not opened.
+fn worktree_key(sandbox_dir: &Path, worktree: &Path) -> (PathBuf, Option<OwnedFd>) {
+    let as_given = || (worktree.to_path_buf(), None);
+    let Ok(real) = sandbox_dir.canonicalize() else {
+        return as_given();
+    };
+    let Ok(rest) = worktree
+        .strip_prefix(sandbox_dir)
+        .or_else(|_| worktree.strip_prefix(&real))
+    else {
+        return as_given();
+    };
+    let mut names = Vec::new();
+    for component in rest.components() {
+        match component {
+            Component::Normal(name) => names.push(name),
+            Component::CurDir => {}
+            _ => return as_given(),
+        }
+    }
+    let key = names.iter().fold(real.clone(), |key, name| key.join(name));
+    let folder = nix::fcntl::open(
+        &real,
+        DIR_FLAGS.difference(OFlag::O_NOFOLLOW),
+        Mode::empty(),
+    )
+    .ok()
+    .and_then(|dir| {
+        names
+            .iter()
+            .try_fold(dir, |dir, name| open_dir_at(&dir, name, false).ok())
+    });
+    (key, folder)
 }
 
 /// The absolute `path` with `.` and `..` removed, without touching the filesystem; `None` for a
@@ -460,7 +497,7 @@ mod tests {
             config.join(CLAUDE_GLOBAL_CONFIG),
             r#"{"userID":"abc","theme":"light","projects":{"/other":{"hasTrustDialogAccepted":true}}}"#,
         )?;
-        ensure_claude_config(&config, &worktree, false)?;
+        ensure_claude_config(&config, dir.path(), &worktree, false)?;
         let text = std::fs::read_to_string(config.join(CLAUDE_GLOBAL_CONFIG))?;
         let value: Value = serde_json::from_str(&text)?;
         let key = worktree.canonicalize()?.to_string_lossy().into_owned();
@@ -473,7 +510,7 @@ mod tests {
             true
         );
         assert!(value.get("bypassPermissionsModeAccepted").is_none());
-        ensure_claude_config(&config, &worktree, true)?;
+        ensure_claude_config(&config, dir.path(), &worktree, true)?;
         let value: Value =
             serde_json::from_str(&std::fs::read_to_string(config.join(CLAUDE_GLOBAL_CONFIG))?)?;
         assert_eq!(value["bypassPermissionsModeAccepted"], true);
@@ -517,7 +554,7 @@ mod tests {
         let worktree = linked_worktree(dir.path(), &common, |admin| {
             format!("gitdir: {}\n", admin.display())
         })?;
-        ensure_claude_config(&config, &worktree, false)?;
+        ensure_claude_config(&config, dir.path(), &worktree, false)?;
         assert!(trusted(&config, &worktree)?, "the worktree");
         assert!(trusted(&config, &repo)?, "its main repository");
         // A relative `gitdir:` (`git worktree add --relative-paths`) leads to the same repository.
@@ -526,7 +563,7 @@ mod tests {
             worktree.join(".git"),
             "gitdir: ../../repo/.git/worktrees/w1\n",
         )?;
-        ensure_claude_config(&config, &worktree, false)?;
+        ensure_claude_config(&config, dir.path(), &worktree, false)?;
         assert!(trusted(&config, &repo)?, "its main repository");
         Ok(())
     }
@@ -582,7 +619,7 @@ mod tests {
             &worktree.to_string_lossy(),
         ])?;
         let config = dir.path().join(".claude");
-        ensure_claude_config(&config, &worktree, false)?;
+        ensure_claude_config(&config, dir.path(), &worktree, false)?;
         assert!(trusted(&config, &worktree)?);
         assert!(trusted(&config, &repo)?);
         Ok(())
@@ -596,7 +633,7 @@ mod tests {
         let worktree = linked_worktree(dir.path(), &bare, |admin| {
             format!("gitdir: {}\n", admin.display())
         })?;
-        ensure_claude_config(&config, &worktree, false)?;
+        ensure_claude_config(&config, dir.path(), &worktree, false)?;
         assert!(trusted(&config, &worktree)?);
         assert!(trusted(&config, &bare)?);
         Ok(())
@@ -613,7 +650,7 @@ mod tests {
         {
             let config = dir.path().join(format!(".claude-{n}"));
             std::fs::write(worktree.join(".git"), contents)?;
-            ensure_claude_config(&config, &worktree, false)?;
+            ensure_claude_config(&config, dir.path(), &worktree, false)?;
             let value: Value =
                 serde_json::from_str(&std::fs::read_to_string(config.join(CLAUDE_GLOBAL_CONFIG))?)?;
             let projects = value["projects"].as_object().ok_or("projects")?;
@@ -632,14 +669,14 @@ mod tests {
                 config.join(CLAUDE_GLOBAL_CONFIG),
             )?)?)
         };
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         assert_eq!(read(&config)?["diffSidebarOpen"], json!(false));
         // Opening the panel by hand in a session writes `true`; the next launch closes it again.
         std::fs::write(
             config.join(CLAUDE_GLOBAL_CONFIG),
             r#"{"userID":"abc","diffSidebarOpen":true}"#,
         )?;
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         let value = read(&config)?;
         assert_eq!(value["diffSidebarOpen"], json!(false));
         assert_eq!(value["userID"], "abc");
@@ -652,7 +689,7 @@ mod tests {
         let config = dir.path().join(".claude");
         let store = config.join("plugins").join("store");
         // Missing stores stay missing: Claude Code seeds them from `diffSidebarOpen`.
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         assert!(!store.exists());
         // `/diff` in a session stores `"open": true` for the diff plugin (and its legacy id).
         std::fs::create_dir_all(&store)?;
@@ -660,7 +697,7 @@ mod tests {
         let legacy = store.join("diff_builtin-c6405f503984.json");
         std::fs::write(&current, r#"{"open":true,"baseMode":"branch"}"#)?;
         std::fs::write(&legacy, r#"{"open":true}"#)?;
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         let value: Value = serde_json::from_str(&std::fs::read_to_string(&current)?)?;
         assert_eq!(value["open"], json!(false));
         assert_eq!(value["baseMode"], "branch", "other plugin state is kept");
@@ -668,7 +705,7 @@ mod tests {
         assert_eq!(value["open"], json!(false));
         // A store Yulius cannot read is Claude Code's to report; the launch goes on.
         std::fs::write(&current, "not json")?;
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         assert_eq!(std::fs::read_to_string(&current)?, "not json");
         Ok(())
     }
@@ -684,7 +721,7 @@ mod tests {
         let read = |path: &std::path::Path| -> Result<Value, Box<dyn std::error::Error>> {
             Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
         };
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         assert_eq!(read(&settings)?, json!({ "outputStyle": "Concise" }));
         {
             use std::os::unix::fs::PermissionsExt;
@@ -698,7 +735,7 @@ mod tests {
             &settings,
             r#"{"verbose":true,"enabledPlugins":{"a@b":false}}"#,
         )?;
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         assert_eq!(
             read(&settings)?,
             json!({ "verbose": true, "enabledPlugins": { "a@b": false }, "outputStyle": "Concise" })
@@ -709,25 +746,25 @@ mod tests {
             r#"{"outputStyle":"default","verbose":true}"#,
         ] {
             std::fs::write(&settings, chosen)?;
-            ensure_claude_config(&config, dir.path(), false)?;
+            ensure_claude_config(&config, dir.path(), dir.path(), false)?;
             assert_eq!(std::fs::read_to_string(&settings)?, chosen);
         }
         // A file that is not a JSON object is Claude Code's to report; the launch goes on.
         for corrupt in ["not json", "[1,2]", "{\"outputStyle\":"] {
             std::fs::write(&settings, corrupt)?;
-            ensure_claude_config(&config, dir.path(), false)?;
+            ensure_claude_config(&config, dir.path(), dir.path(), false)?;
             assert_eq!(std::fs::read_to_string(&settings)?, corrupt);
         }
         let huge = format!("{{\"x\":\"{}\"}}", "a".repeat(8 * 1024 * 1024));
         std::fs::write(&settings, &huge)?;
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         assert!(
             std::fs::read_to_string(&settings)? == huge,
             "an oversized file is untouched"
         );
         // An empty file reads as no settings, as `.claude.json` does.
         std::fs::write(&settings, "\n")?;
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         assert_eq!(read(&settings)?, json!({ "outputStyle": "Concise" }));
         Ok(())
     }
@@ -745,28 +782,28 @@ mod tests {
         let outside = dir.path().join("outside.json");
         std::fs::write(&outside, r#"{"private":"host"}"#)?;
         symlink(&outside, &settings)?;
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         assert!(settings.symlink_metadata()?.file_type().is_symlink());
         assert_eq!(std::fs::read_to_string(&outside)?, r#"{"private":"host"}"#);
         // A dangling link stays a link: it is neither replaced nor created through.
         std::fs::remove_file(&settings)?;
         symlink(dir.path().join("missing.json"), &settings)?;
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         assert!(settings.symlink_metadata()?.file_type().is_symlink());
         assert!(!dir.path().join("missing.json").exists());
         std::fs::remove_file(&settings)?;
         // A FIFO returns at once instead of waiting for a writer.
         nix::unistd::mkfifo(&settings, nix::sys::stat::Mode::S_IRWXU)?;
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         assert!(!settings.metadata()?.is_file());
         std::fs::remove_file(&settings)?;
         // A directory and a file that is not UTF-8 are left as they are.
         std::fs::create_dir(&settings)?;
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         assert!(settings.is_dir());
         std::fs::remove_dir(&settings)?;
         std::fs::write(&settings, b"{\"a\":\"\xff\"}")?;
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         assert_eq!(std::fs::read(&settings)?, b"{\"a\":\"\xff\"}");
         Ok(())
     }
@@ -785,7 +822,7 @@ mod tests {
         std::fs::create_dir_all(&config)?;
         let global = config.join(CLAUDE_GLOBAL_CONFIG);
         symlink(&outside, &global)?;
-        let refused = ensure_claude_config(&config, dir.path(), false)
+        let refused = ensure_claude_config(&config, dir.path(), dir.path(), false)
             .err()
             .ok_or("a linked .claude.json is refused")?;
         assert!(
@@ -795,14 +832,14 @@ mod tests {
         assert!(global.symlink_metadata()?.file_type().is_symlink());
         std::fs::remove_file(&global)?;
         nix::unistd::mkfifo(&global, nix::sys::stat::Mode::S_IRWXU)?;
-        assert!(ensure_claude_config(&config, dir.path(), false).is_err());
+        assert!(ensure_claude_config(&config, dir.path(), dir.path(), false).is_err());
         std::fs::remove_file(&global)?;
         // A diff-plugin store that is a link is left alone, and so is its target.
         let store = config.join("plugins").join("store");
         std::fs::create_dir_all(&store)?;
         let current = store.join("cc-plugin-diff_builtin-3903e77c01b1.json");
         symlink(&outside, &current)?;
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         assert!(current.symlink_metadata()?.file_type().is_symlink());
         assert_eq!(
             std::fs::read_to_string(&outside)?,
@@ -819,7 +856,7 @@ mod tests {
         std::fs::create_dir_all(&worktree)?;
         symlink(&gitfile, worktree.join(".git"))?;
         let config = dir.path().join(".claude-wt");
-        ensure_claude_config(&config, &worktree, false)?;
+        ensure_claude_config(&config, dir.path(), &worktree, false)?;
         assert!(trusted(&config, &worktree)?);
         assert!(!trusted(&config, &main)?);
         // `commondir` is never opened (SPEC-253 CFG-005): a FIFO there holds nothing, and the main
@@ -832,14 +869,14 @@ mod tests {
         std::fs::remove_file(admin.join("commondir"))?;
         nix::unistd::mkfifo(&admin.join("commondir"), nix::sys::stat::Mode::S_IRWXU)?;
         let config = dir.path().join(".claude-common");
-        ensure_claude_config(&config, &worktree, false)?;
+        ensure_claude_config(&config, dir.path(), &worktree, false)?;
         assert!(trusted(&config, &worktree)?);
         assert!(trusted(&config, &main)?);
         // A `.git` FIFO returns at once and trusts the worktree alone.
         std::fs::remove_file(worktree.join(".git"))?;
         nix::unistd::mkfifo(&worktree.join(".git"), nix::sys::stat::Mode::S_IRWXU)?;
         let config = dir.path().join(".claude-fifo");
-        ensure_claude_config(&config, &worktree, false)?;
+        ensure_claude_config(&config, dir.path(), &worktree, false)?;
         assert!(trusted(&config, &worktree)?);
         assert!(!trusted(&config, &main)?);
         Ok(())
@@ -856,7 +893,7 @@ mod tests {
         let home = dir.path().join("home");
         std::fs::create_dir(&home)?;
         symlink(&outside, home.join(".claude"))?;
-        let refused = ensure_claude_config(&home.join(".claude"), dir.path(), false)
+        let refused = ensure_claude_config(&home.join(".claude"), dir.path(), dir.path(), false)
             .err()
             .ok_or("a linked config dir is refused")?;
         assert!(
@@ -869,9 +906,10 @@ mod tests {
         // The home itself linked: refused too, and no `.claude` made in the target.
         let linked_home = dir.path().join("linked-home");
         symlink(&outside, &linked_home)?;
-        let refused = ensure_claude_config(&linked_home.join(".claude"), dir.path(), false)
-            .err()
-            .ok_or("a linked home is refused")?;
+        let refused =
+            ensure_claude_config(&linked_home.join(".claude"), dir.path(), dir.path(), false)
+                .err()
+                .ok_or("a linked home is refused")?;
         assert!(
             refused.to_string().starts_with("linked-home on the way"),
             "{refused}"
@@ -898,7 +936,7 @@ mod tests {
                 symlink(&target, &from).ok();
             }));
         });
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         assert!(config.symlink_metadata()?.file_type().is_symlink());
         assert_eq!(std::fs::read_dir(&outside)?.count(), 0, "nothing written");
         assert!(moved.join(CLAUDE_GLOBAL_CONFIG).is_file());
@@ -920,13 +958,83 @@ mod tests {
         let config = dir.path().join("home").join(".claude");
         std::fs::create_dir_all(&config)?;
         symlink(&outside, config.join("plugins"))?;
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         assert_eq!(std::fs::read_to_string(&store_file)?, r#"{"open":true}"#);
         std::fs::remove_file(config.join("plugins"))?;
         std::fs::create_dir(config.join("plugins"))?;
         symlink(&outside_store, config.join("plugins").join("store"))?;
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         assert_eq!(std::fs::read_to_string(&store_file)?, r#"{"open":true}"#);
+        Ok(())
+    }
+
+    /// SPEC-398 VSH-003 (#801): the agent can swap its worktree, or the `worktrees` folder above
+    /// it, for a link to a host folder at any moment. The trust key names the link, never where it
+    /// leads, and no git file is read through it, so the agent's config never says what a host
+    /// path holds. A host link above the sandbox directory (macOS `/var`) is still resolved.
+    #[test]
+    fn a_link_below_the_sandbox_directory_is_never_resolved() -> TestResult {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir()?;
+        let host = tempfile::tempdir()?;
+        let host = host.path().canonicalize()?;
+        // A host folder laid out as a linked worktree of a host repository.
+        let host_repo = host.join("repo");
+        let target = linked_worktree(&host, &host_repo.join(".git"), |admin| {
+            format!("gitdir: {}\n", admin.display())
+        })?;
+        let sandbox = dir.path().join("sandbox");
+        std::fs::create_dir_all(sandbox.join("home"))?;
+        let real = sandbox.canonicalize()?;
+        let worktree = sandbox.join("worktrees").join("w1");
+        let keys = |config: &std::path::Path| -> Result<Vec<String>, Box<dyn std::error::Error>> {
+            let value: Value =
+                serde_json::from_str(&std::fs::read_to_string(config.join(CLAUDE_GLOBAL_CONFIG))?)?;
+            let mut keys: Vec<String> = value["projects"]
+                .as_object()
+                .ok_or("projects")?
+                .keys()
+                .cloned()
+                .collect();
+            keys.sort();
+            Ok(keys)
+        };
+        let key = |path: &std::path::Path| path.to_string_lossy().into_owned();
+
+        // The worktree itself is a link.
+        std::fs::create_dir_all(sandbox.join("worktrees"))?;
+        symlink(&target, &worktree)?;
+        let config = sandbox.join("home").join(".claude-worktree");
+        ensure_claude_config(&config, &sandbox, &worktree, false)?;
+        assert_eq!(keys(&config)?, [key(&real.join("worktrees/w1"))]);
+        // The folder above it is.
+        std::fs::remove_file(&worktree)?;
+        std::fs::remove_dir(sandbox.join("worktrees"))?;
+        symlink(host.join("worktrees"), sandbox.join("worktrees"))?;
+        let config = sandbox.join("home").join(".claude-worktrees");
+        ensure_claude_config(&config, &sandbox, &worktree, false)?;
+        assert_eq!(keys(&config)?, [key(&real.join("worktrees/w1"))]);
+        // A worktree outside the sandbox directory is keyed as given and not read.
+        let outside = dir.path().join("outside");
+        symlink(&target, &outside)?;
+        let config = sandbox.join("home").join(".claude-outside");
+        ensure_claude_config(&config, &sandbox, &outside, false)?;
+        assert_eq!(keys(&config)?, [key(&outside)]);
+
+        // Without links below it, the sandbox directory reached through a host link gives the
+        // real paths, the main repository's included.
+        std::fs::remove_file(sandbox.join("worktrees"))?;
+        let repo = real.join("repo");
+        let worktree = linked_worktree(&real, &repo.join(".git"), |admin| {
+            format!("gitdir: {}\n", admin.display())
+        })?;
+        let alias = dir.path().join("alias");
+        symlink(&sandbox, &alias)?;
+        let config = alias.join("home").join(".claude-real");
+        ensure_claude_config(&config, &alias, &alias.join("worktrees/w1"), false)?;
+        let mut expected = vec![key(&worktree), key(&repo)];
+        expected.sort();
+        assert_eq!(keys(&sandbox.join("home").join(".claude-real"))?, expected);
         Ok(())
     }
 
@@ -963,7 +1071,7 @@ mod tests {
                 format!("gitdir: {}\n", gitdir.display()),
             )?;
             let config = root.join(format!(".claude-{n}"));
-            ensure_claude_config(&config, &worktree, false)?;
+            ensure_claude_config(&config, dir.path(), &worktree, false)?;
             let value: Value =
                 serde_json::from_str(&std::fs::read_to_string(config.join(CLAUDE_GLOBAL_CONFIG))?)?;
             let mut keys: Vec<String> = value["projects"]
@@ -986,13 +1094,13 @@ mod tests {
     fn creates_a_missing_config_and_refuses_corrupt_ones() -> TestResult {
         let dir = tempfile::tempdir()?;
         let config = dir.path().join("cfg");
-        ensure_claude_config(&config, dir.path(), false)?;
+        ensure_claude_config(&config, dir.path(), dir.path(), false)?;
         let value: Value =
             serde_json::from_str(&std::fs::read_to_string(config.join(CLAUDE_GLOBAL_CONFIG))?)?;
         assert_eq!(value["hasCompletedOnboarding"], json!(true));
         assert_eq!(value["theme"], "dark");
         std::fs::write(config.join(CLAUDE_GLOBAL_CONFIG), "[1,2]")?;
-        assert!(ensure_claude_config(&config, dir.path(), false).is_err());
+        assert!(ensure_claude_config(&config, dir.path(), dir.path(), false).is_err());
         Ok(())
     }
 }
