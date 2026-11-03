@@ -76,12 +76,12 @@ repeat scan does not reopen it.
 
 ## Plan
 
-- [ ] Triage the five findings against dev with file:line evidence
-- [ ] Pin the agent deploy's environment name check (#784) with a test
-- [ ] Accept the five false positives in .config/vidoc.toml
-- [ ] Reserve a CI lane only for a run without an executor (#738)
+- [x] Triage the five findings against dev with file:line evidence
+- [x] Pin the agent deploy's environment name check (#784) with a test
+- [x] Accept the five false positives in .config/vidoc.toml
+- [x] Reserve a CI lane only for a run without an executor (#738)
 - [ ] Independent review and gates green
-- [ ] Comment and close the five issues as not planned
+- [ ] Close the four dismissed issues and link #738 to the pull request
 
 ## Acceptance criteria
 
