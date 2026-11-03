@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
+- Vidoc's five findings on supervisor input and session start (#818, #752, #692, #691, #693) are
+  triaged as false positives on `dev`: a typed first message's pastes never hold an ESC
+  (`Request::parse` drops control characters from text and refuses paths holding one), so the
+  paste end delimiter cannot be typed; `send_input` is the terminal's keyboard, used only by
+  viewers with write access and by Yulius with cleaned text; subscription accounts are an
+  ownerless pool and a switch needs write access to the task. Four wordings get a narrow
+  `[[ignore]]`; `transcript_path`'s never-used stored-path branch is removed instead (SPEC-393,
+  task #375). No behaviour change.
 - The format check of a checkout (`validate_checkout`, used by onboarding, its status and
   `spec_check`) no longer checks a path and then opens it again: each document and the decisions
   folder are opened with `O_NOFOLLOW | O_NONBLOCK` and used only when the handle is a regular file
