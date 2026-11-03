@@ -117,9 +117,10 @@ impl Op {
             .sum()
     }
 
-    /// What keeping it costs: the units it inserts and one per part.
+    /// What keeping it costs, in UTF-16 units: those it inserts, and a part as much as 16 (its
+    /// size in memory).
     pub(crate) fn cost(&self) -> usize {
-        self.inserted() + self.parts.len()
+        self.inserted() + self.parts.len() * 16
     }
 
     /// Whether every insert uses `eol` (`\n` or `\r\n`) for its line breaks, as the text does.

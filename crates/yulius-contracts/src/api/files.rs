@@ -253,6 +253,9 @@ pub struct LiveEdit {
     pub revision: u64,
     /// The operation.
     pub op: Vec<OpPart>,
+    /// Save the text once it is applied (the page goes and cannot ask later; EDT-019).
+    #[serde(default)]
+    pub save: bool,
 }
 
 /// The answer to an edit: the revision its step made.

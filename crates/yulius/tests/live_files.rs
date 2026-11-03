@@ -659,10 +659,9 @@ async fn an_edit_with_counts_beyond_any_text_is_refused_and_the_document_keeps_w
             .status,
         StatusCode::OK
     );
-    assert_eq!(
-        join(&h, &dave, json!({"path": "README.md"})).await?.status,
-        StatusCode::NOT_FOUND
-    );
+    let again = join(&h, &alice, json!({"path": "src/main.rs"})).await?;
+    assert_eq!(again.body["text"], "ok fn main() {}\n");
+    assert_eq!(again.body["revision"], 1);
     Ok(())
 }
 
@@ -855,5 +854,57 @@ async fn concurrent_saves_write_once_and_a_concurrent_disk_change_stays_a_confli
     assert_eq!(whole.body["text"], "bafn main() {}\n");
     assert_eq!(whole.body["saved"], false);
     assert!(whole.body["disk_sha256"].is_string());
+    Ok(())
+}
+
+/// Review round 2: an edit sent as the page goes asks to be saved with it, also when it is the
+/// same edit sent again.
+#[tokio::test]
+async fn an_edit_may_ask_to_be_saved_with_it() -> TestResult {
+    let (h, alice, _, _) = fixture().await?;
+    let session = session_of(&join(&h, &alice, json!({"path": "src/main.rs"})).await?);
+    let body = |op: Value| {
+        Some(
+            json!({"path": "src/main.rs", "session": session, "client": "tab1", "revision": 0, "op": op, "save": true}),
+        )
+    };
+    let first = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/files/live/edit",
+        body(json!(["a", 13])),
+        &alice,
+    )
+    .await?;
+    assert_eq!(first.status, StatusCode::OK, "{:?}", first.body);
+    assert_eq!(on_disk(&h), "afn main() {}\n");
+    // The same edit again, after the disk moved: applied once, the conflict kept, nothing written.
+    assert_eq!(
+        edit(&h, &alice, &session, 1, json!([1, "b", 13]))
+            .await?
+            .status,
+        StatusCode::OK
+    );
+    std::fs::write(repo(&h).join("src/main.rs"), "agent\n")?;
+    let again = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/files/live/edit",
+        body(json!(["a", 13])),
+        &alice,
+    )
+    .await?;
+    assert_eq!(again.body["revision"], 1);
+    assert_eq!(on_disk(&h), "agent\n");
+    let whole = call(
+        &h.router,
+        Method::GET,
+        &format!("{LIVE}?path=src/main.rs&session=x&since=0"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(whole.body["text"], "abfn main() {}\n");
+    assert!(whole.body["disk_sha256"].is_string(), "{:?}", whole.body);
     Ok(())
 }

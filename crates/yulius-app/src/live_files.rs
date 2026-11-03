@@ -546,10 +546,38 @@ impl App {
             EDITS_PER_SECOND,
         )?;
         let max = usize::try_from(MAX_FILE_BYTES).unwrap_or(usize::MAX);
-        let mut op = Op::from_wire(&req.op, max)
+        let op = Op::from_wire(&req.op, max)
             .ok_or_else(|| AppError::Invalid("a count is beyond any text".into()))?;
         let user = ctx.user.id.to_string();
-        let doc = self.live_doc(&place, Some(&req.session))?;
+        let applied = self.live_apply(&place, &user, req, op)?;
+        if req.save {
+            // The tab is going and hears no answer: a conflict or a failure shows in the others'
+            // Editors through the document's state, as for any save.
+            let _ = self
+                .live_save(
+                    ctx,
+                    sandbox,
+                    &LiveFileAction {
+                        root: Some(place.root.clone()),
+                        path: place.path.clone(),
+                        session: req.session.clone(),
+                        force: false,
+                    },
+                )
+                .await;
+        }
+        Ok(applied)
+    }
+
+    /// Applies `req`'s operation `op` in its document, in one critical section with its event.
+    fn live_apply(
+        &self,
+        place: &Place,
+        user: &str,
+        req: &LiveEdit,
+        mut op: Op,
+    ) -> AppResult<LiveApplied> {
+        let doc = self.live_doc(place, Some(&req.session))?;
         let mut doc = locked(&doc);
         if req.revision > doc.revision || req.revision < doc.oldest() {
             return Err(ended());
@@ -575,12 +603,12 @@ impl App {
                 "files are limited to {MAX_FILE_BYTES} bytes in the editor"
             )));
         }
-        doc.step(&user, &req.client, op, text);
+        doc.step(user, &req.client, op, text);
         doc.touched = self.now().0;
         self.live_publish(
-            &place,
+            place,
             &doc,
-            &user,
+            user,
             &req.client,
             doc.steps.back().map(|step| &step.op),
         );
