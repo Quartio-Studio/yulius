@@ -1028,6 +1028,42 @@ fn the_unit_gets_a_drop_in_and_its_restart_is_manual() {
     assert!(!fake.has(UNIT_FILE));
 }
 
+/// SPEC-395 VCH-005 (#679): a value that could add a directive or a specifier to the unit (a
+/// newline, a space, a quote, `%`, `;`) is refused before anything is written.
+#[test]
+fn unit_values_a_unit_file_cannot_hold_are_refused() {
+    for url in [
+        "https://yulius.example.com\nExecStartPre=/bin/sh -c id",
+        "https://yulius.example.com\rUser=root",
+        "https://yulius.example.com x",
+        "https://yulius.example.com/%h",
+        "https://yulius.example.com/\"",
+        "https://yulius.example.com/'",
+        "https://yulius.example.com/\\",
+        "https://yulius.example.com;id",
+    ] {
+        let mut fake = Fake::fresh();
+        let lines = Run::new(
+            &mut fake,
+            Mode::Setup,
+            Options {
+                public_url: Some(url.into()),
+                ..options()
+            },
+            &mut |_| {},
+        )
+        .all();
+        let unit = line(&lines, "yulius.service");
+        assert_eq!(unit.outcome, HostOutcome::Failed, "{url:?}: {lines:#?}");
+        assert!(
+            unit.detail.contains("characters a unit file cannot hold"),
+            "{url:?}: {}",
+            unit.detail
+        );
+        assert!(!fake.has(UNIT_FILE), "{url:?}");
+    }
+}
+
 /// A data directory root owns is refused: sandboxes need the service user's id range.
 #[test]
 fn a_root_owned_data_directory_fails() {
