@@ -4,6 +4,16 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-03
+
+- Vidoc's five findings on the `yulius` CLI and host setup (#754, #753, #743, #742, #679) are
+  triaged as false positives on `dev`: the binary holds no privilege beyond its caller's, so
+  `sandbox-exec`, `--scrub-exec`, `remove` and `security-scan` give no caller anything it could
+  not already do (and `remove` still canonicalizes and refuses what is not the task's), and
+  `yulius host setup` writes the systemd unit only after `unit_safe` checked every value it
+  formats. A new test pins that refusal (`unit_values_a_unit_file_cannot_hold_are_refused`); each
+  wording gets one narrow `[[ignore]]` (SPEC-395, task #377). No product change.
+
 ## 2026-11-02
 
 - Five Vidoc findings about client file names becoming paths are triaged as false positives
@@ -11,6 +21,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   before the job exists and a chunk only selects a stored manifest entry; editor upload paths pass
   `relative_components`. `import_server::unsafe_manifest_names_never_reach_the_disk` pins the
   import side, and `.config/vidoc.toml` ignores each wording.
+- The egress proxy stops adding agent secrets for a run the moment it ends: the policy checks on
+  every request that the client's run still lives (an agent run's attempt, a CI job's credential,
+  a Superagent's shell), where a cached client stayed valid for 15 s and an open intercepted
+  connection kept its secrets until it closed. A failed upstream request is logged without its
+  URL, which held substituted secret values. Vidoc's #839, #709 (duplicate) and #708 were false
+  positives and get `[[ignore]]` entries (SPEC-388, task #370, ADR-0252, fixes #757 and #833).
 - `ci_setup` reads a task worktree's workflows and `yulius.toml` only through handles opened from
   the sandbox directory folder by folder with `O_NOFOLLOW` (ADR-0174), each file checked as a
   regular file on its handle: a contained agent swapping `.github`, `workflows`, the worktree or a
