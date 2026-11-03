@@ -106,8 +106,10 @@ not reopen the issue on the next scan.
 - [x] Chunks of one import file applied one at a time, pinned by a race test
 - [x] Proxy host characters pinned by a test
 - [x] Narrow [[ignore]] entries for the four dismissed wordings
+- [x] Gates, docs and changes entry green
+- [x] Review round 1 answered: contended-lock test and cancel-safe chunk section
+- [ ] Review round 2 approved on the final head
 - [ ] Issues commented and closed or linked to the pull request
-- [ ] Gates, docs, changes entry and independent review answered
 
 ## Acceptance criteria
 
