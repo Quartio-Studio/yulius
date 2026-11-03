@@ -66,7 +66,7 @@ so that a repeat scan does not reopen it.
 
 - [x] Spec SPEC-408 with the triage of all six findings
 - [x] needrestart rule escapes every non-word character (#678)
-- [ ] Narrow [[ignore]] entries for the dismissed wordings (#814 #755 #698 #756 #690)
+- [x] Narrow [[ignore]] entries for the dismissed wordings (#814 #755 #698 #756 #690)
 - [ ] Changes entry and gates
 - [ ] Independent review answered
 - [ ] Dismissed issues commented and closed (#814 #755 #698 #756 #690)

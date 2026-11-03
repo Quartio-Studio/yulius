@@ -1004,3 +1004,50 @@ reason = "the operator sets the server's PATH (the installed unit pins /usr/loca
 path = "crates/yulius-app/src/ci/cd.rs"
 title = "Containment silently disabled without isolation"
 reason = "uncontained is the documented development mode: agents and shells already run on the host as the service user, which reads the data directory and master.key; runs are marked not contained (docs/operations.md, SPEC-403, #715)"
+
+# The triage of task #390 (SPEC-408) on dev d51b98ae.
+# #814: the run directory is under the data directory, which build_app makes 0700 at every start
+# (serve.rs prepare_data_dir), and the process host sets the run directory itself to 0700 before
+# it writes launch.json (yulius-ptyhost spawn.rs prepare_run_dir, tested by its 0700 assertion).
+# Every file Yulius writes there is 0600 (write_private_file).
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+function = "launch_attempt"
+title = "Run directory created with filesystem default permissions"
+reason = "the data directory above it is 0700 (prepare_data_dir) and the process host makes the run directory 0700 before the launch (prepare_run_dir); its files are 0600 (SPEC-408, #814)"
+
+# #755: the same decision as #716. The server's PATH is the operator's (the installed unit pins
+# /usr/local/bin:/usr/bin:/bin); a run in an isolated sandbox gets the fixed SANDBOX_PATH instead,
+# and a contained run without isolation sees the host's system directories read-only.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+function = "base_env"
+title = "Host PATH propagated into agent environment"
+reason = "the operator sets the server's PATH, which no agent can; isolated runs get the fixed SANDBOX_PATH and contained ones see the host's system read-only (SPEC-403, SPEC-408, #716, #755)"
+
+# #698: nobody but the server can plant a link in a run directory: it is 0700 under a 0700 data
+# directory, a contained run sees only its generated files bound read-only, and an uncontained
+# agent already runs as the service user (#715).
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+function = "save_screen"
+title = "Predictable temporary file name in save_screen"
+reason = "the run directory is 0700 under a 0700 data directory and hidden from contained runs; an uncontained agent already is the service user (SPEC-408, #698)"
+
+# #756: a positive oom_score_adj makes the agent's command, not a co-located service, the kernel's
+# preferred victim; an unprivileged process can only raise its own. Best effort on purpose: a
+# failed write (no /proc, as on macOS) must not stop the agent's command.
+[[ignore]]
+path = "crates/yulius/src/main.rs"
+function = "main"
+title = "Unconditional kernel OOM score modification with ignored error"
+reason = "raising one's own oom_score_adj only makes the agent's command the first victim, protecting other services; the write is best effort so a host without /proc still runs the command (SPEC-408, #756)"
+
+# #690: MGT-003 (SPEC-037) keeps the window in memory by design: one server per data directory,
+# restarted only by its operator, and a rolling hour pruned at every reservation, tested by
+# manage::tests::the_window_holds_twenty_an_hour_and_frees_slots_as_they_age.
+[[ignore]]
+path = "crates/yulius-app/src/manage.rs"
+function = "reserve"
+title = "Task-creation rate limit is in-memory only"
+reason = "one server per data directory, restarted only by its operator; the rolling window is pruned at every reservation (MGT-003, SPEC-037, SPEC-408, #690)"
