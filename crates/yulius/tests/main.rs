@@ -43,6 +43,7 @@ mod jev_key;
 mod leftovers;
 mod live_claude;
 mod live_display;
+mod live_files;
 mod live_ui_browser;
 mod live_ui_editor;
 mod live_ui_filedrop;

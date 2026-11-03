@@ -6,7 +6,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use yulius_contracts::api::files::{
-    CreateEntry, DirListing, FileEntry, FilePresence, FileRoots, FileWritten, WriteFile,
+    CreateEntry, DirListing, FileEntry, FilePresence, FileRoots, FileWritten, LiveApplied, LiveDoc,
+    LiveEdit, LiveFileAction, LiveJoin, LiveState, WriteFile,
 };
 
 use crate::AppState;
@@ -101,4 +102,66 @@ pub async fn presence(
 ) -> ApiResult<StatusCode> {
     app.file_presence(&ctx, &sid, &req).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Joins a file's shared text (SPEC-411 EDT-017).
+pub async fn live_join(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+    Json(req): Json<LiveJoin>,
+) -> ApiResult<Json<LiveDoc>> {
+    Ok(Json(app.live_join(&ctx, &sid, &req).await?))
+}
+
+#[derive(Deserialize)]
+pub struct LiveQuery {
+    #[serde(default)]
+    root: Option<String>,
+    path: String,
+    session: String,
+    since: u64,
+}
+
+/// The steps of a file's shared text after `since`, or its whole text (SPEC-411 EDT-022).
+pub async fn live_catch_up(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+    Query(q): Query<LiveQuery>,
+) -> ApiResult<Json<LiveDoc>> {
+    Ok(Json(
+        app.live_catch_up(&ctx, &sid, q.root.as_deref(), &q.path, &q.session, q.since)
+            .await?,
+    ))
+}
+
+/// One edit of a file's shared text (SPEC-411 EDT-017).
+pub async fn live_edit(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+    Json(req): Json<LiveEdit>,
+) -> ApiResult<Json<LiveApplied>> {
+    Ok(Json(app.live_edit(&ctx, &sid, &req).await?))
+}
+
+/// Writes a file's shared text to disk (SPEC-411 EDT-019).
+pub async fn live_save(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+    Json(req): Json<LiveFileAction>,
+) -> ApiResult<Json<LiveState>> {
+    Ok(Json(app.live_save(&ctx, &sid, &req).await?))
+}
+
+/// Takes a newer version on disk into a file's shared text (SPEC-411 EDT-020).
+pub async fn live_disk(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+    Json(req): Json<LiveFileAction>,
+) -> ApiResult<Json<LiveState>> {
+    Ok(Json(app.live_disk(&ctx, &sid, &req).await?))
 }

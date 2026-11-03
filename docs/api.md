@@ -1147,11 +1147,41 @@ resolves to nothing, the run gets the server without that variable or token.
   a base, when it exists. `POST /api/sandboxes/{sid}/files` `{"root?","path","kind":"file|dir"}`
   → 201 entry (409 when it exists). `DELETE /api/sandboxes/{sid}/files?root&path` → 204 (files,
   links and directory trees; never the folder itself). 409 before the repository is cloned.
-  The editor UI (Monaco) keeps each user's open files and unsaved text in their browser only.
+  The editor UI (Monaco) keeps each user's open files in their browser; their text is shared live
+  (SPEC-411, below).
+- The Editor's shared text (SPEC-411; write access to the sandbox, as reading files; a task
+  worktree's text is changed only by its owner, 403 for the others). One document per sandbox,
+  folder and path, held in the server's memory only. An operation is a JSON array over UTF-16
+  units: a positive number keeps that many, a negative one deletes that many, a string inserts
+  itself. `POST /api/sandboxes/{sid}/files/live` `{"root?","path","client?","text?","sha256?",
+  "saved?","eol?"}` → `{"session","revision","text","steps":null,"eol","sha256","saved",
+  "disk_sha256"}`: the file's document; when nobody edits it, a caller who may change the folder
+  starts it from `text` (the disk's version it was read from `sha256`, `saved` when unchanged since,
+  in `eol` `\n` or `\r\n`), anyone else from the disk (422 for a file that is not text, a bad
+  `sha256`, `eol` or `client`, text over 2 MiB; 429 when 256 documents hold unsaved text).
+  `GET …/files/live?root&path&session&since` → the same with `"text":null` and `"steps":[{"revision",
+  "client","op"}]` after `since`, or the whole text when the steps are no longer kept (256) or the
+  session differs; 409 when nobody edits the file. `POST …/files/live/edit` `{"root?","path",
+  "session","client","revision","op","save?"}` → `{"revision"}` (`save`: then save the text, as
+  a page that goes asks): the operation made at `revision`,
+  transformed past the steps since (the same edit sent again by that person's tab is answered with
+  its step, not applied twice); 409 for another or an ended session or a revision older than the
+  kept steps (256, costing at most 1 Mi inserted units plus 16 per part), 422 for a count above 2 Mi,
+  more than 10 000 parts, an operation that does not fit, cuts a character outside the BMP, inserts
+  another line ending than the text's or makes the text larger than 2 MiB, 429 past 30 a second per
+  person and file. Steps carry `user_id` and `client`. `POST …/files/live/save`
+  `{"root?","path","session","force?"}` → `{"session","revision","sha256","saved","disk_sha256"}`:
+  writes the text with the caller's access and the document's `sha256` as base (nothing when it is
+  saved); a disk that moved on sets `disk_sha256` (`""`: deleted) and writes nothing unless `force`
+  (Keep mine). `POST …/files/live/disk` (same body) takes a newer version on disk: as a step when
+  the text is saved or with `force` (Take disk version, which needs write), else it sets
+  `disk_sha256`; 422 when the file is no longer text. A saved document untouched for 10 minutes is
+  dropped, an unsaved one after 24 hours.
   `PUT /api/sandboxes/{sid}/files/presence` (write) `{"root?","path","sha256?","selection":
-  {"anchor","head"}|null,"hello"?,"client"?,"seq"?}` → 204 (SPEC-127): the caller's selection in
-  UTF-16 offsets of the file's text as saved at `sha256` (64 lowercase hex digits, empty when
-  unknown), or `null` when they left the file; `hello`, `client` and `seq` as for notepad presence. Relayed as
+  {"anchor","head"}|null,"hello"?,"client"?,"seq"?,"session"?,"revision"?}` → 204 (SPEC-127): the
+  caller's selection in UTF-16 offsets of the file's text as saved at `sha256` (64 lowercase hex
+  digits, empty when unknown) or, with `session` (1 to 32 letters and digits) and `revision`, of
+  the live document's text at that revision (SPEC-411), or `null` when they left the file; `hello`, `client` and `seq` as for notepad presence. Relayed as
   `file.presence` to the sandbox's writers only, stored nowhere. The path is checked like the
   other file requests (403 for `.git`, 422 for an empty or escaping path, a folder or a path over
   4096 bytes); a selection needs an existing regular file (404; leaving a deleted one is fine);
@@ -1600,8 +1630,12 @@ notepad was saved; a sandbox note's event reaches only that sandbox's viewers, a
 only its owner), `{"type":"note.presence","scope":"team|sandbox","sandbox_id","user_id","client","name",
 "revision","selection":{"anchor","head"}|null,"hello","seq"}` (someone's selection in a shared notepad, to
 the people who may read it; SPEC-112), `{"type":"file.presence","sandbox_id","root","path","user_id",
-"client","name","sha256","selection":{"anchor","head"}|null,"hello","seq"}` (someone's selection in a file
-open in the editor, only to people with write access to that sandbox; SPEC-127),
+"client","name","sha256","selection":{"anchor","head"}|null,"hello","seq","session"?,"revision"?}` (someone's
+selection in a file open in the editor, only to people with write access to that sandbox; SPEC-127),
+`{"type":"file.live","sandbox_id","root","path","session","revision","user_id","client","op":[…]|null,
+"sha256","saved","disk_sha256","eol"}` (a step of a file's shared text, or its saved state, only to
+people with write access to that sandbox; a step inserting more than 64 KiB comes with `op: null` and
+its new `revision`, to be caught up; SPEC-411),
 `{"type":"pulls.updated","sandbox_id"}` (the sandbox's pull requests may have
 changed: a delivery stage moved or a Yulius CI run was queued, started or ended; clients watching
 it read `GET /api/sandboxes/{sid}/git` again; SPEC-108), `{"type":"secrets.updated","sandbox_id"|null}`

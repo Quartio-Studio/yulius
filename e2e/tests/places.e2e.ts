@@ -154,6 +154,8 @@ test('the editor keeps open files and unsaved text across a sandbox switch, with
   await editorShown(browser);
   const content = screen.getByRole('textbox', 'Editor content');
   await expect(content).toBeAttached();
+  // The text saves itself (SPEC-411): its saves are held so it stays unsaved across the switch.
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { live: { holdSaves: boolean } } }).__yuliusMock.live.holdSaves = true; });
   await content.focus();
   await browser.keyboard.type('studioUnsavedWord ');
   await expect(screen.getByRole('tab', /^README\.md\s*, modified/)).toBeVisible();

@@ -2392,6 +2392,43 @@ sequenceDiagram
     end
 ```
 
+The Editor's text is shared live and saves itself
+([SPEC-411](../.ai/specs/SPEC-411-editor-live-co-editing-of-unsaved-text-a.md),
+[decision 0261](decisions/0261-the-editors-text-is-shared-live-and-saved-by-the-server.md)).
+`App::live_*` (`live_files.rs`) keeps one document per sandbox, folder and path in memory, each
+behind its own lock (at most 256, each up to 2 MiB with its last 256 steps); `live_text.rs` applies and transforms operations
+over UTF-16 units. Each browser tab (`livedoc.js`, ops in `livetext.js`) keeps one operation in
+flight and composes the rest; the server transforms an edit past the steps since its revision,
+applies it and publishes `file.live` to the sandbox's writers in the same critical section, so
+every stream sees one order; the tab recognises its own step as the acknowledgement and catches up
+by `GET files/live?since=` after a gap or `resync`. The server writes the text to the file when a
+tab asks (1 s after its person's typing, on blur and leaving), with that person's access and the
+document's `sha256` as base; the 2 s look at the disk asks the server to take a newer version,
+which becomes a step when the text is saved and a conflict (Keep mine, Take disk version) when not.
+
+```mermaid
+sequenceDiagram
+    participant A as Alice's Editor (livedoc.js)
+    participant S as Server (App::live_*)
+    participant B as Bob's Editor
+    participant D as Sandbox disk
+    A->>S: POST files/live/edit {session, revision r, op}
+    S-->>S: transform past steps > r, apply, revision + 1
+    S-->>A: file.live {revision, client: A, op} (her acknowledgement)
+    S-->>B: file.live (writers only): transformed past his unconfirmed typing, applied
+    Note over A: 1 s after typing stops, on blur
+    A->>S: POST files/live/save {session}
+    S->>D: atomic write, base = document's sha256
+    S-->>B: file.live {saved: true, sha256}
+    Note over D: an agent writes the file
+    B->>S: POST files/live/disk (his 2 s look saw a new sha256)
+    alt text saved
+        S-->>A: file.live {op: the disk's change}
+    else unsaved text
+        S-->>A: file.live {disk_sha256}: Keep mine / Take disk version
+    end
+```
+
 ```mermaid
 sequenceDiagram
     participant A as Notepad (notes.js)
