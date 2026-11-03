@@ -11,7 +11,8 @@ type Who = 'me' | 'bob';
 type LiveHub = {
   holdEdits: boolean;
   holdSaves: boolean;
-  edits: { path: string; client: string; at: number }[];
+  edits: { path: string; client: string; save: boolean; at: number }[];
+  holdJoins: boolean;
   saveAsks: { path: string; force: boolean; at: number }[];
   saves: { path: string; text: string; force: boolean }[];
   diskAsks: { path: string; force: boolean }[];
@@ -27,6 +28,7 @@ type LiveMock = {
   dropLive(): void;
   releaseEdits(): void;
   releaseSaves(): void;
+  releaseJoins(): void;
   resyncNow(): void;
   request(method: string, path: string, body?: unknown): Promise<number>;
 };
@@ -274,6 +276,39 @@ test('a disk version that is no longer text is asked for once, and says so', asy
   await expect.poll(reads, { timeout: 10_000 }).toBeGreaterThanOrEqual(after + 2);
   expect(await inWindow<number>(browser, 'me', `return mock.live.diskAsks.filter((a) => a.path === '${FILE}').length`)).toBe(1);
   expect(await textOf(browser, 'me')).toBe(ON_DISK);
+});
+
+// Review round 2: typing done while a lost document is joined again appears once, also when the
+// document starts again from this tab's own text.
+test('typing while a lost document is joined again appears once', async ({ app, browser, screen }) => {
+  await openHere(app, browser, screen);
+  await inWindow(browser, 'me', 'mock.live.holdSaves = true; mock.dropLive(); mock.live.holdJoins = true');
+  await typeAt(browser, 'me', 1, 1, 'h');
+  await expect.poll(() => inWindow<number>(browser, 'me', `return mock.live.joins.filter((j) => j.text != null).length`)).toBe(1);
+  await typeAt(browser, 'me', 1, 2, 'ello');
+  await inWindow(browser, 'me', 'mock.releaseJoins()');
+  await expect.poll(() => inWindow<string | null>(browser, 'me', `return mock.liveDoc('${FILE}')?.text ?? null`)).toBe(`hello${ON_DISK}`);
+  expect(await textOf(browser, 'me')).toBe(`hello${ON_DISK}`);
+});
+
+// Review round 2 (minor 1): a page that goes cannot wait for answers; its typing goes with a
+// request to save it, which the server carries out.
+test('leaving the page sends the typing with a request to save it', async ({ app, browser, screen }) => {
+  await openHere(app, browser, screen);
+  // No autosave timer runs here: only the page's leaving saves.
+  await browser.evaluate(async () => {
+    const { AUTOSAVE_MS: delay, FALLBACK_SAVE_MS: fallback } = await import('/assets/livedoc.js' as string) as { AUTOSAVE_MS: number; FALLBACK_SAVE_MS: number };
+    const real = window.setTimeout.bind(window);
+    window.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) => (ms === delay || ms === fallback ? 0 : real(fn, ms, ...rest))) as typeof window.setTimeout;
+  });
+  await inWindow(browser, 'me', 'mock.live.holdEdits = true');
+  await typeAt(browser, 'me', 1, 1, 'Z');
+  await expect.poll(() => inWindow<number>(browser, 'me', 'return mock.live.edits.length')).toBe(1);
+  await browser.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  await expect.poll(() => inWindow<boolean>(browser, 'me', 'return mock.live.edits.some((e) => e.save)')).toBe(true);
+  await inWindow(browser, 'me', 'mock.releaseEdits()');
+  await expect.poll(() => onDisk(browser)).toBe(`Z${ON_DISK}`);
+  expect(await inWindow<string>(browser, 'me', `return mock.liveDoc('${FILE}').text`)).toBe(`Z${ON_DISK}`);
 });
 
 // EDT-016: the browser's operations converge as the server's do (the mock uses them as the server).
