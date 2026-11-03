@@ -180,7 +180,7 @@ Decisions, ADR-0146 "Co-editing of unsaved text", ADR-0091 "Operational transfor
 - **Review.** Independent reviewer in a fresh session (`om-code-review`), read-only: round 1
   requested changes (blocker: a crafted edit poisoned the shared lock; majors: an edit applied twice
   after a lost answer, typing lost on close, loose memory bounds), round 2 requested changes (a
-  rejoin merge duplicating typing), round 3 approved `6467176e`'s parent with three minors, all
+  rejoin merge duplicating typing), round 3 approved `e8d97bf9` with three minors, all
   fixed test-first above; it ran the real `livetext.js`/`livedoc.js` against a fake server with 3
   clients, 300 random concurrent edits, over several seeds: every client converged.
 - **Gates.**
