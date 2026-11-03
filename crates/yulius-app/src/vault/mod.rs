@@ -323,10 +323,7 @@ impl App {
 
     /// The person's audit label.
     fn vault_actor(ctx: &AuthContext) -> String {
-        ctx.user
-            .github_login
-            .clone()
-            .unwrap_or_else(|| "superadmin".into())
+        ctx.user.label()
     }
 
     /// The agent secrets of `sandbox` that runs of `holder` get (SPEC-245 RES-001..004): one per
@@ -340,6 +337,13 @@ impl App {
         sandbox: &SandboxId,
         holder: Holder<'_>,
     ) -> AppResult<Vec<VaultSecretRecord>> {
+        // A playground's guest reaches no secret, so their runs get none (SPEC-410 GST-004).
+        if let Some(person) = holder.person()
+            && let Some(user) = self.deps.store.user(person).await?
+            && self.guest_link_of(&user).await?.is_some()
+        {
+            return Ok(Vec::new());
+        }
         let candidates = self.deps.store.vault_agent_in(sandbox).await?;
         Ok(reach::resolve(candidates, holder))
     }

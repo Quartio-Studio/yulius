@@ -1249,9 +1249,7 @@ impl App {
     }
 
     pub(crate) fn dlv_actor_login(user: &UserRecord) -> String {
-        user.github_login
-            .clone()
-            .unwrap_or_else(|| "superadmin".into())
+        user.label()
     }
 
     /// Reads and validates the task spec; a task that needs none (DSC-013: research, a

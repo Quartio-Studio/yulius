@@ -394,10 +394,7 @@ impl App {
             Err(AppError::Unauthenticated) => {
                 let (user, sandbox) = self.workspace_worker(token).await?;
                 let once = format!("ws:{}:{}", user.id.as_str(), sandbox.as_str());
-                let actor = user
-                    .github_login
-                    .clone()
-                    .unwrap_or_else(|| "superadmin".into());
+                let actor = user.label();
                 Ok((sandbox, once, actor, Some(user.id)))
             }
             Err(err) => Err(err),

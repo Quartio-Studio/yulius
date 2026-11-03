@@ -143,10 +143,13 @@ pub fn progress(steps: &[StepRecord]) -> StepProgress {
 }
 
 impl App {
-    /// Login to show for a user id (`superadmin` or the GitHub login).
+    /// Login to show for a user id ([`UserRecord::label`]: the GitHub login, `superadmin`, or a
+    /// playground guest's name).
+    ///
+    /// [`UserRecord::label`]: crate::model::UserRecord::label
     pub(crate) async fn login_of(&self, user: &yulius_domain::ids::UserId) -> String {
         match self.deps.store.user(user).await {
-            Ok(Some(u)) => u.github_login.unwrap_or_else(|| "superadmin".into()),
+            Ok(Some(u)) => u.label(),
             _ => "unknown".into(),
         }
     }
@@ -610,11 +613,7 @@ impl App {
     /// `NotFound`/`Forbidden` without access; `Conflict` while the task runs or starts, or
     /// while a finished task's session is still closing.
     pub async fn delete_task(self: &Arc<Self>, ctx: &AuthContext, id: &str) -> AppResult<()> {
-        let actor = ctx
-            .user
-            .github_login
-            .clone()
-            .unwrap_or_else(|| "superadmin".into());
+        let actor = ctx.user.label();
         self.delete_task_as(ctx, id, &actor, None).await.map(|_| ())
     }
 

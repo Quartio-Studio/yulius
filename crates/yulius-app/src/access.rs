@@ -16,8 +16,9 @@ impl App {
     /// Effective access of `user` to `sandbox`.
     ///
     /// The superadmin owns the instance and has admin access to every sandbox, with or without
-    /// a GitHub link, without asking GitHub (ACC-012). A playground is its maker's alone
-    /// (SPEC-099). Everyone else mirrors GitHub: fresh cache
+    /// a GitHub link, without asking GitHub (ACC-012). A playground is its maker's, and a guest's
+    /// whose live link lets them in, with write access (SPEC-099, SPEC-410). Everyone else
+    /// mirrors GitHub: fresh cache
     /// entries are reused; otherwise GitHub is asked with the user's token. On a GitHub failure a
     /// cached value younger than the staleness bound is used, else the error is returned. Other
     /// users without a GitHub identity have no access.
@@ -64,12 +65,17 @@ impl App {
         if user.is_superadmin {
             return Ok(AccessLevel::Admin);
         }
-        // A playground has no GitHub repository to mirror: it is its maker's (SPEC-099 PLY-005).
+        // A playground has no GitHub repository to mirror: it is its maker's (SPEC-099 PLY-005),
+        // and a guest works in the one their live link lets them into (SPEC-410 GST-003).
         if sandbox.is_playground() {
-            return Ok(if sandbox.created_by == user.id {
-                AccessLevel::Admin
-            } else {
-                AccessLevel::None
+            if sandbox.created_by == user.id {
+                return Ok(AccessLevel::Admin);
+            }
+            return Ok(match self.guest_link_of(user).await? {
+                Some(link) if link.sandbox_id == sandbox.id && link.live_at(self.now()) => {
+                    AccessLevel::Write
+                }
+                _ => AccessLevel::None,
             });
         }
         if user.github_login.is_none() {
@@ -241,6 +247,12 @@ impl App {
         let level = self.access_level(user, &sandbox).await?;
         if level == AccessLevel::None {
             return Err(AppError::NotFound);
+        }
+        // A guest works in their playground but never configures or administers it (GST-003).
+        if matches!(action, Action::Configure | Action::Administer) && self.is_guest(user).await {
+            return Err(AppError::Forbidden(
+                "a guest works on this playground's tasks; its settings are its admins'".into(),
+            ));
         }
         if !level.allows(action) {
             return Err(AppError::Forbidden(format!(

@@ -11,6 +11,7 @@ mod delivery;
 mod events;
 mod files;
 mod git;
+mod guests;
 mod imports;
 mod internal;
 mod leftovers;
@@ -48,6 +49,7 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
     Router::new()
         .merge(secrets::public())
         .merge(variables::public())
+        .merge(guests::public())
         .route("/healthz", get(|| async { "ok" }))
         .route("/api/setup/status", get(setup_auth::setup_status))
         .route("/api/setup", post(setup_auth::setup))

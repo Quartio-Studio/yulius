@@ -34,7 +34,8 @@ fn valid_github_login(login: &str) -> bool {
 }
 
 impl App {
-    /// Lists users except the superadmin, with their two-factor (to reset a lost one).
+    /// Lists users except the superadmin and playground guests (whose playground's admins see and
+    /// end them with their links, SPEC-410), with their two-factor (to reset a lost one).
     ///
     /// # Errors
     /// `Forbidden` for members.
@@ -42,7 +43,7 @@ impl App {
         self.require_instance_admin(ctx)?;
         let mut out = Vec::new();
         for user in self.deps.store.users().await? {
-            if !user.is_superadmin {
+            if !user.is_superadmin && self.guest_link_of(&user).await?.is_none() {
                 out.push(view(&user, self.two_factor_of(&user.id).await?));
             }
         }
