@@ -1,11 +1,11 @@
 ---
 yulius-task: 4f1be670-bd99-4c4e-bec0-03bc83810322
-status: in-progress
+status: done
 ---
 
 # SPEC-396: Deleting a task keeps the attachments other tasks name, and a week's trash
 
-Status: in-progress
+Status: done
 Date: 2026-11-03
 Owner: Yulius task #386
 Scope authorization: the owner's goal for task #386 (data loss in the quartio-v2 sandbox on
@@ -78,7 +78,7 @@ how a waiting task starts in place instead of deleting and recreating it.
 - [x] task_update changes a waiting task's start in place
 - [x] Delete confirmation, tool descriptions and docs say where attachments go
 - [x] Independent review approved and findings answered
-- [ ] Gates green with evidence in the spec
+- [x] Gates green with evidence in the spec
 - [ ] Final review approves the evidenced head
 
 ## Acceptance criteria
@@ -124,4 +124,38 @@ first and fails without the change.
 
 ## Evidence
 
-To be filled in when the gates run.
+- `scripts/dev ci` at `dfa0d76d` (2026-11-03): exit 0. Repository contracts, script unit tests,
+  `cargo check`, `fmt`, `clippy -D warnings` (Linux and `aarch64-apple-darwin`), `nextest`
+  **2975 passed, 16 skipped**, doctests, `cargo deny`, `cargo shear`, `cargo doc`. Earlier runs
+  failed and were fixed in this branch: clippy `manual_is_multiple_of` (reaper round counter) and
+  rustdoc `private_intra_doc_links` (`TrashEntry::files`).
+- `cd e2e && npm ci --ignore-scripts && npx e2e run`: **799 passed, 1 failed, 1 skipped**. The
+  failure is `filedrop.e2e.ts` "files dropped on a folder of the explorer are added to it" (51:130,
+  an un-waited class read in the editor's explorer, code this change does not touch). It passed
+  3 of 3 runs of that file alone; filed as #1029.
+- `yulius security-scan`: **disabled** ("Vidoc is turned off in Yulius"); nothing was scanned.
+  Reported as disabled, not passed.
+- Test-first: the new tests in `crates/yulius/tests/attachment_trash.rs` and the changed one in
+  `uploads.rs` were run against the product code with each round's source diff reversed
+  (`git diff HEAD~1 HEAD -- crates/yulius-app | git apply -R`):
+  - first slice: all 5 failed;
+  - round 1: `archived_tasks_and_automations_name_attachments_too`, `task_update_…` (audit) and
+    `the_trash_keeps_what_it_cannot_restore_…` failed;
+  - round 2: `restored_names_need_no_quoting`, `settling_asks_again_before_it_moves_a_folder`,
+    `the_trash_keeps_…` (`left_in_trash`) and `task_update_…` (one audit row) failed;
+  - round 3: `a_trash_swapped_for_a_link_receives_nothing` failed on the missing `not_moved`.
+  - Two tests are regression guards that pass on older code: `a_trash_swapped_for_a_link_…`'s
+    no-escape part (the handle walk was already safe) and `listing_an_empty_trash_creates_nothing`
+    (guards the round-2 fix).
+- Independent review in fresh read-only sessions (skill `yulius-review`), three rounds:
+  - round 1 (`e1f8c85c`): changes requested. A blocker (Cockpit tool-list test), a major
+    (`task_update` audited as the person) and nine minors, all answered in `af0ade60`.
+  - round 2 (`af0ade60`): changes requested. A major (unreported leftovers of a restore) and five
+    minors, answered in `8c748fcd`. Not changed, with reasons: remote `attachments_trash` keeps
+    the Work scope (restoring must not ride a view-only token), and a second concurrent restore is
+    benign.
+  - round 3 (`94c39cea`): approved. Its two minors and four nits were answered in `b67c5f8d`.
+- Pre-existing paths to the same kind of loss, outside this change: composer drafts pruned after a
+  week (#1023), shell attachments removed with the shell (#1027).
+- Not tested: a real contained sandbox (bubblewrap) deleting a task. The tests run the HTTP and MCP
+  paths against the sandbox folder on the host, as the existing upload tests do.
