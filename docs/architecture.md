@@ -297,6 +297,10 @@ The dialog follows the terminal's ending. On `ok` it closes by itself and a toas
 subscription. On `error`, `cancelled` or a lost terminal it shows why, with Try again (a new
 sign-in in the same dialog). Closing it while the sign-in runs cancels that sign-in. The cancel
 waits for the end and keeps a token already printed, so a sign-in that succeeded is never lost.
+The sign-in runs on the host, not in a sandbox. It has a fixed argv, new empty HOME and config
+folders, and input from instance administrators only. Its raw output is one allocation that never
+grows and is zeroed whole once the token is extracted
+([decision 0256](decisions/0256-a-sign-in-runs-on-the-host-and-its-raw-output-is-one-wiped-allocation.md)).
 
 ```mermaid
 stateDiagram-v2
