@@ -953,6 +953,22 @@ async fn revoking_or_expiry_stops_the_guests_tasks() -> TestResult {
         status("t5").await.is_some_and(stopped)
     })
     .await?;
+    // Still within that minute, a later pass catches one more.
+    seed_task(
+        &w.h,
+        "t6",
+        "p1",
+        carol.id.as_str(),
+        TaskStatus::Running,
+        None,
+    )
+    .await?;
+    seed_live_attempt(&w.h, "t6", "guests-run-carol-later-0123456789abc").await?;
+    w.h.app.end_expired_guest_links().await;
+    until("Carol's later task to stop", || async {
+        status("t6").await.is_some_and(stopped)
+    })
+    .await?;
 
     // Dana's link expires: the background sweep stops her task too.
     advance(&w.h, 7 * DAY_MS);
