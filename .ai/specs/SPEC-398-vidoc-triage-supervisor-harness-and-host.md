@@ -86,9 +86,9 @@ test that pins that guard. A dismissed wording gets one narrow `[[ignore]]` entr
 ## Plan
 
 - [x] Spec with the triage of all five findings
-- [ ] The Claude config trusts the worktree without following the agent's links (#801)
-- [ ] Host setup refuses a data directory that is not absolute (#677)
-- [ ] Pinning tests and narrow [[ignore]] entries for the dismissed findings (#813 #696 #728 #677)
+- [x] The Claude config trusts the worktree without following the agent's links (#801)
+- [x] Host setup refuses a data directory that is not absolute (#677)
+- [x] Pinning tests and narrow [[ignore]] entries for the dismissed findings (#813 #696 #728 #677)
 - [ ] Docs, changes entry, gate and evidence
 - [ ] Independent review answered
 - [ ] Issues commented: dismissed ones closed, fixed ones linked to the pull request
