@@ -51,8 +51,8 @@ the explorer redraws its rows during the drag.
 ## Plan
 
 - [x] Spec with the root cause of #1029
-- [ ] Regression test: a roots answer landing after the dragover keeps the mark
-- [ ] Explorer keeps the drop mark by path across redraws
+- [x] Regression test: a roots answer landing after the dragover keeps the mark
+- [x] Explorer keeps the drop mark by path across redraws
 - [ ] Filedrop test waits for the mark; 30 repeats and the full suite pass
 - [ ] Docs and evidence: changes, e2e README, spec
 - [ ] Independent review answered

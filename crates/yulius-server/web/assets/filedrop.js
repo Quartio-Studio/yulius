@@ -301,11 +301,12 @@ function looksLikeText(file) {
  *   ctx, sandboxId     the app context (api, store) and the sandbox
  *   tree, host, head   the explorer's tree, Monaco's host and the explorer's header
  *   getRoot()          `sandbox` or `task:<id>` (the folder the editor shows)
+ *   markTarget(dir)    marks the explorer's folder `dir` under a drag (null: none), also when redrawn
  *   activePath()       the open file's path, or null
  *   reveal(dir)        lists `dir` (expanded) again; refresh() lists every expanded folder again
  *   open(path)         opens a file in a tab
  */
-export function attachEditorDrop({ ctx, sandboxId, tree, host, head, getRoot, canWrite = () => true, activePath, reveal, refresh, open }) {
+export function attachEditorDrop({ ctx, sandboxId, tree, host, head, getRoot, canWrite = () => true, markTarget, activePath, reveal, refresh, open }) {
   const api = ctx.api;
   const side = tree.closest('.ed-side') || tree.parentElement;
   const stage = host.closest('.ed-stage') || host.parentElement;
@@ -328,11 +329,12 @@ export function attachEditorDrop({ ctx, sandboxId, tree, host, head, getRoot, ca
     const isDir = row.dataset.kind ? row.dataset.kind === 'dir' : row.hasAttribute('aria-expanded');
     return isDir ? { dir: path, row } : { dir: parentOf(path), row: null };
   };
+  // The explorer draws the mark (by path, so a redraw during the drag keeps it; #1029).
   const mark = (row) => {
-    if (marked === row) return;
-    if (marked) marked.classList.remove('ed-drop-target');
-    marked = row;
-    if (row) row.classList.add('ed-drop-target');
+    const dir = row ? row.dataset.path || row.title : null;
+    if (marked === dir) return;
+    marked = dir;
+    markTarget(dir);
   };
 
   /** Which of `paths` exist, read from their folders' listings (`kind` per path). */
