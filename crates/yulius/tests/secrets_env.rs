@@ -838,16 +838,43 @@ pub(crate) fn openssh_key(n: u8) -> String {
     key_file(&format!("{} PRIVATE KEY", "OPENSSH"), &body)
 }
 
-/// What `sh` reads for `name` from the `.env` in `dir`, byte for byte.
+/// What `sh` reads for `name` from the `.env` in `dir`, byte for byte. The name is `sh`'s `$1`,
+/// never script text (AGENTS.md: no shell interpolation): `set -a` exports what `.env` sets and
+/// `printenv` prints it with one newline of its own, which is cut.
 pub(crate) fn sourced(dir: &Path, name: &str) -> Result<String, Box<dyn std::error::Error>> {
     let out = Command::new("sh")
-        .args(["-c", &format!(". ./.env && printf %s \"${name}\"")])
+        .args(["-c", "set -a && . ./.env && printenv \"$1\"", "sh", name])
         .current_dir(dir)
         .output()?;
     if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).into_owned().into());
+        return Err(format!(
+            "{name} is not set: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )
+        .into());
     }
-    Ok(String::from_utf8(out.stdout)?)
+    let mut value = String::from_utf8(out.stdout)?;
+    if value.pop() != Some('\n') {
+        return Err(format!("printenv printed no final newline for {name}").into());
+    }
+    Ok(value)
+}
+
+/// SPEC-406 TCF-003 (#772): `sourced` hands the name to `sh` as an argument, never as script
+/// text, so shell syntax in a name runs nothing; values come back byte for byte, a final newline
+/// included.
+#[test]
+fn sourced_runs_no_shell_syntax_from_the_name() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join(".env"), "X=1\nLINES='one\ntwo\n'\n")?;
+    let _ = sourced(dir.path(), "X\"; touch injected; : \"");
+    assert!(
+        !dir.path().join("injected").exists(),
+        "the name ran as shell"
+    );
+    assert_eq!(sourced(dir.path(), "X")?, "1");
+    assert_eq!(sourced(dir.path(), "LINES")?, "one\ntwo\n");
+    Ok(())
 }
 
 /// SPEC-186 SAV-005: keys stored with literal `\n` (an agent secret never spans lines), with or
