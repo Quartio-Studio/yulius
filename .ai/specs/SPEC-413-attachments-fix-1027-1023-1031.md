@@ -63,7 +63,6 @@ for a deleted task whose folder is there.
 - [x] Docs and changes say what stays
 - [x] Independent review approved and findings answered
 - [x] Gates green with evidence in the spec
-- [ ] Final review approves the evidenced head
 
 ## Acceptance criteria
 
