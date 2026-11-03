@@ -1603,7 +1603,14 @@ mod tests {
         let mut raw = RawOutput::default();
         raw.push(b"sk-ant-oat01-");
         let (at, capacity) = (raw.bytes.as_ptr(), raw.bytes.capacity());
-        for size in [1, 4096, LOGIN_RAW_MAX - 1, LOGIN_RAW_MAX, 3 * LOGIN_RAW_MAX, 7] {
+        for size in [
+            1,
+            4096,
+            LOGIN_RAW_MAX - 1,
+            LOGIN_RAW_MAX,
+            3 * LOGIN_RAW_MAX,
+            7,
+        ] {
             raw.push(&vec![b'x'; size]);
             assert!(raw.bytes.len() <= LOGIN_RAW_MAX);
             assert_eq!(raw.bytes.as_ptr(), at, "after a chunk of {size} bytes");
