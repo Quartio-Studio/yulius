@@ -1601,7 +1601,11 @@ mod lane_tests {
             None,
             "the run already executes"
         );
-        assert_eq!(executing.get("r1"), Some(&"first"), "its cancellation stays");
+        assert_eq!(
+            executing.get("r1"),
+            Some(&"first"),
+            "its cancellation stays"
+        );
         assert!(!busy.contains("s1/1"), "no second lane: {busy:?}");
         assert_eq!(
             reserve_run(&mut busy, &mut executing, ("r2", "s1", 2), "other"),
@@ -1613,6 +1617,9 @@ mod lane_tests {
             reserve_run(&mut busy, &mut executing, ("r3", "s2", 2), "claimed"),
             None
         );
-        assert!(!executing.contains_key("r3"), "a refused run registers nothing");
+        assert!(
+            !executing.contains_key("r3"),
+            "a refused run registers nothing"
+        );
     }
 }
