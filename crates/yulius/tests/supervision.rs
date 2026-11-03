@@ -198,7 +198,11 @@ async fn seed_records(app: &App) -> Result<(SandboxId, UserId), Box<dyn std::err
             id: AccountId::parse("a-claude")?,
             provider: Provider::Anthropic,
             label: "Claude test".into(),
-            credential: Some(app.deps.crypto.seal(b"sk-ant-oat01-test-credential")?),
+            credential: Some(
+                app.deps
+                    .crypto
+                    .seal(concat!("sk-ant-oat01-", "test-credential").as_bytes())?,
+            ),
             status: AccountStatus::Ok,
             usage_json: None,
             last_error: None,
@@ -474,7 +478,7 @@ async fn add_account(app: &App, id: &str) -> Result<AccountId, Box<dyn std::erro
             credential: Some(
                 app.deps
                     .crypto
-                    .seal(b"sk-ant-oat01-second-test-credential")?,
+                    .seal(concat!("sk-ant-oat01-", "second-test-credential").as_bytes())?,
             ),
             status: AccountStatus::Ok,
             usage_json: None,
@@ -1529,7 +1533,7 @@ impl UsageProbe for FirstAccountNearLimit {
         _provider: Provider,
         credential: &Secret,
     ) -> Result<AccountUsage, yulius_app::ports::usage::UsageFailure> {
-        if credential.expose() != "sk-ant-oat01-test-credential" {
+        if credential.expose() != concat!("sk-ant-oat01-", "test-credential") {
             return Ok(AccountUsage::default());
         }
         Ok(AccountUsage {

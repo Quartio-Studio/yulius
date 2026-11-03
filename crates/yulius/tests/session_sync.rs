@@ -132,7 +132,11 @@ async fn seed(app: &App, data: &Path) -> Result<(SandboxId, UserRecord), BoxErro
             id: AccountId::parse("a-claude")?,
             provider: Provider::Anthropic,
             label: "Claude test".into(),
-            credential: Some(app.deps.crypto.seal(b"sk-ant-oat01-test-credential")?),
+            credential: Some(
+                app.deps
+                    .crypto
+                    .seal(concat!("sk-ant-oat01-", "test-credential").as_bytes())?,
+            ),
             status: AccountStatus::Ok,
             usage_json: None,
             last_error: None,

@@ -31,6 +31,7 @@ mod delivery;
 mod disk;
 mod files;
 mod first_message;
+mod fixture_hygiene;
 mod git_adapter;
 mod github_admin;
 mod github_checks;

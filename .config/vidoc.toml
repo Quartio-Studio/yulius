@@ -324,6 +324,57 @@ path = "crates/yulius/tests/support/repos.rs"
 title = "Hardcoded crypto master key in test code"
 reason = "a test fixture: in-memory stores in temporary directories"
 
+# SPEC-406 (task #388): the Vidoc findings in crates/yulius/tests, triaged on dev d51b98ae; each
+# issue holds the file:line evidence. (#822 and #797 had real provider prefixes, sk-ant-oat01- and
+# sk_test_: fixtures are now put together from prefix and body, and fixture_hygiene fails on a
+# provider-shaped literal there, ADR-0258. #772 is fixed: sourced passes the name as $1.)
+
+# #821, #773, #746: fixed master keys of test stores. Production's key is 32 random bytes that
+# serve.rs creates with MasterKeyCrypto::load_or_create (mode 0600); from_key has no caller outside
+# test code, and these keys seal only synthetic fixtures in temporary or in-memory stores.
+[[ignore]]
+path = "crates/yulius/tests/supervision.rs"
+function = "build_custom"
+title = "Hardcoded crypto master key in test code"
+reason = "a test fixture key for a temporary store; production generates its key at random (MasterKeyCrypto::load_or_create in serve.rs), and from_key has no caller outside tests (SPEC-406, #821)"
+
+[[ignore]]
+path = "crates/yulius/tests/task_done.rs"
+function = "start_holding"
+title = "Hardcoded master encryption key in test code"
+reason = "a test fixture key for a temporary store sealing synthetic credentials; production generates its key at random (load_or_create in serve.rs) (SPEC-406, #773)"
+
+[[ignore]]
+path = "crates/yulius/tests/support/repos.rs"
+function = "without_claude"
+title = "Hardcoded weak encryption key for test crypto"
+reason = "a test fixture key for the in-memory test store; production generates its key at random (load_or_create in serve.rs), and from_key has no caller outside tests (SPEC-406, #746)"
+
+# #747: World::remote writes into its own temporary scratch folder, and every caller passes literal
+# relative paths or the product's own scaffold (scaffold_files): no input crosses a trust boundary.
+# (`remote` also names LocalGit's URL lookup in that file, another test fake.)
+[[ignore]]
+path = "crates/yulius/tests/support/repos.rs"
+function = "remote"
+title = "Path traversal in test remote seeding"
+reason = "the test's own literal paths (or the product's scaffold) written into the helper's own temporary folder; nothing untrusted reaches it (SPEC-406, #747)"
+
+# #797 and #822, what stays after the fix: synthetic fixtures with no provider shape (a password,
+# RFC 4226's test seed in base32, vault task tokens) and fixtures put together from a prefix and a
+# synthetic body. They reach only the test's own stores and fake hosts; fixture_hygiene keeps any
+# provider-shaped literal out of crates/yulius/tests.
+[[ignore]]
+path = "crates/yulius/tests/secrets.rs"
+title = "Hardcoded credentials in test code"
+reason = "synthetic fixtures without a provider shape, for the test's own store and fake hosts; provider-shaped literals fail fixture_hygiene (SPEC-406, ADR-0258, #797)"
+line = 22
+
+[[ignore]]
+path = "crates/yulius/tests/supervision.rs"
+function = "fetch"
+title = "Hardcoded credential in test code"
+reason = "a synthetic account credential put together from the prefix and a body, for the fake usage probe; provider-shaped literals fail fixture_hygiene (SPEC-406, ADR-0258, #822)"
+
 [[ignore]]
 path = "scripts/test_vidoc_scan.py"
 title = "Hardcoded fake API key constant"

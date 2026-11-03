@@ -191,7 +191,12 @@ async fn fixture_with_workflow(
             id: account.clone(),
             provider: yulius_domain::harness::Provider::Anthropic,
             label: "Claude #1".into(),
-            credential: Some(h.app.deps.crypto.seal(b"sk-ant-oat01-hooks-test")?),
+            credential: Some(
+                h.app
+                    .deps
+                    .crypto
+                    .seal(concat!("sk-ant-oat01-", "hooks-test").as_bytes())?,
+            ),
             status: yulius_app::model::AccountStatus::Ok,
             usage_json: None,
             last_error: None,

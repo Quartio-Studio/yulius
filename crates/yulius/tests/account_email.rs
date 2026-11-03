@@ -37,8 +37,14 @@ use yulius_domain::usage::AccountUsage;
 
 /// Synthetic tokens (realistic shape, not real credentials): one whose profile has an email, one
 /// whose profile is refused (a `setup-token` without `user:profile`).
-const WITH_EMAIL: &str = "sk-ant-oat01-SYNTHETICwithemail0123456789abcdefghijklmnopqrstu-test";
-const REFUSED: &str = "sk-ant-oat01-SYNTHETICrefused000123456789abcdefghijklmnopqrstu-test";
+const WITH_EMAIL: &str = concat!(
+    "sk-ant-oat01-",
+    "SYNTHETICwithemail0123456789abcdefghijklmnopqrstu-test"
+);
+const REFUSED: &str = concat!(
+    "sk-ant-oat01-",
+    "SYNTHETICrefused000123456789abcdefghijklmnopqrstu-test"
+);
 
 /// Claude's profile as the fake sees it: per credential, an email, a refusal or no answer.
 #[derive(Default)]

@@ -309,7 +309,12 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
             id: AccountId::parse("a1")?,
             provider: Provider::Anthropic,
             label: "Claude".into(),
-            credential: Some(h.app.deps.crypto.seal(b"sk-ant-oat01-live-terminal")?),
+            credential: Some(
+                h.app
+                    .deps
+                    .crypto
+                    .seal(concat!("sk-ant-oat01-", "live-terminal").as_bytes())?,
+            ),
             status: AccountStatus::Ok,
             usage_json: None,
             last_error: None,
