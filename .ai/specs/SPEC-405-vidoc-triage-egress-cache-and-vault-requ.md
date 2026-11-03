@@ -68,7 +68,7 @@ its wording, so that a repeat scan does not reopen it.
 - [x] Narrow [[ignore]] entries for the dismissed wordings (#835 #758 #815)
 - [x] Architecture, API docs, changes entry and gates
 - [ ] Independent review answered
-- [ ] The fingerprint file is used only once two reads agree (#835)
+- [x] The fingerprint file is used only once two reads agree (#835)
 - [ ] Dismissed issues commented and closed (#711 #835 #758 #815)
 
 ## Acceptance criteria
