@@ -18,6 +18,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   no longer wait out the pad's doubled back-off or let its own retry settle a lost save first. A
   running CI run's waterfall keeps the hover tip of the row under the pointer through its redraw
   at every poll (it vanished until the pointer moved). Fixes #354, #525 and #510.
+- The Editor's text is shared live: teammates who have a file open see each other's keystrokes
+  and carets before anyone saves, and concurrent typing converges (server-ordered operational
+  transformation over the event stream; the text held in the server's memory for the sandbox's
+  writers only). The Editor saves by itself about a second after typing stops and when the person
+  leaves the file; an agent's write over unsaved text shows "Changed on disk" in every Editor with
+  Keep mine and Take disk version (SPEC-411, task #393, ADR-0261, fixes #566). This reverses
+  EDT-003's "unsaved text is neither stored nor shared", by the person's decision of 2026-11-03.
 - Teammates try a playground without signing in with GitHub (SPEC-410, task #392, ADR-0260,
   fixes #412; the product owner's decision amends ACC-005 for playgrounds only). A playground's
   admin picks "Invite guests…" in its tab menu and creates a link that lasts 1, 7 or 30 days; a

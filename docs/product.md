@@ -293,11 +293,12 @@ watching, steering and unblocking.
   teammates who have a shared notepad open show as a caret with their name and their selection
   in their own colour.
 - **Editor**: Monaco over the sandbox's files for people with write access. Like Notes, its
-  selection is drawn rounded and glides, people who have the same file open see each other's
-  caret, name and selection in their Notes colour (awareness only: unsaved text stays each
-  person's own), and its tabs go in any order. The file in front follows the disk: what
-  teammates, agents and shells write shows within about 2 s while the person has not edited it
-  (SPEC-181). Its folder picker opens any branch the sandbox has checked out, named by its branch:
+  selection is drawn rounded and glides, people who have the same file open edit one shared
+  text and see each other's keystrokes, caret, name and selection in their Notes colour before
+  anything is saved, and its tabs go in any order. It saves by itself about a second after typing
+  stops and when the person leaves the file (SPEC-411). The file in front follows the disk: what
+  agents and shells write shows within about 2 s; over unsaved text every Editor offers Keep mine
+  or Take disk version (SPEC-181, SPEC-411). Its folder picker opens any branch the sandbox has checked out, named by its branch:
   the sandbox repository or any task's worktree, also with no task selected; another person's
   worktree opens read-only and says why (SPEC-340).
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit

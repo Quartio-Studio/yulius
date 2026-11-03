@@ -207,6 +207,8 @@ pub struct App {
     pub(crate) change_slots: tokio::sync::Semaphore,
     /// Notepad presence updates per person and notepad (rate limiting, SPEC-112 NOT-019).
     pub(crate) note_presence: Mutex<HashMap<String, Vec<i64>>>,
+    /// The Editor's shared texts (SPEC-411 EDT-018), in memory only.
+    pub(crate) live_docs: crate::live_files::LiveDocs,
     /// Session supervisor runtime state.
     pub(crate) supervisor: crate::supervisor::SupervisorState,
     /// Account login terminals.
@@ -300,6 +302,7 @@ impl App {
             remote_calls: Mutex::new(HashMap::new()),
             change_slots: tokio::sync::Semaphore::new(crate::remote_files::MAX_CONCURRENT_CHANGES),
             note_presence: Mutex::new(HashMap::new()),
+            live_docs: crate::live_files::LiveDocs::default(),
             supervisor: crate::supervisor::SupervisorState::default(),
             logins: crate::accounts::LoginRegistry::default(),
             capacity: crate::capacity::CapacityState::default(),

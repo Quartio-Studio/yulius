@@ -5,6 +5,9 @@
 Accepted. Specified in
 [SPEC-181](../../.ai/specs/SPEC-181-here-ui-got-bugged-a-little-bit-we-want.md); refines EDT-003
 (SPEC-001) and keeps [0103](0103-editor-presence-mirrors-monaco-and-reaches-writers-only.md).
+Amended by [0261](0261-the-editors-text-is-shared-live-and-saved-by-the-server.md) (2026-11-03): the
+look stays, the server takes a newer version into the shared text, and co-editing is no longer
+rejected.
 
 ## Context
 

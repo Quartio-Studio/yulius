@@ -21,6 +21,7 @@
 
 import { counter, taskInfo } from './status.js';
 import { parsePrompt } from './promptparts.js';
+import { apply as applyOp, transform as transformOp, isNoop as noopOp, replacement } from './livetext.js';
 
 const MIN = 60e3;
 const HOUR = 60 * MIN;
@@ -2467,6 +2468,170 @@ route('POST', `/api/sandboxes/${ID}/files`, ({ db, p, body }) => {
   if (body.kind === 'dir') tree.dirs.add(path); else tree.files.set(path, '');
   return json(201, { name: path.split('/').pop(), path, kind: body.kind === 'dir' ? 'dir' : 'file', size: 0 });
 });
+// ---- The Editor's shared text (SPEC-411): one document per file, kept like the server keeps it.
+// The hub (`db.live`) is the first window's: a window it opens (a teammate, `as=<login>`) shares
+// it and the repository's files, so two windows edit one text as two browsers do on the server.
+// Tests: `liveDoc(path)` reads a document, `dropLive()` forgets them all (a restart),
+// `db.live.holdEdits = true` keeps edits unanswered and unapplied until `releaseEdits()`, and
+// `db.live.holdSaves = true` saves until `releaseSaves()`; `db.live.edits`, `saveAsks` and
+// `saves` (the writes) record what was asked.
+function liveKey(sid, root, path) { return `${sid}|${root}|${path}`; }
+function livePublish(db, sid, root, path, doc, client, op, userId = '') {
+  const event = { type: 'file.live', sandbox_id: sid, root, path, session: doc.session, revision: doc.revision, user_id: userId, client, op, sha256: doc.sha, saved: doc.savedRevision === doc.revision, disk_sha256: doc.diskSha, eol: doc.eol };
+  for (const sink of [...db.live.sinks]) { try { sink(event); } catch { db.live.sinks.delete(sink); } }
+}
+function liveEol(text, fallback) {
+  const crlf = (text.match(/\r\n/g) || []).length;
+  const all = (text.match(/\r\n|\r|\n/g) || []).length;
+  const lone = (text.match(/\r(?!\n)/g) || []).length;
+  return fallback || (all && (crlf + lone) * 2 > all ? '\r\n' : '\n');
+}
+const inEol = (text, eol) => text.replace(/^﻿/, '').replace(/\r\n|\r|\n/g, eol);
+function liveWhole(doc, steps = null) {
+  return { session: doc.session, revision: doc.revision, text: steps ? null : doc.text, steps, eol: doc.eol, sha256: doc.sha, saved: doc.savedRevision === doc.revision, disk_sha256: doc.diskSha };
+}
+const liveState = (doc) => ({ session: doc.session, revision: doc.revision, sha256: doc.sha, saved: doc.savedRevision === doc.revision, disk_sha256: doc.diskSha });
+function livePlace(db, sid, body, write) {
+  const sandbox = sandboxOf(db, sid);
+  need(sandbox, 'write');
+  const root = body.root || 'sandbox';
+  const path = repoPath(body.path);
+  if (!path) fail(422, 'invalid', 'a live document is a file');
+  if (write && root.startsWith('task:')) {
+    const task = db.tasks.find((t) => `task:${t.id}` === root);
+    if (task && ownerOf(task).login !== db.me.user.login) fail(403, 'forbidden', 'only the task’s owner changes its worktree');
+  }
+  return { sid: sandbox.id, root, path, tree: repoTree(db, sandbox.id, root), key: liveKey(sandbox.id, root, path) };
+}
+function liveDocOf(db, place, session) {
+  const doc = db.live.docs.get(place.key);
+  if (!doc || (session !== undefined && doc.session !== session)) fail(409, 'conflict', 'the live document ended; join it again');
+  return doc;
+}
+route('POST', `/api/sandboxes/${ID}/files/live`, async ({ db, p, body }) => {
+  const place = livePlace(db, p[0], body, false);
+  db.live.joins.push({ path: place.path, root: place.root, text: body.text ?? null });
+  if (db.live.holdJoins) await new Promise((resolve) => db.live.heldJoins.push(resolve));
+  const existing = db.live.docs.get(place.key);
+  if (existing) return liveWhole(existing);
+  if (!place.tree.files.has(place.path)) fail(404, 'not_found', 'not found');
+  if ((place.tree.binary && place.tree.binary.has(place.path)) || (place.tree.tooLarge && place.tree.tooLarge.has(place.path))) fail(422, 'invalid', 'the file is not text the editor opens');
+  const content = place.tree.files.get(place.path);
+  const diskSha = mockSha(content);
+  const eol = liveEol(content, body.eol);
+  const onDisk = inEol(content, eol);
+  let writable = true;
+  try { livePlace(db, p[0], body, true); } catch { writable = false; }
+  const own = writable && typeof body.text === 'string' && !(body.saved && body.sha256 !== diskSha);
+  const text = own ? inEol(body.text, eol) : onDisk;
+  const sha = own ? body.sha256 || diskSha : diskSha;
+  db.live.next += 1;
+  const doc = { session: `live${db.live.next}`, text, eol, revision: 0, steps: [], sha, savedRevision: !own || (sha === diskSha && text === onDisk) ? 0 : null, diskSha: own && sha !== diskSha ? diskSha : null };
+  db.live.docs.set(place.key, doc);
+  return liveWhole(doc);
+});
+route('GET', `/api/sandboxes/${ID}/files/live`, ({ db, p, query }) => {
+  const place = livePlace(db, p[0], { root: query.get('root'), path: query.get('path') }, false);
+  const doc = liveDocOf(db, place);
+  const since = Number(query.get('since'));
+  const oldest = doc.steps.length ? doc.steps[0].revision - 1 : doc.revision;
+  if (doc.session !== query.get('session') || since > doc.revision || since < oldest) return liveWhole(doc);
+  return liveWhole(doc, doc.steps.filter((step) => step.revision > since));
+});
+route('POST', `/api/sandboxes/${ID}/files/live/edit`, async ({ db, p, body }) => {
+  const place = livePlace(db, p[0], body, true);
+  db.live.edits.push({ path: place.path, client: body.client, revision: body.revision, op: body.op, save: Boolean(body.save), at: Date.now() });
+  if (db.live.holdEdits) await new Promise((resolve) => db.live.held.push(resolve));
+  const doc = liveDocOf(db, place, body.session);
+  const oldest = doc.steps.length ? doc.steps[0].revision - 1 : doc.revision;
+  if (body.revision > doc.revision || body.revision < oldest) fail(409, 'conflict', 'the live document ended; join it again');
+  // The same edit sent again (its answer lost): its step, as the server answers it.
+  const userId = db.me.user.id;
+  const sent = doc.steps.find((step) => step.revision > body.revision && step.user_id === userId && step.client === body.client);
+  if (sent) {
+    if (body.save) liveSave(db, place, doc, false);
+    return { revision: sent.revision };
+  }
+  let op = body.op;
+  let text;
+  try {
+    for (const step of doc.steps) if (step.revision > body.revision) [op] = transformOp(op, step.op);
+    text = applyOp(doc.text, op);
+  } catch { fail(422, 'invalid', 'the edit does not fit the text; catch up first'); }
+  const wasSaved = doc.savedRevision === doc.revision;
+  doc.text = text;
+  doc.revision += 1;
+  if (wasSaved && noopOp(op)) doc.savedRevision = doc.revision;
+  doc.steps.push({ revision: doc.revision, user_id: userId, client: body.client, op });
+  if (doc.steps.length > 256) doc.steps.shift();
+  livePublish(db, place.sid, place.root, place.path, doc, body.client, op, userId);
+  if (body.save) liveSave(db, place, doc, false);
+  return { revision: doc.revision };
+});
+route('POST', `/api/sandboxes/${ID}/files/live/save`, async ({ db, p, body }) => {
+  const place = livePlace(db, p[0], body, true);
+  liveDocOf(db, place, body.session);
+  db.live.saveAsks.push({ path: place.path, force: Boolean(body.force), at: Date.now() });
+  if (db.live.holdSaves) await new Promise((resolve) => db.live.heldSaves.push(resolve));
+  return liveSave(db, place, liveDocOf(db, place, body.session), Boolean(body.force));
+});
+/** Writes a document's text as the server's save does (`force`: over a disk that moved on). */
+function liveSave(db, place, doc, force) {
+  const body = { force };
+  const conflict = doc.diskSha != null;
+  if ((doc.savedRevision === doc.revision && !conflict) || (conflict && !body.force)) return liveState(doc);
+  const exists = place.tree.files.has(place.path);
+  const current = exists ? mockSha(place.tree.files.get(place.path)) : '';
+  if (!body.force && current !== doc.sha) {
+    doc.diskSha = current;
+  } else {
+    place.tree.files.set(place.path, doc.text);
+    db.live.saves.push({ path: place.path, text: doc.text, force: Boolean(body.force) });
+    doc.sha = mockSha(doc.text);
+    doc.savedRevision = doc.revision;
+    doc.diskSha = null;
+  }
+  livePublish(db, place.sid, place.root, place.path, doc, '', null);
+  return liveState(doc);
+}
+route('POST', `/api/sandboxes/${ID}/files/live/disk`, ({ db, p, body }) => {
+  const place = livePlace(db, p[0], body, Boolean(body.force));
+  db.live.diskAsks.push({ path: place.path, force: Boolean(body.force) });
+  const doc = liveDocOf(db, place, body.session);
+  if (!place.tree.files.has(place.path)) {
+    if (body.force) fail(404, 'not_found', 'not found');
+    if (doc.diskSha !== '') { doc.diskSha = ''; livePublish(db, place.sid, place.root, place.path, doc, '', null); }
+    return liveState(doc);
+  }
+  if ((place.tree.binary && place.tree.binary.has(place.path)) || (place.tree.tooLarge && place.tree.tooLarge.has(place.path))) fail(422, 'invalid', 'the file on disk is no longer text the editor opens');
+  const content = place.tree.files.get(place.path);
+  const sha = mockSha(content);
+  if (sha === doc.sha && !body.force) {
+    if (doc.diskSha != null) { doc.diskSha = null; livePublish(db, place.sid, place.root, place.path, doc, '', null); }
+    return liveState(doc);
+  }
+  if (doc.savedRevision !== doc.revision && !body.force) {
+    if (doc.diskSha !== sha) { doc.diskSha = sha; livePublish(db, place.sid, place.root, place.path, doc, '', null); }
+    return liveState(doc);
+  }
+  // The disk's line ending too, as the server takes it.
+  doc.eol = liveEol(content);
+  const theirs = inEol(content, doc.eol);
+  const ordered = replacement(doc.text, theirs);
+  doc.sha = sha;
+  doc.diskSha = null;
+  if (noopOp(ordered)) {
+    doc.savedRevision = doc.revision;
+    livePublish(db, place.sid, place.root, place.path, doc, '', null);
+    return liveState(doc);
+  }
+  doc.text = theirs;
+  doc.revision += 1;
+  doc.savedRevision = doc.revision;
+  doc.steps.push({ revision: doc.revision, user_id: '', client: '', op: ordered });
+  livePublish(db, place.sid, place.root, place.path, doc, '', ordered);
+  return liveState(doc);
+});
 // ---- Dropped files (EDT-006, UI-048): a raw file into the repository or a worktree (never
 // replacing one unless asked), and terminal attachments with safe, unique names.
 const uploadTooLarge = (db, size) => {
@@ -3349,7 +3514,7 @@ route('PUT', '/api/notes/presence', ({ db, body }) => relayPresence(db, 'team', 
 route('PUT', `/api/sandboxes/${ID}/files/presence`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
-  for (const key of Object.keys(body)) if (!['root', 'path', 'sha256', 'selection', 'hello', 'client', 'seq'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
+  for (const key of Object.keys(body)) if (!['root', 'path', 'sha256', 'selection', 'hello', 'client', 'seq', 'session', 'revision'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
   if (body.client !== undefined && (typeof body.client !== 'string' || !/^[A-Za-z0-9]{0,32}$/.test(body.client))) fail(422, 'invalid', 'a client is at most 32 letters and digits');
   if (body.seq !== undefined && !(Number.isInteger(body.seq) && body.seq >= 0)) fail(422, 'invalid', 'seq is a number from 0');
   if (body.sha256 !== undefined && !/^([0-9a-f]{64})?$/.test(body.sha256)) fail(422, 'invalid', 'sha256 is 64 lowercase hex digits');
@@ -3370,7 +3535,9 @@ route('PUT', `/api/sandboxes/${ID}/files/presence`, ({ db, p, body }) => {
   const seq = body.seq || 0;
   (db.filePresenceSent = db.filePresenceSent || []).push({ sandbox_id: sandbox.id, root, path, sha256, selection, hello: Boolean(body.hello), client, seq });
   const user = db.me.user;
-  const event = { type: 'file.presence', sandbox_id: sandbox.id, root, path, user_id: user.id, client, name: user.github_linked ? user.login : user.display_name, sha256, selection, hello: Boolean(body.hello), seq };
+  const live = body.session ? { session: body.session, revision: body.revision ?? 0 } : {};
+  db.filePresenceSent[db.filePresenceSent.length - 1] = { ...db.filePresenceSent[db.filePresenceSent.length - 1], ...live };
+  const event = { type: 'file.presence', sandbox_id: sandbox.id, root, path, user_id: user.id, client, name: user.github_linked ? user.login : user.display_name, sha256, selection, hello: Boolean(body.hello), seq, ...live };
   emit(db, event);
   if (db.presenceChannel) db.presenceChannel.postMessage(event);
   // `holdPresence = true`: answers wait for `releasePresence()` (an update still on its way).
@@ -5626,6 +5793,25 @@ function startAmbient(db) {
 export function createMockTransport(params) {
   const db = seed(params);
   window.__yuliusMock = db; // debugging aid in the browser console (mock mode only)
+  // The Editor's shared text (SPEC-411): a window this one opened shares its hub and files.
+  let opener = null;
+  try { opener = window.opener && window.opener.__yuliusMock && window.opener.__yuliusMock.live ? window.opener.__yuliusMock : null; } catch { opener = null; }
+  if (opener) {
+    opener.repoTrees = opener.repoTrees || {};
+    db.repoTrees = opener.repoTrees;
+    db.live = opener.live;
+  } else {
+    db.live = { docs: new Map(), sinks: new Set(), next: 0, joins: [], edits: [], saves: [], saveAsks: [], diskAsks: [], held: [], heldJoins: [], holdJoins: false, holdEdits: false, heldSaves: [], holdSaves: false };
+  }
+  // `liveMuted = true`: this window's stream loses the shared text's events (a lost connection).
+  const liveSink = (event) => { if (!db.liveMuted) emit(db, event); };
+  db.live.sinks.add(liveSink);
+  window.addEventListener('pagehide', () => db.live.sinks.delete(liveSink));
+  db.liveDoc = (path, root = 'sandbox') => { const doc = db.live.docs.get(liveKey('sb_studio', root, path)); return doc ? { ...liveWhole(doc), text: doc.text } : null; };
+  db.dropLive = () => db.live.docs.clear();
+  db.releaseEdits = () => { db.live.holdEdits = false; for (const resolve of db.live.held.splice(0)) resolve(); };
+  db.releaseJoins = () => { db.live.holdJoins = false; for (const resolve of db.live.heldJoins.splice(0)) resolve(); };
+  db.releaseSaves = () => { db.live.holdSaves = false; for (const resolve of db.live.heldSaves.splice(0)) resolve(); };
   // Tests change a task as the server would announce it (`touchTask('sb_studio', 12, {…})`).
   // The GitHub App was created in the other tab (SPEC-283): the connection now reads configured.
   db.finishGithubApp = () => { db.me.instance.github_configured = true; };

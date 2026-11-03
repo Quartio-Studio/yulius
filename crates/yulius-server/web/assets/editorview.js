@@ -1,18 +1,20 @@
 // Built-in code editor (SPEC-001 EDT-001..004): a small VS Code-styled editor for quick changes
 // and reviews — explorer, tabs and Monaco (VS Code's editor component) with syntax colors and
 // suggestions (language services for JavaScript/TypeScript, JSON, CSS and HTML; keywords and
-// words of the open files for other popular languages). Each user's view (open files, unsaved
-// text) lives only in this browser tab: nothing is stored on the server or shared. Saving
-// writes the file into the sandbox; a file changed on disk since it was opened (agents edit
-// the same files) is not overwritten silently. The file in front follows the disk: looked at every
-// 2 s while shown, it takes what others wrote when the person has not edited it (SPEC-181). Word wrap (EDT-005) is one switch for every open
-// file — the toolbar button or ⌥Z / Alt+Z as in VS Code — off by default and kept per user in
-// this browser.
+// words of the open files for other popular languages). Each user's view (the open files, the
+// folder, the tab order, the cursor) lives in this browser tab; the text of an open file is shared
+// live with everyone who has it open (SPEC-411, livedoc.js: teammates see each other's keystrokes
+// before anything is saved) and saves itself about a second after typing stops and whenever the
+// person leaves it. The file in front follows the disk: looked at every 2 s while shown, a newer
+// version replaces saved text for everyone (SPEC-181); under unsaved text it is never overwritten
+// silently: every Editor offers Keep mine or Take disk version. Word wrap (EDT-005) is one switch
+// for every open file — the toolbar button or ⌥Z / Alt+Z as in VS Code — off by default and kept
+// per user in this browser.
 //
 // Like the notepads (SPEC-127): the selection is drawn rounded and gliding (editorlayer.js), the
 // people who have the same file open see each other's caret, name and selection in their colour
-// (presence.js, relayed to the sandbox's writers and stored nowhere; no co-editing), and the tabs
-// go in any order (drag, Alt+←/→, the tab's menu).
+// (presence.js, relayed to the sandbox's writers and stored nowhere), and the tabs go in any order
+// (drag, Alt+←/→, the tab's menu).
 
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, openMenu, openModal, field, closableTabKeys, skeleton } from './dom.js';
@@ -23,8 +25,10 @@ import { SAVE_KEYS, WRAP_KEYS, WRAP_ARIA } from './shortcuts.js';
 import { attachEditorDrop } from './filedrop.js';
 import { createSplitter, layoutPrefs } from './splitter.js';
 import { createEditorLayer } from './editorlayer.js';
-import { createPresence, PRESENCE_SWEEP_MS } from './presence.js';
-import { mapPosition, textEdit } from './textlayer.js';
+import { createPresence, PRESENCE_SWEEP_MS, CLIENT_ID } from './presence.js';
+import { textEdit } from './textlayer.js';
+import { createLiveDoc } from './livedoc.js';
+import { apply as applyOp, baseLength, fromChanges, targetLength, toEdits } from './livetext.js';
 import { createTabDrag, movedBy } from './tabdrag.js';
 
 const MONACO_BASE = '/assets/vendor/monaco/vs';
@@ -287,7 +291,7 @@ export function createEditorView(ctx, sandbox, getTask) {
   folder.addEventListener('change', async () => {
     // Taken now: the list read again while the question is asked redraws the picker on `root`.
     const wanted = folder.value;
-    if (tabs.some((t) => t.dirty) && !(await confirmDialog({ title: 'Switch folder?', message: 'Unsaved changes in open files are discarded.', confirmLabel: 'Discard and switch', danger: true }))) {
+    if (!(await leaveFolder())) {
       folder.value = root;
       return;
     }
@@ -305,7 +309,7 @@ export function createEditorView(ctx, sandbox, getTask) {
   const tree = h('div', { class: 'ed-tree', role: 'tree', 'aria-label': 'Files' });
   const tabbar = h('div', { class: 'ed-tabs', role: 'tablist', 'aria-label': 'Open files' });
   const host = h('div', { class: 'ed-host' });
-  const empty = h('div', { class: 'ed-empty' }, h('p', null, 'Open a file from the explorer.'), h('p', { class: 'muted xs' }, `${SAVE_KEYS} saves, ${WRAP_KEYS} wraps long lines. Your open files and unsaved changes stay in this browser tab only.`));
+  const empty = h('div', { class: 'ed-empty' }, h('p', null, 'Open a file from the explorer.'), h('p', { class: 'muted xs' }, `${SAVE_KEYS} saves, ${WRAP_KEYS} wraps long lines. Teammates who open the same file edit it with you; changes save by themselves.`));
 
   // Word wrap: one editor option, so it applies to every open file at once.
   const me = (ctx.store && ctx.store.state.me && ctx.store.state.me.user) || {};
@@ -524,53 +528,35 @@ export function createEditorView(ctx, sandbox, getTask) {
 
   // ---------------------------------------------------------------- presence (SPEC-127 EDT-010)
   // Each open file has its presence; only the one in front is shown, while the Editor is shown,
-  // its sandbox is in front and the page is visible. Offsets travel in the file's text as saved
-  // (`saved`, at `sha`), mapped through the unsaved typing on each side; someone at another `sha`
-  // is hidden until both have the same saved text.
+  // its sandbox is in front and the page is visible. Offsets travel in the shared text at a
+  // revision of its live document (SPEC-411 EDT-021): this tab speaks once its own typing is
+  // confirmed (its text is then the server's at that revision), and places the others through the
+  // steps since and its unconfirmed typing; someone at a revision not reached yet is hidden.
   const myId = me.id || null;
 
-  /**
-   * The edit from the shown text to the saved one (`toSaved`) or back, or `null` while they are the
-   * same (Monaco's version is the saved one's: no whole-text comparison on every key).
-   */
-  function savedEdit(tab, toSaved) {
-    if (tab.model.getAlternativeVersionId() === tab.savedVersion) return null;
-    const text = tab.model.getValue();
-    return toSaved ? textEdit(text, tab.saved) : textEdit(tab.saved, text);
-  }
-  const mapThrough = (offset, edit) => (edit ? mapPosition(offset, edit) : offset);
-
-  /** Marks `tab`'s shown text as its saved one, at `version` of its model. */
-  function savedAs(tab, text, version = tab.model ? tab.model.getAlternativeVersionId() : null) {
-    tab.saved = text;
-    tab.savedVersion = version;
-  }
-
-  /** Where this person is in `tab`'s saved text, or `null` while it is not the file in front. */
+  /** Where this person is in `tab`'s shared text, or `null` while it is not the file in front. */
   function ownSelection(tab) {
     if (!editor || tab !== active || !tab.model || editor.getModel() !== tab.model) return null;
     const selection = editor.getSelection();
     if (!selection) return null;
     const anchor = tab.model.getOffsetAt({ lineNumber: selection.selectionStartLineNumber, column: selection.selectionStartColumn });
     const head = tab.model.getOffsetAt({ lineNumber: selection.positionLineNumber, column: selection.positionColumn });
-    const edit = savedEdit(tab, true);
-    return { anchor: mapThrough(anchor, edit), head: mapThrough(head, edit) };
+    return { anchor, head };
   }
 
-  /** The others in `tab`, drawn when it is the file in front: those at its `sha`, mapped through the typing. */
+  /** The others in `tab`, drawn when it is the file in front, placed in this tab's text. */
   function drawPeers(tab) {
     if (!layer || tab !== active || !tab.model || editor.getModel() !== tab.model) return;
     const list = [];
-    // Nobody else here: nothing to map (typing in a large file stays cheap).
     if (tab.presence.present && tab.presence.peers.size) {
       const length = tab.model.getValueLength();
-      const edit = savedEdit(tab, false);
       for (const [id, peer] of tab.presence.peers) {
-        if (peer.revision !== tab.sha) continue;
-        const clamp = (offset) => Math.min(mapThrough(offset, edit), length);
-        const anchor = clamp(peer.selection.anchor);
-        const head = clamp(peer.selection.head);
-        list.push({ id, colourOf: peer.userId, name: peer.name, start: Math.min(anchor, head), end: Math.max(anchor, head), head });
+        const at = peer.revision;
+        if (!at || at.session !== tab.live.session) continue;
+        const anchor = tab.live.place(peer.selection.anchor, at.revision);
+        const head = tab.live.place(peer.selection.head, at.revision);
+        if (anchor == null || head == null) continue;
+        list.push({ id, colourOf: peer.userId, name: peer.name, start: Math.min(anchor, head, length), end: Math.min(Math.max(anchor, head), length), head: Math.min(head, length) });
       }
     }
     layer.setPeers(list);
@@ -578,8 +564,14 @@ export function createEditorView(ctx, sandbox, getTask) {
 
   function withPresence(tab) {
     tab.presence = createPresence({
-      put: ({ revision, ...body }, options) => api.put(`/api/sandboxes/${sid}/files/presence`, { root: tab.root, path: tab.path, sha256: revision, ...body }, options),
-      state: ({ leaving }) => ({ revision: tab.sha || '', selection: leaving ? null : ownSelection(tab) }),
+      put: ({ revision, ...body }, options) => api.put(`/api/sandboxes/${sid}/files/presence`, { root: tab.root, path: tab.path, sha256: tab.live.state.sha || '', session: revision.session, revision: revision.revision, ...body }, options),
+      // Placed in the server's text: not while this tab's own typing is on its way (a leave goes).
+      state: ({ leaving }) => {
+        if (!tab.live.session) return null;
+        const revision = { session: tab.live.session, revision: tab.live.revision };
+        if (leaving) return { revision, selection: null };
+        return tab.live.synced ? { revision, selection: ownSelection(tab) } : null;
+      },
       draw: () => drawPeers(tab),
       myId,
     });
@@ -592,7 +584,7 @@ export function createEditorView(ctx, sandbox, getTask) {
     for (const tab of tabs) tab.presence.setShown(visible && tab === active && Boolean(tab.model), { going });
   }
 
-  /** The text or its saved version moved: redraw the others and tell them. */
+  /** The text moved: redraw the others and tell them. */
   function presenceMoved(tab) {
     if (!tab || !tab.presence) return;
     drawPeers(tab);
@@ -602,19 +594,54 @@ export function createEditorView(ctx, sandbox, getTask) {
   const offs = [
     ctx.store.on('file-presence', (event) => {
       if (event.sandbox_id !== sandbox.id) return;
-      // A file's saved version is its `sha256`, the revision its offsets are in.
-      for (const tab of tabs) if (tab.root === event.root && tab.path === event.path) tab.presence.peer({ ...event, revision: event.sha256 });
+      // Offsets are in the live document's text at its revision.
+      const revision = event.session ? { session: event.session, revision: event.revision } : null;
+      for (const tab of tabs) if (tab.root === event.root && tab.path === event.path) tab.presence.peer({ ...event, revision });
     }),
-    ctx.store.on('resync', () => { for (const tab of tabs) tab.presence.lost(); }),
+    ctx.store.on('resync', () => {
+      for (const tab of tabs) tab.presence.lost();
+      for (const tab of [...tabs, ...closing]) tab.live.lost();
+    }),
   ];
+  // Closed files whose typing is still being confirmed and saved (`close()`): they hear their
+  // steps until then, also after this view is gone.
+  const closing = new Set();
+  const offLive = ctx.store.on('file-live', (event) => {
+    if (event.sandbox_id !== sandbox.id) return;
+    for (const tab of [...tabs, ...closing]) if (tab.root === event.root && tab.path === event.path) tab.live.event(event);
+  });
+  /** `tab` leaves the Editor: its text stays in memory until its typing is confirmed and saved. */
+  function retire(tab) {
+    tab.presence.destroy({ going: false });
+    if (tab.model) { tab.text = tab.model.getValue(); tab.model.dispose(); tab.model = null; }
+    closing.add(tab);
+    tab.live.close().then(() => {
+      tab.live.destroy();
+      closing.delete(tab);
+      if (destroyed && !closing.size) offLive();
+    });
+  }
+  // Leaving the page while typing is still on its way would lose it: the browser asks first.
+  const onBeforeUnload = (event) => {
+    if (![...tabs, ...closing].some((tab) => tab.live.busy)) return;
+    event.preventDefault();
+    event.returnValue = '';
+  };
+  window.addEventListener('beforeunload', onBeforeUnload);
   // People who went quiet fade out; the file in front says it is still there now and then.
   const sweep = setInterval(() => { for (const tab of tabs) tab.presence.tick(); }, PRESENCE_SWEEP_MS);
-  // A hidden page has left its file for the others (with a request that outlives a closing page).
+  // A hidden page has left its file for the others (with a request that outlives a closing page),
+  // and its text is saved.
   const onVisibility = () => {
-    syncPresence({ going: document.visibilityState === 'hidden' });
-    if (document.visibilityState !== 'hidden' && shown && !suspended && active && active.model && !active.saving) refreshFromDisk(active);
+    const hidden = document.visibilityState === 'hidden';
+    syncPresence({ going: hidden });
+    if (hidden) flushAll({ keepalive: true });
+    else if (shown && !suspended && active && active.model) refreshFromDisk(active);
   };
-  const onPageHide = () => { for (const tab of tabs) tab.presence.setShown(false, { going: true }); };
+  const onPageHide = () => {
+    for (const tab of tabs) tab.presence.setShown(false, { going: true });
+    flushAll({ keepalive: true });
+  };
   document.addEventListener('visibilitychange', onVisibility);
   window.addEventListener('pagehide', onPageHide);
 
@@ -664,6 +691,8 @@ export function createEditorView(ctx, sandbox, getTask) {
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => { if (active) save(active); });
       editor.onDidChangeCursorPosition(() => renderStatus());
       editor.onDidChangeCursorSelection(() => { if (active && active.presence) active.presence.soon(); });
+      // Leaving the text saves it (EDT-019).
+      editor.onDidBlurEditorText(() => { if (active && active.live) active.live.flush(); });
     } catch (error) {
       // Half set up: gone, so the next file's try makes the one editor of this host again.
       if (layer) layer.destroy();
@@ -690,6 +719,31 @@ export function createEditorView(ctx, sandbox, getTask) {
   /** Why `file`, read from `path`, does not open in the editor. */
   const notEditable = (path, file) => (file.too_large ? `${path} is too large for the editor (${Math.round(file.size / 1024)} KB).` : `${path} is a binary file.`);
 
+  /** Saved, or its typing not confirmed or written yet, or a conflict waiting for a choice. */
+  const dirtyOf = (tab) => !tab.live.saved || tab.live.state.diskSha != null;
+
+  /** `tab`'s shared text (SPEC-411): steps of teammates and of the disk come in, typing goes out. */
+  function withLive(tab) {
+    tab.live = createLiveDoc({
+      api,
+      sid,
+      root: tab.root,
+      path: tab.path,
+      client: CLIENT_ID,
+      user: myId,
+      canWrite: writable,
+      getText: () => (tab.model ? tab.model.getValue() : tab.text),
+      onRemote: (op) => applyRemote(tab, op),
+      onReset: (text, eol) => {
+        if (tab.model) { replaceText(tab, text); setEol(tab, eol); } else tab.text = text;
+        presenceMoved(tab);
+      },
+      onState: () => { renderTabs(); if (tab === active) renderStatus(); },
+      onSynced: () => { if (tab.presence) tab.presence.soon(); },
+    });
+    return tab;
+  }
+
   async function loadFile(path) {
     // Another folder chosen meanwhile: this file is not one of its files, and is not shown.
     const from = root;
@@ -706,40 +760,84 @@ export function createEditorView(ctx, sandbox, getTask) {
       toast(notEditable(path, file), { kind: 'info' });
       return;
     }
-    const tab = withPresence({ path, root, model: null, sha: file.sha256, saved: file.content, dirty: false, viewState: null, saving: false });
+    const tab = withLive({ path, root, model: null, text: file.content, viewState: null });
+    try {
+      await tab.live.join();
+    } catch (error) {
+      tab.live.destroy();
+      errorToast(error, `Couldn’t open ${path}`);
+      return;
+    }
+    if (root !== from || tabs.some((t) => t.path === path)) { tab.live.destroy(); return; }
+    withPresence(tab);
     tabs.push(tab);
     // Opened while another sandbox came to the front: it shows when this one is back.
-    if (suspended) { tab.text = file.content; active = tab; renderTabs(); return; }
-    attach(tab, file.content);
+    if (suspended) { active = tab; renderTabs(); return; }
+    attach(tab, tab.text);
+    tab.text = null;
     activate(tab);
   }
 
-  /** The tab's text, from its model, or kept while suspended. */
-  const textOf = (tab) => (tab.model ? tab.model.getValue() : tab.text);
+  /** `tab`'s model uses the document's line ending, as every other Editor's does. */
+  function setEol(tab, eol) {
+    if (tab.model.getEOL() === eol) return;
+    tab.ignoreChange = true;
+    try {
+      tab.model.setEOL(eol === '\r\n' ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+    } finally {
+      tab.ignoreChange = false;
+    }
+  }
 
-  /** Gives `tab` a Monaco model holding `text`; the person's edits mark it modified. */
+  /** Gives `tab` a Monaco model holding `text`; the person's edits go to the shared text. */
   function attach(tab, text) {
     tab.model = monaco.editor.createModel(text, languageFor(monaco, tab.path));
-    // Monaco keeps one kind of line end: the saved text is compared in its terms.
-    // A new model counts its versions afresh: unsaved text is compared in full.
-    if (tab.saved === text) savedAs(tab, tab.model.getValue());
-    else tab.savedVersion = null;
-    tab.model.onDidChangeContent(() => {
+    setEol(tab, tab.live.state.eol);
+    tab.model.onDidChangeContent((event) => {
+      if (!tab.ignoreChange) {
+        const op = fromChanges(event.changes, tab.model.getValueLength());
+        // Monaco changed more than it said (a line ending): the shared text is taken again.
+        if (targetLength(op) !== tab.model.getValueLength()) tab.live.resync();
+        else tab.live.local(op);
+      }
+      // After the typing joined what is unconfirmed: the others are placed through it.
       presenceMoved(tab);
-      if (tab.ignoreChange) return;
-      if (!tab.dirty) { tab.dirty = true; renderTabs(); renderStatus(); }
     });
+  }
+
+  /** A teammate's (or the disk's) step, transformed past this tab's typing, into `tab`'s text. */
+  function applyRemote(tab, op) {
+    if (!tab.model) { tab.text = applyOp(tab.text, op); return; }
+    const model = tab.model;
+    const edits = toEdits(op).map((edit) => {
+      const from = model.getPositionAt(edit.start);
+      const to = model.getPositionAt(edit.end);
+      return { range: new monaco.Range(from.lineNumber, from.column, to.lineNumber, to.column), text: edit.text };
+    });
+    const expected = model.getValueLength() + targetLength(op) - baseLength(op);
+    tab.ignoreChange = true;
+    try {
+      // Its own undo step, as a reload from disk is (SPEC-181).
+      model.pushStackElement();
+      model.pushEditOperations(null, edits, () => null);
+      model.pushStackElement();
+    } finally {
+      tab.ignoreChange = false;
+    }
+    // Monaco gave the text its own line ending: out of step, the shared text is taken again.
+    if (model.getValueLength() !== expected) tab.live.resync();
+    presenceMoved(tab);
   }
 
   /**
    * Opens `path` of folder `root` with the cursor at `line`/`col` (a terminal's file link, UI-018,
-   * F 2026-10-10). Another folder is opened first; unsaved changes are asked about, as when the
-   * folder is switched by hand.
+   * F 2026-10-10). Another folder is opened first; a conflict waiting for a choice is asked about,
+   * as when the folder is switched by hand.
    */
   async function openAt({ root: wanted = 'sandbox', path, line = null, col = null }) {
     if (!path) return;
     if (wanted !== root) {
-      if (tabs.some((t) => t.dirty) && !(await confirmDialog({ title: 'Switch folder?', message: 'Unsaved changes in open files are discarded.', confirmLabel: 'Discard and switch', danger: true }))) return;
+      if (!(await leaveFolder())) return;
       root = wanted;
       folderOptions();
       closeAll();
@@ -761,6 +859,7 @@ export function createEditorView(ctx, sandbox, getTask) {
   function activate(tab, { focus = true } = {}) {
     // Suspended: it shows when the sandbox is back (resume), with the cursor it had.
     if (suspended) { active = tab; renderTabs(); return; }
+    if (active && active !== tab && active.live) active.live.flush();
     if (active && active.model && editor) active.viewState = editor.saveViewState();
     active = tab;
     editor.setModel(tab.model);
@@ -776,73 +875,43 @@ export function createEditorView(ctx, sandbox, getTask) {
   }
 
   /**
-   * Picks up what others wrote into `tab`'s file (teammates, agents, shells; SPEC-181 EDT-015).
-   * Unedited text takes the disk's version as one undoable edit of the part that changed, so the
-   * cursor and the teammates' marks stay with their text; edited text is kept and the status bar
-   * says the disk moved on. The newest look wins: a save or a later look makes an earlier one moot.
-   * `reload`: the person chose "Reload from disk": the whole file is asked for and replaces the
-   * text whatever its version; a file it cannot load keeps the text modified and says why (#571).
+   * Looks at `tab`'s file on disk (SPEC-181 EDT-015) and has the server take a newer version
+   * (SPEC-411 EDT-020): saved text becomes the disk's for everyone, unsaved text is kept as a
+   * conflict. The newest look wins.
    */
-  async function refreshFromDisk(tab, { reload = false } = {}) {
-    // A look answered with the text from before a save would put that text back as saved.
-    if (tab.saving) return;
-    // A reload on its way is the person's choice: a newer look takes its place, as a reload.
-    reload = reload || Boolean(tab.reloading);
+  async function refreshFromDisk(tab) {
     const look = (tab.look || 0) + 1;
     tab.look = look;
     tab.looking = true;
-    tab.reloading = reload;
     try {
-      // Unchanged since what this tab knows (its saved version, or the disk's newer one) is a 204.
-      const known = reload ? null : (tab.dirty && tab.diskSha) || tab.sha;
-      const file = await api.get(`/api/sandboxes/${sid}/files/content?${query(tab.path)}${known ? `&known=${known}` : ''}`);
-      if (tab.look !== look || !tabs.includes(tab) || tab.saving) return;
-      if (!file || file.content == null) {
-        // Unchanged, or no longer text: the text stays.
-        if (reload) toast(`${notEditable(tab.path, file)} Your text is kept, unsaved.`, { kind: 'info' });
-        return;
+      // What the server knows of the disk: the conflict's version, else the text's.
+      const { sha, diskSha } = tab.live.state;
+      const known = diskSha ?? sha;
+      let moved = true;
+      let seen = null;
+      try {
+        const file = await api.get(`/api/sandboxes/${sid}/files/content?${query(tab.path)}${known ? `&known=${known}` : ''}`);
+        seen = file ? file.sha256 : null;
+        // A version the server refused to take (no longer text) is not asked for again.
+        moved = Boolean(file) && file.sha256 !== known && file.sha256 !== tab.refusedSha;
+      } catch (error) {
+        // Deleted: the server keeps the text and says so; unreachable: the next look.
+        moved = error.status === 404 && diskSha !== '';
       }
-      if (!reload && file.sha256 === tab.sha) { setDiskSha(tab, null); return; }
-      if (!reload && tab.dirty) { setDiskSha(tab, file.sha256); return; }
-      setDiskSha(tab, null);
-      if (!tab.model) {
-        // Suspended meanwhile (another sandbox in front): the kept text takes the disk's version.
-        tab.text = file.content;
-        savedAs(tab, file.content, null);
-        tab.sha = file.sha256;
-        markSaved(tab);
-        return;
+      if (moved && tab.look === look && tabs.includes(tab)) {
+        try {
+          await tab.live.disk();
+        } catch (error) {
+          if (error.status !== 422) throw error;
+          tab.refusedSha = seen;
+          toast(`${tab.path} on disk is no longer text the editor opens; the text here is kept.`, { kind: 'info' });
+        }
       }
-      replaceText(tab, file.content);
-      tab.sha = file.sha256;
-      savedAs(tab, tab.model.getValue());
-      markSaved(tab);
-      presenceMoved(tab);
-    } catch (error) {
-      // Deleted or unreachable: the text stays, the next save reports it. A reload says so now,
-      // unless a newer look made it moot.
-      if (reload && tab.look === look && tabs.includes(tab)) {
-        if (error.status === 404) toast(`The file was deleted: your text in ${tab.path} is kept, unsaved.`, { kind: 'info' });
-        else errorToast(error, `Couldn’t reload ${tab.path}`);
-      }
+    } catch {
+      // Unreachable or refused: the next look tries again.
     } finally {
-      if (tab.look === look) { tab.looking = false; tab.reloading = false; }
+      if (tab.look === look) tab.looking = false;
     }
-  }
-
-  /** `tab` holds the disk's text: no longer modified, as its tab and the status bar say. */
-  function markSaved(tab) {
-    if (!tab.dirty) return;
-    tab.dirty = false;
-    renderTabs();
-    renderStatus();
-  }
-
-  /** The disk's version when it differs from what the person edits (`null`: the same). */
-  function setDiskSha(tab, sha) {
-    if (tab.diskSha === sha) return;
-    tab.diskSha = sha;
-    if (tab === active) renderStatus();
   }
 
   /**
@@ -874,25 +943,41 @@ export function createEditorView(ctx, sandbox, getTask) {
   }
 
   // The file in front follows the disk while the person can see it: the timer waits for its last
-  // look, the newest look wins, and none starts while the file saves. Other tabs look when they
-  // come to the front (activate).
+  // look and the newest look wins. Other tabs look when they come to the front (activate).
   const looker = setInterval(() => {
     if (!shown || suspended || document.visibilityState === 'hidden') return;
-    if (active && active.model && !active.looking && !active.saving) refreshFromDisk(active);
+    if (active && active.model && !active.looking) refreshFromDisk(active);
   }, LOOK_MS);
+
+  /** Saves every open file now (EDT-019); `keepalive` as the page goes, closed ones still saving too. */
+  function flushAll({ keepalive = false } = {}) {
+    for (const tab of keepalive ? [...tabs, ...closing] : tabs) tab.live.flush({ keepalive });
+  }
+
+  /** Open files that changed on disk under unsaved text, waiting for a choice. */
+  const conflicts = () => tabs.filter((tab) => tab.live.state.diskSha != null && !tab.live.saved);
+
+  /** Leaving the folder: everything is saved; a file waiting for a choice is asked about. */
+  async function leaveFolder() {
+    flushAll();
+    if (!conflicts().length) return true;
+    return confirmDialog({ title: 'Switch folder?', message: 'A file changed on disk while its text was being edited. Its text stays unsaved until someone keeps it or takes the disk’s version.', confirmLabel: 'Switch anyway', danger: true });
+  }
 
   /**
    * `fromKeyboard`: closed with Delete/Backspace on the strip — focus stays on the tabs instead
    * of moving into the next file, where the next press would delete text (#80).
    */
   async function closeTab(tab, force = false, { fromKeyboard = false } = {}) {
-    if (tab.dirty && !force && !(await confirmDialog({ title: `Close ${tab.path.split('/').pop()}?`, message: 'Your unsaved changes are lost.', confirmLabel: 'Close without saving', danger: true }))) return;
+    if (!force) tab.live.flush();
+    if (!force && conflicts().includes(tab) && !(await confirmDialog({ title: `Close ${tab.path.split('/').pop()}?`, message: 'It changed on disk while its text was being edited. Its text stays unsaved until someone keeps it or takes the disk’s version.', confirmLabel: 'Close', danger: true }))) return;
     const index = tabs.indexOf(tab);
     if (index < 0) return;
     tabs.splice(index, 1);
-    tab.presence.destroy({ going: false });
-    if (tab.model) tab.model.dispose();
-    if (active === tab) {
+    const wasActive = active === tab;
+    if (wasActive && editor) editor.setModel(null);
+    retire(tab);
+    if (wasActive) {
       active = null;
       const next = tabs[index] || tabs[index - 1];
       if (next && suspended) active = next; // shown by resume()
@@ -905,71 +990,56 @@ export function createEditorView(ctx, sandbox, getTask) {
   }
 
   function closeAll() {
-    for (const tab of tabs) tab.presence.destroy({ going: false });
-    for (const tab of tabs) if (tab.model) tab.model.dispose();
+    if (editor) editor.setModel(null);
+    for (const tab of tabs) retire(tab);
     tabs.length = 0;
     active = null;
-    if (editor) editor.setModel(null);
     host.hidden = true;
     empty.hidden = false;
     renderTabs();
     renderStatus();
   }
 
-  async function save(tab, overwrite = false) {
-    if (tab.saving) return;
+  /** Ctrl+S / ⌘S: saves now; a file that changed on disk asks which version stays. */
+  async function save(tab) {
     // Another person's worktree (SPEC-340 EWT-003): nothing is sent for the server to refuse.
     if (!writable()) {
-      if (tab.dirty) toast(`${readOnlyText()}: your text in ${tab.path} is kept, unsaved.`, { kind: 'info' });
+      if (dirtyOf(tab)) toast(`${readOnlyText()}: the text of ${tab.path} is not saved here.`, { kind: 'info' });
       return;
     }
-    tab.saving = true;
-    tab.look = (tab.look || 0) + 1; // a look in flight may predate this save
-    tab.looking = false;
-    tab.reloading = false;
-    renderStatus();
+    if (tab.live.state.diskSha != null) { await resolveConflict(tab); return; }
     try {
-      let baseSha = tab.sha;
-      if (overwrite) {
-        const current = await api.get(`/api/sandboxes/${sid}/files/content?${query(tab.path)}`).catch(() => null);
-        baseSha = current ? current.sha256 : null;
-      }
-      const content = textOf(tab);
-      const model = tab.model;
-      const version = model ? model.getAlternativeVersionId() : null;
-      const written = await api.put(`/api/sandboxes/${sid}/files/content`, { root, path: tab.path, content, base_sha256: baseSha });
-      tab.sha = written.sha256;
-      tab.diskSha = null;
-      // The model may have gone meanwhile (another sandbox in front): then compared in full.
-      savedAs(tab, content, model && tab.model === model ? version : null);
-      tab.dirty = false;
-      presenceMoved(tab);
-      toast(`Saved ${tab.path}`, { kind: 'ok' });
+      await tab.live.flush();
+      if (tab.live.saved) toast(`Saved ${tab.path}`, { kind: 'ok' });
     } catch (error) {
-      if (error.status === 409) {
-        const choice = await openModal({
-          title: `${tab.path} changed on disk`,
-          body: h('p', { class: 'text-2' }, 'Someone (or an agent) changed this file after you opened it. Overwrite it with your version, or reload the version on disk and lose your changes.'),
-          actions: [
-            { label: 'Cancel', value: 'cancel' },
-            { label: 'Reload from disk', value: 'reload' },
-            { label: 'Overwrite', kind: 'primary', value: 'overwrite' },
-          ],
-        }).result;
-        tab.saving = false;
-        // Awaited: until the overwrite is written, the file is saving and no look starts.
-        if (choice === 'overwrite') return await save(tab, true);
-        // The modified mark goes only once the disk's text is in the editor (#571).
-        if (choice === 'reload') await refreshFromDisk(tab, { reload: true });
-      } else {
-        errorToast(error, `Couldn’t save ${tab.path}`);
-      }
-    } finally {
-      tab.saving = false;
-      renderTabs();
-      renderStatus();
+      errorToast(error, `Couldn’t save ${tab.path}`);
     }
-    return undefined;
+  }
+
+  /** The choice for a file that changed on disk under unsaved text (EDT-020). */
+  async function resolveConflict(tab) {
+    const deleted = tab.live.state.diskSha === '';
+    const choice = await openModal({
+      title: deleted ? `${tab.path} was deleted on disk` : `${tab.path} changed on disk`,
+      body: h('p', { class: 'text-2' }, deleted
+        ? 'Someone (or an agent) deleted this file while its text was being edited. Keep the text to write the file again.'
+        : 'Someone (or an agent) changed this file while its text was being edited. Keep this text over the disk’s, or take the disk’s version for everyone.'),
+      actions: [
+        { label: 'Cancel', value: 'cancel' },
+        ...(deleted ? [] : [{ label: 'Take disk version', value: 'disk' }]),
+        { label: 'Keep mine', kind: 'primary', value: 'mine' },
+      ],
+    }).result;
+    if (choice === 'mine') await keepMine(tab);
+    else if (choice === 'disk') await takeDisk(tab);
+  }
+
+  async function keepMine(tab) {
+    try { await tab.live.save({ force: true }); } catch (error) { errorToast(error, `Couldn’t save ${tab.path}`); }
+  }
+
+  async function takeDisk(tab) {
+    try { await tab.live.disk({ force: true }); } catch (error) { errorToast(error, `Couldn’t take the disk’s version of ${tab.path}`); }
   }
 
   /** Puts the open files' tabs in `order` (paths); answers the strip's tabs as drawn again. */
@@ -998,9 +1068,9 @@ export function createEditorView(ctx, sandbox, getTask) {
       const name = tab.path.split('/').pop();
       const button = h('div', { class: ['ed-tab', tab === active && 'active'], role: 'tab', tabindex: tab === active ? '0' : '-1', dataset: { path: tab.path }, title: tab.path, 'aria-selected': String(tab === active), 'aria-keyshortcuts': 'Delete Backspace Alt+ArrowLeft Alt+ArrowRight' },
         h('span', { class: 'ed-tab-name' }, name),
-        tab.dirty ? h('span', { class: 'sr-only' }, ', modified') : null,
+        dirtyOf(tab) ? h('span', { class: 'sr-only' }, ', modified') : null,
         // Not a button: see closableTabKeys. Delete or Backspace closes the focused tab.
-        h('span', { class: 'ed-tab-close', 'aria-hidden': 'true', title: `Close ${name}`, onClick: (event) => { event.stopPropagation(); closeTab(tab); } }, tab.dirty ? '●' : '×'));
+        h('span', { class: 'ed-tab-close', 'aria-hidden': 'true', title: `Close ${name}`, onClick: (event) => { event.stopPropagation(); closeTab(tab); } }, dirtyOf(tab) ? '●' : '×'));
       // A tab closed while pressed (its strip redraws after the click) chooses nothing.
       button.addEventListener('click', () => { if (!tabDrag.clickConsumed() && tabs.includes(tab)) activate(tab); });
       button.addEventListener('auxclick', (event) => { if (event.button === 1) closeTab(tab); });
@@ -1047,10 +1117,15 @@ export function createEditorView(ctx, sandbox, getTask) {
     if (!active || !editor || !active.model) { setChildren(status, h('span', { class: 'muted' }, folderText())); return; }
     const position = editor.getPosition();
     const readOnly = readOnlyText();
+    const live = active.live;
+    const diskSha = live.state.diskSha;
+    const conflict = diskSha == null || live.saved ? null : diskSha === '' ? 'deleted' : 'changed';
     setChildren(status,
       h('span', null, active.path),
-      h('span', { class: 'muted' }, readOnly || (active.saving ? 'Saving…' : active.dirty ? 'Modified' : 'Saved')),
-      active.dirty && active.diskSha ? h('span', { class: 'ed-disk-changed', title: 'Someone (or an agent) changed this file on disk. Saving asks whether to overwrite it or reload.' }, 'Changed on disk') : null,
+      h('span', { class: 'muted ed-saved' }, readOnly || (live.saving ? 'Saving…' : live.saved ? 'Saved' : 'Unsaved')),
+      conflict ? h('span', { class: 'ed-disk-changed', title: 'Someone (or an agent) changed this file on disk while its text was being edited. Nothing is saved until someone chooses.' }, conflict === 'deleted' ? 'Deleted on disk' : 'Changed on disk') : null,
+      conflict && writable() ? h('button', { type: 'button', class: 'link-btn ed-keep-mine', onClick: () => keepMine(active) }, 'Keep mine') : null,
+      conflict === 'changed' && writable() ? h('button', { type: 'button', class: 'link-btn ed-take-disk', onClick: () => takeDisk(active) }, 'Take disk version') : null,
       h('span', { class: 'muted' }, position ? `Ln ${position.lineNumber}, Col ${position.column}` : ''),
       h('span', { class: 'muted' }, active.model.getLanguageId()),
       LANGUAGE_SERVICES.has(active.model.getLanguageId()) ? h('span', { class: 'muted', title: 'Type-aware suggestions run in the browser' }, 'IntelliSense') : null);
@@ -1066,7 +1141,7 @@ export function createEditorView(ctx, sandbox, getTask) {
       shown = true;
       syncPresence();
       // Back in front: what was written meanwhile shows at once, not at the next look.
-      if (active && active.model && !suspended && !active.saving) refreshFromDisk(active);
+      if (active && active.model && !suspended) refreshFromDisk(active);
       if (!started) { started = true; if (!(opts && opts.file && opts.file.root !== root)) loadDir(''); }
       // Worktrees come and go with tasks: read them each time the Editor comes to the front.
       loadRoots();
@@ -1077,16 +1152,18 @@ export function createEditorView(ctx, sandbox, getTask) {
     hide() {
       shown = false;
       syncPresence();
+      flushAll();
     },
     taskChanged() { folderOptions(); loadRoots(); },
     /** Open files with unsaved changes: the panel host never drops this view for its bound. */
-    get unsaved() { return tabs.some((tab) => tab.dirty); },
+    get unsaved() { return tabs.some(dirtyOf); },
     // Another sandbox in front (SPEC-113 KST-006): the Monaco models go, so this sandbox's files feed
     // no suggestions there; each open file keeps its text, unsaved mark and cursor for resume().
     suspend() {
       if (suspended) return;
       suspended = true;
       syncPresence();
+      flushAll();
       if (active && active.model && editor) active.viewState = editor.saveViewState();
       if (editor) editor.setModel(null);
       for (const tab of tabs) {
@@ -1113,7 +1190,10 @@ export function createEditorView(ctx, sandbox, getTask) {
     destroy() {
       destroyed = true;
       tabDrag.cancel();
-      for (const tab of tabs) tab.presence.destroy({ going: false });
+      if (editor) editor.setModel(null);
+      for (const tab of tabs) retire(tab);
+      if (!closing.size) offLive();
+      window.removeEventListener('beforeunload', onBeforeUnload);
       clearInterval(sweep);
       clearInterval(looker);
       offs.forEach((off) => off());
