@@ -105,7 +105,11 @@ The e2e suite (`e2e/`, test-only) shares that CPU with the agents when an agent 
 them, so a page's burst of module requests waits for a busy server instead of having its SYNs
 dropped; the runner's workers stay bounded by the CPU budget
 ([SPEC-148](../.ai/specs/SPEC-148-fix-354-349-356-394-the-e2e-suite-holds.md),
-[decision 0122](decisions/0122-the-e2e-server-keeps-up-with-a-page-under-load.md)).
+[decision 0122](decisions/0122-the-e2e-server-keeps-up-with-a-page-under-load.md)). Three waits
+have their own named budgets, each for one first-load condition: a test's first look at a page
+(`FIRST_LOAD_MS`, [decision 0262](decisions/0262-an-e2e-tests-first-look-at-a-page-has-a-first-load-budget.md)),
+a task terminal's first screen (`TERMINAL_SHOW_MS`, 0251) and Monaco's cold load
+(`MONACO_LOAD_MS`, 0122); every other wait keeps the runner's budgets, with no retries.
 
 ```mermaid
 flowchart LR

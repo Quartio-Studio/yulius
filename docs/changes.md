@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
+- The e2e suite gives a test's first look at a page its own budget: `firstShown(locator, text?)`
+  waits within `FIRST_LOAD_MS` (30 s), and `app.open`/`browser.reload` wait as long for the mock's
+  install, while every later wait keeps its budget and `retries: 0` stays (SPEC-412, task #394,
+  ADR-0262, the person's decision on #354). The tests #354, #525 and #510 list use it, and the
+  races behind some of their failures are fixed: the rail test reads the Browser item without the
+  mock's sign-in request (`browserask=0`), the Tasks list pause test without the ambient regroup
+  under its pointer (`ambient=0`), terminal tests wait for the terminal's first screen, and the
+  notes tests no longer wait out the pad's doubled back-off or let its own retry settle a lost save
+  first. Fixes #354, #525 and #510.
 - Test fixtures under `crates/yulius/tests` no longer commit credentials in a provider's shape.
   26 synthetic values with real prefixes (`sk-ant-oat01-`, `sk_test_`, `sk_live_`) are now put
   together from the prefix and a body, with the same value. `fixture_hygiene` fails on any
