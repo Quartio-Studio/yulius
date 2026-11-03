@@ -969,6 +969,22 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     ));
     let guarded = w.h.app.onboarding_status(&stored).await?;
     assert!(guarded.warnings.is_empty(), "{guarded:?}");
+    // #834 (SPEC-394 VOD-002): a check that failed inside Yulius says so, without the internal
+    // detail, which goes to the log only.
+    *w.github
+        .fail_branch_guard
+        .lock()
+        .map_err(|e| e.to_string())? = Some(yulius_app::error::AppError::Internal(
+        "database /var/lib/yulius/yulius.db is locked".into(),
+    ));
+    let failed = w.h.app.onboarding_status(&stored).await?;
+    assert_eq!(failed.warnings.len(), 1, "{failed:?}");
+    assert!(
+        failed.warnings[0].contains("could not check whether agents can write")
+            && failed.warnings[0].contains("(internal error)")
+            && !failed.warnings[0].contains("yulius.db"),
+        "{failed:?}"
+    );
     assert_eq!(result.body["sandbox_url"], "https://yulius.test/s/shop");
     assert_eq!(
         result.body["sessions_url"],

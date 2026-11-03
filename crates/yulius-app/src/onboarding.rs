@@ -17,8 +17,12 @@
 
 use std::fs::{self, File};
 use std::io::Read;
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use nix::fcntl::OFlag;
+use nix::sys::stat::Mode;
 
 use yulius_contracts::api::sandboxes::{OnboardingPlan, Profile, Sandbox};
 use yulius_contracts::import::{OnboardingStatus, OnboardingTask};
@@ -252,50 +256,48 @@ impl OnboardingState {
     }
 }
 
-/// `root/rel` when it is a regular file (not a link) whose parent resolves inside `root`.
-fn regular_file_inside(root: &Path, canonical_root: &Path, rel: &str) -> Option<PathBuf> {
-    let path = root.join(rel);
-    let meta = fs::symlink_metadata(&path).ok()?;
-    if !meta.is_file() {
-        return None;
-    }
-    let parent = fs::canonicalize(path.parent()?).ok()?;
-    parent.starts_with(canonical_root).then_some(path)
+/// `root/rel` (`root` canonical) opened as a folder (`O_DIRECTORY`): a link at its end is
+/// refused, and the handle is used only when its real path is inside `root` and out of `.git`.
+/// The checkout belongs to contained agents, which can swap any path for a link at any moment, so
+/// the decision is made on the handle, never on the path (#744, ADR-0174). Links inside the root
+/// on the way are followed, as before.
+fn directory_inside(root: &Path, rel: &str) -> Option<OwnedFd> {
+    crate::files::open_inside(root, &root.join(rel), OFlag::O_RDONLY | OFlag::O_DIRECTORY).ok()
 }
 
-/// `root/rel` when it is a real directory (not a link) resolving inside `root`.
-fn directory_inside(root: &Path, canonical_root: &Path, rel: &str) -> Option<PathBuf> {
+/// The text of the regular file `root/rel` (`root` canonical), opened like [`directory_inside`] (a
+/// link at its end refused, the real path inside `root`, without waiting on a FIFO), at most
+/// `max` bytes read through that handle.
+fn read_inside(root: &Path, rel: &str, max: u64) -> Option<String> {
     let path = root.join(rel);
-    let meta = fs::symlink_metadata(&path).ok()?;
-    if !meta.is_dir() {
-        return None;
-    }
-    let resolved = fs::canonicalize(&path).ok()?;
-    resolved.starts_with(canonical_root).then_some(path)
+    crate::race::reached(crate::race::Point::CheckoutRead, &path);
+    let fd = crate::files::open_inside(root, &path, OFlag::O_RDONLY).ok()?;
+    read_bounded(File::from(fd), max)
 }
 
-fn read_bounded(path: &Path, max: u64) -> Option<String> {
+/// At most `max` bytes of `file` when it is a regular file.
+fn read_bounded(file: File, max: u64) -> Option<String> {
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
     let mut bytes = Vec::new();
-    File::open(path)
-        .ok()?
-        .take(max)
-        .read_to_end(&mut bytes)
-        .ok()?;
+    file.take(max).read_to_end(&mut bytes).ok()?;
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn directory_files(dir: &Path) -> Vec<(String, String)> {
-    let Ok(entries) = fs::read_dir(dir) else {
+/// The regular files of the folder `dir` (by name, links, other kinds and non-UTF-8 names left
+/// out), each opened from the folder's handle with `O_NOFOLLOW | O_NONBLOCK`.
+fn directory_files(dir: &OwnedFd) -> Vec<(String, String)> {
+    let Ok(names) = crate::files::names_in(dir, MAX_DECISION_FILES) else {
         return Vec::new();
     };
-    entries
-        .filter_map(Result::ok)
-        .take(MAX_DECISION_FILES)
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
-        .filter_map(|entry| {
-            let name = entry.file_name().to_str()?.to_owned();
-            let contents = read_bounded(&entry.path(), MAX_DOC_BYTES)?;
-            Some((name, contents))
+    let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let name = name.into_string().ok()?;
+            let fd = nix::fcntl::openat(dir, name.as_str(), flags, Mode::empty()).ok()?;
+            Some((name, read_bounded(File::from(fd), MAX_DOC_BYTES)?))
         })
         .collect()
 }
@@ -307,32 +309,54 @@ enum OwnedDecisions {
 }
 
 /// Validates the documentation format of a checkout (SPEC-001 §7.2) and returns the report
-/// plus the raw `yulius.toml`. Files are read at the layout's paths, bounded in size; symbolic
-/// links and paths resolving outside `root` count as missing.
+/// plus the raw `yulius.toml`. Files are read at the layout's paths, bounded in size, through
+/// handles checked as they are opened; symbolic links, FIFOs and paths resolving outside `root`
+/// or into `.git` count as missing. For a checkout in a sandbox directory, which its agents can
+/// change, use [`validate_sandbox_checkout`].
 #[must_use]
 pub fn validate_checkout(root: &Path) -> (ProjectReport, Option<String>) {
-    let canonical = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let read = |rel: &str, max: u64| {
-        regular_file_inside(root, &canonical, rel).and_then(|path| read_bounded(&path, max))
+    checkout_report(root, root)
+}
+
+/// [`validate_checkout`] of a checkout in the sandbox directory `sandbox_dir` (its clone or a task
+/// worktree): read only when it resolves inside `sandbox_dir`, so a checkout folder an agent
+/// swapped for a link to a host folder reads as empty (#744, ADR-0174).
+#[must_use]
+pub fn validate_sandbox_checkout(
+    sandbox_dir: &Path,
+    root: &Path,
+) -> (ProjectReport, Option<String>) {
+    checkout_report(sandbox_dir, root)
+}
+
+/// The report of the checkout `root`, read only when it resolves inside `within`: each file and
+/// folder is then used only when its handle's real path is inside the resolved root.
+fn checkout_report(within: &Path, root: &Path) -> (ProjectReport, Option<String>) {
+    let canonical = match (fs::canonicalize(within), fs::canonicalize(root)) {
+        (Ok(within), Ok(root)) if root.starts_with(&within) => Some(root),
+        _ => None,
     };
+    let canonical = canonical.as_deref();
+    let read = |rel: &str, max: u64| canonical.and_then(|root| read_inside(root, rel, max));
+    let folder = |rel: &str| canonical.and_then(|root| directory_inside(root, rel));
     let yulius_toml = read(
         "yulius.toml",
         u64::try_from(MAX_CONFIG_BYTES).unwrap_or(u64::MAX),
     );
     let mut layout = project_layout(yulius_toml.as_deref());
-    layout.resolve_changes_folder(|rel| directory_inside(root, &canonical, rel).is_some());
+    layout.resolve_changes_folder(|rel| folder(rel).is_some());
     let agents = read(&layout.agents, MAX_DOC_BYTES);
     let claude = read("CLAUDE.md", MAX_DOC_BYTES);
     let product = read(&layout.product, MAX_DOC_BYTES);
     let architecture = read(&layout.architecture, MAX_DOC_BYTES);
     let changes = match layout.changes_folder() {
         // A changes folder is there when it exists (SPEC-363 CHN-004).
-        Some(folder) => directory_inside(root, &canonical, folder).map(|_| String::new()),
+        Some(changes) => folder(changes).map(|_| String::new()),
         None => read(&layout.changes, MAX_DOC_BYTES),
     };
     let decisions = match &layout.decisions {
         DecisionsLocation::Directory(path) | DecisionsLocation::File(path) => {
-            if let Some(dir) = directory_inside(root, &canonical, path) {
+            if let Some(dir) = folder(path) {
                 OwnedDecisions::Directory(directory_files(&dir))
             } else if let Some(text) = read(path, MAX_DOC_BYTES) {
                 OwnedDecisions::File(text)
@@ -785,11 +809,12 @@ impl App {
                 candidates.push(PathBuf::from(path));
             }
             candidates.push(self.sandbox_repo(&record.id));
+            let sandbox_dir = self.sandbox_dir(&record.id);
             let valid = blocking(move || {
                 Ok(candidates
                     .iter()
                     .filter(|dir| dir.is_dir())
-                    .any(|dir| validate_checkout(dir).0.is_valid()))
+                    .any(|dir| validate_sandbox_checkout(&sandbox_dir, dir).0.is_valid()))
             })
             .await?;
             if valid {
@@ -1124,8 +1149,8 @@ impl App {
         if OnboardingState::parse(&record.onboarding_state) != Some(OnboardingState::Pending) {
             return Ok(None);
         }
-        let root = self.sandbox_repo(&record.id);
-        let (report, _) = blocking(move || Ok(validate_checkout(&root))).await?;
+        let (dir, root) = (self.sandbox_dir(&record.id), self.sandbox_repo(&record.id));
+        let (report, _) = blocking(move || Ok(validate_sandbox_checkout(&dir, &root))).await?;
         let creator = store
             .user(&record.created_by)
             .await?
@@ -1165,8 +1190,8 @@ impl App {
                 task_number: Some(task.number),
             });
         }
-        let root = self.sandbox_repo(&record.id);
-        let (report, _) = blocking(move || Ok(validate_checkout(&root))).await?;
+        let (dir, root) = (self.sandbox_dir(&record.id), self.sandbox_repo(&record.id));
+        let (report, _) = blocking(move || Ok(validate_sandbox_checkout(&dir, &root))).await?;
         let (title, steps) = planned(&report);
         Ok(OnboardingPlan {
             title: title.to_owned(),
@@ -1260,11 +1285,12 @@ impl App {
                         candidates.push(PathBuf::from(path));
                     }
                     candidates.push(self.sandbox_repo(&sandbox.id));
+                    let sandbox_dir = self.sandbox_dir(&sandbox.id);
                     let problems = blocking(move || {
                         Ok(candidates
                             .iter()
                             .find(|dir| dir.is_dir())
-                            .map(|dir| validate_checkout(dir).0)
+                            .map(|dir| validate_sandbox_checkout(&sandbox_dir, dir).0)
                             .map(|report| {
                                 report
                                     .problems
@@ -1328,8 +1354,9 @@ impl App {
 
     /// What people must know when the agents of `sandbox` could write its production branch
     /// (ADR-0114): GitHub is asked with an agent's own token which rules apply to the branch and
-    /// whether that token may bypass them. A check that fails is said too, never taken as safe.
-    /// `None` for a guarded branch and for a playground (no GitHub repository).
+    /// whether that token may bypass them. A check that fails is said too, never taken as safe,
+    /// with the error's public message (an internal failure's detail is only logged). `None` for
+    /// a guarded branch and for a playground (no GitHub repository).
     pub(crate) async fn production_branch_warning(
         &self,
         sandbox: &SandboxRecord,
@@ -1357,9 +1384,12 @@ impl App {
             )),
             Err(err) => {
                 tracing::info!(sandbox = %sandbox.id, error = %err, "checking the production branch failed");
+                // Everyone who can view the sandbox reads this: an internal failure's detail
+                // stays in the log (#834).
+                let reason = err.public_message();
                 Some(format!(
                     "Yulius could not check whether agents can write the production branch \
-                     `{branch}` ({err}). {fix}"
+                     `{branch}` ({reason}). {fix}"
                 ))
             }
         }
@@ -1563,6 +1593,95 @@ mod tests {
         fs::remove_file(root.join("docs/changes.md"))?;
         write(root, "docs/changes.md", "# Changes\n")?;
         assert!(validate_checkout(root).0.is_valid());
+        Ok(())
+    }
+
+    /// #744 (SPEC-394 VOD-001): reads go through handles, yet a folder link that stays inside the
+    /// checkout still reads, as before; a FIFO or a link at a layout path counts as missing, and
+    /// so does a decisions file that is a link.
+    #[test]
+    fn checkout_validation_follows_inner_folder_links_and_skips_fifos() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path();
+        write(root, "AGENTS.md", "# Rules\n\nRun the tests.\n")?;
+        write(root, "CLAUDE.md", "See AGENTS.md.\n")?;
+        write(
+            root,
+            "documentation/product.md",
+            "# Shop\n\nSells things.\n",
+        )?;
+        write(
+            root,
+            "documentation/architecture.md",
+            "# A\n\n```mermaid\nflowchart LR\n  A --> B\n```\n",
+        )?;
+        write(
+            root,
+            "documentation/decisions/0001-use-sqlite.md",
+            "# 1. Use SQLite\n\n## Status\n\nAccepted\n\n## Context\n\nOne VM.\n\n\
+             ## Decision\n\nSQLite.\n\n## Alternatives\n\n- Postgres\n\n## Consequences\n\nSimple.\n",
+        )?;
+        write(root, "documentation/changes.md", "# Changes\n")?;
+        std::os::unix::fs::symlink(root.join("documentation"), root.join("docs"))?;
+        write(root, "yulius.toml", "[docs]\n")?;
+        let problems = |root: &Path| -> Vec<String> {
+            validate_checkout(root)
+                .0
+                .problems
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        };
+        assert_eq!(problems(root), Vec::<String>::new());
+
+        let outside = tempfile::tempdir()?;
+        write(
+            outside.path(),
+            "0002-host.md",
+            "# 2. Host\n\n## Status\n\nAccepted\n",
+        )?;
+        std::os::unix::fs::symlink(
+            outside.path().join("0002-host.md"),
+            root.join("documentation/decisions/0002-host.md"),
+        )?;
+        fs::remove_file(root.join("AGENTS.md"))?;
+        nix::unistd::mkfifo(&root.join("AGENTS.md"), nix::sys::stat::Mode::S_IRWXU)?;
+        let problems = problems(root);
+        assert!(
+            problems.contains(&"AGENTS.md: is missing".to_owned()),
+            "{problems:?}"
+        );
+        assert!(
+            !problems.iter().any(|problem| problem.contains("0002-host")),
+            "the linked decision was read: {problems:?}"
+        );
+        Ok(())
+    }
+
+    /// #744 (SPEC-394 VOD-001): a sandbox checkout is read only where it resolves inside the
+    /// sandbox directory. A task worktree swapped for a link to a host folder reads as empty, the
+    /// host folder's `yulius.toml` included.
+    #[test]
+    fn a_sandbox_checkout_resolving_outside_the_sandbox_is_not_read() -> TestResult {
+        let sandbox = tempfile::tempdir()?;
+        let host = tempfile::tempdir()?;
+        write(host.path(), "yulius.toml", "host = \"secret\"\n")?;
+        write(host.path(), "AGENTS.md", "# Rules\n\nRun the tests.\n")?;
+        write(sandbox.path(), "repo/yulius.toml", "[docs]\n")?;
+        fs::create_dir(sandbox.path().join("worktrees"))?;
+        let worktree = sandbox.path().join("worktrees/t1");
+        std::os::unix::fs::symlink(host.path(), &worktree)?;
+
+        assert!(validate_checkout(host.path()).1.is_some());
+        let (report, toml) = validate_sandbox_checkout(sandbox.path(), &worktree);
+        assert_eq!(toml, None, "the host folder was read");
+        let problems: Vec<String> = report.problems.iter().map(ToString::to_string).collect();
+        assert!(
+            problems.contains(&"AGENTS.md: is missing".to_owned()),
+            "{problems:?}"
+        );
+        let (_, toml) = validate_sandbox_checkout(sandbox.path(), &sandbox.path().join("repo"));
+        assert_eq!(toml.as_deref(), Some("[docs]\n"), "its own clone reads");
         Ok(())
     }
 

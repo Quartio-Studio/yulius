@@ -569,6 +569,8 @@ pub struct RepoGitHub {
     pub transferred: Mutex<HashMap<String, String>>,
     /// Sizes GitHub reports (`owner/name` → KiB) on a person's read of a repository.
     pub sizes: Mutex<HashMap<String, u64>>,
+    /// Asking which rules guard a branch fails with this error.
+    pub fail_branch_guard: Mutex<Option<AppError>>,
 }
 
 impl RepoGitHub {
@@ -741,6 +743,14 @@ impl GitHubPort for RepoGitHub {
         name: &str,
         branch: &str,
     ) -> AppResult<BranchGuard> {
+        if let Some(err) = self
+            .fail_branch_guard
+            .lock()
+            .map_err(AppError::internal)?
+            .clone()
+        {
+            return Err(err);
+        }
         let repo = format!("{owner}/{name}");
         let guarded = self
             .rulesets
@@ -902,6 +912,7 @@ impl World {
             fail_installation_reads: AtomicBool::new(false),
             transferred: Mutex::new(HashMap::new()),
             sizes: Mutex::new(HashMap::new()),
+            fail_branch_guard: Mutex::new(None),
         });
         let clock = Arc::new(TestClock(AtomicI64::new(1_791_331_200_000)));
         let config = AppConfig::new(

@@ -585,11 +585,19 @@ async fn task_attachments_get_safe_names_outside_git_and_go_with_the_task() -> T
     assert_eq!(planted.status, StatusCode::FORBIDDEN, "{:?}", planted.body);
     assert!(!target.join("tasks").exists());
 
-    // Deleting the task removes its attachments (TSK-009).
+    // Deleting the task moves its attachments, which no other task names, to the trash (TSK-009,
+    // SPEC-396).
     let deleted = call(&h.router, Method::DELETE, "/api/tasks/t1", None, &alice).await?;
     assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{:?}", deleted.body);
     assert!(!folder.exists());
     assert!(data.join("sandboxes/s1/attachments/tasks").is_dir());
+    let trash: Vec<PathBuf> = std::fs::read_dir(data.join("sandboxes/s1/attachments/trash"))?
+        .map(|entry| entry.map(|e| e.path()))
+        .collect::<Result<_, _>>()?;
+    assert!(
+        matches!(trash.as_slice(), [entry] if entry.join("Screen-Shot-1.png").is_file()),
+        "{trash:?}"
+    );
     assert!(h.store.task(&TaskId::parse("t1")?).await?.is_none());
     assert!(leftovers(&data).is_empty());
     Ok(())

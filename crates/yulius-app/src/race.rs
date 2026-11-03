@@ -24,6 +24,10 @@ pub enum Point {
     /// Removing a task's or a shell's attachments (SPEC-265): the sandbox directory was found,
     /// nothing below it is opened yet. The path is the owner's attachments folder.
     AttachmentsRemove,
+    /// Settling a deleted task's attachments (SPEC-396): the folders were listed and the tasks
+    /// read; nothing is moved yet, and each folder's task is asked for again. The path is the
+    /// sandbox's `attachments/tasks` folder. Reached on a blocking thread.
+    AttachmentsSettle,
     /// Pruning old drafts (SPEC-265): the sandbox directory was found, the drafts folder is not
     /// opened yet. The path is that folder.
     DraftsPrune,
@@ -82,6 +86,9 @@ pub enum Point {
     /// A prompt hook (SPEC-346) passed its turn-end check under the turn lock; it has not set
     /// Working yet. The path is the task id.
     PromptTurnChecked,
+    /// `validate_checkout` (SPEC-394): the checkout's root was resolved and the file's path
+    /// worked out; the file is not opened yet. The path is the file's.
+    CheckoutRead,
 }
 
 #[cfg(feature = "test-support")]
