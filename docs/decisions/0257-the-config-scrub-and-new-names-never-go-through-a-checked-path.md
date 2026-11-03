@@ -55,4 +55,7 @@ it by name:
   handle a failed scrub (the playground move stops, a change clone logs it).
 - An upload or a trash restore on a file system with neither hard links nor `RENAME_NOREPLACE`
   fails; none is used for the data directory.
-- Other folders the server makes with `std::fs::create_dir_all` still follow the process umask.
+- Other folders the server makes with `std::fs::create_dir_all`, and the harness's skill folders
+  (`yulius-harness` `skills.rs`, `mkdirat(…, 0o777)`), still follow the process umask.
+- Only a file that exists at the check is locked and scrubbed, so a stale `config.worktree.lock`
+  does not refuse a clone without `config.worktree`.

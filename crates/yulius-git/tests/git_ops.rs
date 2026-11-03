@@ -2340,10 +2340,78 @@ fn a_clone_configuration_swapped_for_a_link_during_the_scrub_is_never_written_th
     Ok(())
 }
 
-/// SPEC-402 VUG-001 (#810): a configuration file that is not a regular file (a FIFO would block
-/// the open) is refused at once, and nothing is written.
+/// A `git` at `path` that runs `script` (sh, `$7` is the subcommand after the three fixed `-c`
+/// pairs) before the real Git.
+fn wrapped_git(fx: &Fixture, path: &Path, script: &str) -> Result<Git, Box<dyn Error>> {
+    use std::os::unix::fs::PermissionsExt as _;
+    fs::write(path, format!("#!/bin/sh\n{script}\nexec git \"$@\"\n"))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+    Ok(isolated(Git::new(path), &fx.home))
+}
+
+/// SPEC-402 VUG-001 (#810): Git's own lock held by another writer refuses the scrub and stays
+/// that writer's; a lock the scrub took is removed when Git fails, and nothing is written.
 #[test]
-fn a_clone_configuration_that_is_not_a_file_is_refused_without_blocking() -> TestResult {
+fn the_scrub_keeps_another_writer_s_lock_and_drops_its_own_on_failure() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    fx.raw(
+        &repo,
+        &["config", "--local", "http.proxy", "http://127.0.0.1:9"],
+    )?;
+    let lock = repo.join(".git/config.lock");
+    fs::write(&lock, "another writer's")?;
+    assert!(fx.git.scrub_transport_config(&repo).is_err());
+    assert_eq!(fs::read_to_string(&lock)?, "another writer's");
+    fs::remove_file(&lock)?;
+
+    let failing = wrapped_git(
+        &fx,
+        &fx.path("failing-git"),
+        "case \"$*\" in *--unset-all*) exit 1;; esac",
+    )?;
+    assert!(failing.scrub_transport_config(&repo).is_err());
+    assert!(!lock.exists(), "the scrub's own lock is gone");
+    assert_eq!(
+        fx.raw(&repo, &["config", "--local", "http.proxy"])?,
+        "http://127.0.0.1:9",
+        "nothing was written"
+    );
+    Ok(())
+}
+
+/// SPEC-402 VUG-001 (#810): a `config.worktree` swapped for a FIFO after the checks (here at Git's
+/// first `config` call) is refused without blocking the open.
+#[test]
+fn a_clone_configuration_swapped_for_a_fifo_is_refused_without_blocking() -> TestResult {
+    use std::os::unix::fs::FileTypeExt as _;
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let worktree_config = repo.join(".git/config.worktree");
+    fs::write(&worktree_config, "[http]\n\tproxy = http://127.0.0.1:9\n")?;
+    let swapping = wrapped_git(
+        &fx,
+        &fx.path("fifo-git"),
+        &format!(
+            "if [ \"$7\" = config ] && [ ! -p '{file}' ]; then rm '{file}' && mkfifo '{file}'; fi",
+            file = worktree_config.display()
+        ),
+    )?;
+    assert!(swapping.scrub_transport_config(&repo).is_err());
+    assert!(
+        fs::symlink_metadata(&worktree_config)?
+            .file_type()
+            .is_fifo(),
+        "the wrapper swapped the file"
+    );
+    assert!(!repo.join(".git/config.worktree.lock").exists());
+    Ok(())
+}
+
+/// SPEC-402 VUG-001 (#810): a configuration file that is not a regular file is refused before
+/// anything is written.
+#[test]
+fn a_clone_configuration_that_is_not_a_file_is_refused() -> TestResult {
     let fx = Fixture::new()?;
     let (_remote, repo) = fx.repo_with_remote()?;
     fx.raw(

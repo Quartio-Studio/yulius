@@ -917,13 +917,13 @@ function = "prune_old_drafts"
 line = 844
 
 # #811: the token lives only in that one Git command's environment (cleared otherwise, runner.rs);
-# /proc/<pid>/environ needs the service user's uid or root, and contained agents are other uids in
-# other PID namespaces. Git's children are its own helpers (no hooks, no fsmonitor). A
+# /proc/<pid>/environ needs the service user's uid or root, and every contained agent has its own
+# PID namespace and /proc (an isolated one is also another uid). Git's children are its own helpers (no hooks, no fsmonitor). A
 # configuration-driven command is ADR-0114's #54 part B, set aside by a person; a credential helper
 # or askpass would answer such a child the same token (`git credential fill`).
 [[ignore]]
 path = "crates/yulius/src/wiring/git.rs"
 title = "GitHub token placed in the git subprocess environment"
-reason = "only the service user or root can read the command's environment; contained agents are other uids and PID namespaces; config-driven commands are ADR-0114's #54 part B (SPEC-402, #811)"
+reason = "only the service user or root can read the command's environment; contained agents have their own PID namespace and /proc (isolated: also other uids); config-driven commands are ADR-0114's #54 part B (SPEC-402, #811)"
 function = "git_with_token"
 line = 78

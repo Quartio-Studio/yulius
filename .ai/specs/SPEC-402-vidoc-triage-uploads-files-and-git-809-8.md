@@ -56,7 +56,8 @@ it.
     the repository), and the scrubbed bytes are renamed over the name through the `.git` handle
     with the original file's mode. A name swapped for a link meanwhile has only the link
     replaced; nothing it points at is read or written.
-  - A file with nothing to remove is left as it is; the key list is unchanged.
+  - A missing file is neither locked nor scrubbed; a file with nothing to remove is left as it
+    is; the key list is unchanged.
 - VUG-002 (#808, real). Placing a file under a new name never replaces an entry.
   - When `linkat` fails for another reason than `EEXIST`, the fallback is
     `renameat2(RENAME_NOREPLACE)`: `EEXIST` answers "not placed", as the link does.
@@ -70,7 +71,8 @@ it.
   which its agents can already change. Dismissed with a narrow entry; a test pins it.
 - VUG-005 (#811, false positive). The token in the one Git command's `GIT_CONFIG_VALUE_n` is
   readable only by the service user or root (`/proc/<pid>/environ` needs the same uid and ptrace
-  access); contained agents are other uids in other PID namespaces. Git's children are its own
+  access); every contained agent has its own PID namespace and `/proc` (an isolated one is also
+  another uid). Git's children are its own
   helpers (hooks and fsmonitor are off). A configuration-driven command in an agent-writable
   repository is ADR-0114's recorded #54 part B, which a person set aside; a credential helper or
   askpass would hand such a child the token just the same (`git credential fill`). Dismissed with
@@ -92,9 +94,12 @@ it.
 - A `git` that swaps `.git/config` for a link to an outside file at its first `config` call
   leaves that file untouched and the repository's `config` scrubbed (fails on `dev`: the outside
   file loses its `http.proxy`).
-- A FIFO `config.worktree` is refused at once; existing scrub tests still pass.
-- A name taken between the failed link and the fallback placement is kept, the call answers
-  "not placed" (fails on `dev`: the entry is replaced).
+- A FIFO `config.worktree` is refused, also one swapped in after the checks, without blocking;
+  another writer's `config.lock` refuses the scrub and stays, and the scrub's own lock is removed
+  when Git fails; existing scrub tests still pass.
+- A name taken just before the fallback places the file is kept, and the call answers "not
+  placed". On `dev`'s check-then-rename, with the pause point between its `fstatat` and its
+  `renameat`, the racer's entry is replaced (`Some(true)`).
 - `open_dir_at` under umask 0 creates a 0755 folder (fails on `dev`: 0777).
 - A pre-1970 draft is pruned by the owner's next upload; a fresh one stays.
 - `scripts/dev ci` passes; `yulius security-scan` is reported as what it says.
@@ -103,7 +108,9 @@ it.
 
 - `yulius-git` `git_ops`: `a_clone_configuration_swapped_for_a_link_during_the_scrub_is_never_written_through`
   (a wrapper `git` swaps the file at its first `config` call),
-  `a_clone_configuration_that_is_not_a_file_is_refused_without_blocking`.
+  `a_clone_configuration_swapped_for_a_fifo_is_refused_without_blocking`,
+  `the_scrub_keeps_another_writer_s_lock_and_drops_its_own_on_failure`,
+  `a_clone_configuration_that_is_not_a_file_is_refused`.
 - `yulius-app` unit tests: the fallback placement with a name taken at a test-only pause point
   (`uploads::tests`), and `open_dir_at` on a thread with its own umask 0 (`files::tests`, Linux).
 - `yulius` `uploads`: `a_draft_dated_before_1970_is_old`.

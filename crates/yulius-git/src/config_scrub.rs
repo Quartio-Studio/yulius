@@ -29,12 +29,16 @@ pub(crate) fn scrub(
     removed: &dyn Fn(&str) -> bool,
 ) -> Result<(), GitError> {
     let git_dir = unix::open_git_dir(repo)?;
-    // Every file is checked before the first one is written, so a refusal changes nothing.
+    // Every file is checked before the first one is written, so a refusal changes nothing; a
+    // missing one is not scrubbed (nor locked).
+    let mut present = Vec::new();
     for name in FILES {
-        unix::check_kind(&git_dir, name)?;
+        if unix::check_kind(&git_dir, name)? {
+            present.push(name);
+        }
     }
     let private = unix::PrivateDir::new()?;
-    for name in FILES {
+    for name in present {
         unix::scrub_file(git, &git_dir, name, private.path(), removed)?;
     }
     Ok(())
@@ -114,11 +118,11 @@ mod unix {
         }
     }
 
-    /// Refuses `name` in `git_dir` unless it is missing or a regular file.
-    pub(super) fn check_kind(git_dir: &OwnedFd, name: &str) -> Result<(), GitError> {
+    /// Whether `name` is in `git_dir`; refused unless it is missing or a regular file.
+    pub(super) fn check_kind(git_dir: &OwnedFd, name: &str) -> Result<bool, GitError> {
         match fstatat(git_dir, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
-            Ok(stat) => regular(stat.st_mode),
-            Err(Errno::ENOENT) => Ok(()),
+            Ok(stat) => regular(stat.st_mode).map(|()| true),
+            Err(Errno::ENOENT) => Ok(false),
             Err(err) => Err(io("checking the repository configuration", err)),
         }
     }
