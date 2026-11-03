@@ -1,11 +1,11 @@
 ---
 yulius-task: cee88c6b-57ca-4640-98e8-7e958163a913
-status: in-progress
+status: done
 ---
 
 # SPEC-399: Vidoc triage of the web UI and sandbox path findings (#819 #741 #701 #683 #682)
 
-Status: in-progress
+Status: done
 Date: 2026-11-03
 Owner: Yulius task #380
 Scope authorization: task #380 (a person asked that each of the five issues end closed). All five
@@ -68,9 +68,9 @@ reopen it.
 - [x] Spec SPEC-399 with the triage of all five findings
 - [x] Pin the link guards of #741 and #701 with tests
 - [x] Narrow [[ignore]] entries for the five wordings
-- [ ] Gates, docs and changes entry
-- [ ] Independent review answered
-- [ ] Issues closed with their evidence (#819 #741 #701 #683 #682)
+- [x] Gates, docs and changes entry
+- [x] Independent review answered
+- [x] Issues closed with their evidence (#819 #741 #701 #683 #682)
 
 ## Acceptance criteria
 
@@ -108,4 +108,31 @@ reopen it.
 
 ## Evidence
 
-(filled in as the work completes)
+- Triage on `dev` (88a485ca); file:line evidence for each finding is in its issue comment:
+  - #819: `terminal-core.js:387-405` (writers who used the terminal in the last 5 s, no query
+    answered), ADR-0130 Consequences (the accepted residual risk); `terminal.e2e.ts:501`, `:551`.
+  - #741: `sandboxes.rs:75-84`, the only place a `RepoRef` is built; `layout.js:167`, the file's
+    only `window.open`.
+  - #701: `needs_you.rs:172-181`; the only other writer, `goal_retry.rs:105`, sets `link: None`.
+  - #683: `SandboxId::parse` (`yulius-domain/src/ids.rs:33`) via `wiring/sandbox.rs:267`;
+    `path_name` (`manager.rs:446`), `state_dir`/`sysroot` (`:478-491`); `HolderSpec::validate`.
+  - #682: `base::remove_tree`, the only caller of `make_writable`; `leftovers.rs:778`, `:1292`;
+    `holder_live` (`manager.rs:1139-1155`); `reachable_by_runs` routing (`manager.rs:1205-1212`).
+- New assertions pass, and each was seen failing with its guard broken (mutation check, reverted):
+  `cd::a_needs_you_request_reads_what_happened_problem_and_to_do` (left false, right true, with
+  the `public_url` check removed) and
+  `playground_move::a_playground_moves_into_an_empty_github_repository` (with `repo.url` built
+  as `javascript:{owner}/{name}`).
+- `scripts/dev ci` at e7f4a1d7: exit 0, nextest 2988 passed, 16 skipped (fmt, clippy, doctests,
+  macOS compile, deps and docs included). A first run at cda5628f failed on `cargo fmt --check`
+  in the new `cd.rs` assertion; formatted in e7f4a1d7.
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0):
+  disabled, not passed; nothing was scanned, so the entries were not checked against a live scan.
+- The e2e suite was not run: no web UI file changed (the ignore entries only name them).
+- Independent review (fresh session): approved 44e26356, agreeing with all five dismissals (#819
+  as an accepted risk). Its three minors (own text) are answered in cda5628f: the #683 reason
+  and VWS-004 name the `SandboxId` boundary (`production_runs_dir` joins the raw id), VWS-005 and
+  the #682 comment say runs join the holder's user, network and mount namespaces and how
+  `holder_live` still counts them, and VWS-005 names `docker_smoke.rs:386`.
+- #819, #741, #701, #683 and #682 closed as not planned, each with its file:line evidence on
+  `dev` and a note about its `[[ignore]]` entry.
