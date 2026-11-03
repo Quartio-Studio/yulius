@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use support::{
-    Creds, Harness, Resp, TestResult, call, harness, perms, seed_github_user, seed_live_attempt,
+    Creds, Harness, Resp, TestResult, call, perms, seed_github_user, seed_live_attempt,
     seed_sandbox, seed_task, session_from,
 };
 use yulius_app::model::{SandboxRecord, UserRecord, WebSessionRecord};
@@ -83,7 +83,11 @@ async fn browser(h: &Harness, id: &str) -> BoxResult<Creds> {
 }
 
 async fn world() -> BoxResult<World> {
-    let h = harness()?;
+    // Open sockets re-check who is signed in often, so a revocation shows within the test.
+    let h = support::harness_with(support::HarnessOptions {
+        configure: Some(Box::new(|c| c.viewer_recheck_ms = 200)),
+        ..support::HarnessOptions::default()
+    })?;
     let owner = support::setup_superadmin_creds(&h).await?;
     seed_github_user(&h, "u-alice", "alice").await?;
     seed_github_user(&h, "u-bob", "bob").await?;
@@ -788,5 +792,89 @@ async fn a_guest_is_named_as_a_guest() -> TestResult {
     let text = tasks.body.to_string();
     assert!(text.contains("Carol (guest)"), "{text}");
     assert!(!text.contains("superadmin"), "{text}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_guests_event_stream_carries_only_their_playground_and_ends_with_the_link() -> TestResult
+{
+    use futures::StreamExt as _;
+    use tokio_tungstenite::tungstenite::Message;
+    use yulius_contracts::events::UiEvent;
+    let w = world().await?;
+    let made = invite(&w, &w.alice, "p1", json!({"days": 7})).await?;
+    let id = made.body["invite"]["id"].as_str().ok_or("id")?.to_owned();
+    let (guest, _) = join(&w, &code_of(&made.body)?, "Carol").await?;
+    let served = support::serve(w.h.router.clone()).await?;
+    let origin = w.h.app.config.public_url.clone();
+    let mut socket = support::ws_connect(served.addr, "/api/events", &guest, &origin).await?;
+    let mark = |sandbox: Option<&str>, task: &str| -> TestResult {
+        w.h.app.events.publish(
+            sandbox.map(SandboxId::parse).transpose()?,
+            false,
+            UiEvent::TaskRemoved {
+                task_id: task.into(),
+            },
+        );
+        Ok(())
+    };
+    // The server subscribes once the upgrade completes: mark until the stream has it.
+    let mut ready = false;
+    for _ in 0..40 {
+        mark(Some("p1"), "t-ready")?;
+        if let Ok(Some(Ok(Message::Text(text)))) =
+            tokio::time::timeout(std::time::Duration::from_millis(250), socket.next()).await
+            && text.contains("t-ready")
+        {
+            ready = true;
+            break;
+        }
+    }
+    assert!(ready, "the guest's stream never subscribed");
+
+    mark(None, "t-instance-wide")?;
+    mark(Some("p2"), "t-bobs-lab")?;
+    mark(Some("p1"), "t-after")?;
+    let mut frames = Vec::new();
+    loop {
+        let next = tokio::time::timeout(std::time::Duration::from_secs(10), socket.next())
+            .await
+            .map_err(|_| format!("no t-after within 10 s: {frames:?}"))?;
+        if let Some(Ok(Message::Text(text))) = next {
+            let text = text.to_string();
+            let done = text.contains("t-after");
+            frames.push(text);
+            if done {
+                break;
+            }
+        }
+    }
+    assert!(
+        !frames
+            .iter()
+            .any(|f| f.contains("t-instance-wide") || f.contains("t-bobs-lab")),
+        "{frames:?}"
+    );
+
+    let revoked = call(
+        &w.h.router,
+        Method::DELETE,
+        &format!("/api/sandboxes/p1/guest-invites/{id}"),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+    // The stream closes at its next re-check.
+    let closed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            match socket.next().await {
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await;
+    assert!(closed.is_ok(), "the revoked guest's stream stays open");
     Ok(())
 }
