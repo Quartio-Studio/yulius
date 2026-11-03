@@ -452,9 +452,13 @@ a user with no GitHub link and no password, tied to the link in `playground_gues
 session that ends with the link. `App::access_level` gives a guest write on that playground while
 the link lives and none elsewhere, and `App::require` refuses them `Configure` and `Administer`.
 The server's `Auth` extractor lets a guest's request through only on an allowlist of routes
-(`guest_may_reach`); the event stream gives them only their playground's events, and runs of a
-task they own resolve no agent secret. Revoking the link revokes its guests' sessions in the same
-transaction, an access write that the open sockets' re-checks see.
+(`guest_may_reach`); the event stream gives them only their playground's events, and their
+agents' configuring tools need `Configure` (`App::configure_authority`). A guest shares the
+playground's sandbox, so once one joined, `resolved_agent_secrets` gives none of its runs an agent
+secret and its saved agent states are refused (`playground_has_guests`). Revoking the link revokes
+its guests' sessions in the same transaction, an access write that the open sockets' re-checks
+see, and then stops their tasks and terminals; the background tick does the same for links that
+expired (`ended_at`).
 
 ```mermaid
 sequenceDiagram

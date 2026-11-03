@@ -38,12 +38,19 @@ API tokens) are open to any signed-in person. So a guest is not simply a writer.
   `App::require` refuses a guest `Configure` and `Administer`. The server's `Auth` extractor lets a
   guest's request through only on an allowlist (the playground's tasks, sessions, shells, files,
   Git, browser, attachments, notes, previews, stages, CI, intake; the task, session and shell
-  routes; `/api/me`, the event stream, logout and their own notes): every other route, and any route
-  added later, answers 403. The event stream gives a guest only their playground's events. Runs of
-  a task a guest owns get no agent secret.
+  routes; `/api/me`, the event stream, logout and their own notes): every other route answers 403
+  (a route added later outside those prefixes too). The event stream gives a guest only their
+  playground's events, and their tasks' agents get no tool that configures (`automation_*`).
+- **A guest shares the playground's workspace, so it holds no secret from then on.** Inside the
+  playground a guest uses its files and worktrees, terminals and browser as its maker does. So once
+  a guest has joined, no run of the playground (theirs, the maker's, a CI job's) gets an agent
+  secret and no saved agent state is restored into or saved from it, also after the link ends. The
+  Invite dialog says what is shared.
 - **Revoking ends it at once.** The admins list the live links with their guests and revoke one:
   the link stops admitting, its guests' sessions are revoked (401 on the next request, open sockets
-  close at their next re-check, ACC-008) and their access ends. Expiry does the same at its time.
+  close at their next re-check, ACC-008), their access ends and their live and waiting tasks and
+  terminals are stopped. Expiry does the same: the session ends then, and the background sweep stops
+  what its guests still run.
   Moving the playground to GitHub (SPEC-176) or removing it ends guest access, as access then
   mirrors GitHub, which a guest has not.
 - **A guest never becomes a GitHub user.** A teammate who later signs in with GitHub is admitted
@@ -59,6 +66,8 @@ API tokens) are open to any signed-in person. So a guest is not simply a writer.
 - **Email invitations.** Yulius sends no mail and an instance has no mail server.
 - **One shared guest account per playground.** No way to tell guests apart in tasks and audit, or
   to end one link without the others.
+- **A sandbox of their own per guest, or containment per person inside the playground.** A new
+  isolation boundary; trying the maker's code means working in the maker's workspace.
 - **Guests as writers, with a denylist of dangerous routes.** Fails open: every new route would be
   reachable by guests until someone remembered to deny it.
 - **A guest flag on `UserRecord`.** 32 literal sites and parallel tasks that construct it; the
@@ -72,4 +81,9 @@ API tokens) are open to any signed-in person. So a guest is not simply a writer.
 - Anyone holding a live link joins: the maker shares it as a secret, and revokes it when it leaks.
 - The allowlist must grow when a playground page needs a new route for guests; the fence's unit
   test lists it.
-- A guest's tasks use the instance's Claude accounts like the maker's.
+- A guest's tasks use the instance's Claude accounts like the maker's, and every agent run's
+  environment carries that account's token (as before this change, ADR-0005), so a guest's task can
+  read it and it outlives the link. Hiding it behind the egress proxy is a separate change.
+- A guest reaches what the playground's workspace holds: its files (a `.env` written earlier), its
+  browser's signed-in sites. Make links only for people you would let work in it, and keep nothing
+  there you would not show them. Its agent secrets stop applying once a guest joined.

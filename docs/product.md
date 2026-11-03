@@ -86,7 +86,7 @@ watching, steering and unblocking.
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server
   and nothing is pushed anywhere; its tasks merge into its own `dev` with `delivery_merge` (no
-  pull request), on green Yulius CI when the project has CI (SPEC-163). It is its maker's and the superadmin's, and its admins let teammates without GitHub try it: "Invite guests…" in its sandbox menu makes a link that lasts 1, 7 or 30 days, a teammate opens it and joins with a name, works on that playground's tasks only and is signed out when the link is revoked or ends (SPEC-410, the one exception to signing in with GitHub). Connecting GitHub is
+  pull request), on green Yulius CI when the project has CI (SPEC-163). It is its maker's and the superadmin's, and its admins let teammates without GitHub try it: "Invite guests…" in its sandbox menu makes a link that lasts 1, 7 or 30 days, a teammate opens it and joins with a name, works on that playground's tasks only, sharing its workspace (so its runs get no agent secret from then on), and is signed out and stopped when the link is revoked or ends (SPEC-410, the one exception to signing in with GitHub). Connecting GitHub is
   optional and can wait (SPEC-099). A local checkout without GitHub, with its Claude Code
   sessions, comes in with `yulius onboard --playground`, and removing a playground can delete its
   code from the server for good, which frees its place among its maker's 10 (SPEC-171). Once GitHub
