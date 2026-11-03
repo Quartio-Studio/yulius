@@ -25,6 +25,7 @@ mod bundle;
 mod cd;
 mod ci;
 mod commit;
+mod config_scrub;
 pub mod credential;
 mod error;
 mod hooks;

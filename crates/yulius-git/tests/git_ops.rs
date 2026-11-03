@@ -2292,6 +2292,77 @@ fn a_redirected_clone_git_directory_is_refused() -> TestResult {
     Ok(())
 }
 
+/// SPEC-402 VUG-001 (#810): a `config` an agent swaps for a link after the scrub's checks (here
+/// at Git's first `config` call) is never written through: the file it points at keeps its
+/// settings, and the repository's own name holds the scrubbed configuration.
+#[test]
+fn a_clone_configuration_swapped_for_a_link_during_the_scrub_is_never_written_through() -> TestResult
+{
+    use std::os::unix::fs::PermissionsExt as _;
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    fx.raw(
+        &repo,
+        &["config", "--local", "http.proxy", "http://127.0.0.1:9"],
+    )?;
+    let outside = fx.path("outside.cfg");
+    let planted = "[http]\n\tproxy = http://127.0.0.1:9\n[user]\n\tname = Outside\n";
+    fs::write(&outside, planted)?;
+    let config = repo.join(".git/config");
+    let swapper = fx.path("swapping-git");
+    fs::write(
+        &swapper,
+        format!(
+            "#!/bin/sh\nif [ \"$7\" = config ] && [ ! -e '{mark}' ]; then\n  : > '{mark}'\n  \
+             mv '{config}' '{config}.aside' && ln -s '{outside}' '{config}'\nfi\nexec git \"$@\"\n",
+            mark = fx.path("swapped").display(),
+            config = config.display(),
+            outside = outside.display(),
+        ),
+    )?;
+    fs::set_permissions(&swapper, fs::Permissions::from_mode(0o755))?;
+    let git = isolated(Git::new(&swapper), &fx.home);
+    git.scrub_transport_config(&repo)?;
+    assert!(fx.path("swapped").exists(), "the wrapper swapped the file");
+    assert_eq!(
+        fs::read_to_string(&outside)?,
+        planted,
+        "the file the link points at is untouched"
+    );
+    assert!(
+        !fs::symlink_metadata(&config)?.is_symlink(),
+        "the link was replaced"
+    );
+    assert!(!repo.join(".git/config.lock").exists(), "the lock is gone");
+    let left = fx.raw(&repo, &["config", "--local", "--list", "--name-only"])?;
+    assert!(!left.lines().any(|k| k == "http.proxy"), "{left}");
+    assert!(left.lines().any(|k| k == "remote.origin.url"), "{left}");
+    Ok(())
+}
+
+/// SPEC-402 VUG-001 (#810): a configuration file that is not a regular file (a FIFO would block
+/// the open) is refused at once, and nothing is written.
+#[test]
+fn a_clone_configuration_that_is_not_a_file_is_refused_without_blocking() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    fx.raw(
+        &repo,
+        &["config", "--local", "http.proxy", "http://127.0.0.1:9"],
+    )?;
+    nix::unistd::mkfifo(
+        &repo.join(".git/config.worktree"),
+        nix::sys::stat::Mode::from_bits_truncate(0o600),
+    )?;
+    assert!(fx.git.scrub_transport_config(&repo).is_err());
+    assert_eq!(
+        fx.raw(&repo, &["config", "--local", "http.proxy"])?,
+        "http://127.0.0.1:9",
+        "nothing was written"
+    );
+    Ok(())
+}
+
 /// SPEC-247 RMT-024: an empty directory names the repository's root.
 #[test]
 fn list_dir_lists_the_root_when_no_directory_is_named() -> TestResult {
