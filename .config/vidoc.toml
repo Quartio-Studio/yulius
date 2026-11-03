@@ -777,3 +777,42 @@ reason = "ids arrive as SandboxId (validated by SandboxId::parse), state_dir and
 path = "crates/yulius-sandbox/src/base.rs"
 title = "TOCTOU in make_writable chmod by path"
 reason = "only trees no sandbox run can change at that time (bases, system trees once no holder or run of it lives) are removed by path; run-reachable trees use the O_NOFOLLOW walk (ADR-0176, SPEC-399, #682)"
+
+# SPEC-398 (task #381): the Vidoc findings on the supervisor, harness and host setup, triaged on dev
+# 88a485ca; each issue holds the file:line evidence. #801 and the data directory of #677 were fixed.
+
+# #813: Crypto::new_id's only production implementation (MasterKeyCrypto, serve.rs) is
+# Uuid::new_v4 from getrandom (the OS CSPRNG), and random_bytes is rand::rng(), a CSPRNG seeded from
+# the OS. Pinned by crypto.rs ids_and_random_bytes_are_random.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "Entropy source unspecified for session IDs"
+reason = "new_id is Uuid::new_v4 from getrandom (OS CSPRNG) and random_bytes is rand::rng(); tested by ids_and_random_bytes_are_random (SPEC-398, #813)"
+
+# #696: a profile's branches are validated when written (DeliveryProfile::validate: no leading -,
+# whitespace, control or ~^:?*[\) and again by every Git call (branch_exists, rev_parse with
+# --end-of-options, worktree add with --, the push guard validates and single-quotes); Git runs with
+# an argv. Pinned by profile_validation, revisions_cannot_be_options and
+# protected_names_are_single_quoted.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "Unvalidated deserialization of sandbox profile used in Git commands"
+reason = "profile branches are validated on write (DeliveryProfile::validate) and by each Git call, which runs with an argv; tested by profile_validation and revisions_cannot_be_options (SPEC-398, #696)"
+
+# #677: Run::all refuses a service name that is not [A-Za-z0-9@._-]+.service or starts with - before
+# any systemctl call (service_name_ok), and user_and_ids runs no systemctl; the data directory part
+# of the finding was fixed (an absolute path is required). Pinned by host_setup
+# values_that_could_read_as_options_run_nothing.
+[[ignore]]
+path = "crates/yulius/src/host_setup.rs"
+title = "Unvalidated service name passed to systemctl as an argument"
+reason = "service_name_ok refuses a leading - or any character outside [A-Za-z0-9@._-] before any systemctl call, and the data directory must be absolute; tested by values_that_could_read_as_options_run_nothing (SPEC-398, #677)"
+
+# #728: the status line hook authenticates the run by its bearer and updates only the account the
+# server recorded for that attempt (ctx.attempt.account_id); session_window bounds the values. The
+# session spends that account's quota itself, and a setup-token sign-in has no other source of usage
+# (ADR-17). Pinned by capacity.rs session_readings_are_bounded.
+[[ignore]]
+path = "crates/yulius-app/src/capacity.rs"
+title = "Session-reported usage accepted without validation at the trust boundary"
+reason = "only the attempt's own server-recorded account is updated, values are bounded by session_window, and the session spends that quota itself (ADR-17); tested by session_readings_are_bounded (SPEC-398, #728)"

@@ -816,7 +816,7 @@ impl App {
             sandbox: sandbox.clone(),
             creator: creator.clone(),
             task,
-            folder: std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()),
+            folder: named_folder(&self.sandbox_dir(sandbox), cwd),
             name: Mutex::new(name),
             created_at: self.now(),
             seq: self.shells.next_seq.fetch_add(1, Ordering::SeqCst),
@@ -1350,7 +1350,8 @@ impl App {
         (adopted, removed)
     }
 
-    /// The folder an adopted shell started in: its task's worktree, else the repository.
+    /// The folder an adopted shell started in: its task's worktree, else the repository, with only
+    /// the sandbox directory resolved ([`named_folder`]).
     async fn shell_folder(&self, sandbox: &SandboxId, task: Option<&TaskId>) -> PathBuf {
         let worktree = match task {
             Some(task) => self
@@ -1365,7 +1366,7 @@ impl App {
             None => None,
         };
         let folder = worktree.unwrap_or_else(|| self.sandbox_repo(sandbox));
-        std::fs::canonicalize(&folder).unwrap_or(folder)
+        named_folder(&self.sandbox_dir(sandbox), &folder)
     }
 
     async fn adopt_shell(self: &Arc<Self>, dir_name: &str, run_dir: &Path) -> AppResult<()> {
@@ -1536,4 +1537,26 @@ impl App {
             .unwrap_or_default();
         self.end_shells(&shells).await;
     }
+}
+
+/// The folder a shell starts in, `cwd` with only `sandbox_dir` resolved: its real path (the data
+/// directory may sit behind a host link, macOS `/var`) joined with the rest of `cwd` as named.
+/// Every folder below the sandbox directory is the agent's to swap for a link, which the host never
+/// resolves: the Superagent's launch keys its Claude Code trust by this folder (SPEC-398 VSH-003,
+/// #801). A `cwd` outside the sandbox directory, or naming `..`, is resolved as before.
+fn named_folder(sandbox_dir: &Path, cwd: &Path) -> PathBuf {
+    let resolved = || std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let (Ok(real), Ok(rest)) = (
+        std::fs::canonicalize(sandbox_dir),
+        cwd.strip_prefix(sandbox_dir),
+    ) else {
+        return resolved();
+    };
+    if rest
+        .components()
+        .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
+        return resolved();
+    }
+    real.join(rest)
 }

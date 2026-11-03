@@ -1401,3 +1401,43 @@ fn an_import_makes_only_the_user_and_its_ids() {
     assert!(!fake.ran("apt-get"), "{:#?}", fake.log);
     assert!(!fake.ran("systemctl"), "{:#?}", fake.log);
 }
+
+/// SPEC-398 VSH-004 (#677): the setup hands the data directory and the service name to privileged
+/// commands as arguments, so a value that could read as an option is refused before anything runs:
+/// a data directory that is not absolute (setup, check and the import's user step) and a service
+/// name starting with `-`.
+#[test]
+fn values_that_could_read_as_options_run_nothing() {
+    let relative = |data: &str| Options {
+        data_dir: PathBuf::from(data),
+        ..options()
+    };
+    let cases = [
+        (Mode::Setup, relative("-x"), "data directory"),
+        (Mode::Check, relative("var/lib/yulius"), "data directory"),
+        (
+            Mode::Setup,
+            Options {
+                service: "--user.service".into(),
+                ..options()
+            },
+            "yulius.service",
+        ),
+    ];
+    for (mode, opts, item) in cases {
+        let mut fake = Fake::fresh();
+        let lines = Run::new(&mut fake, mode, opts, &mut |_| {}).all();
+        assert_eq!(lines.len(), 1, "{lines:#?}");
+        assert_eq!(outcome(&lines, item), HostOutcome::Failed, "{lines:#?}");
+        assert!(fake.log.is_empty(), "{:#?}", fake.log);
+    }
+    let mut fake = Fake::fresh();
+    let lines = Run::new(&mut fake, Mode::Setup, relative("-x"), &mut |_| {}).user_and_ids();
+    assert_eq!(lines.len(), 1, "{lines:#?}");
+    assert_eq!(
+        line(&lines, "data directory").outcome,
+        HostOutcome::Failed,
+        "{lines:#?}"
+    );
+    assert!(fake.log.is_empty(), "{:#?}", fake.log);
+}
