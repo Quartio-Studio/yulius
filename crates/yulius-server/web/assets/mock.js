@@ -2429,7 +2429,7 @@ route('GET', `/api/sandboxes/${ID}/files/live`, ({ db, p, query }) => {
 });
 route('POST', `/api/sandboxes/${ID}/files/live/edit`, async ({ db, p, body }) => {
   const place = livePlace(db, p[0], body, true);
-  db.live.edits.push({ path: place.path, client: body.client, revision: body.revision, op: body.op });
+  db.live.edits.push({ path: place.path, client: body.client, revision: body.revision, op: body.op, at: Date.now() });
   if (db.live.holdEdits) await new Promise((resolve) => db.live.held.push(resolve));
   const doc = liveDocOf(db, place, body.session);
   const oldest = doc.steps.length ? doc.steps[0].revision - 1 : doc.revision;
@@ -2452,7 +2452,7 @@ route('POST', `/api/sandboxes/${ID}/files/live/edit`, async ({ db, p, body }) =>
 route('POST', `/api/sandboxes/${ID}/files/live/save`, async ({ db, p, body }) => {
   const place = livePlace(db, p[0], body, true);
   liveDocOf(db, place, body.session);
-  db.live.saveAsks.push({ path: place.path, force: Boolean(body.force) });
+  db.live.saveAsks.push({ path: place.path, force: Boolean(body.force), at: Date.now() });
   if (db.live.holdSaves) await new Promise((resolve) => db.live.heldSaves.push(resolve));
   const doc = liveDocOf(db, place, body.session);
   const conflict = doc.diskSha != null;
@@ -5668,7 +5668,8 @@ export function createMockTransport(params) {
   } else {
     db.live = { docs: new Map(), sinks: new Set(), next: 0, joins: [], edits: [], saves: [], saveAsks: [], held: [], holdEdits: false, heldSaves: [], holdSaves: false };
   }
-  const liveSink = (event) => emit(db, event);
+  // `liveMuted = true`: this window's stream loses the shared text's events (a lost connection).
+  const liveSink = (event) => { if (!db.liveMuted) emit(db, event); };
   db.live.sinks.add(liveSink);
   window.addEventListener('pagehide', () => db.live.sinks.delete(liveSink));
   db.liveDoc = (path, root = 'sandbox') => { const doc = db.live.docs.get(liveKey('sb_studio', root, path)); return doc ? { ...liveWhole(doc), text: doc.text } : null; };

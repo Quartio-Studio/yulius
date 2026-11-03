@@ -762,12 +762,14 @@ export function createEditorView(ctx, sandbox, getTask) {
     tab.model = monaco.editor.createModel(text, languageFor(monaco, tab.path));
     setEol(tab, tab.live.state.eol);
     tab.model.onDidChangeContent((event) => {
+      if (!tab.ignoreChange) {
+        const op = fromChanges(event.changes, tab.model.getValueLength());
+        // Monaco changed more than it said (a line ending): the shared text is taken again.
+        if (targetLength(op) !== tab.model.getValueLength()) tab.live.resync();
+        else tab.live.local(op);
+      }
+      // After the typing joined what is unconfirmed: the others are placed through it.
       presenceMoved(tab);
-      if (tab.ignoreChange) return;
-      const op = fromChanges(event.changes, tab.model.getValueLength());
-      // Monaco changed more than it said (a line ending): the shared text is taken again.
-      if (targetLength(op) !== tab.model.getValueLength()) tab.live.resync();
-      else tab.live.local(op);
     });
   }
 
