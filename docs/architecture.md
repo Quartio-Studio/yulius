@@ -704,8 +704,12 @@ resolved folder from the sandbox directory with `open_dirs_below` (no real-path 
 a link unlinked, never followed)
 ([SPEC-265](../.ai/specs/SPEC-265-editor-delete-folder-create-and-listing.md)); the harness's skill copies
 do the same and remove trees with `unlinkat`, and the launch preparation of the Claude config dir
-(`claude_config::ensure_claude_config`) opens `<home>/.claude` from the folder above the home and
-reads paths the agent wrote in a worktree's git files lexically, never on the host filesystem
+(`claude_config::ensure_claude_config`) opens `<home>/.claude` from the folder above the home,
+keys the worktree's trust by the sandbox directory's real path and the rest of the worktree's path
+as named (a link below the sandbox directory is never resolved, and the worktree's `.git` is read
+through folders opened with `O_NOFOLLOW`,
+[SPEC-398](../.ai/specs/SPEC-398-vidoc-triage-supervisor-harness-and-host.md)), and reads paths the
+agent wrote in a worktree's git files lexically, never on the host filesystem
 ([SPEC-253](../.ai/specs/SPEC-253-claude-config-dir-links-and-commondir-ca.md),
 [decision 0193](decisions/0193-the-claude-config-dir-is-walked-from-above-home-and-the-main-repository-is-read-from-the-git-layout.md)).
 The disk upkeep counts a worktree, a CI job checkout or a cache only when every folder from the
