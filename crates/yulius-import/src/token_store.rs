@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use reqwest::Url;
@@ -45,7 +45,30 @@ struct CredentialsFile {
 
 #[derive(Serialize, Deserialize)]
 struct StoredCredential {
-    token: String,
+    /// A `Secret` from parsing to drop, so no plain copy outlives it (SPEC-407 TKS-002, #769).
+    #[serde(with = "stored_secret")]
+    token: Secret,
+}
+
+/// `Secret` has no `Serialize`, so it cannot reach output by accident; the credentials file is the
+/// one place it is written, as the plain string it holds.
+mod stored_secret {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use crate::secret::Secret;
+
+    pub(super) fn serialize<S: Serializer>(
+        token: &Secret,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(token.expose())
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Secret, D::Error> {
+        String::deserialize(deserializer).map(Secret::new)
+    }
 }
 
 /// Stores CLI bearer tokens keyed by normalized server URL.
@@ -118,7 +141,7 @@ impl TokenStore {
             .read()?
             .servers
             .remove(&Self::server_key(server))
-            .map(|stored| Secret::new(stored.token)))
+            .map(|stored| stored.token))
     }
 
     /// Saves `token` for `server`, replacing any previous one. The file is written atomically
@@ -131,7 +154,7 @@ impl TokenStore {
         file.servers.insert(
             Self::server_key(server),
             StoredCredential {
-                token: token.expose().to_owned(),
+                token: token.clone(),
             },
         );
         self.write(&file)
@@ -231,8 +254,6 @@ impl TokenStore {
             .filter(|dir| !dir.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         create_private_dir(dir).map_err(self.io_error(dir))?;
-        let json = serde_json::to_vec_pretty(file)
-            .map_err(|error| self.io_error(&self.path)(io::Error::other(error)))?;
         let temp = dir.join(format!(".credentials.json.tmp-{}", std::process::id()));
         // A stale temporary file from a crashed run is replaced.
         match fs::remove_file(&temp) {
@@ -240,7 +261,7 @@ impl TokenStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(self.io_error(&temp)(error)),
         }
-        let result = write_private_file(&temp, &json).and_then(|()| fs::rename(&temp, &self.path));
+        let result = write_private_file(&temp, file).and_then(|()| fs::rename(&temp, &self.path));
         if let Err(error) = result {
             // Best effort: do not leave a token copy behind.
             let _ = fs::remove_file(&temp);
@@ -284,7 +305,9 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
     fs::create_dir_all(dir)
 }
 
-fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+/// Creates `path` owner-only and writes `contents` to it unbuffered: the tokens go to the file
+/// only, never to a growing buffer that would free unzeroed copies (SPEC-407 TKS-002, #769).
+fn write_private_file(path: &Path, contents: &CredentialsFile) -> io::Result<()> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -293,7 +316,7 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
         options.mode(0o600);
     }
     let mut file = options.open(path)?;
-    file.write_all(bytes)?;
+    serde_json::to_writer_pretty(&mut file, contents).map_err(io::Error::other)?;
     file.sync_all()
 }
 
@@ -379,13 +402,25 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-407 TKS-002 (#769): a parsed token is a `Secret` (wiped when dropped) from parsing on,
+    /// every server's, and it is written back as the plain string the file holds.
+    #[test]
+    fn stored_tokens_are_secrets() -> TestResult {
+        let text = r#"{"version":1,"servers":{"https://a.example":{"token":"yul_a"},"https://b.example":{"token":"yul_b"}}}"#;
+        let file: CredentialsFile = serde_json::from_str(text)?;
+        let tokens: Vec<&Secret> = file.servers.values().map(|stored| &stored.token).collect();
+        assert_eq!(tokens, [&Secret::new("yul_a"), &Secret::new("yul_b")]);
+        assert_eq!(serde_json::to_string(&file)?, text);
+        Ok(())
+    }
+
     /// SPEC-407 TKS-001 (#770): the size bound holds for what is read, not for a length looked up
     /// before: a FIFO (length 0) fed more than 1 MiB of valid JSON is refused, without waiting
     /// for a writer, and so is a regular file over the bound.
     #[cfg(unix)]
     #[test]
     fn an_oversized_or_special_credentials_file_is_refused() -> TestResult {
-        use std::io::Read as _;
+        use std::io::{Read as _, Write as _};
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("credentials.json");
         let server = Url::parse("https://y.example")?;
