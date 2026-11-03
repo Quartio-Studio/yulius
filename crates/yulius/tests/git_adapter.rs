@@ -160,7 +160,10 @@ async fn an_environment_head_is_fetched_from_github_into_the_mirror() -> TestRes
 
 /// A sandbox (`<root>/sandbox`: its clone `repo` with no tracked file and Git told to ignore
 /// everything, and the worktree `worktrees/t1`), and a folder of someone else's at
-/// `<root>/other/victim`.
+/// `<root>/other/victim`. The victim's `.git` points back to the worktree's record, and Git
+/// ignores everything: that is what Git checks through the path before it deletes. Here it
+/// stands in for the swap that a racing agent makes again during Git's own run, between Git's
+/// checks and its deletion through the path.
 struct Swapped {
     _dir: tempfile::TempDir,
     sandbox: std::path::PathBuf,
@@ -196,6 +199,11 @@ fn swapped() -> Result<Swapped, Box<dyn std::error::Error>> {
     let victim = root.join("other/victim");
     std::fs::create_dir_all(victim.join("src"))?;
     std::fs::write(victim.join("src/work.txt"), "someone else's\n")?;
+    let record = repo.join(".git/worktrees/t1");
+    std::fs::write(
+        victim.join(".git"),
+        format!("gitdir: {}\n", record.display()),
+    )?;
     Ok(Swapped {
         _dir: dir,
         sandbox,
@@ -227,20 +235,13 @@ impl Swapped {
 }
 
 /// #844 (SPEC-401 VCD-001): a clean worktree swapped for a link once its checks passed has the
-/// link removed, never what it names. The victim's `.git` points back to the worktree's record
-/// and Git ignores everything, which is what Git checks before it deletes: here it stands in for
-/// the swap a racing agent makes again during Git's own run, between Git's checks and its
-/// deletion through the path.
+/// link removed, never what it names.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_worktree_swapped_for_a_link_during_its_removal_touches_nothing_behind_it() -> TestResult
 {
     let s = swapped()?;
     let record = s.repo.join(".git/worktrees/t1");
-    std::fs::write(
-        s.victim.join(".git"),
-        format!("gitdir: {}\n", record.display()),
-    )?;
     s.swap_after_the_checks();
     let adapter = GitAdapter::new("git");
     let removed = adapter.remove_worktree(&s.repo, &s.wt, &s.worktrees).await;
