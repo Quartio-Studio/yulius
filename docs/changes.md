@@ -8,7 +8,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - `task_delete` no longer answers as if a deleted task had no attachments when settling left its
   folder in place: with `attachments` or its `tasks` folder swapped for a link (never looked
-  behind) or the sandbox's tasks unreadable while the folder is there, the answer says
+  behind), a `tasks` folder that cannot be opened, or the sandbox's tasks unreadable while the
+  folder is there, the answer says
   `not_moved: true`; the tool description and SPEC-396's ATR-003 now name the field (SPEC-397,
   task #387).
 - Deleting a task no longer destroys attachments another task still uses: its
