@@ -1,6 +1,6 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { editorShown, failOnPageErrors, mock, openSuperagent } from './support.ts';
+import { editorShown, failOnPageErrors, firstShown, mock, openSuperagent } from './support.ts';
 
 failOnPageErrors();
 
@@ -19,7 +19,7 @@ const tabMenu = (browser: Browser, name: string) => browser.evaluate((name) => {
 
 test('a sandbox tab returns to the screen left in that sandbox', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await expect(heading(screen)).toHaveText('#12 Checkout API');
+  await firstShown(heading(screen), '#12 Checkout API');
 
   await tab(screen, 'product').click();
   await expect(browser).toHaveURL(/#\/s\/product$/);
@@ -121,7 +121,7 @@ test('each sandbox comes back with its own tool panel and the same Superagent se
 // tool only (KST-005); closing the panel hides the rail again and the hidden choice stays.
 test('a sandbox coming back to its tool shows the hidden rail only while the panel is open', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/agent'));
-  await expect(browser.locator('.agent-term .xterm-rows').first()).toHaveText(/Welcome to Claude Code/);
+  await firstShown(browser.locator('.agent-term .xterm-rows').first(), /Welcome to Claude Code/);
   const rail = screen.getByRole('navigation', 'Tools');
   const panel = screen.getByRole('region', 'Tool panel');
 
@@ -148,6 +148,7 @@ const modelTexts = (browser: Browser) => browser.evaluate(() => (window as unkno
 
 test('the editor keeps open files and unsaved text across a sandbox switch, without feeding the other sandbox', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
+  await firstShown(heading(screen), '#12 Checkout API');
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();
   await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();

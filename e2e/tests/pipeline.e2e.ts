@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, firstShown, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -11,7 +11,7 @@ failOnPageErrors();
 
 test('the Pipeline shows delivery figures, a stage trend with p50 and p90, and the stage table', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/dashboard?section=pipeline'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Dashboard');
+  await firstShown(screen.getByRole('heading', { level: 1 }), 'Dashboard');
   await expect(screen.getByRole('radio', 'Pipeline (stages)')).toHaveAttribute('aria-checked', 'true');
   const delivery = screen.getByRole('region', 'Delivery');
   const dev = delivery.getByRole('group', 'Dev');
@@ -53,6 +53,7 @@ test('the Pipeline shows delivery figures, a stage trend with p50 and p90, and t
 test('the Pipeline is the second tab of the Dashboard, not a sidebar entry', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/dashboard'));
   const nav = screen.getByRole('navigation', 'Sandbox');
+  await firstShown(screen.getByRole('radiogroup', 'Section'));
   await expect(nav.getByRole('link', 'Pipeline (stages)')).toBeHidden();
   await expect(nav.getByRole('link', 'Dashboard')).toHaveAttribute('aria-current', 'page');
   await expect(screen.getByRole('radiogroup', 'Section')).toBeVisible();
@@ -90,7 +91,7 @@ test('the Pipeline is the second tab of the Dashboard, not a sidebar entry', asy
 // SPEC-161 DPL-004: the Pipeline page's own address, in older links, opens the tab with its state.
 test('the earlier Pipeline address opens the Dashboard\'s Pipeline tab', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/pipeline'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Dashboard');
+  await firstShown(screen.getByRole('heading', { level: 1 }), 'Dashboard');
   await expect(screen.getByRole('radio', 'Pipeline (stages)')).toHaveAttribute('aria-checked', 'true');
   await expect(screen.getByRole('region', 'Delivery')).toBeVisible();
   await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?section=pipeline$/);
@@ -98,6 +99,7 @@ test('the earlier Pipeline address opens the Dashboard\'s Pipeline tab', async (
 
   // With its state: the filters come with it, after the tab in the canonical address.
   await app.open(mock('/s/studio/pipeline?days=7&subject=cd_run&environment=prod'));
+  await firstShown(screen.getByRole('combobox', 'Environment'));
   await expect(screen.getByRole('combobox', 'Environment')).toHaveValue('prod');
   await expect(screen.getByRole('radiogroup', 'Date range').getByRole('radio', '7 days')).toBeChecked();
   await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?section=pipeline&days=7&subject=cd_run&environment=prod$/);
@@ -105,6 +107,7 @@ test('the earlier Pipeline address opens the Dashboard\'s Pipeline tab', async (
 
 test('filters narrow the stages and stay in the address', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/pipeline?days=7'));
+  await firstShown(screen.getByRole('radio', '7 days'));
   await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?section=pipeline&days=7$/);
   await expect(screen.getByRole('radio', '7 days')).toBeChecked();
   await screen.getByRole('combobox', 'What').selectOption('CD runs');
@@ -116,6 +119,7 @@ test('filters narrow the stages and stay in the address', async ({ app, browser,
   await expect(stages.getByRole('button', 'CD · Confirmation')).toBeVisible();
   await expect(stages.getByRole('button', 'CD · Deploy')).toBeHidden();
   await app.open(mock('/s/studio/pipeline?days=7&subject=cd_run&environment=prod'));
+  await firstShown(screen.getByRole('combobox', 'Environment'));
   await expect(screen.getByRole('combobox', 'Environment')).toHaveValue('prod');
 });
 
@@ -123,6 +127,7 @@ test('a CI run, a deploy and a task each show a waterfall of their stages', asyn
   // A CI run's view: its queue, preparation and jobs with the stages their output named.
   await app.open(mock('/s/studio/ci?run=ci_s2'));
   const run = screen.getByRole('region', 'Stages of this run');
+  await firstShown(run);
   await expect(run).toContainText('Queue');
   await expect(run).toContainText('quality');
   // SPEC-165: a passed job's stages are folded under it until it is opened.
@@ -198,6 +203,7 @@ function jobRows(browser: Browser) {
 test('a busy CI run reads one row per job: its wait for a slot and its run on one bar', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/ci?run=ci_s4'));
   const run = screen.getByRole('region', 'Stages of this run');
+  await firstShown(run);
   await expect(run).toContainText('Jobs');
   expect(await browser.evaluate(() => [...document.querySelectorAll('.st-waterfall .st-group')].map((g) => g.textContent))).toEqual(['Run', 'Jobs']);
   // No anonymous "Waiting for a job slot" row: each wait is on its job's row, in waiting order.
