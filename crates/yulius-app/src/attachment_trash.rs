@@ -222,6 +222,23 @@ fn left_in_place(attachments: &OwnedFd, folders: Option<&OwnedFd>, id: &str) -> 
     }
 }
 
+/// The folders of `folders` to settle: at most `limit` listed ones, and the deleted task's own
+/// whether or not the listing reached it (SPEC-413 ANR-003). Links are never taken. Blocks.
+fn listed_folders(folders: &OwnedFd, deleted: &str, limit: usize) -> Vec<OsString> {
+    let is_folder =
+        |name: &OsStr| kind_at(folders, name).is_ok_and(|(kind, _)| kind == SFlag::S_IFDIR);
+    let mut names: Vec<OsString> = names_in(folders, limit)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|name| is_folder(name))
+        .collect();
+    let own = OsStr::new(deleted);
+    if !names.iter().any(|name| name == own) && is_folder(own) {
+        names.push(own.to_owned());
+    }
+    names
+}
+
 /// What settling needs to know about the sandbox: the live tasks, and every text that may name a
 /// folder (requests, automations' prompts). Shell folders and composer drafts ask it too
 /// (SPEC-413, ADR-0259).
@@ -411,6 +428,7 @@ impl App {
                 .join(deleted.id.as_str()),
         );
         let now = self.now_secs();
+        let own = deleted.id.as_str().to_owned();
         // Listed before the tasks are read: a task created meanwhile is then among them.
         let listed = blocking(move || {
             let (attachments, folders) = match open_attachments(&sandbox_dir) {
@@ -421,15 +439,7 @@ impl App {
             purge(&attachments, now);
             let names = folders
                 .as_ref()
-                .map(|folders| {
-                    names_in(folders, MAX_PRUNED_ENTRIES)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .filter(|name| {
-                            kind_at(folders, name).is_ok_and(|(kind, _)| kind == SFlag::S_IFDIR)
-                        })
-                        .collect::<Vec<_>>()
-                })
+                .map(|folders| listed_folders(folders, &own, MAX_PRUNED_ENTRIES))
                 .unwrap_or_default();
             Ok(Ok(Some((attachments, folders, names))))
         })
@@ -673,8 +683,28 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeletedAttachments, left_in_place, parse_entry};
+    use super::{DeletedAttachments, left_in_place, listed_folders, parse_entry};
     use crate::files::open_dirs_below;
+
+    /// SPEC-413 ANR-003 (#1031): the deleted task's folder is settled even when the listing's cap
+    /// stops before it; a link or a file of its name is never taken for it.
+    #[test]
+    fn the_deleted_tasks_folder_is_listed_past_the_cap() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(dir.path().join("t1"))?;
+        std::fs::create_dir_all(dir.path().join("t2"))?;
+        std::fs::write(dir.path().join("t3"), "")?;
+        std::os::unix::fs::symlink(dir.path().join("t2"), dir.path().join("t4"))?;
+        let folders = open_dirs_below(dir.path(), &[], false)?;
+        assert_eq!(listed_folders(&folders, "t1", 0), ["t1"]);
+        for id in ["t3", "t4", "t5"] {
+            assert!(listed_folders(&folders, id, 0).is_empty(), "{id}");
+        }
+        let mut all = listed_folders(&folders, "t1", 10);
+        all.sort();
+        assert_eq!(all, ["t1", "t2"], "listed once, links and files left out");
+        Ok(())
+    }
 
     /// SPEC-397 NMV-002: settling stopped early (the tasks unreadable) says the deleted task's
     /// folder stayed only when it is there as a folder.

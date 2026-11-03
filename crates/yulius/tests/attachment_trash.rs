@@ -605,3 +605,31 @@ async fn restored_names_need_no_quoting() -> TestResult {
     assert_eq!(std::fs::read_to_string(path)?, "x");
     Ok(())
 }
+
+/// SPEC-413 ANR-003 (#1031): with more folders in `attachments/tasks/` than settling lists
+/// (`MAX_PRUNED_ENTRIES`, 10,000; planted by a sandbox process), deleting a task still moves its
+/// folder to the trash and says so, never `{}`. The planted names are no task ids, so they stay.
+#[tokio::test]
+async fn a_deletion_past_ten_thousand_planted_folders_still_trashes_its_own() -> TestResult {
+    let (h, attachments) = world().await?;
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let tasks = attachments.join("tasks");
+    for n in 0..=10_000 {
+        std::fs::create_dir_all(tasks.join(format!("p.{n:05}")))?;
+    }
+    attach(&attachments, "t1", "a.txt", "a")?;
+    let (deleted, is_error) = tool(&h, "task_delete", json!({"task_id": "t1"})).await?;
+    assert!(!is_error, "{deleted}");
+    assert_eq!(
+        deleted["deleted"]["attachments"]["trash"]["files"],
+        json!(["a.txt"]),
+        "{deleted}"
+    );
+    assert!(!tasks.join("t1").exists());
+    assert_eq!(
+        std::fs::read_dir(&tasks)?.count(),
+        10_001,
+        "planted ones stay"
+    );
+    Ok(())
+}
