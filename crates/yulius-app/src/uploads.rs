@@ -387,8 +387,8 @@ fn ensure_dirs(root: &Path, dirs: &[&str]) -> AppResult<(PathBuf, OwnedFd)> {
 }
 
 /// Links `temp` as `name` in `folder` unless `name` exists. Returns whether it was placed. Where
-/// the file system has no hard links, it checks and renames instead (not atomic against a racing
-/// writer).
+/// the link fails (a file system without hard links), it renames with `RENAME_NOREPLACE` instead,
+/// as atomic as the link (SPEC-402).
 fn link_new(folder: &OwnedFd, temp: &str, name: &str) -> std::io::Result<bool> {
     link_new_in((folder, temp), folder, name)
 }
@@ -402,14 +402,54 @@ pub(crate) fn link_new_in(
     match linkat(from, source, to, name, AtFlags::empty()) {
         Ok(()) => Ok(true),
         Err(Errno::EEXIST) => Ok(false),
-        Err(_) => match fstatat(to, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
-            Ok(_) => Ok(false),
-            Err(Errno::ENOENT) => {
-                renameat(from, source, to, name)?;
-                Ok(true)
-            }
-            Err(err) => Err(err.into()),
-        },
+        Err(link) => {
+            fallback_placing();
+            rename_new((from, source), to, name, link)
+        }
+    }
+}
+
+/// Renames `source` of `from` to `name` of `to` unless `name` exists, in one step
+/// (`RENAME_NOREPLACE`): whether it was placed. A file system without the flag fails the
+/// placement; nothing checks and then renames (#808).
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn rename_new(
+    (from, source): (&OwnedFd, &str),
+    to: &OwnedFd,
+    name: &str,
+    _link: Errno,
+) -> std::io::Result<bool> {
+    use nix::fcntl::{RenameFlags, renameat2};
+    match renameat2(from, source, to, name, RenameFlags::RENAME_NOREPLACE) {
+        Ok(()) => Ok(true),
+        Err(Errno::EEXIST) => Ok(false),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Without an atomic no-replace rename (development hosts), the link's error stands.
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn rename_new(
+    _source: (&OwnedFd, &str),
+    _to: &OwnedFd,
+    _name: &str,
+    link: Errno,
+) -> std::io::Result<bool> {
+    Err(link.into())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only pause point: runs once where [`link_new_in`]'s fallback places the file.
+    static FALLBACK_PLACING: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// [`link_new_in`]'s fallback is about to place the file (a pause point for this thread's test).
+fn fallback_placing() {
+    #[cfg(test)]
+    if let Some(hook) = FALLBACK_PLACING.with(|hook| hook.borrow_mut().take()) {
+        hook();
     }
 }
 
@@ -1064,6 +1104,35 @@ mod tests {
         let long = format!("{}.png", "x".repeat(300));
         let short = attachment_name(&long);
         assert!(short.ends_with(".png") && short.chars().count() <= MAX_ATTACHMENT_NAME_CHARS);
+    }
+
+    /// SPEC-402 VUG-002 (#808): where the link fails (here a folder, which `linkat` refuses), a
+    /// name another writer takes just before the fallback places the file is kept, and the call
+    /// says the file was not placed.
+    #[test]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    fn a_name_taken_while_the_fallback_places_is_never_replaced()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let base = dir.path().to_path_buf();
+        std::fs::create_dir(base.join("upload.tmp"))?;
+        std::fs::write(base.join("upload.tmp/ours"), "ours")?;
+        let folder = crate::files::open_dirs_below(&base, &[], false)?;
+        let taken = base.join("photo.png");
+        FALLBACK_PLACING.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let _ = std::fs::create_dir(&taken);
+            }));
+        });
+        let placed = link_new_in((&folder, "upload.tmp"), &folder, "photo.png");
+        assert!(base.join("photo.png").is_dir(), "the racer took the name");
+        assert_eq!(placed.ok(), Some(false));
+        assert!(
+            !base.join("photo.png/ours").exists(),
+            "the racer's entry was not replaced"
+        );
+        assert!(base.join("upload.tmp/ours").exists());
+        Ok(())
     }
 
     #[test]
