@@ -148,8 +148,8 @@ for a deleted task whose folder is there.
     renumbering lookup's 10,000 cap, blocking file work on async threads) recorded in Decisions.
   - round 2 (`ec1c4543`): approved with two minors (the per-pass cache of the leftovers guard, the
     drafts bound swallowing a listing error) and three nits, all fixed in `8cf472b0`.
-  - round 3 (`8cf472b0`): approved. Its three nits are left, with reasons, at the round limit
-    (ADR-0141): the per-draft read in a person's deletion is bounded and documented in ADR-0259
+  - round 3 (`8cf472b0`): approved. Its three nits are answered without a change (a nit is the
+    author's call, om-code-review), for these reasons: the per-draft read in a person's deletion is bounded and documented in ADR-0259
     (correctness over a cache); failing the upload on an entry's read error is the safe side for a
     bound; the store error not kept in the "kept" reason is the pattern the code had before.
 - Not tested: a real contained sandbox (bubblewrap) and a real Superagent pasting into its shell;
