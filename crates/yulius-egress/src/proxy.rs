@@ -1301,6 +1301,28 @@ mod tests {
         assert!(warn_due(&mut warned, sandbox, Some("s1")));
     }
 
+    /// SPEC-400 VTV-003 (#840): the host the policy audits comes from a parsed `Uri`, which holds
+    /// no `|`, space or line break, so it cannot add a field to an audit key or a line to its
+    /// detail. Such a target never becomes a request.
+    #[test]
+    fn proxy_targets_with_delimiters_are_no_uri() {
+        for target in [
+            "a|b.example.com:443",
+            "a b.example.com:443",
+            "a\nb.example.com:443",
+            "a\r\nb.example.com:443",
+            "http://a|b.example.com/",
+            "http://a\nb.example.com/",
+        ] {
+            assert!(
+                target.parse::<hyper::http::Uri>().is_err(),
+                "{target:?} parsed"
+            );
+        }
+        let uri: hyper::http::Uri = "API.Example.com:8443".parse().unwrap_or_default();
+        assert_eq!(connect_target(&uri), Some(("api.example.com".into(), 8443)));
+    }
+
     #[test]
     fn proxy_credentials_and_targets() {
         let mut headers = hyper::http::HeaderMap::new();
