@@ -14,6 +14,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   to `sh` as an argument instead of script text (fixes #772). The Vidoc findings #821, #773 and
   #746 (fixed master keys of test stores; production's key is random) and #747 (the test's own
   paths in its own temporary folder) are dismissed with narrow `[[ignore]]` entries.
+- The CLI token store (`yulius login`, `yulius remote login`) reads its credentials file through
+  one handle, a regular file only, and never more than 1 MiB of it: a FIFO or a file that grew after
+  its size was checked was read whole (fixes #770). Saved tokens stay a zeroizing `Secret` from
+  parsing to drop, and the file is written without an intermediate buffer (fixes #769). It is
+  written through an owner-only temporary file with a random name, so nothing left at the old
+  fixed name can block a save (fixes #771) (SPEC-407, task #389). The Vidoc findings #802 (the
+  `gitdir:` path only names a trust key in the agent's own config, nothing is opened) and #684 (only
+  the service user can create a `docker-smoke-<pid>` entry) are dismissed with narrow `[[ignore]]`
+  entries.
 - The scrub of a clone's transport settings no longer writes through a link an agent swaps in
   after its checks: `.git`, `config` and `config.worktree` are opened with `O_NOFOLLOW` under Git's
   own lock, Git edits a private copy, and the result is renamed over the name through the `.git`

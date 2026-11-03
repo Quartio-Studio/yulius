@@ -1079,3 +1079,33 @@ path = "crates/yulius/tests/supervision.rs"
 function = "fetch"
 title = "Hardcoded credential in test code"
 reason = "a synthetic account credential put together from the prefix and a body, for the fake usage probe; provider-shaped literals fail fixture_hygiene (SPEC-406, ADR-0258, #822)"
+
+# SPEC-407 (task #389): the Vidoc findings on the CLI token store, the harness and the Docker smoke,
+# triaged on dev d51b98ae; #771, #770 and #769 (token store) were fixed. Each issue holds the
+# file:line evidence.
+
+# #802: main_repository reads the worktree's .git through a folder opened from the sandbox
+# directory with O_NOFOLLOW (worktree_key, #801) and as a regular file only, resolves the gitdir:
+# path lexically and opens nothing below it (not even commondir, SPEC-253 CFG-005), so the host does
+# no filesystem operation on the agent's path. The only effect is a trust key in the agent's own
+# Claude config, which it can write itself (SPEC-106); a key outside the worktree is the point (a
+# linked worktree's main repository lies beside it). Pinned by claude_config.rs
+# the_main_repository_comes_from_the_gitdir_path_alone and
+# host_reads_never_follow_a_link_or_wait_on_a_fifo.
+[[ignore]]
+path = "crates/yulius-harness/src/claude_config.rs"
+title = "Agent-controlled .git file used to derive trust paths outside worktree"
+function = "main_repository"
+reason = "the gitdir: path is resolved lexically and nothing below it is opened; the only effect is a trust key in the agent's own config, which it can write itself (SPEC-253 CFG-005, SPEC-106); tested by the_main_repository_comes_from_the_gitdir_path_alone (SPEC-407, #802)"
+
+# #684: stale_smokes considers only runtime/sandboxes/docker-smoke-<pid>; real sandbox ids are UUID
+# v4 (crypto.new_id), so no real sandbox has such a name, and remove_sandbox removes only that smoke
+# name's trees. runtime/sandboxes itself is written only by the service user (holders get binds of
+# subfolders of their own state dir), who owns every tree the smoke could remove; a reused PID only
+# keeps a stale smoke sandbox. Pinned by docker_smoke.rs
+# only_sandboxes_of_finished_smoke_tests_are_stale.
+[[ignore]]
+path = "crates/yulius/src/docker_smoke.rs"
+title = "PID liveness probe from attacker-influenced directory name"
+function = "stale_smokes"
+reason = "only docker-smoke-<pid> names count, real sandbox ids are UUIDs, and only the service user can create entries in runtime/sandboxes; tested by only_sandboxes_of_finished_smoke_tests_are_stale (SPEC-407, #684)"
