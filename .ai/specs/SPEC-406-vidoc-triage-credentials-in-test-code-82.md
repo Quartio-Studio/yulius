@@ -65,9 +65,9 @@ Each of the seven low Vidoc findings in `crates/yulius/tests` is checked against
 ## Plan
 
 - [x] Spec SPEC-406 with the triage of all seven findings
-- [ ] Test fixtures carry no provider-shaped credential literal, guarded by a test (#822 #797)
-- [ ] sourced passes the variable name as an argument, not script text (#772)
-- [ ] Narrow [[ignore]] entries for the dismissed wordings (#821 #773 #746 #747 #797 rest)
+- [x] Test fixtures carry no provider-shaped credential literal, guarded by a test (#822 #797)
+- [x] sourced passes the variable name as an argument, not script text (#772)
+- [x] Narrow [[ignore]] entries for the dismissed wordings (#821 #773 #746 #747 #797 rest)
 - [ ] ADR, docs, changes entry and gates
 - [ ] Independent review answered
 - [ ] Dismissed issues commented and closed (#821 #773 #746 #747)

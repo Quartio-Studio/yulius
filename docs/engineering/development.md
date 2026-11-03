@@ -52,6 +52,9 @@ The `yulius` crate's integration tests are modules of one test binary, `tests/ma
 one file's tests with `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`
 (`cargo test -p yulius --test main <file>::` filters by substring: `supervision::` also runs
 `pool_supervision::`).
+Test fixtures there hold no credential in a provider's shape: put one that needs it together
+from the prefix and a synthetic body (`concat!("sk_test_", "…")`); `fixture_hygiene` fails on
+a provider prefix followed by a token body ([ADR-0258](../decisions/0258-test-fixtures-hold-no-provider-shaped-credential-literal.md)).
 Use the full gate after implementation stabilizes.
 
 The web UI has end-to-end tests in [`e2e/`](../../e2e/README.md): flows, accessibility (axe-core)

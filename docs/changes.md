@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
+- Test fixtures under `crates/yulius/tests` no longer commit credentials in a provider's shape.
+  26 synthetic values with real prefixes (`sk-ant-oat01-`, `sk_test_`, `sk_live_`) are now put
+  together from the prefix and a body, with the same value. `fixture_hygiene` fails on any
+  provider-shaped literal there, so a real token pasted into a test fails the gate (SPEC-406,
+  task #388, ADR-0258, fixes #822 and #797). The `.env` helper `sourced` passes the variable name
+  to `sh` as an argument instead of script text (fixes #772). The Vidoc findings #821, #773 and
+  #746 (fixed master keys of test stores; production's key is random) and #747 (the test's own
+  paths in its own temporary folder) are dismissed with narrow `[[ignore]]` entries.
 - A subscription sign-in no longer frees copies of its token unzeroed in its raw output. That
   output, kept to read the token, was a growing buffer, and each growth freed the previous copy
   unzeroed. It is now one allocation that never grows, and it is zeroed whole once the token is
