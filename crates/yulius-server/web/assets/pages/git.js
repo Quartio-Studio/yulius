@@ -153,7 +153,8 @@ export function mountGitPage(ctx, sandbox) {
     try {
       const [git, runs] = await Promise.all([
         ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/git`, { signal: reads.signal }),
-        ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/delivery/runs`, { signal: reads.signal }).catch(() => []),
+        // A playground deploys nothing (SPEC-099 PLY-005): no environment runs to read.
+        sandbox.playground ? [] : ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/delivery/runs`, { signal: reads.signal }).catch(() => []),
       ]);
       if (!current()) return;
       const rows = Array.isArray(git.tasks) ? git.tasks : [];

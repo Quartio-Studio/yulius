@@ -412,10 +412,7 @@ fn human_duration(d: Duration) -> String {
 }
 
 fn actor(ctx: &AuthContext) -> String {
-    ctx.user
-        .github_login
-        .clone()
-        .unwrap_or_else(|| "superadmin".into())
+    ctx.user.label()
 }
 
 fn mask_whole(masker: &mut dyn OutputMasker, bytes: &[u8]) -> Vec<u8> {

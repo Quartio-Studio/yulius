@@ -971,6 +971,19 @@ impl App {
         Ok(parts)
     }
 
+    /// A saved state is never restored into, or saved from, a playground a guest joined: its
+    /// guests share the sandbox and reach no secret (SPEC-410 GST-004).
+    async fn refuse_states_with_guests(&self, sandbox: &SandboxId) -> AppResult<()> {
+        if self.playground_had_guests(sandbox).await {
+            return Err(AppError::Forbidden(
+                "guests have worked in this playground, which they share: saved agent states stay \
+                 out of it"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// The canonical sandbox folder, the anchor no agent can replace.
     fn state_anchor(&self, sandbox: &SandboxId) -> AppResult<PathBuf> {
         std::fs::canonicalize(self.sandbox_dir(sandbox)).map_err(|_| {
@@ -990,6 +1003,7 @@ impl App {
         let parts = Self::home_path(&args.path)?;
         let path = format!("~/{}", parts.join("/"));
         let sandbox = ctx.task.sandbox_id.clone();
+        self.refuse_states_with_guests(&sandbox).await?;
         let _slot = self.state_slot()?;
         let (record, sealed) = self.state_of(&sandbox, args.name.trim()).await?;
         let archive = self.open_state(&record, sealed).await?;
@@ -1086,6 +1100,7 @@ impl App {
         let args: SaveArgs = serde_json::from_value(args.clone())
             .map_err(|e| AppError::Invalid(format!("invalid arguments: {e}")))?;
         let sandbox = ctx.task.sandbox_id.clone();
+        self.refuse_states_with_guests(&sandbox).await?;
         // One writer at a time (SPEC-278 CDS-005): never under a running deploy, and read under
         // the hold, so a deploy's save is seen.
         let _hold = self

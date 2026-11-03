@@ -155,8 +155,8 @@ impl App {
             .vault_reset_two_factor(user.id.as_str())
             .await?
         {
-            let person = user.github_login.as_deref().unwrap_or("superadmin");
-            self.vault_audit(&Self::vault_actor(ctx), "vault.2fa.reset", None, person)
+            let person = user.label();
+            self.vault_audit(&Self::vault_actor(ctx), "vault.2fa.reset", None, &person)
                 .await?;
         }
         Ok(Revealed::Values(()))

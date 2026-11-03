@@ -1,0 +1,26 @@
+-- A playground's guests (SPEC-410, ADR-0260): the expiring links its admins create (only the code's
+-- hash is kept) and the guest accounts each link let in.
+CREATE TABLE playground_invites (
+    id TEXT PRIMARY KEY,
+    sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
+    code_hash TEXT NOT NULL UNIQUE,
+    created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    revoked_at INTEGER,
+    -- When the sweep ended what its guests ran for good (a minute or more after the link died).
+    ended_at INTEGER,
+    -- The sweep's last try, so links whose work will not stop do not hold its batch.
+    swept_at INTEGER
+);
+CREATE INDEX playground_invites_sandbox ON playground_invites(sandbox_id);
+-- The sweep's links: revoked or expired, their guests' work not ended yet.
+CREATE INDEX playground_invites_unended ON playground_invites(swept_at, expires_at)
+    WHERE ended_at IS NULL;
+
+CREATE TABLE playground_guests (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    invite_id TEXT NOT NULL REFERENCES playground_invites(id) ON DELETE CASCADE,
+    joined_at INTEGER NOT NULL
+);
+CREATE INDEX playground_guests_invite ON playground_guests(invite_id);

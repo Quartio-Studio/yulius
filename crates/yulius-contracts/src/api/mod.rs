@@ -11,6 +11,7 @@ pub mod ci;
 pub mod common;
 pub mod files;
 pub mod git;
+pub mod guests;
 pub mod intake;
 pub mod leftovers;
 pub mod mcp;

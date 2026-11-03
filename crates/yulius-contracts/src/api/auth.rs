@@ -57,6 +57,20 @@ pub struct MeUser {
     pub is_instance_admin: bool,
     /// Whether a GitHub identity is linked.
     pub github_linked: bool,
+    /// For a playground's guest (SPEC-410 GST-006): the one playground they reach and until when.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest: Option<MeGuest>,
+}
+
+/// The playground a guest was let into (SPEC-410).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeGuest {
+    /// The playground's sandbox id.
+    pub sandbox_id: String,
+    /// Its slug.
+    pub slug: String,
+    /// When the guest's access ends.
+    pub expires_at: String,
 }
 
 /// Instance part of [`Me`].
