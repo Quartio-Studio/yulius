@@ -48,7 +48,7 @@ test('files dropped on a folder of the explorer are added to it', async ({ app, 
   // While the files are over the folder, the overlay names it and the row is marked.
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.ed-row[data-path="src"]', [['notes.txt', 'hello from a drop\n', 'text/plain']], ['dragenter', 'dragover']));
   await expect(browser.locator('.ed-side .drop-overlay')).toHaveText('Drop to add to src/');
-  expect(await browser.evaluate(() => document.querySelector('.ed-row[data-path="src"]')!.classList.contains('ed-drop-target'))).toBe(true);
+  await expect(browser.locator('.ed-row[data-path="src"]')).toHaveAttribute('class', /\bed-drop-target\b/);
 
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.ed-row[data-path="src"]', [['notes.txt', 'hello from a drop\n', 'text/plain']], ['drop']));
   await expect(browser.locator('.drop-overlay')).toBeHidden();

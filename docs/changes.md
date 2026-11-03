@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
+- The editor's explorer keeps a file drag's folder marked when it draws its rows again during the
+  drag, for example when the folder list answers after the listing. The mark is drawn by path
+  with the rows, not kept on a row element that a redraw replaces. The filedrop e2e test waits for
+  the mark instead of reading it once, and a new test redraws the tree mid-drag (SPEC-414, task
+  #396, fixes #1029).
 - Test fixtures under `crates/yulius/tests` no longer commit credentials in a provider's shape.
   26 synthetic values with real prefixes (`sk-ant-oat01-`, `sk_test_`, `sk_live_`) are now put
   together from the prefix and a body, with the same value. `fixture_hygiene` fails on any
