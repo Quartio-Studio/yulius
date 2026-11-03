@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { editorShown, failOnPageErrors, LATE_OBSERVER_MS, lateResizeObservers, mock, terminalShown, touchTask } from './support.ts';
+import { editorShown, failOnPageErrors, firstShown, LATE_OBSERVER_MS, lateResizeObservers, mock, terminalShown, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -551,7 +551,8 @@ test('a read-only viewer’s clipboard is never written by the program', async (
   // SPEC-158 OSC-003: a viewer who cannot write only watches; the program's copy is not theirs,
   // even right after they clicked into the terminal.
   await app.open(mock('/s/sandbox-3/t/1'));
-  await expect(screen.getByText('Read-only (GitHub: read)')).toBeVisible();
+  await firstShown(screen.getByText('Read-only (GitHub: read)'));
+  await terminalShown(browser);
   await expect(rows(browser)).toHaveText(/Read 142 lines/);
   const clip = await recordClipboard(browser);
   await rows(browser).click({ position: { x: 300, y: 8 } });
@@ -562,7 +563,7 @@ test('a read-only viewer’s clipboard is never written by the program', async (
 
 test('a read-only viewer cannot paste', async ({ app, browser, screen }) => {
   await app.open(mock('/s/sandbox-3/t/1'));
-  await expect(screen.getByText('Read-only (GitHub: read)')).toBeVisible();
+  await firstShown(screen.getByText('Read-only (GitHub: read)'));
   // That banner is the sandbox's; the terminal says read-only once its first state arrived, which
   // shows it. A paste before then has no terminal to land in (#354).
   await terminalShown(browser);
@@ -627,6 +628,7 @@ test('only keystrokes count as typing, as on the server (SPEC-068)', async ({ ap
 test('another viewer’s size fills this box, with a chip instead of a banner, until a click takes it', async ({ app, browser, screen }) => {
   // Another, active viewer set the terminal to 90×30 (the mock's `othercols`/`otherrows`).
   await app.open(mock('/s/studio/t/12', '&othercols=90&otherrows=30'));
+  await terminalShown(browser);
   await expect(rows(browser)).toHaveText(/Read 142 lines/);
   await holdStill(browser);
   const chip = screen.getByText('Sized by another viewer');
@@ -693,6 +695,7 @@ test('the program has the mouse, as in a native terminal; Shift (Option on macOS
 
 test('the wheel scrolls the program; pinch-zoom and horizontal swipes stay with the browser', async ({ app, browser }) => {
   await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
   await holdStill(browser);
   const sent = await recordInput(browser);
@@ -1108,7 +1111,8 @@ test('mouse use while disconnected says nothing; typed input still warns', async
 
 test('a read-only viewer’s mouse selects text and does not reach the program', async ({ app, browser, screen }) => {
   await app.open(mock('/s/sandbox-3/t/1'));
-  await expect(screen.getByText('Read-only (GitHub: read)')).toBeVisible();
+  await firstShown(screen.getByText('Read-only (GitHub: read)'));
+  await terminalShown(browser);
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
   const sent = await recordInput(browser);
   const point = await spot(browser, 'Searched for 2 patterns');
@@ -1127,6 +1131,9 @@ test('a click beside another viewer’s grid takes the size but does not reach t
   // Ten columns or more each side whatever the fonts: at 90 columns the margin depended on the
   // font's width and was 7 px on macOS (SPEC-082).
   await app.open(mock('/s/studio/t/12', '&othercols=70&otherrows=30'));
+  // The terminal's first screen within its budget (#525: the rows were still empty after 5 s),
+  // then still at once: with 30 rows the line scrolls out about 21 s after it is printed.
+  await terminalShown(browser);
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
   await holdStill(browser);
   const point = await spot(browser, 'Searched for 2 patterns');

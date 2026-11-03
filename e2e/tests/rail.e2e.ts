@@ -38,7 +38,9 @@ function railLayout(browser: Browser) {
 
 // F 2026-10-09: the rail looked "a little broken": highlighted items ran past its right edge.
 test('the tools rail keeps its items inside it, with one open tool', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/t/12'));
+  // Without the sandbox browser's sign-in request 5 s after the start (`browserask=0`): it names
+  // the Browser item "Browser, an agent needs your action", which a slower run read (#525).
+  await app.open(mock('/s/studio/t/12', '&browserask=0'));
   await screen.getByRole('button', /^Show tools/).click();
   const rail = screen.getByRole('navigation', 'Tools');
   await expect(rail).toBeVisible();
