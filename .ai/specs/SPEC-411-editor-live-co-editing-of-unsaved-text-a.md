@@ -1,11 +1,11 @@
 ---
 yulius-task: da9ce3c6-bc5c-4e71-98b2-c5fd7ae27386
-status: in-progress
+status: done
 ---
 
 # SPEC-411: the Editor's text is shared live and saves itself
 
-Status: in-progress
+Status: done
 Date: 2026-11-03
 Owner: task #393
 Scope authorization: the person's decision of 2026-11-03 on issue #566: "#566 - let's do live
@@ -68,8 +68,8 @@ Decisions, ADR-0146 "Co-editing of unsaved text", ADR-0091 "Operational transfor
 - [x] Review round 1 findings fixed test-first: bounded edits, per-document locks, closing saves
 - [x] Review round 2 findings fixed test-first: rejoin merge, per-document tab ids, leaving saves
 - [x] Review round 3 findings fixed test-first: unsent typing kept, refused edits caught up
-- [ ] Every gate green, evidence recorded and the changes log updated
-- [ ] The final review approves the exact head
+- [x] Every gate green, evidence recorded and the changes log updated
+- [x] The final review approves the exact head
 
 ## Acceptance criteria
 
@@ -155,4 +155,45 @@ Decisions, ADR-0146 "Co-editing of unsaved text", ADR-0091 "Operational transfor
 
 ## Evidence
 
-To be recorded when the work is done.
+- **Red, then green.** Each regression test was run against the code before its fix and failed for
+  the reason it names:
+  - Rust `live_text::concurrent_operations_converge_in_either_order` failed with the delete branch
+    of `transform` removed (a mutation check), then passed (2000 seeded random pairs, with
+    characters outside the BMP).
+  - Rust `live_files::edits_that_do_not_fit_are_refused` found a no-op step marking saved text
+    unsaved and a dropped document still answering a join (both fixed).
+  - Review round 1: `an_edit_with_counts_beyond_any_text_is_refused_and_the_document_keeps_working`
+    panicked in `live_text.rs` (overflow), `an_edit_sent_twice_is_applied_once` answered revision 2,
+    `large_steps_are_announced_without_their_text_and_steps_name_their_person` got the whole insert
+    in the event; e2e "a file closed right after typing still saves all of it", "a document started
+    again by someone else keeps the person's unconfirmed typing on top" and "a disk version that is
+    no longer text is asked for once" failed on the previous client code.
+  - Review round 2: e2e "typing while a lost document is joined again appears once" and "leaving
+    the page sends the typing with a request to save it" failed on the previous `livedoc.js`; Rust
+    `an_edit_may_ask_to_be_saved_with_it` was refused (unknown field) before `save` existed.
+  - Review round 3: e2e "a closed file still saving when the page goes sends its typing…" and the
+    in-page unit test "a whole-text catch-up keeps unsent typing, and a refused old edit is not
+    applied twice" failed (`{"kept":"Xabc!","once":"abcd","edits":48}`) before the fix.
+  - e2e "two people type into one file…" first failed on a teammate's caret drawn one character
+    early (redrawn before the keystroke joined the unconfirmed typing); "a disk back at the text's
+    version ends the conflict by itself" failed with the look's old comparison.
+- **Review.** Independent reviewer in a fresh session (`om-code-review`), read-only: round 1
+  requested changes (blocker: a crafted edit poisoned the shared lock; majors: an edit applied twice
+  after a lost answer, typing lost on close, loose memory bounds), round 2 requested changes (a
+  rejoin merge duplicating typing), round 3 approved `6467176e`'s parent with three minors, all
+  fixed test-first above; it ran the real `livetext.js`/`livedoc.js` against a fake server with 3
+  clients, 300 random concurrent edits, over several seeds: every client converged.
+- **Gates.**
+  - `scripts/dev ci` on `371353fd` (the branch merged with `origin/dev`): exit 0, nextest 3049
+    passed, 16 skipped; fmt, clippy, docs, deny, shear, macOS targets. After it only JavaScript,
+    e2e tests and documents changed.
+  - `cd e2e && npx e2e run` on `e915e7bc`: 809 passed, 1 skipped (72 files), including
+    `live-editor.e2e.ts` (12 tests) and `editor.e2e.ts` (32).
+  - `python3 scripts/check_repository.py`: passed.
+  - `yulius security-scan` / Vidoc: **disabled** for this project in Yulius ("Security scan
+    disabled … nothing was scanned"); not passed, not run.
+- **Not testable here.** Two real browsers on two machines against a deployed server (network
+  latency, a real restart of the server with Editors open), Monaco's IME composition while a
+  teammate's step arrives, and `keepalive` requests outliving a real page close: the mock windows
+  (one browser, one hub in the first window) and the Rust router tests stand in. Undo is shared in
+  time order (a teammate's step is an undo stop of its own), as decided above.
