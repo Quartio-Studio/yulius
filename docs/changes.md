@@ -14,6 +14,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   store), #726 (128-bit one-time setup token), #734 (GitHub App secrets never leave the server in
   clear) and #837 (the deploy itself refuses production without the typed slug) are dismissed with
   narrow `[[ignore]]` entries.
+- `task_delete` no longer answers as if a deleted task had no attachments when settling left its
+  folder in place: with `attachments` or its `tasks` folder swapped for a link (never looked
+  behind), a `tasks` folder that cannot be opened, or the sandbox's tasks unreadable while the
+  folder is there, the answer says
+  `not_moved: true`; the tool description and SPEC-396's ATR-003 now name the field (SPEC-397,
+  task #387).
 - Deleting a task no longer destroys attachments another task still uses: its
   `attachments/tasks/<id>/` folder stays where it is while a remaining task's request or an
   automation's prompt names it (`task_delete` answers `kept_for`), and otherwise waits 7 days in the
