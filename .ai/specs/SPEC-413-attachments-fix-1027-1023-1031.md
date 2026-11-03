@@ -1,11 +1,11 @@
 ---
 yulius-task: 04f3e36b-6a99-4183-bb3c-4cb9ac3d5b45
-status: in-progress
+status: done
 ---
 
 # SPEC-413: A shell's and a composer's attachments stay while a request names them
 
-Status: in-progress
+Status: done
 Date: 2026-11-03
 Owner: Yulius task #395
 Scope authorization: the owner's goal for task #395 (fix #1027, #1023 and #1031).
@@ -61,8 +61,9 @@ for a deleted task whose folder is there.
 - [x] Old drafts a request names survive the next upload
 - [x] task_delete finds its folder past the listing cap
 - [x] Docs and changes say what stays
-- [ ] Independent review approved and findings answered
-- [ ] Gates green with evidence in the spec
+- [x] Independent review approved and findings answered
+- [x] Gates green with evidence in the spec
+- [ ] Final review approves the evidenced head
 
 ## Acceptance criteria
 
@@ -118,4 +119,40 @@ for a deleted task whose folder is there.
 
 ## Evidence
 
-Pending.
+- `scripts/dev ci` at `8cf472b0` (2026-11-03): exit 0. Repository contracts, script unit tests,
+  `cargo check`, `fmt`, `clippy -D warnings` (Linux and `aarch64-apple-darwin`), `nextest`
+  **3029 passed, 16 skipped**, doctests, `cargo deny`, `cargo shear`, `cargo doc`. Two earlier
+  runs were stopped unfinished because review rounds changed the head.
+- `yulius security-scan`: **disabled** ("Vidoc is turned off in Yulius"); nothing was scanned.
+  Reported as disabled, not passed.
+- No web UI change, so the e2e suite was not run.
+- Test-first: each test below failed on the source before its fix (the source diff reversed with
+  `git apply -R`, or before the fix was written) and passed after:
+  - `uploads::shell_attachments_belong_to_the_shell_owner_and_end_with_the_shell` (extended),
+    `uploads::an_old_draft_a_request_names_is_never_pruned` and
+    `uploads::unreadable_requests_keep_old_drafts_and_shell_folders`: `NotFound` on the named file
+    or the kept file gone (#1027, #1023);
+  - `attachment_trash::tests::the_deleted_tasks_folder_is_listed_past_the_cap`: `left: []`,
+    `right: ["t1"]` (#1031);
+  - review round 1: `leftovers::old_drafts_a_request_names_are_no_leftovers` (the named draft
+    listed as `old-draft`) and `uploads::kept_old_drafts_never_fill_the_drafts_folder` (409).
+  - `attachment_trash::a_deletion_past_ten_thousand_planted_folders_still_trashes_its_own` also
+    passes without the fix here (the listing order kept `t1` among the first 10,000): an end-to-end
+    guard of the answer; the unit test above is the deterministic proof.
+  - Round 2's two changes (a fresh read per old draft in the leftovers deletion, a listing error
+    refusing the drafts bound) have no failing test: a task created inside one deletion pass and a
+    listing error on a held handle need probe hooks to provoke; the reviewer accepted that.
+- Independent review in fresh read-only sessions (skill `om-code-review`), three rounds:
+  - round 1 (`4f985387`): changes requested. A blocker (the leftovers round, SPEC-215 `old-draft`,
+    still deleted named drafts), a major (kept drafts filled the drafts folder's 500), three
+    minors and three nits; all answered in `ec1c4543`, the two pre-existing ones (the trash
+    renumbering lookup's 10,000 cap, blocking file work on async threads) recorded in Decisions.
+  - round 2 (`ec1c4543`): approved with two minors (the per-pass cache of the leftovers guard, the
+    drafts bound swallowing a listing error) and three nits, all fixed in `8cf472b0`.
+  - round 3 (`8cf472b0`): approved. Its three nits are left, with reasons, at the round limit
+    (ADR-0141): the per-draft read in a person's deletion is bounded and documented in ADR-0259
+    (correctness over a cache); failing the upload on an entry's read error is the safe side for a
+    bound; the store error not kept in the "kept" reason is the pattern the code had before.
+- Not tested: a real contained sandbox (bubblewrap) and a real Superagent pasting into its shell;
+  the tests run the HTTP, MCP and leftovers paths against the sandbox folder on the host, as the
+  existing upload and trash tests do.
