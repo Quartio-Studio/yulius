@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
+- A task's spec and `yulius.toml` are no longer read through a link an agent swaps in after the
+  containment check: the server reads them through a handle opened without following a link at
+  its end and kept only while its real path is inside the worktree (SPEC-409, task #391, fixes
+  #745). The unused `spec_format::spec_path` is removed (#820). The Vidoc findings #817 (draft
+  thumbnails are this page's own data URLs), #816 (every shell viewer is its writing creator),
+  #737 (the status link's parts are server-made) and #732 (the `LIMIT` is a `u32`) are dismissed
+  with narrow `[[ignore]]` entries.
 - The scrub of a clone's transport settings no longer writes through a link an agent swaps in
   after its checks: `.git`, `config` and `config.worktree` are opened with `O_NOFOLLOW` under Git's
   own lock, Git edits a private copy, and the result is renamed over the name through the `.git`
