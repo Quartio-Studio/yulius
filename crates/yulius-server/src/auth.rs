@@ -136,7 +136,7 @@ const GUEST_SANDBOX_PAGES: &[&str] = &[
 
 /// Whether a playground's guest may send `method` to `path` (an allowlist, so a route added later
 /// stays closed to guests until it is listed): their account (`/api/me`, sign-out, their own notes),
-/// the event stream, the sandbox list, a sandbox and its [`GUEST_SANDBOX_PAGES`], tasks,
+/// the event stream, the sandbox list, a sandbox and its `GUEST_SANDBOX_PAGES`, tasks,
 /// sessions and shells (each decided by the sandbox's access) and preview authorization.
 #[must_use]
 pub fn guest_may_reach(method: &Method, path: &str) -> bool {

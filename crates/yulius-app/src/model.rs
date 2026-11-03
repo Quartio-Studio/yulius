@@ -91,7 +91,7 @@ pub struct UserRecord {
 impl UserRecord {
     /// How the person is named wherever others read it (an audit actor, a task's owner): their
     /// GitHub login, `superadmin`, or for a playground's guest, the only other account without a
-    /// GitHub login, "<name> (guest)" (SPEC-410 GST-006).
+    /// GitHub login, `<name> (guest)` (SPEC-410 GST-006).
     #[must_use]
     pub fn label(&self) -> String {
         match &self.github_login {

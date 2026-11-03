@@ -1,11 +1,11 @@
 ---
 yulius-task: 197d7905-2c61-41a5-b567-f8ce85d7f442
-status: in-progress
+status: done
 ---
 
 # SPEC-410: teammates try a playground without GitHub sign-in
 
-Status: in-progress
+Status: done
 Date: 2026-11-03
 Owner: Yulius task #392
 Scope authorization: issue [#412](https://github.com/Quartio-Studio/yulius/issues/412), decided by
@@ -62,8 +62,8 @@ reaches nothing else: no other sandbox, no secret, no instance setting, no accou
 - [x] Docs: SPEC-001, SPEC-099, architecture, product and changes
 - [x] Review fixes: no secrets or states in a guest playground, no configuring tools, revoking stops guests' work
 - [x] Review rounds 2 and 3 answered: no token surprise, sweep retries, Vidoc key withheld
-- [ ] Independent review approves the head
-- [ ] Gates green on the reviewed head
+- [x] Independent review approves the head
+- [x] Gates green on the reviewed head
 
 ## Acceptance criteria
 
@@ -112,4 +112,37 @@ reaches nothing else: no other sandbox, no secret, no instance setting, no accou
 
 ## Evidence
 
-Pending.
+Run on 2026-11-03 in the task worktree (head `eca36631` plus two doc-comment fixes):
+
+- `scripts/dev ci`: doctor, repository contracts, `cargo check`, `cargo fmt --check`, Clippy
+  (Linux and `aarch64-apple-darwin`), `cargo nextest` (**3052 passed**, 16 skipped), doctests,
+  `cargo deny`, `cargo shear` passed; its last step `cargo doc` failed on two doc comments of this
+  change (`<name>` read as an HTML tag, a link to a private const). Fixed, then
+  `RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-deps` passed and
+  `cargo fmt --check` and Clippy (`-D warnings`) of `yulius-app` and `yulius-server` passed again.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^playground_guests::/)'`: 20
+  passed; store `playground_guest_links_are_bounded_and_end_once`,
+  `the_guest_link_sweep_takes_the_least_recently_swept_first`: passed; server unit test
+  `a_guest_reaches_only_their_playgrounds_work`: passed; `ui_contract::`: passed.
+- Test-first evidence: the fence, labels and secrets tests failed before step 4; each later guard
+  was mutation-checked (disabled, its test failed, restored): events filter, secrets in a guest
+  playground, saved states, configuring tools, revoke stop, join-vs-revoke re-check (via the
+  `GuestJoined` race point), Vidoc key, the one-minute grace, the ended-for-good branch, the
+  moved playground's revocation and its audit.
+- e2e: `npx e2e run tests/playground-guests.e2e.ts` 5 passed (no page errors, no call the guest
+  fence refuses, no WCAG violations); with `playground`, `git` and `sign-in` 21 passed.
+- `python3 scripts/check_repository.py`: passed. `yulius security-scan`: **disabled** (Vidoc is
+  switched off for this project in Yulius; nothing scanned, not a pass).
+- Independent review: six rounds in fresh read-only sessions. Rounds 1-4 requested changes (the
+  shared workspace, configuring tools, saved states, revoke stopping work, the Claude token, the
+  move to GitHub, sweep retries and grace, the Vidoc key, tests); all were fixed test-first.
+  Rounds 4-6 approved. The Claude token exposure was put to the product owner (needs_you), who
+  answered "decide what's better": shipped stated (ADR-0260).
+- Left as is, with reasons: an audit entry of a sweep revocation is lost if the audit write fails
+  after the revoke (the admin path has the same order; logged as a warning); the move dialog does
+  not warn about a playground that had guests (ADR-0260 says to look it over).
+- Not testable here: a real browser against `yulius serve` (the e2e suite uses the mock, which
+  applies the same fence); a guest's real Claude run (no account in tests); the token exposure
+  itself is documented, not mitigated.
+- Size: about 2,800 changed lines, about 1,100 of them tests; one feature whose fence, access and
+  revocation must ship together, so it was not split.
