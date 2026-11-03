@@ -16,6 +16,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   says), so once a guest joined its runs get no agent secret or saved agent state. Revoking the
   link or its expiry signs its guests out and stops what they run.
 
+- The editor's explorer keeps a file drag's folder marked when it draws its rows again during the
+  drag, for example when the folder list answers after the listing. The mark is drawn by path
+  with the rows, not kept on a row element that a redraw replaces. The filedrop e2e test waits for
+  the mark instead of reading it once, and a new test redraws the tree mid-drag (SPEC-414, task
+  #396, fixes #1029).
 - Attachments a task's request or an automation's prompt names are no longer removed by the older
   clean-ups: a shell's folder (a screenshot pasted into the Superagent and named in `task_create`)
   stays when the shell ends and at start-up, and a composer draft older than a week stays at its
