@@ -59,9 +59,9 @@ its wording, so that a repeat scan does not reopen it.
 ## Plan
 
 - [x] Spec SPEC-405 with the triage of all five findings
-- [ ] browser_fill_secret refuses a production secret (#710)
-- [ ] Fingerprint-file guard pinned: a partly written file fails closed (#835)
-- [ ] Narrow [[ignore]] entries for the dismissed wordings (#835 #758 #815)
+- [x] browser_fill_secret refuses a production secret (#710)
+- [x] Fingerprint-file guard pinned: a partly written file fails closed (#835)
+- [x] Narrow [[ignore]] entries for the dismissed wordings (#835 #758 #815)
 - [ ] Architecture, API docs, changes entry and gates
 - [ ] Independent review answered
 - [ ] Dismissed issues commented and closed (#711 #835 #758 #815)

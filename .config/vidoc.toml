@@ -904,3 +904,36 @@ reason = "a confirmation under 7 characters fails the guard and is refused with 
 path = "crates/yulius-app/src/ci/cd.rs"
 title = "Agent can read production run output (potential secret disclosure)"
 reason = "stored CD output is redacted of every agent secret of the sandbox, production's included; tested by production_secrets_need_their_own_allowance (SPEC-401, #717)"
+
+# #835: the fingerprint file is rewritten in place on purpose: a contained session binds its inode
+# read-only, so a renamed replacement would never reach it (it would keep the previous holder's
+# fingerprints, SPEC-248 FUP-002). A read that meets the rewrite half done parses no set (one JSON
+# object, closed by its last byte), and the Bash wrapper then runs nothing. Pinned by
+# scrub_client::tests::a_partly_written_fingerprint_file_fails_closed.
+[[ignore]]
+path = "crates/yulius-app/src/vault/runtime.rs"
+title = "Non-atomic rewrite of the fingerprint file"
+function = "rewrite_run_fingerprints"
+line = 530
+reason = "a half-written fingerprint file parses no set and the wrapper fails closed (exit 126); a rename would not reach the read-only bind; tested by a_partly_written_fingerprint_file_fails_closed (SPEC-405, #835)"
+
+# #758: asker names are `#N`, `<login>'s Superagent` (logins: letters, digits, hyphens), with
+# ` in <slug>` for a secret of every sandbox (slugs: [a-z0-9-]): none holds ", ". The list only
+# says who asked and whether a task's waiting flag stays; the person who manages the secret allows
+# a request, never an asker.
+[[ignore]]
+path = "crates/yulius-app/src/vault/requests.rs"
+title = "Askers compared by naive comma-split"
+function = "among_askers"
+line = 428
+reason = "no asker name can hold \", \" (#N, GitHub logins, [a-z0-9-] slugs) and the list authorizes nothing: it shows the askers and keeps a task's waiting flag (SPEC-405, #758)"
+
+# #815: open_credential is crate-private; its four callers (task start and its switch preflight,
+# the Superagent after require(Work), split proposals) take the account from the server's own pool
+# choice (choose_account, pool_account), and the token only starts the agent process.
+[[ignore]]
+path = "crates/yulius-app/src/supervisor.rs"
+title = "Sealed credential decrypted without additional access control check"
+function = "open_credential"
+line = 2087
+reason = "every caller gets the account from the server's pool choice after its own authorization; the token is never returned to a caller (SPEC-405, #815)"
