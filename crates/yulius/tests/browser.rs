@@ -656,6 +656,65 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
     .await
 }
 
+/// SPEC-405 VEV-001 (#710): a production secret (`cd_prod`) is never typed into a page, not even
+/// one of the hosts it kept from before production secrets became exclusive (SPEC-308 R2).
+#[tokio::test]
+async fn a_production_secret_is_never_typed_into_a_page() -> TestResult {
+    const VALUE: &str = "prod-pass-5512-qrs";
+    with_fixture(|f| async move {
+        let created = support::call(
+            &f.h.router,
+            axum::http::Method::POST,
+            "/api/sandboxes/s1/agent-secrets",
+            Some(
+                json!({"name": "PROD_LOGIN", "hosts": ["docs.example"], "value": VALUE,
+                "auto_allow": false}),
+            ),
+            &f.writer,
+        )
+        .await?;
+        assert_eq!(
+            created.status,
+            axum::http::StatusCode::CREATED,
+            "{}",
+            created.body
+        );
+        let id = created.body["id"].as_str().ok_or("id")?;
+        support::legacy_production_secret(&f.h.store, id).await?;
+
+        let opened = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_open",
+            json!({"url": "https://docs.example/login"}),
+        )
+        .await?;
+        let tab = tool_text(&opened)["tab"]["id"]
+            .as_str()
+            .ok_or("tab id")?
+            .to_owned();
+        let before = f.fake.calls_for("Input.insertText").len();
+        let refused = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_fill_secret",
+            json!({"tab_id": tab, "secret": "PROD_LOGIN", "selector": "#password"}),
+        )
+        .await?;
+        assert_eq!(refused["isError"], true, "{refused}");
+        assert!(
+            tool_text(&refused)
+                .as_str()
+                .is_some_and(|t| t.contains("production secret")),
+            "{refused}"
+        );
+        assert!(!refused.to_string().contains(VALUE));
+        assert_eq!(f.fake.calls_for("Input.insertText").len(), before);
+        Ok(())
+    })
+    .await
+}
+
 #[tokio::test]
 async fn user_action_requests_mark_the_task_notify_viewers_and_return_a_link() -> TestResult {
     with_fixture(|f| async move {

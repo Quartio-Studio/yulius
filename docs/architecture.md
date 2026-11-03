@@ -1328,7 +1328,9 @@ request waits on the secret (`requested_hosts`) until a person who manages it al
 agent misled by injected content cannot send that secret to another server; and production gets
 it only through the production-only allowance (`cd_prod`), which excludes `auto_allow`, `.env`
 copies and bound hosts: each compare-and-set of the store refuses the pair itself, so two people
-answering at once cannot end with both (SPEC-134 M-B, SPEC-262).
+answering at once cannot end with both (SPEC-134 M-B, SPEC-262). Hosts a production secret kept
+from before that are used by the egress proxy only: `browser_fill_secret` never types a production
+secret into a page the agent drives (SPEC-405).
 
 Every team secret belongs to one sandbox (`sandbox_id`, the default) or is team-wide
 (`NULL`). A sandbox's team secret is read by the people who can view that sandbox
