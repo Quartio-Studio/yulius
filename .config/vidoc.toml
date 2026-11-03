@@ -905,8 +905,9 @@ path = "crates/yulius-app/src/ci/cd.rs"
 title = "Agent can read production run output (potential secret disclosure)"
 reason = "stored CD output is redacted of every agent secret of the sandbox, production's included; tested by production_secrets_need_their_own_allowance (SPEC-401, #717)"
 
-# SPEC-403 (task #384): the Vidoc findings on CD environments, CD run environments and CI lanes,
-# triaged as false positives on dev ffbc2e91; each issue holds the file:line evidence.
+# SPEC-403 (task #384): the Vidoc findings on CD environments and CD run environments, triaged as
+# false positives on dev ffbc2e91; each issue holds the file:line evidence. (#738, the CI lane
+# finding, led to a real double dispatch, which is fixed.)
 
 # #784: the agent tool cd_deploy (tool_cd_deploy) applies dom::env_name before it calls
 # cd_deploy_for_task, its only caller, as the person's route does in cd_deploy. Pinned by cd.rs
@@ -938,12 +939,3 @@ reason = "the operator sets the server's PATH (the installed unit pins /usr/loca
 path = "crates/yulius-app/src/ci/cd.rs"
 title = "Containment silently disabled without isolation"
 reason = "uncontained is the documented development mode: agents and shells already run on the host as the service user, which reads the data directory and master.key; runs are marked not contained (docs/operations.md, SPEC-403, #715)"
-
-# #738: the first lock only skips the disk-room query when no lane is free; the lane is taken and
-# the executor registered under one lock, and a failed take_lane continues before registering.
-# There is one dispatcher (start_ci), and ci_claim shares the busy mutex. Pinned by ci/mod.rs
-# a_sandbox_runs_as_many_runs_as_it_has_lanes_and_never_while_claimed.
-[[ignore]]
-path = "crates/yulius-app/src/ci/mod.rs"
-title = "TOCTOU on lane reservation in ci_dispatch"
-reason = "take_lane re-checks and reserves under the same lock that registers the executor, and a failed take registers nothing; the earlier check only skips a disk query (SPEC-403, #738)"

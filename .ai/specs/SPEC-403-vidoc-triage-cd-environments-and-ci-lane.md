@@ -8,14 +8,17 @@ status: in-progress
 Status: in-progress
 Date: 2026-11-03
 Owner: Yulius task #384
-Scope authorization: task #384 (a person asked that each of the five issues end closed). All five
-are false positives on `dev` at ffbc2e91. They are dismissed with file:line evidence, a narrow
-`[[ignore]]` entry per wording, and tests that pin the two guards nothing pinned yet.
+Scope authorization: task #384 (a person asked that each of the five issues end closed). Fixes
+#738. Its mechanism as Vidoc describes it is wrong, but the independent review found a real
+double dispatch in the same reservation. #784, #718 (a duplicate of #780), #716 and #715 are false
+positives on `dev` at ffbc2e91. Each is dismissed with file:line evidence and a narrow
+`[[ignore]]` entry per wording. Tests pin the two guards nothing pinned yet.
 
 ## Goal
 
 Each of the five Vidoc findings about CD environments, CD run environments and CI lanes is
-checked against `dev` (ffbc2e91). Each one ends closed. A repeat scan does not reopen it.
+checked against `dev` (ffbc2e91). Each one ends closed: fixed test-first, or dismissed so that a
+repeat scan does not reopen it.
 
 ## Context
 
@@ -46,26 +49,37 @@ checked against `dev` (ffbc2e91). Each one ends closed. A repeat scan does not r
   `/root` and `/var` are empty, and only the run's directory and its cache are bound in
   (`production_containment`, `ci/cd.rs:1856`). So nothing an agent installed is on that PATH. A
   test pins the unit's PATH.
-- VCE-004 (#715, false positive). `contained = false` is the documented development mode
-  (docs/operations.md lines 13, 18 and 335; SPEC-002 NFR-007). In that mode every agent run and
-  shell already runs on the host as the service user, which can read the data directory and
-  `master.key`. So an uncontained production run gets no capability that the agents lack.
-  Runs are marked "not contained". With containment, every CD run is contained
-  (`cd_containment`, `ci/cd.rs:1331-1380`).
-- VCE-005 (#738, false positive). There is no window between the two locks. The first lock
-  (`ci/mod.rs:1246-1250`) only skips the disk-room query when no lane is free. The reservation
-  and the `executing` registration happen under one lock scope (`ci/mod.rs:1256-1267`).
-  `take_lane` checks again there, and on `None` the loop `continue`s before anything is
-  registered. Only one dispatcher exists (`start_ci`'s `swap`, `ci/mod.rs:1151-1159`).
-  `ci_claim` and the lanes share the same `busy` mutex. The test
-  `a_sandbox_runs_as_many_runs_as_it_has_lanes_and_never_while_claimed` pins that a claim holds
-  every lane.
+- VCE-004 (#715, false positive). `contained = false` is the documented development mode:
+  docs/operations.md, lines 13 and 18, says runs are then marked "not contained", and the web UI
+  shows a "Not isolated" chip. In that mode, every agent run and shell already runs on the host
+  as the service user. That user can read the data directory and `master.key` (operations.md
+  line 335). So an uncontained production run gets no capability that the agents lack. A
+  production deploy still needs an administrator who types the slug. With containment, every CD
+  run is contained (`cd_containment`, `ci/cd.rs:1331-1380`).
+- VCE-005 (#738, real; fixed). Vidoc's mechanism is wrong. The first lock
+  (`ci/mod.rs:1246-1250`) only skips the disk-room query when no lane is free. `take_lane` checks
+  again and reserves under the lock scope that registers the executor
+  (`ci/mod.rs:1256-1267`). A failed take registers nothing, and only one dispatcher exists
+  (`start_ci`, `ci/mod.rs:1151-1159`).
+  - **The real race:** the dispatcher keeps every run whose state is `Queued`. A pending wake
+    can start the next dispatch before the first executor's Queued→Running transition
+    (`ci/exec.rs:340`) commits. With 2 or more lanes (the default), the same run then takes a
+    second lane. Its `executing.insert` drops the first executor's cancellation sender. The
+    second executor's transition fails, and it forgets its own entry. A later cancel then finds
+    no executor and marks the run cancelled while its jobs keep running.
+  - **Fix:** the dispatcher reserves through `reserve_run`, which refuses a run that already has
+    an executor, all under the `busy` and `executing` locks. That lock order is already the
+    dispatcher's own, and no other site holds `executing` while it takes `busy`.
+  - **Disk requeue:** a run queued again for disk forgets its executor itself
+    (`ci_forget_executor`), and the executor's end wakes the dispatcher, so such a run is
+    dispatched again as before.
 
 ## Plan
 
 - [ ] Triage the five findings against dev with file:line evidence
 - [ ] Pin the agent deploy's environment name check (#784) with a test
 - [ ] Accept the five false positives in .config/vidoc.toml
+- [ ] Reserve a CI lane only for a run without an executor (#738)
 - [ ] Independent review and gates green
 - [ ] Comment and close the five issues as not planned
 
@@ -75,20 +89,29 @@ checked against `dev` (ffbc2e91). Each one ends closed. A repeat scan does not r
   malformed names with the unknown-environment message. It fails when `tool_cd_deploy` skips
   `dom::env_name` (mutation-checked).
 - `host_setup::tests` asserts that the written unit pins `PATH=/usr/local/bin:/usr/bin:/bin`.
-- `.config/vidoc.toml` has one narrow entry per dismissed wording, each with its reason.
-- Each of the five issues ends closed as not planned, with a comment giving the evidence. #718
-  is labelled `duplicate` of #780.
+- `ci::lane_tests::a_run_with_an_executor_is_not_reserved_again` fails on dev's reservation (a
+  second lane, `Some(1)`) and passes with the fix. The CI, CD and disk integration tests pass
+  unchanged.
+- `.config/vidoc.toml` has one narrow entry per dismissed wording (#784, #718, #716 and #715),
+  each with its reason.
+- Each issue ends closed. #738 is closed by the merged pull request. The others are closed as
+  not planned, each with a comment giving the evidence, and #718 is labelled `duplicate` of
+  #780.
 
 ## Test plan
 
-- Additions to `crates/yulius/tests/cd.rs` and `crates/yulius/src/host_setup/tests.rs`.
+- Additions to `crates/yulius/tests/cd.rs`, `crates/yulius/src/host_setup/tests.rs` and
+  `ci/mod.rs`'s `lane_tests`.
 - Mutation check of the #784 test, done by removing the validation in `tool_cd_deploy`.
 - `scripts/dev ci` (the full gate). `yulius security-scan` reports the scan as disabled for this
   project (Vidoc is off in Yulius), never as passed.
 
 ## Decisions
 
-- No code change for any finding. Each guard Vidoc asks for already exists. Moving
+- #738 is fixed, not dismissed. The pure `reserve_run` helper makes the race testable without
+  timing, where a test racing two dispatches would need a sleep. The executor check sits in the
+  helper that the dispatcher must use.
+- No code change for the other four. Each guard Vidoc asks for already exists. Moving
   `dom::env_name` into `cd_start` (#784) would only duplicate a check that both entry points
   already make. A hard-coded PATH (#716) would ignore an operator's deliberate choice, and the
   installer already writes the minimal PATH. Refusing `contained = false` for production (#715)
