@@ -1127,7 +1127,9 @@ dropped or pasted onto a terminal are stored as attachments in
 files). They count towards the
 data directory's disk: at most 1 GiB each (`YULIUS_UPLOAD_MAX_MB`), 500 per task or terminal,
 8 uploads at once; an upload that would bring the data disk to its critical level (95 % used) is
-refused before it starts (ADR-0219). A task's attachments go when the task is deleted, a terminal's when it ends
+refused before it starts (ADR-0219). A deleted task's attachments stay while another task's request or an automation's prompt names
+them, and otherwise wait 7 days in `attachments/trash/<secs>-<number>-<id>/` (SPEC-396;
+`attachments_trash` restores them into a task), a terminal's go when it ends
 (left-overs are removed at the next start); archiving a task keeps them. Uploads are audited
 (`audit_log`: `file.uploaded`, `attachment.uploaded`).
 

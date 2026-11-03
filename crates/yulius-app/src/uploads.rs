@@ -38,7 +38,8 @@
 //!   keep letters, digits, `.`, `-`, `_` and `+` (anything else becomes `-`; no leading dot or
 //!   dash), so a path needs no quoting in a terminal; at most [`MAX_ATTACHMENTS_PER_FOLDER`] per
 //!   folder. Files dropped on the new-task composer wait in `…/attachments/drafts/<user>/` and are
-//!   removed after a week; a task's folder is removed with the task (TSK-009), a shell's when the shell ends and
+//!   removed after a week; a deleted task's folder stays while another task's request names it and
+//!   otherwise waits a week in the trash (crate::attachment_trash, SPEC-396), a shell's goes when the shell ends and
 //!   at start-up for shells that are gone;
 //! - every upload is audited (`file.uploaded`, `attachment.uploaded`).
 
@@ -83,11 +84,11 @@ const MAX_NAME_BYTES: usize = 255;
 /// Longest attachment name, in characters (the extension is kept).
 const MAX_ATTACHMENT_NAME_CHARS: usize = 100;
 /// Names tried for an attachment before giving up (`name`, `name-2`, …).
-const MAX_FREE_NAME_ATTEMPTS: u32 = 1000;
+pub(crate) const MAX_FREE_NAME_ATTEMPTS: u32 = 1000;
 /// Folder of every attachment in a sandbox directory.
 pub(crate) const ATTACHMENTS_DIR: &str = "attachments";
 /// Shell attachment folders inspected at start-up.
-const MAX_PRUNED_ENTRIES: usize = 10_000;
+pub(crate) const MAX_PRUNED_ENTRIES: usize = 10_000;
 
 /// How long a file dropped on the composer waits for its task before it is removed.
 const DRAFT_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
@@ -303,7 +304,7 @@ fn split_extension(name: &str) -> (&str, &str) {
 }
 
 /// The `n`-th candidate for a free name: `photo.png`, `photo-2.png`, `photo-3.png`, …
-fn candidate(name: &str, n: u32) -> String {
+pub(crate) fn candidate(name: &str, n: u32) -> String {
     if n <= 1 {
         return name.to_owned();
     }
@@ -314,7 +315,7 @@ fn candidate(name: &str, n: u32) -> String {
 /// Opens `parts` below `base` as real directories, creating the missing ones: a link or a file
 /// on the way is refused, so nothing is ever written through a link a sandbox process planted.
 /// Returns the folder's path and its handle.
-fn ensure_plain_dirs(base: &Path, parts: &[&str]) -> AppResult<(PathBuf, OwnedFd)> {
+pub(crate) fn ensure_plain_dirs(base: &Path, parts: &[&str]) -> AppResult<(PathBuf, OwnedFd)> {
     let names: Vec<&OsStr> = parts.iter().map(OsStr::new).collect();
     let fd = open_dirs_below(base, &names, true).map_err(|err| match err {
         Errno::ELOOP | Errno::ENOTDIR => {
@@ -389,13 +390,22 @@ fn ensure_dirs(root: &Path, dirs: &[&str]) -> AppResult<(PathBuf, OwnedFd)> {
 /// the file system has no hard links, it checks and renames instead (not atomic against a racing
 /// writer).
 fn link_new(folder: &OwnedFd, temp: &str, name: &str) -> std::io::Result<bool> {
-    match linkat(folder, temp, folder, name, AtFlags::empty()) {
+    link_new_in((folder, temp), folder, name)
+}
+
+/// [`link_new`] from the folder `from` into the folder `to` (a link is never followed).
+pub(crate) fn link_new_in(
+    (from, source): (&OwnedFd, &str),
+    to: &OwnedFd,
+    name: &str,
+) -> std::io::Result<bool> {
+    match linkat(from, source, to, name, AtFlags::empty()) {
         Ok(()) => Ok(true),
         Err(Errno::EEXIST) => Ok(false),
-        Err(_) => match fstatat(folder, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+        Err(_) => match fstatat(to, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
             Ok(_) => Ok(false),
             Err(Errno::ENOENT) => {
-                renameat(folder, temp, folder, name)?;
+                renameat(from, source, to, name)?;
                 Ok(true)
             }
             Err(err) => Err(err.into()),
@@ -475,7 +485,7 @@ fn place(
 }
 
 /// Entries of `folder` (`.` and `..` left out), counted through its handle up to `limit`.
-fn count_entries(folder: &OwnedFd, limit: usize) -> AppResult<usize> {
+pub(crate) fn count_entries(folder: &OwnedFd, limit: usize) -> AppResult<usize> {
     let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC;
     let mut listing =
         nix::dir::Dir::openat(folder, ".", flags, Mode::empty()).map_err(errno_error)?;
@@ -979,11 +989,6 @@ impl App {
         if let Err(err) = remove_tree(&parent, OsStr::new(name)) {
             tracing::warn!(%sandbox, error = %err, "could not remove attachments");
         }
-    }
-
-    /// Removes a deleted task's attachments (TSK-009).
-    pub(crate) fn remove_task_attachments(&self, sandbox: &SandboxId, task: &TaskId) {
-        self.remove_attachments(sandbox, &Owner::Task(task));
     }
 
     /// Removes an ended shell's attachments.

@@ -1609,6 +1609,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
     assert_eq!(
         names,
         [
+            "attachments_trash",
             "automation_create",
             "automation_delete",
             "automation_run_now",
@@ -1630,6 +1631,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "task_get",
             "task_message",
             "task_stop",
+            "task_update",
             "tasks_list",
             "workflows_list",
         ]

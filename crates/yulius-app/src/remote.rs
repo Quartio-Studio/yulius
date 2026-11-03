@@ -76,6 +76,8 @@ const REMOTE_TOOLS: &[(&str, Reach, Action)] = &[
     ("task_start_now", Reach::Project, Action::Work),
     ("task_archive", Reach::Project, Action::Work),
     ("task_delete", Reach::Project, Action::Work),
+    ("task_update", Reach::Project, Action::Work),
+    ("attachments_trash", Reach::Project, Action::Work),
     ("sessions_search", Reach::Project, Action::View),
     ("session_read", Reach::Project, Action::View),
     ("ci_runs", Reach::Project, Action::View),
@@ -121,6 +123,8 @@ const SHARED_TOOLS: &[&str] = &[
     "task_stop",
     "task_archive",
     "task_delete",
+    "task_update",
+    "attachments_trash",
     "sessions_search",
     "session_read",
     "automations_list",
@@ -777,6 +781,8 @@ impl App {
                 self.tool_task_change(project, args, TaskChange::Delete)
                     .await
             }
+            "task_update" => self.tool_task_update(project, args).await,
+            "attachments_trash" => self.tool_attachments_trash(project, args).await,
             "sessions_search" => self.tool_sessions_search(project, args).await,
             "session_read" => self.tool_session_read(project, args).await,
             "automations_list" => self.tool_automations_list(project).await,
