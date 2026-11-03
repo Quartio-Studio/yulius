@@ -500,14 +500,8 @@ impl App {
         Ok(Me {
             user: MeUser {
                 id: user.id.to_string(),
-                login: user.github_login.clone().unwrap_or_else(|| {
-                    if user.is_superadmin {
-                        "superadmin"
-                    } else {
-                        "guest"
-                    }
-                    .into()
-                }),
+                // A guest is named as everywhere else, so their own tasks' requests read as theirs.
+                login: user.label(),
                 display_name: user.display_name.clone(),
                 avatar_url: user.avatar_url.clone(),
                 is_superadmin: user.is_superadmin,

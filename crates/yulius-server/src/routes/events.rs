@@ -44,7 +44,7 @@ async fn pump(app: AppState, ctx: AuthContext, mut socket: WebSocket) {
     // The person as of the last re-check: their roles decide admin-only events (#722).
     let mut user = ctx.user.clone();
     // A playground's guest gets only their playground's events and their own (SPEC-410 GST-004).
-    let guest = app.is_guest(&ctx.user).await;
+    let guest = app.is_guest(&ctx.user);
     let mut recheck =
         tokio::time::interval(Duration::from_millis(app.config.viewer_recheck_ms.max(100)));
     recheck.tick().await;

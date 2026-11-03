@@ -112,7 +112,7 @@ impl App {
             return Ok(());
         }
         // A guest tries one playground and makes none (SPEC-410 GST-004).
-        if self.guest_link_of(user).await?.is_some() {
+        if self.is_guest(user) {
             return Err(AppError::Forbidden(GUEST_FENCE.into()));
         }
         // Every repository on disk counts, a removed playground's too: removal keeps its files

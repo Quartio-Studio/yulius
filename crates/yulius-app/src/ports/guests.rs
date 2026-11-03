@@ -95,11 +95,24 @@ pub trait PlaygroundGuestStore: Send + Sync {
     /// The link `user` came in by, when they are a guest.
     async fn guest_invite_of(&self, user: &UserId) -> AppResult<Option<PlaygroundInviteRecord>>;
     /// Revokes the live link `invite_id` of `sandbox` and, in the same transaction, every browser
-    /// session and API token of the guests it let in; answers whether a live link was revoked.
+    /// session and API token of the guests it let in, marking it ended; answers whether a live
+    /// link was revoked.
     async fn revoke_playground_invite(
         &self,
         sandbox: &SandboxId,
         invite_id: &str,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// The guests `invite_id` let in.
+    async fn invite_guest_ids(&self, invite_id: &str) -> AppResult<Vec<UserId>>;
+    /// At most `limit` links expired by `now` whose guests' work was not ended yet, oldest first.
+    async fn unended_expired_invites(
+        &self,
+        now: Timestamp,
+        limit: usize,
+    ) -> AppResult<Vec<PlaygroundInviteRecord>>;
+    /// Records that what the guests of `invite_id` ran was stopped.
+    async fn mark_invite_ended(&self, invite_id: &str, at: Timestamp) -> AppResult<()>;
+    /// Whether a guest ever joined the playground `sandbox` (false once it is not a playground).
+    async fn playground_has_guests(&self, sandbox: &SandboxId) -> AppResult<bool>;
 }

@@ -1234,7 +1234,7 @@ function becomeGuest(db, invite, name) {
   db.signedIn = true;
   db.me = {
     ...db.me,
-    user: { id: `usr_guest_${invite.guests.length}`, login: 'guest', display_name: name, avatar_url: null, is_superadmin: false, is_instance_admin: false, github_linked: false, guest: { sandbox_id: lab.id, slug: lab.slug, expires_at: invite.expires_at } },
+    user: { id: `usr_guest_${invite.guests.length}`, login: `${name} (guest)`, display_name: name, avatar_url: null, is_superadmin: false, is_instance_admin: false, github_linked: false, guest: { sandbox_id: lab.id, slug: lab.slug, expires_at: invite.expires_at } },
   };
   lab.access = 'write';
   db.sandboxes = [lab];

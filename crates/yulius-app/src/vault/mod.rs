@@ -337,11 +337,9 @@ impl App {
         sandbox: &SandboxId,
         holder: Holder<'_>,
     ) -> AppResult<Vec<VaultSecretRecord>> {
-        // A playground's guest reaches no secret, so their runs get none (SPEC-410 GST-004).
-        if let Some(person) = holder.person()
-            && let Some(user) = self.deps.store.user(person).await?
-            && self.guest_link_of(&user).await?.is_some()
-        {
+        // A playground a guest joined is shared with them: none of its runs (the guest's, its
+        // maker's, a CI job's) gets an agent secret from then on (SPEC-410 GST-004).
+        if self.playground_had_guests(sandbox).await {
             return Ok(Vec::new());
         }
         let candidates = self.deps.store.vault_agent_in(sandbox).await?;

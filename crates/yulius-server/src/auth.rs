@@ -108,7 +108,7 @@ async fn refuse_guests_outside(
     parts: &Parts,
     ctx: &AuthContext,
 ) -> Result<(), AppError> {
-    if guest_may_reach(&parts.method, parts.uri.path()) || !app.is_guest(&ctx.user).await {
+    if guest_may_reach(&parts.method, parts.uri.path()) || !app.is_guest(&ctx.user) {
         return Ok(());
     }
     Err(AppError::Forbidden(GUEST_FENCE.into()))

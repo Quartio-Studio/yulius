@@ -85,7 +85,10 @@ async fn browser(h: &Harness, id: &str) -> BoxResult<Creds> {
 async fn world() -> BoxResult<World> {
     // Open sockets re-check who is signed in often, so a revocation shows within the test.
     let h = support::harness_with(support::HarnessOptions {
-        configure: Some(Box::new(|c| c.viewer_recheck_ms = 200)),
+        configure: Some(Box::new(|c| {
+            c.viewer_recheck_ms = 200;
+            c.stop_escalation_ms = 50;
+        })),
         ..support::HarnessOptions::default()
     })?;
     let owner = support::setup_superadmin_creds(&h).await?;
@@ -295,7 +298,7 @@ async fn a_guest_joins_with_a_name_and_gets_a_session() -> TestResult {
     assert_eq!(joined.status, StatusCode::CREATED, "{}", joined.body);
     assert_eq!(joined.body["slug"], "alices-lab");
     assert_eq!(joined.body["user"]["display_name"], "Carol");
-    assert_eq!(joined.body["user"]["login"], "guest");
+    assert_eq!(joined.body["user"]["login"], "Carol (guest)");
     assert_eq!(joined.body["user"]["is_superadmin"], false);
     assert_eq!(joined.body["user"]["is_instance_admin"], false);
     assert_eq!(joined.body["user"]["github_linked"], false);
@@ -610,8 +613,35 @@ async fn a_guest_reaches_no_secret_or_setting() -> TestResult {
     Ok(())
 }
 
+/// What the proxy forwards to `host` for the run holding `token` (`None` when it refuses).
+async fn sent_by(w: &World, token: &str, host: &str) -> Option<String> {
+    let client = w.h.app.egress_client(token).await?;
+    let request = EgressRequest {
+        host: host.into(),
+        port: 443,
+        path_and_query: "/v1".into(),
+        headers: vec![(
+            "authorization".into(),
+            b"Bearer yulius-secret-LAB_TOKEN".to_vec(),
+        )],
+    };
+    match w.h.app.egress_apply(&client, request).await {
+        EgressDecision::Forward { headers, .. } => Some(
+            headers
+                .iter()
+                .map(|(_, v)| String::from_utf8_lossy(v).into_owned())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        EgressDecision::Refuse { .. } => None,
+    }
+}
+
+/// GST-004: a guest shares the playground's sandbox with its maker's runs, so once a guest has
+/// joined, no run of the playground gets an agent secret: not the guest's, not the maker's, not a
+/// CI job's that the integration branch (which a guest's merge changes) grants one.
 #[tokio::test]
-async fn a_guests_task_gets_no_agent_secret() -> TestResult {
+async fn a_playground_with_guests_gives_no_run_an_agent_secret() -> TestResult {
     let w = world().await?;
     support::exhausted_subscription(&w.h).await?;
     let host = "api.lab.test";
@@ -625,10 +655,22 @@ async fn a_guests_task_gets_no_agent_secret() -> TestResult {
     )
     .await?;
     assert_eq!(added.status, StatusCode::CREATED, "{}", added.body);
-    let code = link(&w, 7).await?;
-    let (_, guest) = join(&w, &code, "Carol").await?;
     seed_task(&w.h, "t1", "p1", "u-alice", TaskStatus::Running, None).await?;
     seed_live_attempt(&w.h, "t1", ALICE_TASK).await?;
+    let p1 = SandboxId::parse("p1")?;
+    let granted = ["LAB_TOKEN".to_owned()];
+    let ci =
+        w.h.app
+            .ci_egress_open(&p1, "run-1", "job-1", &granted)
+            .ok_or("ci credential")?;
+    // Before any guest: the maker's run and the granted CI job get it.
+    for (who, token) in [("the maker's task", ALICE_TASK), ("a CI job", ci.as_str())] {
+        let before = sent_by(&w, token, host).await.ok_or(who)?;
+        assert!(before.contains(value), "{who} gets the project secret");
+    }
+
+    let code = link(&w, 7).await?;
+    let (_, guest) = join(&w, &code, "Carol").await?;
     seed_task(
         &w.h,
         "t2",
@@ -639,44 +681,256 @@ async fn a_guests_task_gets_no_agent_secret() -> TestResult {
     )
     .await?;
     seed_live_attempt(&w.h, "t2", GUEST_TASK).await?;
+    let ci_after =
+        w.h.app
+            .ci_egress_open(&p1, "run-2", "job-2", &granted)
+            .ok_or("ci credential")?;
+    for (who, token) in [
+        ("the maker's task", ALICE_TASK),
+        ("the guest's task", GUEST_TASK),
+        ("a CI job", ci_after.as_str()),
+    ] {
+        let after = sent_by(&w, token, host).await.unwrap_or_default();
+        assert!(
+            !after.contains(value),
+            "{who} gets no agent secret now: {after}"
+        );
+    }
+    // Revoking the link does not bring them back: what guests left in the sandbox stays.
+    let listed = get(&w, "/api/sandboxes/p1/guest-invites", &w.alice).await?;
+    let id = listed.body["invites"][0]["id"]
+        .as_str()
+        .ok_or("id")?
+        .to_owned();
+    call(
+        &w.h.router,
+        Method::DELETE,
+        &format!("/api/sandboxes/p1/guest-invites/{id}"),
+        None,
+        &w.alice,
+    )
+    .await?;
+    let later = sent_by(&w, ALICE_TASK, host).await.unwrap_or_default();
+    assert!(!later.contains(value), "{later}");
+    w.h.app.ci_egress_close(&ci);
+    w.h.app.ci_egress_close(&ci_after);
+    Ok(())
+}
 
-    let sent = |token: &'static str| {
-        let app = w.h.app.clone();
+/// GST-004: saved agent states (a login kept in the vault) are not restored into a playground a
+/// guest shares, or saved from it, whoever's task asks.
+#[tokio::test]
+async fn a_playground_with_guests_keeps_saved_agent_states_out() -> TestResult {
+    let w = world().await?;
+    seed_task(&w.h, "t1", "p1", "u-alice", TaskStatus::Running, None).await?;
+    seed_live_attempt(&w.h, "t1", ALICE_TASK).await?;
+    let restore = json!({"name": "OPERATOR", "path": "~/.ops"});
+    let before =
+        support::mcp_tool(&w.h, ALICE_TASK, "secret_state_restore", restore.clone()).await?;
+    assert!(
+        !support::tool_text(&before).to_string().contains("guest"),
+        "without guests the restore is refused for its own reasons: {before}"
+    );
+    let code = link(&w, 7).await?;
+    join(&w, &code, "Carol").await?;
+    for (tool, args) in [
+        ("secret_state_restore", restore),
+        ("secret_state_save", json!({"name": "OPERATOR"})),
+    ] {
+        let refused = support::mcp_tool(&w.h, ALICE_TASK, tool, args).await?;
+        assert_eq!(refused["isError"], true, "{tool}: {refused}");
+        assert!(
+            support::tool_text(&refused).to_string().contains("guests"),
+            "{tool}: {refused}"
+        );
+    }
+    Ok(())
+}
+
+/// GST-003: a guest's agent configures nothing either: its automation tools are refused, as the
+/// guest's own requests are.
+#[tokio::test]
+async fn a_guests_task_gets_no_configuring_tool() -> TestResult {
+    let w = world().await?;
+    let code = link(&w, 7).await?;
+    let (_, guest) = join(&w, &code, "Carol").await?;
+    seed_task(
+        &w.h,
+        "t2",
+        "p1",
+        guest.id.as_str(),
+        TaskStatus::Running,
+        None,
+    )
+    .await?;
+    seed_live_attempt(&w.h, "t2", GUEST_TASK).await?;
+    seed_task(&w.h, "t1", "p1", "u-alice", TaskStatus::Running, None).await?;
+    seed_live_attempt(&w.h, "t1", ALICE_TASK).await?;
+    let daily = json!({"name": "Align docs", "cron": "0 4 * * *", "prompt": "Align the docs"});
+    let made = support::mcp_tool(&w.h, ALICE_TASK, "automation_create", daily.clone()).await?;
+    assert_eq!(
+        made["isError"], false,
+        "the maker's agent configures: {made}"
+    );
+    let id = support::tool_text(&made)["automation"]["id"]
+        .as_str()
+        .ok_or("id")?
+        .to_owned();
+    for (tool, args) in [
+        ("automation_create", daily),
+        (
+            "automation_update",
+            json!({"automation_id": id, "enabled": false}),
+        ),
+        ("automation_delete", json!({"automation_id": id})),
+        ("automation_run_now", json!({"automation_id": id})),
+        (
+            "automation_template_enable",
+            json!({"template": "docs-up-to-date"}),
+        ),
+    ] {
+        let refused = support::mcp_tool(&w.h, GUEST_TASK, tool, args).await?;
+        assert_eq!(refused["isError"], true, "{tool}: {refused}");
+        assert!(
+            support::tool_text(&refused).to_string().contains("guest"),
+            "{tool}: {refused}"
+        );
+    }
+    Ok(())
+}
+
+/// Waits (bounded) until `check` holds.
+async fn until<F, Fut>(what: &str, check: F) -> TestResult
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !check().await {
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("{what} within 10 s").into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Ok(())
+}
+
+/// GST-005: revoking a link, or its expiry, also stops what its guests still run: their live and
+/// queued tasks end, so a leaked link keeps nothing working.
+#[tokio::test]
+async fn revoking_or_expiry_stops_the_guests_tasks() -> TestResult {
+    use yulius_app::ports::store::TaskStore as _;
+    use yulius_domain::ids::TaskId;
+    let w = world().await?;
+    let made = invite(&w, &w.alice, "p1", json!({"days": 1})).await?;
+    let id = made.body["invite"]["id"].as_str().ok_or("id")?.to_owned();
+    let (_, carol) = join(&w, &code_of(&made.body)?, "Carol").await?;
+    let other = link(&w, 7).await?;
+    let (_, dana) = join(&w, &other, "Dana").await?;
+    seed_task(
+        &w.h,
+        "t1",
+        "p1",
+        carol.id.as_str(),
+        TaskStatus::Running,
+        None,
+    )
+    .await?;
+    seed_live_attempt(&w.h, "t1", "guests-run-carol-0123456789abcdef").await?;
+    seed_task(
+        &w.h,
+        "t2",
+        "p1",
+        carol.id.as_str(),
+        TaskStatus::Queued,
+        None,
+    )
+    .await?;
+    seed_task(
+        &w.h,
+        "t3",
+        "p1",
+        dana.id.as_str(),
+        TaskStatus::Running,
+        None,
+    )
+    .await?;
+    seed_live_attempt(&w.h, "t3", "guests-run-dana-0123456789abcdefg").await?;
+    seed_task(&w.h, "t4", "p1", "u-alice", TaskStatus::Running, None).await?;
+    seed_live_attempt(&w.h, "t4", ALICE_TASK).await?;
+    let status = |task: &'static str| {
+        let store = w.h.store.clone();
         async move {
-            let client = app.egress_client(token).await?;
-            let request = EgressRequest {
-                host: host.into(),
-                port: 443,
-                path_and_query: "/v1".into(),
-                headers: vec![(
-                    "authorization".into(),
-                    b"Bearer yulius-secret-LAB_TOKEN".to_vec(),
-                )],
-            };
-            match app.egress_apply(&client, request).await {
-                EgressDecision::Forward { headers, .. } => Some(
-                    headers
-                        .iter()
-                        .map(|(_, v)| String::from_utf8_lossy(v).into_owned())
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                ),
-                EgressDecision::Refuse { .. } => None,
-            }
+            store
+                .task(&TaskId::parse(task).ok()?)
+                .await
+                .ok()
+                .flatten()
+                .map(|t| t.status)
         }
     };
-    let makers = sent(ALICE_TASK)
-        .await
-        .ok_or("the maker's run reaches the host")?;
-    assert!(
-        makers.contains(value),
-        "the maker's task gets the project secret"
+
+    // Stopped: asked to stop (its run ends as the supervisor reaps it) or ended.
+    let stopped =
+        |s: TaskStatus| s == TaskStatus::Stopping || !(s.is_live() || s == TaskStatus::Queued);
+    let revoked = call(
+        &w.h.router,
+        Method::DELETE,
+        &format!("/api/sandboxes/p1/guest-invites/{id}"),
+        None,
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+    until("Carol's tasks to stop", || async {
+        status("t1").await.is_some_and(stopped) && status("t2").await.is_some_and(stopped)
+    })
+    .await?;
+    // Another link's guest and the maker keep working.
+    assert_eq!(status("t3").await, Some(TaskStatus::Running));
+    assert_eq!(status("t4").await, Some(TaskStatus::Running));
+
+    // Dana's link expires: the background sweep stops her task too.
+    advance(&w.h, 7 * DAY_MS);
+    w.h.app.end_expired_guest_links().await;
+    until("Dana's task to stop", || async {
+        status("t3").await.is_some_and(stopped)
+    })
+    .await?;
+    assert_eq!(
+        status("t4").await,
+        Some(TaskStatus::Running),
+        "the maker's runs on"
     );
-    let guests = sent(GUEST_TASK).await.unwrap_or_default();
-    assert!(
-        !guests.contains(value),
-        "a guest's task gets no agent secret: {guests}"
+    Ok(())
+}
+
+/// A revoke that lands while a guest joins leaves no live session behind (the join is refused).
+#[tokio::test]
+async fn a_join_racing_a_revoke_leaves_no_session() -> TestResult {
+    let w = world().await?;
+    let made = invite(&w, &w.alice, "p1", json!({"days": 7})).await?;
+    let code = code_of(&made.body)?;
+    let id = made.body["invite"]["id"].as_str().ok_or("id")?.to_owned();
+    let path = format!("/api/sandboxes/p1/guest-invites/{id}");
+    let (joined, revoked) = tokio::join!(
+        join_raw(&w, &code, "Carol"),
+        call(&w.h.router, Method::DELETE, &path, None, &w.alice)
     );
+    let (joined, revoked) = (joined?, revoked?);
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT);
+    if joined.status == StatusCode::CREATED {
+        let creds = Creds {
+            cookie: Some(session_from(&joined.set_cookie).ok_or("cookie")?),
+            ..Creds::default()
+        };
+        assert_eq!(
+            get(&w, "/api/me", &creds).await?.status,
+            StatusCode::UNAUTHORIZED
+        );
+    } else {
+        assert_eq!(joined.status, StatusCode::GONE, "{}", joined.body);
+    }
     Ok(())
 }
 

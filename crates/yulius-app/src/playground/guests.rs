@@ -4,10 +4,12 @@
 //! password whose browser session ends with the link. A guest works in that playground and reaches
 //! nothing else (access in `access.rs`, the route fence in the server's `Auth` extractor).
 
+use std::sync::Arc;
 use yulius_contracts::api::guests::{
     GuestInviteCreated, GuestInvitePeek, GuestInviteView, GuestInvites, GuestView,
 };
 use yulius_domain::ids::{SandboxId, UserId};
+
 use yulius_domain::permission::Action;
 
 use crate::auth::{AuthContext, NewSession, count_client_attempt, hex_token, rfc3339};
@@ -29,6 +31,8 @@ pub const GUEST_ATTEMPTS_PER_MINUTE: usize = 10;
 /// The longest guest name, in characters.
 pub const MAX_GUEST_NAME: usize = 60;
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+/// Expired links whose guests' work one background sweep ends.
+const EXPIRED_LINKS_PER_SWEEP: usize = 20;
 /// What a guest is told where they may not go (GST-004).
 pub const GUEST_FENCE: &str = "a guest reaches only the playground they were let into";
 
@@ -58,7 +62,7 @@ pub fn guest_name(raw: &str) -> AppResult<String> {
 /// Unicode format characters (Cf) that matter in a name: bidirectional controls and invisible
 /// joiners and marks.
 fn is_format(c: char) -> bool {
-    matches!(c, '\u{00ad}' | '\u{061c}' | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}')
+    matches!(c, '\u{00ad}' | '\u{061c}' | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{fff9}'..='\u{fffb}' | '\u{e0000}'..='\u{e007f}')
 }
 
 impl App {
@@ -77,9 +81,77 @@ impl App {
         self.deps.store.guest_invite_of(&user.id).await
     }
 
-    /// Whether `user` is a playground's guest (errors count as yes: the narrower answer).
-    pub async fn is_guest(&self, user: &UserRecord) -> bool {
-        !matches!(self.guest_link_of(user).await, Ok(None))
+    /// Whether `user` is fenced as a playground's guest: any account but the superadmin without a
+    /// GitHub login. Only setup and guest links make such accounts, so one whose link row is gone
+    /// stays fenced (fail closed).
+    #[must_use]
+    pub fn is_guest(&self, user: &UserRecord) -> bool {
+        !user.is_superadmin && user.github_login.is_none()
+    }
+
+    /// Whether a guest ever joined the playground `sandbox`, whose sandbox they then share with
+    /// its maker's runs (GST-004): its runs get no agent secret and no saved agent state from
+    /// then on. Errors count as yes.
+    pub(crate) async fn playground_had_guests(&self, sandbox: &SandboxId) -> bool {
+        !matches!(
+            self.deps.store.playground_has_guests(sandbox).await,
+            Ok(false)
+        )
+    }
+
+    /// Stops what the guests of `invite` still run in its playground (GST-005): their live and
+    /// waiting tasks and their terminals, once the link is revoked or expired.
+    async fn end_guests_work(self: &Arc<Self>, invite: &str, sandbox: &SandboxId) {
+        let store = &self.deps.store;
+        let guests = match store.invite_guest_ids(invite).await {
+            Ok(guests) if !guests.is_empty() => guests,
+            Ok(_) => return,
+            Err(err) => {
+                tracing::warn!(error = %err, "a guest link's guests could not be read");
+                return;
+            }
+        };
+        match store.tasks(sandbox, false).await {
+            Ok(tasks) => {
+                for task in tasks
+                    .iter()
+                    .filter(|t| guests.contains(&t.owner) && !t.status.is_resting())
+                {
+                    if let Err(err) = self.stop_task_now(&task.id).await {
+                        tracing::warn!(task = %task.id, error = %err, "a guest's task did not stop");
+                    }
+                }
+            }
+            Err(err) => tracing::warn!(error = %err, "a playground's tasks could not be read"),
+        }
+        let shells = self.shells_created_by(sandbox, &guests);
+        if !shells.is_empty() {
+            self.end_shells(&shells).await;
+        }
+    }
+
+    /// The background sweep (GST-005): ends what the guests of each link expired since the last
+    /// sweep still run, at most a bounded batch at a time.
+    pub async fn end_expired_guest_links(self: &Arc<Self>) {
+        let now = self.now();
+        let expired = match self
+            .deps
+            .store
+            .unended_expired_invites(now, EXPIRED_LINKS_PER_SWEEP)
+            .await
+        {
+            Ok(expired) => expired,
+            Err(err) => {
+                tracing::warn!(error = %err, "expired guest links could not be read");
+                return;
+            }
+        };
+        for invite in expired {
+            self.end_guests_work(&invite.id, &invite.sandbox_id).await;
+            if let Err(err) = self.deps.store.mark_invite_ended(&invite.id, now).await {
+                tracing::warn!(error = %err, "an expired guest link could not be marked ended");
+            }
+        }
     }
 
     /// `POST /api/sandboxes/{sid}/guest-invites` (GST-001): a new link to the playground, from
@@ -179,7 +251,7 @@ impl App {
     /// # Errors
     /// `NotFound` for an invisible sandbox or no such live link, `Forbidden` for a non-admin.
     pub async fn revoke_guest_invite(
-        &self,
+        self: &Arc<Self>,
         ctx: &AuthContext,
         sandbox: &str,
         invite: &str,
@@ -191,6 +263,9 @@ impl App {
         if !store.revoke_playground_invite(&sid, invite, now).await? {
             return Err(AppError::NotFound);
         }
+        // What its guests still run stops too; the answer does not wait for the stops.
+        let (app, link, playground) = (Arc::clone(self), invite.to_owned(), sid.clone());
+        tokio::spawn(async move { app.end_guests_work(&link, &playground).await });
         store
             .audit(
                 now,
@@ -273,6 +348,16 @@ impl App {
             )
             .await?;
         let session = self.new_session_until(&user, invite.expires_at).await?;
+        // A revoke that landed between the guest row and the session revoked no session: look at
+        // the link again, and end this one if it died meanwhile.
+        if self.live_link(code).await.is_err() {
+            let hash = self
+                .deps
+                .crypto
+                .sha256_hex(session.cookie.expose().as_bytes());
+            store.revoke_web_session(&hash, self.now()).await?;
+            return Err(AppError::NotFound);
+        }
         Ok((session, sandbox.slug))
     }
 

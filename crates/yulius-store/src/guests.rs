@@ -217,7 +217,7 @@ impl PlaygroundGuestStore for SqliteStore {
             let revoked = tx
                 .execute(
                     &format!(
-                        "UPDATE playground_invites SET revoked_at = ?2 \
+                        "UPDATE playground_invites SET revoked_at = ?2, ended_at = ?2 \
                          WHERE id = ?1 AND sandbox_id = ?3 AND {LIVE}"
                     ),
                     params![invite, at.0, sandbox],
@@ -238,6 +238,75 @@ impl PlaygroundGuestStore for SqliteStore {
             }
             tx.commit().map_err(db)?;
             Ok(true)
+        })
+        .await
+    }
+
+    async fn invite_guest_ids(&self, invite_id: &str) -> AppResult<Vec<UserId>> {
+        let invite = invite_id.to_owned();
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT user_id FROM playground_guests WHERE invite_id = ?1 ORDER BY rowid",
+                )
+                .map_err(db)?;
+            let rows = stmt
+                .query_map([invite], |row| {
+                    let user: String = row.get(0)?;
+                    UserId::parse(&user).map_err(|_| bad_column("user id", &user))
+                })
+                .map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn unended_expired_invites(
+        &self,
+        now: Timestamp,
+        limit: usize,
+    ) -> AppResult<Vec<PlaygroundInviteRecord>> {
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare(&format!(
+                    "SELECT {COLS} FROM playground_invites WHERE ended_at IS NULL \
+                     AND expires_at <= ?1 ORDER BY expires_at, id LIMIT ?2"
+                ))
+                .map_err(db)?;
+            let rows = stmt
+                .query_map(params![now.0, limit], invite_from_row)
+                .map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn mark_invite_ended(&self, invite_id: &str, at: Timestamp) -> AppResult<()> {
+        let invite = invite_id.to_owned();
+        self.call(move |c| {
+            c.execute(
+                "UPDATE playground_invites SET ended_at = ?2 WHERE id = ?1 AND ended_at IS NULL",
+                params![invite, at.0],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn playground_has_guests(&self, sandbox: &SandboxId) -> AppResult<bool> {
+        let sandbox = sandbox.as_str().to_owned();
+        self.call(move |c| {
+            c.query_row(
+                "SELECT EXISTS (SELECT 1 FROM playground_guests g \
+                 JOIN playground_invites i ON i.id = g.invite_id \
+                 JOIN sandboxes s ON s.id = i.sandbox_id \
+                 WHERE i.sandbox_id = ?1 AND s.repo_owner = '')",
+                [sandbox],
+                |row| row.get(0),
+            )
+            .map_err(db)
         })
         .await
     }

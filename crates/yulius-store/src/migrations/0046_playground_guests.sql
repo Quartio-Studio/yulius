@@ -7,7 +7,9 @@ CREATE TABLE playground_invites (
     created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
-    revoked_at INTEGER
+    revoked_at INTEGER,
+    -- When what its guests still ran was stopped (at the revoke, or the sweep after expiry).
+    ended_at INTEGER
 );
 CREATE INDEX playground_invites_sandbox ON playground_invites(sandbox_id);
 

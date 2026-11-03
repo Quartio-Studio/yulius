@@ -249,7 +249,7 @@ impl App {
             return Err(AppError::NotFound);
         }
         // A guest works in their playground but never configures or administers it (GST-003).
-        if matches!(action, Action::Configure | Action::Administer) && self.is_guest(user).await {
+        if matches!(action, Action::Configure | Action::Administer) && self.is_guest(user) {
             return Err(AppError::Forbidden(
                 "a guest works on this playground's tasks; its settings are its admins'".into(),
             ));

@@ -43,7 +43,7 @@ impl App {
         self.require_instance_admin(ctx)?;
         let mut out = Vec::new();
         for user in self.deps.store.users().await? {
-            if !user.is_superadmin && self.guest_link_of(&user).await?.is_none() {
+            if !user.is_superadmin && !self.is_guest(&user) {
                 out.push(view(&user, self.two_factor_of(&user.id).await?));
             }
         }
