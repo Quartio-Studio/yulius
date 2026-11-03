@@ -22,16 +22,20 @@ from it on the event WebSocket, and the server is one process.
 
 ## Decision
 
-- **One shared text per open file**, held in the server's memory (`live_text.rs`), keyed by
+- **One shared text per open file**, held in the server's memory (`live_files.rs`, operations in
+  `live_text.rs`), each behind its own lock, keyed by
   sandbox, folder and path: its text (UTF-16), a revision, its last 256 steps, the disk's
   `sha256` it was last saved at or taken from, whether it is saved, and the disk's newer
   `sha256` while unsaved text meets a disk change. Never stored in the database or another file.
-  At most 256 documents of 2 MiB; a saved one untouched for 10 minutes is dropped, an unsaved one
-  after 24 hours untouched; a full server drops its oldest saved one, else refuses.
+  At most 256 documents of 2 MiB, an operation of at most 10 000 parts, kept steps costing at
+  most 1 Mi (inserted units plus parts); a saved one untouched for 10 minutes is dropped, an
+  unsaved one after 24 hours untouched; a full server drops its oldest saved one, else refuses.
 - **Server-ordered operational transformation.** An operation is a list of retains (`n`),
   inserts (`"text"`) and deletes (`-n`) over UTF-16 units, made at a revision. The server
   transforms it past the steps since, applies it, and publishes the step as `file.live` to the
-  sandbox's writers (`publish_to_writers`). Each browser tab keeps one operation in flight and
+  sandbox's writers (`publish_to_writers`), with its operation when it inserts at most 64 KiB (a
+  larger one is announced without it and caught up). Steps name the person and tab that sent
+  them; the same edit sent again is answered with its step, so a retry never applies it twice. Each browser tab keeps one operation in flight and
   composes the rest (the Jupiter model of Google Wave and ot.js), recognises its own step as the
   acknowledgement, and catches up by `GET …/files/live?since=` after a gap or `resync`.
 - **Access.** Joining, reading and catching up need what reading the folder needs (write access
@@ -42,7 +46,9 @@ from it on the event WebSocket, and the server is one process.
   shared text with the existing atomic, handle-based write and the document's `sha256` as base,
   with the asking person's access; saves of a document run one at a time. The Editor asks 1 s after
   its person's last keystroke, at once when focus or the file leaves, on Ctrl+S, and as the page is
-  hidden; teammates' Editors ask 3 s after the last step as a fallback.
+  hidden; teammates' Editors ask 3 s after the last step as a fallback. A closed file keeps its
+  document in the tab until its typing is confirmed and written, and leaving the page with typing
+  on its way asks first.
 - **The disk.** The 2 s look of 0146 stays. A newer disk version is taken by the server: as one
   step when the text is saved, else kept as a conflict that every Editor shows with Keep mine and
   Take disk version; nothing saves automatically meanwhile.

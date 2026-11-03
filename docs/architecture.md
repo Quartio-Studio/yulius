@@ -2360,8 +2360,8 @@ sequenceDiagram
 The Editor's text is shared live and saves itself
 ([SPEC-411](../.ai/specs/SPEC-411-editor-live-co-editing-of-unsaved-text-a.md),
 [decision 0261](decisions/0261-the-editors-text-is-shared-live-and-saved-by-the-server.md)).
-`App::live_*` (`live_files.rs`) keeps one document per sandbox, folder and path in memory (at most
-256, each up to 2 MiB with its last 256 steps); `live_text.rs` applies and transforms operations
+`App::live_*` (`live_files.rs`) keeps one document per sandbox, folder and path in memory, each
+behind its own lock (at most 256, each up to 2 MiB with its last 256 steps); `live_text.rs` applies and transforms operations
 over UTF-16 units. Each browser tab (`livedoc.js`, ops in `livetext.js`) keeps one operation in
 flight and composes the rest; the server transforms an edit past the steps since its revision,
 applies it and publishes `file.live` to the sandbox's writers in the same critical section, so

@@ -1158,9 +1158,12 @@ resolves to nothing, the run gets the server without that variable or token.
   "client","op"}]` after `since`, or the whole text when the steps are no longer kept (256) or the
   session differs; 409 when nobody edits the file. `POST …/files/live/edit` `{"root?","path",
   "session","client","revision","op"}` → `{"revision"}`: the operation made at `revision`,
-  transformed past the steps since; 409 for another or an ended session or a revision older than
-  the kept steps, 422 for an operation that does not fit, cuts a character outside the BMP or makes
-  the text larger than 2 MiB, 429 past 30 a second per person and file. `POST …/files/live/save`
+  transformed past the steps since (the same edit sent again by that person's tab is answered with
+  its step, not applied twice); 409 for another or an ended session or a revision older than the
+  kept steps (256, costing at most 1 Mi inserted units plus parts), 422 for a count above 2 Mi,
+  more than 10 000 parts, an operation that does not fit, cuts a character outside the BMP, inserts
+  another line ending than the text's or makes the text larger than 2 MiB, 429 past 30 a second per
+  person and file. Steps carry `user_id` and `client`. `POST …/files/live/save`
   `{"root?","path","session","force?"}` → `{"session","revision","sha256","saved","disk_sha256"}`:
   writes the text with the caller's access and the document's `sha256` as base (nothing when it is
   saved); a disk that moved on sets `disk_sha256` (`""`: deleted) and writes nothing unless `force`
@@ -1622,9 +1625,10 @@ only its owner), `{"type":"note.presence","scope":"team|sandbox","sandbox_id","u
 the people who may read it; SPEC-112), `{"type":"file.presence","sandbox_id","root","path","user_id",
 "client","name","sha256","selection":{"anchor","head"}|null,"hello","seq","session"?,"revision"?}` (someone's
 selection in a file open in the editor, only to people with write access to that sandbox; SPEC-127),
-`{"type":"file.live","sandbox_id","root","path","session","revision","client","op":[…]|null,"sha256",
-"saved","disk_sha256","eol"}` (a step of a file's shared text, or its saved state, only to people
-with write access to that sandbox; SPEC-411),
+`{"type":"file.live","sandbox_id","root","path","session","revision","user_id","client","op":[…]|null,
+"sha256","saved","disk_sha256","eol"}` (a step of a file's shared text, or its saved state, only to
+people with write access to that sandbox; a step inserting more than 64 KiB comes with `op: null` and
+its new `revision`, to be caught up; SPEC-411),
 `{"type":"pulls.updated","sandbox_id"}` (the sandbox's pull requests may have
 changed: a delivery stage moved or a Yulius CI run was queued, started or ended; clients watching
 it read `GET /api/sandboxes/{sid}/git` again; SPEC-108), `{"type":"secrets.updated","sandbox_id"|null}`
