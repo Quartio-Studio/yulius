@@ -666,7 +666,10 @@ async fn a_production_secret_is_never_typed_into_a_page() -> TestResult {
             &f.h.router,
             axum::http::Method::POST,
             "/api/sandboxes/s1/agent-secrets",
-            Some(json!({"name": "PROD_LOGIN", "hosts": ["docs.example"], "value": VALUE})),
+            Some(
+                json!({"name": "PROD_LOGIN", "hosts": ["docs.example"], "value": VALUE,
+                "auto_allow": false}),
+            ),
             &f.writer,
         )
         .await?;
@@ -677,13 +680,7 @@ async fn a_production_secret_is_never_typed_into_a_page() -> TestResult {
             created.body
         );
         let id = created.body["id"].as_str().ok_or("id")?;
-        // The store refuses the pair now; older versions left it.
-        let store = &f.h.app.deps.store;
-        let mut record = store.vault_get(id).await?.ok_or("record")?;
-        record.cd_prod = true;
-        record.auto_allow = false;
-        assert!(store.vault_delete(id).await?);
-        store.vault_insert(&record).await?;
+        support::legacy_production_secret(&f.h.store, id).await?;
 
         let opened = mcp_tool(
             &f.h,

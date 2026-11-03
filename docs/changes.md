@@ -9,11 +9,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - `browser_fill_secret` no longer types a production secret (`cd_prod`) into a page: one that
   kept a bound host from before production secrets became exclusive was typed into that host's
   pages by an agent run, though production secrets never reach agents (SPEC-405, task #382, fixes
-  #710). Vidoc's #711 (the egress client cache) is a duplicate of #757, fixed by #1022. The Vidoc
-  findings #835 (a half-written fingerprint file parses no set, so the Bash wrapper runs nothing;
-  now pinned by a test), #758 (no asker name holds `", "`, and the list authorizes nothing) and
-  #815 (every caller of `open_credential` gets the account from the server's own pool choice) are
-  dismissed with narrow `[[ignore]]` entries.
+  #710). The Bash wrapper and the tool hook use the run's fingerprint file only once two reads in a
+  row agree: a read that overlapped its in-place rewrite could join the old file to the new one
+  into a set that parses but redacts nothing (fixes #835). Vidoc's #711 (the egress client cache)
+  is a duplicate of #757, fixed by #1022. The findings #758 (no asker name holds `", "`, and the
+  list authorizes nothing) and #815 (every caller of `open_credential` gets the account from the
+  server's own pool choice) are dismissed with narrow `[[ignore]]` entries.
 - A task worktree that a contained agent swaps for a link after Yulius's checks no longer makes
   the host delete the folder behind the link. On Linux, the disk upkeep, the hygiene cleanup,
   snapshot imports and task deletion let Git only check the worktree. The server then removes its

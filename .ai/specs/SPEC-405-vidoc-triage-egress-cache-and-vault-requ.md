@@ -9,7 +9,7 @@ Status: in-progress
 Date: 2026-11-03
 Owner: Yulius task #382
 Scope authorization: task #382 (a person asked that each of the five issues end closed). Fixes
-#710. #711 is a duplicate of #757, which #1022 fixed. #835, #758 and #815 are dismissed as false
+#710 and #835. #711 is a duplicate of #757, which #1022 fixed. #758 and #815 are dismissed as false
 positives.
 
 ## Goal
@@ -46,9 +46,13 @@ its wording, so that a repeat scan does not reopen it.
   `Forbidden` and types nothing, whatever hosts it carries. A filled page is in the agent's hands
   (it reads it back and screenshots it), unlike a request the proxy completes outside the run.
   The proxy keeps using a production secret's old bound hosts (SPEC-308 R2).
-- VEV-002 (#835, false positive). A reader of a partly rewritten fingerprint file fails closed: an
-  empty file, or any strict prefix of a serialized fingerprint set, is `FileState::Invalid`, so
-  `--scrub-exec` does not run the command. This is pinned by a test and gets a narrow entry.
+- VEV-002 (#835, real, found by review round 1). The Bash wrapper and the tool hook use only a
+  fingerprint file that two reads in a row agree on (`settled_read`, at most 4 reads). A read that
+  overlaps the in-place rewrite can join the old file's start to the new one's end. Joined inside a
+  digest, that parses as a set whose salt and digests disagree, so it would redact nothing for that
+  command. A file that keeps changing is unreadable, so the command is not run. A partly written
+  file (empty, or any strict prefix of a set) is `FileState::Invalid`, as before, and is pinned by
+  a test. The rewrite stays in place.
 - VEV-003 (#711, duplicate). #711 is closed as a duplicate of #757, whose fix (#1022) is on `dev`.
 - VEV-004 (#758, false positive). `among_askers` splits names that can never contain `", "`, and
   it authorizes nothing. This gets a narrow entry.
@@ -62,8 +66,9 @@ its wording, so that a repeat scan does not reopen it.
 - [x] browser_fill_secret refuses a production secret (#710)
 - [x] Fingerprint-file guard pinned: a partly written file fails closed (#835)
 - [x] Narrow [[ignore]] entries for the dismissed wordings (#835 #758 #815)
-- [ ] Architecture, API docs, changes entry and gates
+- [x] Architecture, API docs, changes entry and gates
 - [ ] Independent review answered
+- [ ] The fingerprint file is used only once two reads agree (#835)
 - [ ] Dismissed issues commented and closed (#711 #835 #758 #815)
 
 ## Acceptance criteria
@@ -74,10 +79,14 @@ its wording, so that a repeat scan does not reopen it.
 - `scrub_client::tests::a_partly_written_fingerprint_file_fails_closed` shows that an empty file
   and every strict prefix of a serialized set are `Invalid`, and that `run_scrub_exec` does not
   run the command for one (exit 126).
-- `.config/vidoc.toml` has one narrow entry per dismissed wording (#835, #758, #815), each with
-  its reason and function.
-- Each issue ends closed: #710 by the merged pull request, #711 as a duplicate, and the others as
-  not planned, each with a comment giving the evidence.
+- `scrub_client::tests::a_torn_read_of_the_fingerprint_file_is_never_used` shows that a torn read
+  parses as a set, and that `settled_read` returns only content two reads agree on.
+  `a_fingerprint_file_that_keeps_changing_is_not_read` (Linux) fails when `load_fingerprints`
+  reads the file once.
+- `.config/vidoc.toml` has one narrow entry per dismissed wording (#758, #815), each with its
+  reason and function. The early #835 entry is removed.
+- Each issue ends closed: #710 and #835 by the merged pull request, #711 as a duplicate, and #758
+  and #815 as not planned, each with a comment giving the evidence.
 
 ## Test plan
 
@@ -92,14 +101,17 @@ its wording, so that a repeat scan does not reopen it.
   before exclusivity, but it exists (SPEC-308 R2). The proxy exception is kept because the proxy
   adds the value outside the agent's reach. A filled field sits in a page the agent drives: it
   reads it back (redacted) and screenshots it (not redacted). Refusing it matches
-  `agent_secret_value` and ADR-0171 ("production secrets never resolve to agents"). This narrows
-  an existing rule, so it needs no ADR.
-- #835: an atomic rename would break the fallback. A contained session binds the file read-only by
-  inode (bubblewrap `--ro-bind`), so a renamed replacement would never reach it. It would keep
-  reading the previous holder's fingerprints, the leak SPEC-248 FUP-002 closed. A partly written
-  file never parses: the set is one JSON object whose closing brace is its last byte, and
-  `serde_json` refuses an unclosed object and trailing data. The file is read only while Yulius
-  cannot answer, and the rewrite runs inside Yulius.
+  `agent_secret_value`, which never resolves a production secret, and the production-only
+  allowance, which excludes any agent use (ADR-0171, after ADR-0109). This narrows an existing rule, so it needs no ADR.
+- #835 was first dismissed, then fixed after review round 1 found the torn read. An atomic rename
+  would break the fallback: a contained session binds the file read-only by inode (bubblewrap
+  `--ro-bind`), so a renamed replacement would never reach it. It would keep reading the previous
+  holder's fingerprints, the leak SPEC-248 FUP-002 closed. So the reader settles instead. Two
+  equal reads in a row cannot both overlap the single write at different progress, and a torn
+  read differs from the next one. A `flock` protocol was rejected for two reasons. The agent can
+  open the bound file and hold a shared lock. That would block or fail Yulius's rewrite, and an
+  unbounded wait inside the wrapper breaks the rule that every wait is bounded. A partly written
+  file never parses: the set is one JSON object whose closing brace is its last byte.
 - #711: the same cache and wording as #757. Its fix checks the run on every cached hit, so nothing
   is left to change.
 - #758: asker names are `#N`, `<login>'s Superagent` (GitHub logins are letters, digits and
