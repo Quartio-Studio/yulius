@@ -205,7 +205,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_delete".into(),
-            description: "Delete another task of this project permanently (by task_id or number), as Delete in the UI: its local worktree and branch (uncommitted work included), runs and transcripts go; remote branches and pull requests stay. Its attachments stay where they are while another task's request or an automation's prompt names them (the answer's kept_for, kept_for_automations), otherwise they wait 7 days in the trash (the answer's trash; attachments_trash restores them); not_moved: true says they stayed where they are because moving them to the trash failed. A running task must be stopped first (a Done one is closed first). Not your own task. Audited.".into(),
+            description: "Delete another task of this project permanently (by task_id or number), as Delete in the UI: its local worktree and branch (uncommitted work included), runs and transcripts go; remote branches and pull requests stay. Its attachments stay where they are while another task's request or an automation's prompt names them (the answer's kept_for, kept_for_automations), otherwise they wait 7 days in the trash (the answer's trash; attachments_trash restores them); not_moved: true says they stayed where they are because moving them to the trash failed or was not tried (a link in the way is never followed, or the tasks could not be read). A running task must be stopped first (a Done one is closed first). Not your own task. Audited.".into(),
             input_schema: schema(task_ref.clone(), &[]),
         },
         ToolDescriptor {
@@ -893,7 +893,12 @@ mod tests {
             .find(|t| t.name == "task_delete")
             .map(|t| t.description)
             .unwrap_or_default();
-        for field in ["kept_for", "kept_for_automations", "trash", "not_moved"] {
+        for field in [
+            "kept_for,",
+            "kept_for_automations",
+            "the answer's trash",
+            "not_moved",
+        ] {
             assert!(description.contains(field), "`{field}` is not named");
         }
     }

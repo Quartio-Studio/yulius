@@ -30,7 +30,8 @@ the deleted task's attachment folder where it is never answers as if there were 
 ## Requirements
 
 - **NMV-001** `task_delete`'s tool description and SPEC-396's ATR-003 name `not_moved`: the
-  attachments stayed where they are because moving them to the trash failed.
+  attachments stayed where they are because moving them to the trash failed or was not tried
+  (NMV-002).
 - **NMV-002** `task_delete` answers `not_moved: true` when settling left the deleted task's folder
   in place before trying to move it:
   - `attachments` is there but cannot be opened as a plain folder (a link, or an error other than
@@ -38,9 +39,10 @@ the deleted task's attachment folder where it is never answers as if there were 
     there and nothing moved it;
   - the sandbox's tasks cannot be read and `attachments/tasks/<id>/` is a folder (looked up
     without following a link);
-  - `attachments/tasks` is a link (the same reasoning as a linked `attachments`).
-  A missing `attachments` or `tasks` folder, or an `attachments` that is a plain file, still
-  answers nothing (no folder can exist).
+  - `attachments/tasks` cannot be opened but is there as a link (the same reasoning as a linked
+    `attachments`) or a folder (out of descriptors, no permission).
+  A missing `attachments` or `tasks`, or either being a plain file, still answers nothing (no
+  folder can exist).
 
 ## Plan
 
@@ -60,11 +62,14 @@ the deleted task's attachment folder where it is never answers as if there were 
 
 ## Test plan
 
-- `crates/yulius/tests/attachment_trash.rs`: a deletion while `attachments` is a link (as the
-  swapped-folder tests in `uploads.rs` set it up), checking the MCP answer and the outside folder;
-  the tool description's `not_moved` checked through `tools/list`.
-- A unit test in `attachment_trash.rs` for the unreadable-tasks answer (a store failure is not
-  reachable through the HTTP harness without a fault port), on the helper that decides it.
+- `crates/yulius/tests/attachment_trash.rs`: a deletion while `attachments` or `tasks` is a link
+  (as the swapped-folder tests in `uploads.rs` set it up), checking the MCP answer, the outside
+  folder and an old trash entry behind the link (never purged); a deletion with the sandbox's
+  tasks unreadable (the `automations` table renamed away through rusqlite), with and without the
+  task's folder.
+- Unit tests: `left_in_place` in `attachment_trash.rs` (folder, file, link, missing; a `tasks`
+  that could not be opened), and the `task_delete` description naming every answer field in
+  `mcp.rs` (`tools/list` serves `tool_descriptors()` unchanged).
 - Each written first and failing without the change.
 
 ## Decisions

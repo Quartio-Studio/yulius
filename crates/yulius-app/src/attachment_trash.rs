@@ -70,7 +70,8 @@ pub struct DeletedAttachments {
     /// They wait in the trash.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trash: Option<TrashEntry>,
-    /// They stay where they are: moving them to the trash failed (a link planted on the way).
+    /// They stay where they are: moving them to the trash failed (a link planted on the way) or
+    /// was not tried (an `attachments` or `tasks` link never looked behind, the tasks unreadable).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub not_moved: bool,
 }
@@ -206,15 +207,16 @@ fn open_attachments(sandbox_dir: &Path) -> Result<Option<(OwnedFd, Option<OwnedF
 }
 
 /// The deleted task's fate when settling stopped before moving anything: `not_moved` when its
-/// folder is in `folders`, or `tasks` is a link it may be behind (never followed). Blocks.
+/// folder is in `folders`, or when `tasks` could not be opened but is there as a folder or a link
+/// it may be behind (never followed). Blocks.
 fn left_in_place(attachments: &OwnedFd, folders: Option<&OwnedFd>, id: &str) -> DeletedAttachments {
-    let is = |dir: &OwnedFd, name: &str, wanted: SFlag| {
-        kind_at(dir, OsStr::new(name)).is_ok_and(|(kind, _)| kind == wanted)
+    let is = |dir: &OwnedFd, name: &str, wanted: &[SFlag]| {
+        kind_at(dir, OsStr::new(name)).is_ok_and(|(kind, _)| wanted.contains(&kind))
     };
     DeletedAttachments {
         not_moved: match folders {
-            Some(folders) => is(folders, id, SFlag::S_IFDIR),
-            None => is(attachments, "tasks", SFlag::S_IFLNK),
+            Some(folders) => is(folders, id, &[SFlag::S_IFDIR]),
+            None => is(attachments, "tasks", &[SFlag::S_IFDIR, SFlag::S_IFLNK]),
         },
         ..DeletedAttachments::default()
     }
@@ -678,10 +680,17 @@ mod tests {
         for id in ["t2", "t3", "t4"] {
             assert!(!stayed(id), "{id}");
         }
+        assert!(
+            left_in_place(&attachments, None, "t1").not_moved,
+            "a `tasks` folder that could not be opened may hold it"
+        );
+        let empty = tempfile::tempdir()?;
+        std::fs::write(empty.path().join("tasks"), "")?;
+        let empty = open_dirs_below(empty.path(), &[], false)?;
         assert_eq!(
-            left_in_place(&attachments, None, "t1"),
+            left_in_place(&empty, None, "t1"),
             DeletedAttachments::default(),
-            "a plain `tasks` folder that could not be opened holds nothing to say"
+            "a plain file `tasks` holds nothing"
         );
         let linked = tempfile::tempdir()?;
         std::os::unix::fs::symlink(&tasks, linked.path().join("tasks"))?;

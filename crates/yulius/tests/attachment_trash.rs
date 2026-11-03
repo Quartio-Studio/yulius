@@ -23,7 +23,11 @@ const DAY_SECS: i64 = 24 * 3600;
 /// Sandbox `s1` with alice (write) and bob (read); their tasks `t-agent` and `t-bob` run with the
 /// task tokens `tok-agent` and `tok-bob`.
 async fn world() -> Result<(support::Harness, PathBuf), Error> {
-    let h = harness_configured(|c| c.max_live_sessions = 0)?;
+    world_in(harness_configured(|c| c.max_live_sessions = 0)?).await
+}
+
+/// [`world`] on the harness `h`.
+async fn world_in(h: support::Harness) -> Result<(support::Harness, PathBuf), Error> {
     support::exhausted_subscription(&h).await?;
     add_sandbox(&h, "s1", "studio", 20000).await?;
     user_with_token(&h, "u-alice", "alice", false).await?;
@@ -461,6 +465,9 @@ async fn a_deletion_through_a_linked_attachments_folder_says_not_moved() -> Test
     seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None).await?;
     let outside = h.app.config.data_dir.join("host");
     let file = attach(&outside, "t1", "a.txt", "a")?;
+    let old = outside.join("trash/1-0-t-old/old.txt");
+    std::fs::create_dir_all(outside.join("trash/1-0-t-old"))?;
+    std::fs::write(&old, "old")?;
     std::fs::remove_dir(&attachments)?;
     std::os::unix::fs::symlink(&outside, &attachments)?;
     let (deleted, is_error) = tool(&h, "task_delete", json!({"task_id": "t1"})).await?;
@@ -470,8 +477,12 @@ async fn a_deletion_through_a_linked_attachments_folder_says_not_moved() -> Test
         json!({"not_moved": true}),
         "the answer says they stayed: {deleted}"
     );
-    assert_eq!(std::fs::read_to_string(&file)?, "a", "nothing outside moved");
-    assert_eq!(std::fs::read_dir(&outside)?.count(), 1, "no trash outside");
+    assert_eq!(
+        std::fs::read_to_string(&file)?,
+        "a",
+        "nothing outside moved"
+    );
+    assert!(old.is_file(), "nothing outside was purged");
 
     seed_task(&h, "t3", "s1", "u-alice", TaskStatus::Closed, None).await?;
     attach(&outside, "t3", "c.txt", "c")?;
@@ -485,7 +496,10 @@ async fn a_deletion_through_a_linked_attachments_folder_says_not_moved() -> Test
         json!({"not_moved": true}),
         "{deleted}"
     );
-    assert!(outside.join("tasks/t3/c.txt").is_file(), "nothing outside moved");
+    assert!(
+        outside.join("tasks/t3/c.txt").is_file(),
+        "nothing outside moved"
+    );
 
     seed_task(&h, "t2", "s1", "u-alice", TaskStatus::Closed, None).await?;
     std::fs::remove_dir_all(&attachments)?;
@@ -493,6 +507,39 @@ async fn a_deletion_through_a_linked_attachments_folder_says_not_moved() -> Test
     let (deleted, is_error) = tool(&h, "task_delete", json!({"task_id": "t2"})).await?;
     assert!(!is_error, "{deleted}");
     assert_eq!(deleted["deleted"]["attachments"], json!({}), "{deleted}");
+    Ok(())
+}
+
+/// SPEC-397 NMV-002: a deletion whose sandbox's tasks cannot be read (the automations table
+/// renamed away) keeps every folder; the answer says `not_moved` when the deleted task had one.
+#[tokio::test]
+async fn a_deletion_with_unreadable_tasks_says_not_moved_when_the_folder_stayed() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let db_path = dir.path().join("yulius.db");
+    let (h, attachments) = world_in(support::harness_with(support::HarnessOptions {
+        store: Some(yulius_store::SqliteStore::open(&db_path)?),
+        dir: Some(dir),
+        configure: Some(Box::new(|c| c.max_live_sessions = 0)),
+        ..support::HarnessOptions::default()
+    })?)
+    .await?;
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    seed_task(&h, "t2", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let file = attach(&attachments, "t1", "a.txt", "a")?;
+    let db = rusqlite::Connection::open(&db_path)?;
+    db.execute_batch("ALTER TABLE automations RENAME TO automations_gone")?;
+    let (deleted, is_error) = tool(&h, "task_delete", json!({"task_id": "t1"})).await?;
+    assert!(!is_error, "{deleted}");
+    assert_eq!(
+        deleted["deleted"]["attachments"],
+        json!({"not_moved": true}),
+        "{deleted}"
+    );
+    assert!(file.is_file(), "the folder stayed");
+    let (deleted, is_error) = tool(&h, "task_delete", json!({"task_id": "t2"})).await?;
+    assert!(!is_error, "{deleted}");
+    assert_eq!(deleted["deleted"]["attachments"], json!({}), "{deleted}");
+    db.execute_batch("ALTER TABLE automations_gone RENAME TO automations")?;
     Ok(())
 }
 
