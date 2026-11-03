@@ -89,6 +89,15 @@ pub enum Point {
     /// `validate_checkout` (SPEC-394): the checkout's root was resolved and the file's path
     /// worked out; the file is not opened yet. The path is the file's.
     CheckoutRead,
+    /// `put_import_chunk` (SPEC-400): the job was read and the chunk checked; the file is not
+    /// locked or written yet. The path is the import file's.
+    ImportChunkRead,
+    /// `put_import_chunk` (SPEC-400): the chunk holds its file and is about to write it; reached
+    /// on a blocking thread. The path is the import file's.
+    ImportChunkWrite,
+    /// `put_import_chunk` (SPEC-400): another chunk holds the file, so this one waits for it.
+    /// The path is the import file's.
+    ImportChunkWait,
 }
 
 #[cfg(feature = "test-support")]

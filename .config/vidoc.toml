@@ -816,3 +816,53 @@ reason = "service_name_ok refuses a leading - or any character outside [A-Za-z0-
 path = "crates/yulius-app/src/capacity.rs"
 title = "Session-reported usage accepted without validation at the trust boundary"
 reason = "only the attempt's own server-recorded account is updated, values are bounded by session_window, and the session spends that quota itself (ADR-17); tested by session_readings_are_bounded (SPEC-398, #728)"
+
+# SPEC-400 (task #379): the Vidoc findings on the vault and recovery, triaged as false positives on
+# dev 88a485ca (#845, the import chunk race, was real and is fixed). One entry per wording; the
+# evidence is in SPEC-400 and in each issue's closing comment.
+
+# #841: the in-sandbox redactors must test output against a needle without the server, so any
+# matcher they get is an equality test for a guess (offline while a run holds the set; the rolling
+# hash alone already is), and redaction gives the same test online: a printed guess comes back as
+# [secret:NAME] over exactly its bytes. SPEC-002 ADR-20 and ADR-0014 accept
+# "redaction is an oracle for weak values" with the 8-character minimum (MIN_AGENT_VALUE_CHARS);
+# ADR-0144 and ADR-0186 name the salted fingerprints. A server-held key would move the same test
+# online and send the run's output to Yulius.
+[[ignore]]
+path = "crates/yulius-app/src/vault/runtime.rs"
+title = "Salted secret digests and lengths exposed to the sandbox form a guessing oracle"
+reason = "the redaction oracle accepted in SPEC-002 ADR-20/ADR-0014 (8-character minimum): sandbox-side redactors need a local matcher, and redaction itself confirms a printed guess and its length (SPEC-400, #841)"
+function = "scrub_fingerprints_for"
+line = 365
+
+# #840: the host comes from hyper's parsed Uri (connect_target, uri().host()), whose URI_CHARS
+# refuse |, space and every control byte, so no field or line can be added; the caller's part is
+# the key's last field after the fixed action|run|id, so it cannot collide with another run's or
+# secret's key; and it is audited only for secrets bound to that host by a person. Pinned by
+# yulius-egress proxy::tests::proxy_targets_with_delimiters_are_no_uri.
+[[ignore]]
+path = "crates/yulius-app/src/vault/runtime.rs"
+title = "Attacker-controlled host flows into audit keys and detail text"
+reason = "the host is a parsed Uri host (no |, space or control byte) and the key's last field after a fixed prefix; tested by proxy_targets_with_delimiters_are_no_uri (SPEC-400, #840)"
+function = "note_agent_use"
+line = 332
+
+# #740: users/<id>/home is the Superagent's own $HOME (identity.rs user_space: HOME uncontained,
+# bound as /home/<login> contained), so it already reads every file there; storing one as a secret
+# with no hosts and no .env allowance, by a person with write access, is the safer path ADR-0167
+# chose for a key in the person's own files. A task's agent gets the sandbox home only.
+[[ignore]]
+path = "crates/yulius-app/src/vault/create.rs"
+title = "Superagent home-root exposes the person's whole shared home to project agents"
+reason = "that home is the Superagent's own $HOME (user_space), which it reads anyway; the secret gets no hosts or .env until a person allows each (ADR-0167, SPEC-400, #740)"
+function = "secret_source_root"
+line = 388
+
+# #749: recover_password is stricter than a rate limit: one process-wide lock, the failure counted
+# in the database before the answer, and recovery erased and locked for good after 3 wrong 6-digit
+# codes (ADR-0011). Pinned by recovery::the_recovery_code_resets_the_password_and_three_wrong_codes_lock_it
+# (ten parallel guesses included). Title only: the public router spans hundreds of lines.
+[[ignore]]
+path = "crates/yulius-server/src/routes/mod.rs"
+title = "Public recovery endpoint without visible rate limiting"
+reason = "recover_password locks recovery permanently after 3 wrong codes under one lock, counted before the answer (ADR-0011); tested by the_recovery_code_resets_the_password_and_three_wrong_codes_lock_it (SPEC-400, #749)"

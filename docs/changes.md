@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
+- Import chunks of one file are applied one at a time, each from the received length read once
+  nothing else writes that file: two chunks that read the same length used to both truncate and
+  write it, so the later one could overwrite the earlier, leave the file shorter than its
+  recorded length (every later chunk then failed for good) or replace verified bytes (SPEC-400,
+  task #379, fixes #845). The Vidoc findings #841 (the redaction fingerprints are the accepted
+  redaction oracle, ADR-0014), #840 (the audited host is a parsed URI host), #740 (the
+  Superagent's home is its own `$HOME`) and #749 (recovery locks for good after three wrong codes)
+  are dismissed with narrow `[[ignore]]` entries.
 - The Claude config's trust key no longer resolves a link the agent puts at its worktree or the
   `worktrees` folder: only the sandbox directory is resolved, the rest of the path is named and
   opened with `O_NOFOLLOW`, and the worktree's `.git` is read through that handle; a shell's

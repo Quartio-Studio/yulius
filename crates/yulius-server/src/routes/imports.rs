@@ -54,7 +54,7 @@ pub async fn put_chunk(
             AppError::Invalid(format!("the {CHUNK_SHA256_HEADER} header is required"))
         })?;
     Ok(Json(
-        app.put_import_chunk(&ctx, &job, &name, offset, digest, &body)
+        app.put_import_chunk(&ctx, &job, &name, offset, digest, body.into())
             .await?,
     ))
 }
