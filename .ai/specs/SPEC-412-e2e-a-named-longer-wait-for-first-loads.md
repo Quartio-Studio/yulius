@@ -1,11 +1,11 @@
 ---
 yulius-task: 5a102cb9-9349-4aac-b6a3-3ee049a49bf0
-status: in-progress
+status: done
 ---
 
 # SPEC-412: e2e: one named, longer wait for first loads, and the races behind #354, #525 and #510
 
-Status: in-progress
+Status: done
 Date: 2026-11-03
 Owner: Yulius task #394
 Scope authorization: the person's goal (task #394). Fix GitHub issues #354, #525 and #510 in one
@@ -102,7 +102,7 @@ three issues found behind other timeouts are fixed, so these tests fail only for
 - [x] Changed files repeated under load again
 - [x] The whole-session offer holds under load (transcript held in the page)
 - [x] Independent review findings resolved
-- [ ] Gates green
+- [x] Gates green
 
 ## Acceptance criteria
 
@@ -221,3 +221,11 @@ named below; run 3 of the files those fixes touched had no failure.
   is already the action's 30 s, so `firstShown` would change nothing and is not used there.
 - Later waits that a starved runner still misses (the clipboard read, the held card, the OSC 8
   hover): kept at their budgets as decided.
+
+**Gates** (head `34480c37`: this branch with `dev` merged, `fcb85e94`; after `scripts/bootstrap.py`).
+- `scripts/dev ci`: exit 0. nextest 3029 passed, 16 skipped; `unittest discover -s scripts` 152
+  tests OK; doctests ok; `cargo deny` advisories, bans, licenses and sources ok; `cargo shear` clean.
+- `cd e2e && npx e2e run` (the whole suite, `CI=true`, the config's 2 workers, host load 20–45):
+  804 passed, 1 skipped, in 1406 s.
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius": disabled, not
+  passed; nothing was scanned.
