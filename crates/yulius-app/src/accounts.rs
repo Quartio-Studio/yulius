@@ -108,23 +108,41 @@ impl LoginPhase {
     }
 }
 
-/// Raw login output, bounded to the newest [`LOGIN_RAW_MAX`] bytes.
-#[derive(Default)]
+/// Raw login output, bounded to the newest [`LOGIN_RAW_MAX`] bytes. It holds the token in
+/// plaintext, so it is one allocation of the bound that never grows (growing would free an
+/// earlier copy unzeroed) and is zeroed whole when wiped or dropped (SPEC-404 ALG-001, #731).
 struct RawOutput {
     bytes: Vec<u8>,
 }
 
-impl RawOutput {
-    fn push(&mut self, chunk: &[u8]) {
-        self.bytes.extend_from_slice(chunk);
-        if self.bytes.len() > LOGIN_RAW_MAX {
-            let excess = self.bytes.len() - LOGIN_RAW_MAX;
-            self.bytes.drain(..excess);
+impl Default for RawOutput {
+    fn default() -> Self {
+        Self {
+            bytes: Vec::with_capacity(LOGIN_RAW_MAX),
         }
     }
+}
 
-    fn take(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.bytes)
+impl RawOutput {
+    fn push(&mut self, chunk: &[u8]) {
+        let chunk = &chunk[chunk.len().saturating_sub(LOGIN_RAW_MAX)..];
+        let excess = (self.bytes.len() + chunk.len()).saturating_sub(LOGIN_RAW_MAX);
+        self.bytes.drain(..excess);
+        self.bytes.extend_from_slice(chunk);
+    }
+
+    /// Overwrites the whole allocation with zeros, past the end of the output too; the output
+    /// reads as zeros afterwards.
+    fn wipe(&mut self) {
+        self.bytes.resize(self.bytes.capacity(), 0);
+        self.bytes.fill(0);
+        std::hint::black_box(&self.bytes);
+    }
+}
+
+impl Drop for RawOutput {
+    fn drop(&mut self) {
+        self.wipe();
     }
 }
 
@@ -1294,6 +1312,7 @@ impl App {
                 if !masked.is_empty() {
                     session.hub.output(s, &masked);
                 }
+                scrub(Some(bytes));
                 None
             }
             RunEvent::Snapshot { seq: s, bytes } => {
@@ -1336,6 +1355,26 @@ impl App {
         }
     }
 
+    /// The credential in the whole raw output, which is wiped afterwards (with the temporary
+    /// plaintext copy extraction may make), so no copy outlives the sign-in (SPEC-404 ALG-001).
+    fn take_credential(&self, session: &LoginSession) -> Option<String> {
+        let Ok(mut raw) = session.raw.lock() else {
+            return None;
+        };
+        let found = match session.provider {
+            Provider::Anthropic => {
+                let text = String::from_utf8_lossy(&raw.bytes);
+                let found = self.deps.harness.extract_claude_token(&text);
+                if let Cow::Owned(copy) = text {
+                    scrub(Some(copy.into_bytes()));
+                }
+                found
+            }
+        };
+        raw.wipe();
+        found
+    }
+
     /// Asks the process to stop and waits (bounded) for its exit; kills the host otherwise.
     async fn stop_login(
         &self,
@@ -1364,21 +1403,16 @@ impl App {
     /// Extracts and seals the credential (or records the failure), wipes the temporary
     /// directory and tells viewers and the UI.
     async fn finish_login(&self, session: &LoginSession, ending: Ending) {
-        let mut raw = session.raw.lock().map(|mut r| r.take()).unwrap_or_default();
         let exit_code = match &ending {
             Ending::Exited(exit) => exit.code,
             _ => None,
         };
         let cancelled =
             matches!(ending, Ending::Cancelled) || session.cancelled.load(Ordering::SeqCst);
-        let credential = match session.provider {
-            Provider::Anthropic => self
-                .deps
-                .harness
-                .extract_claude_token(&String::from_utf8_lossy(&raw))
-                .map(Secret)
-                .ok_or_else(|| "the sign-in ended without producing a token".to_owned()),
-        };
+        let credential = self
+            .take_credential(session)
+            .map(Secret)
+            .ok_or_else(|| "the sign-in ended without producing a token".to_owned());
         // A cancel that comes after the token was printed still keeps it: the sign-in had
         // succeeded (SPEC-243 LGN-002).
         let result: Option<Result<Secret, String>> = match credential {
@@ -1397,10 +1431,6 @@ impl App {
                 _ => reason,
             })),
         };
-        // Best-effort scrub of the plaintext copy before the buffer is freed.
-        raw.fill(0);
-        std::hint::black_box(&raw);
-        drop(raw);
         let phase = match result {
             None => LoginPhase::Cancelled,
             Some(Ok(secret)) => match self.store_credential(&session.account_id, &secret).await {
@@ -1541,10 +1571,45 @@ mod tests {
         let mut raw = RawOutput::default();
         raw.push(&vec![b'a'; LOGIN_RAW_MAX]);
         raw.push(b"tail");
-        let bytes = raw.take();
-        assert_eq!(bytes.len(), LOGIN_RAW_MAX);
-        assert!(bytes.ends_with(b"tail"));
-        assert!(raw.take().is_empty());
+        assert_eq!(raw.bytes.len(), LOGIN_RAW_MAX);
+        assert!(raw.bytes.ends_with(b"tail"));
+        assert!(raw.bytes.starts_with(b"aaaa"));
+    }
+
+    /// SPEC-404 ALG-001 (#731): the wipe zeroes the whole allocation, whether the output filled
+    /// it (and pushed the token's start out) or not.
+    #[test]
+    fn wiping_raw_output_zeroes_its_whole_allocation() {
+        let token = b"sk-ant-oat01-AAAAAAAAAAAAAAAAAAAAAAAA";
+        let mut short = RawOutput::default();
+        short.push(token);
+        let mut full = RawOutput::default();
+        full.push(&vec![b'a'; LOGIN_RAW_MAX - 20]);
+        full.push(token);
+        for mut raw in [short, full] {
+            let at = raw.bytes.as_ptr();
+            raw.wipe();
+            assert_eq!(raw.bytes.as_ptr(), at, "the one allocation");
+            assert_eq!(raw.bytes.len(), raw.bytes.capacity());
+            assert!(raw.bytes.len() >= LOGIN_RAW_MAX);
+            assert!(raw.bytes.iter().all(|&b| b == 0));
+        }
+    }
+
+    /// SPEC-404 ALG-001 (#731): growing would free an earlier copy of the token unzeroed, so the
+    /// buffer keeps its one allocation, whatever the chunk sizes.
+    #[test]
+    fn raw_output_never_reallocates() {
+        let mut raw = RawOutput::default();
+        raw.push(b"sk-ant-oat01-");
+        let (at, capacity) = (raw.bytes.as_ptr(), raw.bytes.capacity());
+        for size in [1, 4096, LOGIN_RAW_MAX - 1, LOGIN_RAW_MAX, 3 * LOGIN_RAW_MAX, 7] {
+            raw.push(&vec![b'x'; size]);
+            assert!(raw.bytes.len() <= LOGIN_RAW_MAX);
+            assert_eq!(raw.bytes.as_ptr(), at, "after a chunk of {size} bytes");
+            assert_eq!(raw.bytes.capacity(), capacity);
+        }
+        assert!(raw.bytes.ends_with(b"xxxxxxx"));
     }
 
     #[test]
