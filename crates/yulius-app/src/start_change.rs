@@ -141,6 +141,21 @@ impl App {
         id: &str,
         req: &ChangeStart,
     ) -> AppResult<TaskSummary> {
+        self.change_task_start_as(ctx, id, req, None).await
+    }
+
+    /// [`App::change_task_start`] audited as a management tool's caller (`actor` and its audit
+    /// detail, SPEC-066 MGT-010) instead of the person.
+    ///
+    /// # Errors
+    /// As [`App::change_task_start`].
+    pub(crate) async fn change_task_start_as(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        id: &str,
+        req: &ChangeStart,
+        caller: Option<(&str, &serde_json::Value)>,
+    ) -> AppResult<TaskSummary> {
         // One change at a time: two could each pass the check below and wait for each other.
         let serial = self.start_change_lock.lock().await;
         let task = self.load_task(ctx, id, Action::Work).await?;
@@ -271,13 +286,21 @@ impl App {
             return Err(AppError::Conflict("task state changed concurrently".into()));
         }
         drop(serial);
+        let (actor, detail) = match caller {
+            Some((actor, detail)) => {
+                let mut detail = detail.clone();
+                detail["start"] = serde_json::json!(what);
+                (actor.to_owned(), detail.to_string())
+            }
+            None => (self.login_of(&ctx.user.id).await, what),
+        };
         store
             .audit(
                 now,
-                &self.login_of(&ctx.user.id).await,
+                &actor,
                 "task.start_changed",
                 Some(task.id.as_str()),
-                Some(&what),
+                Some(&detail),
             )
             .await?;
         self.publish_task(&task.id).await;

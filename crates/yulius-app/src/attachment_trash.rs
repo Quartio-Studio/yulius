@@ -23,7 +23,8 @@
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::os::fd::OwnedFd;
-use std::path::PathBuf;
+use std::path::Path;
+use std::sync::Arc;
 
 use nix::errno::Errno;
 use nix::fcntl::renameat;
@@ -44,7 +45,7 @@ use crate::model::TaskRecord;
 use crate::projects::blocking;
 use crate::uploads::{
     ATTACHMENTS_DIR, MAX_ATTACHMENTS_PER_FOLDER, MAX_FREE_NAME_ATTEMPTS, MAX_PRUNED_ENTRIES,
-    candidate, count_entries, ensure_plain_dirs, link_new_in,
+    attachment_name, candidate, count_entries, ensure_plain_dirs, link_new_in,
 };
 
 /// Days a deleted task's attachments can be restored.
@@ -110,7 +111,7 @@ fn parse_entry(name: &str) -> Option<(i64, u32, TaskId)> {
     ))
 }
 
-/// The regular files of the folder `dir` with printable names, sorted, at most `limit`.
+/// The regular files of the folder `dir` with UTF-8 names, sorted, at most `limit`.
 fn files_in(dir: &OwnedFd, limit: usize) -> Vec<String> {
     let mut files: Vec<String> = names_in(dir, MAX_PRUNED_ENTRIES)
         .unwrap_or_default()
@@ -173,7 +174,7 @@ fn purge(attachments: &OwnedFd, now: i64) {
 
 /// The sandbox's `attachments` folder and its `tasks` folder (each `None` when missing), opened
 /// from the sandbox directory without following a link. Blocks.
-fn open_attachments(sandbox_dir: &PathBuf) -> Option<(OwnedFd, Option<OwnedFd>)> {
+fn open_attachments(sandbox_dir: &Path) -> Option<(OwnedFd, Option<OwnedFd>)> {
     let dir = std::fs::canonicalize(sandbox_dir).ok()?;
     let attachments = match open_dirs_below(&dir, &[OsStr::new(ATTACHMENTS_DIR)], false) {
         Ok(folder) => folder,
@@ -208,11 +209,13 @@ fn to_trash(
     Ok((trash, entry))
 }
 
-/// Settles the listed orphan folders (ATR-002) and answers the deleted task's fate. Blocks.
+/// Settles the listed orphan folders (ATR-002) and answers the deleted task's fate; `exists`
+/// says whether a task still exists now (a task the namers missed, being unarchived meanwhile).
+/// Blocks.
 fn settle(
     (attachments, folders): (&OwnedFd, &OwnedFd),
     names: &[OsString],
-    namers: &Namers,
+    (namers, exists): (&Namers, &dyn Fn(&str) -> bool),
     (deleted, number): (&str, u32),
     now: i64,
 ) -> DeletedAttachments {
@@ -222,6 +225,10 @@ fn settle(
         let Some(id) = name.to_str().filter(|id| !namers.live.contains(*id)) else {
             continue;
         };
+        let own = id == deleted;
+        if !own && exists(id) {
+            continue;
+        }
         let path = format!("{ATTACHMENTS_DIR}/tasks/{id}/");
         let mut tasks: Vec<u32> = namers
             .tasks
@@ -235,7 +242,6 @@ fn settle(
             .filter(|(_, text)| text.contains(&path))
             .map(|(n, _)| n.clone())
             .collect();
-        let own = id == deleted;
         own_seen |= own;
         if !tasks.is_empty() || !automations.is_empty() {
             if own {
@@ -252,6 +258,8 @@ fn settle(
             now,
         ) {
             Ok((trash, entry)) if own => fate.trash = entry_of(&trash, &entry),
+            // A parallel deletion's settling moved it first: found in the trash below.
+            Err(Errno::ENOENT) if own => own_seen = false,
             Ok(_) | Err(Errno::ENOENT) => {}
             Err(err) => tracing::warn!(error = %err, "attachments not moved to the trash"),
         }
@@ -295,7 +303,7 @@ fn restore(
     let mut restored = Restored::default();
     for file in files {
         let placed = (1..=MAX_FREE_NAME_ATTEMPTS).find_map(|n| {
-            let name = candidate(&file, n);
+            let name = candidate(&attachment_name(&file), n);
             match link_new_in((&from, &file), to, &name) {
                 Ok(true) => Some(Ok(name)),
                 Ok(false) => None,
@@ -309,14 +317,25 @@ fn restore(
                     .paths
                     .push(shown.join(&name).to_string_lossy().into_owned());
             }
+            // A parallel restore moved it already.
+            Some(Err(err)) if err.raw_os_error() == Some(Errno::ENOENT as i32) => {}
             Some(Err(err)) => {
                 tracing::warn!(error = %err, file, "an attachment was not restored");
-                restored.left.push(file);
             }
-            None => restored.left.push(file),
+            None => {}
         }
     }
-    // Whatever is still in it (a folder, a file it could not move) keeps the entry.
+    // Whatever is still in it (a folder, a file it could not move) keeps the entry, and is said.
+    restored.left = names_in(&from, MAX_LISTED_FILES)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|name| {
+            let folder = kind_at(&from, &name).is_ok_and(|(kind, _)| kind == SFlag::S_IFDIR);
+            let name = name.to_string_lossy().into_owned();
+            if folder { format!("{name}/") } else { name }
+        })
+        .collect();
+    restored.left.sort();
     match unlinkat(trash, entry, UnlinkatFlags::RemoveDir) {
         Ok(()) | Err(Errno::ENOTEMPTY | Errno::EEXIST | Errno::ENOENT) => {}
         Err(err) => tracing::warn!(error = %err, "a restored trash entry was not removed"),
@@ -374,14 +393,28 @@ impl App {
             }
         };
         let (id, number) = (deleted.id.as_str().to_owned(), deleted.number);
+        let (store, runtime) = (
+            Arc::clone(&self.deps.store),
+            tokio::runtime::Handle::current(),
+        );
+        let tasks_dir = self
+            .sandbox_dir(sandbox)
+            .join(ATTACHMENTS_DIR)
+            .join("tasks");
         blocking(move || {
             let Some(folders) = folders else {
                 return Ok(DeletedAttachments::default());
             };
+            crate::race::reached(crate::race::Point::AttachmentsSettle, &tasks_dir);
+            // Asked again for each folder about to move: an unreadable answer keeps it.
+            let exists = |id: &str| match TaskId::parse(id) {
+                Ok(id) => !matches!(runtime.block_on(store.task(&id)), Ok(None)),
+                Err(_) => true,
+            };
             Ok(settle(
                 (&attachments, &folders),
                 &names,
-                &namers,
+                (&namers, &exists),
                 (&id, number),
                 now,
             ))
@@ -443,34 +476,52 @@ impl App {
         args: &Value,
     ) -> AppResult<Value> {
         let sandbox = &caller.sandbox;
-        let dir = std::fs::canonicalize(self.sandbox_dir(sandbox))
-            .map_err(|_| AppError::Conflict("the sandbox has no folder yet".into()))?;
-        let now = self.now_secs();
-        let trash_dir = dir.clone();
-        let (trash, listed) = blocking(move || {
-            let attachments = ensure_plain_dirs(&trash_dir, &[ATTACHMENTS_DIR])?.1;
+        let (sandbox_dir, now) = (self.sandbox_dir(sandbox), self.now_secs());
+        // Listing creates nothing: a missing trash is an empty one, a link is refused.
+        let (dir, trash, listed) = blocking(move || {
+            let dir = std::fs::canonicalize(&sandbox_dir)
+                .map_err(|_| AppError::Conflict("the sandbox has no folder yet".into()))?;
+            let not_plain =
+                || AppError::Forbidden("the attachments trash is not a plain folder".into());
+            let attachments = match open_dirs_below(&dir, &[OsStr::new(ATTACHMENTS_DIR)], false) {
+                Ok(folder) => folder,
+                Err(Errno::ENOENT) => return Ok((dir, None, Vec::new())),
+                Err(Errno::ELOOP | Errno::ENOTDIR) => return Err(not_plain()),
+                Err(err) => return Err(errno_error(err)),
+            };
             purge(&attachments, now);
-            let trash =
-                open_dir_at(&attachments, OsStr::new(TRASH_DIR), true).map_err(errno_error)?;
-            let listed = entries(&trash);
-            Ok((trash, listed))
+            match open_dir_at(&attachments, OsStr::new(TRASH_DIR), false) {
+                Ok(trash) => {
+                    let listed = entries(&trash);
+                    Ok((dir, Some(trash), listed))
+                }
+                Err(Errno::ENOENT) => Ok((dir, None, Vec::new())),
+                Err(Errno::ELOOP | Errno::ENOTDIR) => Err(not_plain()),
+                Err(err) => Err(errno_error(err)),
+            }
         })
         .await?;
         let mut out = json!({});
         if let Some(wanted) = args.get("restore").filter(|v| !v.is_null()) {
             self.manage_authority(caller).await?;
             let (id, number) = match wanted {
-                Value::String(text) => (
+                Value::String(text) if !text.trim().is_empty() => (
                     Some(text.trim().to_owned()),
                     text.trim().parse::<u32>().ok(),
                 ),
                 Value::Number(n) => (None, n.as_u64().and_then(|n| u32::try_from(n).ok())),
-                _ => {
-                    return Err(AppError::Invalid(
-                        "`restore` must be a deleted task's id or number".into(),
-                    ));
-                }
+                _ => (None, None),
             };
+            if id.is_none() && number.is_none() {
+                return Err(AppError::Invalid(
+                    "`restore` must be a deleted task's id or number".into(),
+                ));
+            }
+            let trash = trash.ok_or_else(|| {
+                AppError::Invalid(
+                    "the trash is empty: no deleted task's attachments wait there".into(),
+                )
+            })?;
             let shown_wanted = id
                 .clone()
                 .or(number.map(|n| format!("#{n}")))

@@ -45,8 +45,9 @@ how a waiting task starts in place instead of deleting and recreating it.
   (deletion time in Unix seconds; number `0` when no longer known), by one rename through folder
   handles that never follows a link. A folder kept earlier goes to the trash once the last task
   naming it is deleted. The folders are listed before the tasks are read, so a task created
-  meanwhile is never taken for a deleted one; a folder a parallel deletion moved first, without its
-  number, gets it back from its own task's settling. The file system work runs off the runtime.
+  meanwhile is never taken for a deleted one, and each folder's task is asked for again just before
+  it moves (one unarchived between the readings); a folder a parallel deletion moved first,
+  without its number, gets it back from its own task's settling. The file system work runs off the runtime.
 - **ATR-003** `task_delete` answers what happened to the task's attachments: `kept_for` (the
   numbers of the tasks naming them, `kept_for_automations` the automations' names) or `trash` (the entry, its files and until when it can be
   restored). The UI's delete confirmation says that attachments another task names stay and the
@@ -60,7 +61,9 @@ how a waiting task starts in place instead of deleting and recreating it.
   default), moves the entry's regular files into that task's attachments folder under free names
   (`name`, `name-2`, …) and answers their new paths. Restoring needs write access, respects the
   folder bound, and is audited (`attachment.restored`). The entry goes once it is empty: what a
-  restore could not move (a folder, a file without a free name) stays in it and is reported.
+  restore could not move (a folder, a link, a file without a free name) stays in it and is
+  reported (`left_in_trash`). Restored names are made safe as an upload's are. Listing creates
+  no folder.
 - **ATR-006** `task_update` (task agents and the Superagent) changes how a waiting (chained or
   prepared) task starts, as the UI's change does (SPEC-126), with `task_create`'s start arguments
   (`after_task`, `start_rule`, `supertask`, `prepared`, `start_at`; none of them means start now).
@@ -111,8 +114,7 @@ first and fails without the change.
   automations); messages typed into a running session are kept nowhere Yulius can search (its
   transcript only), and the trash covers those.
 - Composer drafts a waiting task names are still pruned after a week, and a shell's attachments go
-  with the shell: older paths to the same kind of loss, outside this change (#1023, and the issue
-  for shells).
+  with the shell: older paths to the same kind of loss, outside this change (#1023, #1027).
 - The tool is named `task_update` (what an agent looks for) and takes only the start for now.
 
 ## Evidence

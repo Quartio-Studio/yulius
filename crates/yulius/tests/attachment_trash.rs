@@ -265,11 +265,15 @@ async fn task_update_changes_a_waiting_tasks_start_in_place() -> TestResult {
     // nothing.
     let actor = format!("task:{}", number(&h, "t-agent").await?);
     let audit = h.store.automation_audit("t-later", 10).await?;
-    assert!(
-        audit
-            .iter()
-            .any(|e| e.action == "task.start_changed" && e.actor == actor),
-        "{audit:?}"
+    let changes: Vec<&str> = audit
+        .iter()
+        .filter(|e| e.action == "task.start_changed")
+        .map(|e| e.actor.as_str())
+        .collect();
+    assert_eq!(
+        changes,
+        [actor.as_str()],
+        "one row, the caller's: {audit:?}"
     );
     let refused = mcp_tool(
         &h,
@@ -377,6 +381,11 @@ async fn the_trash_keeps_what_it_cannot_restore_and_numbers_what_others_moved() 
         std::fs::read_to_string(attachments.join("tasks/t-agent/a.txt"))?,
         "a"
     );
+    assert_eq!(
+        restored["restored"]["left_in_trash"],
+        json!(["nested/"]),
+        "{restored}"
+    );
     let entries = trash(&attachments);
     let entry = entries.first().ok_or("the entry stays")?;
     assert_eq!(
@@ -424,5 +433,68 @@ async fn a_trash_swapped_for_a_link_receives_nothing() -> TestResult {
     let listed = mcp_tool(&h, "tok-agent", "attachments_trash", json!({})).await?;
     assert_eq!(listed["isError"], json!(true), "{listed}");
     assert_eq!(std::fs::read_dir(&outside)?.count(), 0);
+    Ok(())
+}
+
+/// AC ATR-002: while a deletion settles, a task its first reading missed (created or unarchived
+/// meanwhile) keeps its folder, and the deleted task's folder moved by a parallel deletion first
+/// gets its number back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn settling_asks_again_before_it_moves_a_folder() -> TestResult {
+    let (h, attachments) = world().await?;
+    let proto = seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let n1 = number(&h, "t1").await?;
+    attach(&attachments, "t1", "a.txt", "a")?;
+    let late = attach(&attachments, "t-late", "late.txt", "late")?;
+    let (store, runtime) = (h.store.clone(), tokio::runtime::Handle::current());
+    let mut record = proto.clone();
+    record.id = TaskId::parse("t-late")?;
+    record.number = 0;
+    let (tasks, now) = (attachments.join("tasks"), h.app.now().0 / 1000);
+    yulius_app::race::on(
+        yulius_app::race::Point::AttachmentsSettle,
+        &tasks.clone(),
+        move || {
+            let _ = runtime.block_on(store.insert_task(&record));
+            let _ = std::fs::create_dir_all(tasks.with_file_name("trash"));
+            let _ = std::fs::rename(
+                tasks.join("t1"),
+                tasks.with_file_name("trash").join(format!("{now}-0-t1")),
+            );
+        },
+    );
+    let (deleted, is_error) = tool(&h, "task_delete", json!({"task_id": "t1"})).await?;
+    assert!(!is_error, "{deleted}");
+    assert!(late.is_file(), "the late task's folder stays");
+    assert_eq!(
+        deleted["deleted"]["attachments"]["trash"]["number"],
+        json!(n1),
+        "{deleted}"
+    );
+    assert_eq!(trash(&attachments), [format!("{now}-{n1}-t1")]);
+    Ok(())
+}
+
+/// AC ATR-005: a restored file gets a name that needs no quoting, whatever the trash held.
+#[tokio::test]
+async fn restored_names_need_no_quoting() -> TestResult {
+    let (h, attachments) = world().await?;
+    let entry = attachments
+        .join("trash")
+        .join(format!("{}-7-t-gone", h.app.now().0 / 1000));
+    std::fs::create_dir_all(&entry)?;
+    std::fs::write(entry.join("x;$(id).png"), "x")?;
+    let (restored, is_error) = tool(&h, "attachments_trash", json!({"restore": "t-gone"})).await?;
+    assert!(!is_error, "{restored}");
+    let path = restored["restored"]["paths"][0].as_str().ok_or("path")?;
+    let name = Path::new(path).file_name().ok_or("name")?.to_string_lossy();
+    assert!(
+        name.ends_with(".png")
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-+".contains(c)),
+        "{name}"
+    );
+    assert_eq!(std::fs::read_to_string(path)?, "x");
     Ok(())
 }

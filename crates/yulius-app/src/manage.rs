@@ -233,7 +233,7 @@ impl App {
 impl App {
     /// `task_update` (SPEC-396 ATR-006): the UI's change of how a waiting task of the caller's
     /// project starts (SPEC-126), with `task_create`'s start arguments, for the person it acts
-    /// for; audited by that change and with the caller (MGT-010).
+    /// for; audited once, with the caller (MGT-010).
     ///
     /// # Errors
     /// `Invalid` arguments, `NotFound` outside the project, `Forbidden` without write access, and
@@ -257,25 +257,13 @@ impl App {
             start_at: opt_str(args, "start_at")?,
         };
         let changed = self
-            .change_task_start(&ctx, task.id.as_str(), &change)
-            .await?;
-        let named =
-            json!({"task": format!("#{} {}", task.number, task.title), "status": changed.status});
-        // The change happened: a failed audit write is logged, as for the other task tools.
-        if let Err(err) = self
-            .deps
-            .store
-            .audit(
-                self.now(),
-                &caller.actor,
-                "task.start_changed",
-                Some(task.id.as_str()),
-                Some(&tool_detail(caller, &named)),
+            .change_task_start_as(
+                &ctx,
+                task.id.as_str(),
+                &change,
+                Some((&caller.actor, &caller.detail)),
             )
-            .await
-        {
-            tracing::warn!(task = %task.id, error = %err, "tool audit failed");
-        }
+            .await?;
         tracing::info!(task = %task.id, actor = %caller.actor, status = %changed.status, "task start changed by a tool");
         let task = self
             .deps
