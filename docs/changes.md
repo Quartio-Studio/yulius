@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
+- The Vidoc findings #819 (OSC 52 copies, ADR-0130), #741 (`repo.url` is built by the server as
+  `https://github.com/{owner}/{name}`), #701 (`needs_you` stores only links to this instance),
+  #683 (sandbox names map to `.invalid` in host paths) and #682 (path-based `make_writable` only
+  for trees no sandbox run can change, ADR-0176) are dismissed as false positives with narrow
+  `[[ignore]]` entries; new assertions pin the two link guards (SPEC-399, task #380).
 - Approving a CLI sign-in (device grant) claims the grant and stores its new `cli` token in one
   store transaction (`SessionStore::approve_device_grant`): a second approval of a grant already
   approved or denied, by the same person, another one or at the same moment, answers 409 and
