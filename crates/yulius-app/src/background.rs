@@ -74,6 +74,17 @@ impl App {
                 }
             }
         });
+        // What the guests of revoked or expired playground links still run (SPEC-410 GST-005), on
+        // its own loop: ending terminals waits, and the tick above must not.
+        let app = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(TICK);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                app.end_expired_guest_links().await;
+            }
+        });
         // Deliveries in progress follow GitHub, so the Git board moves without anyone looking.
         let app = Arc::clone(self);
         tokio::spawn(async move {

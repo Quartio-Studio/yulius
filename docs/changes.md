@@ -13,6 +13,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   leaves the file; an agent's write over unsaved text shows "Changed on disk" in every Editor with
   Keep mine and Take disk version (SPEC-411, task #393, ADR-0261, fixes #566). This reverses
   EDT-003's "unsaved text is neither stored nor shared", by the person's decision of 2026-11-03.
+- Teammates try a playground without signing in with GitHub (SPEC-410, task #392, ADR-0260,
+  fixes #412; the product owner's decision amends ACC-005 for playgrounds only). A playground's
+  admin picks "Invite guests…" in its tab menu and creates a link that lasts 1, 7 or 30 days; a
+  teammate opens it, types a name and works on that playground's tasks, terminals and files. A
+  guest reaches no other sandbox, secret or setting (an allowlist of routes, no Configure or
+  Administer, for their agents too). They share the playground's workspace (files, terminals,
+  browser, the Claude account its tasks use, whose token a guest's task can copy, as the dialog
+  says), so once a guest joined its runs get no agent secret or saved agent state. Revoking the
+  link, its expiry, or moving the playground to GitHub or removing it signs its guests out and
+  stops what they run.
+- The editor's explorer keeps a file drag's folder marked when it draws its rows again during the
+  drag, for example when the folder list answers after the listing. The mark is drawn by path
+  with the rows, not kept on a row element that a redraw replaces. The filedrop e2e test waits for
+  the mark instead of reading it once, and a new test redraws the tree mid-drag (SPEC-414, task
+  #396, fixes #1029).
 - Attachments a task's request or an automation's prompt names are no longer removed by the older
   clean-ups: a shell's folder (a screenshot pasted into the Superagent and named in `task_create`)
   stays when the shell ends and at start-up, and a composer draft older than a week stays at its

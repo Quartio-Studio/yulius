@@ -104,6 +104,9 @@ pub enum Point {
     /// `read_repo_file` (SPEC-409): the path was resolved and found inside the task worktree; the
     /// file is not opened yet. The path is the resolved one.
     RepoFileRead,
+    /// Joining through a guest link (SPEC-410): the guest's account exists; their session does
+    /// not yet. The path is the link's id.
+    GuestJoined,
 }
 
 #[cfg(feature = "test-support")]

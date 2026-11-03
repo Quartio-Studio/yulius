@@ -334,6 +334,7 @@ p { margin: 0; }
 .tabrow-right .btn-icon { width: var(--control-lg); height: var(--control-lg); }
 .chip { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 8px; border-radius: var(--radius-full); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 500; }
 .chip-warn { background: var(--warn-soft); color: var(--warn-fg); border: 1px solid var(--warn-border); }
+.chip-guest { background: var(--info-soft); color: var(--info-fg); border: 1px solid var(--border); }
 .btn-status { height: var(--control-md); padding: 0 8px; gap: 4px; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text-2); background: transparent; border-color: transparent; }
 .btn-status[aria-expanded="true"] { background: var(--surface-3); color: var(--text); }
 .btn-status .ev-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
@@ -2765,7 +2766,7 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .leftovers-actions { flex-wrap: wrap; }
 .leftovers-kept h3 { margin: 0; }
 .leftovers-kept-list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.leftovers-kept-row { flex-wrap: wrap; gap: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.leftovers-kept-row { flex-wrap: wrap; gap: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .leftovers-kept-name { min-width: 0; overflow-wrap: anywhere; }
 .leftovers-result ul { margin: 4px 0 0; padding-left: 16px; overflow-wrap: anywhere; }
 .leftovers-table .leftovers-check { width: 32px; }
@@ -2990,3 +2991,9 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .gs-state { font-size: var(--fs-xs); line-height: var(--lh-xs); color: var(--muted); white-space: nowrap; }
 .gs-next .gs-state { color: var(--text); font-weight: 600; }
 .gs-next .gs-mark { border-color: var(--text-2); color: var(--text); }
+
+/* A playground's guest links (SPEC-410): the admin's dialog. */
+.guest-new { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
+.guest-invite-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.guest-invite { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); }
+.guest-invite > .grow { flex: 1; min-width: 0; }

@@ -485,6 +485,19 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// The live shells and Cockpits of `sandbox` that one of `users` started (a playground's
+    /// guests, whose work ends with their link, SPEC-410).
+    pub(crate) fn shells_created_by(
+        &self,
+        sandbox: &SandboxId,
+        users: &[UserId],
+    ) -> Vec<Arc<ShellRuntime>> {
+        self.sandbox_shells(sandbox)
+            .into_iter()
+            .filter(|shell| users.contains(&shell.creator))
+            .collect()
+    }
+
     /// The caller's live shells in `sandbox`, oldest first.
     fn own_shells(&self, user: &UserId, sandbox: &SandboxId) -> Vec<Arc<ShellRuntime>> {
         let mut own: Vec<Arc<ShellRuntime>> = self

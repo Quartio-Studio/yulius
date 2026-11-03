@@ -199,6 +199,8 @@ pub struct App {
     pub(crate) login_attempts: Mutex<HashMap<String, Vec<i64>>>,
     /// CLI device sign-in starts per client key (rate limiting, #169).
     pub(crate) device_starts: Mutex<HashMap<String, Vec<i64>>>,
+    /// Looks at and joins through playground guest links per client key (SPEC-410 GST-002).
+    pub(crate) guest_attempts: Mutex<HashMap<String, Vec<i64>>>,
     /// Remote MCP requests per API token in the last minute (SPEC-247 RMT-014).
     pub(crate) remote_calls: Mutex<HashMap<String, Vec<i64>>>,
     /// Remote file changes being committed at once (SPEC-247 RMT-025).
@@ -296,6 +298,7 @@ impl App {
             events,
             login_attempts: Mutex::new(HashMap::new()),
             device_starts: Mutex::new(HashMap::new()),
+            guest_attempts: Mutex::new(HashMap::new()),
             remote_calls: Mutex::new(HashMap::new()),
             change_slots: tokio::sync::Semaphore::new(crate::remote_files::MAX_CONCURRENT_CHANGES),
             note_presence: Mutex::new(HashMap::new()),

@@ -20,12 +20,17 @@ use crate::projects::{PORT_RANGE_SIZE, Scaffold, profile_view, remove_tree, slug
 
 mod folder;
 mod github;
+mod guests;
 mod onboard;
 pub(crate) mod purge;
 
 pub(crate) use onboard::UploadTarget;
 
 pub use folder::{FolderUpload, MAX_FOLDER_UPLOAD_BYTES};
+pub use guests::{
+    DEFAULT_GUEST_LINK_DAYS, GUEST_ATTEMPTS_PER_MINUTE, GUEST_FENCE, GUEST_LINK_DAYS,
+    MAX_GUEST_NAME, MAX_GUESTS_PER_LINK, MAX_LIVE_GUEST_LINKS, guest_name,
+};
 
 /// The note a playground's delivery views carry instead of a GitHub error (PLY-008).
 pub const PLAYGROUND_NOTE: &str = "This playground keeps its Git on this server: no pull \
@@ -105,6 +110,10 @@ impl App {
     pub(crate) async fn playground_quota(&self, user: &UserRecord) -> AppResult<()> {
         if user.is_superadmin {
             return Ok(());
+        }
+        // A guest tries one playground and makes none (SPEC-410 GST-004).
+        if self.is_guest(user) {
+            return Err(AppError::Forbidden(GUEST_FENCE.into()));
         }
         // Every repository on disk counts, a removed playground's too: removal keeps its files
         // (PRJ-009); purging its code frees its place (SPEC-171).

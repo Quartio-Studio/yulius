@@ -201,6 +201,8 @@ export function createUpdateBanner(ctx) {
   }
 
   async function refresh() {
+    // A playground's guest reads no instance state (SPEC-410): the banner stays empty.
+    if (ctx.guest && ctx.guest()) return;
     // Reads overlap (events, the reconnect, the poll, the instance page's actions): an answer to
     // an older read than the one shown is dropped (#502).
     const asked = ++reads;

@@ -230,6 +230,7 @@ export function createEditorView(ctx, sandbox, getTask) {
   let suspended = false; // another sandbox is in front: no Monaco models (SPEC-113)
   let shown = false; // the Editor is the tool in front
   const expanded = new Map(); // dir path → entries | null (loading)
+  let dropTarget = null; // the folder a file drag is over (EDT-006): its row is marked, also when drawn again
 
   const folder = h('select', { class: 'select select-sm', 'aria-label': 'Folder' });
   // The folders the server lists (SPEC-340 EWT-001): the sandbox and every task worktree on disk,
@@ -372,7 +373,7 @@ export function createEditorView(ctx, sandbox, getTask) {
 
   const query = (path) => `root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`;
   // Files dropped on the explorer or the editor, or picked with its upload button (EDT-006).
-  const drop = attachEditorDrop({ ctx, sandboxId: sandbox.id, tree, host, head: treeHead, getRoot: () => root, canWrite: writable, activePath: () => (active ? active.path : null), reveal: (dir) => loadDir(dir), refresh: () => refreshTree(), open: (path) => openFile(path) });
+  const drop = attachEditorDrop({ ctx, sandboxId: sandbox.id, tree, host, head: treeHead, getRoot: () => root, canWrite: writable, markTarget: markDropTarget, activePath: () => (active ? active.path : null), reveal: (dir) => loadDir(dir), refresh: () => refreshTree(), open: (path) => openFile(path) });
 
   /**
    * A folder this person may not change (another person's task worktree, SPEC-340 EWT-003): Monaco
@@ -417,6 +418,12 @@ export function createEditorView(ctx, sandbox, getTask) {
     renderTree();
   }
 
+  /** Marks the folder `path` a file drag is over (null: none); `renderTree` keeps the mark (SPEC-414). */
+  function markDropTarget(path) {
+    dropTarget = path;
+    for (const row of tree.querySelectorAll('.ed-row')) row.classList.toggle('ed-drop-target', path !== null && row.dataset.path === path);
+  }
+
   function renderTree() {
     const rows = [];
     let busy = false;
@@ -428,7 +435,7 @@ export function createEditorView(ctx, sandbox, getTask) {
         const isDir = entry.kind === 'dir';
         const open = isDir && expanded.has(entry.path);
         const row = h('div', {
-          class: ['ed-row', active && active.path === entry.path && 'active', entry.kind === 'symlink' && 'muted'],
+          class: ['ed-row', active && active.path === entry.path && 'active', entry.kind === 'symlink' && 'muted', dropTarget === entry.path && 'ed-drop-target'],
           role: 'treeitem',
           'aria-expanded': isDir ? String(open) : null,
           title: entry.path,

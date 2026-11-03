@@ -323,10 +323,7 @@ impl App {
 
     /// The person's audit label.
     fn vault_actor(ctx: &AuthContext) -> String {
-        ctx.user
-            .github_login
-            .clone()
-            .unwrap_or_else(|| "superadmin".into())
+        ctx.user.label()
     }
 
     /// The agent secrets of `sandbox` that runs of `holder` get (SPEC-245 RES-001..004): one per
@@ -340,6 +337,11 @@ impl App {
         sandbox: &SandboxId,
         holder: Holder<'_>,
     ) -> AppResult<Vec<VaultSecretRecord>> {
+        // A playground a guest joined is shared with them: none of its runs (the guest's, its
+        // maker's, a CI job's) gets an agent secret from then on (SPEC-410 GST-004).
+        if self.playground_had_guests(sandbox).await {
+            return Ok(Vec::new());
+        }
         let candidates = self.deps.store.vault_agent_in(sandbox).await?;
         Ok(reach::resolve(candidates, holder))
     }
@@ -358,9 +360,11 @@ impl App {
         holder: Holder<'_>,
     ) -> AppResult<Vec<VaultSecretRecord>> {
         let mut records = self.resolved_agent_secrets(sandbox, holder).await?;
+        // The instance key neither: a guest's runs would spend it (SPEC-410 GST-004).
         if self.vidoc_key().is_some()
             && !records.iter().any(|r| r.name == VIDOC_SECRET)
             && self.sandbox_vidoc_on(sandbox).await?
+            && !self.playground_had_guests(sandbox).await
         {
             records.push(instance_vidoc_record());
         }

@@ -244,10 +244,7 @@ impl App {
 
     /// The person's audit label (their login), as for agent secrets.
     fn variable_actor(ctx: &AuthContext) -> String {
-        ctx.user
-            .github_login
-            .clone()
-            .unwrap_or_else(|| "superadmin".into())
+        ctx.user.label()
     }
 
     async fn variable_audit(

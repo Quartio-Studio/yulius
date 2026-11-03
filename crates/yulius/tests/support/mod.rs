@@ -1619,6 +1619,11 @@ pub async fn ws_connect(
     {
         request.headers_mut().insert("authorization", value);
     }
+    if let Some(cookie) = &creds.cookie
+        && let Ok(value) = HeaderValue::from_str(&cookie_header(cookie))
+    {
+        request.headers_mut().insert("cookie", value);
+    }
     if let Ok(value) = HeaderValue::from_str(origin) {
         request.headers_mut().insert("origin", value);
     }
