@@ -914,24 +914,27 @@ reason = "stored CD output is redacted of every agent secret of the sandbox, pro
 # it already controls the server, and a fixed PATH would miss the operator's `claude` install. The
 # argv is fixed, HOME and CLAUDE_CONFIG_DIR are new empty private folders (no settings, no hooks),
 # and only instance administrators type into it; bubblewrap containment is a sandbox's, and a
-# sign-in has none. accounts.rs claude_login_masks_the_token_for_viewers_and_seals_it pins the plan.
+# sign-in has none. tests/accounts.rs claude_login_masks_the_token_for_viewers_and_seals_it pins the plan.
 [[ignore]]
 path = "crates/yulius-app/src/accounts.rs"
+function = "login_plan"
 title = "Login process launched with inherited PATH and no containment"
 reason = "the sign-in is a host operation by design (ADR-0256): PATH is the operator's own server environment, the argv fixed, HOME and config new empty folders, input from instance administrators only (SPEC-404, #806)"
 
 [[ignore]]
 path = "crates/yulius-app/src/accounts.rs"
+function = "login_plan"
 title = "Login process spawned without containment on the host"
 reason = "duplicate of #806: the sign-in runs on the host by design (ADR-0256), with a fixed argv, new empty HOME and config folders and input from instance administrators only (SPEC-404, #729)"
 
 # #751: a prune between prune_logins and the lookup drops only a finished sign-in, so the answer is
 # the NotFound a moment later would give; a replaced sign-in keeps its own id, Notify and phase;
 # `ended` is notify_waiters, so every cancel waiting on it wakes; a second administrator's cancel
-# is their own audited request. All of it needs an instance administrator. accounts.rs
+# is their own audited request. All of it needs an instance administrator. tests/accounts.rs
 # a_running_sign_in_can_be_cancelled pins a second cancel of an ended sign-in changing nothing.
 [[ignore]]
 path = "crates/yulius-app/src/accounts.rs"
+function = "login_terminal"
 title = "TOCTOU between prune and login lookup"
 reason = "a prune in between drops only a finished sign-in (NotFound, as a moment later); a replaced one keeps its own id and state; a second cancel is a second administrator's own audited request (SPEC-404, #751)"
 
@@ -939,8 +942,9 @@ reason = "a prune in between drops only a finished sign-in (NotFound, as a momen
 # the handshake of an attach (ptyhost host.rs attach; client.rs handshake reads it), which
 # start_login makes right after the spawn, before a viewer can paste the code that makes the CLI
 # print a token. Within the stream, TokenMasker holds a split token back across chunks (pinned by
-# accounts.rs claude_login_masks_the_token_for_viewers_and_seals_it, which splits it).
+# tests/accounts.rs claude_login_masks_the_token_for_viewers_and_seals_it, which splits it).
 [[ignore]]
 path = "crates/yulius-app/src/accounts.rs"
+function = "login_event"
 title = "Masking state reset on snapshots can split a masked token across chunks"
 reason = "the only snapshot comes in the attach handshake right after the spawn, before a token can be printed; output chunks share one masker that holds a split token back (SPEC-404, #730)"

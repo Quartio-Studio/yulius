@@ -42,12 +42,14 @@ wording, so that a repeat scan does not reopen it.
   that the server could have overwritten:
   - The buffer is allocated once at its bound and never reallocates. The old `Vec` growth freed
     earlier copies of the token without zeroing them.
-  - When the sign-in ends, the whole allocation is zeroed, including the bytes that dropping old
-    output left past the end. So is a buffer that is dropped without ending, for example on a
-    failed start.
+  - When the sign-in ends, the whole allocation is zeroed up to its capacity, past the end of the
+    output too. So is a buffer that is dropped without that, for example by a pump task that
+    dies, and a buffer whose lock was poisoned.
   - The lossy UTF-8 copy that token extraction may make is scrubbed, as `holds_credential`
     already does.
   - Each raw output chunk is scrubbed once it has been copied and masked.
+  - The extracted token is zeroized once it has been sealed into the account, or once sealing
+    failed.
 - ALG-002 (#806, false positive). The sign-in keeps the server's own `PATH` and runs uncontained.
   `PATH` comes from the server's environment, which only the operator sets. The argv is fixed,
   HOME and the config folder are new and empty, and only instance administrators type into it.
@@ -75,7 +77,7 @@ wording, so that a repeat scan does not reopen it.
 ## Acceptance criteria
 
 - `accounts::tests::raw_output_never_reallocates` fails on dev, where the `Vec` grows and moves,
-  and passes with the fix.
+  and passes with the fix. A chunk larger than the bound keeps its newest bytes.
 - `accounts::tests::wiping_raw_output_zeroes_its_whole_allocation` shows that a buffer holding a
   token, partly pushed out by newer output, is all zeros over its whole capacity after the wipe.
 - The existing sign-in tests (`accounts::` in the `yulius` integration binary: token split
@@ -96,10 +98,10 @@ wording, so that a repeat scan does not reopen it.
   `finish_login` zeroes it. But growth by doubling freed every earlier allocation with the token
   in it, unzeroed, and `drain` left old bytes past the end, which `fill` does not reach. Both are
   closed with safe code (`unsafe` is forbidden): the buffer is allocated once at
-  `LOGIN_RAW_MAX`, and `resize` to its capacity then `fill(0)` zeroes all of it. The `zeroize`
-  crate was rejected: it adds a dependency for what two lines do here. Copies outside this
-  module (the PTY client's read buffer, the stored `Secret`) are out of scope. The sealed
-  credential has to live on anyway. ADR-0256.
+  `LOGIN_RAW_MAX`, and `resize` to its capacity then `zeroize` (volatile writes; the crate is
+  already a dependency of `yulius-app`, used by the vault) zeroes all of it. The extracted
+  `Secret` is zeroized once it has been sealed. The PTY client's read buffer and the masker's held
+  bytes are outside this module and short-lived; they are out of scope. ADR-0256.
 - #806 and #729: a sign-in runs on the host by design. Containing it would need a sandbox it does
   not have, the `claude` install and its runtime bound in read-only, and a network path to
   Anthropic, to guard against an instance administrator typing into a code prompt. A fixed

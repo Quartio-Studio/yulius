@@ -6,10 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
-- A subscription sign-in no longer leaves copies of its token in freed memory. Its raw output, kept
-  to read the token, was a growing buffer: each growth freed the previous copy unzeroed. It is now
-  one allocation that never grows, and it is zeroed whole once the token is read, with the
-  extraction's temporary copy and each output chunk (SPEC-404, task #383, ADR-0256, fixes #731).
+- A subscription sign-in no longer frees copies of its token unzeroed in its raw output. That
+  output, kept to read the token, was a growing buffer, and each growth freed the previous copy
+  unzeroed. It is now one allocation that never grows, and it is zeroed whole once the token is
+  read. The extraction's temporary copy, each output chunk and, once sealed, the extracted token
+  are zeroed too (SPEC-404, task #383, ADR-0256, fixes #731).
   The Vidoc findings #806 and its duplicate #729 (the sign-in runs on the host by design, with the
   server's own `PATH`), #751 (a prune between two locks only drops a finished sign-in) and #730
   (the only snapshot comes before a token can be printed) are dismissed with narrow `[[ignore]]`

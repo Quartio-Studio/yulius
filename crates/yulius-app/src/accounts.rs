@@ -1355,8 +1355,8 @@ impl App {
         }
     }
 
-    /// The credential in the whole raw output, which is wiped afterwards (with the temporary
-    /// plaintext copy extraction may make), so no copy outlives the sign-in (SPEC-404 ALG-001).
+    /// The credential in the whole raw output, which is wiped afterwards, with the temporary
+    /// plaintext copy that extraction may make (SPEC-404 ALG-001).
     fn take_credential(&self, session: &LoginSession) -> Option<String> {
         // Nothing under this lock panics; were it poisoned, the buffer is still wiped.
         let mut raw = session
