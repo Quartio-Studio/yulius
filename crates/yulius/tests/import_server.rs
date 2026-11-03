@@ -428,6 +428,99 @@ async fn unsafe_manifest_names_never_reach_the_disk() -> TestResult {
     Ok(())
 }
 
+/// SPEC-400 VTV-001 (#845): two chunks of one file never write from the same stale length. A
+/// short chunk has read the job (nothing received) when a longer one is applied; the short one
+/// is then acknowledged as covered, never written over it, and the upload completes intact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn racing_chunks_of_one_file_never_overwrite_each_other() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", false).await?;
+    let remote = w.remote(
+        OWNER,
+        "shop",
+        &[("README.md", "# Shop\n"), ("src/app.txt", "v1\n")],
+        &[],
+    )?;
+    w.grant("alice", "shop", "admin");
+    let offer = laptop_offer(&w, &remote)?;
+    let created = create_job(&w, &alice, offer.body()?).await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    let job = text(&created.body["job_id"]).to_owned();
+    let sandbox = w.h.store.sandboxes().await?.remove(0);
+    let bundle = offer.contents.get("repo.bundle").ok_or("bundle")?.clone();
+    assert!(bundle.len() > 16, "a bundle long enough to split");
+    let (short, long) = (bundle.len() / 4, bundle.len() / 2);
+    let file = w
+        .data_dir()
+        .join("sandboxes")
+        .join(sandbox.id.as_str())
+        .join("imports")
+        .join(&job)
+        .join("repo.bundle");
+
+    // The longer chunk is applied while the short one is paused after its read of the job.
+    let (router, creds) = (w.h.router.clone(), alice.clone());
+    let (path, digest) = (
+        format!("/api/import/{job}/files/repo.bundle?offset=0"),
+        w.h.app.deps.crypto.sha256_hex(&bundle[..long]),
+    );
+    let longer = bundle[..long].to_vec();
+    let (applied_tx, applied_rx) = std::sync::mpsc::channel();
+    let handle = tokio::runtime::Handle::current();
+    yulius_app::race::on(yulius_app::race::Point::ImportChunkRead, &file, move || {
+        let applied = tokio::task::block_in_place(|| {
+            handle.block_on(call_raw(
+                &router,
+                Method::PUT,
+                &path,
+                longer,
+                &[
+                    ("x-chunk-sha256", digest.as_str()),
+                    ("content-type", "application/octet-stream"),
+                ],
+                &creds,
+            ))
+        });
+        let _ = applied_tx.send(
+            applied
+                .map(|r| (r.status, r.body))
+                .map_err(|e| e.to_string()),
+        );
+    });
+    let stale = put_chunk(&w, &alice, &job, "repo.bundle", 0, &bundle[..short], None).await?;
+    let (status, body) = applied_rx.try_recv()??;
+    assert_eq!(status, StatusCode::OK, "the longer chunk: {body:?}");
+    assert_eq!(body["received_bytes"], long as u64);
+    let stored = std::fs::read(&file)?;
+    assert!(
+        stored == bundle[..long],
+        "nothing written over the longer chunk: {} bytes stored, {long} received",
+        stored.len()
+    );
+    assert_eq!(
+        (stale.status, stale.body["received_bytes"].clone()),
+        (StatusCode::OK, json!(long as u64)),
+        "the stale chunk is covered by the longer one: {:?}",
+        stale.body
+    );
+
+    // The rest of the file uploads from the reported length and verifies.
+    let rest = put_chunk(
+        &w,
+        &alice,
+        &job,
+        "repo.bundle",
+        long as u64,
+        &bundle[long..],
+        None,
+    )
+    .await?;
+    assert_eq!(rest.status, StatusCode::OK, "{:?}", rest.body);
+    assert_eq!(rest.body["received_bytes"], bundle.len() as u64);
+    assert_eq!(std::fs::read(&file)?, bundle);
+    Ok(())
+}
+
 /// OBD-002: the CLI uploads; only a person (the browser, or their operate token) starts
 /// onboarding; a `yulius login` token is refused and told both ways (SPEC-313).
 #[tokio::test]

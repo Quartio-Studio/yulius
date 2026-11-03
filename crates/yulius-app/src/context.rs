@@ -232,6 +232,8 @@ pub struct App {
     pub(crate) previews: crate::preview::PreviewState,
     /// Uploads in progress (SPEC-001 EDT-006, UI-048).
     pub(crate) uploads: crate::uploads::UploadState,
+    /// Import files a chunk is being applied to, one at a time each (SPEC-400 VTV-001).
+    pub(crate) import_chunks: crate::imports::ChunkLocks,
     /// Files of original prompts being read (SPEC-080).
     pub(crate) attachment_reads: crate::task_prompt::AttachmentReads,
     /// A random tag of this server process, sent with every response (`X-Yulius`): the preview
@@ -307,6 +309,7 @@ impl App {
             start_change_lock: tokio::sync::Mutex::new(()),
             previews: crate::preview::PreviewState::default(),
             uploads: crate::uploads::UploadState::default(),
+            import_chunks: crate::imports::ChunkLocks::default(),
             attachment_reads: crate::task_prompt::AttachmentReads::default(),
             intake: OnceLock::new(),
             vidoc: OnceLock::new(),
