@@ -54,10 +54,10 @@ for a deleted task whose folder is there.
 ## Plan
 
 - [x] Spec and ADR for naming shell and draft attachments
-- [ ] Named shell attachments survive the shell's end and the start-up prune
-- [ ] Old drafts a request names survive the next upload
-- [ ] task_delete finds its folder past the listing cap
-- [ ] Docs and changes say what stays
+- [x] Named shell attachments survive the shell's end and the start-up prune
+- [x] Old drafts a request names survive the next upload
+- [x] task_delete finds its folder past the listing cap
+- [x] Docs and changes say what stays
 - [ ] Independent review approved and findings answered
 - [ ] Gates green with evidence in the spec
 
