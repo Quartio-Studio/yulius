@@ -1,11 +1,11 @@
 ---
 yulius-task: 1ca9a981-c9f8-400d-b143-8df16d921b1d
-status: in-progress
+status: done
 ---
 
 # SPEC-408: Vidoc triage of the supervisor and host findings (#814 #755 #698 #756 #678 #690)
 
-Status: in-progress
+Status: done
 Date: 2026-11-03
 Owner: Yulius task #390
 Scope authorization: task #390 (a person asked that each of the six issues end closed). Fixes
@@ -69,9 +69,9 @@ so that a repeat scan does not reopen it.
 - [x] Spec SPEC-408 with the triage of all six findings
 - [x] needrestart rule escapes every non-word character (#678)
 - [x] Narrow [[ignore]] entries for the dismissed wordings (#814 #755 #698 #756 #690)
-- [ ] Changes entry and gates
-- [ ] Independent review answered
-- [ ] Dismissed issues commented and closed (#814 #755 #698 #756 #690)
+- [x] Changes entry and gates
+- [x] Independent review answered
+- [x] Dismissed issues commented and closed (#814 #755 #698 #756 #690)
 
 ## Acceptance criteria
 
@@ -100,3 +100,51 @@ so that a repeat scan does not reopen it.
   third copy of the same rule.
 - #755 keeps the inherited `PATH` outside a sandbox. A fixed list there would miss the operator's
   own tools, and whoever can change the server's `PATH` already controls the server (#716, #806).
+
+## Evidence
+
+- Triage on `dev` d51b98ae (the file:line evidence is in each dismissed issue's closing comment):
+  - #814: `prepare_data_dir` makes the data directory 0700 (`serve.rs:405-412`, `:435`).
+    `PtySessionHost::spawn` (`wiring/session.rs:152-181`) reaches `prepare_run_dir`, which sets
+    the run directory to 0700 before `launch.json` (`yulius-ptyhost/src/spawn.rs:167-187`, tested
+    at `:384-397`).
+  - #755: the unit pins `PATH` (`host_setup.rs:256`). Isolated runs get `SANDBOX_PATH`
+    (`supervisor.rs:1411-1425`), and contained runs see the host's system read-only
+    (`containment.rs:12`, `:86-88`). The same decision as #716.
+  - #698: the run directory is 0700 under a 0700 data directory. Contained runs get only their
+    generated files, read-only (`supervisor.rs:1429-1446`).
+  - #756: `main.rs:561-565` only raises the wrapper's own score. The write is best effort on
+    purpose.
+  - #690: MGT-003 (SPEC-037) and `manage.rs:8-9`. The window is pruned at every reservation
+    (`manage.rs:43-62`), tested by
+    `manage::tests::the_window_holds_twenty_an_hour_and_frees_slots_as_they_age`.
+  - #678: guarded by `service_name_ok` (`host_setup.rs:458`), but fixed so the rule is correct on
+    its own.
+- Regression test: `host_setup::tests::the_needrestart_rule_matches_the_name_literally` failed on
+  dev's escape set (the rule held `qr(^a+b(c)$x|y*\.service$)`) and passes with the fix. The 33
+  `host_setup::` tests pass. The rule's text is unchanged for every name `service_name_ok`
+  accepts, so no host's rule file is rewritten.
+- `[[ignore]]` entries in `.config/vidoc.toml`, each with the exact path and Vidoc's exact title:
+  - `supervisor.rs` `line = 1362` "Run directory created with filesystem default permissions"
+    (#814);
+  - `supervisor.rs` `base_env` "Host PATH propagated into agent environment" (#755);
+  - `supervisor.rs` `save_screen` "Predictable temporary file name in save_screen" (#698);
+  - `main.rs` `line = 565` "Unconditional kernel OOM score modification with ignored error"
+    (#756);
+  - `manage.rs` `ToolTaskWindow` "Task-creation rate limit is in-memory only" (#690).
+- Independent review (fresh session, read-only):
+  - Round 1, at ead8bf74, requested changes. The #814 and #756 entries named whole functions
+    (`launch_attempt`, 453 lines, and `main`, 230 lines), which would have waived unrelated
+    findings there. They now use `line`. #690 named `reserve` instead of `ToolTaskWindow`. The
+    spec had no Evidence section, said "every file is 0600", and two of its citations were off by
+    one line. All of these are answered.
+  - Round 2, at 027f4c5b, approved and agreed to all five entries. The reviewer also checked the
+    escaped `qr(...)` with perl 5.38.2.
+- `scripts/dev ci` at ead8bf74: nextest 3008 passed, 16 skipped, then the run failed at
+  `cargo doc`: the public doc of `needrestart_rule` linked the private `service_name_ok`. That is
+  fixed.
+- `scripts/dev ci` at 027f4c5b: exit 0, nextest 3008 passed, 16 skipped.
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0). This
+  means not scanned, not passed.
+- Dismissed issues #814, #755, #698, #756 and #690 are commented with their evidence and closed
+  as not planned. #678 is closed by this pull request.
