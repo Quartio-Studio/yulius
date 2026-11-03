@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
+- The CLI token store (`yulius login`, `yulius remote login`) reads its credentials file through
+  one handle, a regular file only, and never more than 1 MiB of it: a FIFO or a file that grew after
+  its size was checked was read whole (fixes #770). Saved tokens stay a zeroizing `Secret` from
+  parsing to drop, and the file is written without an intermediate buffer (fixes #769). It is
+  written through an owner-only temporary file with a random name, so nothing left at the old
+  fixed name can block a save (fixes #771) (SPEC-407, task #389). The Vidoc findings #802 (the
+  `gitdir:` path only names a trust key in the agent's own config, nothing is opened) and #684 (only
+  the service user can create a `docker-smoke-<pid>` entry) are dismissed with narrow `[[ignore]]`
+  entries.
 - A subscription sign-in no longer frees copies of its token unzeroed in its raw output. That
   output, kept to read the token, was a growing buffer, and each growth freed the previous copy
   unzeroed. It is now one allocation that never grows, and it is zeroed whole once the token is
