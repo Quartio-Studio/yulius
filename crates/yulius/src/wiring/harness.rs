@@ -141,8 +141,10 @@ impl HarnessPort for HarnessAdapter {
         };
         let plan = launch::plan_launch(&request).map_err(|e| AppError::Invalid(e.to_string()))?;
         if l.harness == Harness::ClaudeCode {
+            // The worktree lies in the sandbox directory, the folder above the home (#801).
             yulius_harness::claude_config::ensure_claude_config(
                 &l.sandbox_home.join(".claude"),
+                l.sandbox_home.parent().unwrap_or(&l.sandbox_home),
                 &l.worktree,
                 l.contained,
             )
@@ -196,6 +198,7 @@ impl HarnessPort for HarnessAdapter {
         // Contained, it bypasses approvals as a task run does, its warning accepted (SPEC-208).
         yulius_harness::claude_config::ensure_claude_config(
             &l.config_dir_host,
+            &l.sandbox_dir,
             &l.cwd,
             l.contained,
         )
@@ -583,6 +586,7 @@ mod tests {
         let config = dir.path().join("cockpit");
         adapter.plan_cockpit(&CockpitLaunch {
             cwd: dir.path().to_path_buf(),
+            sandbox_dir: dir.path().to_path_buf(),
             config_dir: config.clone(),
             config_dir_host: config.clone(),
             resume: None,

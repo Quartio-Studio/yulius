@@ -89,6 +89,9 @@ pub struct HarnessLaunch {
 pub struct CockpitLaunch {
     /// Working directory (the sandbox repository).
     pub cwd: PathBuf,
+    /// The sandbox directory on the host: the folder above `cwd` that the agent cannot replace,
+    /// from which the launch preparation reaches `cwd` without following a link (#801).
+    pub sandbox_dir: PathBuf,
     /// Claude's config dir as the session sees it.
     pub config_dir: PathBuf,
     /// The same directory on the host, prepared before the launch.

@@ -1468,6 +1468,7 @@ fn a_contained_superagent_starts_with_the_approval_bypass_accepted() -> TestResu
     );
     let launch = |home: &str, contained: bool| CockpitLaunch {
         cwd: cwd.clone(),
+        sandbox_dir: dir.path().to_path_buf(),
         config_dir: PathBuf::from("/home/alice/.claude"),
         config_dir_host: dir.path().join(home),
         resume: None,
