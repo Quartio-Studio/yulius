@@ -4572,8 +4572,8 @@ class TermSession {
     this.classic = params.get('classic') === '1';
     // ?wrapurl=1: a URL longer than a row, cut as Claude Code cuts it (SPEC-339, #940).
     this.wrapUrl = params.get('wrapurl') === '1';
-    // ?still=1: the transcript prints nothing after its first screen, so a test that reads or points
-    // at its lines finds them where they were drawn however slowly it runs (SPEC-412).
+    // ?still=1: the agent prints no more of its script after the first screen, so a test that reads
+    // or points at its lines finds them where they were drawn however slowly it runs (SPEC-412).
     this.still = params.get('still') === '1';
     this.script = SCRIPT_CLAUDE;
     this.scriptIndex = 0;

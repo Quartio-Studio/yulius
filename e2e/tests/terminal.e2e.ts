@@ -540,7 +540,7 @@ test('a selection the program copies (OSC 52) reaches the clipboard, or the copy
 test('a read-only viewer’s clipboard is never written by the program', async ({ app, browser, screen }) => {
   // SPEC-158 OSC-003: a viewer who cannot write only watches; the program's copy is not theirs,
   // even right after they clicked into the terminal.
-  await app.open(mock('/s/sandbox-3/t/1'));
+  await app.open(mock('/s/sandbox-3/t/1', '&still=1'));
   await firstShown(screen.getByText('Read-only (GitHub: read)'));
   await terminalShown(browser);
   await expect(rows(browser)).toHaveText(/Read 142 lines/);
@@ -1099,7 +1099,7 @@ test('mouse use while disconnected says nothing; typed input still warns', async
 });
 
 test('a read-only viewer’s mouse selects text and does not reach the program', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/sandbox-3/t/1'));
+  await app.open(mock('/s/sandbox-3/t/1', '&still=1'));
   await firstShown(screen.getByText('Read-only (GitHub: read)'));
   await terminalShown(browser);
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);

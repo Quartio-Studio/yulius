@@ -40,8 +40,8 @@ three issues found behind other timeouts are fixed, so these tests fail only for
     not a budget: `&browserask=0` leaves the request out (as `notes.e2e.ts` does, E2L-006).
   - `terminal.e2e.ts` "a click beside another viewer's grid…": the rows were empty at the first
     `toHaveText` (5 s): the terminal's first screen, which `terminalShown` covers. With 30 rows,
-    the awaited line scrolls out about 21 s after it is printed, so the test holds the transcript
-    still as soon as it shows (`holdStill`, as now).
+    the awaited line scrolls out about 21 s after the hello, so the test opens the mock with a
+    transcript that stays still (`still=1`, FLD-009).
   - `queued-messages.e2e.ts` "a waiting task takes a message…": the first wait after `app.open`.
   - `onboarding.e2e.ts`: the Add sandbox dialog's repository radio did not show within the
     action's 30 s, at load 15 too (task #136). No race was found by task #297, nor by this task
@@ -86,7 +86,7 @@ three issues found behind other timeouts are fixed, so these tests fail only for
 | FLD-006 | The notes tests that turn a failure off then trigger the next load at once (a tab switch, which loads), instead of waiting out a back-off a starved run stretches; tests that need the test's own save to be the refused one hold the server's answer to the pad's look from before the lost answer, so the pad's own retry cannot settle it first. Each passes with the probe delay that failed it before, and the back-off test still proves the pad retries by itself. | `notes.e2e.ts` (removing the retry after a teammate's edit fails "…backs off") |
 | FLD-007 | A running subject's waterfall, drawn again at every poll, shows the tip of the row under a still pointer again after the redraw (`stages.js` `loadWaterfall`). | `pipeline.e2e.ts` "the hover tip of a running run stays through the waterfall's redraw" (fails without it: the tip hidden) |
 | FLD-008 | Terminal tests that look at a task terminal's rows right after `app.open` wait for its first screen first (`terminalShown`). | `terminal.e2e.ts` |
-| FLD-009 | Terminal tests that read or point at the transcript open the mock with `still=1`: the task transcript prints nothing after its first screen (`mock.js` `TermSession.ensureTicking`), instead of being stopped after the runner's next read. Stopped late, a starved run's transcript had scrolled on, so a classic run had scrollback and its first turn up offered no whole session. | `terminal.e2e.ts` (#911's tests: a 15 s probe right after `app.open` fails 2 of 2 with a hold after the first screen, passes 2 of 2 with `still=1`) |
+| FLD-009 | Terminal tests that read or point at the transcript's lines open the mock with `still=1`: the mock agent prints no more of its script after the first screen (`mock.js` `TermSession.ensureTicking`; typed input, its echo and canned replies still print), instead of being stopped after the runner's next read. Stopped late, a starved run's transcript had scrolled on, so a classic run had scrollback and its first turn up offered no whole session. | `terminal.e2e.ts` (#911's tests: a 15 s probe right after `app.open` fails 2 of 2 with a hold after the first screen, passes 2 of 2 with `still=1`) |
 
 ## Plan
 
@@ -99,9 +99,9 @@ three issues found behind other timeouts are fixed, so these tests fail only for
 - [x] ADR, e2e README, architecture and changes
 - [x] Affected files repeated under load, numbers recorded
 - [x] Load-run findings fixed: waterfall tip, terminal first screens
-- [ ] Changed files repeated under load again
-- [ ] The whole-session offer holds under load (transcript held in the page)
-- [ ] Independent review findings resolved
+- [x] Changed files repeated under load again
+- [x] The whole-session offer holds under load (transcript held in the page)
+- [x] Independent review findings resolved
 - [ ] Gates green
 
 ## Acceptance criteria
@@ -187,6 +187,29 @@ probe median 0.175 (0.07–0.37), load 37–82, seconds per test pipeline 14.0, 
 15.0. **399 of 405 passed**: pipeline 75/75, notes 180/180, terminal 144/150. Five of the six were
 #911's whole-session tests (the offer never shown: FLD-009, fixed); the sixth, "file paths in the
 task terminal…" (1 of 5), waited 5 s for xterm to report a hovered OSC 8 link, a later wait.
+
+**Loaded run 3** (head `25450ec5`, `still=1`; 16:30–16:52): terminal and pipeline
+`--repeat-each 5`; probe median 0.156 (0.07–0.43), load 17–79. **225 of 225 passed**: terminal
+150/150 (8.9 s a test), pipeline 75/75 (9.2 s a test). Then the two read-only tests that still
+read a ticking transcript got `still=1` too (review round 3): terminal and pipeline 45 of 45
+without load.
+
+So the affected files ran 1881 times under the held load: 1251 + 399 + 225 passed, 15 failed in
+runs 1 and 2, each traced to a cause fixed afterwards (FLD-007, FLD-008, FLD-009) or a later wait
+named below; run 3 of the files those fixes touched had no failure.
+
+**Review** (fresh sessions, read-only, no test runs while the load ran).
+- Round 1 (head `291a79fd`): request changes. M1, the back-off test no longer proved a retry:
+  fixed (lower bound; the mutation fails it). M2, onboarding and editor presence unaddressed:
+  onboarding's no-op wait removed and both explained below and in the changes entry. Lows: the
+  ADR's wording for an `app.open` to another route and for its 5 s claim, the Team pad's load
+  held by mistake (now waited for), the architecture's wording: all fixed.
+- Round 2 (head `82ae706c`): request changes. M-A, the in-page hold still came after the hello:
+  replaced by `still=1` (red/green above). L-B, the redraw wait got the poll's budget
+  (`RUN_POLL_MS + 5_000`). Unused types removed; the changes entry names what is not covered.
+- Round 3 (head `25450ec5`): approve. Minor: two read-only tests still read a ticking transcript:
+  `still=1` added. Nits (wording of `still=1`, a stale spec line, a comment's place, a long line):
+  fixed.
 
 **Not covered, and why.**
 - `editor.e2e.ts` "two people in one file…" (#354's last item from SPEC-148): Bob still shown 5 s

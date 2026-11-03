@@ -11,13 +11,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   install, while every later wait keeps its budget and `retries: 0` stays (SPEC-412, task #394,
   ADR-0262, the person's decision on #354). The tests #354, #525 and #510 list use it, all but
   onboarding's repository radio (already a 30 s wait, not reproduced) and editor presence (a later
-  wait), and the races behind some of their failures are fixed: the rail test reads the Browser item without the
-  mock's sign-in request (`browserask=0`), the Tasks list pause test without the ambient regroup
-  under its pointer (`ambient=0`), terminal tests wait for the terminal's first screen with a
-  transcript that stays still from the start (mock `still=1`), and the
-  notes tests no longer wait out the pad's doubled back-off or let its own retry settle a lost save
-  first. A running CI run's waterfall keeps the hover tip of the row under the pointer through its
-  redraw at every poll (it vanished until the pointer moved). Fixes #354, #525 and #510.
+  wait), and the races behind some of their failures are fixed: the rail test reads the Browser
+  item without the mock's sign-in request (`browserask=0`), the Tasks list pause test without the
+  ambient regroup under its pointer (`ambient=0`), terminal tests wait for the terminal's first
+  screen with a transcript that stays still from the start (mock `still=1`), and the notes tests
+  no longer wait out the pad's doubled back-off or let its own retry settle a lost save first. A
+  running CI run's waterfall keeps the hover tip of the row under the pointer through its redraw
+  at every poll (it vanished until the pointer moved). Fixes #354, #525 and #510.
 - Test fixtures under `crates/yulius/tests` no longer commit credentials in a provider's shape.
   26 synthetic values with real prefixes (`sk-ant-oat01-`, `sk_test_`, `sk_live_`) are now put
   together from the prefix and a body, with the same value. `fixture_hygiene` fails on any

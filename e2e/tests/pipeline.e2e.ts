@@ -312,10 +312,11 @@ async function hoverAt(browser: Browser, tip: string, x: number, y: number) {
   await expect(browser.locator(tip)).toBeVisible();
 }
 
-// SPEC-412 (#510): a running run's waterfall is drawn again at every poll (3 s); the tip of the
-// row under a still pointer went with the old rows, so a slower run read an empty tip.
 /** The CI run view's poll while a run is active (`POLL_ACTIVE_MS`, pages/ci.js). */
 const RUN_POLL_MS = 3_000;
+
+// SPEC-412 (#510): a running run's waterfall is drawn again at every poll (3 s); the tip of the
+// row under a still pointer went with the old rows, so a slower run read an empty tip.
 test('the hover tip of a running run stays through the waterfall’s redraw', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/ci?run=ci_s4'));
   const run = screen.getByRole('region', 'Stages of this run');
