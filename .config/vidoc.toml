@@ -904,3 +904,26 @@ reason = "a confirmation under 7 characters fails the guard and is refused with 
 path = "crates/yulius-app/src/ci/cd.rs"
 title = "Agent can read production run output (potential secret disclosure)"
 reason = "stored CD output is redacted of every agent secret of the sandbox, production's included; tested by production_secrets_need_their_own_allowance (SPEC-401, #717)"
+
+# #809: a draft whose mtime lies before 1970 is older than DRAFT_MAX_AGE, so reading it as the
+# epoch prunes it exactly as its real date would; the drafts folder is the sandbox's own, which its
+# agents can already change, and only regular files are removed, through its handle. Pinned by
+# uploads.rs a_draft_dated_before_1970_is_old.
+[[ignore]]
+path = "crates/yulius-app/src/uploads.rs"
+title = "Negative file mtime treated as epoch age"
+reason = "a pre-1970 draft is older than a week, so pruning it is the intended outcome; the folder is the sandbox's own; tested by a_draft_dated_before_1970_is_old (SPEC-402, #809)"
+function = "prune_old_drafts"
+line = 844
+
+# #811: the token lives only in that one Git command's environment (cleared otherwise, runner.rs);
+# /proc/<pid>/environ needs the service user's uid or root, and contained agents are other uids in
+# other PID namespaces. Git's children are its own helpers (no hooks, no fsmonitor). A
+# configuration-driven command is ADR-0114's #54 part B, set aside by a person; a credential helper
+# or askpass would answer such a child the same token (`git credential fill`).
+[[ignore]]
+path = "crates/yulius/src/wiring/git.rs"
+title = "GitHub token placed in the git subprocess environment"
+reason = "only the service user or root can read the command's environment; contained agents are other uids and PID namespaces; config-driven commands are ADR-0114's #54 part B (SPEC-402, #811)"
+function = "git_with_token"
+line = 78
