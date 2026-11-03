@@ -1691,7 +1691,10 @@ task; other hooks answer as usual.
   the egress proxy accepts its bearer as `yulius:ck_…`. A personal secret is sent only by the
   egress proxy: `browser_fill_secret` and `secret_copy_to_env` refuse it (403) and a
   `${secret:NAME}` reference never resolves to it
-  ([ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.md)).
+  ([ADR-0186](decisions/0186-agent-secrets-are-project-global-or-personal.md)). A production
+  secret (`cd_prod`) is never typed either: `browser_fill_secret` refuses it (403), also on hosts
+  it kept from before production secrets became exclusive, which only the egress proxy still uses
+  (SPEC-405).
 - MCP `secret_create_from_file {name, file, description?, delete_file?}` (SPEC-211, tasks and the
   Superagent, not run without asking where approvals apply) → `{created, file, deleted, hosts: [], link, next, warning?}`:
   Yulius reads `file` (relative to the folder the caller works in, or `~/…` in its home), anchored
