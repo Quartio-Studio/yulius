@@ -723,27 +723,21 @@ impl App {
         if grant.expires_at <= now {
             return Err(AppError::NotFound);
         }
-        let (status, sealed) = if approve {
-            let token = self
-                .issue_api_token(&ctx.user, "yulius CLI", TokenScope::Cli)
-                .await?;
-            (
-                "approved",
-                Some(self.deps.crypto.seal(token.expose().as_bytes())?),
-            )
+        // The claim and the token are one transaction: a grant no longer pending (approved or
+        // denied before, or by a concurrent approval) leaves no token behind (#725).
+        let changed = if approve {
+            let (token, record) = self.new_token(&ctx.user, "yulius CLI", TokenScope::Cli);
+            let sealed = self.deps.crypto.seal(token.expose().as_bytes())?;
+            self.deps
+                .store
+                .approve_device_grant(&grant.user_code, &record, &sealed)
+                .await?
         } else {
-            ("denied", None)
+            self.deps
+                .store
+                .resolve_device_grant(&grant.user_code, "denied", Some(&ctx.user.id), None)
+                .await?
         };
-        let changed = self
-            .deps
-            .store
-            .resolve_device_grant(
-                &grant.user_code,
-                status,
-                Some(&ctx.user.id),
-                sealed.as_ref(),
-            )
-            .await?;
         if changed {
             Ok(())
         } else {
@@ -815,6 +809,18 @@ impl App {
         label: &str,
         scope: TokenScope,
     ) -> AppResult<(Secret, ApiTokenRecord)> {
+        let (token, record) = self.new_token(user, label, scope);
+        self.deps.store.insert_api_token(&record).await?;
+        Ok((token, record))
+    }
+
+    /// A new token and its record, not stored yet.
+    fn new_token(
+        &self,
+        user: &UserRecord,
+        label: &str,
+        scope: TokenScope,
+    ) -> (Secret, ApiTokenRecord) {
         let token = format!("yul_{}", hex_token(&self.deps.crypto.random_bytes()));
         let record = ApiTokenRecord {
             id: self.deps.crypto.new_id(),
@@ -826,8 +832,7 @@ impl App {
             last_used_at: None,
             revoked_at: None,
         };
-        self.deps.store.insert_api_token(&record).await?;
-        Ok((Secret(token), record))
+        (Secret(token), record)
     }
 
     /// Requires the superadmin.

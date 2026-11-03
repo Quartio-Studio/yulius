@@ -601,6 +601,47 @@ path = "crates/yulius-app/src/mcp.rs"
 title = "Unsalted SHA-256 equality oracle over secret values"
 reason = "Cockpit-only equality check accepted in ADR-0144: no stored hash is handed out, production secrets refused, each candidate audited (SPEC-389, #846)"
 
+# SPEC-392 (task #374): Vidoc's findings on sign-in, API tokens and credentials, filed as #724,
+# #726, #734 and #837 from change scans of code those changes did not touch, triaged as false
+# positives on dev at f416b400 (#725 was real and is fixed). One entry per wording, title only.
+# The guards and the tests that pin them are in SPEC-392.
+
+# #724: a reworded repeat of "Revoked API tokens still authenticate" above. The store's api_token
+# selects only revoked_at IS NULL, as its port documents, so a token revoked alone or by
+# revoke_user_credentials resolves to no record. Pinned by store.rs revoked_api_tokens_are_not_found
+# and remote_mcp.rs tokens_are_made_in_the_browser_listed_and_revoked.
+[[ignore]]
+path = "crates/yulius-app/src/auth.rs"
+title = "authenticate_bearer does not check token revocation"
+reason = "api_token selects only revoked_at IS NULL (yulius-store sessions.rs, port doc 'not revoked'); tested by store.rs revoked_api_tokens_are_not_found (SPEC-392, #724)"
+
+# #726: the setup token is 128 random bits, accepted only while no superadmin exists, compared as
+# SHA-256 hex in constant time; Argon2 runs only after it matches, so a guess costs a row read and
+# one hash. Pinned by http_auth.rs setup_requires_token_confirmation_and_happens_once.
+[[ignore]]
+path = "crates/yulius-app/src/auth.rs"
+title = "No rate limiting on setup token verification"
+reason = "a 128-bit one-time token, only before the superadmin exists, compared in constant time before any Argon2 work; a limit adds nothing guessable (SPEC-392, #726)"
+
+# #734: GitHubAppConfig's Debug prints only app_id and slug; it is serialized only to be sealed
+# (github_admin.rs), and the wiring wraps each secret in yulius-github's Secret at once
+# (github_client.rs). No view, log or error carries it. Giving the app's Secret Serialize to hold
+# these would make every Secret serializable: weaker.
+[[ignore]]
+path = "crates/yulius-app/src/ports/github.rs"
+title = "GitHub App secrets stored as plain strings rather than Secret wrapper"
+reason = "redacting Debug, serialized only into the sealed instance row, wrapped in yulius-github's Secret at the client; never in a view, log or error (SPEC-392, #734)"
+
+# #837: the remote cd_deploy sends no confirmation, so the deploy itself refuses every
+# production-stage environment (cd.rs cd_prepare -> may_deploy), and a name whose stage cannot be
+# resolved is refused as not defined; the outer check only words the refusal. Pinned by
+# remote_mcp.rs (prod refused), cd.rs production_is_deployed_by_an_administrator_who_types_the_slug
+# and named_environments_deploy_by_their_stage (no slug: 422).
+[[ignore]]
+path = "crates/yulius-app/src/remote.rs"
+title = "Production deployment check fails open on transient errors"
+reason = "the remote call passes confirm None, so cd_prepare's may_deploy refuses any production-stage environment and an unresolved stage is not defined (SPEC-392, #837)"
+
 # SPEC-395 (task #377): Vidoc's findings on the yulius CLI and host setup, filed as #754, #753,
 # #743, #742 and #679 from change scans of code those changes did not touch, triaged as false
 # positives on dev at f416b400. One entry per wording, title only: a `function` on `main` would

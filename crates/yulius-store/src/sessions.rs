@@ -44,6 +44,15 @@ fn grant_from_row(row: &Row<'_>) -> rusqlite::Result<DeviceGrantRecord> {
     })
 }
 
+fn insert_token(c: &rusqlite::Connection, t: &ApiTokenRecord) -> AppResult<()> {
+    c.execute(
+        "INSERT INTO api_tokens (id, user_id, token_hash, label, scope, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![t.id, t.user_id.as_str(), t.token_hash, t.label, t.scope.as_str(), t.created_at.0],
+    )
+    .map_err(db)?;
+    Ok(())
+}
+
 const GRANT_COLS: &str = "user_code, device_code_hash, status, user_id, token_plain, created_at, \
      expires_at, client_key";
 
@@ -115,15 +124,7 @@ impl SessionStore for SqliteStore {
 
     async fn insert_api_token(&self, t: &ApiTokenRecord) -> AppResult<()> {
         let t = t.clone();
-        self.call(move |c| {
-            c.execute(
-                "INSERT INTO api_tokens (id, user_id, token_hash, label, scope, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![t.id, t.user_id.as_str(), t.token_hash, t.label, t.scope.as_str(), t.created_at.0],
-            )
-            .map_err(db)?;
-            Ok(())
-        })
-        .await
+        self.call(move |c| insert_token(c, &t)).await
     }
 
     async fn api_token(&self, token_hash: &str) -> AppResult<Option<ApiTokenRecord>> {
@@ -289,6 +290,31 @@ impl SessionStore for SqliteStore {
                 )
                 .map_err(db)?;
             Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn approve_device_grant(
+        &self,
+        user_code: &str,
+        token: &ApiTokenRecord,
+        sealed: &Sealed,
+    ) -> AppResult<bool> {
+        let (code, t, sealed) = (user_code.to_owned(), token.clone(), sealed.0.clone());
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            let n = tx
+                .execute(
+                    "UPDATE device_grants SET status = 'approved', user_id = ?1, token_plain = ?2 WHERE user_code = ?3 AND status = 'pending'",
+                    params![t.user_id.as_str(), sealed, code],
+                )
+                .map_err(db)?;
+            if n != 1 {
+                return Ok(false);
+            }
+            insert_token(&tx, &t)?;
+            tx.commit().map_err(db)?;
+            Ok(true)
         })
         .await
     }
