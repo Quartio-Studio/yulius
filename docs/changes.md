@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
+- Import chunks of one file are applied one at a time, each from the received length read once
+  nothing else writes that file: two chunks that read the same length used to both truncate and
+  write it, so the later one could overwrite the earlier, leave the file shorter than its
+  recorded length (every later chunk then failed for good) or replace verified bytes (SPEC-400,
+  task #379, fixes #845). The Vidoc findings #841 (the redaction fingerprints are the accepted
+  redaction oracle, ADR-0014), #840 (the audited host is a parsed URI host), #740 (the
+  Superagent's home is its own `$HOME`) and #749 (recovery locks for good after three wrong codes)
+  are dismissed with narrow `[[ignore]]` entries.
 - Approving a CLI sign-in (device grant) claims the grant and stores its new `cli` token in one
   store transaction (`SessionStore::approve_device_grant`): a second approval of a grant already
   approved or denied, by the same person, another one or at the same moment, answers 409 and
