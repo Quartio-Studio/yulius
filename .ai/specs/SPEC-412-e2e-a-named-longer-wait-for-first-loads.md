@@ -86,6 +86,7 @@ three issues found behind other timeouts are fixed, so these tests fail only for
 | FLD-006 | The notes tests that turn a failure off then trigger the next load at once (a tab switch, which loads), instead of waiting out a back-off a starved run stretches; tests that need the test's own save to be the refused one hold the server's answer to the pad's look from before the lost answer, so the pad's own retry cannot settle it first. Each passes with the probe delay that failed it before, and the back-off test still proves the pad retries by itself. | `notes.e2e.ts` (removing the retry after a teammate's edit fails "…backs off") |
 | FLD-007 | A running subject's waterfall, drawn again at every poll, shows the tip of the row under a still pointer again after the redraw (`stages.js` `loadWaterfall`). | `pipeline.e2e.ts` "the hover tip of a running run stays through the waterfall's redraw" (fails without it: the tip hidden) |
 | FLD-008 | Terminal tests that look at a task terminal's rows right after `app.open` wait for its first screen first (`terminalShown`). | `terminal.e2e.ts` |
+| FLD-009 | Terminal tests hold the mock transcript still inside the page the moment their line is printed (`holdStillAt`), not after the runner's next read: a classic run whose transcript scrolled on has scrollback, and its first turn up offers no whole session. | `terminal.e2e.ts` (#911's tests: a 15 s probe before the old `holdStill` fails 2 of 2, passes with `holdStillAt`) |
 
 ## Plan
 
@@ -99,6 +100,7 @@ three issues found behind other timeouts are fixed, so these tests fail only for
 - [x] Affected files repeated under load, numbers recorded
 - [x] Load-run findings fixed: waterfall tip, terminal first screens
 - [ ] Changed files repeated under load again
+- [ ] The whole-session offer holds under load (transcript held in the page)
 - [ ] Independent review findings resolved
 - [ ] Gates green
 
@@ -137,4 +139,59 @@ three issues found behind other timeouts are fixed, so these tests fail only for
 
 ## Evidence
 
-(Filled in as steps finish.)
+All in task #394's sandbox (12 CPUs shared with other tasks, `YULIUS_CPUS=4`), 2026-11-03,
+`CI=true`, the config's `retries: 0`, 4 workers. "Probe delay" means a pause inside the page at an
+await point, where a starved runner is slow; "held load" means busy loops that a controller sets
+so that a 2 s CPU-bound probe gets about 0.2 of a CPU (SPEC-148's method), logged every 6–20 s.
+
+**Red, then green (each change).**
+- FLD-002/003: with `FIRST_LOAD_MS = 5_000`, "opening a page waits for a mock that loads later than
+  5 s" failed (`expect.poll` timed out after 5000 ms) and "the first look at a page waits…" failed
+  (`toBeVisible`, no node); with 30 s, 3 of 3 pass.
+- Notes (FLD-006), a 9 s probe before each `setMock(…, false)`, unchanged tests: "read-only until
+  loaded" failed (`toHaveValue` saw ""), "a save made while a refused one…" failed (`noteLoads` 3,
+  not 4), "an undo after a lost answer…" failed (`noteLoads` never rose); "…backs off" with a 5 s
+  probe failed 2 of 3. Changed tests: the ten probed tests 10 of 10; `notes.e2e.ts` 36 of 36.
+  Removing `retryLater(load)` after a teammate's edit fails "…backs off" (review M1).
+- Rail (FLD-005), a 7 s pause after the rail shows: unchanged, failed with #525's exact list
+  (`"Browser, an agent needs your action"`); with `browserask=0`, 3 of 3.
+- Pause (FLD-005), a 9 s pause between the hover and the click on #8's row: unchanged, 1 of 2
+  failed with #354's exact "element is not visible: .tl-row[data-task-id="tsk_studio_8"] …"; with
+  `ambient=0`, 3 of 3.
+- Terminal first screens, the hello held 7 s (`__yuliusHoldTerminal`): unchanged 0 of 4 (the
+  margin, wheel, other viewer's size and read-only mouse tests); with the waits, 4 of 4.
+- Waterfall tip (FLD-007): the new test failed 2 of 2 (`.st-tip` hidden after the redraw); with
+  the `stages.js` change, 3 of 3; a 6 s probe before "a busy CI run…"'s hover failed 2 of 2 before
+  and passes 2 of 2 after (`browserask=0` did not help, so it was not kept).
+- Whole-session offer (FLD-009): a 15 s probe before the old `holdStill` in `classicTask12` failed
+  "the attention bar's Reply…" 2 of 2 ("tap did not become actionable", the offer never shown);
+  with `holdStillAt`, 2 of 2 pass with the same probe.
+
+**Loaded run 1** (head `291a79fd`, 14:09–15:10): the 15 affected files `--repeat-each 5`; probe
+median 0.181 (10th–90th percentile 0.09–0.36), load 13–77. **1251 of 1260 passed**, 3661 s.
+Seconds per test (a file's reported time over its runs): archive 7.4 (8.7 in SPEC-148's
+reproduction), notes 9.8 (8.8), terminal 11.3 (7.1), so at least as starved as there.
+- Every file the issues list passed every run but two: archive 45/45, consistency 55/55,
+  menus 145/145, onboarding 70/70, ownership 25/25, agent-panel 165/165, pause 20/20, rail 15/15,
+  places 105/105, queued-messages 105/105, notes 180/180, task-done 95/95, mock-ready 15/15.
+- pipeline 67/70: "a busy CI run…" failed 3 of 5, with an empty hover tip: FLD-007, fixed.
+- terminal 144/150: four were first waits on the rows right after `app.open` (FLD-008, fixed);
+  "a read-only viewer's clipboard…" (the runner's read of the rows after a print timed out) and
+  "the way on sits below a held card…" (the offer hidden) were later waits.
+
+**Loaded run 2** (head `81297787`, 15:25–16:10): terminal, pipeline and notes `--repeat-each 5`;
+probe median 0.175 (0.07–0.37), load 37–82, seconds per test pipeline 14.0, terminal 13.4, notes
+15.0. **399 of 405 passed**: pipeline 75/75, notes 180/180, terminal 144/150. Five of the six were
+#911's whole-session tests (the offer never shown: FLD-009, fixed); the sixth, "file paths in the
+task terminal…" (1 of 5), waited 5 s for xterm to report a hovered OSC 8 link, a later wait.
+
+**Not covered, and why.**
+- `editor.e2e.ts` "two people in one file…" (#354's last item from SPEC-148): Bob still shown 5 s
+  after he left, a later wait on a starved runner; no ordering fault was found (SPEC-148), and the
+  person's decision gives first loads only a longer budget. Not run here.
+- `onboarding.e2e.ts`'s repository radio (#525): not reproduced by probe delays after the page's
+  load, after the mock flag and after the click, nor under held load (70 of 70); the home renders
+  no Import button before its sandboxes load, so no early click lands on a moved button. Its wait
+  is already the action's 30 s, so `firstShown` would change nothing and is not used there.
+- Later waits that a starved runner still misses (the clipboard read, the held card, the OSC 8
+  hover): kept at their budgets as decided.
