@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
+- A subscription sign-in no longer leaves copies of its token in freed memory. Its raw output, kept
+  to read the token, was a growing buffer: each growth freed the previous copy unzeroed. It is now
+  one allocation that never grows, and it is zeroed whole once the token is read, with the
+  extraction's temporary copy and each output chunk (SPEC-404, task #383, ADR-0256, fixes #731).
+  The Vidoc findings #806 and its duplicate #729 (the sign-in runs on the host by design, with the
+  server's own `PATH`), #751 (a prune between two locks only drops a finished sign-in) and #730
+  (the only snapshot comes before a token can be printed) are dismissed with narrow `[[ignore]]`
+  entries.
 - A task worktree that a contained agent swaps for a link after Yulius's checks no longer makes
   the host delete the folder behind the link. On Linux, the disk upkeep, the hygiene cleanup,
   snapshot imports and task deletion let Git only check the worktree. The server then removes its
