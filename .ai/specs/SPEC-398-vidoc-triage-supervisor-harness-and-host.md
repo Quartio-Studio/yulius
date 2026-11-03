@@ -1,11 +1,11 @@
 ---
 yulius-task: ece3cd8e-a84c-4cb9-86dd-9f90c6435d17
-status: in-progress
+status: done
 ---
 
 # SPEC-398: Triage of the Vidoc findings on the supervisor, harness and host setup (#813 #696 #801 #677 #728)
 
-Status: in-progress
+Status: done
 Date: 2026-11-03
 Owner: Yulius task #381
 Scope authorization: task #381 (a person asked for each of the five issues to end closed, as a
@@ -102,9 +102,9 @@ test that pins that guard. A dismissed wording gets one narrow `[[ignore]]` entr
 - [x] The Claude config trusts the worktree without following the agent's links (#801)
 - [x] Host setup refuses a data directory that is not absolute (#677)
 - [x] Pinning tests and narrow [[ignore]] entries for the dismissed findings (#813 #696 #728 #677)
-- [ ] Docs, changes entry, gate and evidence
-- [ ] Independent review answered
-- [ ] Issues commented: dismissed ones closed, fixed ones linked to the pull request
+- [x] Docs, changes entry, gate and evidence
+- [x] Independent review answered
+- [x] Dismissed issues commented and closed (#813 #696 #728)
 
 ## Acceptance criteria
 
@@ -156,4 +156,32 @@ test that pins that guard. A dismissed wording gets one narrow `[[ignore]]` entr
 
 ## Evidence
 
-Pending.
+- Regression tests failed before their fix and pass after it:
+  - `claude_config::tests::a_link_below_the_sandbox_directory_is_never_resolved` failed with keys
+    `[<host>/repo, <host>/worktrees/w1]` instead of `[<sandbox>/worktrees/w1]`.
+  - `host_setup::tests::values_that_could_read_as_options_run_nothing` failed: the setup went on
+    and ran its commands with the data directory `-x`.
+  - `shells::a_shell_folder_never_resolves_a_link_below_the_sandbox` failed with the folder at the
+    link's target, first for a new shell (review round 1), then for an adopted one (round 2).
+- Pinning tests for the dismissed findings pass: `crypto::tests::ids_and_random_bytes_are_random`
+  and `capacity::tests::session_readings_are_bounded`.
+- Targeted runs pass: `claude_config::` 16/16, `host_setup::` 32/32, and `shells::` with
+  `cockpit::` 64/64.
+- `scripts/vidoc_scan.py`'s `parse_config` reads `.config/vidoc.toml`: 104 ignores, the four new
+  ones without `function` or `line`.
+- `scripts/dev ci` at da61dd86: exit 0, 2993 tests passed, 16 skipped. Only this spec changed after
+  that.
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius". Nothing was
+  scanned; this is reported as disabled, not passed.
+- Independent review in a fresh session:
+  - Round 1 at edd5c961 requested changes. A major finding: the Superagent's folder was resolved
+    when its shell was made. A minor one: VSH-002 claimed a single profile writer. A nit about a
+    moved data directory. All three were answered at 0691db18.
+  - Round 2 approved with a minor finding: adopted shells still resolved the whole path. It was
+    fixed test-first at da61dd86, together with the function rename the review asked for.
+  - The reviewer agreed to each `[[ignore]]` entry: #813, #696, #677 (service name) and #728.
+- Related, not changed here (pre-existing): with a link planted at the sandbox repository, the
+  Superagent's transcript lookups miss its own transcripts; only the sandbox whose agent planted
+  the link is affected.
+- Not tested: macOS hosts (`scripts/dev macos` in the gate only compiles them); the `/var` link case
+  is covered by the `alias` case of the claude_config test on Linux.
