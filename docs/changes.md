@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
+- A task worktree that a contained agent swaps for a link after Yulius's checks no longer makes
+  the host delete the folder behind the link. On Linux, the disk upkeep, the hygiene cleanup,
+  snapshot imports and task deletion let Git only check the worktree. The server then removes its
+  folder and its Git record through `O_NOFOLLOW` handles from the folder above them, where Git's
+  own `worktree remove` resolved the path again (SPEC-401, task #378, ADR-0255, fixes #844). The
+  Vidoc findings #848 (a task's agent reads its sandbox's CI runs, which every run of the sandbox
+  already mounts), #795 (declared caches stay inside the sandbox's own worktree), #780 (a
+  confirmation under 7 characters is refused) and #717 (CD output is redacted of production's
+  secrets) are dismissed with narrow `[[ignore]]` entries; tests pin #780 and #717.
 - Import chunks of one file are applied one at a time, each from the received length read once
   nothing else writes that file: two chunks that read the same length used to both truncate and
   write it, so the later one could overwrite the earlier, leave the file shorter than its

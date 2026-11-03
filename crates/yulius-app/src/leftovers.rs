@@ -316,6 +316,18 @@ pub(crate) fn no_link_between(root: &Path, path: &Path) -> bool {
     true
 }
 
+/// Removes a part of a worktree Git checked (its folder, then its Git record) below the trusted
+/// folder `root` with [`remove_below`], so a folder swapped for a link after the checks has the
+/// link removed, never what it names (SPEC-401, ADR-0255). Git's own `worktree remove` resolves
+/// the path once more and follows such a link.
+///
+/// # Errors
+/// As [`remove_below`].
+pub fn remove_worktree_part(root: &Path, path: &Path) -> std::io::Result<()> {
+    crate::race::reached(crate::race::Point::WorktreeRemove, path);
+    remove_below(root, path)
+}
+
 /// Removes `path` (a file, a link or a tree) below `root` without ever following a link on the
 /// way: each directory from `root` down is opened with `O_NOFOLLOW`, so a directory a sandbox
 /// swapped for a link (also after the last check) fails the open instead of steering the removal

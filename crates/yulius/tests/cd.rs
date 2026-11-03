@@ -682,6 +682,20 @@ async fn production_is_deployed_by_an_administrator_who_types_the_slug() -> Test
         stale.body
     );
     assert_eq!(f.head("main")?, main_before, "nothing was promoted");
+    // #780 (SPEC-401 VCD-004): a confirmation shorter than 7 characters is refused, even a
+    // prefix of the commit it deploys; it never skips the check.
+    for short in [&dev[..1], &dev[..6]] {
+        let refused = call(
+            &f.h.router,
+            Method::POST,
+            "/api/sandboxes/s1/cd/prod/deploy",
+            Some(json!({"confirm": "app", "expect": short})),
+            &f.bob,
+        )
+        .await?;
+        assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    }
+    assert_eq!(f.head("main")?, main_before, "nothing was promoted");
 
     let started = call(
         &f.h.router,
@@ -1379,6 +1393,33 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
         output.contains("token-ok") && !output.contains(VALUE),
         "{output}"
     );
+    // #717 (SPEC-401 VCD-005): an agent of the project reads that production run's output, which
+    // printed the production secret, with the value redacted.
+    support::seed_task(
+        &f.h,
+        "t1",
+        "s1",
+        "u-alice",
+        yulius_domain::task::TaskStatus::Running,
+        None,
+    )
+    .await?;
+    support::seed_live_attempt(&f.h, "t1", TOKEN).await?;
+    let read = support::mcp_tool(
+        &f.h,
+        TOKEN,
+        "cd_status",
+        json!({"run_id": started.body["run_id"]}),
+    )
+    .await?;
+    let text = support::tool_text(&read)["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        text.contains("the token is") && !text.contains(VALUE),
+        "{text}"
+    );
     // A production secret is never given to agents: no .env copy, no hosts (round 2, M-B) and no
     // MCP `${secret:NAME}` (round 3, M2).
     let env = call(
@@ -1414,17 +1455,7 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
         f.h.app.resolve_secret_ref(&sandbox, "DEV_TOKEN").await?,
         None
     );
-    // Agents cannot even ask for it (round 3, L3).
-    support::seed_task(
-        &f.h,
-        "t1",
-        "s1",
-        "u-alice",
-        yulius_domain::task::TaskStatus::Running,
-        None,
-    )
-    .await?;
-    support::seed_live_attempt(&f.h, "t1", TOKEN).await?;
+    // Agents cannot even ask for it (round 3, L3); task #1 is the agent seeded above.
     for (tool, args) in [
         ("secret_copy_to_env", json!({"secrets": ["DEV_TOKEN"]})),
         (

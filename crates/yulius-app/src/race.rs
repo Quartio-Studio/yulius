@@ -98,6 +98,9 @@ pub enum Point {
     /// `put_import_chunk` (SPEC-400): another chunk holds the file, so this one waits for it.
     /// The path is the import file's.
     ImportChunkWait,
+    /// A worktree's removal (SPEC-401): Git's checks passed; nothing is removed yet. The path is
+    /// the worktree's, then its Git record's. Reached on a blocking thread.
+    WorktreeRemove,
 }
 
 #[cfg(feature = "test-support")]

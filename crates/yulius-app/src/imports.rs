@@ -1296,10 +1296,11 @@ impl App {
         let (stats, committed) = match made {
             Ok(made) => made,
             Err(err) => {
-                // Nothing in the server's folder outlives a failed import. Git removes a clean
-                // worktree; the folder goes anyway, and a record Git keeps of it is only
-                // prunable (the hygiene round's). No `git worktree prune` here: it would drop the
-                // records of worktrees agents keep elsewhere (SPEC-215).
+                // Nothing in the server's folder outlives a failed import. A clean worktree is
+                // removed (Git checks, the server removes, ADR-0255); the folder goes anyway,
+                // and a record Git keeps of it is only prunable (the hygiene round's). No
+                // `git worktree prune` here: it would drop the records of worktrees agents keep
+                // elsewhere (SPEC-215).
                 match git.remove_worktree(&repo, &path, &worktrees).await {
                     Ok(_) => {}
                     Err(err) => tracing::warn!(error = %err, "removing a failed snapshot worktree"),
