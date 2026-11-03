@@ -60,7 +60,7 @@ reaches nothing else: no other sandbox, no secret, no instance setting, no accou
 - [x] Web UI: Invite guests dialog for the playground admin
 - [x] Web UI: join page and guest mode
 - [x] Docs: SPEC-001, SPEC-099, architecture, product and changes
-- [ ] Review fixes: no secrets or states in a guest playground, no configuring tools, revoking stops guests' work
+- [x] Review fixes: no secrets or states in a guest playground, no configuring tools, revoking stops guests' work
 - [ ] Independent review answered and gates green
 
 ## Acceptance criteria
