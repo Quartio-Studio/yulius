@@ -26,12 +26,14 @@ not reopen the issue on the next scan.
   hash and `SHA-256(salt || needle)`, with a fresh salt per set
   (`yulius-contracts/src/scrub.rs:1-6`). They redact inside the sandbox, so they must be able to
   test a window of output against a needle without the server. Any matcher that can do that is
-  also an equality test for a guess. The redactor already gives every run that test: print a guess
-  and it comes back as `[secret:NAME]` over exactly the needle's bytes, which also shows the
-  length. SPEC-002 ADR-20 and ADR-0014 (`docs/decisions/0014-secrets-vault.md:24`) accept
+  also an equality test for a guess, offline at hash speed while the run holds the set (the
+  rolling hash with its known base alone already is). Redaction itself gives the same test online,
+  one try per command: a printed guess comes back as `[secret:NAME]` over exactly the needle's
+  bytes, which also shows the length. SPEC-002 ADR-20 and ADR-0014 (`docs/decisions/0014-secrets-vault.md:24`) accept
   "redaction is an oracle for weak values" with the 8-character minimum
   (`MIN_AGENT_VALUE_CHARS`, `yulius-domain/src/vault/mod.rs:45`, enforced at `:67`). ADR-0144
-  (`:84-87`) and ADR-0186 (`:86-87`) say the same about the salted fingerprints. A server-held
+  (`:84-87`) names redaction and "the salted fingerprints a person's processes already read" as
+  that equality oracle; ADR-0186 (`:86-87`) keeps it to weak values. A server-held
   HMAC key, Vidoc's suggested fix, would mean sending every output window to Yulius to be tested.
   That is the same oracle online, and it sends the run's output out of the sandbox.
 - **#840 (host in audit keys).** `note_agent_use` (`runtime.rs:319-339`) builds the audit key
@@ -81,11 +83,14 @@ not reopen the issue on the next scan.
 - VTV-001 (#845, fixed). Chunks of one import file are applied one at a time. The length a chunk
   writes at is read again once nothing else writes that file, and it is the length that is
   verified and compared-and-set. A chunk that a competing chunk already covered is acknowledged as
-  a repeat, never written. A regression test reproduces the interleaving deterministically (a
-  test-only pause point, no sleeps): a short chunk that read a stale length is paused, a longer one
-  completes, then the short one resumes. The upload must finish with the right bytes.
-- VTV-002. The per-file lock is bounded: an entry exists only while a chunk of that file holds it
-  or waits for it, and it is removed when the last one is done.
+  a repeat, never written. The part that holds the file runs to its end even when the request
+  goes away (a spawned task owns the hold), so no write or stored length is still under way once
+  the file is free. Regression tests reproduce both interleavings deterministically (test-only
+  pause points, no sleeps): a short chunk that read a stale length is paused while a longer one
+  completes; and a short chunk whose request is dropped mid-write makes a longer one wait for it.
+  The upload must finish with the right bytes.
+- VTV-002. The per-file lock is bounded: an entry lives while a chunk of that file holds it or
+  waits for it; one left by a cancelled wait is removed when the next chunk is done.
 - VTV-003 (#840, dismissed). A test in `yulius-egress` pins that a proxy target whose host holds
   `|`, a space or a line break is no `Uri` (refused before the policy). It also pins that
   `connect_target` returns a valid target's host and port.
@@ -98,9 +103,9 @@ not reopen the issue on the next scan.
 ## Plan
 
 - [x] Spec SPEC-400 with the triage of all five findings
-- [ ] Chunks of one import file applied one at a time, pinned by a race test
-- [ ] Proxy host characters pinned by a test
-- [ ] Narrow [[ignore]] entries for the four dismissed wordings
+- [x] Chunks of one import file applied one at a time, pinned by a race test
+- [x] Proxy host characters pinned by a test
+- [x] Narrow [[ignore]] entries for the four dismissed wordings
 - [ ] Issues commented and closed or linked to the pull request
 - [ ] Gates, docs, changes entry and independent review answered
 
@@ -109,6 +114,9 @@ not reopen the issue on the next scan.
 - `import_server::racing_chunks_of_one_file_never_overwrite_each_other` fails on `dev`'s code and
   passes with the fix: the stale short chunk is acknowledged without being written, the rest of
   the file uploads, and the stored file equals the offered bytes.
+- `import_server::a_chunk_whose_request_goes_away_keeps_its_file_until_it_is_stored` fails
+  without the hold (or with the hold freed by a dropped request) and passes with the fix: the
+  longer chunk waits for the dropped one's write, then continues from its stored length.
 - The per-file lock map is empty once no chunk is in flight (unit test).
 - `yulius-egress` test `proxy_targets_with_delimiters_are_no_uri` passes.
 - `.config/vidoc.toml` has four new entries. The scanner's own `apply_ignores` marks each of the
@@ -119,8 +127,10 @@ not reopen the issue on the next scan.
 
 ## Test plan
 
-- New integration test in `crates/yulius/tests/import_server.rs` (multi-thread runtime, a
-  `race::Point` hook that runs the competing chunk while the first is paused).
+- Two integration tests in `crates/yulius/tests/import_server.rs` (multi-thread runtime,
+  `race::Point` hooks: `ImportChunkRead` runs the competing chunk while the first is paused;
+  `ImportChunkWrite` holds a write while its request is dropped, and `ImportChunkWait`, reached
+  only when `try_lock` fails, shows the other chunk waits).
 - Unit tests in `imports.rs` (lock map bound) and `yulius-egress/src/proxy.rs` (host characters).
 - `scripts/dev ci` (the full gate). The security scan is disabled for this project, and is
   reported as disabled, not as passed.
@@ -137,10 +147,18 @@ not reopen the issue on the next scan.
 
   One server process owns the data directory (one binary, ADR-0001), so an in-process lock is
   enough. Its scope is one file, so other files and other jobs still upload in parallel.
+- **The locked section runs in a spawned task** (review round 1). Its blocking write and its
+  store calls keep running if axum drops the handler, so a hold dropped with the handler would
+  free the file while they run. The task owns the hold and the body (`Vec<u8>`, taken from the
+  route's `Bytes` without a copy) and the handler awaits it. Alternatives: moving the guard into
+  the blocking closure frees it before the stored length; a cancel-safe handler is not something
+  axum offers.
 - The pause point sits after the first read of the job (authorization and validation) and before
   the lock. On `dev`'s code, which has no lock, the paused chunk then writes at the stale length.
   With the fix, it waits for nothing and reads the length again under the lock. The test therefore
-  runs the same way on both and never deadlocks.
+  runs the same way on both and never deadlocks. The second test contends the lock for real:
+  `ImportChunkWait` fires only after a failed `try_lock`, and the test waits for it or for the
+  longer chunk's answer, whichever comes first (a 30 s bound only fails a hung run).
 - The four dismissals are not "hardened" with a second mechanism. Fingerprints keyed by the server
   would move the oracle online and send output out of the sandbox. Escaping a host that cannot
   hold a delimiter would be dead code. A per-project Superagent home would hide nothing from an

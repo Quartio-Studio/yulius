@@ -734,8 +734,9 @@ reason = "accounts are an ownerless pool; switch_task requires Work on the task,
 # evidence is in SPEC-400 and in each issue's closing comment.
 
 # #841: the in-sandbox redactors must test output against a needle without the server, so any
-# matcher they get is an equality test for a guess, and the redactor already gives one: a printed
-# guess comes back as [secret:NAME] over exactly its bytes. SPEC-002 ADR-20 and ADR-0014 accept
+# matcher they get is an equality test for a guess (offline while a run holds the set; the rolling
+# hash alone already is), and redaction gives the same test online: a printed guess comes back as
+# [secret:NAME] over exactly its bytes. SPEC-002 ADR-20 and ADR-0014 accept
 # "redaction is an oracle for weak values" with the 8-character minimum (MIN_AGENT_VALUE_CHARS);
 # ADR-0144 and ADR-0186 name the salted fingerprints. A server-held key would move the same test
 # online and send the run's output to Yulius.
