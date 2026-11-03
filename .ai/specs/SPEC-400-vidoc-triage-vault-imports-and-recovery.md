@@ -1,11 +1,11 @@
 ---
 yulius-task: 3b36d422-c79c-44ce-8968-8bf49003df06
-status: in-progress
+status: done
 ---
 
 # SPEC-400: Triage of the Vidoc findings on the vault, imports and recovery
 
-Status: in-progress
+Status: done
 Date: 2026-11-03
 Owner: Yulius task #379
 Scope authorization: task #379 (close #841, #840, #740, #845 and #749, each as a false positive
@@ -108,8 +108,8 @@ not reopen the issue on the next scan.
 - [x] Narrow [[ignore]] entries for the four dismissed wordings
 - [x] Gates, docs and changes entry green
 - [x] Review round 1 answered: contended-lock test and cancel-safe chunk section
-- [ ] Review round 2 approved on the final head
-- [ ] Issues commented and closed or linked to the pull request
+- [x] Review round 2 approved on the final head
+- [x] Issues commented and closed or linked to the pull request
 
 ## Acceptance criteria
 
@@ -213,3 +213,12 @@ not reopen the issue on the next scan.
   - Nit: VTV-002 wording. Aligned.
   - Nit: #841 is an offline test while a run holds the set, not only redaction's online test. The
     Context, the ignore comment and the issue comment now say so; the verdict is unchanged.
+- **Independent review, round 2 (APPROVE at 5ad0602a).** Round 1's findings were all confirmed
+  fixed, with no new blocker, major or minor. One nit (own code), accepted: a chunk whose request
+  was dropped keeps its body (at most 8 MiB) until it gets its file. Only the job's owner can
+  cause that, and the wait is bounded by the file's size. It is the price of the cancellation fix.
+  The pull request description proposes a per-file cap on waiting chunks as a follow-up, since this
+  task files no issues.
+- **Issues.** On 2026-11-03, #841, #840, #740 and #749 were commented with their file:line
+  evidence and closed as not planned. #845 was commented with the confirmation and a link to PR
+  #1036, whose `Fixes #845` closes it on merge.
