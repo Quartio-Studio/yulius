@@ -1443,3 +1443,18 @@ fn values_that_could_read_as_options_run_nothing() {
     );
     assert!(fake.log.is_empty(), "{:#?}", fake.log);
 }
+
+/// #678: the rule's Perl regex matches the unit name literally on its own, whatever
+/// `service_name_ok` accepts: every character but a letter, a digit, `_` or `-` is escaped.
+#[test]
+fn the_needrestart_rule_matches_the_name_literally() {
+    assert!(
+        super::needrestart_rule("yulius.service").contains(r"qr(^yulius\.service$)"),
+        "the rule for the default unit keeps its text"
+    );
+    assert!(
+        super::needrestart_rule("yulius-dev@1.service").contains(r"qr(^yulius-dev\@1\.service$)")
+    );
+    let rule = super::needrestart_rule("a+b(c)$x|y*.service");
+    assert!(rule.contains(r"qr(^a\+b\(c\)\$x\|y\*\.service$)"), "{rule}");
+}
