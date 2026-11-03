@@ -31,6 +31,7 @@ use yulius_domain::harness::Provider;
 use yulius_domain::ids::AccountId;
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, UsageWindow};
+use zeroize::Zeroize;
 
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
@@ -131,12 +132,11 @@ impl RawOutput {
         self.bytes.extend_from_slice(chunk);
     }
 
-    /// Overwrites the whole allocation with zeros, past the end of the output too; the output
-    /// reads as zeros afterwards.
+    /// Overwrites the whole allocation with zeros (volatile writes), past the end of the output
+    /// too; the output reads as zeros afterwards.
     fn wipe(&mut self) {
         self.bytes.resize(self.bytes.capacity(), 0);
-        self.bytes.fill(0);
-        std::hint::black_box(&self.bytes);
+        self.bytes.as_mut_slice().zeroize();
     }
 }
 
@@ -1358,9 +1358,11 @@ impl App {
     /// The credential in the whole raw output, which is wiped afterwards (with the temporary
     /// plaintext copy extraction may make), so no copy outlives the sign-in (SPEC-404 ALG-001).
     fn take_credential(&self, session: &LoginSession) -> Option<String> {
-        let Ok(mut raw) = session.raw.lock() else {
-            return None;
-        };
+        // Nothing under this lock panics; were it poisoned, the buffer is still wiped.
+        let mut raw = session
+            .raw
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let found = match session.provider {
             Provider::Anthropic => {
                 let text = String::from_utf8_lossy(&raw.bytes);
@@ -1433,20 +1435,25 @@ impl App {
         };
         let phase = match result {
             None => LoginPhase::Cancelled,
-            Some(Ok(secret)) => match self.store_credential(&session.account_id, &secret).await {
-                Ok(()) => LoginPhase::Succeeded,
-                // The account was removed meanwhile: nothing to sign in.
-                Err(AppError::NotFound) => LoginPhase::Cancelled,
-                Err(err) => {
-                    tracing::error!(error = %err, "could not store an account credential");
-                    self.record_login_failure(
-                        &session.account_id,
-                        "the credential could not be stored",
-                    )
-                    .await;
-                    LoginPhase::Failed
+            Some(Ok(mut secret)) => {
+                let stored = self.store_credential(&session.account_id, &secret).await;
+                // The plaintext copy goes once the credential is sealed (or could not be).
+                secret.0.zeroize();
+                match stored {
+                    Ok(()) => LoginPhase::Succeeded,
+                    // The account was removed meanwhile: nothing to sign in.
+                    Err(AppError::NotFound) => LoginPhase::Cancelled,
+                    Err(err) => {
+                        tracing::error!(error = %err, "could not store an account credential");
+                        self.record_login_failure(
+                            &session.account_id,
+                            "the credential could not be stored",
+                        )
+                        .await;
+                        LoginPhase::Failed
+                    }
                 }
-            },
+            }
             Some(Err(reason)) => {
                 self.record_login_failure(&session.account_id, &reason)
                     .await;
@@ -1584,8 +1591,12 @@ mod tests {
         let mut short = RawOutput::default();
         short.push(token);
         let mut full = RawOutput::default();
-        full.push(&vec![b'a'; LOGIN_RAW_MAX - 20]);
         full.push(token);
+        full.push(&vec![b'a'; LOGIN_RAW_MAX - 20]);
+        assert!(
+            full.bytes.starts_with(b"AAAA"),
+            "the token's start was pushed out"
+        );
         for mut raw in [short, full] {
             let at = raw.bytes.as_ptr();
             raw.wipe();
@@ -1617,6 +1628,13 @@ mod tests {
             assert_eq!(raw.bytes.capacity(), capacity);
         }
         assert!(raw.bytes.ends_with(b"xxxxxxx"));
+        // A chunk larger than the bound keeps its newest bytes.
+        let mut oversized = vec![b'o'; LOGIN_RAW_MAX];
+        oversized.extend_from_slice(b"newest");
+        raw.push(&oversized);
+        assert_eq!(raw.bytes.len(), LOGIN_RAW_MAX);
+        assert!(raw.bytes.ends_with(b"newest"));
+        assert_eq!(raw.bytes.as_ptr(), at);
     }
 
     #[test]
