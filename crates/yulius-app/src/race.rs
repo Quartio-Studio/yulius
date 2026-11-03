@@ -89,6 +89,9 @@ pub enum Point {
     /// `validate_checkout` (SPEC-394): the checkout's root was resolved and the file's path
     /// worked out; the file is not opened yet. The path is the file's.
     CheckoutRead,
+    /// A worktree's removal (SPEC-401): Git's checks passed; nothing is removed yet. The path is
+    /// the worktree's, then its Git record's. Reached on a blocking thread.
+    WorktreeRemove,
 }
 
 #[cfg(feature = "test-support")]

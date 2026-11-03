@@ -157,3 +157,122 @@ async fn an_environment_head_is_fetched_from_github_into_the_mirror() -> TestRes
     assert_eq!(head, git(&origin, &["rev-parse", "refs/heads/dev"])?);
     Ok(())
 }
+
+/// A sandbox (`<root>/sandbox`: its clone `repo` with no tracked file and Git told to ignore
+/// everything, and the worktree `worktrees/t1`), and a folder of someone else's at
+/// `<root>/other/victim`.
+struct Swapped {
+    _dir: tempfile::TempDir,
+    sandbox: std::path::PathBuf,
+    repo: std::path::PathBuf,
+    worktrees: std::path::PathBuf,
+    wt: std::path::PathBuf,
+    victim: std::path::PathBuf,
+}
+
+fn swapped() -> Result<Swapped, Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let sandbox = root.join("sandbox");
+    let repo = sandbox.join("repo");
+    std::fs::create_dir_all(&repo)?;
+    git(&repo, &["init", "-q", "-b", "main"])?;
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"])?;
+    std::fs::write(repo.join(".git/info/exclude"), "*\n")?;
+    let worktrees = sandbox.join("worktrees");
+    std::fs::create_dir_all(&worktrees)?;
+    let wt = worktrees.join("t1");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat/1",
+            wt.to_str().ok_or("path")?,
+        ],
+    )?;
+    let victim = root.join("other/victim");
+    std::fs::create_dir_all(victim.join("src"))?;
+    std::fs::write(victim.join("src/work.txt"), "someone else's\n")?;
+    Ok(Swapped {
+        _dir: dir,
+        sandbox,
+        repo,
+        worktrees,
+        wt,
+        victim,
+    })
+}
+
+impl Swapped {
+    /// Swaps the worktree for a link to the victim once the server's checks passed and nothing
+    /// is removed yet, as a contained agent of the sandbox can.
+    fn swap_after_the_checks(&self) {
+        let (wt, aside, victim) = (
+            self.wt.clone(),
+            self.worktrees.join("t1.aside"),
+            self.victim.clone(),
+        );
+        yulius_app::race::on(
+            yulius_app::race::Point::WorktreeRemove,
+            &self.sandbox,
+            move || {
+                std::fs::rename(&wt, &aside).ok();
+                std::os::unix::fs::symlink(&victim, &wt).ok();
+            },
+        );
+    }
+}
+
+/// #844 (SPEC-401 VCD-001): a clean worktree swapped for a link once its checks passed has the
+/// link removed, never what it names. The victim's `.git` points back to the worktree's record
+/// and Git ignores everything, which is what Git checks before it deletes: here it stands in for
+/// the swap a racing agent makes again during Git's own run, between Git's checks and its
+/// deletion through the path.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_worktree_swapped_for_a_link_during_its_removal_touches_nothing_behind_it() -> TestResult
+{
+    let s = swapped()?;
+    let record = s.repo.join(".git/worktrees/t1");
+    std::fs::write(
+        s.victim.join(".git"),
+        format!("gitdir: {}\n", record.display()),
+    )?;
+    s.swap_after_the_checks();
+    let adapter = GitAdapter::new("git");
+    let removed = adapter.remove_worktree(&s.repo, &s.wt, &s.worktrees).await;
+    assert!(
+        s.victim.join("src/work.txt").exists(),
+        "the folder behind the link was deleted ({removed:?})"
+    );
+    assert!(removed?, "the worktree (now the link) and its record go");
+    assert!(!s.wt.exists() && !record.exists());
+    assert!(!git(&s.repo, &["worktree", "list"])?.contains("t1"));
+    assert!(git(&s.repo, &["branch", "--list", "feat/1"])?.contains("feat/1"));
+    Ok(())
+}
+
+/// #844 (SPEC-401 VCD-001): a task's deletion discards its worktree; one swapped for a link once
+/// the checks passed has the link removed, never the folder behind it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_discarded_worktree_swapped_for_a_link_touches_nothing_behind_it() -> TestResult {
+    let s = swapped()?;
+    std::fs::write(s.wt.join("draft.txt"), "uncommitted\n")?;
+    s.swap_after_the_checks();
+    let adapter = GitAdapter::new("git");
+    let discarded = adapter
+        .discard_worktree(&s.repo, &s.wt, &s.worktrees, Some("feat/1"))
+        .await;
+    assert!(
+        s.victim.join("src/work.txt").exists(),
+        "the folder behind the link was deleted ({discarded:?})"
+    );
+    discarded?;
+    assert!(!s.wt.exists() && !s.repo.join(".git/worktrees/t1").exists());
+    assert!(!git(&s.repo, &["branch", "--list", "feat/1"])?.contains("feat/1"));
+    Ok(())
+}

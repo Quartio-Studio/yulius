@@ -148,6 +148,14 @@ enum Stream {
 /// `git worktree list` at that moment dies reading the half-written files (#666, SPEC-289).
 static WORKTREE_CHANGES: Mutex<()> = Mutex::new(());
 
+/// Holds [`WORKTREE_CHANGES`] for a registration change made without Git (a worktree's record
+/// removed through handles, SPEC-401).
+pub(crate) fn worktree_changes() -> std::sync::MutexGuard<'static, ()> {
+    WORKTREE_CHANGES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Whether `args` add, move, remove, prune or list worktrees.
 fn touches_worktree_registrations(args: &[OsString]) -> bool {
     args.first()
