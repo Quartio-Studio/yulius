@@ -15,6 +15,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   is a duplicate of #757, fixed by #1022. The findings #758 (no asker name holds `", "`, and the
   list authorizes nothing) and #815 (every caller of `open_credential` gets the account from the
   server's own pool choice) are dismissed with narrow `[[ignore]]` entries.
+- A queued CI run is no longer started twice. The dispatcher could read a run as still queued
+  before its executor marked it running. With two lanes, the run then took a second lane and
+  dropped the first executor's cancellation, so a later cancel left its jobs running. A run that
+  already has an executor is now never reserved again (SPEC-403, task #384, fixes #738).
+  - The Vidoc findings #784, #718, #716 and #715 are dismissed as false positives, each with a
+    narrow `[[ignore]]` entry. For #784, the agent's `cd_deploy` validates the name before
+    `cd_deploy_for_task`. #718 duplicates #780. For #716, the installed unit pins the server's
+    PATH to the host's read-only system. For #715, uncontained is the development mode.
+  - New tests pin #784 and the unit's PATH.
 - A task worktree that a contained agent swaps for a link after Yulius's checks no longer makes
   the host delete the folder behind the link. On Linux, the disk upkeep, the hygiene cleanup,
   snapshot imports and task deletion let Git only check the worktree. The server then removes its

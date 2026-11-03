@@ -1769,6 +1769,17 @@ async fn named_environments_deploy_by_their_stage() -> TestResult {
             "{refused}"
         );
     }
+    // #784: the agent's deploy validates the name as the person's does, before anything else.
+    for env in ["../staging", "Staging", "staging/x", "dev prod", ""] {
+        let refused = tool("cd_deploy", json!({"environment": env})).await?;
+        assert_eq!(refused["isError"], true, "{refused}");
+        assert!(
+            refused
+                .to_string()
+                .contains("lowercase letters, digits and '-'"),
+            "{env:?}: {refused}"
+        );
+    }
     let started = tool("cd_deploy", json!({"environment": "staging"})).await?;
     assert_eq!(started["isError"], false, "{started}");
     let run = support::tool_text(&started)["run"].clone();

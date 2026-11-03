@@ -925,3 +925,38 @@ title = "Sealed credential decrypted without additional access control check"
 function = "open_credential"
 line = 2087
 reason = "every caller gets the account from the server's pool choice after its own authorization; the token is never returned to a caller (SPEC-405, #815)"
+
+# SPEC-403 (task #384): the Vidoc findings on CD environments and CD run environments, triaged as
+# false positives on dev ffbc2e91; each issue holds the file:line evidence. (#738, the CI lane
+# finding, led to a real double dispatch, which is fixed.)
+
+# #784: the agent tool cd_deploy (tool_cd_deploy) applies dom::env_name before it calls
+# cd_deploy_for_task, its only caller, as the person's route does in cd_deploy. Pinned by cd.rs
+# named_environments_deploy_by_their_stage (malformed names refused with the name rule).
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "Agent deploy path skips environment name validation"
+reason = "tool_cd_deploy, the only caller of cd_deploy_for_task, validates with dom::env_name first, as cd_deploy does; tested by named_environments_deploy_by_their_stage (SPEC-403, #784)"
+
+# #718 (duplicate of #780): the same guard, !(len >= 7 && starts_with(lowercased)), refuses a
+# value under 7 characters with 409.
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "Weak commit confirmation check accepts short inputs"
+reason = "a confirmation under 7 characters fails the guard and is refused with 409; tested by production_is_deployed_by_an_administrator_who_types_the_slug (SPEC-401, SPEC-403, #718, #780)"
+
+# #716: the server's PATH is the operator's, which no agent sets; `yulius host setup` writes
+# PATH=/usr/local/bin:/usr/bin:/bin into yulius.service, the fallback itself. In a production run
+# those are the host's read-only system, with empty /home, /root and /var, and only the run's
+# directory and cache bound in (production_containment). Pinned by host_setup::tests
+# a_fresh_host_gets_the_service_and_a_base_with_docker.
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "Host PATH inherited into CD run environments"
+reason = "the operator sets the server's PATH (the installed unit pins /usr/local/bin:/usr/bin:/bin); a production run sees those as the host's read-only system with nothing an agent wrote (SPEC-403, #716)"
+
+# #715: the same accepted risk as the two uncontained-production entries above, reworded.
+[[ignore]]
+path = "crates/yulius-app/src/ci/cd.rs"
+title = "Containment silently disabled without isolation"
+reason = "uncontained is the documented development mode: agents and shells already run on the host as the service user, which reads the data directory and master.key; runs are marked not contained (docs/operations.md, SPEC-403, #715)"
