@@ -42,9 +42,12 @@ prepared or chained task's request named it (#1023).
 ## Consequences
 
 - A shell's or a draft's files can outlive it for as long as a task's request names them, using
-  disk (a shell's folder bounded at 500 files, kept drafts only by the sandbox's quota).
+  disk (a shell's folder bounded at 500 files, kept drafts only by the sandbox's quota; past
+  10,000 entries in a drafts folder the count of waiting drafts is partial).
 - Every composer upload while an old draft is kept, and the end of each shell that got a file,
-  read the sandbox's tasks and automations once.
+  read the sandbox's tasks and automations once; the hourly leftovers scan reads them for every
+  sandbox holding an old draft (as long as a request names one), and its deletion reads them
+  again for each old draft it removes.
 - A task created in the instant between that reading and a removal can still see an unnamed file
   go, as with ADR-0253's settling.
 - References typed only into a running session are still not seen.

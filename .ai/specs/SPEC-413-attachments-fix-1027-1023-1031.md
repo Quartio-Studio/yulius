@@ -109,7 +109,8 @@ for a deleted task whose folder is there.
   archived tasks), and leaving the bound as it was (an active person would hit 409 within weeks).
   Old named drafts count toward the sandbox's quota.
 - Residual race, as SPEC-396 records for its own: a task created between reading the texts and
-  removing an unnamed shell folder or draft can still see it go; the window is one store read.
+  removing an unnamed shell folder or draft can still see it go; the window is one store read
+  (the leftovers deletion reads the texts again for each old draft, review round 2).
 - Pre-existing, outside this change (review round 1): the lookup of a trash entry a parallel
   deletion moved without its number scans at most 10,000 trash names; file system work of these
   clean-ups still runs on the async threads, as before (bounded).

@@ -542,14 +542,14 @@ fn old_draft(kind: SFlag, stat: &nix::sys::stat::FileStat) -> bool {
 }
 
 /// The entries of a drafts folder other than drafts older than a week, at most `limit`, among the
-/// first [`MAX_PRUNED_ENTRIES`] listed. Blocks.
-fn count_waiting_drafts(folder: &OwnedFd, limit: usize) -> usize {
-    names_in(folder, MAX_PRUNED_ENTRIES)
-        .unwrap_or_default()
+/// first [`MAX_PRUNED_ENTRIES`] listed (past that the count is partial). Blocks.
+fn count_waiting_drafts(folder: &OwnedFd, limit: usize) -> AppResult<usize> {
+    Ok(names_in(folder, MAX_PRUNED_ENTRIES)
+        .map_err(errno_error)?
         .iter()
         .filter(|name| !kind_at(folder, name).is_ok_and(|(kind, stat)| old_draft(kind, &stat)))
         .take(limit)
-        .count()
+        .count())
 }
 
 /// Makes a rename or link durable (best effort: not every file system syncs directories).
@@ -799,7 +799,8 @@ impl App {
 
     /// Starts an attachment for the new-task composer of `sandbox` (write access to it): the
     /// file waits in the caller's drafts folder, outside every worktree, until the prompt that
-    /// names its path starts a task. Drafts older than a week are removed first.
+    /// names its path starts a task. Drafts older than a week that no request names are removed
+    /// first (SPEC-413).
     ///
     /// # Errors
     /// As [`App::begin_task_attachment`], with `NotFound`/`Forbidden` for the sandbox.
@@ -946,12 +947,13 @@ impl App {
         let count = match owner {
             // Drafts older than a week stay only while a request names them (SPEC-413): they are
             // tasks' files now, so the bound counts the ones still waiting for a task.
-            Owner::Draft(_) => count_waiting_drafts(&dir.1, MAX_ATTACHMENTS_PER_FOLDER + 1),
+            Owner::Draft(_) => count_waiting_drafts(&dir.1, MAX_ATTACHMENTS_PER_FOLDER + 1)?,
             _ => count_entries(&dir.1, MAX_ATTACHMENTS_PER_FOLDER + 1)?,
         };
         if !replacing && count >= MAX_ATTACHMENTS_PER_FOLDER {
             return Err(AppError::Conflict(format!(
-                "at most {MAX_ATTACHMENTS_PER_FOLDER} attachments are kept per terminal or draft"
+                "at most {MAX_ATTACHMENTS_PER_FOLDER} attachments are kept per terminal, or drafts \
+                 waiting for a task"
             )));
         }
         let shown_dir = owner
@@ -1073,7 +1075,9 @@ impl App {
         let folder = [ATTACHMENTS_DIR, "shells", shell]
             .iter()
             .fold(self.sandbox_dir(sandbox), |path, part| path.join(part));
-        if std::fs::symlink_metadata(&folder).is_err() {
+        if std::fs::symlink_metadata(&folder)
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        {
             return;
         }
         let namers = match self.namers(sandbox).await {

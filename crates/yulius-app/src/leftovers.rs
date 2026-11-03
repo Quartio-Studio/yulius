@@ -199,12 +199,10 @@ impl Drop for JobEnd<'_> {
     }
 }
 
-/// What one deletion pass reads once: the CI job keys each sandbox used, and what each sandbox's
-/// requests name (`None` when they cannot be read).
+/// What one deletion pass reads once: the CI job keys each sandbox used.
 #[derive(Default)]
 struct Pass {
     ci_keys: std::collections::HashMap<SandboxId, Option<HashSet<String>>>,
-    namers: std::collections::HashMap<SandboxId, Option<crate::attachment_trash::Namers>>,
 }
 
 /// The path a request names a draft by, from its `<user>/<file>`.
@@ -1342,20 +1340,20 @@ impl App {
                 if !self.old_draft(&item.path) {
                     return Err("not a draft older than 7 days any more".into());
                 }
-                if !pass.namers.contains_key(&sandbox.id) {
-                    let namers = self.namers(&sandbox.id).await.ok();
-                    pass.namers.insert(sandbox.id.clone(), namers);
-                }
                 let draft = item
                     .path
                     .parent()
                     .map(|user| format!("{}/{}", file_name(user), file_name(&item.path)))
                     .ok_or("no drafts folder")?;
-                match pass.namers.get(&sandbox.id) {
-                    Some(Some(namers)) if !namers.name(&draft_path(&draft)) => Ok(None),
-                    Some(Some(_)) => Err("a task's request or an automation names it".into()),
-                    _ => Err("the sandbox's tasks cannot be read".into()),
+                // Read fresh for each draft (LFT-007): a task created during the pass counts.
+                let namers = self
+                    .namers(&sandbox.id)
+                    .await
+                    .map_err(|_| "the sandbox's tasks cannot be read")?;
+                if namers.name(&draft_path(&draft)) {
+                    return Err("a task's request or an automation names it".into());
                 }
+                Ok(None)
             }
             Kind::HostDocker => Err("reported only".into()),
         }

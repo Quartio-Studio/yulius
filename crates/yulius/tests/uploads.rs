@@ -765,8 +765,8 @@ async fn shell_attachments_belong_to_the_shell_owner_and_end_with_the_shell() ->
         &prompt,
     )
     .await?;
-    // The named shell ends first and is forgotten (its attachments are settled right after) before
-    // the other is closed, whose whole close then outlasts that last step.
+    // The named shell ends first and is forgotten before the other is closed: its attachments are
+    // most likely settled by then (by timing only; the start-up prune below is the sure check).
     let sandbox = SandboxId::parse("s1")?;
     for (shell, left) in [(&named_id, 1), (&id, 0)] {
         let closed = call(
