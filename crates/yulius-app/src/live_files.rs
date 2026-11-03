@@ -108,11 +108,18 @@ impl Doc {
 
     /// Applies `op` (at the current revision) as `client`'s step.
     fn step(&mut self, client: &str, op: Op, text: Vec<u16>) {
+        // A step that changes nothing (both deleted the same text) leaves saved text saved.
+        let still_saved = op.is_noop() && self.saved();
         self.text = text;
         self.revision += 1;
+        if still_saved {
+            self.saved_revision = Some(self.revision);
+        }
         self.kept_units += op.inserted();
         self.steps.push_back((self.revision, client.to_owned(), op));
-        while self.steps.len() > MAX_STEPS || (self.kept_units > MAX_KEPT_UNITS && self.steps.len() > 1) {
+        while self.steps.len() > MAX_STEPS
+            || (self.kept_units > MAX_KEPT_UNITS && self.steps.len() > 1)
+        {
             if let Some((_, _, old)) = self.steps.pop_front() {
                 self.kept_units -= old.inserted();
             }
@@ -278,13 +285,17 @@ impl App {
         );
     }
 
-    /// Drops documents left alone (saved for [`SAVED_IDLE_MS`], any for [`UNSAVED_IDLE_MS`]) and,
-    /// for a new one at [`MAX_DOCS`], the least recently touched saved one.
-    fn live_room(docs: &mut HashMap<String, Doc>, now: i64) -> AppResult<()> {
+    /// Drops documents left alone (saved for [`SAVED_IDLE_MS`], any for [`UNSAVED_IDLE_MS`]).
+    fn live_prune(docs: &mut HashMap<String, Doc>, now: i64) {
         docs.retain(|_, doc| {
             let idle = now - doc.touched;
             idle < UNSAVED_IDLE_MS && !(doc.saved() && idle >= SAVED_IDLE_MS)
         });
+    }
+
+    /// Makes room for a new document: at [`MAX_DOCS`], the least recently touched saved one goes.
+    fn live_room(docs: &mut HashMap<String, Doc>, now: i64) -> AppResult<()> {
+        Self::live_prune(docs, now);
         if docs.len() < MAX_DOCS {
             return Ok(());
         }
@@ -317,29 +328,51 @@ impl App {
         req: &LiveJoin,
     ) -> AppResult<LiveDoc> {
         crate::notes::check_presence(None, 0, &req.client)?;
-        if req.sha256.as_deref().is_some_and(|sha| !crate::files::is_sha256_hex(sha)) {
-            return Err(AppError::Invalid("sha256 is 64 lowercase hex digits".into()));
+        if req
+            .sha256
+            .as_deref()
+            .is_some_and(|sha| !crate::files::is_sha256_hex(sha))
+        {
+            return Err(AppError::Invalid(
+                "sha256 is 64 lowercase hex digits".into(),
+            ));
         }
-        if req.eol.as_deref().is_some_and(|eol| eol != "\n" && eol != "\r\n") {
+        if req
+            .eol
+            .as_deref()
+            .is_some_and(|eol| eol != "\n" && eol != "\r\n")
+        {
             return Err(AppError::Invalid("eol is \\n or \\r\\n".into()));
         }
-        if req.text.as_ref().is_some_and(|text| u64::try_from(text.len()).unwrap_or(u64::MAX) > MAX_FILE_BYTES) {
-            return Err(AppError::Invalid("the text is over the editor's size limit".into()));
+        if req
+            .text
+            .as_ref()
+            .is_some_and(|text| u64::try_from(text.len()).unwrap_or(u64::MAX) > MAX_FILE_BYTES)
+        {
+            return Err(AppError::Invalid(
+                "the text is over the editor's size limit".into(),
+            ));
         }
         let place = self
             .live_place(ctx, sandbox, req.root.as_deref(), &req.path, false)
             .await?;
         let now = self.now().0;
-        if let Some(doc) = self.live_lock()?.get_mut(&place.key) {
-            doc.touched = now;
-            return Ok(doc.whole());
+        {
+            let mut docs = self.live_lock()?;
+            Self::live_prune(&mut docs, now);
+            if let Some(doc) = docs.get_mut(&place.key) {
+                doc.touched = now;
+                return Ok(doc.whole());
+            }
         }
         let disk = self
             .file_read(ctx, sandbox, Some(&place.root), &place.path, None)
             .await?
             .ok_or(AppError::NotFound)?;
         let Some(content) = disk.content else {
-            return Err(AppError::Invalid("the file is not text the editor opens".into()));
+            return Err(AppError::Invalid(
+                "the file is not text the editor opens".into(),
+            ));
         };
         // Only someone who may change the folder starts it from their own text.
         let own = match &req.text {
@@ -410,7 +443,10 @@ impl App {
         let mut docs = self.live_lock()?;
         let doc = docs.get_mut(&place.key).ok_or_else(ended)?;
         doc.touched = self.now().0;
-        let oldest = doc.steps.front().map_or(doc.revision, |(made, _, _)| made - 1);
+        let oldest = doc
+            .steps
+            .front()
+            .map_or(doc.revision, |(made, _, _)| made - 1);
         if doc.session != session || since > doc.revision || since < oldest {
             return Ok(doc.whole());
         }
@@ -456,7 +492,10 @@ impl App {
             .ok_or_else(|| AppError::Invalid("a count is beyond any text".into()))?;
         let mut docs = self.live_lock()?;
         let doc = docs.get_mut(&place.key).ok_or_else(ended)?;
-        let oldest = doc.steps.front().map_or(doc.revision, |(made, _, _)| made - 1);
+        let oldest = doc
+            .steps
+            .front()
+            .map_or(doc.revision, |(made, _, _)| made - 1);
         if doc.session != req.session || req.revision > doc.revision || req.revision < oldest {
             return Err(ended());
         }
@@ -486,7 +525,12 @@ impl App {
     }
 
     /// The disk's `sha256` now (`""`: the file is gone).
-    async fn live_disk_sha(&self, ctx: &AuthContext, sandbox: &str, place: &Place) -> AppResult<String> {
+    async fn live_disk_sha(
+        &self,
+        ctx: &AuthContext,
+        sandbox: &str,
+        place: &Place,
+    ) -> AppResult<String> {
         match self
             .file_read(ctx, sandbox, Some(&place.root), &place.path, None)
             .await
@@ -594,7 +638,13 @@ impl App {
             (!req.force).then(|| doc.sha256.clone())
         };
         let read = self
-            .file_read(ctx, sandbox, Some(&place.root), &place.path, known.as_deref())
+            .file_read(
+                ctx,
+                sandbox,
+                Some(&place.root),
+                &place.path,
+                known.as_deref(),
+            )
             .await;
         let disk = match read {
             Ok(disk) => disk,
@@ -626,7 +676,9 @@ impl App {
             return Ok(doc.state());
         };
         let Some(content) = disk.content else {
-            return Err(AppError::Invalid("the file on disk is no longer text the editor opens".into()));
+            return Err(AppError::Invalid(
+                "the file on disk is no longer text the editor opens".into(),
+            ));
         };
         if !(doc.saved() || req.force) {
             if doc.disk_sha256.as_deref() != Some(disk.sha256.as_str()) {
@@ -660,11 +712,20 @@ mod tests {
 
     #[test]
     fn line_endings_follow_most_of_the_text_as_monaco_takes_them() {
-        assert_eq!(normalized("a\r\nb\r\nc\n", None), ("a\r\nb\r\nc\r\n".into(), "\r\n".into()));
-        assert_eq!(normalized("\u{feff}a\nb\r\nc\n", None), ("a\nb\nc\n".into(), "\n".into()));
+        assert_eq!(
+            normalized("a\r\nb\r\nc\n", None),
+            ("a\r\nb\r\nc\r\n".into(), "\r\n".into())
+        );
+        assert_eq!(
+            normalized("\u{feff}a\nb\r\nc\n", None),
+            ("a\nb\nc\n".into(), "\n".into())
+        );
         assert_eq!(normalized("a\rb", None), ("a\r\nb".into(), "\r\n".into()));
         assert_eq!(normalized("abc", None).1, "\n");
-        assert_eq!(normalized("a\r\nb", Some("\n")), ("a\nb".into(), "\n".into()));
+        assert_eq!(
+            normalized("a\r\nb", Some("\n")),
+            ("a\nb".into(), "\n".into())
+        );
     }
 
     #[test]

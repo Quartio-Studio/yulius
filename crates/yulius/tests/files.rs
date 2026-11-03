@@ -436,6 +436,8 @@ async fn presence_is_relayed_to_writers_only() -> TestResult {
             selection: Some(NoteSelection { anchor: 3, head: 7 }),
             hello: true,
             seq: 4,
+            session: None,
+            revision: None,
         }
     );
 

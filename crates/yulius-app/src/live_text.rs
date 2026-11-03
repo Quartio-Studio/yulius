@@ -88,18 +88,22 @@ impl Op {
     }
 
     /// Length of the text it applies to.
+    #[cfg(test)]
     pub(crate) const fn base_len(&self) -> usize {
         self.base
     }
 
     /// Length of the text it makes.
+    #[cfg(test)]
     pub(crate) const fn target_len(&self) -> usize {
         self.target
     }
 
     /// Whether it changes nothing.
     pub(crate) fn is_noop(&self) -> bool {
-        self.parts.iter().all(|part| matches!(part, Part::Retain(_)))
+        self.parts
+            .iter()
+            .all(|part| matches!(part, Part::Retain(_)))
     }
 
     /// Units it inserts, a bound on what a kept step costs.
@@ -313,7 +317,9 @@ mod tests {
             match rng.below(3) {
                 0 => op.retain(n - at),
                 1 => op.delete(n - at),
-                _ => op.insert(&units(PIECES[rng.below(PIECES.len())])).retain(n - at),
+                _ => op
+                    .insert(&units(PIECES[rng.below(PIECES.len())]))
+                    .retain(n - at),
             };
             at = n;
         }
@@ -326,7 +332,7 @@ mod tests {
     /// AC-411-1: concurrent operations converge whichever arrives first.
     #[test]
     fn concurrent_operations_converge_in_either_order() -> Result<(), OpError> {
-        let mut rng = Rng(0x5eed_411);
+        let mut rng = Rng(0x05ee_d411);
         for _ in 0..2000 {
             let start = random_text(&mut rng);
             let a = random_op(&mut rng, &start);
@@ -334,7 +340,12 @@ mod tests {
             let (a2, b2) = Op::transform(&a, &b)?;
             let left = b2.apply(&a.apply(&start)?)?;
             let right = a2.apply(&b.apply(&start)?)?;
-            assert_eq!(text(&left), text(&right), "{a:?} / {b:?} on {:?}", text(&start));
+            assert_eq!(
+                text(&left),
+                text(&right),
+                "{a:?} / {b:?} on {:?}",
+                text(&start)
+            );
             assert_eq!(a2.base_len(), b.target_len());
             assert_eq!(b2.base_len(), a.target_len());
         }

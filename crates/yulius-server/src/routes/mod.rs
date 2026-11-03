@@ -412,6 +412,25 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         // Who has a file open in the editor (SPEC-127): a selection, relayed and stored nowhere.
         .route("/api/sandboxes/{sid}/files/presence", put(files::presence))
+        // The Editor's shared text (SPEC-411): a 2 MiB text, escaped in JSON, fits the body.
+        .route(
+            "/api/sandboxes/{sid}/files/live",
+            get(files::live_catch_up)
+                .post(files::live_join)
+                .layer(DefaultBodyLimit::max(12 << 20)),
+        )
+        .route(
+            "/api/sandboxes/{sid}/files/live/edit",
+            post(files::live_edit).layer(DefaultBodyLimit::max(12 << 20)),
+        )
+        .route(
+            "/api/sandboxes/{sid}/files/live/save",
+            post(files::live_save),
+        )
+        .route(
+            "/api/sandboxes/{sid}/files/live/disk",
+            post(files::live_disk),
+        )
         .route("/api/sandboxes/{sid}/files/roots", get(files::roots))
         // Dropped files (EDT-006, UI-048): raw streamed bodies, bounded by the upload limit.
         .route("/api/sandboxes/{sid}/files/upload", put(uploads::file))
