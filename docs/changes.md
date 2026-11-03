@@ -8,8 +8,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - The Claude config's trust key no longer resolves a link the agent puts at its worktree or the
   `worktrees` folder: only the sandbox directory is resolved, the rest of the path is named and
-  opened with `O_NOFOLLOW`, and the worktree's `.git` is read through that handle, so the agent's
-  `.claude.json` never says where a host path leads (SPEC-398, task #381, fixes #801). `yulius host
+  opened with `O_NOFOLLOW`, and the worktree's `.git` is read through that handle; a shell's
+  folder (a terminal's, the Superagent's) resolves only the sandbox directory too, so neither a
+  `.claude.json` nor a shell says where a link below the sandbox leads (SPEC-398, task #381, fixes
+  #801). `yulius host
   setup` and `host check` refuse a data directory that is not absolute before running anything, so
   it cannot reach `install`, `useradd` or `chmod` as an option (fixes #677). The Vidoc findings
   #813 (ids are UUID v4 from the OS CSPRNG), #696 (profile branches validated on write and by each

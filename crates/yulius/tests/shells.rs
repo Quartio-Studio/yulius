@@ -1296,3 +1296,23 @@ async fn a_terminal_follows_the_instance_vidoc_switch() -> TestResult {
     read_until(&mut socket, &mut screen, "vidoc=[off]").await?;
     Ok(())
 }
+
+/// SPEC-398 VSH-003 (#801, review round 1): an agent can swap the sandbox repository for a link to
+/// a host folder. The shell's folder, by which the Superagent's launch keys its Claude Code trust,
+/// names the link with only the sandbox directory resolved, never where the link leads.
+#[tokio::test]
+async fn a_shell_folder_never_resolves_a_link_below_the_sandbox() -> TestResult {
+    use std::os::unix::fs::symlink;
+    let f = fixture().await?;
+    let outside = tempfile::tempdir()?;
+    let repo = f.data.join("sandboxes/s1/repo");
+    std::fs::remove_dir(&repo)?;
+    symlink(outside.path(), &repo)?;
+    let created = create(&f, &f.writer, "s1", None).await?;
+    f.h.app.end_all_shells().await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    let folder = created.body["folder"].as_str().ok_or("folder")?;
+    let named = f.data.canonicalize()?.join("sandboxes/s1/repo");
+    assert_eq!(folder, named.to_string_lossy());
+    Ok(())
+}

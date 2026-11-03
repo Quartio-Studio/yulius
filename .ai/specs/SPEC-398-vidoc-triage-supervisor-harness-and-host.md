@@ -44,10 +44,16 @@ test that pins that guard. A dismissed wording gets one narrow `[[ignore]]` entr
   grants nothing anyway: run access goes through the run's bearer token. Pinned by a new
   `crypto.rs` test that ids are distinct random (version 4) UUIDs.
 - VSH-002 (#696, dismissed). The profile's branch names are validated where they are written and
-  again where Git gets them. The only writer of a profile with branches validates it
-  (`delivery.rs:282`, `DeliveryProfile::validate`, `yulius-domain` `delivery.rs:360-362`,
-  `validate_branch` `delivery.rs:430-452`: no leading `-`, whitespace, control character or
-  `~^:?*[\`). At use, `branch_exists` validates the name (`repo.rs:383`), `rev_parse` refuses a
+  again where Git gets them. Every writer of a profile's branches validates them or writes a
+  constant preset: the profile editor (`delivery.rs:282`), the import of a repository's
+  `yulius.toml` (`import_profile`, `projects.rs:87-95`, through `parse_yulius_toml`, which runs
+  the same validation, `spec_format/config.rs:890-892`), and the presets (`DeliveryProfile::
+  for_preset`, `standard`, `projects.rs:632`, `projects.rs:897`); the Vidoc switch
+  (`delivery.rs:2010-2020`) rewrites the stored object keeping its validated fields. The check is
+  `DeliveryProfile::validate` (`yulius-domain` `delivery.rs:360-362`, `validate_branch`
+  `delivery.rs:430-452`: no leading `-`, whitespace, control character or `~^:?*[\`). The
+  sandbox's `default_branch` (GitHub's answer, not a profile field) reaches Git only as
+  `origin/<default_branch>` through `rev_parse`. At use, `branch_exists` validates the name (`repo.rs:383`), `rev_parse` refuses a
   revision starting with `-` (`validate.rs:244-248`) and passes `--end-of-options`
   (`repo.rs:362`), `worktree add` passes `--` before its path (`worktree.rs:77`), and the push
   guard validates every protected branch (`hooks.rs:164-166`) and single-quotes it in the hook
@@ -64,7 +70,13 @@ test that pins that guard. A dismissed wording gets one narrow `[[ignore]]` entr
   file is read through it (the worktree alone is trusted). A worktree outside its anchor, or one
   naming `..`, is keyed as given and not opened. Without links the keys are unchanged: Claude Code
   still finds its trust by the real path of its working directory, also behind a host link above
-  the anchor (macOS `/var`).
+  the anchor (macOS `/var`). The Superagent's working directory is its shell's folder, which
+  `new_shell_runtime` resolved in full when the shell was made (`shells.rs:819`): a shell's folder
+  now resolves only the sandbox directory the same way (`shell_folder`), so a link at the sandbox
+  repository or a task worktree is named, never resolved, for terminals and the Superagent alike
+  (review round 1). A worktree path stored under an older data-directory path (a moved data
+  directory) is keyed as given and its main repository not trusted; an instance import keeps the
+  data directory (`instance/import.rs:139`), so this needs a hand move.
 - VSH-004 (#677, fixed for the data directory; dismissed for the service name). `host setup`,
   `host check` and the import's user step refuse a data directory that is not absolute before
   running anything, so it can never reach `install -d`, `useradd --home-dir`, `chmod` or the
@@ -95,6 +107,9 @@ test that pins that guard. A dismissed wording gets one narrow `[[ignore]]` entr
 
 ## Acceptance criteria
 
+- A terminal opened in a sandbox whose repository was swapped for a link to a host folder reports
+  the link's path (the sandbox directory's real path and `repo`), not the target; the test fails
+  on `dev`.
 - With the worktree folder (or the `worktrees` folder above it) swapped for a link to a folder
   outside the sandbox that holds a linked worktree's `.git`, `.claude.json` holds no key naming the
   link's target or the main repository its `.git` names, and the link's own path is trusted; the
@@ -113,6 +128,8 @@ test that pins that guard. A dismissed wording gets one narrow `[[ignore]]` entr
 - `cargo nextest run -p yulius-harness -E 'test(/claude_config::/)'`: the new link test and every
   existing one (trust keys, linked worktrees, config dir links).
 - `cargo nextest run -p yulius -E 'test(/host_setup::/)'`: the new refusal test and the others.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^shells::/) | test(/^cockpit::/))'`:
+  the new shell-folder test, terminals and the Superagent.
 - The new `yulius-store` crypto test and `yulius-app` capacity test.
 - `scripts/vidoc_scan.py`'s config parser accepts `.config/vidoc.toml`.
 - `scripts/dev ci`: the full gate.

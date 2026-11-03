@@ -707,7 +707,8 @@ do the same and remove trees with `unlinkat`, and the launch preparation of the 
 (`claude_config::ensure_claude_config`) opens `<home>/.claude` from the folder above the home,
 keys the worktree's trust by the sandbox directory's real path and the rest of the worktree's path
 as named (a link below the sandbox directory is never resolved, and the worktree's `.git` is read
-through folders opened with `O_NOFOLLOW`,
+through folders opened with `O_NOFOLLOW`; a shell's folder, the Superagent's working directory,
+resolves only the sandbox directory the same way,
 [SPEC-398](../.ai/specs/SPEC-398-vidoc-triage-supervisor-harness-and-host.md)), and reads paths the
 agent wrote in a worktree's git files lexically, never on the host filesystem
 ([SPEC-253](../.ai/specs/SPEC-253-claude-config-dir-links-and-commondir-ca.md),
