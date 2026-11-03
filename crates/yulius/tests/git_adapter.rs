@@ -164,6 +164,7 @@ async fn an_environment_head_is_fetched_from_github_into_the_mirror() -> TestRes
 /// ignores everything: that is what Git checks through the path before it deletes. Here it
 /// stands in for the swap that a racing agent makes again during Git's own run, between Git's
 /// checks and its deletion through the path.
+#[cfg(target_os = "linux")]
 struct Swapped {
     _dir: tempfile::TempDir,
     sandbox: std::path::PathBuf,
@@ -173,6 +174,7 @@ struct Swapped {
     victim: std::path::PathBuf,
 }
 
+#[cfg(target_os = "linux")]
 fn swapped() -> Result<Swapped, Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let root = dir.path().canonicalize()?;
@@ -214,6 +216,7 @@ fn swapped() -> Result<Swapped, Box<dyn std::error::Error>> {
     })
 }
 
+#[cfg(target_os = "linux")]
 impl Swapped {
     /// Swaps the worktree for a link to the victim once the server's checks passed and nothing
     /// is removed yet, as a contained agent of the sandbox can.
