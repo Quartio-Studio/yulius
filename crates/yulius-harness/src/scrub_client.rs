@@ -38,6 +38,8 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(2);
 const REPORT_TIMEOUT: Duration = Duration::from_millis(500);
 /// Exit status when a command is not run (fails closed).
 const NOT_RUN: i32 = 126;
+/// Most reads of the fingerprint file before it counts as changing under us.
+const FILE_READS: usize = 4;
 
 /// What the run's redaction knows.
 pub enum Fingerprints {
@@ -98,6 +100,22 @@ fn valid(set: FingerprintSet) -> Option<FingerprintSet> {
     (set.version == FINGERPRINT_VERSION).then_some(set)
 }
 
+/// What two reads in a row of the fingerprint file agree on (SPEC-405 VEV-002). Yulius rewrites
+/// it in place, as a contained session binds its inode (SPEC-248 FUP-002): a read that overlaps a
+/// rewrite can join the old file's start to the new one's end, which may parse while its salt and
+/// digests disagree, and such a set would redact nothing.
+fn settled_read(mut read: impl FnMut() -> io::Result<Vec<u8>>) -> io::Result<Vec<u8>> {
+    let mut last = read()?;
+    for _ in 1..FILE_READS {
+        let next = read()?;
+        if next == last {
+            return Ok(next);
+        }
+        last = next;
+    }
+    Err(io::Error::other("it kept changing while it was read"))
+}
+
 /// Loads the run's fingerprints: from Yulius, else from the run's file while Yulius cannot be
 /// reached or is not ready. A Yulius that refuses the token (an ended run, a person who may no
 /// longer work in the sandbox) is not a restart: the file does not stand in for it (SPEC-352
@@ -126,7 +144,7 @@ pub fn load_fingerprints(env: &dyn Fn(&str) -> Option<String>) -> Fingerprints {
     };
     let file = match file {
         None => FileState::None,
-        Some(path) => match std::fs::read(&path) {
+        Some(path) => match settled_read(|| std::fs::read(&path)) {
             Err(_) => FileState::Unreadable(path),
             Ok(bytes) => match serde_json::from_slice(&bytes).ok().and_then(valid) {
                 Some(set) => return Fingerprints::Set(set),
@@ -507,7 +525,11 @@ mod tests {
 
     /// A fingerprint set as the server makes it.
     fn set() -> FingerprintSet {
-        let salt = b"0123456789abcdef";
+        salted(b"0123456789abcdef")
+    }
+
+    /// [`set`] with another salt: the set a rewrite makes (same layout, other digests).
+    fn salted(salt: &[u8]) -> FingerprintSet {
         let base = 912_367;
         FingerprintSet {
             version: FINGERPRINT_VERSION,
@@ -702,6 +724,62 @@ mod tests {
         let command = format!("touch '{}'", marker.display());
         assert_eq!(run_scrub_exec(&[command], &env), NOT_RUN);
         assert!(!marker.exists());
+        Ok(())
+    }
+
+    /// SPEC-405 VEV-002 (#835): a read that overlaps an in-place rewrite can join the old file's
+    /// start to the new one's end, and that can parse (here, joined inside a digest). Only what
+    /// two reads in a row agree on is used; a file that keeps changing is not used at all.
+    #[test]
+    fn a_torn_read_of_the_fingerprint_file_is_never_used() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let old = serde_json::to_vec(&set())?;
+        let new = serde_json::to_vec(&salted(b"fedcba9876543210"))?;
+        assert_eq!(old.len(), new.len(), "a rewrite of the same layout");
+        let digest = new
+            .windows(10)
+            .rposition(|w| w == b"\"digest\":\"")
+            .ok_or("a digest")?;
+        let join = digest + 10 + 20;
+        let torn = [&old[..join], &new[join..]].concat();
+        let parsed = serde_json::from_slice(&torn).ok().and_then(valid);
+        assert!(parsed.is_some(), "the torn read parses as a set");
+
+        let reads = |list: Vec<Vec<u8>>| {
+            let mut list = list.into_iter();
+            move || list.next().ok_or_else(|| io::Error::other("no more reads"))
+        };
+        assert_eq!(
+            settled_read(reads(vec![torn.clone(), new.clone(), new.clone()]))?,
+            new
+        );
+        assert!(
+            settled_read(reads(vec![
+                torn.clone(),
+                new.clone(),
+                torn.clone(),
+                new.clone(),
+                torn.clone(),
+            ]))
+            .is_err(),
+            "a file that keeps changing is not used"
+        );
+        assert_eq!(settled_read(reads(vec![old.clone(), old.clone()]))?, old);
+        Ok(())
+    }
+
+    /// VEV-002: the run's file is read through [`settled_read`]: one that differs at every read
+    /// is not used (it cannot be read), whatever it holds.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_fingerprint_file_that_keeps_changing_is_not_read() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let changing = "/proc/sys/kernel/random/uuid".to_owned();
+        let env = run_env(nobody()?, Some(changing.clone()));
+        assert_eq!(
+            unavailable(load_fingerprints(&env))?.file,
+            FileState::Unreadable(changing)
+        );
         Ok(())
     }
 
