@@ -147,13 +147,14 @@ does not reopen it.
   after the checks): both `git_adapter::` swap tests failed with the victim's folder deleted
   ("the folder behind the link was deleted (... failed to delete '.../worktrees/t1': Not a
   directory)"). They pass with the fix. Mutation checks after review round 1: both fail when the
-  adapter is put back to Git's removal (the swap never runs), and `removal_below_hands_over_only_
-  verified_worktrees` fails without the gitlink check or the `gitdir` back-reference.
-- The #780 pin fails when the length check is removed (`cd::production_is_deployed_by_an_
-  administrator_who_types_the_slug`).
+  adapter is put back to Git's removal (the swap never runs), and
+  `removal_below_hands_over_only_verified_worktrees` fails without the gitlink check or the
+  `gitdir` back-reference.
+- The #780 pin fails when the length check is removed
+  (`cd::production_is_deployed_by_an_administrator_who_types_the_slug`).
 - `[[ignore]]` entries are title-only with the exact path, one per wording, like most entries in
-  `.config/vidoc.toml`. The `function` field is optional and left out (a title-only entry is
-  narrower than the function would make it). The independent reviewer agreed to all four: `ci/tools.rs` "Task-scoped agent can read
+  `.config/vidoc.toml`. The `function` field is optional and left out, as in all but one of the
+  existing entries. The independent reviewer agreed to all four: `ci/tools.rs` "Task-scoped agent can read
   any run's output in the sandbox"; `disk.rs` "Attacker-controlled cache declarations steer host
   deletions"; `ci/cd.rs` "Weak deploy confirmation check" and "Agent can read production run
   output (potential secret disclosure)".
