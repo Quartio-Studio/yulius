@@ -1,11 +1,11 @@
 ---
 yulius-task: 3140fc31-ace4-4995-ae6a-b77475cdd30b
-status: in-progress
+status: done
 ---
 
 # SPEC-409: Vidoc triage of web, server, CI status and store findings (#817 #816 #820 #745 #737 #732)
 
-Status: in-progress
+Status: done
 Date: 2026-11-03
 Owner: Yulius task #391
 Scope authorization: task #391 (a person asked that each of the six issues end closed). Fixes
@@ -63,9 +63,10 @@ so that a repeat scan does not reopen it.
 - [x] Spec and config reads go through a handle checked inside the worktree (#745)
 - [x] Unused spec_path removed (#820)
 - [x] Narrow [[ignore]] entries for the dismissed wordings (#817 #816 #737 #732)
-- [ ] Changes entry and gates
-- [ ] Independent review answered
-- [ ] Dismissed issues commented and closed (#817 #816 #820 #737 #732)
+- [x] Changes entry and gates
+- [x] Flaky worktree-list assertion fixed and gate green on the final head
+- [x] Independent review answered
+- [x] Dismissed issues commented and closed (#817 #816 #820 #737 #732)
 
 ## Acceptance criteria
 
@@ -94,5 +95,51 @@ so that a repeat scan does not reopen it.
   still read as before, and the containment error stays as clear.
 - #820: the function is removed rather than given its own validation. Nothing calls it, and an
   ignore entry would keep dead code.
+- The refusal of `open_inside` is compared by a shared constant, `files::OUTSIDE`, not a
+  substring (review round 1). A file that grows between the size check and the read is cut at
+  `max`, as `onboarding::read_bounded` does. The bound holds, and a cut spec only fails
+  validation.
+- `git_adapter::a_worktree_swapped_for_a_link_during_its_removal_touches_nothing_behind_it`
+  (from #1035) failed once in the gate. `git worktree list` also prints the main checkout's
+  path, whose random temporary folder can contain `t1`. Setting `TMPDIR` to a folder named
+  `tmp-t1` reproduced it every time. The test now looks for the worktree's own path in
+  `--porcelain` output. This test-only fix is in its own commit.
 - #732: binding `LIMIT` would renumber the parameters of every query that reuses the cohort CTE,
   with no gain for a `u32`. It stays as it is.
+
+## Evidence
+
+- Triage on `dev` ea39cb55. The file:line evidence is in each issue's closing comment.
+  - #817: `drafts.js:96-99`, `:186` and `:210-221`; `taskview.js:992`.
+  - #816: `yulius-app/src/shells.rs:1119-1134`, `:1162`, `:1235` and `:1256`;
+    `routes/shells.rs:190-204`, `:288` and `:305-310`.
+  - #737: `ci/mod.rs:665` and `:1138`; `projects.rs:100` and `:718-735`;
+    `store/sandboxes.rs:307`; `store/crypto.rs:166`; `github/statuses.rs:69-74`.
+  - #732: `app/analytics.rs:43`; `store/analytics.rs:97` and `:127-137`.
+  - #820: no caller of `spec_path` (`spec_format/mod.rs:729`) outside its own test.
+- Test-first for #745:
+  - Both new tests failed before the fix. The host's `host secret` was read as the spec, giving
+    frontmatter problems and not "points outside the task worktree".
+  - With the fix, all 57 `delivery::` tests pass.
+- `scripts/dev ci`:
+  - At 6c52e876: exit 0, nextest 3015 passed, 16 skipped.
+  - At 7767e4ac: exit 1. 3013 passed, 2 failed:
+    - `local_ci::the_security_job_and_the_others_never_cancel_each_other`: its jobs hit their
+      8 s timeout under VM load. It passed 3 of 3 alone.
+    - The `git_adapter` flake described under Decisions, fixed in b87a250f.
+  - At b87a250f: exit 0, nextest 3015 passed, 16 skipped.
+  - 96af4ab5 is a merge of dev 1564483a: the `.config/vidoc.toml` conflict was resolved by
+    keeping both sides. After it, `cargo check --workspace --all-targets` passes and the
+    `delivery::a_spec*` and `git_adapter::` tests pass.
+- `yulius security-scan`: disabled (Vidoc is turned off in Yulius), so nothing was scanned. It
+  did not pass.
+- Independent review in a fresh session:
+  - Round 1 approved 47f2f7ba, with 2 minors and 2 nits, all answered: the shared constant, the
+    reworded #816 comment, and the size and blocking points kept with reasons. It agreed with
+    the four dismissals and with removing `spec_path`.
+  - Round 2 reviews the final head.
+- Issues:
+  - #817, #816, #737, #732 and #820 were closed as not planned, each with an evidence comment.
+  - #745 is closed by this pull request (`Fixes #745`).
+- Not tested: the macOS build of `open_inside`'s `F_GETPATH` branch beyond the gate's macOS
+  compile. The `local_ci` load flake is outside this change and left as it is.
