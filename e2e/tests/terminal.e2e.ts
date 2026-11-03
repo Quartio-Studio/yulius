@@ -21,13 +21,26 @@ const TOP_SETTLE_MS = 400;
 /** Lets a pointer move settle (xterm asks its link providers when the pointer rests). */
 const settle = (ms = 500) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
-/** Holds the mock agent's transcript still (it prints a line every few seconds). */
-const holdStill = (browser: Browser) => browser.evaluate(() => {
-  for (const [, session] of (window as unknown as WithMock).__yuliusMock.sessions) {
+/**
+ * Holds the mock agent's transcript (it prints a line every 1.3 s) still the moment it has printed
+ * a line with `text`, inside the page. Stopping it only after the runner's next read let a
+ * starved run's transcript scroll on, so a classic run had scrollback and its first turn up offered
+ * nothing (#911's tests under load, SPEC-412).
+ */
+const holdStillAt = (browser: Browser, text: string) => browser.evaluate(async (needle) => {
+  type Printing = Session & { lines: unknown[]; drawn(line: unknown): string };
+  const sessions = (window as unknown as { __yuliusMock: { sessions: Map<string, Printing> } }).__yuliusMock.sessions;
+  const printed = () => [...sessions.values()].some((s) => s.lines.some((line) => String(s.drawn(line)).includes(needle)));
+  const until = Date.now() + 30_000;
+  while (!printed()) {
+    if (Date.now() > until) throw new Error(`the transcript never printed ${needle}`);
+    await new Promise((resolve) => { setTimeout(resolve, 20); });
+  }
+  for (const [, session] of sessions) {
     session.stopTicking();
     session.ensureTicking = () => {};
   }
-});
+}, text);
 
 /** Where `text` is drawn on the page (the middle of its second character), or null. */
 const spot = (browser: Browser, text: string, scope = '.taskview') => browser.evaluate(([where, needle]) => {
@@ -385,8 +398,8 @@ test('a URL Claude Code wraps onto the next rows opens whole from any of them (#
   // and the last.
   await app.open(mock('/s/studio/t/12', '&wrapurl=1'));
   await terminalShown(browser);
+  await holdStillAt(browser, 'Sign in at');
   await expect(rows(browser)).toHaveText(/Sign in at/);
-  await holdStill(browser);
   const parts = await browser.evaluate(() => {
     const lines = [...document.querySelectorAll('.taskview .xterm-rows > div')].map((d) => (d.textContent || '').trim());
     const first = lines.findIndex((l) => l.includes('Sign in at'));
@@ -409,8 +422,8 @@ test('a URL Claude Code wraps onto the next rows opens whole from any of them (#
 test('Ctrl+C copies a selection and interrupts without one; paste types the clipboard', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await terminalShown(browser);
+  await holdStillAt(browser, 'Read 142 lines');
   await expect(rows(browser)).toHaveText(/Read 142 lines/);
-  await holdStill(browser);
   // What a copy puts on the clipboard, read from the copy event (no clipboard permission needed).
   await browser.evaluate(() => {
     const copied: string[] = [];
@@ -505,8 +518,8 @@ test('a selection the program copies (OSC 52) reaches the clipboard, or the copy
   // mock does; the browser clipboard must get it.
   await app.open(mock('/s/studio/t/12'));
   await terminalShown(browser);
+  await holdStillAt(browser, 'Read 142 lines');
   await expect(rows(browser)).toHaveText(/Read 142 lines/);
-  await holdStill(browser);
   const clip = await recordClipboard(browser);
   const notice = browser.locator('.taskview .term-notice');
 
@@ -632,8 +645,8 @@ test('another viewer’s size fills this box, with a chip instead of a banner, u
   // Another, active viewer set the terminal to 90×30 (the mock's `othercols`/`otherrows`).
   await app.open(mock('/s/studio/t/12', '&othercols=90&otherrows=30'));
   await terminalShown(browser);
+  await holdStillAt(browser, 'Read 142 lines');
   await expect(rows(browser)).toHaveText(/Read 142 lines/);
-  await holdStill(browser);
   const chip = screen.getByText('Sized by another viewer');
   await expect(chip).toBeVisible();
   await expect(screen.getByRole('button', 'Take control')).toBeHidden();
@@ -666,8 +679,8 @@ test('the program has the mouse, as in a native terminal; Shift (Option on macOS
   // toggles a collapsed tool group on a primary press at its row. No chip offers to switch.
   await app.open(mock('/s/studio/t/12'));
   await terminalShown(browser);
+  await holdStillAt(browser, 'Searched for 2 patterns, read 1 file');
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns, read 1 file/);
-  await holdStill(browser);
   const expanded = /loyalty_points/;
   const group = async () => {
     const point = await spot(browser, 'Searched for 2 patterns');
@@ -700,8 +713,8 @@ test('the program has the mouse, as in a native terminal; Shift (Option on macOS
 test('the wheel scrolls the program; pinch-zoom and horizontal swipes stay with the browser', async ({ app, browser }) => {
   await app.open(mock('/s/studio/t/12'));
   await terminalShown(browser);
+  await holdStillAt(browser, 'Searched for 2 patterns');
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
-  await holdStill(browser);
   const sent = await recordInput(browser);
   const point = await spot(browser, 'Searched for 2 patterns');
   expect(point, 'the group is on the screen').not.toBeNull();
@@ -730,8 +743,8 @@ test('the wheel scrolls the program; pinch-zoom and horizontal swipes stay with 
 test('a wheel turn reports one row per row of its distance (#863)', async ({ app, browser }) => {
   await app.open(mock('/s/studio/t/12'));
   await terminalShown(browser);
+  await holdStillAt(browser, 'Searched for 2 patterns');
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
-  await holdStill(browser);
   const sent = await recordInput(browser);
   const point = await spot(browser, 'Searched for 2 patterns');
   expect(point, 'the group is on the screen').not.toBeNull();
@@ -835,8 +848,8 @@ async function openClassicHistory(browser: Browser, point: { x: number; y: numbe
 async function longTask12(app: { open: (url: string) => Promise<unknown> }, browser: Browser): Promise<{ x: number; y: number }> {
   await app.open(mock('/s/studio/t/12'));
   await terminalShown(browser);
+  await holdStillAt(browser, 'Searched for 2 patterns');
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
-  await holdStill(browser);
   await browser.evaluate(() => {
     const session = (window as unknown as HistoryMock).__yuliusMock.sessions.get('tsk_studio_12')!;
     session.lines.push(...Array.from({ length: 60 }, (_, i) => `Earlier output line ${i + 1}`));
@@ -854,8 +867,8 @@ async function classicTask12(app: { open: (url: string) => Promise<unknown> }, b
   // that froze and thawed it: no mouse reporting, and only the visible screen reaches a viewer.
   await app.open(mock('/s/studio/t/12', '&classic=1'));
   await terminalShown(browser);
+  await holdStillAt(browser, 'Searched for 2 patterns');
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
-  await holdStill(browser);
   const point = await spot(browser, 'Searched for 2 patterns');
   expect(point, 'the group is on the screen').not.toBeNull();
   return point!;
@@ -1104,8 +1117,8 @@ test('dismissing a queued message kept after the start leaves the whole session 
 test('mouse use while disconnected says nothing; typed input still warns', async ({ app, browser }) => {
   await app.open(mock('/s/studio/t/12'));
   await terminalShown(browser);
+  await holdStillAt(browser, 'Searched for 2 patterns');
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
-  await holdStill(browser);
   const point = await spot(browser, 'Searched for 2 patterns');
   expect(point, 'the group is on the screen').not.toBeNull();
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { goOffline(): void } }).__yuliusMock.goOffline());
@@ -1143,8 +1156,8 @@ test('a click beside another viewer’s grid takes the size but does not reach t
   // The terminal's first screen within its budget (#525: the rows were still empty after 5 s),
   // then still at once: with 30 rows the line scrolls out about 21 s after it is printed.
   await terminalShown(browser);
+  await holdStillAt(browser, 'Searched for 2 patterns');
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
-  await holdStill(browser);
   const point = await spot(browser, 'Searched for 2 patterns');
   expect(point, 'the group is on the screen').not.toBeNull();
   const margin = await browser.evaluate(() => {
@@ -1165,8 +1178,8 @@ test('a click beside another viewer’s grid takes the size but does not reach t
 test('file paths in the task terminal open the editor at the file and line', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await terminalShown(browser);
+  await holdStillAt(browser, 'Not links:');
   await expect(rows(browser)).toHaveText(/Not links:/);
-  await holdStill(browser);
 
   // Links: a bare path, `path:line:col`, a name in parentheses, an absolute path in the worktree,
   // an OSC 8 file:// hyperlink.
