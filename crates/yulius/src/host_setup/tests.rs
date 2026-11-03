@@ -884,6 +884,8 @@ fn a_fresh_host_gets_the_service_and_a_base_with_docker() {
         "User=yulius",
         "YULIUS_PUBLIC_URL=https://yulius.example.com",
         "YULIUS_CONTAINED=true",
+        // #716: production CD runs inherit this PATH and see it as the host's read-only system.
+        "\nEnvironment=PATH=/usr/local/bin:/usr/bin:/bin\n",
         "Delegate=yes",
         "DelegateSubgroup=server",
         "KillMode=process",
