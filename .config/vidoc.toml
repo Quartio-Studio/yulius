@@ -324,6 +324,57 @@ path = "crates/yulius/tests/support/repos.rs"
 title = "Hardcoded crypto master key in test code"
 reason = "a test fixture: in-memory stores in temporary directories"
 
+# SPEC-406 (task #388): the Vidoc findings in crates/yulius/tests, triaged on dev d51b98ae; each
+# issue holds the file:line evidence. (#822 and #797 had real provider prefixes, sk-ant-oat01- and
+# sk_test_: fixtures are now put together from prefix and body, and fixture_hygiene fails on a
+# provider-shaped literal there, ADR-0258. #772 is fixed: sourced passes the name as $1.)
+
+# #821, #773, #746: fixed master keys of test stores. Production's key is 32 random bytes that
+# serve.rs creates with MasterKeyCrypto::load_or_create (mode 0600); from_key has no caller outside
+# test code, and these keys seal only synthetic fixtures in temporary or in-memory stores.
+[[ignore]]
+path = "crates/yulius/tests/supervision.rs"
+function = "build_custom"
+title = "Hardcoded crypto master key in test code"
+reason = "a test fixture key for a temporary store; production generates its key at random (MasterKeyCrypto::load_or_create in serve.rs), and from_key has no caller outside tests (SPEC-406, #821)"
+
+[[ignore]]
+path = "crates/yulius/tests/task_done.rs"
+function = "start_holding"
+title = "Hardcoded master encryption key in test code"
+reason = "a test fixture key for a temporary store sealing synthetic credentials; production generates its key at random (load_or_create in serve.rs) (SPEC-406, #773)"
+
+[[ignore]]
+path = "crates/yulius/tests/support/repos.rs"
+function = "without_claude"
+title = "Hardcoded weak encryption key for test crypto"
+reason = "a test fixture key for the in-memory test store; production generates its key at random (load_or_create in serve.rs), and from_key has no caller outside tests (SPEC-406, #746)"
+
+# #747: World::remote writes into its own temporary scratch folder, and every caller passes literal
+# relative paths or the product's own scaffold (scaffold_files): no input crosses a trust boundary.
+# (`remote` also names LocalGit's URL lookup in that file, another test fake.)
+[[ignore]]
+path = "crates/yulius/tests/support/repos.rs"
+function = "remote"
+title = "Path traversal in test remote seeding"
+reason = "the test's own literal paths (or the product's scaffold) written into the helper's own temporary folder; nothing untrusted reaches it (SPEC-406, #747)"
+
+# #797 and #822, what stays after the fix: synthetic fixtures with no provider shape (a password,
+# RFC 4226's test seed in base32, vault task tokens) and fixtures put together from a prefix and a
+# synthetic body. They reach only the test's own stores and fake hosts; fixture_hygiene keeps any
+# provider-shaped literal out of crates/yulius/tests.
+[[ignore]]
+path = "crates/yulius/tests/secrets.rs"
+title = "Hardcoded credentials in test code"
+reason = "synthetic fixtures without a provider shape, for the test's own store and fake hosts; provider-shaped literals fail fixture_hygiene (SPEC-406, ADR-0258, #797)"
+line = 22
+
+[[ignore]]
+path = "crates/yulius/tests/supervision.rs"
+function = "fetch"
+title = "Hardcoded credential in test code"
+reason = "a synthetic account credential put together from the prefix and a body, for the fake usage probe; provider-shaped literals fail fixture_hygiene (SPEC-406, ADR-0258, #822)"
+
 [[ignore]]
 path = "scripts/test_vidoc_scan.py"
 title = "Hardcoded fake API key constant"
@@ -1029,56 +1080,41 @@ path = "crates/yulius-app/src/ci/cd.rs"
 title = "Containment silently disabled without isolation"
 reason = "uncontained is the documented development mode: agents and shells already run on the host as the service user, which reads the data directory and master.key; runs are marked not contained (docs/operations.md, SPEC-403, #715)"
 
-# SPEC-406 (task #388): the Vidoc findings in crates/yulius/tests, triaged on dev d51b98ae; each
-# issue holds the file:line evidence. (#822 and #797 had real provider prefixes, sk-ant-oat01- and
-# sk_test_: fixtures are now put together from prefix and body, and fixture_hygiene fails on a
-# provider-shaped literal there, ADR-0258. #772 is fixed: sourced passes the name as $1.)
-
-# #821, #773, #746: fixed master keys of test stores. Production's key is 32 random bytes that
-# serve.rs creates with MasterKeyCrypto::load_or_create (mode 0600); from_key has no caller outside
-# test code, and these keys seal only synthetic fixtures in temporary or in-memory stores.
+# #817: a draft's `thumb` is a data URL that this page draws from the person's own file
+# (drafts.js `thumbnail`, canvas.toDataURL), and is restored from this browser's localStorage only
+# when it starts with `data:image/` (drafts.js `restore`). No server or draft-sync response sets it,
+# and `imageOf` otherwise returns this view's own blob: URL.
 [[ignore]]
-path = "crates/yulius/tests/supervision.rs"
-function = "build_custom"
-title = "Hardcoded crypto master key in test code"
-reason = "a test fixture key for a temporary store; production generates its key at random (MasterKeyCrypto::load_or_create in serve.rs), and from_key has no caller outside tests (SPEC-406, #821)"
+path = "crates/yulius-server/web/assets/taskview.js"
+title = "Image source taken from untrusted attachment data"
+reason = "thumb is a data:image/ URL drawn by this page from the person's own file, restored from localStorage only when it starts with data:image/; no server value reaches it (SPEC-409, #817)"
+function = "mountComposer"
+line = 992
 
+# #816: a shell has one kind of viewer, its creator with Work access who owns the shell's task
+# (shell_open). Every socket that reaches pump may write and controls its own shell until the
+# periodic re-check closes it on a change of access; shell_input checks again.
 [[ignore]]
-path = "crates/yulius/tests/task_done.rs"
-function = "start_holding"
-title = "Hardcoded master encryption key in test code"
-reason = "a test fixture key for a temporary store sealing synthetic credentials; production generates its key at random (load_or_create in serve.rs) (SPEC-406, #773)"
+path = "crates/yulius-server/src/routes/shells.rs"
+title = "Terminal state reports can_write and controller as always true"
+reason = "shell_open admits only the shell's creator with Work access owning its task, so every attached viewer can write; the re-check closes the socket on revocation and shell_input re-checks (SPEC-409, #816)"
+function = "send_state"
 
+# #737: every part of the commit status target_url is server-made: public_url is operator
+# configuration, the slug is [a-z0-9-] (projects::slug_base, numeric suffix), the run id a UUID v4
+# (crypto.new_id). It goes into a JSON body that create_commit_status checks to be http(s).
 [[ignore]]
-path = "crates/yulius/tests/support/repos.rs"
-function = "without_claude"
-title = "Hardcoded weak encryption key for test crypto"
-reason = "a test fixture key for the in-memory test store; production generates its key at random (load_or_create in serve.rs), and from_key has no caller outside tests (SPEC-406, #746)"
+path = "crates/yulius-app/src/ci/mod.rs"
+title = "Unencoded URL components in commit status target_url"
+reason = "public_url is operator config, the slug [a-z0-9-] (slug_base), the run id a UUID; sent in a JSON body checked to be http(s), never a header (SPEC-409, #737)"
+function = "ci_try_publish"
 
-# #747: World::remote writes into its own temporary scratch folder, and every caller passes literal
-# relative paths or the product's own scaffold (scaffold_files): no input crosses a trust boundary.
-# (`remote` also names LocalGit's URL lookup in that file, another test fake.)
+# #732: the interpolated LIMIT is AnalyticsQuery::limit, a u32: an integer by type.
 [[ignore]]
-path = "crates/yulius/tests/support/repos.rs"
-function = "remote"
-title = "Path traversal in test remote seeding"
-reason = "the test's own literal paths (or the product's scaffold) written into the helper's own temporary folder; nothing untrusted reaches it (SPEC-406, #747)"
-
-# #797 and #822, what stays after the fix: synthetic fixtures with no provider shape (a password,
-# RFC 4226's test seed in base32, vault task tokens) and fixtures put together from a prefix and a
-# synthetic body. They reach only the test's own stores and fake hosts; fixture_hygiene keeps any
-# provider-shaped literal out of crates/yulius/tests.
-[[ignore]]
-path = "crates/yulius/tests/secrets.rs"
-title = "Hardcoded credentials in test code"
-reason = "synthetic fixtures without a provider shape, for the test's own store and fake hosts; provider-shaped literals fail fixture_hygiene (SPEC-406, ADR-0258, #797)"
-line = 22
-
-[[ignore]]
-path = "crates/yulius/tests/supervision.rs"
-function = "fetch"
-title = "Hardcoded credential in test code"
-reason = "a synthetic account credential put together from the prefix and a body, for the fake usage probe; provider-shaped literals fail fixture_hygiene (SPEC-406, ADR-0258, #822)"
+path = "crates/yulius-store/src/analytics.rs"
+title = "Limit interpolated into SQL"
+reason = "the LIMIT is AnalyticsQuery::limit: u32, formatted as an integer; every other value is a bound parameter (SPEC-409, #732)"
+function = "read"
 
 # The triage of task #390 (SPEC-408) on dev d51b98ae.
 # #814: the run directory is under the data directory, which build_app makes 0700 at every start

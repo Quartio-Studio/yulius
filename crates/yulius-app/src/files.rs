@@ -68,7 +68,7 @@ impl Target {
     /// one folder at a time without following links: a folder on the way swapped for a link
     /// after `folder` was resolved is refused, and no `/proc` is needed to tell (#660).
     fn open_folder(&self, folder: &Path) -> AppResult<OwnedFd> {
-        let outside = || AppError::Forbidden("the path leads outside the folder".into());
+        let outside = || AppError::Forbidden(OUTSIDE.into());
         if !inside(&self.root, folder) {
             return Err(outside());
         }
@@ -108,6 +108,10 @@ pub(crate) fn relative_components(path: &str) -> AppResult<Vec<String>> {
     }
     Ok(parts)
 }
+
+/// The refusal of a path that leads outside its folder (`AppError::Forbidden`), compared by
+/// callers that word it for their own folder.
+pub(crate) const OUTSIDE: &str = "the path leads outside the folder";
 
 /// An OS error of a `*at` call, as [`io_error`] reports it.
 pub(crate) fn errno_error(err: Errno) -> AppError {
@@ -161,7 +165,7 @@ pub(crate) fn open_inside(
     path: &Path,
     flags: OFlag,
 ) -> AppResult<std::os::fd::OwnedFd> {
-    let outside = || AppError::Forbidden("the path leads outside the folder".into());
+    let outside = || AppError::Forbidden(OUTSIDE.into());
     let flags = flags | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
     let fd = match nix::fcntl::open(path, flags, Mode::empty()) {
         Ok(fd) => fd,
@@ -535,9 +539,7 @@ impl App {
     fn existing(target: &Target) -> AppResult<PathBuf> {
         let resolved = std::fs::canonicalize(&target.path).map_err(|e| io_error(&e))?;
         if !inside(&target.root, &resolved) {
-            return Err(AppError::Forbidden(
-                "the path leads outside the folder".into(),
-            ));
+            return Err(AppError::Forbidden(OUTSIDE.into()));
         }
         Ok(resolved)
     }
@@ -710,9 +712,7 @@ impl App {
             .ok_or_else(|| AppError::Invalid("invalid path".into()))?;
         let parent = std::fs::canonicalize(parent).map_err(|e| io_error(&e))?;
         if !inside(&target.root, &parent) {
-            return Err(AppError::Forbidden(
-                "the path leads outside the folder".into(),
-            ));
+            return Err(AppError::Forbidden(OUTSIDE.into()));
         }
         let file = parent.join(target.path.file_name().unwrap_or_default());
         let existing = match std::fs::symlink_metadata(&file) {
@@ -744,9 +744,7 @@ impl App {
             }
             Err(Errno::ENOENT) => None,
             Err(Errno::ELOOP) => {
-                return Err(AppError::Forbidden(
-                    "the path leads outside the folder".into(),
-                ));
+                return Err(AppError::Forbidden(OUTSIDE.into()));
             }
             Err(err) => return Err(errno_error(err)),
         };
@@ -853,9 +851,7 @@ impl App {
             .map_err(|e| io_error(&e))?
             .ok_or_else(|| AppError::Invalid("invalid path".into()))?;
         if !inside(&target.root, &parent) {
-            return Err(AppError::Forbidden(
-                "the path leads outside the folder".into(),
-            ));
+            return Err(AppError::Forbidden(OUTSIDE.into()));
         }
         crate::race::reached(crate::race::Point::FileCreate, &parent);
         // Created through the parent's handle: a parent swapped for a link is refused (#660).
@@ -909,9 +905,7 @@ impl App {
             .map_err(|e| io_error(&e))?
             .ok_or_else(|| AppError::Invalid("invalid path".into()))?;
         if !inside(&target.root, &parent) {
-            return Err(AppError::Forbidden(
-                "the path leads outside the folder".into(),
-            ));
+            return Err(AppError::Forbidden(OUTSIDE.into()));
         }
         crate::race::reached(crate::race::Point::FileDelete, &parent);
         // Removed through the parent's handle: a parent swapped for a link is refused, and a

@@ -353,9 +353,7 @@ fn ensure_dirs(root: &Path, dirs: &[&str]) -> AppResult<(PathBuf, OwnedFd)> {
             Ok(_) => {
                 let resolved = std::fs::canonicalize(&next).map_err(|e| io_error(&e))?;
                 if !inside(root, &resolved) {
-                    return Err(AppError::Forbidden(
-                        "the path leads outside the folder".into(),
-                    ));
+                    return Err(AppError::Forbidden(crate::files::OUTSIDE.into()));
                 }
                 if !resolved.is_dir() {
                     return Err(AppError::Conflict(format!(
@@ -378,9 +376,7 @@ fn ensure_dirs(root: &Path, dirs: &[&str]) -> AppResult<(PathBuf, OwnedFd)> {
         };
         current = real_path(&fd)?;
         if !inside(root, &current) {
-            return Err(AppError::Forbidden(
-                "the path leads outside the folder".into(),
-            ));
+            return Err(AppError::Forbidden(crate::files::OUTSIDE.into()));
         }
     }
     Ok((current, fd))

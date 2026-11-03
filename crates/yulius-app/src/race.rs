@@ -101,6 +101,9 @@ pub enum Point {
     /// A worktree's removal (SPEC-401): Git's checks passed; nothing is removed yet. The path is
     /// the worktree's, then its Git record's. Reached on a blocking thread.
     WorktreeRemove,
+    /// `read_repo_file` (SPEC-409): the path was resolved and found inside the task worktree; the
+    /// file is not opened yet. The path is the resolved one.
+    RepoFileRead,
 }
 
 #[cfg(feature = "test-support")]
