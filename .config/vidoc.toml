@@ -1029,6 +1029,42 @@ path = "crates/yulius-app/src/ci/cd.rs"
 title = "Containment silently disabled without isolation"
 reason = "uncontained is the documented development mode: agents and shells already run on the host as the service user, which reads the data directory and master.key; runs are marked not contained (docs/operations.md, SPEC-403, #715)"
 
+# #817: a draft's `thumb` is a data URL that this page draws from the person's own file
+# (drafts.js `thumbnail`, canvas.toDataURL), and is restored from this browser's localStorage only
+# when it starts with `data:image/` (drafts.js `restore`). No server or draft-sync response sets it,
+# and `imageOf` otherwise returns this view's own blob: URL.
+[[ignore]]
+path = "crates/yulius-server/web/assets/taskview.js"
+title = "Image source taken from untrusted attachment data"
+reason = "thumb is a data:image/ URL drawn by this page from the person's own file, restored from localStorage only when it starts with data:image/; no server value reaches it (SPEC-409, #817)"
+function = "mountComposer"
+line = 992
+
+# #816: a shell has one kind of viewer, its creator with Work access who owns the shell's task
+# (shell_open). Every socket that reaches pump may write and controls its own shell until the
+# periodic re-check closes it on a change of access; shell_input checks again.
+[[ignore]]
+path = "crates/yulius-server/src/routes/shells.rs"
+title = "Terminal state reports can_write and controller as always true"
+reason = "shell_open admits only the shell's creator with Work access owning its task, so every attached viewer can write; the re-check closes the socket on revocation and shell_input re-checks (SPEC-409, #816)"
+function = "send_state"
+
+# #737: every part of the commit status target_url is server-made: public_url is operator
+# configuration, the slug is [a-z0-9-] (projects::slug_base, numeric suffix), the run id a UUID v4
+# (crypto.new_id). It goes into a JSON body that create_commit_status checks to be http(s).
+[[ignore]]
+path = "crates/yulius-app/src/ci/mod.rs"
+title = "Unencoded URL components in commit status target_url"
+reason = "public_url is operator config, the slug [a-z0-9-] (slug_base), the run id a UUID; sent in a JSON body checked to be http(s), never a header (SPEC-409, #737)"
+function = "ci_try_publish"
+
+# #732: the interpolated LIMIT is AnalyticsQuery::limit, a u32: an integer by type.
+[[ignore]]
+path = "crates/yulius-store/src/analytics.rs"
+title = "Limit interpolated into SQL"
+reason = "the LIMIT is AnalyticsQuery::limit: u32, formatted as an integer; every other value is a bound parameter (SPEC-409, #732)"
+function = "read"
+
 # The triage of task #390 (SPEC-408) on dev d51b98ae.
 # #814: the run directory is under the data directory, which build_app makes 0700 at every start
 # (serve.rs prepare_data_dir), and the process host sets the run directory itself to 0700 before

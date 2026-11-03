@@ -561,6 +561,77 @@ impl FakeRemote for BareRemote {
     }
 }
 
+/// #745 (SPEC-409 VTW-001): the spec's folder swapped for a link to a host folder after its path
+/// was found inside the worktree: the read goes through a handle whose real path is outside it,
+/// so the host's file is refused, not read as the spec.
+#[tokio::test]
+async fn a_spec_folder_swapped_for_a_link_after_its_check_is_not_read() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    assert_eq!(f.delivery("t1").await?["spec_valid"], true);
+    let host = tempfile::tempdir()?;
+    std::fs::create_dir_all(host.path().join("specs"))?;
+    std::fs::write(
+        host.path().join(SPEC_PATH.trim_start_matches("docs/")),
+        "host secret\n",
+    )?;
+    let (folder, target) = (wt.join("docs"), host.path().to_path_buf());
+    yulius_app::race::on(
+        yulius_app::race::Point::RepoFileRead,
+        &wt.join(SPEC_PATH),
+        move || {
+            std::fs::rename(&folder, folder.with_extension("aside"))
+                .and_then(|()| std::os::unix::fs::symlink(&target, &folder))
+                .ok();
+        },
+    );
+    let d = f.delivery("t1").await?;
+    assert_eq!(d["spec_valid"], false, "{d}");
+    assert!(
+        d["spec_problems"]
+            .to_string()
+            .contains("points outside the task worktree"),
+        "{d}"
+    );
+    Ok(())
+}
+
+/// #745 (SPEC-409 VTW-001): the spec swapped for a link to a host file after its check: the
+/// link at the end is not followed, so the host's file is not read as the spec.
+#[tokio::test]
+async fn a_spec_swapped_for_a_link_after_its_check_is_not_read() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    assert_eq!(f.delivery("t1").await?["spec_valid"], true);
+    let host = tempfile::tempdir()?;
+    let secret = host.path().join("secret.md");
+    std::fs::write(&secret, "host secret\n")?;
+    let file = wt.join(SPEC_PATH);
+    let link = file.clone();
+    yulius_app::race::on(yulius_app::race::Point::RepoFileRead, &file, move || {
+        std::fs::remove_file(&link)
+            .and_then(|()| std::os::unix::fs::symlink(&secret, &link))
+            .ok();
+    });
+    let d = f.delivery("t1").await?;
+    assert_eq!(d["spec_valid"], false, "{d}");
+    assert!(
+        d["spec_problems"]
+            .to_string()
+            .contains("points outside the task worktree"),
+        "{d}"
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------- fixture
 
 const SPEC_PATH: &str = "docs/specs/2026-10-07-checkout-api.md";

@@ -263,7 +263,10 @@ async fn a_worktree_swapped_for_a_link_during_its_removal_touches_nothing_behind
     );
     assert!(removed?, "the worktree (now the link) and its record go");
     assert!(!s.wt.exists() && !record.exists());
-    assert!(!git(&s.repo, &["worktree", "list"])?.contains("t1"));
+    // The worktree's own path, not `t1`: the random temporary folder's name may contain that.
+    let listed = git(&s.repo, &["worktree", "list", "--porcelain"])?;
+    let wt = format!("worktree {}", s.wt.display());
+    assert!(!listed.lines().any(|line| line == wt), "{listed}");
     assert!(git(&s.repo, &["branch", "--list", "feat/1"])?.contains("feat/1"));
     Ok(())
 }
