@@ -1296,3 +1296,38 @@ async fn a_terminal_follows_the_instance_vidoc_switch() -> TestResult {
     read_until(&mut socket, &mut screen, "vidoc=[off]").await?;
     Ok(())
 }
+
+/// SPEC-398 VSH-003 (#801, review rounds 1 and 2): an agent can swap the sandbox repository for a
+/// link to a host folder. The shell's folder, by which the Superagent's launch keys its Claude Code
+/// trust, names the link with only the sandbox directory resolved, never where the link leads;
+/// so does the folder of a shell adopted again after a server restart.
+#[tokio::test]
+async fn a_shell_folder_never_resolves_a_link_below_the_sandbox() -> TestResult {
+    use std::os::unix::fs::symlink;
+    let f = fixture().await?;
+    let outside = tempfile::tempdir()?;
+    let repo = f.data.join("sandboxes/s1/repo");
+    std::fs::remove_dir(&repo)?;
+    symlink(outside.path(), &repo)?;
+    let named = f.data.canonicalize()?.join("sandboxes/s1/repo");
+    let created = create(&f, &f.writer, "s1", None).await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    let folder = created.body["folder"].as_str().ok_or("folder")?;
+    assert_eq!(folder, named.to_string_lossy());
+
+    f.h.app.stop_workspace_services().await;
+    let g = fixture_with(false, Some(f.data.clone()), None).await?;
+    let adopted = g.h.app.adopt_shells().await;
+    let shells = list(&g, &g.writer, "s1").await?;
+    g.h.app.end_all_shells().await;
+    assert_eq!(adopted, (1, 0));
+    let folders: Vec<&str> = shells
+        .body
+        .as_array()
+        .ok_or("shells")?
+        .iter()
+        .filter_map(|shell| shell["folder"].as_str())
+        .collect();
+    assert_eq!(folders, [named.to_string_lossy()], "{:?}", shells.body);
+    Ok(())
+}

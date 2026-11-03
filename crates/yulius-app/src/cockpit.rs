@@ -946,6 +946,7 @@ impl App {
         let bearer = runtime.cockpit_token(self.deps.crypto.as_ref());
         let mut plan = self.deps.harness.plan_cockpit(&CockpitLaunch {
             cwd: folder.clone(),
+            sandbox_dir: self.sandbox_dir(&record.id),
             config_dir: space.home.join(".claude"),
             config_dir_host: space.home_host.join(".claude"),
             resume: resume.clone(),

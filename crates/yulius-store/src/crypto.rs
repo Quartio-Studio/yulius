@@ -285,6 +285,22 @@ impl Crypto for MasterKeyCrypto {
 mod tests {
     use super::*;
 
+    /// SPEC-398 VSH-001 (#813): ids (attempt ids, run directories) are random version 4 UUIDs from
+    /// the operating system's CSPRNG, never time-based or sequential; random bytes differ too.
+    #[test]
+    fn ids_and_random_bytes_are_random() -> Result<(), Box<dyn std::error::Error>> {
+        let crypto = MasterKeyCrypto::from_key(&[7u8; 32])?;
+        let ids: std::collections::BTreeSet<String> = (0..64).map(|_| crypto.new_id()).collect();
+        assert_eq!(ids.len(), 64);
+        for id in &ids {
+            let parsed = uuid::Uuid::parse_str(id)?;
+            assert_eq!(parsed.get_version(), Some(uuid::Version::Random), "{id}");
+            assert_eq!(parsed.hyphenated().to_string(), *id);
+        }
+        assert_ne!(crypto.random_bytes(), crypto.random_bytes());
+        Ok(())
+    }
+
     #[test]
     fn seal_round_trip_and_tamper_detection() -> Result<(), Box<dyn std::error::Error>> {
         let crypto = MasterKeyCrypto::from_key(&[7u8; 32])?;
