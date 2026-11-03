@@ -2,7 +2,7 @@
 // assets/mock.js stand in for `yulius serve`, so no server, account or model is needed.
 import { createRequire } from 'node:module';
 import { afterEach, beforeEach, type Browser, type Screen } from '@e2e-dev/web';
-import { expect, type App } from 'e2e';
+import { expect, type App, type Locator, type TextMatch } from 'e2e';
 
 /**
  * A UI path in mock mode (`?mock=1`, hash routing). `options` are further mock switches, such as
@@ -39,15 +39,35 @@ export async function instrument(browser: Browser): Promise<void> {
  * does not wait for the app's dynamic import of mock.js, which a busy machine delays.
  */
 function waitForTheMockOnEveryLoad(app: App, browser: Browser): void {
-  // The app's own test for mock mode (app.js): `?mock=1`.
+  // The app's own test for mock mode (app.js): `?mock=1`. Part of the page's first load, so it has
+  // that budget (SPEC-412 FLD-002).
   const ready = () => expect.poll(() => browser.evaluate(() => new URLSearchParams(location.search).get('mock') !== '1'
     || Boolean((window as { __yuliusMock?: unknown }).__yuliusMock)), {
+    timeout: FIRST_LOAD_MS,
     message: 'window.__yuliusMock was never installed (mock.js did not load or the app did not start)',
   }).toBe(true);
   const open = app.open.bind(app);
   const reload = browser.reload.bind(browser);
   Object.assign(app, { open: async (path?: string) => { await open(path); await ready(); } });
   Object.assign(browser, { reload: async (...args: Parameters<Browser['reload']>) => { await reload(...args); await ready(); } });
+}
+
+/**
+ * Budget for a page's first load: its modules, the mock's install and its first reads, which a
+ * starved runner (about a fifth of a CPU per thread) took longer than an assertion's 5 s to finish
+ * (#354, ADR-0262). It bounds the first look at a page after `app.open` or a reload only
+ * (`firstShown`), like `MONACO_LOAD_MS` and `TERMINAL_SHOW_MS`; every later wait keeps its budget.
+ */
+export const FIRST_LOAD_MS = 30_000;
+
+/**
+ * Waits within `FIRST_LOAD_MS` until the page just opened or reloaded shows `locator` (with
+ * `text`, until it has that text). Use it for a test's first look at the page only: what the test
+ * does next waits with the usual budgets, so a slow step after the first load still fails.
+ */
+export async function firstShown(locator: Locator, text?: TextMatch): Promise<void> {
+  if (text === undefined) await expect(locator).toBeVisible({ timeout: FIRST_LOAD_MS });
+  else await expect(locator).toHaveText(text, { timeout: FIRST_LOAD_MS });
 }
 
 /**
