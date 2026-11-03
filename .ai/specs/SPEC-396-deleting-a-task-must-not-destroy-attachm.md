@@ -50,7 +50,8 @@ how a waiting task starts in place instead of deleting and recreating it.
   without its number, gets it back from its own task's settling. The file system work runs off the runtime.
 - **ATR-003** `task_delete` answers what happened to the task's attachments: `kept_for` (the
   numbers of the tasks naming them, `kept_for_automations` the automations' names) or `trash` (the entry, its files and until when it can be
-  restored). The UI's delete confirmation says that attachments another task names stay and the
+  restored), or `not_moved: true` when they stayed where they are because moving them to the trash
+  failed or settling stopped before it (SPEC-397). The UI's delete confirmation says that attachments another task names stay and the
   rest wait 7 days in the trash.
 - **ATR-004** A trash entry older than 7 days is removed: when a task is deleted, when the trash is
   listed, at start-up and by the workspace reaper (once an hour), at most 100 entries a round.
