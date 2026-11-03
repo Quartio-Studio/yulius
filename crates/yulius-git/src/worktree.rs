@@ -376,12 +376,12 @@ impl Git {
         if record.parent() != Some(records.as_path()) {
             return Ok(None);
         }
-        let names_back = std::fs::read(record.join("gitdir"))
-            .ok()
-            .is_some_and(|text| {
-                let text = text.strip_suffix(b"\n").unwrap_or(&text);
-                bytes_to_path(text).canonicalize().ok() == target.join(".git").canonicalize().ok()
-            });
+        // A relative `gitdir` (Git 2.48+ `--relative-paths`) is relative to the record.
+        let named = std::fs::read(record.join("gitdir")).ok().and_then(|text| {
+            let text = text.strip_suffix(b"\n").unwrap_or(&text);
+            record.join(bytes_to_path(text)).canonicalize().ok()
+        });
+        let names_back = named.is_some() && named == target.join(".git").canonicalize().ok();
         Ok(names_back.then_some(record))
     }
 

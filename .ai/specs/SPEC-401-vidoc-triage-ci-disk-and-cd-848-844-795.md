@@ -1,11 +1,11 @@
 ---
 yulius-task: 66ccb5b5-4307-4f29-ba26-738e1f7ea791
-status: in-progress
+status: done
 ---
 
 # SPEC-401: Vidoc triage of the CI, disk and CD findings (#848 #844 #795 #780 #717)
 
-Status: in-progress
+Status: done
 Date: 2026-11-03
 Owner: Yulius task #378
 Scope authorization: task #378 (a person asked that each of the five issues end closed). Fixes
@@ -66,14 +66,14 @@ does not reopen it.
 
 ## Plan
 
-- [ ] Spec SPEC-401 with the triage of all five findings
-- [ ] Worktrees are removed through no-follow handles after Git's checks (#844)
-- [ ] Task deletion discards worktrees through no-follow handles (#844)
-- [ ] CD guards pinned: short confirmations refused, production output redacted for agents (#780 #717)
-- [ ] Narrow [[ignore]] entries for the dismissed wordings (#848 #795 #780 #717)
-- [ ] ADR, architecture, changes entry and gates
-- [ ] Independent review answered
-- [ ] Dismissed issues commented and closed (#848 #795 #780 #717)
+- [x] Spec SPEC-401 with the triage of all five findings
+- [x] Worktrees are removed through no-follow handles after Git's checks (#844)
+- [x] Task deletion discards worktrees through no-follow handles (#844)
+- [x] CD guards pinned: short confirmations refused, production output redacted for agents (#780 #717)
+- [x] Narrow [[ignore]] entries for the dismissed wordings (#848 #795 #780 #717)
+- [x] ADR, architecture, changes entry and gates
+- [x] Independent review answered
+- [x] Dismissed issues commented and closed (#848 #795 #780 #717)
 
 ## Acceptance criteria
 
@@ -174,3 +174,13 @@ does not reopen it.
   - The docs wrongly said "sandbox directory" for imports.
   - Spec test names were wrong.
   - The #717 title was widened to Vidoc's full wording.
+- `scripts/dev ci` at 7dd73440 (round 1 answered, origin/dev merged; the only conflict,
+  `.config/vidoc.toml`, kept both sides): exit 0, nextest 2991 passed, 16 skipped.
+- Independent review, round 2: approved 7dd73440 and agreed again to the four entries. Its
+  minor finding was answered after that: a relative `gitdir` (Git 2.48+ `--relative-paths`) is
+  now resolved from the record, not the server's working directory. This could not be tested
+  here: Git 2.43 on this host lists such a worktree as prunable, so the registration check
+  refuses it first, and either way the worktree is kept. Its nits were also answered (the
+  imports comment rewrapped, this Evidence).
+- #848, #795, #780 and #717 were closed as not planned, each with its file:line evidence on
+  88a485ca. #844 closes with the pull request.
