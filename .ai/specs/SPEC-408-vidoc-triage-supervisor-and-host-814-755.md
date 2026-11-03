@@ -44,7 +44,9 @@ so that a repeat scan does not reopen it.
   character class it is literal, and existing rules for hyphenated units keep their text.
 - VTS-002 (#814, false positive). The run directory's default mode exposes nothing: the data
   directory above it is 0700, the process host sets the run directory to 0700 before it writes
-  the launch, and every file Yulius writes there is 0600 (`write_private_file`).
+  the launch, and its secret-bearing files are 0600 (`write_private_file`). Files written there
+  before the process host's chmod (the planned configuration, the opening and goal markers) are
+  still under the 0700 data directory.
 - VTS-003 (#755, false positive). The `PATH` an agent run inherits is the operator's, which no
   agent sets. An isolated run gets the fixed `SANDBOX_PATH`, and a contained one sees the host's
   system read-only. The same decision as #716.
@@ -90,7 +92,7 @@ so that a repeat scan does not reopen it.
 ## Decisions
 
 - #678 is fixed, not dismissed, though `service_name_ok` already guards its only caller
-  (`host_setup.rs:457` runs before `needrestart` at `:463`). `needrestart_rule` is public and its
+  (`host_setup.rs:458` runs before `needrestart` at `:464`). `needrestart_rule` is public and its
   correctness depended on a check elsewhere. Escaping by what is safe instead of by what is
   special ties the two together, as the finding asks, for three lines.
 - #814 is not "fixed" with a second chmod in the supervisor: the directory is already 0700 at

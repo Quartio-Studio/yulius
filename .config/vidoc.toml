@@ -1009,12 +1009,13 @@ reason = "uncontained is the documented development mode: agents and shells alre
 # #814: the run directory is under the data directory, which build_app makes 0700 at every start
 # (serve.rs prepare_data_dir), and the process host sets the run directory itself to 0700 before
 # it writes launch.json (yulius-ptyhost spawn.rs prepare_run_dir, tested by its 0700 assertion).
-# Every file Yulius writes there is 0600 (write_private_file).
+# Its secret-bearing files are 0600 (write_private_file); the scrub wrapper (0755) holds only the
+# executable's path.
 [[ignore]]
 path = "crates/yulius-app/src/supervisor.rs"
-function = "launch_attempt"
+line = 1362
 title = "Run directory created with filesystem default permissions"
-reason = "the data directory above it is 0700 (prepare_data_dir) and the process host makes the run directory 0700 before the launch (prepare_run_dir); its files are 0600 (SPEC-408, #814)"
+reason = "the data directory above it is 0700 (prepare_data_dir) and the process host makes the run directory 0700 before the launch (prepare_run_dir); its secret-bearing files are 0600 (SPEC-408, #814)"
 
 # #755: the same decision as #716. The server's PATH is the operator's (the installed unit pins
 # /usr/local/bin:/usr/bin:/bin); a run in an isolated sandbox gets the fixed SANDBOX_PATH instead,
@@ -1039,7 +1040,7 @@ reason = "the run directory is 0700 under a 0700 data directory and hidden from 
 # failed write (no /proc, as on macOS) must not stop the agent's command.
 [[ignore]]
 path = "crates/yulius/src/main.rs"
-function = "main"
+line = 565
 title = "Unconditional kernel OOM score modification with ignored error"
 reason = "raising one's own oom_score_adj only makes the agent's command the first victim, protecting other services; the write is best effort so a host without /proc still runs the command (SPEC-408, #756)"
 
@@ -1048,6 +1049,6 @@ reason = "raising one's own oom_score_adj only makes the agent's command the fir
 # manage::tests::the_window_holds_twenty_an_hour_and_frees_slots_as_they_age.
 [[ignore]]
 path = "crates/yulius-app/src/manage.rs"
-function = "reserve"
+function = "ToolTaskWindow"
 title = "Task-creation rate limit is in-memory only"
 reason = "one server per data directory, restarted only by its operator; the rolling window is pruned at every reservation (MGT-003, SPEC-037, SPEC-408, #690)"

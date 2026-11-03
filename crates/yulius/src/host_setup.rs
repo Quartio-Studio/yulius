@@ -196,7 +196,7 @@ pub const NEEDRESTART_RULE_FILE: &str = "/etc/needrestart/conf.d/yulius.conf";
 
 /// The needrestart rule's content for the unit `service` (HST-006): its name is a regular
 /// expression in Perl, so every character but a letter, a digit, `_` or `-` (literal outside a
-/// class) is escaped: it matches the name literally whatever [`service_name_ok`] accepts (#678).
+/// class) is escaped: it matches the name literally whatever `service_name_ok` accepts (#678).
 #[must_use]
 pub fn needrestart_rule(service: &str) -> String {
     let pattern: String = service
