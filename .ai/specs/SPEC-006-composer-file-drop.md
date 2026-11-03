@@ -28,7 +28,7 @@ not only onto the Claude terminal. The task's agent then reads them by path.
 | --- | --- | --- |
 | CMP-001 | Files dropped on the new-task prompt box, or an image pasted into it, are uploaded and they are shown beside the prompt (images as thumbnails, each removable) instead of their paths being typed into the text; the paths are appended to the prompt when the task starts. Text pastes are unchanged. | e2e `filedrop.e2e.ts` composer test |
 | CMP-002 | `POST /api/sandboxes/{sid}/attachments?name` stores a file in `sandboxes/<sid>/attachments/drafts/<user>/` with a safe, never-clashing name, outside every worktree; it needs write access to the sandbox (403 otherwise, 404 for an unknown sandbox) and is bounded by the upload limit. | `composer_drafts_are_kept_per_user_outside_git_and_need_write_access` in uploads.rs |
-| CMP-003 | Files in a user's drafts folder older than 7 days are removed when that user next uploads a draft. | the same test (a backdated draft is removed by the next upload) |
+| CMP-003 | Files in a user's drafts folder older than 7 days are removed when that user next uploads a draft, unless a task's request or an automation's prompt names them (SPEC-413). | the same test (a backdated draft is removed by the next upload) |
 | CMP-004 | While the prompt is read-only (a task is being created), drops are refused with a short message. | code review |
 
 ## Acceptance criteria

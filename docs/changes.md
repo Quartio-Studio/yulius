@@ -9,7 +9,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - Attachments a task's request or an automation's prompt names are no longer removed by the older
   clean-ups: a shell's folder (a screenshot pasted into the Superagent and named in `task_create`)
   stays when the shell ends and at start-up, and a composer draft older than a week stays at its
-  owner's next upload; when the tasks cannot be read nothing is removed (SPEC-413, task #395,
+  owner's next upload and in the leftovers round (and no longer counts toward the drafts folder's
+  500); when the tasks cannot be read nothing is removed (SPEC-413, task #395,
   ADR-0259, fixes #1027 and #1023). `task_delete` settles the deleted task's folder even when
   `attachments/tasks/` holds more than 10,000 entries, instead of answering `{}` (fixes #1031).
 - Test fixtures under `crates/yulius/tests` no longer commit credentials in a provider's shape.

@@ -21,8 +21,11 @@ prepared or chained task's request named it (#1023).
   automation's prompt) decide: a shell folder whose `attachments/shells/<shell>/` path one of them
   contains stays in place when the shell ends and at start-up; an old draft whose
   `attachments/drafts/<user>/<file>` path one of them contains is not pruned.
-- Unnamed ones go as before: a shell's folder is removed, a draft older than a week is unlinked.
+- Unnamed ones go as before: a shell's folder is removed, a draft older than a week is unlinked
+  (at its owner's next upload and by the leftovers round, which checks again before deleting).
   A kept shell folder is asked about again at each start-up.
+- The drafts folder's bound of 500 counts only drafts younger than a week, the ones waiting for a
+  task; older ones a request keeps are the tasks' files.
 - When those texts cannot be read, nothing is removed.
 
 ## Alternatives
@@ -39,7 +42,9 @@ prepared or chained task's request named it (#1023).
 ## Consequences
 
 - A shell's or a draft's files can outlive it for as long as a task's request names them, using
-  disk (bounded per folder, counted in the sandbox's quota).
-- Each composer upload with an old draft and each shell end read the sandbox's tasks and
-  automations once.
+  disk (a shell's folder bounded at 500 files, kept drafts only by the sandbox's quota).
+- Every composer upload while an old draft is kept, and the end of each shell that got a file,
+  read the sandbox's tasks and automations once.
+- A task created in the instant between that reading and a removal can still see an unnamed file
+  go, as with ADR-0253's settling.
 - References typed only into a running session are still not seen.

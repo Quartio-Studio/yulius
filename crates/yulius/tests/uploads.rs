@@ -30,7 +30,7 @@ use yulius_app::ports::store::{TaskStore, UserStore};
 use yulius_app::ports::store_ext::AutomationStore;
 use yulius_app::uploads::MAX_CONCURRENT_UPLOADS;
 use yulius_domain::harness::Provider;
-use yulius_domain::ids::{AccountId, TaskId, UserId};
+use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
 use yulius_ptyhost::test_support::locate_fake_agent;
@@ -765,7 +765,10 @@ async fn shell_attachments_belong_to_the_shell_owner_and_end_with_the_shell() ->
         &prompt,
     )
     .await?;
-    for shell in [&named_id, &id] {
+    // The named shell ends first and is forgotten (its attachments are settled right after) before
+    // the other is closed, whose whole close then outlasts that last step.
+    let sandbox = SandboxId::parse("s1")?;
+    for (shell, left) in [(&named_id, 1), (&id, 0)] {
         let closed = call(
             &h.router,
             Method::DELETE,
@@ -775,6 +778,10 @@ async fn shell_attachments_belong_to_the_shell_owner_and_end_with_the_shell() ->
         )
         .await?;
         assert_eq!(closed.status, StatusCode::NO_CONTENT);
+        wait_for("the shell to be forgotten", Duration::from_secs(20), || {
+            h.app.sandbox_shells(&sandbox).len() == left
+        })
+        .await?;
     }
     // Closing a shell nobody names removes its attachments.
     wait_for(
@@ -783,7 +790,7 @@ async fn shell_attachments_belong_to_the_shell_owner_and_end_with_the_shell() ->
         || !folder.exists(),
     )
     .await?;
-    // The named shell was closed first; the start-up prune below checks it again for certain.
+    // The start-up prune below checks it again, deterministically.
     assert_eq!(std::fs::read(&shot)?, b"png", "the named file stays");
 
     // Folders left by shells that ended while no server ran are pruned at the next start, unless
@@ -1324,6 +1331,43 @@ async fn an_old_draft_a_request_names_is_never_pruned() -> TestResult {
     );
     assert!(!unnamed.exists(), "nothing names it");
     assert_eq!(names(&drafts)?, ["named-plan.pdf", "named.png", "new.png"]);
+    Ok(())
+}
+
+/// SPEC-413 ANR-002: the drafts folder's bound (500) counts the drafts younger than a week, which
+/// wait for a task; older ones a request keeps never block the next drop.
+#[tokio::test]
+async fn kept_old_drafts_never_fill_the_drafts_folder() -> TestResult {
+    let h = harness_configured(|c| c.upload_max_bytes = LIMIT)?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    std::fs::create_dir_all(data.join("sandboxes/s1/repo"))?;
+    let drafts = data.join("sandboxes/s1/attachments/drafts/u-alice");
+    std::fs::create_dir_all(&drafts)?;
+    let mut prompt = String::from("Compare");
+    for n in 0..500 {
+        let file = drafts.join(format!("old-{n}.png"));
+        std::fs::write(&file, "png")?;
+        age(&file, 8)?;
+        prompt.push_str(&format!(" {}", file.display()));
+    }
+    seed_task_with_prompt(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None, &prompt).await?;
+    let url = "/api/sandboxes/s1/attachments?name=new.png";
+    let sent = upload(&h, Method::POST, url, b"png", &alice).await?;
+    assert_eq!(sent.status, StatusCode::CREATED, "{:?}", sent.body);
+    assert_eq!(
+        std::fs::read_dir(&drafts)?.count(),
+        501,
+        "the named ones stay"
+    );
+    // Fresh drafts still count: 500 waiting for a task fill it.
+    for n in 1..500 {
+        std::fs::write(drafts.join(format!("fresh-{n}.png")), "png")?;
+    }
+    let refused = upload(&h, Method::POST, url, b"png", &alice).await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
     Ok(())
 }
 

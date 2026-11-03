@@ -534,6 +534,24 @@ pub(crate) fn count_entries(folder: &OwnedFd, limit: usize) -> AppResult<usize> 
         .count())
 }
 
+/// Whether `stat` is a regular file older than [`DRAFT_MAX_AGE`] (a draft the prune may take).
+fn old_draft(kind: SFlag, stat: &nix::sys::stat::FileStat) -> bool {
+    let modified =
+        std::time::UNIX_EPOCH + Duration::from_secs(u64::try_from(stat.st_mtime).unwrap_or(0));
+    kind == SFlag::S_IFREG && modified.elapsed().is_ok_and(|age| age > DRAFT_MAX_AGE)
+}
+
+/// The entries of a drafts folder other than drafts older than a week, at most `limit`, among the
+/// first [`MAX_PRUNED_ENTRIES`] listed. Blocks.
+fn count_waiting_drafts(folder: &OwnedFd, limit: usize) -> usize {
+    names_in(folder, MAX_PRUNED_ENTRIES)
+        .unwrap_or_default()
+        .iter()
+        .filter(|name| !kind_at(folder, name).is_ok_and(|(kind, stat)| old_draft(kind, &stat)))
+        .take(limit)
+        .count()
+}
+
 /// Makes a rename or link durable (best effort: not every file system syncs directories).
 fn sync_dir(folder: &OwnedFd) {
     let _ = nix::unistd::fsync(folder);
@@ -837,14 +855,7 @@ impl App {
         };
         let old: Vec<_> = entries
             .into_iter()
-            .filter(|name| {
-                kind_at(&folder, name).is_ok_and(|(kind, stat)| {
-                    let modified = std::time::UNIX_EPOCH
-                        + Duration::from_secs(u64::try_from(stat.st_mtime).unwrap_or(0));
-                    kind == SFlag::S_IFREG
-                        && modified.elapsed().is_ok_and(|age| age > DRAFT_MAX_AGE)
-                })
-            })
+            .filter(|name| kind_at(&folder, name).is_ok_and(|(kind, stat)| old_draft(kind, &stat)))
             .collect();
         if old.is_empty() {
             return;
@@ -932,7 +943,12 @@ impl App {
         let dir = ensure_plain_dirs(&sandbox_dir, &owner.parts())?;
         // A name that replaces a regular file adds none, so a full folder still takes it.
         let replacing = replaces && kind_in(&dir.1, &name)? == Some(SFlag::S_IFREG);
-        let count = count_entries(&dir.1, MAX_ATTACHMENTS_PER_FOLDER + 1)?;
+        let count = match owner {
+            // Drafts older than a week stay only while a request names them (SPEC-413): they are
+            // tasks' files now, so the bound counts the ones still waiting for a task.
+            Owner::Draft(_) => count_waiting_drafts(&dir.1, MAX_ATTACHMENTS_PER_FOLDER + 1),
+            _ => count_entries(&dir.1, MAX_ATTACHMENTS_PER_FOLDER + 1)?,
+        };
         if !replacing && count >= MAX_ATTACHMENTS_PER_FOLDER {
             return Err(AppError::Conflict(format!(
                 "at most {MAX_ATTACHMENTS_PER_FOLDER} attachments are kept per terminal or draft"
@@ -1052,6 +1068,14 @@ impl App {
     /// Removes an ended shell's attachments, unless a task's request or an automation's prompt
     /// names its folder (SPEC-413 ANR-001): then, or when those cannot be read, they stay.
     pub(crate) async fn remove_shell_attachments(&self, sandbox: &SandboxId, shell: &str) {
+        // Most shells never got a file: nothing to remove, nothing to read. Only a gate: the
+        // removal itself goes through handles.
+        let folder = [ATTACHMENTS_DIR, "shells", shell]
+            .iter()
+            .fold(self.sandbox_dir(sandbox), |path, part| path.join(part));
+        if std::fs::symlink_metadata(&folder).is_err() {
+            return;
+        }
         let namers = match self.namers(sandbox).await {
             Ok(namers) => namers,
             Err(err) => {

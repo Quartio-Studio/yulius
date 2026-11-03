@@ -199,10 +199,17 @@ impl Drop for JobEnd<'_> {
     }
 }
 
-/// What one deletion pass reads once: the CI job keys each sandbox used.
+/// What one deletion pass reads once: the CI job keys each sandbox used, and what each sandbox's
+/// requests name (`None` when they cannot be read).
 #[derive(Default)]
 struct Pass {
     ci_keys: std::collections::HashMap<SandboxId, Option<HashSet<String>>>,
+    namers: std::collections::HashMap<SandboxId, Option<crate::attachment_trash::Namers>>,
+}
+
+/// The path a request names a draft by, from its `<user>/<file>`.
+fn draft_path(draft: &str) -> String {
+    format!("attachments/drafts/{draft}")
 }
 
 /// Whether `name` is the export a removal of the sandbox `slug` wrote (`sandbox-<slug>-<ms>.json`):
@@ -862,18 +869,37 @@ impl App {
         }
         self.scan_checkouts(sandbox, out).await?;
         let drafts = dir.join("attachments").join("drafts");
-        for (_, user_dir) in entries(&drafts) {
-            for (name, file) in entries(&user_dir) {
-                if self.old_draft(&file) {
-                    out.push(
-                        Leftover::new(
-                            Kind::OldDraft,
-                            file,
-                            format!("a draft attachment ({name}) older than 7 days"),
-                        )
-                        .of(sandbox),
-                    );
-                }
+        let old: Vec<(String, PathBuf)> = entries(&drafts)
+            .into_iter()
+            .flat_map(|(user, user_dir)| {
+                entries(&user_dir)
+                    .into_iter()
+                    .map(move |(name, file)| (format!("{user}/{name}"), file))
+            })
+            .filter(|(_, file)| self.old_draft(file))
+            .collect();
+        if old.is_empty() {
+            return Ok(());
+        }
+        // A draft a task's request or an automation's prompt names is no leftover (SPEC-413).
+        let namers = match self.namers(&sandbox.id).await {
+            Ok(namers) => namers,
+            Err(err) => {
+                tracing::warn!(sandbox = %sandbox.id, error = %err, "old drafts kept: tasks unreadable");
+                return Ok(());
+            }
+        };
+        for (draft, file) in old {
+            if !namers.name(&draft_path(&draft)) {
+                let name = file_name(&file);
+                out.push(
+                    Leftover::new(
+                        Kind::OldDraft,
+                        file,
+                        format!("a draft attachment ({name}) older than 7 days"),
+                    )
+                    .of(sandbox),
+                );
             }
         }
         Ok(())
@@ -1312,10 +1338,23 @@ impl App {
                 _ => Err("the base is current or mounted".into()),
             },
             Kind::OldDraft => {
-                if self.old_draft(&item.path) {
-                    Ok(None)
-                } else {
-                    Err("not a draft older than 7 days any more".into())
+                let sandbox = sandbox.ok_or("no sandbox")?;
+                if !self.old_draft(&item.path) {
+                    return Err("not a draft older than 7 days any more".into());
+                }
+                if !pass.namers.contains_key(&sandbox.id) {
+                    let namers = self.namers(&sandbox.id).await.ok();
+                    pass.namers.insert(sandbox.id.clone(), namers);
+                }
+                let draft = item
+                    .path
+                    .parent()
+                    .map(|user| format!("{}/{}", file_name(user), file_name(&item.path)))
+                    .ok_or("no drafts folder")?;
+                match pass.namers.get(&sandbox.id) {
+                    Some(Some(namers)) if !namers.name(&draft_path(&draft)) => Ok(None),
+                    Some(Some(_)) => Err("a task's request or an automation names it".into()),
+                    _ => Err("the sandbox's tasks cannot be read".into()),
                 }
             }
             Kind::HostDocker => Err("reported only".into()),

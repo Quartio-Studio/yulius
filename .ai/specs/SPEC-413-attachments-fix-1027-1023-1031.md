@@ -41,9 +41,12 @@ for a deleted task whose folder is there.
   named folder stays where it is, whole; an unnamed one is removed as before. A kept folder is
   asked about again at each start-up and removed once nothing names it. When the tasks or
   automations cannot be read, the folder stays.
-- **ANR-002** A composer draft older than 7 days is pruned at its owner's next upload only when no
-  task's request or automation's prompt contains `attachments/drafts/<user>/<file>`. The texts are
-  read only when there is an old draft; when they cannot be read, nothing is pruned.
+- **ANR-002** A composer draft older than 7 days is pruned only when no task's request or
+  automation's prompt contains `attachments/drafts/<user>/<file>`: at its owner's next upload, and
+  by the leftovers round (SPEC-215 `old-draft`, listed and checked again before it deletes). The
+  texts are read only when there is an old draft; when they cannot be read, nothing is pruned. The
+  drafts folder's bound (`MAX_ATTACHMENTS_PER_FOLDER`, 500) counts the drafts that are not older
+  than a week (those still waiting for a task), so kept ones never block the next drop.
 - **ANR-003** Settling a deleted task (ATR-002) always considers the deleted task's own folder:
   when it is not among the listed names it is looked up directly in `attachments/tasks/` (an
   `lstat`, never following a link) and, if it is a folder, settled like a listed one, so
@@ -66,8 +69,9 @@ for a deleted task whose folder is there.
 - A shell whose folder a task's request names (`attachments/shells/<id>/data.csv`) is closed: the
   file is still readable at that path; another shell nobody names loses its folder; at the next
   start-up an orphan shell folder a request names stays and an unnamed one is removed (ANR-001).
-- A draft older than 7 days that a task's request names survives its owner's next upload with its
-  content; an equally old unnamed one is removed (ANR-002).
+- A draft older than 7 days that a task's request names survives its owner's next upload and the
+  leftovers round with its content; an equally old unnamed one is removed; 500 kept old drafts
+  do not refuse the next drop, 500 fresh ones do (ANR-002).
 - With more than `MAX_PRUNED_ENTRIES` entries in `attachments/tasks/`, deleting a task whose
   folder is there answers `trash` and moves it (ANR-003); the listing helper with a cap of 0 still
   yields the deleted task's folder, and never a link (ANR-003, ANR-004).
@@ -75,8 +79,11 @@ for a deleted task whose folder is there.
 ## Test plan
 
 - `crates/yulius/tests/uploads.rs`: extend the shell test (a named shell folder survives the close;
-  the start-up prune keeps a named orphan and removes an unnamed one) and the drafts test (an old
-  named draft survives, an old unnamed one goes).
+  the start-up prune keeps a named orphan and removes an unnamed one), the drafts tests (an old
+  named draft survives, an old unnamed one goes; unreadable requests keep everything; the bound
+  counts waiting drafts only).
+- `crates/yulius/tests/leftovers.rs`: an old named draft is no `old-draft` leftover, one named
+  between the scan and the deletion stays, an unnamed one goes.
 - `crates/yulius/tests/attachment_trash.rs`: a deletion with more than 10,000 planted folders in
   `attachments/tasks/` answers `trash`.
 - Unit test in `attachment_trash.rs`: the listing of orphan folders with a cap of 0 yields the
@@ -96,6 +103,16 @@ for a deleted task whose folder is there.
   week on disk, never a loss.
 - A kept shell folder is asked about again only at start-up (the existing prune); it holds at most
   500 files and counts toward the sandbox's quota.
+- Named drafts are no longer bounded by the week: the folder's bound counts only drafts younger
+  than a week (review round 1). Rejected: protecting drafts only for tasks that have not ended
+  (a restarted task, or another task copying the paths, would lose them, as ADR-0253 counts
+  archived tasks), and leaving the bound as it was (an active person would hit 409 within weeks).
+  Old named drafts count toward the sandbox's quota.
+- Residual race, as SPEC-396 records for its own: a task created between reading the texts and
+  removing an unnamed shell folder or draft can still see it go; the window is one store read.
+- Pre-existing, outside this change (review round 1): the lookup of a trash entry a parallel
+  deletion moved without its number scans at most 10,000 trash names; file system work of these
+  clean-ups still runs on the async threads, as before (bounded).
 - One mechanism: the namers SPEC-396 reads at deletions, no reference table.
 
 ## Evidence
