@@ -13,6 +13,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   #716), #698 (no one but the server can write in a run directory), #756 (a raised OOM score only
   makes the agent's command the first victim) and #690 (the in-memory window is MGT-003's design)
   are dismissed with narrow `[[ignore]]` entries.
+- The scrub of a clone's transport settings no longer writes through a link an agent swaps in
+  after its checks: `.git`, `config` and `config.worktree` are opened with `O_NOFOLLOW` under Git's
+  own lock, Git edits a private copy, and the result is renamed over the name through the `.git`
+  handle (SPEC-402, task #385, ADR-0257, fixes #810). An upload whose link fails places its new
+  name with `RENAME_NOREPLACE` instead of a check then a rename (fixes #808), and the folders the
+  server creates in a sandbox tree are 0755 whatever the umask (fixes #800). The Vidoc findings
+  #809 (a pre-1970 draft is old, so pruning it is right) and #811 (only the service user or root
+  can read the Git command's environment) are dismissed with narrow `[[ignore]]` entries; a test
+  pins #809.
 - A subscription sign-in no longer frees copies of its token unzeroed in its raw output. That
   output, kept to read the token, was a growing buffer, and each growth freed the previous copy
   unzeroed. It is now one allocation that never grows, and it is zeroed whole once the token is
