@@ -384,6 +384,7 @@ test('a URL Claude Code wraps onto the next rows opens whole from any of them (#
   // is a part that only a joined link can open. A press is tried on the first row, the next one
   // and the last.
   await app.open(mock('/s/studio/t/12', '&wrapurl=1'));
+  await terminalShown(browser);
   await expect(rows(browser)).toHaveText(/Sign in at/);
   await holdStill(browser);
   const parts = await browser.evaluate(() => {
@@ -407,6 +408,7 @@ test('a URL Claude Code wraps onto the next rows opens whole from any of them (#
 
 test('Ctrl+C copies a selection and interrupts without one; paste types the clipboard', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
   await expect(rows(browser)).toHaveText(/Read 142 lines/);
   await holdStill(browser);
   // What a copy puts on the clipboard, read from the copy event (no clipboard permission needed).
@@ -502,6 +504,7 @@ test('a selection the program copies (OSC 52) reaches the clipboard, or the copy
   // Task #149, SPEC-158: Claude Code selects a plain drag itself and copies it with OSC 52, as the
   // mock does; the browser clipboard must get it.
   await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
   await expect(rows(browser)).toHaveText(/Read 142 lines/);
   await holdStill(browser);
   const clip = await recordClipboard(browser);
@@ -662,6 +665,7 @@ test('the program has the mouse, as in a native terminal; Shift (Option on macOS
   // Task #25, SPEC-098: the mock draws full screen with mouse reporting, like Claude Code, and
   // toggles a collapsed tool group on a primary press at its row. No chip offers to switch.
   await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns, read 1 file/);
   await holdStill(browser);
   const expanded = /loyalty_points/;
@@ -725,6 +729,7 @@ test('the wheel scrolls the program; pinch-zoom and horizontal swipes stay with 
 
 test('a wheel turn reports one row per row of its distance (#863)', async ({ app, browser }) => {
   await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
   await holdStill(browser);
   const sent = await recordInput(browser);
@@ -829,6 +834,7 @@ async function openClassicHistory(browser: Browser, point: { x: number; y: numbe
 /** Task #12 with a transcript longer than its screen, so the program has rows to scroll; the pointer's spot. */
 async function longTask12(app: { open: (url: string) => Promise<unknown> }, browser: Browser): Promise<{ x: number; y: number }> {
   await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
   await holdStill(browser);
   await browser.evaluate(() => {
@@ -847,6 +853,7 @@ async function classicTask12(app: { open: (url: string) => Promise<unknown> }, b
   // Started before SPEC-310, the run kept Claude Code's main-screen renderer through the updates
   // that froze and thawed it: no mouse reporting, and only the visible screen reaches a viewer.
   await app.open(mock('/s/studio/t/12', '&classic=1'));
+  await terminalShown(browser);
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
   await holdStill(browser);
   const point = await spot(browser, 'Searched for 2 patterns');
@@ -1039,6 +1046,7 @@ test('the way on sits below a held card over the terminal (#911)', async ({ app,
 
 test('a task that never ran offers no earlier messages (#911)', async ({ app, browser }) => {
   await app.open(mock('/s/product/t/7'));
+  await terminalShown(browser);
   // The mock draws a screen even for a waiting task: the task's state alone holds the offer back.
   await expect(rows(browser)).toHaveText(/Welcome to Claude/);
   const point = await browser.evaluate(() => {
@@ -1095,6 +1103,7 @@ test('dismissing a queued message kept after the start leaves the whole session 
 
 test('mouse use while disconnected says nothing; typed input still warns', async ({ app, browser }) => {
   await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
   await holdStill(browser);
   const point = await spot(browser, 'Searched for 2 patterns');
@@ -1155,6 +1164,7 @@ test('a click beside another viewer’s grid takes the size but does not reach t
 
 test('file paths in the task terminal open the editor at the file and line', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
   await expect(rows(browser)).toHaveText(/Not links:/);
   await holdStill(browser);
 
