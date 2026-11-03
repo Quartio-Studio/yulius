@@ -62,7 +62,7 @@ so that a repeat scan does not reopen it.
 - [x] Spec SPEC-409 with the triage of all six findings
 - [x] Spec and config reads go through a handle checked inside the worktree (#745)
 - [x] Unused spec_path removed (#820)
-- [ ] Narrow [[ignore]] entries for the dismissed wordings (#817 #816 #737 #732)
+- [x] Narrow [[ignore]] entries for the dismissed wordings (#817 #816 #737 #732)
 - [ ] Changes entry and gates
 - [ ] Independent review answered
 - [ ] Dismissed issues commented and closed (#817 #816 #820 #737 #732)
