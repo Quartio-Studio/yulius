@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
+- The needrestart rule `yulius host setup` writes escapes every character of the unit name but
+  letters, digits, `_` and `-`, so its Perl regex matches the name literally on its own, not only
+  because the setup validated the name first (SPEC-408, task #390, fixes #678). The Vidoc findings
+  #814 (the run directory is 0700, under a 0700 data directory), #755 (the operator's `PATH`, as
+  #716), #698 (no one but the server can write in a run directory), #756 (a raised OOM score only
+  makes the agent's command the first victim) and #690 (the in-memory window is MGT-003's design)
+  are dismissed with narrow `[[ignore]]` entries.
 - A subscription sign-in no longer frees copies of its token unzeroed in its raw output. That
   output, kept to read the token, was a growing buffer, and each growth freed the previous copy
   unzeroed. It is now one allocation that never grows, and it is zeroed whole once the token is
