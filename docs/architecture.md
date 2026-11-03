@@ -729,6 +729,13 @@ server's `import-worktrees`), because Git's own removal resolves the path again 
 follows a link swapped in after the checks
 ([SPEC-401](../.ai/specs/SPEC-401-vidoc-triage-ci-disk-and-cd-848-844-795.md),
 [decision 0255](decisions/0255-git-checks-a-worktree-and-the-server-removes-it-through-handles.md)).
+The scrub of a clone's transport settings (SPEC-176) opens `.git`, `config` and `config.worktree`
+with `O_NOFOLLOW` under Git's own `<file>.lock`, lets Git edit a copy in a 0700 folder of the
+service user, and renames the result over the name through the `.git` handle; an upload places a
+new name with a link or `RENAME_NOREPLACE`, never a check then a rename; and the folders the server
+creates in a sandbox tree are 0755 whatever the umask
+([SPEC-402](../.ai/specs/SPEC-402-vidoc-triage-uploads-files-and-git-809-8.md),
+[decision 0257](decisions/0257-the-config-scrub-and-new-names-never-go-through-a-checked-path.md)).
 Where Git, not the server, would write (it resolves the path it is given and follows links), the
 work moves out of the sandbox instead: an import's snapshot is checked out, filled and committed
 in `<data>/import-worktrees/<sandbox>/import-<job>[-<n>]` (0700, the name taken with a create-new

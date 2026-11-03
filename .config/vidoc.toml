@@ -263,6 +263,19 @@ path = "crates/yulius/src/wiring/git.rs"
 title = "Refspec injection"
 reason = "validate_push_refspec requires unforced refs/heads/ names on both sides, checked by check-ref-format rules, after --"
 
+# #811: the token lives only in that one Git command's environment (cleared otherwise, runner.rs);
+# /proc/<pid>/environ needs the service user's uid or root, and every contained agent has its own
+# PID namespace and /proc (an isolated one is also another uid). Git's children are its own
+# helpers (no hooks, no fsmonitor). A configuration-driven command is ADR-0114's #54 part B, set
+# aside by a person; a credential helper or askpass would answer such a child the same token
+# (`git credential fill`).
+[[ignore]]
+path = "crates/yulius/src/wiring/git.rs"
+title = "GitHub token placed in the git subprocess environment"
+reason = "only the service user or root can read the command's environment; contained agents have their own PID namespace and /proc (isolated: also other uids); config-driven commands are ADR-0114's #54 part B (SPEC-402, #811)"
+function = "git_with_token"
+line = 78
+
 [[ignore]]
 path = "crates/yulius/src/wiring/harness.rs"
 title = "MCP environment variable names"
@@ -515,6 +528,17 @@ title = "Path component validation misses"
 reason = "check_components only sees target.relative, built by relative_components (no .., .git, NUL, absolute), and ensure_dirs re-checks with files::inside; proven by uploads::editor_uploads_stay_in_the_folder_and_never_replace_a_file_silently (SPEC-390)"
 function = "check_components"
 line = 234
+
+# #809: a draft whose mtime lies before 1970 is older than DRAFT_MAX_AGE, so reading it as the
+# epoch prunes it exactly as its real date would; the drafts folder is the sandbox's own, which its
+# agents can already change, and only regular files are removed, through its handle. Pinned by
+# uploads.rs a_draft_dated_before_1970_is_old.
+[[ignore]]
+path = "crates/yulius-app/src/uploads.rs"
+title = "Negative file mtime treated as epoch age"
+reason = "a pre-1970 draft is older than a week, so pruning it is the intended outcome; the folder is the sandbox's own; tested by a_draft_dated_before_1970_is_old (SPEC-402, #809)"
+function = "prune_old_drafts"
+line = 844
 
 [[ignore]]
 path = "crates/yulius-server/src/routes/mod.rs"
