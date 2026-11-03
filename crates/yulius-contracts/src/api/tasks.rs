@@ -511,8 +511,8 @@ pub struct PromptAttachment {
     pub name: String,
     /// Whether Claude Code takes it as an image (it was pasted as one).
     pub image: bool,
-    /// Whether it can be served: a regular file in the sandbox's attachments folder (drafts are
-    /// removed after a week; a path mentioned by hand is never served).
+    /// Whether it can be served: a regular file in the sandbox's attachments folder (drafts no
+    /// request names are removed after a week; a path mentioned by hand is never served).
     pub available: bool,
 }
 

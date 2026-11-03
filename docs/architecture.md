@@ -702,7 +702,8 @@ checked to be inside the root), `files::open_dirs_below` (each folder from the s
 with `O_DIRECTORY | O_NOFOLLOW`, made with `mkdirat` when missing) and `files::replace_in` (a
 random `O_EXCL | O_NOFOLLOW` temporary file renamed within the handle). The editor's listing,
 folder creation and deletion, the removal of shell and draft attachments, and a deleted task's
-attachments moved to the trash, purged or restored (SPEC-396, `attachment_trash`), walk the
+attachments moved to the trash, purged or restored (SPEC-396, `attachment_trash`; a shell's folder
+or an old draft that a task's request or an automation's prompt names is kept, SPEC-413), walk the
 resolved folder from the sandbox directory with `open_dirs_below` (no real-path check, so no
 `/proc`) and list, `mkdirat`, or remove through `files::remove_tree` (bounded, handle by handle,
 a link unlinked, never followed)
@@ -1315,6 +1316,7 @@ flowchart LR
   MCP -->|"task_update"| SC["App::change_task_start (as the UI's change of a waiting task's start)"]
   TU -->|"delete: settle_attachments"| TR["attachments: named by a request → stay; else → attachments/trash (7 days)"]
   MCP -->|"attachments_trash: list, restore into a task"| TR
+  SH -->|"ends, start-up prune: shell attachments named by a request → stay; else removed (SPEC-413)"| SA["attachments/shells/id"]
   MCP -->|"automation_*, automation_template_enable"| AU["Automations and ready-made ones"]
 ```
 
