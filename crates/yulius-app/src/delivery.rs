@@ -845,7 +845,7 @@ pub(crate) async fn read_repo_file(
     let opened =
         crate::files::open_inside(&root, &path, nix::fcntl::OFlag::O_RDONLY).map_err(|err| {
             match err {
-                AppError::Forbidden(message) if message.contains("outside") => {
+                AppError::Forbidden(message) if message == crate::files::OUTSIDE => {
                     format!("`{relative}` points outside the task worktree")
                 }
                 _ => format!("`{relative}` cannot be read"),

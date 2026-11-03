@@ -1041,8 +1041,8 @@ function = "mountComposer"
 line = 992
 
 # #816: a shell has one kind of viewer, its creator with Work access who owns the shell's task
-# (shell_open). Every socket that reaches pump can write and controls its own shell; the
-# periodic re-check closes the socket when that changes, and shell_input checks again.
+# (shell_open). Every socket that reaches pump may write and controls its own shell until the
+# periodic re-check closes it on a change of access; shell_input checks again.
 [[ignore]]
 path = "crates/yulius-server/src/routes/shells.rs"
 title = "Terminal state reports can_write and controller as always true"
