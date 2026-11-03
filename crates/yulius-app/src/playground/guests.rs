@@ -144,6 +144,23 @@ impl App {
     /// a task created while the link died, a failed stop or a restart are caught by a later pass.
     async fn sweep_link(self: &Arc<Self>, invite: &PlaygroundInviteRecord) {
         let now = self.now();
+        let mut invite = invite.clone();
+        // A live link of a playground moved to GitHub or removed: it ends now, its guests'
+        // sessions with it.
+        if invite.live_at(now) {
+            match self
+                .deps
+                .store
+                .revoke_playground_invite(&invite.sandbox_id, &invite.id, now)
+                .await
+            {
+                Ok(_) => invite.revoked_at = Some(now),
+                Err(err) => {
+                    tracing::warn!(error = %err, "a moved playground's guest link could not end");
+                    return;
+                }
+            }
+        }
         let died = invite
             .revoked_at
             .unwrap_or(invite.expires_at)
@@ -160,8 +177,9 @@ impl App {
         }
     }
 
-    /// The background sweep (GST-005): ends what the guests of each revoked or expired link not
-    /// ended yet still run, at most a bounded batch at a time.
+    /// The background sweep (GST-005): ends what the guests of each dead link (revoked, expired,
+    /// or of a playground moved to GitHub or removed) not ended yet still run, at most a bounded
+    /// batch at a time.
     pub async fn end_expired_guest_links(self: &Arc<Self>) {
         let now = self.now();
         let expired = match self

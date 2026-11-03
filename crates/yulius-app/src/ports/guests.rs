@@ -104,8 +104,9 @@ pub trait PlaygroundGuestStore: Send + Sync {
     ) -> AppResult<bool>;
     /// The guests `invite_id` let in.
     async fn invite_guest_ids(&self, invite_id: &str) -> AppResult<Vec<UserId>>;
-    /// At most `limit` links revoked or expired by `now` whose guests' work was not ended yet, the
-    /// least recently swept first.
+    /// At most `limit` links whose guests' work was not ended yet and that are dead by `now`
+    /// (revoked, expired, or of a playground moved to GitHub or removed), the least recently swept
+    /// first.
     async fn unended_expired_invites(
         &self,
         now: Timestamp,

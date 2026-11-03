@@ -53,7 +53,8 @@ API tokens) are open to any signed-in person. So a guest is not simply a writer.
   the link stops admitting, its guests' sessions are revoked (401 on the next request, open sockets
   close at their next re-check, ACC-008), their access ends and their live and waiting tasks and
   terminals are stopped. Expiry does the same: the session ends then, and the background sweep stops
-  what its guests still run.
+  what its guests still run; it also revokes and ends the live links of a playground moved to
+  GitHub or removed.
   Moving the playground to GitHub (SPEC-176) or removing it ends guest access, as access then
   mirrors GitHub, which a guest has not.
 - **A guest never becomes a GitHub user.** A teammate who later signs in with GitHub is admitted

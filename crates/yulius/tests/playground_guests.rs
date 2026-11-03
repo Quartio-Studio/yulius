@@ -14,6 +14,7 @@ use support::{
 };
 use yulius_app::model::{SandboxRecord, UserRecord, WebSessionRecord};
 use yulius_app::ports::egress::{EgressDecision, EgressPolicy as _, EgressRequest};
+use yulius_app::ports::guests::PlaygroundGuestStore as _;
 use yulius_app::ports::store::{
     AuditStore as _, SandboxStore as _, SessionStore as _, UserStore as _,
 };
@@ -982,6 +983,29 @@ async fn revoking_or_expiry_stops_the_guests_tasks() -> TestResult {
         Some(TaskStatus::Running),
         "the maker's runs on"
     );
+    // Dead long enough after a pass that worked, a link is ended for good and swept no more;
+    // Dana's, dead only since this pass, waits its minute.
+    let unended = |at: Timestamp| {
+        let store = w.h.store.clone();
+        async move {
+            store
+                .unended_expired_invites(at, 10)
+                .await
+                .map(|list| list.into_iter().map(|i| i.id).collect::<Vec<_>>())
+        }
+    };
+    let dana_link = unended(now(&w.h)).await?;
+    assert!(
+        !dana_link.contains(&id),
+        "Carol's link is ended: {dana_link:?}"
+    );
+    assert_eq!(dana_link.len(), 1, "{dana_link:?}");
+    advance(&w.h, 61_000);
+    w.h.app.end_expired_guest_links().await;
+    assert!(
+        unended(now(&w.h)).await?.is_empty(),
+        "every dead link is ended"
+    );
     Ok(())
 }
 
@@ -1103,9 +1127,19 @@ async fn an_expired_link_ends_its_guests() -> TestResult {
 async fn moving_or_removing_the_playground_ends_guest_access() -> TestResult {
     let w = world().await?;
     let code = link(&w, 7).await?;
-    let (_, user) = join(&w, &code, "Carol").await?;
+    let (carol, user) = join(&w, &code, "Carol").await?;
     let p1 = SandboxId::parse("p1")?;
     assert!(w.h.app.can_work_in(&user, &p1).await);
+    seed_task(
+        &w.h,
+        "t1",
+        "p1",
+        user.id.as_str(),
+        TaskStatus::Running,
+        None,
+    )
+    .await?;
+    seed_live_attempt(&w.h, "t1", "guests-run-carol-moved-0123456789abc").await?;
     w.h.store
         .move_to_github(&p1, "acme", "lab", Some(9))
         .await?;
@@ -1113,6 +1147,23 @@ async fn moving_or_removing_the_playground_ends_guest_access() -> TestResult {
         !w.h.app.can_view(&user, &p1).await,
         "access mirrors GitHub now"
     );
+    // The sweep ends a moved playground's live links: the guest is signed out, their work stops.
+    w.h.app.end_expired_guest_links().await;
+    assert_eq!(
+        get(&w, "/api/me", &carol).await?.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let t1 = yulius_domain::ids::TaskId::parse("t1")?;
+    until("the moved playground's guest task to stop", || async {
+        use yulius_app::ports::store::TaskStore as _;
+        w.h.store
+            .task(&t1)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|t| matches!(t.status, TaskStatus::Stopping | TaskStatus::Stopped(_)))
+    })
+    .await?;
 
     let made = invite(&w, &w.bob, "p2", json!({})).await?;
     let (_, bobs) = join(&w, &code_of(&made.body)?, "Dana").await?;
@@ -1120,6 +1171,12 @@ async fn moving_or_removing_the_playground_ends_guest_access() -> TestResult {
     assert!(w.h.app.can_work_in(&bobs, &p2).await);
     w.h.store.remove_sandbox(&p2, now(&w.h)).await?;
     assert!(!w.h.app.can_view(&bobs, &p2).await);
+    w.h.app.end_expired_guest_links().await;
+    let listed = w.h.store.live_playground_invites(&p2, now(&w.h)).await?;
+    assert!(
+        listed.is_empty(),
+        "a removed playground's links end: {listed:?}"
+    );
     Ok(())
 }
 

@@ -270,8 +270,10 @@ impl PlaygroundGuestStore for SqliteStore {
         self.call(move |c| {
             let mut stmt = c
                 .prepare(&format!(
-                    "SELECT {COLS} FROM playground_invites WHERE ended_at IS NULL \
-                     AND (expires_at <= ?1 OR revoked_at IS NOT NULL) \
+                    "SELECT {COLS} FROM playground_invites i WHERE ended_at IS NULL \
+                     AND (expires_at <= ?1 OR revoked_at IS NOT NULL OR NOT EXISTS \
+                     (SELECT 1 FROM sandboxes s WHERE s.id = i.sandbox_id \
+                     AND s.repo_owner = '' AND s.removed_at IS NULL)) \
                      ORDER BY COALESCE(swept_at, 0), expires_at, id LIMIT ?2"
                 ))
                 .map_err(db)?;

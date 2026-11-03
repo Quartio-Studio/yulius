@@ -8,7 +8,7 @@ CREATE TABLE playground_invites (
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
     revoked_at INTEGER,
-    -- When what its guests still ran was stopped (at the revoke, or the sweep after expiry).
+    -- When the sweep ended what its guests ran for good (a minute or more after the link died).
     ended_at INTEGER,
     -- The sweep's last try, so links whose work will not stop do not hold its batch.
     swept_at INTEGER
