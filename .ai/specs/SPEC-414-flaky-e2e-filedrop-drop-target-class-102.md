@@ -1,11 +1,11 @@
 ---
 yulius-task: cb65828b-58a2-4d3e-a62e-a5a2336cd079
-status: in-progress
+status: done
 ---
 
 # SPEC-414: The explorer keeps a drag's drop target across a redraw (#1029)
 
-Status: in-progress
+Status: done
 Date: 2026-11-03
 Owner: Yulius task #396
 Scope authorization: task #396 (fix the flaky e2e test "files dropped on a folder of the explorer
@@ -53,9 +53,9 @@ the explorer redraws its rows during the drag.
 - [x] Spec with the root cause of #1029
 - [x] Regression test: a roots answer landing after the dragover keeps the mark
 - [x] Explorer keeps the drop mark by path across redraws
-- [ ] Filedrop test waits for the mark; 30 repeats and the full suite pass
-- [ ] Docs and evidence: changes, e2e README, spec
-- [ ] Independent review answered
+- [x] Filedrop test waits for the mark; 30 repeats and the full suite pass
+- [x] Docs and evidence: changes, e2e README, spec
+- [x] Independent review answered
 
 ## Acceptance criteria
 
@@ -83,3 +83,31 @@ the explorer redraws its rows during the drag.
   (more moving parts, and a frame late), and leaving the app as it is with only a test poll
   (still fails when the redraw lands after the `dragover`). Both were rejected. This is a local
   choice, recorded here and not as an ADR.
+
+## Evidence
+
+- Reproduced first: `npx e2e run tests/filedrop.e2e.ts --grep 'stays marked when the explorer
+  redraws'` against the unfixed app (dev fc492692 plus the new test) failed at
+  `filedrop.e2e.ts:82`. The roots read had been released, the `src` row was a new element
+  (line 81 passed), and its class was `"ed-row"` only. With the fix, the whole file passes
+  (13 of 13).
+- `npx e2e run tests/filedrop.e2e.ts --repeat-each 30`: 390 of 390 passed, and all 13 tests
+  passed all 30 runs, both explorer drag tests included (20 min, `YULIUS_CPUS=4`).
+- Full e2e suite (`npx e2e run`): 800 passed, 1 skipped, 1 failed. The failure was
+  `start-change.e2e.ts:67` ("a prepared task changes to run after a task…"): `.strip-status`
+  did not show "Scheduled · tomorrow" within 5 s under full-suite load. This change touches
+  nothing in the task strip or the start menu. That file passed 15 of 15 alone with
+  `--repeat-each 5`. It is outside this change, and the task may not open issues, so it is
+  reported here and in the pull request.
+- `scripts/dev ci` (after `python3 scripts/bootstrap.py`): exit 0. nextest: 3023 tests run,
+  3023 passed, 16 skipped.
+- `yulius security-scan`: disabled ("Vidoc is turned off in Yulius"), nothing scanned. This is
+  not a pass.
+- The shared first-load helper (task #394) has not merged. This test waits for a row the mock
+  lists at once, so it does not need the helper.
+- Independent review (fresh session) of 4ea977fc: approved. Its minor finding: a redraw that
+  removes the row under the pointer may skew the drop zone's enter/leave count, so a drag that
+  leaves the window might not clear the mark. That count is the drop zone's pre-existing leave
+  handling (`filedrop.js` `dragleave`), and the overlay then stays up as well, naming the same
+  folder, so it is left as it is. Its nit (no default for `markTarget`) is declined: `reveal`,
+  `refresh` and `open` are required in the same way.
