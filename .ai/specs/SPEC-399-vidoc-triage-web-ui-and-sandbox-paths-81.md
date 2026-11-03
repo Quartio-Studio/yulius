@@ -41,24 +41,33 @@ reopen it.
   `public_url` or a page below it, so no `javascript:` (or other scheme) link is stored; the
   instance's own `public_url` is set by its operator. Pinned by a new `javascript:` case;
   dismissed with a narrow entry.
-- VWS-004 (#683, false positive; the code changed in #651). Every path the manager derives from a
-  sandbox name goes through `path_name`, which maps a name that is not a holder name to the fixed
-  component `.invalid`, so no path leaves `runtime/sandboxes/` or `sysroots/`; a holder spec with
-  such a name is refused by `HolderSpec::validate` before anything starts. Dismissed with a narrow
-  entry.
+- VWS-004 (#683, false positive; the code changed in #651). The ids reaching the manager are
+  validated at the trust boundary: the server passes a `SandboxId`, which only
+  `SandboxId::parse` makes (ASCII letters, digits, `-` and `_`, at most 64;
+  `yulius-domain/src/ids.rs:33`, `wiring/sandbox.rs:267`). Below that, `state_dir` and `sysroot`
+  go through `path_name`, which maps a name that is not a holder name to the fixed component
+  `.invalid`, and `HolderSpec::validate` refuses such a name before a holder starts.
+  `production_runs_dir` joins the id itself, so it relies on the `SandboxId` boundary. Dismissed
+  with a narrow entry.
 - VWS-005 (#682, false positive). The path-based `make_writable` runs only from
   `base::remove_tree`, which ADR-0176 keeps for trees no sandbox run can change at that time:
   bases (built by the service user, mounted read-only), and system trees (`sysroots/`,
-  `runtime/sandboxes/`, `system/`) removed only once no holder of them lives (its PID namespace,
-  and every process that could write the tree, ended with it). Trees runs can rearrange
-  (`sandboxes/`, CD run files) go through the `O_NOFOLLOW` walk as mapped root. Dismissed with a
-  narrow entry.
+  `runtime/sandboxes/`, `system/`) removed only once no holder of them lives (leftovers.rs checks
+  `holder_live` again at deletion). Runs join the holder's user, network and mount namespaces,
+  not its PID namespace, so `holder_live` also counts a stopped holder's runs still in its network
+  namespace (`manager.rs:1149`), and a removed sandbox is purged only once nothing of it runs
+  (`still_running`). Trees runs can rearrange (`sandboxes/`, CD run files) go through the
+  `O_NOFOLLOW` walk as mapped root (`reachable_by_runs`). The one other caller,
+  `docker_smoke.rs:386`, is an operator-run diagnostic that removes its own fixed
+  `docker-smoke-<pid>` sandbox by path after stopping its holders. Even a won race only adds
+  owner `rwx` to a directory the service user owns; the `remove_dir_all` after it follows no link.
+  Dismissed with a narrow entry.
 
 ## Plan
 
 - [x] Spec SPEC-399 with the triage of all five findings
-- [ ] Pin the link guards of #741 and #701 with tests
-- [ ] Narrow [[ignore]] entries for the five wordings
+- [x] Pin the link guards of #741 and #701 with tests
+- [x] Narrow [[ignore]] entries for the five wordings
 - [ ] Gates, docs and changes entry
 - [ ] Independent review answered
 - [ ] Issues closed with their evidence (#819 #741 #701 #683 #682)

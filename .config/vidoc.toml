@@ -757,21 +757,23 @@ path = "crates/yulius-server/web/assets/taskview.js"
 title = "Unvalidated external link in href"
 reason = "needs_you stores only links to this instance's public_url and below; javascript: and other origins are refused, tested in cd.rs (SPEC-399, #701)"
 
-# #683: state_dir and sysroot join path_name(sandbox), which maps any name that is not a holder
-# name to the fixed component .invalid, and HolderSpec::validate refuses such a name before a
-# holder starts (since #651). Pinned by manager.rs
+# #683: the server passes a SandboxId, which only SandboxId::parse makes ([A-Za-z0-9_-], at most
+# 64); below it, state_dir and sysroot join path_name(sandbox), which maps any name that is not a
+# holder name to the fixed component .invalid, and HolderSpec::validate refuses such a name
+# before a holder starts (since #651). Pinned by manager.rs
 # a_production_holder_has_its_own_trees_and_is_retired_with_its_sandbox (x.y is .invalid).
 [[ignore]]
 path = "crates/yulius-sandbox/src/manager.rs"
 title = "Unvalidated sandbox identifier used in filesystem paths"
-reason = "every path from a sandbox name goes through path_name (an invalid name becomes .invalid) and HolderSpec::validate refuses it; tested by a_production_holder_has_its_own_trees_and_is_retired_with_its_sandbox (SPEC-399, #683)"
+reason = "ids arrive as SandboxId (validated by SandboxId::parse), state_dir and sysroot also go through path_name (an invalid name becomes .invalid) and HolderSpec::validate refuses one; tested by a_production_holder_has_its_own_trees_and_is_retired_with_its_sandbox (SPEC-399, #683)"
 
 # #682: the path-based make_writable serves only base::remove_tree, which ADR-0176 keeps for trees
 # no sandbox run can change then: bases (the service user's build, read-only lower layers) and
-# system trees removed once no holder of them lives (its PID namespace ended with it). Trees runs
-# rearrange go through the O_NOFOLLOW walk (reachable_by_runs). Pinned by leftovers.rs
+# system trees removed once holder_live is false, which also counts a stopped holder's runs still
+# in its network namespace (runs join its user, net and mount namespaces). Trees runs rearrange go
+# through the O_NOFOLLOW walk (reachable_by_runs). Pinned by leftovers.rs
 # the_system_layer_waits_for_the_holder_to_stop and manager.rs only_a_sandbox_s_system_tree_is_removed.
 [[ignore]]
 path = "crates/yulius-sandbox/src/base.rs"
 title = "TOCTOU in make_writable chmod by path"
-reason = "only trees no sandbox run can change at that time (bases, system trees of stopped holders) are removed by path; run-reachable trees use the O_NOFOLLOW walk (ADR-0176, SPEC-399, #682)"
+reason = "only trees no sandbox run can change at that time (bases, system trees once no holder or run of it lives) are removed by path; run-reachable trees use the O_NOFOLLOW walk (ADR-0176, SPEC-399, #682)"
