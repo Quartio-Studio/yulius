@@ -1157,10 +1157,11 @@ resolves to nothing, the run gets the server without that variable or token.
   `GET …/files/live?root&path&session&since` → the same with `"text":null` and `"steps":[{"revision",
   "client","op"}]` after `since`, or the whole text when the steps are no longer kept (256) or the
   session differs; 409 when nobody edits the file. `POST …/files/live/edit` `{"root?","path",
-  "session","client","revision","op"}` → `{"revision"}`: the operation made at `revision`,
+  "session","client","revision","op","save?"}` → `{"revision"}` (`save`: then save the text, as
+  a page that goes asks): the operation made at `revision`,
   transformed past the steps since (the same edit sent again by that person's tab is answered with
   its step, not applied twice); 409 for another or an ended session or a revision older than the
-  kept steps (256, costing at most 1 Mi inserted units plus parts), 422 for a count above 2 Mi,
+  kept steps (256, costing at most 1 Mi inserted units plus 16 per part), 422 for a count above 2 Mi,
   more than 10 000 parts, an operation that does not fit, cuts a character outside the BMP, inserts
   another line ending than the text's or makes the text larger than 2 MiB, 429 past 30 a second per
   person and file. Steps carry `user_id` and `client`. `POST …/files/live/save`

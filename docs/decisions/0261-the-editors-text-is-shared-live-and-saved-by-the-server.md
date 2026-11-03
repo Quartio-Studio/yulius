@@ -28,7 +28,7 @@ from it on the event WebSocket, and the server is one process.
   `sha256` it was last saved at or taken from, whether it is saved, and the disk's newer
   `sha256` while unsaved text meets a disk change. Never stored in the database or another file.
   At most 256 documents of 2 MiB, an operation of at most 10 000 parts, kept steps costing at
-  most 1 Mi (inserted units plus parts); a saved one untouched for 10 minutes is dropped, an
+  most 1 Mi (inserted units plus 16 per part); a saved one untouched for 10 minutes is dropped, an
   unsaved one after 24 hours untouched; a full server drops its oldest saved one, else refuses.
 - **Server-ordered operational transformation.** An operation is a list of retains (`n`),
   inserts (`"text"`) and deletes (`-n`) over UTF-16 units, made at a revision. The server
@@ -47,8 +47,8 @@ from it on the event WebSocket, and the server is one process.
   with the asking person's access; saves of a document run one at a time. The Editor asks 1 s after
   its person's last keystroke, at once when focus or the file leaves, on Ctrl+S, and as the page is
   hidden; teammates' Editors ask 3 s after the last step as a fallback. A closed file keeps its
-  document in the tab until its typing is confirmed and written, and leaving the page with typing
-  on its way asks first.
+  document in the tab until its typing is confirmed and written, leaving the page with typing
+  on its way asks first, and a page that goes sends its typing in an edit that asks to be saved.
 - **The disk.** The 2 s look of 0146 stays. A newer disk version is taken by the server: as one
   step when the text is saved, else kept as a conflict that every Editor shows with Keep mine and
   Take disk version; nothing saves automatically meanwhile.

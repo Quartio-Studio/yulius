@@ -34,6 +34,8 @@ const RETRY_MS = 1000;
 const LOG_STEPS = 200;
 /** An edit this small also goes with `keepalive`, so it outlives a closing page (64 KiB budget). */
 const KEEPALIVE_CHARS = 16 * 1024;
+/** Documents opened in this page: each gets a tab id of its own (`<page id>d<n>`). */
+let documents = 0;
 
 /**
  * `api`, `sid` (encoded), `root`, `path`, `client` (this tab), `user` (this person's id);
@@ -42,7 +44,11 @@ const KEEPALIVE_CHARS = 16 * 1024;
  * state or the conflict changed; `onSynced()` nothing of this tab's is unconfirmed any more
  * (presence may speak).
  */
-export function createLiveDoc({ api, sid, root, path, client, user, canWrite, getText, onRemote, onReset, onState, onSynced }) {
+export function createLiveDoc({ api, sid, root, path, client: page, user, canWrite, getText, onRemote, onReset, onState, onSynced }) {
+  // Its own id, and a new one once typing was given up (an edit of the old one landing late is
+  // then nobody's acknowledgement, and never taken for a new edit sent twice).
+  const fresh = () => `${page}d${(documents += 1).toString(36)}`;
+  let client = fresh();
   let session = null;
   let revision = 0;
   let shadow = ''; // the document's text at `revision`, as this tab has it
@@ -91,12 +97,24 @@ export function createLiveDoc({ api, sid, root, path, client, user, canWrite, ge
   }
 
   /**
-   * A whole document: this tab's text becomes its text. With `merge` (a document joined again),
-   * this tab's unconfirmed typing goes on top, transformed past the change from `shadow`.
+   * A whole document: this tab's text becomes its text, with this tab's typing on top where it is
+   * known not to be in it. `sent`: the text a join sent (the document may have started from it:
+   * then only the typing since); else the typing not confirmed yet goes on top, transformed past
+   * the change from `shadow`, unless an edit of it is on its way and may have landed already
+   * (`keep: false`, or a catch-up's whole text): that typing is given up.
    */
-  function takeWhole(doc, { merge = false } = {}) {
-    const mine = merge && doc.text != null && doc.text !== getText() ? unconfirmed() : null;
-    const before = shadow;
+  function takeWhole(doc, { sent = null, keep = true } = {}) {
+    let mine = null;
+    let before = shadow;
+    if (doc.text != null && doc.text !== getText()) {
+      if (sent != null && doc.text === sent) {
+        before = sent;
+        mine = replacement(sent, getText());
+      } else if (sent != null || (keep && !outstanding)) {
+        mine = unconfirmed();
+      }
+    }
+    if (!mine && pending()) client = fresh();
     session = doc.session;
     revision = doc.revision;
     outstanding = null;
@@ -126,7 +144,7 @@ export function createLiveDoc({ api, sid, root, path, client, user, canWrite, ge
     // Its own text in its own line ending; else the server takes the disk's.
     if (own) Object.assign(body, own, { eol: state.eol });
     joining = api.post(`/api/sandboxes/${sid}/files/live`, body).then((doc) => {
-      if (!destroyed) takeWhole(doc, { merge: Boolean(own) });
+      if (!destroyed) takeWhole(doc, { sent: own ? own.text : null });
       return doc;
     }).finally(() => { joining = null; });
     return joining;
@@ -144,7 +162,7 @@ export function createLiveDoc({ api, sid, root, path, client, user, canWrite, ge
   /** A step of the server's, in order. */
   function step({ revision: made, user_id: by, client: from, op }) {
     if (made <= revision) return;
-    if (from === client && by === user && outstanding) {
+    if (from === client && (user == null || by === user) && outstanding) {
       outstanding = null;
       clearTimeout(ackTimer);
     } else {
@@ -195,13 +213,16 @@ export function createLiveDoc({ api, sid, root, path, client, user, canWrite, ge
     });
   }
 
-  function post() {
+  /** Sends `outstanding` (`save`: the server saves it too, as the page goes). */
+  function post({ save: andSave = false } = {}) {
     const sent = outstanding;
     const at = session;
     clearTimeout(ackTimer);
     ackTimer = setTimeout(() => { if (outstanding === sent) recheck(sent); }, ACK_MS);
     const keepalive = JSON.stringify(sent).length < KEEPALIVE_CHARS;
-    api.post(`/api/sandboxes/${sid}/files/live/edit`, { ...base(), session: at, client, revision, op: sent }, keepalive ? { keepalive: true } : undefined).catch((error) => {
+    const body = { ...base(), session: at, client, revision, op: sent };
+    if (andSave) body.save = true;
+    api.post(`/api/sandboxes/${sid}/files/live/edit`, body, keepalive ? { keepalive: true } : undefined).catch((error) => {
       if (destroyed || outstanding !== sent || session !== at) return;
       const status = error && error.status;
       if (status === 409) rejoin();
@@ -214,7 +235,7 @@ export function createLiveDoc({ api, sid, root, path, client, user, canWrite, ge
   /** This tab's text is out of step: the server's text replaces it. */
   function resync() {
     api.get(`/api/sandboxes/${sid}/files/live?${new URLSearchParams({ ...base(), session: '-', since: '0' })}`)
-      .then((doc) => { if (!destroyed) takeWhole(doc); }, () => rejoin());
+      .then((doc) => { if (!destroyed) takeWhole(doc, { keep: false }); }, () => rejoin());
   }
 
   /**
@@ -227,7 +248,7 @@ export function createLiveDoc({ api, sid, root, path, client, user, canWrite, ge
     catching = api.get(`/api/sandboxes/${sid}/files/live?${new URLSearchParams({ ...base(), session, since: String(revision) })}`).then((doc) => {
       if (destroyed) return false;
       if (doc.session !== session) { rejoin(); return false; }
-      if (!doc.steps) { takeWhole(doc); return true; }
+      if (!doc.steps) { takeWhole(doc, { keep: false }); return true; }
       for (const each of doc.steps) step(each);
       takeState(doc);
       return true;
@@ -332,8 +353,18 @@ export function createLiveDoc({ api, sid, root, path, client, user, canWrite, ge
     resync,
     /** Events may have been lost. */
     lost() { if (session) catchUp(); },
-    /** Saves now (focus or the file left, Ctrl+S, the page goes: `keepalive`). */
+    /**
+     * Saves now (focus or the file left, Ctrl+S). As the page goes (`keepalive`) it cannot wait for
+     * an answer: the typing goes at once and the server saves it with it (an edit on its way is
+     * sent again for that; the server applies it once). Typing behind an edit on its way is lost
+     * then, unless a teammate's Editor or the next one to open the file saves it.
+     */
     flush({ keepalive = false } = {}) {
+      if (keepalive && session && !readOnly && canWrite() && pending()) {
+        if (!outstanding) { outstanding = buffer; buffer = null; sentAt = Date.now(); }
+        post({ save: true });
+        return Promise.resolve();
+      }
       if (buffer && !outstanding) send();
       return save({ keepalive });
     },
