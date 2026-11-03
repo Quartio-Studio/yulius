@@ -11,7 +11,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   pages by an agent run, though production secrets never reach agents (SPEC-405, task #382, fixes
   #710). The Bash wrapper and the tool hook use the run's fingerprint file only once two reads in a
   row agree: a read that overlapped its in-place rewrite could join the old file to the new one
-  into a set that parses but redacts nothing (fixes #835). Vidoc's #711 (the egress client cache)
+  into a set that parses but redacts the wrong values, or none (fixes #835). Vidoc's #711 (the egress client cache)
   is a duplicate of #757, fixed by #1022. The findings #758 (no asker name holds `", "`, and the
   list authorizes nothing) and #815 (every caller of `open_credential` gets the account from the
   server's own pool choice) are dismissed with narrow `[[ignore]]` entries.

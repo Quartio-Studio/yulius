@@ -1,11 +1,11 @@
 ---
 yulius-task: 03c4d16d-68a1-457f-878e-5d455635e89d
-status: in-progress
+status: done
 ---
 
 # SPEC-405: Vidoc triage of the egress cache and vault request findings (#835 #711 #710 #758 #815)
 
-Status: in-progress
+Status: done
 Date: 2026-11-03
 Owner: Yulius task #382
 Scope authorization: task #382 (a person asked that each of the five issues end closed). Fixes
@@ -49,10 +49,10 @@ its wording, so that a repeat scan does not reopen it.
 - VEV-002 (#835, real, found by review round 1). The Bash wrapper and the tool hook use only a
   fingerprint file that two reads in a row agree on (`settled_read`, at most 4 reads). A read that
   overlaps the in-place rewrite can join the old file's start to the new one's end. Joined inside a
-  digest, that parses as a set whose salt and digests disagree, so it would redact nothing for that
-  command. A file that keeps changing is unreadable, so the command is not run. A partly written
-  file (empty, or any strict prefix of a set) is `FileState::Invalid`, as before, and is pinned by
-  a test. The rewrite stays in place.
+  digest, that parses as a set whose salt and digests disagree, so for that command it would
+  redact the wrong values, or none. A file that keeps changing is unreadable, so the command is
+  not run. A partly written file (empty, or any strict prefix of a set) is `FileState::Invalid`,
+  as before, and is pinned by a test. The rewrite stays in place.
 - VEV-003 (#711, duplicate). #711 is closed as a duplicate of #757, whose fix (#1022) is on `dev`.
 - VEV-004 (#758, false positive). `among_askers` splits names that can never contain `", "`, and
   it authorizes nothing. This gets a narrow entry.
@@ -65,11 +65,11 @@ its wording, so that a repeat scan does not reopen it.
 - [x] Spec SPEC-405 with the triage of all five findings
 - [x] browser_fill_secret refuses a production secret (#710)
 - [x] Fingerprint-file guard pinned: a partly written file fails closed (#835)
-- [x] Narrow [[ignore]] entries for the dismissed wordings (#835 #758 #815)
+- [x] Narrow [[ignore]] entries for the dismissed wordings (#758 #815)
 - [x] Architecture, API docs, changes entry and gates
-- [ ] Independent review answered
+- [x] Independent review answered
 - [x] The fingerprint file is used only once two reads agree (#835)
-- [ ] Dismissed issues commented and closed (#711 #835 #758 #815)
+- [x] Dismissed issues commented and closed (#711 #758 #815)
 
 ## Acceptance criteria
 
@@ -102,7 +102,8 @@ its wording, so that a repeat scan does not reopen it.
   adds the value outside the agent's reach. A filled field sits in a page the agent drives: it
   reads it back (redacted) and screenshots it (not redacted). Refusing it matches
   `agent_secret_value`, which never resolves a production secret, and the production-only
-  allowance, which excludes any agent use (ADR-0171, after ADR-0109). This narrows an existing rule, so it needs no ADR.
+  allowance, which excludes any agent use (ADR-0171, after ADR-0109). This narrows an existing
+  rule, so it needs no ADR.
 - #835 was first dismissed, then fixed after review round 1 found the torn read. An atomic rename
   would break the fallback: a contained session binds the file read-only by inode (bubblewrap
   `--ro-bind`), so a renamed replacement would never reach it. It would keep reading the previous
@@ -128,4 +129,30 @@ its wording, so that a repeat scan does not reopen it.
 
 ## Evidence
 
-To be completed before delivery.
+- Triage on `dev` ffbc2e91. The file:line evidence for #711, #758 and #815 is in each issue's
+  closing comment. #711 got the `duplicate` label. #711, #758 and #815 are closed as not planned.
+- Regression tests, each seen failing without its fix:
+  - `browser::a_production_secret_is_never_typed_into_a_page`: on dev, the call succeeded and
+    typed the value (`"isError":false … "filled":true`). It passes with the fix. Mutation check:
+    it fails again with the guard disabled (`if record.cd_prod && false`).
+  - `scrub_client::tests::a_torn_read_of_the_fingerprint_file_is_never_used`: on dev it does not
+    compile (`settled_read` does not exist). Its first assertion shows that a torn read of an old
+    and a new set parses as a valid set.
+  - `scrub_client::tests::a_fingerprint_file_that_keeps_changing_is_not_read`: fails when
+    `load_fingerprints` reads the file once with `std::fs::read`, and passes through
+    `settled_read`.
+  - `scrub_client::tests::a_partly_written_fingerprint_file_fails_closed` pins the old guard. It
+    fails when an invalid file is treated as "not a run" (fail open).
+- Gates: `scripts/dev ci` exit 0 on 6d89bef5 (3002 tests passed) and on 87f0a28f (3004 tests
+  passed). It also ran on the final head (see the pull request's Yulius CI).
+- Security scan: Vidoc is turned off for this project in Yulius. `yulius security-scan` reports it
+  as disabled, which is not a pass. The remaining `[[ignore]]` entries (#758, #815) were agreed by
+  the independent reviewer in rounds 1 and 2.
+- Independent review: round 1 approved a18e9be5 with M1 (torn read: #835 is now fixed rather than
+  dismissed), M2 (use `support::legacy_production_secret`) and N1 (ADR citation); all were answered.
+  Round 2 approved 87f0a28f with minor points: a precondition on the changing-file test, plan
+  titles, doc wording and a long line. All were answered.
+- Not tested: a real concurrent torn read of the fingerprint file, which needs kernel page
+  timing. The tests feed `settled_read` the torn content directly. Out of scope and not verified
+  (the round-1 reviewer's open question): a cached Superagent egress client re-checks only that
+  its shell still runs, not the person's Work access, which is re-checked on a cache miss (15 s).

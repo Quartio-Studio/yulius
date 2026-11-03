@@ -775,6 +775,7 @@ mod tests {
     fn a_fingerprint_file_that_keeps_changing_is_not_read() -> Result<(), Box<dyn std::error::Error>>
     {
         let changing = "/proc/sys/kernel/random/uuid".to_owned();
+        assert_ne!(std::fs::read(&changing)?, std::fs::read(&changing)?);
         let env = run_env(nobody()?, Some(changing.clone()));
         assert_eq!(
             unavailable(load_fingerprints(&env))?.file,
