@@ -99,6 +99,9 @@ are never built.
 
 - `token_store::tests::an_oversized_or_special_credentials_file_is_refused` fails on `dev`
   (a FIFO fed more than 1 MiB of valid JSON is accepted) and passes with the fix.
+- `token_store::tests::reads_stop_at_the_bound` pins that what is read is bounded, whatever the
+  length was when the file was opened: it fails when the length check after the read is removed
+  (review round 1).
 - `token_store::tests::stored_tokens_are_secrets` does not build on `dev` (the token is a
   `String`) and passes with the fix.
 - `token_store::tests::a_squatted_temporary_name_does_not_block_a_save` fails on `dev` (a folder
@@ -132,5 +135,11 @@ are never built.
   `dev`'s code removed such a file only when a later save happened to get the same process id, so
   it was effectively never removed either. A string with JSON escapes passes through
   `serde_json`'s parsing scratch buffer, which is not zeroized; Yulius tokens (`yul_…`) have none.
+- **Review round 1 (approve, one low finding, own code): the bound on what is read had no test.**
+  The FIFO is refused by its type, and a regular file by its length, before anything is read.
+  The bounded read moved into `read_bounded` (any reader), and `reads_stop_at_the_bound` tests it
+  with a source over the bound and an endless one. The nits are kept on purpose: the 1 MiB buffer
+  is sized once so it never grows and frees no unzeroed copy (zeroing it is one `memset` per CLI
+  call), and a folder at the credentials path reads as corrupt, which asks to remove it.
 - No ADR: these are local hardening choices inside one module with no lasting cross-cutting
   consequence.

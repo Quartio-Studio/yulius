@@ -229,16 +229,9 @@ impl TokenStore {
         if !meta.is_file() || meta.len() > MAX_CREDENTIALS_BYTES {
             return Err(TokenStoreError::Corrupt(self.path.clone()));
         }
-        // Sized once for the bound, so the buffer never grows and leaves no unzeroed copy.
-        let mut bytes = Zeroizing::new(Vec::with_capacity(
-            usize::try_from(MAX_CREDENTIALS_BYTES + 1).unwrap_or(usize::MAX),
-        ));
-        file.take(MAX_CREDENTIALS_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(self.io_error(&self.path))?;
-        if bytes.len() as u64 > MAX_CREDENTIALS_BYTES {
-            return Err(TokenStoreError::Corrupt(self.path.clone()));
-        }
+        let bytes = read_bounded(file)
+            .map_err(self.io_error(&self.path))?
+            .ok_or_else(|| TokenStoreError::Corrupt(self.path.clone()))?;
         let file: CredentialsFile = serde_json::from_slice(&bytes)
             .map_err(|_| TokenStoreError::Corrupt(self.path.clone()))?;
         if file.version != CREDENTIALS_VERSION {
@@ -268,6 +261,18 @@ impl TokenStore {
         }
         Ok(())
     }
+}
+
+/// At most `MAX_CREDENTIALS_BYTES` of `source`, `None` when it holds more. The buffer is sized once
+/// for the bound, so it never grows and leaves no unzeroed copy, and is zeroed when dropped.
+fn read_bounded(source: impl Read) -> io::Result<Option<Zeroizing<Vec<u8>>>> {
+    let mut bytes = Zeroizing::new(Vec::with_capacity(
+        usize::try_from(MAX_CREDENTIALS_BYTES + 1).unwrap_or(usize::MAX),
+    ));
+    source
+        .take(MAX_CREDENTIALS_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= MAX_CREDENTIALS_BYTES).then_some(bytes))
 }
 
 /// Opens `path` to read without waiting: a FIFO with no writer would block the open.
@@ -438,6 +443,22 @@ mod tests {
         let tokens: Vec<&Secret> = file.servers.values().map(|stored| &stored.token).collect();
         assert_eq!(tokens, [&Secret::new("yul_a"), &Secret::new("yul_b")]);
         assert_eq!(serde_json::to_string(&file)?, text);
+        Ok(())
+    }
+
+    /// SPEC-407 TKS-001 (#770): what is read is bounded too, not only the length looked up when
+    /// the file was opened (a file that grows in between): the bound itself is read, one more
+    /// byte is refused.
+    #[test]
+    fn reads_stop_at_the_bound() -> TestResult {
+        let bound = usize::try_from(MAX_CREDENTIALS_BYTES)?;
+        let at_bound = read_bounded(io::repeat(b' ').take(MAX_CREDENTIALS_BYTES))?;
+        assert_eq!(at_bound.map(|bytes| bytes.len()), Some(bound));
+        assert!(read_bounded(io::repeat(b' ').take(MAX_CREDENTIALS_BYTES + 1))?.is_none());
+        assert!(
+            read_bounded(io::repeat(b' '))?.is_none(),
+            "an endless source"
+        );
         Ok(())
     }
 
