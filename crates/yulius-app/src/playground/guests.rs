@@ -33,6 +33,9 @@ pub const MAX_GUEST_NAME: usize = 60;
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 /// Expired links whose guests' work one background sweep ends.
 const EXPIRED_LINKS_PER_SWEEP: usize = 20;
+/// How long after a link died the sweep keeps ending what its guests run (a minute: a request
+/// authorized just before it died has ended by then).
+const GUEST_END_GRACE_MS: i64 = 60_000;
 /// What a guest is told where they may not go (GST-004).
 pub const GUEST_FENCE: &str = "a guest reaches only the playground they were let into";
 
@@ -136,13 +139,24 @@ impl App {
         ended
     }
 
-    /// Ends what the guests of `invite` run and, once nothing is left, marks the link ended, so
-    /// the sweep tries again after a failed stop or a restart.
-    async fn end_link(self: &Arc<Self>, invite: &str, sandbox: &SandboxId) {
-        if self.end_guests_work(invite, sandbox).await
-            && let Err(err) = self.deps.store.mark_invite_ended(invite, self.now()).await
+    /// The sweep's pass over one dead link: ends what its guests run and records the try. The link
+    /// is ended for good only once that worked and it has been dead for [`GUEST_END_GRACE_MS`], so
+    /// a task created while the link died, a failed stop or a restart are caught by a later pass.
+    async fn sweep_link(self: &Arc<Self>, invite: &PlaygroundInviteRecord) {
+        let now = self.now();
+        let died = invite
+            .revoked_at
+            .unwrap_or(invite.expires_at)
+            .min(invite.expires_at);
+        let stopped = self.end_guests_work(&invite.id, &invite.sandbox_id).await;
+        let ended = stopped && now.millis_since(died) >= GUEST_END_GRACE_MS;
+        if let Err(err) = self
+            .deps
+            .store
+            .mark_invite_swept(&invite.id, now, ended)
+            .await
         {
-            tracing::warn!(error = %err, "a guest link could not be marked ended");
+            tracing::warn!(error = %err, "a guest link's sweep could not be recorded");
         }
     }
 
@@ -163,7 +177,7 @@ impl App {
             }
         };
         for invite in expired {
-            self.end_link(&invite.id, &invite.sandbox_id).await;
+            self.sweep_link(&invite).await;
         }
     }
 
@@ -278,7 +292,10 @@ impl App {
         }
         // What its guests still run stops too; the answer does not wait for the stops.
         let (app, link, playground) = (Arc::clone(self), invite.to_owned(), sid.clone());
-        tokio::spawn(async move { app.end_link(&link, &playground).await });
+        // The sweep ends the link for good once it has been dead a while (`sweep_link`).
+        tokio::spawn(async move {
+            app.end_guests_work(&link, &playground).await;
+        });
         store
             .audit(
                 now,

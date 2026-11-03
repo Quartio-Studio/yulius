@@ -87,13 +87,15 @@ API tokens) are open to any signed-in person. So a guest is not simply a writer.
 - A guest's tasks use the instance's Claude accounts like the maker's, and every agent run's
   environment carries that account's token (as before this change, ADR-0005), so a guest's task can
   read it and it outlives the link. Chosen over blocking guests' tasks until the token is hidden
-  (which would leave guests nothing to try): only people the maker sends a link reach it, links
+  (which would leave guests nothing to try): only whoever holds a link the maker sent reaches it, links
   end within 30 days and can be revoked, and the Invite dialog says so. Hiding the token behind the
   egress proxy is a follow-up change for every run.
 - A guest's change in the sandbox (a hook, a shell profile) can run in the maker's later runs,
-  which act with the maker's authority in the playground; it stays inside the playground (the
-  cross-sandbox and GitHub tools refuse there), and the no-secret rule holds after a move to
-  GitHub for the same reason.
+  which act with the maker's authority. While it is a playground that stays inside it (the
+  cross-sandbox and GitHub tools refuse there). After a move to GitHub the sandbox is the same,
+  so such a change would then run with the maker's GitHub access to that repository; the
+  no-secret rule keeps holding after the move, but the GitHub tools open. Look the playground over
+  before moving one that had guests.
 - A guest reaches what the playground's workspace holds: its files (a `.env` written earlier), its
   browser's signed-in sites. Make links only for people you would let work in it, and keep nothing
   there you would not show them. Its agent secrets stop applying once a guest joined.

@@ -272,7 +272,7 @@ impl PlaygroundGuestStore for SqliteStore {
                 .prepare(&format!(
                     "SELECT {COLS} FROM playground_invites WHERE ended_at IS NULL \
                      AND (expires_at <= ?1 OR revoked_at IS NOT NULL) \
-                     ORDER BY expires_at, id LIMIT ?2"
+                     ORDER BY COALESCE(swept_at, 0), expires_at, id LIMIT ?2"
                 ))
                 .map_err(db)?;
             let rows = stmt
@@ -283,12 +283,19 @@ impl PlaygroundGuestStore for SqliteStore {
         .await
     }
 
-    async fn mark_invite_ended(&self, invite_id: &str, at: Timestamp) -> AppResult<()> {
+    async fn mark_invite_swept(
+        &self,
+        invite_id: &str,
+        at: Timestamp,
+        ended: bool,
+    ) -> AppResult<()> {
         let invite = invite_id.to_owned();
         self.call(move |c| {
             c.execute(
-                "UPDATE playground_invites SET ended_at = ?2 WHERE id = ?1 AND ended_at IS NULL",
-                params![invite, at.0],
+                "UPDATE playground_invites SET swept_at = ?2, \
+                 ended_at = CASE WHEN ?3 THEN ?2 ELSE NULL END \
+                 WHERE id = ?1 AND ended_at IS NULL",
+                params![invite, at.0, ended],
             )
             .map_err(db)?;
             Ok(())

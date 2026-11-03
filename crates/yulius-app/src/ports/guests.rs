@@ -104,15 +104,17 @@ pub trait PlaygroundGuestStore: Send + Sync {
     ) -> AppResult<bool>;
     /// The guests `invite_id` let in.
     async fn invite_guest_ids(&self, invite_id: &str) -> AppResult<Vec<UserId>>;
-    /// At most `limit` links revoked or expired by `now` whose guests' work was not ended yet,
-    /// oldest first.
+    /// At most `limit` links revoked or expired by `now` whose guests' work was not ended yet, the
+    /// least recently swept first.
     async fn unended_expired_invites(
         &self,
         now: Timestamp,
         limit: usize,
     ) -> AppResult<Vec<PlaygroundInviteRecord>>;
-    /// Records that what the guests of `invite_id` ran was stopped.
-    async fn mark_invite_ended(&self, invite_id: &str, at: Timestamp) -> AppResult<()>;
+    /// Records a sweep of `invite_id` at `at`, and with `ended` that what its guests ran is stopped
+    /// for good.
+    async fn mark_invite_swept(&self, invite_id: &str, at: Timestamp, ended: bool)
+    -> AppResult<()>;
     /// Whether a guest ever joined `sandbox` (also after it moved to GitHub: what they left stays).
     async fn playground_has_guests(&self, sandbox: &SandboxId) -> AppResult<bool>;
 }

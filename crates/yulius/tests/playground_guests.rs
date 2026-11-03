@@ -615,6 +615,11 @@ async fn a_guest_reaches_no_secret_or_setting() -> TestResult {
 
 /// What the proxy forwards to `host` for the run holding `token` (`None` when it refuses).
 async fn sent_by(w: &World, token: &str, host: &str) -> Option<String> {
+    sent_naming(w, token, host, "LAB_TOKEN").await
+}
+
+/// What the proxy forwards to `host` for a request of `token`'s run naming the secret `name`.
+async fn sent_naming(w: &World, token: &str, host: &str, name: &str) -> Option<String> {
     let client = w.h.app.egress_client(token).await?;
     let request = EgressRequest {
         host: host.into(),
@@ -622,7 +627,7 @@ async fn sent_by(w: &World, token: &str, host: &str) -> Option<String> {
         path_and_query: "/v1".into(),
         headers: vec![(
             "authorization".into(),
-            b"Bearer yulius-secret-LAB_TOKEN".to_vec(),
+            format!("Bearer yulius-secret-{name}").into_bytes(),
         )],
     };
     match w.h.app.egress_apply(&client, request).await {
@@ -714,6 +719,49 @@ async fn a_playground_with_guests_gives_no_run_an_agent_secret() -> TestResult {
     assert!(!later.contains(value), "{later}");
     w.h.app.ci_egress_close(&ci);
     w.h.app.ci_egress_close(&ci_after);
+    Ok(())
+}
+
+struct AnyVidoc;
+
+#[async_trait::async_trait]
+impl yulius_app::ports::vidoc::VidocConnector for AnyVidoc {
+    async fn check(
+        &self,
+        _key: &yulius_app::model::Secret,
+    ) -> yulius_app::ports::vidoc::VidocCheck {
+        yulius_app::ports::vidoc::VidocCheck::Ok
+    }
+}
+
+/// GST-004: the instance's Vidoc key, which the proxy adds to a project's runs as a virtual
+/// secret, is not added to a playground's runs once a guest joined either.
+#[tokio::test]
+async fn a_playground_with_guests_gets_no_instance_vidoc_key() -> TestResult {
+    const INSTANCE_KEY: &str = "vidoc-instance-key-0123456789";
+    let w = world().await?;
+    w.h.app.set_vidoc(yulius_app::vidoc_key::VidocServices::new(
+        std::sync::Arc::new(AnyVidoc),
+        Ok(Some(yulius_app::model::Secret(INSTANCE_KEY.into()))),
+    ));
+    w.h.app.load_vidoc_key().await;
+    seed_task(&w.h, "t1", "p1", "u-alice", TaskStatus::Running, None).await?;
+    seed_live_attempt(&w.h, "t1", ALICE_TASK).await?;
+    let host = yulius_app::vidoc_key::VIDOC_HOST;
+    let before = sent_naming(&w, ALICE_TASK, host, "VIDOC_API_KEY")
+        .await
+        .ok_or("the maker's run reaches Vidoc")?;
+    assert!(before.contains(INSTANCE_KEY), "before any guest: {before}");
+
+    let code = link(&w, 7).await?;
+    join(&w, &code, "Carol").await?;
+    let after = sent_naming(&w, ALICE_TASK, host, "VIDOC_API_KEY")
+        .await
+        .unwrap_or_default();
+    assert!(
+        !after.contains(INSTANCE_KEY),
+        "after a guest joined: {after}"
+    );
     Ok(())
 }
 
@@ -888,6 +936,23 @@ async fn revoking_or_expiry_stops_the_guests_tasks() -> TestResult {
     // Another link's guest and the maker keep working.
     assert_eq!(status("t3").await, Some(TaskStatus::Running));
     assert_eq!(status("t4").await, Some(TaskStatus::Running));
+    // A task of Carol's that a request authorized just before the revoke creates afterwards is
+    // caught by the sweep, which keeps the link for a minute after it died.
+    seed_task(
+        &w.h,
+        "t5",
+        "p1",
+        carol.id.as_str(),
+        TaskStatus::Running,
+        None,
+    )
+    .await?;
+    seed_live_attempt(&w.h, "t5", "guests-run-carol-late-0123456789abcd").await?;
+    w.h.app.end_expired_guest_links().await;
+    until("Carol's late task to stop", || async {
+        status("t5").await.is_some_and(stopped)
+    })
+    .await?;
 
     // Dana's link expires: the background sweep stops her task too.
     advance(&w.h, 7 * DAY_MS);
