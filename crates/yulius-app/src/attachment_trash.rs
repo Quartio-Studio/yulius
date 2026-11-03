@@ -223,11 +223,23 @@ fn left_in_place(attachments: &OwnedFd, folders: Option<&OwnedFd>, id: &str) -> 
 }
 
 /// What settling needs to know about the sandbox: the live tasks, and every text that may name a
-/// folder (requests, automations' prompts).
-struct Namers {
+/// folder (requests, automations' prompts). Shell folders and composer drafts ask it too
+/// (SPEC-413, ADR-0259).
+pub(crate) struct Namers {
     live: HashSet<String>,
     tasks: Vec<(u32, String)>,
     automations: Vec<(String, String)>,
+}
+
+impl Namers {
+    /// Whether a task's request or an automation's prompt contains `path`.
+    pub(crate) fn name(&self, path: &str) -> bool {
+        self.tasks
+            .iter()
+            .map(|(_, text)| text)
+            .chain(self.automations.iter().map(|(_, text)| text))
+            .any(|text| text.contains(path))
+    }
 }
 
 /// Moves `id`'s folder from `folders` to the trash as `<now>-<number>-<id>`. Blocks.
@@ -473,7 +485,8 @@ impl App {
         .unwrap_or_default()
     }
 
-    async fn namers(&self, sandbox: &SandboxId) -> AppResult<Namers> {
+    /// The sandbox's tasks (archived ones included) and automations, read for what they name.
+    pub(crate) async fn namers(&self, sandbox: &SandboxId) -> AppResult<Namers> {
         let mut namers = Namers {
             live: HashSet::new(),
             tasks: Vec::new(),
