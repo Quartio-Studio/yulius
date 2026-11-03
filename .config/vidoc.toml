@@ -728,3 +728,50 @@ reason = "raw keystrokes by design for writers only (terminal_input checks may_w
 path = "crates/yulius-app/src/supervisor.rs"
 title = "Missing authorization check on requested account in preflight_start"
 reason = "accounts are an ownerless pool; switch_task requires Work on the task, rotation::manual refuses unknown or unusable accounts, and the checked credential is dropped (SPEC-393, #691)"
+
+# SPEC-399 (task #380): the Vidoc findings on the web UI's terminal clipboard and links and on two
+# sandbox host paths, triaged as false positives on dev 88a485ca; each issue holds the file:line
+# evidence.
+
+# #819: ADR-0130's decision. A program's OSC 52 write reaches only a viewer who can write and
+# pressed a key or mouse button in that terminal in the last 5 s, and a query is never answered;
+# the program draws its own selection, so xterm has none to match. Pinned by terminal.e2e.ts "a
+# selection the program copies (OSC 52)…" (an unasked copy writes nothing) and "a read-only
+# viewer's clipboard is never written by the program".
+[[ignore]]
+path = "crates/yulius-server/web/assets/terminal-core.js"
+title = "OSC 52 clipboard write can poison the user's clipboard"
+reason = "accepted by ADR-0130: writers who used the terminal in the last 5 s only, never a query; xterm has no selection to match since the program draws its own (SPEC-158, SPEC-399, #819)"
+
+# #741: sandbox.repo.url is not stored data: sandboxes.rs builds it as
+# https://github.com/{owner}/{name} (empty for a playground). Pinned by playground_move.rs.
+[[ignore]]
+path = "crates/yulius-server/web/assets/layout.js"
+title = "Untrusted URL passed to window.open"
+reason = "the server builds repo.url as https://github.com/{owner}/{name}, a fixed scheme and host; tested in playground_move.rs (SPEC-399, #741)"
+
+# #701: needs_you refuses a link that is not public_url or a page below it, so no javascript: link
+# is stored. Pinned by cd.rs a_needs_you_request_reads_what_happened_problem_and_to_do.
+[[ignore]]
+path = "crates/yulius-server/web/assets/taskview.js"
+title = "Unvalidated external link in href"
+reason = "needs_you stores only links to this instance's public_url and below; javascript: and other origins are refused, tested in cd.rs (SPEC-399, #701)"
+
+# #683: state_dir and sysroot join path_name(sandbox), which maps any name that is not a holder
+# name to the fixed component .invalid, and HolderSpec::validate refuses such a name before a
+# holder starts (since #651). Pinned by manager.rs
+# a_production_holder_has_its_own_trees_and_is_retired_with_its_sandbox (x.y is .invalid).
+[[ignore]]
+path = "crates/yulius-sandbox/src/manager.rs"
+title = "Unvalidated sandbox identifier used in filesystem paths"
+reason = "every path from a sandbox name goes through path_name (an invalid name becomes .invalid) and HolderSpec::validate refuses it; tested by a_production_holder_has_its_own_trees_and_is_retired_with_its_sandbox (SPEC-399, #683)"
+
+# #682: the path-based make_writable serves only base::remove_tree, which ADR-0176 keeps for trees
+# no sandbox run can change then: bases (the service user's build, read-only lower layers) and
+# system trees removed once no holder of them lives (its PID namespace ended with it). Trees runs
+# rearrange go through the O_NOFOLLOW walk (reachable_by_runs). Pinned by leftovers.rs
+# the_system_layer_waits_for_the_holder_to_stop and manager.rs only_a_sandbox_s_system_tree_is_removed.
+[[ignore]]
+path = "crates/yulius-sandbox/src/base.rs"
+title = "TOCTOU in make_writable chmod by path"
+reason = "only trees no sandbox run can change at that time (bases, system trees of stopped holders) are removed by path; run-reachable trees use the O_NOFOLLOW walk (ADR-0176, SPEC-399, #682)"
