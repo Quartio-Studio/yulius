@@ -14,10 +14,10 @@ named those files by their absolute paths, and lost them when the first was dele
 ## Decision
 
 - When a task is deleted, every attachment folder of the sandbox whose task no longer exists is
-  settled: one that a remaining task's request (prompt with its queued messages) names by its
-  `attachments/tasks/<id>/` path stays where it is, whole; any other moves, by one rename through
-  folder handles, to `attachments/trash/<secs>-<number>-<id>/`. A kept folder goes to the trash
-  once the last task naming it is deleted.
+  settled: one that a remaining task's request (prompt with its queued messages) or an
+  automation's prompt names by its `attachments/tasks/<id>/` path stays where it is, whole; any
+  other moves, by one rename through folder handles, to `attachments/trash/<secs>-<number>-<id>/`.
+  A kept folder goes to the trash once the last task naming it is deleted.
 - Trash entries are removed 7 days after the deletion (at deletions, listings, start-up and an
   hourly reaper round).
 - `attachments_trash` lists the trash and restores an entry's files into a live task's folder

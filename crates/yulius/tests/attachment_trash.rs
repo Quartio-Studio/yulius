@@ -260,5 +260,169 @@ async fn task_update_changes_a_waiting_tasks_start_in_place() -> TestResult {
     .await?;
     assert!(is_error, "{refused}");
     assert!(refused.to_string().contains("has started"), "{refused}");
+
+    // Audited with the calling agent (MGT-010); a person who only reads the project changes
+    // nothing.
+    let actor = format!("task:{}", number(&h, "t-agent").await?);
+    let audit = h.store.automation_audit("t-later", 10).await?;
+    assert!(
+        audit
+            .iter()
+            .any(|e| e.action == "task.start_changed" && e.actor == actor),
+        "{audit:?}"
+    );
+    let refused = mcp_tool(
+        &h,
+        "tok-bob",
+        "task_update",
+        json!({"number": later, "prepared": true}),
+    )
+    .await?;
+    assert_eq!(refused["isError"], json!(true), "{refused}");
+    let task = h
+        .store
+        .task(&TaskId::parse("t-later")?)
+        .await?
+        .ok_or("task")?;
+    assert_eq!(task.status, TaskStatus::Chained);
+    Ok(())
+}
+
+/// AC ATR-001: an archived task's request and an automation's prompt name a folder as well.
+#[tokio::test]
+async fn archived_tasks_and_automations_name_attachments_too() -> TestResult {
+    let (h, attachments) = world().await?;
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    seed_task(&h, "t2", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let one = attach(&attachments, "t1", "one.png", "1")?;
+    let two = attach(&attachments, "t2", "two.png", "2")?;
+    let prompt = format!("Compare with {}", one.display());
+    seed_task_with_prompt(
+        &h,
+        "t-old",
+        "s1",
+        "u-alice",
+        TaskStatus::Closed,
+        None,
+        &prompt,
+    )
+    .await?;
+    let (archived, is_error) = tool(&h, "task_archive", json!({"task_id": "t-old"})).await?;
+    assert!(!is_error, "{archived}");
+    let (created, is_error) = tool(
+        &h,
+        "automation_create",
+        json!({"name": "Nightly", "cron": "0 4 * * *", "prompt": format!("Check {}", two.display())}),
+    )
+    .await?;
+    assert!(!is_error, "{created}");
+
+    let (deleted, is_error) = tool(&h, "task_delete", json!({"task_id": "t1"})).await?;
+    assert!(!is_error, "{deleted}");
+    let kept = number(&h, "t-old").await?;
+    assert_eq!(deleted["deleted"]["attachments"]["kept_for"], json!([kept]));
+    let (deleted, is_error) = tool(&h, "task_delete", json!({"task_id": "t2"})).await?;
+    assert!(!is_error, "{deleted}");
+    assert_eq!(
+        deleted["deleted"]["attachments"]["kept_for_automations"],
+        json!(["Nightly"])
+    );
+    assert!(one.is_file() && two.is_file());
+    assert!(trash(&attachments).is_empty());
+    Ok(())
+}
+
+/// AC ATR-002, ATR-004, ATR-005: an old entry goes at a deletion too; a full task takes no
+/// restore; what a restore cannot move keeps its entry; a folder a parallel deletion trashed
+/// first gets its task's number back.
+#[tokio::test]
+async fn the_trash_keeps_what_it_cannot_restore_and_numbers_what_others_moved() -> TestResult {
+    let (h, attachments) = world().await?;
+    let now = h.app.now().0 / 1000;
+    let old = attachments
+        .join("trash")
+        .join(format!("{}-9-t-old", now - 8 * DAY_SECS));
+    std::fs::create_dir_all(&old)?;
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    seed_task(&h, "t2", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    seed_task(&h, "t-full", "s1", "u-alice", TaskStatus::Prepared, None).await?;
+    let (n1, n2) = (number(&h, "t1").await?, number(&h, "t2").await?);
+    let full = number(&h, "t-full").await?;
+    attach(&attachments, "t1", "a.txt", "a")?;
+    std::fs::create_dir_all(attachments.join("tasks/t1/nested"))?;
+    std::fs::write(attachments.join("tasks/t1/nested/b.txt"), "b")?;
+    for i in 0..500 {
+        attach(&attachments, "t-full", &format!("f{i}.txt"), "f")?;
+    }
+
+    let (deleted, is_error) = tool(&h, "task_delete", json!({"task_id": "t1"})).await?;
+    assert!(!is_error, "{deleted}");
+    assert!(
+        !old.exists(),
+        "an entry older than a week goes at a deletion"
+    );
+
+    let (refused, is_error) = tool(
+        &h,
+        "attachments_trash",
+        json!({"restore": "t1", "into": full}),
+    )
+    .await?;
+    assert!(is_error, "{refused}");
+    assert!(refused.to_string().contains("more than 500"), "{refused}");
+
+    let (restored, is_error) = tool(&h, "attachments_trash", json!({"restore": n1})).await?;
+    assert!(!is_error, "{restored}");
+    assert_eq!(
+        std::fs::read_to_string(attachments.join("tasks/t-agent/a.txt"))?,
+        "a"
+    );
+    let entries = trash(&attachments);
+    let entry = entries.first().ok_or("the entry stays")?;
+    assert_eq!(
+        std::fs::read_to_string(attachments.join("trash").join(entry).join("nested/b.txt"))?,
+        "b",
+        "a folder in the entry is never removed by a restore"
+    );
+
+    // t2's folder was moved by another deletion before t2's own settling, without its number.
+    std::fs::create_dir_all(attachments.join(format!("trash/{now}-0-t2")))?;
+    std::fs::write(attachments.join(format!("trash/{now}-0-t2/c.txt")), "c")?;
+    let (deleted, is_error) = tool(&h, "task_delete", json!({"task_id": "t2"})).await?;
+    assert!(!is_error, "{deleted}");
+    assert_eq!(
+        deleted["deleted"]["attachments"]["trash"]["number"],
+        json!(n2),
+        "{deleted}"
+    );
+    assert!(
+        attachments
+            .join(format!("trash/{now}-{n2}-t2/c.txt"))
+            .is_file()
+    );
+    Ok(())
+}
+
+/// AC ATR-002: a trash folder swapped for a link outside the sandbox receives nothing; the
+/// deleted task's folder stays where it is.
+#[tokio::test]
+async fn a_trash_swapped_for_a_link_receives_nothing() -> TestResult {
+    let (h, attachments) = world().await?;
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None).await?;
+    let file = attach(&attachments, "t1", "a.txt", "a")?;
+    let outside = h.app.config.data_dir.join("host");
+    std::fs::create_dir_all(&outside)?;
+    std::os::unix::fs::symlink(&outside, attachments.join("trash"))?;
+    let (deleted, is_error) = tool(&h, "task_delete", json!({"task_id": "t1"})).await?;
+    assert!(!is_error, "{deleted}");
+    assert_eq!(
+        std::fs::read_dir(&outside)?.count(),
+        0,
+        "nothing went outside"
+    );
+    assert!(file.is_file());
+    let listed = mcp_tool(&h, "tok-agent", "attachments_trash", json!({})).await?;
+    assert_eq!(listed["isError"], json!(true), "{listed}");
+    assert_eq!(std::fs::read_dir(&outside)?.count(), 0);
     Ok(())
 }

@@ -37,31 +37,35 @@ how a waiting task starts in place instead of deleting and recreating it.
 ## Requirements
 
 - **ATR-001** A task's attachment folder `attachments/tasks/<id>/` is *named* by a task when the
-  task's request (prompt with its queued messages) contains `attachments/tasks/<id>/`. Every task
-  of the sandbox counts, archived ones included.
+  task's request (prompt with its queued messages) or an automation's prompt contains
+  `attachments/tasks/<id>/`. Every task of the sandbox counts, archived ones included.
 - **ATR-002** When a task is deleted, every attachment folder of the sandbox whose task no longer
   exists is settled: a named one stays where it is, whole, so the paths in the naming requests keep
   working; any other goes to the sandbox's trash, `attachments/trash/<secs>-<number>-<id>/`
   (deletion time in Unix seconds; number `0` when no longer known), by one rename through folder
   handles that never follows a link. A folder kept earlier goes to the trash once the last task
-  naming it is deleted.
+  naming it is deleted. The folders are listed before the tasks are read, so a task created
+  meanwhile is never taken for a deleted one; a folder a parallel deletion moved first, without its
+  number, gets it back from its own task's settling. The file system work runs off the runtime.
 - **ATR-003** `task_delete` answers what happened to the task's attachments: `kept_for` (the
-  numbers of the tasks naming them) or `trash` (the entry, its files and until when it can be
+  numbers of the tasks naming them, `kept_for_automations` the automations' names) or `trash` (the entry, its files and until when it can be
   restored). The UI's delete confirmation says that attachments another task names stay and the
   rest wait 7 days in the trash.
 - **ATR-004** A trash entry older than 7 days is removed: when a task is deleted, when the trash is
-  listed, at start-up and by the workspace reaper (at most once an hour). Removal never follows a
-  link.
+  listed, at start-up and by the workspace reaper (once an hour), at most 100 entries a round.
+  Removal never follows a link.
 - **ATR-005** `attachments_trash` (task agents and the Superagent) lists the project's trash
   entries (deleted task id and number, deleted at, restorable until, file names) and, with
   `restore` (the deleted task's id or number) and `into` (a task number; a task agent's own task by
   default), moves the entry's regular files into that task's attachments folder under free names
   (`name`, `name-2`, …) and answers their new paths. Restoring needs write access, respects the
-  folder bound, and is audited (`attachment.restored`).
+  folder bound, and is audited (`attachment.restored`). The entry goes once it is empty: what a
+  restore could not move (a folder, a file without a free name) stays in it and is reported.
 - **ATR-006** `task_update` (task agents and the Superagent) changes how a waiting (chained or
   prepared) task starts, as the UI's change does (SPEC-126), with `task_create`'s start arguments
   (`after_task`, `start_rule`, `supertask`, `prepared`, `start_at`; none of them means start now).
-  A task that has started is refused, as in the UI.
+  A task that has started is refused, as in the UI. Audited with the caller (MGT-010). Both tools
+  are also served to the remote MCP.
 
 ## Plan
 
@@ -103,8 +107,12 @@ first and fails without the change.
   inside the sandbox's attachments folder, kept 7 days; restoring moves files into a live task.
 - `task_create` does not copy the attachments its prompt names: keeping named folders in place
   already protects the files, and copying would mean rewriting the prompt's paths.
-- Only requests are searched for references: messages typed into a running session are kept
-  nowhere Yulius can search (its transcript only); the trash covers those.
+- Requests and automations' prompts are searched for references (review round 1 added the
+  automations); messages typed into a running session are kept nowhere Yulius can search (its
+  transcript only), and the trash covers those.
+- Composer drafts a waiting task names are still pruned after a week, and a shell's attachments go
+  with the shell: older paths to the same kind of loss, outside this change (#1023, and the issue
+  for shells).
 - The tool is named `task_update` (what an agent looks for) and takes only the start for now.
 
 ## Evidence

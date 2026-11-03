@@ -1470,7 +1470,7 @@ impl App {
     pub async fn start_workspace_services(self: &Arc<Self>) -> WorkspaceReaper {
         let (adopted, removed) = self.adopt_shells().await;
         self.prune_shell_attachments();
-        self.purge_attachment_trash();
+        self.purge_attachment_trash().await;
         if adopted + removed > 0 {
             tracing::info!(adopted, removed, "shells of the previous server process");
         }
@@ -1488,8 +1488,8 @@ impl App {
                 app.reap_idle_shells().await;
                 // Deleted tasks' attachments older than a week go hourly (SPEC-396 ATR-004).
                 rounds = rounds.wrapping_add(1);
-                if rounds % TRASH_PURGE_ROUNDS == 0 {
-                    app.purge_attachment_trash();
+                if rounds.is_multiple_of(TRASH_PURGE_ROUNDS) {
+                    app.purge_attachment_trash().await;
                 }
                 for sandbox in app.deps.browser.reap_idle().await {
                     tracing::info!(sandbox = %sandbox, "stopped an idle sandbox browser");

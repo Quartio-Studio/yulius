@@ -3,22 +3,27 @@
 //! Contract:
 //! - when a task is deleted, every `attachments/tasks/<id>/` folder of its sandbox whose task no
 //!   longer exists is settled: one that a remaining task's request (its prompt with its queued
-//!   messages; archived tasks count) names by `attachments/tasks/<id>/` stays where it is, so the
-//!   request's paths keep working; any other moves by one rename to
-//!   `attachments/trash/<secs>-<number>-<id>/` (deletion time in Unix seconds, number `0` once
-//!   unknown);
-//! - an entry is removed [`TRASH_DAYS`] days after its deletion: at deletions, at listings, at
-//!   start-up and in the workspace reaper's hourly round;
+//!   messages; archived tasks count) or an automation's prompt names by `attachments/tasks/<id>/`
+//!   stays where it is, so those paths keep working; any other moves by one rename to
+//!   `attachments/trash/<secs>-<number>-<id>/` (deletion time in Unix seconds, number `0` when
+//!   unknown: a folder kept earlier, or one a parallel deletion moved first, which the task's own
+//!   settling then renumbers). The folders are listed before the tasks are read, so a task created
+//!   meanwhile (its record comes before its folder) is never taken for a deleted one;
+//! - an entry is removed [`TRASH_DAYS`] days after its deletion, at most
+//!   [`MAX_PURGED_PER_ROUND`] entries a round: at deletions, at listings, at start-up and in the
+//!   workspace reaper's hourly round;
 //! - `attachments_trash` lists the project's entries and restores one's regular files into a live
 //!   task's folder under free names (write access, the folder bound, audited
-//!   `attachment.restored`);
-//! - every folder is reached through handles without following a link (ADR-0174, #660): a link
-//!   planted on the way moves, removes or restores nothing.
+//!   `attachment.restored`); an entry goes once nothing is left in it, so what could not be
+//!   restored stays in the trash and is reported;
+//! - the file system work runs off the async runtime, and every folder is reached through handles
+//!   without following a link (ADR-0174, #660): a link planted on the way moves, removes or
+//!   restores nothing.
 
 use std::collections::HashSet;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::os::fd::OwnedFd;
-use std::path::Path;
+use std::path::PathBuf;
 
 use nix::errno::Errno;
 use nix::fcntl::renameat;
@@ -36,6 +41,7 @@ use crate::error::{AppError, AppResult};
 use crate::files::{errno_error, kind_at, names_in, open_dir_at, open_dirs_below, remove_tree};
 use crate::manage::tool_detail;
 use crate::model::TaskRecord;
+use crate::projects::blocking;
 use crate::uploads::{
     ATTACHMENTS_DIR, MAX_ATTACHMENTS_PER_FOLDER, MAX_FREE_NAME_ATTEMPTS, MAX_PRUNED_ENTRIES,
     candidate, count_entries, ensure_plain_dirs, link_new_in,
@@ -44,6 +50,8 @@ use crate::uploads::{
 /// Days a deleted task's attachments can be restored.
 pub const TRASH_DAYS: i64 = 7;
 const TRASH_MAX_AGE_SECS: i64 = TRASH_DAYS * 24 * 3600;
+/// Old entries one purge removes at most (a sandbox process can plant many).
+pub const MAX_PURGED_PER_ROUND: usize = 100;
 /// The trash folder inside a sandbox's attachments folder.
 const TRASH_DIR: &str = "trash";
 /// File names an entry's listing shows.
@@ -55,6 +63,9 @@ pub struct DeletedAttachments {
     /// They stay where they are: the numbers of the tasks whose requests name them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub kept_for: Vec<u32>,
+    /// They stay where they are: the names of the automations whose prompts name them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub kept_for_automations: Vec<String>,
     /// They wait in the trash.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trash: Option<TrashEntry>,
@@ -77,6 +88,13 @@ pub struct TrashEntry {
     name: String,
 }
 
+/// What a restore moved and what it left in the trash.
+#[derive(Debug, Default)]
+struct Restored {
+    paths: Vec<String>,
+    left: Vec<String>,
+}
+
 /// `<secs>-<number>-<id>` read back.
 fn parse_entry(name: &str) -> Option<(i64, u32, TaskId)> {
     let (secs, rest) = name.split_once('-')?;
@@ -92,7 +110,7 @@ fn parse_entry(name: &str) -> Option<(i64, u32, TaskId)> {
     ))
 }
 
-/// The regular files of the folder `dir`, sorted, at most `limit`.
+/// The regular files of the folder `dir` with printable names, sorted, at most `limit`.
 fn files_in(dir: &OwnedFd, limit: usize) -> Vec<String> {
     let mut files: Vec<String> = names_in(dir, MAX_PRUNED_ENTRIES)
         .unwrap_or_default()
@@ -120,6 +138,192 @@ fn entry_of(trash: &OwnedFd, name: &str) -> Option<TrashEntry> {
     })
 }
 
+/// The trash's entries, newest first.
+fn entries(trash: &OwnedFd) -> Vec<TrashEntry> {
+    let mut found: Vec<TrashEntry> = names_in(trash, MAX_PRUNED_ENTRIES)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|name| entry_of(trash, name.to_str()?))
+        .collect();
+    found.sort_by(|a, b| b.name.cmp(&a.name));
+    found
+}
+
+/// Removes the trash's entries older than [`TRASH_DAYS`] at `now` (ATR-004), at most
+/// [`MAX_PURGED_PER_ROUND`]. Blocks.
+fn purge(attachments: &OwnedFd, now: i64) {
+    let Ok(trash) = open_dir_at(attachments, OsStr::new(TRASH_DIR), false) else {
+        return;
+    };
+    let old = names_in(&trash, MAX_PRUNED_ENTRIES)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|name| {
+            name.to_str()
+                .and_then(parse_entry)
+                .is_some_and(|(secs, _, _)| now.saturating_sub(secs) > TRASH_MAX_AGE_SECS)
+        })
+        .take(MAX_PURGED_PER_ROUND);
+    for name in old {
+        if let Err(err) = remove_tree(&trash, &name) {
+            tracing::warn!(error = %err, "could not purge the attachments trash");
+        }
+    }
+}
+
+/// The sandbox's `attachments` folder and its `tasks` folder (each `None` when missing), opened
+/// from the sandbox directory without following a link. Blocks.
+fn open_attachments(sandbox_dir: &PathBuf) -> Option<(OwnedFd, Option<OwnedFd>)> {
+    let dir = std::fs::canonicalize(sandbox_dir).ok()?;
+    let attachments = match open_dirs_below(&dir, &[OsStr::new(ATTACHMENTS_DIR)], false) {
+        Ok(folder) => folder,
+        Err(Errno::ENOENT) => return None,
+        Err(err) => {
+            tracing::warn!(error = %err, "attachments folder is not a plain folder");
+            return None;
+        }
+    };
+    let tasks = open_dir_at(&attachments, OsStr::new("tasks"), false).ok();
+    Some((attachments, tasks))
+}
+
+/// What settling needs to know about the sandbox: the live tasks, and every text that may name a
+/// folder (requests, automations' prompts).
+struct Namers {
+    live: HashSet<String>,
+    tasks: Vec<(u32, String)>,
+    automations: Vec<(String, String)>,
+}
+
+/// Moves `id`'s folder from `folders` to the trash as `<now>-<number>-<id>`. Blocks.
+fn to_trash(
+    (attachments, folders): (&OwnedFd, &OwnedFd),
+    id: &str,
+    number: u32,
+    now: i64,
+) -> Result<(OwnedFd, String), Errno> {
+    let trash = open_dir_at(attachments, OsStr::new(TRASH_DIR), true)?;
+    let entry = format!("{now}-{number}-{id}");
+    renameat(folders, id, &trash, entry.as_str())?;
+    Ok((trash, entry))
+}
+
+/// Settles the listed orphan folders (ATR-002) and answers the deleted task's fate. Blocks.
+fn settle(
+    (attachments, folders): (&OwnedFd, &OwnedFd),
+    names: &[OsString],
+    namers: &Namers,
+    (deleted, number): (&str, u32),
+    now: i64,
+) -> DeletedAttachments {
+    let mut fate = DeletedAttachments::default();
+    let mut own_seen = false;
+    for name in names {
+        let Some(id) = name.to_str().filter(|id| !namers.live.contains(*id)) else {
+            continue;
+        };
+        let path = format!("{ATTACHMENTS_DIR}/tasks/{id}/");
+        let mut tasks: Vec<u32> = namers
+            .tasks
+            .iter()
+            .filter(|(_, text)| text.contains(&path))
+            .map(|(n, _)| *n)
+            .collect();
+        let automations: Vec<String> = namers
+            .automations
+            .iter()
+            .filter(|(_, text)| text.contains(&path))
+            .map(|(n, _)| n.clone())
+            .collect();
+        let own = id == deleted;
+        own_seen |= own;
+        if !tasks.is_empty() || !automations.is_empty() {
+            if own {
+                tasks.sort_unstable();
+                fate.kept_for = tasks;
+                fate.kept_for_automations = automations;
+            }
+            continue;
+        }
+        match to_trash(
+            (attachments, folders),
+            id,
+            if own { number } else { 0 },
+            now,
+        ) {
+            Ok((trash, entry)) if own => fate.trash = entry_of(&trash, &entry),
+            Ok(_) | Err(Errno::ENOENT) => {}
+            Err(err) => tracing::warn!(error = %err, "attachments not moved to the trash"),
+        }
+    }
+    // A parallel deletion's settling may have moved this task's folder first, without its number.
+    if !own_seen && let Ok(trash) = open_dir_at(attachments, OsStr::new(TRASH_DIR), false) {
+        let unnumbered = names_in(&trash, MAX_PRUNED_ENTRIES)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|name| name.into_string().ok())
+            .find(|name| {
+                parse_entry(name).is_some_and(|(_, n, id)| n == 0 && id.as_str() == deleted)
+            });
+        if let Some(found) = unnumbered
+            && let Some((secs, _, _)) = parse_entry(&found)
+        {
+            let entry = format!("{secs}-{number}-{deleted}");
+            if renameat(&trash, found.as_str(), &trash, entry.as_str()).is_ok() {
+                fate.trash = entry_of(&trash, &entry);
+            }
+        }
+    }
+    fate
+}
+
+/// Moves the regular files of the trash entry `from` into the folder `to` under free names,
+/// answering their paths below `shown`; removes the entry once it is empty. Blocks.
+fn restore(
+    (trash, entry): (&OwnedFd, &str),
+    to: &OwnedFd,
+    shown: &std::path::Path,
+) -> AppResult<Restored> {
+    let from = open_dir_at(trash, OsStr::new(entry), false).map_err(errno_error)?;
+    let files = files_in(&from, MAX_ATTACHMENTS_PER_FOLDER + 1);
+    if count_entries(to, MAX_ATTACHMENTS_PER_FOLDER + 1)? + files.len() > MAX_ATTACHMENTS_PER_FOLDER
+    {
+        return Err(AppError::Conflict(format!(
+            "the task would have more than {MAX_ATTACHMENTS_PER_FOLDER} attachments"
+        )));
+    }
+    let mut restored = Restored::default();
+    for file in files {
+        let placed = (1..=MAX_FREE_NAME_ATTEMPTS).find_map(|n| {
+            let name = candidate(&file, n);
+            match link_new_in((&from, &file), to, &name) {
+                Ok(true) => Some(Ok(name)),
+                Ok(false) => None,
+                Err(err) => Some(Err(err)),
+            }
+        });
+        match placed {
+            Some(Ok(name)) => {
+                let _ = unlinkat(&from, file.as_str(), UnlinkatFlags::NoRemoveDir);
+                restored
+                    .paths
+                    .push(shown.join(&name).to_string_lossy().into_owned());
+            }
+            Some(Err(err)) => {
+                tracing::warn!(error = %err, file, "an attachment was not restored");
+                restored.left.push(file);
+            }
+            None => restored.left.push(file),
+        }
+    }
+    // Whatever is still in it (a folder, a file it could not move) keeps the entry.
+    match unlinkat(trash, entry, UnlinkatFlags::RemoveDir) {
+        Ok(()) | Err(Errno::ENOTEMPTY | Errno::EEXIST | Errno::ENOENT) => {}
+        Err(err) => tracing::warn!(error = %err, "a restored trash entry was not removed"),
+    }
+    Ok(restored)
+}
+
 impl App {
     fn now_secs(&self) -> i64 {
         self.now().0 / 1000
@@ -129,107 +333,101 @@ impl App {
     /// what became of its own. Store failures keep everything where it is.
     pub(crate) async fn settle_attachments(&self, deleted: &TaskRecord) -> DeletedAttachments {
         let sandbox = &deleted.sandbox_id;
-        let mut fate = DeletedAttachments::default();
-        let mut tasks = Vec::new();
-        for archived in [false, true] {
-            match self.deps.store.tasks(sandbox, archived).await {
-                Ok(found) => tasks.extend(found),
-                Err(err) => {
-                    tracing::warn!(%sandbox, error = %err, "attachments kept: tasks unreadable");
-                    return fate;
-                }
-            }
-        }
-        let Ok(dir) = std::fs::canonicalize(self.sandbox_dir(sandbox)) else {
-            return fate;
-        };
+        let sandbox_dir = self.sandbox_dir(sandbox);
         crate::race::reached(
             crate::race::Point::AttachmentsRemove,
-            &dir.join(ATTACHMENTS_DIR)
+            &sandbox_dir
+                .join(ATTACHMENTS_DIR)
                 .join("tasks")
                 .join(deleted.id.as_str()),
         );
-        let attachments = match open_dirs_below(&dir, &[OsStr::new(ATTACHMENTS_DIR)], false) {
-            Ok(folder) => folder,
-            Err(Errno::ENOENT) => return fate,
-            Err(err) => {
-                tracing::warn!(%sandbox, error = %err, "attachments folder is not a plain folder");
-                return fate;
-            }
-        };
-        self.purge_trash_in(sandbox, &attachments);
-        let Ok(folders) = open_dir_at(&attachments, OsStr::new("tasks"), false) else {
-            return fate;
-        };
-        let live: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        for name in names_in(&folders, MAX_PRUNED_ENTRIES).unwrap_or_default() {
-            let Some(id) = name.to_str().filter(|id| !live.contains(id)) else {
-                continue;
+        let now = self.now_secs();
+        // Listed before the tasks are read: a task created meanwhile is then among them.
+        let listed = blocking(move || {
+            let Some((attachments, folders)) = open_attachments(&sandbox_dir) else {
+                return Ok(None);
             };
-            if !kind_at(&folders, &name).is_ok_and(|(kind, _)| kind == SFlag::S_IFDIR) {
-                continue;
+            purge(&attachments, now);
+            let names = folders
+                .as_ref()
+                .map(|folders| {
+                    names_in(folders, MAX_PRUNED_ENTRIES)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|name| {
+                            kind_at(folders, name).is_ok_and(|(kind, _)| kind == SFlag::S_IFDIR)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            Ok(Some((attachments, folders, names)))
+        })
+        .await;
+        let Ok(Some((attachments, folders, names))) = listed else {
+            return DeletedAttachments::default();
+        };
+        let namers = match self.namers(sandbox).await {
+            Ok(namers) => namers,
+            Err(err) => {
+                tracing::warn!(%sandbox, error = %err, "attachments kept: tasks unreadable");
+                return DeletedAttachments::default();
             }
-            let path = format!("{ATTACHMENTS_DIR}/tasks/{id}/");
-            let mut naming: Vec<u32> = tasks
-                .iter()
-                .filter(|t| t.prompt.contains(&path))
-                .map(|t| t.number)
-                .collect();
-            let own = id == deleted.id.as_str();
-            if !naming.is_empty() {
-                if own {
-                    naming.sort_unstable();
-                    fate.kept_for = naming;
-                }
-                continue;
-            }
-            let number = if own { deleted.number } else { 0 };
-            let entry = format!("{}-{number}-{id}", self.now_secs());
-            let moved = open_dir_at(&attachments, OsStr::new(TRASH_DIR), true)
-                .and_then(|trash| renameat(&folders, id, &trash, entry.as_str()).map(|()| trash));
-            match moved {
-                Ok(trash) if own => fate.trash = entry_of(&trash, &entry),
-                Ok(_) | Err(Errno::ENOENT) => {}
-                Err(err) => {
-                    tracing::warn!(%sandbox, error = %err, "attachments not moved to the trash")
-                }
-            }
-        }
-        fate
+        };
+        let (id, number) = (deleted.id.as_str().to_owned(), deleted.number);
+        blocking(move || {
+            let Some(folders) = folders else {
+                return Ok(DeletedAttachments::default());
+            };
+            Ok(settle(
+                (&attachments, &folders),
+                &names,
+                &namers,
+                (&id, number),
+                now,
+            ))
+        })
+        .await
+        .unwrap_or_default()
     }
 
-    /// Removes the entries of a sandbox's trash older than [`TRASH_DAYS`] (ATR-004).
-    fn purge_trash_in(&self, sandbox: &SandboxId, attachments: &OwnedFd) {
-        let Ok(trash) = open_dir_at(attachments, OsStr::new(TRASH_DIR), false) else {
-            return;
+    async fn namers(&self, sandbox: &SandboxId) -> AppResult<Namers> {
+        let mut namers = Namers {
+            live: HashSet::new(),
+            tasks: Vec::new(),
+            automations: Vec::new(),
         };
-        let now = self.now_secs();
-        for name in names_in(&trash, MAX_PRUNED_ENTRIES).unwrap_or_default() {
-            let old = name
-                .to_str()
-                .and_then(parse_entry)
-                .is_some_and(|(secs, _, _)| now.saturating_sub(secs) > TRASH_MAX_AGE_SECS);
-            if old && let Err(err) = remove_tree(&trash, &name) {
-                tracing::warn!(%sandbox, error = %err, "could not purge the attachments trash");
+        for archived in [false, true] {
+            for task in self.deps.store.tasks(sandbox, archived).await? {
+                namers.live.insert(task.id.as_str().to_owned());
+                namers.tasks.push((task.number, task.prompt));
             }
         }
+        for automation in self.deps.store.automations(sandbox).await? {
+            namers
+                .automations
+                .push((automation.name, automation.prompt));
+        }
+        Ok(namers)
     }
 
     /// The trash of every sandbox purged (start-up and the reaper's hourly round).
-    pub(crate) fn purge_attachment_trash(&self) {
-        let Ok(sandboxes) = std::fs::read_dir(self.config.data_dir.join("sandboxes")) else {
-            return;
-        };
-        for sandbox in sandboxes.flatten().take(MAX_PRUNED_ENTRIES) {
-            let Ok(id) = SandboxId::parse(&sandbox.file_name().to_string_lossy()) else {
-                continue;
+    pub(crate) async fn purge_attachment_trash(&self) {
+        let (sandboxes, now) = (self.config.data_dir.join("sandboxes"), self.now_secs());
+        let _ = blocking(move || {
+            let Ok(found) = std::fs::read_dir(&sandboxes) else {
+                return Ok(());
             };
-            if let Ok(attachments) =
-                open_dirs_below(&sandbox.path(), &[OsStr::new(ATTACHMENTS_DIR)], false)
-            {
-                self.purge_trash_in(&id, &attachments);
+            for sandbox in found.flatten().take(MAX_PRUNED_ENTRIES) {
+                if SandboxId::parse(&sandbox.file_name().to_string_lossy()).is_err() {
+                    continue;
+                }
+                if let Some((attachments, _)) = open_attachments(&sandbox.path()) {
+                    purge(&attachments, now);
+                }
             }
-        }
+            Ok(())
+        })
+        .await;
     }
 
     /// `attachments_trash` (ATR-005): the project's trash, after restoring the entry `restore`
@@ -247,39 +445,53 @@ impl App {
         let sandbox = &caller.sandbox;
         let dir = std::fs::canonicalize(self.sandbox_dir(sandbox))
             .map_err(|_| AppError::Conflict("the sandbox has no folder yet".into()))?;
-        let attachments = ensure_plain_dirs(&dir, &[ATTACHMENTS_DIR])?.1;
-        self.purge_trash_in(sandbox, &attachments);
-        let trash = open_dir_at(&attachments, OsStr::new(TRASH_DIR), true).map_err(errno_error)?;
-        let list = |trash: &OwnedFd| -> Vec<TrashEntry> {
-            let mut entries: Vec<TrashEntry> = names_in(trash, MAX_PRUNED_ENTRIES)
-                .unwrap_or_default()
-                .iter()
-                .filter_map(|name| entry_of(trash, name.to_str()?))
-                .collect();
-            entries.sort_by(|a, b| b.name.cmp(&a.name));
-            entries
-        };
+        let now = self.now_secs();
+        let trash_dir = dir.clone();
+        let (trash, listed) = blocking(move || {
+            let attachments = ensure_plain_dirs(&trash_dir, &[ATTACHMENTS_DIR])?.1;
+            purge(&attachments, now);
+            let trash =
+                open_dir_at(&attachments, OsStr::new(TRASH_DIR), true).map_err(errno_error)?;
+            let listed = entries(&trash);
+            Ok((trash, listed))
+        })
+        .await?;
         let mut out = json!({});
         if let Some(wanted) = args.get("restore").filter(|v| !v.is_null()) {
             self.manage_authority(caller).await?;
-            let matches = |e: &TrashEntry| match wanted {
-                Value::String(id) => e.task_id == *id,
-                Value::Number(n) => n
-                    .as_u64()
-                    .is_some_and(|n| e.number.map(u64::from) == Some(n)),
-                _ => false,
+            let (id, number) = match wanted {
+                Value::String(text) => (
+                    Some(text.trim().to_owned()),
+                    text.trim().parse::<u32>().ok(),
+                ),
+                Value::Number(n) => (None, n.as_u64().and_then(|n| u32::try_from(n).ok())),
+                _ => {
+                    return Err(AppError::Invalid(
+                        "`restore` must be a deleted task's id or number".into(),
+                    ));
+                }
             };
-            let found: Vec<TrashEntry> = list(&trash).into_iter().filter(matches).collect();
+            let shown_wanted = id
+                .clone()
+                .or(number.map(|n| format!("#{n}")))
+                .unwrap_or_default();
+            let found: Vec<&TrashEntry> = listed
+                .iter()
+                .filter(|e| {
+                    id.as_deref() == Some(e.task_id.as_str())
+                        || (number.is_some() && e.number == number)
+                })
+                .collect();
             let entry = match found.as_slice() {
-                [entry] => entry.clone(),
+                [entry] => (*entry).clone(),
                 [] => {
                     return Err(AppError::Invalid(format!(
-                        "no deleted task {wanted} has attachments in the trash"
+                        "no deleted task {shown_wanted} has attachments in the trash"
                     )));
                 }
                 _ => {
                     return Err(AppError::Invalid(format!(
-                        "several trash entries match {wanted}: name it by its task id"
+                        "several trash entries match {shown_wanted}: name it by its task id"
                     )));
                 }
             };
@@ -289,8 +501,19 @@ impl App {
                     AppError::Invalid("name the task to restore into with `into`".into())
                 })?,
             };
-            let paths = self.restore_entry((&dir, &trash), &entry, &into)?;
-            let detail = json!({"from_task": entry.task_id, "files": paths.len()});
+            let folder = into.id.as_str().to_owned();
+            let shown = [ATTACHMENTS_DIR, "tasks", &folder]
+                .iter()
+                .fold(self.sandbox_dir_absolute(&into.sandbox_id), |path, part| {
+                    path.join(part)
+                });
+            let name = entry.name.clone();
+            let restored = blocking(move || {
+                let (_, to) = ensure_plain_dirs(&dir, &[ATTACHMENTS_DIR, "tasks", &folder])?;
+                restore((&trash, &name), &to, &shown)
+            });
+            let restored = restored.await?;
+            let detail = json!({"from_task": entry.task_id, "files": restored.paths.len()});
             if let Err(err) = self
                 .deps
                 .store
@@ -305,9 +528,12 @@ impl App {
             {
                 tracing::warn!(task = %into.id, error = %err, "restore audit failed");
             }
-            out["restored"] = json!({"into": into.number, "paths": paths});
+            out["restored"] = json!({"into": into.number, "paths": restored.paths});
+            if !restored.left.is_empty() {
+                out["restored"]["left_in_trash"] = json!(restored.left);
+            }
         }
-        out["trash"] = json!(list(&trash));
+        out["trash"] = json!(self.trash_entries(sandbox).await?);
         out["note"] = json!(format!(
             "A deleted task's attachments stay {TRASH_DAYS} days in the trash; restored files \
              belong to the task they were restored into."
@@ -315,48 +541,17 @@ impl App {
         Ok(out)
     }
 
-    /// Moves `entry`'s regular files into `into`'s attachments folder under free names and removes
-    /// the entry; answers the files' new paths.
-    fn restore_entry(
-        &self,
-        (dir, trash): (&Path, &OwnedFd),
-        entry: &TrashEntry,
-        into: &TaskRecord,
-    ) -> AppResult<Vec<String>> {
-        let from = open_dir_at(trash, OsStr::new(&entry.name), false).map_err(errno_error)?;
-        let parts = [ATTACHMENTS_DIR, "tasks", into.id.as_str()];
-        let (_, to) = ensure_plain_dirs(dir, &parts)?;
-        let files = files_in(&from, MAX_ATTACHMENTS_PER_FOLDER + 1);
-        if count_entries(&to, MAX_ATTACHMENTS_PER_FOLDER + 1)? + files.len()
-            > MAX_ATTACHMENTS_PER_FOLDER
-        {
-            return Err(AppError::Conflict(format!(
-                "task #{} would have more than {MAX_ATTACHMENTS_PER_FOLDER} attachments",
-                into.number
-            )));
-        }
-        let shown = parts
-            .iter()
-            .fold(self.sandbox_dir_absolute(&into.sandbox_id), |path, part| {
-                path.join(part)
-            });
-        let mut paths = Vec::new();
-        for file in &files {
-            for n in 1..=MAX_FREE_NAME_ATTEMPTS {
-                let name = candidate(file, n);
-                if link_new_in((&from, file), &to, &name).map_err(|e| crate::files::io_error(&e))? {
-                    let _ = unlinkat(&from, file.as_str(), UnlinkatFlags::NoRemoveDir);
-                    paths.push(shown.join(&name).to_string_lossy().into_owned());
-                    break;
-                }
-            }
-        }
-        // An entry keeps what could not be restored; once emptied, it goes with what is left in it
-        // that is not a regular file.
-        if paths.len() == files.len() {
-            remove_tree(trash, OsStr::new(&entry.name))?;
-        }
-        Ok(paths)
+    async fn trash_entries(&self, sandbox: &SandboxId) -> AppResult<Vec<TrashEntry>> {
+        let dir = self.sandbox_dir(sandbox);
+        blocking(move || {
+            Ok(open_attachments(&dir)
+                .and_then(|(attachments, _)| {
+                    open_dir_at(&attachments, OsStr::new(TRASH_DIR), false).ok()
+                })
+                .map(|trash| entries(&trash))
+                .unwrap_or_default())
+        })
+        .await
     }
 }
 
