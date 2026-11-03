@@ -205,6 +205,11 @@ struct Pass {
     ci_keys: std::collections::HashMap<SandboxId, Option<HashSet<String>>>,
 }
 
+/// The path a request names a draft by, from its `<user>/<file>`.
+fn draft_path(draft: &str) -> String {
+    format!("attachments/drafts/{draft}")
+}
+
 /// Whether `name` is the export a removal of the sandbox `slug` wrote (`sandbox-<slug>-<ms>.json`):
 /// never another sandbox's whose slug only starts with it (`app` and `app-2`).
 fn is_export_of(name: &str, slug: &str) -> bool {
@@ -862,18 +867,37 @@ impl App {
         }
         self.scan_checkouts(sandbox, out).await?;
         let drafts = dir.join("attachments").join("drafts");
-        for (_, user_dir) in entries(&drafts) {
-            for (name, file) in entries(&user_dir) {
-                if self.old_draft(&file) {
-                    out.push(
-                        Leftover::new(
-                            Kind::OldDraft,
-                            file,
-                            format!("a draft attachment ({name}) older than 7 days"),
-                        )
-                        .of(sandbox),
-                    );
-                }
+        let old: Vec<(String, PathBuf)> = entries(&drafts)
+            .into_iter()
+            .flat_map(|(user, user_dir)| {
+                entries(&user_dir)
+                    .into_iter()
+                    .map(move |(name, file)| (format!("{user}/{name}"), file))
+            })
+            .filter(|(_, file)| self.old_draft(file))
+            .collect();
+        if old.is_empty() {
+            return Ok(());
+        }
+        // A draft a task's request or an automation's prompt names is no leftover (SPEC-413).
+        let namers = match self.namers(&sandbox.id).await {
+            Ok(namers) => namers,
+            Err(err) => {
+                tracing::warn!(sandbox = %sandbox.id, error = %err, "old drafts kept: tasks unreadable");
+                return Ok(());
+            }
+        };
+        for (draft, file) in old {
+            if !namers.name(&draft_path(&draft)) {
+                let name = file_name(&file);
+                out.push(
+                    Leftover::new(
+                        Kind::OldDraft,
+                        file,
+                        format!("a draft attachment ({name}) older than 7 days"),
+                    )
+                    .of(sandbox),
+                );
             }
         }
         Ok(())
@@ -1312,11 +1336,24 @@ impl App {
                 _ => Err("the base is current or mounted".into()),
             },
             Kind::OldDraft => {
-                if self.old_draft(&item.path) {
-                    Ok(None)
-                } else {
-                    Err("not a draft older than 7 days any more".into())
+                let sandbox = sandbox.ok_or("no sandbox")?;
+                if !self.old_draft(&item.path) {
+                    return Err("not a draft older than 7 days any more".into());
                 }
+                let draft = item
+                    .path
+                    .parent()
+                    .map(|user| format!("{}/{}", file_name(user), file_name(&item.path)))
+                    .ok_or("no drafts folder")?;
+                // Read fresh for each draft (LFT-007): a task created during the pass counts.
+                let namers = self
+                    .namers(&sandbox.id)
+                    .await
+                    .map_err(|_| "the sandbox's tasks cannot be read")?;
+                if namers.name(&draft_path(&draft)) {
+                    return Err("a task's request or an automation names it".into());
+                }
+                Ok(None)
             }
             Kind::HostDocker => Err("reported only".into()),
         }

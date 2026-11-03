@@ -19,7 +19,8 @@ use serde_json::json;
 use support::agents::{FakeAgentHarness, FakeAgentOptions};
 use support::{
     Creds, Harness, HarnessOptions, Resp, TestResult, call, harness_configured, harness_with,
-    perms, seed_github_user, seed_sandbox, seed_task, setup_superadmin_creds,
+    perms, seed_github_user, seed_sandbox, seed_task, seed_task_with_prompt,
+    setup_superadmin_creds,
 };
 use yulius::wiring::git::GitAdapter;
 use yulius::wiring::session::PtySessionHost;
@@ -29,7 +30,7 @@ use yulius_app::ports::store::{TaskStore, UserStore};
 use yulius_app::ports::store_ext::AutomationStore;
 use yulius_app::uploads::MAX_CONCURRENT_UPLOADS;
 use yulius_domain::harness::Provider;
-use yulius_domain::ids::{AccountId, TaskId, UserId};
+use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
 use yulius_ptyhost::test_support::locate_fake_agent;
@@ -731,29 +732,75 @@ async fn shell_attachments_belong_to_the_shell_owner_and_end_with_the_shell() ->
         0
     );
 
-    // Closing the shell removes its attachments.
-    let closed = call(
+    // SPEC-413 ANR-001 (#1027): another shell's file that a task's request names (the Superagent
+    // put a pasted screenshot into `task_create`) stays when that shell ends.
+    let other = call(
         &h.router,
-        Method::DELETE,
-        &format!("/api/sandboxes/s1/shells/{id}"),
+        Method::POST,
+        "/api/sandboxes/s1/shells",
         None,
         &alice,
     )
     .await?;
-    assert_eq!(closed.status, StatusCode::NO_CONTENT);
+    assert_eq!(other.status, StatusCode::CREATED, "{:?}", other.body);
+    let named_id = other.body["id"].as_str().ok_or("shell id")?.to_owned();
+    let shot = upload(
+        &h,
+        Method::POST,
+        &format!("/api/sandboxes/s1/shells/{named_id}/attachments?name=shot.png"),
+        b"png",
+        &alice,
+    )
+    .await?;
+    assert_eq!(shot.status, StatusCode::CREATED, "{:?}", shot.body);
+    let shot = PathBuf::from(shot.body["path"].as_str().ok_or("path")?);
+    let prompt = format!("Fix the layout shown in {}", shot.display());
+    seed_task_with_prompt(
+        &h,
+        "t1",
+        "s1",
+        "u-alice",
+        TaskStatus::Prepared,
+        None,
+        &prompt,
+    )
+    .await?;
+    // The named shell ends first and is forgotten before the other is closed: its attachments are
+    // most likely settled by then (by timing only; the start-up prune below is the sure check).
+    let sandbox = SandboxId::parse("s1")?;
+    for (shell, left) in [(&named_id, 1), (&id, 0)] {
+        let closed = call(
+            &h.router,
+            Method::DELETE,
+            &format!("/api/sandboxes/s1/shells/{shell}"),
+            None,
+            &alice,
+        )
+        .await?;
+        assert_eq!(closed.status, StatusCode::NO_CONTENT);
+        wait_for("the shell to be forgotten", Duration::from_secs(20), || {
+            h.app.sandbox_shells(&sandbox).len() == left
+        })
+        .await?;
+    }
+    // Closing a shell nobody names removes its attachments.
     wait_for(
         "the shell's attachments to go",
         Duration::from_secs(20),
         || !folder.exists(),
     )
     .await?;
+    // The start-up prune below checks it again, deterministically.
+    assert_eq!(std::fs::read(&shot)?, b"png", "the named file stays");
 
-    // A folder left by a shell that ended while no server ran is pruned at the next start.
+    // Folders left by shells that ended while no server ran are pruned at the next start, unless
+    // a request names them.
     let orphan = data.join("sandboxes/s1/attachments/shells/0123456789abcdef");
     std::fs::create_dir_all(&orphan)?;
     std::fs::write(orphan.join("left.txt"), "x")?;
     let reaper = h.app.start_workspace_services().await;
     assert!(!orphan.exists());
+    assert_eq!(std::fs::read(&shot)?, b"png", "still named at start-up");
     drop(reaper);
     Ok(())
 }
@@ -1204,6 +1251,166 @@ async fn a_draft_dated_before_1970_is_old() -> TestResult {
     .await?;
     assert_eq!(sent.status, StatusCode::CREATED, "{:?}", sent.body);
     assert_eq!(names(&drafts)?, ["folder", "fresh.png", "new.png"]);
+    Ok(())
+}
+
+/// SPEC-413 ANR-002 (#1023): a draft older than a week that a waiting task's request names
+/// survives its owner's next upload and stays readable at its path; an unnamed one goes.
+#[tokio::test]
+async fn an_old_draft_a_request_names_is_never_pruned() -> TestResult {
+    let h = harness_configured(|c| c.upload_max_bytes = LIMIT)?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    std::fs::create_dir_all(data.join("sandboxes/s1/repo"))?;
+    let drafts = data.join("sandboxes/s1/attachments/drafts/u-alice");
+    let mut paths = Vec::new();
+    for name in ["named.png", "named-plan.pdf", "unnamed.png"] {
+        let sent = upload(
+            &h,
+            Method::POST,
+            &format!("/api/sandboxes/s1/attachments?name={name}"),
+            name.as_bytes(),
+            &alice,
+        )
+        .await?;
+        assert_eq!(sent.status, StatusCode::CREATED, "{:?}", sent.body);
+        paths.push(PathBuf::from(sent.body["path"].as_str().ok_or("path")?));
+    }
+    // A prepared task names the first; the second is named by an automation's prompt.
+    let [named, planned, unnamed] = paths.as_slice() else {
+        return Err("three drafts".into());
+    };
+    let prompt = format!("Start next month: fix what {} shows", named.display());
+    seed_task_with_prompt(
+        &h,
+        "t1",
+        "s1",
+        "u-alice",
+        TaskStatus::Prepared,
+        None,
+        &prompt,
+    )
+    .await?;
+    let automation = json!({
+        "name": "Weekly",
+        "cron": "0 3 * * 1",
+        "prompt": format!("Follow {} every week", planned.display()),
+    });
+    let created = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/automations",
+        Some(automation),
+        &alice,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    for path in &paths {
+        age(path, 8)?;
+    }
+    let sent = upload(
+        &h,
+        Method::POST,
+        "/api/sandboxes/s1/attachments?name=new.png",
+        b"png",
+        &alice,
+    )
+    .await?;
+    assert_eq!(sent.status, StatusCode::CREATED, "{:?}", sent.body);
+    assert_eq!(
+        std::fs::read(named)?,
+        b"named.png",
+        "a task's request names it"
+    );
+    assert_eq!(
+        std::fs::read(planned)?,
+        b"named-plan.pdf",
+        "an automation names it"
+    );
+    assert!(!unnamed.exists(), "nothing names it");
+    assert_eq!(names(&drafts)?, ["named-plan.pdf", "named.png", "new.png"]);
+    Ok(())
+}
+
+/// SPEC-413 ANR-002: the drafts folder's bound (500) counts the drafts younger than a week, which
+/// wait for a task; older ones a request keeps never block the next drop.
+#[tokio::test]
+async fn kept_old_drafts_never_fill_the_drafts_folder() -> TestResult {
+    let h = harness_configured(|c| c.upload_max_bytes = LIMIT)?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    std::fs::create_dir_all(data.join("sandboxes/s1/repo"))?;
+    let drafts = data.join("sandboxes/s1/attachments/drafts/u-alice");
+    std::fs::create_dir_all(&drafts)?;
+    let mut prompt = String::from("Compare");
+    for n in 0..500 {
+        let file = drafts.join(format!("old-{n}.png"));
+        std::fs::write(&file, "png")?;
+        age(&file, 8)?;
+        prompt.push_str(&format!(" {}", file.display()));
+    }
+    seed_task_with_prompt(&h, "t1", "s1", "u-alice", TaskStatus::Closed, None, &prompt).await?;
+    let url = "/api/sandboxes/s1/attachments?name=new.png";
+    let sent = upload(&h, Method::POST, url, b"png", &alice).await?;
+    assert_eq!(sent.status, StatusCode::CREATED, "{:?}", sent.body);
+    assert_eq!(
+        std::fs::read_dir(&drafts)?.count(),
+        501,
+        "the named ones stay"
+    );
+    // Fresh drafts still count: 500 waiting for a task fill it.
+    for n in 1..500 {
+        std::fs::write(drafts.join(format!("fresh-{n}.png")), "png")?;
+    }
+    let refused = upload(&h, Method::POST, url, b"png", &alice).await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    Ok(())
+}
+
+/// SPEC-413 ANR-001, ANR-002: while the sandbox's tasks and automations cannot be read (the
+/// `automations` table renamed away), an old draft and a gone shell's folder stay.
+#[tokio::test]
+async fn unreadable_requests_keep_old_drafts_and_shell_folders() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let db_path = dir.path().join("yulius.db");
+    let h = harness_with(HarnessOptions {
+        store: Some(yulius_store::SqliteStore::open(&db_path)?),
+        dir: Some(dir),
+        configure: Some(Box::new(|c| c.upload_max_bytes = LIMIT)),
+        ..HarnessOptions::default()
+    })?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let base = h.app.config.data_dir.join("sandboxes/s1");
+    std::fs::create_dir_all(base.join("repo"))?;
+    let draft = base.join("attachments/drafts/u-alice/old.png");
+    let shell = base.join("attachments/shells/0123456789abcdef/left.txt");
+    for file in [&draft, &shell] {
+        std::fs::create_dir_all(file.parent().ok_or("parent")?)?;
+        std::fs::write(file, "precious")?;
+    }
+    age(&draft, 8)?;
+    let db = rusqlite::Connection::open(&db_path)?;
+    db.execute_batch("ALTER TABLE automations RENAME TO automations_gone")?;
+    let sent = upload(
+        &h,
+        Method::POST,
+        "/api/sandboxes/s1/attachments?name=new.png",
+        b"png",
+        &alice,
+    )
+    .await?;
+    assert_eq!(sent.status, StatusCode::CREATED, "{:?}", sent.body);
+    let reaper = h.app.start_workspace_services().await;
+    drop(reaper);
+    assert!(draft.is_file(), "the old draft stayed");
+    assert!(shell.is_file(), "the gone shell's folder stayed");
+    db.execute_batch("ALTER TABLE automations_gone RENAME TO automations")?;
     Ok(())
 }
 

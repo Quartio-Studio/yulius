@@ -1553,6 +1553,7 @@ sandboxes/<sandbox>/home/           sandbox HOME inside containment (caches, .cl
 sandboxes/<sandbox>/browser/        Chromium profile
 sandboxes/<sandbox>/attachments/{tasks,shells}/<id>/  files dropped or pasted onto a terminal (UI-048):
                                     outside every worktree; removed with the task or when the shell ends
+                                    (kept while a request names them: SPEC-396, SPEC-413)
 users/<user>/home/                  user's home in their shells (bound at /home/<login>; ADR-12)
 users/<user>/identity/              generated passwd/group files of the user's sandbox identity
 runtime/bin/                        generated helper commands bound read-only into user processes (sudo shim)
