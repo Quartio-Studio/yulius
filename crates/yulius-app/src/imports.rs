@@ -55,11 +55,22 @@ use crate::supervisor::branch_for;
 #[derive(Debug, Default)]
 pub(crate) struct ChunkLocks(std::sync::Mutex<FileLocks>);
 
+/// A checked chunk on its way to its file.
+struct Chunk {
+    job: String,
+    manifest: ImportManifest,
+    file: FileRef,
+    offset: u64,
+    body: Vec<u8>,
+    sandbox: SandboxId,
+    path: PathBuf,
+}
+
 /// One lock per (job, file name).
 type FileLocks = HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>;
 
 impl ChunkLocks {
-    async fn hold(&self, job: &str, name: &str) -> ChunkHold<'_> {
+    async fn hold(&self, job: &str, name: &str, path: &Path) -> ChunkHold<'_> {
         let lock = Arc::clone(
             self.entries()
                 .entry((job.to_owned(), name.to_owned()))
@@ -70,7 +81,13 @@ impl ChunkLocks {
             lock: Some(Arc::clone(&lock)),
             guard: None,
         };
-        hold.guard = Some(lock.lock_owned().await);
+        hold.guard = Some(match Arc::clone(&lock).try_lock_owned() {
+            Ok(guard) => guard,
+            Err(_) => {
+                crate::race::reached(crate::race::Point::ImportChunkWait, path);
+                lock.lock_owned().await
+            }
+        });
         hold
     }
 
@@ -713,13 +730,13 @@ impl App {
     /// # Errors
     /// See above; `NotFound` for unknown jobs, files or other users' jobs.
     pub async fn put_import_chunk(
-        &self,
+        self: &Arc<Self>,
         ctx: &AuthContext,
         job_id: &str,
         name: &str,
         offset: u64,
         sha256: &str,
-        body: &[u8],
+        body: Vec<u8>,
     ) -> AppResult<FileProgress> {
         let job = self.owned_job(ctx, job_id).await?;
         let manifest = parse_manifest(&job)?;
@@ -732,7 +749,7 @@ impl App {
         if !is_valid_chunk_len(len) {
             return Err(AppError::Invalid("the chunk exceeds 8 MiB".into()));
         }
-        if !is_sha256_hex(sha256) || sha256_hex(body) != sha256 {
+        if !is_sha256_hex(sha256) || sha256_hex(&body) != sha256 {
             return Err(AppError::Invalid("chunk digest mismatch".into()));
         }
         let sandbox = job
@@ -741,13 +758,43 @@ impl App {
             .ok_or_else(|| AppError::Internal("import job without sandbox".into()))?;
         let path = self.import_dir(&sandbox, &job.id).join(&file.name);
         crate::race::reached(crate::race::Point::ImportChunkRead, &path);
-        // One chunk of a file at a time, from the length as it is now: a chunk that read the job
-        // before another advanced it would otherwise truncate and overwrite it (#845).
-        let _applying = self.import_chunks.hold(&job.id, &file.name).await;
+        // Applied to its end even when the request goes away: a write or a stored length still
+        // under way once its file is free again would race the next chunk (#845).
+        let app = Arc::clone(self);
+        let chunk = Chunk {
+            job: job.id,
+            manifest,
+            file,
+            offset,
+            body,
+            sandbox,
+            path,
+        };
+        tokio::spawn(async move { app.apply_import_chunk(chunk).await })
+            .await
+            .map_err(AppError::internal)?
+    }
+
+    /// The part of [`App::put_import_chunk`] that holds the file: one chunk of a file at a time,
+    /// from the length as it is now, as a chunk that read the job before another advanced it
+    /// would otherwise truncate and overwrite it (#845).
+    async fn apply_import_chunk(&self, chunk: Chunk) -> AppResult<FileProgress> {
+        let Chunk {
+            job,
+            manifest,
+            file,
+            offset,
+            body,
+            sandbox,
+            path,
+        } = chunk;
+        let name = file.name.as_str();
+        let len = u64::try_from(body.len()).unwrap_or(u64::MAX);
+        let _applying = self.import_chunks.hold(&job, name, &path).await;
         let job = self
             .deps
             .store
-            .import_job(&job.id)
+            .import_job(&job)
             .await?
             .ok_or(AppError::NotFound)?;
         let progress = |received_bytes| FileProgress {
@@ -786,13 +833,12 @@ impl App {
             return Ok(progress(received));
         }
         let skip = usize::try_from(received - offset).map_err(AppError::internal)?;
-        let fresh = body[skip..].to_vec();
-        let fresh_len = u64::try_from(fresh.len()).unwrap_or(u64::MAX);
-        let new_len = received + fresh_len;
+        let new_len = end;
         let expected = file.sha256.clone();
         let complete = new_len == file.size;
         let verified = blocking(move || {
-            write_at(&path, received, &fresh)?;
+            crate::race::reached(crate::race::Point::ImportChunkWrite, &path);
+            write_at(&path, received, &body[skip..])?;
             if complete {
                 Ok(Some(sha256_file(&path)? == expected))
             } else {
@@ -2112,9 +2158,9 @@ mod tests {
     #[tokio::test]
     async fn chunk_locks_live_only_while_a_chunk_needs_them() {
         let locks = ChunkLocks::default();
-        let first = locks.hold("job", "a.bin").await;
-        let other = locks.hold("job", "b.bin").await;
-        let mut waiting = std::pin::pin!(locks.hold("job", "a.bin"));
+        let first = locks.hold("job", "a.bin", Path::new("a.bin")).await;
+        let other = locks.hold("job", "b.bin", Path::new("b.bin")).await;
+        let mut waiting = std::pin::pin!(locks.hold("job", "a.bin", Path::new("a.bin")));
         assert!(pending(waiting.as_mut()), "the same file waits");
         assert_eq!(locks.len(), 2);
         drop(first);
@@ -2122,9 +2168,9 @@ mod tests {
         drop((second, other));
         assert_eq!(locks.len(), 0, "nothing left once every chunk is done");
 
-        let held = locks.hold("job", "a.bin").await;
+        let held = locks.hold("job", "a.bin", Path::new("a.bin")).await;
         {
-            let mut given_up = std::pin::pin!(locks.hold("job", "a.bin"));
+            let mut given_up = std::pin::pin!(locks.hold("job", "a.bin", Path::new("a.bin")));
             assert!(pending(given_up.as_mut()));
         }
         drop(held);

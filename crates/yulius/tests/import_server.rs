@@ -521,6 +521,110 @@ async fn racing_chunks_of_one_file_never_overwrite_each_other() -> TestResult {
     Ok(())
 }
 
+/// SPEC-400 VTV-001 (#845, review round 1): a chunk whose request goes away while it writes
+/// keeps its file until its write and stored length are done, so a longer chunk waits for it and
+/// then continues from what it stored, instead of writing beside it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_chunk_whose_request_goes_away_keeps_its_file_until_it_is_stored() -> TestResult {
+    use yulius_app::race::{Point, on};
+    const BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", false).await?;
+    let remote = w.remote(
+        OWNER,
+        "shop",
+        &[("README.md", "# Shop\n"), ("src/app.txt", "v1\n")],
+        &[],
+    )?;
+    w.grant("alice", "shop", "admin");
+    let offer = laptop_offer(&w, &remote)?;
+    let created = create_job(&w, &alice, offer.body()?).await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    let job = text(&created.body["job_id"]).to_owned();
+    let sandbox = w.h.store.sandboxes().await?.remove(0);
+    let bundle = offer.contents.get("repo.bundle").ok_or("bundle")?.clone();
+    assert!(bundle.len() > 16, "a bundle long enough to split");
+    let (short, long) = (bundle.len() / 4, bundle.len() / 2);
+    let file = w
+        .data_dir()
+        .join("sandboxes")
+        .join(sandbox.id.as_str())
+        .join("imports")
+        .join(&job)
+        .join("repo.bundle");
+    let send = |bytes: Vec<u8>| {
+        let (router, creds) = (w.h.router.clone(), alice.clone());
+        let digest = w.h.app.deps.crypto.sha256_hex(&bytes);
+        let path = format!("/api/import/{job}/files/repo.bundle?offset=0");
+        tokio::spawn(async move {
+            call_raw(
+                &router,
+                Method::PUT,
+                &path,
+                bytes,
+                &[
+                    ("x-chunk-sha256", digest.as_str()),
+                    ("content-type", "application/octet-stream"),
+                ],
+                &creds,
+            )
+            .await
+            .map_err(|e| e.to_string())
+        })
+    };
+
+    // The short chunk stops just before its write; then its request goes away.
+    let (writing_tx, writing_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    on(Point::ImportChunkWrite, &file, move || {
+        let _ = writing_tx.send(());
+        let _ = release_rx.recv_timeout(BOUND);
+    });
+    let gone = send(bundle[..short].to_vec());
+    tokio::time::timeout(BOUND, writing_rx).await??;
+    gone.abort();
+    let _ = gone.await;
+
+    // The longer chunk must wait for the file: applied at once, it would race the write still
+    // under way (which then truncates it).
+    let (waits_tx, waits_rx) = tokio::sync::oneshot::channel();
+    on(Point::ImportChunkWait, &file, move || {
+        let _ = waits_tx.send(());
+    });
+    let mut longer = send(bundle[..long].to_vec());
+    let waited = tokio::select! {
+        waited = waits_rx => waited.is_ok(),
+        _ = &mut longer => false,
+    };
+    release_tx.send(())?;
+    assert!(
+        waited,
+        "the longer chunk was applied beside a write still under way"
+    );
+    let applied = tokio::time::timeout(BOUND, longer).await???;
+    assert_eq!(applied.status, StatusCode::OK, "{:?}", applied.body);
+    assert_eq!(applied.body["received_bytes"], long as u64);
+    let stored = std::fs::read(&file)?;
+    assert!(
+        stored == bundle[..long],
+        "the gone chunk wrote nothing over the longer one: {} bytes stored, {long} received",
+        stored.len()
+    );
+    let rest = put_chunk(
+        &w,
+        &alice,
+        &job,
+        "repo.bundle",
+        long as u64,
+        &bundle[long..],
+        None,
+    )
+    .await?;
+    assert_eq!(rest.status, StatusCode::OK, "{:?}", rest.body);
+    assert_eq!(std::fs::read(&file)?, bundle);
+    Ok(())
+}
+
 /// OBD-002: the CLI uploads; only a person (the browser, or their operate token) starts
 /// onboarding; a `yulius login` token is refused and told both ways (SPEC-313).
 #[tokio::test]
