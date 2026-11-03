@@ -3,11 +3,12 @@
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::secret::Secret;
 
@@ -44,7 +45,30 @@ struct CredentialsFile {
 
 #[derive(Serialize, Deserialize)]
 struct StoredCredential {
-    token: String,
+    /// A `Secret` from parsing to drop, so no plain copy outlives it (SPEC-407 TKS-002, #769).
+    #[serde(with = "stored_secret")]
+    token: Secret,
+}
+
+/// `Secret` has no `Serialize`, so it cannot reach output by accident; the credentials file is the
+/// one place it is written, as the plain string it holds.
+mod stored_secret {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use crate::secret::Secret;
+
+    pub(super) fn serialize<S: Serializer>(
+        token: &Secret,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(token.expose())
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Secret, D::Error> {
+        String::deserialize(deserializer).map(Secret::new)
+    }
 }
 
 /// Stores CLI bearer tokens keyed by normalized server URL.
@@ -117,7 +141,7 @@ impl TokenStore {
             .read()?
             .servers
             .remove(&Self::server_key(server))
-            .map(|stored| Secret::new(stored.token)))
+            .map(|stored| stored.token))
     }
 
     /// Saves `token` for `server`, replacing any previous one. The file is written atomically
@@ -130,7 +154,7 @@ impl TokenStore {
         file.servers.insert(
             Self::server_key(server),
             StoredCredential {
-                token: token.expose().to_owned(),
+                token: token.clone(),
             },
         );
         self.write(&file)
@@ -187,12 +211,12 @@ impl TokenStore {
         move |source| TokenStoreError::Io { path, source }
     }
 
+    /// Reads the file through one handle: a regular file only, at most
+    /// `MAX_CREDENTIALS_BYTES` read from it, whatever its length was when opened (SPEC-407
+    /// TKS-001, #770).
     fn read(&self) -> Result<CredentialsFile, TokenStoreError> {
-        let bytes = match fs::metadata(&self.path) {
-            Ok(meta) if meta.len() > MAX_CREDENTIALS_BYTES => {
-                return Err(TokenStoreError::Corrupt(self.path.clone()));
-            }
-            Ok(_) => fs::read(&self.path).map_err(self.io_error(&self.path))?,
+        let file = match open_for_read(&self.path) {
+            Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok(CredentialsFile {
                     version: CREDENTIALS_VERSION,
@@ -201,6 +225,13 @@ impl TokenStore {
             }
             Err(error) => return Err(self.io_error(&self.path)(error)),
         };
+        let meta = file.metadata().map_err(self.io_error(&self.path))?;
+        if !meta.is_file() || meta.len() > MAX_CREDENTIALS_BYTES {
+            return Err(TokenStoreError::Corrupt(self.path.clone()));
+        }
+        let bytes = read_bounded(file)
+            .map_err(self.io_error(&self.path))?
+            .ok_or_else(|| TokenStoreError::Corrupt(self.path.clone()))?;
         let file: CredentialsFile = serde_json::from_slice(&bytes)
             .map_err(|_| TokenStoreError::Corrupt(self.path.clone()))?;
         if file.version != CREDENTIALS_VERSION {
@@ -216,21 +247,13 @@ impl TokenStore {
             .filter(|dir| !dir.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         create_private_dir(dir).map_err(self.io_error(dir))?;
-        let json = serde_json::to_vec_pretty(file)
-            .map_err(|error| self.io_error(&self.path)(io::Error::other(error)))?;
-        let temp = dir.join(format!(".credentials.json.tmp-{}", std::process::id()));
-        // A stale temporary file from a crashed run is replaced.
-        match fs::remove_file(&temp) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(self.io_error(&temp)(error)),
-        }
-        let result = write_private_file(&temp, &json).and_then(|()| fs::rename(&temp, &self.path));
-        if let Err(error) = result {
-            // Best effort: do not leave a token copy behind.
-            let _ = fs::remove_file(&temp);
-            return Err(self.io_error(&self.path)(error));
-        }
+        // A fresh random name, created with O_EXCL and 0600: nothing left at a fixed name blocks
+        // the save or is written through (SPEC-407 TKS-003, #771). Dropped on a failure, the
+        // temporary file is removed, so no token copy stays behind.
+        let mut temp = private_temp_file(dir).map_err(self.io_error(dir))?;
+        write_private_file(temp.as_file_mut(), file).map_err(self.io_error(temp.path()))?;
+        temp.persist(&self.path)
+            .map_err(|error| self.io_error(&self.path)(error.error))?;
         set_private_permissions(&self.path).map_err(self.io_error(&self.path))?;
         if let Ok(directory) = File::open(dir) {
             // Directory fsync makes the rename durable where supported.
@@ -238,6 +261,33 @@ impl TokenStore {
         }
         Ok(())
     }
+}
+
+/// At most `MAX_CREDENTIALS_BYTES` of `source`, `None` when it holds more. The buffer is sized once
+/// for the bound, so it never grows and leaves no unzeroed copy, and is zeroed when dropped.
+fn read_bounded(source: impl Read) -> io::Result<Option<Zeroizing<Vec<u8>>>> {
+    let mut bytes = Zeroizing::new(Vec::with_capacity(
+        usize::try_from(MAX_CREDENTIALS_BYTES + 1).unwrap_or(usize::MAX),
+    ));
+    source
+        .take(MAX_CREDENTIALS_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= MAX_CREDENTIALS_BYTES).then_some(bytes))
+}
+
+/// Opens `path` to read without waiting: a FIFO with no writer would block the open.
+#[cfg(unix)]
+fn open_for_read(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::fcntl::OFlag::O_NONBLOCK.bits())
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_for_read(path: &Path) -> io::Result<File> {
+    File::open(path)
 }
 
 #[cfg(unix)]
@@ -254,16 +304,22 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
     fs::create_dir_all(dir)
 }
 
-fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
+/// An owner-only (`0600`) file with a random name in `dir`, created with `O_EXCL`.
+fn private_temp_file(dir: &Path) -> io::Result<tempfile::NamedTempFile> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".credentials.json.tmp-");
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o600));
     }
-    let mut file = options.open(path)?;
-    file.write_all(bytes)?;
+    builder.tempfile_in(dir)
+}
+
+/// Writes `contents` to `file` unbuffered and syncs it: the tokens go to the file only, never to a
+/// growing buffer that would free unzeroed copies (SPEC-407 TKS-002, #769).
+fn write_private_file(file: &mut File, contents: &CredentialsFile) -> io::Result<()> {
+    serde_json::to_writer_pretty(&mut *file, contents).map_err(io::Error::other)?;
     file.sync_all()
 }
 
@@ -346,6 +402,108 @@ mod tests {
                 .save(&Url::parse("https://y.example")?, &Secret::new("t"))
                 .is_err()
         );
+        Ok(())
+    }
+
+    /// SPEC-407 TKS-003 (#771): the temporary file has a fresh random name, so nothing left at a
+    /// predictable name (here a folder, which no removal clears) blocks a save or is written
+    /// through, and no temporary file of the save remains.
+    #[test]
+    fn a_squatted_temporary_name_does_not_block_a_save() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let squatted = dir
+            .path()
+            .join(format!(".credentials.json.tmp-{}", std::process::id()));
+        fs::create_dir(&squatted)?;
+        let store = TokenStore::new(dir.path().join("credentials.json"));
+        let server = Url::parse("https://y.example")?;
+        store.save(&server, &Secret::new("yul_x"))?;
+        assert_eq!(store.load(&server)?, Some(Secret::new("yul_x")));
+        assert!(fs::read_dir(&squatted)?.next().is_none());
+        let mut names: Vec<_> = fs::read_dir(dir.path())?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<Result<_, _>>()?;
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                squatted.file_name().ok_or("name")?,
+                "credentials.json".as_ref()
+            ]
+        );
+        Ok(())
+    }
+
+    /// SPEC-407 TKS-002 (#769): a parsed token is a `Secret` (wiped when dropped) from parsing on,
+    /// every server's, and it is written back as the plain string the file holds.
+    #[test]
+    fn stored_tokens_are_secrets() -> TestResult {
+        let text = r#"{"version":1,"servers":{"https://a.example":{"token":"yul_a"},"https://b.example":{"token":"yul_b"}}}"#;
+        let file: CredentialsFile = serde_json::from_str(text)?;
+        let tokens: Vec<&Secret> = file.servers.values().map(|stored| &stored.token).collect();
+        assert_eq!(tokens, [&Secret::new("yul_a"), &Secret::new("yul_b")]);
+        assert_eq!(serde_json::to_string(&file)?, text);
+        Ok(())
+    }
+
+    /// SPEC-407 TKS-001 (#770): what is read is bounded too, not only the length looked up when
+    /// the file was opened (a file that grows in between): the bound itself is read, one more
+    /// byte is refused.
+    #[test]
+    fn reads_stop_at_the_bound() -> TestResult {
+        let bound = usize::try_from(MAX_CREDENTIALS_BYTES)?;
+        let at_bound = read_bounded(io::repeat(b' ').take(MAX_CREDENTIALS_BYTES))?;
+        assert_eq!(at_bound.map(|bytes| bytes.len()), Some(bound));
+        assert!(read_bounded(io::repeat(b' ').take(MAX_CREDENTIALS_BYTES + 1))?.is_none());
+        assert!(
+            read_bounded(io::repeat(b' '))?.is_none(),
+            "an endless source"
+        );
+        Ok(())
+    }
+
+    /// SPEC-407 TKS-001 (#770): the size bound holds for what is read, not for a length looked up
+    /// before: a FIFO (length 0) fed more than 1 MiB of valid JSON is refused, without waiting
+    /// for a writer, and so is a regular file over the bound.
+    #[cfg(unix)]
+    #[test]
+    fn an_oversized_or_special_credentials_file_is_refused() -> TestResult {
+        use std::io::{Read as _, Write as _};
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("credentials.json");
+        let server = Url::parse("https://y.example")?;
+        let padded = |len: usize| {
+            let mut json = vec![b' '; len];
+            json.extend_from_slice(br#"{"version":1,"servers":{}}"#);
+            json
+        };
+        nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRWXU)?;
+        // Read and write: the open neither waits for a reader nor ends the stream for one.
+        let mut fifo = OpenOptions::new().read(true).write(true).open(&path)?;
+        let json = padded(usize::try_from(MAX_CREDENTIALS_BYTES)? + 1);
+        let writer = std::thread::spawn(move || {
+            // Refused or read whole, the stream ends when this end closes.
+            let _ = fifo.write_all(&json);
+        });
+        match TokenStore::new(path.clone()).load(&server) {
+            Err(TokenStoreError::Corrupt(_)) => {}
+            other => return Err(format!("a FIFO: expected Corrupt, got {other:?}").into()),
+        }
+        // Drain what the refused read left, so the writer ends.
+        let mut rest = Vec::new();
+        File::open(&path)?.read_to_end(&mut rest)?;
+        writer.join().map_err(|_| "writer panicked")?;
+        // No writer at all: refused at once.
+        assert!(matches!(
+            TokenStore::new(path.clone()).load(&server),
+            Err(TokenStoreError::Corrupt(_))
+        ));
+        fs::remove_file(&path)?;
+        fs::write(&path, padded(usize::try_from(MAX_CREDENTIALS_BYTES)?))?;
+        assert!(matches!(
+            TokenStore::new(path).load(&server),
+            Err(TokenStoreError::Corrupt(_))
+        ));
         Ok(())
     }
 
