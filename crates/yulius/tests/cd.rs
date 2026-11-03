@@ -1009,6 +1009,20 @@ async fn a_needs_you_request_reads_what_happened_problem_and_to_do() -> TestResu
             .contains("describe other places in action or problem"),
         "{outside}"
     );
+    // A script link is refused too, so the UI's Open button never carries one (#701).
+    let script = tool(
+        "needs_you",
+        json!({"action": "x", "link": "javascript:alert(document.cookie)"}),
+    )
+    .await?;
+    assert_eq!(script["isError"], true, "{script}");
+    let kept = summary().await?;
+    assert_eq!(
+        kept["link"],
+        serde_json::Value::Null,
+        "the open request keeps no link: {kept}"
+    );
+    assert_eq!(kept["problem"], "the free plan has 2 runners", "{kept}");
     Ok(())
 }
 
