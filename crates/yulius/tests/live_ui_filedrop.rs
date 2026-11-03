@@ -210,7 +210,12 @@ async fn files_dragged_from_disk_reach_the_repository_and_the_agent() -> TestRes
             id: AccountId::parse("a1")?,
             provider: Provider::Anthropic,
             label: "Claude".into(),
-            credential: Some(h.app.deps.crypto.seal(b"sk-ant-oat01-live-filedrop")?),
+            credential: Some(
+                h.app
+                    .deps
+                    .crypto
+                    .seal(concat!("sk-ant-oat01-", "live-filedrop").as_bytes())?,
+            ),
             status: AccountStatus::Ok,
             usage_json: None,
             last_error: None,

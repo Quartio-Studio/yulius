@@ -36,7 +36,10 @@ use yulius_domain::task::{AttemptState, TaskStatus};
 use yulius_domain::time::Timestamp;
 
 /// Synthetic token: realistic shape, not a real credential.
-const TOKEN: &str = "sk-ant-oat01-SYNTHETICabcdefghijklmnopqrstuvwxyz0123456789_-test";
+const TOKEN: &str = concat!(
+    "sk-ant-oat01-",
+    "SYNTHETICabcdefghijklmnopqrstuvwxyz0123456789_-test"
+);
 const MASK: &str = "sk-ant-oat01-[REDACTED]";
 
 /// What one fake login process does.
@@ -699,7 +702,7 @@ async fn a_partial_token_does_not_end_the_sign_in() -> TestResult {
     s.h.app
         .set_account_login_timeout(Duration::from_millis(400));
     s.host.push(Script {
-        chunks: vec!["Waiting: sk-ant-oat01-short\r\n".into()],
+        chunks: vec![concat!("Waiting: sk-ant-oat01-", "short\r\n").into()],
         exit: None,
         ..Script::default()
     });

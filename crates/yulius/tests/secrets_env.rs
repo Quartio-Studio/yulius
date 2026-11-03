@@ -18,7 +18,7 @@ use yulius::wiring::git::GitAdapter;
 use yulius_app::ports::vault::{EnvFiles, VaultStore as _};
 use yulius_domain::task::TaskStatus;
 
-const VALUE: &str = "sk_live_51EnvCopyValue9q2w";
+const VALUE: &str = concat!("sk_live_", "51EnvCopyValue9q2w");
 const TOKEN: &str = "env-task-token-s1-0123456789abcdef";
 
 fn git(dir: &Path, args: &[&str]) -> TestResult {

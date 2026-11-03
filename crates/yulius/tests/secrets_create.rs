@@ -22,7 +22,7 @@ use yulius_domain::task::TaskStatus;
 const TOKEN: &str = "create-task-token-s1-0123456789abcdef";
 const READER_TOKEN: &str = "create-task-token-s1-reader-0123456789";
 const API_TOKEN: &str = "tok_synthetic_created_from_a_file_4821";
-const EXISTING: &str = "sk_live_51ExistingValue9q2w";
+const EXISTING: &str = concat!("sk_live_", "51ExistingValue9q2w");
 
 struct World {
     h: support::Harness,

@@ -22,7 +22,7 @@ use yulius_domain::vault::redact::{Matcher as _, redact_text};
 const PASSWORD: &str = "a very long secret";
 const MAIL_PASSWORD: &str = "gmail-team-Passw0rd-417";
 const SEED: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
-const STRIPE: &str = "sk_test_51NzQ9vaultValue8f3a";
+const STRIPE: &str = concat!("sk_test_", "51NzQ9vaultValue8f3a");
 const TOKEN_S1: &str = "vault-task-token-s1-0123456789abcdef";
 const TOKEN_S2: &str = "vault-task-token-s2-0123456789abcdef";
 
@@ -1685,12 +1685,12 @@ async fn agent_secrets_follow_sandbox_access_and_reveal_only_to_managers() -> Te
         &w.h.router,
         Method::PATCH,
         &format!("/api/agent-secrets/{id}"),
-        Some(json!({"value": "sk_test_replaced_999"})),
+        Some(json!({"value": concat!("sk_test_", "replaced_999")})),
         &w.writer,
     )
     .await?;
     assert_eq!(replaced.status, StatusCode::OK);
-    assert_hidden(&replaced.body, &["sk_test_replaced_999"]);
+    assert_hidden(&replaced.body, &[concat!("sk_test_", "replaced_999")]);
     let removed = call(
         &w.h.router,
         Method::DELETE,

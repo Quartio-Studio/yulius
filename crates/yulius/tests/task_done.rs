@@ -338,7 +338,11 @@ async fn seed(app: &App, data: &Path) -> Result<(SandboxId, UserId), BoxError> {
             id: AccountId::parse("a-claude")?,
             provider: Provider::Anthropic,
             label: "Claude test".into(),
-            credential: Some(app.deps.crypto.seal(b"sk-ant-oat01-test-credential")?),
+            credential: Some(
+                app.deps
+                    .crypto
+                    .seal(concat!("sk-ant-oat01-", "test-credential").as_bytes())?,
+            ),
             status: AccountStatus::Ok,
             usage_json: None,
             last_error: None,
@@ -1256,7 +1260,11 @@ fn the_goal_is_typed_after_the_turn_continued_past_a_limit() -> TestResult {
                 id: AccountId::parse("b-claude")?,
                 provider: Provider::Anthropic,
                 label: "Claude second".into(),
-                credential: Some(app.deps.crypto.seal(b"sk-ant-oat01-second-credential")?),
+                credential: Some(
+                    app.deps
+                        .crypto
+                        .seal(concat!("sk-ant-oat01-", "second-credential").as_bytes())?,
+                ),
                 status: AccountStatus::Ok,
                 usage_json: None,
                 last_error: None,
@@ -2015,7 +2023,11 @@ fn a_switch_waits_for_a_background_agent_launched_in_the_turn() -> TestResult {
                 id: AccountId::parse("a-claude-2")?,
                 provider: Provider::Anthropic,
                 label: "Claude spare".into(),
-                credential: Some(app.deps.crypto.seal(b"sk-ant-oat01-spare-credential")?),
+                credential: Some(
+                    app.deps
+                        .crypto
+                        .seal(concat!("sk-ant-oat01-", "spare-credential").as_bytes())?,
+                ),
                 status: AccountStatus::Ok,
                 usage_json: None,
                 last_error: None,

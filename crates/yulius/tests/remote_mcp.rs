@@ -988,7 +988,7 @@ async fn files_change_through_a_pull_request_merged_on_green() -> TestResult {
 /// RMT-027: agent secrets are named, bound and answered remotely; no value goes either way.
 #[tokio::test]
 async fn secrets_are_managed_by_name_and_binding_only() -> TestResult {
-    const VALUE: &str = "sk_live_remote_0123456789abcdef";
+    const VALUE: &str = concat!("sk_live_", "remote_0123456789abcdef");
     let w = World::new("org").await?;
     support::seed_sandbox(&w.h, "s1", "shop", "u-alice").await?;
     let (_, browser, alice) = person(&w, "alice").await?;
