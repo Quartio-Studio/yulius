@@ -154,12 +154,13 @@ does not reopen it.
   (`cd::production_is_deployed_by_an_administrator_who_types_the_slug`).
 - `[[ignore]]` entries are title-only with the exact path, one per wording, like most entries in
   `.config/vidoc.toml`. The `function` field is optional and left out, as in all but one of the
-  existing entries. The independent reviewer agreed to all four: `ci/tools.rs` "Task-scoped agent can read
-  any run's output in the sandbox"; `disk.rs` "Attacker-controlled cache declarations steer host
-  deletions"; `ci/cd.rs` "Weak deploy confirmation check" and "Agent can read production run
+  existing entries. The independent reviewer agreed to all four: `ci/tools.rs` "Task-scoped
+  agent can read any run's output in the sandbox"; `disk.rs` "Attacker-controlled cache
+  declarations steer host deletions"; `ci/cd.rs` "Weak deploy confirmation check" and "Agent can read production run
   output (potential secret disclosure)".
 - `scripts/dev ci` at bd7390fc: exit 0, nextest 2990 passed, 16 skipped. The first run failed
-  macOS clippy (Linux-only test helpers unused there), which was fixed by `cfg(target_os = "linux")`.
+  macOS clippy (Linux-only test helpers unused there), which was fixed by
+  `cfg(target_os = "linux")`.
 - `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0). This
   is disabled, not passed; nothing was scanned.
 - Independent review, round 1 (fresh session, bd7390fc): request changes. It found no remaining
