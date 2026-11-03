@@ -195,14 +195,15 @@ pub const DOCKER_KEY: &str = "/etc/apt/keyrings/docker.asc";
 pub const NEEDRESTART_RULE_FILE: &str = "/etc/needrestart/conf.d/yulius.conf";
 
 /// The needrestart rule's content for the unit `service` (HST-006): its name is a regular
-/// expression in Perl, so `.` and `@` are escaped.
+/// expression in Perl, so every character but a letter, a digit, `_` or `-` (literal outside a
+/// class) is escaped: it matches the name literally whatever `service_name_ok` accepts (#678).
 #[must_use]
 pub fn needrestart_rule(service: &str) -> String {
     let pattern: String = service
         .chars()
         .flat_map(|c| match c {
-            '.' | '@' => vec!['\\', c],
-            c => vec![c],
+            c if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') => vec![c],
+            c => vec!['\\', c],
         })
         .collect();
     format!(

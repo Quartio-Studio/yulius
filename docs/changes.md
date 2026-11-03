@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-03
 
+- The needrestart rule `yulius host setup` writes escapes every character of the unit name but
+  letters, digits, `_` and `-`, so its Perl regex matches the name literally on its own, not only
+  because the setup validated the name first (SPEC-408, task #390, fixes #678). The Vidoc findings
+  #814 (the run directory is 0700, under a 0700 data directory), #755 (the operator's `PATH`, as
+  #716), #698 (no one but the server can write in a run directory), #756 (a raised OOM score only
+  makes the agent's command the first victim) and #690 (the in-memory window is MGT-003's design)
+  are dismissed with narrow `[[ignore]]` entries.
 - The CLI token store (`yulius login`, `yulius remote login`) reads its credentials file through
   one handle, a regular file only, and never more than 1 MiB of it: a FIFO or a file that grew after
   its size was checked was read whole (fixes #770). Saved tokens stay a zeroizing `Secret` from
