@@ -1,11 +1,11 @@
 ---
 yulius-task: 5caab8de-c311-4c56-8723-04c080df043c
-status: in-progress
+status: done
 ---
 
 # SPEC-406: Vidoc triage of the test-code findings (#822 #821 #797 #773 #746 #747 #772)
 
-Status: in-progress
+Status: done
 Date: 2026-11-03
 Owner: Yulius task #388
 Scope authorization: task #388 (a person asked that each of the seven issues end closed; a fixture
@@ -74,8 +74,8 @@ Each of the seven low Vidoc findings in `crates/yulius/tests` is checked against
 - [x] sourced passes the variable name as an argument, not script text (#772)
 - [x] Narrow [[ignore]] entries for the dismissed wordings (#821 #773 #746 #747 #797 rest)
 - [x] ADR, docs, changes entry and gates
-- [ ] Independent review answered
-- [ ] Dismissed issues commented and closed (#821 #773 #746 #747)
+- [x] Independent review answered
+- [x] Dismissed issues commented and closed (#821 #773 #746 #747)
 
 ## Acceptance criteria
 
@@ -114,4 +114,55 @@ Each of the seven low Vidoc findings in `crates/yulius/tests` is checked against
 
 ## Evidence
 
-(Filled in at the end.)
+- Triage on dev d51b98ae, rechecked on ea39cb55 (the file:line evidence is in each issue's
+  comment):
+  - #821, #773, #746: production's key comes only from `load_or_create` (`serve.rs:438`,
+    `crypto.rs:58-67`, random, 0600). `from_key` (`crypto.rs:74`) has no caller outside test code.
+    The keys are at `supervision.rs:92` (`build_custom`), `task_done.rs:182` (`start_holding`) and
+    `support/repos.rs:928` (`without_claude`, an in-memory store).
+  - #747: `World::remote` (`support/repos.rs:1093-1110`) writes under its own `scratch` tempdir
+    (`:878`, `:897`). Every caller passes literal paths or `scaffold_files` (`templates.rs:741`).
+  - #822, #797: real by the person's rule (`sk-ant-oat01-`, `sk_test_51`). The guard found 26
+    such literals in 17 files on dev.
+  - #772: real by AGENTS.md (no shell interpolation of IDs). Its callers pass literals only.
+- Regression tests:
+  - `fixture_hygiene::test_fixtures_hold_no_provider_shaped_credential` failed on dev, naming the
+    26 literals (prefix and length only), and passes with the fix.
+    `the_scan_finds_a_provider_shape_and_leaves_prefixes_alone` pins the scanner: shapes found,
+    prefixes, templates, masks and prefixes inside words left alone.
+  - `secrets_env::sourced_runs_no_shell_syntax_from_the_name` failed on the old helper ("the name
+    ran as shell"), both written first and as a mutation check after review round 1, and passes
+    with the fix.
+  - The 285 tests of the touched modules pass unchanged.
+- `[[ignore]]` entries in `.config/vidoc.toml`, each with the exact path and Vidoc's title:
+  - `supervision.rs` `build_custom` "Hardcoded crypto master key in test code" (#821);
+  - `task_done.rs` `start_holding` "Hardcoded master encryption key in test code" (#773);
+  - `support/repos.rs` `without_claude` "Hardcoded weak encryption key for test crypto" (#746);
+  - `support/repos.rs` `remote` "Path traversal in test remote seeding" (#747);
+  - `secrets.rs` `line = 22` "Hardcoded credentials in test code" (#797, what stays);
+  - `supervision.rs` `fetch` "Hardcoded credential in test code" (#822, what stays).
+
+  The independent reviewer agreed to all six in round 1.
+- `scripts/dev ci` at b9e9e1b2: exit 0, nextest 3010 passed, 16 skipped.
+- `scripts/dev ci` at 6626e240 (review round 1 answered, dev ea39cb55 merged): exit 0, nextest
+  3017 passed, 16 skipped.
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0). This
+  is disabled, not passed; nothing was scanned.
+- Independent review, round 1 (fresh session, e71fe360): request changes.
+  - Major, refuted: "the #772 test passes on the old code". The reviewer read `"${name}"` as a
+    shell `${…}`, but in Rust's `format!` it is `$` and the name, so the payload closes the quote
+    and `touch` runs. The mutation check above fails with "the name ran as shell".
+  - Minors fixed in 1e942b88:
+    - The guard covers every `redact.rs` token prefix, with the rule's own minimum for prefixes
+      that are also parts of words.
+    - It skips a prefix inside a word, as the redactor does.
+    - It reads every file under the tests folder, the stream probe's JS and HTML too.
+    - The ignore semantics in Context are corrected.
+  - Nits fixed: 17 files, not 18, and `sourced`'s error no longer claims a parse failure means an
+    unset name.
+- Round 2 (fresh session) reviewed the head that carries this Evidence: its verdict is in the
+  pull request (#1044).
+- #821, #773, #746 and #747 were closed as not planned, each with its file:line evidence on
+  ea39cb55. #822, #797 and #772 were commented with a link to #1044, which closes them on merge.
+- Not tested: whether Vidoc stays quiet on the new entries (the scan is disabled). Provider-shaped
+  fixtures outside `crates/yulius/tests` are not covered (they are named in #1044).
