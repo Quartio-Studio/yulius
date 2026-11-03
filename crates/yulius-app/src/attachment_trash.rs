@@ -70,6 +70,9 @@ pub struct DeletedAttachments {
     /// They wait in the trash.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trash: Option<TrashEntry>,
+    /// They stay where they are: moving them to the trash failed (a link planted on the way).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub not_moved: bool,
 }
 
 /// One deleted task's attachments in the trash.
@@ -226,9 +229,6 @@ fn settle(
             continue;
         };
         let own = id == deleted;
-        if !own && exists(id) {
-            continue;
-        }
         let path = format!("{ATTACHMENTS_DIR}/tasks/{id}/");
         let mut tasks: Vec<u32> = namers
             .tasks
@@ -251,6 +251,10 @@ fn settle(
             }
             continue;
         }
+        // Only a folder about to move costs a question (named ones stay anyway).
+        if !own && exists(id) {
+            continue;
+        }
         match to_trash(
             (attachments, folders),
             id,
@@ -261,7 +265,10 @@ fn settle(
             // A parallel deletion's settling moved it first: found in the trash below.
             Err(Errno::ENOENT) if own => own_seen = false,
             Ok(_) | Err(Errno::ENOENT) => {}
-            Err(err) => tracing::warn!(error = %err, "attachments not moved to the trash"),
+            Err(err) => {
+                tracing::warn!(error = %err, "attachments not moved to the trash");
+                fate.not_moved |= own;
+            }
         }
     }
     // A parallel deletion's settling may have moved this task's folder first, without its number.

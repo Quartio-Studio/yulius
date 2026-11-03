@@ -115,6 +115,10 @@ first and fails without the change.
   transcript only), and the trash covers those.
 - Composer drafts a waiting task names are still pruned after a week, and a shell's attachments go
   with the shell: older paths to the same kind of loss, outside this change (#1023, #1027).
+- A task created after the namers were read whose request names an orphan folder nobody else
+  names can still see that folder go to the trash (the fresh question covers only the folder's own
+  task); it is restorable, and creating a task naming a deleted task's files in that instant is
+  far-fetched (review round 3).
 - The tool is named `task_update` (what an agent looks for) and takes only the start for now.
 
 ## Evidence

@@ -203,6 +203,17 @@ async fn a_deleted_tasks_attachments_are_restored_from_the_trash() -> TestResult
     Ok(())
 }
 
+/// AC ATR-005: listing a sandbox that never had a deletion creates no folder.
+#[tokio::test]
+async fn listing_an_empty_trash_creates_nothing() -> TestResult {
+    let (h, attachments) = world().await?;
+    let (listed, is_error) = tool(&h, "attachments_trash", json!({})).await?;
+    assert!(!is_error, "{listed}");
+    assert_eq!(listed["trash"], json!([]), "{listed}");
+    assert!(!attachments.join("trash").exists());
+    Ok(())
+}
+
 /// AC ATR-004: an entry older than 7 days is removed at the next listing; a younger one stays.
 #[tokio::test]
 async fn trash_entries_older_than_a_week_are_removed() -> TestResult {
@@ -424,6 +435,11 @@ async fn a_trash_swapped_for_a_link_receives_nothing() -> TestResult {
     std::os::unix::fs::symlink(&outside, attachments.join("trash"))?;
     let (deleted, is_error) = tool(&h, "task_delete", json!({"task_id": "t1"})).await?;
     assert!(!is_error, "{deleted}");
+    assert_eq!(
+        deleted["deleted"]["attachments"]["not_moved"],
+        json!(true),
+        "the answer says they stayed: {deleted}"
+    );
     assert_eq!(
         std::fs::read_dir(&outside)?.count(),
         0,
