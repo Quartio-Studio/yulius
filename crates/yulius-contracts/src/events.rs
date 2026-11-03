@@ -177,6 +177,8 @@ pub enum UiEvent {
         saved: bool,
         /// The disk's newer version while unsaved text is kept (a conflict).
         disk_sha256: Option<String>,
+        /// The text's line ending (`\n` or `\r\n`); a step taken from the disk may change it.
+        eol: String,
     },
     /// The sandbox's pull requests may have changed (a delivery stage moved, a Yulius CI run was
     /// queued, started or ended): watching clients read the Git overview again (SPEC-108).

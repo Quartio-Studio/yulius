@@ -577,7 +577,7 @@ async fn presence_is_refused_when_malformed() -> TestResult {
     let mut events = h.app.events.subscribe();
     for (body, status) in [
         (
-            json!({"path": "src/main.rs", "selection": null, "revision": 1}),
+            json!({"path": "src/main.rs", "selection": null, "rev": 1}),
             StatusCode::UNPROCESSABLE_ENTITY,
         ),
         (json!({"selection": null}), StatusCode::UNPROCESSABLE_ENTITY),

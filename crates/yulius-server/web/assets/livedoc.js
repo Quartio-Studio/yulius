@@ -84,8 +84,9 @@ export function createLiveDoc({ api, sid, root, path, client, canWrite, getText,
   /** Joins the file's document (`own`: start it from this tab's text, when nobody edits it). */
   function join(own = null) {
     if (joining) return joining;
-    const body = { ...base(), client, eol: state.eol };
-    if (own) Object.assign(body, own);
+    const body = { ...base(), client };
+    // Its own text in its own line ending; else the server takes the disk's.
+    if (own) Object.assign(body, own, { eol: state.eol });
     joining = api.post(`/api/sandboxes/${sid}/files/live`, body).then((doc) => {
       if (!destroyed) takeWhole(doc);
       return doc;
@@ -251,6 +252,8 @@ export function createLiveDoc({ api, sid, root, path, client, canWrite, getText,
       if (destroyed || !session) return;
       if (event.session !== session) { rejoin(); return; }
       if (event.revision > revision + (event.op ? 1 : 0)) { catchUp(); return; }
+      // The disk's line endings changed: the whole text again, in them.
+      if (event.op && event.eol && event.eol !== state.eol) { resync(); return; }
       if (event.op) step(event);
       if (event.revision === revision) takeState({ saved: event.saved, sha256: event.sha256, disk_sha256: event.disk_sha256 });
     },

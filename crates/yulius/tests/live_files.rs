@@ -432,7 +432,7 @@ async fn the_disk_is_followed_and_a_conflict_waits_for_a_choice() -> TestResult 
     let session = session_of(&join(&h, &alice, json!({"path": "src/main.rs"})).await?);
     let mut events = h.app.events.subscribe();
 
-    // Saved text takes the disk's version as one step, in the document's line ending.
+    // Saved text takes the disk's version as one step, with the disk's line ending.
     std::fs::write(repo(&h).join("src/main.rs"), "fn main() { agent() }\r\n")?;
     let taken = act(&h, &dave, "disk", &session, false).await?;
     assert_eq!(taken.status, StatusCode::OK, "{:?}", taken.body);
@@ -441,7 +441,8 @@ async fn the_disk_is_followed_and_a_conflict_waits_for_a_choice() -> TestResult 
     let published = live_events(&mut events);
     assert_eq!(published.len(), 1);
     assert_eq!(published[0].1["client"], "");
-    assert_eq!(published[0].1["op"], json!([11, " agent() ", 2]));
+    assert_eq!(published[0].1["op"], json!([11, " agent() }\r", -1, 1]));
+    assert_eq!(published[0].1["eol"], "\r\n");
     let whole = call(
         &h.router,
         Method::GET,
@@ -450,7 +451,8 @@ async fn the_disk_is_followed_and_a_conflict_waits_for_a_choice() -> TestResult 
         &alice,
     )
     .await?;
-    assert_eq!(whole.body["text"], "fn main() { agent() }\n");
+    assert_eq!(whole.body["text"], "fn main() { agent() }\r\n");
+    assert_eq!(whole.body["eol"], "\r\n");
     // Unchanged: nothing.
     assert_eq!(
         act(&h, &dave, "disk", &session, false).await?.body["revision"],
@@ -460,7 +462,7 @@ async fn the_disk_is_followed_and_a_conflict_waits_for_a_choice() -> TestResult 
 
     // Unsaved text meets a disk change: kept, the conflict published, no save written.
     assert_eq!(
-        edit(&h, &alice, &session, 1, json!(["// mine\n", 22]))
+        edit(&h, &alice, &session, 1, json!(["// mine\r\n", 23]))
             .await?
             .status,
         StatusCode::OK
@@ -490,11 +492,11 @@ async fn the_disk_is_followed_and_a_conflict_waits_for_a_choice() -> TestResult 
     assert_eq!(kept.status, StatusCode::OK, "{:?}", kept.body);
     assert_eq!(kept.body["saved"], true);
     assert_eq!(kept.body["disk_sha256"], Value::Null);
-    assert_eq!(on_disk(&h), "// mine\nfn main() { agent() }\n");
+    assert_eq!(on_disk(&h), "// mine\r\nfn main() { agent() }\r\n");
 
     // A save that finds the disk moved on keeps the conflict too.
     assert_eq!(
-        edit(&h, &alice, &session, 2, json!([30, "// more\n"]))
+        edit(&h, &alice, &session, 2, json!([32, "// more\r\n"]))
             .await?
             .status,
         StatusCode::OK

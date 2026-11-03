@@ -305,7 +305,7 @@ mod tests {
             && left.seq == 0));
         assert!(serde_json::from_str::<FilePresence>(r#"{"selection":null}"#).is_err());
         assert!(
-            serde_json::from_str::<FilePresence>(r#"{"path":"a","selection":null,"revision":1}"#)
+            serde_json::from_str::<FilePresence>(r#"{"path":"a","selection":null,"rev":1}"#)
                 .is_err()
         );
     }

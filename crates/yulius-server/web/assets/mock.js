@@ -2362,10 +2362,12 @@ route('POST', `/api/sandboxes/${ID}/files`, ({ db, p, body }) => {
 // The hub (`db.live`) is the first window's: a window it opens (a teammate, `as=<login>`) shares
 // it and the repository's files, so two windows edit one text as two browsers do on the server.
 // Tests: `liveDoc(path)` reads a document, `dropLive()` forgets them all (a restart),
-// `db.live.holdEdits = true` keeps edits unanswered and unapplied until `releaseEdits()`.
+// `db.live.holdEdits = true` keeps edits unanswered and unapplied until `releaseEdits()`, and
+// `db.live.holdSaves = true` saves until `releaseSaves()`; `db.live.edits`, `saveAsks` and
+// `saves` (the writes) record what was asked.
 function liveKey(sid, root, path) { return `${sid}|${root}|${path}`; }
 function livePublish(db, sid, root, path, doc, client, op) {
-  const event = { type: 'file.live', sandbox_id: sid, root, path, session: doc.session, revision: doc.revision, client, op, sha256: doc.sha, saved: doc.savedRevision === doc.revision, disk_sha256: doc.diskSha };
+  const event = { type: 'file.live', sandbox_id: sid, root, path, session: doc.session, revision: doc.revision, client, op, sha256: doc.sha, saved: doc.savedRevision === doc.revision, disk_sha256: doc.diskSha, eol: doc.eol };
   for (const sink of [...db.live.sinks]) { try { sink(event); } catch { db.live.sinks.delete(sink); } }
 }
 function liveEol(text, fallback) {
@@ -2447,8 +2449,11 @@ route('POST', `/api/sandboxes/${ID}/files/live/edit`, async ({ db, p, body }) =>
   livePublish(db, place.sid, place.root, place.path, doc, body.client, op);
   return { revision: doc.revision };
 });
-route('POST', `/api/sandboxes/${ID}/files/live/save`, ({ db, p, body }) => {
+route('POST', `/api/sandboxes/${ID}/files/live/save`, async ({ db, p, body }) => {
   const place = livePlace(db, p[0], body, true);
+  liveDocOf(db, place, body.session);
+  db.live.saveAsks.push({ path: place.path, force: Boolean(body.force) });
+  if (db.live.holdSaves) await new Promise((resolve) => db.live.heldSaves.push(resolve));
   const doc = liveDocOf(db, place, body.session);
   const conflict = doc.diskSha != null;
   if ((doc.savedRevision === doc.revision && !conflict) || (conflict && !body.force)) return liveState(doc);
@@ -2474,6 +2479,7 @@ route('POST', `/api/sandboxes/${ID}/files/live/disk`, ({ db, p, body }) => {
     if (doc.diskSha !== '') { doc.diskSha = ''; livePublish(db, place.sid, place.root, place.path, doc, '', null); }
     return liveState(doc);
   }
+  if ((place.tree.binary && place.tree.binary.has(place.path)) || (place.tree.tooLarge && place.tree.tooLarge.has(place.path))) fail(422, 'invalid', 'the file on disk is no longer text the editor opens');
   const content = place.tree.files.get(place.path);
   const sha = mockSha(content);
   if (sha === doc.sha && !body.force) {
@@ -2484,6 +2490,8 @@ route('POST', `/api/sandboxes/${ID}/files/live/disk`, ({ db, p, body }) => {
     if (doc.diskSha !== sha) { doc.diskSha = sha; livePublish(db, place.sid, place.root, place.path, doc, '', null); }
     return liveState(doc);
   }
+  // The disk's line ending too, as the server takes it.
+  doc.eol = liveEol(content);
   const theirs = inEol(content, doc.eol);
   const ordered = replacement(doc.text, theirs);
   doc.sha = sha;
@@ -5658,7 +5666,7 @@ export function createMockTransport(params) {
     db.repoTrees = opener.repoTrees;
     db.live = opener.live;
   } else {
-    db.live = { docs: new Map(), sinks: new Set(), next: 0, joins: [], edits: [], saves: [], held: [], holdEdits: false };
+    db.live = { docs: new Map(), sinks: new Set(), next: 0, joins: [], edits: [], saves: [], saveAsks: [], held: [], holdEdits: false, heldSaves: [], holdSaves: false };
   }
   const liveSink = (event) => emit(db, event);
   db.live.sinks.add(liveSink);
@@ -5666,6 +5674,7 @@ export function createMockTransport(params) {
   db.liveDoc = (path, root = 'sandbox') => { const doc = db.live.docs.get(liveKey('sb_studio', root, path)); return doc ? { ...liveWhole(doc), text: doc.text } : null; };
   db.dropLive = () => db.live.docs.clear();
   db.releaseEdits = () => { db.live.holdEdits = false; for (const resolve of db.live.held.splice(0)) resolve(); };
+  db.releaseSaves = () => { db.live.holdSaves = false; for (const resolve of db.live.heldSaves.splice(0)) resolve(); };
   // Tests change a task as the server would announce it (`touchTask('sb_studio', 12, {…})`).
   // The GitHub App was created in the other tab (SPEC-283): the connection now reads configured.
   db.finishGithubApp = () => { db.me.instance.github_configured = true; };

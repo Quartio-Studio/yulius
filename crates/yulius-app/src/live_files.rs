@@ -281,6 +281,7 @@ impl App {
                 sha256: doc.sha256.clone(),
                 saved: doc.saved(),
                 disk_sha256: doc.disk_sha256.clone(),
+                eol: doc.eol.clone(),
             },
         );
     }
@@ -687,9 +688,10 @@ impl App {
             }
             return Ok(doc.state());
         }
-        let theirs: Vec<u16> = in_eol(normalized(&content, None).0.as_str(), &doc.eol)
-            .encode_utf16()
-            .collect();
+        // The disk's line ending too: a file converted on disk keeps its new line endings.
+        let (theirs, eol) = normalized(&content, None);
+        let theirs: Vec<u16> = theirs.encode_utf16().collect();
+        doc.eol = eol;
         let op = replacement(&doc.text, &theirs);
         doc.sha256 = disk.sha256;
         doc.disk_sha256 = None;
