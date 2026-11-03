@@ -269,6 +269,9 @@ test('a save made while a refused one is looked into is not a conflict with ones
   await openNotes(screen);
   const notes = screen.getByRole('textbox', 'Sandbox notes');
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  // Both notepads' opening loads have been answered (the Team pad's too), so the hold below holds
+  // only a look after a refusal.
+  await expect.poll(() => noteLoads(browser)).toBeGreaterThanOrEqual(2);
   // The look at the server after a refusal is held from here, whichever save is refused first: the
   // blur below, or the pad's own retry of the lost save 1 s after it, which a starved run is slower
   // than (#510); unheld, that retry's look settled the lost save before the blur.
@@ -344,6 +347,8 @@ test("a failed reload after a teammate's edit backs off", async ({ app, browser,
   await browser.evaluate(() => new Promise((resolve) => setTimeout(resolve, 2500)));
   const tries = await browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.noteLoads);
   expect(tries - before).toBeLessThanOrEqual(3);
+  // It does try again by itself: the load the edit's event asked for, then its first retry 1 s later.
+  await expect.poll(() => noteLoads(browser)).toBeGreaterThanOrEqual(before + 2);
   await setMock(browser, 'failNoteLoads', false);
   await loadAgain(screen);
   await expect(screen.getByRole('textbox', 'Sandbox notes')).toHaveValue('from alice');
