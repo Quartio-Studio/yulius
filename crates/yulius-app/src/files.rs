@@ -191,6 +191,10 @@ pub(crate) fn open_dirs_below(
     Ok(dir)
 }
 
+/// The mode of the folders the server creates in a sandbox tree: never writable by others,
+/// whatever the umask (which can only take bits away; SPEC-402, #800).
+const FOLDER_MODE: Mode = Mode::from_bits_truncate(0o755);
+
 /// Opens the folder `name` in the folder `dir` with `O_DIRECTORY | O_NOFOLLOW`, creating it
 /// first when it is missing and `create` (see [`open_dirs_below`]).
 pub(crate) fn open_dir_at(
@@ -201,7 +205,7 @@ pub(crate) fn open_dir_at(
     let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
     match openat(dir, name, flags, Mode::empty()) {
         Err(Errno::ENOENT) if create => {
-            match nix::sys::stat::mkdirat(dir, name, Mode::from_bits_truncate(0o777)) {
+            match nix::sys::stat::mkdirat(dir, name, FOLDER_MODE) {
                 Ok(()) | Err(Errno::EEXIST) => {}
                 Err(err) => return Err(err),
             }
@@ -860,7 +864,7 @@ impl App {
             .path
             .file_name()
             .ok_or_else(|| AppError::Invalid("invalid path".into()))?;
-        match mkdirat(&folder, name, Mode::from_bits_truncate(0o777)) {
+        match mkdirat(&folder, name, FOLDER_MODE) {
             Ok(()) => {}
             Err(Errno::EEXIST) => return Err(AppError::Conflict("that path exists".into())),
             Err(err) => return Err(errno_error(err)),
@@ -993,6 +997,31 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-402 VUG-003 (#800): a folder the server creates is 0755 at most whatever the umask
+    /// (here 0, on a thread that has its own).
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn created_folders_are_never_writable_by_others_whatever_the_umask()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir()?;
+        let base = dir.path().to_path_buf();
+        let thread_base = base.clone();
+        std::thread::spawn(move || -> Result<(), Errno> {
+            nix::sched::unshare(nix::sched::CloneFlags::CLONE_FS)?;
+            nix::sys::stat::umask(Mode::empty());
+            let folder = open_dirs_below(&thread_base, &[OsStr::new("a")], true)?;
+            open_dir_at(&folder, OsStr::new("b"), true).map(drop)
+        })
+        .join()
+        .map_err(|_| "the umask thread panicked")??;
+        for path in [base.join("a"), base.join("a/b")] {
+            let mode = std::fs::metadata(&path)?.permissions().mode() & 0o7777;
+            assert_eq!(mode, 0o755, "{}", path.display());
+        }
+        Ok(())
+    }
 
     #[test]
     fn only_plain_relative_paths_pass() {

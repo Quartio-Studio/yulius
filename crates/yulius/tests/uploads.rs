@@ -1173,6 +1173,40 @@ async fn old_drafts_are_never_pruned_through_a_swapped_folder() -> TestResult {
     Ok(())
 }
 
+/// SPEC-402 VUG-004 (#809): a draft dated before 1970 is older than a week, so the owner's next
+/// upload prunes it as it prunes any old draft; a fresh one and a folder stay.
+#[tokio::test]
+async fn a_draft_dated_before_1970_is_old() -> TestResult {
+    let h = harness_configured(|c| c.upload_max_bytes = LIMIT)?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    std::fs::create_dir_all(data.join("sandboxes/s1/repo"))?;
+    let drafts = data.join("sandboxes/s1/attachments/drafts/u-alice");
+    std::fs::create_dir_all(drafts.join("folder"))?;
+    std::fs::write(drafts.join("ancient.png"), "old")?;
+    std::fs::write(drafts.join("fresh.png"), "new")?;
+    let before_1970 = std::time::UNIX_EPOCH
+        .checked_sub(Duration::from_secs(24 * 3600))
+        .ok_or("no time before 1970 here")?;
+    std::fs::File::options()
+        .write(true)
+        .open(drafts.join("ancient.png"))?
+        .set_modified(before_1970)?;
+    let sent = upload(
+        &h,
+        Method::POST,
+        "/api/sandboxes/s1/attachments?name=new.png",
+        b"png",
+        &alice,
+    )
+    .await?;
+    assert_eq!(sent.status, StatusCode::CREATED, "{:?}", sent.body);
+    assert_eq!(names(&drafts)?, ["folder", "fresh.png", "new.png"]);
+    Ok(())
+}
+
 /// Uploads `bytes` declaring `declared` bytes (a client announcing a large file).
 async fn upload_declaring(
     h: &Harness,
