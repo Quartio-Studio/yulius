@@ -564,6 +564,7 @@ impl App {
                 rollback,
             });
         }
+        super::rollback::mark_rollback_not_needed(&mut environments, &profile.integration_branch);
         let mut views = Vec::new();
         for run in &runs {
             views.push(self.cd_run_view(run, false).await);
@@ -2162,7 +2163,7 @@ fn environment_text(out: &mut String, env: &CdEnvironment) {
     if let Some(run) = &env.last_run {
         out.push_str(&format!("  last run: {}\n", run_line(run)));
     }
-    super::rollback::rollback_text(out, &env.rollback, &env.stage);
+    super::rollback::rollback_text(out, env);
 }
 
 pub(super) fn short_sha(sha: &str) -> &str {

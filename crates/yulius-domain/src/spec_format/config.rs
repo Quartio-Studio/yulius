@@ -1644,6 +1644,15 @@ mod tests {
         assert_eq!(cd.state("dev", CdStage::Dev), CdState::Empty);
         let prod = cd.target("prod").ok_or("prod")?;
         assert!(prod.promote && prod.deploy.is_none());
+        // SPEC-418 AC4: no rollback command (nothing to redeploy); the line says how Yulius
+        // rolls back instead.
+        assert!(prod.rollback.is_none());
+        let about = prod.about.as_deref().unwrap_or_default();
+        assert!(
+            about.contains("restores the previous binary and database")
+                && about.contains("revert on dev and promote again"),
+            "{about}"
+        );
         assert_eq!(cd.environments.len(), 2, "only the defaults");
         Ok(())
     }

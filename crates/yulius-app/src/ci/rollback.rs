@@ -13,7 +13,9 @@ use std::io::Read as _;
 use std::path::Path;
 use std::sync::Arc;
 
-use yulius_contracts::api::cd::{CdPart, CdRelease, CdRollback, CdRollbackRequest, CdRun};
+use yulius_contracts::api::cd::{
+    CdEnvironment, CdPart, CdRelease, CdRollback, CdRollbackRequest, CdRun,
+};
 use yulius_domain::cd::{self as dom, CdRefusal, CdStage, CdTarget, Requester, env_label};
 use yulius_domain::ci::RunState;
 use yulius_domain::ids::SandboxId;
@@ -279,6 +281,14 @@ impl App {
         let Some(target) = config.target_of(env, stage).cloned() else {
             return Err(refusal(&CdRefusal::not_defined(env)));
         };
+        if target.rollback.is_none() && target.deploy.is_none() {
+            // Review L3 of SPEC-418: nothing Yulius deploys there could be redeployed.
+            return Err(AppError::Conflict(format!(
+                "nothing is deployed to {} that a rollback could redeploy: [cd.{env}] of \
+                 yulius.toml on {branch} runs no deploy command",
+                env_label(env)
+            )));
+        }
         if target.rollback.is_none() {
             return Err(AppError::Conflict(format!(
                 "rollback is not configured for {}: add `rollback` and `migrations` to [cd.{env}] \
@@ -769,6 +779,7 @@ impl App {
             drill_environment,
             drill,
             blocked,
+            not_needed: None,
         })
     }
 
@@ -830,13 +841,54 @@ impl App {
     }
 }
 
+/// Marks the environments that need no rollback, saying why (SPEC-418 RCF-001, ADR-0264): no
+/// `rollback` and no `deploy` command in a table that was read, and no production-stage
+/// environment that deploys drills its rollback on it (review M1: production waits for that
+/// drill). `integration` is the branch a promotion takes its releases from.
+pub(super) fn mark_rollback_not_needed(envs: &mut [CdEnvironment], integration: &str) {
+    let drilled: Vec<String> = envs
+        .iter()
+        // A production whose table could not be read may deploy and drill (review round 2).
+        .filter(|env| {
+            env.stage == CdStage::Prod.as_str() && (env.deploy.is_some() || env.problem.is_some())
+        })
+        .map(|env| env.rollback.drill_environment.clone())
+        .collect();
+    for env in envs.iter_mut() {
+        let needed = env.rollback.command.is_some()
+            || env.deploy.is_some()
+            || env.problem.is_some()
+            || (env.stage == CdStage::Dev.as_str() && drilled.contains(&env.name));
+        env.rollback.not_needed = (!needed).then(|| {
+            if env.stage == CdStage::Prod.as_str() && env.promote {
+                format!(
+                    "promoting is the release: nothing deployed here can be redeployed; undo a \
+                     release by reverting it on {integration} and promoting again"
+                )
+            } else {
+                "it runs no deploy command; add rollback and migrations with one".to_owned()
+            }
+        });
+    }
+}
+
 /// An environment's rollback as `cd_status` prints it.
-pub(super) fn rollback_text(out: &mut String, rollback: &CdRollback, stage: &str) {
+pub(super) fn rollback_text(out: &mut String, env: &CdEnvironment) {
+    let (rollback, stage) = (&env.rollback, env.stage.as_str());
+    if let Some(why) = &rollback.not_needed {
+        // Nothing Yulius deploys here could be redeployed (SPEC-418, ADR-0264).
+        out.push_str(&format!("  rollback: not needed ({why})\n"));
+        return;
+    }
     let Some(command) = &rollback.command else {
-        out.push_str(
+        out.push_str(if env.deploy.is_none() && env.problem.is_none() {
+            // Not "not needed": a production that deploys drills here (review round 2).
+            "  rollback: not configured (production deploys wait for a rollback drill here: add a \
+             deploy command, `rollback` and `migrations` to its table)\n"
+        } else {
             "  rollback: not configured (add `rollback` and `migrations` to its table; production \
-             deploys need a proven rollback)\n",
-        );
+             deploys need a proven rollback)\n"
+        });
         if let Some(blocked) = &rollback.blocked {
             out.push_str(&format!("  production deploys refused: {blocked}\n"));
         }
@@ -907,6 +959,123 @@ mod tests {
     use super::*;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn env(stage: &str, deploy: Option<&str>, promote: bool) -> CdEnvironment {
+        CdEnvironment {
+            name: stage.into(),
+            label: stage.into(),
+            stage: stage.into(),
+            state: if deploy.is_some() || promote {
+                "ready"
+            } else {
+                "empty"
+            }
+            .into(),
+            branch: if stage == "prod" { "main" } else { "dev" }.into(),
+            head: None,
+            problem: None,
+            about: None,
+            deploy: deploy.map(Into::into),
+            verify: None,
+            promote,
+            promotes_from: None,
+            secrets: Vec::new(),
+            states: Vec::new(),
+            deployed: None,
+            last_run: None,
+            rollback: CdRollback {
+                drill_environment: "dev".into(),
+                ..CdRollback::default()
+            },
+        }
+    }
+
+    /// `cd_status`'s rollback lines of each environment once marked.
+    fn said(envs: &mut [CdEnvironment]) -> Vec<String> {
+        mark_rollback_not_needed(envs, "dev");
+        envs.iter()
+            .map(|env| {
+                let mut out = String::new();
+                rollback_text(&mut out, env);
+                out
+            })
+            .collect()
+    }
+
+    /// SPEC-418 RCF-001/003: an environment that runs no deploy command needs no rollback, and
+    /// says why (Yulius's own CD: an empty dev, a production that only promotes); one that
+    /// deploys without `rollback` is still "not configured".
+    #[test]
+    fn environments_that_deploy_nothing_need_no_rollback() {
+        let out = said(&mut [env("dev", None, false), env("prod", None, true)]);
+        assert!(
+            out[0].contains("rollback: not needed (it runs no deploy command"),
+            "{}",
+            out[0]
+        );
+        assert!(
+            out[1].contains("rollback: not needed (promoting is the release")
+                && out[1].contains("reverting it on dev and promoting again"),
+            "{}",
+            out[1]
+        );
+        for out in &out {
+            assert!(!out.contains("not configured"), "{out}");
+            assert!(!out.contains("need a proven rollback"), "{out}");
+        }
+        let out = said(&mut [
+            env("dev", Some("scripts/cd/deploy.sh dev"), false),
+            env("prod", None, true),
+        ]);
+        assert!(out[0].contains("rollback: not configured"), "{}", out[0]);
+    }
+
+    /// Review M1 of SPEC-418: an empty dev that a deploying production drills its rollback on
+    /// needs one (production waits for that drill), whatever production's own state.
+    #[test]
+    fn an_environment_a_deploying_production_drills_on_needs_rollback() {
+        let mut envs = [
+            env("dev", None, false),
+            env("prod", Some("scripts/cd/deploy.sh prod"), false),
+        ];
+        let out = said(&mut envs);
+        assert_eq!(envs[0].rollback.not_needed, None);
+        // Review round 2: an agent reads that it needs a deploy command too, and why.
+        assert!(
+            out[0].contains("rollback: not configured (production deploys wait for a rollback drill here: add a deploy command, `rollback` and `migrations`"),
+            "{}",
+            out[0]
+        );
+        // Another dev-stage environment, not drilled on, still needs none.
+        let mut staging = env("dev", None, false);
+        staging.name = "staging".into();
+        let mut envs = [
+            env("dev", None, false),
+            staging,
+            env("prod", Some("scripts/cd/deploy.sh prod"), false),
+        ];
+        said(&mut envs);
+        assert_eq!(envs[0].rollback.not_needed, None);
+        assert!(envs[1].rollback.not_needed.is_some());
+    }
+
+    /// Review L1 of SPEC-418: a table that could not be read is never said to need no rollback.
+    #[test]
+    fn an_unreadable_table_is_not_said_to_need_no_rollback() {
+        let mut broken = env("dev", None, false);
+        broken.problem = Some("yulius.toml line 3: invalid".into());
+        let mut envs = [broken, env("prod", None, true)];
+        said(&mut envs);
+        assert_eq!(envs[0].rollback.not_needed, None);
+        assert!(envs[1].rollback.not_needed.is_some());
+        // Review round 2: an unreadable production may deploy and drill on dev.
+        let mut prod = env("prod", None, false);
+        prod.problem = Some("yulius.toml line 3: invalid".into());
+        let mut envs = [env("dev", None, false), prod];
+        said(&mut envs);
+        assert_eq!(envs[0].rollback.not_needed, None);
+        assert_eq!(envs[1].rollback.not_needed, None);
+    }
 
     /// Review H1 of SPEC-415: the markers come from the regular file the run wrote, never through
     /// a link or from a FIFO or a device the deploy put in its place, and the reading ends.
