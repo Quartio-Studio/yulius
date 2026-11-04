@@ -55,8 +55,12 @@ const word = (name) => (name === 'prod' ? 'production' : name);
 /** An environment's name as a title: Dev, Production, Platform. */
 const titleOf = (name) => word(name).charAt(0).toUpperCase() + word(name).slice(1);
 const title = (env) => titleOf(env.name);
+/** What a run did, in a few words: deploy, rollback or rollback drill (SPEC-415). */
+const kindWord = (run) => (run.kind === 'rollback' ? 'rollback' : run.kind === 'drill' ? 'rollback drill' : 'deploy');
+/** A rollback's or a drill's releases: `v1`, or `engine 1.4.1 then engine 1.4.2`. */
+const stepsText = (run) => (run.steps || []).map((s) => (s.part ? `${s.part} ${s.release}` : s.release)).join(' then ');
 /** What a run's card's open button is called. */
-const openLabel = (run) => `Open the ${word(run.environment)} deploy at ${shortSha(run.commit)}`;
+const openLabel = (run) => `Open the ${word(run.environment)} ${kindWord(run)} at ${shortSha(run.commit)}`;
 // The deploy whose view was left last, per sandbox: the list it goes back to puts the keyboard on
 // its card (SPEC-238 review round 1).
 const leftRun = new Map();
@@ -182,6 +186,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
           ? h('p', { class: 'small muted' }, `Production never gets a secret agents use (copies into .env files or hosts the proxy sends it to), so nobody can allow it. Give production a separate secret: add it on the Secrets page and name it in [cd.${env.name}] secrets of yulius.toml; or remove its .env copies and hosts first, then allow it for production deploys.`)
           : null));
     }
+    rows.push(rollbackSection(env, overview));
     if (env.last_run) {
       const run = env.last_run;
       rows.push(h('p', { class: 'small muted' }, `Last run ${relLong(run.started_at)} by ${run.requested_by}: ${stateOf(run.state).label.toLowerCase()}`, run.reason ? ` · ${run.reason}` : ''));
@@ -204,17 +209,97 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
       prod ? h('p', { class: 'small muted' }, `${env.name === 'prod' ? 'Production' : `${title(env)}, a production environment,`} is always deployed by a person. Agents never promote or deploy it; they ask with “Needs you”.`) : null);
   }
 
+  /**
+   * An environment's rollback (SPEC-415): whether it is configured and proven, the migrations
+   * line, and per part the kept releases with "Roll back to previous" and "Roll back to this".
+   */
+  function rollbackSection(env, overview) {
+    const rb = env.rollback || {};
+    const prod = isProd(env);
+    const drill = rb.drill || null;
+    let status;
+    if (!rb.command) status = badge('Rollback not configured', 'warn');
+    else if (prod) status = rb.blocked ? badge('Not proven', 'warn') : badge('Proven', 'ok');
+    else if (drill) status = badge(drill.state === 'passed' ? 'Drill passed' : drill.state === 'running' ? 'Drill running' : 'Drill failed', drill.state === 'passed' ? 'ok' : drill.state === 'running' ? '' : 'danger');
+    else status = badge('Configured', '');
+    const rows = [h('div', { class: 'cd-rollback-head' }, h('h3', null, 'Rollback'), status)];
+    if (!rb.command) {
+      if (env.state === 'ready' && (env.deploy || prod)) {
+        rows.push(h('p', { class: 'small muted' }, `Add rollback (a command that redeploys the kept release in $YULIUS_CD_RELEASE, never building) and migrations (how data changes stay compatible) to [cd.${env.name}] in yulius.toml.`));
+      }
+      if (rb.blocked) rows.push(h('p', { class: 'small' }, `Production deploys wait: ${rb.blocked}`));
+      return h('section', { class: 'stack-sm cd-rollback', 'aria-label': `${title(env)} rollback` }, rows);
+    }
+    const facts = [['Rollback', h('code', null, rb.command)]];
+    if (rb.migrations) facts.push(['Data', rb.migrations]);
+    facts.push(['Drill', drill
+      ? [`${stateOf(drill.state).label.toLowerCase()} `, h('a', { href: href(`${page}&run=${encodeURIComponent(drill.run_id)}`), dataset: { route: `${page}&run=${encodeURIComponent(drill.run_id)}` } }, `at ${shortSha(drill.commit)}`), h('span', { class: 'muted' }, ` · ${relLong(drill.started_at)}${prod ? ` on ${word(rb.drill_environment)}` : ''}`)]
+      : h('span', { class: 'muted' }, prod ? `none yet on ${word(rb.drill_environment)}` : 'none yet: it follows a deploy that has an earlier release')]);
+    rows.push(h('dl', { class: 'cd-rollback-facts' }, facts.flatMap(([k, v]) => [h('dt', null, k), h('dd', null, v)])));
+    if (prod && rb.blocked) rows.push(h('div', { class: 'banner banner-warn', role: 'status' }, icon('warn', { size: 16 }), h('span', { class: 'banner-text' }, `Production deploys wait: ${rb.blocked}`)));
+    const allowed = prod ? overview.can_deploy_prod : overview.can_deploy_dev;
+    const running = (overview.runs || []).some((r) => r.environment === env.name && r.state === 'running');
+    const why = !allowed ? (prod ? 'Only an administrator rolls back production' : 'Requires write access') : running ? 'A run of this environment is running' : null;
+    for (const part of rb.parts || []) {
+      const where = part.name ? `${title(env)} ${part.name}` : title(env);
+      const releases = part.releases || [];
+      const previous = releases.find((r) => r.release === part.previous);
+      const back = h('button', { type: 'button', class: ['btn', 'btn-sm', prod && 'btn-danger'], disabled: Boolean(why || !previous || previous.blocked), title: why || (!previous ? 'No earlier release to go back to' : previous.blocked) || null,
+        'aria-label': `Roll back ${where.toLowerCase()} to previous`, onClick: () => rollBack(env, part, previous, overview) },
+      icon('back', { size: 14 }), previous ? `Roll back to previous (${previous.release})` : 'Roll back to previous');
+      const list = releases.length
+        ? h('ul', { class: 'cd-releases', 'aria-label': `${where} releases` }, releases.map((r) => h('li', { dataset: { release: r.release } },
+          h('code', null, r.release),
+          h('span', { class: 'muted small cd-release-meta' }, `${shortSha(r.commit)} · `, h('span', { title: dateTime(r.deployed_at) }, relLong(r.deployed_at)), ` · ${r.requested_by}`, r.barrier ? ` · no rollback past it: ${r.barrier}` : ''),
+          r.current ? badge('Deployed now', 'ok')
+            : r.blocked ? h('span', { class: 'small muted' }, `Blocked: ${r.blocked}`)
+              : h('button', { type: 'button', class: 'btn btn-sm', disabled: Boolean(why), title: why || null, 'aria-label': `Roll back ${where.toLowerCase()} to ${r.release}`, onClick: () => rollBack(env, part, r, overview) }, 'Roll back to this'))))
+        : h('p', { class: 'small muted' }, 'No releases yet: the next deploy records one.');
+      rows.push(h('div', { class: 'stack-sm' }, h('div', { class: 'cd-part-head' }, h('h4', null, part.name || 'Releases'), releases.length ? back : null), list));
+    }
+    return h('section', { class: 'stack-sm cd-rollback', 'aria-label': `${title(env)} rollback` }, rows);
+  }
+
+  /** Rolls a part back (or forward) to a kept release after a confirmation (SPEC-415). */
+  async function rollBack(env, part, release, overview) {
+    const prod = isProd(env);
+    const where = part.name ? `${word(env.name)} ${part.name}` : word(env.name);
+    const rb = env.rollback || {};
+    const opened = performance.now();
+    const ok = await confirmDialog({
+      title: `Roll back ${where}?`,
+      message: `Redeploys ${release.release} (from ${shortSha(release.commit)}, deployed ${relLong(release.deployed_at)} by ${release.requested_by}) with the rollback command of ${env.branch}, then runs the verify command. Nothing is rebuilt.`,
+      details: h('dl', { class: 'cd-rollback-facts' }, h('dt', null, 'Data'), h('dd', null, rb.migrations || 'not described'), h('dt', null, 'Rollback'), h('dd', null, h('code', null, rb.command || ''))),
+      confirmLabel: `Roll back to ${release.release}`,
+      danger: prod,
+      typeToConfirm: prod ? overview.slug : undefined,
+    });
+    if (!ok) return;
+    const body = { release: release.release };
+    if (part.name) body.part = part.name;
+    if (prod) { body.confirm = overview.slug; body.confirm_ms = Math.max(0, Math.round(performance.now() - opened)); }
+    try {
+      const run = await ctx.api.post(`${base}/cd/${enc(env.name)}/rollback`, body);
+      if (destroyed) return;
+      reload({ quiet: true });
+      toast(`Rolling ${where} back to ${release.release}.`, { kind: 'ok', action: { label: 'Open', run: () => openLater(run.run_id) } });
+    } catch (error) {
+      errorToast(error, `Couldn’t roll ${where} back`);
+      if (!destroyed) reload({ quiet: true });
+    }
+  }
+
   function runCard(run, overview) {
     const st = stateOf(run.state);
-    const label = titleOf(run.environment);
+    const label = `${titleOf(run.environment)}${run.kind === 'rollback' ? ' rollback' : run.kind === 'drill' ? ' rollback drill' : ''}`;
     const controls = [];
     const may = isProd(run) ? overview.can_deploy_prod : overview.can_deploy_dev;
-    if (may && run.state === 'running') controls.push(h('button', { type: 'button', class: 'btn btn-sm', 'aria-label': `Cancel the ${label.toLowerCase()} deploy at ${shortSha(run.commit)}`, onClick: () => cancel(run) }, 'Cancel'));
+    if (may && run.state === 'running') controls.push(h('button', { type: 'button', class: 'btn btn-sm', 'aria-label': `Cancel the ${word(run.environment)} ${kindWord(run)} at ${shortSha(run.commit)}`, onClick: () => cancel(run) }, 'Cancel'));
     return itemCard({
       iconEl: h('span', { class: ['ci-state', `ci-${run.state}`] }, icon(st.icon, { size: 18, label: st.label })),
       title: [label, ' ', h('code', { class: 'muted' }, shortSha(run.commit))],
       badges: [badge(st.label, st.tone)],
-      description: [run.note || `${run.branch}`, run.reason ? ` · ${run.reason}` : null],
+      description: [run.note || `${run.branch}`, (run.steps || []).length ? ` · to ${stepsText(run)}` : null, run.reason ? ` · ${run.reason}` : null],
       extra: h('div', { class: 'item-meta' }, h('span', { title: dateTime(run.started_at) }, `Started ${relLong(run.started_at)}`), ` · by ${run.requested_by}`),
       controls,
       onOpen: () => openLater(run.run_id),

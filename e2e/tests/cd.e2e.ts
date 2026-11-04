@@ -815,3 +815,56 @@ test('a needs_you decision reads Decide, and an action alone only To do', async 
   await expect(browser.locator('.attention-bar .needs-you-head')).toHaveText('Needs you');
   expect(await neededParts(browser)).toEqual([['To do', 'Deploy production on the CD page']]);
 });
+
+// Task #397 (SPEC-415 RBK-040): each environment shows its rollback: whether it is proven, the
+// migrations line, the kept releases with the one deployed now, "Roll back to previous" and "Roll
+// back to this", and why a release behind a barrier cannot be gone back to. One click and a
+// confirmation roll back; production's confirmation takes the slug typed.
+test('the CD page rolls back to an earlier release in one click', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci?section=cd'));
+  const dev = screen.getByRole('region', 'Dev rollback');
+  await expect(dev.getByText('Drill passed')).toBeVisible();
+  await expect(dev.getByText(/^expand and contract: the previous release reads the new schema/)).toBeVisible();
+  const row = (env: string, release: string) => browser.locator(`.cd-rollback[aria-label="${env} rollback"] li[data-release="${release}"]`);
+  await expect(row('Dev', 'v42')).toContainText('Deployed now');
+  await expect(row('Dev', 'v40')).toContainText('Blocked: rolling back past v41 is blocked: orders.total split into two columns');
+  const prod = screen.getByRole('region', 'Production rollback');
+  await expect(prod.getByText('Not proven')).toBeVisible();
+  await expect(prod.getByText(/^Production deploys wait: rollback is not proven for this commit/)).toBeVisible();
+  // The drill shows among the runs as what it is.
+  await expect(screen.getByRole('button', /Open the dev rollback drill at 3c5a7e9/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // One click: back to the previous release, after a confirmation that says what happens to data.
+  await dev.getByRole('button', 'Roll back dev to previous').click();
+  const confirm = screen.getByRole('dialog', 'Roll back dev?');
+  await expect(confirm.getByText(/^Redeploys v41 \(from 8e2d4f6, deployed .+ by mkarp\) with the rollback command of quartio, then runs the verify command\. Nothing is rebuilt\.$/)).toBeVisible();
+  await expect(confirm.getByText(/^expand and contract/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await confirm.getByRole('button', 'Roll back to v41').click();
+  await expect(screen.getByText('Rolling dev back to v41.')).toBeVisible();
+  await expect(row('Dev', 'v41')).toContainText('Deployed now');
+  await expect(screen.getByRole('button', /Open the dev rollback at 8e2d4f6/)).toBeVisible();
+  // v40 lies behind v41's barrier: going back further is not offered.
+  await expect(dev.getByRole('button', 'Roll back dev to previous')).toBeDisabled();
+  await expect(dev.getByRole('button', 'Roll back dev to v40')).toBeHidden();
+
+  // Production: a chosen release, with the slug typed.
+  await prod.getByRole('button', 'Roll back production to v39').click();
+  const typed = screen.getByRole('dialog', 'Roll back production?');
+  const go = typed.getByRole('button', 'Roll back to v39');
+  await expect(go).toBeDisabled();
+  await typed.getByRole('textbox', 'Type studio to confirm').fill('studio');
+  await go.click();
+  await expect(screen.getByText('Rolling production back to v39.')).toBeVisible();
+  const sent = await browser.evaluate(() => (window as unknown as { __yuliusMock: { lastCdRollback?: { release?: string; confirm?: string } } }).__yuliusMock.lastCdRollback ?? null);
+  expect(sent).toMatchObject({ release: 'v39', confirm: 'studio' });
+  await expect(row('Production', 'v39')).toContainText('Deployed now');
+});
+
+// SPEC-415 RBK-040: without rollback a project's environments say what to add.
+test('an environment without rollback says it is not configured', async ({ app, screen }) => {
+  await app.open(mock('/s/product/ci?section=cd'));
+  await expect(screen.getByRole('region', 'Dev rollback').getByText('Rollback not configured')).toBeVisible();
+  await expect(screen.getByRole('region', 'Production rollback').getByText('Rollback not configured')).toBeVisible();
+});
