@@ -190,6 +190,8 @@ pub struct Foundations {
     pub actions_workflows: usize,
     /// `[cd.dev]` and `[cd.prod]` are both defined, empty or not (SPEC-134 CDC-002).
     pub cd_defined: bool,
+    /// The `[cd.<name>]` tables that deploy without a `rollback` (SPEC-415).
+    pub cd_without_rollback: Vec<String>,
 }
 
 impl Default for Foundations {
@@ -201,6 +203,7 @@ impl Default for Foundations {
             lint_command: true,
             actions_workflows: 0,
             cd_defined: true,
+            cd_without_rollback: Vec::new(),
         }
     }
 }
@@ -233,6 +236,18 @@ impl Foundations {
                  with an `about` line"
                     .to_owned(),
             );
+        }
+        if !self.cd_without_rollback.is_empty() {
+            let tables: Vec<String> = self
+                .cd_without_rollback
+                .iter()
+                .map(|name| format!("`[cd.{name}]`"))
+                .collect();
+            out.push(format!(
+                "rollback in CD: {} deploy(s) without `rollback` and `migrations`; production \
+                 deploys wait until a dev drill proved it (SPEC-415)",
+                tables.join(", ")
+            ));
         }
         out
     }
@@ -738,10 +753,9 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          `needs_you` and continue with the rest.\n\
          Features and fixes take one path, with no human acceptance step: spec → implementation \
          with tests → independent review → fixes → gates green → pull request → merge into \
-         {integration} on green → summary. Merges deploy nothing: `cd_deploy` dev only if asked; \
-         {production} is a person's: never promote. \
-         Work that changes nothing in the repository (research, a brainstorm, an answer) ends \
-         with its result.\n\
+         {integration} on green → summary. Merges deploy nothing: `cd_deploy`/`cd_rollback` dev \
+         only if asked; {production} is a person's: never promote. Each `[cd.*]` deploy has a \
+         `rollback`. Work that changes no file ends with its result.\n\
          - Git (skill `git-hygiene`): work only on {branch}. Never commit or push to \
          {integration} or {production}, never `--no-verify`, never rewrite pushed commits (no \
          rebase, amend or force push: Yulius pushes plainly). Small conventional commits; nothing \
@@ -856,7 +870,7 @@ fn foundations(input: &BriefingInput<'_>) -> String {
          and integration tests, lint and format, one local gate that Yulius CI runs on our own \
          machines (`[commands] gate` or `[[ci.jobs]]` in `yulius.toml`; `ci_setup` lists the \
          GitHub Actions to translate before you delete them), CD (deployment) with `[cd.dev]` and \
-         `[cd.prod]` (and a `[cd.<name>]` with its `stage` per further target) and their deploy and verify scripts, the docs and the GitHub labels. Never add GitHub Actions \
+         `[cd.prod]` (and a `[cd.<name>]` with its `stage` per further target) and their deploy, verify and rollback scripts, the docs and the GitHub labels. Never add GitHub Actions \
          or anything that needs a paid GitHub plan. Research and questions go ahead without \
          it.\n\n",
         gaps.join("; ")
@@ -2158,6 +2172,7 @@ mod tests {
             lint_command: true,
             actions_workflows: 2,
             cd_defined: false,
+            cd_without_rollback: Vec::new(),
         };
         let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
         let section = text
@@ -2186,6 +2201,7 @@ mod tests {
             lint_command: false,
             actions_workflows: 0,
             cd_defined: false,
+            cd_without_rollback: Vec::new(),
         };
         assert_eq!(
             none.gaps().len(),
@@ -2202,6 +2218,17 @@ mod tests {
             no_cd.gaps()
         );
         assert!(Foundations::default().gaps().is_empty());
+        // SPEC-415: a table that deploys without rollback is a gap to fill.
+        let no_rollback = Foundations {
+            cd_without_rollback: vec!["dev".into(), "prod".into()],
+            ..Foundations::default()
+        };
+        let gaps = no_rollback.gaps();
+        assert!(
+            gaps.iter()
+                .any(|g| g.contains("`[cd.dev]`, `[cd.prod]` deploy(s) without `rollback`")),
+            "{gaps:?}"
+        );
         Ok(())
     }
 

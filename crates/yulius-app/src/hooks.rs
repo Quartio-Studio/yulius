@@ -1236,6 +1236,16 @@ fn foundations(root: &Path, toml: Option<&str>) -> Foundations {
         cd_defined: toml.is_some_and(|text| {
             yulius_domain::spec_format::parse_yulius_toml_cd(text).is_ok_and(|cd| cd.is_defined())
         }),
+        cd_without_rollback: toml
+            .and_then(|text| yulius_domain::spec_format::parse_yulius_toml_cd(text).ok())
+            .map(|cd| {
+                cd.environments
+                    .into_iter()
+                    .filter(|target| target.deploy.is_some() && target.rollback.is_none())
+                    .map(|target| target.name)
+                    .collect()
+            })
+            .unwrap_or_default(),
     }
 }
 

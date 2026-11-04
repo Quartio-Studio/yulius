@@ -24,7 +24,7 @@ flowchart LR
   APP --- CI
   APP --- CD
   CD -->|"dev: deploy + verify, allowed secrets"| SB
-  CD -->|"production: deploy + verify, allowed secrets"| PSB
+  CD -->|"production: deploy + verify (or rollback), allowed secrets"| PSB
   APP -->|"prune caches, quota"| SB
   CI -->|"jobs in its ci/ leaf, job slots"| SB
   SUP <-->|"Unix socket"| PH["yulius ptyhost (per run)"]
@@ -1641,6 +1641,35 @@ flowchart LR
   DEV["dev stage: [cd.dev], [cd.staging] … at the dev head"] -.->|"cd_deploy, CD page, nightly automation"| RUN1["CD run"]
   P["a person on the CD page, slug typed"] --> PROMO["promote dev into main"] --> PROD["prod stage: [cd.prod], [cd.platform] … at the main head"] --> RUN2["CD run"]
   AG["agent"] -.->|"refused"| P
+```
+
+### Rollback
+
+Rollback is part of every project's CD
+([SPEC-415](../.ai/specs/SPEC-415-global-rollback-in-ci-cd-one-click-roll.md),
+[decision 0263](decisions/0263-rollback-redeploys-a-kept-release-and-a-dev-drill-proves-it-before-production.md)):
+a CD run has a kind (`cd_runs.kind`: deploy, rollback or drill). A passed deploy records the
+releases its output names (`::yulius-release`, per part; else its commit) in `cd_releases`, which
+outlives the runs' 14 days. A rollback (`crates/yulius-app/src/ci/rollback.rs`) goes through the
+same start, record, audit and execution as a deploy (`App::cd_start` with `CdRequest::Rollback`),
+but runs the fixed `ROLLBACK_WRAPPER`: the table's `rollback` command once per step with the release
+as an argument turned into `YULIUS_CD_RELEASE`, each followed by `verify`, from the scripts of the
+branch's verified head. Which release is previous, kept or behind a barrier is
+`yulius_domain::rollback::History`. When a dev-stage deploy passes, its execution starts the drill
+(`App::cd_start_drill`; back to the previous release and forward, `drill_steps`), and a
+production-stage deploy asks `App::cd_rollback_gate` (`yulius_domain::rollback::production_gate`)
+before any secret or promotion: rollback configured, and the newest drill passed at the tree it
+deploys.
+
+```mermaid
+flowchart LR
+  D1["dev deploy passes"] -->|"::yulius-release v2"| REL["cd_releases (per env, stage, part)"]
+  D1 --> DR["drill on dev: rollback v1, verify, rollback v2, verify"]
+  DR -->|"passed at commit X"| GATE{"production deploy of X's tree"}
+  NOCFG["no rollback in [cd.prod]"] -->|"refused"| GATE
+  GATE -->|"proven"| PROD["production deploy"]
+  REL --> RB["Roll back to previous / to this (CD page, cd_rollback on dev)"]
+  RB -->|"rollback + verify, no rebuild"| REL
 ```
 
 A delivery profile's environment run (DLV-003; an agent's `delivery_deploy`) is a CD run of its

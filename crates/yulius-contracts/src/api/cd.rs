@@ -73,6 +73,67 @@ pub struct CdEnvironment {
     /// The latest run.
     #[serde(default)]
     pub last_run: Option<CdRun>,
+    /// Its rollback (SPEC-415).
+    #[serde(default)]
+    pub rollback: CdRollback,
+}
+
+/// An environment's rollback (SPEC-415, ADR-0263).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CdRollback {
+    /// The `rollback` command; `None`: rollback is not configured.
+    #[serde(default)]
+    pub command: Option<String>,
+    /// How schema and data changes stay compatible with the previous release.
+    #[serde(default)]
+    pub migrations: Option<String>,
+    /// Each part's releases (one unnamed part without `parts`).
+    #[serde(default)]
+    pub parts: Vec<CdPart>,
+    /// The dev-stage environment whose drill proves this one (itself for a dev-stage one).
+    pub drill_environment: String,
+    /// The newest drill of that environment.
+    #[serde(default)]
+    pub drill: Option<CdRun>,
+    /// Production stage: why a deploy is refused for its rollback now; `None`: it is not.
+    #[serde(default)]
+    pub blocked: Option<String>,
+}
+
+/// One part's kept releases.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CdPart {
+    /// The part's name (empty: the environment's only part).
+    pub name: String,
+    /// The release deployed now.
+    #[serde(default)]
+    pub current: Option<String>,
+    /// What "Roll back to previous" goes to.
+    #[serde(default)]
+    pub previous: Option<String>,
+    /// The kept releases, newest first (at most 10).
+    pub releases: Vec<CdRelease>,
+}
+
+/// One kept release.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CdRelease {
+    /// Release id.
+    pub release: String,
+    /// The commit it was deployed from.
+    pub commit: String,
+    /// When its deploy ended (RFC 3339).
+    pub deployed_at: String,
+    /// Who deployed it: a login, `task #N` or `yulius`.
+    pub requested_by: String,
+    /// It is deployed now.
+    pub current: bool,
+    /// Why rolling back to it is refused (a barrier).
+    #[serde(default)]
+    pub blocked: Option<String>,
+    /// Its deploy said rolling back past it is unsafe, and why.
+    #[serde(default)]
+    pub barrier: Option<String>,
 }
 
 /// One CD run (lists leave the output out).
@@ -80,6 +141,12 @@ pub struct CdEnvironment {
 pub struct CdRun {
     /// Run id.
     pub run_id: String,
+    /// `deploy`, `rollback` or `drill` (SPEC-415).
+    #[serde(default = "deploy_kind")]
+    pub kind: String,
+    /// A rollback's or a drill's releases, in order.
+    #[serde(default)]
+    pub steps: Vec<CdStep>,
     /// The environment's name.
     pub environment: String,
     /// Its stage when it ran: `dev` or `prod`.
@@ -117,6 +184,19 @@ pub struct CdRun {
     pub output: Option<String>,
 }
 
+fn deploy_kind() -> String {
+    "deploy".to_owned()
+}
+
+/// One release a rollback or a drill goes to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CdStep {
+    /// The part (empty: the environment's only one).
+    pub part: String,
+    /// The release id.
+    pub release: String,
+}
+
 /// `GET /api/sandboxes/{sid}/cd`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CdOverview {
@@ -144,6 +224,23 @@ pub struct CdDeploy {
     pub expect: Option<String>,
     /// Production: how long the person kept the confirmation open, in milliseconds, as the page
     /// measured it (SPEC-137 STG-302); kept up to an hour, recorded as the run's confirmation wait.
+    #[serde(default)]
+    pub confirm_ms: Option<u64>,
+}
+
+/// `POST /api/sandboxes/{sid}/cd/{env}/rollback` (SPEC-415).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CdRollbackRequest {
+    /// The part; required when the environment has several.
+    #[serde(default)]
+    pub part: Option<String>,
+    /// The kept release to go to; default the previous one.
+    #[serde(default)]
+    pub release: Option<String>,
+    /// Production: the project's slug, typed by the person.
+    #[serde(default)]
+    pub confirm: Option<String>,
+    /// Production: how long the person kept the confirmation open, in milliseconds.
     #[serde(default)]
     pub confirm_ms: Option<u64>,
 }

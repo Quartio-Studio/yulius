@@ -1,10 +1,10 @@
 //! CD (deployment) (SPEC-134; docs/api.md "CD"). Reads need read access to the sandbox;
-//! deploying dev and cancelling need write access; production needs administrator access and
+//! deploying or rolling back dev and cancelling need write access; production needs administrator access and
 //! the project's slug typed as `confirm`.
 
 use axum::Json;
 use axum::extract::{Path, State};
-use yulius_contracts::api::cd::{CdDeploy, CdOverview, CdRun};
+use yulius_contracts::api::cd::{CdDeploy, CdOverview, CdRollbackRequest, CdRun};
 
 use crate::AppState;
 use crate::auth::Auth;
@@ -25,6 +25,15 @@ pub async fn deploy(
     Json(req): Json<CdDeploy>,
 ) -> ApiResult<Json<CdRun>> {
     Ok(Json(app.cd_deploy(&ctx, &sid, &env, &req).await?))
+}
+
+pub async fn rollback(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path((sid, env)): Path<(String, String)>,
+    Json(req): Json<CdRollbackRequest>,
+) -> ApiResult<Json<CdRun>> {
+    Ok(Json(app.cd_rollback(&ctx, &sid, &env, &req).await?))
 }
 
 pub async fn run(

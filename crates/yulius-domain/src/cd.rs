@@ -137,6 +137,14 @@ pub struct CdTarget {
     pub about: Option<String>,
     /// Production stage only: promote the integration branch before deploying.
     pub promote: bool,
+    /// Rollback command: redeploys the kept release in `YULIUS_CD_RELEASE` (SPEC-415).
+    pub rollback: Option<String>,
+    /// How schema and data changes stay compatible with the previous release (with `rollback`).
+    pub migrations: Option<String>,
+    /// Parts deployed separately, each with its own releases (empty: one part).
+    pub parts: Vec<String>,
+    /// Production stage only: the dev-stage environment whose drill proves this rollback.
+    pub drill: Option<String>,
 }
 
 impl CdTarget {
@@ -153,13 +161,35 @@ impl CdTarget {
             variables: Vec::new(),
             about: None,
             promote: false,
+            rollback: None,
+            migrations: None,
+            parts: Vec::new(),
+            drill: None,
         }
+    }
+
+    /// The dev-stage environment whose drill proves this one's rollback (default `dev`).
+    #[must_use]
+    pub fn drill_env(&self) -> &str {
+        self.drill
+            .as_deref()
+            .unwrap_or(crate::rollback::DEFAULT_DRILL)
     }
 
     /// Whether a deploy would do anything.
     #[must_use]
     pub fn runs_anything(&self) -> bool {
         self.deploy.is_some() || self.verify.is_some() || self.promote
+    }
+
+    /// The parts of its releases: its `parts`, else the one unnamed part.
+    #[must_use]
+    pub fn part_names(&self) -> Vec<String> {
+        if self.parts.is_empty() {
+            vec![String::new()]
+        } else {
+            self.parts.clone()
+        }
     }
 }
 

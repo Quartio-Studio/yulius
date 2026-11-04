@@ -26,13 +26,13 @@ use yulius_domain::ci::RunState;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::time::Timestamp;
 
-type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
-type TestResult = BoxResult<()>;
+pub(crate) type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
+pub(crate) type TestResult = BoxResult<()>;
 
 const WAIT: Duration = Duration::from_secs(60);
-const VALUE: &str = "dev-deploy-token-9q2w7e5r";
+pub(crate) const VALUE: &str = "dev-deploy-token-9q2w7e5r";
 
-fn git(dir: &Path, args: &[&str]) -> BoxResult<String> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> BoxResult<String> {
     let out = Command::new("git")
         .args([
             "-c",
@@ -124,18 +124,18 @@ const VERIFY: &str = r#"#!/bin/sh
 test "$(cat "$MARKS/$YULIUS_CD_ENV")" = "$YULIUS_CD_SHA" && echo verified
 "#;
 
-struct Fixture {
-    h: support::Harness,
-    alice: Creds,
-    bob: Creds,
-    origin: PathBuf,
-    work: PathBuf,
-    marks: PathBuf,
-    secret: String,
+pub(crate) struct Fixture {
+    pub(crate) h: support::Harness,
+    pub(crate) alice: Creds,
+    pub(crate) bob: Creds,
+    pub(crate) origin: PathBuf,
+    pub(crate) work: PathBuf,
+    pub(crate) marks: PathBuf,
+    pub(crate) secret: String,
 }
 
 /// `yulius.toml` with CD tables `cd` (the marks directory replaces `{marks}`).
-async fn fixture(cd: &str) -> BoxResult<Fixture> {
+pub(crate) async fn fixture(cd: &str) -> BoxResult<Fixture> {
     fixture_with(cd, None).await
 }
 
@@ -243,18 +243,20 @@ fn full_cd() -> String {
      [cd.prod]\n\
      promote = true\n\
      deploy = \"MARKS={marks} DEV_TOKEN=none sh scripts/cd/deploy.sh\"\n\
-     verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n"
+     verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n\
+     rollback = \"true\"\n\
+     migrations = \"none: the test app keeps no data\"\n"
         .to_owned()
 }
 
 impl Fixture {
-    async fn get(&self, path: &str) -> BoxResult<Value> {
+    pub(crate) async fn get(&self, path: &str) -> BoxResult<Value> {
         let r = call(&self.h.router, Method::GET, path, None, &self.alice).await?;
         assert_eq!(r.status, StatusCode::OK, "{path}: {}", r.body);
         Ok(r.body)
     }
 
-    async fn deploy(
+    pub(crate) async fn deploy(
         &self,
         who: &Creds,
         env: &str,
@@ -270,7 +272,7 @@ impl Fixture {
         .await
     }
 
-    async fn allow_secret(&self) -> TestResult {
+    pub(crate) async fn allow_secret(&self) -> TestResult {
         let now = self
             .h
             .store
@@ -297,7 +299,7 @@ impl Fixture {
     }
 
     /// Waits until run `id` ended and returns it with its output.
-    async fn ended(&self, id: &str) -> BoxResult<Value> {
+    pub(crate) async fn ended(&self, id: &str) -> BoxResult<Value> {
         let deadline = tokio::time::Instant::now() + WAIT;
         loop {
             let run = self.get(&format!("/api/sandboxes/s1/cd/runs/{id}")).await?;
@@ -312,7 +314,7 @@ impl Fixture {
     }
 
     /// Commits `files` (path, contents; `None` removes) on `branch` and pushes it.
-    fn push(&self, branch: &str, files: &[(&str, Option<&str>)]) -> BoxResult<String> {
+    pub(crate) fn push(&self, branch: &str, files: &[(&str, Option<&str>)]) -> BoxResult<String> {
         git(
             &self.work,
             &["checkout", "-q", "-B", branch, &format!("origin/{branch}")],
@@ -334,8 +336,54 @@ impl Fixture {
         git(&self.work, &["rev-parse", "HEAD"])
     }
 
-    fn head(&self, branch: &str) -> BoxResult<String> {
+    pub(crate) fn head(&self, branch: &str) -> BoxResult<String> {
         git(&self.origin, &["rev-parse", branch])
+    }
+
+    /// Records a passed rollback drill of `dev` at `branch`'s head, so a production deploy of
+    /// that tree is not refused for its rollback (SPEC-415): for tests about something else.
+    pub(crate) async fn prove(&self, branch: &str) -> TestResult {
+        let sha = self.head(branch)?;
+        let id = format!("drill-{}", &sha[..12]);
+        if self.h.store.cd_run(&id, false).await?.is_some() {
+            return Ok(());
+        }
+        let at = self.h.app.now();
+        self.h
+            .store
+            .insert_cd_run(&CdRunRecord {
+                id: id.clone(),
+                sandbox_id: SandboxId::parse("s1")?,
+                environment: "dev".into(),
+                stage: CdStage::Dev,
+                branch: "dev".into(),
+                sha,
+                state: RunState::Running,
+                reason: None,
+                requested_by: "yulius".into(),
+                task_id: None,
+                deploy: Some("true".into()),
+                verify: None,
+                note: None,
+                output: String::new(),
+                exit_code: None,
+                started_at: at,
+                ended_at: None,
+                kind: yulius_domain::rollback::CdRunKind::Drill,
+                source: None,
+                steps: Vec::new(),
+            })
+            .await?;
+        let end = yulius_app::ci::cd::CdRunEnd {
+            state: RunState::Passed,
+            reason: None,
+            exit_code: Some(0),
+            output: String::new(),
+            ended_at: at,
+            usage: None,
+        };
+        self.h.store.finish_cd_run(&id, &end).await?;
+        Ok(())
     }
 }
 
@@ -591,6 +639,9 @@ async fn a_run_left_by_a_restart_is_an_error() -> TestResult {
             exit_code: None,
             started_at: Timestamp(1),
             ended_at: None,
+            kind: yulius_domain::rollback::CdRunKind::Deploy,
+            source: None,
+            steps: Vec::new(),
         })
         .await?;
     assert_eq!(f.h.app.reconcile_cd_runs().await?, 1);
@@ -643,6 +694,7 @@ async fn a_deploy_whose_request_is_dropped_after_its_record_still_runs() -> Test
 async fn production_is_deployed_by_an_administrator_who_types_the_slug() -> TestResult {
     let f = fixture(&full_cd()).await?;
     let dev = f.push("dev", &[("feature.txt", Some("new\n"))])?;
+    f.prove("dev").await?;
     let main_before = f.head("main")?;
     let writer = f.deploy(&f.alice, "prod", Some("app")).await?;
     assert_eq!(writer.status, StatusCode::FORBIDDEN, "{}", writer.body);
@@ -752,7 +804,7 @@ async fn production_is_deployed_by_an_administrator_who_types_the_slug() -> Test
     Ok(())
 }
 
-const TOKEN: &str = "cd-task-token-s1-0123456789abcdef";
+pub(crate) const TOKEN: &str = "cd-task-token-s1-0123456789abcdef";
 
 /// AC2, AC4, AC6 (CDA-001/003, CDT-001..004): an agent reads CD, asks a person through
 /// `needs_you`, deploys dev (its secret asked for first), waits for the run with `yulius wait`,
@@ -776,7 +828,7 @@ async fn agents_deploy_dev_ask_a_person_and_never_deploy_production() -> TestRes
     assert!(shown.contains("secrets: DEV_TOKEN not allowed"), "{shown}");
     // The CI/CD page's CD tab, its canonical address (SPEC-151).
     assert!(
-        shown.contains("production-stage ones are deployed by a person on ")
+        shown.contains("production-stage ones are deployed and rolled back by a person on ")
             && shown.ends_with("/ci?section=cd."),
         "{shown}"
     );
@@ -1186,9 +1238,12 @@ async fn production_gets_a_secret_agents_set_up() -> TestResult {
         "[cd.dev]\n\n[cd.prod]\n\
          deploy = \"MARKS={marks} sh scripts/cd/deploy.sh\"\n\
          verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n\
+         rollback = \"true\"\n\
+         migrations = \"none: the test app keeps no data\"\n\
          secrets = \"DEV_TOKEN\"\n",
     )
     .await?;
+    f.prove("main").await?;
     let secret_path = format!("/api/agent-secrets/{}", f.secret);
     let auto = |on: bool| {
         call(
@@ -1269,9 +1324,12 @@ async fn production_never_gets_a_secret_bound_to_hosts() -> TestResult {
          [cd.prod]\n\
          deploy = \"MARKS={marks} sh scripts/cd/deploy.sh\"\n\
          verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n\
+         rollback = \"true\"\n\
+         migrations = \"none: the test app keeps no data\"\n\
          secrets = \"DEV_TOKEN PROD_TOKEN\"\n",
     )
     .await?;
+    f.prove("main").await?;
     let created = call(
         &f.h.router,
         Method::POST,
@@ -1320,9 +1378,12 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
         "[cd.dev]\n\n[cd.prod]\n\
          deploy = \"MARKS={marks} sh scripts/cd/deploy.sh\"\n\
          verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n\
+         rollback = \"true\"\n\
+         migrations = \"none: the test app keeps no data\"\n\
          secrets = \"DEV_TOKEN\"\n",
     )
     .await?;
+    f.prove("main").await?;
     f.allow_secret().await?;
     // Agents use it (its .env copies), so no person can allow it for production (round 2, M-B):
     // the page and the refusal say so instead of asking a person to allow it (#704, SPEC-237).
@@ -1504,6 +1565,9 @@ async fn a_lost_run_leaves_no_files_behind() -> TestResult {
             exit_code: None,
             started_at: Timestamp(1),
             ended_at: None,
+            kind: yulius_domain::rollback::CdRunKind::Deploy,
+            source: None,
+            steps: Vec::new(),
         })
         .await?;
     assert_eq!(f.h.app.reconcile_cd_runs().await?, 1);
@@ -1530,7 +1594,9 @@ async fn a_deploy_records_its_confirmation_checks_promotion_phases_and_stages() 
          [cd.prod]\n\
          promote = true\n\
          deploy = \"echo '::yulius-stage build'; sleep 1; echo '::yulius-stage upload'; MARKS={marks} DEV_TOKEN=none sh scripts/cd/deploy.sh\"\n\
-         verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n",
+         verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n\
+         rollback = \"true\"\n\
+         migrations = \"none: the test app keeps no data\"\n",
     )
     .await?;
     let clock = Arc::clone(&f.h.clock);
@@ -1542,6 +1608,7 @@ async fn a_deploy_records_its_confirmation_checks_promotion_phases_and_stages() 
         }
     });
     f.push("dev", &[("feature.txt", Some("new\n"))])?;
+    f.prove("dev").await?;
     let deploy = |confirm_ms: u64| {
         call(
             &f.h.router,
@@ -1654,7 +1721,9 @@ fn named_cd() -> String {
      [cd.platform]\n\
      stage = \"prod\"\n\
      deploy = \"test ! -e $YULIUS_CD_CACHE/planted && MARKS={marks} sh scripts/cd/deploy.sh\"\n\
-     verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n\n\
+     verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n\
+     rollback = \"true\"\n\
+     migrations = \"none: the test app keeps no data\"\n\n\
      [cd.selfserve]\n\
      stage = \"prod\"\n\
      about = \"released from main by its tags\"\n"
@@ -1723,6 +1792,7 @@ async fn named_environments_deploy_by_their_stage() -> TestResult {
         refused.body
     );
     let main = f.head("main")?;
+    f.prove("main").await?;
     let started = f.deploy(&f.bob, "platform", Some("app")).await?;
     assert_eq!(started.status, StatusCode::OK, "{}", started.body);
     assert_eq!(started.body["stage"], "prod");
@@ -1816,6 +1886,7 @@ async fn a_named_production_refusal_names_its_own_table() -> TestResult {
     assert!(cd.contains("secrets = \"DEV_TOKEN\""), "{cd}");
     let f = fixture(&cd).await?;
     f.allow_secret().await?;
+    f.prove("main").await?;
     let refused = f.deploy(&f.bob, "platform", Some("app")).await?;
     assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
     let said = refused.body.to_string();
@@ -1834,6 +1905,7 @@ async fn a_named_production_refusal_names_its_own_table() -> TestResult {
 async fn a_named_production_run_is_cancelled_by_an_administrator() -> TestResult {
     let f = fixture(&named_cd()).await?;
     f.push("main", &[("slow", Some("x"))])?;
+    f.prove("main").await?;
     let started = f.deploy(&f.bob, "platform", Some("app")).await?;
     assert_eq!(started.status, StatusCode::OK, "{}", started.body);
     let id = started.body["run_id"].as_str().ok_or("id")?.to_owned();
@@ -1911,6 +1983,7 @@ async fn a_relabelled_environment_takes_the_integration_heads_stage() -> TestRes
         deployed(CdStage::Prod).await?.is_none(),
         "a dev-stage run is not what production-stage platform has deployed"
     );
+    f.prove("main").await?;
     let started = f.deploy(&f.bob, "platform", Some("app")).await?;
     assert_eq!(started.status, StatusCode::OK, "{}", started.body);
     assert_eq!(started.body["stage"], "prod");
@@ -1947,6 +2020,8 @@ fn states_cd() -> String {
      states = [\"OPERATOR\"]\n\n\
      [cd.prod]\n\
      deploy = \"MARKS={marks} sh scripts/cd/state.sh\"\n\
+     rollback = \"true\"\n\
+     migrations = \"none: the test app keeps no data\"\n\
      states = [\"OPERATOR\"]\n\
      variables = [\"OVH_ENDPOINT\"]\n\n\
      [cd.second]\n\
@@ -2122,6 +2197,7 @@ async fn deploys_restore_write_and_save_an_agent_state_with_one_writer() -> Test
     for branch in ["dev", "main"] {
         f.push(branch, &[("scripts/cd/state.sh", Some(STATE_SCRIPT))])?;
     }
+    f.prove("main").await?;
     let served = support::serve(f.h.router.clone()).await?;
     // As `yulius` does before its first client (plain HTTP here; reqwest still asks for one).
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -2623,6 +2699,7 @@ async fn production_runs_join_the_production_holder_with_its_docker_engine() -> 
     let holders = Arc::new(Holders::default());
     assert!(f.h.app.set_isolation(holders.clone()));
     let data = f.h.app.config.data_dir.clone();
+    f.prove("dev").await?;
     let started = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert_eq!(started.status, StatusCode::OK, "{}", started.body);
     let id = started.body["run_id"].as_str().ok_or("id")?.to_owned();
@@ -2705,6 +2782,7 @@ async fn a_production_run_over_the_quota_prunes_the_engines_after_it() -> TestRe
         ..Holders::default()
     });
     assert!(f.h.app.set_isolation(holders.clone()));
+    f.prove("dev").await?;
     let started = f.deploy(&f.bob, "prod", Some("app")).await?;
     assert_eq!(started.status, StatusCode::OK, "{}", started.body);
     let run = f

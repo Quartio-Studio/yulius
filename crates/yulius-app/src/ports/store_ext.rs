@@ -601,6 +601,31 @@ pub trait CdStore: Send + Sync {
     /// started before `before`, keeping each environment's newest passed run (what is deployed);
     /// returns how many were deleted.
     async fn prune_cd_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64>;
+    /// The newest run of `kind` of an environment of a sandbox as an environment of `stage`,
+    /// without output (SPEC-415: the newest drill).
+    async fn last_cd_run_of_kind(
+        &self,
+        sandbox: &SandboxId,
+        environment: &str,
+        stage: yulius_domain::cd::CdStage,
+        kind: yulius_domain::rollback::CdRunKind,
+    ) -> AppResult<Option<crate::ci::cd::CdRunRecord>>;
+    /// Records releases of an environment of `stage` (in order, the last the newest) and keeps
+    /// the newest [`yulius_domain::rollback::KEEP_RELEASE_RECORDS`] of each part.
+    async fn insert_cd_releases(
+        &self,
+        sandbox: &SandboxId,
+        environment: &str,
+        stage: yulius_domain::cd::CdStage,
+        records: &[yulius_domain::rollback::ReleaseRecord],
+    ) -> AppResult<()>;
+    /// The release records of an environment of `stage`, every part, newest first.
+    async fn cd_releases(
+        &self,
+        sandbox: &SandboxId,
+        environment: &str,
+        stage: yulius_domain::cd::CdStage,
+    ) -> AppResult<Vec<yulius_domain::rollback::ReleaseRecord>>;
 }
 
 /// What a task's agent asked a person to do (SPEC-134 CDT-004, column `tasks.needs_you`).

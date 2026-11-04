@@ -2004,7 +2004,7 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `ci_setup` | Onboarding off GitHub Actions: the worktree's workflows summarized, its `[[ci.jobs]]`, the steps (DLV-006) |
 | `repo_hygiene`, `repo_cleanup` | Stale branches and worktrees; removal of safe items, `force` for unmerged branches without a pull request (DLV-007) |
 | `delivery_status` | PR/checks/profile status and next actions (GIT-001) |
-| `cd_status`, `cd_deploy` | CD environments, runs and output; a deploy of a dev-stage environment only (SPEC-134, SPEC-257, ADR-0110) |
+| `cd_status`, `cd_deploy`, `cd_rollback` | CD environments, runs, releases and output; a deploy or a rollback of a dev-stage environment only (SPEC-134, SPEC-257, SPEC-415, ADR-0110) |
 | `needs_you` | Ask a person for what only a person can do; the task shows "Needs you" until a person writes or `resolved: true` (SPEC-134) |
 | `production_protect` | The onboarding task only: a ruleset protecting the production branch, as the owner when GitHub says they are an admin (ADR-0114, ADR-0129) |
 | `reference_repo` | Another repository of the owner, fetched as the owner when they can read it, bounded by a 1 GiB cap (SPEC-267, ADR-0197, ADR-0223, ADR-0236) |

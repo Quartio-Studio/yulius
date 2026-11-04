@@ -11,7 +11,7 @@ machine-checked and the review is independent, so you decide, record why, and mo
 ```text
 ready issue → spec → slices (test first) → local gates → independent review → fixes
   → pull request → merge on green → cleanup
-CD, separately: deploy dev and verify (when asked, or nightly) · production: a person promotes and deploys
+CD, separately: deploy dev and verify (when asked, or nightly), its rollback drilled · production: a person promotes and deploys
 ```
 
 Research, questions about the product, documentation and small chores skip the spec (and
@@ -108,7 +108,12 @@ and `[cd.prod]` (and any other `[cd.<name>]`, of the dev or the production stage
 and verify scripts from the protected branches (skill `infra-bootstrap`, step 3). Deploy dev (or
 another dev-stage environment) when your task asks for it (in Yulius: `cd_deploy`, then
 wait for the run and read it with `cd_status`), or let a nightly automation deploy and test it. A
-failed deploy or verification is fixed forward through this same pipeline. Production, with its
+failed deploy or verification is fixed forward through this same pipeline; when it broke what
+dev ran before, first roll dev back to the previous release (in Yulius: `cd_rollback`). Every
+environment that deploys has a `rollback` and a `migrations` line (SPEC-415): a change to the
+schema or the data keeps the previous release working (expand, then contract a release later)
+or makes its deploy print a rollback barrier. Yulius drills the rollback after each dev deploy,
+and production deploys wait for the drill of their commit. Production, with its
 promotion, and every production-stage environment are always a person's decision and action: never promote or deploy it; when your task
 needs it, ask a person (in Yulius: `needs_you`) and finish the rest.
 

@@ -54,9 +54,15 @@
 //! states = ["OPERATOR"]                  # agent states restored before, saved after (SPEC-278)
 //! variables = ["REGION"]                 # project variables production gets (dev gets them all)
 //!
+//! rollback = "scripts/cd/rollback.sh dev" # redeploys the kept release $YULIUS_CD_RELEASE, then
+//!                                        # verify (SPEC-415); a production deploy needs it proven
+//! migrations = "expand/contract: the previous release reads the new schema"  # with rollback
+//! parts = ["engine", "infra"]            # parts released separately (default: one)
+//!
 //! [cd.prod]
 //! about = "the instances update themselves from main"
 //! promote = true                         # a person's deploy promotes the integration branch first
+//! drill = "dev"                          # whose rollback drill proves this one (default dev)
 //!
 //! [cd.platform]                         # more environments (SPEC-257): any name with its stage,
 //! stage = "prod"                         # "dev" or "prod" (fixed for [cd.dev] and [cd.prod])
@@ -77,6 +83,7 @@ use crate::cd::{
 use crate::delivery::{
     DeliveryProfile, Environment, MergeMethod, Preset, ProfileError, PromoteMethod, Stage, Verify,
 };
+use crate::rollback::{MAX_PARTS, valid_part};
 
 use super::{Commands, DecisionsLocation, DocsLayout, ProjectConfig};
 use crate::ci::{CiConfigError, JobDef, parse_matrix, parse_secrets, project_jobs};
@@ -221,6 +228,16 @@ pub enum ConfigProblem {
         "[{0}] needs 'stage = \"dev\"' or 'stage = \"prod\"': what decides who may deploy it is never implied"
     )]
     MissingCdStage(String),
+    /// A rollback command without its data-safety line (SPEC-415 RBK-002).
+    #[error(
+        "[{0}] has 'rollback' without 'migrations': say in one line how schema and data changes stay compatible with the previous release (or why there are none)"
+    )]
+    RollbackNeedsMigrations(String),
+    /// A `drill` naming no dev-stage table of the file (SPEC-415 RBK-004).
+    #[error(
+        "[{0}]: 'drill = \"{1}\"' names no dev-stage table of yulius.toml; name a [cd.<name>] whose stage is \"dev\""
+    )]
+    UnknownDrill(String, String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -280,8 +297,12 @@ const BRANCH_POLICY_KEYS: &str = "preset, types";
 const POLICY_TYPES: &str = "1-20 space-separated types of 1-20 lowercase letters including feat (Yulius's task branches), like \"feat fix docs\"";
 const ENVIRONMENT_KEYS: &str = "name, after, command, verify";
 const CI_JOB_KEYS: &str = "name, command, matrix, cpus, memory_gb, secrets";
-const CD_DEV_KEYS: &str = "stage, deploy, verify, secrets, states, variables, about";
-const CD_PROD_KEYS: &str = "stage, deploy, verify, secrets, states, variables, about, promote";
+const CD_DEV_KEYS: &str =
+    "stage, deploy, verify, secrets, states, variables, about, rollback, migrations, parts";
+const CD_PROD_KEYS: &str = "stage, deploy, verify, secrets, states, variables, about, promote, \
+    rollback, migrations, parts, drill";
+const CD_PARTS: &str = "at most 8 part names like [\"engine\", \"infra\"] (an array, or space-separated) of 1-32 lowercase letters, digits and '-', starting with a letter";
+const CD_DRILL: &str = "a dev-stage environment's name, like \"dev\"";
 const CD_SECRETS: &str = "at most 16 space-separated agent-secret names like DEV_SSH_KEY";
 const CD_STATES: &str =
     "at most 8 agent-state names like [\"QUARTIO_OPERATOR\"] (an array, or space-separated)";
@@ -1013,8 +1034,51 @@ fn cd_target(env: &str, table: &Table) -> Result<CdTarget, FormatError> {
                 target.about = (!text.is_empty()).then(|| text.to_owned());
             }
             "promote" if stage == CdStage::Prod => target.promote = bool_value(entry)?,
+            "rollback" => target.rollback = Some(command(entry)?),
+            "migrations" => {
+                let text = string_value(entry)?.trim();
+                if text.is_empty()
+                    || text.chars().count() > MAX_ABOUT_CHARS
+                    || text.contains(['\n', '\r'])
+                {
+                    return Err(invalid(entry, text, CD_ABOUT));
+                }
+                target.migrations = Some(text.to_owned());
+            }
+            "parts" => {
+                let parts: Vec<String> = match &entry.value {
+                    Value::Array(items) => items.iter().map(|s| s.trim().to_owned()).collect(),
+                    Value::Str(text) => text.split_whitespace().map(str::to_owned).collect(),
+                    _ => return Err(invalid(entry, "", CD_PARTS)),
+                };
+                if parts.len() > MAX_PARTS {
+                    return Err(invalid(entry, &parts.join(" "), CD_PARTS));
+                }
+                target.parts = Vec::new();
+                for part in parts {
+                    if !valid_part(&part) {
+                        return Err(invalid(entry, &part, CD_PARTS));
+                    }
+                    if !target.parts.contains(&part) {
+                        target.parts.push(part);
+                    }
+                }
+            }
+            "drill" if stage == CdStage::Prod => {
+                let text = string_value(entry)?.trim();
+                if !valid_env_name(text) || fixed_stage(text) == Some(CdStage::Prod) {
+                    return Err(invalid(entry, text, CD_DRILL));
+                }
+                target.drill = Some(text.to_owned());
+            }
             _ => return Err(unknown(&name, entry, known)),
         }
+    }
+    if target.rollback.is_some() && target.migrations.is_none() {
+        return Err(err(
+            table.line,
+            ConfigProblem::RollbackNeedsMigrations(name),
+        ));
     }
     Ok(target)
 }
@@ -1053,13 +1117,25 @@ fn names_of(entry: &Entry, max: usize, allowed: &'static str) -> Result<Vec<Stri
 }
 
 fn cd_of(document: &Document) -> Result<CdConfig, FormatError> {
-    Ok(CdConfig {
+    let config = CdConfig {
         environments: document
             .cd
             .iter()
             .map(|(env, table)| cd_target(env, table))
             .collect::<Result<_, _>>()?,
-    })
+    };
+    // A named drill environment is a dev-stage table of the same file (review of SPEC-415).
+    for ((_, table), target) in document.cd.iter().zip(&config.environments) {
+        if let Some(drill) = &target.drill
+            && config.target_of(drill, CdStage::Dev).is_none()
+        {
+            return Err(err(
+                table.line,
+                ConfigProblem::UnknownDrill(format!("cd.{}", target.name), drill.clone()),
+            ));
+        }
+    }
+    Ok(config)
 }
 
 /// The project's CD (deployment, SPEC-134, SPEC-257): its `[cd.<name>]` tables, `[cd.dev]` and
@@ -1401,6 +1477,74 @@ mod tests {
         assert_eq!(none.state("prod", CdStage::Prod), CdState::NotDefined);
         // The whole file is validated with them.
         assert!(parse_yulius_toml("[cd.dev]\n[cd.prod]\n").is_ok());
+        Ok(())
+    }
+
+    /// SPEC-415 RBK-001..004: the rollback contract's keys, and what is refused.
+    #[test]
+    fn cd_tables_define_their_rollback() -> TestResult {
+        let cd = parse_yulius_toml_cd(
+            "[cd.dev]\ndeploy = \"scripts/cd/run deploy dev\"\n\
+             rollback = \"scripts/cd/run rollback dev\"\n\
+             migrations = \"expand/contract: the previous release reads the new schema\"\n\
+             parts = [\"engine\", \"infra\", \"engine\"]\n\
+             [cd.prod]\npromote = true\ndeploy = \"d\"\nrollback = \"r\"\nmigrations = \"none: stateless\"\n\
+             parts = \"engine infra\"\n\
+             [cd.prod-both]\nstage = \"prod\"\ndeploy = \"d\"\ndrill = \"dev-both\"\n\
+             [cd.dev-both]\nstage = \"dev\"\n",
+        )?;
+        let dev = cd.target("dev").ok_or("dev")?;
+        assert_eq!(dev.rollback.as_deref(), Some("scripts/cd/run rollback dev"));
+        assert!(
+            dev.migrations
+                .as_deref()
+                .is_some_and(|m| m.starts_with("expand"))
+        );
+        assert_eq!(dev.parts, ["engine", "infra"]);
+        assert_eq!(dev.part_names(), ["engine", "infra"]);
+        let prod = cd.target("prod").ok_or("prod")?;
+        assert_eq!(
+            prod.drill_env(),
+            "dev",
+            "production is proven by dev by default"
+        );
+        assert_eq!(prod.parts, ["engine", "infra"]);
+        let both = cd.target("prod-both").ok_or("prod-both")?;
+        assert_eq!(
+            (both.drill_env(), both.rollback.as_deref()),
+            ("dev-both", None)
+        );
+        assert_eq!(both.part_names(), [""], "one unnamed part");
+        for (bad, says) in [
+            ("[cd.dev]\nrollback = \"r\"\n", "without 'migrations'"),
+            (
+                "[cd.dev]\nrollback = \"\"\nmigrations = \"m\"\n",
+                "rollback",
+            ),
+            (
+                "[cd.dev]\nrollback = \"r\"\nmigrations = \"\"\n",
+                "'migrations'",
+            ),
+            ("[cd.dev]\ndrill = \"dev\"\n", "drill"),
+            ("[cd.prod]\ndrill = \"prod\"\n", "'drill'"),
+            ("[cd.prod]\ndrill = \"Dev\"\n", "'drill'"),
+            ("[cd.dev]\nparts = [\"Engine\"]\n", "'parts'"),
+            ("[cd.dev]\nparts = \"a b c d e f g h i\"\n", "'parts'"),
+            (
+                "[cd.prod]\ndrill = \"staging\"\n",
+                "'drill = \"staging\"' names no dev-stage table",
+            ),
+            (
+                "[cd.prod]\ndrill = \"platform\"\n[cd.platform]\nstage = \"prod\"\n",
+                "'drill = \"platform\"' names no dev-stage table",
+            ),
+        ] {
+            let shown = parse_yulius_toml_cd(bad).err().map(|e| e.to_string());
+            assert!(
+                shown.as_deref().is_some_and(|e| e.contains(says)),
+                "{bad}: {shown:?}"
+            );
+        }
         Ok(())
     }
 

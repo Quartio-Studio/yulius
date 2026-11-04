@@ -791,9 +791,13 @@ secrets = "DEV_SSH_KEY DEV_HOST"    # at most 16 agent secrets, as environment v
 states = ["OPERATOR"]               # at most 8 agent states, restored before, saved after (ADR-0207)
 variables = ["REGION"]              # at most 32 project variables production gets (dev gets all);
                                     #   a named one the project lacks refuses the deploy
+rollback = "scripts/cd/rollback.sh dev" # redeploys the kept release $YULIUS_CD_RELEASE (SPEC-415)
+migrations = "expand/contract: the previous release reads the new schema" # required with rollback
+parts = ["engine", "infra"]         # at most 8 parts released separately (default: one)
 
 [cd.prod]                           # the same keys, and:
 promote = true                      # a person's deploy first promotes the integration branch
+drill = "dev"                       # the dev-stage environment whose drill proves it (default dev)
 
 [cd.platform]                       # another environment: the same keys, and
 stage = "prod"                      # "dev" or "prod" (fixed for [cd.dev] and [cd.prod])
@@ -819,6 +823,8 @@ restart is recorded as `error` and never run again by itself.
 | `GET /api/sandboxes/{sid}/cd` | read | `CdOverview` |
 | `POST /api/sandboxes/{sid}/cd/{env}/deploy`, a dev-stage `env` | write | the running `CdRun` |
 | `POST /api/sandboxes/{sid}/cd/{env}/deploy`, a production-stage `env` (`production` is `prod`) | admin, `{"confirm": "<slug>", "expect": "<sha>", "confirm_ms": 4200}` | the running `CdRun` after the promotion |
+| `POST /api/sandboxes/{sid}/cd/{env}/rollback`, a dev-stage `env` | write, `{"part": "engine"?, "release": "<kept id>"?}` (default: the previous release) | the running `CdRun` (`kind: rollback`) |
+| `POST /api/sandboxes/{sid}/cd/{env}/rollback`, a production-stage `env` | admin, `{"part"?, "release"?, "confirm": "<slug>", "confirm_ms"?}` | the running `CdRun`; never promotes |
 | `GET /api/sandboxes/{sid}/cd/runs/{rid}` | read | `CdRun` with its `output` |
 | `POST /api/sandboxes/{sid}/cd/runs/{rid}/cancel` | write (a production run: admin) | `CdRun`; `conflict` when it ended |
 | `POST /api/agent-secrets/{id}/cd-prod` | manage the secret, `{"allow": true}` | `AgentSecretView` with `cd_prod`; production runs get it. 409 while agents can use it, and while `auto_allow` is on (production already gets it, SPEC-216) |
@@ -833,8 +839,15 @@ CdEnvironment = {"name": "dev|prod|<name>", "label": "dev|production|<name>", "s
                  "promote", "promotes_from": "<integration head>"|null,
                  "secrets": [{"name", "state": "ready|not_allowed|missing|production|agents_use"}],
                  "states": [{"name", "version": <newest>|null (missing), "held_by": "<env> run <id>"|null}],
-                 "deployed": "<sha of the last passed run>"|null, "last_run": CdRun|null}
-CdRun = {"run_id", "environment": "<name>", "stage": "dev|prod", "state": "running|passed|failed|error|cancelled",
+                 "deployed": "<sha of the last passed run>"|null, "last_run": CdRun|null,
+                 "rollback": CdRollback}
+CdRollback = {"command": "<rollback>"|null (not configured), "migrations", "drill_environment",
+              "drill": CdRun|null (its newest drill), "blocked": "<why a production deploy is refused>"|null,
+              "parts": [{"name": ""|"<part>", "current", "previous" (what "Roll back to previous" goes to),
+                         "releases": [{"release", "commit", "deployed_at", "requested_by", "current",
+                                       "blocked": "<barrier reason>"|null, "barrier"}] (newest 10)}]}
+CdRun = {"run_id", "kind": "deploy|rollback|drill", "steps": [{"part", "release"}],
+         "environment": "<name>", "stage": "dev|prod", "state": "running|passed|failed|error|cancelled",
          "branch", "commit", "requested_by": "<login>|task #<n>", "deploy", "verify",
          "note": "promoted 'dev' to 'main' at …"|null, "reason", "exit_code", "started_at", "ended_at",
          "output" (detail only)}
@@ -856,9 +869,42 @@ ran: …"), a deploy while Yulius is being updated ("nothing ran: Yulius is bein
 running run, or a
 promotion that cannot complete now (its pull request's checks). Every run is audited before it
 starts (`cd.deploy`), its end (`cd.finished`), cancellations (`cd.cancel`) and refused production
-deploys (`cd.refused`). Agents use the MCP tools `cd_status` and `cd_deploy` (dev-stage environments only;
+deploys (`cd.refused`). Agents use the MCP tools `cd_status`, `cd_deploy` and `cd_rollback` (dev-stage environments only;
 production-stage ones are refused whatever they pass); `yulius wait` returns when the task's CD run ends (`cd_run`, `cd_state`,
 `cd_detail` in its state).
+
+### Rollback (SPEC-415, ADR-0263)
+
+A deploy names the releases it shipped with output lines `::yulius-release <id>` (one part) or
+`::yulius-release <part>=<id>` (an environment with `parts`); a one-part deploy that names none
+shipped its commit. An id is 1-128 letters, digits and `._+:@/-`; an invalid id or an unknown part
+is ignored and the run's output says so. `::yulius-rollback-barrier <reason>` (or
+`<part>: <reason>`) marks a release that cannot be rolled back past; a release deployed again keeps
+the barrier of its earlier deploy. Yulius keeps the last 20
+records per environment, stage and part (`cd_releases`) and offers the newest 10 distinct releases.
+
+A rollback (`kind: rollback`, audited `cd.rollback`) runs the environment's `rollback` command, then
+its `verify`, from the scripts of its branch's verified head (production: the production head, no
+promotion), with the run's usual variables and `YULIUS_CD_ROLLBACK=1`, `YULIUS_CD_RELEASE`,
+`YULIUS_CD_PART` and `YULIUS_CD_RELEASE_SHA` (the target's commit; `YULIUS_CD_SHA` is the commit
+whose scripts run). It is refused (`conflict`) without `rollback`, for a part the environment does
+not have (or none named when it has several), a release Yulius did not keep, the release deployed
+now, or one behind a barrier (with its reason). A passed rollback makes its release current; the
+previous release is the newest deploy before the current release's deploy, so repeated rollbacks
+walk back.
+
+After a dev-stage deploy passes and its table has `rollback`, Yulius starts a drill on that
+environment (`kind: drill`, requested by `yulius`, audited `cd.drill`, `YULIUS_CD_DRILL=1`): for each
+part with an earlier release, shipped or not, that release then the one it runs, each verified;
+behind a barrier (on any deploy of the release it runs) only that release again. A drill that cannot
+start is recorded as an `error` saying why. After each rollback command that succeeded the wrapper
+prints `::yulius-rolled-back <step>`; a rollback, or a drill that failed, records the release each
+part last reached as current. Markers are read from the run's regular log file only (no link, no
+FIFO; at most 256 MiB, the last 256 markers), and release ids and barrier reasons are redacted of
+the sandbox's agent secrets (an id that held one is ignored). `drill` must name a dev-stage table. A
+production-stage deploy whose table has a `deploy` is refused (`conflict`, audited
+`cd.refused`) until the table has `rollback` and the newest drill of its `drill` environment passed
+at a commit with the tree being deployed (with `promote`: the integration commit promoted).
 
 ## Stages (pipeline measurements)
 

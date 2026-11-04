@@ -230,6 +230,8 @@ pub struct OutputStages {
     count: usize,
     /// The figure names each span took, at most [`MAX_FIGURES_PER_SPAN`] (review round 2).
     figure_names: HashMap<String, HashSet<String>>,
+    /// How often each phase started: a drill rolls back and verifies twice (SPEC-415).
+    phases: HashMap<&'static str, usize>,
 }
 
 impl OutputStages {
@@ -248,6 +250,7 @@ impl OutputStages {
             stage: None,
             count: 0,
             figure_names: HashMap::new(),
+            phases: HashMap::new(),
         }
     }
 
@@ -266,6 +269,7 @@ impl OutputStages {
             stage: None,
             count: 0,
             figure_names: HashMap::new(),
+            phases: HashMap::new(),
         }
     }
 
@@ -451,7 +455,13 @@ impl OutputStages {
                             outcome: Some("passed".into()),
                         });
                     }
-                    let key = format!("{}/{}", self.root, phase.as_str());
+                    let seen = self.phases.entry(phase.as_str()).or_insert(0);
+                    *seen += 1;
+                    let key = if *seen == 1 {
+                        format!("{}/{}", self.root, phase.as_str())
+                    } else {
+                        format!("{}/{}-{seen}", self.root, phase.as_str())
+                    };
                     let root = Some(self.root.clone());
                     let span = self.span(key.clone(), root, phase.as_str(), phase.as_str(), now);
                     ops.push(SpanOp::Start(Box::new(span)));
@@ -1292,6 +1302,33 @@ mod tests {
                 ("end run/verify".into(), Some("failed".into())),
             ]
         );
+    }
+
+    /// SPEC-415: a drill's repeated rollback and verify phases each get their own span.
+    #[test]
+    fn a_drill_s_repeated_phases_get_their_own_spans() {
+        let mut stages = OutputStages::cd_run(sid(), "cd1", "dev");
+        let ops = stages.feed(
+            b"[yulius] rollback: v1\n[yulius] verify: v\n[yulius] rollback: v2\n[yulius] verify: v\n[yulius] rollback failed with status 5; verify skipped\n",
+            Timestamp(7),
+        );
+        let started: Vec<String> = ops
+            .iter()
+            .filter_map(|op| match op {
+                SpanOp::Start(s) => Some(format!("{} {}", s.key, s.name)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            started,
+            [
+                "run/rollback rollback",
+                "run/verify verify",
+                "run/rollback-2 rollback",
+                "run/verify-2 verify"
+            ]
+        );
+        assert!(ops.iter().any(|op| matches!(op, SpanOp::End { key, outcome, .. } if key == "run/verify-2" && outcome.as_deref() == Some("failed"))));
     }
 
     #[test]

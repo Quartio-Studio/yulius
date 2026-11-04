@@ -6,6 +6,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-04
 
+- Rollback is part of every project's CD (SPEC-415, task #397, ADR-0263). `[cd.<name>]` takes
+  `rollback` (redeploys a kept release named in `$YULIUS_CD_RELEASE`, never building, then
+  `verify`), `migrations` (required with it), `parts` and, on production tables, `drill`. Deploys
+  name what they shipped with `::yulius-release [<part>=]<id>` and irreversible changes with
+  `::yulius-rollback-barrier`; Yulius keeps the releases per environment and part. The CD page
+  lists them with "Roll back to previous" and "Roll back to this" (production: an administrator
+  with the slug typed), agents roll dev back with `cd_rollback`, and every rollback is audited.
+  After each passed dev deploy Yulius drills the rollback (back and forward, verified), and a
+  production deploy is refused until rollback is configured and that drill passed at its commit.
+  Onboarding, infra-bootstrap, delivery-pipeline, the briefing and AGENTS template teach it, and a
+  project whose deploys lack rollback sees it as a missing foundation.
 - The documentation matches what was merged since 2026-10-22 (task #398, documentation only). The
   Vidoc switches are described the same way everywhere: the instance switch is on the Instance
   page's Vidoc card, a switched-off project gets no built-in `security` job, the proxy's refusal

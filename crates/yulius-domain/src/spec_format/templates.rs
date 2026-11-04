@@ -364,7 +364,9 @@ fn agents_md(template: TemplateKind, names: &Names, commands: &Commands) -> Stri
          slice, independent review in a fresh session, fixes, gates, a small pull request into\n\
          `dev`, merge on green, cleanup. There is no human acceptance step; the gates decide. A\n\
          merge deploys nothing: deploy and verify `dev` only when the task asks. Production,\n\
-         with its promotion to `main`, is always a person's decision and action.\n\
+         with its promotion to `main`, is always a person's decision and action. Every CD\n\
+         environment that deploys has a `rollback` and a `migrations` line in `yulius.toml`;\n\
+         Yulius drills the rollback on dev, and production waits for that drill.\n\
          \n\
          - One task, one branch, one worktree from `dev`; never commit or push to `dev` or\n  \
            `main` directly, never `--no-verify`, no `git stash` as a tool, never rebase or\n  \
