@@ -5,7 +5,8 @@
 Accepted. Specified in [SPEC-275](../../.ai/specs/SPEC-275-project-variables-non-secret-values-regi.md);
 task #259. Extends [0194](0194-an-operate-token-confirms-for-its-person-s-laptop-onboarding.md)
 (laptop onboarding) and [0188](0188-remote-control-uses-scoped-personal-api-tokens.md) (remote
-tools).
+tools). Amended by [0207](0207-cd-runs-restore-and-save-agent-states-under-one-hold.md): CD runs
+get the variables too (dev all, production those its table names).
 
 ## Context
 

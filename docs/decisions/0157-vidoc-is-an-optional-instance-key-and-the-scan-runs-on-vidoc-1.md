@@ -15,7 +15,11 @@ from `HEAD`, and the file can also hold `exclude` and `[[ignore]]`.
 The skip rule of [ADR-0133](0133-a-ci-job-that-checked-nothing-ends-skipped.md) is kept.
 
 Amended by [ADR-0229](0229-a-person-switches-a-projects-vidoc-scans-off-in-yulius.md): a project a
-person switched off in Yulius gets neither the instance key nor a scan.
+person switched off in Yulius gets neither the instance key nor a scan. Amended by
+[ADR-0172](0172-medium-findings-in-the-change-block-and-the-rest-become-issues.md): medium findings
+in the change fail the scan too, and the `security` job is built in rather than added at
+onboarding. Amended by [ADR-0242](0242-a-superadmin-switches-vidoc-off-for-the-whole-instance.md):
+a superadmin can switch Vidoc off for the whole instance, keeping the key.
 
 ## Context
 

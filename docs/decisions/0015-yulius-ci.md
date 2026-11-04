@@ -4,6 +4,7 @@
 
 Accepted. Recorded retroactively from SPEC-002 (ADR-21); the full analysis is in
 [SPEC-002 section 2](../../.ai/specs/SPEC-002-yulius-architecture.md).
+Refined by [0238](0238-a-ci-job-s-cache-is-its-checkout-s-own.md).
 
 ## Context
 

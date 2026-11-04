@@ -9,6 +9,10 @@ issues #974 and #970. Builds on
 (the proxy share and the strays) and
 [ADR-0239](0239-the-superagent-gets-a-fingerprint-file-as-a-task-run-does.md) (the Superagent's
 fingerprint file).
+Refined by [ADR-0243](0243-the-busiest-run-gives-way-at-a-full-proxy-share.md) (the busiest run
+gives way at a full share); see also
+[ADR-0246](0246-a-full-proxy-share-or-relay-shows-on-the-panel-once-per-trouble.md) and
+[ADR-0250](0250-a-plain-http-request-waits-a-bounded-time-for-its-answer.md).
 
 ## Context
 

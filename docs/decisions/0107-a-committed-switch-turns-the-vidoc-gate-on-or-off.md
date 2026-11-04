@@ -3,7 +3,7 @@
 ## Status
 
 Accepted. Specified in [SPEC-131](../../.ai/specs/SPEC-131-we-d-like-to-be-able-to-enable-and-disab.md).
-Amends [ADR-0104](0104-agents-scan-their-branch-with-vidoc-before-delivery.md). Amended by [ADR-0157](0157-vidoc-is-an-optional-instance-key-and-the-scan-runs-on-vidoc-1.md): the switch is read from `HEAD`, and the file also holds `exclude` globs and `[[ignore]]` entries. Complemented by [ADR-0229](0229-a-person-switches-a-projects-vidoc-scans-off-in-yulius.md): a person also switches a project's scans off in Yulius (`YULIUS_VIDOC=off`, set by Yulius only).
+Amends [ADR-0104](0104-agents-scan-their-branch-with-vidoc-before-delivery.md). Amended by [ADR-0157](0157-vidoc-is-an-optional-instance-key-and-the-scan-runs-on-vidoc-1.md): the switch is read from `HEAD`, and the file also holds `exclude` globs and `[[ignore]]` entries. Complemented by [ADR-0229](0229-a-person-switches-a-projects-vidoc-scans-off-in-yulius.md): a person also switches a project's scans off in Yulius (`YULIUS_VIDOC=off`, set by Yulius only), [ADR-0242](0242-a-superadmin-switches-vidoc-off-for-the-whole-instance.md) (a superadmin's switch for the whole instance) and [ADR-0245](0245-a-sandboxs-admins-switch-its-vidoc-scans-on-its-ci-cd-page.md) (the CI/CD page's card shows a committed `enabled = false`, which wins).
 
 ## Context
 

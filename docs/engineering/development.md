@@ -171,7 +171,11 @@ The scan is on. `enabled = false` in `.config/vidoc.toml`
 [ADR-0107](../decisions/0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md)) turns it off
 for every branch that has that commit. It then prints `Security scan disabled: ...; nothing was
 scanned.` and exits 0. Agents report such a run as disabled, never as passed. Turn it off or on in a
-reviewed pull request that says why. Exit codes:
+reviewed pull request that says why. Yulius can also switch a project's scans off, or every
+project's: runs, terminals and CI jobs then get `YULIUS_VIDOC=off`, and the scan prints `Security
+scan disabled: Vidoc is turned off in Yulius, …` and exits 0 the same way (who switches it and
+where: [Vidoc in the architecture](../architecture.md#vidoc-the-instance-key-and-the-security-scan)).
+Exit codes:
 
 - 0: passed (no open critical or high finding, and no open medium one in the change, in a
   complete scan), nothing to scan, or disabled. Its message says which; with `--ci`, nothing to
@@ -200,7 +204,9 @@ scan every line counts.
 - 2: not run. The causes:
   - no key, or a key that is malformed or refused;
   - out of quota (402, or a 429 that says the key is used up);
-  - no base (`origin/HEAD` is not set and there is no `--base`);
+  - Vidoc switched off in Yulius after the session started (the egress proxy's 403 `Yulius: Vidoc
+    is turned off …`);
+  - no base (no `--base`, no `origin/$YULIUS_INTEGRATION_BRANCH` and no `origin/HEAD`);
   - a malformed `.config/vidoc.toml`;
   - Python older than 3.11;
   - files past the byte budget, with no finding.
@@ -275,7 +281,7 @@ can use the same rust-analyzer component and toolchain. No global editor setting
 or agent permission overrides are installed.
 
 Yulius CI is the only CI ([SPEC-002 ADR-18](../../.ai/specs/SPEC-002-yulius-architecture.md),
-ADR-21): there are no GitHub Actions. It runs `quality` and `e2e` (`[[ci.jobs]]`) and publishes
+ADR-21): there are no GitHub Actions. It runs `quality`, `e2e` and `security` (`[[ci.jobs]]`) and publishes
 the `yulius/ci` commit status, which the rulesets require. The `e2e` job gets no model key (agent
 steps are skipped). [Git delivery](git.md) defines promotion checks and post-merge evidence.
 

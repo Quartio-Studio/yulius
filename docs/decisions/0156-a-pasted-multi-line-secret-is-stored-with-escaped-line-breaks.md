@@ -8,6 +8,7 @@ task #179, fixes #591. Builds on [ADR-0150](0150-the-superagent-uses-agent-secre
 [ADR-0144](0144-the-superagent-reads-the-agent-vault-and-verifies-values-by-hash.md)
 (`secret_verify` answers `escaped_newlines`). Widens ADR-0150's key block to any END label (its
 SPEC-186 review had asked for matching labels).
+Refined by [0215](0215-a-key-block-s-public-header-lines-are-not-redaction-needles.md).
 
 ## Context
 

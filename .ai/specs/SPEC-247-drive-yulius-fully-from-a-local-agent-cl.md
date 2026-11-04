@@ -92,8 +92,9 @@ Confirmed against `dev` at 06b58375.
   scope.
 - **RMT-013** The tasks, automations, workflows and sessions tools are the Superagent's own
   implementations (`tasks_list`, `task_get`, `task_create`, `task_message`, `task_stop`,
-  `task_archive`, `task_delete`, `automation_*`, `workflows_list`, `sessions_search`,
-  `session_read`), run as `ProjectCaller { actor: "remote:<login>" }`, so they behave, render and
+  `task_archive`, `task_delete`, `task_update`, `attachments_trash`, `automation_*`,
+  `workflows_list`, `sessions_search`, `session_read`, `secrets_list`; `SHARED_TOOLS` in
+  `remote.rs`), run as `ProjectCaller { actor: "remote:<login>" }`, so they behave, render and
   audit as for the Superagent.
 - **RMT-014** At most 120 requests a minute per token; more are answered with a JSON-RPC error
   saying to wait. Tools that create tasks keep their 20 an hour per project.

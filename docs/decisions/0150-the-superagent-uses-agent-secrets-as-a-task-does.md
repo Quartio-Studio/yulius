@@ -14,6 +14,7 @@ the server-side checks of the two tools (the person's one-time allowance, Git ig
 still apply. Amended by
 [0252](0252-the-egress-policy-checks-a-clients-run-on-every-request.md): the proxy checks that
 the Superagent's shell is running on every request, not only when it resolves its bearer.
+Refined by [0215](0215-a-key-block-s-public-header-lines-are-not-redaction-needles.md).
 
 ## Context
 

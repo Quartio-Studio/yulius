@@ -5,6 +5,7 @@
 Accepted. Specified in [SPEC-243](../../.ai/specs/SPEC-243-claude-sign-in-confirm-success-and-auto.md);
 task #229, from an early external user's feedback. Refines SPEC-002 ADR-05 (the account login
 flow) and SPEC-001 ROT-002.
+Refined by [0256](0256-a-sign-in-runs-on-the-host-and-its-raw-output-is-one-wiped-allocation.md).
 
 ## Context
 

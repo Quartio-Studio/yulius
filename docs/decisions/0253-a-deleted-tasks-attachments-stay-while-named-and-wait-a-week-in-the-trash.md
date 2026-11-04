@@ -3,7 +3,9 @@
 ## Status
 
 Accepted (2026-11-03, task #386, [SPEC-396](../../.ai/specs/SPEC-396-deleting-a-task-must-not-destroy-attachm.md)).
-Amends TSK-009's removal of a task's attachments with the task.
+Amends TSK-009's removal of a task's attachments with the task. Extended by
+[0259](0259-shell-and-draft-attachments-stay-while-a-request-names-them.md) to shell folders and
+composer drafts.
 
 ## Context
 
