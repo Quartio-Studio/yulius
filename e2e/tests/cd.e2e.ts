@@ -646,6 +646,57 @@ test('each card keeps its deploy button top right, never styles a dead deploy as
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// Task #399 (SPEC-417): "2 columns not 3". Four environments on a wide window are two rows of
+// two cards, never three side by side; a phone stacks them in one column.
+type CardRow = { top: number; cards: number };
+const cardRows = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => browser.evaluate((): CardRow[] => {
+  const rows = new Map<number, number>();
+  for (const card of document.querySelectorAll('.cd-env')) {
+    const top = Math.round(card.getBoundingClientRect().top);
+    rows.set(top, (rows.get(top) || 0) + 1);
+  }
+  return [...rows].sort(([a], [b]) => a - b).map(([top, cards]) => ({ top, cards }));
+});
+
+test('the environment cards stand in two columns at most', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1920, height: 1080 });
+  await app.open(mock('/s/studio/ci?section=cd'));
+  await expect(screen.getByRole('region', 'Production environment')).toBeVisible();
+  await browser.evaluate(() => {
+    const envs = (window as unknown as { __yuliusMock: { cd: Record<string, { environments: { name: string; label: string }[] }> } }).__yuliusMock.cd.sb_studio.environments;
+    envs.splice(1, 0, { ...envs[0], name: 'dev-both', label: 'dev-both' });
+    envs.push({ ...envs[2], name: 'prod-both', label: 'prod-both' });
+  });
+  // Leaving and coming back reads the environments again.
+  await screen.getByRole('radio', 'CI (tests)').click();
+  await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();
+  await screen.getByRole('radio', 'CD (deployment)').click();
+  await expect(screen.getByRole('region', 'Prod-both environment')).toBeVisible();
+  // The grid is wide enough for three 320 px cards: the cap, not the width, keeps it at two.
+  expect(await browser.evaluate(() => document.querySelector('.cd-envs')!.getBoundingClientRect().width)).toBeGreaterThan(3 * 320 + 2 * 12);
+  expect((await cardRows(browser)).map((r) => r.cards)).toEqual([2, 2]);
+  // Equal columns: two 1fr tracks of a fractional row may differ by a layout unit, never a pixel.
+  const widths = await browser.evaluate(() => [...document.querySelectorAll('.cd-env')].map((c) => c.getBoundingClientRect().width));
+  expect(Math.max(...widths) - Math.min(...widths)).toBeLessThan(1);
+
+  // An odd count: the last card keeps one column's width, alone on its row.
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { cd: Record<string, { environments: unknown[] }> } }).__yuliusMock.cd.sb_studio.environments.pop() && null);
+  await screen.getByRole('radio', 'CI (tests)').click();
+  await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();
+  await screen.getByRole('radio', 'CD (deployment)').click();
+  await expect(screen.getByRole('region', 'Production environment')).toBeVisible();
+  await expect(screen.getByRole('region', 'Prod-both environment')).toBeHidden();
+  expect((await cardRows(browser)).map((r) => r.cards)).toEqual([2, 1]);
+  const odd = await browser.evaluate(() => [...document.querySelectorAll('.cd-env')].map((c) => c.getBoundingClientRect().width));
+  expect(Math.max(...odd) - Math.min(...odd)).toBeLessThan(1);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // A phone: one column, nothing scrolls sideways.
+  await browser.setViewport({ width: 390, height: 844 });
+  await expect.poll(async () => (await cardRows(browser)).map((r) => r.cards)).toEqual([1, 1, 1]);
+  expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
 test('a promoting production names the branch and the commit it promotes', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/cd'));
   await expect(screen.getByRole('region', 'Production environment')).toBeVisible();
