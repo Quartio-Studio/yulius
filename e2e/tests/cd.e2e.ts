@@ -675,8 +675,9 @@ test('the environment cards stand in two columns at most', async ({ app, browser
   // The grid is wide enough for three 320 px cards: the cap, not the width, keeps it at two.
   expect(await browser.evaluate(() => document.querySelector('.cd-envs')!.getBoundingClientRect().width)).toBeGreaterThan(3 * 320 + 2 * 12);
   expect((await cardRows(browser)).map((r) => r.cards)).toEqual([2, 2]);
-  const widths = await browser.evaluate(() => [...document.querySelectorAll('.cd-env')].map((c) => Math.round(c.getBoundingClientRect().width)));
-  expect(new Set(widths).size).toBe(1);
+  // Equal columns: two 1fr tracks of a fractional row may differ by a layout unit, never a pixel.
+  const widths = await browser.evaluate(() => [...document.querySelectorAll('.cd-env')].map((c) => c.getBoundingClientRect().width));
+  expect(Math.max(...widths) - Math.min(...widths)).toBeLessThan(1);
 
   // An odd count: the last card keeps one column's width, alone on its row.
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { cd: Record<string, { environments: unknown[] }> } }).__yuliusMock.cd.sb_studio.environments.pop() && null);
@@ -686,8 +687,8 @@ test('the environment cards stand in two columns at most', async ({ app, browser
   await expect(screen.getByRole('region', 'Production environment')).toBeVisible();
   await expect(screen.getByRole('region', 'Prod-both environment')).toBeHidden();
   expect((await cardRows(browser)).map((r) => r.cards)).toEqual([2, 1]);
-  const odd = await browser.evaluate(() => [...document.querySelectorAll('.cd-env')].map((c) => Math.round(c.getBoundingClientRect().width)));
-  expect(new Set(odd).size).toBe(1);
+  const odd = await browser.evaluate(() => [...document.querySelectorAll('.cd-env')].map((c) => c.getBoundingClientRect().width));
+  expect(Math.max(...odd) - Math.min(...odd)).toBeLessThan(1);
   expect(await axeViolations(browser)).toEqual([]);
 
   // A phone: one column, nothing scrolls sideways.

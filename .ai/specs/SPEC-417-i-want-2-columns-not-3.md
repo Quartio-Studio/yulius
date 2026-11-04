@@ -44,15 +44,17 @@ three or more. A narrow window keeps one column, as today.
 
 ## Acceptance criteria
 
-- An e2e test with four environments at 1920 px wide finds the cards at two distinct left
-  offsets (two columns, two rows); it fails on `dev` (three columns) and passes with the change.
-- At 390 px the cards share one left offset and the page does not scroll sideways.
+- An e2e test with four environments at 1920 px wide counts the cards per row (grouped by their
+  top edge) as two and two, of equal width; it fails on `dev` (three and one) and passes with the
+  change. With three environments the rows are two and one, the last card one column wide.
+- At 390 px each row holds one card and the page does not scroll sideways.
 
 ## Test plan
 
 - e2e (`cd.e2e.ts`): add two environments to the mock's studio (as the existing staging and
   platform test does), set the viewport to 1920 × 1080 with the side panel as the mock opens it,
-  and count the distinct `left` of the `.cd-env` cards and the cards per row; then at 390 px.
+  and count the `.cd-env` cards per row (grouped by their top edge) and compare their widths;
+  then with one environment fewer, then at 390 px.
 - Run the CD e2e file, then the full e2e suite and `scripts/dev ci`.
 
 ## Decisions
