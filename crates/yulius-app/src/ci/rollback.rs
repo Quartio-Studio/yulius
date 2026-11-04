@@ -454,10 +454,7 @@ impl App {
             Ok(known) => known,
             Err(err) => {
                 tracing::warn!(error = %err, run = %run.id, "reading a CD run's releases failed");
-                ring.push_str(
-                    "[yulius] the releases recorded so far could not be read: earlier barriers \
-                     are not carried over\n",
-                );
+                ring.push_str("[yulius] the releases recorded so far could not be read\n");
                 Vec::new()
             }
         };
