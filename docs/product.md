@@ -74,7 +74,8 @@ watching, steering and unblocking.
   after the deploy, one writer at a time.
 - **Project variables** (SPEC-275): a project's non-secret values (regions, environment names,
   ids, base URLs, contact addresses) are shown in plain on the Secrets page's Variables tab and
-  are in every task's environment. The laptop agent sets them with `yulius vars`, and the secrets
+  are in every task's environment and in CD runs' (dev: all; production: those its `[cd.<name>]`
+  names, SPEC-278). The laptop agent sets them with `yulius vars`, and the secrets
   import sends a `.env`'s plain values there instead of making them secrets.
 - **Move or copy the whole instance** (SPEC-329): `sudo yulius instance export | ssh root@new-vm
   yulius instance import` pauses every Yulius process, announces the exact size, and streams the
@@ -108,7 +109,7 @@ watching, steering and unblocking.
   automation through Yulius's tools, and it changes how a waiting task starts, stops, archives or
   deletes tasks, runs or deletes automations and enables the ready-made ones (asking the person
   before each change only on an uncontained server). A deleted task's attachments stay while
-  another task's request names them and otherwise wait 7 days in a trash it restores them from
+  another task's request or an automation's prompt names them and otherwise wait 7 days in a trash it restores them from
   (SPEC-396). Task agents
   can do the same for their task's owner, except to their own task. Told "tell #5 it may use the
   DO budget", the Superagent passes the message on (task agents cannot): a task that has not
@@ -209,8 +210,9 @@ watching, steering and unblocking.
   secret only when the integration branch's `[[ci.jobs]]` entry names it (`secrets`) and the job
   runs that entry's command (a pull request's own job with another command gets none), as a
   placeholder through the egress proxy toward the secret's bound hosts, audited as `ci:<run>`;
-  every pull request runs Yulius's own `security` job, granted `VIDOC_API_KEY`, which scans the
-  pull request's changes with Vidoc's vidoc-1. A job that checked nothing exits with
+  every pull request of a project that a Vidoc key reaches, with its scans on, runs Yulius's own
+  `security` job, granted `VIDOC_API_KEY`, which scans the pull request's changes with Vidoc's
+  vidoc-1. A job that checked nothing exits with
   `$YULIUS_CI_SKIP_CODE` and reads **Skipped**, never Passed; it blocks no merge (ADR-0133).
   A run opens in place of the CI/CD page's list, at its own address, so Back and the sidebar come
   back to it; its summary stays on top with the time so far and the stages running now. Above the
@@ -224,18 +226,19 @@ watching, steering and unblocking.
   on low ones there (SPEC-217, ADR-0172). Findings in code a pull request did not touch become
   GitHub issues, filed once, reopened while reported and closed once the code is gone. Every project
   with CI whose sandbox has a Vidoc key runs the scan as a built-in `security` job, unless its CI
-  already scans. The code goes to
+  already scans, it is a playground or its scans are switched off. The code goes to
   Vidoc, but the key never reaches agents: the egress proxy adds it toward
   `model.vidocsecurity.com` only. With a key, infra bootstrap adds only the AGENTS.md rule to scan
   before delivery, never a job of its own. Without one, the scan reports "not run". A person can
   switch a project's scans off, for example while the key's quota is used up, on the Instance
   page's Vidoc card or when adding the project ("Scan pull requests with Vidoc"); it then scans
-  nothing, its scan and CI job say "disabled" (Skipped), and its agents ask nobody about the key
+  nothing, its scans say "disabled", Yulius adds no `security` job (one the repository configures
+  itself ends Skipped), and its agents ask nobody about the key
   (SPEC-338, ADR-0229). The sandbox's own admins switch the same setting on its CI/CD page (the
   Security scan card), which also says when the repository's committed `.config/vidoc.toml` or
   the instance has Vidoc off and who changed it last; a scan whose key is refused or out of quota
-  names that page (SPEC-359, ADR-0245). A superadmin can switch Vidoc off for the whole instance on the same card
-  ("Scan every project with Vidoc"), keeping the key, also one from the server's configuration
+  names that page (SPEC-359, ADR-0245). A superadmin can switch Vidoc off for the whole instance on the Instance
+  page's Vidoc card ("Scan every project with Vidoc"; the Security scan card shows it), keeping the key, also one from the server's configuration
   file: every project then scans nothing in the same way until it is switched on again, and each
   project keeps its own choice for then (SPEC-356, ADR-0242).
 - **Pipeline (stages)**: every stage of tasks, CI runs and deployments is measured as it happens
@@ -277,8 +280,8 @@ watching, steering and unblocking.
   cannot change what a deploy runs, and they ask a person with `needs_you` for what only a person
   can give (a machine's credentials). Onboarding finds how a project deploys today and writes it
   down this way; "Set up CD with an agent" does the same later, through a task. For Yulius itself
-  dev is empty until it has a dev machine, and production is the push to `main` that instances
-  install by themselves.
+  dev is empty until it has a dev machine, and production is the push to `main`, which each
+  instance installs once a superadmin chooses Update now.
 - **Browser panel**: the sandbox's real Chrome streamed as video so people can pass captchas
   and sign-ins for the agent.
 - **Automations**: tasks on a schedule. Three ship with Yulius and head the Automations page as
@@ -367,7 +370,8 @@ watching, steering and unblocking.
 
 ## Principles
 
-Agents are real CLIs; sessions outlive the server; GitHub is the authority for permissions;
+Agents are real CLIs; sessions outlive the server; GitHub is the authority for permissions (a playground's guests, let
+in through an expiring link, are the one exception);
 coordination goes through one MCP and hook protocol; every queue, stream, retry and wait is
 bounded and owned; features have specs, research and questions do not.
 

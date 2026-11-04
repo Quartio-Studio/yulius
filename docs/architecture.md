@@ -12,7 +12,7 @@ flowchart LR
   LA["A person's local agent or the yulius CLI"] -->|"remote MCP, API token"| RP
   subgraph Server["yulius serve"]
     API["Public HTTP + WS API, remote MCP"]
-    INT["Internal loopback: MCP, hooks, git and gh credentials"]
+    INT["Internal loopback: MCP, hooks, git and gh credentials, egress proxy"]
     APP["Application services"]
     SUP["Session supervisor"]
     CI["Yulius CI runner"]
@@ -26,6 +26,7 @@ flowchart LR
   CD -->|"dev: deploy + verify, allowed secrets"| SB
   CD -->|"production: deploy + verify (or rollback), allowed secrets"| PSB
   APP -->|"prune caches, quota"| SB
+  CI -->|"jobs in its ci/ leaf, job slots"| SB
   SUP <-->|"Unix socket"| PH["yulius ptyhost (per run)"]
   subgraph SB["Sandbox (namespace holder)"]
     PH --> AG["claude TUI"]
@@ -36,7 +37,8 @@ flowchart LR
     PR["production run (host's read-only system)"] -->|"/run/yulius/docker"| PDF["its Docker front"]
     PDF --> PDE["its Docker engine (on demand)"]
   end
-  AG -->|"MCP + hooks"| INT
+  AG -->|"MCP (yulius mcp stdio bridge) + hooks"| INT
+  AG -->|"HTTP(S) via the egress proxy: secrets for bound hosts"| INT
   APP <--> GH["GitHub App + REST"]
   AG <--> AN["Anthropic"]
   APP <-->|"DevTools pipe (fds 3/4)"| CH["Chrome on Xvfb"]
@@ -61,7 +63,8 @@ depends on domain and contracts. `scripts/check_repository.py` enforces this.
 
 A sandbox's processes share its cgroup limits, but not equally. CI jobs run in its `ci/` leaf
 with four times the CPU weight of the agents' `agents/` leaf. Under full load CI gets up to 80 % of
-the sandbox and the agents at least 20 %, and idle CPU goes to whoever wants it. Agent Bash commands also run
+the sandbox and the agents 20 % while the holder (`system/`) and the Docker engine (`engine/`), at
+the agents' weight each, idle; and idle CPU goes to whoever wants it. Agent Bash commands also run
 5 nice levels below the agents themselves ([SPEC-053](../.ai/specs/SPEC-053-ci-e2e-timeouts-under-agent-load-give-ci.md),
 [decision 0039](decisions/0039-ci-jobs-get-the-cpu-first.md)).
 
@@ -471,7 +474,7 @@ sequenceDiagram
   participant S as Yulius server
   participant G as Guest's browser
   A->>S: POST /api/sandboxes/{sid}/guest-invites {days}
-  S-->>A: link /join?code=… (shown once; hash stored)
+  S-->>A: link /join?code=… (shown once, hash stored)
   A-->>G: sends the link
   G->>S: GET /api/guest-invites/{code}
   S-->>G: playground, invited by, ends at
@@ -479,7 +482,7 @@ sequenceDiagram
   S-->>G: Me + session cookie (ends with the link)
   G->>S: their playground's routes only (Auth allowlist, require)
   A->>S: DELETE …/guest-invites/{id}
-  S-->>G: 401 on the next request; sockets close at their re-check
+  S-->>G: 401 on the next request, sockets close at their re-check
 ```
 
 A local checkout without GitHub comes in from the command line too
@@ -687,7 +690,7 @@ sequenceDiagram
     B->>Y: POST /mcp
     Y-->>B: 100 Continue, then the answer
     B-->>C: the answer, one line
-    Y->>C: 90 s later, to a task idle since the outage: "Yulius is back; continue"
+    Y->>C: 90 s later, to a task idle since the outage: "Yulius is back#59; continue"
 ```
 
 ## A task's own files
@@ -1116,8 +1119,9 @@ and its viewers are told, and the move starts no second Cockpit on the same conv
 It manages the project through the Yulius MCP server
 ([SPEC-037](../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md),
 [decision 0029](decisions/0029-cockpit-manages-through-mcp.md)). Its bearer (`ck_…`) is derived
-from the shell's persisted host token, and it is served the management tools (tasks,
-automations, workflows, sessions), `task_message` and the vault tools (below). Those tools act for a person (`ProjectCaller`, which names its
+from the shell's persisted host token, and it is served `COCKPIT_TOOLS`: the task, automation, workflow and session tools,
+`attachments_trash`, `task_message`, the vault tools (below) and `sandboxes_list` /
+`sandbox_task_create` for its person's other sandboxes. Those tools act for a person (`ProjectCaller`, which names its
 `Channel`: task agent, Superagent or remote MCP): the Cockpit's owner, the remote MCP token's
 person, or a task's owner when a task's agent calls them. `task_create` takes the same path as
 New task; `task_update` is the UI's change of a waiting task's start (SPEC-126, SPEC-396);
@@ -1314,7 +1318,7 @@ sequenceDiagram
     participant App as Yulius (vault API)
     P->>C: --to agent .env (or stdin, or hidden prompts)
     C->>App: GET /api/sandboxes, GET agent-secrets (names only)
-    C->>C: ordinary text skipped; values in the project's tracked files asked about
+    C->>C: ordinary text skipped, values in the project's tracked files asked about
     C-->>P: names: new / exists (skipped) / skipped with reason
     P->>C: yes at /dev/tty (or --yes with an operate token)
     C->>App: POST agent-secrets per new name (hosts [], once, audited by name)
@@ -1529,7 +1533,8 @@ Vidoc is an optional instance service, like Jev
 - **The project switch** ([SPEC-338](../.ai/specs/SPEC-338-in-vidoc-related-problems-we-want-to-be.md),
   [decision 0229](decisions/0229-a-person-switches-a-projects-vidoc-scans-off-in-yulius.md)).
   `vidoc: false` in a sandbox's profile JSON (`delivery::vidoc_switched_on`, set by
-  `PATCH /api/sandboxes/{sid}` `{"vidoc": …}` from the Vidoc card or the Add sandbox dialog)
+  `PATCH /api/sandboxes/{sid}` `{"vidoc": …}` from the Instance page's Vidoc card or the CI/CD
+  page's Security scan card)
   switches the project off (the Add sandbox dialog sends `"vidoc": false` with `POST
   /api/sandboxes`, set before onboarding starts): its agent runs (`base_env`), terminals
   (`shell_env`) and CI jobs (`ci_job_env`) get
@@ -1554,7 +1559,8 @@ Vidoc is an optional instance service, like Jev
   `me.instance.vidoc` is false. Each project's own switch is kept and shown disabled on the card.
   For either switch the egress proxy intercepts `model.vidocsecurity.com:443` and refuses (403,
   nothing sent; `vault/runtime.rs` `vidoc_refused`), so a session started before it went off sends
-  no code either.
+  no code either; its scanner reports that 403 as not run (exit 2), saying Vidoc is off. A switch
+  the proxy cannot read refuses with 503, so such a scan ends incomplete.
 
 ```mermaid
 flowchart LR
@@ -1615,15 +1621,17 @@ sequenceDiagram
     participant App as Yulius (CD)
     participant G as Git clone
     participant V as Vault
-    participant S as Sandbox (process host)
+    participant S as Sandbox, or its production holder (process host)
     A->>App: deploy dev (cd_deploy / CD page)
     App->>App: authorize (production: administrator + typed slug)
     App->>G: fetch: GitHub's dev head into the private mirror (objects checked), read [cd.dev]
     App->>V: values of the named secrets (allowed for this environment)
     V-->>App: values, or "nothing ran: a person allows …"
-    App->>App: record the run (cd_runs) and audit cd.deploy
+    App->>V: hold the named agent states, restore the newest into the run
+    App->>App: project variables (production: only those named), record the run (cd_runs), audit cd.deploy
     App->>S: the commit's tree in the run's own directory, run deploy then verify
     S-->>App: output (redacted), exit status
+    App->>V: save each changed agent state as its next version, release
     App->>App: passed / failed / error, audit cd.finished
 ```
 
@@ -1728,9 +1736,9 @@ Git runs, the runner's size watch measures the fetch folder and then the bundle 
 streams the bundle into the task's attachments through the upload path's handles (ADR-0174), the
 fetch folder is removed, and the agent clones the bundle itself into
 `<sandbox>/reference/<owner>/<name>`, outside every worktree. Git never runs on the host in a folder
-an agent writes, and the agent never holds the person's token. Another owner, the sandbox's own
-repository, a playground, a disabled or unsigned owner and no read access are refused with
-`needs_you`; onboarding fetches the repositories a project refers to first.
+an agent writes, and the agent never holds the person's token. Another owner, a disabled or unsigned owner
+and no read access are refused pointing to `needs_you`; the sandbox's own repository (the worktree
+already has it) and a playground are refused; onboarding fetches the repositories a project refers to first.
 
 ```mermaid
 flowchart LR
@@ -1856,7 +1864,10 @@ it in one transaction and audits `variable.*` without values; the Secrets page's
 `/api/sandboxes/{sid}/variables` and the remote tools (`variables_list`, `variables_set`,
 `variable_delete`, behind `yulius vars`) all go through it. A task run's environment starts with
 them (`supervisor.rs`), so `base_env` and the agent secret placeholders win over a variable of the
-same name; `secrets_list` names them. `yulius_domain::vault::plain` tells a plain value from a
+same name; `secrets_list` names them. A CD run gets them too, before its own variables and secrets:
+a dev-stage run all of them, a production-stage run only those its `[cd.<name>]` `variables`
+names (`ci/cd.rs`, [decision 0207](decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)).
+`yulius_domain::vault::plain` tells a plain value from a
 secret (shorter than 8 characters and plain-shaped, or the ordinary text of SPEC-274's
 `ordinary_text`, never under a credential-like name), and `yulius secrets import --to agent` sends such entries of a
 `.env` as variables.
@@ -1869,6 +1880,7 @@ flowchart LR
     C["yulius vars / variables_set / Variables tab"] --> V
     V --> R["task run environment (first)"]
     S --> R
+    V -->|"dev: all, production: those its [cd.name] names"| CDR["CD run environment (first)"]
 ```
 
 ## Terminal input
@@ -2407,9 +2419,9 @@ The file in front follows the disk ([SPEC-181](../.ai/specs/SPEC-181-here-ui-got
 Agents and shells write the sandbox directly, so there is no event to wait for: while the Editor is
 shown, the page visible and the sandbox in front, the browser looks at that one file every 2 s
 (and at once when the Editor or the page comes back) with the `sha256` it has, and
-`App::file_read` answers 204 when the bytes still hash to it. A newer version replaces unedited
-text as one undoable edit of the part that changed; edited text is kept and the status bar says
-"Changed on disk", and the save's 409 choice decides.
+`App::file_read` answers 204 when the bytes still hash to it. A newer version goes to the server's live
+document (`POST files/live/disk`, below): a step for everyone when the text is saved, else a
+conflict offering Keep mine or Take disk version.
 
 ```mermaid
 sequenceDiagram
@@ -2423,7 +2435,7 @@ sequenceDiagram
             S-->>E: 204
         else changed (agent, shell, teammate's save)
             S-->>E: {content, sha256}
-            E-->>E: unedited: one edit of the changed part, edited: "Changed on disk"
+            E->>S: POST files/live/disk (see the next diagram)
         end
     end
 ```
@@ -2513,7 +2525,7 @@ sequenceDiagram
   participant R as Root helper
   S->>R: build request (tasks keep working)
   R-->>S: built
-  S->>S: close the deploy gate; wait until no CD or environment run runs (tasks keep working)
+  S->>S: close the deploy gate, wait until no CD or environment run runs (tasks keep working)
   S->>H: freeze(run) for every live task
   H->>K: mkdir run-<attempt>, cgroup.freeze=1, move agent tree
   K-->>H: cgroup.events frozen 1
@@ -2568,7 +2580,7 @@ sequenceDiagram
   E->>D: systemctl freeze yulius.service (wait for frozen)
   E->>F: walk 1: exact length + header fingerprint
   E->>I: manifest (total_bytes) first
-  I->>I: check format, schema, free space, no instance; make user and ids
+  I->>I: check format, schema, free space, no instance, make user and ids
   loop every entry
     E->>F: walk 2: read
     E->>I: header + data

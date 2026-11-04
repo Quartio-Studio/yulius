@@ -17,6 +17,22 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   production deploy is refused until rollback is configured and that drill passed at its commit.
   Onboarding, infra-bootstrap, delivery-pipeline, the briefing and AGENTS template teach it, and a
   project whose deploys lack rollback sees it as a missing foundation.
+- The documentation matches what was merged since 2026-10-22 (task #398, documentation only). The
+  Vidoc switches are described the same way everywhere: the instance switch is on the Instance
+  page's Vidoc card, a switched-off project gets no built-in `security` job, the proxy's refusal
+  of an older session is "not run" (exit 2), and the development guide names `YULIUS_VIDOC=off`.
+  The API reference adds `GET /api/disk`, `GET /api/connections` and their events, the Superagent
+  request routes as served, the remote MCP's `task_update`, `attachments_trash` and variables
+  tools, the CI job's `secrets` key and environment, CD's `states` and `variables` keys,
+  environment and refusals, every sandbox's purge (ADR-0205), up to `YULIUS_CI_LANES` runs at
+  once, and a task's agent acting for its owner (SPEC-070). SPEC-002 §7.4 lists every Yulius MCP
+  tool, the stdio bridge and `COCKPIT_TOOLS`, without `delivery_promote`. Operations shows
+  the 1 GiB upload default, a five-step setup and the egress proxy's 504; the Editor's docs follow
+  live co-editing; the top, CD and variables diagrams show the egress proxy, CI in the sandbox,
+  agent states and production's holder, and five architecture diagrams that did not render (a
+  semicolon ends a Mermaid statement) render again. Amended ADRs link to their amendments, AGENTS.md routes to
+  the API, operations and remote-control references, and `yulius.toml`'s comments name three CI
+  jobs and Update now. Help texts that disagree with the code are issue #1052.
 
 ## 2026-11-03
 

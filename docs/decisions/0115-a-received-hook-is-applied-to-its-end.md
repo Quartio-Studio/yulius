@@ -4,6 +4,8 @@
 
 Accepted. Specified in [SPEC-140](../../.ai/specs/SPEC-140-fix-404-464-353-443-task-done-supervisio.md)
 (HKS-001); task #127, #404. Refines SPEC-002 §7.5.
+Refined by [0212](0212-a-turn-whose-stop-yulius-never-answered-settles-at-its-record.md) and
+[0234](0234-a-prompt-hook-sent-before-its-turn-ended-changes-nothing.md).
 
 ## Context
 

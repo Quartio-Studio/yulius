@@ -35,7 +35,7 @@ RUST_TEST_THREADS = "{cpus}"
 
 # macOS has no Yulius runner: the gate compiles every target for macOS (ADR-0169); run
 # `scripts/dev ci` on a Mac before a release to link and test there. Each job gets an
-# equal share of the sandbox (two jobs: half each), and a run's jobs wait for theirs.
+# equal share of the sandbox (three jobs: a third each), and a run's jobs wait for theirs.
 [[ci.jobs]]
 name = "quality"
 command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev ci"
@@ -60,14 +60,15 @@ name = "security"
 secrets = "VIDOC_API_KEY"
 command = "python3 scripts/vidoc_scan.py --ci"
 
-# CD (deployment), SPEC-134: Yulius runs these from the protected branches, inside the sandbox
-# (CD page, `cd_deploy`). Both are explicit, even when one deploys nothing yet. A merge deploys
-# nothing; only a person deploys production (ADR-0110).
+# CD (deployment), SPEC-134: Yulius runs these from the protected branches, dev inside the
+# sandbox and production in its production holder (ADR-0208; CD page, `cd_deploy`). Both are
+# explicit, even when one deploys nothing yet. A merge deploys nothing; only a person deploys
+# production (ADR-0110).
 [cd.dev]
 about = "No dev machine yet: once a person adds its credentials to the vault, an agent writes scripts/cd/ and fills this in"
 
 [cd.prod]
-about = "A push to main is the release: instances update themselves from main (Settings, Instance, Update now)"
+about = "A push to main is the release: each instance installs it when a superadmin chooses Update now (Settings, Instance)"
 promote = true
 
 # Build caches beyond the recognised ones (SPEC-008): pruned for tasks that do not work.

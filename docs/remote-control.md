@@ -96,7 +96,7 @@ The server's instructions tell your agent what to do ([SPEC-256](../.ai/specs/SP
    A `.env` also holds values that are not secrets: a region (`OVH_ENDPOINT=ovh-ca`), an
    environment name (`production`), account and project ids, base URLs, a contact address. They
    go to the project's **variables** instead, which every task of the project has in its
-   environment, in plain ([SPEC-275](../.ai/specs/SPEC-275-project-variables-non-secret-values-regi.md),
+   environment, in plain, as do its CD runs (production: those its `[cd.<name>]` names) ([SPEC-275](../.ai/specs/SPEC-275-project-variables-non-secret-values-regi.md),
    [ADR-0203](decisions/0203-project-variables-are-plain-per-project-values-in-task-runs.md)).
    The import moves some of them itself: instead of skipping ordinary text, it sends a plain entry
    shorter than 8 characters or ordinary text (SPEC-274's rule) as a variable with the secrets,

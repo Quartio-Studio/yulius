@@ -129,8 +129,9 @@ Environment=YULIUS_BIND=127.0.0.1:8080
 Environment=YULIUS_INTERNAL_BIND=127.0.0.1:8081
 Environment=YULIUS_MAX_SESSIONS=8
 Environment=YULIUS_CONTAINED=true
-# Largest file dropped onto the editor or a terminal, in MiB (keep the proxy's body limit above it).
-Environment=YULIUS_UPLOAD_MAX_MB=25
+# Largest file dropped onto the editor or a terminal, in MiB (default 1024; keep the proxy's body
+# limit above it).
+#Environment=YULIUS_UPLOAD_MAX_MB=1024
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 # The sandbox browser: a headful Chrome on a virtual display when xvfb and ffmpeg are installed
 # (auto, the default). See "Sandbox browser" below for the other settings.
@@ -704,7 +705,8 @@ medium findings in the lines the branch changed. Findings in code the branch did
 GitHub issues, which Yulius files once, reopens while they are reported and closes once their code
 is gone (ADR-0172). When the sandbox can use a Vidoc key (its own `VIDOC_API_KEY` agent secret or
 the instance's), Yulius CI adds a built-in `security` job to every project whose CI does not scan
-already. **The scanned code is sent to Vidoc** (`https://model.vidocsecurity.com`). Without a key
+already, unless it is a playground or Vidoc is switched off for the project or the instance (below).
+**The scanned code is sent to Vidoc** (`https://model.vidocsecurity.com`). Without a key
 the scan says "not run", and nothing else changes. Keys come from <https://model.vidocsecurity.com/#key>.
 
 The key is managed like the Jev key:
@@ -732,12 +734,14 @@ not on the service.
 | --- | --- | --- |
 | `--vidoc-api-key-file` / `YULIUS_VIDOC_API_KEY_FILE` | unset | File holding the instance's Vidoc API key, owned by the service user, mode `0600`. Used while no key is saved in settings; read at start. |
 
-**Turning Vidoc off for one project.** While the key fails (refused, HTTP 401, or out of quota,
-HTTP 429), the sandbox's admins (GitHub `admin` on its repository) switch its scans off on the
+**Turning Vidoc off for one project.** While the key fails (refused, HTTP 401 or 403, or out of quota,
+HTTP 402 or a 429 that says so), the sandbox's admins (GitHub `admin` on its repository) switch its scans off on the
 sandbox's CI/CD page: the CI tab's **Security scan (Vidoc)** card, "Scan this project with Vidoc".
 No instance administrator is needed; a superadmin can do the same on the Instance page's Vidoc
 card, which shows the same switch (and switch Vidoc off for every project there). Off, the project
-sends nothing to Vidoc, its scans and CI's `security` job report "disabled" (Skipped), and its
+sends nothing to Vidoc, its scans report "disabled", Yulius adds no built-in `security` job (a
+`security` job the repository configures itself ends Skipped), a session started before the switch
+went off has its requests refused by the egress proxy (its scan ends "not run"), and its
 agents ask nobody about the key or its quota; on again, the next run and CI job scan. Each change is
 audited as `delivery.vidoc.update` (who, when, on or off), and the card says who changed it last.
 Members with write or maintain access see the card but cannot change it. A repository whose
@@ -746,8 +750,15 @@ says; the card says so and offers no way on (a reviewed pull request turns it on
 fails names the card's address (`YULIUS_VIDOC_SWITCH`, which Yulius sets from `--public-url`), and
 so does CI's job log (SPEC-359, ADR-0245).
 
+**Turning Vidoc off for every project.** A superadmin switches "Scan every project with Vidoc"
+off on Settings → Instance's Vidoc card (`PUT /api/admin/vidoc/enabled`). It takes effect at once,
+survives restarts, is audited as `vidoc.disabled` / `vidoc.enabled`, and keeps the key (also one
+from `YULIUS_VIDOC_API_KEY_FILE`). Every project then scans nothing, as above, and keeps its own
+choice for when the switch goes back on (SPEC-356, ADR-0242).
+
 The start log says `Vidoc is on (instance key saved in settings)` (or `… from
-YULIUS_VIDOC_API_KEY_FILE`) or `Vidoc is off: no instance key`.
+YULIUS_VIDOC_API_KEY_FILE`) or `Vidoc is off: no instance key`; while a superadmin has switched
+Vidoc off, it also says `Vidoc scans are switched off for the instance`.
 
 ## 5. First run
 
@@ -756,8 +767,9 @@ YULIUS_VIDOC_API_KEY_FILE`) or `Vidoc is off: no instance key`.
 2. Open the public URL, enter the token, choose the superadmin password (twice; at least 8
    characters, 12 or more recommended) and confirm both warnings: **the password can be recovered
    only with the recovery code** (SPEC-001 ACC-002, ACC-011). Store the recovery code shown next.
-   The last two steps ask for the Jev API key and the Vidoc API key (both optional; skip them to
-   add them later in Settings → Instance).
+   Steps 3 and 4 of 5 ask for the Jev API key and the Vidoc API key (both optional; skip them to
+   add them later in Settings → Instance); the last one adds the first Claude subscription
+   (skippable, see step 5).
 3. User menu → Administration → GitHub connection: create the GitHub App with the manifest flow for the owner account or
    organization, then install it on the repositories Yulius may use. The App's callback URLs point
    at `YULIUS_PUBLIC_URL`. The manifest requests the permissions below.
@@ -876,11 +888,12 @@ involved.
 - The CI comes from `[[ci.jobs]]`, or `[commands] gate`, in `yulius.toml` on the integration
   branch (docs/api.md "CI").
 - An administrator can set `gate` on the sandbox profile instead (`PATCH /api/sandboxes/{sid}`).
-- Every open pull request into the integration branch and every new integration or production
-  commit is tested once.
+- Every open pull request into the integration branch from the same repository (never a fork's)
+  and every new integration or production commit is tested once. A failed job cancels the run's
+  other jobs; the `security` job neither cancels them nor is cancelled.
 - The jobs run in parallel as the `yulius` user, inside the sandbox's containment when
   `YULIUS_CONTAINED=true`, without any token.
-- Results appear on each sandbox's CI page and on GitHub as the status `yulius/ci`.
+- Results appear on each sandbox's CI/CD page (CI tab) and on GitHub as the status `yulius/ci`.
 - `YULIUS_CI=off` stops all of it. Merges then fall back to GitHub's checks.
 
 **The machine.** Jobs use the tools installed on the VM (`/usr`, `/opt` and
@@ -889,8 +902,8 @@ involved.
 - Install the toolchains the projects need system-wide, for example rustup's toolchains under
   `/opt`, Node and Python.
 - Each sandbox keeps `<data>/sandboxes/<id>/ci/`:
-  - `jobs/<job>` (and `jobs/<job>@<lane>` past the first lane): one persistent checkout per job
-    and lane; ignored build outputs such as `target/` and `node_modules/` are its cache;
+  - `jobs/<job>[.<n>][@<lane>]` (`.<n>` for a matrix job's place, `@<lane>` past the first lane):
+    one persistent checkout per job and lane; ignored build outputs such as `target/` and `node_modules/` are its cache;
   - `home`: `HOME` for jobs, with `~/.cargo`, `~/.npm` and `~/.cache`;
   - `cache/<job>[.<n>][@<lane>]` (named like the checkout): `YULIUS_CI_CACHE`, the
     job checkout's own persistent cache, never shared with a job running at the same time
@@ -922,7 +935,7 @@ involved.
   of the sandbox's, at least 2) and the memory in proportion: three of them testing at once fill
   the sandbox.
 - `YULIUS_CI_LANES` (default 2) runs of one sandbox execute at once. Each lane past the first
-  keeps its own job checkouts and caches (`ci/jobs/<job>@<lane>`, `ci/cache/<job>@<lane>`), so
+  keeps its own job checkouts and caches (`ci/jobs/<job>[.<n>]@<lane>`, `ci/cache/<job>[.<n>]@<lane>`), so
   budget its disk too.
 
 **Moving a repository off GitHub Actions** (the onboarding step; agents use the `ci_setup` tool):
@@ -941,8 +954,9 @@ involved.
    enforces the delivery profile either way.
 
 **Hygiene.** After a merge through Yulius the head branch is deleted. Every 6 hours (first 10 minutes
-after start) Yulius removes each sandbox's safe stale branches and worktrees itself and lists the
-rest on its CI page, with what the last cleanup removed and kept (SPEC-269, ADR-0199). People clean
+after start) Yulius removes each sandbox's safe stale branches and worktrees itself (except `merged` remote
+branches with no merged pull request, such as a release branch, which stay for a person) and lists
+the rest on its CI/CD page (CI tab, Repository hygiene card), with what the last cleanup removed and kept (SPEC-269, ADR-0199). People clean
 up at once there, agents with `repo_cleanup`. Each removal is audited `hygiene.cleanup`.
 
 ### CD on this machine
@@ -1130,7 +1144,9 @@ data directory's disk: at most 1 GiB each (`YULIUS_UPLOAD_MAX_MB`), 500 per task
 refused before it starts (ADR-0219). A deleted task's attachments stay while another task's request or an automation's prompt names
 them, and otherwise wait 7 days in `attachments/trash/<secs>-<number>-<id>/` (SPEC-396;
 `attachments_trash` restores them into a task), a terminal's go when it ends
-(left-overs are removed at the next start); archiving a task keeps them. Uploads are audited
+unless a task's request or an automation's prompt names its folder (others are removed at the next
+start), and composer drafts wait in `attachments/drafts/<user>/` and go after a week unless named
+(SPEC-413, ADR-0259); archiving a task keeps them. Uploads are audited
 (`audit_log`: `file.uploaded`, `attachment.uploaded`).
 
 ## 7. Backup and restore
@@ -1216,7 +1232,7 @@ task that started working again keeps its files. Every deletion is audited as `l
 | A removed sandbox's `<data>/sysroots/<id>` (installed packages, Docker images and volumes) and `<data>/runtime/sandboxes/<id>` | once its holder has stopped (a minute after the removal, SPEC-206); removed as root of a mapped namespace | yes |
 | Everything else of a removed sandbox: its clone, home with the Claude sessions, attachments, `<data>/transcripts/<task>`, a playground's `origin`, `<data>/exports/sandbox-<slug>-<ms>.json` | removed with **Delete its files permanently**: as soon as nothing of it runs; removed with **Keep**: kept (PRJ-009), listed under Kept files of removed sandboxes; the database records always stay | on request |
 | A task's rebuildable caches (`target`, `node_modules`, `[disk] caches`, …) | closed, stopped or failed: after 10 minutes; **archived**: at once; **done**: after 30 quiet minutes; waiting: after 4 hours; any idle task at 90 % of the quota or with the data disk critical | yes (the worktree and uncommitted work stay) |
-| Units of a Cargo `target` (worktrees and CI checkouts) | unused for 48 hours (6 h with the disk low, 1 h critical), then the least recently used incremental ones above 5 % of the disk (at least 8 GB; half when low, a quarter when critical); never while Cargo compiles there (its locks); compiled artifacts only in a CI checkout with no CI run and in the worktree of a task that neither works nor runs background work while no Shell of the sandbox is open (otherwise only incremental state goes) | yes, hourly (audited `disk.sweep`) |
+| Units of a Cargo `target` (worktrees and CI checkouts) | unused for 48 hours (6 h with the disk low, 1 h critical), then the least recently used incremental ones above 5 % of the disk (at least 8 GB; half when low, a quarter when critical); never while Cargo compiles there (its locks); compiled artifacts only in a CI checkout with no CI run and in the worktree of a task that neither works nor runs background work while no Shell of the sandbox is open (otherwise only incremental state goes) | yes, hourly, and every 5-minute round while the disk is low (audited `disk.sweep`) |
 | A closed or cancelled task's clean worktree | after 10 minutes (its branch keeps the work) | yes |
 | Git's record of a worktree inside the sandbox directory whose directory is gone (`.git/worktrees/<name>`), not locked | always (that record only; a worktree an agent keeps in its own `/tmp` keeps its record) | yes |
 | A CI checkout of a job or lane no run used for 14 days, and its cache (`ci/cache/<job>[.<n>][@<lane>]`); an entry of `ci/cache` named like no job (what the cache every job shared held before SPEC-351) | while no CI run of that sandbox runs | yes |
@@ -1301,7 +1317,10 @@ one project each polled `sleep 0.05` there for days (SPEC-353). Yulius handles t
   [ADR-0243](decisions/0243-the-busiest-run-gives-way-at-a-full-proxy-share.md)). At a full share
   with every connection active, the oldest connection of the run holding the most gives way to
   a run holding at least 2 fewer, and at the full proxy the busiest sandbox's does. A plain
-  request waiting for its answer is never taken. This is logged as `egress proxy: a sandbox's share
+  request waiting for its answer is never taken, but it waits at most 5 minutes with no progress
+  for its upstream's response head, then gets `504` (`Yulius proxy: <host> sent no response for
+  300 s`) and frees its place
+  ([ADR-0250](decisions/0250-a-plain-http-request-waits-a-bounded-time-for-its-answer.md)). This is logged as `egress proxy: a sandbox's share
   is full of active connections; the busiest run's oldest connection was closed for another run`
   (sandbox, run, how many it held) or `egress proxy: every connection is taken and active; the
   busiest sandbox's oldest connection was closed for another sandbox`, each at most once a minute

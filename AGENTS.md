@@ -13,7 +13,9 @@ implemented; do not invent features beyond them.
 
 Project map for Yulius, configured in [yulius.toml](yulius.toml): [product](docs/product.md),
 [architecture](docs/architecture.md), [decisions](docs/decisions/README.md), specs in
-[.ai/specs](.ai/specs), [changes](docs/changes.md). They summarise and point to the specs
+[.ai/specs](.ai/specs), [changes](docs/changes.md); the references for running and driving it:
+[HTTP and MCP API](docs/api.md), [operations](docs/operations.md),
+[remote control](docs/remote-control.md). They summarise and point to the specs
 above; the rules in this file stay authoritative. Yulius CI is the only CI: it runs the gate
 (`[[ci.jobs]]` in `yulius.toml`) and publishes the `yulius/ci` commit status; there are no GitHub Actions.
 CD (deployment) is `[cd.dev]` (empty: no dev machine yet) and `[cd.prod]` (promotion of `dev` to
@@ -94,7 +96,8 @@ independent reviewer agrees; list it in the spec's Evidence. On code the branch 
 entry also matches a reworded repeat in that function, near its `line`, or one Vidoc answers as
 that accepted risk; each open finding names its nearest ignore
 ([ADR-0202](docs/decisions/0202-vidoc-repeats-match-by-place-and-an-incomplete-scan-blocks-as-infrastructure.md)).
-Exit 2 (not run: no key, a refused key, no quota) is unrun and exit 3 (incomplete: Vidoc
+Exit 2 (not run: no key, a refused key, no quota, or Vidoc switched off in Yulius after the
+session started, which the egress proxy refuses) is unrun and exit 3 (incomplete: Vidoc
 unreachable or failing, files listed) is incomplete, never passed. The key is
 `VIDOC_API_KEY`, a placeholder that the egress proxy replaces: an agent secret of that name that
 reaches the run ([scopes](docs/architecture.md#agent-secret-scopes)), else the instance's Vidoc
@@ -112,7 +115,7 @@ scans off in Yulius (Instance page, Vidoc card; [ADR-0229](docs/decisions/0229-a
 and the sandbox's admins on its CI/CD page (Security scan card; [ADR-0245](docs/decisions/0245-a-sandboxs-admins-switch-its-vidoc-scans-on-its-ci-cd-page.md)):
 runs then get `YULIUS_VIDOC=off`, the scan exits 0 as disabled (CI: skipped), and nobody is asked
 about the key or its quota. A superadmin can switch Vidoc off the same way for every project of the
-instance, keeping the key (the same card; [ADR-0242](docs/decisions/0242-a-superadmin-switches-vidoc-off-for-the-whole-instance.md)). Other projects run the same scanner
+instance, keeping the key (the Instance page's Vidoc card; [ADR-0242](docs/decisions/0242-a-superadmin-switches-vidoc-off-for-the-whole-instance.md)). Other projects run the same scanner
 as `yulius security-scan`.
 
 Web UI changes: also run the end-to-end suite, `cd e2e && npm ci --ignore-scripts && npx e2e run`
@@ -133,7 +136,8 @@ Never claim a missing command was passed; do not skip gates or widen allowlists 
 - Inherit workspace edition, MSRV, license and lints in every crate. `unsafe` is forbidden.
 - Explicit typed domain commands and events; adapters own network, disk, Git and subprocess I/O.
 - No shell interpolation of prompts, IDs, paths or repository content. Worktrees isolate
-  changes, **not** process capabilities. A future sandbox needs an actual containment boundary.
+  changes, **not** process capabilities; the per-sandbox containment is that boundary
+  ([ADR-0003](docs/decisions/0003-sandbox-isolation.md)), so keep work that needs it inside it.
 - Every queue, output stream, retry and wait needs an explicit bound/cancellation contract.
   A timeout is not proof a subprocess died. Reap children before releasing execution capacity.
 - Treat credentials and raw agent transcripts as private. Use synthetic/redacted fixtures.

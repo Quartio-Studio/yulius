@@ -4,7 +4,10 @@
 
 Accepted. Specified in
 [SPEC-028](../../.ai/specs/SPEC-028-delete-message-mechanism-for-now-until-w.md); narrows
-[0006](0006-yulius-mcp-and-hooks.md) (the MCP server and hooks no longer carry messages).
+[0006](0006-yulius-mcp-and-hooks.md) (the MCP server and hooks no longer carry messages). Amended by
+[0178](0178-the-superagent-messages-tasks-by-queueing-or-typing.md) (a person's message is queued
+or typed into a task) and [0244](0244-task-runs-reach-yulius-through-a-stdio-bridge-and-are-woken-after-an-outage.md)
+("Yulius is back; continue" once after Yulius's own outage).
 
 ## Context
 
