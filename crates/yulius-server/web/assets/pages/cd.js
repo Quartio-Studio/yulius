@@ -241,22 +241,26 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     const allowed = prod ? overview.can_deploy_prod : overview.can_deploy_dev;
     const running = (overview.runs || []).some((r) => r.environment === env.name && r.state === 'running');
     const why = !allowed ? (prod ? 'Only an administrator rolls back production' : 'Requires write access') : running ? 'A run of this environment is running' : null;
+    if (why && (rb.parts || []).some((p) => (p.releases || []).length > 1)) rows.push(h('p', { class: 'small muted' }, `${why}.`));
     for (const part of rb.parts || []) {
       const where = part.name ? `${title(env)} ${part.name}` : title(env);
       const releases = part.releases || [];
       const previous = releases.find((r) => r.release === part.previous);
-      const back = h('button', { type: 'button', class: ['btn', 'btn-sm', prod && 'btn-danger'], disabled: Boolean(why || !previous || previous.blocked), title: why || (!previous ? 'No earlier release to go back to' : previous.blocked) || null,
-        'aria-label': `Roll back ${where.toLowerCase()} to previous`, onClick: () => rollBack(env, part, previous, overview) },
-      icon('back', { size: 14 }), previous ? `Roll back to previous (${previous.release})` : 'Roll back to previous');
+      // The accessible name starts with the visible text (WCAG 2.5.3) and adds the part.
+      const backText = previous ? `Roll back to previous (${previous.release})` : 'Roll back to previous';
+      const back = h('button', { type: 'button', class: ['btn', 'btn-sm', prod && 'btn-danger'], disabled: Boolean(why || !previous || previous.blocked),
+        'aria-label': `${backText} of ${where.toLowerCase()}`, onClick: () => rollBack(env, part, previous, overview) },
+      icon('back', { size: 14 }), backText);
       const list = releases.length
         ? h('ul', { class: 'cd-releases', 'aria-label': `${where} releases` }, releases.map((r) => h('li', { dataset: { release: r.release } },
           h('code', null, r.release),
           h('span', { class: 'muted small cd-release-meta' }, `${shortSha(r.commit)} · `, h('span', { title: dateTime(r.deployed_at) }, relLong(r.deployed_at)), ` · ${r.requested_by}`, r.barrier ? ` · no rollback past it: ${r.barrier}` : ''),
           r.current ? badge('Deployed now', 'ok')
             : r.blocked ? h('span', { class: 'small muted' }, `Blocked: ${r.blocked}`)
-              : h('button', { type: 'button', class: 'btn btn-sm', disabled: Boolean(why), title: why || null, 'aria-label': `Roll back ${where.toLowerCase()} to ${r.release}`, onClick: () => rollBack(env, part, r, overview) }, 'Roll back to this'))))
+              : h('button', { type: 'button', class: 'btn btn-sm', disabled: Boolean(why), 'aria-label': `Roll back to this: ${where.toLowerCase()} ${r.release}`, onClick: () => rollBack(env, part, r, overview) }, 'Roll back to this'))))
         : h('p', { class: 'small muted' }, 'No releases yet: the next deploy records one.');
-      rows.push(h('div', { class: 'stack-sm' }, h('div', { class: 'cd-part-head' }, h('h4', null, part.name || 'Releases'), releases.length ? back : null), list));
+      const alone = releases.length === 1 ? h('p', { class: 'small muted' }, 'No earlier release to go back to yet.') : null;
+      rows.push(h('div', { class: 'stack-sm' }, h('div', { class: 'cd-part-head' }, h('h4', null, part.name || 'Releases'), releases.length ? back : null), list, alone));
     }
     return h('section', { class: 'stack-sm cd-rollback', 'aria-label': `${title(env)} rollback` }, rows);
   }
@@ -279,6 +283,8 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     const body = { release: release.release };
     if (part.name) body.part = part.name;
     if (prod) { body.confirm = overview.slug; body.confirm_ms = Math.max(0, Math.round(performance.now() - opened)); }
+    // The server checks the branch, the release and the secrets first: seconds (as a deploy's).
+    toast(`Starting the rollback of ${where} to ${release.release}…`);
     try {
       const run = await ctx.api.post(`${base}/cd/${enc(env.name)}/rollback`, body);
       if (destroyed) return;

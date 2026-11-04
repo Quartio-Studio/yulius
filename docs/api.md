@@ -880,8 +880,13 @@ walk back.
 
 After a dev-stage deploy passes and its table has `rollback`, Yulius starts a drill on that
 environment (`kind: drill`, requested by `yulius`, audited `cd.drill`, `YULIUS_CD_DRILL=1`): for each
-part it shipped, the previous release then the new one, each verified; behind a barrier only the
-new one again. A production-stage deploy whose table has a `deploy` is refused (`conflict`, audited
+part with an earlier release, shipped or not, that release then the one it runs, each verified;
+behind a barrier (on any deploy of the release it runs) only that release again. A drill that cannot
+start is recorded as an `error` saying why. After each rollback command that succeeded the wrapper
+prints `::yulius-rolled-back <step>`; a rollback, or a drill that failed, records the release each
+part last reached as current. Markers are read from the run's regular log file only (no link, no
+FIFO; at most 256 MiB, the last 256 markers), and release ids and barrier reasons are redacted of
+the sandbox's agent secrets (an id that held one is ignored). `drill` must name a dev-stage table. A production-stage deploy whose table has a `deploy` is refused (`conflict`, audited
 `cd.refused`) until the table has `rollback` and the newest drill of its `drill` environment passed
 at a commit with the tree being deployed (with `promote`: the integration commit promoted).
 

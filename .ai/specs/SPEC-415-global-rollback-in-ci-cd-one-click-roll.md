@@ -49,19 +49,25 @@ Contract (`yulius.toml`, every `[cd.<name>]`):
 - RBK-003. `parts`: the names of parts the environment deploys separately (at most 8, environment
   name syntax). Without it the environment is one part.
 - RBK-004. `drill` (production stage only): the dev-stage environment whose drill proves this
-  environment's rollback; default `dev`.
+  environment's rollback; default `dev`. A `drill` naming no dev-stage table of the file is
+  invalid.
 
 Releases:
 
 - RBK-010. A passed deploy records a release per part it shipped: `::yulius-release <id>` (one
   part) or `::yulius-release <part>=<id>` lines of its output; a one-part environment whose deploy
   printed none records its commit. A release id is 1-128 characters of letters, digits and
-  `._+:@/-`; an invalid id or an unknown part is ignored and the output says so.
+  `._+:@/-`; an invalid id, one holding an agent secret, or an unknown part is ignored and the
+  output says so. Markers are read from the run's regular log file only (never through a link,
+  never a FIFO), at most 256 MiB, the last 256 kept.
 - RBK-011. `::yulius-rollback-barrier <reason>` (or `<part>: <reason>`) marks the release as one
-  that cannot be rolled back past (an irreversible migration). Yulius keeps the reason.
-- RBK-012. Yulius keeps the releases per environment, stage and part (the last 20 records, at least
-  the last 10 distinct releases deployed), with commit, time and who. The current release is the
-  newest one recorded by a passed deploy or rollback.
+  that cannot be rolled back past (an irreversible migration). Yulius keeps the reason, redacted
+  of the sandbox's agent secrets.
+- RBK-012. Yulius keeps the releases per environment, stage and part (the last 20 records, plus the
+  newest deploy of each of the last 10 distinct releases deployed and of the current release),
+  with commit, time and who. The current release is the newest one recorded by a passed deploy, or
+  the last release a rollback or a failed drill rolled a part to (the wrapper prints
+  `::yulius-rolled-back <step>` after each rollback command that succeeded), verified or not.
 - RBK-013. "Previous" is the newest release deployed before the current one's deploy that differs
   from it, so repeated rollbacks walk back.
 
@@ -84,10 +90,12 @@ Rollback:
 Drill and the production gate:
 
 - RBK-030. After a dev-stage deploy passes and its table has `rollback`, Yulius starts a drill on
-  that environment, by itself: for each part the deploy shipped with a release before it, roll back
-  to that release and verify, then roll back to the new release and verify. When the new release
-  has a barrier the drill redeploys the new release through `rollback` and verifies it. A part
-  with no earlier release is not drilled. A drill never runs on a production-stage environment.
+  that environment, by itself: for each part with a release before the one it runs (shipped by this
+  deploy or not), roll back to that release and verify, then roll back to the current release and
+  verify. When a barrier on any deploy of the current release forbids going back, the drill
+  redeploys the current release through `rollback` and verifies it. A part with no earlier release
+  is not drilled. A drill never runs on a production-stage environment. A drill that cannot start
+  is recorded as an error saying why, and audited.
 - RBK-031. A production-stage deploy whose table has a `deploy` command is refused unless its
   table has `rollback` ("rollback not configured") and the newest finished drill of its `drill`
   environment passed at a commit with the same tree as the commit being deployed (with
@@ -160,3 +168,10 @@ Surfaces:
   and it proves the command takes any kept release.
 - The gate compares trees: a production head that is a merge of the drilled integration commit has
   its tree, and the drill proves those files' rollback.
+- Review round 1: the drill covers every part with an earlier release, not only the parts a
+  deploy shipped, so a deploy that ships nothing (quartio-v2's "only what changed") still proves
+  its commit; a failed rollback or drill records where it left each part (from the wrapper's
+  per-step markers, not the script's output alone) so "Roll back to this" works afterwards.
+- `cd_rollback` is not added to the remote MCP of people's laptops (`remote.rs`) nor to the
+  briefing's tool list (whose byte budget is full; the delivery rule names it): RBK-041 asks for a
+  task agent's tool, which `tools/list` serves with its description.

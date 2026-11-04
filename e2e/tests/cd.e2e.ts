@@ -836,7 +836,7 @@ test('the CD page rolls back to an earlier release in one click', async ({ app, 
   expect(await axeViolations(browser)).toEqual([]);
 
   // One click: back to the previous release, after a confirmation that says what happens to data.
-  await dev.getByRole('button', 'Roll back dev to previous').click();
+  await dev.getByRole('button', 'Roll back to previous (v41) of dev').click();
   const confirm = screen.getByRole('dialog', 'Roll back dev?');
   await expect(confirm.getByText(/^Redeploys v41 \(from 8e2d4f6, deployed .+ by mkarp\) with the rollback command of quartio, then runs the verify command\. Nothing is rebuilt\.$/)).toBeVisible();
   await expect(confirm.getByText(/^expand and contract/)).toBeVisible();
@@ -846,11 +846,11 @@ test('the CD page rolls back to an earlier release in one click', async ({ app, 
   await expect(row('Dev', 'v41')).toContainText('Deployed now');
   await expect(screen.getByRole('button', /Open the dev rollback at 8e2d4f6/)).toBeVisible();
   // v40 lies behind v41's barrier: going back further is not offered.
-  await expect(dev.getByRole('button', 'Roll back dev to previous')).toBeDisabled();
-  await expect(dev.getByRole('button', 'Roll back dev to v40')).toBeHidden();
+  await expect(dev.getByRole('button', 'Roll back to previous (v40) of dev')).toBeDisabled();
+  await expect(dev.getByRole('button', 'Roll back to this: dev v40')).toBeHidden();
 
   // Production: a chosen release, with the slug typed.
-  await prod.getByRole('button', 'Roll back production to v39').click();
+  await prod.getByRole('button', 'Roll back to this: production v39').click();
   const typed = screen.getByRole('dialog', 'Roll back production?');
   const go = typed.getByRole('button', 'Roll back to v39');
   await expect(go).toBeDisabled();

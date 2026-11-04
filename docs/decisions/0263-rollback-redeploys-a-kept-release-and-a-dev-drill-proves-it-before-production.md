@@ -37,9 +37,12 @@ one environment, shipping only the parts that changed.
   deploy that makes rolling back unsafe prints `::yulius-rollback-barrier [<part>:] <reason>`, and
   a rollback to a release before it is refused with that reason. Rolling forward is not blocked.
 - **The drill is automatic and dev-only.** After a dev-stage deploy passes, Yulius rolls each
-  shipped part back to its previous release, verifies, rolls forward to the new one with the same
-  `rollback` command and verifies (behind a barrier: redeploys the new release only). It is a
-  `cd_runs` row of kind `drill`, requested by Yulius, audited.
+  part that has an earlier release (shipped by that deploy or not) back to it, verifies, rolls
+  forward to the release it ran with the same `rollback` command and verifies (behind a barrier:
+  redeploys that release only). It is a `cd_runs` row of kind `drill`, requested by Yulius,
+  audited; one that cannot start is recorded as an error saying why. A rollback or drill that
+  fails part-way records the release each part was last rolled to, from the wrapper's own
+  per-step markers.
 - **Production is gated on it.** A production-stage deploy that runs a deploy command is refused
   until its table has `rollback` and the newest drill of its `drill` environment passed at a
   commit with the tree being deployed. A promotion-only production (nothing Yulius deploys) is not
