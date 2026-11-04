@@ -865,7 +865,8 @@ A deploy names the releases it shipped with output lines `::yulius-release <id>`
 `::yulius-release <part>=<id>` (an environment with `parts`); a one-part deploy that names none
 shipped its commit. An id is 1-128 letters, digits and `._+:@/-`; an invalid id or an unknown part
 is ignored and the run's output says so. `::yulius-rollback-barrier <reason>` (or
-`<part>: <reason>`) marks a release that cannot be rolled back past. Yulius keeps the last 20
+`<part>: <reason>`) marks a release that cannot be rolled back past; a release deployed again keeps
+the barrier of its earlier deploy. Yulius keeps the last 20
 records per environment, stage and part (`cd_releases`) and offers the newest 10 distinct releases.
 
 A rollback (`kind: rollback`, audited `cd.rollback`) runs the environment's `rollback` command, then

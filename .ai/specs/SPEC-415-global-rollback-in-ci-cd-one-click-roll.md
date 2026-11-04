@@ -120,13 +120,13 @@ Surfaces:
 ## Plan
 
 - [x] Spec and ADR: rollback contract, releases, drill and production gate
-- [ ] Contract keys and release rules in the domain, with unit tests
-- [ ] Releases and run kinds stored (migration 0047), with store tests
-- [ ] Deploys record releases; a person rolls back from the API, audited
-- [ ] Dev drill runs after a deploy and gates production deploys
-- [ ] Agents roll back dev with cd_rollback; cd_status shows rollback
-- [ ] CD page: releases with one-click roll back, rollback state, e2e
-- [ ] Onboarding, briefing rules and docs teach rollback from day one
+- [x] Contract keys and release rules in the domain, with unit tests
+- [x] Releases and run kinds stored (migration 0047), with store tests
+- [x] Deploys record releases; a person rolls back from the API, audited
+- [x] Dev drill runs after a deploy and gates production deploys
+- [x] Agents roll back dev with cd_rollback; cd_status shows rollback
+- [x] CD page: releases with one-click roll back, rollback state, e2e
+- [x] Onboarding, briefing rules and docs teach rollback from day one
 - [ ] Independent review answered, gates green, evidence recorded
 
 ## Acceptance criteria

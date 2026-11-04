@@ -443,14 +443,27 @@ impl App {
             run_id: run.id.clone(),
         };
         let mut records = Vec::new();
+        // What is recorded so far: earlier barriers, and where a part stands (review round 3: a
+        // failed read is said, never silently taken as no history).
+        let known = match self
+            .deps
+            .store
+            .cd_releases(&sandbox.id, &run.environment, run.stage)
+            .await
+        {
+            Ok(known) => known,
+            Err(err) => {
+                tracing::warn!(error = %err, run = %run.id, "reading a CD run's releases failed");
+                ring.push_str(
+                    "[yulius] the releases recorded so far could not be read: earlier barriers \
+                     are not carried over\n",
+                );
+                Vec::new()
+            }
+        };
         match run.kind {
             CdRunKind::Deploy if state == RunState::Passed => {
-                let earlier = self
-                    .deps
-                    .store
-                    .cd_releases(&sandbox.id, &run.environment, run.stage)
-                    .await
-                    .unwrap_or_default();
+                let earlier = &known;
                 let (shipped, ignored) =
                     shipped(markers.iter().map(String::as_str), &target.parts, &run.sha);
                 for note in ignored {
@@ -465,7 +478,7 @@ impl App {
                     // A release deployed again keeps its first deploy's barrier (review round 2).
                     let barrier = match &s.barrier {
                         Some(why) => Some(self.redact_for_sandbox(&sandbox.id, why).await),
-                        None => earlier_barrier(&earlier, &s.part, &release),
+                        None => earlier_barrier(earlier, &s.part, &release),
                     };
                     records.push(record(
                         s.part,
@@ -479,12 +492,7 @@ impl App {
             CdRunKind::Deploy => {}
             CdRunKind::Drill if state == RunState::Passed => {}
             CdRunKind::Rollback | CdRunKind::Drill => {
-                let current = self
-                    .deps
-                    .store
-                    .cd_releases(&sandbox.id, &run.environment, run.stage)
-                    .await
-                    .unwrap_or_default();
+                let current = &known;
                 let mut reached = reached_steps(&run.steps, markers);
                 // A passed rollback whose markers could not be read went to every step.
                 if reached.is_empty()

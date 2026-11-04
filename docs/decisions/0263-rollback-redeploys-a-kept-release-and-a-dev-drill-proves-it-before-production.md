@@ -36,6 +36,7 @@ one environment, shipping only the parts that changed.
 - **Data safety is declared twice.** `migrations` says the policy, shown before the button; a
   deploy that makes rolling back unsafe prints `::yulius-rollback-barrier [<part>:] <reason>`, and
   a rollback to a release before it is refused with that reason. Rolling forward is not blocked.
+  A release deployed again keeps the barrier of its earlier deploy (its migration ran then).
 - **The drill is automatic and dev-only.** After a dev-stage deploy passes, Yulius rolls each
   part that has an earlier release (shipped by that deploy or not) back to it, verifies, rolls
   forward to the release it ran with the same `rollback` command and verifies (behind a barrier:
