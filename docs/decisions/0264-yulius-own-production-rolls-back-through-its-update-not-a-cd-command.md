@@ -19,7 +19,8 @@ an environment and there is nothing Yulius CD deployed that a command could rede
 What can undo a Yulius release today:
 
 - The update helper backs up the binary and the database before an install and restores both when
-  the new build fails its check (ADR-0013): an automatic rollback of a broken install.
+  the new build fails to start (its health check) (ADR-0013): an automatic rollback of a broken
+  install.
 - The helper refuses to install a commit older than the installed one ("updates never go back"),
   and the store refuses a database whose schema is newer than the build (`StoreError` "newer than
   supported"): an older build cannot open the database a newer one migrated.
@@ -29,14 +30,18 @@ What can undo a Yulius release today:
 ## Decision
 
 - **Yulius's own CD gets no `rollback` command.** Its production rolls back in two ways, both
-  outside CD: automatically, by the update helper when the new build fails its check; on purpose,
-  by a revert on `dev` promoted to `main` and installed with Update now. `[cd.prod]`'s `about` says
-  so, and the product and architecture documents describe it.
+  outside CD: automatically, by the update helper when the new build fails to start (its health
+  check); on purpose, by a revert on `dev` promoted to `main` and installed with Update now.
+  `[cd.prod]`'s `about` says so, and the product and architecture documents describe it.
 - **An environment that runs no deploy command needs no rollback.** The CD page shows its rollback
   as "Not needed" (not a warning) with why: a promotion-only production says that promoting is the
-  release and how to undo one; an empty environment says rollback comes with its deploy command.
-  `cd_status` says the same. A table that defines `rollback` anyway is shown as configured, as
-  before. The production gate is unchanged (RBK-031/032).
+  release and how to undo one; an empty environment says rollback comes with its deploy command. The
+  server marks it once per CD overview (`not_needed` of the environment's rollback), so `cd_status`
+  and the page say the same. Two exceptions keep "not configured": a dev-stage environment a
+  deploying production drills its rollback on (that production waits for the drill), and a table
+  that could not be read. A `cd_rollback` of such an environment is refused with "nothing is
+  deployed … that a rollback could redeploy". A table that defines `rollback` anyway is shown as
+  configured, as before. The production gate is unchanged (RBK-031/032).
 
 ## Alternatives
 

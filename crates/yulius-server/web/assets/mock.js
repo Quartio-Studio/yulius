@@ -2080,7 +2080,24 @@ function cdRollback(command, releases, extra = {}) {
   };
 }
 
-const NO_ROLLBACK = { command: null, migrations: null, parts: [], drill_environment: 'dev', drill: null, blocked: null };
+const NO_ROLLBACK = { command: null, migrations: null, parts: [], drill_environment: 'dev', drill: null, blocked: null, not_needed: null };
+
+/**
+ * Why each environment needs no rollback, as the server marks it (SPEC-418): no rollback and no deploy
+ * command, a table that was read, and no deploying production drilling on it.
+ */
+function cdNotNeeded(envs) {
+  const integration = (envs.find((e) => e.stage === 'dev') || {}).branch || 'dev';
+  const drilled = envs.filter((e) => e.stage === 'prod' && e.deploy).map((e) => (e.rollback || {}).drill_environment || 'dev');
+  return envs.map((env) => {
+    const rb = env.rollback || {};
+    const needed = rb.command || env.deploy || env.problem || (env.stage === 'dev' && drilled.includes(env.name));
+    const why = needed ? null : env.stage === 'prod' && env.promote
+      ? `promoting is the release: nothing deployed here can be redeployed; undo a release by reverting it on ${integration} and promoting again`
+      : 'it runs no deploy command; add rollback and migrations with one';
+    return { ...env, rollback: { ...rb, not_needed: why } };
+  });
+}
 
 function seedCd() {
   const drill = cdRun('cd_s3', 'dev', 'quartio', '3c5a7e9b1d2f4a6c', 'passed', 70, 'yulius', { kind: 'drill', steps: [{ part: '', release: 'v41' }, { part: '', release: 'v42' }], note: 'rollback drill after deploy cd_s0 by task #12', output: '[yulius] rollback: v41\nswitching to v41\n[yulius] verify: scripts/cd/verify.sh dev\nGET /health 200\n[yulius] rollback: v42\nswitching to v42\n[yulius] verify: scripts/cd/verify.sh dev\nGET /health 200\n[yulius] done\n' });
@@ -2141,7 +2158,7 @@ function cdOverview(db, sid) {
   const runs = cd.runs.map((r) => progressCd(r, db.cdRunMs));
   return {
     slug: sandbox.slug,
-    environments: cd.environments.map((env) => {
+    environments: cdNotNeeded(cd.environments).map((env) => {
       const mine = runs.filter((r) => r.environment === env.name);
       const deployed = mine.find((r) => r.state === 'passed');
       return { ...clone(env), deployed: deployed ? deployed.commit : null, last_run: mine.length ? cdSummary(mine[0]) : null };

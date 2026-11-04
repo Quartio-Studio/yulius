@@ -68,7 +68,7 @@ command = "python3 scripts/vidoc_scan.py --ci"
 about = "No dev machine yet: once a person adds its credentials to the vault, an agent writes scripts/cd/ and fills this in"
 
 [cd.prod]
-about = "A push to main is the release: each instance installs it when a superadmin chooses Update now (Settings, Instance). Rollback (ADR-0264): an update whose new build fails its check restores the previous binary and database by itself; otherwise revert on dev and promote again"
+about = "A push to main is the release: each instance installs it when a superadmin chooses Update now (Settings, Instance). Rollback (ADR-0264): an update whose new build fails to start (its health check) restores the previous binary and database by itself; otherwise revert on dev and promote again"
 promote = true
 
 # Build caches beyond the recognised ones (SPEC-008): pruned for tasks that do not work.

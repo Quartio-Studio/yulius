@@ -915,29 +915,41 @@ test('the CD page rolls back to an earlier release in one click', async ({ app, 
 
 // SPEC-415 RBK-040, SPEC-418 RCF-002/003: an environment that deploys nothing needs no rollback
 // and says why (Yulius's own CD: an empty dev, a production that only promotes); one that deploys
-// without rollback says it is not configured and what to add.
+// without rollback, or that a deploying production drills on, says it is not configured.
 test('an environment that deploys nothing needs no rollback; one that deploys says what to add', async ({ app, browser, screen }) => {
+  type Env = { state: string; promote: boolean; about: string | null; deploy: string | null };
+  const edit = async (dev: Partial<Env>, prod: Partial<Env>) => {
+    await browser.evaluate(([d, p]) => {
+      const w = window as unknown as { __yuliusMock: { cd: Record<string, { environments: Env[] }> } };
+      Object.assign(w.__yuliusMock.cd.sb_product.environments[0], d);
+      Object.assign(w.__yuliusMock.cd.sb_product.environments[1], p);
+    }, [dev, prod] as const);
+    // Leaving and coming back reads the environments again.
+    await screen.getByRole('radio', 'CI (tests)').click();
+    await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();
+    await screen.getByRole('radio', 'CD (deployment)').click();
+  };
   await app.open(mock('/s/product/ci?section=cd'));
   const dev = screen.getByRole('region', 'Dev rollback');
   const prod = screen.getByRole('region', 'Production rollback');
+  // The product's dev is empty ("no dev machine yet").
   await expect(dev.getByText('Not needed')).toBeVisible();
-  await expect(dev.getByText('Nothing deploys here yet: add rollback and migrations to [cd.dev] with its deploy command.')).toBeVisible();
+  await expect(dev.getByText('It runs no deploy command; add rollback and migrations with one.')).toBeVisible();
   await expect(dev.getByText('Rollback not configured')).toBeHidden();
-  await browser.evaluate(() => {
-    type Env = { state: string; promote: boolean; about: string | null; deploy: string | null };
-    const w = window as unknown as { __yuliusMock: { cd: Record<string, { environments: Env[] }> } };
-    Object.assign(w.__yuliusMock.cd.sb_product.environments[1], { state: 'ready', promote: true, about: 'a push to main is the release' });
-    Object.assign(w.__yuliusMock.cd.sb_product.environments[0], { state: 'ready', deploy: 'scripts/cd/deploy.sh dev' });
-  });
-  // Leaving and coming back reads the environments again.
-  await screen.getByRole('radio', 'CI (tests)').click();
-  await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();
-  await screen.getByRole('radio', 'CD (deployment)').click();
+
+  await edit({ state: 'ready', deploy: 'scripts/cd/deploy.sh dev' }, { state: 'ready', promote: true, about: 'a push to main is the release' });
   await expect(prod.getByText('Not needed')).toBeVisible();
-  await expect(prod.getByText('Promoting is the release: nothing deployed here can be redeployed. Undo a release by reverting it and promoting again.')).toBeVisible();
+  await expect(prod.getByText('Promoting is the release: nothing deployed here can be redeployed; undo a release by reverting it on quartio and promoting again.')).toBeVisible();
   await expect(prod.getByText('Rollback not configured')).toBeHidden();
   await expect(prod.getByText(/^Add rollback/)).toBeHidden();
   await expect(dev.getByText('Rollback not configured')).toBeVisible();
   await expect(dev.getByText(/^Add rollback \(a command that redeploys the kept release/)).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
+
+  // Review M1: production deploys and drills its rollback on the empty dev, which needs one.
+  await edit({ state: 'empty', deploy: null }, { promote: false, deploy: 'scripts/cd/deploy.sh prod' });
+  await expect(dev.getByText('Rollback not configured')).toBeVisible();
+  await expect(dev.getByText('Production deploys wait for a rollback drill here: add deploy, rollback and migrations to [cd.dev].')).toBeVisible();
+  await expect(dev.getByText('Not needed')).toBeHidden();
+  await expect(prod.getByText('Rollback not configured')).toBeVisible();
 });
