@@ -7,6 +7,7 @@ task #182, #597. Amends [0151](0151-a-sandbox-runs-its-own-docker-engine-under-a
 Amended by [0160](0160-a-sandbox-s-engine-comes-from-its-own-system-not-the-host-s.md): whether a front serves an engine follows the sandbox's own system, not the
 host's `dockerd`. Amended by [0162](0162-one-host-setup-command-brings-and-keeps-docker-in-sandboxes.md):
 Settings → Instance shows whether sandboxes get Docker and runs the smoke test.
+Refined by [0217](0217-the-docker-front-binds-its-socket-under-a-thread-private-umask.md).
 
 ## Context
 

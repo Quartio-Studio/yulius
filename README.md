@@ -267,8 +267,10 @@ Yulius uses its defaults.
 
 [Vidoc](https://vidocsecurity.com) reviews code for security vulnerabilities with its `vidoc-1`
 model. With a key, agents scan their changes before delivery and each project's CI scans every
-pull request; serious findings block the merge, the rest become GitHub issues. **Optional:**
-without a key the scan is off.
+pull request; serious findings block the merge, the rest become GitHub issues. A project's admins
+can switch its scans off on its CI/CD page, and a superadmin every project's in **Settings →
+Instance**, keeping the key ([operations](docs/operations.md)). **Optional:** without a key the scan
+reports "not run".
 
 - **The Vidoc API key:** get it at [model.vidocsecurity.com](https://model.vidocsecurity.com/#key),
   paste it on the setup screen "Security scans with Vidoc" or in **Settings → Instance**.

@@ -6,6 +6,10 @@ Accepted. Specified in
 [SPEC-353](../../.ai/specs/SPEC-353-leftover-agent-shells-pile-up-in-a-sandb.md); task #335.
 Amends SPEC-130 DMD-001: the namespace init's orphans are still no background shells,
 but they are no longer ignored. Leaves the Superagent's fingerprint file to SPEC-352 (task #334).
+Refined by [ADR-0243](0243-the-busiest-run-gives-way-at-a-full-proxy-share.md) (the busiest run
+gives way at a full share); see also
+[ADR-0246](0246-a-full-proxy-share-or-relay-shows-on-the-panel-once-per-trouble.md) and
+[ADR-0250](0250-a-plain-http-request-waits-a-bounded-time-for-its-answer.md).
 
 ## Context
 

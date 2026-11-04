@@ -7,7 +7,9 @@ task #264. Amends [0200](0200-operator-state-is-a-sealed-agent-state-with-one-wr
 single-writer rule) and [0203](0203-project-variables-are-plain-per-project-values-in-task-runs.md)
 (variables reach task runs only); extends
 [0109](0109-cd-runs-verified-commits-out-of-the-agents-reach.md) and
-[0195](0195-cd-environments-are-named-and-take-their-rules-from-a-stage.md).
+[0195](0195-cd-environments-are-named-and-take-their-rules-from-a-stage.md). Its "no Docker engine
+in production" limit is lifted by
+[0208](0208-production-cd-runs-use-a-production-holder-with-its-own-docker-engine.md).
 
 ## Context
 

@@ -5,6 +5,8 @@
 Accepted. Specified in [SPEC-162](../../.ai/specs/SPEC-162-all-security-checks-kept-getting-yulius.md);
 task #153, issue #530. Amends [ADR-0116](0116-ci-jobs-use-named-agent-secrets-through-the-proxy.md):
 the `security` job is granted `VIDOC_API_KEY`, and its exit 2 ends it skipped instead of passed.
+Amended by [ADR-0202](0202-vidoc-repeats-match-by-place-and-an-incomplete-scan-blocks-as-infrastructure.md):
+a scan that Vidoc's outage left incomplete ends error and blocks the merge instead of skipped.
 
 ## Context
 

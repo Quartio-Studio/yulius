@@ -98,11 +98,11 @@ access only). Instance tools: `projects_list`, `repositories_list`, `project_imp
 Every other tool takes `project` (`owner/name`, slug or id) and needs, on that project, the
 person's access for its action: view (`project_get`, `tasks_list`, `task_get`, `task_delivery`,
 `sessions_search`, `session_read`, `ci_runs`, `ci_run`, `cd_status`, `project_files`,
-`project_file_read`, `automations_list`, `workflows_list`, `secrets_list`), work
+`project_file_read`, `automations_list`, `workflows_list`, `secrets_list`, `variables_list`), work
 (`onboarding_start`, `task_create`, `task_message`, `task_stop`, `task_restart`, `task_pause`,
-`task_unpause`, `task_start_now`, `task_archive`, `task_delete`, `ci_rerun`, `ci_cancel`,
+`task_unpause`, `task_start_now`, `task_update`, `task_archive`, `task_delete`, `attachments_trash`, `ci_rerun`, `ci_cancel`,
 `cd_deploy` (dev-stage environments only), `project_change`, `change_merge`), configure (`automation_*`,
-`secret_update`, `secret_hosts_answer`, `secret_delete` (the project's own agent secret, SPEC-274)) or administer (`onboarding_skip`). A project the person
+`secret_update`, `secret_hosts_answer`, `secret_delete` (the project's own agent secret, SPEC-274), `variables_set`, `variable_delete`) or administer (`onboarding_skip`). A project the person
 cannot see answers like one that does not exist. `tools/call` with `_meta: {"yulius/structured":
 true}` adds the tool's record as `structuredContent`. `initialize` answers
 `_meta: {"yulius/person": login, "yulius/scope": scope}`. See [remote-control.md](remote-control.md).
@@ -117,7 +117,7 @@ true}` adds the tool's record as `structuredContent`. `initialize` answers
 | POST | `/api/sandboxes` | admin on repo (superadmin: a repository the App can access) / owner; a playground: anyone signed in | `{"mode":"import","repo":"owner/name"}`, `{"mode":"create","name","template","description"}` or `{"mode":"playground","name","template"}` → 201 `Sandbox` (an import from the browser starts onboarding at once; with a bearer token it stays `pending`, SPEC-051; a playground needs no GitHub, SPEC-099) |
 | POST | `/api/playgrounds?name=<name>` | anyone signed in | raw body: a gzip tar of the folder (`files/…` its working tree, `git/…` its `.git`, of which only `HEAD`, `packed-refs`, `shallow`, `objects/` and `refs/` are taken) → 201 `Sandbox` (`playground: true`); 409 for a person who keeps 10 playgrounds (the superadmin is not counted); at most 1 GiB (refused from `Content-Length` before it is read) and the import bounds once unpacked (2 GiB, 200 000 entries); 422 for an empty, unreadable or over-limit archive, nothing kept (SPEC-099) |
 | GET | `/api/sandboxes/{sid}` | read | → `Sandbox` |
-| PATCH | `/api/sandboxes/{sid}` | admin | `{"profile": Profile}` → `Sandbox` |
+| PATCH | `/api/sandboxes/{sid}` | admin | `{"profile"?: Profile, "vidoc"?: bool}` → `Sandbox` (`vidoc`: below) |
 | GET | `/api/sandboxes/{sid}/vidoc` | read | `SandboxVidocView`: the project's, instance's and repository's Vidoc switches, `can_change`, the last change (SPEC-359) |
 | GET | `/api/sandboxes/{sid}/onboarding/plan` | read | → `{"title", "steps": [..], "task_number"}`: what onboarding does, its task's title and steps, or while that task does not exist yet (a `pending` sandbox, SPEC-097) the ones it would be created with (`task_number: null`); reads only |
 | POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`); an operator's recovery path for an onboarding that cannot finish: the web UI offers no skip (ADR-0076) |
@@ -127,7 +127,7 @@ true}` adds the tool's record as `structuredContent`. `initialize` answers
 | POST | `/api/sandboxes/{sid}/guest-invites` | admin of a playground, a browser session or an `operate` token, `{"days": 1|7|30}` (7 by default) → 201 `{"invite", "url": "<public_url>/join?code=<code>"}`, the URL shown only now; 409 for a sandbox that is not a playground or past 5 live links, 422 for other days, 403 for a `cli` token; audited `playground.invite.create` |
 | DELETE | `/api/sandboxes/{sid}/guest-invites/{id}` | admin → 204: revokes the live link and every session of its guests (their next request is 401, open sockets close at their next re-check) and stops their live and waiting tasks and terminals (the background sweep stops them for an expired link, and revokes and stops them for the live links of a playground moved to GitHub or removed); 404 for no such live link; audited `playground.invite.revoke` |
 | POST | `/api/sandboxes/{sid}/move-to-github` | admin of a live playground, who could import the repository (`admin`/`maintain` on GitHub; the superadmin: a repository the App can access) | `{"name"}` → `Sandbox` (now a GitHub sandbox, same id and slug). Pushes every branch and tag of the playground to the empty repository `<instance owner>/<name>` in one atomic push, points the clone's `origin` at it, records the repository and deletes the playground's bare `origin`; tasks, sessions and steps stay, access then mirrors GitHub. 409 without the GitHub App, for a GitHub sandbox, while a task is live or queued or a CI run of it is active, for a repository that is a sandbox or holds anything but this playground's refs (at or behind its commits); 403/422 as an import; a failure leaves the playground as it was (SPEC-176, ADR-0142) |
-| POST | `/api/sandboxes/{sid}/purge` | admin of a live playground; the superadmin for a removed one | → `{"state": "purged"\|"waiting", "waiting_for": ["1 agent run", …]}`; removes the playground as `DELETE` does (when still live) and asks for its code to be deleted for good: its `origin` and sandbox directory go once no agent run, shell, browser, CI run or other process of its sandbox is left (at once, else with the disk upkeep); task records, the export and the audit stay, and the quota no longer counts it; 409 for a GitHub sandbox (SPEC-171, ADR-0139) |
+| POST | `/api/sandboxes/{sid}/purge` | admin of a live sandbox; the superadmin for a removed one | → `{"state": "purged"\|"waiting", "waiting_for": ["1 agent run", …]}`; removes the sandbox as `DELETE` does (when still live) and asks for every file of it on this server to be deleted for good (clone, home and sessions, worktrees, CI directories, runs, transcripts, the removal's export, a playground's `origin`) once no agent run, shell, browser, CI run, deploy or other process of it is left: tried at once, every 15 s for 10 minutes, then with the disk upkeep; the sandbox row, task records and the audit stay, a GitHub repository is never touched, and a playground's quota no longer counts it; audited `sandbox.purge_requested` (SPEC-171, ADR-0139; SPEC-276, ADR-0205) |
 
 A **playground** (SPEC-099) is a sandbox without GitHub: `Sandbox.playground` is true, its `repo`
 has an empty `owner` and `url`, its onboarding is `not_needed`, and only its maker and the
@@ -624,21 +624,22 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   caller's token (the superadmin without a GitHub identity: the App's), so both are theirs on
   GitHub (title: task title unless given; body: the spec's Goal, spec path, Plan checklist and
   steps unless given, plus a link back to the task). The pull request Yulius opens by itself for
-  a ready task, and later pushes to it, use the task creator's token (GIT-003).
+  a ready task, and later pushes to it, use the task owner's token (GIT-003, SPEC-070).
 - **Merge** uses the profile's merge method and passes the head that was checked as the
   expected head; a PR head that differs from the task worktree's head is refused as stale.
   With `auto_promote` (Studio), the integration branch is promoted right after a merge done
   through Yulius once no integration environment is pending; the outcome is added to `notes`
   and audited. No other path merges, promotes or deploys on its own. Agents deliver their own
   work through the MCP tools `delivery_merge` (passed checks and `reviewed_head`, the commit an
-  independent review approved, equal to the branch head) and `delivery_deploy` (integration
+  independent review approved: the branch head, or an earlier head followed only by clean merges of
+  the integration branch, SPEC-083 REV-001) and `delivery_deploy` (integration
   environments with a command and `verify = "command"` only), which take these same paths with
-  the task creator's authority and are audited as `task:<n>` too (DLV-008). Agents never promote:
+  the task owner's authority and are audited as `task:<n>` too (DLV-008). Agents never promote:
   production is always a person's (ADR-0110; there is no `delivery_promote` any more), and they
   deploy with CD (below). `issue_create`
   opens a GitHub issue only when it meets the Definition of Ready (one `type:`, one `priority:`,
   at least one `area:` label and an `## Acceptance criteria` checklist). On GitHub these tools
-  act with the task creator's own token; a creator without a usable one (no linked account, an
+  act with the task owner's own token; an owner without a usable one (no linked account, an
   expired sign-in) gets the App's, and the task's terminal says so once (GIT-003).
 - **Promote** needs an administrator and `{"confirm": "<slug>"}` (a release is a production deploy,
   ADR-0110). It refuses while a merged task still has an integration environment pending, when
@@ -688,6 +689,8 @@ matrix = "1/2 2/2"          # optional: one job per value, as $YULIUS_CI_MATRIX 
 cpus = 4                    # optional (1-1024): the CPUs it uses and waits for (its "slots");
 memory_gb = 8               #   default: an equal share of the sandbox among the run's jobs;
                             #   memory_gb (1-4096) follows the CPUs
+secrets = "VIDOC_API_KEY"    # optional: at most 8 agent secrets, as placeholders through the egress
+                            #   proxy; only the integration branch's entry grants them (ADR-0116)
 # or, for one job: [commands] gate = "…"   (not both)
 
 [resources.env]             # optional: the budget in this repository's tools' terms (SPEC-082)
@@ -698,7 +701,10 @@ CARGO_BUILD_JOBS = "{cpus}" # placeholders {cpus}, {memory_mb}, {memory_gb}; at 
 ```
 
 Jobs name their stages with `::yulius-stage <name>` lines ("Stages" below). Jobs get `CI=true`, `HOME` (persistent, shared by the sandbox's lanes), `YULIUS_CI_CACHE` (persistent, the job checkout's own: never shared with a job running at the same time), `YULIUS_CI_RUN`,
-`YULIUS_CI_JOB`, `YULIUS_CI_SHA`, `YULIUS_CI_REF`, `YULIUS_CI_MATRIX` and no secrets. A job
+`YULIUS_CI_JOB`, `YULIUS_CI_SHA`, `YULIUS_CI_REF`, `YULIUS_CI_MATRIX`, `YULIUS_CI=1`,
+`YULIUS_CI_SKIP_CODE` (78), `YULIUS_CI_INCOMPLETE_CODE` (75), `YULIUS_SANDBOX`,
+`YULIUS_INTEGRATION_BRANCH`, and no secret values (granted `secrets` arrive as placeholders through
+the egress proxy, audited `ci:<run>`). A job
 starts once its CPUs and memory are free: the CI jobs of all lanes never ask for more than the
 sandbox has, and each is told its budget in `YULIUS_CPUS`, `YULIUS_MEMORY_MB` and the variables of
 `[resources.env]` in its checkout's `yulius.toml` (its output starts with
@@ -746,7 +752,8 @@ Cleanup request = {"items": [{"kind", "name"}] (empty: every safe item), "force"
   every new integration and production head is tested once per commit. The integration branch's
   configuration applies; while it has none, a pull request that adds CI is tested with its own
   (`source: pull_request`). A newer head cancels the active run of the same reference ("superseded
-  by …"). One run per sandbox runs at a time; its jobs share the instance's job slots.
+  by …"). Up to `YULIUS_CI_LANES` runs of one sandbox (default 2) execute at once, each in its own job
+  checkouts; their jobs share the instance's job slots (`YULIUS_CI_MAX_JOBS`).
 - **Commit status** `yulius/ci` on the commit: `pending` (queued, running), `success`, `failure`
   (names the failed job and exit code), `error` (errors and cancellations), linking to
   `/s/<slug>/ci?run=<id>`. It needs the App's "Commit statuses: Read and write"; without it `status`
@@ -781,6 +788,9 @@ about = "the team's dev VM"         # one line for people (at most 300 character
 deploy = "scripts/cd/deploy.sh dev" # one line, /bin/sh -c in the environment's own checkout
 verify = "scripts/cd/verify.sh dev" # after a successful deploy
 secrets = "DEV_SSH_KEY DEV_HOST"    # at most 16 agent secrets, as environment variables
+states = ["OPERATOR"]               # at most 8 agent states, restored before, saved after (ADR-0207)
+variables = ["REGION"]              # at most 32 project variables production gets (dev gets all);
+                                    #   a named one the project lacks refuses the deploy
 
 [cd.prod]                           # the same keys, and:
 promote = true                      # a person's deploy first promotes the integration branch
@@ -794,7 +804,9 @@ A run deploys the commit GitHub reports for the branch, taken into a mirror only
 directory and runs `deploy` then `verify` through the process host (dev inside the sandbox's
 containment, production in the sandbox's production holder, with its own network and Docker
 engine, on the host's read-only system), for at most the CI job
-timeout, with `YULIUS_CD=1`, `YULIUS_CD_ENV` (its name), `YULIUS_CD_STAGE`, `YULIUS_CD_RUN`, `YULIUS_CD_SHA`,
+timeout (plus up to as long again waiting for a held agent state), with the project's variables
+(production: only those its table names), `YULIUS_SANDBOX`, `YULIUS_STATE_<NAME>` for each named
+agent state ([operations](operations.md)), `YULIUS_CD=1`, `YULIUS_CD_ENV` (its name), `YULIUS_CD_STAGE`, `YULIUS_CD_RUN`, `YULIUS_CD_SHA`,
 `YULIUS_CD_BRANCH`, `YULIUS_CD_CACHE` (persistent, per environment and stage, so a name relabelled to dev never shares production's; out of the agents' reach), a
 `HOME` made for the run and removed after it, and the real value of each named secret allowed for
 that environment: dev, allowed outside the proxy (`env_files = allowed`, ADR-0105); production,
@@ -839,7 +851,9 @@ environment's own `[cd.<name>]` secrets, which the refusal names (SPEC-237, SPEC
 
 Refusals: `forbidden` for production below administrator access, `invalid` for what cannot name an
 environment or a production deploy without the slug typed exactly, `conflict` for an empty or
-undefined environment, a missing or not-allowed secret ("nothing ran: …"), a running run, or a
+undefined environment, a missing or not-allowed secret, or a named variable or agent state the project lacks ("nothing
+ran: …"), a deploy while Yulius is being updated ("nothing ran: Yulius is being updated; …"), a
+running run, or a
 promotion that cannot complete now (its pull request's checks). Every run is audited before it
 starts (`cd.deploy`), its end (`cd.finished`), cancellations (`cd.cancel`) and refused production
 deploys (`cd.refused`). Agents use the MCP tools `cd_status` and `cd_deploy` (dev-stage environments only;
@@ -987,14 +1001,15 @@ the same name (case-insensitive), which counts as the template's: a template is 
 run by itself.
 
 Task agents and Cockpits manage the same things through the Yulius MCP tools (SPEC-002 §7.4,
-SPEC-037, SPEC-066), acting for the task's creator or the Cockpit's owner, who must still have
-write access; every changing call is audited with the caller (`task:<n>` or `cockpit:<login>`):
+SPEC-037, SPEC-066), acting for the task's owner or the Cockpit's owner, who must still have
+write access; every changing call is audited with the caller (`task:<n>`, `cockpit:<login>`, or
+`remote:<login>` for the remote MCP):
 
 | Tool | Same as | Notes |
 | --- | --- | --- |
 | `task_create` | New task | origin `agent`; at most 20 per project and rolling hour |
 | `task_message` (the Cockpit and the remote MCP, never task agents; SPEC-230, SPEC-247) | `POST /api/tasks/{tid}/queued-messages`, or typing into the task's terminal | `{task_id \| number, text}` → `{"task","delivered":"queued"\|"sent","note"}`; queued into a task that never started, typed into a `running` one as one bracketed paste `Message from <login> (through their Superagent):` from the Cockpit, `Message from <login> (through their own agent):` from the remote MCP (SPEC-322), + Enter; refused before Claude Code's session started there, while a person typed there in the last minute, while its folder-trust dialog shows, while the first message or another message is typed, and in every other state; 403 for anyone but the owner on a task holding its owner's personal secrets (SPEC-245) or personal MCP servers, configured or in its live run (SPEC-332); a sent message ends the task's `needs_you`; control characters but LF and tab removed, at most 64 KiB; audited `task.messaged` without the text |
-| `sandboxes_list`, `sandbox_task_create` (the Cockpit only; SPEC-335, ADR-0227) | `GET`/`POST /api/sandboxes/{sid}/superagent/requests` | `sandboxes_list` → `{"sandboxes":[{"sandbox","repository","onboarding"}]}`: the other live sandboxes the person can work in (pre-allowed). `sandbox_task_create {sandbox, prompt, …task_create's arguments}` asks the person and waits at most 4 minutes (`CROSS_REQUEST_WAIT`): `{"outcome":"approved","sandbox","task"}`, `{"outcome":"declined"}` or `{"outcome":"unanswered"}`; refused at once for its own sandbox, one the person cannot work in (not found), unknown arguments, an empty prompt, a text holding a character a person cannot see (tag, bidirectional, zero-width, filler, variation selector, private use), and beyond 3 waiting per person and sandbox; a dropped call, or `notifications/cancelled` with the call's id, takes its request with it (`{"outcome":"cancelled"}`) |
+| `sandboxes_list`, `sandbox_task_create` (the Cockpit only; SPEC-335, ADR-0227) | `GET /api/sandboxes/{sid}/superagent/requests`, `POST /api/sandboxes/{sid}/superagent/requests/{id}` (the person's answer) | `sandboxes_list` → `{"sandboxes":[{"sandbox","repository","onboarding"}]}`: the other live sandboxes the person can work in (pre-allowed). `sandbox_task_create {sandbox, prompt, …task_create's arguments}` asks the person and waits at most 4 minutes (`CROSS_REQUEST_WAIT`): `{"outcome":"approved","sandbox","task"}`, `{"outcome":"declined"}` or `{"outcome":"unanswered"}`; refused at once for its own sandbox, one the person cannot work in (not found), unknown arguments, an empty prompt, a text holding a character a person cannot see (tag, bidirectional, zero-width, filler, variation selector, private use), and beyond 3 waiting per person and sandbox; a dropped call, or `notifications/cancelled` with the call's id, takes its request with it (`{"outcome":"cancelled"}`) |
 | `task_stop`, `task_archive` (`archived`: false restores), `task_delete` | `POST /api/tasks/{tid}/stop`, `…/archive` (`…/restore`), `DELETE /api/tasks/{tid}` | by `task_id` or `number`; never the caller's own task; audited `task.stopped`, `task.archived`/`task.unarchived`, `task.deleted`; `task_delete` → `{"deleted":{"task_id","number","attachments":{"kept_for":[numbers],"kept_for_automations":[names],"trash":{"task_id","number","deleted_at","restorable_until","files"},"not_moved":true}}}` (each only when it applies; `not_moved`: the folder stayed where it is because the move to the trash failed or settling stopped before it, an `attachments` or `tasks` link never being looked behind, a `tasks` folder that cannot be opened or the tasks unreadable, SPEC-397): its attachment folder stays while a remaining task's request or an automation's prompt names `attachments/tasks/<id>/` (`kept_for`, `kept_for_automations`), otherwise it waits 7 days in `attachments/trash/<secs>-<number>-<id>/` (SPEC-396) |
 | `task_update` (SPEC-396; also the remote MCP) | `PUT /api/tasks/{tid}/start` (SPEC-126) | by `task_id` or `number`; `after_task`, `start_rule`, `supertask`, `prepared`, `start_at` as `task_create` takes them (none: start now); only a `chained` or `prepared` task; → `{"task"}`; audited `task.start_changed` |
 | `attachments_trash` (SPEC-396) | none | → `{"trash":[{"task_id","number","deleted_at","restorable_until","files"}],"note"}`, entries older than 7 days removed first; `{restore: id \| number, into?: number}` (write access) moves that entry's regular files into the `into` task's attachments (the caller's own task by default; the Superagent and the remote MCP name it) under free names → `"restored":{"into","paths","left_in_trash"?}`; the entry goes once empty (a folder or a file it could not move keeps it); at most 100 old entries removed a round; audited `attachment.restored` (also the remote MCP) |
@@ -1349,6 +1364,8 @@ resolves to nothing, the run gets the server without that variable or token.
 | GET | `/api/analytics/summary?sandbox&from&to` | read | → `AnalyticsSummary` |
 | GET | `/api/analytics/tasks?format=json|csv&sandbox&from&to` | read | → `[TaskRow]` or CSV |
 | GET | `/api/status` | signed in | → `Status` |
+| GET | `/api/disk` | signed in | → `{"level":"ok|low|critical","used"|null,"total"|null}`: how full the server's data disk is (low from 85 %, critical from 95 %), for the warning every page shows (SPEC-276) |
+| GET | `/api/connections` | signed in | → `{"troubles":[{"id","limit":"share|relay|proxy","sandbox_id"|null,"sandbox_name"|null,"since_ms","held","max","refused","holders":[…]}]}`, oldest first: the open connection troubles of the sandboxes the person can view and of the egress proxy itself (SPEC-361, ADR-0246) |
 | GET | `/api/update` | signed in | → `UpdateView` (below): the build and a running update's `phase` for everyone; the offered update, the last check, whether the helper is installed and the current or last run for the superadmin (OPS-006..OPS-009, SPEC-002 ADR-18) |
 | POST | `/api/admin/update/check` | superadmin | reads `main` now (a check younger than 30 s is reused, also one that ended while this one waited for it) → `UpdateView` |
 | POST | `/api/admin/update` | superadmin | `{"commit","confirm":true}` → 202 `UpdateView`: installs exactly that commit, which must be the offered head of `main`; 422 without `confirm` or for a malformed commit, 409 without an installed helper, while an update runs, or for any other commit |
@@ -1365,7 +1382,7 @@ resolves to nothing, the run gets the server without that variable or token.
 | PUT | `/api/admin/vidoc/enabled` | superadmin | `{"enabled": bool}` → `VidocKeyView` (`enabled`, `disabled_at`, `disabled_by`): `false` switches Vidoc off for every project of the instance, keeping the key (runs and CI jobs get `YULIUS_VIDOC=off`, no instance key, no built-in `security` job), `true` on again; at once, stored, audited `vidoc.disabled` / `vidoc.enabled` (SPEC-356) |
 | POST | `/api/admin/vidoc/adopt` | superadmin | saves the key of `YULIUS_VIDOC_API_KEY_FILE` in settings → `VidocKeyView`; 409 without a usable file |
 | POST | `/api/admin/vidoc/test` | superadmin | one `GET /v1/models` with the key in use → `{"ok","result":"ok|refused|unreachable|timeout|invalid|none","message","latency_ms|null"}` (`invalid`: no `vidoc-1` in the answer) |
-| GET | `/api/admin/leftovers` | superadmin | → `LeftoversView` `{"items":[{"id","kind","path","bytes|null","sandbox|null","task|null","reason","auto","deletable"}],"scanned_at|null","total_bytes","safe_bytes","disk_used|null","disk_total|null","data_dir","job|null","next_auto_at|null"}`: what is kept and what can go (SPEC-215, [operations](operations.md#leftovers-what-is-kept-what-is-cleaned-and-when)) |
+| GET | `/api/admin/leftovers` | superadmin | → `LeftoversView` `{"items":[{"id","kind","path","bytes|null","sandbox|null","task|null","reason","auto","deletable"}],"scanned_at|null","total_bytes","safe_bytes","disk_used|null","disk_total|null","data_dir","job|null","next_auto_at|null","last_auto|null","kept":[{"id","slug","removed_at|null","bytes|null","purge_requested"}]}` (`last_auto`: the last automatic round since the start; `kept`: removed sandboxes whose files stay, SPEC-276): what is kept and what can go (SPEC-215, [operations](operations.md#leftovers-what-is-kept-what-is-cleaned-and-when)) |
 | POST | `/api/admin/leftovers/scan` | superadmin | rescans in the background → `LeftoversView`; 409 while a scan or deletion runs |
 | POST | `/api/admin/leftovers/delete` | superadmin | `{"ids":[…]}` or `{"all_safe":true}` → `LeftoversView`, deleting in the background (`job`); 409 while a scan or deletion runs, 422 for unknown ids or nothing to delete |
 | GET | `/api/admin/sandbox-docker` | superadmin | → `SandboxDockerView` `{"ok","detail","isolated","base","host_dockerd","rebuild","own_engines","own_engine_fix","host_check","smoke"}`: whether sandboxes get Docker (SPEC-203) |
@@ -1536,6 +1553,7 @@ UpdateView = {"current":{"commit":"<40 hex>|null","short":"…|null"},
          "step":"fetching|verifying|compiling|built|pausing|stopping|backing_up|installing|starting|checking|rolling_back|resuming|…|null",
          "message|null","progress":{"done","total"}|null,
          "tasks":{"paused","total","waiting":[{"id","number","title","sandbox"}],"deadline|null"}|null,
+         "deploys":[{"sandbox","environment","kind":"cd|environment","run"}],  // ≤ 20 deploys it waits for (SPEC-342)
          "error|null","log_tail":["…"],"docker":{"ok","lines":[…],"error|null","commit|null","checked_at"}|null,"requested_by","started_at","state_since","finished_at|null",
          "can_cancel","can_proceed"}|null}
 JevKeyView = {"configured","source":"settings|config|null","set_at|null","set_by|null",
@@ -1603,11 +1621,12 @@ after an unlock.
 | POST | `/api/agent-secrets/{id}/env` | `{allow: bool, env_files, env_requested_by?}` → `AgentSecret`: whether agents (every task of each project it reaches: its own, or those a global secret is switched on for) may copy the value into git-ignored `.env` files with `secret_copy_to_env` (SPEC-129). `true` answers an agent's request (`env_files` `asked` → `allowed`); `false` dismisses it or revokes an allowance (→ `no`; copies already written stay). `env_files` and `env_requested_by` are what the person saw: 409 unless they still hold, and when there is nothing to answer; 422 for an unknown `env_files`; 409 when allowing a personal or a production secret. People who manage it (403 for readers, 404 without access). Audited (`vault.agent.env_allow` / `vault.agent.env_dismiss` / `vault.agent.env_revoke`) |
 | POST | `/api/agent-secrets/{id}/reveal` | `{purpose?, fields?: ["value","notes"]}` → `{value, notes}` (`notes` = the description, led by a stored user name and, for older secrets, `Two-factor seed: …`) for people who manage it, after an unlock (403 `reauth_required` otherwise; 403 for readers, 404 without access). Audited (`vault.agent.reveal` / `vault.agent.copy`) |
 | GET | `/api/sandboxes/{sid}/agent-states` | (read) → `[AgentState]`: `{name, description, version, bytes, files, updated_by, updated_at, restored_path?, restored_version?, restored_at?}`, never content (SPEC-271): the project's folders of operator state; `restored_path` (`~/…` of the sandbox home) is the copy written to, stale while `restored_version` < `version` |
-| PUT | `/api/sandboxes/{sid}/agent-states/{name}?description&replace` | raw `application/gzip` tar body, ≤ 64 MiB (larger `Content-Length` refused before reading) → `AgentState`: stores a packed folder as the agent state `name` (an agent secret name), sealed per version. Only files and folders with relative paths, ≤ 20 000 entries and 512 MiB unpacked (422 otherwise). Write access; the slot and the access are checked before the body is read, 429 while two states are moving. A state never restored is replaced (version + 1); once restored, 409 naming the sandbox's copy unless `replace=true`. Audited `vault.state.import` / `vault.state.replace` with name, files and bytes ([ADR-0200](decisions/0200-operator-state-is-a-sealed-agent-state-with-one-writer.md)) |
+| PUT | `/api/sandboxes/{sid}/agent-states/{name}?description&replace` | raw `application/gzip` tar body, ≤ 64 MiB (larger `Content-Length` refused before reading) → `AgentState`: stores a packed folder as the agent state `name` (an agent secret name), sealed per version. Only files and folders with relative paths, ≤ 20 000 entries and 512 MiB unpacked (422 otherwise). Write access; the slot and the access are checked before the body is read, 429 while two states are moving. A state never restored is replaced (version + 1); once restored, 409 naming the sandbox's copy unless `replace=true`; 409 while a CD run holds it (whatever `replace` says), and once a CD run saved it last, 409 unless `replace=true` ([ADR-0207](decisions/0207-cd-runs-restore-and-save-agent-states-under-one-hold.md)). Audited `vault.state.import` / `vault.state.replace` with name, files and bytes ([ADR-0200](decisions/0200-operator-state-is-a-sealed-agent-state-with-one-writer.md)) |
 | GET | `/api/sandboxes/{sid}/agent-states/{name}/archive` | → the newest packed state (`application/gzip`, `Cache-Control: no-store`), for people with write access, never through a read-only token (403 for both; 429 while two states are moving). Audited `vault.state.export` |
 
 **Project variables** — a project's non-secret values (regions, environment names, ids, base URLs,
-contact addresses), in plain; every task run of the project gets them in its environment
+contact addresses), in plain; every task run of the project gets them in its environment, and so
+do its CD runs (dev: all; production: those its `[cd.<name>]` `variables` names; ADR-0207)
 ([ADR-0203](decisions/0203-project-variables-are-plain-per-project-values-in-task-runs.md)).
 
 | Method | Path | Body → Response |
@@ -1648,6 +1667,10 @@ person only; its panel reads `GET /api/sandboxes/{sid}/superagent/requests` agai
 `{"type":"superagent.link","sandbox_id"}` (the person's Superagent in that sandbox lost its link
 to Yulius or got it back; to that person only; its panel reads `GET
 /api/sandboxes/{sid}/cockpit/link` again; SPEC-355),
+`{"type":"disk.updated","level","used","total"}` (the data disk changed level; SPEC-276),
+`{"type":"connections.updated","sandbox_id"|null}` (a connection trouble began or ended; to the
+sandbox's viewers, or everyone for the proxy's own; pages read `GET /api/connections` again;
+SPEC-361),
 `{"type":"resync"}`,
 `{"type":"heartbeat"}` (every 20 s, `events_heartbeat_ms`: a page that hears nothing for 50 s, or
 for 1.5 beats when it is shown again or back online, takes the connection for dead and reconnects,
