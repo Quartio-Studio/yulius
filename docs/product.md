@@ -269,9 +269,13 @@ watching, steering and unblocking.
   previous one, "Roll back to this" on the others (agents roll dev back with
   `cd_rollback`), refuses rolling back past a release whose migration cannot be undone and says
   why, drills the rollback on dev after every deploy, and refuses a production deploy until that
-  drill passed for the commit it deploys. Production (with its promotion) is always a person's: an
-  administrator types the project's slug, and on GitHub a ruleset only repository admins bypass
-  keeps the production branch out of reach of the agents' own token, which is never a person's
+  drill passed for the commit it deploys. An environment that runs no deploy command (an empty one,
+  or a production that only promotes, as Yulius's own) needs no rollback, and the page says so and
+  why; Yulius itself rolls back through its update, which restores the previous binary and database
+  when the new build fails to start (its health check), or by a revert promoted again (SPEC-418).
+  Production (with its promotion) is always a person's: an administrator types the project's slug,
+  and on GitHub a ruleset only repository admins bypass keeps the production branch out of reach of
+  the agents' own token, which is never a person's
   (onboarding says when that ruleset is missing, and its agent adds it with `production_protect`
   as the person who started onboarding when they are a repository admin). A task that needs to read
   another repository of the same GitHub owner gets it with `reference_repo`, fetched as the task's

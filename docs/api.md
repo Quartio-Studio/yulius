@@ -843,6 +843,7 @@ CdEnvironment = {"name": "dev|prod|<name>", "label": "dev|production|<name>", "s
                  "rollback": CdRollback}
 CdRollback = {"command": "<rollback>"|null (not configured), "migrations", "drill_environment",
               "drill": CdRun|null (its newest drill), "blocked": "<why a production deploy is refused>"|null,
+              "not_needed": "<why it needs no rollback: no deploy command, SPEC-418>"|null,
               "parts": [{"name": ""|"<part>", "current", "previous" (what "Roll back to previous" goes to),
                          "releases": [{"release", "commit", "deployed_at", "requested_by", "current",
                                        "blocked": "<barrier reason>"|null, "barrier"}] (newest 10)}]}

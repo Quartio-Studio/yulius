@@ -98,6 +98,10 @@ pub struct CdRollback {
     /// Production stage: why a deploy is refused for its rollback now; `None`: it is not.
     #[serde(default)]
     pub blocked: Option<String>,
+    /// Why the environment needs no rollback (it runs no deploy command, its table was read, and
+    /// no production that deploys drills on it; SPEC-418); `None`: it needs one, or has one.
+    #[serde(default)]
+    pub not_needed: Option<String>,
 }
 
 /// One part's kept releases.

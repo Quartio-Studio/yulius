@@ -616,6 +616,58 @@ async fn empty_and_undefined_environments_run_nothing() -> TestResult {
     Ok(())
 }
 
+/// SPEC-418 AC1: Yulius's own CD (an empty dev, a production that only promotes) deploys nothing a
+/// rollback could redeploy, so `cd_status` says rollback is not needed and why, never that it is
+/// missing.
+#[tokio::test]
+async fn environments_that_deploy_nothing_need_no_rollback() -> TestResult {
+    use yulius_domain::task::TaskStatus;
+    let f =
+        fixture("[cd.dev]\nabout = \"no dev machine yet\"\n\n[cd.prod]\npromote = true\n").await?;
+    support::seed_task(&f.h, "t1", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&f.h, "t1", TOKEN).await?;
+    let status = support::mcp_tool(&f.h, TOKEN, "cd_status", json!({})).await?;
+    let shown = support::tool_text(&status)["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        shown.contains("rollback: not needed (it runs no deploy command"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("rollback: not needed (promoting is the release"),
+        "{shown}"
+    );
+    assert!(
+        !shown.contains("not configured") && !shown.contains("need a proven rollback"),
+        "{shown}"
+    );
+    // The page reads the same reasons; production names the branch a revert goes to.
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    assert_eq!(
+        overview["environments"][0]["rollback"]["not_needed"],
+        "it runs no deploy command; add rollback and migrations with one"
+    );
+    assert!(
+        overview["environments"][1]["rollback"]["not_needed"]
+            .as_str()
+            .is_some_and(|why| why.contains("reverting it on dev and promoting again")),
+        "{overview}"
+    );
+    // Review L3: rolling back what deploys nothing says so, not what to configure.
+    let refused =
+        support::mcp_tool(&f.h, TOKEN, "cd_rollback", json!({"environment": "dev"})).await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(
+        refused
+            .to_string()
+            .contains("nothing is deployed to dev that a rollback could redeploy"),
+        "{refused}"
+    );
+    Ok(())
+}
+
 /// AC5 (CDR-004): a run left running by a restart is recorded as an error, never run again.
 #[tokio::test]
 async fn a_run_left_by_a_restart_is_an_error() -> TestResult {

@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-04
 
+- Rollback in Yulius's own CD (SPEC-418, task #400, ADR-0264): an environment that runs no deploy
+  command (an empty dev, a production that only promotes, as Yulius's own) shows its rollback as
+  "Not needed" with why on the CD page and in `cd_status`, instead of "not configured" (unless a
+  production that deploys drills its rollback on it).
+  `[cd.prod]` says how Yulius rolls back: an update whose new build fails to start (its health check)
+  restores the previous binary and database by itself; otherwise a revert on dev is promoted again.
 - The CD page's kept releases fit their card (SPEC-419, task #401, #1060). Long release ids, like
   a commit with a content hash, ran the "Roll back to previous (<id>)" button out of the card. Each
   release now has one action ("Roll back to previous" on the previous one, "Roll back to this" on
