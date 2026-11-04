@@ -22,7 +22,7 @@ calm to read. Each kept release shows one action, so the same rollback is not of
   (`crates/yulius-server/web/assets/pages/cd.js`, `rollbackSection`). It shows each part, then a
   "Roll back to previous (<release id>)" button, then each kept release with its full id in
   monospace and a "Roll back to this" button on every release except the current one.
-- Symptom (screenshot, quartio-v2): the release ids are 129-character ids
+- Symptom (screenshot, quartio-v2): the release ids are 77-character ids
   (`0e36f03a3bba-67f8…adfb1c`). The "Roll back to previous (…)" button holds the whole id. A
   `.btn` does not wrap and is not shrinkable, so the button runs past the Dev card and under the
   Production card next to it. Each release row prints the full id on a line of its own. With two
@@ -64,7 +64,7 @@ calm to read. Each kept release shows one action, so the same rollback is not of
 
 ## Acceptance criteria
 
-- With 129-character release ids in two parts, at 1440 px and 390 px wide, every descendant of
+- With 77-character release ids in two parts, at 1440 px and 390 px wide, every descendant of
   each `.cd-env` card lies within the card's box, and the page does not scroll sideways.
 - The previous release's row holds the only "Roll back to previous" button. Its accessible name
   is `Roll back to previous (<id>) of <where>`. The current row holds no button.
