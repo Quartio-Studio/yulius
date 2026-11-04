@@ -131,4 +131,6 @@ shown as missing a rollback.
   round 3 approve at 2c5e22e8; every finding fixed test-first or answered in Decisions.
 - Not tested here: the live CD page of this instance (it runs `main`; the change shows there only
   after a person promotes it), and an instance update failing to start (the helper's restore is
-  existing behaviour, ADR-0013, covered by `crates/yulius/tests/self_update.rs`, not changed).
+  existing behaviour, ADR-0013, not changed: `a_failed_check_restores_the_previous_binary_and_database`
+  and `commits_off_main_older_than_installed_or_unknown_are_refused` in
+  `crates/yulius/src/update_helper/tests.rs`).
