@@ -40,7 +40,7 @@ pub fn render(tool: &str, args: &Value, value: &Value) -> String {
         // The number, the file to create and what to do with it (SPEC-083).
         "record_number" => text(value, "next").map(str::to_owned),
         // CD (SPEC-134): the tool writes its own few lines.
-        "cd_status" | "cd_deploy" => text(value, "text").map(str::to_owned),
+        "cd_status" | "cd_deploy" | "cd_rollback" => text(value, "text").map(str::to_owned),
         "variables_list" => variables_list(value),
         _ => None,
     };

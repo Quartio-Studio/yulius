@@ -84,6 +84,9 @@ pub enum Phase {
     Deploy,
     /// The environment's verify command.
     Verify,
+    /// The environment's rollback command, once per release a rollback or a drill goes to
+    /// (SPEC-415).
+    Rollback,
 }
 
 impl Phase {
@@ -93,6 +96,7 @@ impl Phase {
         match self {
             Self::Deploy => "deploy",
             Self::Verify => "verify",
+            Self::Rollback => "rollback",
         }
     }
 }
@@ -208,7 +212,12 @@ fn scan_line(raw: &str, cd: bool) -> Option<OutputEvent> {
             Some(OutputEvent::PhaseStart(Phase::Deploy))
         } else if rest.starts_with("verify: ") {
             Some(OutputEvent::PhaseStart(Phase::Verify))
-        } else if rest.starts_with("deploy failed") || rest.starts_with("verify failed") {
+        } else if rest.starts_with("rollback: ") {
+            Some(OutputEvent::PhaseStart(Phase::Rollback))
+        } else if rest.starts_with("deploy failed")
+            || rest.starts_with("verify failed")
+            || rest.starts_with("rollback failed")
+        {
             Some(OutputEvent::PhaseEnd { failed: true })
         } else if rest == "done" {
             Some(OutputEvent::PhaseEnd { failed: false })

@@ -36,7 +36,7 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 use yulius_contracts::api::cd::{
-    CdAgentState, CdDeploy, CdEnvironment, CdOverview, CdRun, CdSecret,
+    CdAgentState, CdDeploy, CdEnvironment, CdOverview, CdRun, CdSecret, CdStep,
 };
 use yulius_domain::cd::{
     self as dom, CdConfig, CdRefusal, CdStage, CdState, CdTarget, Requester, env_label,
@@ -51,6 +51,7 @@ use yulius_domain::time::Timestamp;
 
 use super::OUTPUT_BYTES;
 use super::exec::{DiskBound, Ended, RunLog, Sink, ci_join};
+use super::rollback::steps_text;
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::coordination::AgentContext;
@@ -162,16 +163,43 @@ impl CdActor<'_> {
     }
 }
 
-/// What a checked deploy runs.
-struct Prepared {
-    stage: CdStage,
-    branch: String,
-    sha: String,
-    target: CdTarget,
-    secrets: Vec<(String, String)>,
-    note: Option<String>,
+/// What a checked deploy, rollback or drill runs.
+pub(super) struct Prepared {
+    pub(super) stage: CdStage,
+    pub(super) branch: String,
+    /// What is deployed once it passed: the commit deployed, or the target release's commit.
+    pub(super) sha: String,
+    pub(super) target: CdTarget,
+    pub(super) secrets: Vec<(String, String)>,
+    pub(super) note: Option<String>,
     /// When the promotion it made started and ended (SPEC-137).
-    promoted: Option<(Timestamp, Timestamp)>,
+    pub(super) promoted: Option<(Timestamp, Timestamp)>,
+    /// Deploy, rollback or drill (SPEC-415).
+    pub(super) kind: CdRunKind,
+    /// A rollback's scripts' commit (the branch head), when it is not `sha`.
+    pub(super) source: Option<String>,
+    /// A rollback's or a drill's releases.
+    pub(super) steps: Vec<RollbackStep>,
+}
+
+/// What a person or an agent asks Yulius to run on an environment.
+pub(crate) enum CdRequest<'a> {
+    /// Deploy its branch head: the commit the person saw (`expect`) and how long they confirmed.
+    Deploy {
+        /// The commit the person was shown.
+        expected: Option<&'a str>,
+        /// How long the person kept the confirmation open, in milliseconds.
+        confirm_ms: Option<u64>,
+    },
+    /// Roll a part back (or forward) to a kept release (SPEC-415).
+    Rollback {
+        /// The part; required when the environment has several.
+        part: Option<&'a str>,
+        /// The release; default the previous one.
+        release: Option<&'a str>,
+        /// How long the person kept the confirmation open, in milliseconds.
+        confirm_ms: Option<u64>,
+    },
 }
 
 /// Longest confirmation wait recorded, in milliseconds.
@@ -196,7 +224,7 @@ struct ShownSource {
 }
 
 /// Who asked, as shown (`task:12` reads `task #12`).
-fn shown_requester(requested_by: &str) -> String {
+pub(super) fn shown_requester(requested_by: &str) -> String {
     match requested_by.strip_prefix("task:") {
         Some(number) => format!("task #{number}"),
         None => requested_by.to_owned(),
@@ -205,7 +233,7 @@ fn shown_requester(requested_by: &str) -> String {
 
 /// A refusal of the rule as an application error: who may not is `Forbidden`, a wrong
 /// confirmation `Invalid`, nothing to run `Conflict`.
-fn refusal(refused: &CdRefusal) -> AppError {
+pub(super) fn refusal(refused: &CdRefusal) -> AppError {
     match refused {
         CdRefusal::ProductionIsAPersons | CdRefusal::ProductionNeedsAdministrator => {
             AppError::Forbidden(refused.to_string())
@@ -236,7 +264,7 @@ impl App {
         self.config.data_dir.join("cd").join(sandbox.as_str())
     }
 
-    fn cd_mirror(&self, sandbox: &SandboxId) -> PathBuf {
+    pub(super) fn cd_mirror(&self, sandbox: &SandboxId) -> PathBuf {
         self.cd_private_dir(sandbox).join("source.git")
     }
 
@@ -417,9 +445,18 @@ impl App {
         }
     }
 
-    async fn cd_run_view(&self, run: &CdRunRecord, with_output: bool) -> CdRun {
+    pub(super) async fn cd_run_view(&self, run: &CdRunRecord, with_output: bool) -> CdRun {
         CdRun {
             run_id: run.id.clone(),
+            kind: run.kind.as_str().to_owned(),
+            steps: run
+                .steps
+                .iter()
+                .map(|step| CdStep {
+                    part: step.part.clone(),
+                    release: step.release.clone(),
+                })
+                .collect(),
             environment: run.environment.clone(),
             stage: run.stage.as_str().to_owned(),
             state: run.state.as_str().to_owned(),
@@ -505,6 +542,8 @@ impl App {
                 None => None,
             };
             let target = target.unwrap_or_else(|| CdTarget::new(&name, stage));
+            let deploying = source.promotes_from.as_deref().or(source.head.as_deref());
+            let rollback = self.cd_rollback_view(sandbox, &target, deploying).await?;
             environments.push(CdEnvironment {
                 label: env_label(&name).to_owned(),
                 name,
@@ -522,6 +561,7 @@ impl App {
                 states,
                 deployed,
                 last_run,
+                rollback,
             });
         }
         let mut views = Vec::new();
@@ -575,7 +615,10 @@ impl App {
                 &env,
                 requester,
                 &CdActor::Person(&ctx.user),
-                (req.expect.as_deref(), req.confirm_ms),
+                CdRequest::Deploy {
+                    expected: req.expect.as_deref(),
+                    confirm_ms: req.confirm_ms,
+                },
             )
             .await?;
         Ok(self.cd_run_view(&run, false).await)
@@ -609,19 +652,23 @@ impl App {
             env,
             Requester::Agent,
             &CdActor::Agent(ctx),
-            (None, None),
+            CdRequest::Deploy {
+                expected: None,
+                confirm_ms: None,
+            },
         )
         .await
     }
 
-    /// Checks everything, promotes when production says so, records the run and starts it.
-    async fn cd_start(
+    /// Checks everything, promotes when production says so, records the run and starts it: a
+    /// deploy, or a rollback to a kept release (SPEC-415).
+    pub(super) async fn cd_start(
         self: &Arc<Self>,
         sandbox: &SandboxRecord,
         env: &str,
         requester: Requester<'_>,
         actor: &CdActor<'_>,
-        (expected, confirm_ms): (Option<&str>, Option<u64>),
+        request: CdRequest<'_>,
     ) -> AppResult<CdRunRecord> {
         let requested = self.now();
         // A playground has no deploy: its Git stays on the server (SPEC-099).
@@ -648,10 +695,32 @@ impl App {
         // What the checks resolve the stage to: a production-stage refusal is audited, as
         // production's always was; a dev-stage failure is not a refused production deploy.
         let mut resolved = fixed;
-        let prepared = match self
-            .cd_prepare(sandbox, env, requester, actor, expected, &mut resolved)
-            .await
-        {
+        let (prepared, confirm_ms) = match request {
+            CdRequest::Deploy {
+                expected,
+                confirm_ms,
+            } => (
+                self.cd_prepare(sandbox, env, requester, actor, expected, &mut resolved)
+                    .await,
+                confirm_ms,
+            ),
+            CdRequest::Rollback {
+                part,
+                release,
+                confirm_ms,
+            } => (
+                self.cd_prepare_rollback(
+                    sandbox,
+                    env,
+                    (requester, actor),
+                    (part, release),
+                    &mut resolved,
+                )
+                .await,
+                confirm_ms,
+            ),
+        };
+        let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(err) => {
                 if resolved == Some(CdStage::Prod) {
@@ -681,16 +750,19 @@ impl App {
             reason: None,
             requested_by: actor.label(),
             task_id: asker.map(|ctx| ctx.task.id.clone()),
-            deploy: prepared.target.deploy.clone(),
+            deploy: match prepared.kind {
+                CdRunKind::Deploy => prepared.target.deploy.clone(),
+                CdRunKind::Rollback | CdRunKind::Drill => prepared.target.rollback.clone(),
+            },
             verify: prepared.target.verify.clone(),
             note: prepared.note.clone(),
             output: String::new(),
             exit_code: None,
             started_at: self.now(),
             ended_at: None,
-            kind: CdRunKind::Deploy,
-            source: None,
-            steps: Vec::new(),
+            kind: prepared.kind,
+            source: prepared.source.clone(),
+            steps: prepared.steps.clone(),
         };
         // Detached from the request from its record on (SPEC-347, ADR-0233): a client that goes
         // away mid-start leaves the run executing, or ended as an error, never running with
@@ -707,7 +779,7 @@ impl App {
 
     /// Records the run, its spans and its audit entry, then starts its execution; a run whose
     /// audit entry could not be written ends as an error at once.
-    async fn cd_record_and_execute(
+    pub(super) async fn cd_record_and_execute(
         self: &Arc<Self>,
         sandbox: &SandboxRecord,
         run: CdRunRecord,
@@ -727,12 +799,22 @@ impl App {
         self.cd_start_spans(&run, requested, prepared.promoted, confirm_ms)
             .await;
         let detail = format!(
-            "run {} of {} at {}; deploy: {}; verify: {}; secrets: [{}]; states: [{}]{}",
+            "run {} of {} at {}; {}: {}; verify: {}{}; secrets: [{}]; states: [{}]{}",
             run.id,
             run.branch,
-            run.sha,
-            prepared.target.deploy.as_deref().unwrap_or("-"),
+            run.source.as_deref().unwrap_or(&run.sha),
+            if run.kind == CdRunKind::Deploy {
+                "deploy"
+            } else {
+                "rollback"
+            },
+            run.deploy.as_deref().unwrap_or("-"),
             prepared.target.verify.as_deref().unwrap_or("-"),
+            if run.steps.is_empty() {
+                String::new()
+            } else {
+                format!("; to: {}", steps_text(&run.steps))
+            },
             prepared.target.secrets.join(" "),
             prepared.target.states.join(" "),
             run.note
@@ -747,7 +829,11 @@ impl App {
             .audit(
                 self.now(),
                 &actor,
-                "cd.deploy",
+                match run.kind {
+                    CdRunKind::Deploy => "cd.deploy",
+                    CdRunKind::Rollback => "cd.rollback",
+                    CdRunKind::Drill => "cd.drill",
+                },
                 Some(&target_name),
                 Some(&detail),
             )
@@ -778,14 +864,8 @@ impl App {
         let app = Arc::clone(self);
         let (sandbox, started) = (sandbox.clone(), run.clone());
         tokio::spawn(async move {
-            app.cd_execute(
-                sandbox,
-                started,
-                prepared.secrets,
-                (prepared.target.states, prepared.target.variables),
-                rx,
-            )
-            .await;
+            app.cd_execute_boxed(sandbox, started, prepared.secrets, prepared.target, rx)
+                .await;
         });
         Ok(run)
     }
@@ -847,7 +927,7 @@ impl App {
     /// The commit GitHub reports as `branch`'s head, taken from the sandbox clone into the CD
     /// mirror with every object checked (review C1): what a deploy runs never depends on
     /// anything an agent can write.
-    async fn cd_verified_head(
+    pub(super) async fn cd_verified_head(
         &self,
         sandbox: &SandboxRecord,
         branch: &str,
@@ -915,7 +995,11 @@ impl App {
     }
 
     /// `[cd.*]` of the verified commit `sha` in the CD mirror.
-    async fn cd_verified_config(&self, sandbox: &SandboxRecord, sha: &str) -> AppResult<CdConfig> {
+    pub(super) async fn cd_verified_config(
+        &self,
+        sandbox: &SandboxRecord,
+        sha: &str,
+    ) -> AppResult<CdConfig> {
         self.cd_config_at(&self.cd_mirror(&sandbox.id), sha)
             .await
             .map_err(|problem| {
@@ -1017,6 +1101,13 @@ impl App {
                 "an authorized environment has a table".into(),
             ));
         };
+        // Production waits for a proven rollback of what it deploys (SPEC-415 RBK-031).
+        if let Some(why) = self
+            .cd_rollback_gate(sandbox, &target, &sha, &self.cd_mirror(&sandbox.id))
+            .await?
+        {
+            return Err(AppError::Conflict(format!("nothing ran: {why}")));
+        }
         if self
             .deps
             .store
@@ -1046,6 +1137,9 @@ impl App {
                 secrets,
                 note: None,
                 promoted: None,
+                kind: CdRunKind::Deploy,
+                source: None,
+                steps: Vec::new(),
             });
         }
         let CdActor::Person(user) = actor else {
@@ -1115,6 +1209,9 @@ impl App {
             secrets,
             note: Some(note),
             promoted,
+            kind: CdRunKind::Deploy,
+            source: None,
+            steps: Vec::new(),
         })
     }
 
@@ -1174,25 +1271,53 @@ impl App {
         .await
     }
 
+    /// [`App::cd_execute`] as a named future type: a drill's run executes through it again from
+    /// within a run's execution, which an opaque type cannot express.
+    fn cd_execute_boxed(
+        self: Arc<Self>,
+        sandbox: SandboxRecord,
+        run: CdRunRecord,
+        secrets: Vec<(String, String)>,
+        target: CdTarget,
+        cancel: watch::Receiver<Option<String>>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        Box::pin(self.cd_execute(sandbox, run, secrets, target, cancel))
+    }
+
     /// Background part of a run: its files, the commands, the record of the end.
     async fn cd_execute(
         self: Arc<Self>,
         sandbox: SandboxRecord,
         run: CdRunRecord,
         secrets: Vec<(String, String)>,
-        (states, named): (Vec<String>, Vec<String>),
+        target: CdTarget,
         mut cancel: watch::Receiver<Option<String>>,
     ) {
+        let (states, named) = (&target.states, &target.variables);
         let mut ring = OutputRing::new(OUTPUT_BYTES);
         if let Some(note) = &run.note {
             ring.push_str(&format!("[yulius] {note}\n"));
         }
-        ring.push_str(&format!(
-            "[yulius] deploying {} at {} to {}\n",
-            run.branch,
-            run.sha,
-            env_label(&run.environment)
-        ));
+        ring.push_str(&match run.kind {
+            CdRunKind::Deploy => format!(
+                "[yulius] deploying {} at {} to {}\n",
+                run.branch,
+                run.sha,
+                env_label(&run.environment)
+            ),
+            CdRunKind::Rollback | CdRunKind::Drill => format!(
+                "[yulius] {} {} with the scripts of {} at {}: {}\n",
+                if run.kind == CdRunKind::Drill {
+                    "drilling the rollback of"
+                } else {
+                    "rolling back"
+                },
+                env_label(&run.environment),
+                run.branch,
+                run.source.as_deref().unwrap_or(&run.sha),
+                steps_text(&run.steps)
+            ),
+        });
         let run_dir = self.cd_run_dir(&run.id);
         let files = self.run_files_dir(&sandbox.id, run.stage, &run_dir, &format!("cd-{}", run.id));
         let mut held = CdHeld::default();
@@ -1202,8 +1327,8 @@ impl App {
                 &run,
                 RunInputs {
                     secrets,
-                    states: &states,
-                    variables: &named,
+                    states,
+                    variables: named,
                     held: &mut held,
                 },
                 (&run_dir, &files),
@@ -1220,6 +1345,12 @@ impl App {
             .cd_save_states(&sandbox, &run, &files, &held.restored, &mut ring)
             .await;
         drop(held);
+        // What the deploy said it shipped, from its whole log, before the log goes (SPEC-415).
+        let markers = if run.kind == CdRunKind::Deploy {
+            super::rollback::release_markers(&files.join("work").join("log")).await
+        } else {
+            Vec::new()
+        };
         // The run's files (the tree, its HOME, its log) go with it.
         self.remove_run_dirs(&run_dir, &files).await;
         // A cache past the bound would stop every next run, and nobody else can empty it
@@ -1295,6 +1426,10 @@ impl App {
             ),
             None => (state, reason),
         };
+        if state == RunState::Passed {
+            self.cd_record_releases(&sandbox, &run, &target, &markers, &mut ring)
+                .await;
+        }
         let output = self
             .redact_for_sandbox(&sandbox.id, &whole_lines(&ring))
             .await;
@@ -1328,6 +1463,10 @@ impl App {
         // Once its end is recorded (SPEC-279 PDE-006, review round 2).
         if run.stage == CdStage::Prod {
             self.after_production_run(&sandbox).await;
+        }
+        // A passed dev-stage deploy is drilled at once (SPEC-415 RBK-030).
+        if state == RunState::Passed {
+            self.cd_start_drill(&sandbox, &run, &target).await;
         }
     }
 
@@ -1415,17 +1554,13 @@ impl App {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("preparing the run's directories failed: {e}"))?;
         }
+        // A rollback runs the scripts of its branch's head, not of the release (ADR-0263).
+        let tree = run.source.as_deref().unwrap_or(&run.sha);
         self.deps
             .git
-            .export_tree(&self.cd_mirror(&sandbox.id), &run.sha, &src)
+            .export_tree(&self.cd_mirror(&sandbox.id), tree, &src)
             .await
-            .map_err(|err| {
-                format!(
-                    "writing {}'s files failed: {}",
-                    run.sha,
-                    err.public_message()
-                )
-            })?;
+            .map_err(|err| format!("writing {tree}'s files failed: {}", err.public_message()))?;
         std::fs::File::create(&log).map_err(|e| format!("creating the run log failed: {e}"))?;
         // The states it names, held first (SPEC-278 CDS-003): another run's wait ends here.
         if !states.is_empty() {
@@ -1501,7 +1636,8 @@ impl App {
             ("YULIUS_CD_ENV".to_owned(), run.environment.clone()),
             ("YULIUS_CD_STAGE".to_owned(), run.stage.as_str().to_owned()),
             ("YULIUS_CD_RUN".to_owned(), run.id.clone()),
-            ("YULIUS_CD_SHA".to_owned(), run.sha.clone()),
+            ("YULIUS_CD_KIND".to_owned(), run.kind.as_str().to_owned()),
+            ("YULIUS_CD_SHA".to_owned(), tree.to_owned()),
             ("YULIUS_CD_BRANCH".to_owned(), run.branch.clone()),
             (
                 "YULIUS_CD_CACHE".to_owned(),
@@ -1510,16 +1646,30 @@ impl App {
             ("YULIUS_SANDBOX".to_owned(), sandbox.slug.clone()),
         ]);
         env.extend(state_env);
+        let mut argv: Vec<String> = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            if run.kind == CdRunKind::Deploy {
+                CD_WRAPPER.into()
+            } else {
+                super::rollback::ROLLBACK_WRAPPER.into()
+            },
+            "yulius-cd".into(),
+            log.to_string_lossy().into_owned(),
+            run.deploy.clone().unwrap_or_default(),
+            run.verify.clone().unwrap_or_default(),
+        ];
+        if run.kind != CdRunKind::Deploy {
+            env.push(("YULIUS_CD_ROLLBACK".to_owned(), "1".to_owned()));
+            if run.kind == CdRunKind::Drill {
+                env.push(("YULIUS_CD_DRILL".to_owned(), "1".to_owned()));
+            }
+            for step in &run.steps {
+                argv.extend([step.part.clone(), step.release.clone(), step.sha.clone()]);
+            }
+        }
         let plan = LaunchPlan {
-            argv: vec![
-                "/bin/sh".into(),
-                "-c".into(),
-                CD_WRAPPER.into(),
-                "yulius-cd".into(),
-                log.to_string_lossy().into_owned(),
-                run.deploy.clone().unwrap_or_default(),
-                run.verify.clone().unwrap_or_default(),
-            ],
+            argv,
             cwd: src,
             env,
             secret_env: secrets,
@@ -1730,7 +1880,11 @@ struct CdHeld {
 impl App {
     /// Refuses a deploy naming a project variable the project lacks or an agent state its vault
     /// does not hold (SPEC-278 CDS-002), before anything ran.
-    async fn cd_names_present(&self, sandbox: &SandboxRecord, target: &CdTarget) -> AppResult<()> {
+    pub(super) async fn cd_names_present(
+        &self,
+        sandbox: &SandboxRecord,
+        target: &CdTarget,
+    ) -> AppResult<()> {
         if !target.variables.is_empty() {
             let set = self.variables_env(&sandbox.id).await?;
             if let Some(name) = target
@@ -1844,7 +1998,7 @@ impl App {
 }
 
 /// One lock per sandbox around its CD mirror's reads and writes.
-fn mirror_lock(sandbox: &SandboxId) -> Arc<tokio::sync::Mutex<()>> {
+pub(super) fn mirror_lock(sandbox: &SandboxId) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     > = std::sync::OnceLock::new();
@@ -1901,7 +2055,7 @@ pub fn production_containment(
 
 /// A production table read from the production head: only the integration head decides a
 /// promotion (review L4).
-fn no_promotion(mut config: CdConfig) -> CdConfig {
+pub(super) fn no_promotion(mut config: CdConfig) -> CdConfig {
     for target in &mut config.environments {
         target.promote = false;
     }
@@ -1923,7 +2077,7 @@ fn cache_name(name: &str, stage: CdStage) -> String {
 const UNKNOWN_ENV: &str = "the environment is a [cd.<name>] of yulius.toml: dev, prod or another \
     name of lowercase letters, digits and '-'";
 
-fn running_refusal(env: &str) -> AppError {
+pub(super) fn running_refusal(env: &str) -> AppError {
     AppError::Conflict(format!(
         "a deploy to {} is running; wait for it to end (or cancel it)",
         env_label(env)
@@ -2013,15 +2167,23 @@ fn environment_text(out: &mut String, env: &CdEnvironment) {
     if let Some(run) = &env.last_run {
         out.push_str(&format!("  last run: {}\n", run_line(run)));
     }
+    super::rollback::rollback_text(out, &env.rollback, &env.stage);
 }
 
-fn short_sha(sha: &str) -> &str {
+pub(super) fn short_sha(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }
 
 fn run_line(run: &CdRun) -> String {
+    // A rollback or a drill says so and where it went (SPEC-415).
+    let kind = if run.kind == "deploy" {
+        String::new()
+    } else {
+        let to: Vec<&str> = run.steps.iter().map(|s| s.release.as_str()).collect();
+        format!(" {} to {}", run.kind, to.join(" then "))
+    };
     let mut line = format!(
-        "{} {} {} at {} by {} ({})",
+        "{} {}{kind} {} at {} by {} ({})",
         run.run_id,
         run.environment,
         run.state,
@@ -2086,7 +2248,7 @@ impl App {
             }
         }
         text.push_str(&format!(
-            "You may deploy the dev-stage environments (cd_deploy); production-stage ones are deployed by a person on {}/s/{}/ci?section=cd.",
+            "You may deploy and roll back the dev-stage environments (cd_deploy, cd_rollback); production-stage ones are deployed and rolled back by a person on {}/s/{}/ci?section=cd.",
             self.config.public_url, sandbox.slug
         ));
         Ok(serde_json::json!({"text": text, "cd": overview}))
@@ -2153,6 +2315,7 @@ mod tests {
             states: Vec::new(),
             deployed: None,
             last_run: None,
+            rollback: yulius_contracts::api::cd::CdRollback::default(),
         };
         let mut text = String::new();
         environment_text(&mut text, &env);
@@ -2186,6 +2349,7 @@ mod tests {
             states: Vec::new(),
             deployed: None,
             last_run: None,
+            rollback: yulius_contracts::api::cd::CdRollback::default(),
         };
         let mut text = String::new();
         environment_text(&mut text, &env);

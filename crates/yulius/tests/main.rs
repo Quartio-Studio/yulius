@@ -20,6 +20,7 @@ mod automation_start;
 mod automations;
 mod browser;
 mod cd;
+mod cd_rollback;
 mod ci_setup;
 mod claude_gate;
 mod cli;

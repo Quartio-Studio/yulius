@@ -38,6 +38,7 @@ mod exec;
 mod findings;
 pub mod hygiene;
 pub(crate) mod playground;
+mod rollback;
 mod tools;
 
 use std::collections::{HashMap, HashSet};

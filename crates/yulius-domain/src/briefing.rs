@@ -738,10 +738,9 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          `needs_you` and continue with the rest.\n\
          Features and fixes take one path, with no human acceptance step: spec → implementation \
          with tests → independent review → fixes → gates green → pull request → merge into \
-         {integration} on green → summary. Merges deploy nothing: `cd_deploy` dev only if asked; \
-         {production} is a person's: never promote. \
-         Work that changes nothing in the repository (research, a brainstorm, an answer) ends \
-         with its result.\n\
+         {integration} on green → summary. Merges deploy nothing: `cd_deploy`/`cd_rollback` dev \
+         only if asked; {production} is a person's: never promote. Each `[cd.*]` deploy has a \
+         `rollback`. Work that changes no file ends with its result.\n\
          - Git (skill `git-hygiene`): work only on {branch}. Never commit or push to \
          {integration} or {production}, never `--no-verify`, never rewrite pushed commits (no \
          rebase, amend or force push: Yulius pushes plainly). Small conventional commits; nothing \
