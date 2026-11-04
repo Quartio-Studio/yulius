@@ -83,3 +83,37 @@ test('long release ids keep every CD card within its bounds, with one action per
   await expect.poll(() => outside(browser)).toEqual([]);
   expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
+
+/** The ids of the engine part's release rows a person sees, in order. */
+const shownEngine = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => browser.evaluate(() =>
+  [...document.querySelectorAll('.cd-rollback[aria-label="Dev rollback"] .cd-part')]
+    .filter((p) => p.querySelector('h4')?.textContent === 'engine')
+    .flatMap((p) => [...p.querySelectorAll('li[data-release]')])
+    .filter((li) => li.getClientRects().length > 0)
+    .map((li) => (li as HTMLElement).dataset.release!.slice(0, 4)));
+
+test('a part shows its three newest releases and folds the older ones', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci?section=cd'));
+  await expect(screen.getByRole('region', 'Dev rollback')).toBeVisible();
+  await longReleases(browser, 5);
+  await reread(screen);
+  const dev = screen.getByRole('region', 'Dev rollback');
+  await expect(dev.getByRole('heading', 'engine')).toBeVisible();
+  expect(await shownEngine(browser)).toEqual(['0e36', '0731', '5d1c']);
+  await browser.locator('.cd-rollback[aria-label="Dev rollback"] .cd-part:has-text("engine") summary').click();
+  await expect.poll(() => shownEngine(browser)).toEqual(['0e36', '0731', '5d1c', '4c3b', '3b2a']);
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.cd-rollback[aria-label="Dev rollback"] summary')].map((s) => s.textContent))).toEqual(['2 older releases', '2 older releases']);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Walked back: the release deployed now and the previous one are never folded.
+  await browser.evaluate((ids) => {
+    const dev = (window as unknown as Mock).__yuliusMock.cd.sb_studio.environments.find((e) => e.name === 'dev')!;
+    const engine = dev.rollback.parts[0] as { current: string; previous: string; releases: { release: string; current: boolean }[] };
+    Object.assign(engine, { current: ids[2], previous: ids[3] });
+    for (const r of engine.releases) r.current = r.release === ids[2];
+  }, LONG);
+  await reread(screen);
+  await expect(dev.getByRole('heading', 'engine')).toBeVisible();
+  expect(await shownEngine(browser)).toEqual(['0e36', '0731', '5d1c', '4c3b']);
+  await expect(dev.getByRole('button', `Roll back to previous (${LONG[3]}) of dev engine`)).toBeVisible();
+});
