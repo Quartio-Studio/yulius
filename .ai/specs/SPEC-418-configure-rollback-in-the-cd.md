@@ -1,11 +1,11 @@
 ---
 yulius-task: 9c9c5334-b957-480f-9e3a-6ef66d8ae613
-status: in-progress
+status: done
 ---
 
 # SPEC-418: Rollback in Yulius's own CD, and environments that deploy nothing need none
 
-Status: in-progress
+Status: done
 Date: 2026-11-04
 Owner: Yulius task #400
 Scope authorization: task #400, asked by the project's owner right after promoting #1055 to
@@ -59,8 +59,8 @@ shown as missing a rollback.
 - [x] Environments that deploy nothing say rollback is not needed (cd_status), tests first
 - [x] CD page shows rollback not needed for them, with e2e
 - [x] yulius.toml and docs say how Yulius's production rolls back
-- [ ] Independent review answered
-- [ ] Gates green and evidence recorded
+- [x] Independent review answered
+- [x] Gates green and evidence recorded
 
 ## Acceptance criteria
 
@@ -110,4 +110,25 @@ shown as missing a rollback.
 
 ## Evidence
 
-To be recorded when the gates have run.
+- `scripts/dev ci` at 2c5e22e8: passed (repository contracts, scripts' unit tests, check, fmt,
+  clippy `-D warnings` on Linux and for macOS, nextest 3103 passed / 16 skipped, doctests, cargo
+  deny, cargo shear, doc).
+- Unit tests (`crates/yulius-app/src/ci/rollback.rs`): `environments_that_deploy_nothing_need_no_rollback`
+  (AC1, AC2), `an_environment_a_deploying_production_drills_on_needs_rollback` (M1),
+  `an_unreadable_table_is_not_said_to_need_no_rollback` (L1, round 2). Each failed before its
+  fix; removing the problem or the drill clause of `mark_rollback_not_needed` fails them.
+- Integration: `crates/yulius/tests/cd.rs::environments_that_deploy_nothing_need_no_rollback`
+  (`cd_status`, the overview's `not_needed`, the `cd_rollback` refusal); the CD and rollback
+  integration files 33/33.
+- AC4: `spec_format::config::tests::the_repositorys_own_cd_is_defined` parses this repository's
+  `yulius.toml` (no `rollback`, the `about` says both ways Yulius rolls back).
+- e2e: `tests/cd.e2e.ts` and `tests/pipeline.e2e.ts` 40/40 (AC3: empty dev and promotion-only
+  production "Not needed", a deploying dev and a drilled empty dev "Rollback not configured", no
+  WCAG violations); the new test failed against the previous page.
+- Security scan: `yulius security-scan` reports "Security scan disabled" (Vidoc is turned off for
+  this project): disabled, not passed.
+- Independent review in a fresh session: round 1 request changes, round 2 approve with three lows,
+  round 3 approve at 2c5e22e8; every finding fixed test-first or answered in Decisions.
+- Not tested here: the live CD page of this instance (it runs `main`; the change shows there only
+  after a person promotes it), and an instance update failing to start (the helper's restore is
+  existing behaviour, ADR-0013, covered by `crates/yulius/tests/self_update.rs`, not changed).
