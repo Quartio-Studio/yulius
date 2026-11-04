@@ -1,11 +1,11 @@
 ---
 yulius-task: 8a13aa7f-873c-4084-8847-278adfb05f62
-status: in-progress
+status: done
 ---
 
 # SPEC-419: The CD page's kept releases fit their card and offer one action each
 
-Status: in-progress
+Status: done
 Date: 2026-11-04
 Owner: Yulius task #401
 Scope authorization: task #401, "UI is overwhleming and broken in CD section", with a screenshot of
@@ -57,10 +57,10 @@ calm to read. Each kept release shows one action, so the same rollback is not of
 
 ## Plan
 
-- [ ] Long release ids keep every CD card within its bounds, with one action per release (e2e first)
-- [ ] Older kept releases fold behind a disclosure (e2e first)
-- [ ] Docs, changes entry and independent review answered
-- [ ] Gates green and delivered to dev
+- [x] Long release ids keep every CD card within its bounds, with one action per release (e2e first)
+- [x] Older kept releases fold behind a disclosure (e2e first)
+- [x] Docs, changes entry and independent review answered
+- [x] Gates green and delivered to dev
 
 ## Acceptance criteria
 
@@ -90,3 +90,25 @@ calm to read. Each kept release shows one action, so the same rollback is not of
   (WCAG 2.5.3: the name starts with the visible text).
 - Fold after 3 rows. Rollbacks almost always go to the previous release, and up to 20 releases
   are kept per part, so the full list stays one click away.
+
+## Evidence
+
+- Reproduced: `e2e/tests/cd-releases.e2e.ts` failed at 4baf4be2, before the fix. Its bounds check
+  found `button Roll back to previous (0731fe929a36-ca82…` outside both parts' cards. The fold
+  test failed at its own commit, before the fold existed.
+- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run tests/cd.e2e.ts tests/cd-releases.e2e.ts`:
+  27 passed at the final head, with axe finding no violations, including with the fold open.
+- `scripts/dev ci` at fbb2a7f9 (round-1 answers): exit 0, nextest 3099 run, 3099 passed, 16
+  skipped. The only later change is a line moved within `e2e/tests/cd.e2e.ts` (review round 2).
+- `yulius security-scan`: "Security scan disabled" (Vidoc is off in Yulius). Disabled, not passed.
+- Visual check: a Playwright screenshot of the Dev card at 1440 px and 390 px, with two parts
+  holding 77-character ids. Each release fits on one line with one action, and the older ones
+  are folded.
+- Independent review in a fresh session (`om-code-review`):
+  - Round 1 approved, with minor findings. All were answered: roll-forward coverage, the toast's
+    double ellipsis, part names on the folds, and the spec and docs wording.
+  - Round 2 asked to move the mock's `cdRunMs = 0` line before the v41 rollback, so the
+    roll-forward step no longer waits for the 3 s poll. Done.
+  - The pre-existing "Roll back to this" label on newer releases is filed as #1061.
+- Not tested here: the full e2e suite (Yulius CI runs it as the `e2e` job) and a live
+  quartio-v2 page. The ids come from its screenshot, replayed in the mock.

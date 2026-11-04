@@ -892,6 +892,8 @@ test('the CD page rolls back to an earlier release in one click', async ({ app, 
   await expect(confirm.getByText(/^Redeploys v41 \(from 8e2d4f6, deployed .+ by mkarp\) with the rollback command of quartio, then runs the verify command\. Nothing is rebuilt\.$/)).toBeVisible();
   await expect(confirm.getByText(/^expand and contract/)).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
+  // The mock's rollback ends at once, so the reload after it already allows the next one.
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { cdRunMs: number } }).__yuliusMock.cdRunMs = 0; });
   await confirm.getByRole('button', 'Roll back to v41').click();
   await expect(screen.getByText('Rolling dev back to v41.')).toBeVisible();
   await expect(row('Dev', 'v41')).toContainText('Deployed now');
@@ -900,8 +902,7 @@ test('the CD page rolls back to an earlier release in one click', async ({ app, 
   // one action per release, the previous one's being the one-click default).
   await expect(dev.getByRole('button', 'Roll back to previous (v40) of dev')).toBeHidden();
   await expect(dev.getByRole('button', 'Roll back to this: dev v40')).toBeHidden();
-  // Any other kept release: "Roll back to this", here forward again, once the rollback ended.
-  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { cdRunMs: number } }).__yuliusMock.cdRunMs = 0; });
+  // Any other kept release: "Roll back to this", here forward again (the rollback has ended).
   const forward = dev.getByRole('button', 'Roll back to this: dev v42');
   await expect(forward).toBeEnabled();
   await forward.click();
