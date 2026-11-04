@@ -827,7 +827,7 @@ mod tests {
     #[test]
     fn a_barrier_survives_redeploys_and_retention() {
         let mut records: Vec<ReleaseRecord> = vec![deploy("v2")];
-        let mut add = |records: &mut Vec<ReleaseRecord>, mut new: ReleaseRecord| {
+        let add = |records: &mut Vec<ReleaseRecord>, mut new: ReleaseRecord| {
             if new.barrier.is_none() {
                 new.barrier = earlier_barrier(records, &new.part, &new.release);
             }
