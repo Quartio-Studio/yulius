@@ -259,7 +259,13 @@ watching, steering and unblocking.
   (deployment) page; a confirmed deploy shows its run's view at once, saying what it checks and
   promotes, and that view becomes the run. A merge deploys nothing: a person or an agent
   (`cd_deploy`) deploys dev when it is wanted, or the ready-made "Deploy dev every night"
-  automation deploys and tests it. Production (with its promotion) is always a person's: an
+  automation deploys and tests it. Every environment that deploys also defines its rollback
+  (SPEC-415): a command that redeploys a release Yulius kept from an earlier deploy, never
+  building, and a line saying how data changes stay compatible. The CD page lists each part's
+  recent releases with "Roll back to previous" and "Roll back to this" (agents roll dev back with
+  `cd_rollback`), refuses rolling back past a release whose migration cannot be undone and says
+  why, drills the rollback on dev after every deploy, and refuses a production deploy until that
+  drill passed for the commit it deploys. Production (with its promotion) is always a person's: an
   administrator types the project's slug, and on GitHub a ruleset only repository admins bypass
   keeps the production branch out of reach of the agents' own token, which is never a person's
   (onboarding says when that ruleset is missing, and its agent adds it with `production_protect`

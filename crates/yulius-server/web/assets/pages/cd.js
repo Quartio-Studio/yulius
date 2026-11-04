@@ -72,6 +72,7 @@ const SETUP_PROMPT = `Set up this project's CD (deployment) in yulius.toml and s
 - Define [cd.dev] and [cd.prod] explicitly. Either may be empty (no deploy yet) with an \`about\` line saying why.
 - Something else to deploy on its own (a staging machine, a hosted platform next to a self-hosted release)? Add a [cd.<name>] table for each, with stage = "dev" or "prod".
 - Write idempotent bash scripts for deploy and verify (a smoke test of what is deployed), committed under scripts/cd/, with machines and credentials only from agent secrets.
+- Give each environment that deploys a rollback (scripts/cd/rollback.sh redeploys the kept release named in $YULIUS_CD_RELEASE, never building; the deploy prints ::yulius-release <id> and keeps its last 10 artifacts) and a migrations line saying how data changes stay compatible with the previous release. Production deploys wait until the dev rollback drill passed.
 - Ask me with needs_you for anything only a person can give (a machine's credentials on the Secrets page, allowing a secret).
 
 How we deploy (fill in what you know):

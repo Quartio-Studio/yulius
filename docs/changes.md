@@ -4,6 +4,20 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-04
+
+- Rollback is part of every project's CD (SPEC-415, task #397, ADR-0263). `[cd.<name>]` takes
+  `rollback` (redeploys a kept release named in `$YULIUS_CD_RELEASE`, never building, then
+  `verify`), `migrations` (required with it), `parts` and, on production tables, `drill`. Deploys
+  name what they shipped with `::yulius-release [<part>=]<id>` and irreversible changes with
+  `::yulius-rollback-barrier`; Yulius keeps the releases per environment and part. The CD page
+  lists them with "Roll back to previous" and "Roll back to this" (production: an administrator
+  with the slug typed), agents roll dev back with `cd_rollback`, and every rollback is audited.
+  After each passed dev deploy Yulius drills the rollback (back and forward, verified), and a
+  production deploy is refused until rollback is configured and that drill passed at its commit.
+  Onboarding, infra-bootstrap, delivery-pipeline, the briefing and AGENTS template teach it, and a
+  project whose deploys lack rollback sees it as a missing foundation.
+
 ## 2026-11-03
 
 - The e2e suite gives a test's first look at a page its own budget: `firstShown(locator, text?)`
