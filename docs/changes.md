@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-04
 
+- The CD page's kept releases fit their card (SPEC-419, task #401, #1060). Long release ids, like
+  a commit with a content hash, ran the "Roll back to previous (<id>)" button out of the card. Each
+  release now has one action ("Roll back to previous" on the previous one, "Roll back to this" on
+  the others, none on the one deployed now), its id is cut with an ellipsis (whole in its tooltip,
+  its button's name and the confirmation), the confirm button and toasts name a short id, and a
+  part shows its three newest releases with the older ones folded.
 - The CD page lays its environment cards out in two columns at most (SPEC-417, task #399): a wide
   window showed three narrow cards side by side and a fourth alone below them. A column is never
   narrower than half the row, nor than 320 px, so a narrow window still stacks them in one.

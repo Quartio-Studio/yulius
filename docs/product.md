@@ -265,7 +265,8 @@ watching, steering and unblocking.
   automation deploys and tests it. Every environment that deploys also defines its rollback
   (SPEC-415): a command that redeploys a release Yulius kept from an earlier deploy, never
   building, and a line saying how data changes stay compatible. The CD page lists each part's
-  recent releases with "Roll back to previous" and "Roll back to this" (agents roll dev back with
+  three newest releases (older ones fold), each with one action: "Roll back to previous" on the
+  previous one, "Roll back to this" on the others (agents roll dev back with
   `cd_rollback`), refuses rolling back past a release whose migration cannot be undone and says
   why, drills the rollback on dev after every deploy, and refuses a production deploy until that
   drill passed for the commit it deploys. Production (with its promotion) is always a person's: an

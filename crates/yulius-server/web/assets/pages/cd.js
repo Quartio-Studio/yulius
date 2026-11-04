@@ -42,10 +42,14 @@ const SECRET_STATE = {
 };
 const POLL_ACTIVE_MS = 3000;
 const POLL_IDLE_MS = 30000;
+/** How many kept releases a part shows before the older ones fold (SPEC-419). */
+const SHOWN_RELEASES = 3;
 
 /** A deploy's state in words, tone and icon. */
 export const stateOf = (state) => STATE[state] || { label: state || 'Unknown', tone: '', icon: 'clock' };
 const shortSha = (sha) => String(sha || '').slice(0, 7);
+/** A release id short enough for a button or a toast: past 16 characters, its first 12 and "…" (SPEC-419). */
+const shortRelease = (id) => (String(id).length > 16 ? `${String(id).slice(0, 12)}…` : String(id));
 /** Whether an environment or a run is of the production stage (SPEC-257). */
 const isProd = (e) => (e.stage ? e.stage === 'prod' : (e.environment || e.name) === 'prod');
 /** The integration branch: the dev-stage environments' branch (SPEC-152). */
@@ -245,22 +249,35 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     for (const part of rb.parts || []) {
       const where = part.name ? `${title(env)} ${part.name}` : title(env);
       const releases = part.releases || [];
-      const previous = releases.find((r) => r.release === part.previous);
-      // The accessible name starts with the visible text (WCAG 2.5.3) and adds the part.
-      const backText = previous ? `Roll back to previous (${previous.release})` : 'Roll back to previous';
-      const back = h('button', { type: 'button', class: ['btn', 'btn-sm', prod && 'btn-danger'], disabled: Boolean(why || !previous || previous.blocked),
-        'aria-label': `${backText} of ${where.toLowerCase()}`, onClick: () => rollBack(env, part, previous, overview) },
-      icon('back', { size: 14 }), backText);
+      // One action per release (SPEC-419): the previous one's is the one-click default.
+      const action = (r) => {
+        if (r.current) return badge('Deployed now', 'ok');
+        if (r.blocked) return null;
+        const previous = r.release === part.previous;
+        // The accessible name starts with the visible text (WCAG 2.5.3) and adds the whole id.
+        return h('button', { type: 'button', class: ['btn', 'btn-sm', previous && prod && 'btn-danger'], disabled: Boolean(why),
+          'aria-label': previous ? `Roll back to previous (${r.release}) of ${where.toLowerCase()}` : `Roll back to this: ${where.toLowerCase()} ${r.release}`,
+          onClick: () => rollBack(env, part, r, overview) },
+        previous ? [icon('back', { size: 14 }), 'Roll back to previous'] : 'Roll back to this');
+      };
+      const item = (r) => h('li', { dataset: { release: r.release } },
+        h('div', { class: 'cd-release-id' },
+          h('code', { title: r.release }, r.release),
+          h('span', { class: 'muted small' }, `${shortSha(r.commit)} · `, h('span', { title: dateTime(r.deployed_at) }, relLong(r.deployed_at)), ` · ${r.requested_by}`, r.barrier ? ` · no rollback past it: ${r.barrier}` : ''),
+          r.blocked ? h('span', { class: 'small muted' }, `Blocked: ${r.blocked}`) : null),
+        action(r));
+      // The newest releases, down to the one deployed now and the previous one; the rest fold (SPEC-419).
+      const shown = Math.max(SHOWN_RELEASES, ...releases.map((r, i) => (r.current || r.release === part.previous ? i + 1 : 0)));
+      const older = releases.slice(shown);
       const list = releases.length
-        ? h('ul', { class: 'cd-releases', 'aria-label': `${where} releases` }, releases.map((r) => h('li', { dataset: { release: r.release } },
-          h('code', null, r.release),
-          h('span', { class: 'muted small cd-release-meta' }, `${shortSha(r.commit)} · `, h('span', { title: dateTime(r.deployed_at) }, relLong(r.deployed_at)), ` · ${r.requested_by}`, r.barrier ? ` · no rollback past it: ${r.barrier}` : ''),
-          r.current ? badge('Deployed now', 'ok')
-            : r.blocked ? h('span', { class: 'small muted' }, `Blocked: ${r.blocked}`)
-              : h('button', { type: 'button', class: 'btn btn-sm', disabled: Boolean(why), 'aria-label': `Roll back to this: ${where.toLowerCase()} ${r.release}`, onClick: () => rollBack(env, part, r, overview) }, 'Roll back to this'))))
+        ? h('ul', { class: 'cd-releases', 'aria-label': `${where} releases` }, releases.slice(0, shown).map(item))
         : h('p', { class: 'small muted' }, 'No releases yet: the next deploy records one.');
+      const fold = older.length
+        ? h('details', { class: 'cd-older' }, h('summary', { class: 'small', 'aria-label': `${older.length} older release${older.length === 1 ? '' : 's'} of ${where.toLowerCase()}` }, `${older.length} older release${older.length === 1 ? '' : 's'}`),
+          h('ul', { class: 'cd-releases', 'aria-label': `${where} older releases` }, older.map(item)))
+        : null;
       const alone = releases.length === 1 ? h('p', { class: 'small muted' }, 'No earlier release to go back to yet.') : null;
-      rows.push(h('div', { class: 'stack-sm' }, h('div', { class: 'cd-part-head' }, h('h4', null, part.name || 'Releases'), releases.length ? back : null), list, alone));
+      rows.push(h('div', { class: 'stack-sm cd-part' }, h('h4', { class: 'cd-part-name' }, part.name || 'Releases'), list, fold, alone));
     }
     return h('section', { class: 'stack-sm cd-rollback', 'aria-label': `${title(env)} rollback` }, rows);
   }
@@ -273,9 +290,10 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     const opened = performance.now();
     const ok = await confirmDialog({
       title: `Roll back ${where}?`,
-      message: `Redeploys ${release.release} (from ${shortSha(release.commit)}, deployed ${relLong(release.deployed_at)} by ${release.requested_by}) with the rollback command of ${env.branch}, then runs the verify command. Nothing is rebuilt.`,
+      // The message names the whole id, wrapped anywhere (SPEC-419).
+      message: h('p', { class: 'cd-wrap' }, `Redeploys ${release.release} (from ${shortSha(release.commit)}, deployed ${relLong(release.deployed_at)} by ${release.requested_by}) with the rollback command of ${env.branch}, then runs the verify command. Nothing is rebuilt.`),
       details: h('dl', { class: 'cd-rollback-facts' }, h('dt', null, 'Data'), h('dd', null, rb.migrations || 'not described'), h('dt', null, 'Rollback'), h('dd', null, h('code', null, rb.command || ''))),
-      confirmLabel: `Roll back to ${release.release}`,
+      confirmLabel: `Roll back to ${shortRelease(release.release)}`,
       danger: prod,
       typeToConfirm: prod ? overview.slug : undefined,
     });
@@ -284,12 +302,13 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     if (part.name) body.part = part.name;
     if (prod) { body.confirm = overview.slug; body.confirm_ms = Math.max(0, Math.round(performance.now() - opened)); }
     // The server checks the branch, the release and the secrets first: seconds (as a deploy's).
-    toast(`Starting the rollback of ${where} to ${release.release}…`);
+    const to = shortRelease(release.release);
+    toast(`Starting the rollback of ${where} to ${to}${to.endsWith('…') ? '' : '…'}`);
     try {
       const run = await ctx.api.post(`${base}/cd/${enc(env.name)}/rollback`, body);
       if (destroyed) return;
       reload({ quiet: true });
-      toast(`Rolling ${where} back to ${release.release}.`, { kind: 'ok', action: { label: 'Open', run: () => openLater(run.run_id) } });
+      toast(`Rolling ${where} back to ${shortRelease(release.release)}.`, { kind: 'ok', action: { label: 'Open', run: () => openLater(run.run_id) } });
     } catch (error) {
       errorToast(error, `Couldn’t roll ${where} back`);
       if (!destroyed) reload({ quiet: true });

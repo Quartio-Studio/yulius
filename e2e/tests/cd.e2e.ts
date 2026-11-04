@@ -892,16 +892,27 @@ test('the CD page rolls back to an earlier release in one click', async ({ app, 
   await expect(confirm.getByText(/^Redeploys v41 \(from 8e2d4f6, deployed .+ by mkarp\) with the rollback command of quartio, then runs the verify command\. Nothing is rebuilt\.$/)).toBeVisible();
   await expect(confirm.getByText(/^expand and contract/)).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
+  // The mock's rollback ends at once, so the reload after it already allows the next one.
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { cdRunMs: number } }).__yuliusMock.cdRunMs = 0; });
   await confirm.getByRole('button', 'Roll back to v41').click();
   await expect(screen.getByText('Rolling dev back to v41.')).toBeVisible();
   await expect(row('Dev', 'v41')).toContainText('Deployed now');
   await expect(screen.getByRole('button', /Open the dev rollback at 8e2d4f6/)).toBeVisible();
-  // v40 lies behind v41's barrier: going back further is not offered.
-  await expect(dev.getByRole('button', 'Roll back to previous (v40) of dev')).toBeDisabled();
+  // v40 lies behind v41's barrier: going back further is not offered; going forward is (SPEC-419:
+  // one action per release, the previous one's being the one-click default).
+  await expect(dev.getByRole('button', 'Roll back to previous (v40) of dev')).toBeHidden();
   await expect(dev.getByRole('button', 'Roll back to this: dev v40')).toBeHidden();
+  // Any other kept release: "Roll back to this", here forward again (the rollback has ended).
+  const forward = dev.getByRole('button', 'Roll back to this: dev v42');
+  await expect(forward).toBeEnabled();
+  await forward.click();
+  await screen.getByRole('dialog', 'Roll back dev?').getByRole('button', 'Roll back to v42').click();
+  await expect(screen.getByText('Rolling dev back to v42.')).toBeVisible();
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { lastCdRollback?: { release?: string } } }).__yuliusMock.lastCdRollback?.release ?? null)).toBe('v42');
+  await expect(row('Dev', 'v42')).toContainText('Deployed now');
 
-  // Production: a chosen release, with the slug typed.
-  await prod.getByRole('button', 'Roll back to this: production v39').click();
+  // Production: the previous release, with the slug typed.
+  await prod.getByRole('button', 'Roll back to previous (v39) of production').click();
   const typed = screen.getByRole('dialog', 'Roll back production?');
   const go = typed.getByRole('button', 'Roll back to v39');
   await expect(go).toBeDisabled();
