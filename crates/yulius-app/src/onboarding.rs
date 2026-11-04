@@ -142,8 +142,12 @@ vercel.json, netlify.toml, Procfile, k8s/, Helm, Terraform, Ansible), deploy job
 [cd.dev] and [cd.prod] explicitly: what exists moves into idempotent deploy and verify scripts \
 under scripts/cd/ (keep working conventions; machines and credentials come from agent secrets, \
 never the repository), and an environment with nothing to deploy yet is an empty table with an \
-`about` line saying so. A production deploy that pushes or promotes the production branch is \
-`promote = true`. A repository that deploys more than one thing (a self-hosted release and the \
+`about` line saying so. Each table that deploys also gets `rollback` (a script that redeploys the \
+kept release named in $YULIUS_CD_RELEASE, never building; the deploy prints `::yulius-release <id>` \
+and keeps its last 10 artifacts) and a one-line `migrations` saying how data changes stay \
+compatible with the previous release (SPEC-415): Yulius drills it after each dev deploy and \
+refuses production deploys until that drill passed. A production deploy that pushes or promotes \
+the production branch is `promote = true`. A repository that deploys more than one thing (a self-hosted release and the \
 hosted platform, a staging machine) gets one more [cd.<name>] table per target, with \
 `stage = \"dev\"` or `stage = \"prod\"`, which decides its rules as for dev and production. \
 Yulius reads them from the protected branches and only a person deploys \

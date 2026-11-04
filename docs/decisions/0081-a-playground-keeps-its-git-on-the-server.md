@@ -4,7 +4,9 @@
 
 Accepted. Specified in [SPEC-099](../../.ai/specs/SPEC-099-on-onboarding-we-want-a-mode-to-play-aro.md).
 Amended by [0142](0142-a-playground-moves-into-an-empty-github-repository.md): a playground can move
-into a GitHub repository.
+into a GitHub repository. Amended by
+[0260](0260-a-playgrounds-guests-come-in-through-an-expiring-link.md): its admins let guests in
+through an expiring link, so access is no longer the maker's and the superadmin's alone.
 
 ## Context
 

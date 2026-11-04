@@ -5,6 +5,7 @@
 Accepted. Specified in [SPEC-290](../../.ai/specs/SPEC-290-fix-status-was-working-while-the-goal-wa.md);
 task #276, issue #877. Refines the finish rule (SPEC-002 §6.1, TSK-014) and
 [ADR-0115](0115-a-received-hook-is-applied-to-its-end.md)'s hook handling.
+Refined by [0225](0225-claude-code-owns-the-goal-retry-after-an-api-error.md).
 
 ## Context
 

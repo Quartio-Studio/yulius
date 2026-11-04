@@ -6,7 +6,14 @@ Accepted. Specified in [SPEC-037](../../.ai/specs/SPEC-037-i-got-something-like-
 Supersedes the "no MCP server" part of [0020](0020-cockpit-as-a-plain-shell-session.md); the
 Cockpit still has no hooks, settings, briefing, gates or approval bypass. Amended by
 [0165](0165-the-superagent-bypasses-approvals-on-contained-servers.md): on a contained server it
-bypasses approvals, so "asks the person first" below holds only on an uncontained one.
+bypasses approvals, so "asks the person first" below holds only on an uncontained one. Its tool set grew with
+[0049](0049-management-tools-cover-the-task-and-automation-lifecycle.md),
+[0144](0144-the-superagent-reads-the-agent-vault-and-verifies-values-by-hash.md),
+[0150](0150-the-superagent-uses-agent-secrets-as-a-task-does.md),
+[0167](0167-agents-create-agent-secrets-from-a-file-yulius-reads.md),
+[0178](0178-the-superagent-messages-tasks-by-queueing-or-typing.md) and
+[0227](0227-the-superagent-starts-tasks-in-other-sandboxes-only-on-its-persons-approval.md); the
+served set is `COCKPIT_TOOLS` in `mcp.rs`.
 
 ## Context
 

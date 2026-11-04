@@ -227,6 +227,9 @@ async fn lifecycle(f: &Fixture) -> TestResult {
                 exit_code: None,
                 started_at: Timestamp(start),
                 ended_at: None,
+                kind: yulius_domain::rollback::CdRunKind::Deploy,
+                source: None,
+                steps: Vec::new(),
             })
             .await?;
         store

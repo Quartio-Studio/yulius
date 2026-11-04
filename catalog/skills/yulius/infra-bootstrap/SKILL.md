@@ -1,6 +1,6 @@
 ---
 name: infra-bootstrap
-description: Lay a project's engineering foundations the way a senior engineer would - strong unit and integration tests, lint and format, one local gate that our own CI runs (no GitHub Actions), CD (deployment) with dev and production deploy and verify scripts, AGENTS.md, architecture and product docs, GitHub labels and templates. Use on the first prompt of a fresh project, during onboarding, when the briefing lists missing foundations, or to set up or change CD.
+description: Lay a project's engineering foundations the way a senior engineer would - strong unit and integration tests, lint and format, one local gate that our own CI runs (no GitHub Actions), CD (deployment) with dev and production deploy, verify and rollback scripts, AGENTS.md, architecture and product docs, GitHub labels and templates. Use on the first prompt of a fresh project, during onboarding, when the briefing lists missing foundations, or to set up or change CD.
 ---
 
 # Infra bootstrap
@@ -111,6 +111,8 @@ example when it starts deploying for real), and record every change as a decisio
    about = "the team's dev VM"
    deploy = "scripts/cd/deploy.sh dev"
    verify = "scripts/cd/verify.sh dev"   # a smoke test of what is deployed
+   rollback = "scripts/cd/rollback.sh dev"  # redeploys the kept release $YULIUS_CD_RELEASE
+   migrations = "expand/contract: the previous release reads the new schema"
    secrets = "DEV_SSH_KEY DEV_HOST"      # agent secrets; a person allows each outside the proxy
    states = ["DEV_OPERATOR"]             # agent states: restored before, saved after each run
 
@@ -118,6 +120,8 @@ example when it starts deploying for real), and record every change as a decisio
    promote = true                        # first promote the integration branch (a push to main)
    deploy = "scripts/cd/deploy.sh prod"
    verify = "scripts/cd/verify.sh prod"
+   rollback = "scripts/cd/rollback.sh prod"
+   migrations = "expand/contract: the previous release reads the new schema"
 
    [cd.platform]                         # one more target, deployed and verified on its own
    stage = "prod"                        # its rules: "dev" (agents, integration branch) or "prod"
@@ -157,6 +161,33 @@ example when it starts deploying for real), and record every change as a decisio
      runs outside it on a clean system, so production scripts install what they need (a CLI, a
      package) into `$YULIUS_CD_CACHE` themselves. You improve CD only through a pull request, and
      nothing you merge reaches production until a person deploys it.
+   - **Rollback from day one** (SPEC-415). Every table with a `deploy` also has `rollback` and
+     `migrations`; Yulius refuses production deploys until a rollback is configured and proven.
+     - The deploy names what it shipped with an output line `::yulius-release <id>` (an image
+       tag, a binary's version, a channel release; without one the commit is the release). An
+       environment that ships several parts separately lists them, `parts = ["engine",
+       "infra"]`, and names each part it shipped: `::yulius-release engine=1.4.2`. The project
+       keeps those artifacts for at least its last 10 deploys: a rollback never builds.
+     - `rollback` redeploys the release in `$YULIUS_CD_RELEASE` (the part in `$YULIUS_CD_PART`,
+       its commit in `$YULIUS_CD_RELEASE_SHA`; `$YULIUS_CD_DRILL` is `1` in a drill) and exits
+       non-zero when it cannot; then Yulius runs `verify`, exactly as after a deploy. It runs the
+       scripts of the branch head, never the release's commit, so it works for releases deployed
+       before it existed.
+     - `migrations` says in one line how schema and data changes stay compatible with the
+       previous release (expand, migrate, contract over two releases; or "none: stateless"). A
+       deploy whose change cannot be undone prints `::yulius-rollback-barrier <reason>`
+       (`<part>: <reason>` for one part); Yulius then refuses rollbacks past that release and
+       shows why next to it.
+     - After every passed dev deploy Yulius drills the rollback by itself: back to the previous
+       release, verify, forward to the new one, verify. A production table is proven by the
+       drill of `dev` (`drill = "<name>"` names another dev-stage environment) at the commit it
+       deploys, so deploy dev first. The drill never touches production.
+     - The gate tests the rollback script: without `YULIUS_CD_RELEASE` it refuses (non-zero), and
+       with `YULIUS_CD_RELEASE=<id> YULIUS_CD_DRY_RUN=1` it says what it would switch to and
+       exits 0, changing nothing.
+     - Who rolls back: dev, a person on the CD page or an agent with `cd_rollback`; production,
+       a person with administrator access who types the project's slug ("Roll back to previous"
+       or "Roll back to this" on the CD page).
    - **State a deploy tool keeps** (an inventory, rollout receipts, locks, pinned host keys) is an
      agent state, never a file in the repository or on the laptop: name it in `states`. Before
      the deploy the run restores the vault's newest version into a folder of its own and exports
@@ -213,6 +244,7 @@ example when it starts deploying for real), and record every change as a decisio
   AGENTS.md asks for the scan before delivery; without one, the summary says it was skipped.
 - `[cd.dev]` and `[cd.prod]` are defined (empty with an `about` when nothing deploys yet), with a
   `[cd.<name>]` and its `stage` for each further target, and each one that deploys has a deploy
-  and a verify script that passed on a real run.
+  and a verify script that passed on a real run, and a `rollback` with its `migrations` line
+  whose dev drill passed after two dev deploys; the gate tests the rollback script.
 - The docs describe the project as it is, and each choice has an ADR.
 - The critical and high-cost conventions are codified as primitives or checked by the gate.

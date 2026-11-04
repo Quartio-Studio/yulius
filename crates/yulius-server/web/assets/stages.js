@@ -27,13 +27,16 @@ const DELIVERY_NAMES = {
 const KIND_NAMES = {
   state: 'State', step: 'Step', run: 'Run', pause: 'Pause', delivery: 'Delivery', wait: 'Wait',
   update: 'Update', queue: 'Queue', prepare: 'Preparation', job: 'Job', stage: 'Stage',
-  promote: 'Promotion', deploy: 'Deploy', verify: 'Verify',
+  promote: 'Promotion', deploy: 'Deploy', verify: 'Verify', rollback: 'Rollback',
 };
 const SUBJECT_NAMES = { task: 'Task', ci_run: 'CI', cd_run: 'CD' };
 const WAIT_KINDS = new Set(['queue', 'wait', 'pause']);
 const FAILED = new Set(['failed', 'error']);
 const PAUSE_NAMES = { limit: 'Usage limit', turn: 'Capacity at a turn', prompt: 'Capacity before a prompt', start: 'Capacity before the start' };
 const WAIT_NAMES = { needs_you: 'Asked a person', merge_armed: 'Armed merge, waiting for checks', 'job slot': 'Waiting for a job slot', confirmation: 'Confirmation' };
+
+/** A CD run's span in words: what it did (SPEC-415). */
+const cdRunName = (detail) => (detail && detail.kind === 'rollback' ? 'Rollback' : detail && detail.kind === 'drill' ? 'Rollback drill' : 'Deployment');
 
 /** The words for a span (or a stage row): "Queued", "Pull request open", "Job quality". */
 export function stageLabel(span) {
@@ -42,13 +45,13 @@ export function stageLabel(span) {
   if (kind === 'delivery') return DELIVERY_NAMES[name] || name;
   if (kind === 'pause') return PAUSE_NAMES[name] || `Pause: ${name}`;
   if (kind === 'wait') return WAIT_NAMES[name] || name;
-  if (kind === 'run') return span.subject_kind === 'task' ? `Run${span.detail && span.detail.seq ? ` ${span.detail.seq}` : ''}` : span.subject_kind === 'cd_run' ? 'Deployment' : 'Run';
+  if (kind === 'run') return span.subject_kind === 'task' ? `Run${span.detail && span.detail.seq ? ` ${span.detail.seq}` : ''}` : span.subject_kind === 'cd_run' ? cdRunName(span.detail) : 'Run';
   if (kind === 'queue') return name === 'queue' ? 'Queue' : name.replace(/^queue · /, 'Queue: ');
   if (kind === 'job') return `Job ${name}`;
   if (kind === 'step' && name === 'step') return 'Steps';
   if (kind === 'prepare') return name === 'checkout' ? 'Checkout' : name === 'commit' ? 'Fetch the commit' : 'Checks';
   if (kind === 'promote') return 'Promotion';
-  if (kind === 'deploy' || kind === 'verify') return KIND_NAMES[kind];
+  if (kind === 'deploy' || kind === 'verify' || kind === 'rollback') return KIND_NAMES[kind];
   if (kind === 'update') return `Update ${name}`;
   return name;
 }

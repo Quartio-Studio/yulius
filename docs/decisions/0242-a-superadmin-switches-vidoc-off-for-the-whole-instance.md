@@ -4,7 +4,9 @@
 
 Accepted. Specified in [SPEC-356](../../.ai/specs/SPEC-356-vidoc-security-should-be-optional-and-su.md);
 task #338. Amends [ADR-0229](0229-a-person-switches-a-projects-vidoc-scans-off-in-yulius.md), which
-rejected an instance-wide pause; the per-project switch stays.
+rejected an instance-wide pause; the per-project switch stays. Complemented by
+[ADR-0245](0245-a-sandboxs-admins-switch-its-vidoc-scans-on-its-ci-cd-page.md): the CI/CD page's
+Security scan card shows the instance switch's state.
 
 ## Context
 

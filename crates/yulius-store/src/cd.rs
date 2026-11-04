@@ -8,12 +8,38 @@ use yulius_app::ports::store_ext::CdStore;
 use yulius_domain::cd::CdStage;
 use yulius_domain::ci::RunState;
 use yulius_domain::ids::{SandboxId, TaskId};
+use yulius_domain::rollback::{CdRunKind, ReleaseKind, ReleaseRecord, RollbackStep, kept};
 use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db};
 
 const COLS: &str = "id, sandbox_id, environment, stage, branch, sha, state, reason, requested_by, \
-    task_id, deploy, verify, note, exit_code, started_at, ended_at";
+    task_id, deploy, verify, note, exit_code, started_at, ended_at, kind, source, steps";
+
+/// A rollback's or a drill's steps as stored: `[[part, release, sha], ...]`.
+fn steps_json(steps: &[RollbackStep]) -> Option<String> {
+    (!steps.is_empty()).then(|| {
+        serde_json::Value::Array(
+            steps
+                .iter()
+                .map(|s| serde_json::json!([s.part, s.release, s.sha]))
+                .collect(),
+        )
+        .to_string()
+    })
+}
+
+fn steps_from(text: Option<String>) -> rusqlite::Result<Vec<RollbackStep>> {
+    let Some(text) = text else {
+        return Ok(Vec::new());
+    };
+    let parsed: Vec<(String, String, String)> =
+        serde_json::from_str(&text).map_err(|_| bad_column("CD run steps", &text))?;
+    Ok(parsed
+        .into_iter()
+        .map(|(part, release, sha)| RollbackStep { part, release, sha })
+        .collect())
+}
 
 fn run_from_row(row: &Row<'_>, with_output: bool) -> rusqlite::Result<CdRunRecord> {
     let sandbox: String = row.get("sandbox_id")?;
@@ -44,6 +70,26 @@ fn run_from_row(row: &Row<'_>, with_output: bool) -> rusqlite::Result<CdRunRecor
         exit_code: row.get("exit_code")?,
         started_at: Timestamp(row.get("started_at")?),
         ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
+        kind: {
+            let kind: String = row.get("kind")?;
+            CdRunKind::parse(&kind).ok_or_else(|| bad_column("CD run kind", &kind))?
+        },
+        source: row.get("source")?,
+        steps: steps_from(row.get("steps")?)?,
+    })
+}
+
+fn release_from_row(row: &Row<'_>) -> rusqlite::Result<ReleaseRecord> {
+    let kind: String = row.get("kind")?;
+    Ok(ReleaseRecord {
+        part: row.get("part")?,
+        release: row.get("release")?,
+        sha: row.get("sha")?,
+        kind: ReleaseKind::parse(&kind).ok_or_else(|| bad_column("release kind", &kind))?,
+        requested_by: row.get("requested_by")?,
+        at: Timestamp(row.get("at")?),
+        barrier: row.get("barrier")?,
+        run_id: row.get("run_id")?,
     })
 }
 
@@ -71,7 +117,8 @@ impl CdStore for SqliteStore {
             let inserted = c.execute(
                 &format!(
                     "INSERT INTO cd_runs ({COLS}, output) VALUES \
-                     (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"
+                     (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, \
+                      ?18, ?19, ?20)"
                 ),
                 params![
                     run.id,
@@ -90,6 +137,9 @@ impl CdStore for SqliteStore {
                     run.exit_code,
                     run.started_at.0,
                     run.ended_at.map(|t| t.0),
+                    run.kind.as_str(),
+                    run.source,
+                    steps_json(&run.steps),
                     run.output,
                 ],
             );
@@ -253,6 +303,119 @@ impl CdStore for SqliteStore {
         })
         .await
     }
+
+    async fn last_cd_run_of_kind(
+        &self,
+        sandbox: &SandboxId,
+        environment: &str,
+        stage: CdStage,
+        kind: CdRunKind,
+    ) -> AppResult<Option<CdRunRecord>> {
+        let (sandbox, environment) = (sandbox.as_str().to_owned(), environment.to_owned());
+        let (stage, kind) = (stage.as_str(), kind.as_str());
+        self.call(move |c| {
+            Ok(select(
+                c,
+                "sandbox_id = ?1 AND environment = ?2 AND stage = ?3 AND kind = ?4 \
+                 ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                &[&sandbox, &environment, &stage, &kind],
+            )?
+            .into_iter()
+            .next())
+        })
+        .await
+    }
+
+    async fn insert_cd_releases(
+        &self,
+        sandbox: &SandboxId,
+        environment: &str,
+        stage: CdStage,
+        records: &[ReleaseRecord],
+    ) -> AppResult<()> {
+        let (sandbox, environment) = (sandbox.as_str().to_owned(), environment.to_owned());
+        let (stage, records) = (stage.as_str(), records.to_vec());
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            for r in &records {
+                tx.execute(
+                    "INSERT INTO cd_releases (sandbox_id, environment, stage, part, release, sha, \
+                     kind, requested_by, at, barrier, run_id) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    params![
+                        sandbox,
+                        environment,
+                        stage,
+                        r.part,
+                        r.release,
+                        r.sha,
+                        r.kind.as_str(),
+                        r.requested_by,
+                        r.at.0,
+                        r.barrier,
+                        r.run_id
+                    ],
+                )
+                .map_err(db)?;
+                // What retention keeps (review M3 of SPEC-415): `rollback::kept`.
+                let rows: Vec<(i64, String, String)> = {
+                    let mut stmt = tx
+                        .prepare(
+                            "SELECT id, kind, release FROM cd_releases WHERE sandbox_id = ?1 \
+                             AND environment = ?2 AND stage = ?3 AND part = ?4 ORDER BY id DESC",
+                        )
+                        .map_err(db)?;
+                    stmt.query_map(params![sandbox, environment, stage, r.part], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                    })
+                    .map_err(db)?
+                    .collect::<Result<_, _>>()
+                    .map_err(db)?
+                };
+                let view: Vec<(ReleaseKind, &str)> = rows
+                    .iter()
+                    .map(|(_, kind, release)| {
+                        (
+                            ReleaseKind::parse(kind).unwrap_or(ReleaseKind::Rollback),
+                            release.as_str(),
+                        )
+                    })
+                    .collect();
+                for ((id, _, _), keep) in rows.iter().zip(kept(&view)) {
+                    if !keep {
+                        tx.execute("DELETE FROM cd_releases WHERE id = ?1", [id])
+                            .map_err(db)?;
+                    }
+                }
+            }
+            tx.commit().map_err(db)
+        })
+        .await
+    }
+
+    async fn cd_releases(
+        &self,
+        sandbox: &SandboxId,
+        environment: &str,
+        stage: CdStage,
+    ) -> AppResult<Vec<ReleaseRecord>> {
+        let (sandbox, environment) = (sandbox.as_str().to_owned(), environment.to_owned());
+        let stage = stage.as_str();
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT part, release, sha, kind, requested_by, at, barrier, run_id \
+                     FROM cd_releases WHERE sandbox_id = ?1 AND environment = ?2 AND stage = ?3 \
+                     ORDER BY id DESC",
+                )
+                .map_err(db)?;
+            stmt.query_map(params![sandbox, environment, stage], release_from_row)
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -280,6 +443,9 @@ mod tests {
             exit_code: None,
             started_at: Timestamp(at),
             ended_at: None,
+            kind: yulius_domain::rollback::CdRunKind::Deploy,
+            source: None,
+            steps: Vec::new(),
         })
     }
 
@@ -292,6 +458,200 @@ mod tests {
             ended_at: Timestamp(at),
             usage: None,
         }
+    }
+
+    /// SPEC-415: a run keeps its kind, its scripts' commit and its steps; the newest of a kind is
+    /// found per environment and stage.
+    #[tokio::test]
+    async fn runs_keep_their_kind_and_steps() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        store.insert_cd_run(&run("d1", "dev", 1)?).await?;
+        store.finish_cd_run("d1", &end(RunState::Passed, 2)).await?;
+        let steps = vec![
+            RollbackStep {
+                part: "engine".into(),
+                release: "1.4.1".into(),
+                sha: "b".repeat(40),
+            },
+            RollbackStep {
+                part: "engine".into(),
+                release: "1.4.2".into(),
+                sha: "a".repeat(40),
+            },
+        ];
+        let drill = CdRunRecord {
+            kind: CdRunKind::Drill,
+            source: Some("c".repeat(40)),
+            steps: steps.clone(),
+            requested_by: "yulius".into(),
+            ..run("x1", "dev", 3)?
+        };
+        store.insert_cd_run(&drill).await?;
+        let read = store.cd_run("x1", false).await?.ok_or("x1")?;
+        assert_eq!(
+            (read.kind, read.source.as_deref(), read.steps),
+            (CdRunKind::Drill, drill.source.as_deref(), steps)
+        );
+        assert_eq!(
+            store.cd_run("d1", false).await?.ok_or("d1")?.kind,
+            CdRunKind::Deploy
+        );
+        let sandbox = SandboxId::parse("s1")?;
+        let newest = store
+            .last_cd_run_of_kind(&sandbox, "dev", CdStage::Dev, CdRunKind::Drill)
+            .await?;
+        assert_eq!(newest.map(|r| r.id), Some("x1".to_owned()));
+        assert!(
+            store
+                .last_cd_run_of_kind(&sandbox, "dev", CdStage::Prod, CdRunKind::Drill)
+                .await?
+                .is_none()
+        );
+        assert!(
+            store
+                .last_cd_run_of_kind(&sandbox, "dev", CdStage::Dev, CdRunKind::Rollback)
+                .await?
+                .is_none()
+        );
+        let kind: String = store
+            .call(|c| {
+                c.query_row(
+                    "SELECT json_extract(detail, '$.kind') FROM spans \
+                     WHERE subject_kind = 'cd_run' AND subject_id = 'x1' AND key = 'run'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(db)
+            })
+            .await?;
+        assert_eq!(kind, "drill", "the run's span says what it did");
+        Ok(())
+    }
+
+    /// SPEC-415 RBK-012: releases are kept per environment, stage and part, newest first, the
+    /// newest 20 of each part.
+    #[tokio::test]
+    async fn releases_are_kept_per_part() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        let sandbox = SandboxId::parse("s1")?;
+        let record = |part: &str, release: String, kind| ReleaseRecord {
+            part: part.into(),
+            sha: "a".repeat(40),
+            release,
+            kind,
+            requested_by: "alice".into(),
+            at: Timestamp(1),
+            barrier: None,
+            run_id: "r".into(),
+        };
+        for n in 0..25 {
+            store
+                .insert_cd_releases(
+                    &sandbox,
+                    "dev",
+                    CdStage::Dev,
+                    &[
+                        record("engine", format!("e{n}"), ReleaseKind::Deploy),
+                        record("infra", format!("i{n}"), ReleaseKind::Deploy),
+                    ],
+                )
+                .await?;
+        }
+        let back = ReleaseRecord {
+            barrier: Some("schema v2".into()),
+            ..record("infra", "i3".into(), ReleaseKind::Rollback)
+        };
+        store
+            .insert_cd_releases(&sandbox, "dev", CdStage::Dev, std::slice::from_ref(&back))
+            .await?;
+        store
+            .insert_cd_releases(
+                &sandbox,
+                "dev",
+                CdStage::Prod,
+                &[record("", "p1".into(), ReleaseKind::Deploy)],
+            )
+            .await?;
+        let all = store.cd_releases(&sandbox, "dev", CdStage::Dev).await?;
+        let engine: Vec<&str> = all
+            .iter()
+            .filter(|r| r.part == "engine")
+            .map(|r| r.release.as_str())
+            .collect();
+        assert_eq!(engine.len(), 20);
+        assert_eq!(
+            (engine[0], engine[19]),
+            ("e24", "e5"),
+            "newest first, the oldest pruned"
+        );
+        let infra: Vec<&ReleaseRecord> = all.iter().filter(|r| r.part == "infra").collect();
+        assert_eq!(infra.len(), 20);
+        assert_eq!(
+            infra[0], &back,
+            "a rollback is the newest record, as written"
+        );
+        assert_eq!(infra[1].release, "i24");
+        let prod = store.cd_releases(&sandbox, "dev", CdStage::Prod).await?;
+        assert_eq!(prod.len(), 1, "a stage keeps its own");
+        assert!(
+            store
+                .cd_releases(&sandbox, "prod", CdStage::Prod)
+                .await?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    /// Review M3 of SPEC-415: rollbacks never push out the deploys a rollback goes to.
+    #[tokio::test]
+    async fn rollbacks_never_push_out_the_kept_deploys() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        let sandbox = SandboxId::parse("s1")?;
+        let record = |release: String, kind| ReleaseRecord {
+            part: String::new(),
+            sha: "a".repeat(40),
+            release,
+            kind,
+            requested_by: "alice".into(),
+            at: Timestamp(1),
+            barrier: None,
+            run_id: "r".into(),
+        };
+        for n in 1..=12 {
+            let deployed = [record(format!("v{n}"), ReleaseKind::Deploy)];
+            store
+                .insert_cd_releases(&sandbox, "dev", CdStage::Dev, &deployed)
+                .await?;
+        }
+        for _ in 0..25 {
+            let back = [record("v3".into(), ReleaseKind::Rollback)];
+            store
+                .insert_cd_releases(&sandbox, "dev", CdStage::Dev, &back)
+                .await?;
+        }
+        let all = store.cd_releases(&sandbox, "dev", CdStage::Dev).await?;
+        assert_eq!(
+            all.len(),
+            30,
+            "the newest 20 and the deploys of 10 releases"
+        );
+        let deploys: Vec<&str> = all
+            .iter()
+            .filter(|r| r.kind == ReleaseKind::Deploy)
+            .map(|r| r.release.as_str())
+            .collect();
+        assert_eq!(
+            deploys,
+            [
+                "v12", "v11", "v10", "v9", "v8", "v7", "v6", "v5", "v4", "v3"
+            ]
+        );
+        let history = yulius_domain::rollback::History(&all);
+        assert!(
+            history.find("v4").is_some(),
+            "rolling forward again stays possible"
+        );
+        Ok(())
     }
 
     /// SPEC-134 CDR-004: one running run per environment; it ends once.
@@ -373,7 +733,7 @@ mod tests {
         store
             .call(move |c| {
                 c.execute_batch(
-                    "DROP TRIGGER spans_cd_run_insert; ALTER TABLE cd_runs DROP COLUMN stage;\
+                    "DROP TRIGGER spans_cd_run_insert; DROP INDEX cd_runs_kind; ALTER TABLE cd_runs DROP COLUMN stage;\
                      INSERT INTO cd_runs (id, sandbox_id, environment, branch, sha, state, requested_by, started_at) \
                      VALUES ('d', 's1', 'dev', 'dev', 'a', 'passed', 'x', 1), \
                             ('p', 's1', 'prod', 'main', 'b', 'passed', 'x', 2); \

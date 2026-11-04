@@ -1110,7 +1110,7 @@ Mechanisms considered for *using* a secret:
 | --- | --- |
 | (i) HTTP APIs: credential-injecting egress proxy | **Chosen.** Below. |
 | (ii) Website sign-in: `browser_fill_secret` types into the sandbox browser | **Chosen.** Only into a tab whose page is on a bound host (no typing a password into an attacker's page); returns no value; audited. |
-| (iii) CLIs | Token CLIs (`gh`, `vercel`, `stripe`, `supabase`, SDKs) work unchanged through the proxy and placeholders (`GH_TOKEN=yulius-secret-GH_TOKEN`). Git keeps its credential helper (a token the agent can read, as before: since F 2026-10-11 its task creator's, §8). Helpers that print a credential to their caller (`credential_process`, Docker helpers) would hand it to the agent: not offered. Request-signing CLIs (AWS SigV4, service-account JWTs) need the key itself: not supported; give them short-lived scoped credentials. |
+| (iii) CLIs | Token CLIs (`gh`, `vercel`, `stripe`, `supabase`, SDKs) work unchanged through the proxy and placeholders (`GH_TOKEN=yulius-secret-GH_TOKEN`). Git keeps its credential helper (a token the agent can read, as before: since F 2026-10-11 its task owner's, SPEC-070, §8). Helpers that print a credential to their caller (`credential_process`, Docker helpers) would hand it to the agent: not offered. Request-signing CLIs (AWS SigV4, service-account JWTs) need the key itself: not supported; give them short-lived scoped credentials. |
 | Environment variables or files with real values; an MCP tool returning a value | Rejected: the agent reads them. |
 | A tool that performs HTTP requests on the agent's behalf | Works, but every SDK and CLI would have to be rewritten around a tool; the proxy covers real programs. |
 
@@ -1968,35 +1968,48 @@ translated. A switch resumes the task's own Claude session on another account.
 
 ### 7.4 Yulius MCP (internal listener `/mcp`, Streamable HTTP, JSON-RPC 2.0)
 
-Authentication: `Authorization: Bearer <task token>`; token → (task, attempt). A Cockpit's
-`ck_…` bearer (SPEC-037, ADR-0029) resolves to its owner and sandbox and is served only the
-management tools (tasks, automations, workflows, sessions). Protocol versions
+Authentication: `Authorization: Bearer <task token>`; token → (task, attempt). Task runs reach the
+listener through `yulius mcp`, a stdio bridge that lives as long as the session and holds a call
+Yulius never read through its outage (SPEC-358, ADR-0244). A Cockpit's `ck_…` bearer (SPEC-037,
+ADR-0029) connects over HTTP, resolves to its owner and sandbox and is served only
+`COCKPIT_TOOLS` (`mcp.rs`): the task, automation, workflow and session tools, `attachments_trash`,
+`task_message`, the vault tools it shares with tasks, `secret_verify`, `sandboxes_list` and
+`sandbox_task_create`. Protocol versions
 accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 
 | Tool | Purpose (requirements) |
 | --- | --- |
 | `project_context` | Project summary, architecture/decision index, recent changes, delivery rules (COM-004, DSC-009) |
 | `tasks_list`, `task_get` | Previous and parallel tasks: status, harness, branch, spec, steps, summary (COM-001) |
-| `task_create` | Create and start a task as New task does, origin `agent`, for the task's creator or the Cockpit's owner; at most 20 per project and rolling hour (SPEC-037 MGT-001..003) |
+| `task_create` | Create and start a task as New task does, origin `agent`, for the task's owner or the Cockpit's owner; at most 20 per project and rolling hour (SPEC-037 MGT-001..003) |
 | ~~`message_send`, `messages_inbox`~~ | Withdrawn (SPEC-028, ADR-0023): no message tools. |
 | `scope_claim`, `scope_release`, `scopes_list` | Advisory path-glob claims with conflict report (COM-003) |
 | `record_number` | The next free number of a directory's numbered files (ADRs, specs, migrations), past the integration branch, every live task and every reservation, reserved for the task (SPEC-083 NUM-001..003) |
 | `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002, STP-006..008): plan bounds, effort, WIP limit, no reopening by agents, weighted `percent` and `nudges` in every result (ADR-19) |
 | `spec_check` | Run the format validator on the task spec and docs (DSC-003); `required` per the spec policy (DSC-013) and `plan_nudges` |
+| `task_update` | Change how a chained or prepared task starts (`after_task`, `start_rule`, `supertask`, `prepared`, `start_at`), as `PUT /api/tasks/{tid}/start` (SPEC-126, SPEC-396) |
+| `attachments_trash` | Deleted tasks' attachments, kept 7 days; `restore` moves one entry's files into a task (`into`, by default the caller's own) (SPEC-396, ADR-0253) |
+| `task_message` | The Cockpit only: a person's message to a task, queued into its request or typed into its running session (SPEC-230, ADR-0178) |
+| `sandboxes_list`, `sandbox_task_create` | The Cockpit only: the person's other sandboxes, and a task there once the person approves the request (SPEC-335, ADR-0227) |
 | `task_stop`, `task_archive`, `task_delete` | The UI's stop, archive and delete of another task of the project, for the person the caller acts for, audited with the caller; never the caller's own task (SPEC-066 MGT-008..010) |
 | `automation_create`, `automations_list`, `automation_update` | Prompt-created automations (AUT-002); `automations_list` also lists the ready-made ones (`ready_made`, SPEC-066 AUT-012) |
 | `automation_delete`, `automation_run_now`, `automation_template_enable` | The Automations page's delete, Run now and Enable of a ready-made automation, audited with the caller (SPEC-066 MGT-011, AUT-012) |
 | `workflows_list` | Workflows available, the defaults first with `builtin` and `when_to_use` (AUT-004, AUT-006) |
 | `browser_tabs`, `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_screenshot`, `browser_request_user_action` | Shared sandbox browser control and user hand-off (BRW-003/004) |
-| `delivery_status` | Read-only PR/checks/profile status (GIT-001); no merge tool (GIT-002) |
 | `sessions_search`, `session_read` | Sessions as docs (SES-005): full-text search over the task and imported sessions of the agent's sandbox (its own sessions excluded; ≤ 20 sessions, ≤ 3 passages each) and a bounded read of one session by id or task number (≤ 200 entries, ≤ 100 000 characters, `next_from`); never another sandbox's |
 | `secrets_list`, `browser_fill_secret` | Agent secrets: names, descriptions and bindings; typing a value, user name or TOTP code into a page of a bound host (VLT-004/005, ADR-20) |
+| `secret_request_hosts`, `secret_copy_to_env`, `secret_create_from_file`, `secret_state_restore`, `secret_state_save` | Asking a person to bind a secret's hosts, real values into a git-ignored `.env`, a secret from a file nobody sees, and agent states restored into and saved from the sandbox home (SPEC-121, SPEC-129, SPEC-211, SPEC-271; the last two tasks only) |
+| `secret_verify` | The Cockpit only: whether a value the person holds is an agent secret's, from its SHA-256 (SPEC-178) |
 | `ci_status`, `ci_rerun` | The CI in force and recent runs (this task's pull request first), one run with the output tails (16 KiB) of its failed or errored jobs, or of the job named by `job`, run a commit again (DLV-006, SPEC-086) |
 | `ci_setup` | Onboarding off GitHub Actions: the worktree's workflows summarized, its `[[ci.jobs]]`, the steps (DLV-006) |
 | `repo_hygiene`, `repo_cleanup` | Stale branches and worktrees; removal of safe items, `force` for unmerged branches without a pull request (DLV-007) |
 | `delivery_status` | PR/checks/profile status and next actions (GIT-001) |
-| `issue_create` | A GitHub issue meeting the Definition of Ready (one `type:`, one `priority:`, at least one `area:` label; an `## Acceptance criteria` checklist), as the task creator or the App; labels created when missing (DLV-008) |
-| `delivery_merge`, `delivery_deploy`, `delivery_promote` | Agents deliver their own work (DLV-008, ADR-19): the person paths (`merge_task_pr`, `start_environment_run`, `promote_sandbox`) run with the task creator's authority, plus an independent review of the exact head (or of an earlier one the branch moved past only through clean merges of the integration branch, SPEC-083 REV-001) and passed checks for a merge (`reviewed_head`), command-verified environments only for a deploy; each action is also audited as `task:<n>` |
+| `cd_status`, `cd_deploy`, `cd_rollback` | CD environments, runs, releases and output; a deploy or a rollback of a dev-stage environment only (SPEC-134, SPEC-257, SPEC-415, ADR-0110) |
+| `needs_you` | Ask a person for what only a person can do; the task shows "Needs you" until a person writes or `resolved: true` (SPEC-134) |
+| `production_protect` | The onboarding task only: a ruleset protecting the production branch, as the owner when GitHub says they are an admin (ADR-0114, ADR-0129) |
+| `reference_repo` | Another repository of the owner, fetched as the owner when they can read it, bounded by a 1 GiB cap (SPEC-267, ADR-0197, ADR-0223, ADR-0236) |
+| `issue_create` | A GitHub issue meeting the Definition of Ready (one `type:`, one `priority:`, at least one `area:` label; an `## Acceptance criteria` checklist), as the task owner or the App; labels created when missing (DLV-008) |
+| `delivery_merge`, `delivery_deploy` | Agents deliver their own work (DLV-008, ADR-19; no promotion tool, ADR-0110): the person paths (`merge_task_pr`, `start_environment_run`) run with the task owner's authority, plus an independent review of the exact head (or of an earlier one the branch moved past only through clean merges of the integration branch, SPEC-083 REV-001) and passed checks for a merge (`reviewed_head`), command-verified environments only for a deploy; each action is also audited as `task:<n>` |
 
 Every tool the briefing announces (`YULIUS_TOOLS`) is served; a unit test fails otherwise (#50).
 A tool builds a record and answers with short text rendered from it (`yulius-app::mcp_text`,
@@ -2037,7 +2050,9 @@ task's activity nor its achieved goal (SPEC-346 LPH-002, ADR-0234). Responses:
   until a `200` (printed as usual), a 4xx (fails open) or 8 days pass (fails open); while held, a
   refused connection or a 5xx is retried every 2 s (a server restart). The CLI's `timeout` for
   these two events is 8 days + 1 h; the other events keep 15 s.
-- `Notification` / `PermissionRequest` → `needs_attention` only for the `notification_type`s that ask a person to act: `permission_prompt`, `worker_permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`. Every other type (Claude Code 2.1.292 also sends `idle_prompt`, `auth_success`, `agent_completed`, `push_notification`, `quota_auto_resume_*`, `computer_use_*`, `model_refusal_fallback`, `auth_storage_failure`, and later releases add more) leaves the activity as it is, so a finished task stays `waiting`/`done` and a working one `working` (F 2026-10-11, SPEC-032 STA-002). Without `notification_type` (older CLIs) the idle text rule applies. The agent's next assistant line after such a notice makes the task `working` again (STA-003).
+- `PreToolUse` (matcher `Bash`, `guard_client.rs`) never reaches the server: the hook client refuses
+  a command whose `pgrep -f`/`pkill -f` pattern matches its own `bash -c` line.
+- `Notification` → `needs_attention` only for the `notification_type`s that ask a person to act: `permission_prompt`, `worker_permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`. Every other type (Claude Code 2.1.292 also sends `idle_prompt`, `auth_success`, `agent_completed`, `push_notification`, `quota_auto_resume_*`, `computer_use_*`, `model_refusal_fallback`, `auth_storage_failure`, and later releases add more) leaves the activity as it is, so a finished task stays `waiting`/`done` and a working one `working` (F 2026-10-11, SPEC-032 STA-002). Without `notification_type` (older CLIs) the idle text rule applies. The agent's next assistant line after such a notice makes the task `working` again (STA-003).
 - `SessionEnd` → no output; its `reason` is kept for the run until it exits: `prompt_input_exit`
   (`/exit`, Ctrl+C twice, Ctrl+D) and `logout` make the exit a normal close whatever its code;
   `clear` (the process goes on with a new session) drops an achieved goal (§6.1).
@@ -2056,8 +2071,9 @@ task's activity nor its achieved goal (SPEC-346 LPH-002, ADR-0234). Responses:
   `hookSpecificOutput.updatedToolOutput` when it held an agent secret (ADR-20); without
   fingerprints in a Yulius run the result is withheld.
 
-Waking idle tasks (COM-005) is withdrawn (SPEC-028, ADR-0023): Yulius never types into an agent's
-session; an agent that waits runs `yulius wait` in a background shell, which Claude Code wakes it
+Waking idle tasks (COM-005) is withdrawn (SPEC-028, ADR-0023): Yulius types into an idle agent's
+session only a person's message (`task_message`, ADR-0178) and, once after its own outage, "Yulius is back;
+continue" into a task that went idle meanwhile (SPEC-358, ADR-0244); an agent that waits runs `yulius wait` in a background shell, which Claude Code wakes it
 from.
 
 ### 7.6 Briefing
@@ -2533,7 +2549,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | R-05 | Browser video on phones and slow links. | Flow control by the viewer's acknowledgements, bitrate and frame-rate tiers following the slowest viewer, keyframes on demand, skip to a fresh keyframe per viewer (ADR-15, F 2026-10-10). Open: per-viewer tiers (the slowest viewer sets the shared stream). |
 | R-06 | Git operations of agents inside containment need credentials. | Credential helper via internal listener scoped per sandbox. |
 | R-07 | Closed by ADR-0191 (SPEC-252, #626). Chromium's DevTools endpoint was unauthenticated on loopback; before ADR-22 sandboxes shared the loopback network, and under the fallback containment (`YULIUS_ISOLATION=auto` without a holder or base) and for host processes it still did, so any local process could drive a sandbox browser and its logged-in sessions; CDP can make the uncontained browser write host files. The profile also lies inside the sandbox's writable root. | Chromium starts with `--remote-debugging-pipe`: DevTools runs on fds 3 and 4 that only Yulius holds and no DevTools socket exists, whatever the containment. A sandbox's CDP-capable MCP servers get no raw endpoint (U-10); one would need a per-sandbox authenticated endpoint. Open: the profile inside the writable root. |
-| R-08 | An unrestricted GitHub installation token works for every repository of the installation; a user-to-server token for every repository its user may use within the installation. | Mitigated: agents receive their task creator's own token (GIT-003: never more than that person may do) or, without one, an installation token restricted to their sandbox repository (`repositories` parameter); only for live task tokens and only for `github.com`, Git's requests only for `<owner>/<repo>`; unrestricted installation tokens stay server-side (delivery pushes and merges without a creator token, repository creation). Open: a user-to-server token cannot be narrowed to one repository, so a manipulated agent can act as its creator elsewhere in the installation until the token expires (8 h, §8). |
+| R-08 | An unrestricted GitHub installation token works for every repository of the installation; a user-to-server token for every repository its user may use within the installation. | Mitigated: agents receive their task owner's own token (GIT-003: never more than that person may do) or, without one, an installation token restricted to their sandbox repository (`repositories` parameter); only for live task tokens and only for `github.com`, Git's requests only for `<owner>/<repo>`; unrestricted installation tokens stay server-side (delivery pushes and merges without an owner token, repository creation). Open: a user-to-server token cannot be narrowed to one repository, so a manipulated agent can act as its owner elsewhere in the installation until the token expires (8 h, §8). |
 | R-09 | Delivery environment commands ran with the server's privileges outside containment, in a clone whose `.git` and the sandbox home are agent-writable (repository-local Git config such as filter drivers, tools reading `HOME`; #656). | Closed (SPEC-219, ADR-0175): a run takes its commit from origin into a mirror only Yulius writes, writes its tree into its own directory with a fresh `HOME` and runs through the process host in CD's containment; nothing of it reads the sandbox clone. |
 | R-10 | The MCP server connection test makes the server connect to a user-supplied URL (SSRF). | Mitigated: the host is resolved and the client pinned to the checked addresses; link-local (cloud metadata), unspecified, multicast and broadcast targets are refused for everyone; loopback and private networks only for instance administrators; no redirects; 5 s bound; only tool names or a short error are returned. |
 | R-11 | Concurrent Claude processes in one sandbox share `.claude.json`; a running Claude may rewrite the file between Yulius' trust merge and a new launch. | Merge immediately before spawn; the window is short. Live verification of concurrent launches pending. |

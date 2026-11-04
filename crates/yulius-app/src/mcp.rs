@@ -348,6 +348,15 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
             input_schema: schema(json!({"environment": {"type": "string", "description": "A dev-stage environment's name: dev, or another one cd_status lists with stage dev"}}), &["environment"]),
         },
         ToolDescriptor {
+            name: "cd_rollback".into(),
+            description: "Roll a dev-stage environment back (or forward) to a release Yulius kept from an earlier deploy, without rebuilding: Yulius runs its rollback command (YULIUS_CD_RELEASE is the release) then its verify, from the integration branch head (SPEC-415). Default: the previous release; name the part when the environment has several, and a release from cd_status to pick another. Refused for a release behind a rollback barrier (a migration that cannot be undone). Production and every production-stage environment are rolled back only by a person on the CD page; ask one with needs_you. Start `yulius wait` in the background to wait for the run's end.".into(),
+            input_schema: schema(json!({
+                "environment": {"type": "string", "description": "A dev-stage environment's name: dev, or another one cd_status lists with stage dev"},
+                "part": {"type": "string", "description": "The part to roll back, when the environment has several (cd_status lists them)"},
+                "release": {"type": "string", "description": "A kept release cd_status lists (default: the previous one)"}
+            }), &["environment"]),
+        },
+        ToolDescriptor {
             name: "needs_you".into(),
             description: "Ask a person to do something only a person can (add a credential to the vault on the Secrets page, allow a secret, deploy production, decide on a paid plan): the task shows \"Needs you: <action>\" and people are notified, until a person writes to the task or you call it again with resolved: true (for example once cd_status shows the secret). It reads as What happened, Problem and To do (Decide with decision: true): give each part in its own field, short and plain, and say exactly what to do and where in action; go on with other work meanwhile. Not for questions you can decide yourself, and not for reading another repository of this project's owner: reference_repo fetches it without a person.".into(),
             input_schema: schema(json!({
@@ -710,6 +719,7 @@ impl App {
             "delivery_deploy" => self.tool_delivery_deploy(ctx, &args).await,
             "cd_status" => self.tool_cd_status(ctx, &args).await,
             "cd_deploy" => self.tool_cd_deploy(ctx, &args).await,
+            "cd_rollback" => self.tool_cd_rollback(ctx, &args).await,
             "needs_you" => self.tool_needs_you(ctx, &args).await,
             "production_protect" => self.tool_production_protect(ctx).await,
             "reference_repo" => self.tool_reference_repo(ctx, &args).await,

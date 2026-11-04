@@ -5,7 +5,9 @@
 Accepted. Specified in [SPEC-271](../../.ai/specs/SPEC-271-laptop-onboarding-move-a-project-s-opera.md);
 task #257. Extends [0194](0194-an-operate-token-confirms-for-its-person-s-laptop-onboarding.md)
 (laptop onboarding) and [0174](0174-host-access-to-agent-owned-folders-goes-through-handles.md)
-(host writes into agent-owned folders go through handles).
+(host writes into agent-owned folders go through handles). Amended by
+[0207](0207-cd-runs-restore-and-save-agent-states-under-one-hold.md): a CD run is a writer under a
+hold.
 
 ## Context
 

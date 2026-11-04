@@ -10,6 +10,9 @@ It amends the verdict of [ADR-0157](0157-vidoc-is-an-optional-instance-key-and-t
 skip rule of [ADR-0133](0133-a-ci-job-that-checked-nothing-ends-skipped.md) and the switch of
 [ADR-0107](0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md) are kept.
 
+Amended by [ADR-0202](0202-vidoc-repeats-match-by-place-and-an-incomplete-scan-blocks-as-infrastructure.md):
+issues are filed at the run's end, after the other jobs passed.
+
 ## Context
 
 - **Nothing blocked medium findings.** The scan failed only on critical and high findings, and

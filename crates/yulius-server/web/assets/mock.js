@@ -2056,7 +2056,7 @@ function cdRun(id, environment, branch, sha, state, minutesAgo, by, extra = {}) 
   const started = Date.now() - minutesAgo * 60000;
   const ended = state === 'running' ? null : started + 95000;
   return {
-    run_id: id, environment, stage: extra.stage || (environment === 'dev' ? 'dev' : 'prod'), state, branch, commit: sha, requested_by: by,
+    run_id: id, kind: extra.kind || 'deploy', steps: extra.steps || [], environment, stage: extra.stage || (environment === 'dev' ? 'dev' : 'prod'), state, branch, commit: sha, requested_by: by,
     deploy: `scripts/cd/deploy.sh ${environment}`,
     verify: `scripts/cd/verify.sh ${environment}`,
     note: extra.note || null, reason: extra.reason || null, exit_code: state === 'passed' ? 0 : (state === 'failed' ? 3 : null),
@@ -2065,22 +2065,50 @@ function cdRun(id, environment, branch, sha, state, minutesAgo, by, extra = {}) 
   };
 }
 
+/** A kept release of the mock (SPEC-415): `ago` minutes since its deploy. */
+function cdRelease(release, commit, ago, by, extra = {}) {
+  return { release, commit, deployed_at: new Date(Date.now() - ago * 60000).toISOString(), requested_by: by, current: false, blocked: null, barrier: null, ...extra };
+}
+
+/** An environment's rollback: one part whose releases are given newest first, the first deployed. */
+function cdRollback(command, releases, extra = {}) {
+  const list = releases.map((r, i) => ({ ...r, current: i === 0 }));
+  return {
+    command, migrations: 'expand and contract: the previous release reads the new schema; a destructive step prints a barrier',
+    parts: [{ name: '', current: list.length ? list[0].release : null, previous: list.length > 1 ? list[1].release : null, releases: list }],
+    drill_environment: 'dev', drill: null, blocked: null, ...extra,
+  };
+}
+
+const NO_ROLLBACK = { command: null, migrations: null, parts: [], drill_environment: 'dev', drill: null, blocked: null };
+
 function seedCd() {
+  const drill = cdRun('cd_s3', 'dev', 'quartio', '3c5a7e9b1d2f4a6c', 'passed', 70, 'yulius', { kind: 'drill', steps: [{ part: '', release: 'v41' }, { part: '', release: 'v42' }], note: 'rollback drill after deploy cd_s0 by task #12', output: '[yulius] rollback: v41\nswitching to v41\n[yulius] verify: scripts/cd/verify.sh dev\nGET /health 200\n[yulius] rollback: v42\nswitching to v42\n[yulius] verify: scripts/cd/verify.sh dev\nGET /health 200\n[yulius] done\n' });
   return {
     sb_studio: {
       environments: [
-        { name: 'dev', label: 'dev', stage: 'dev', state: 'ready', branch: 'quartio', head: '9f3c2a1b7e4d5f6a', problem: null, about: 'the team’s dev VM', deploy: 'scripts/cd/deploy.sh dev', verify: 'scripts/cd/verify.sh dev', promote: false, secrets: [{ name: 'DEV_SSH_KEY', state: 'ready' }, { name: 'DEV_HOST', state: 'not_allowed' }] },
-        { name: 'prod', label: 'production', stage: 'prod', state: 'ready', branch: 'main', head: '4be81c0d2a9f1e2d', problem: null, about: 'customers', deploy: 'scripts/cd/deploy.sh prod', verify: 'scripts/cd/verify.sh prod', promote: true, promotes_from: '9f3c2a1b7e4d5f6a', secrets: [] },
+        { name: 'dev', label: 'dev', stage: 'dev', state: 'ready', branch: 'quartio', head: '9f3c2a1b7e4d5f6a', problem: null, about: 'the team’s dev VM', deploy: 'scripts/cd/deploy.sh dev', verify: 'scripts/cd/verify.sh dev', promote: false, secrets: [{ name: 'DEV_SSH_KEY', state: 'ready' }, { name: 'DEV_HOST', state: 'not_allowed' }],
+          rollback: cdRollback('scripts/cd/rollback.sh dev', [
+            cdRelease('v42', '3c5a7e9b1d2f4a6c', 75, 'task #12'),
+            cdRelease('v41', '8e2d4f6a1c3b5d7e', 3 * 60, 'mkarp', { barrier: 'orders.total split into two columns' }),
+            cdRelease('v40', '1a2b3c4d5e6f7a8b', 26 * 60, 'mkarp', { blocked: 'rolling back past v41 is blocked: orders.total split into two columns' }),
+          ], { drill: cdSummary(drill) }) },
+        { name: 'prod', label: 'production', stage: 'prod', state: 'ready', branch: 'main', head: '4be81c0d2a9f1e2d', problem: null, about: 'customers', deploy: 'scripts/cd/deploy.sh prod', verify: 'scripts/cd/verify.sh prod', promote: true, promotes_from: '9f3c2a1b7e4d5f6a', secrets: [],
+          rollback: cdRollback('scripts/cd/rollback.sh prod', [
+            cdRelease('v41', '4be81c0d2a9f1e2d', 26 * 60, 'mkarp'),
+            cdRelease('v39', '6f7e8d9c0b1a2f3e', 5 * 24 * 60, 'mkarp'),
+          ], { drill: cdSummary(drill), blocked: 'rollback is not proven for this commit: the last rollback drill of dev ran at 3c5a7e9; deploy dev at this commit first: its rollback drill follows by itself' }) },
       ],
       runs: [
+        drill,
         cdRun('cd_s2', 'dev', 'quartio', '7d1e0c9b8a7f6e5d', 'failed', 90, 'task #12', { reason: null, output: '[yulius] deploy: scripts/cd/deploy.sh dev\nssh: connect to host [secret:DEV_HOST] port 22: timed out\n[yulius] deploy failed with status 3; verify skipped\n' }),
         cdRun('cd_s1', 'prod', 'main', '4be81c0d2a9f1e2d', 'passed', 26 * 60, 'mkarp', { note: "promoted 'quartio' to 'main' at 4be81c0d2a9f1e2d" }),
       ],
     },
     sb_product: {
       environments: [
-        { name: 'dev', label: 'dev', stage: 'dev', state: 'empty', branch: 'quartio', head: 'b7e9f01c2d3e4f5a', problem: null, about: 'no dev machine yet', deploy: null, verify: null, promote: false, secrets: [] },
-        { name: 'prod', label: 'production', stage: 'prod', state: 'not_defined', branch: 'main', head: 'a0b1c2d3e4f5a6b7', problem: null, about: null, deploy: null, verify: null, promote: false, secrets: [] },
+        { name: 'dev', label: 'dev', stage: 'dev', state: 'empty', branch: 'quartio', head: 'b7e9f01c2d3e4f5a', problem: null, about: 'no dev machine yet', deploy: null, verify: null, promote: false, secrets: [], rollback: { ...NO_ROLLBACK } },
+        { name: 'prod', label: 'production', stage: 'prod', state: 'not_defined', branch: 'main', head: 'a0b1c2d3e4f5a6b7', problem: null, about: null, deploy: null, verify: null, promote: false, secrets: [], rollback: { ...NO_ROLLBACK } },
       ],
       runs: [],
     },
@@ -2090,7 +2118,7 @@ function seedCd() {
 function cdOf(db, sid) {
   sandboxOf(db, sid);
   if (!db.cd[sid]) {
-    db.cd[sid] = { environments: ['dev', 'prod'].map((name) => ({ name, label: name === 'dev' ? 'dev' : 'production', stage: name, state: 'not_defined', branch: name === 'dev' ? 'dev' : 'main', head: null, problem: null, about: null, deploy: null, verify: null, promote: false, secrets: [] })), runs: [] };
+    db.cd[sid] = { environments: ['dev', 'prod'].map((name) => ({ name, label: name === 'dev' ? 'dev' : 'production', stage: name, state: 'not_defined', branch: name === 'dev' ? 'dev' : 'main', head: null, problem: null, about: null, deploy: null, verify: null, promote: false, secrets: [], rollback: { ...NO_ROLLBACK } })), runs: [] };
   }
   return db.cd[sid];
 }
@@ -2151,6 +2179,42 @@ route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, async ({ db, p, body }) =>
   db.nextId += 1;
   const run = cdRun(`cd_${db.nextId}`, name, env.branch, env.head || '0000000', 'running', 0, db.me.user.login, { stage: env.stage, ...(prod && env.promote ? { note: `promoted the integration branch to '${env.branch}'` } : {}) });
   cd.runs.unshift(run);
+  return cdSummary(run);
+});
+// A rollback to a kept release (SPEC-415): refused as the server refuses it, else a run of kind
+// rollback whose release is deployed at once on the page.
+route('POST', `/api/sandboxes/${ID}/cd/${ID}/rollback`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  const cd = cdOf(db, p[0]);
+  const name = p[1] === 'production' ? 'prod' : p[1];
+  const env = cd.environments.find((e) => e.name === name);
+  if (!env) fail(409, 'conflict', `CD ${name} is not defined: add [cd.${name}] to yulius.toml on the protected branch`);
+  const prod = env.stage === 'prod';
+  need(sandbox, prod ? 'admin' : 'write');
+  db.lastCdRollback = body || {};
+  if (prod && String((body && body.confirm) || '').trim() !== sandbox.slug) fail(422, 'invalid', `type the project's slug '${sandbox.slug}' to confirm a production deploy`);
+  const rb = env.rollback || {};
+  if (!rb.command) fail(409, 'conflict', `rollback is not configured for ${env.label}: add \`rollback\` and \`migrations\` to [cd.${name}] of yulius.toml on ${env.branch}`);
+  const part = (rb.parts || []).find((x) => x.name === ((body && body.part) || ''));
+  if (!part) fail(409, 'conflict', `${env.label} has no part '${body && body.part}'`);
+  const wanted = (body && body.release) || part.previous;
+  const target = part.releases.find((r) => r.release === wanted);
+  if (!target) fail(409, 'conflict', wanted ? `${wanted} is not one of the releases Yulius keeps for ${env.label}` : `${env.label} has no earlier release to roll back to`);
+  if (target.release === part.current) fail(409, 'conflict', `${target.release} is already deployed to ${env.label}`);
+  if (target.blocked) fail(409, 'conflict', `nothing ran: ${target.blocked}`);
+  if (cd.runs.some((r) => r.environment === name && progressCd(r, db.cdRunMs).state === 'running')) fail(409, 'conflict', `a deploy to ${env.label} is running`);
+  db.nextId += 1;
+  const run = cdRun(`cd_${db.nextId}`, name, env.branch, target.commit, 'running', 0, db.me.user.login, {
+    stage: env.stage, kind: 'rollback', steps: [{ part: part.name, release: target.release }],
+    note: `rolling ${env.label} from ${part.current} to ${target.release}`,
+    output: `[yulius] rollback: ${target.release}\nswitching to ${target.release}\n[yulius] verify: scripts/cd/verify.sh ${name}\nGET /health 200\n[yulius] done\n`,
+  });
+  run.deploy = rb.command;
+  cd.runs.unshift(run);
+  const at = part.releases.indexOf(target);
+  part.current = target.release;
+  part.previous = part.releases[at + 1] ? part.releases[at + 1].release : null;
+  for (const r of part.releases) r.current = r === target;
   return cdSummary(run);
 });
 route('GET', `/api/sandboxes/${ID}/cd/runs/${ID}`, ({ db, p }) => {
