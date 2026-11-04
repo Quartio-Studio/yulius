@@ -76,6 +76,8 @@ test('long release ids keep every CD card within its bounds, with one action per
   await expect(confirm.getByText(new RegExp(`^Redeploys ${LONG[1]} \\(from `))).toBeVisible();
   expect(await browser.evaluate(() => { const b = document.querySelector('dialog[open] .modal-body')!; return b.scrollWidth - b.clientWidth; })).toBeLessThanOrEqual(0);
   await confirm.getByRole('button', 'Roll back to 0731fe929a36…').click();
+  // A shortened id's own ellipsis ends the starting toast: never two.
+  await expect(screen.getByText('Starting the rollback of dev engine to 0731fe929a36…')).toBeVisible();
   await expect(screen.getByText('Rolling dev engine back to 0731fe929a36….')).toBeVisible();
 
   // A phone: one column, nothing outside its card, nothing scrolls sideways.
@@ -102,7 +104,8 @@ test('a part shows its three newest releases and folds the older ones', async ({
   expect(await shownEngine(browser)).toEqual(['0e36', '0731', '5d1c']);
   await browser.locator('.cd-rollback[aria-label="Dev rollback"] .cd-part:has-text("engine") summary').click();
   await expect.poll(() => shownEngine(browser)).toEqual(['0e36', '0731', '5d1c', '4c3b', '3b2a']);
-  expect(await browser.evaluate(() => [...document.querySelectorAll('.cd-rollback[aria-label="Dev rollback"] summary')].map((s) => s.textContent))).toEqual(['2 older releases', '2 older releases']);
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.cd-rollback[aria-label="Dev rollback"] summary')].map((s) => [s.textContent, s.getAttribute('aria-label')]))).toEqual([
+    ['2 older releases', '2 older releases of dev engine'], ['2 older releases', '2 older releases of dev infra']]);
   expect(await axeViolations(browser)).toEqual([]);
 
   // Walked back: the release deployed now and the previous one are never folded.

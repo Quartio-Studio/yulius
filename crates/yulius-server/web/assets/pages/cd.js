@@ -273,7 +273,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
         ? h('ul', { class: 'cd-releases', 'aria-label': `${where} releases` }, releases.slice(0, shown).map(item))
         : h('p', { class: 'small muted' }, 'No releases yet: the next deploy records one.');
       const fold = older.length
-        ? h('details', { class: 'cd-older' }, h('summary', { class: 'small' }, `${older.length} older release${older.length === 1 ? '' : 's'}`),
+        ? h('details', { class: 'cd-older' }, h('summary', { class: 'small', 'aria-label': `${older.length} older release${older.length === 1 ? '' : 's'} of ${where.toLowerCase()}` }, `${older.length} older release${older.length === 1 ? '' : 's'}`),
           h('ul', { class: 'cd-releases', 'aria-label': `${where} older releases` }, older.map(item)))
         : null;
       const alone = releases.length === 1 ? h('p', { class: 'small muted' }, 'No earlier release to go back to yet.') : null;
@@ -302,7 +302,8 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     if (part.name) body.part = part.name;
     if (prod) { body.confirm = overview.slug; body.confirm_ms = Math.max(0, Math.round(performance.now() - opened)); }
     // The server checks the branch, the release and the secrets first: seconds (as a deploy's).
-    toast(`Starting the rollback of ${where} to ${shortRelease(release.release)}…`);
+    const to = shortRelease(release.release);
+    toast(`Starting the rollback of ${where} to ${to}${to.endsWith('…') ? '' : '…'}`);
     try {
       const run = await ctx.api.post(`${base}/cd/${enc(env.name)}/rollback`, body);
       if (destroyed) return;

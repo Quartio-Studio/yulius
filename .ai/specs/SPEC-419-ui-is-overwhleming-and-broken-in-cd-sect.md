@@ -74,11 +74,11 @@ calm to read. Each kept release shows one action, so the same rollback is not of
 
 ## Test plan
 
-- e2e `cd.e2e.ts`: a new test gives the mock's dev environment two parts with long ids and checks
+- e2e `cd-releases.e2e.ts` (new): a test gives the mock's dev environment two parts with long ids and checks
   the bounds of every element (desktop and phone), the one action per row and the axe rules. It
   fails before the fix because the button ends past the card.
-- e2e: the fold of older releases (5 kept releases: 3 shown, disclosure opens 2 more).
-- The existing SPEC-415 rollback test, adjusted where the header button became a row button.
+- e2e `cd-releases.e2e.ts`: the fold of older releases (5 kept releases: 3 shown, disclosure opens 2 more; walked back, the release deployed now and the previous one stay shown).
+- `cd.e2e.ts`: the existing SPEC-415 rollback test, adjusted where the header button became a row button, now also rolls forward with "Roll back to this".
 
 ## Decisions
 
