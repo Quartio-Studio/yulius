@@ -218,6 +218,15 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     const rb = env.rollback || {};
     const prod = isProd(env);
     const drill = rb.drill || null;
+    // An environment that runs no deploy command has nothing to redeploy (SPEC-418, ADR-0264).
+    if (!rb.command && !env.deploy) {
+      const why = prod && env.promote
+        ? 'Promoting is the release: nothing deployed here can be redeployed. Undo a release by reverting it and promoting again.'
+        : `Nothing deploys here yet: add rollback and migrations to [cd.${env.name}] with its deploy command.`;
+      return h('section', { class: 'stack-sm cd-rollback', 'aria-label': `${title(env)} rollback` },
+        h('div', { class: 'cd-rollback-head' }, h('h3', null, 'Rollback'), badge('Not needed', '')),
+        h('p', { class: 'small muted' }, why));
+    }
     let status;
     if (!rb.command) status = badge('Rollback not configured', 'warn');
     else if (prod) status = rb.blocked ? badge('Not proven', 'warn') : badge('Proven', 'ok');
@@ -225,7 +234,7 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
     else status = badge('Configured', '');
     const rows = [h('div', { class: 'cd-rollback-head' }, h('h3', null, 'Rollback'), status)];
     if (!rb.command) {
-      if (env.state === 'ready' && (env.deploy || prod)) {
+      if (env.state === 'ready') {
         rows.push(h('p', { class: 'small muted' }, `Add rollback (a command that redeploys the kept release in $YULIUS_CD_RELEASE, never building) and migrations (how data changes stay compatible) to [cd.${env.name}] in yulius.toml.`));
       }
       if (rb.blocked) rows.push(h('p', { class: 'small' }, `Production deploys wait: ${rb.blocked}`));

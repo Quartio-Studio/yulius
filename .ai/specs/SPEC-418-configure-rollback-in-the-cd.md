@@ -49,7 +49,7 @@ shown as missing a rollback.
 
 - [x] Spec and ADR: how Yulius's own CD rolls back
 - [x] Environments that deploy nothing say rollback is not needed (cd_status), tests first
-- [ ] CD page shows rollback not needed for them, with e2e
+- [x] CD page shows rollback not needed for them, with e2e
 - [ ] yulius.toml and docs say how Yulius's production rolls back
 - [ ] Independent review answered
 - [ ] Gates green and evidence recorded

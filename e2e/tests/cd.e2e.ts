@@ -913,9 +913,31 @@ test('the CD page rolls back to an earlier release in one click', async ({ app, 
   await expect(row('Production', 'v39')).toContainText('Deployed now');
 });
 
-// SPEC-415 RBK-040: without rollback a project's environments say what to add.
-test('an environment without rollback says it is not configured', async ({ app, screen }) => {
+// SPEC-415 RBK-040, SPEC-418 RCF-002/003: an environment that deploys nothing needs no rollback
+// and says why (Yulius's own CD: an empty dev, a production that only promotes); one that deploys
+// without rollback says it is not configured and what to add.
+test('an environment that deploys nothing needs no rollback; one that deploys says what to add', async ({ app, browser, screen }) => {
   await app.open(mock('/s/product/ci?section=cd'));
-  await expect(screen.getByRole('region', 'Dev rollback').getByText('Rollback not configured')).toBeVisible();
-  await expect(screen.getByRole('region', 'Production rollback').getByText('Rollback not configured')).toBeVisible();
+  const dev = screen.getByRole('region', 'Dev rollback');
+  const prod = screen.getByRole('region', 'Production rollback');
+  await expect(dev.getByText('Not needed')).toBeVisible();
+  await expect(dev.getByText('Nothing deploys here yet: add rollback and migrations to [cd.dev] with its deploy command.')).toBeVisible();
+  await expect(dev.getByText('Rollback not configured')).toBeHidden();
+  await browser.evaluate(() => {
+    type Env = { state: string; promote: boolean; about: string | null; deploy: string | null };
+    const w = window as unknown as { __yuliusMock: { cd: Record<string, { environments: Env[] }> } };
+    Object.assign(w.__yuliusMock.cd.sb_product.environments[1], { state: 'ready', promote: true, about: 'a push to main is the release' });
+    Object.assign(w.__yuliusMock.cd.sb_product.environments[0], { state: 'ready', deploy: 'scripts/cd/deploy.sh dev' });
+  });
+  // Leaving and coming back reads the environments again.
+  await screen.getByRole('radio', 'CI (tests)').click();
+  await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();
+  await screen.getByRole('radio', 'CD (deployment)').click();
+  await expect(prod.getByText('Not needed')).toBeVisible();
+  await expect(prod.getByText('Promoting is the release: nothing deployed here can be redeployed. Undo a release by reverting it and promoting again.')).toBeVisible();
+  await expect(prod.getByText('Rollback not configured')).toBeHidden();
+  await expect(prod.getByText(/^Add rollback/)).toBeHidden();
+  await expect(dev.getByText('Rollback not configured')).toBeVisible();
+  await expect(dev.getByText(/^Add rollback \(a command that redeploys the kept release/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
 });
