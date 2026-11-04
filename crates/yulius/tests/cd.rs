@@ -643,6 +643,28 @@ async fn environments_that_deploy_nothing_need_no_rollback() -> TestResult {
         !shown.contains("not configured") && !shown.contains("need a proven rollback"),
         "{shown}"
     );
+    // The page reads the same reasons; production names the branch a revert goes to.
+    let overview = f.get("/api/sandboxes/s1/cd").await?;
+    assert_eq!(
+        overview["environments"][0]["rollback"]["not_needed"],
+        "it runs no deploy command; add rollback and migrations with one"
+    );
+    assert!(
+        overview["environments"][1]["rollback"]["not_needed"]
+            .as_str()
+            .is_some_and(|why| why.contains("reverting it on dev and promoting again")),
+        "{overview}"
+    );
+    // Review L3: rolling back what deploys nothing says so, not what to configure.
+    let refused =
+        support::mcp_tool(&f.h, TOKEN, "cd_rollback", json!({"environment": "dev"})).await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(
+        refused
+            .to_string()
+            .contains("nothing is deployed to dev that a rollback could redeploy"),
+        "{refused}"
+    );
     Ok(())
 }
 
