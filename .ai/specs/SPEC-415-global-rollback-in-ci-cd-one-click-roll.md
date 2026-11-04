@@ -1,11 +1,11 @@
 ---
 yulius-task: 6869077e-3347-40ab-88bc-151dc3aea411
-status: in-progress
+status: done
 ---
 
 # SPEC-415: Rollback is part of every project's CD, drilled on dev before production
 
-Status: in-progress
+Status: done
 Date: 2026-11-04
 Owner: Yulius task #397
 Scope authorization: task #397, asked by quartio-v2's owner: "Create rollback mechanism. If
@@ -127,7 +127,8 @@ Surfaces:
 - [x] Agents roll back dev with cd_rollback; cd_status shows rollback
 - [x] CD page: releases with one-click roll back, rollback state, e2e
 - [x] Onboarding, briefing rules and docs teach rollback from day one
-- [ ] Independent review answered, gates green, evidence recorded
+- [x] Independent review answered: three rounds, approved
+- [x] Gates green and evidence recorded
 
 ## Acceptance criteria
 
@@ -180,3 +181,46 @@ Surfaces:
 - `cd_rollback` is not added to the remote MCP of people's laptops (`remote.rs`) nor to the
   briefing's tool list (whose byte budget is full; the delivery rule names it): RBK-041 asks for a
   task agent's tool, which `tools/list` serves with its description.
+
+## Evidence
+
+- `scripts/dev ci` at 6193fe39: passed (repository checks, scripts' unit tests, check, fmt,
+  clippy `-D warnings`, nextest 3099 passed / 16 skipped, doctests, cargo deny, cargo shear, doc).
+- The live drill on a test project, `crates/yulius/tests/cd_rollback.rs` (real Git, the real
+  detached ptyhost, real deploy/verify/rollback scripts, the fake GitHub), 7 tests passed:
+  - AC1/AC2: two dev deploys record v1 and v2; the drill runs by itself (rollback v1, verify,
+    rollback v2, verify; `YULIUS_CD_RELEASE`, `YULIUS_CD_RELEASE_SHA`, `YULIUS_CD_DRILL` reach the
+    script); one request rolls back to the previous release without rebuilding and verifies it,
+    another rolls forward to a chosen one; audit entries `cd.rollback`, `cd.drill`, `cd.finished`.
+  - AC3/AC5: a production deploy is refused without `rollback`, without a drill, after a failed
+    drill, and for a commit whose tree was not drilled; it runs once the drill of its commit
+    passed; production is never drilled.
+  - AC4: an agent rolls dev back with `cd_rollback` and is refused production (audited); a
+    writer, and an administrator without the typed slug, cannot roll back production; an
+    administrator can, on `main`, with no promotion.
+  - Parts and barriers: engine and infra keep their own releases; a barrier makes the drill only
+    redeploy and refuses a rollback past it with its reason; a barrier holding a secret is
+    redacted; a deploy that ships no part still drills; a failed drill says where it left dev and
+    rolling forward works; a drill that cannot start is recorded and audited; a redeployed
+    release keeps its barrier.
+- Existing CD tests (`crates/yulius/tests/cd.rs`) updated for the gate (production tables have a
+  rollback and a seeded passed drill) and passing; 228 CD, stages, delivery, MCP and related
+  integration tests passed before the review fixes, all again in the gate.
+- Unit tests: `yulius_domain::rollback` (markers, history, previous, barriers, drill steps,
+  retention, production gate), config parsing of the new keys and refusals, store kinds, steps
+  and retention, `ci::rollback` (log reading never follows a link or waits on a FIFO or
+  `/dev/zero`; last markers kept; reached steps), drill phase spans, briefing budget.
+- Mutation checks: with the failed-drill recording, the redaction of barriers or the drilling of
+  unshipped parts removed, the corresponding integration tests fail.
+- e2e: `tests/cd.e2e.ts` 24/24 and `tests/pipeline.e2e.ts` passed (one-click roll back on the
+  mock, production with the slug typed, no WCAG violations). Full suite: 819 passed, 1 skipped,
+  1 failed: `editor.e2e.ts` "unsaved text is kept when the disk moves on…", which passed 32/32
+  alone and lies outside this change (the live editor of #566); filed as #1054.
+- Security scan: `yulius security-scan` reports "Security scan disabled" (Vidoc is turned off
+  for this project): disabled, not passed.
+- Independent review in a fresh session: round 1 requested changes (2 high, 4 medium, lows), round
+  2 found one regression of a fix (barriers lost to retention), round 3 approved; every finding
+  was fixed test-first or recorded in Decisions.
+- Not tested here: a drill on a real Yulius instance (instances run `main`, and promoting is a
+  person's) and quartio-v2's own rollback scripts (its follow-up task); macOS runs only the
+  gate's cross-compilation.
