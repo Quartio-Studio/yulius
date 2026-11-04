@@ -265,14 +265,11 @@ impl<'a> History<'a> {
         out
     }
 
-    /// Where the current release's newest deploy stands among the deploys (0: the newest).
-    fn current_position(&self) -> usize {
-        let Some(current) = self.current() else {
-            return 0;
-        };
-        self.deploys()
-            .position(|r| r.release == current.release)
-            .unwrap_or(0)
+    /// Where the current release's newest deploy stands among the deploys (0: the newest);
+    /// `None` when there is no current release or its deploy is not kept.
+    fn current_position(&self) -> Option<usize> {
+        let current = self.current()?;
+        self.deploys().position(|r| r.release == current.release)
     }
 
     /// The release before the current one: the newest deploy after the current release's deploy
@@ -280,7 +277,7 @@ impl<'a> History<'a> {
     #[must_use]
     pub fn previous(&self) -> Option<&'a ReleaseRecord> {
         let current = self.current()?;
-        let from = self.current_position();
+        let from = self.current_position()?;
         let previous = self
             .deploys()
             .skip(from)
@@ -300,7 +297,8 @@ impl<'a> History<'a> {
     /// `target` is older (RBK-022). Rolling forward is never blocked.
     #[must_use]
     pub fn blocked(&self, target: &str) -> Option<String> {
-        let from = self.current_position();
+        // Without the current release's deploy, every barrier down to the target counts.
+        let from = self.current_position().unwrap_or(0);
         let to = self.deploys().position(|r| r.release == target)?;
         if to <= from {
             return None;
@@ -349,21 +347,47 @@ impl RollbackStep {
     }
 }
 
-/// The drill's steps for one part whose history starts with the deploy just recorded (RBK-030):
-/// back to the previous release and forward to the new one; behind a barrier only the new one
-/// again; nothing without a previous release.
+/// The drill's steps for one part (RBK-030): back to the release before the one it runs now and
+/// forward to that one again; when a barrier forbids going back (on any deploy of the release it
+/// runs, review H2), only that release again; nothing without a previous release. Every part is
+/// drilled, shipped by the deploy or not (review M2): the drill proves the scripts at its commit.
 #[must_use]
 pub fn drill_steps(history: History<'_>) -> Vec<RollbackStep> {
-    let Some(new) = history.current().filter(|r| r.kind == ReleaseKind::Deploy) else {
+    let (Some(now), Some(previous)) = (history.current(), history.previous()) else {
         return Vec::new();
     };
-    if new.barrier.is_some() {
-        return vec![RollbackStep::to(new)];
+    if history.blocked(&previous.release).is_some() {
+        return vec![RollbackStep::to(now)];
     }
-    match history.previous() {
-        Some(previous) => vec![RollbackStep::to(previous), RollbackStep::to(new)],
-        None => Vec::new(),
+    vec![RollbackStep::to(previous), RollbackStep::to(now)]
+}
+
+/// Which of one part's records, newest first as `(kind, release)`, retention keeps (RBK-012,
+/// review M3): the newest [`KEEP_RELEASE_RECORDS`], the newest deploy of each of the newest
+/// [`KEEP_RELEASES`] distinct releases deployed, and the newest deploy of the release run now, so
+/// rollbacks and repeated deploys never push out what a rollback goes to.
+#[must_use]
+pub fn kept(records: &[(ReleaseKind, &str)]) -> Vec<bool> {
+    let newest = usize::try_from(KEEP_RELEASE_RECORDS).unwrap_or(usize::MAX);
+    let mut keep: Vec<bool> = (0..records.len()).map(|i| i < newest).collect();
+    let mut releases: Vec<&str> = Vec::new();
+    for (i, (kind, release)) in records.iter().enumerate() {
+        if *kind == ReleaseKind::Deploy
+            && releases.len() < KEEP_RELEASES
+            && !releases.contains(release)
+        {
+            releases.push(release);
+            keep[i] = true;
+        }
     }
+    if let Some((_, current)) = records.first()
+        && let Some(i) = records
+            .iter()
+            .position(|(kind, release)| *kind == ReleaseKind::Deploy && release == current)
+    {
+        keep[i] = true;
+    }
+    keep
 }
 
 /// The newest finished drill of the environment that proves a production one, as the gate reads
@@ -652,7 +676,7 @@ mod tests {
         let after_rollback = [rolled("v1"), deploy("v2"), deploy("v1")];
         assert!(
             drill_steps(History(&after_rollback)).is_empty(),
-            "drills follow deploys only"
+            "nothing before the release run now"
         );
     }
 
@@ -708,6 +732,82 @@ mod tests {
             ..target
         };
         assert!(production_gate(&named, None).is_some_and(|why| why.contains("drill of staging")));
+    }
+
+    /// Review H2: a release deployed again keeps the barrier of its earlier deploy; the drill
+    /// does not go back past it.
+    #[test]
+    fn a_barrier_on_an_earlier_deploy_of_the_same_release_holds() {
+        let records = [
+            deploy("v3"),
+            record("v3", ReleaseKind::Deploy, Some("dropped column x")),
+            deploy("v2"),
+        ];
+        let history = History(&records);
+        assert!(history.blocked("v2").is_some());
+        let steps: Vec<String> = drill_steps(history)
+            .into_iter()
+            .map(|s| s.release)
+            .collect();
+        assert_eq!(steps, ["v3"], "only the release deployed now again");
+    }
+
+    /// Review M2: a part this deploy did not ship is drilled from what it runs now.
+    #[test]
+    fn a_part_not_shipped_now_is_drilled_too() {
+        let records = [rolled("e2"), deploy("e3"), deploy("e2"), deploy("e1")];
+        let steps: Vec<String> = drill_steps(History(&records))
+            .into_iter()
+            .map(|s| s.release)
+            .collect();
+        assert_eq!(
+            steps,
+            ["e1", "e2"],
+            "back to the release before e2, forward to e2"
+        );
+    }
+
+    /// Review M3: without the current release's deploy there is no previous release.
+    #[test]
+    fn a_current_release_without_its_deploy_has_no_previous() {
+        let records = [rolled("v9"), deploy("v2"), deploy("v1")];
+        assert_eq!(History(&records).previous(), None);
+    }
+
+    /// Review M3: retention keeps the newest records and the deploys of the newest distinct
+    /// releases and of the current one, whatever rollbacks and repeated deploys came after.
+    #[test]
+    fn retention_keeps_the_releases_a_rollback_needs() {
+        let mut records: Vec<(ReleaseKind, String)> = Vec::new();
+        for _ in 0..30 {
+            records.push((ReleaseKind::Rollback, "v1".into()));
+        }
+        for n in (1..=15).rev() {
+            records.push((ReleaseKind::Deploy, format!("v{n}")));
+            records.push((ReleaseKind::Deploy, format!("v{n}")));
+        }
+        let view: Vec<(ReleaseKind, &str)> =
+            records.iter().map(|(k, r)| (*k, r.as_str())).collect();
+        let kept = kept(&view);
+        let kept_deploys: Vec<&str> = view
+            .iter()
+            .zip(&kept)
+            .filter(|((kind, _), keep)| **keep && *kind == ReleaseKind::Deploy)
+            .map(|((_, release), _)| *release)
+            .collect();
+        assert_eq!(
+            kept_deploys,
+            [
+                "v15", "v14", "v13", "v12", "v11", "v10", "v9", "v8", "v7", "v6", "v1"
+            ],
+            "the newest deploy of the 10 newest releases and of the current one"
+        );
+        assert_eq!(
+            kept.iter().take(20).filter(|k| **k).count(),
+            20,
+            "the newest 20"
+        );
+        assert_eq!(kept.iter().filter(|k| **k).count(), 31);
     }
 
     #[test]

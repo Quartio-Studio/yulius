@@ -1345,12 +1345,9 @@ impl App {
             .cd_save_states(&sandbox, &run, &files, &held.restored, &mut ring)
             .await;
         drop(held);
-        // What the deploy said it shipped, from its whole log, before the log goes (SPEC-415).
-        let markers = if run.kind == CdRunKind::Deploy {
-            super::rollback::release_markers(&files.join("work").join("log")).await
-        } else {
-            Vec::new()
-        };
+        // What the deploy shipped, or how far a rollback got, from its whole log before the log
+        // goes (SPEC-415).
+        let markers = super::rollback::release_markers(&files.join("work").join("log")).await;
         // The run's files (the tree, its HOME, its log) go with it.
         self.remove_run_dirs(&run_dir, &files).await;
         // A cache past the bound would stop every next run, and nobody else can empty it
@@ -1426,10 +1423,8 @@ impl App {
             ),
             None => (state, reason),
         };
-        if state == RunState::Passed {
-            self.cd_record_releases(&sandbox, &run, &target, &markers, &mut ring)
-                .await;
-        }
+        self.cd_record_releases(&sandbox, (&run, state), &target, &markers, &mut ring)
+            .await;
         let output = self
             .redact_for_sandbox(&sandbox.id, &whole_lines(&ring))
             .await;

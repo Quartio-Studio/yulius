@@ -4,7 +4,7 @@
 //! releases, the dev drill runs by itself, a person rolls back in one request, production waits
 //! for a proven rollback, agents roll back dev only, and barriers block.
 
-use crate::cd::{BoxResult, Fixture, TOKEN, TestResult, fixture};
+use crate::cd::{BoxResult, Fixture, TOKEN, TestResult, VALUE, fixture};
 use crate::support;
 
 use std::time::Duration;
@@ -16,6 +16,8 @@ use yulius_app::ports::store_ext::AutomationStore as _;
 
 /// Deploys `v<version file>` and names it; one part.
 const DEPLOY: &str = r#"#!/bin/sh
+if [ -f "$MARKS/hold" ]; then touch "$MARKS/holding"; fi
+while [ -f "$MARKS/hold" ]; do sleep 0.1; done
 v="v$(cat version)"
 echo "building $v"
 echo "::yulius-release $v"
@@ -33,7 +35,7 @@ test "$(cat "$MARKS/$YULIUS_CD_ENV")" = "$want" && echo "verified $want"
 const ROLLBACK: &str = r#"#!/bin/sh
 test -n "$YULIUS_CD_RELEASE" || { echo "no release given"; exit 64; }
 echo "${YULIUS_CD_ROLLBACK:-0} ${YULIUS_CD_DRILL:-0} $YULIUS_CD_ENV ${YULIUS_CD_PART:--} $YULIUS_CD_RELEASE $YULIUS_CD_RELEASE_SHA" >> "$MARKS/rollbacks"
-if [ -f "$MARKS/fail-rollback" ]; then echo "the artifact store is down"; exit 5; fi
+if [ -f "$MARKS/fail-rollback" ] || [ -f "$MARKS/fail-to-$YULIUS_CD_RELEASE" ]; then echo "the artifact store is down"; exit 5; fi
 echo "switching to $YULIUS_CD_RELEASE"
 echo "$YULIUS_CD_RELEASE" > "$MARKS/$YULIUS_CD_ENV"
 "#;
@@ -561,7 +563,10 @@ async fn parts_roll_back_on_their_own_and_barriers_block() -> TestResult {
         &[
             ("engine", Some("e2\n".to_owned())),
             ("infra", Some("i2\n".to_owned())),
-            ("barrier", Some("users.email is now NOT NULL\n".to_owned())),
+            (
+                "barrier",
+                Some(format!("users.email is now NOT NULL ({VALUE})\n")),
+            ),
         ],
     )?;
     f.deployed(&f.alice, "dev", None).await?;
@@ -587,6 +592,14 @@ async fn parts_roll_back_on_their_own_and_barriers_block() -> TestResult {
             .as_str()
             .is_some_and(|b| b.contains("users.email is now NOT NULL")),
         "the page says why before the button: {}",
+        parts[1]
+    );
+    // Review M4: a secret printed in a barrier is redacted before it is kept.
+    assert!(
+        parts[1]["releases"][0]["barrier"]
+            .as_str()
+            .is_some_and(|b| b.contains("[secret:DEV_TOKEN]") && !b.contains(VALUE)),
+        "{}",
         parts[1]
     );
     let named = f
@@ -636,5 +649,103 @@ async fn parts_roll_back_on_their_own_and_barriers_block() -> TestResult {
     let parts = f.rollback_of("dev").await?["parts"].clone();
     assert_eq!(parts[0]["current"], "e1");
     assert_eq!(releases(&parts[1]), ["i3", "i2", "i1"]);
+
+    // Review M2: a deploy that ships no part still drills the parts with an earlier release, so
+    // production at its commit can be proven.
+    let before = f.rollbacks().len();
+    push(
+        &f,
+        "dev",
+        &[("infra", None), ("notes.txt", Some("x\n".to_owned()))],
+    )?;
+    f.deployed(&f.alice, "dev", None).await?;
+    let drill = f.drill(3).await?;
+    assert_eq!(drill["state"], "passed", "{}", drill["output"]);
+    assert_eq!(f.rollbacks()[before..], ["1 infra i2", "1 infra i3"]);
+    Ok(())
+}
+
+/// Review M1: a drill that fails after going back leaves dev on the earlier release, which the
+/// page says, and rolling forward to the new release is offered and works.
+#[tokio::test]
+async fn a_failed_drill_says_where_it_left_dev() -> TestResult {
+    let f = fixture(&rollback_cd()).await?;
+    push(&f, "dev", &scripts("1"))?;
+    f.deployed(&f.alice, "dev", None).await?;
+    std::fs::write(f.marks.join("fail-to-v2"), "")?;
+    push(&f, "dev", &[("version", Some("2\n".to_owned()))])?;
+    f.deployed(&f.alice, "dev", None).await?;
+    let drill = f.drill(1).await?;
+    assert_eq!(drill["state"], "failed", "{}", drill["output"]);
+    assert_eq!(f.mark("dev")?, "v1", "the drill got back to v1 only");
+    let part = &f.rollback_of("dev").await?["parts"][0];
+    assert_eq!(part["current"], "v1", "{part}");
+    std::fs::remove_file(f.marks.join("fail-to-v2"))?;
+    let run = f
+        .rolled_back(&f.alice, "dev", json!({"release": "v2"}))
+        .await?;
+    assert_eq!(run["state"], "passed", "{}", run["output"]);
+    assert_eq!(f.mark("dev")?, "v2");
+    assert_eq!(f.rollback_of("dev").await?["parts"][0]["current"], "v2");
+    Ok(())
+}
+
+/// Review (low): a drill that cannot start (here its secret was no longer allowed when the deploy
+/// ended) is recorded as an error saying why, audited, and production stays refused.
+#[tokio::test]
+async fn a_drill_that_cannot_start_is_recorded() -> TestResult {
+    use yulius_app::ports::vault::{EnvFiles, VaultStore as _};
+    let cd = rollback_cd().replacen("[cd.dev]\n", "[cd.dev]\nsecrets = \"DEV_TOKEN\"\n", 1);
+    let f = fixture(&cd).await?;
+    f.allow_secret().await?;
+    push(&f, "dev", &scripts("1"))?;
+    f.deployed(&f.alice, "dev", None).await?;
+    push(&f, "dev", &[("version", Some("2\n".to_owned()))])?;
+    std::fs::write(f.marks.join("hold"), "")?;
+    let started = f.deploy(&f.alice, "dev", None).await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while !f.marks.join("holding").exists() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the deploy never started"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let now = f.h.store.vault_get(&f.secret).await?.ok_or("secret")?;
+    f.h.store
+        .vault_set_env_files(
+            &f.secret,
+            (now.env_files, now.env_requested_by.as_deref()),
+            (EnvFiles::No, None),
+        )
+        .await?;
+    std::fs::remove_file(f.marks.join("hold"))?;
+    let run = f
+        .ended(started.body["run_id"].as_str().ok_or("id")?)
+        .await?;
+    assert_eq!(run["state"], "passed", "{}", run["output"]);
+    let drill = f.drill(1).await?;
+    assert_eq!(drill["state"], "error");
+    assert!(
+        drill["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("could not start") && r.contains("DEV_TOKEN")),
+        "{drill}"
+    );
+    let entries = f.h.store.automation_audit("app/dev", 50).await?;
+    assert!(
+        entries.iter().any(|e| e.action == "cd.drill"
+            && e.detail
+                .as_deref()
+                .is_some_and(|d| d.contains("could not start"))),
+        "{entries:?}"
+    );
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert!(
+        refused.body.to_string().contains("did not pass"),
+        "{}",
+        refused.body
+    );
     Ok(())
 }

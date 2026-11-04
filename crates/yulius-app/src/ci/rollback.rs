@@ -24,8 +24,8 @@ use yulius_domain::rollback::{
 };
 
 use super::cd::{
-    CdActor, CdRequest, CdRunEnd, CdRunRecord, Prepared, mirror_lock, no_promotion, refusal,
-    running_refusal, short_sha, shown_requester,
+    CdActor, CdRequest, CdRunRecord, Prepared, mirror_lock, no_promotion, refusal, running_refusal,
+    short_sha, shown_requester,
 };
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
@@ -38,11 +38,14 @@ use crate::model::SandboxRecord;
 /// The fixed script of a rollback or a drill: output to the log, stdin closed, then for each
 /// step (`part release sha` after the commands) the rollback command with the step in
 /// `YULIUS_CD_PART`, `YULIUS_CD_RELEASE` and `YULIUS_CD_RELEASE_SHA`, and the verify command when
-/// it succeeded. Each command is its own `/bin/sh -c` argument and each value a positional one:
-/// nothing configured or recorded is spliced into this script.
+/// it succeeded. After each rollback command that succeeded it prints `::yulius-rolled-back <n>`
+/// (the step's index), so a run that fails later still says what the environment runs (review
+/// M1). Each command is its own `/bin/sh -c` argument and each value a positional one: nothing
+/// configured or recorded is spliced into this script.
 pub(super) const ROLLBACK_WRAPPER: &str = r#"exec >>"$1" 2>&1 </dev/null
 rollback=$2
 verify=$3
+step=0
 shift 3
 while [ "$#" -ge 3 ]; do
   YULIUS_CD_PART=$1 YULIUS_CD_RELEASE=$2 YULIUS_CD_RELEASE_SHA=$3
@@ -50,6 +53,8 @@ while [ "$#" -ge 3 ]; do
   shift 3
   printf '[yulius] rollback: %s%s\n' "${YULIUS_CD_PART:+$YULIUS_CD_PART }" "$YULIUS_CD_RELEASE"
   /bin/sh -c "$rollback" || { s=$?; printf '[yulius] rollback failed with status %s; verify skipped\n' "$s"; exit "$s"; }
+  printf '::yulius-rolled-back %s\n' "$step"
+  step=$((step + 1))
   if [ -n "$verify" ]; then
     printf '[yulius] verify: %s\n' "$verify"
     /bin/sh -c "$verify" || { s=$?; printf '[yulius] verify failed with status %s\n' "$s"; exit "$s"; }
@@ -59,8 +64,10 @@ printf '[yulius] done\n'"#;
 
 /// Longest marker line read from a log; longer lines are skipped.
 const MAX_MARKER_LINE: usize = 4096;
-/// Most marker lines read from one log.
+/// Most marker lines kept from one log: the last ones.
 const MAX_MARKERS: usize = 256;
+/// Most bytes read from one log: a run's output bound.
+const MAX_LOG_BYTES: u64 = 256 << 20;
 
 /// The steps as people read them: `engine 1.4.1, engine 1.4.2` or `v1`.
 pub(super) fn steps_text(steps: &[RollbackStep]) -> String {
@@ -87,17 +94,30 @@ fn part_label(env: &str, part: &str) -> String {
     }
 }
 
-/// The `::yulius-release` and `::yulius-rollback-barrier` lines of a deploy's whole log, read
-/// off the async runtime and bounded (line length and count); none when it cannot be read.
+/// The `::yulius-release`, `::yulius-rollback-barrier` and `::yulius-rolled-back` lines of a run's
+/// whole log, the last [`MAX_MARKERS`], read off the async runtime. Opened as `LogTail::open`
+/// does (review H1): a link is never followed and only a regular file is read, so a FIFO or a
+/// device put in the log's place is never waited on; at most [`MAX_LOG_BYTES`] are read. None
+/// when it cannot be read.
 pub(super) async fn release_markers(log: &Path) -> Vec<String> {
     let log = log.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let Ok(file) = std::fs::File::open(&log) else {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let flags = nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK;
+        let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(flags.bits())
+            .open(&log)
+        else {
             return Vec::new();
         };
-        let mut reader = std::io::BufReader::with_capacity(64 * 1024, file);
-        let (mut found, mut line, mut overflow) = (Vec::new(), Vec::new(), false);
-        let mut chunk = [0_u8; 64 * 1024];
+        if !file.metadata().is_ok_and(|meta| meta.is_file()) {
+            return Vec::new();
+        }
+        let mut reader = file.take(MAX_LOG_BYTES);
+        let mut found = std::collections::VecDeque::new();
+        let (mut line, mut overflow) = (Vec::new(), false);
+        let mut chunk = vec![0_u8; 64 * 1024];
         loop {
             let read = match reader.read(&mut chunk) {
                 Ok(0) | Err(_) => break,
@@ -116,26 +136,51 @@ pub(super) async fn release_markers(log: &Path) -> Vec<String> {
                 line.clear();
                 overflow = false;
             }
-            if found.len() >= MAX_MARKERS {
-                break;
-            }
         }
         keep_marker(&mut found, &line, overflow);
-        found.truncate(MAX_MARKERS);
-        found
+        Vec::from(found)
     })
     .await
     .unwrap_or_default()
 }
 
-fn keep_marker(found: &mut Vec<String>, line: &[u8], overflow: bool) {
+fn keep_marker(found: &mut std::collections::VecDeque<String>, line: &[u8], overflow: bool) {
     let text = String::from_utf8_lossy(line);
     let text = text.trim();
     if !overflow
-        && (text.starts_with("::yulius-release") || text.starts_with("::yulius-rollback-barrier"))
+        && [
+            "::yulius-release",
+            "::yulius-rollback-barrier",
+            "::yulius-rolled-back",
+        ]
+        .iter()
+        .any(|marker| text.starts_with(marker))
     {
-        found.push(text.to_owned());
+        if found.len() == MAX_MARKERS {
+            found.pop_front();
+        }
+        found.push_back(text.to_owned());
     }
+}
+
+/// The step each part of a rollback or a drill reached: of the steps the wrapper said it rolled
+/// to (`::yulius-rolled-back <n>`, in order), the last of each part (review M1).
+fn reached_steps(steps: &[RollbackStep], markers: &[String]) -> Vec<RollbackStep> {
+    let done = markers
+        .iter()
+        .filter_map(|m| m.strip_prefix("::yulius-rolled-back "))
+        .filter_map(|n| n.trim().parse::<usize>().ok())
+        .filter(|n| *n < steps.len())
+        .max();
+    let Some(done) = done else {
+        return Vec::new();
+    };
+    let mut reached: Vec<RollbackStep> = Vec::new();
+    for step in &steps[..=done] {
+        reached.retain(|r| r.part != step.part);
+        reached.push(step.clone());
+    }
+    reached
 }
 
 impl App {
@@ -373,12 +418,15 @@ impl App {
         Ok(production_gate(target, seen.as_ref()))
     }
 
-    /// Records what a passed run deployed (RBK-010..012): a deploy's shipped releases (its markers;
-    /// the ignored ones said in its output), a rollback's release. A drill ends where it started.
+    /// Records what a run left deployed (RBK-010..012): a passed deploy's shipped releases (its
+    /// markers; the ignored ones said in its output), and the release each part of a rollback, or
+    /// of a drill that did not pass, last rolled to, verified or not (review M1). A passed drill
+    /// ends where it started. Release ids and barrier reasons are redacted of the sandbox's agent
+    /// secrets before they are kept (review M4): an id that held one is ignored.
     pub(super) async fn cd_record_releases(
         &self,
         sandbox: &SandboxRecord,
-        run: &CdRunRecord,
+        (run, state): (&CdRunRecord, RunState),
         target: &CdTarget,
         markers: &[String],
         ring: &mut OutputRing,
@@ -394,41 +442,63 @@ impl App {
             barrier,
             run_id: run.id.clone(),
         };
-        let records: Vec<ReleaseRecord> = match run.kind {
-            CdRunKind::Drill => return,
-            CdRunKind::Deploy => {
+        let mut records = Vec::new();
+        match run.kind {
+            CdRunKind::Deploy if state == RunState::Passed => {
                 let (shipped, ignored) =
                     shipped(markers.iter().map(String::as_str), &target.parts, &run.sha);
                 for note in ignored {
                     ring.push_str(&format!("[yulius] ignored {note}\n"));
                 }
-                shipped
-                    .into_iter()
-                    .map(|s| {
-                        record(
-                            s.part,
-                            s.release,
-                            run.sha.clone(),
-                            ReleaseKind::Deploy,
-                            s.barrier,
-                        )
-                    })
-                    .collect()
+                for s in shipped {
+                    let release = self.redact_for_sandbox(&sandbox.id, &s.release).await;
+                    if release != s.release {
+                        ring.push_str("[yulius] ignored a release id that holds a secret\n");
+                        continue;
+                    }
+                    let barrier = match &s.barrier {
+                        Some(why) => Some(self.redact_for_sandbox(&sandbox.id, why).await),
+                        None => None,
+                    };
+                    records.push(record(
+                        s.part,
+                        release,
+                        run.sha.clone(),
+                        ReleaseKind::Deploy,
+                        barrier,
+                    ));
+                }
             }
-            CdRunKind::Rollback => run
-                .steps
-                .iter()
-                .map(|s| {
-                    record(
-                        s.part.clone(),
-                        s.release.clone(),
-                        s.sha.clone(),
+            CdRunKind::Deploy => {}
+            CdRunKind::Drill if state == RunState::Passed => {}
+            CdRunKind::Rollback | CdRunKind::Drill => {
+                let current = self
+                    .deps
+                    .store
+                    .cd_releases(&sandbox.id, &run.environment, run.stage)
+                    .await
+                    .unwrap_or_default();
+                for step in reached_steps(&run.steps, markers) {
+                    let now = current.iter().find(|r| r.part == step.part);
+                    // A drill that failed after going back records where it left the part.
+                    if run.kind == CdRunKind::Drill
+                        && now.is_some_and(|r| r.release == step.release)
+                    {
+                        continue;
+                    }
+                    records.push(record(
+                        step.part,
+                        step.release,
+                        step.sha,
                         ReleaseKind::Rollback,
                         None,
-                    )
-                })
-                .collect(),
-        };
+                    ));
+                }
+            }
+        }
+        if records.is_empty() {
+            return;
+        }
         for r in &records {
             ring.push_str(&format!(
                 "[yulius] {} is now {}{}\n",
@@ -452,9 +522,11 @@ impl App {
     }
 
     /// Starts the drill of a passed dev-stage deploy whose table has `rollback` (RBK-030): each
-    /// part it shipped goes back to its previous release and forward again, each step verified.
-    /// Never for a production-stage environment, a rollback or a drill. A drill that cannot start
-    /// is recorded as an error with why, so the page and the gate say so.
+    /// part with an earlier release, shipped by this deploy or not (review M2), goes back to it and
+    /// forward again, each step verified. Never for a production-stage environment, a rollback or
+    /// a drill. A drill that cannot start (its releases unreadable, a secret, an update, another
+    /// run of the environment) is recorded as an error saying why, with its audit entry, so the
+    /// page and the gate say so (review, low).
     pub(super) async fn cd_start_drill(
         self: &Arc<Self>,
         sandbox: &SandboxRecord,
@@ -468,30 +540,7 @@ impl App {
         {
             return;
         }
-        let records = match self
-            .deps
-            .store
-            .cd_releases(&sandbox.id, &deployed.environment, CdStage::Dev)
-            .await
-        {
-            Ok(records) => records,
-            Err(err) => {
-                tracing::warn!(error = %err, "reading releases for a drill failed");
-                return;
-            }
-        };
-        let mut steps = Vec::new();
-        for part in target.part_names() {
-            let mine: Vec<ReleaseRecord> =
-                records.iter().filter(|r| r.part == part).cloned().collect();
-            if mine.first().is_some_and(|r| r.run_id == deployed.id) {
-                steps.extend(drill_steps(History(&mine)));
-            }
-        }
-        if steps.is_empty() {
-            return;
-        }
-        let run = CdRunRecord {
+        let mut run = CdRunRecord {
             id: self.deps.crypto.new_id(),
             sandbox_id: sandbox.id.clone(),
             environment: deployed.environment.clone(),
@@ -515,8 +564,29 @@ impl App {
             ended_at: None,
             kind: CdRunKind::Drill,
             source: None,
-            steps,
+            steps: Vec::new(),
         };
+        let records = match self
+            .deps
+            .store
+            .cd_releases(&sandbox.id, &deployed.environment, CdStage::Dev)
+            .await
+        {
+            Ok(records) => records,
+            Err(err) => {
+                return self
+                    .cd_drill_not_started(sandbox, run, &err.public_message())
+                    .await;
+            }
+        };
+        for part in target.part_names() {
+            let mine: Vec<ReleaseRecord> =
+                records.iter().filter(|r| r.part == part).cloned().collect();
+            run.steps.extend(drill_steps(History(&mine)));
+        }
+        if run.steps.is_empty() {
+            return;
+        }
         let target_name = format!("{}/{}", sandbox.slug, run.environment);
         let started = self.now();
         let permit = match self.deploy_permit() {
@@ -565,38 +635,40 @@ impl App {
         let recorded = self
             .cd_record_and_execute(
                 sandbox,
-                run,
+                run.clone(),
                 prepared,
                 ("yulius".to_owned(), target_name),
                 (started, None),
             )
             .await;
         drop(permit);
-        if let Err(err) = recorded {
+        // Another run of the environment started first: nothing of the drill was recorded.
+        if let Err(AppError::Conflict(_)) = recorded {
+            self.cd_drill_not_started(
+                sandbox,
+                run,
+                "another run of the environment was running; deploy it again for a drill",
+            )
+            .await;
+        } else if let Err(err) = recorded {
             tracing::warn!(error = %err, "the rollback drill did not start");
         }
     }
 
-    /// Records a drill that could not start as an error saying why (its audit entry too).
+    /// Records a drill that could not start as an ended error saying why (never running, so a
+    /// running run of the environment does not stand in its way), with its audit entry.
     async fn cd_drill_not_started(&self, sandbox: &SandboxRecord, run: CdRunRecord, why: &str) {
         let target = format!("{}/{}", sandbox.slug, run.environment);
         let reason = format!("the rollback drill could not start: {why}");
-        if self.deps.store.insert_cd_run(&run).await.is_ok() {
-            let _ = self
-                .deps
-                .store
-                .finish_cd_run(
-                    &run.id,
-                    &CdRunEnd {
-                        state: RunState::Error,
-                        reason: Some(reason.clone()),
-                        exit_code: None,
-                        output: format!("[yulius] {reason}\n"),
-                        ended_at: self.now(),
-                        usage: None,
-                    },
-                )
-                .await;
+        let ended = CdRunRecord {
+            state: RunState::Error,
+            reason: Some(reason.clone()),
+            output: format!("[yulius] {reason}\n"),
+            ended_at: Some(self.now()),
+            ..run
+        };
+        if let Err(err) = self.deps.store.insert_cd_run(&ended).await {
+            tracing::warn!(error = %err, "recording a drill that could not start failed");
         }
         self.dlv_audit("yulius", "cd.drill", &target, &reason).await;
     }
@@ -804,5 +876,108 @@ pub(super) fn rollback_text(out: &mut String, rollback: &CdRollback, stage: &str
             Some(blocked) => out.push_str(&format!("  production deploys refused: {blocked}\n")),
             None => out.push_str("  rollback proven: production may deploy\n"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// Review H1 of SPEC-415: the markers come from the regular file the run wrote, never through
+    /// a link or from a FIFO or a device the deploy put in its place, and the reading ends.
+    #[tokio::test]
+    async fn markers_are_read_only_from_the_regular_log() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let log = dir.path().join("log");
+        std::fs::write(&log, "x\n::yulius-release v1\n  ::yulius-rolled-back 0  \n")?;
+        assert_eq!(
+            release_markers(&log).await,
+            ["::yulius-release v1", "::yulius-rolled-back 0"]
+        );
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::write(&elsewhere, "::yulius-release secret\n")?;
+        let linked = dir.path().join("linked");
+        std::os::unix::fs::symlink(&elsewhere, &linked)?;
+        assert!(
+            release_markers(&linked).await.is_empty(),
+            "a link is not followed"
+        );
+        let zero = dir.path().join("zero");
+        std::os::unix::fs::symlink("/dev/zero", &zero)?;
+        assert!(release_markers(&zero).await.is_empty());
+        let fifo = dir.path().join("fifo");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU)?;
+        let read = tokio::time::timeout(std::time::Duration::from_secs(20), release_markers(&fifo))
+            .await?;
+        assert!(read.is_empty(), "a FIFO is never waited on");
+        assert!(
+            release_markers(&dir.path().join("missing"))
+                .await
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    /// The last markers win when there are more than are kept; overlong lines are skipped.
+    #[tokio::test]
+    async fn the_last_markers_are_kept() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let log = dir.path().join("log");
+        let mut text = format!("::yulius-release {}\n", "a".repeat(MAX_MARKER_LINE));
+        for n in 0..300 {
+            text.push_str(&format!("::yulius-release v{n}\n"));
+        }
+        text.push_str("::yulius-release last");
+        std::fs::write(&log, text)?;
+        let found = release_markers(&log).await;
+        assert_eq!(found.len(), MAX_MARKERS);
+        assert_eq!(
+            found.last().map(String::as_str),
+            Some("::yulius-release last")
+        );
+        assert_eq!(
+            found.first().map(String::as_str),
+            Some("::yulius-release v45")
+        );
+        Ok(())
+    }
+
+    /// Review M1: the steps a rollback or a drill completed, from the wrapper's markers.
+    #[test]
+    fn completed_steps_come_from_the_wrapper_markers() {
+        let step = |part: &str, release: &str| RollbackStep {
+            part: part.into(),
+            release: release.into(),
+            sha: format!("sha-{release}"),
+        };
+        let steps = [
+            step("engine", "e1"),
+            step("engine", "e2"),
+            step("infra", "i1"),
+        ];
+        let markers = |lines: &[&str]| lines.iter().map(|l| (*l).to_owned()).collect::<Vec<_>>();
+        let reached = |lines: &[&str]| -> Vec<String> {
+            reached_steps(&steps, &markers(lines))
+                .into_iter()
+                .map(|s| s.release)
+                .collect()
+        };
+        assert!(reached(&[]).is_empty());
+        assert_eq!(reached(&["::yulius-rolled-back 0"]), ["e1"]);
+        assert_eq!(
+            reached(&[
+                "::yulius-rolled-back 0",
+                "::yulius-rolled-back 1",
+                "::yulius-rolled-back 2"
+            ]),
+            ["e2", "i1"],
+            "the last step of each part"
+        );
+        assert_eq!(
+            reached(&["::yulius-rolled-back 7", "::yulius-rolled-back x"]),
+            Vec::<String>::new()
+        );
     }
 }

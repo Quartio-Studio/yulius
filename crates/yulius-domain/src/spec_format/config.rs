@@ -233,6 +233,11 @@ pub enum ConfigProblem {
         "[{0}] has 'rollback' without 'migrations': say in one line how schema and data changes stay compatible with the previous release (or why there are none)"
     )]
     RollbackNeedsMigrations(String),
+    /// A `drill` naming no dev-stage table of the file (SPEC-415 RBK-004).
+    #[error(
+        "[{0}]: 'drill = \"{1}\"' names no dev-stage table of yulius.toml; name a [cd.<name>] whose stage is \"dev\""
+    )]
+    UnknownDrill(String, String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1112,13 +1117,25 @@ fn names_of(entry: &Entry, max: usize, allowed: &'static str) -> Result<Vec<Stri
 }
 
 fn cd_of(document: &Document) -> Result<CdConfig, FormatError> {
-    Ok(CdConfig {
+    let config = CdConfig {
         environments: document
             .cd
             .iter()
             .map(|(env, table)| cd_target(env, table))
             .collect::<Result<_, _>>()?,
-    })
+    };
+    // A named drill environment is a dev-stage table of the same file (review of SPEC-415).
+    for ((_, table), target) in document.cd.iter().zip(&config.environments) {
+        if let Some(drill) = &target.drill
+            && config.target_of(drill, CdStage::Dev).is_none()
+        {
+            return Err(err(
+                table.line,
+                ConfigProblem::UnknownDrill(format!("cd.{}", target.name), drill.clone()),
+            ));
+        }
+    }
+    Ok(config)
 }
 
 /// The project's CD (deployment, SPEC-134, SPEC-257): its `[cd.<name>]` tables, `[cd.dev]` and
@@ -1463,8 +1480,6 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-278 CDS-001: a table names the agent states its run uses, as an array of names or a
-    /// space-separated string, at most 8, duplicates dropped.
     /// SPEC-415 RBK-001..004: the rollback contract's keys, and what is refused.
     #[test]
     fn cd_tables_define_their_rollback() -> TestResult {
@@ -1475,7 +1490,8 @@ mod tests {
              parts = [\"engine\", \"infra\", \"engine\"]\n\
              [cd.prod]\npromote = true\ndeploy = \"d\"\nrollback = \"r\"\nmigrations = \"none: stateless\"\n\
              parts = \"engine infra\"\n\
-             [cd.prod-both]\nstage = \"prod\"\ndeploy = \"d\"\ndrill = \"dev-both\"\n",
+             [cd.prod-both]\nstage = \"prod\"\ndeploy = \"d\"\ndrill = \"dev-both\"\n\
+             [cd.dev-both]\nstage = \"dev\"\n",
         )?;
         let dev = cd.target("dev").ok_or("dev")?;
         assert_eq!(dev.rollback.as_deref(), Some("scripts/cd/run rollback dev"));
@@ -1514,6 +1530,14 @@ mod tests {
             ("[cd.prod]\ndrill = \"Dev\"\n", "'drill'"),
             ("[cd.dev]\nparts = [\"Engine\"]\n", "'parts'"),
             ("[cd.dev]\nparts = \"a b c d e f g h i\"\n", "'parts'"),
+            (
+                "[cd.prod]\ndrill = \"staging\"\n",
+                "'drill = \"staging\"' names no dev-stage table",
+            ),
+            (
+                "[cd.prod]\ndrill = \"platform\"\n[cd.platform]\nstage = \"prod\"\n",
+                "'drill = \"platform\"' names no dev-stage table",
+            ),
         ] {
             let shown = parse_yulius_toml_cd(bad).err().map(|e| e.to_string());
             assert!(
@@ -1524,6 +1548,8 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-278 CDS-001: a table names the agent states its run uses, as an array of names or a
+    /// space-separated string, at most 8, duplicates dropped.
     #[test]
     fn cd_tables_name_their_states() -> TestResult {
         let cd = parse_yulius_toml_cd(

@@ -30,7 +30,7 @@ pub(crate) type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 pub(crate) type TestResult = BoxResult<()>;
 
 const WAIT: Duration = Duration::from_secs(60);
-const VALUE: &str = "dev-deploy-token-9q2w7e5r";
+pub(crate) const VALUE: &str = "dev-deploy-token-9q2w7e5r";
 
 pub(crate) fn git(dir: &Path, args: &[&str]) -> BoxResult<String> {
     let out = Command::new("git")
@@ -131,7 +131,7 @@ pub(crate) struct Fixture {
     pub(crate) origin: PathBuf,
     pub(crate) work: PathBuf,
     pub(crate) marks: PathBuf,
-    secret: String,
+    pub(crate) secret: String,
 }
 
 /// `yulius.toml` with CD tables `cd` (the marks directory replaces `{marks}`).
@@ -272,7 +272,7 @@ impl Fixture {
         .await
     }
 
-    async fn allow_secret(&self) -> TestResult {
+    pub(crate) async fn allow_secret(&self) -> TestResult {
         let now = self
             .h
             .store

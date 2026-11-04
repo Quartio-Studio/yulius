@@ -8,9 +8,7 @@ use yulius_app::ports::store_ext::CdStore;
 use yulius_domain::cd::CdStage;
 use yulius_domain::ci::RunState;
 use yulius_domain::ids::{SandboxId, TaskId};
-use yulius_domain::rollback::{
-    CdRunKind, KEEP_RELEASE_RECORDS, ReleaseKind, ReleaseRecord, RollbackStep,
-};
+use yulius_domain::rollback::{CdRunKind, ReleaseKind, ReleaseRecord, RollbackStep, kept};
 use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db};
@@ -359,20 +357,36 @@ impl CdStore for SqliteStore {
                     ],
                 )
                 .map_err(db)?;
-                tx.execute(
-                    "DELETE FROM cd_releases WHERE sandbox_id = ?1 AND environment = ?2 \
-                     AND stage = ?3 AND part = ?4 AND id NOT IN (\
-                       SELECT id FROM cd_releases WHERE sandbox_id = ?1 AND environment = ?2 \
-                       AND stage = ?3 AND part = ?4 ORDER BY id DESC LIMIT ?5)",
-                    params![
-                        sandbox,
-                        environment,
-                        stage,
-                        r.part,
-                        i64::from(KEEP_RELEASE_RECORDS)
-                    ],
-                )
-                .map_err(db)?;
+                // What retention keeps (review M3 of SPEC-415): `rollback::kept`.
+                let rows: Vec<(i64, String, String)> = {
+                    let mut stmt = tx
+                        .prepare(
+                            "SELECT id, kind, release FROM cd_releases WHERE sandbox_id = ?1 \
+                             AND environment = ?2 AND stage = ?3 AND part = ?4 ORDER BY id DESC",
+                        )
+                        .map_err(db)?;
+                    stmt.query_map(params![sandbox, environment, stage, r.part], |row| {
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                    })
+                    .map_err(db)?
+                    .collect::<Result<_, _>>()
+                    .map_err(db)?
+                };
+                let view: Vec<(ReleaseKind, &str)> = rows
+                    .iter()
+                    .map(|(_, kind, release)| {
+                        (
+                            ReleaseKind::parse(kind).unwrap_or(ReleaseKind::Rollback),
+                            release.as_str(),
+                        )
+                    })
+                    .collect();
+                for ((id, _, _), keep) in rows.iter().zip(kept(&view)) {
+                    if !keep {
+                        tx.execute("DELETE FROM cd_releases WHERE id = ?1", [id])
+                            .map_err(db)?;
+                    }
+                }
             }
             tx.commit().map_err(db)
         })
@@ -584,6 +598,58 @@ mod tests {
                 .cd_releases(&sandbox, "prod", CdStage::Prod)
                 .await?
                 .is_empty()
+        );
+        Ok(())
+    }
+
+    /// Review M3 of SPEC-415: rollbacks never push out the deploys a rollback goes to.
+    #[tokio::test]
+    async fn rollbacks_never_push_out_the_kept_deploys() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        let sandbox = SandboxId::parse("s1")?;
+        let record = |release: String, kind| ReleaseRecord {
+            part: String::new(),
+            sha: "a".repeat(40),
+            release,
+            kind,
+            requested_by: "alice".into(),
+            at: Timestamp(1),
+            barrier: None,
+            run_id: "r".into(),
+        };
+        for n in 1..=12 {
+            let deployed = [record(format!("v{n}"), ReleaseKind::Deploy)];
+            store
+                .insert_cd_releases(&sandbox, "dev", CdStage::Dev, &deployed)
+                .await?;
+        }
+        for _ in 0..25 {
+            let back = [record("v3".into(), ReleaseKind::Rollback)];
+            store
+                .insert_cd_releases(&sandbox, "dev", CdStage::Dev, &back)
+                .await?;
+        }
+        let all = store.cd_releases(&sandbox, "dev", CdStage::Dev).await?;
+        assert_eq!(
+            all.len(),
+            30,
+            "the newest 20 and the deploys of 10 releases"
+        );
+        let deploys: Vec<&str> = all
+            .iter()
+            .filter(|r| r.kind == ReleaseKind::Deploy)
+            .map(|r| r.release.as_str())
+            .collect();
+        assert_eq!(
+            deploys,
+            [
+                "v12", "v11", "v10", "v9", "v8", "v7", "v6", "v5", "v4", "v3"
+            ]
+        );
+        let history = yulius_domain::rollback::History(&all);
+        assert!(
+            history.find("v4").is_some(),
+            "rolling forward again stays possible"
         );
         Ok(())
     }
