@@ -2868,6 +2868,8 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .cd-release-id { min-width: 0; display: flex; flex-direction: column; overflow-wrap: anywhere; }
 .cd-release-id code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cd-wrap { overflow-wrap: anywhere; }
+.cd-older > summary { cursor: pointer; color: var(--text-2); width: fit-content; }
+.cd-older > .cd-releases { margin-top: 4px; }
 /* A deploy before its run exists (SPEC-189): what the server does now, with the time so far. */
 .cd-starting-row { display: flex; align-items: flex-start; gap: 12px; padding: 16px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface-2); }
 .cd-starting { flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 12px; overflow-wrap: anywhere; }

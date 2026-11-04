@@ -89,7 +89,7 @@ const shownEngine = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => brows
   [...document.querySelectorAll('.cd-rollback[aria-label="Dev rollback"] .cd-part')]
     .filter((p) => p.querySelector('h4')?.textContent === 'engine')
     .flatMap((p) => [...p.querySelectorAll('li[data-release]')])
-    .filter((li) => li.getClientRects().length > 0)
+    .filter((li) => li.checkVisibility())
     .map((li) => (li as HTMLElement).dataset.release!.slice(0, 4)));
 
 test('a part shows its three newest releases and folds the older ones', async ({ app, browser, screen }) => {

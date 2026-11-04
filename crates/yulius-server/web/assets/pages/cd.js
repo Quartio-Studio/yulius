@@ -42,6 +42,8 @@ const SECRET_STATE = {
 };
 const POLL_ACTIVE_MS = 3000;
 const POLL_IDLE_MS = 30000;
+/** How many kept releases a part shows before the older ones fold (SPEC-419). */
+const SHOWN_RELEASES = 3;
 
 /** A deploy's state in words, tone and icon. */
 export const stateOf = (state) => STATE[state] || { label: state || 'Unknown', tone: '', icon: 'clock' };
@@ -258,16 +260,24 @@ export function mountCdSection(ctx, sandbox, route, section, actions) {
           onClick: () => rollBack(env, part, r, overview) },
         previous ? [icon('back', { size: 14 }), 'Roll back to previous'] : 'Roll back to this');
       };
+      const item = (r) => h('li', { dataset: { release: r.release } },
+        h('div', { class: 'cd-release-id' },
+          h('code', { title: r.release }, r.release),
+          h('span', { class: 'muted small' }, `${shortSha(r.commit)} · `, h('span', { title: dateTime(r.deployed_at) }, relLong(r.deployed_at)), ` · ${r.requested_by}`, r.barrier ? ` · no rollback past it: ${r.barrier}` : ''),
+          r.blocked ? h('span', { class: 'small muted' }, `Blocked: ${r.blocked}`) : null),
+        action(r));
+      // The newest releases, down to the one deployed now and the previous one; the rest fold (SPEC-419).
+      const shown = Math.max(SHOWN_RELEASES, ...releases.map((r, i) => (r.current || r.release === part.previous ? i + 1 : 0)));
+      const older = releases.slice(shown);
       const list = releases.length
-        ? h('ul', { class: 'cd-releases', 'aria-label': `${where} releases` }, releases.map((r) => h('li', { dataset: { release: r.release } },
-          h('div', { class: 'cd-release-id' },
-            h('code', { title: r.release }, r.release),
-            h('span', { class: 'muted small' }, `${shortSha(r.commit)} · `, h('span', { title: dateTime(r.deployed_at) }, relLong(r.deployed_at)), ` · ${r.requested_by}`, r.barrier ? ` · no rollback past it: ${r.barrier}` : ''),
-            r.blocked ? h('span', { class: 'small muted' }, `Blocked: ${r.blocked}`) : null),
-          action(r))))
+        ? h('ul', { class: 'cd-releases', 'aria-label': `${where} releases` }, releases.slice(0, shown).map(item))
         : h('p', { class: 'small muted' }, 'No releases yet: the next deploy records one.');
+      const fold = older.length
+        ? h('details', { class: 'cd-older' }, h('summary', { class: 'small' }, `${older.length} older release${older.length === 1 ? '' : 's'}`),
+          h('ul', { class: 'cd-releases', 'aria-label': `${where} older releases` }, older.map(item)))
+        : null;
       const alone = releases.length === 1 ? h('p', { class: 'small muted' }, 'No earlier release to go back to yet.') : null;
-      rows.push(h('div', { class: 'stack-sm' }, h('h4', { class: 'cd-part-name' }, part.name || 'Releases'), list, alone));
+      rows.push(h('div', { class: 'stack-sm cd-part' }, h('h4', { class: 'cd-part-name' }, part.name || 'Releases'), list, fold, alone));
     }
     return h('section', { class: 'stack-sm cd-rollback', 'aria-label': `${title(env)} rollback` }, rows);
   }
