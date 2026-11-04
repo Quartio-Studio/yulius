@@ -13,7 +13,9 @@ use std::io::Read as _;
 use std::path::Path;
 use std::sync::Arc;
 
-use yulius_contracts::api::cd::{CdPart, CdRelease, CdRollback, CdRollbackRequest, CdRun};
+use yulius_contracts::api::cd::{
+    CdEnvironment, CdPart, CdRelease, CdRollback, CdRollbackRequest, CdRun,
+};
 use yulius_domain::cd::{self as dom, CdRefusal, CdStage, CdTarget, Requester, env_label};
 use yulius_domain::ci::RunState;
 use yulius_domain::ids::SandboxId;
@@ -830,8 +832,27 @@ impl App {
     }
 }
 
+/// Why an environment that runs no deploy command needs no rollback (SPEC-418 RCF-001).
+fn no_rollback_needed(env: &CdEnvironment) -> &'static str {
+    if env.stage == "prod" && env.promote {
+        "promoting is the release: nothing deployed here can be redeployed; undo a release by \
+         reverting it and promoting again"
+    } else {
+        "it runs no deploy command; add `rollback` and `migrations` with one"
+    }
+}
+
 /// An environment's rollback as `cd_status` prints it.
-pub(super) fn rollback_text(out: &mut String, rollback: &CdRollback, stage: &str) {
+pub(super) fn rollback_text(out: &mut String, env: &CdEnvironment) {
+    let (rollback, stage) = (&env.rollback, env.stage.as_str());
+    if rollback.command.is_none() && env.deploy.is_none() {
+        // Nothing Yulius deploys here could be redeployed (SPEC-418, ADR-0264).
+        out.push_str(&format!(
+            "  rollback: not needed ({})\n",
+            no_rollback_needed(env)
+        ));
+        return;
+    }
     let Some(command) = &rollback.command else {
         out.push_str(
             "  rollback: not configured (add `rollback` and `migrations` to its table; production \
@@ -910,6 +931,67 @@ mod tests {
 
     /// Review H1 of SPEC-415: the markers come from the regular file the run wrote, never through
     /// a link or from a FIFO or a device the deploy put in its place, and the reading ends.
+    fn env(stage: &str, deploy: Option<&str>, promote: bool) -> CdEnvironment {
+        CdEnvironment {
+            name: stage.into(),
+            label: stage.into(),
+            stage: stage.into(),
+            state: if deploy.is_some() || promote {
+                "ready"
+            } else {
+                "empty"
+            }
+            .into(),
+            branch: if stage == "prod" { "main" } else { "dev" }.into(),
+            head: None,
+            problem: None,
+            about: None,
+            deploy: deploy.map(Into::into),
+            verify: None,
+            promote,
+            promotes_from: None,
+            secrets: Vec::new(),
+            states: Vec::new(),
+            deployed: None,
+            last_run: None,
+            rollback: CdRollback {
+                drill_environment: "dev".into(),
+                ..CdRollback::default()
+            },
+        }
+    }
+
+    /// SPEC-418 RCF-001/003: an environment that runs no deploy command needs no rollback, and
+    /// says why; one that deploys without `rollback` is still "not configured".
+    #[test]
+    fn environments_that_deploy_nothing_need_no_rollback() {
+        let said = |env: &CdEnvironment| {
+            let mut out = String::new();
+            rollback_text(&mut out, env);
+            out
+        };
+        let promoting = said(&env("prod", None, true));
+        assert!(
+            promoting.contains("rollback: not needed (promoting is the release")
+                && promoting.contains("reverting it and promoting again"),
+            "{promoting}"
+        );
+        let empty = said(&env("dev", None, false));
+        assert!(
+            empty.contains("rollback: not needed (it runs no deploy command"),
+            "{empty}"
+        );
+        for out in [&promoting, &empty] {
+            assert!(!out.contains("not configured"), "{out}");
+            assert!(!out.contains("need a proven rollback"), "{out}");
+        }
+        let deploying = said(&env("prod", Some("scripts/cd/deploy.sh prod"), false));
+        assert!(
+            deploying.contains("rollback: not configured"),
+            "{deploying}"
+        );
+    }
+
     #[tokio::test]
     async fn markers_are_read_only_from_the_regular_log() -> TestResult {
         let dir = tempfile::tempdir()?;

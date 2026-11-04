@@ -616,6 +616,36 @@ async fn empty_and_undefined_environments_run_nothing() -> TestResult {
     Ok(())
 }
 
+/// SPEC-418 AC1: Yulius's own CD (an empty dev, a production that only promotes) deploys nothing a
+/// rollback could redeploy, so `cd_status` says rollback is not needed and why, never that it is
+/// missing.
+#[tokio::test]
+async fn environments_that_deploy_nothing_need_no_rollback() -> TestResult {
+    use yulius_domain::task::TaskStatus;
+    let f =
+        fixture("[cd.dev]\nabout = \"no dev machine yet\"\n\n[cd.prod]\npromote = true\n").await?;
+    support::seed_task(&f.h, "t1", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&f.h, "t1", TOKEN).await?;
+    let status = support::mcp_tool(&f.h, TOKEN, "cd_status", json!({})).await?;
+    let shown = support::tool_text(&status)["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        shown.contains("rollback: not needed (it runs no deploy command"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("rollback: not needed (promoting is the release"),
+        "{shown}"
+    );
+    assert!(
+        !shown.contains("not configured") && !shown.contains("need a proven rollback"),
+        "{shown}"
+    );
+    Ok(())
+}
+
 /// AC5 (CDR-004): a run left running by a restart is recorded as an error, never run again.
 #[tokio::test]
 async fn a_run_left_by_a_restart_is_an_error() -> TestResult {
