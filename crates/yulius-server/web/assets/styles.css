@@ -2861,11 +2861,13 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .cd-rollback { border-top: 1px solid var(--border); padding-top: 8px; }
 .cd-rollback-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .cd-rollback-head h3 { margin: 0; font-size: var(--fs); line-height: var(--lh); font-weight: 600; }
-.cd-part-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; justify-content: space-between; }
-.cd-part-head h4 { margin: 0; font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: 600; }
+.cd-part-name { margin: 0; font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: 600; }
 .cd-releases { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-.cd-releases li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-height: var(--control-sm); overflow-wrap: anywhere; }
-.cd-release-meta { flex: 1; min-width: 0; }
+.cd-releases li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 8px; min-height: var(--control-sm); }
+/* A long release id stays on one line, cut with an ellipsis; its tooltip holds all of it (SPEC-419). */
+.cd-release-id { min-width: 0; display: flex; flex-direction: column; overflow-wrap: anywhere; }
+.cd-release-id code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cd-wrap { overflow-wrap: anywhere; }
 /* A deploy before its run exists (SPEC-189): what the server does now, with the time so far. */
 .cd-starting-row { display: flex; align-items: flex-start; gap: 12px; padding: 16px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface-2); }
 .cd-starting { flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 12px; overflow-wrap: anywhere; }

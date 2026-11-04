@@ -896,12 +896,14 @@ test('the CD page rolls back to an earlier release in one click', async ({ app, 
   await expect(screen.getByText('Rolling dev back to v41.')).toBeVisible();
   await expect(row('Dev', 'v41')).toContainText('Deployed now');
   await expect(screen.getByRole('button', /Open the dev rollback at 8e2d4f6/)).toBeVisible();
-  // v40 lies behind v41's barrier: going back further is not offered.
-  await expect(dev.getByRole('button', 'Roll back to previous (v40) of dev')).toBeDisabled();
+  // v40 lies behind v41's barrier: going back further is not offered; going forward is (SPEC-419:
+  // one action per release, the previous one's being the one-click default).
+  await expect(dev.getByRole('button', 'Roll back to previous (v40) of dev')).toBeHidden();
   await expect(dev.getByRole('button', 'Roll back to this: dev v40')).toBeHidden();
+  await expect(dev.getByRole('button', 'Roll back to this: dev v42')).toBeVisible();
 
-  // Production: a chosen release, with the slug typed.
-  await prod.getByRole('button', 'Roll back to this: production v39').click();
+  // Production: the previous release, with the slug typed.
+  await prod.getByRole('button', 'Roll back to previous (v39) of production').click();
   const typed = screen.getByRole('dialog', 'Roll back production?');
   const go = typed.getByRole('button', 'Roll back to v39');
   await expect(go).toBeDisabled();

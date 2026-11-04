@@ -74,6 +74,7 @@ test('long release ids keep every CD card within its bounds, with one action per
   await back.click();
   const confirm = screen.getByRole('dialog', 'Roll back dev engine?');
   await expect(confirm.getByText(new RegExp(`^Redeploys ${LONG[1]} \\(from `))).toBeVisible();
+  expect(await browser.evaluate(() => { const b = document.querySelector('dialog[open] .modal-body')!; return b.scrollWidth - b.clientWidth; })).toBeLessThanOrEqual(0);
   await confirm.getByRole('button', 'Roll back to 0731fe929a36…').click();
   await expect(screen.getByText('Rolling dev engine back to 0731fe929a36….')).toBeVisible();
 
