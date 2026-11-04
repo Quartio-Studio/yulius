@@ -1659,7 +1659,13 @@ branch's verified head. Which release is previous, kept or behind a barrier is
 (`App::cd_start_drill`; back to the previous release and forward, `drill_steps`), and a
 production-stage deploy asks `App::cd_rollback_gate` (`yulius_domain::rollback::production_gate`)
 before any secret or promotion: rollback configured, and the newest drill passed at the tree it
-deploys.
+deploys. An environment whose table has no `deploy` and no `rollback` (empty, or a production that
+only promotes) needs no rollback: `cd_status` (`rollback_text`) and the CD page say "not needed"
+and why ([SPEC-418](../.ai/specs/SPEC-418-configure-rollback-in-the-cd.md),
+[decision 0264](decisions/0264-yulius-own-production-rolls-back-through-its-update-not-a-cd-command.md)).
+Yulius's own CD is such: its production is a promotion of `dev` into `main`, and an instance rolls
+back through its update (the update helper restores the previous binary and database when the new
+build fails its check, and never installs an older commit) or by a revert promoted again.
 
 ```mermaid
 flowchart LR
@@ -1670,6 +1676,7 @@ flowchart LR
   GATE -->|"proven"| PROD["production deploy"]
   REL --> RB["Roll back to previous / to this (CD page, cd_rollback on dev)"]
   RB -->|"rollback + verify, no rebuild"| REL
+  NODEP["no deploy command: empty, or promotion only (Yulius itself)"] -->|"rollback not needed"| UPD["Yulius: the update restores itself on a failed check; else revert and promote"]
 ```
 
 A delivery profile's environment run (DLV-003; an agent's `delivery_deploy`) is a CD run of its
