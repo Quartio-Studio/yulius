@@ -1276,6 +1276,9 @@ async fn running_deploy(i: &Instance, id: &str) -> Result<(), Box<dyn std::error
             exit_code: None,
             started_at: i.h.app.now(),
             ended_at: None,
+            kind: yulius_domain::rollback::CdRunKind::Deploy,
+            source: None,
+            steps: Vec::new(),
         })
         .await?;
     Ok(())

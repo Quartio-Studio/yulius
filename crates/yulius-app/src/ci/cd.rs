@@ -45,6 +45,7 @@ use yulius_domain::ci::RunState;
 use yulius_domain::delivery::DeliveryProfile;
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::permission::{AccessLevel, Action};
+use yulius_domain::rollback::{CdRunKind, RollbackStep};
 use yulius_domain::spec_format::{MAX_CONFIG_BYTES, parse_yulius_toml_cd};
 use yulius_domain::time::Timestamp;
 
@@ -119,6 +120,12 @@ pub struct CdRunRecord {
     pub started_at: Timestamp,
     /// End.
     pub ended_at: Option<Timestamp>,
+    /// Deploy, rollback or drill (SPEC-415).
+    pub kind: CdRunKind,
+    /// A rollback's or a drill's scripts' commit (the branch head) when it is not `sha`.
+    pub source: Option<String>,
+    /// A rollback's or a drill's releases, in order.
+    pub steps: Vec<RollbackStep>,
 }
 
 /// How a run ended.
@@ -681,6 +688,9 @@ impl App {
             exit_code: None,
             started_at: self.now(),
             ended_at: None,
+            kind: CdRunKind::Deploy,
+            source: None,
+            steps: Vec::new(),
         };
         // Detached from the request from its record on (SPEC-347, ADR-0233): a client that goes
         // away mid-start leaves the run executing, or ended as an error, never running with

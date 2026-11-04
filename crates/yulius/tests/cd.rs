@@ -591,6 +591,9 @@ async fn a_run_left_by_a_restart_is_an_error() -> TestResult {
             exit_code: None,
             started_at: Timestamp(1),
             ended_at: None,
+            kind: yulius_domain::rollback::CdRunKind::Deploy,
+            source: None,
+            steps: Vec::new(),
         })
         .await?;
     assert_eq!(f.h.app.reconcile_cd_runs().await?, 1);
@@ -1504,6 +1507,9 @@ async fn a_lost_run_leaves_no_files_behind() -> TestResult {
             exit_code: None,
             started_at: Timestamp(1),
             ended_at: None,
+            kind: yulius_domain::rollback::CdRunKind::Deploy,
+            source: None,
+            steps: Vec::new(),
         })
         .await?;
     assert_eq!(f.h.app.reconcile_cd_runs().await?, 1);

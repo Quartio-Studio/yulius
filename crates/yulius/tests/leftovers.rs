@@ -433,6 +433,9 @@ async fn production_run_files_left_behind_are_ended_runs() -> BoxResult<()> {
             exit_code: None,
             started_at: yulius_domain::time::Timestamp(1),
             ended_at: None,
+            kind: yulius_domain::rollback::CdRunKind::Deploy,
+            source: None,
+            steps: Vec::new(),
         })
         .await?;
     let now_ms = i64::try_from(
