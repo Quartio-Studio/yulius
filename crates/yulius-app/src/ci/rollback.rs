@@ -848,7 +848,10 @@ impl App {
 pub(super) fn mark_rollback_not_needed(envs: &mut [CdEnvironment], integration: &str) {
     let drilled: Vec<String> = envs
         .iter()
-        .filter(|env| env.stage == CdStage::Prod.as_str() && env.deploy.is_some())
+        // A production whose table could not be read may deploy and drill (review round 2).
+        .filter(|env| {
+            env.stage == CdStage::Prod.as_str() && (env.deploy.is_some() || env.problem.is_some())
+        })
         .map(|env| env.rollback.drill_environment.clone())
         .collect();
     for env in envs.iter_mut() {
@@ -870,17 +873,22 @@ pub(super) fn mark_rollback_not_needed(envs: &mut [CdEnvironment], integration: 
 }
 
 /// An environment's rollback as `cd_status` prints it.
-pub(super) fn rollback_text(out: &mut String, rollback: &CdRollback, stage: &str) {
+pub(super) fn rollback_text(out: &mut String, env: &CdEnvironment) {
+    let (rollback, stage) = (&env.rollback, env.stage.as_str());
     if let Some(why) = &rollback.not_needed {
         // Nothing Yulius deploys here could be redeployed (SPEC-418, ADR-0264).
         out.push_str(&format!("  rollback: not needed ({why})\n"));
         return;
     }
     let Some(command) = &rollback.command else {
-        out.push_str(
+        out.push_str(if env.deploy.is_none() && env.problem.is_none() {
+            // Not "not needed": a production that deploys drills here (review round 2).
+            "  rollback: not configured (production deploys wait for a rollback drill here: add a \
+             deploy command, `rollback` and `migrations` to its table)\n"
+        } else {
             "  rollback: not configured (add `rollback` and `migrations` to its table; production \
-             deploys need a proven rollback)\n",
-        );
+             deploys need a proven rollback)\n"
+        });
         if let Some(blocked) = &rollback.blocked {
             out.push_str(&format!("  production deploys refused: {blocked}\n"));
         }
@@ -988,7 +996,7 @@ mod tests {
         envs.iter()
             .map(|env| {
                 let mut out = String::new();
-                rollback_text(&mut out, &env.rollback, &env.stage);
+                rollback_text(&mut out, env);
                 out
             })
             .collect()
@@ -1032,7 +1040,12 @@ mod tests {
         ];
         let out = said(&mut envs);
         assert_eq!(envs[0].rollback.not_needed, None);
-        assert!(out[0].contains("rollback: not configured"), "{}", out[0]);
+        // Review round 2: an agent reads that it needs a deploy command too, and why.
+        assert!(
+            out[0].contains("rollback: not configured (production deploys wait for a rollback drill here: add a deploy command, `rollback` and `migrations`"),
+            "{}",
+            out[0]
+        );
         // Another dev-stage environment, not drilled on, still needs none.
         let mut staging = env("dev", None, false);
         staging.name = "staging".into();
@@ -1055,6 +1068,13 @@ mod tests {
         said(&mut envs);
         assert_eq!(envs[0].rollback.not_needed, None);
         assert!(envs[1].rollback.not_needed.is_some());
+        // Review round 2: an unreadable production may deploy and drill on dev.
+        let mut prod = env("prod", None, false);
+        prod.problem = Some("yulius.toml line 3: invalid".into());
+        let mut envs = [env("dev", None, false), prod];
+        said(&mut envs);
+        assert_eq!(envs[0].rollback.not_needed, None);
+        assert_eq!(envs[1].rollback.not_needed, None);
     }
 
     /// Review H1 of SPEC-415: the markers come from the regular file the run wrote, never through

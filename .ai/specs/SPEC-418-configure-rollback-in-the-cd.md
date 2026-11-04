@@ -103,6 +103,10 @@ shown as missing a rollback.
   helper had taken another test's doc comment: moved. N2 (the product mock's dev is `not_defined`):
   no change, `seedCd` makes it `empty`, and the M1 case sets `empty` again. N3 long lines and
   `docs/api.md`: fixed.
+- Review round 2 (approve, three non-blocking findings, all fixed): a production whose table could
+  not be read counts as drilling on its drill environment (it may deploy); `cd_status` tells an
+  agent that a drilled environment without a deploy command needs one too; the mock refuses a
+  rollback of an environment that deploys nothing as the server does.
 
 ## Evidence
 

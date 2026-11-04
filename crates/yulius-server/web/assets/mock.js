@@ -2088,7 +2088,7 @@ const NO_ROLLBACK = { command: null, migrations: null, parts: [], drill_environm
  */
 function cdNotNeeded(envs) {
   const integration = (envs.find((e) => e.stage === 'dev') || {}).branch || 'dev';
-  const drilled = envs.filter((e) => e.stage === 'prod' && e.deploy).map((e) => (e.rollback || {}).drill_environment || 'dev');
+  const drilled = envs.filter((e) => e.stage === 'prod' && (e.deploy || e.problem)).map((e) => (e.rollback || {}).drill_environment || 'dev');
   return envs.map((env) => {
     const rb = env.rollback || {};
     const needed = rb.command || env.deploy || env.problem || (env.stage === 'dev' && drilled.includes(env.name));
@@ -2211,6 +2211,7 @@ route('POST', `/api/sandboxes/${ID}/cd/${ID}/rollback`, ({ db, p, body }) => {
   db.lastCdRollback = body || {};
   if (prod && String((body && body.confirm) || '').trim() !== sandbox.slug) fail(422, 'invalid', `type the project's slug '${sandbox.slug}' to confirm a production deploy`);
   const rb = env.rollback || {};
+  if (!rb.command && !env.deploy) fail(409, 'conflict', `nothing is deployed to ${env.label} that a rollback could redeploy: [cd.${name}] of yulius.toml on ${env.branch} runs no deploy command`);
   if (!rb.command) fail(409, 'conflict', `rollback is not configured for ${env.label}: add \`rollback\` and \`migrations\` to [cd.${name}] of yulius.toml on ${env.branch}`);
   const part = (rb.parts || []).find((x) => x.name === ((body && body.part) || ''));
   if (!part) fail(409, 'conflict', `${env.label} has no part '${body && body.part}'`);
