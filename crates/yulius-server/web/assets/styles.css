@@ -2844,7 +2844,8 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .ci-tab:focus-visible { box-shadow: var(--focus); outline: none; }
 
 /* ---- CD page (pages/cd.js) */
-.cd-envs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 12px; }
+/* Two columns at most (SPEC-417): a column is never narrower than half the row, nor than 320 px. */
+.cd-envs { --cd-gap: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, max(320px, (100% - var(--cd-gap)) / 2)), 1fr)); gap: var(--cd-gap); }
 .cd-env { min-width: 0; }
 .cd-env-head { display: flex; align-items: flex-start; gap: 8px; }
 .cd-env-name { flex: 1; min-width: 0; min-height: var(--control-md); }

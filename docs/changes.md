@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-04
 
+- The CD page lays its environment cards out in two columns at most (SPEC-417, task #399): a wide
+  window showed three narrow cards side by side and a fourth alone below them. A column is never
+  narrower than half the row, nor than 320 px, so a narrow window still stacks them in one.
 - Rollback is part of every project's CD (SPEC-415, task #397, ADR-0263). `[cd.<name>]` takes
   `rollback` (redeploys a kept release named in `$YULIUS_CD_RELEASE`, never building, then
   `verify`), `migrations` (required with it), `parts` and, on production tables, `drill`. Deploys
