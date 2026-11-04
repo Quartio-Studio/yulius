@@ -749,3 +749,45 @@ async fn a_drill_that_cannot_start_is_recorded() -> TestResult {
     );
     Ok(())
 }
+
+/// Review round 2: a release deployed again without its barrier (the migration ran the first
+/// time) keeps the barrier, so the release before it stays blocked.
+#[tokio::test]
+async fn a_redeployed_release_keeps_its_barrier() -> TestResult {
+    let f = fixture(&rollback_cd()).await?;
+    push(&f, "dev", &scripts("1"))?;
+    f.deployed(&f.alice, "dev", None).await?;
+    push(
+        &f,
+        "dev",
+        &[
+            ("version", Some("2\n".to_owned())),
+            ("barrier", Some("orders.total split\n".to_owned())),
+        ],
+    )?;
+    f.deployed(&f.alice, "dev", None).await?;
+    f.drill(1).await?;
+    push(&f, "dev", &[("barrier", None)])?;
+    f.deployed(&f.alice, "dev", None).await?;
+    f.drill(2).await?;
+    let part = &f.rollback_of("dev").await?["parts"][0];
+    assert_eq!(
+        part["releases"][0]["barrier"], "orders.total split",
+        "{part}"
+    );
+    assert!(
+        part["releases"][1]["blocked"]
+            .as_str()
+            .is_some_and(|b| b.contains("orders.total split")),
+        "{part}"
+    );
+    let refused = f
+        .post_as(
+            &f.alice,
+            "/api/sandboxes/s1/cd/dev/rollback",
+            json!({"release": "v1"}),
+        )
+        .await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    Ok(())
+}

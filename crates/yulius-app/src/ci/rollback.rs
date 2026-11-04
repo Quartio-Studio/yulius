@@ -20,7 +20,7 @@ use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::Action;
 use yulius_domain::rollback::{
     CdRunKind, DrillSeen, History, ReleaseKind, ReleaseRecord, RollbackStep, drill_steps,
-    production_gate, shipped, short_release,
+    earlier_barrier, production_gate, shipped, short_release,
 };
 
 use super::cd::{
@@ -445,6 +445,12 @@ impl App {
         let mut records = Vec::new();
         match run.kind {
             CdRunKind::Deploy if state == RunState::Passed => {
+                let earlier = self
+                    .deps
+                    .store
+                    .cd_releases(&sandbox.id, &run.environment, run.stage)
+                    .await
+                    .unwrap_or_default();
                 let (shipped, ignored) =
                     shipped(markers.iter().map(String::as_str), &target.parts, &run.sha);
                 for note in ignored {
@@ -456,9 +462,10 @@ impl App {
                         ring.push_str("[yulius] ignored a release id that holds a secret\n");
                         continue;
                     }
+                    // A release deployed again keeps its first deploy's barrier (review round 2).
                     let barrier = match &s.barrier {
                         Some(why) => Some(self.redact_for_sandbox(&sandbox.id, why).await),
-                        None => None,
+                        None => earlier_barrier(&earlier, &s.part, &release),
                     };
                     records.push(record(
                         s.part,
@@ -478,7 +485,18 @@ impl App {
                     .cd_releases(&sandbox.id, &run.environment, run.stage)
                     .await
                     .unwrap_or_default();
-                for step in reached_steps(&run.steps, markers) {
+                let mut reached = reached_steps(&run.steps, markers);
+                // A passed rollback whose markers could not be read went to every step.
+                if reached.is_empty()
+                    && run.kind == CdRunKind::Rollback
+                    && state == RunState::Passed
+                {
+                    let all: Vec<String> = (0..run.steps.len())
+                        .map(|n| format!("::yulius-rolled-back {n}"))
+                        .collect();
+                    reached = reached_steps(&run.steps, &all);
+                }
+                for step in reached {
                     let now = current.iter().find(|r| r.part == step.part);
                     // A drill that failed after going back records where it left the part.
                     if run.kind == CdRunKind::Drill

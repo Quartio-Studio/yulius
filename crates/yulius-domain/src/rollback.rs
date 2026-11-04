@@ -362,6 +362,18 @@ pub fn drill_steps(history: History<'_>) -> Vec<RollbackStep> {
     vec![RollbackStep::to(previous), RollbackStep::to(now)]
 }
 
+/// The barrier an earlier deploy of `release` of `part` printed, among `records`: a release
+/// deployed again keeps it (its migration ran the first time), so retention, which keeps a
+/// release's newest deploy, never drops the barrier in front of an older release it keeps
+/// (review round 2).
+#[must_use]
+pub fn earlier_barrier(records: &[ReleaseRecord], part: &str, release: &str) -> Option<String> {
+    records
+        .iter()
+        .filter(|r| r.kind == ReleaseKind::Deploy && r.part == part && r.release == release)
+        .find_map(|r| r.barrier.clone())
+}
+
 /// Which of one part's records, newest first as `(kind, release)`, retention keeps (RBK-012,
 /// review M3): the newest [`KEEP_RELEASE_RECORDS`], the newest deploy of each of the newest
 /// [`KEEP_RELEASES`] distinct releases deployed, and the newest deploy of the release run now, so
@@ -808,6 +820,45 @@ mod tests {
             "the newest 20"
         );
         assert_eq!(kept.iter().filter(|k| **k).count(), 31);
+    }
+
+    /// Review round 2: a release deployed again keeps the barrier of its first deploy, so
+    /// retention never keeps an older release while dropping the barrier in front of it.
+    #[test]
+    fn a_barrier_survives_redeploys_and_retention() {
+        let mut records: Vec<ReleaseRecord> = vec![deploy("v2")];
+        let mut add = |records: &mut Vec<ReleaseRecord>, mut new: ReleaseRecord| {
+            if new.barrier.is_none() {
+                new.barrier = earlier_barrier(records, &new.part, &new.release);
+            }
+            records.insert(0, new);
+            let view: Vec<(ReleaseKind, &str)> = records
+                .iter()
+                .map(|r| (r.kind, r.release.as_str()))
+                .collect();
+            let keep = kept(&view);
+            let mut i = 0;
+            records.retain(|_| {
+                i += 1;
+                keep[i - 1]
+            });
+        };
+        add(
+            &mut records,
+            record("v3", ReleaseKind::Deploy, Some("dropped column x")),
+        );
+        for _ in 0..20 {
+            add(&mut records, deploy("v3"));
+        }
+        let history = History(&records);
+        assert!(history.find("v2").is_some(), "v2 is still kept");
+        assert!(
+            history
+                .blocked("v2")
+                .is_some_and(|why| why.contains("dropped column x")),
+            "{records:?}"
+        );
+        assert_eq!(earlier_barrier(&records, "", "v9"), None);
     }
 
     #[test]

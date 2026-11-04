@@ -886,7 +886,8 @@ start is recorded as an `error` saying why. After each rollback command that suc
 prints `::yulius-rolled-back <step>`; a rollback, or a drill that failed, records the release each
 part last reached as current. Markers are read from the run's regular log file only (no link, no
 FIFO; at most 256 MiB, the last 256 markers), and release ids and barrier reasons are redacted of
-the sandbox's agent secrets (an id that held one is ignored). `drill` must name a dev-stage table. A production-stage deploy whose table has a `deploy` is refused (`conflict`, audited
+the sandbox's agent secrets (an id that held one is ignored). `drill` must name a dev-stage table. A
+production-stage deploy whose table has a `deploy` is refused (`conflict`, audited
 `cd.refused`) until the table has `rollback` and the newest drill of its `drill` environment passed
 at a commit with the tree being deployed (with `promote`: the integration commit promoted).
 
