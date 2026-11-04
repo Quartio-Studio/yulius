@@ -172,6 +172,11 @@ Surfaces:
   deploy shipped, so a deploy that ships nothing (quartio-v2's "only what changed") still proves
   its commit; a failed rollback or drill records where it left each part (from the wrapper's
   per-step markers, not the script's output alone) so "Roll back to this" works afterwards.
+- Review round 2: a release deployed again inherits the barrier of its earlier deploy, so retention
+  (which keeps a release's newest deploy) never keeps an older release behind a dropped barrier. The
+  wrapper's `::yulius-rolled-back` marker shares the run's log, so the project's own scripts could
+  print it; it only names steps of the run's own record, and the scripts are the project's,
+  reviewed and merged like its code, so this is accepted (as `::yulius-release` is).
 - `cd_rollback` is not added to the remote MCP of people's laptops (`remote.rs`) nor to the
   briefing's tool list (whose byte budget is full; the delivery rule names it): RBK-041 asks for a
   task agent's tool, which `tools/list` serves with its description.
