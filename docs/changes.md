@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-05
 
+- Work after a task's merge is delivered again (SPEC-425, task #407, #1074, ADR-0269): commits an
+  agent makes on its branch after the task's pull request merged are pushed and opened as a new
+  pull request of the same task (at the end of a turn and on `delivery_merge`), instead of staying
+  local while `delivery_merge` waited for checks of the merged pull request forever; a head that
+  only merged `dev` since opens nothing, and `delivery_merge` then says the pull request is merged.
 - Sign-in before GitHub is connected shows no raw error (SPEC-422, task #404, #1069): until the
   instance has a GitHub App the sign-in page offers no GitHub button, says why and opens the
   superadmin password; `/api/auth/github/start` then returns to `/signin?error=github_unconfigured`

@@ -634,7 +634,10 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 ยง6.7, ย
   independent review approved: the branch head, or an earlier head followed only by clean merges of
   the integration branch, SPEC-083 REV-001) and `delivery_deploy` (integration
   environments with a command and `verify = "command"` only), which take these same paths with
-  the task owner's authority and are audited as `task:<n>` too (DLV-008). Agents never promote:
+  the task owner's authority and are audited as `task:<n>` too (DLV-008). Work committed after
+  the task's pull request merged is delivered as a new pull request of the task; with nothing
+  new, `delivery_merge` answers `merged: true` and that it is merged already, arming nothing
+  (SPEC-425). Agents never promote:
   production is always a person's (ADR-0110; there is no `delivery_promote` any more), and they
   deploy with CD (below). `issue_create`
   opens a GitHub issue only when it meets the Definition of Ready (one `type:`, one `priority:`,
