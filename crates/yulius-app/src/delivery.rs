@@ -441,6 +441,25 @@ pub(crate) fn domain_checks(state: gh::ChecksState) -> ChecksState {
     }
 }
 
+/// Why a head with commits to deliver is not ready to go out, if it is not: a task that needs a
+/// spec needs its plan too; research, docs and chores may have none.
+fn not_ready(spec: &SpecCheck, no_steps: bool, steps_open: usize, dirty: bool) -> Option<String> {
+    if !spec.valid {
+        Some(format!(
+            "the spec is not valid ({}); fix it and commit",
+            spec.problems.join(" ")
+        ))
+    } else if no_steps && spec.required {
+        Some("the task has no plan: record its steps with `step_update`".to_owned())
+    } else if steps_open > 0 {
+        Some("a step is still open: finish it or resolve it with `step_update`".to_owned())
+    } else if dirty {
+        Some("the worktree has uncommitted changes: commit them".to_owned())
+    } else {
+        None
+    }
+}
+
 /// An upstream failure as the reason in a note, without the adapter's `GitHub: ` prefix: the
 /// GitHub error already says it is GitHub ("GitHub refused the request (HTTP 403): …"), so the
 /// note does not repeat it (#111).
@@ -1125,6 +1144,17 @@ pub(crate) enum AutoDelivery {
     Blocked(String),
     /// Pushed and the pull request opened or updated, as said to the agent.
     Delivered(String),
+}
+
+/// What a merged task's worktree head holds beyond its merged pull request (SPEC-425).
+enum AfterMerge {
+    /// Work the merged pull request did not carry: delivered anew, as this pull request's
+    /// follow-up.
+    FollowUp(u64),
+    /// Nothing new: the task stays merged.
+    Covered,
+    /// Yulius cannot tell now, and why (what `delivery_merge` answers).
+    Unknown(String),
 }
 
 impl App {
@@ -2744,10 +2774,11 @@ impl App {
     }
 
     /// What Yulius did for a ready task: opened its pull request, or pushed commits made since
-    /// to the open one (#68). [`AutoDelivery::Blocked`] says why a head with commits to deliver
-    /// is not ready (an invalid spec, an open step, uncommitted work);
-    /// [`AutoDelivery::Unchanged`] covers everything else (no branch or worktree, no commits
-    /// ahead of the integration branch, a later stage, nothing new).
+    /// to the open one (#68), or opened a new one for work committed after its merge (SPEC-425).
+    /// [`AutoDelivery::Blocked`] says why a head with commits to deliver is not ready (an invalid
+    /// spec, an open step, uncommitted work) or why Yulius cannot judge what a merged task's head
+    /// adds; [`AutoDelivery::Unchanged`] covers everything else (no branch or worktree, no
+    /// commits ahead of the integration branch, a merged task with nothing new, nothing new).
     pub(crate) async fn try_auto_open_pr(
         &self,
         task_id: &TaskId,
@@ -2762,19 +2793,41 @@ impl App {
         if self.dlv_sandbox_of(&task).await?.is_playground() {
             return Ok(AutoDelivery::Unchanged);
         }
-        // Cheap checks first: most turns end with steps still open, and they need no GitHub call.
+        // Cheap checks first: most turns end with steps still open, and they need no GitHub call
+        // (a merged task's head is judged before them; a covered head only once: SPEC-425).
         let steps = store.steps(&task.id).await?;
         let open_step = steps
             .iter()
             .find(|s| !StepStatus::parse(&s.status).is_some_and(StepStatus::is_resolved));
-        if (steps.is_empty() && !self.branch_changed(&task).await?)
-            || store
-                .delivery(&task.id)
-                .await?
-                .is_some_and(|r| !matches!(r.stage, DeliveryStage::None | DeliveryStage::PrOpen))
-        {
+        if steps.is_empty() && !self.branch_changed(&task).await? {
             return Ok(AutoDelivery::Unchanged);
         }
+        // Past its pull request's merge a task delivers again only work committed since
+        // (SPEC-425 FUP-001); a later stage with nothing new stays as it is (FUP-002), and one
+        // Yulius cannot judge says why to `delivery_merge` (FUP-003).
+        let merged = store
+            .delivery(&task.id)
+            .await?
+            .filter(|r| !matches!(r.stage, DeliveryStage::None | DeliveryStage::PrOpen));
+        let follow_up = match &merged {
+            Some(record) => match self
+                .work_after_merge(&task, Path::new(&worktree), record)
+                .await
+            {
+                AfterMerge::FollowUp(number) => Some((record, number)),
+                AfterMerge::Covered => {
+                    // Nothing undelivered: an earlier "not delivered" note is stale.
+                    self.clear_push_problem(task_id);
+                    return Ok(AutoDelivery::Unchanged);
+                }
+                AfterMerge::Unknown(reason) => {
+                    // Said to `yulius wait` too, so an agent that only ends its turn hears it.
+                    self.note_undelivered(&task, &worktree, &reason).await;
+                    return Ok(AutoDelivery::Blocked(reason));
+                }
+            },
+            None => None,
+        };
         if let Some(step) = open_step {
             let reason = format!(
                 "step \"{}\" is {}: finish it, or resolve it with `step_update` and a note",
@@ -2787,6 +2840,45 @@ impl App {
         let profile = delivery_profile(&sandbox);
         if branch == profile.integration_branch || branch == profile.production_branch {
             return Ok(AutoDelivery::Unchanged);
+        }
+        if let Some((record, number)) = follow_up {
+            // Ready first, as for any delivery: a head that cannot go out keeps the task merged.
+            let spec = self.dlv_check_spec(&task).await;
+            let dirty = self
+                .deps
+                .git
+                .has_changes(Path::new(&worktree))
+                .await
+                .unwrap_or(false);
+            if let Some(reason) = not_ready(&spec, steps.is_empty(), 0, dirty) {
+                self.note_undelivered(&task, &worktree, &reason).await;
+                return Ok(AutoDelivery::Blocked(reason));
+            }
+            // The stage alone is compared on write: a record that moved on to another pull
+            // request meanwhile (a concurrent Stop delivered and merged it) is left alone.
+            let current = store.delivery(&task.id).await?;
+            let fresh = DeliveryRecord {
+                updated_at: self.now(),
+                ..DeliveryRecord::initial(&task.id)
+            };
+            if current.as_ref().map(|r| (&r.stage, r.pr_number))
+                != Some((&record.stage, record.pr_number))
+                || !self
+                    .dlv_transition(&task.sandbox_id, &record.stage, &fresh)
+                    .await?
+            {
+                return Ok(AutoDelivery::Unchanged);
+            }
+            self.dlv_audit(
+                "yulius",
+                "delivery.follow_up",
+                &format!("{}#{}", sandbox.slug, task.number),
+                &format!(
+                    "{} -> none: commits after pull request #{number} merged are delivered anew",
+                    record.stage
+                ),
+            )
+            .await;
         }
         // The task's owner pushes and authors the pull request (their GitHub account, as if
         // they had pressed Deliver…, F 2026-10-11); without a usable token the App does.
@@ -2806,21 +2898,12 @@ impl App {
             return Ok(AutoDelivery::Unchanged);
         }
         // A task that needs a spec needs its plan too; research, docs and chores may have none.
-        let not_ready = if !observed.spec.valid {
-            Some(format!(
-                "the spec is not valid ({}); fix it and commit",
-                observed.spec.problems.join(" ")
-            ))
-        } else if observed.steps.is_empty() && observed.spec.required {
-            Some("the task has no plan: record its steps with `step_update`".to_owned())
-        } else if observed.steps_open > 0 {
-            Some("a step is still open: finish it or resolve it with `step_update`".to_owned())
-        } else if observed.dirty {
-            Some("the worktree has uncommitted changes: commit them".to_owned())
-        } else {
-            None
-        };
-        if let Some(reason) = not_ready {
+        if let Some(reason) = not_ready(
+            &observed.spec,
+            observed.steps.is_empty(),
+            observed.steps_open,
+            observed.dirty,
+        ) {
             self.note_undelivered(&task, &worktree, &reason).await;
             return Ok(AutoDelivery::Blocked(reason));
         }
@@ -2912,6 +2995,143 @@ impl App {
                 };
                 Err(AutoDeliveryError { error, note })
             }
+        }
+    }
+
+    /// Whether the task's worktree head carries work its merged pull request (`record`) did not
+    /// (SPEC-425 FUP-001): the merged head is an ancestor of it, it is more than that head plus
+    /// Git's own clean merges of the integration branch, and it adds something to the integration
+    /// branch (a follow-up merged outside Yulius adds nothing). A head that is the merged one,
+    /// behind it, or adds nothing is [`AfterMerge::Covered`] (FUP-002), remembered per head so
+    /// later Stops ask GitHub nothing; anything Yulius cannot judge is [`AfterMerge::Unknown`].
+    async fn work_after_merge(
+        &self,
+        task: &TaskRecord,
+        worktree: &Path,
+        record: &DeliveryRecord,
+    ) -> AfterMerge {
+        let Some(number) = record.pr_number else {
+            return AfterMerge::Unknown(
+                "Yulius has no merged pull request on record for this task".to_owned(),
+            );
+        };
+        let head = match self.deps.git.log(worktree, "HEAD", 1).await {
+            Ok(commits) => match commits.into_iter().next() {
+                Some(commit) => commit.sha,
+                None => return AfterMerge::Unknown("the task branch has no commit".to_owned()),
+            },
+            Err(err) => {
+                return AfterMerge::Unknown(format!(
+                    "the task branch head cannot be read: {}",
+                    err.public_message()
+                ));
+            }
+        };
+        let covered = (head.clone(), number);
+        if let Ok(known) = self.runtime(&task.id).merged_covers.lock()
+            && known.as_ref() == Some(&covered)
+        {
+            return AfterMerge::Covered;
+        }
+        let verdict = self.judge_after_merge(task, worktree, number, &head).await;
+        if matches!(verdict, AfterMerge::Covered)
+            && let Ok(mut known) = self.runtime(&task.id).merged_covers.lock()
+        {
+            *known = Some(covered);
+        }
+        verdict
+    }
+
+    /// [`App::work_after_merge`] for `head`, asking GitHub and Git.
+    async fn judge_after_merge(
+        &self,
+        task: &TaskRecord,
+        worktree: &Path,
+        number: u64,
+        head: &str,
+    ) -> AfterMerge {
+        let unknown = |why: String| {
+            AfterMerge::Unknown(format!(
+                "whether this head adds to pull request #{number}, merged already, is unknown: \
+                 {why}"
+            ))
+        };
+        let sandbox = match self.dlv_sandbox_of(task).await {
+            Ok(sandbox) => sandbox,
+            Err(err) => return unknown(err.public_message()),
+        };
+        let merged = match self.task_github_token(task, &sandbox).await {
+            Ok(token) => match self
+                .deps
+                .github
+                .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, number)
+                .await
+            {
+                Ok(pull) => pull.head_sha,
+                Err(err) => return unknown(format!("GitHub: {}", github_reason(&err))),
+            },
+            Err(err) => return unknown(err.public_message()),
+        };
+        if merged == head {
+            return AfterMerge::Covered;
+        }
+        // Every check below reads the integration branch and the merged head from a fresh fetch.
+        if let Err(err) = self.dlv_refresh_clone(&sandbox).await {
+            return unknown(format!(
+                "the clone could not be refreshed: {}",
+                err.public_message()
+            ));
+        }
+        let git = &self.deps.git;
+        let short = merged.get(..9).unwrap_or(&merged);
+        if !matches!(git.resolve_commit(worktree, &merged).await, Ok(Some(_))) {
+            return unknown(format!(
+                "its merged head {short} is not in this clone (made on GitHub?). Fetch it with \
+                 `git fetch origin pull/{number}/head` and merge it without forcing (`git merge \
+                 --no-edit {merged}`), and Yulius delivers what this head adds"
+            ));
+        }
+        match git.is_ancestor(worktree, &merged, head).await {
+            Ok(true) => {}
+            Ok(false)
+                if git
+                    .is_ancestor(worktree, head, &merged)
+                    .await
+                    .unwrap_or(false) =>
+            {
+                return AfterMerge::Covered;
+            }
+            Ok(false) => {
+                return unknown(format!(
+                    "the branch no longer contains its merged head {short} (rewritten?). Merge \
+                     it back without forcing (`git merge --no-edit {merged}`), and Yulius \
+                     delivers what this head adds"
+                ));
+            }
+            Err(err) => return unknown(err.public_message()),
+        }
+        if self.review_covers(task, worktree, &merged, head).await {
+            return AfterMerge::Covered;
+        }
+        // What the head changed since the merged head, applied to the integration branch: a
+        // follow-up merged outside Yulius changes nothing there, whatever else `dev` gained.
+        let integration = format!("origin/{}", delivery_profile(&sandbox).integration_branch);
+        match git.adds_to(worktree, &integration, &merged, head).await {
+            // A live merge train counts on its members' recorded stages until it ends: only new
+            // work would move this one's back.
+            Ok(Some(true)) if self.in_train(task) => unknown(
+                "it is in a merge train that has not ended; call again once the train ends"
+                    .to_owned(),
+            ),
+            Ok(Some(true)) => AfterMerge::FollowUp(number),
+            Ok(Some(false)) => AfterMerge::Covered,
+            // A conflict may be work merged outside Yulius that `dev` changed since, or new work
+            // that conflicts: the merge settles it either way.
+            Ok(None) => unknown(format!(
+                "what it changed conflicts with `{integration}`. Merge it (`git merge --no-edit \
+                 {integration}`) and Yulius delivers what this head still adds"
+            )),
+            Err(err) => unknown(err.public_message()),
         }
     }
 

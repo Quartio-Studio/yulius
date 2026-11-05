@@ -140,6 +140,9 @@ pub struct TaskRuntime {
     /// The head Yulius last tried to open a pull request for by itself (#35), so a failed try is
     /// not repeated every turn.
     pub(crate) auto_pr_head: Mutex<Option<String>>,
+    /// The head and merged pull request Yulius last found to add nothing to that pull request
+    /// (SPEC-425 FUP-002), so a merged task's later Stops ask GitHub only for a new head.
+    pub(crate) merged_covers: Mutex<Option<(String, u64)>>,
     /// When a person last typed into the task's terminal (ms, 0 = never): a prompt submitted
     /// soon after is theirs (TSK-013).
     pub(crate) typed_at_ms: AtomicI64,
@@ -363,6 +366,7 @@ impl TaskRuntime {
             at_limit: AtomicBool::new(false),
             turn_started_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
+            merged_covers: Mutex::new(None),
             typed_at_ms: AtomicI64::new(0),
             typed_by: Mutex::new(None),
             personal_mcp_of: Mutex::new(None),

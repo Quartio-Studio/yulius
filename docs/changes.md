@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-05
 
+- Work after a task's merge is delivered again (SPEC-425, task #407, #1074, ADR-0269): commits an
+  agent makes on its branch after the task's pull request merged are pushed and opened as a new
+  pull request of the same task (at the end of a turn and on `delivery_merge`), instead of staying
+  local while `delivery_merge` waited for checks of the merged pull request forever; a head that
+  only merged `dev` since opens nothing, and `delivery_merge` then says the pull request is merged.
 - Reply in a task's attention bar works on the first click (SPEC-424, task #406, ADR-0268): a task
   update arriving while the button is pressed replaced it and lost the click; the bar now holds its
   render until the press ends, and the keyboard stays on the terminal Reply across updates.
