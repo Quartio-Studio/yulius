@@ -323,6 +323,34 @@ export function mountTaskView(ctx, sandbox, task) {
     if (isPhone()) quickInput.focus();
     else terminal.focus();
   };
+  // Reply when the question is in the terminal: one button kept across the bar's renders, so the
+  // keyboard stays on it through task updates (#406).
+  const terminalReply = h('button', { type: 'button', class: 'btn btn-sm', onClick: focusReply }, 'Reply');
+  // A press on the bar holds its renders until the press ends (#406): a browser clicks the nearest
+  // common ancestor of the press and the release, so a button replaced in between lost its click
+  // to the bar. The held render runs a task after the release, once its click has acted; a press
+  // that ends outside the page ends with the window's focus.
+  let pressed = false;
+  let attentionStale = false;
+  const endPress = () => {
+    if (!pressed) return;
+    pressed = false;
+    setTimeout(() => {
+      if (pressed || !attentionStale || !alive) return;
+      attentionStale = false;
+      renderAttention();
+    }, 0);
+  };
+  attention.addEventListener('pointerdown', () => { pressed = true; });
+  // The window's own blur only: a capturing listener would also hear the terminal losing the
+  // keyboard to the pressed button, which ends no press.
+  const onWindowBlur = (event) => { if (event.target === window) endPress(); };
+  for (const type of ['pointerup', 'pointercancel']) window.addEventListener(type, endPress, true);
+  window.addEventListener('blur', onWindowBlur);
+  destroyers.push(() => {
+    for (const type of ['pointerup', 'pointercancel']) window.removeEventListener(type, endPress, true);
+    window.removeEventListener('blur', onWindowBlur);
+  });
   // A text answer (Needs you, waiting for your reply) is written in a field in the bar and typed
   // into the session (SPEC-156): focusing the terminal alone showed nothing, as Claude Code draws
   // its own cursor. Phones have the quick input for it. The field stays in the bar (hidden when not
@@ -362,6 +390,8 @@ export function mountTaskView(ctx, sandbox, task) {
     h('button', { type: 'button', class: 'btn btn-sm', onClick: closeReply }, 'Cancel'));
   replyForm.hidden = true;
   function renderAttention() {
+    if (pressed) { attentionStale = true; return; }
+    attentionStale = false;
     const pr = ctx.store.pullsOf(current.sandbox_id).get(current.id);
     const info = taskInfo(current, ctx.store.state.actionRequests, pr);
     let content = null;
@@ -433,7 +463,7 @@ export function mountTaskView(ctx, sandbox, task) {
       asksPerson = true;
       content = [icon('st-attention', { size: 16 }), needsYouText(asked),
         asked.link ? h('a', { class: 'btn btn-sm', href: asked.link, target: asked.link.startsWith(location.origin) ? null : '_blank', rel: 'noopener' }, 'Open') : null,
-        owner() ? null : asksInTerminal ? h('button', { type: 'button', class: 'btn btn-sm', onClick: focusReply }, 'Reply') : replying ? null : replyButton];
+        owner() ? null : asksInTerminal ? terminalReply : replying ? null : replyButton];
     } else if (info.request) {
       content = [icon('globe', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'Action needed in the browser: '), info.request.reason || 'the agent asked you to do something there.'),
         h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.openBrowserTab && ctx.openBrowserTab(sandbox, info.request.tab_id) }, 'Open browser tab')];
@@ -442,7 +472,7 @@ export function mountTaskView(ctx, sandbox, task) {
       content = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, owner()
         ? h('strong', null, `The agent needs @${owner()}'s attention.`)
         : [h('strong', null, 'The agent needs your attention. '), 'Its question is in the terminal below.']),
-        owner() ? null : h('button', { type: 'button', class: 'btn btn-sm', onClick: focusReply }, 'Reply')];
+        owner() ? null : terminalReply];
     } else if (current.status === 'running' && current.activity === 'waiting' && info.group === 'needs') {
       content = [icon('st-input', { size: 16 }), h('span', { class: 'attention-text' }, owner()
         ? h('strong', null, `The agent is waiting for @${owner()}'s reply.`)

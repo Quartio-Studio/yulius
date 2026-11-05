@@ -187,3 +187,91 @@ test('Reply on a phone focuses the quick input; no field opens', async ({ app, b
   await expect.poll(() => focused(browser)).toEqual({ label: 'Quick input', caret: 0 });
   await expect(screen.getByRole('textbox', 'Reply to the agent')).toBeHidden();
 });
+
+// Task #406 ("sometimes i cant click reply"): the bar is rebuilt on every task update, and a click
+// is lost when its button is replaced between the press and the release.
+
+/** Presses the mouse on the attention bar's Reply button and holds it. */
+const pressReply = async (browser: Browser) => {
+  const box = await browser.evaluate(() => {
+    const button = [...document.querySelectorAll('.attention-bar button')].find((b) => b.textContent === 'Reply');
+    const rect = button?.getBoundingClientRect();
+    return rect ? { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 } : null;
+  });
+  if (!box) throw new Error('the attention bar has no Reply button');
+  await browser.mouse.move(box.x, box.y);
+  await browser.mouse.down();
+};
+
+/** Touches task #12 with a new title and waits until the view's strip shows it. */
+const updateTitle = async (browser: Browser, title: string) => {
+  await touchTask(browser, 'sb_studio', 12, { title });
+  await expect(browser.locator('.taskview .step-task')).toContainText(title);
+};
+
+test('Reply pressed across a task update still focuses the terminal (#406)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
+  await touchTask(browser, 'sb_studio', 12, { activity: 'needs_attention' });
+  await expect(browser.locator('.attention-bar .attention-text')).toHaveText('The agent needs your attention. Its question is in the terminal below.');
+  // Away from the terminal first, so focusing it is the click's doing.
+  await browser.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+
+  await pressReply(browser);
+  await updateTitle(browser, 'Checkout API v2');
+  await browser.mouse.up();
+  await expect.poll(() => focused(browser)).toEqual({ label: 'Terminal input', caret: 0 });
+});
+
+test('Reply pressed across a task update opens the field; the update shows after (#406)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
+  await askRuleset(browser);
+  const bar = browser.locator('.attention-bar');
+  await expect(bar).toHaveText(/Needs you[\s\S]*To do[\s\S]*Add a ruleset/);
+
+  await pressReply(browser);
+  await touchTask(browser, 'sb_studio', 12, {
+    needs_you: { action: 'Add a ruleset on main', problem: 'agents can push to main', decision: false, at: new Date().toISOString() },
+  });
+  await updateTitle(browser, 'Checkout API v2');
+  await browser.mouse.up();
+  const field = screen.getByRole('textbox', 'Reply to the agent');
+  await expect(field).toBeVisible();
+  await expect.poll(() => focused(browser)).toEqual({ label: 'Reply to the agent', caret: 0 });
+  // The update held back during the press is shown once it ends.
+  await expect(bar).toHaveText(/Add a ruleset on main/);
+});
+
+test('the keyboard stays on the terminal Reply across a task update (#406)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
+  await touchTask(browser, 'sb_studio', 12, { activity: 'needs_attention' });
+  await expect(browser.locator('.attention-bar .attention-text')).toHaveText(/needs your attention/);
+  await browser.evaluate(() => ([...document.querySelectorAll('.attention-bar button')].find((b) => b.textContent === 'Reply') as HTMLElement).focus());
+
+  await updateTitle(browser, 'Checkout API v2');
+  await expect.poll(() => browser.evaluate(() => (document.activeElement?.tagName === 'BUTTON' ? document.activeElement.textContent : document.activeElement?.tagName) ?? null)).toBe('Reply');
+  await browser.keyboard.press('Enter');
+  await expect.poll(() => focused(browser)).toEqual({ label: 'Terminal input', caret: 0 });
+  await expect(screen.getByRole('textbox', 'Reply to the agent')).toBeHidden();
+});
+
+test('a press the window loses focus during does not hold the bar back (#406)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await terminalShown(browser);
+  await askRuleset(browser);
+  const bar = browser.locator('.attention-bar');
+  await expect(bar).toHaveText(/Needs you[\s\S]*To do[\s\S]*Add a ruleset/);
+
+  await pressReply(browser);
+  await touchTask(browser, 'sb_studio', 12, {
+    needs_you: { action: 'Add a ruleset on main', problem: 'agents can push to main', decision: false, at: new Date().toISOString() },
+  });
+  await updateTitle(browser, 'Checkout API v2');
+  // Held while pressed; the window losing focus (the release lands outside the page) ends the press.
+  await expect(bar).not.toHaveText(/Add a ruleset on main/);
+  await browser.evaluate(() => { window.dispatchEvent(new Event('blur')); });
+  await expect(bar).toHaveText(/Add a ruleset on main/);
+  await browser.mouse.up();
+});
