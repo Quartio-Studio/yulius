@@ -1,11 +1,11 @@
 ---
 yulius-task: 97d4c28f-ac17-4d91-9cc8-02534b58ae79
-status: in-progress
+status: done
 ---
 
 # SPEC-425: Work committed after a task's merge is delivered again
 
-Status: in-progress
+Status: done
 Date: 2026-11-05
 Owner: Yulius task #407
 Scope authorization: task #407, asked by the project's owner with a screenshot ("yulius doesnt
@@ -66,8 +66,8 @@ green. Nothing waits on a pull request that is already merged.
 
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Fix the cause until the regression test and every gate pass
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -108,3 +108,28 @@ green. Nothing waits on a pull request that is already merged.
 
 - [ADR-0269](../../docs/decisions/0269-work-after-a-tasks-merge-is-delivered-as-a-new-pull-request.md):
   the follow-up is a new pull request of the same task, not a new task and not a refusal.
+
+## Evidence
+
+- Reproduced: `work_committed_after_the_merge_opens_a_new_pull_request` committed first
+  (4ced334b) failed on `dev`: `delivery_merge` on the merged pull request answered
+  `armed: true, checks: none`, the stuck state of the report.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^delivery::/)'`: 61 passed
+  at the final code (29201a37).
+- Mutation runs (each restored afterwards): adds_to always "follow-up" → the cannot-judge test
+  fails; no `--merge-base`, no readiness check before the reset, no note clearing → each fails
+  `a_follow_up_merged_by_hand_is_judged_since_the_merged_head`; the round-4 train case failed
+  before its fix (commit "a train member with nothing new reads already merged").
+- `scripts/dev ci` at 5901ad6d: exit 0, 3129 tests passed, 16 skipped; rerun at the final head
+  before the merge (result in the pull request and Yulius CI).
+- `scripts/dev security`: exit 0, "Security scan disabled: Vidoc is turned off in Yulius" —
+  unrun, not passed.
+- Independent review in fresh sessions: rounds 1-3 requested changes (all own-code findings fixed
+  test-first, listed in the commits "review round N"), round 4 approved 5901ad6d with one low
+  finding (a train member with nothing new read "unknown"), fixed test-first in 29201a37; round 5
+  reviews the final head.
+- Pre-existing, outside this change: #1075 (an armed merge whose pull request merged outside
+  Yulius is never dropped), found by review round 2.
+- Not tested: a real GitHub repository on a free private organisation (the reporter's); the
+  delivery path is the same for every plan, and the GitHub mock squash-merges into a real origin.
+  Git older than 2.40 (no `merge-tree --merge-base`): reads as unknown by design, not exercised.
