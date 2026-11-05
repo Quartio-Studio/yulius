@@ -109,6 +109,9 @@ function createApp(root, transport) {
 
   // ------------------------------------------------------------ boot
 
+  // Whether GitHub sign-in can start (SPEC-422): the public setup status says it before sign-in.
+  let githubConfigured = true;
+
   async function start() {
     setChildren(root, h('main', { class: 'auth' }, placeholder(`Loading ${BRAND.name}…`, 'loading')));
     // Both asked at once: one round trip before the app shows instead of two (PERF-11).
@@ -122,6 +125,8 @@ function createApp(root, transport) {
       fatal(error);
       return;
     }
+    // A server before SPEC-422 does not say it: GitHub sign-in stays offered.
+    githubConfigured = !(setup && setup.github_configured === false);
     if (setup && setup.setup_required) {
       renderSetup();
       return;
@@ -167,7 +172,7 @@ function createApp(root, transport) {
     const reason = loc.path === '/signin' ? loc.query.get('error') : null;
     const problem = reason ? signInProblem(reason, loc.query.get('login')) : null;
     navigate(`/signin?next=${encodeURIComponent(next)}`, { replace: true });
-    setChildren(root, mountSignIn(ctx, { next, problem, onDone: (me, target) => signedIn(me, target) }).el);
+    setChildren(root, mountSignIn(ctx, { next, problem, githubConfigured, onDone: (me, target) => signedIn(me, target) }).el);
   }
 
   function renderJoin(me) {
