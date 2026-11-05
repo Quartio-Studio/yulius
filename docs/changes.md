@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-05
 
+- Reply in a task's attention bar works on the first click (SPEC-424, task #406, ADR-0268): a task
+  update arriving while the button is pressed replaced it and lost the click; the bar now holds its
+  render until the press ends, and the keyboard stays on the terminal Reply across updates.
 - Sign-in before GitHub is connected shows no raw error (SPEC-422, task #404, #1069): until the
   instance has a GitHub App the sign-in page offers no GitHub button, says why and opens the
   superadmin password; `/api/auth/github/start` then returns to `/signin?error=github_unconfigured`

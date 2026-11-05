@@ -51,13 +51,13 @@ are not affected.
 | RPL-001 | While a pointer is pressed inside the attention bar, a render of the bar is held back; it runs once the press ends (release or cancel, after its click), so the pressed button is the one released and its click acts. | e2e `reply.e2e.ts` (#406 tests) |
 | RPL-002 | The update held back during a press shows once the press ends. | e2e |
 | RPL-003 | The terminal Reply (agent asks in the terminal) is one button kept across renders, like the field Reply, so the keyboard stays on it across task updates. | e2e |
-| RPL-004 | A press that never ends inside the page (released outside the window, the window losing focus) does not freeze the bar: a lost window focus or a pointer cancel ends it too. | review of the code path |
+| RPL-004 | A press that never ends inside the page (released outside the window, the window losing focus) does not freeze the bar: a lost window focus or a pointer cancel ends it too. | e2e (window blur during a press) |
 
 ## Plan
 
 - [x] Spec with the root cause of the lost Reply click
-- [ ] A click on the attention bar survives a task update and the keyboard stays on Reply
-- [ ] Docs, ADR and changes record the held render
+- [x] A click on the attention bar survives a task update and the keyboard stays on Reply
+- [x] Docs, ADR and changes record the held render
 - [ ] Independent review approves the head
 - [ ] Every gate green with dev merged
 
