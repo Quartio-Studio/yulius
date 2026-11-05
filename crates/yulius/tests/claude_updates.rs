@@ -29,6 +29,8 @@ struct Release {
     integrity: Option<String>,
     /// Where the version document says the tarball is (`None`: on the stub).
     url: Option<String>,
+    /// Sent in chunks without a `Content-Length`.
+    chunked: bool,
 }
 
 #[derive(Default)]
@@ -84,6 +86,7 @@ fn good(version: &str) -> Release {
         tarball: tarball(version),
         integrity: None,
         url: None,
+        chunked: false,
     }
 }
 
@@ -136,6 +139,11 @@ fn answer(stub: &Stub, origin: &str, path: &str) -> Response {
         && let Some(release) = releases.get(version)
     {
         stub.downloads.fetch_add(1, Ordering::SeqCst);
+        if release.chunked {
+            let chunks: Vec<Result<Vec<u8>, std::io::Error>> =
+                release.tarball.chunks(16).map(|c| Ok(c.to_vec())).collect();
+            return axum::body::Body::from_stream(futures::stream::iter(chunks)).into_response();
+        }
         return release.tarball.clone().into_response();
     }
     StatusCode::NOT_FOUND.into_response()
@@ -259,44 +267,48 @@ async fn a_refused_release_leaves_the_current_version() -> TestResult {
     s.updater.check(Channel::Stable).await?;
     s.stub.tag("stable", "2.1.318");
 
+    // The same tarball on another origin than the registry's.
+    let elsewhere = serve(Arc::clone(&s.stub)).await?;
+    let symlink = {
+        let mut builder = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::fast()));
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_size(0);
+        header.set_cksum();
+        builder.append_link(&mut header, "package/claude", "/bin/sh")?;
+        builder.into_inner()?.finish()?
+    };
     let refusals = [
         (
-            "integrity",
+            "sha512",
             Release {
                 integrity: Some(integrity_of(b"something else")),
                 ..good("2.1.318")
             },
         ),
-        ("version", good("2.1.300")),
+        ("--version does not name 2.1.318", good("2.1.300")),
         (
-            "url",
+            "is not on",
             Release {
-                url: Some("https://example.invalid/claude-code-linux-x64-2.1.318.tgz".into()),
+                url: Some(format!("{elsewhere}/t/2.1.318.tgz")),
                 ..good("2.1.318")
             },
         ),
         (
-            "binary",
+            "not a regular file",
             Release {
-                tarball: {
-                    let mut builder =
-                        tar::Builder::new(GzEncoder::new(Vec::new(), Compression::fast()));
-                    let mut header = tar::Header::new_gnu();
-                    header.set_entry_type(tar::EntryType::Symlink);
-                    header.set_size(0);
-                    header.set_cksum();
-                    builder.append_link(&mut header, "package/claude", "/bin/sh")?;
-                    builder.into_inner()?.finish()?
-                },
-                integrity: None,
-                url: None,
+                tarball: symlink,
+                ..good("2.1.318")
             },
         ),
     ];
     for (why, release) in refusals {
         s.stub.release("2.1.318", release);
         let refused = s.updater.check(Channel::Stable).await;
-        assert!(refused.is_err(), "{why}: {refused:?}");
+        assert!(
+            refused.as_ref().is_err_and(|e| e.to_string().contains(why)),
+            "{why}: {refused:?}"
+        );
         assert_eq!(s.updater.current(), Some(v("2.1.311")), "{why}");
         assert_eq!(installed(&s.root), ["2.1.311"], "{why}");
         assert!(
@@ -306,8 +318,7 @@ async fn a_refused_release_leaves_the_current_version() -> TestResult {
         );
     }
 
-    // A tarball over the bound is not read to its end.
-    s.stub.release("2.1.318", good("2.1.318"));
+    // A tarball over the bound is not read to its end, with or without a `Content-Length`.
     let small = ClaudeUpdater::with_registry(
         s.root.clone(),
         Some(s.host.clone()),
@@ -316,9 +327,24 @@ async fn a_refused_release_leaves_the_current_version() -> TestResult {
         false,
     )?
     .with_max_tarball(64);
-    assert!(small.check(Channel::Stable).await.is_err());
-    assert_eq!(s.updater.current(), Some(v("2.1.311")));
-    assert!(leftovers(&s.root).is_empty());
+    for chunked in [false, true] {
+        s.stub.release(
+            "2.1.318",
+            Release {
+                chunked,
+                ..good("2.1.318")
+            },
+        );
+        let refused = small.check(Channel::Stable).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|e| e.to_string().contains("larger than allowed")),
+            "chunked {chunked}: {refused:?}"
+        );
+        assert_eq!(s.updater.current(), Some(v("2.1.311")));
+        assert!(leftovers(&s.root).is_empty());
+    }
 
     // The same release, intact, goes through.
     assert_eq!(
