@@ -552,13 +552,19 @@ fn planned(report: &ProjectReport) -> (&'static str, Vec<String>) {
     }
 }
 
-/// The ruleset a repository admin adds so only people move the production branch (ADR-0114).
-pub(crate) fn production_ruleset_fix(repo: &str, branch: &str) -> String {
+/// The ruleset a repository admin adds so only people move the production branch (ADR-0114),
+/// and where a sandbox admin waives that requirement instead when the plan has no rulesets
+/// (`switch`, the Git page's card; SPEC-423 PPR-004).
+pub(crate) fn production_ruleset_fix(repo: &str, branch: &str, switch: &str) -> String {
     format!(
         "A repository admin must add a branch ruleset on GitHub (https://github.com/{repo}/settings/rules): \
          target `{branch}`, enforcement Active, rules Restrict updates, Restrict deletions and Block \
          force pushes, and only the Repository admin role in the bypass list (never the Yulius App). \
-         Classic branch protection is not counted."
+         Classic branch protection is not counted. Without GitHub Pro, Team or Enterprise a private \
+         repository cannot have rulesets: a sandbox admin can then accept that agents could write \
+         `{branch}` and turn this requirement off in Yulius instead: open {switch} (the sandbox's \
+         Git page, card \"Production protection\") and switch off \"Require a GitHub ruleset on \
+         `{branch}`\"."
     )
 }
 
@@ -635,8 +641,8 @@ impl App {
                 "\n\n{warning} Protect it with the `production_protect` tool: Yulius adds that \
                  ruleset as the person who owns this task when GitHub says they are a repository \
                  admin (SPEC-157). Only if the tool refuses, ask a person with `needs_you`, quoting \
-                 that setting, and carry on with the rest; never change the repository's protection \
-                 from your shell."
+                 that setting and where to turn the requirement off instead, and carry on with the \
+                 rest; never change the repository's protection from your shell."
             ));
         }
         let task = self
@@ -1356,6 +1362,15 @@ impl App {
         })
     }
 
+    /// Where a sandbox admin turns `sandbox`'s production protection requirement off (SPEC-423
+    /// PPR-005): the Git page's "Production protection" card.
+    pub(crate) fn production_protection_switch(&self, sandbox: &SandboxRecord) -> String {
+        format!(
+            "{}/s/{}/git?show=production-protection",
+            self.config.public_url, sandbox.slug
+        )
+    }
+
     /// What people must know when the agents of `sandbox` could write its production branch
     /// (ADR-0114): GitHub is asked with an agent's own token which rules apply to the branch and
     /// whether that token may bypass them. A check that fails is said too, never taken as safe,
@@ -1365,7 +1380,8 @@ impl App {
         &self,
         sandbox: &SandboxRecord,
     ) -> Option<String> {
-        if sandbox.is_playground() {
+        // A sandbox admin accepted that agents could write it (SPEC-423 PPR-003).
+        if sandbox.is_playground() || !crate::delivery::production_protection_required(sandbox) {
             return None;
         }
         let branch = crate::delivery::delivery_profile(sandbox).production_branch;
@@ -1379,7 +1395,8 @@ impl App {
             Err(err) => Err(err),
         };
         let repo = format!("{}/{}", sandbox.repo_owner, sandbox.repo_name);
-        let fix = production_ruleset_fix(&repo, &branch);
+        let fix =
+            production_ruleset_fix(&repo, &branch, &self.production_protection_switch(sandbox));
         match checked {
             Ok(guard) if guard.is_guarded() => None,
             Ok(_) => Some(format!(

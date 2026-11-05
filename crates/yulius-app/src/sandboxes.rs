@@ -68,6 +68,7 @@ impl App {
             serde_json::from_str(&record.profile_json).unwrap_or_else(|_| standard_profile());
         // Always a value (SPEC-338 VOF-001), read on its own like the scans read it.
         profile.vidoc = Some(crate::delivery::vidoc_switched_on(record));
+        profile.protect_production = Some(crate::delivery::production_protection_required(record));
         Ok(Sandbox {
             id: record.id.to_string(),
             slug: record.slug.clone(),

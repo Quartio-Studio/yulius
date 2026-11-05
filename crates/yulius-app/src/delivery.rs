@@ -308,6 +308,7 @@ pub fn profile_to_contract(profile: &DeliveryProfile) -> Profile {
             .collect(),
         gate: None,
         vidoc: None,
+        protect_production: None,
     }
 }
 
@@ -324,14 +325,27 @@ pub fn profile_gate(sandbox: &SandboxRecord) -> Option<String> {
 /// `vidoc` is not `false`. Read on its own, so a profile that is otherwise unreadable keeps it.
 #[must_use]
 pub fn vidoc_switched_on(sandbox: &SandboxRecord) -> bool {
-    #[derive(serde::Deserialize)]
-    struct Switch {
-        #[serde(default)]
-        vidoc: Option<bool>,
-    }
-    serde_json::from_str::<Switch>(&sandbox.profile_json)
+    profile_switch_on(&sandbox.profile_json, VIDOC_SWITCH)
+}
+
+/// Whether the sandbox's production branch must be protected from agents (SPEC-423 PPR-001): its
+/// stored profile's `protect_production` is not `false`. Read on its own, like the Vidoc switch.
+#[must_use]
+pub fn production_protection_required(sandbox: &SandboxRecord) -> bool {
+    profile_switch_on(&sandbox.profile_json, PRODUCTION_SWITCH)
+}
+
+/// The stored profile's key of the Vidoc switch.
+const VIDOC_SWITCH: &str = "vidoc";
+/// The stored profile's key of the production protection switch.
+const PRODUCTION_SWITCH: &str = "protect_production";
+
+/// Whether the switch `key` of a stored profile's JSON is on: anything but `false`, also in a
+/// profile that is otherwise unreadable.
+fn profile_switch_on(profile_json: &str, key: &str) -> bool {
+    serde_json::from_str::<Value>(profile_json)
         .ok()
-        .and_then(|switch| switch.vidoc)
+        .and_then(|profile| profile.get(key).and_then(Value::as_bool))
         != Some(false)
 }
 
@@ -348,6 +362,14 @@ fn worktree_state(task: &TaskRecord) -> WorktreeState {
 /// A playground runs no CI scan, so it has no Vidoc switch (SPEC-338 VOF-001).
 fn playground_has_no_vidoc() -> AppError {
     invalid("a playground runs no Vidoc scan: it has no switch to turn".to_owned())
+}
+
+/// A playground has no GitHub branch to protect, so it has no protection switch (SPEC-423 PPR-002).
+fn playground_has_no_production_protection() -> AppError {
+    invalid(
+        "a playground has no GitHub production branch: it has no protection switch to turn"
+            .to_owned(),
+    )
 }
 
 /// The sandbox's stored profile; an unreadable or invalid one falls back to `standard`.
@@ -1996,45 +2018,15 @@ impl App {
 
     // ---------------------------------------------------------------- profile
 
-    /// Sets the sandbox's Vidoc switch (SPEC-338 VOF-001) as `actor`: `vidoc` in its stored
-    /// profile JSON, the rest kept as it is, audited when it changes. Callers check permission;
-    /// a playground has no CI scan to turn. Profile writes are serialized, so a concurrent
-    /// profile update cannot undo it.
-    ///
-    /// # Errors
-    /// `Invalid` for a playground; store failures.
-    pub(crate) async fn write_vidoc_switch(
-        &self,
-        actor: &str,
-        sandbox: &SandboxId,
-        on: bool,
-    ) -> AppResult<()> {
-        let _writing = self.profile_writes.lock().await;
-        let sandbox = self
-            .deps
-            .store
-            .sandbox(sandbox)
-            .await?
-            .ok_or(AppError::NotFound)?;
-        if sandbox.is_playground() {
-            return Err(playground_has_no_vidoc());
-        }
-        if vidoc_switched_on(&sandbox) == on {
-            return Ok(());
-        }
-        let mut stored = match serde_json::from_str::<Value>(&sandbox.profile_json) {
-            Ok(Value::Object(map)) => map,
-            _ => serde_json::Map::new(),
-        };
-        if on {
-            stored.remove("vidoc");
-        } else {
-            stored.insert("vidoc".to_owned(), Value::Bool(false));
-        }
-        let json = serde_json::to_string(&stored).map_err(AppError::internal)?;
-        self.deps.store.set_profile(&sandbox.id, &json).await?;
-        self.vidoc_switched(actor, &sandbox, on).await;
-        Ok(())
+    /// After the production protection switch changed: audited.
+    async fn production_protection_switched(&self, actor: &str, sandbox: &SandboxRecord, on: bool) {
+        self.dlv_audit(
+            actor,
+            "delivery.production_protection.update",
+            &sandbox.slug,
+            if on { "on" } else { "off" },
+        )
+        .await;
     }
 
     /// After the switch changed: CI's gate and the virtual key are read again, and it is audited.
@@ -2132,11 +2124,12 @@ impl App {
         }
     }
 
-    /// `PATCH /api/sandboxes/{sid}` (admin): validates and stores the delivery profile and the
-    /// Vidoc switch (SPEC-338 VOF-001) in one write, or changes nothing when either is refused.
+    /// `PATCH /api/sandboxes/{sid}` (admin): validates and stores the delivery profile, the Vidoc
+    /// switch (SPEC-338 VOF-001) and the production protection switch (SPEC-423 PPR-002) in one
+    /// write, or changes nothing when any is refused.
     ///
     /// # Errors
-    /// `Forbidden` below admin, `Invalid` profiles, `Invalid` switch of a playground.
+    /// `Forbidden` below admin, `Invalid` profiles, `Invalid` switches of a playground.
     pub async fn update_sandbox_profile(
         &self,
         ctx: &AuthContext,
@@ -2157,12 +2150,46 @@ impl App {
         if req.vidoc.is_some() && sandbox.is_playground() {
             return Err(playground_has_no_vidoc());
         }
+        if req.protect_production.is_some() && sandbox.is_playground() {
+            return Err(playground_has_no_production_protection());
+        }
         let was_on = vidoc_switched_on(&sandbox);
         let on = req.vidoc.unwrap_or(was_on);
+        let was_protected = production_protection_required(&sandbox);
+        let protect = req.protect_production.unwrap_or(was_protected);
+        // Letting agents write production is a person's decision (SPEC-423 PPR-002): never a
+        // `yulius login` token, which an agent may hold.
+        if was_protected && !protect && !ctx.acts_for_person() {
+            return Err(AppError::Forbidden(
+                "Turning the production protection off is a person's decision: switch it off on \
+                 the sandbox's Git page (Production protection card), or with an operate token"
+                    .into(),
+            ));
+        }
         let Some(requested) = &req.profile else {
+            // Both switches in one write of the stored JSON, the rest kept as it is.
+            if on != was_on || protect != was_protected {
+                let mut stored = match serde_json::from_str::<Value>(&sandbox.profile_json) {
+                    Ok(Value::Object(map)) => map,
+                    _ => serde_json::Map::new(),
+                };
+                for (key, value) in [(VIDOC_SWITCH, on), (PRODUCTION_SWITCH, protect)] {
+                    if value {
+                        stored.remove(key);
+                    } else {
+                        stored.insert(key.to_owned(), Value::Bool(false));
+                    }
+                }
+                let json = serde_json::to_string(&stored).map_err(AppError::internal)?;
+                self.deps.store.set_profile(&sid, &json).await?;
+            }
             drop(writing);
             if on != was_on {
-                self.write_vidoc_switch(&actor, &sid, on).await?;
+                self.vidoc_switched(&actor, &sandbox, on).await;
+            }
+            if protect != was_protected {
+                self.production_protection_switched(&actor, &sandbox, protect)
+                    .await;
             }
             let updated = self
                 .deps
@@ -2196,12 +2223,17 @@ impl App {
         // The switch is the stored one unless this request sets it: the profile editor does not
         // carry it (VOF-001).
         stored.vidoc = (!on).then_some(false);
+        stored.protect_production = (!protect).then_some(false);
         let json = serde_json::to_string(&stored).map_err(AppError::internal)?;
         self.deps.store.set_profile(&sid, &json).await?;
         drop(writing);
         self.ci_forget_gate(&sid);
         if on != was_on {
             self.vidoc_switched(&actor, &sandbox, on).await;
+        }
+        if protect != was_protected {
+            self.production_protection_switched(&actor, &sandbox, protect)
+                .await;
         }
         self.dlv_audit(
             &actor,
@@ -5042,5 +5074,36 @@ mod tests {
         assert_eq!(clip_chars("abcdef", 3), "abc…");
         assert_eq!(clip_bytes("żółw", 3), "ż");
         assert_eq!(tail_bytes("żółw", 3), "łw");
+    }
+}
+
+#[cfg(test)]
+mod switch_tests {
+    use super::{PRODUCTION_SWITCH, VIDOC_SWITCH, profile_switch_on};
+
+    /// SPEC-423 PPR-001 (review round 1): a stored switch is off only for a boolean `false`; an
+    /// absent, `true`, mistyped or unreadable value leaves it on, and an otherwise invalid profile
+    /// keeps a stored `false`.
+    #[test]
+    fn a_switch_is_off_only_for_a_stored_false() {
+        for key in [PRODUCTION_SWITCH, VIDOC_SWITCH] {
+            for on in [
+                "{}".to_owned(),
+                format!(r#"{{"{key}":true}}"#),
+                format!(r#"{{"{key}":"false"}}"#),
+                format!(r#"{{"{key}":null}}"#),
+                "not json".to_owned(),
+                "[]".to_owned(),
+            ] {
+                assert!(profile_switch_on(&on, key), "{key} in {on}");
+            }
+            let off = format!(r#"{{"preset":42,"environments":"broken","{key}":false}}"#);
+            assert!(!profile_switch_on(&off, key), "{key} in {off}");
+        }
+        assert!(profile_switch_on(r#"{"vidoc":false}"#, PRODUCTION_SWITCH));
+        assert!(profile_switch_on(
+            r#"{"protect_production":false}"#,
+            VIDOC_SWITCH
+        ));
     }
 }
