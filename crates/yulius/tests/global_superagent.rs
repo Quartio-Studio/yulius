@@ -3,9 +3,10 @@
 //! every sandbox's tools for its person through its own bearer, outliving its host sandbox.
 
 use crate::cockpit::{
-    Fixture, ORIGIN, attach, cockpit_id, cockpit_tool, contained_harness, conversation, fixture,
-    fixture_with, insert_account, limited_conversation, mcp, printed, project_of, read_message,
-    read_until, task_rests, wait_for,
+    Fixture, ORIGIN, answer_record, attach, cockpit_id, cockpit_tool, contained_harness,
+    conversation, fixture, fixture_with, insert_account, limited_conversation, mcp,
+    predate_launch_digest, printed, project_of, prompt_record, read_message, read_until,
+    task_rests, wait_for,
 };
 use crate::support;
 
@@ -517,5 +518,57 @@ async fn a_usage_limit_moves_the_global_superagent_and_keeps_it_global() -> Test
     assert!(printed(&screen, "bearer")?.starts_with("gs_"));
     assert_eq!(global_id(&f, &f.alice).await?, again, "the panel finds it");
     f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// GSA-005 (SPEC-186 SAV-006): one started by a Yulius before an update that changed what it is
+/// served is adopted, then started again once idle as a Global Superagent, resuming its
+/// conversation; its old bearer ends with it.
+#[tokio::test]
+async fn a_global_superagent_started_before_an_update_restarts_as_global() -> TestResult {
+    let f = fixture().await?;
+    let id = global_id(&f, &f.alice).await?;
+    let old_token = global_token(&f, "u-alice")?;
+    let config = f.data.join("users/u-alice/superagent/.claude");
+    let work = std::fs::canonicalize(f.data.join("users/u-alice/superagent/work"))?;
+    let project = yulius_harness::paths::claude_project_dir(&config, &work);
+    std::fs::create_dir_all(&project)?;
+    std::fs::write(
+        project.join("conv-1.jsonl"),
+        [
+            prompt_record("u0", None, -60),
+            answer_record("a0", "u0", -59),
+        ]
+        .concat(),
+    )?;
+    predate_launch_digest(&f, &id)?;
+    f.h.app.stop_workspace_services().await;
+
+    let g = fixture_with(true, Some(f.data.clone())).await?;
+    let served = serve(g.h.router.clone()).await?;
+    assert_eq!(g.h.app.adopt_shells().await, (1, 0));
+    let mut again = None;
+    wait_for("the Global Superagent to start again", || {
+        again = globals(&g)
+            .into_iter()
+            .map(|(_, other)| other)
+            .find(|other| *other != id);
+        again.is_some()
+    })
+    .await?;
+    let again = again.ok_or("restarted")?;
+    let mut socket = attach(served.addr, &again, &g.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let args = printed(&screen, "cockpit-args")?;
+    assert!(
+        args.starts_with("[--resume conv-1 --strict-mcp-config --tools  --model"),
+        "{args}"
+    );
+    let token = global_token(&g, "u-alice")?;
+    assert_ne!(token, old_token);
+    let refused = mcp(&g, &old_token, "tools/list", json!({})).await?;
+    assert_eq!(refused["error"]["code"], -32001, "{refused}");
+    g.h.app.end_all_shells().await;
     Ok(())
 }

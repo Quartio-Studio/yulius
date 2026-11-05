@@ -2341,7 +2341,7 @@ fn transcript_record(
     format!("{record}\n")
 }
 
-fn prompt_record(uuid: &str, parent: Option<&str>, secs: i64) -> String {
+pub(crate) fn prompt_record(uuid: &str, parent: Option<&str>, secs: i64) -> String {
     transcript_record(
         "user",
         uuid,
@@ -2351,7 +2351,7 @@ fn prompt_record(uuid: &str, parent: Option<&str>, secs: i64) -> String {
     )
 }
 
-fn answer_record(uuid: &str, parent: &str, secs: i64) -> String {
+pub(crate) fn answer_record(uuid: &str, parent: &str, secs: i64) -> String {
     transcript_record(
         "assistant",
         uuid,
@@ -3806,7 +3806,7 @@ fn alice_project(f: &Fixture) -> Result<PathBuf, Box<dyn std::error::Error>> {
 
 /// Makes the record of shell `id` look written by a Yulius from before SPEC-186 (no launch
 /// digest).
-fn predate_launch_digest(f: &Fixture, id: &str) -> TestResult {
+pub(crate) fn predate_launch_digest(f: &Fixture, id: &str) -> TestResult {
     let path = f.data.join("shells").join(id).join("shell.json");
     let mut record: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
     assert!(record.get("launch").is_some(), "{record}");
