@@ -41,19 +41,23 @@ green. Nothing waits on a pull request that is already merged.
 ## Requirements
 
 - FUP-001. A task whose pull request is merged gets its work delivered again when its branch
-  head carries work the merged pull request did not: the merged head is an ancestor of the head
-  and the head is more than it plus Git's own clean merges of the integration branch
-  (`review_covers`, SPEC-083 REV-001). Yulius then starts a new delivery of the same task (the
-  record back to `none`, audited `delivery.follow_up`) and opens a new pull request (or takes on
-  the branch's open one) at the end of a clean turn and on `delivery_merge`, with the same
-  readiness rules as the first one.
-- FUP-002. A head equal to the merged head, behind it, or only clean merges of the integration
-  branch since it is not new work: the task stays merged and nothing is pushed or opened. A
-  merged pull request that cannot be read, or a branch rewritten so the merged head is no longer
-  its ancestor, changes nothing either (the conservative reading).
-- FUP-003. `delivery_merge` on a task whose pull request is merged and that has no new work
-  never arms a merge: it answers that pull request #N is already merged and there is nothing to
-  deliver.
+  head carries work the merged pull request did not: the merged head is an ancestor of the head,
+  the head is more than it plus Git's own clean merges of the integration branch
+  (`review_covers`, SPEC-083 REV-001), and it adds to the fetched integration branch (Git's merge
+  of the two changes the branch's tree, or conflicts). Yulius then starts a new delivery of the
+  same task (the record back to `none` if it still names that pull request, audited
+  `delivery.follow_up`) and opens a new pull request (or takes on the branch's open one) at the
+  end of a clean turn and on `delivery_merge`, with the same readiness rules as the first one.
+- FUP-002. A head equal to the merged head, behind it, only clean merges of the integration
+  branch since it, or one the integration branch already holds (a follow-up merged outside
+  Yulius) is not new work: the task stays merged and nothing is pushed or opened. The verdict is
+  kept per head and pull request, so later Stops at that head ask GitHub nothing.
+- FUP-003. `delivery_merge` on a merged task never arms a merge of the merged pull request. With
+  no new work it answers `merged: true`, that pull request #N is already merged. When Yulius
+  cannot judge (a branch rewritten so the merged head is no longer its ancestor, with the
+  `git merge` that brings it back; the merged pull request unreadable on GitHub; unreadable
+  commits; the task in a live merge train) it refuses with that reason, and nothing is pushed,
+  opened or reset.
 
 ## Plan
 
@@ -75,8 +79,14 @@ green. Nothing waits on a pull request that is already merged.
 - `crates/yulius/tests/delivery.rs` `work_committed_after_the_merge_opens_a_new_pull_request`
   (standard profile, real Git, the GitHub mock squash-merging into the origin): merged head →
   nothing opened, "already merged", not armed; clean merge of `origin/dev` → nothing opened;
-  follow-up commit → pushed, PR #2 open, armed and merged on green; another commit → the merge
-  call alone opens PR #3 and arms it. Fails before the fix (armed with checks `none`).
+  follow-up commit → pushed, PR #2 open, `delivery.follow_up` audited, armed and merged on green;
+  another commit → the merge call alone opens PR #3 and arms it. Fails before the fix (armed
+  with checks `none`).
+- `work_after_the_merge_opens_nothing_it_cannot_judge`: an open step blocks and the task stays
+  merged; a follow-up opened and merged by hand outside Yulius opens no third pull request and
+  reads "already merged"; a branch rewritten onto `dev` is refused with the `git merge` remedy,
+  not pushed; the merged pull request unreadable on GitHub is refused with "cannot tell", not
+  armed. Without the integration-branch check it fails (mutation run).
 - The existing delivery tests (`#68` follow-ups to an open pull request, the merged pull request
   staying on its task) still pass.
 

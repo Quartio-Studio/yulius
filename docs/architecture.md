@@ -654,12 +654,15 @@ a violation is refused with the rule in words, also for promotion pull requests
 [decision 0051](decisions/0051-the-merge-gate-enforces-the-branch-policy.md)).
 `delivery_merge` first delivers the head the way the end of a clean turn does
 (`try_auto_open_pr`): it pushes the branch and opens the pull request, or pushes new commits to
-it. Work committed after the task's pull request merged (more than its head plus clean merges of
-the integration branch) starts a new delivery of the same task, audited `delivery.follow_up`: the
-record goes back to `none` and a new pull request opens; with nothing new, `delivery_merge`
-answers that the pull request is merged already and arms nothing
+it. Work committed after the task's pull request merged (on top of its head, more than clean
+merges of the integration branch, and adding to it) starts a new delivery of the same task,
+audited `delivery.follow_up`: the record goes back to `none` and a new pull request opens. With
+nothing new, `delivery_merge` answers that the pull request is merged already and arms nothing;
+what Yulius cannot judge (a rewritten branch, GitHub not answering, a live merge train) it
+refuses with the reason
 ([SPEC-425](../.ai/specs/SPEC-425-yulius-doesnt-pick-up-things-this-is-on.md),
-[decision 0269](decisions/0269-work-after-a-tasks-merge-is-delivered-as-a-new-pull-request.md)). A head it cannot deliver yet (open step, no plan for a task that needs a spec, invalid spec,
+[decision 0269](decisions/0269-work-after-a-tasks-merge-is-delivered-as-a-new-pull-request.md)).
+A head it cannot deliver yet (open step, no plan for a task that needs a spec, invalid spec,
 uncommitted work) is refused with the reason, and a push GitHub refuses answers with the remedy
 (merge the pushed head, never force): only a note that same call wrote replaces its error. A head
 is pushed when GitHub's branch is at it, whatever `git push` said: every push of a task's head
