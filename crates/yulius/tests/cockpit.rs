@@ -39,7 +39,7 @@ use yulius_domain::time::Timestamp;
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
-const ORIGIN: &str = "https://yulius.test";
+pub(crate) const ORIGIN: &str = "https://yulius.test";
 const WAIT: Duration = Duration::from_secs(20);
 const TOKEN: &str = "synthetic-oauth-token";
 
@@ -79,14 +79,14 @@ if [ -f \"$CLAUDE_CONFIG_DIR/exit-3-on-signal\" ]; then\n\
 fi\n\
 exec /bin/sh\n";
 
-struct Fixture {
-    h: Harness,
+pub(crate) struct Fixture {
+    pub(crate) h: Harness,
     /// The session host: holds the next start between its spawn and its attach when armed.
-    gate: Arc<GatedHost>,
-    alice: Creds,
-    bob: Creds,
-    carol: Creds,
-    data: PathBuf,
+    pub(crate) gate: Arc<GatedHost>,
+    pub(crate) alice: Creds,
+    pub(crate) bob: Creds,
+    pub(crate) carol: Creds,
+    pub(crate) data: PathBuf,
 }
 
 /// alice and carol (write) and bob (read) on `s1`; one pool subscription unless `account` is
@@ -173,7 +173,7 @@ async fn fixture_ending(
     })
 }
 
-async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
+pub(crate) async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
     fixture_with(true, None).await
 }
 
@@ -191,13 +191,16 @@ async fn open_cockpit(
     .await
 }
 
-async fn cockpit_id(f: &Fixture, creds: &Creds) -> Result<String, Box<dyn std::error::Error>> {
+pub(crate) async fn cockpit_id(
+    f: &Fixture,
+    creds: &Creds,
+) -> Result<String, Box<dyn std::error::Error>> {
     let resp = open_cockpit(f, creds).await?;
     assert_eq!(resp.status, StatusCode::OK, "{:?}", resp.body);
     Ok(resp.body["id"].as_str().ok_or("id")?.to_owned())
 }
 
-async fn attach(
+pub(crate) async fn attach(
     addr: std::net::SocketAddr,
     id: &str,
     creds: &Creds,
@@ -218,7 +221,7 @@ async fn attach(
 }
 
 /// Reads frames until the accumulated terminal text contains `needle`.
-async fn read_until(
+pub(crate) async fn read_until(
     socket: &mut Socket,
     text: &mut String,
     needle: &str,
@@ -240,7 +243,7 @@ async fn read_until(
 }
 
 /// The value printed after `key:` on the fake's screen.
-fn printed(screen: &str, key: &str) -> Result<String, Box<dyn std::error::Error>> {
+pub(crate) fn printed(screen: &str, key: &str) -> Result<String, Box<dyn std::error::Error>> {
     let start = screen
         .find(&format!("{key}:"))
         .ok_or_else(|| format!("{key} not printed"))?
@@ -258,7 +261,7 @@ fn printed(screen: &str, key: &str) -> Result<String, Box<dyn std::error::Error>
         .to_owned())
 }
 
-async fn wait_for(what: &str, mut check: impl FnMut() -> bool) -> TestResult {
+pub(crate) async fn wait_for(what: &str, mut check: impl FnMut() -> bool) -> TestResult {
     let deadline = tokio::time::Instant::now() + WAIT;
     while tokio::time::Instant::now() < deadline {
         if check() {
@@ -270,7 +273,7 @@ async fn wait_for(what: &str, mut check: impl FnMut() -> bool) -> TestResult {
 }
 
 /// A conversation file of Claude Code, last written `secs` after the epoch.
-fn conversation(project: &Path, id: &str, secs: u64) -> TestResult {
+pub(crate) fn conversation(project: &Path, id: &str, secs: u64) -> TestResult {
     std::fs::create_dir_all(project)?;
     let file = std::fs::File::create(project.join(format!("{id}.jsonl")))?;
     file.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000 + secs))?;
@@ -1023,7 +1026,7 @@ async fn the_mcp_test_never_runs_a_command_from_the_repository_mcp_json() -> Tes
 }
 
 /// The run directories of shells and Cockpits on disk.
-fn run_dirs(f: &Fixture) -> usize {
+pub(crate) fn run_dirs(f: &Fixture) -> usize {
     std::fs::read_dir(f.data.join("shells"))
         .map(|entries| entries.count())
         .unwrap_or(0)
@@ -1309,9 +1312,9 @@ async fn without_capacity_the_cockpit_waits_for_a_subscription() -> TestResult {
 }
 
 /// Records the Cockpit launch a contained server asks for and refuses it (no bwrap needed).
-struct RecordingHarness {
+pub(crate) struct RecordingHarness {
     inner: yulius::wiring::harness::HarnessAdapter,
-    cockpit: std::sync::Mutex<Option<CockpitLaunch>>,
+    pub(crate) cockpit: std::sync::Mutex<Option<CockpitLaunch>>,
 }
 
 impl HarnessPort for RecordingHarness {
@@ -1379,7 +1382,7 @@ impl HarnessPort for RecordingHarness {
 
 /// A contained server whose Cockpit launches are recorded and refused, with alice (write) on `s1`
 /// and one pool subscription.
-async fn contained_harness()
+pub(crate) async fn contained_harness()
 -> Result<(Harness, Arc<RecordingHarness>, Creds), Box<dyn std::error::Error>> {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let recorder = Arc::new(RecordingHarness {
@@ -1478,6 +1481,7 @@ fn a_contained_superagent_starts_with_the_approval_bypass_accepted() -> TestResu
         project_mcp_servers: Vec::new(),
         mcp: Vec::new(),
         contained,
+        only_yulius: None,
     };
     let settled = |home: &str| -> Result<Value, Box<dyn std::error::Error>> {
         let path = dir.path().join(home).join(".claude.json");
@@ -1507,7 +1511,7 @@ fn a_contained_superagent_starts_with_the_approval_bypass_accepted() -> TestResu
 }
 
 /// A JSON-RPC call to the internal `/mcp` with `token`.
-async fn mcp(
+pub(crate) async fn mcp(
     f: &Fixture,
     token: &str,
     method: &str,
@@ -1529,7 +1533,7 @@ async fn mcp(
 }
 
 /// A tool's record (or an error's text), and whether it is an error.
-async fn cockpit_tool(
+pub(crate) async fn cockpit_tool(
     f: &Fixture,
     token: &str,
     name: &str,
@@ -1554,7 +1558,7 @@ async fn cockpit_tool(
 }
 
 /// Waits until `task`'s start has ended (it rests: failed, stopped or closed).
-async fn task_rests(
+pub(crate) async fn task_rests(
     f: &Fixture,
     task: &yulius_domain::ids::TaskId,
 ) -> Result<(), Box<dyn std::error::Error>> {

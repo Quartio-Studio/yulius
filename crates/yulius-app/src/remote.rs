@@ -137,6 +137,11 @@ const SHARED_TOOLS: &[&str] = &[
     "secrets_list",
 ];
 
+/// The remote tool `name`'s action, when it is one.
+pub(crate) fn remote_tool_action(name: &str) -> Option<Action> {
+    remote_tool(name).map(|(_, action)| action)
+}
+
 fn remote_tool(name: &str) -> Option<(Reach, Action)> {
     REMOTE_TOOLS
         .iter()
@@ -155,11 +160,30 @@ pub struct RemoteCaller {
     pub scope: TokenScope,
     /// The person's login (audits).
     pub login: String,
+    /// The shell of the person's Global Superagent when it is the caller, served these tools
+    /// through its own bearer (SPEC-427 GSA-003); `None` for the person's own agent.
+    pub superagent: Option<String>,
 }
 
 impl RemoteCaller {
     fn actor(&self) -> String {
-        format!("remote:{}", self.login)
+        match self.superagent {
+            Some(_) => format!("superagent:{}", self.login),
+            None => format!("remote:{}", self.login),
+        }
+    }
+
+    /// How its calls are told apart in the audit and in what a task is told.
+    fn via(&self) -> Value {
+        match &self.superagent {
+            Some(shell) => json!({"via": "global-superagent", "shell": shell}),
+            None => json!({"via": "remote", "token": self.token_id}),
+        }
+    }
+
+    /// Whether it is served `tool` (the Global Superagent is not served every one).
+    fn serves(&self, tool: &str) -> bool {
+        self.superagent.is_none() || crate::global_superagent::serves(tool)
     }
 }
 
@@ -495,13 +519,21 @@ impl App {
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}},
                     "serverInfo": {"name": "yulius", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": REMOTE_INSTRUCTIONS,
+                    "instructions": if caller.superagent.is_some() {
+                        crate::global_superagent::GLOBAL_INSTRUCTIONS
+                    } else {
+                        REMOTE_INSTRUCTIONS
+                    },
                     // Who the token acts for, for `yulius remote status`.
                     "_meta": {"yulius/person": caller.login, "yulius/scope": caller.scope.as_str()},
                 })
             }
             "ping" => json!({}),
-            "tools/list" => json!({"tools": remote_tool_descriptors(caller.scope)}),
+            "tools/list" => json!({"tools": if caller.superagent.is_some() {
+                crate::global_superagent::global_tool_descriptors()
+            } else {
+                remote_tool_descriptors(caller.scope)
+            }}),
             "tools/call" => self.remote_call(caller, &request.params).await,
             other => {
                 return Some(RpcResponse::err(
@@ -548,6 +580,7 @@ impl App {
             token_id: grant.id,
             scope: grant.scope,
             login,
+            superagent: None,
         })
     }
 
@@ -563,7 +596,7 @@ impl App {
             .and_then(|meta| meta.get(STRUCTURED_META))
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let Some((reach, action)) = remote_tool(name) else {
+        let Some((reach, action)) = remote_tool(name).filter(|_| caller.serves(name)) else {
             return text_result(format!("unknown tool: {name}"), true);
         };
         if !caller.scope.allows(action) {
@@ -621,9 +654,14 @@ impl App {
                     sandbox: sandbox.id.clone(),
                     user: caller.ctx.user.id.clone(),
                     task: None,
-                    channel: Channel::Remote,
+                    // What a task is told: "through their Superagent" (SPEC-427 GSA-003).
+                    channel: if caller.superagent.is_some() {
+                        Channel::Superagent
+                    } else {
+                        Channel::Remote
+                    },
                     actor: caller.actor(),
-                    detail: json!({"via": "remote", "token": caller.token_id}),
+                    detail: caller.via(),
                 };
                 let outcome = self
                     .remote_project_tool(caller, &project, &sandbox, name, &args)
@@ -681,7 +719,13 @@ impl App {
         sandbox: Option<&SandboxId>,
         ok: bool,
     ) {
-        let detail = json!({"tool": tool, "token": caller.token_id, "ok": ok}).to_string();
+        let detail = match &caller.superagent {
+            Some(shell) => {
+                json!({"tool": tool, "via": "global-superagent", "shell": shell, "ok": ok})
+            }
+            None => json!({"tool": tool, "token": caller.token_id, "ok": ok}),
+        }
+        .to_string();
         if let Err(err) = self
             .deps
             .store
@@ -690,7 +734,10 @@ impl App {
                 &caller.actor(),
                 "remote.tool",
                 Some(&sandbox.map_or_else(
-                    || format!("token:{}", caller.token_id),
+                    || match &caller.superagent {
+                        Some(shell) => format!("superagent:{shell}"),
+                        None => format!("token:{}", caller.token_id),
+                    },
                     |id| id.as_str().to_owned(),
                 )),
                 Some(&detail),

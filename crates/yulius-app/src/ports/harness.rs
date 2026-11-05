@@ -114,6 +114,9 @@ pub struct CockpitLaunch {
     pub mcp: Vec<McpAttachment>,
     /// A contained server: the session bypasses approvals, as a task run there does (SPEC-208).
     pub contained: bool,
+    /// The Global Superagent (SPEC-427 GSA-002): only the Yulius MCP, no built-in tools and no
+    /// redaction hook, with these of its tools pre-allowed. `None` for a sandbox's Cockpit.
+    pub only_yulius: Option<Vec<String>>,
 }
 
 /// A launch plan plus the session id known up front.

@@ -671,6 +671,10 @@ pub struct CockpitRequest {
     /// Bypass-permissions mode (`--dangerously-skip-permissions`, with `IS_SANDBOX=1`: a contained
     /// Cockpit is root of its sandbox), as a task run of a contained server has (SPEC-208).
     pub bypass_permissions: bool,
+    /// Only the Yulius MCP and no built-in tools (`--strict-mcp-config --tools ""`), with these of
+    /// its tools pre-allowed instead of the Cockpit's read tools: the Global Superagent (SPEC-427
+    /// GSA-002). `None` for a sandbox's Cockpit.
+    pub only_yulius: Option<Vec<String>>,
 }
 
 /// The Yulius MCP server of a Cockpit (SPEC-037 MGT-004).
@@ -744,8 +748,17 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
                 "url": format!("{}/mcp", yulius.url.trim_end_matches('/')),
             }),
         );
+        let read_only = request.only_yulius.as_ref().map_or_else(
+            || {
+                COCKPIT_READ_ONLY_TOOLS
+                    .iter()
+                    .map(|t| (*t).to_owned())
+                    .collect()
+            },
+            Clone::clone,
+        );
         allowed = Some(
-            COCKPIT_READ_ONLY_TOOLS
+            read_only
                 .iter()
                 .map(|tool| format!("mcp__{YULIUS_MCP_NAME}__{tool}"))
                 .collect::<Vec<_>>()
@@ -782,6 +795,14 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
     }
     if !settings.is_empty() {
         argv.extend(["--settings".into(), Value::Object(settings).to_string()]);
+    }
+    // It reads and changes nothing but through Yulius (SPEC-427 GSA-002).
+    if request.only_yulius.is_some() {
+        argv.extend([
+            "--strict-mcp-config".into(),
+            "--tools".into(),
+            String::new(),
+        ]);
     }
     // The person's own session still starts on Yulius's default model and effort (SPEC-023).
     argv.extend([

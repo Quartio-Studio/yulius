@@ -187,6 +187,7 @@ fn a_remote_message_names_the_persons_own_agent() -> TestResult {
             token_id: "tok-laptop".into(),
             scope: TokenScope::Operate,
             login: "admin".into(),
+            superagent: None,
         };
 
         let request = RpcRequest {

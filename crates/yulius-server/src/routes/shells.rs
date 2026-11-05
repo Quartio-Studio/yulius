@@ -86,6 +86,15 @@ pub async fn cockpit(
     Ok(Json(dto(app.cockpit_open(&ctx, &sid).await?)))
 }
 
+/// `POST /api/superagent`: the caller's Global Superagent, started when it is not running
+/// (SPEC-427 GSA-001). Its terminal is `WS /api/shells/{id}/terminal`.
+pub async fn global_superagent(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+) -> ApiResult<Json<Shell>> {
+    Ok(Json(dto(app.global_superagent_open(&ctx).await?)))
+}
+
 /// `GET /api/sandboxes/{sid}/cockpit/link`: `{"state": "ok"|"lost"|"recovered"|"unknown",
 /// "lost_at": ms | null}`, the caller's Superagent's link to Yulius (SPEC-355 SLR-006).
 pub async fn cockpit_link(

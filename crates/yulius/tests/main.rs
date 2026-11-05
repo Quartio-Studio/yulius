@@ -37,6 +37,7 @@ mod fixture_hygiene;
 mod git_adapter;
 mod github_admin;
 mod github_checks;
+mod global_superagent;
 mod http_auth;
 mod import_server;
 mod intake;

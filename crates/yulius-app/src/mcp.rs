@@ -527,6 +527,15 @@ impl App {
         token: &str,
         request: RpcRequest,
     ) -> Option<RpcResponse> {
+        // A Global Superagent is served the remote tools for its person (SPEC-427 GSA-003).
+        if token.starts_with(crate::shells::GLOBAL_TOKEN_PREFIX) {
+            return match self.global_superagent_caller(token).await {
+                Ok(caller) => self.remote_mcp_handle(&caller, request).await,
+                Err(_) => request
+                    .id
+                    .map(|id| RpcResponse::err(id, -32001, "invalid or expired task token")),
+            };
+        }
         let Some(id) = request.id.clone() else {
             // A Superagent's client cancelled a call that waits for its person (SPEC-335).
             if request.method == "notifications/cancelled"
