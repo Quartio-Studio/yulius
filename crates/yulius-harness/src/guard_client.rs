@@ -1,5 +1,7 @@
-//! `yulius hook claude PreToolUse` (Bash only), inside the sandbox: refuses a command that can
-//! never work as meant, before it runs (F 2026-10-12, complaint 1: dead monitors and shells).
+//! `yulius hook claude PreToolUse`, inside the sandbox: refuses a Bash command that can never
+//! work as meant, before it runs (F 2026-10-12, complaint 1: dead monitors and shells). The edit
+//! tools' calls ([`EDIT_TOOLS`]) are not judged here: the hook client sends them to Yulius's
+//! edit gate (SPEC-426).
 //!
 //! Claude Code runs a Bash command as `bash -c '<command>'`, so `pgrep -f P` and `pkill -f P` in
 //! it see their own shell, whose command line contains `P`: a wait on `pgrep -f` never ends (the
@@ -13,6 +15,18 @@ use serde_json::Value;
 
 /// Largest hook input read.
 const MAX_INPUT_BYTES: u64 = 1024 * 1024;
+
+/// Claude Code's tools that write a file: their `PreToolUse` goes to Yulius (SPEC-426 EDG-001).
+pub const EDIT_TOOLS: [&str; 4] = ["Edit", "MultiEdit", "Write", "NotebookEdit"];
+
+/// Whether the `PreToolUse` input `body` is a call of one of the [`EDIT_TOOLS`].
+#[must_use]
+pub fn is_edit(body: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|event| event["tool_name"].as_str().map(str::to_owned))
+        .is_some_and(|tool| EDIT_TOOLS.contains(&tool.as_str()))
+}
 
 /// Why `command` would match itself: the first `pgrep -f`/`pkill -f` pattern that its own
 /// `bash -c` command line contains, or `None`.

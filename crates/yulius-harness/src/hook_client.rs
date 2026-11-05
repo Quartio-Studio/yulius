@@ -85,9 +85,31 @@ pub fn run_hook_with(
     if harness == "claude" && event == "PostToolUse" {
         return crate::scrub_client::post_tool_use(input, output, env);
     }
-    // Commands that can never work as meant are refused here too, before they run.
+    // Commands that can never work as meant are refused here, before they run; an edit of a
+    // file goes to Yulius's edit gate (SPEC-426 EDG-001).
     if harness == "claude" && event == "PreToolUse" {
-        return crate::guard_client::pre_tool_use(input, output);
+        let mut body = Vec::new();
+        if input
+            .take(MAX_INPUT_BYTES as u64 + 1)
+            .read_to_end(&mut body)
+            .is_err()
+        {
+            return 0;
+        }
+        if !crate::guard_client::is_edit(&body) {
+            return crate::guard_client::pre_tool_use(&mut body.as_slice(), output);
+        }
+        if let Ok(answer) = forward(
+            harness,
+            event,
+            &mut body.as_slice(),
+            env,
+            HOOK_TIMEOUT,
+            hold,
+        ) {
+            let _ignored = output.write_all(&answer).and_then(|()| output.flush());
+        }
+        return 0;
     }
     if let Ok(body) = forward(harness, event, input, env, HOOK_TIMEOUT, hold) {
         let _ignored = output.write_all(&body).and_then(|()| output.flush());
