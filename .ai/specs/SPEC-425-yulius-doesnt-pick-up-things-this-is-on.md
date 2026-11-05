@@ -58,8 +58,8 @@ green. Nothing waits on a pull request that is already merged.
   cannot judge (a branch rewritten so the merged head is no longer its ancestor, with the
   `git merge` that brings it back; a merged head missing from the clone, with the fetch of
   `pull/N/head`; what the head changed conflicting with the integration branch, with the merge
-  to make; the merged pull request unreadable on GitHub; a failed fetch; the task in a live merge
-  train) it refuses with that reason, the end of a turn notes it for `yulius wait` (the note goes
+  to make; the merged pull request unreadable on GitHub; a failed fetch; new work while a live
+  merge train holds the task, on an instance with CI) it refuses with that reason, the end of a turn notes it for `yulius wait` (the note goes
   once the head is covered again), and nothing is pushed, opened or reset.
 
 ## Plan
@@ -98,9 +98,11 @@ green. Nothing waits on a pull request that is already merged.
   without the clearing); new work with uncommitted changes keeps the task merged (fails without
   the readiness check before the reset); a merged head missing from the clone gives the
   `pull/1/head` fetch; an unfetchable origin is "could not be refreshed"; then #3 opens and arms.
-- `work_after_the_merge_waits_for_a_live_merge_train`: a merged task in a live train is refused
-  ("merge train that has not ended") and not reset; once the train ends it opens its pull
-  request.
+- `work_after_the_merge_waits_for_a_live_merge_train`: in a live train, a head that only merged
+  `dev` reads "already merged"; new work is refused ("merge train that has not ended") and not
+  reset; once the train ends it opens its pull request.
+- `a_leftover_train_holds_nothing_without_ci`: with CI off, a leftover trains file holds nothing
+  and the follow-up opens (fails without the CI check in `in_train`).
 - The existing delivery tests (`#68` follow-ups to an open pull request, the merged pull request
   staying on its task) still pass.
 
@@ -120,14 +122,18 @@ green. Nothing waits on a pull request that is already merged.
   fails; no `--merge-base`, no readiness check before the reset, no note clearing → each fails
   `a_follow_up_merged_by_hand_is_judged_since_the_merged_head`; the round-4 train case failed
   before its fix (commit "a train member with nothing new reads already merged").
-- `scripts/dev ci` at 5901ad6d: exit 0, 3129 tests passed, 16 skipped; rerun at the final head
-  before the merge (result in the pull request and Yulius CI).
+- `scripts/dev ci` at 5901ad6d: exit 0, 3129 tests passed, 16 skipped. At ef110353: 3128
+  passed, 1 failed: `task_done::a_done_onboarding_task_is_archived_and_the_sandbox_is_ready`
+  timed out waiting for the shell probe (90 s) under full-suite load; it passed in the previous
+  full run and 5 of 5 isolated runs, touches no delivery code, and is filed as #1078. Rerun at
+  the final head before the merge (Yulius CI).
 - `scripts/dev security`: exit 0, "Security scan disabled: Vidoc is turned off in Yulius" —
   unrun, not passed.
 - Independent review in fresh sessions: rounds 1-3 requested changes (all own-code findings fixed
   test-first, listed in the commits "review round N"), round 4 approved 5901ad6d with one low
   finding (a train member with nothing new read "unknown"), fixed test-first in 29201a37; round 5
-  reviews the final head.
+  approved ef110353 with two minor findings (docs wording; `in_train` ignored CI being off),
+  fixed, the second test-first; round 6 reviews the final head.
 - Pre-existing, outside this change: #1075 (an armed merge whose pull request merged outside
   Yulius is never dropped), found by review round 2.
 - Not tested: a real GitHub repository on a free private organisation (the reporter's); the
