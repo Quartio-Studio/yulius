@@ -807,7 +807,7 @@ impl GitPort for GitAdapter {
         base: &str,
         since: &str,
         head: &str,
-    ) -> AppResult<bool> {
+    ) -> AppResult<Option<bool>> {
         let (git, worktree, base, since, head) = (
             self.git(),
             worktree.to_path_buf(),
@@ -816,10 +816,14 @@ impl GitPort for GitAdapter {
             head.to_owned(),
         );
         blocking(move || {
+            // One commit for both reads: a fetch in between must not move `base`.
+            let base = git.rev_parse(&worktree, &base)?;
             let Some(merged) = git.merge_tree_from(&worktree, Some(&since), &base, &head)? else {
-                return Ok(true);
+                return Ok(None);
             };
-            Ok(git.tree_of(&worktree, &base)?.as_deref() != Some(merged.as_str()))
+            Ok(Some(
+                git.tree_of(&worktree, &base)?.as_deref() != Some(merged.as_str()),
+            ))
         })
         .await
     }

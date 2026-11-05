@@ -328,14 +328,14 @@ pub trait GitPort: Send + Sync {
     }
     /// Whether what `head` changed since `since` adds anything to `base`: Git's merge of the
     /// two from `since` (in `worktree`, with the repository's merge drivers) is not `base`'s
-    /// tree, or conflicts (SPEC-425 FUP-002).
+    /// tree; `None` when that merge conflicts (SPEC-425 FUP-002). `base` is read once.
     async fn adds_to(
         &self,
         worktree: &Path,
         base: &str,
         since: &str,
         head: &str,
-    ) -> AppResult<bool> {
+    ) -> AppResult<Option<bool>> {
         let _ = (worktree, base, since, head);
         unsupported("comparing trees")
     }

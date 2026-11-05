@@ -317,7 +317,7 @@ impl GitPort for RealGit {
         base: &str,
         since: &str,
         head: &str,
-    ) -> AppResult<bool> {
+    ) -> AppResult<Option<bool>> {
         yulius::wiring::git::GitAdapter::new("git")
             .adds_to(worktree, base, since, head)
             .await
@@ -4492,6 +4492,159 @@ async fn work_after_the_merge_opens_nothing_it_cannot_judge() -> TestResult {
     );
     assert_eq!(wait_state(&f, &agent, &back).await?["merge_armed"], false);
     assert_eq!(pulls_opened(&f), 2);
+    Ok(())
+}
+
+/// SPEC-425 (review of #407, rounds 2 and 3): a follow-up merged by hand from a branch that
+/// never merged `dev` stays covered once `dev` changes a file of the merged pull request (what
+/// the head changed is read since the merged head, not since the old fork point); a head whose
+/// change conflicts with `dev` is unknown and noted for `yulius wait`, the note goes once the
+/// head is covered again; a dirty follow-up keeps the task merged; a merged head missing from the
+/// clone and a failed fetch are said with their remedy; then the follow-up opens.
+#[tokio::test]
+async fn a_follow_up_merged_by_hand_is_judged_since_the_merged_head() -> TestResult {
+    let (f, wt, _) = merged_task().await?;
+    let t1 = TaskId::parse("t1")?;
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+    let merge_call = |head: String| {
+        let (f, agent) = (&f, &agent);
+        async move {
+            agent_tool(
+                f,
+                agent,
+                "delivery_merge",
+                json!({"reviewed_head": head, "review_summary": "approve"}),
+            )
+            .await
+        }
+    };
+    let text = |result: &Value| {
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+
+    // The follow-up, delivered and squash-merged by hand as #2; then `dev` edits the merged
+    // pull request's file.
+    commit_file(&wt, "other.txt", "other", "Follow-up by hand")?;
+    let by_hand = git(&wt, &["rev-parse", "HEAD"])?;
+    git(
+        &wt,
+        &["push", "--quiet", "origin", "HEAD:feat/1-checkout-api"],
+    )?;
+    let manual = yulius_app::ports::github::GitHubPort::create_pull(
+        f.h.github.as_ref(),
+        &Secret("token-bob".into()),
+        "Quartio-Studio",
+        "shop",
+        &yulius_app::ports::github::NewPull {
+            title: "fix: by hand".into(),
+            head: "feat/1-checkout-api".into(),
+            base: "dev".into(),
+            body: String::new(),
+        },
+    )
+    .await?;
+    f.h.github.set_checks(&by_hand, ChecksState::Success);
+    yulius_app::ports::github::GitHubPort::merge_pull(
+        f.h.github.as_ref(),
+        &Secret("token-carol".into()),
+        "Quartio-Studio",
+        "shop",
+        manual.number,
+        "squash",
+        &by_hand,
+    )
+    .await?;
+    advance_base(&f, "dev", "feature.txt", "a\nb\nc\nd\ne\nf\nG\n")?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        pulls_opened(&f),
+        2,
+        "the hand-made #2 only: {:?}",
+        f.h.github.writes()
+    );
+    let done = merge_call(by_hand.clone()).await?;
+    assert!(text(&done).contains("already merged"), "{done}");
+
+    // A change that conflicts with `dev`: unknown, said to the merge call and to `yulius wait`.
+    commit_file(
+        &wt,
+        "feature.txt",
+        "a\nb\nc\nd\ne\nf\nH\n",
+        "Conflicting follow-up",
+    )?;
+    let conflicting = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.app.auto_open_pr(&t1).await;
+    let note = wait_state(&f, &agent, &conflicting).await?["push_problem"].clone();
+    assert!(
+        note.as_str()
+            .unwrap_or_default()
+            .contains("conflicts with `origin/dev`"),
+        "{note}"
+    );
+    let refused = merge_call(conflicting.clone()).await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(
+        text(&refused).contains("git merge --no-edit origin/dev"),
+        "{refused}"
+    );
+    assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
+    assert_eq!(pulls_opened(&f), 2);
+
+    // Back at the covered head: the note is stale and goes.
+    git(&wt, &["reset", "--quiet", "--hard", &by_hand])?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        wait_state(&f, &agent, &conflicting).await?["push_problem"],
+        Value::Null
+    );
+
+    // New work with uncommitted changes: not ready, so the task stays merged.
+    commit_file(&wt, "more.txt", "more", "More work")?;
+    let more = git(&wt, &["rev-parse", "HEAD"])?;
+    std::fs::write(wt.join("scratch.txt"), "work in progress")?;
+    let dirty = merge_call(more.clone()).await?;
+    assert_eq!(dirty["isError"], true, "{dirty}");
+    assert!(text(&dirty).contains("uncommitted changes"), "{dirty}");
+    assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
+    std::fs::remove_file(wt.join("scratch.txt"))?;
+
+    // A merged head this clone does not have (made on GitHub): how to fetch it.
+    let merged_head =
+        f.h.github
+            .pulls
+            .lock()
+            .ok()
+            .and_then(|p| p.iter().find(|p| p.number == 1).map(|p| p.head_sha.clone()))
+            .unwrap_or_default();
+    let absent = "1".repeat(40);
+    edit_pull(&f, 1, |p| p.head_sha = absent.clone());
+    let missing = merge_call(more.clone()).await?;
+    assert!(
+        text(&missing).contains("git fetch origin pull/1/head"),
+        "{missing}"
+    );
+    edit_pull(&f, 1, |p| p.head_sha = merged_head.clone());
+
+    // The origin cannot be fetched: unknown, never a pull request from a stale `dev`.
+    let moved = f.origin.with_extension("moved");
+    std::fs::rename(&f.origin, &moved)?;
+    let unfetched = merge_call(more.clone()).await?;
+    std::fs::rename(&moved, &f.origin)?;
+    assert!(
+        text(&unfetched).contains("could not be refreshed"),
+        "{unfetched}"
+    );
+    assert_eq!(pulls_opened(&f), 2);
+
+    // All clear: the follow-up opens as #3 and arms.
+    f.h.github.set_checks(&more, ChecksState::Pending);
+    let armed = arm_merge(&f, &agent, &more).await?;
+    assert_eq!(armed["armed"], true, "{armed}");
+    assert_eq!(pulls_opened(&f), 3, "{:?}", f.h.github.writes());
+    assert_eq!(f.origin_sha("feat/1-checkout-api")?, more, "pushed");
     Ok(())
 }
 

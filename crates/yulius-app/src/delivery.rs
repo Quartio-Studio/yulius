@@ -419,9 +419,6 @@ pub(crate) fn domain_checks(state: gh::ChecksState) -> ChecksState {
     }
 }
 
-/// An upstream failure as the reason in a note, without the adapter's `GitHub: ` prefix: the
-/// GitHub error already says it is GitHub ("GitHub refused the request (HTTP 403): …"), so the
-/// note does not repeat it (#111).
 /// Why a head with commits to deliver is not ready to go out, if it is not: a task that needs a
 /// spec needs its plan too; research, docs and chores may have none.
 fn not_ready(spec: &SpecCheck, no_steps: bool, steps_open: usize, dirty: bool) -> Option<String> {
@@ -441,6 +438,9 @@ fn not_ready(spec: &SpecCheck, no_steps: bool, steps_open: usize, dirty: bool) -
     }
 }
 
+/// An upstream failure as the reason in a note, without the adapter's `GitHub: ` prefix: the
+/// GitHub error already says it is GitHub ("GitHub refused the request (HTTP 403): …"), so the
+/// note does not repeat it (#111).
 fn github_reason(err: &AppError) -> String {
     let message = err.public_message();
     match message.strip_prefix("GitHub: ") {
@@ -2762,7 +2762,7 @@ impl App {
             return Ok(AutoDelivery::Unchanged);
         }
         // Cheap checks first: most turns end with steps still open, and they need no GitHub call
-        // (a merged task's head is judged before them, once per head: SPEC-425).
+        // (a merged task's head is judged before them; a covered head only once: SPEC-425).
         let steps = store.steps(&task.id).await?;
         let open_step = steps
             .iter()
@@ -2783,7 +2783,11 @@ impl App {
                 .await
             {
                 AfterMerge::FollowUp(number) => Some((record, number)),
-                AfterMerge::Covered => return Ok(AutoDelivery::Unchanged),
+                AfterMerge::Covered => {
+                    // Nothing undelivered: an earlier "not delivered" note is stale.
+                    self.clear_push_problem(task_id);
+                    return Ok(AutoDelivery::Unchanged);
+                }
                 AfterMerge::Unknown(reason) => {
                     // Said to `yulius wait` too, so an agent that only ends its turn hears it.
                     self.note_undelivered(&task, &worktree, &reason).await;
@@ -3020,13 +3024,6 @@ impl App {
                  {why}"
             ))
         };
-        // A live merge train counts on its members' recorded stages until it ends.
-        if self.in_train(task) {
-            return unknown(
-                "it is in a merge train that has not ended; call again once the train ends"
-                    .to_owned(),
-            );
-        }
         let sandbox = match self.dlv_sandbox_of(task).await {
             Ok(sandbox) => sandbox,
             Err(err) => return unknown(err.public_message()),
@@ -3081,6 +3078,13 @@ impl App {
             }
             Err(err) => return unknown(err.public_message()),
         }
+        // A live merge train counts on its members' recorded stages until it ends.
+        if self.in_train(task) {
+            return unknown(
+                "it is in a merge train that has not ended; call again once the train ends"
+                    .to_owned(),
+            );
+        }
         if self.review_covers(task, worktree, &merged, head).await {
             return AfterMerge::Covered;
         }
@@ -3088,8 +3092,14 @@ impl App {
         // follow-up merged outside Yulius changes nothing there, whatever else `dev` gained.
         let integration = format!("origin/{}", delivery_profile(&sandbox).integration_branch);
         match git.adds_to(worktree, &integration, &merged, head).await {
-            Ok(true) => AfterMerge::FollowUp(number),
-            Ok(false) => AfterMerge::Covered,
+            Ok(Some(true)) => AfterMerge::FollowUp(number),
+            Ok(Some(false)) => AfterMerge::Covered,
+            // A conflict may be work merged outside Yulius that `dev` changed since, or new work
+            // that conflicts: the merge settles it either way.
+            Ok(None) => unknown(format!(
+                "what it changed conflicts with `{integration}`. Merge it (`git merge --no-edit \
+                 {integration}`) and Yulius delivers what this head still adds"
+            )),
             Err(err) => unknown(err.public_message()),
         }
     }
