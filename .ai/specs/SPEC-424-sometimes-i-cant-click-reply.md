@@ -72,8 +72,9 @@ are not affected.
   terminal.
 - AC-4: a press held across an update ends, and the bar shows the update, on a window blur, a
   context menu, a pointer cancel or a move with the button up; a right press holds nothing.
-- AC-5: a touch press and release on Reply across an update, then the tap's click: the field opens
-  with the caret and the bar shows the update.
+- AC-5: a touch press and release on Reply across an update, then the tap's click on that (kept)
+  Reply: the touch release ends the hold, the field opens with the caret and the bar shows the
+  update.
 
 ## Test plan
 

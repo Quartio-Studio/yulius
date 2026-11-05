@@ -309,7 +309,8 @@ test('a press ended by a context menu, a cancel or a buttonless move shows the h
   for (const [index, [ending, action, init]] of endings.entries()) {
     await pointerAtBar(browser, 'pointerdown', { button: 0, buttons: 1 });
     await askWhilePressed(browser, action, `Checkout API v${index + 2}`);
-    await expect(bar).not.toHaveText(new RegExp(`${action}$`));
+    // Held: the bar's text (which ends with its Reply) still asks the earlier ruleset.
+    await expect(bar).not.toHaveText(new RegExp(action));
     if (ending === 'contextmenu') {
       await browser.evaluate(() => { document.querySelector('.attention-bar')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 })); });
     } else {
