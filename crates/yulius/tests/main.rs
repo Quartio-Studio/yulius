@@ -66,6 +66,7 @@ mod pool_supervision;
 mod prepared;
 mod preview;
 mod production_branch;
+mod production_protection;
 mod projects;
 mod queued_messages;
 mod recovery;

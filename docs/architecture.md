@@ -1737,7 +1737,13 @@ onboarding reports a branch the agents could write. The preparation agent then c
 `production_protect` ([ADR-0129](decisions/0129-onboarding-agents-protect-production-as-the-onboarding-person.md)):
 `App::tool_production_protect` adds `people_only_ruleset` (the same rules, no pull-request rule)
 with the task owner's own token after `repo_access` says they are a repository admin, and only
-when the branch is not already guarded; the agent's token never gains Administration.
+when the branch is not already guarded; the agent's token never gains Administration. A sandbox
+admin can waive the ruleset where the GitHub plan has none
+([ADR-0267](decisions/0267-a-sandboxs-admins-waive-the-production-ruleset-on-its-git-page.md)):
+`profile.protect_production: false` (`delivery::production_protection_required`, the Git page's
+Production protection card) makes `production_branch_warning` answer nothing and
+`production_protect` answer `waived`; every request for the ruleset (`production_ruleset_fix`)
+names that card's address.
 
 ```mermaid
 flowchart LR
@@ -1748,6 +1754,7 @@ flowchart LR
   GH --> OK["main moves"]
   ONB["onboarding"] -->|"branch_guard with an agent token"| GH
   ONB -->|"production_protect: owner's admin token adds the ruleset"| GH
+  WAIVE["Git page: protect_production off (ADR-0267)"] -.->|"no warning, tool answers waived"| ONB
 ```
 
 That token reaches only the sandbox's own repository. To read another repository of the same
