@@ -16,6 +16,7 @@ import { href } from '../router.js';
 import { openDeliveryDialog, notesBanner, checksAccessNote, openRunViewer, UNKNOWN_CHECKS } from '../actions.js';
 import { pageFrame } from './common.js';
 import { BRAND } from '../brand.js';
+import { productionProtectionCard, PROTECTION_ID } from './gitprotection.js';
 
 const LIVE_LIMIT = 5;
 const ACTIVITY_LIMIT = 8;
@@ -126,6 +127,7 @@ export function mountGitPage(ctx, sandbox) {
   let model = null;
   let showAllActivity = false;
   let showAllNeeds = false;
+  let scrolledToCard = false;
   const expanded = new Set();
 
   // Only the newest load renders, and none after the page is left; delivery reads run at most
@@ -217,7 +219,15 @@ export function mountGitPage(ctx, sandbox) {
       statusStrip(profile, envs, by('waiting'), by('live')),
       attention(items),
       board(profile, items, by),
-      activity()));
+      activity(),
+      // A playground has no GitHub branch to protect (SPEC-423 PPR-005).
+      sb().playground ? null : productionProtectionCard(ctx, sb())));
+    // Messages link to the card (`#production-protection`); it exists once the overview drew.
+    if (!scrolledToCard && window.location.hash === `#${PROTECTION_ID}`) {
+      scrolledToCard = true;
+      const card = document.getElementById(PROTECTION_ID);
+      if (card) card.scrollIntoView({ block: 'start' });
+    }
   }
 
   // ---- Live / waiting

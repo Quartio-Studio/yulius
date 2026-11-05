@@ -896,9 +896,15 @@ route('DELETE', `/api/me/tokens/${ID}`, ({ db, p }) => {
   return json(204);
 });
 
-/** A sandbox as the server shows it: `profile.vidoc` always a boolean (SPEC-338 VOF-001). */
+/**
+ * A sandbox as the server shows it: `profile.vidoc` (SPEC-338 VOF-001) and
+ * `profile.protect_production` (SPEC-423 PPR-001) always booleans.
+ */
 const shown = (sandbox) => {
-  if (sandbox && sandbox.profile) sandbox.profile.vidoc = sandbox.profile.vidoc !== false;
+  if (sandbox && sandbox.profile) {
+    sandbox.profile.vidoc = sandbox.profile.vidoc !== false;
+    sandbox.profile.protect_production = sandbox.profile.protect_production !== false;
+  }
   return sandbox;
 };
 route('GET', '/api/sandboxes', ({ db }) => db.sandboxes.map(shown));
@@ -1068,10 +1074,16 @@ route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
     if ((sandbox.profile.vidoc !== false) !== Boolean(body.vidoc)) sandbox.vidocChanged = { by: db.me.user.login, at: new Date().toISOString() };
     sandbox.profile = { ...sandbox.profile, vidoc: Boolean(body.vidoc) };
   }
+  // SPEC-423 PPR-002: the production protection switch, set on its own like the Vidoc one.
+  if (body.protect_production !== undefined && body.protect_production !== null) {
+    if (sandbox.playground) fail(422, 'invalid', 'a playground has no GitHub production branch: it has no protection switch to turn');
+    sandbox.profile = { ...sandbox.profile, protect_production: Boolean(body.protect_production) };
+  }
   if (body.profile) {
     validateProfile(body.profile);
     const vidoc = sandbox.profile.vidoc !== false;
-    sandbox.profile = { ...relabel({ ...body.profile, environments: (body.profile.environments || []).map((e) => ({ ...e, command: e.command && e.command.trim() ? e.command : null })) }), vidoc };
+    const protectProduction = sandbox.profile.protect_production !== false;
+    sandbox.profile = { ...relabel({ ...body.profile, environments: (body.profile.environments || []).map((e) => ({ ...e, command: e.command && e.command.trim() ? e.command : null })) }), vidoc, protect_production: protectProduction };
   }
   return shown(sandbox);
 });
