@@ -242,7 +242,7 @@ group `needs` (`status.js`), the rule the server counts with too.
 | Path | View |
 | --- | --- |
 | `/setup` | Setup wizard (token, password twice, two non-recoverable-password confirmations). |
-| `/signin?next=…&error=…` | Sign in with GitHub (`/api/auth/github/start?next=`) or the superadmin password. |
+| `/signin?next=…&error=…` | Sign in with GitHub (`/api/auth/github/start?next=`) or the superadmin password; without a GitHub App (`github_configured` false in `/api/setup/status`) only the password, open (SPEC-422). |
 | `/join?code=<code>` | A playground's guest link (SPEC-410, ADR-0260): who invited them and until when, a name, Join as guest. |
 | `/` | Home: every sandbox as a card (the default view; ⌘⇧H / Ctrl+Shift+H, the logo or the All sandboxes tab return to it); empty state with Import/Create when there is none. |
 | `/s/<slug>` | New-task composer. |

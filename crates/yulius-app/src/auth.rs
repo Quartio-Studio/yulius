@@ -524,6 +524,15 @@ impl App {
         })
     }
 
+    /// Whether the instance has a GitHub App (GitHub sign-in can start).
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn github_configured(&self) -> AppResult<bool> {
+        let instance = self.deps.store.instance().await?;
+        Ok(instance.is_some_and(|i| i.github_app.is_some()))
+    }
+
     /// Stored GitHub App configuration.
     ///
     /// # Errors

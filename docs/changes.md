@@ -11,6 +11,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Production protection card switches off "Require a GitHub ruleset on `<branch>`"; onboarding then
   stops warning and asking for it, and `production_protect` answers that it was waived. Every
   warning and refusal about the ruleset now says exactly where that switch is.
+- Sign-in before GitHub is connected shows no raw error (SPEC-422, task #404, #1069): until the
+  instance has a GitHub App the sign-in page offers no GitHub button, says why and opens the
+  superadmin password; `/api/auth/github/start` then returns to `/signin?error=github_unconfigured`
+  instead of a 409 JSON body, and `GET /api/setup/status` says `github_configured`.
 - Claude Code updates itself on an instance (SPEC-421, task #403, ADR-0266). The server checks
   npm's `stable` release of Claude Code every hour (`YULIUS_CLAUDE_UPDATES`: `stable`, `latest` or
   `off`), installs a newer one under `<data>/claude-code` after checking its sha512, platform and
