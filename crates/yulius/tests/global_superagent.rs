@@ -358,6 +358,8 @@ async fn the_global_superagent_outlives_its_host_sandbox() -> TestResult {
     read_until(&mut socket, &mut screen, "ready").await?;
     let config = PathBuf::from(printed(&screen, "config")?);
     let cwd = printed(&screen, "cwd")?;
+    // An empty path would write the conversation into the working directory.
+    assert!(config.is_absolute() && Path::new(&cwd).is_absolute(), "{screen}");
     let project = yulius_harness::paths::claude_project_dir(&config, Path::new(&cwd));
     conversation(&project, "across-sandboxes", 1_000)?;
     let hosts = globals(&f);
@@ -610,6 +612,7 @@ async fn a_usage_limit_moves_the_global_superagent_and_keeps_it_global() -> Test
     read_until(&mut socket, &mut screen, "ready").await?;
     assert_eq!(printed(&screen, "token")?, "token-a");
     let project = project_of(&screen)?;
+    assert!(project.starts_with(&f.data), "{project:?}");
     std::fs::create_dir_all(&project)?;
     std::fs::write(
         project.join("conv-1.jsonl"),
