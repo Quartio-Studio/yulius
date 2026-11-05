@@ -1,11 +1,11 @@
 ---
 yulius-task: 855e4f28-7025-4aa9-83d1-6eeb6c612caa
-status: in-progress
+status: done
 ---
 
 # SPEC-420: the original prompt's images show an animated loading tile, never the browser's broken image
 
-Status: in progress
+Status: implemented
 Date: 2026-11-05
 Owner: Yulius task #402
 Scope authorization: task request: "photos dont load instantly when i click 'see prompt' - fix or
@@ -56,8 +56,8 @@ already shows `Uploading…` with a spinner (`pi-spinner`).
 - [x] Thumbnails and Image N placeholders show an animated icon while their image loads
 - [x] Docs, ADR and changes record the loading tile
 - [x] Review rounds 1 and 2 answered test-first: blobs freed, shimmer and failure asserted
-- [ ] Review round 3 approves the head
-- [ ] Every gate green with dev merged
+- [x] Review round 3 approves the head
+- [x] Every gate green with dev merged
 
 ## Acceptance criteria
 
@@ -91,3 +91,31 @@ already shows `Uploading…` with a spinner (`pi-spinner`).
 - No in-page cache of read images across openings and no server thumbnails: both would make
   reopening faster but change memory bounds (SPEC-080) or the server; the loading state is what
   the request needs. Reads stay one per file per opening.
+
+## Evidence
+
+- Reproduced in the mock (`hold=/api/tasks/tsk_studio_12/prompt/attachments/0`): the tile held
+  `<img alt="a.png">` with no source; filed as #1065.
+- Red first: `npx e2e run tests/original-prompt.e2e.ts` at 9d836aae failed the two new tests (an
+  `img` in the held tile, `{"busy":null,…,"imgs":1}`; the `.jpg` read as text kept its `img`). Review
+  round 1's leak test failed at f70a9a48 ("expected 2 to be 1"); round 2's close-during-decode test
+  failed at 5a0497e8 ("expected 1 to be 0").
+- Green: `original-prompt.e2e.ts` and `inline-images.e2e.ts` 35/35; the whole e2e suite
+  (`E2E_TELEMETRY_DISABLED=1 npx e2e run`) at bb4dcfd9: 73 files passed, 1 skipped; 826 tests passed,
+  1 skipped.
+- Seen in the Yulius browser (mock, read held): the tile shimmers with a turning ring and its
+  number, no file name or broken-image icon.
+- `scripts/dev ci` at d2567dc1 (dev merged, nothing new on it): exit 0, nextest 3103/3103 passed.
+  An earlier run at 97e3f299 failed only `task_done::a_goal_the_tui_dropped_is_submitted_again`
+  (timed out waiting for Done under full-suite load; passed alone 2/2 in 17 s); this change touches
+  no Rust, so it is filed as #1066 (recurrence of #243 and #921).
+- `yulius security-scan`: disabled (Vidoc is turned off in Yulius for this project); nothing was
+  scanned, not a pass.
+- Independent review in fresh sessions: round 1 approved 97e3f299 with 4 minor and 2 nit findings
+  (all own code, all fixed test-first or in the docs); round 2 requested changes on b41ed56d (a blob
+  decoded after close was never revoked and could open a preview), fixed test-first; round 3
+  approved bb4dcfd9 with nits: PIL-005 and the e2e README line added; an off-DOM decode running on
+  after close is bounded and freed when it ends (kept); a still-reading image opening on top of
+  another's preview is dev's behaviour (outside this change).
+- Not tested: real large pictures over a slow network, and browsers other than Chromium.
+
