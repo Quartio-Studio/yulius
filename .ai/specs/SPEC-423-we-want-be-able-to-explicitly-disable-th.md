@@ -1,11 +1,11 @@
 ---
 yulius-task: d0f188af-9197-4cec-94ce-366e767d9533
-status: in-progress
+status: done
 ---
 
 # SPEC-423: A sandbox's admins turn the production-branch protection requirement off on the Git page
 
-Status: in-progress
+Status: done
 Date: 2026-11-05
 Owner: Yulius task #405
 Scope authorization: task #405 (`/goal`), with a screenshot of an onboarding agent's "Needs you"
@@ -81,14 +81,14 @@ production ruleset; switching it on again restores today's behavior.
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] A sandbox's admins switch production protection off and on through the sandbox PATCH
-- [ ] A switched-off sandbox gets no production warning or protect instruction, and the tool says it is waived
-- [ ] Every ruleset request and refusal says exactly where to turn the protection off
-- [ ] The Git page's Production protection card shows and flips the switch
-- [ ] ADR, architecture, API, operations and product docs describe the switch
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Read the product context and related work, then write and validate the spec
+- [x] A sandbox's admins switch production protection off and on through the sandbox PATCH
+- [x] A switched-off sandbox gets no production warning or protect instruction, and the tool says it is waived
+- [x] Every ruleset request and refusal says exactly where to turn the protection off
+- [x] The Git page's Production protection card shows and flips the switch
+- [x] ADR, architecture, API, operations and product docs describe the switch
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -130,3 +130,31 @@ production ruleset; switching it on again restores today's behavior.
   agent was told nothing about it; an agent that still calls it (an older prompt) should stop asking
   the person, not retry a ruleset the plan refuses.
 - Lasting decision recorded as ADR-0267.
+
+## Evidence
+
+- Behavior tests, each seen failing before its change: `crates/yulius/tests/production_protection.rs`
+  (AC1 PATCH, audit, profile updates keep it, writer 403, `yulius login` token 403 for turning it
+  off, refused profile changes nothing, both switches in one write, playground 422; AC2 no warning
+  while off; AC3 the warning names `?show=production-protection` and the switch label),
+  `crates/yulius/tests/import_server.rs` (AC2 onboarding prompt without `production_protect` and the
+  tool answering `waived` with no ruleset created; AC3 the prompt and GitHub's 403 refusal name the
+  switch), unit `delivery::switch_tests` (stored-switch reading), and
+  `e2e/tests/production-protection.e2e.ts` (AC4 admin keyboard toggle with focus kept, member
+  disabled, refused change redrawn at once also after a mid-request redraw and after leaving and
+  revisiting the page, card present when the overview fails, `?show=` scrolls to it). The card's
+  failure tests were checked failing against the previous card code before the fixes.
+- `scripts/dev ci` at `aed9a0e5`: exit 0 (repository check, script tests, check, fmt, clippy Linux
+  and macOS, nextest 3131 passed / 16 skipped, doctests, deny, shear, doc). After it only web files,
+  the e2e test and one doc comment changed; at `bdf9108a`: `cargo fmt --all -- --check` and
+  `scripts/check_repository.py` pass, and `npx e2e run tests/production-protection.e2e.ts
+  tests/git.e2e.ts` passes 12/12 twice. Yulius CI reruns the whole gate and e2e on the final head.
+- Full e2e suite (`npx e2e run`): 828 passed, 1 skipped (run on the first card version; the files
+  touched afterwards were rerun above).
+- Security scan: `yulius security-scan` printed "Security scan disabled: Vidoc is turned off in
+  Yulius"; disabled, not passed.
+- Independent review: round 1 request changes (1 major, 6 minor, 3 nits, all own code), fixed in
+  `aed9a0e5`; round 2 approve with 1 minor and 3 nits, fixed in `bdf9108a` (the README order nit is
+  pre-existing: the index is not ordered around 0255-0267); round 3 on the final head.
+- Not tested: a real GitHub plan refusing rulesets (the fake GitHub returns the same 403 text), and
+  the Git page in a production build in a browser outside the mock.
