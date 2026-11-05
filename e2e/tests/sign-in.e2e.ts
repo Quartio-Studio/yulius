@@ -59,7 +59,7 @@ test('a GitHub sign-in started without an App says why on the sign-in page', asy
 
 test('with a GitHub App the page still offers GitHub sign-in', async ({ app, browser, screen }) => {
   await app.open(mock('/', '&signedout=1'));
-  await expect(browser.locator('a.btn-github')).toHaveText('Sign in with GitHub');
+  await githubOffered(browser);
   await expect(screen.getByText(NO_GITHUB)).toHaveCount(0);
   await expect(browser.locator('details[open]')).toHaveCount(0);
 });
@@ -77,6 +77,13 @@ const holdStatus = (browser: Browser) => browser.evaluate(() => {
 const statusWaiting = (browser: Browser) => browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.heldWaiting ?? 0);
 const releaseStatus = (browser: Browser) => browser.evaluate(() => { (window as unknown as Mocked).__yuliusMock.release(); });
 const passwordValue = (browser: Browser) => browser.evaluate(() => (document.querySelector('input[type="password"]') as HTMLInputElement | null)?.value ?? null);
+/** "Sign in with GitHub", the other-account link and the divider are shown (not merely present). */
+const githubOffered = async (browser: Browser) => {
+  await expect(browser.locator('a.btn-github')).toBeVisible();
+  await expect(browser.locator('a.btn-github')).toHaveText('Sign in with GitHub');
+  await expect(browser.locator('a.auth-alt')).toBeVisible();
+  await expect(browser.locator('.auth-card .divider')).toBeVisible();
+};
 const signOut = async (browser: Browser, screen: { getByRole: Function }) => {
   await screen.getByRole('button', /account menu$/).click();
   await screen.getByRole('menuitem', 'Sign out').click();
@@ -93,13 +100,13 @@ test('GitHub connected after the page loaded is offered at the next sign-in', as
   await screen.getByRole('button', /account menu$/).click();
   await screen.getByRole('menuitem', 'Sign out').click();
   await expect(browser).toHaveURL(/#\/signin/);
-  await expect(browser.locator('a.btn-github')).toHaveText('Sign in with GitHub');
+  await githubOffered(browser);
   await expect(screen.getByText(NO_GITHUB)).toHaveCount(0);
 });
 
 test('a stale "not set up" reason is not shown once GitHub is connected', async ({ app, browser }) => {
   await app.open(mock('/signin?error=github_unconfigured&next=/', '&signedout=1'));
-  await expect(browser.locator('a.btn-github')).toHaveText('Sign in with GitHub');
+  await githubOffered(browser);
   await expect(browser.locator('.auth-card >> text=/isn’t set up on this instance yet/')).toHaveCount(0);
 });
 
@@ -116,7 +123,7 @@ test('a password typed while the page learns GitHub was connected stays', async 
   await expect(password).toBeFocused();
   await password.fill(MOCK_PASSWORD);
   await releaseStatus(browser);
-  await expect(browser.locator('a.btn-github')).toHaveText('Sign in with GitHub');
+  await githubOffered(browser);
   await expect(screen.getByText(NO_GITHUB)).toHaveCount(0);
   // The same form: the typed password, the open disclosure and the keyboard stay.
   expect(await passwordValue(browser)).toBe(MOCK_PASSWORD);
@@ -142,7 +149,31 @@ test('GitHub connected in this session is offered at sign-out before the status 
   // The setup status cannot answer: what the session knew draws the page.
   await holdStatus(browser);
   await signOut(browser, screen);
-  await expect(browser.locator('a.btn-github')).toHaveText('Sign in with GitHub');
+  await expect.poll(() => statusWaiting(browser)).toBe(1);
+  await githubOffered(browser);
   await expect(screen.getByText(NO_GITHUB)).toHaveCount(0);
   await releaseStatus(browser);
+});
+
+test('a late status answer for an earlier sign-in page leaves the current one right', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&github=0'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  await browser.evaluate(() => { (window as unknown as Mocked).__yuliusMock.finishGithubApp(); });
+  await holdStatus(browser);
+  // Page A: drawn from the session (no GitHub), its status read held.
+  await signOut(browser, screen);
+  await expect.poll(() => statusWaiting(browser)).toBe(1);
+  await screen.getByLabel('Superadmin password').fill(MOCK_PASSWORD);
+  await screen.getByRole('button', 'Sign in').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  // GitHub goes away again; this session still says it is connected.
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { me: { instance: { github_configured: boolean } } } }).__yuliusMock.me.instance.github_configured = false; });
+  // Page B: drawn from the session (GitHub), its status read held too.
+  await signOut(browser, screen);
+  await expect.poll(() => statusWaiting(browser)).toBe(2);
+  await githubOffered(browser);
+  // A's answer comes first and is for a page no longer shown; B's then says GitHub is gone.
+  await releaseStatus(browser);
+  await expect(screen.getByText(NO_GITHUB)).toBeVisible();
+  await expect(browser.locator('a.btn-github')).toBeHidden();
 });
