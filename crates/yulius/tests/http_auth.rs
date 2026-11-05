@@ -396,6 +396,60 @@ async fn github_login(
     github_callback(h, &format!("code={code}&state={state}")).await
 }
 
+/// Before the GitHub App is connected, GitHub sign-in lands on the sign-in page with a reason,
+/// never on a JSON error, and the public setup status says so (SPEC-422, #1069).
+#[tokio::test]
+async fn github_sign_in_without_an_app_returns_to_the_sign_in_page() -> TestResult {
+    let h = harness()?;
+    setup_superadmin(&h).await?;
+    let status = |h: &support::Harness| {
+        let router = h.router.clone();
+        async move {
+            call(
+                &router,
+                Method::GET,
+                "/api/setup/status",
+                None,
+                &Creds::default(),
+            )
+            .await
+        }
+    };
+    let before = status(&h).await?;
+    assert_eq!(before.body["setup_required"], false);
+    assert_eq!(before.body["github_configured"], false);
+
+    for (query, location) in [
+        (
+            "next=/s/a%20b",
+            "/signin?error=github_unconfigured&next=/s/a%20b",
+        ),
+        (
+            "next=/&prompt=select_account",
+            "/signin?error=github_unconfigured&next=/",
+        ),
+        // A `next` leaving the site is dropped, as everywhere else (#60).
+        ("next=//evil.example", "/signin?error=github_unconfigured"),
+        ("", "/signin?error=github_unconfigured"),
+    ] {
+        let start = call(
+            &h.router,
+            Method::GET,
+            &format!("/api/auth/github/start?{query}"),
+            None,
+            &Creds::default(),
+        )
+        .await?;
+        assert_eq!(start.status, StatusCode::SEE_OTHER, "{query}");
+        assert_eq!(start.location.as_deref(), Some(location), "{query}");
+    }
+
+    configure_github(&h).await?;
+    assert_eq!(status(&h).await?.body["github_configured"], true);
+    github_state(&h, "next=/").await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn only_admitted_github_users_sign_in_and_see_permitted_sandboxes() -> TestResult {
     let h = harness()?;
