@@ -89,7 +89,7 @@ fn global_read_tools() -> Vec<String> {
 impl App {
     /// `users/<id>/superagent`: the Global Superagent's own folder, its Claude Code config
     /// included (GSA-002). No run binds it, unlike the person's home.
-    fn global_superagent_dir(&self, user: &UserId) -> PathBuf {
+    pub(crate) fn global_superagent_dir(&self, user: &UserId) -> PathBuf {
         self.users_dir().join(user.as_str()).join("superagent")
     }
 

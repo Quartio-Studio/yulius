@@ -4,7 +4,8 @@
 
 use crate::cockpit::{
     Fixture, ORIGIN, attach, cockpit_id, cockpit_tool, contained_harness, conversation, fixture,
-    mcp, printed, read_until, task_rests, wait_for,
+    fixture_with, insert_account, limited_conversation, mcp, printed, project_of, read_message,
+    read_until, task_rests, wait_for,
 };
 use crate::support;
 
@@ -440,5 +441,81 @@ async fn a_contained_global_superagent_has_a_root_of_its_own() -> TestResult {
         }
         Containment::None => return Err("not contained".into()),
     }
+    Ok(())
+}
+
+/// GSA-005: a Global Superagent running across a server restart is adopted as one: the same
+/// session, its bearer still served the remote tools, its folder its own.
+#[tokio::test]
+async fn a_running_global_superagent_is_adopted_after_a_restart() -> TestResult {
+    let f = fixture().await?;
+    let id = global_id(&f, &f.alice).await?;
+    let token = global_token(&f, "u-alice")?;
+    f.h.app.stop_workspace_services().await;
+
+    let g = fixture_with(true, Some(f.data.clone())).await?;
+    assert_eq!(g.h.app.adopt_shells().await, (1, 0));
+    assert_eq!(global_token(&g, "u-alice")?, token, "its bearer survives");
+    assert_eq!(g.h.app.cockpit_refresh_state(&id), "none");
+    let tools = mcp(&g, &token, "tools/list", json!({})).await?;
+    let names = tools["result"]["tools"].to_string();
+    assert!(names.contains("projects_list"), "{tools}");
+    assert_eq!(global_id(&g, &g.alice).await?, id, "the same session");
+    assert_ne!(cockpit_id(&g, &g.alice).await?, id, "not the sandbox one");
+    let info =
+        g.h.app
+            .sandbox_shells(&sandbox("s1"))
+            .into_iter()
+            .find(|shell| shell.id() == id)
+            .ok_or("adopted")?;
+    assert!(info.is_global_superagent());
+    g.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// GSA-005 (SPEC-074): a usage limit moves the Global Superagent to a subscription with capacity
+/// as the sandbox one: still global, in its own folder, continuing the conversation.
+#[tokio::test]
+async fn a_usage_limit_moves_the_global_superagent_and_keeps_it_global() -> TestResult {
+    let f = fixture_with(false, None).await?;
+    insert_account(&f.h, "acc-a", "token-a", 5.0).await?;
+    insert_account(&f.h, "acc-b", "token-b", 60.0).await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = global_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(printed(&screen, "token")?, "token-a");
+    let project = project_of(&screen)?;
+    std::fs::create_dir_all(&project)?;
+    std::fs::write(
+        project.join("conv-1.jsonl"),
+        limited_conversation(1_791_400_000),
+    )?;
+
+    let exit = read_message(&mut socket, "exit").await?;
+    assert_eq!(exit["status"], "switched", "{exit}");
+    let mut again = None;
+    wait_for("the Global Superagent on another subscription", || {
+        again = globals(&f)
+            .into_iter()
+            .map(|(_, id)| id)
+            .find(|other| *other != id);
+        again.is_some()
+    })
+    .await?;
+    let again = again.ok_or("moved")?;
+    let mut socket = attach(served.addr, &again, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let args = printed(&screen, "cockpit-args")?;
+    assert!(
+        args.starts_with("[--resume conv-1 --strict-mcp-config --tools  --model"),
+        "{args}"
+    );
+    assert_eq!(printed(&screen, "token")?, "token-b");
+    assert!(printed(&screen, "bearer")?.starts_with("gs_"));
+    assert_eq!(global_id(&f, &f.alice).await?, again, "the panel finds it");
+    f.h.app.end_all_shells().await;
     Ok(())
 }

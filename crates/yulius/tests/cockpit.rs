@@ -91,7 +91,7 @@ pub(crate) struct Fixture {
 
 /// alice and carol (write) and bob (read) on `s1`; one pool subscription unless `account` is
 /// false; optionally on the data directory of an earlier fixture (a server restart).
-async fn fixture_with(
+pub(crate) async fn fixture_with(
     account: bool,
     data_dir: Option<PathBuf>,
 ) -> Result<Fixture, Box<dyn std::error::Error>> {
@@ -2377,7 +2377,7 @@ fn limit_record(uuid: &str, parent: &str, secs: i64, resets: i64) -> String {
     )
 }
 
-async fn insert_account(h: &Harness, id: &str, token: &str, used: f64) -> TestResult {
+pub(crate) async fn insert_account(h: &Harness, id: &str, token: &str, used: f64) -> TestResult {
     let now = h.clock.0.load(Ordering::SeqCst);
     let window =
         json!({"used_percent": used, "window_minutes": 10080, "resets_at": now + 80 * 3_600_000});
@@ -2412,7 +2412,7 @@ async fn usage_of(h: &Harness, account: &str) -> Result<Value, Box<dyn std::erro
 }
 
 /// Reads the socket until a JSON message of `kind` arrives.
-async fn read_message(
+pub(crate) async fn read_message(
     socket: &mut Socket,
     kind: &str,
 ) -> Result<Value, Box<dyn std::error::Error>> {
@@ -2453,7 +2453,7 @@ fn project_config(screen: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
 }
 
 /// The conversation of the Cockpit whose screen is `screen`: its project directory.
-fn project_of(screen: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+pub(crate) fn project_of(screen: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let config = PathBuf::from(printed(screen, "config")?);
     let cwd = printed(screen, "cwd")?;
     Ok(yulius_harness::paths::claude_project_dir(
@@ -2464,7 +2464,7 @@ fn project_of(screen: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
 
 /// A conversation that hit the weekly limit a day before the Cockpit started and went on, then
 /// hits it again now (resetting at `resets`).
-fn limited_conversation(resets: i64) -> String {
+pub(crate) fn limited_conversation(resets: i64) -> String {
     [
         prompt_record("u0", None, -86_400),
         limit_record("old-limit", "u0", -86_399, 1_791_000_000),

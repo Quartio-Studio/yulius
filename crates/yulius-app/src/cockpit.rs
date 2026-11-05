@@ -455,10 +455,14 @@ impl App {
     }
 
     async fn watch_cockpit(self: Arc<Self>, runtime: Arc<ShellRuntime>) {
-        let home = self
-            .users_dir()
-            .join(runtime.creator().as_str())
-            .join("home");
+        // A Global Superagent's conversations are in its own folder (SPEC-427 GSA-002).
+        let home = if runtime.global {
+            self.global_superagent_dir(runtime.creator())
+        } else {
+            self.users_dir()
+                .join(runtime.creator().as_str())
+                .join("home")
+        };
         let info = runtime.info();
         let folder = PathBuf::from(&info.folder);
         let started = info.created_at;
