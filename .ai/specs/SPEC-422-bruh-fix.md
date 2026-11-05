@@ -1,11 +1,11 @@
 ---
 yulius-task: 2d37216d-f24f-4bfe-887f-666d3d161f10
-status: in-progress
+status: done
 ---
 
 # SPEC-422: Sign-in without a GitHub App never shows a raw error
 
-Status: in-progress
+Status: done
 Date: 2026-11-05
 Owner: Yulius task #404
 Scope authorization: task #404, asked by the project's owner with two screenshots ("bruh, fix"):
@@ -59,9 +59,9 @@ link opened anyway lands on the sign-in page with that sentence, never on a JSON
 - [x] GitHub sign-in start redirects to the sign-in page instead of a JSON error
 - [x] Setup status says whether GitHub is configured
 - [x] Sign-in page hides GitHub sign-in until the App is connected
-- [ ] Independent review answered and docs current
+- [x] Independent review answered and docs current
 - [x] Sign-in page follows GitHub being connected after load (review round 1)
-- [ ] Gates green and delivered
+- [x] Gates green and delivered
 
 ## Acceptance criteria
 
@@ -96,6 +96,25 @@ link opened anyway lands on the sign-in page with that sentence, never on a JSON
 - `github_configured` on the public setup status rather than a new endpoint: the page already
   reads it at boot (one round trip, PERF-11) and the fact is already observable by clicking.
 
+## Evidence
+
+- Regression tests first: `cargo test -p yulius --test main github_sign_in_without_an_app`
+  failed before the fix (`github_configured` was `null`, start answered 409 JSON), then passed;
+  `http_auth` 23 passed after the server fix. The `error=failed` test fails with that branch
+  mutated back to the JSON error.
+- e2e (`npx e2e run tests/sign-in.e2e.ts`): the new tests failed before each page fix, then 9
+  passed, three runs in a row; with `access`, `onboarding`, `onboarding-flow`, `password-setup`,
+  `pulls`, `drafts`, `places` and `wordmark`, 97 passed. Mutations checked: teardown capture
+  removed, and `setGithub(true)` leaving GitHub hidden, each fail the tests.
+- `scripts/dev ci` at 5ea7a4c9: exit 0 (repository checks, script tests, check, fmt, clippy for
+  Linux and macOS, nextest 3125 passed / 16 skipped, doctests, deny, shear, doc).
+- `yulius security-scan`: "Security scan disabled" (Vidoc is turned off for this project); not
+  scanned, not passed.
+- Independent review in fresh sessions: rounds 1-3 requested changes (answered below), round 4
+  approved 5ea7a4c9; its README nit is fixed in the docs-only commit after it.
+- Not tested: a real GitHub App round trip on a live instance (the e2e runs on the mock; the
+  server redirect is covered by the HTTP tests).
+
 ## Review
 
 Round 1 (fresh-session reviewer, head 7fc9ab35): request changes.
@@ -125,3 +144,6 @@ Round 3 (fresh-session reviewer, head c2a1bc37): request changes.
 | 2 | A late status answer for a replaced sign-in page could leave the current page stale | own code | Fixed test-first: answers for a page no longer shown are ignored; each page compares with what it shows |
 | 3 | The sign-out test did not prove its hold took effect | own code | Polls `heldWaiting` before judging the page |
 | 4 | Test plan and GSU-004 out of date | own code | Updated |
+
+Round 4 (fresh-session reviewer, head 5ea7a4c9): approve. Nit: the e2e README row missed the
+late-answer test (fixed, docs only).
