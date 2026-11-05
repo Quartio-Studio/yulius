@@ -56,8 +56,9 @@ production ruleset; switching it on again restores today's behavior.
   (`delivery::production_protection_required`). A profile update keeps the stored value.
 - **PPR-002 Admins change it.** `PATCH /api/sandboxes/{sid}` `{"protect_production": bool}` with
   `Action::Administer` (GitHub admin on the repository, or a superadmin); a writer gets 403, a
-  playground `Invalid` (it has no GitHub branch). It can be sent alone or with a profile, in one
-  write. Each change is audited as `delivery.production_protection.update` (`on`/`off`).
+  playground `Invalid` (it has no GitHub branch). Turning it off needs a person (a browser session or
+  an `operate` token); a `yulius login` token gets 403. It can be sent alone, with the Vidoc switch
+  or with a profile, in one write; a refused profile changes nothing. Each change is audited as `delivery.production_protection.update` (`on`/`off`).
 - **PPR-003 Off means no requirement.** While off, `production_branch_warning` is `None` (no
   onboarding warning, nothing in the onboarding prompt about protecting production), and
   `production_protect` changes nothing on GitHub and answers `waived: true` with a message telling
@@ -66,14 +67,17 @@ production ruleset; switching it on again restores today's behavior.
 - **PPR-004 Every request for the ruleset says how to waive it.** `production_ruleset_fix`, and so
   every onboarding warning, the onboarding prompt and every `production_protect` refusal (including
   GitHub's 403 for the plan), ends with: without rulesets on the plan, a sandbox admin can turn the
-  requirement off instead, at `<public_url>/s/<slug>/git#production-protection`, card "Production
+  requirement off instead, at `<public_url>/s/<slug>/git?show=production-protection`, card "Production
   protection", switch "Require a GitHub ruleset on `<branch>`". The onboarding prompt tells the
   agent to quote it in `needs_you`.
 - **PPR-005 The Git page card.** Below the board, a "Production protection" card
   (`id="production-protection"`) shows the switch "Require a GitHub ruleset on `<branch>`" with
   what on and off mean, a link to the repository's GitHub rulesets settings, and for non-admins
   that only the sandbox's admins (or a superadmin) can change it (the switch disabled). A playground
-  has no card. Changing it sends the PATCH, toasts a failure and shows the stored value again.
+  has no card. It is drawn apart from the delivery overview, so it is there when that fails to
+  load, and `?show=production-protection` scrolls to it. Changing it sends the PATCH, toasts a
+  failure and shows the stored value again at once, also when the page redrew meanwhile; the
+  keyboard stays on the switch.
 
 ## Plan
 
@@ -95,7 +99,7 @@ production ruleset; switching it on again restores today's behavior.
   started onboarding task's prompt does not mention `production_protect`; `production_protect`
   answers `waived: true` and creates no ruleset.
 - AC3: with the switch on, the warning, the prompt and the tool's refusal for GitHub's 403 each
-  contain the Git page address with `#production-protection` and the switch's label.
+  contain the Git page address with `?show=production-protection` and the switch's label.
 - AC4: on the Git page an admin sees the card with the switch on, turns it off, and the stored
   profile says `protect_production: false`; a writer sees it disabled with who can change it.
 

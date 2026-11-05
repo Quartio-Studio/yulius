@@ -12,7 +12,7 @@ import { enc } from '../api.js';
 import { h, icon, setChildren, toast, iconButton, statusMark, field, openModal, keepFocus, coalesce, loadError, bar, skeletonOf } from '../dom.js';
 import { relShort, dateTime, plural } from '../format.js';
 import { allows, taskInfo } from '../status.js';
-import { href } from '../router.js';
+import { href, currentLocation } from '../router.js';
 import { openDeliveryDialog, notesBanner, checksAccessNote, openRunViewer, UNKNOWN_CHECKS } from '../actions.js';
 import { pageFrame } from './common.js';
 import { BRAND } from '../brand.js';
@@ -123,11 +123,13 @@ export function mountGitPage(ctx, sandbox) {
   ] });
   const intro = h('div', { class: 'dl-intro' });
   const body = h('div', { class: 'stack dl' }, loadingShape(sb().profile || {}));
-  frame.body.append(intro, body);
+  // The Production protection card is drawn apart from the overview, so it is there also when the
+  // overview cannot be read (SPEC-423 PPR-005).
+  const protection = h('div', { class: 'dl' });
+  frame.body.append(intro, body, protection);
   let model = null;
   let showAllActivity = false;
   let showAllNeeds = false;
-  let scrolledToCard = false;
   const expanded = new Set();
 
   // Only the newest load renders, and none after the page is left; delivery reads run at most
@@ -180,6 +182,22 @@ export function mountGitPage(ctx, sandbox) {
       if (!current()) return;
       setChildren(body, loadError(`Couldn’t load the delivery overview: ${error.message}`, load));
     }
+    showProtection();
+  }
+
+  function drawProtection() {
+    // A playground has no GitHub branch to protect.
+    keepFocus(protection, () => setChildren(protection, sb().playground ? null : productionProtectionCard(ctx, sb(), drawProtection)));
+  }
+
+  // Messages link to the card with `?show=production-protection`: once the page above it has its
+  // height, it is scrolled into view, once per visit.
+  let shownProtection = false;
+  function showProtection() {
+    if (shownProtection || currentLocation().query.get('show') !== PROTECTION_ID) return;
+    shownProtection = true;
+    const card = document.getElementById(PROTECTION_ID);
+    if (card) card.scrollIntoView({ block: 'start' });
   }
 
   function renderIntro() {
@@ -204,6 +222,7 @@ export function mountGitPage(ctx, sandbox) {
 
   function render() {
     renderIntro();
+    drawProtection();
     if (!model) return;
     const profile = sb().profile || {};
     const envs = environments(profile);
@@ -219,15 +238,7 @@ export function mountGitPage(ctx, sandbox) {
       statusStrip(profile, envs, by('waiting'), by('live')),
       attention(items),
       board(profile, items, by),
-      activity(),
-      // A playground has no GitHub branch to protect (SPEC-423 PPR-005).
-      sb().playground ? null : productionProtectionCard(ctx, sb())));
-    // Messages link to the card (`#production-protection`); it exists once the overview drew.
-    if (!scrolledToCard && window.location.hash === `#${PROTECTION_ID}`) {
-      scrolledToCard = true;
-      const card = document.getElementById(PROTECTION_ID);
-      if (card) card.scrollIntoView({ block: 'start' });
-    }
+      activity()));
   }
 
   // ---- Live / waiting
@@ -409,6 +420,7 @@ export function mountGitPage(ctx, sandbox) {
     ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) repaint(); }),
   ];
   renderIntro();
+  drawProtection();
   load();
   return { el: frame.el, key: `git:${sandbox.id}`, destroy: () => { alive = false; reads.abort(); repaint.cancel(); offs.forEach((off) => off()); } };
 }

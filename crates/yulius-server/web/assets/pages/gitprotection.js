@@ -4,7 +4,7 @@
 // Pro, Team or Enterprise), accepting that agents could write the branch; onboarding then stops
 // asking for the ruleset. The switch is `profile.protect_production`, changed with the sandbox
 // PATCH like the Vidoc switch. Onboarding's warnings and `production_protect`'s refusals link here
-// (`#production-protection`).
+// (`?show=production-protection`, a query: in-app links and the sign-in redirect keep it).
 
 import { enc } from '../api.js';
 import { h, icon, toggle, toast, errorToast } from '../dom.js';
@@ -16,8 +16,12 @@ export const PROTECTION_ID = 'production-protection';
 // Per sandbox, the switch being sent ({ on }): a repaint while it is on its way shows it, disabled.
 const pending = new Map();
 
-/** The card for `sandbox` (not a playground: it has no GitHub branch). */
-export function productionProtectionCard(ctx, sandbox) {
+/**
+ * The card for `sandbox` (not a playground: it has no GitHub branch). `redraw()` draws it again
+ * from the stored sandbox, at once: called once a change is answered, so a card drawn while it was
+ * on its way never stays.
+ */
+export function productionProtectionCard(ctx, sandbox, redraw) {
   const branch = (sandbox.profile && sandbox.profile.production_branch) || 'production';
   const required = !sandbox.profile || sandbox.profile.protect_production !== false;
   const admin = allows(sandbox.access, 'admin');
@@ -28,6 +32,9 @@ export function productionProtectionCard(ctx, sandbox) {
     disabled: Boolean(sending) || !admin,
     label,
     onChange: async (on, input) => {
+      // The switch is disabled while the change is sent (which drops focus) and drawn again
+      // after it, as the Vidoc card does.
+      const focused = document.activeElement === input;
       pending.set(sandbox.id, { on });
       input.disabled = true;
       try {
@@ -37,10 +44,12 @@ export function productionProtectionCard(ctx, sandbox) {
         toast(on ? `${BRAND.name} asks for a ruleset on ${branch} again.` : `Production protection is off: ${BRAND.name} no longer asks for a ruleset on ${branch}.`, { kind: 'ok' });
       } catch (error) {
         pending.delete(sandbox.id);
-        input.checked = !on;
-        input.disabled = false;
         errorToast(error, 'Couldn’t change the production protection');
       }
+      redraw();
+      const now = document.querySelector(`#${PROTECTION_ID} input[role="switch"]`);
+      const lost = !document.activeElement || document.activeElement === document.body;
+      if (focused && lost && now && !now.disabled) now.focus();
     },
   });
   const rules = sandbox.repo && sandbox.repo.url ? `${sandbox.repo.url}/settings/rules` : null;

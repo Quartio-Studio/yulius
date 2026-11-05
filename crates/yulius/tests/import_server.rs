@@ -928,7 +928,7 @@ async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestRe
     // SPEC-423 PPR-004: and is told where the person can waive it instead.
     assert!(
         task.prompt
-            .contains("https://yulius.test/s/shop/git#production-protection"),
+            .contains("https://yulius.test/s/shop/git?show=production-protection"),
         "{}",
         task.prompt
     );
@@ -987,7 +987,7 @@ async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestRe
     // SPEC-423 PPR-004 (AC3): the refusal says where a sandbox admin waives the requirement.
     refused_with(
         &plan,
-        "https://yulius.test/s/shop/git#production-protection",
+        "https://yulius.test/s/shop/git?show=production-protection",
     )?;
     refused_with(&plan, "Require a GitHub ruleset on `main`")?;
     w.github
@@ -1075,7 +1075,7 @@ async fn a_waived_production_protection_is_not_asked_for_in_onboarding() -> Test
     assert_ne!(waived["isError"], true, "{waived}");
     let record = support::tool_text(&waived);
     assert_eq!(record["waived"], true, "{waived}");
-    assert_eq!(record["protected"], false, "{waived}");
+    assert_eq!(record.get("protected"), None, "unchecked: {waived}");
     assert!(
         record["message"].to_string().contains("needs_you"),
         "{waived}"

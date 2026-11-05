@@ -1366,7 +1366,7 @@ impl App {
     /// PPR-005): the Git page's "Production protection" card.
     pub(crate) fn production_protection_switch(&self, sandbox: &SandboxRecord) -> String {
         format!(
-            "{}/s/{}/git#production-protection",
+            "{}/s/{}/git?show=production-protection",
             self.config.public_url, sandbox.slug
         )
     }

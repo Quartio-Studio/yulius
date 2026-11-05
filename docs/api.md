@@ -242,7 +242,8 @@ always a boolean in responses, and a `profile` update keeps the switch whatever 
 before its onboarding starts.
 `PATCH /api/sandboxes/{sid}` `{"protect_production": false|true}` waives or restores the
 requirement of a GitHub ruleset on the production branch (SPEC-423, ADR-0267; `422` for a
-playground, audited `delivery.production_protection.update`); `profile.protect_production` is
+playground, `403` for turning it off with a `yulius login` token: a browser session or an `operate`
+token decides it; audited `delivery.production_protection.update`); `profile.protect_production` is
 always a boolean in responses, and a `profile` update keeps it whatever it carries. Off, the
 onboarding status has no production warning and `production_protect` answers `waived: true`.
 `GET /api/sandboxes/{sid}/vidoc` (read) answers `SandboxVidocView` (SPEC-359, ADR-0245): `project`

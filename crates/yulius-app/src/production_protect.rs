@@ -58,7 +58,6 @@ impl App {
         // and nobody to ask.
         if !crate::delivery::production_protection_required(&sandbox) {
             return Ok(json!({
-                "protected": false,
                 "waived": true,
                 "branch": branch,
                 "added": null,

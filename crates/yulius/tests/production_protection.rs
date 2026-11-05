@@ -160,11 +160,84 @@ async fn the_warning_names_the_git_page_switch() -> TestResult {
     let i = instance().await?;
     let warning = warnings(&i).await?.join("\n");
     assert!(
-        warning.contains("/s/app/git#production-protection")
+        warning.contains("/s/app/git?show=production-protection")
             && warning.contains("Production protection")
             && warning.contains("Require a GitHub ruleset on `main`"),
         "{warning}"
     );
+    Ok(())
+}
+
+/// PPR-002 (review round 1): waiving the protection is a person's decision, so a `yulius login`
+/// token, which an agent may hold, cannot turn it off; it can turn it on again.
+#[tokio::test]
+async fn a_cli_token_cannot_waive_the_protection() -> TestResult {
+    let i = instance().await?;
+    let alice = i.h.store.user_by_login("alice").await?.ok_or("alice")?;
+    let token =
+        i.h.app
+            .issue_api_token(&alice, "tests", yulius_domain::permission::TokenScope::Cli)
+            .await?;
+    let cli = Creds {
+        bearer: Some(token.expose().to_owned()),
+        ..Creds::default()
+    };
+    let refused = patch(&i, json!({"protect_production": false}), &cli).await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert!(
+        refused.body.to_string().contains("Git page"),
+        "{}",
+        refused.body
+    );
+    assert_eq!(shown(&i).await?, true);
+
+    let off = patch(&i, json!({"protect_production": false}), &i.alice).await?;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.body);
+    let on = patch(&i, json!({"protect_production": true}), &cli).await?;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+    assert_eq!(shown(&i).await?, true);
+    Ok(())
+}
+
+/// PPR-002 (review round 1): a refused profile changes nothing, the switch included; both switches
+/// sent without a profile are written together.
+#[tokio::test]
+async fn a_refused_profile_leaves_the_switch_alone() -> TestResult {
+    let i = instance().await?;
+    let mut profile = patch(&i, json!({}), &i.alice).await?.body["profile"].clone();
+    profile["production_branch"] = profile["integration_branch"].clone();
+    let refused = patch(
+        &i,
+        json!({"profile": profile, "protect_production": false}),
+        &i.alice,
+    )
+    .await?;
+    assert_eq!(
+        refused.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        refused.body
+    );
+    assert_eq!(shown(&i).await?, true);
+    assert!(audited(&i).await?.is_empty());
+
+    let both = patch(
+        &i,
+        json!({"vidoc": false, "protect_production": false}),
+        &i.alice,
+    )
+    .await?;
+    assert_eq!(both.status, StatusCode::OK, "{}", both.body);
+    assert_eq!(both.body["profile"]["vidoc"], false);
+    assert_eq!(both.body["profile"]["protect_production"], false);
+    let record =
+        i.h.store
+            .sandbox(&SandboxId::parse("s1")?)
+            .await?
+            .ok_or("s1")?;
+    let stored: Value = serde_json::from_str(&record.profile_json)?;
+    assert_eq!(stored["vidoc"], false, "{stored}");
+    assert_eq!(stored["protect_production"], false, "{stored}");
     Ok(())
 }
 

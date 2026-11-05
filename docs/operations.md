@@ -851,7 +851,7 @@ private repository) the agent asks a person for it with `needs_you`. A promotion
 once the ruleset exists. A private repository without GitHub Pro, Team or Enterprise cannot have
 rulesets: a sandbox admin then accepts the risk on the sandbox's Git page, card **Production
 protection**, by switching off **Require a GitHub ruleset on `<branch>`**
-(`<public_url>/s/<slug>/git#production-protection`, ADR-0267); onboarding then stops warning and
+(`<public_url>/s/<slug>/git?show=production-protection`, ADR-0267); onboarding then stops warning and
 asking for it, and every request for the ruleset names that address.
 
 The manifest flow requests these repository permissions:

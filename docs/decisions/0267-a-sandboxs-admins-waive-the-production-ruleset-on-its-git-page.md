@@ -27,7 +27,10 @@ and tell the person exactly how in that message.
   (`delivery::production_protection_required`), always a boolean in responses, kept by profile
   updates. `PATCH /api/sandboxes/{sid}` `{"protect_production": bool}` changes it with
   `Action::Administer` (sandbox admin or superadmin), audited as
-  `delivery.production_protection.update`; a playground (no GitHub branch) is refused.
+  `delivery.production_protection.update`; a playground (no GitHub branch) is refused. Turning it
+  off is a person's decision: a browser session or an `operate` token (`acts_for_person`), never a
+  `yulius login` token, which an agent may hold; any of them may turn it on again. Sent with the
+  Vidoc switch or a profile, everything is one write of the stored profile, or nothing on a refusal.
 - **Off means Yulius no longer requires the ruleset.** `production_branch_warning` answers nothing,
   so onboarding neither warns nor tells its agent to protect production, and `production_protect`
   changes nothing on GitHub and answers `waived: true`, telling the agent to resolve its
@@ -35,11 +38,12 @@ and tell the person exactly how in that message.
 - **Every request for the ruleset names the switch.** `production_ruleset_fix` (the warning, the
   onboarding prompt and every `production_protect` refusal, GitHub's 403 included) ends with: without
   GitHub Pro, Team or Enterprise a sandbox admin can accept the risk at
-  `<public_url>/s/<slug>/git#production-protection`, card "Production protection", switch "Require a
+  `<public_url>/s/<slug>/git?show=production-protection`, card "Production protection", switch "Require a
   GitHub ruleset on `<branch>`". The prompt tells the agent to quote it in `needs_you`.
-- **The Git page shows it.** A "Production protection" card under the activity, visible to every
-  member, switchable by admins, with what on and off mean and a link to the repository's rulesets;
-  the page scrolls to it when opened with `#production-protection`.
+- **The Git page shows it.** A "Production protection" card under the activity, drawn apart from
+  the delivery overview (also when that cannot be read), visible to every member, switchable by
+  admins, with what on and off mean and a link to the repository's rulesets;
+  the page scrolls to it when opened with `?show=production-protection` (a query, which in-app links and the sign-in redirect keep).
 
 ## Alternatives
 
