@@ -1,11 +1,11 @@
 ---
 yulius-task: 3af0ab1d-b26b-4f9b-95fe-1e30eb87d458
-status: in-progress
+status: done
 ---
 
 # SPEC-424: a click on the attention bar is never lost to a task update
 
-Status: in progress
+Status: implemented
 Date: 2026-11-05
 Owner: Yulius task #406
 Scope authorization: task request: "sometimes i cant click reply", with a screenshot of the task
@@ -58,8 +58,8 @@ are not affected.
 - [x] Spec with the root cause of the lost Reply click
 - [x] A click on the attention bar survives a task update and the keyboard stays on Reply
 - [x] Docs, ADR and changes record the held render
-- [ ] Independent review approves the head
-- [ ] Every gate green with dev merged
+- [x] Independent review approves the head
+- [x] Every gate green with dev merged
 
 ## Acceptance criteria
 
@@ -103,3 +103,33 @@ are not affected.
 - Only a primary press holds, and a context menu, a cancel, a buttonless move or the window's blur
   end it (review round 1, finding 1): a context menu may swallow the release, which would leave the
   bar stale until the next click.
+
+## Evidence
+
+- Red first: `npx e2e run tests/reply.e2e.ts` with the first three #406 tests on dev's
+  `taskview.js` failed all three (terminal input not focused, `{"label":null,"caret":null}`; reply
+  field "no node"; focus on `BODY`). The first fix still failed the Needs you test (a capturing
+  window `blur` listener heard the terminal losing focus to the pressed button and ended the
+  press), fixed in 4ada724d. Review round 1's context menu / cancel / buttonless-move and
+  right-press tests failed on 4ada724d ("expected text /Add a ruleset on main/"), fixed in 0cdfe6a5.
+- Review round 3's mutation runs on f7cd200b: without the hold 4 tests fail; without
+  `pointercancel`, the primary-button check or the kept terminal Reply 3 fail; rendering at the
+  release instead of a task later 2 fail.
+- Green: `tests/reply.e2e.ts` 13/13 at f7cd200b; the whole e2e suite
+  (`E2E_TELEMETRY_DISABLED=1 npx e2e run`) at f7cd200b: 73 files passed, 1 skipped; 841 tests
+  passed, 1 skipped. Reviewers also ran `watching`, `pause`, `cd` and `terminal` e2e files: all
+  passed.
+- `scripts/dev ci` (started at 0cdfe6a5; f7cd200b changes only an e2e test and this spec, which the
+  gate does not build or test): exit 0, nextest 3125 passed, 16 skipped. Dev had not moved
+  (`origin/dev` = 5095d1bf, the base).
+- `yulius security-scan`: disabled (Vidoc is turned off in Yulius for this project); nothing was
+  scanned, not a pass.
+- Independent review in fresh sessions: round 1 requested changes on a56f5bf6 (major: a press whose
+  release a context menu swallows left the bar stale; minor: the click-before-render claim holds
+  for a mouse only, spec counts and an untested `pointercancel`; nits: ADR wording, a redundant
+  check), all own code, fixed test-first or in the spec and ADR; round 2 requested changes on
+  0cdfe6a5 (major: the endings test's held check was anchored with `$` and could never fail;
+  nit: AC-5 wording), fixed in f7cd200b; round 3 approved f7cd200b with one nit (the tap test
+  clicks the kept node, already described as a non-regression check; kept).
+- Not tested: a real touch screen (the tap is synthetic), native context menus (headless Chromium
+  shows none; covered by a synthetic `contextmenu`), and browsers other than Chromium.
