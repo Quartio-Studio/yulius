@@ -925,6 +925,13 @@ async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestRe
         "{}",
         task.prompt
     );
+    // SPEC-423 PPR-004: and is told where the person can waive it instead.
+    assert!(
+        task.prompt
+            .contains("https://yulius.test/s/shop/git#production-protection"),
+        "{}",
+        task.prompt
+    );
     assert!(
         !task.prompt.contains("Only a person can apply it"),
         "{}",
@@ -977,6 +984,12 @@ async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestRe
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let plan = support::mcp_tool(&w.h, "tok-prep", "production_protect", json!({})).await?;
     refused_with(&plan, "Upgrade to GitHub Pro")?;
+    // SPEC-423 PPR-004 (AC3): the refusal says where a sandbox admin waives the requirement.
+    refused_with(
+        &plan,
+        "https://yulius.test/s/shop/git#production-protection",
+    )?;
+    refused_with(&plan, "Require a GitHub ruleset on `main`")?;
     w.github
         .refuse_rulesets
         .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -1007,6 +1020,67 @@ async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestRe
     assert_eq!(record["protected"], true, "{again}");
     assert_eq!(record["added"], Value::Null, "{again}");
     assert_eq!(w.github.rulesets().len(), 1);
+    Ok(())
+}
+
+/// SPEC-423 PPR-003 (AC2): with the requirement switched off by a sandbox admin, the onboarding
+/// prompt says nothing about protecting production, and `production_protect` changes nothing on
+/// GitHub and says it was waived.
+#[tokio::test]
+async fn a_waived_production_protection_is_not_asked_for_in_onboarding() -> TestResult {
+    use yulius_app::ports::store::InstanceStore as _;
+    let w = World::new("org").await?;
+    w.h.store.set_installation(Some(1)).await?;
+    let (alice_user, alice) = w.user("alice", false).await?;
+    let remote = w.remote(
+        OWNER,
+        "shop",
+        &[("README.md", "# Shop\n"), ("src/app.txt", "v1\n")],
+        &[],
+    )?;
+    w.grant("alice", "shop", "admin");
+    let offer = laptop_offer(&w, &remote)?;
+    let created = create_job(&w, &alice, offer.body()?).await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    let sandbox = w.h.store.sandboxes().await?.remove(0);
+    let browser = w.browser(&alice_user).await?;
+    let path = format!("/api/sandboxes/{}", sandbox.id);
+    let off = call(
+        &w.h.router,
+        Method::PATCH,
+        &path,
+        Some(json!({"protect_production": false})),
+        &browser,
+    )
+    .await?;
+    assert_eq!(off.status, StatusCode::OK, "{:?}", off.body);
+    let approve = format!("/api/sandboxes/{}/onboarding/approve", sandbox.id);
+    let started = call(&w.h.router, Method::POST, &approve, None, &browser).await?;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
+    let task =
+        w.h.store
+            .tasks(&sandbox.id, false)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("onboarding task")?;
+    assert!(
+        !task.prompt.contains("production_protect")
+            && !task.prompt.contains("not protected from agents"),
+        "{}",
+        task.prompt
+    );
+    support::seed_live_attempt(&w.h, task.id.as_str(), "tok-prep").await?;
+    let waived = support::mcp_tool(&w.h, "tok-prep", "production_protect", json!({})).await?;
+    assert_ne!(waived["isError"], true, "{waived}");
+    let record = support::tool_text(&waived);
+    assert_eq!(record["waived"], true, "{waived}");
+    assert_eq!(record["protected"], false, "{waived}");
+    assert!(
+        record["message"].to_string().contains("needs_you"),
+        "{waived}"
+    );
+    assert!(w.github.rulesets().is_empty(), "{:?}", w.github.rulesets());
     Ok(())
 }
 

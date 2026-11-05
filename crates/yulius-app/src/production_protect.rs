@@ -33,7 +33,7 @@ impl App {
     /// onboarding task: starting onboarding is the person's consent (ADR-0129).
     ///
     /// # Errors
-    /// `Conflict` (naming the setting and `needs_you`) in a playground, outside the onboarding
+    /// `Conflict` (naming the setting, where to waive it and `needs_you`) in a playground, outside the onboarding
     /// task, when the owner is disabled, has no usable GitHub sign-in or is not a repository
     /// admin, or when GitHub refuses the ruleset; store failures.
     pub(crate) async fn tool_production_protect(&self, ctx: &AgentContext) -> AppResult<Value> {
@@ -47,12 +47,24 @@ impl App {
         crate::playground::refuse_in_playground(&sandbox, "Protecting the production branch")?;
         let branch = crate::delivery::delivery_profile(&sandbox).production_branch;
         let repo = format!("{}/{}", sandbox.repo_owner, sandbox.repo_name);
-        let fix = production_ruleset_fix(&repo, &branch);
+        let fix =
+            production_ruleset_fix(&repo, &branch, &self.production_protection_switch(&sandbox));
         let refused = |why: String| {
             AppError::Conflict(format!(
                 "{why} Ask a person with `needs_you`, quoting the setting: {fix}"
             ))
         };
+        // A sandbox admin accepted that agents could write it (SPEC-423 PPR-003): nothing to add,
+        // and nobody to ask.
+        if !crate::delivery::production_protection_required(&sandbox) {
+            return Ok(json!({
+                "protected": false,
+                "waived": true,
+                "branch": branch,
+                "added": null,
+                "message": format!("A sandbox admin turned the production protection requirement off ({}): agents may be able to write `{branch}`, and Yulius adds no ruleset. Nothing was changed. If you asked a person for the ruleset with needs_you, call needs_you with resolved: true.", self.production_protection_switch(&sandbox)),
+            }));
+        }
         if ctx.task.origin != TaskOrigin::Onboarding {
             return Err(refused(
                 "Only the onboarding task protects the production branch through Yulius.".into(),
