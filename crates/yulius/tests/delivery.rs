@@ -4649,14 +4649,13 @@ async fn a_follow_up_merged_by_hand_is_judged_since_the_merged_head() -> TestRes
 }
 
 /// SPEC-425 (review of #407, finding 4): a merged task that is a member of a live merge train
-/// is not delivered anew while the train counts on its stage; once the train ends, it is.
+/// is not delivered anew while the train counts on its stage, once the train ends it is; a head
+/// with nothing new reads "already merged" during the train too (round 4).
 #[tokio::test]
 async fn work_after_the_merge_waits_for_a_live_merge_train() -> TestResult {
     let (f, wt, merged_head) = merged_task().await?;
     let t1 = TaskId::parse("t1")?;
     let agent = live_agent(&f, "t1", "tok-agent").await?;
-    commit_file(&wt, "fix.txt", "fixed", "Fix after the merge")?;
-    let fix = git(&wt, &["rev-parse", "HEAD"])?;
     let trains =
         f.h.app
             .config
@@ -4669,6 +4668,28 @@ async fn work_after_the_merge_waits_for_a_live_merge_train() -> TestResult {
             "armed_at": 1, "tree": "t"}]}}})
         .to_string(),
     )?;
+    // Nothing new (a clean merge of `dev`): merged already, train or not.
+    git(&wt, &["fetch", "--quiet", "origin"])?;
+    git(&wt, &["merge", "--quiet", "--no-edit", "origin/dev"])?;
+    let synced = git(&wt, &["rev-parse", "HEAD"])?;
+    let done = agent_tool(
+        &f,
+        &agent,
+        "delivery_merge",
+        json!({"reviewed_head": synced, "review_summary": "approve"}),
+    )
+    .await?;
+    assert!(
+        done["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("already merged"),
+        "{done}"
+    );
+
+    // New work waits for the train.
+    commit_file(&wt, "fix.txt", "fixed", "Fix after the merge")?;
+    let fix = git(&wt, &["rev-parse", "HEAD"])?;
     f.h.app.auto_open_pr(&t1).await;
     assert_eq!(pulls_opened(&f), 1, "{:?}", f.h.github.writes());
     let held = agent_tool(
