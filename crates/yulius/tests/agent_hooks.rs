@@ -1482,84 +1482,44 @@ async fn edits_are_placed_from_the_agents_folder_and_through_links() -> TestResu
     Ok(())
 }
 
-/// SPEC-426 EDG-005 (review rounds 1 and 2): denials are counted in rounds, the agent's chances
-/// to react: edits refused within a few seconds of a round's first (one response's batch) are one
-/// round. After three rounds the turn's edits pass, the task says so once and the gate stops
-/// looking; a new prompt starts again. A denial its client stopped waiting for is not counted.
+/// SPEC-426 EDG-005 (review round 3): the edit gate never gives up. Claude Code runs each edit's
+/// hook as its block finishes streaming, so neither call counts nor time windows tell one
+/// response from the next; the way through is always open (the spec is documentation), and an
+/// agent that loops meets the Stop gate, which asks a person after three blocks.
 #[tokio::test]
-async fn the_edit_gate_gives_up_after_three_denials_and_says_so() -> TestResult {
+async fn the_edit_gate_holds_every_edit_until_the_plan_exists() -> TestResult {
     use std::sync::atomic::Ordering;
     let f = fixture().await?;
     let mut watch = f.h.app.runtime(&f.task).hub.watch();
     let file = f.worktree.join("api.rs").to_string_lossy().into_owned();
-    let later = |ms: i64| f.h.clock.0.fetch_add(ms, Ordering::SeqCst);
-    for round in 1..=3 {
-        // One response's four parallel edits: all refused, one round.
-        for call in 1..=4 {
-            assert!(
-                pre_tool_use(&f, "Write", json!({"file_path": file}))
-                    .await?
-                    .is_some(),
-                "round {round}, call {call}"
-            );
-        }
-        later(3_000);
-    }
-    assert!(notices(&mut watch).is_empty(), "denials alone say nothing");
-    assert_eq!(
-        pre_tool_use(&f, "Edit", json!({"file_path": file})).await?,
-        None,
-        "the fourth round passes"
-    );
-    let said = notices(&mut watch);
-    assert!(
-        said.iter()
-            .any(|n| n.contains("3 times") && n.contains("Plan")),
-        "{said:?}"
-    );
-    later(10_000);
-    assert_eq!(
-        pre_tool_use(&f, "Edit", json!({"file_path": file})).await?,
-        None,
-        "the rest of the turn passes"
-    );
-    assert!(notices(&mut watch).is_empty(), "said once");
-    hook(&f, "UserPromptSubmit", json!({"prompt": "go on"})).await?;
-    assert!(
-        pre_tool_use(&f, "Edit", json!({"file_path": file}))
-            .await?
-            .is_some(),
-        "a new turn is held again"
-    );
-
-    // A hook its client sent more than 5 s ago (it gave up and the edit went ahead) is answered
-    // with nothing and not counted.
-    hook(&f, "UserPromptSubmit", json!({"prompt": "again"})).await?;
-    let sent = (f.h.app.now().0 - 6_000).to_string();
-    for _ in 0..4 {
-        use http_body_util::BodyExt as _;
-        use tower::ServiceExt as _;
-        let request = axum::http::Request::post("/hooks/claude/PreToolUse")
-            .header("authorization", format!("Bearer {TOKEN}"))
-            .header("content-type", "application/json")
-            .header("x-yulius-hook-sent-ms", sent.as_str())
-            .body(axum::body::Body::from(
-                json!({"tool_name": "Edit", "tool_input": {"file_path": file}}).to_string(),
-            ))?;
-        let response = f.h.internal.clone().oneshot(request).await?;
-        assert_eq!(response.status(), 200);
-        let body = response.into_body().collect().await?.to_bytes();
+    // One streamed response's edits arrive tens of seconds apart; later responses too.
+    for call in 1..=8 {
         assert!(
-            !String::from_utf8_lossy(&body).contains("deny"),
-            "late: {body:?}"
+            pre_tool_use(&f, "Write", json!({"file_path": file}))
+                .await?
+                .is_some(),
+            "call {call}"
         );
-        later(3_000);
+        f.h.clock.0.fetch_add(10_000, Ordering::SeqCst);
     }
     assert!(
-        pre_tool_use(&f, "Edit", json!({"file_path": file}))
-            .await?
-            .is_some(),
-        "late answers used up no round"
+        notices(&mut watch).is_empty(),
+        "denials say nothing to the person"
+    );
+    // The spec, being documentation, can always be written; then the edit passes.
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    let spec = f.worktree.join("docs/specs/checkout.md");
+    assert_eq!(
+        pre_tool_use(&f, "Write", json!({"file_path": spec.to_string_lossy()})).await?,
+        None
+    );
+    std::fs::write(
+        &spec,
+        "---\nyulius-task: t-main\nstatus: draft\n---\n# Checkout\n\n## Plan\n\n- [ ] Pay\n",
+    )?;
+    assert_eq!(
+        pre_tool_use(&f, "Write", json!({"file_path": file})).await?,
+        None
     );
     Ok(())
 }

@@ -669,7 +669,10 @@ fn an_edit_check_fails_open_and_is_never_held() -> TestResult {
     assert_eq!(sent["tool_input"]["file_path"], "/w/api.rs");
 
     // Non-string fields are left out, and an edit without a path is still asked about.
-    let (url, server) = serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec())?;
+    let (url, server) = serve_once_within(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        Duration::from_secs(10),
+    )?;
     let odd = br#"{"tool_name":"Edit","cwd":7,"tool_input":{"file_path":["x"]}}"#;
     run_hook(
         "claude",
