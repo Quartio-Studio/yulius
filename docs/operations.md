@@ -1218,7 +1218,7 @@ with SIGKILL, thaw by hand: `sudo systemctl thaw yulius.service`. `--move` keeps
 frozen and disables its unit after a successful export, so it never runs beside the new one (both
 would run the same agents against the same repositories); undo with `sudo systemctl thaw
 yulius.service && sudo systemctl enable yulius.service`. Left out, because the new host makes its
-own: `system/` (the sandbox base), `runtime/`, `update/`, `yulius.db-shm`, sockets and FIFOs. It is
+own: `system/` (the sandbox base), `runtime/`, `update/`, `claude-code/` (Claude Code for this host's platform, downloaded again), `yulius.db-shm`, sockets and FIFOs. It is
 refused (exit 2, nothing frozen) while the update helper runs (checked again once frozen and
 before the copy's checksum), from a Yulius terminal (it would freeze itself), and while the
 service is stopped but its agents still run (start it first).
