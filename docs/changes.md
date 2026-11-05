@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-05
 
+- Two Superagents: every person now also has a Global Superagent (SPEC-427, task #409,
+  ADR-0271), opened from the tools rail on All sandboxes (or `/superagent`). It sees every
+  sandbox the person can see and keeps them in sync through Yulius's tools, as the person: status
+  across projects, a task per repository for a change that must spread, small pull requests,
+  task messages. It has no shell or file tools, runs in a folder and container of its own, and is
+  not given the vault, deploy or onboarding tools. The sandbox Superagent stays as it was.
 - Work after a task's merge is delivered again (SPEC-425, task #407, #1074, ADR-0269): commits an
   agent makes on its branch after the task's pull request merged are pushed and opened as a new
   pull request of the same task (at the end of a turn and on `delivery_merge`), instead of staying

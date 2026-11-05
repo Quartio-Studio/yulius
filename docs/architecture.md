@@ -1213,6 +1213,39 @@ sequenceDiagram
   end
 ```
 
+### The Global Superagent
+
+Beside the sandbox Superagents every person has one **Global Superagent**, which sees every
+sandbox they can see and keeps them in sync
+([SPEC-427](../.ai/specs/SPEC-427-there-should-be-2-superagens-global-and.md),
+[decision 0271](decisions/0271-a-global-superagent-acts-in-every-sandbox-of-its-person-through-yulius-tools-only.md),
+`global_superagent.rs`). It is a Cockpit marked `global` in its shell record, so it shares the
+start lock, usage-limit moves, update refreshes, adoption and the terminal protocol; its seat is
+`Seat::Global` instead of `Seat::Sandbox(id)`. A sandbox its person can work in hosts it (its shell
+is registered there: private terminal, idle end, removal); the process runs elsewhere. Claude Code
+starts with `--strict-mcp-config --tools ""`: no built-in tool, no MCP server but Yulius, no hook,
+no agent secret and no egress proxy. Its folder and config are `users/<id>/superagent` (working
+folder `work/`), which no run binds, and on a contained server it runs in a bubblewrap namespace
+whose only writable root is that folder, without a sandbox holder (`App::global_containment`).
+Its `gs_` bearer makes `App::mcp_handle` hand the call to the remote MCP (`remote_mcp_handle`) with
+a `RemoteCaller` for its person as an operate token, its `superagent` set: the remote tools but
+`WITHHELD_TOOLS` (the vault and variables, `cd_deploy`, `project_import`, `onboarding_*`), every
+project tool checked against the person's access at the call, the actor `superagent:<login>` on
+the Superagent channel, changes audited `remote.tool` with `via: global-superagent`. A removed or
+lost host ends it; the next `POST /api/superagent` starts it under the oldest sandbox the person
+can work in, resuming the conversation kept in its folder. The web UI opens it from the tools rail
+outside a sandbox, where the rail shows only the Superagent.
+
+```mermaid
+flowchart LR
+  P["Person: rail on All sandboxes"] -->|"POST /api/superagent"| Y["Yulius"]
+  Y -->|"spawn, bwrap root users/ID/superagent"| G["Global Superagent: claude --tools '' --strict-mcp-config"]
+  G -->|"/mcp, gs_ bearer"| R["remote MCP tools minus WITHHELD_TOOLS (person's access per call)"]
+  R --> A["sandbox A: tasks, CI, files, pull requests"]
+  R --> B["sandbox B: tasks, CI, files, pull requests"]
+  H["host sandbox (oldest the person can work in)"] -.->|"registers the shell"| G
+```
+
 A repository's `.mcp.json` would make Claude Code ask about each of its servers when the
 Superagent starts. Before every task run and Superagent start, `App::import_project_mcp` adds
 the file's servers that the sandbox lacks to its MCP servers, so task runs get them like any
