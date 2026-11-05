@@ -793,7 +793,7 @@ function checkNewPassword(body) {
   if (body.password !== body.password_confirm) fail(422, 'invalid', 'passwords do not match');
   if ([...(body.password || '')].length < 8) fail(422, 'invalid', 'the password needs at least 8 characters');
 }
-route('GET', '/api/setup/status', ({ db }) => ({ setup_required: db.setupRequired }));
+route('GET', '/api/setup/status', ({ db }) => ({ setup_required: db.setupRequired, github_configured: db.me.instance.github_configured }));
 route('POST', '/api/setup', ({ db, body }) => {
   if (!db.setupRequired) fail(403, 'forbidden', 'This instance is already set up.');
   if (body.token !== 'YUL-SETUP-1234') fail(403, 'forbidden', 'Wrong setup token. (Mock token: YUL-SETUP-1234)');
