@@ -59,6 +59,33 @@ fn serve_once(response: Vec<u8>) -> io::Result<(String, JoinHandle<io::Result<Re
     Ok((url, handle))
 }
 
+/// [`serve_once`] that stops waiting for the connection after `within` (an error, not a hang).
+fn serve_once_within(
+    response: Vec<u8>,
+    within: Duration,
+) -> io::Result<(String, JoinHandle<io::Result<Request>>)> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
+    let url = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
+    let handle = thread::spawn(move || {
+        let deadline = Instant::now() + within;
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        stream.set_nonblocking(false)?;
+        let request = read_request(&mut stream)?;
+        stream.write_all(&response)?;
+        Ok(request)
+    });
+    Ok((url, handle))
+}
+
 fn env_with(url: String, token: Option<&'static str>) -> impl Fn(&str) -> Option<String> {
     move |key| match key {
         "YULIUS_URL" => Some(url.clone()),
@@ -620,7 +647,10 @@ fn an_edit_check_fails_open_and_is_never_held() -> TestResult {
     let big = serde_json::to_vec(&serde_json::json!({
         "tool_name": "Write", "tool_input": {"file_path": "/w/api.rs", "content": content}
     }))?;
-    let (url, server) = serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec())?;
+    let (url, server) = serve_once_within(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        Duration::from_secs(10),
+    )?;
     let mut output = Vec::new();
     run_hook(
         "claude",
@@ -629,11 +659,29 @@ fn an_edit_check_fails_open_and_is_never_held() -> TestResult {
         &mut output,
         &env_with(url, Some("t")),
     );
-    let request = join(server)?;
+    let request = join(server).map_err(|e| format!("the large Write was not sent: {e}"))?;
     assert!(
         request.body.len() < 200,
         "trimmed: {} bytes",
         request.body.len()
+    );
+    let sent: serde_json::Value = serde_json::from_slice(&request.body)?;
+    assert_eq!(sent["tool_input"]["file_path"], "/w/api.rs");
+
+    // Non-string fields are left out, and an edit without a path is still asked about.
+    let (url, server) = serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec())?;
+    let odd = br#"{"tool_name":"Edit","cwd":7,"tool_input":{"file_path":["x"]}}"#;
+    run_hook(
+        "claude",
+        "PreToolUse",
+        &mut &odd[..],
+        &mut Vec::new(),
+        &env_with(url, Some("t")),
+    );
+    let request = join(server)?;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&request.body)?,
+        serde_json::json!({"tool_name": "Edit"})
     );
     Ok(())
 }

@@ -79,7 +79,8 @@ discovered at the end of a turn.
 - [x] Yulius refuses a code edit of a task whose spec has no Plan yet
 - [x] Claude Code sends edit tools' PreToolUse to Yulius
 - [x] ADR, architecture and docs describe the edit gate
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
+- [ ] Review round 2 approves the fixed head
 - [ ] Every gate green, Evidence and the changes log updated
 
 ## Acceptance criteria
