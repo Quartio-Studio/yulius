@@ -1105,6 +1105,17 @@ pub(crate) enum AutoDelivery {
     Delivered(String),
 }
 
+/// What a merged task's worktree head holds beyond its merged pull request (SPEC-425).
+enum AfterMerge {
+    /// Work the merged pull request did not carry: delivered anew, as this pull request's
+    /// follow-up.
+    FollowUp(u64),
+    /// Nothing new: the task stays merged.
+    Covered,
+    /// Yulius cannot tell now, and why (what `delivery_merge` answers).
+    Unknown(String),
+}
+
 impl App {
     async fn dlv_sandbox_of(&self, task: &TaskRecord) -> AppResult<SandboxRecord> {
         self.deps
@@ -2739,7 +2750,8 @@ impl App {
             return Ok(AutoDelivery::Unchanged);
         }
         // Past its pull request's merge a task delivers again only work committed since
-        // (SPEC-425 FUP-001); a later stage with nothing new stays as it is (FUP-002).
+        // (SPEC-425 FUP-001); a later stage with nothing new stays as it is (FUP-002), and one
+        // Yulius cannot judge says why to `delivery_merge` (FUP-003).
         let merged = store
             .delivery(&task.id)
             .await?
@@ -2749,8 +2761,9 @@ impl App {
                 .work_after_merge(&task, Path::new(&worktree), record)
                 .await
             {
-                Some(number) => Some((record, number)),
-                None => return Ok(AutoDelivery::Unchanged),
+                AfterMerge::FollowUp(number) => Some((record, number)),
+                AfterMerge::Covered => return Ok(AutoDelivery::Unchanged),
+                AfterMerge::Unknown(reason) => return Ok(AutoDelivery::Blocked(reason)),
             },
             None => None,
         };
@@ -2762,18 +2775,27 @@ impl App {
             self.note_undelivered(&task, &worktree, &reason).await;
             return Ok(AutoDelivery::Blocked(reason));
         }
+        let sandbox = self.dlv_sandbox_of(&task).await?;
+        let profile = delivery_profile(&sandbox);
+        if branch == profile.integration_branch || branch == profile.production_branch {
+            return Ok(AutoDelivery::Unchanged);
+        }
         if let Some((record, number)) = follow_up {
+            // The stage alone is compared on write: a record that moved on to another pull
+            // request meanwhile (a concurrent Stop delivered and merged it) is left alone.
+            let current = store.delivery(&task.id).await?;
             let fresh = DeliveryRecord {
                 updated_at: self.now(),
                 ..DeliveryRecord::initial(&task.id)
             };
-            if !self
-                .dlv_transition(&task.sandbox_id, &record.stage, &fresh)
-                .await?
+            if current.as_ref().map(|r| (&r.stage, r.pr_number))
+                != Some((&record.stage, record.pr_number))
+                || !self
+                    .dlv_transition(&task.sandbox_id, &record.stage, &fresh)
+                    .await?
             {
                 return Ok(AutoDelivery::Unchanged);
             }
-            let sandbox = self.dlv_sandbox_of(&task).await?;
             self.dlv_audit(
                 "yulius",
                 "delivery.follow_up",
@@ -2784,11 +2806,6 @@ impl App {
                 ),
             )
             .await;
-        }
-        let sandbox = self.dlv_sandbox_of(&task).await?;
-        let profile = delivery_profile(&sandbox);
-        if branch == profile.integration_branch || branch == profile.production_branch {
-            return Ok(AutoDelivery::Unchanged);
         }
         // The task's owner pushes and authors the pull request (their GitHub account, as if
         // they had pressed Deliver…, F 2026-10-11); without a usable token the App does.
@@ -2917,48 +2934,121 @@ impl App {
         }
     }
 
-    /// The merged pull request of `record` when the task's worktree head carries work it did
-    /// not (SPEC-425 FUP-001): its head is an ancestor of the worktree head, which is more than
-    /// it plus Git's own clean merges of the integration branch. `None` keeps the task merged
-    /// (FUP-002): the same head, one behind it or only clean merges since, a rewritten branch,
-    /// or anything Yulius cannot read (GitHub, the commits).
+    /// Whether the task's worktree head carries work its merged pull request (`record`) did not
+    /// (SPEC-425 FUP-001): the merged head is an ancestor of it, it is more than that head plus
+    /// Git's own clean merges of the integration branch, and it adds something to the integration
+    /// branch (a follow-up merged outside Yulius adds nothing). A head that is the merged one,
+    /// behind it, or adds nothing is [`AfterMerge::Covered`] (FUP-002), remembered per head so
+    /// later Stops ask GitHub nothing; anything Yulius cannot judge is [`AfterMerge::Unknown`].
     async fn work_after_merge(
         &self,
         task: &TaskRecord,
         worktree: &Path,
         record: &DeliveryRecord,
-    ) -> Option<u64> {
-        let number = record.pr_number?;
-        let head = self
-            .deps
-            .git
-            .log(worktree, "HEAD", 1)
-            .await
-            .ok()?
-            .into_iter()
-            .next()?
-            .sha;
-        let sandbox = self.dlv_sandbox_of(task).await.ok()?;
-        let token = self.task_github_token(task, &sandbox).await.ok()?;
-        let merged = self
-            .deps
-            .github
-            .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, number)
-            .await
-            .ok()?
-            .head_sha;
-        if merged == head
-            || !self
-                .deps
-                .git
-                .is_ancestor(worktree, &merged, &head)
-                .await
-                .unwrap_or(false)
-            || self.review_covers(task, worktree, &merged, &head).await
+    ) -> AfterMerge {
+        let Some(number) = record.pr_number else {
+            return AfterMerge::Unknown(
+                "Yulius has no merged pull request on record for this task".to_owned(),
+            );
+        };
+        let head = match self.deps.git.log(worktree, "HEAD", 1).await {
+            Ok(commits) => match commits.into_iter().next() {
+                Some(commit) => commit.sha,
+                None => return AfterMerge::Unknown("the task branch has no commit".to_owned()),
+            },
+            Err(err) => {
+                return AfterMerge::Unknown(format!(
+                    "the task branch head cannot be read: {}",
+                    err.public_message()
+                ));
+            }
+        };
+        let covered = (head.clone(), number);
+        if let Ok(known) = self.runtime(&task.id).merged_covers.lock()
+            && known.as_ref() == Some(&covered)
         {
-            return None;
+            return AfterMerge::Covered;
         }
-        Some(number)
+        let verdict = self.judge_after_merge(task, worktree, number, &head).await;
+        if matches!(verdict, AfterMerge::Covered)
+            && let Ok(mut known) = self.runtime(&task.id).merged_covers.lock()
+        {
+            *known = Some(covered);
+        }
+        verdict
+    }
+
+    /// [`App::work_after_merge`] for `head`, asking GitHub and Git.
+    async fn judge_after_merge(
+        &self,
+        task: &TaskRecord,
+        worktree: &Path,
+        number: u64,
+        head: &str,
+    ) -> AfterMerge {
+        let unknown = |why: String| {
+            AfterMerge::Unknown(format!(
+                "Yulius cannot tell whether this head adds to pull request #{number}, merged \
+                 already: {why}"
+            ))
+        };
+        // A live merge train counts on its members' recorded stages until it ends.
+        if self.in_train(task) {
+            return unknown(
+                "it is in a merge train that has not ended; call again once the train ends"
+                    .to_owned(),
+            );
+        }
+        let sandbox = match self.dlv_sandbox_of(task).await {
+            Ok(sandbox) => sandbox,
+            Err(err) => return unknown(err.public_message()),
+        };
+        let merged = match self.task_github_token(task, &sandbox).await {
+            Ok(token) => match self
+                .deps
+                .github
+                .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, number)
+                .await
+            {
+                Ok(pull) => pull.head_sha,
+                Err(err) => return unknown(format!("GitHub: {}", github_reason(&err))),
+            },
+            Err(err) => return unknown(err.public_message()),
+        };
+        if merged == head {
+            return AfterMerge::Covered;
+        }
+        let git = &self.deps.git;
+        match git.is_ancestor(worktree, &merged, head).await {
+            Ok(true) => {}
+            Ok(false)
+                if git
+                    .is_ancestor(worktree, head, &merged)
+                    .await
+                    .unwrap_or(false) =>
+            {
+                return AfterMerge::Covered;
+            }
+            Ok(false) => {
+                let short = merged.get(..9).unwrap_or(&merged);
+                return unknown(format!(
+                    "the branch no longer contains its merged head {short} (rewritten?). Merge \
+                     it back without forcing (`git merge --no-edit {merged}`), and Yulius \
+                     delivers what this head adds"
+                ));
+            }
+            Err(err) => return unknown(err.public_message()),
+        }
+        // `review_covers` fetches the integration branch first, which the next check reads too.
+        if self.review_covers(task, worktree, &merged, head).await {
+            return AfterMerge::Covered;
+        }
+        let integration = format!("origin/{}", delivery_profile(&sandbox).integration_branch);
+        match git.adds_to(worktree, &integration, head).await {
+            Ok(true) => AfterMerge::FollowUp(number),
+            Ok(false) => AfterMerge::Covered,
+            Err(err) => unknown(err.public_message()),
+        }
     }
 
     /// The part of [`App::task_is_done`] that needs no GitHub call: the turn ended, no background

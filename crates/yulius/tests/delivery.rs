@@ -28,7 +28,7 @@ use yulius_app::ports::session::{
     AttachedRun, Containment, LaunchPlan, RunInspection, SessionHost, SpawnedRun,
 };
 use yulius_app::ports::store::{
-    CoordinationStore, InstanceStore, SandboxStore, TaskStore, UserStore,
+    AuditStore, CoordinationStore, InstanceStore, SandboxStore, TaskStore, UserStore,
 };
 use yulius_app::ports::store_ext::DeliveryStore;
 use yulius_domain::delivery::{DeliveryProfile, DeliveryStage};
@@ -302,6 +302,12 @@ impl GitPort for RealGit {
     ) -> AppResult<bool> {
         yulius::wiring::git::GitAdapter::new("git")
             .only_clean_merges_since(worktree, reviewed, head, integration, limit)
+            .await
+    }
+
+    async fn adds_to(&self, worktree: &Path, base: &str, head: &str) -> AppResult<bool> {
+        yulius::wiring::git::GitAdapter::new("git")
+            .adds_to(worktree, base, head)
             .await
     }
 
@@ -4203,40 +4209,10 @@ async fn a_merge_call_opens_the_pull_request_a_goal_task_still_lacks() -> TestRe
 /// request that is merged already.
 #[tokio::test]
 async fn work_committed_after_the_merge_opens_a_new_pull_request() -> TestResult {
-    let f = fixture(&DeliveryProfile::standard()).await?;
-    let wt = f
-        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
-        .await?;
-    git(&wt, &["config", "user.name", "Bob"])?;
-    git(&wt, &["config", "user.email", "bob@yulius.test"])?;
-    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
-    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
-    set_steps(&f, "t1", &["done", "done"]).await?;
+    let (f, wt, merged_head) = merged_task().await?;
     let t1 = TaskId::parse("t1")?;
     let agent = live_agent(&f, "t1", "tok-agent").await?;
-    let pulls_opened = || {
-        f.h.github
-            .writes()
-            .iter()
-            .filter(|w| w.starts_with("create_pull"))
-            .count()
-    };
-    f.h.app.auto_open_pr(&t1).await;
-    assert_eq!(pulls_opened(), 1, "{:?}", f.h.github.writes());
-    let merged_head = git(&wt, &["rev-parse", "HEAD"])?;
-    f.h.github.set_checks(&merged_head, ChecksState::Success);
-    yulius_app::ports::github::GitHubPort::merge_pull(
-        f.h.github.as_ref(),
-        &Secret("token-carol".into()),
-        "Quartio-Studio",
-        "shop",
-        1,
-        "squash",
-        &merged_head,
-    )
-    .await?;
-    f.h.app.reconcile_deliveries().await;
-    assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
+    let pulls_opened = || pulls_opened(&f);
 
     // The merged head itself: nothing to deliver, and the merge call arms nothing.
     f.h.app.auto_open_pr(&t1).await;
@@ -4273,6 +4249,14 @@ async fn work_committed_after_the_merge_opens_a_new_pull_request() -> TestResult
     assert_eq!(d["stage"], "pr_open", "{d}");
     assert_eq!(d["pr"]["number"], 2, "{d}");
     assert_eq!(d["pr"]["head"], "feat/1-checkout-api");
+    let said =
+        f.h.store
+            .audit_details("shop#1", "delivery.follow_up", 5)
+            .await?;
+    assert!(
+        said.len() == 1 && said[0].contains("pull request #1 merged"),
+        "{said:?}"
+    );
 
     // The merge call takes the new pull request on: armed while its checks run, merged on green.
     f.h.github.set_checks(&fix, ChecksState::Pending);
@@ -4298,6 +4282,173 @@ async fn work_committed_after_the_merge_opens_a_new_pull_request() -> TestResult
     assert_eq!(again["armed"], true, "{again}");
     assert_eq!(pulls_opened(), 3, "{:?}", f.h.github.writes());
     assert_eq!(f.origin_sha("feat/1-checkout-api")?, fix2, "pushed");
+    let d = f.delivery("t1").await?;
+    assert_eq!(
+        (&d["stage"], &d["pr"]["number"]),
+        (&json!("pr_open"), &json!(3)),
+        "{d}"
+    );
+    Ok(())
+}
+
+/// A standard-profile task `t1` whose pull request #1 merged (squashed into `dev` on the
+/// origin) at its head, with its plan done: the fixture, its worktree and the merged head.
+async fn merged_task() -> BoxResult<(Fixture, PathBuf, String)> {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    git(&wt, &["config", "user.name", "Bob"])?;
+    git(&wt, &["config", "user.email", "bob@yulius.test"])?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    f.h.app.auto_open_pr(&TaskId::parse("t1")?).await;
+    assert_eq!(pulls_opened(&f), 1, "{:?}", f.h.github.writes());
+    let merged_head = git(&wt, &["rev-parse", "HEAD"])?;
+    merge_on_github(&f, 1, &merged_head).await?;
+    Ok((f, wt, merged_head))
+}
+
+/// Pull requests Yulius opened so far.
+fn pulls_opened(f: &Fixture) -> usize {
+    f.h.github
+        .writes()
+        .iter()
+        .filter(|w| w.starts_with("create_pull"))
+        .count()
+}
+
+/// Pull request `number` squash-merged on GitHub at `head` (outside Yulius), and followed.
+async fn merge_on_github(f: &Fixture, number: u64, head: &str) -> TestResult {
+    f.h.github.set_checks(head, ChecksState::Success);
+    yulius_app::ports::github::GitHubPort::merge_pull(
+        f.h.github.as_ref(),
+        &Secret("token-carol".into()),
+        "Quartio-Studio",
+        "shop",
+        number,
+        "squash",
+        head,
+    )
+    .await?;
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
+    Ok(())
+}
+
+/// SPEC-425 FUP-002 and FUP-003 (review of #407): what is not new work after the merge opens
+/// nothing, and what Yulius cannot judge is said to `delivery_merge`, never "already merged" nor
+/// armed: a follow-up merged outside Yulius, an open step, a rewritten branch, GitHub not
+/// answering for the merged pull request.
+#[tokio::test]
+async fn work_after_the_merge_opens_nothing_it_cannot_judge() -> TestResult {
+    let (f, wt, merged_head) = merged_task().await?;
+    let t1 = TaskId::parse("t1")?;
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+    let merge_text = |result: &Value| {
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let merge_call = |head: String| {
+        let (f, agent) = (&f, &agent);
+        async move {
+            agent_tool(
+                f,
+                agent,
+                "delivery_merge",
+                json!({"reviewed_head": head, "review_summary": "approve"}),
+            )
+            .await
+        }
+    };
+
+    // An open step with new work: blocked by the step, the task stays merged.
+    commit_file(&wt, "fix.txt", "fixed", "Fix after the merge")?;
+    let fix = git(&wt, &["rev-parse", "HEAD"])?;
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+    let blocked = merge_call(fix.clone()).await?;
+    assert_eq!(blocked["isError"], true, "{blocked}");
+    assert!(merge_text(&blocked).contains("is in_progress"), "{blocked}");
+    assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
+    set_steps(&f, "t1", &["done", "done"]).await?;
+
+    // The agent delivered the fix by hand as #2 and it merged outside Yulius: the task's record
+    // still names #1, but the head adds nothing to `dev`, so no third pull request opens.
+    git(
+        &wt,
+        &["push", "--quiet", "origin", "HEAD:feat/1-checkout-api"],
+    )?;
+    let manual = yulius_app::ports::github::GitHubPort::create_pull(
+        f.h.github.as_ref(),
+        &Secret("token-bob".into()),
+        "Quartio-Studio",
+        "shop",
+        &yulius_app::ports::github::NewPull {
+            title: "fix: after the merge".into(),
+            head: "feat/1-checkout-api".into(),
+            base: "dev".into(),
+            body: String::new(),
+        },
+    )
+    .await?;
+    f.h.github.set_checks(&fix, ChecksState::Success);
+    yulius_app::ports::github::GitHubPort::merge_pull(
+        f.h.github.as_ref(),
+        &Secret("token-carol".into()),
+        "Quartio-Studio",
+        "shop",
+        manual.number,
+        "squash",
+        &fix,
+    )
+    .await?;
+    git(&wt, &["fetch", "--quiet", "origin"])?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(
+        pulls_opened(&f),
+        2,
+        "the hand-made #2 only: {:?}",
+        f.h.github.writes()
+    );
+    let done = merge_call(fix.clone()).await?;
+    assert!(merge_text(&done).contains("already merged"), "{done}");
+    assert_eq!(wait_state(&f, &agent, &fix).await?["merge_armed"], false);
+
+    // A branch rewritten onto `dev` with new work: Yulius says how to bring the merged head
+    // back, and neither pushes nor opens anything.
+    git(&wt, &["reset", "--quiet", "--hard", "origin/dev"])?;
+    commit_file(&wt, "rewritten.txt", "other", "Rewritten")?;
+    let rewritten = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.app.auto_open_pr(&t1).await;
+    let refused = merge_call(rewritten.clone()).await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    let why = merge_text(&refused);
+    assert!(
+        why.contains("no longer contains its merged head")
+            && why.contains(&format!("git merge --no-edit {merged_head}")),
+        "{why}"
+    );
+    assert_eq!(pulls_opened(&f), 2);
+    assert_eq!(f.origin_sha("feat/1-checkout-api")?, fix, "not pushed");
+    assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
+
+    // GitHub cannot answer for the merged pull request: said, nothing armed or opened.
+    git(&wt, &["merge", "--quiet", "--no-edit", &merged_head])?;
+    let back = git(&wt, &["rev-parse", "HEAD"])?;
+    if let Ok(mut pulls) = f.h.github.pulls.lock() {
+        pulls.retain(|p| p.number != 1);
+    }
+    let unknown = merge_call(back.clone()).await?;
+    assert_eq!(unknown["isError"], true, "{unknown}");
+    assert!(
+        merge_text(&unknown).contains("cannot tell whether this head adds to pull request #1"),
+        "{unknown}"
+    );
+    assert_eq!(wait_state(&f, &agent, &back).await?["merge_armed"], false);
+    assert_eq!(pulls_opened(&f), 2);
     Ok(())
 }
 

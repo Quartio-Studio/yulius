@@ -305,6 +305,14 @@ impl App {
         )
     }
 
+    /// Whether `task` is a member of its sandbox's live merge train, merged or not: the train
+    /// counts on its recorded stage until it ends (SPEC-425, review finding 4).
+    pub(crate) fn in_train(&self, task: &TaskRecord) -> bool {
+        self.read_trains(&task.sandbox_id)
+            .train
+            .is_some_and(|train| train.members.iter().any(|m| m.task == task.id.as_str()))
+    }
+
     /// What `yulius wait` says about `task`'s merge train, if it is in one or was left out.
     pub(crate) fn train_note(&self, task: &TaskRecord) -> Option<String> {
         let state = self.read_trains(&task.sandbox_id);
