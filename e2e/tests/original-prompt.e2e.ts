@@ -296,9 +296,10 @@ test('an image being read shows an animated loading tile, not a broken image', a
       number: thumb.querySelector('.composer-attachment-number')?.textContent ?? null,
       imgs: thumb.querySelectorAll('img').length,
       ring: ring ? getComputedStyle(ring).animationName : null,
+      shimmer: getComputedStyle(thumb).animationName,
     };
   });
-  expect(await loading()).toEqual({ busy: 'true', number: '1', imgs: 0, ring: 'spin' });
+  expect(await loading()).toEqual({ busy: 'true', number: '1', imgs: 0, ring: 'spin', shimmer: 'shimmer' });
   expect(await axeViolations(browser)).toEqual([]);
 
   // The placeholder in the text, clicked meanwhile, is busy with a turning ring.
@@ -319,7 +320,7 @@ test('an image being read shows an animated loading tile, not a broken image', a
   await expect(preview).toBeHidden();
   // The picture is drawn and nothing is busy any more.
   await expect(files.getByRole('img', 'a.png')).toBeVisible();
-  expect(await loading()).toEqual({ busy: null, number: '1', imgs: 1, ring: null });
+  expect(await loading()).toEqual({ busy: null, number: '1', imgs: 1, ring: null, shimmer: 'none' });
   expect(await atom()).toEqual({ busy: null, ring: null, icon: 1 });
 });
 
@@ -331,6 +332,16 @@ test('an image the browser cannot draw says it could not be loaded', async ({ ap
   const drafts = '/srv/yulius/sandboxes/sb_studio/attachments/drafts/usr_mkarp';
   // The mock serves only `.png` as a picture: this `.jpg` is text.
   await touchTask(browser, 'sb_studio', 12, { prompt: `Broken @'${drafts}/broken.jpg' and @'${drafts}/a.png'.` });
+  // The page's object URLs still alive: a failed decode gives its blob back (review round 1).
+  await browser.evaluate(() => {
+    const live = new Set<string>();
+    (window as unknown as { __liveUrls: Set<string> }).__liveUrls = live;
+    const create = URL.createObjectURL.bind(URL);
+    const revoke = URL.revokeObjectURL.bind(URL);
+    URL.createObjectURL = (blob: Blob) => { const url = create(blob); live.add(url); return url; };
+    URL.revokeObjectURL = (url: string) => { live.delete(url); revoke(url); };
+  });
+  const liveUrls = () => browser.evaluate(() => (window as unknown as { __liveUrls: Set<string> }).__liveUrls.size);
 
   await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
   await screen.getByRole('menuitem', 'See the original prompt').click();
@@ -338,8 +349,15 @@ test('an image the browser cannot draw says it could not be loaded', async ({ ap
   await expect(files.getByRole('img', 'a.png')).toBeVisible();
   await expect(files.getByRole('listitem').filter({ hasText: 'broken.jpg' })).toHaveText(/broken\.jpg\s*Couldn’t load it/);
   await expect(files.getByRole('img', 'broken.jpg')).toHaveCount(0);
-  // Its placeholder in the text says so too, and opens no broken preview.
+  expect(await liveUrls()).toBe(1);
+  // Its placeholder in the text says so too, in words that are the same in every browser, opens
+  // no broken preview and is no longer busy.
   await browser.locator('.prompt-modal .prompt-text').getByRole('button', { name: 'Open Image 1, broken.jpg' }).click();
-  await expect(browser.locator('.toast-msg:has-text("Couldn’t open broken.jpg")')).toBeVisible();
+  await expect(browser.locator('.toast-msg:has-text("Couldn’t open broken.jpg: it is not a picture the browser can show.")')).toBeVisible();
   await expect(screen.getByRole('dialog', 'broken.jpg')).toHaveCount(0);
+  await expect.poll(() => browser.evaluate(() => {
+    const el = document.querySelector('.prompt-modal .prompt-text [aria-label="Open Image 1, broken.jpg"]')!;
+    return { busy: el.getAttribute('aria-busy'), ring: el.querySelectorAll('.pi-spinner').length, icon: el.querySelectorAll('svg').length };
+  })).toEqual({ busy: null, ring: 0, icon: 1 });
+  expect(await liveUrls()).toBe(1);
 });
