@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-05
 
+- Reply in a task's attention bar works on the first click (SPEC-424, task #406, ADR-0268): a task
+  update arriving while the button is pressed replaced it and lost the click; the bar now holds its
+  render until the press ends, and the keyboard stays on the terminal Reply across updates.
 - A sandbox's admins can waive the production ruleset (SPEC-423, task #405, ADR-0267): a private
   repository without GitHub Pro, Team or Enterprise cannot have one, so the Git page's new
   Production protection card switches off "Require a GitHub ruleset on `<branch>`"; onboarding then
