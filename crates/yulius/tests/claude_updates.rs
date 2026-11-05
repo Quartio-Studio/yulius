@@ -62,28 +62,47 @@ impl Stub {
     }
 }
 
-/// A tarball as npm publishes a platform package: `package/claude` and friends.
-fn tarball(printed: &str) -> Vec<u8> {
-    let script = format!("#!/bin/sh\necho '{printed} (Claude Code)'\n");
+/// ELF's `e_machine` of x86-64.
+const X86_64: u16 = 62;
+
+/// A stand-in for the native binary: an ELF64 header for `machine`, then filler, then the
+/// version as the real binary embeds it (`VERSION:"X.Y.Z"`), across a 64 KiB boundary.
+fn binary(machine: u16, version: &str) -> Vec<u8> {
+    let mut bytes = vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0];
+    bytes.resize(16, 0);
+    bytes.extend_from_slice(&2u16.to_le_bytes());
+    bytes.extend_from_slice(&machine.to_le_bytes());
+    bytes.resize(65_536 - 7, b'.');
+    bytes.extend_from_slice(format!("VERSION:\"{version}\"").as_bytes());
+    bytes.extend_from_slice(b"...");
+    bytes
+}
+
+/// A tarball as npm publishes a platform package, with `files` under `package/`.
+fn tarball_of(files: &[(&str, Vec<u8>)]) -> Vec<u8> {
     let mut builder = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::fast()));
-    for (path, body, mode) in [
-        ("package/package.json", "{}".to_owned(), 0o644),
-        ("package/README.md", "readme".to_owned(), 0o644),
-        ("package/claude", script, 0o755),
-    ] {
+    for (path, body) in files {
         let mut header = tar::Header::new_gnu();
         header.set_entry_type(tar::EntryType::Regular);
         header.set_size(body.len() as u64);
-        header.set_mode(mode);
+        header.set_mode(0o755);
         header.set_cksum();
         builder
-            .append_data(&mut header, path, body.as_bytes())
+            .append_data(&mut header, format!("package/{path}"), body.as_slice())
             .expect("entry");
     }
     builder
         .into_inner()
         .and_then(GzEncoder::finish)
         .expect("tarball")
+}
+
+fn tarball(version: &str) -> Vec<u8> {
+    tarball_of(&[
+        ("package.json", b"{}".to_vec()),
+        ("README.md", b"readme".to_vec()),
+        ("claude", binary(X86_64, version)),
+    ])
 }
 
 fn good(version: &str) -> Release {
@@ -238,11 +257,22 @@ async fn a_newer_stable_release_is_installed_and_becomes_current() -> TestResult
 
     let outcome = s.updater.check(Channel::Stable).await?;
     assert_eq!(outcome, Outcome::Installed(v("2.1.311")));
-    let binary = s.root.join("versions/2.1.311/bin/claude.exe");
-    let out = std::process::Command::new(&binary)
-        .arg("--version")
-        .output()?;
-    assert!(String::from_utf8_lossy(&out.stdout).starts_with("2.1.311 "));
+    let installed_binary = s.root.join("versions/2.1.311/bin/claude.exe");
+    assert_eq!(std::fs::read(&installed_binary)?, binary(X86_64, "2.1.311"));
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            std::fs::metadata(&installed_binary)?.permissions().mode() & 0o777,
+            0o755
+        );
+        for dir in ["", "versions", "versions/2.1.311", "versions/2.1.311/bin"] {
+            assert_eq!(
+                std::fs::metadata(s.root.join(dir))?.permissions().mode() & 0o777,
+                0o755,
+                "{dir:?}"
+            );
+        }
+    }
     assert_eq!(
         std::fs::read_link(s.root.join("current"))?,
         Path::new("versions/2.1.311")
@@ -291,7 +321,28 @@ async fn a_refused_release_leaves_the_current_version() -> TestResult {
                 ..good("2.1.318")
             },
         ),
-        ("--version does not name 2.1.318", good("2.1.300")),
+        ("does not name 2.1.318", good("2.1.300")),
+        (
+            "not a 64-bit ELF for",
+            Release {
+                tarball: tarball_of(&[("claude", b"#!/bin/sh\necho 2.1.318\n".to_vec())]),
+                ..good("2.1.318")
+            },
+        ),
+        (
+            "not a 64-bit ELF for",
+            Release {
+                tarball: tarball_of(&[("claude", binary(183, "2.1.318"))]),
+                ..good("2.1.318")
+            },
+        ),
+        (
+            "holds no `package/claude`",
+            Release {
+                tarball: tarball_of(&[("cli.js", binary(X86_64, "2.1.318"))]),
+                ..good("2.1.318")
+            },
+        ),
         (
             "is not on",
             Release {
@@ -350,6 +401,26 @@ async fn a_refused_release_leaves_the_current_version() -> TestResult {
         assert_eq!(s.updater.current(), Some(v("2.1.311")));
         assert!(leftovers(&s.root).is_empty());
     }
+
+    // A binary over its bound is not written to its end.
+    let small = ClaudeUpdater::with_registry(
+        s.root.clone(),
+        Some(s.host.clone()),
+        s.updater.registry().to_owned(),
+        Some(PLATFORM.to_owned()),
+        false,
+    )?
+    .with_max_binary(1024);
+    s.stub.release("2.1.318", good("2.1.318"));
+    let refused = small.check(Channel::Stable).await;
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains("binary is larger than allowed")),
+        "{refused:?}"
+    );
+    assert_eq!(s.updater.current(), Some(v("2.1.311")));
+    assert!(leftovers(&s.root).is_empty());
 
     // The same release, intact, goes through.
     assert_eq!(
@@ -512,18 +583,75 @@ async fn runs_bind_the_chosen_version_at_the_host_package_path() -> TestResult {
 #[tokio::test]
 async fn the_doctor_names_the_version_runs_get() -> TestResult {
     let s = setup("2.1.292").await?;
-    let text = describe(&s.root, Some(&s.host));
+    let text = describe(&s.root, Some(&s.host), Channel::Stable);
     assert!(text.starts_with("2.1.292 from the host"), "{text}");
     s.stub.tag("stable", "2.1.311");
     s.stub.release("2.1.311", good("2.1.311"));
     s.updater.check(Channel::Stable).await?;
-    let text = describe(&s.root, Some(&s.host));
+    let text = describe(&s.root, Some(&s.host), Channel::Stable);
     assert!(
         text.starts_with("2.1.311, kept current by Yulius in "),
         "{text}"
     );
     assert!(text.contains("the host has 2.1.292"), "{text}");
-    let text = describe(&s.root, None);
+    // Off: runs bind the host's, whatever was installed before (review finding 7).
+    let text = describe(&s.root, Some(&s.host), Channel::Off);
+    assert!(text.starts_with("2.1.292 from the host"), "{text}");
+    assert!(text.contains("YULIUS_CLAUDE_UPDATES=off"), "{text}");
+    let text = describe(&s.root, None, Channel::Stable);
     assert!(text.contains("no npm install of Claude Code"), "{text}");
+    Ok(())
+}
+
+/// Review finding 1: a host package laid out otherwise (its `claude` is not `bin/claude.exe`)
+/// is neither updated nor bound over: runs keep the host's.
+#[tokio::test]
+async fn a_host_package_of_another_layout_is_left_alone() -> TestResult {
+    let s = setup("2.1.292").await?;
+    s.stub.tag("stable", "2.1.311");
+    s.stub.release("2.1.311", good("2.1.311"));
+    s.updater.check(Channel::Stable).await?;
+    std::fs::write(
+        s.host.join("package.json"),
+        r#"{"name":"@anthropic-ai/claude-code","version":"2.1.292","bin":{"claude":"cli.js"}}"#,
+    )?;
+    assert_eq!(agent_cli_source(&s.root, &s.host), s.host);
+    s.stub.tag("stable", "2.1.318");
+    s.stub.release("2.1.318", good("2.1.318"));
+    let asked = s.stub.requests.load(Ordering::SeqCst);
+    assert_eq!(s.updater.check(Channel::Stable).await?, Outcome::HostLayout);
+    assert_eq!(s.stub.requests.load(Ordering::SeqCst), asked);
+    assert_eq!(s.updater.current(), Some(v("2.1.311")));
+    Ok(())
+}
+
+/// Review finding 2: a version a running process executes is kept past the switches, and removed
+/// by the first check after it ended.
+#[tokio::test]
+async fn a_version_a_process_runs_is_not_removed() -> TestResult {
+    let s = setup("2.1.292").await?;
+    s.stub.tag("latest", "2.1.300");
+    s.stub.release("2.1.300", good("2.1.300"));
+    s.updater.check(Channel::Latest).await?;
+    // A session still running 2.1.300's binary (a real executable stands in for it).
+    let old = s.root.join("versions/2.1.300/bin/claude.exe");
+    std::fs::remove_file(&old)?;
+    std::fs::copy("/bin/sleep", &old)?;
+    let mut running = tokio::process::Command::new(&old)
+        .arg("600")
+        .kill_on_drop(true)
+        .spawn()?;
+    for version in ["2.1.311", "2.1.318"] {
+        s.stub.tag("latest", version);
+        s.stub.release(version, good(version));
+        s.updater.check(Channel::Latest).await?;
+    }
+    assert_eq!(installed(&s.root), ["2.1.300", "2.1.311", "2.1.318"]);
+    running.kill().await?;
+    assert_eq!(
+        s.updater.check(Channel::Latest).await?,
+        Outcome::UpToDate(v("2.1.318"))
+    );
+    assert_eq!(installed(&s.root), ["2.1.311", "2.1.318"]);
     Ok(())
 }

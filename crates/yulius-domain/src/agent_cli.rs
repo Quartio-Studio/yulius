@@ -27,7 +27,12 @@ impl Version {
         let mut parts = text.split('.');
         let mut number = || {
             let part = parts.next()?;
-            if part.is_empty() || part.len() > 9 || !part.bytes().all(|b| b.is_ascii_digit()) {
+            let leading_zero = part.len() > 1 && part.starts_with('0');
+            if part.is_empty()
+                || part.len() > 9
+                || leading_zero
+                || !part.bytes().all(|b| b.is_ascii_digit())
+            {
                 return None;
             }
             part.parse().ok()
@@ -95,6 +100,17 @@ pub fn platform_package(os: &str, arch: &str, musl: bool) -> Option<String> {
     (os == "linux").then(|| format!("{PACKAGE}-linux-{cpu}{libc}"))
 }
 
+/// ELF's `e_machine` of a Linux platform package's binary.
+#[must_use]
+pub fn elf_machine(package: &str) -> Option<u16> {
+    let platform = package.strip_prefix(PACKAGE)?.trim_end_matches("-musl");
+    match platform {
+        "-linux-x64" => Some(62),
+        "-linux-arm64" => Some(183),
+        _ => None,
+    }
+}
+
 /// Whether `offered` should be installed over the version runs get now.
 #[must_use]
 pub fn should_install(offered: Version, in_use: Option<Version>) -> bool {
@@ -140,6 +156,8 @@ mod tests {
             "../1.2",
             "1/2.3",
             "2.1.99999999999",
+            "02.1.3",
+            "2.01.3",
         ] {
             assert_eq!(Version::parse(bad), None, "{bad:?}");
         }
@@ -181,6 +199,24 @@ mod tests {
         );
         assert_eq!(name("macos", "aarch64", false), None);
         assert_eq!(name("linux", "riscv64", false), None);
+    }
+
+    #[test]
+    fn platform_packages_name_their_elf_machine() {
+        assert_eq!(elf_machine("@anthropic-ai/claude-code-linux-x64"), Some(62));
+        assert_eq!(
+            elf_machine("@anthropic-ai/claude-code-linux-x64-musl"),
+            Some(62)
+        );
+        assert_eq!(
+            elf_machine("@anthropic-ai/claude-code-linux-arm64"),
+            Some(183)
+        );
+        assert_eq!(
+            elf_machine("@anthropic-ai/claude-code-linux-arm64-musl"),
+            Some(183)
+        );
+        assert_eq!(elf_machine("@anthropic-ai/claude-code-darwin-arm64"), None);
     }
 
     #[test]

@@ -5,10 +5,12 @@
 //!
 //! **Install.** A newer version's platform package is downloaded from the registry (the tarball
 //! must be on it), its sha512 checked against the registry's `integrity`, and only its native
-//! binary `package/claude` taken into a temporary directory, where `--version` must name the
-//! version. The binary then moves to `<data>/claude-code/versions/<v>/bin/claude.exe` and
-//! `current` is pointed at it by an atomic rename; the version before it stays, older ones go.
-//! The host's install is never written, and nothing runs `npm` or a package script.
+//! binary `package/claude` taken into a temporary directory: it must be a 64-bit ELF for this
+//! platform that embeds the version (`VERSION:"X.Y.Z"`, as Claude Code's builds do). It is never
+//! run on the host. The binary then moves to `<data>/claude-code/versions/<v>/bin/claude.exe` and
+//! `current` is pointed at it by an atomic rename; the version before it stays, older ones go
+//! once no process runs them. The host's install is never written, and nothing runs `npm` or a
+//! package script.
 //!
 //! **Use.** [`agent_cli_source`] says which directory a run binds at the host package's path:
 //! chosen when the run starts, so a running process keeps its binary and the next start gets
@@ -21,10 +23,11 @@ use std::time::Duration;
 use base64::Engine as _;
 use serde_json::Value;
 use sha2::{Digest, Sha512};
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::io::AsyncWriteExt as _;
 use yulius_app::ports::session::Bind;
 use yulius_domain::agent_cli::{
-    self as policy, Channel, PACKAGE, REGISTRY_HOST, Version, platform_package, should_install,
+    self as policy, Channel, PACKAGE, REGISTRY_HOST, Version, elf_machine, platform_package,
+    should_install,
 };
 
 /// npm's registry.
@@ -41,10 +44,6 @@ const DOCUMENT_TIMEOUT: Duration = Duration::from_secs(15);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// Largest registry document read.
 const MAX_DOCUMENT: usize = 1024 * 1024;
-/// Deadline of the new binary's `--version`.
-const VERSION_TIMEOUT: Duration = Duration::from_secs(30);
-/// Most of `--version`'s output read.
-const MAX_VERSION_OUTPUT: u64 = 4096;
 /// Names of temporary entries in the updater's directory, removed by the next check.
 const TEMPORARY: [&str; 2] = [".staging-", ".current-"];
 
@@ -57,6 +56,8 @@ pub enum Outcome {
     Unsupported,
     /// No npm install of Claude Code on the host to bind over.
     NoHostInstall,
+    /// The host's package is not laid out as `bin/claude.exe`: runs keep binding it.
+    HostLayout,
     /// Runs already get this version (or a newer one).
     UpToDate(Version),
     /// This version was installed and is now current.
@@ -87,6 +88,7 @@ pub struct ClaudeUpdater {
     host_dir: Option<PathBuf>,
     platform: Option<String>,
     max_tarball: u64,
+    max_binary: u64,
 }
 
 impl ClaudeUpdater {
@@ -129,6 +131,7 @@ impl ClaudeUpdater {
             host_dir,
             platform,
             max_tarball: MAX_TARBALL,
+            max_binary: MAX_BINARY,
         })
     }
 
@@ -136,6 +139,13 @@ impl ClaudeUpdater {
     #[must_use]
     pub fn with_max_tarball(mut self, bytes: u64) -> Self {
         self.max_tarball = bytes;
+        self
+    }
+
+    /// A smaller binary bound (tests).
+    #[must_use]
+    pub fn with_max_binary(mut self, bytes: u64) -> Self {
+        self.max_binary = bytes;
         self
     }
 
@@ -166,7 +176,14 @@ impl ClaudeUpdater {
         let Some(host_dir) = self.host_dir.as_deref() else {
             return Ok(Outcome::NoHostInstall);
         };
+        if !host_layout_ok(host_dir) {
+            return Ok(Outcome::HostLayout);
+        }
         self.remove_temporary().await;
+        // A version a process still ran at the last check may have ended since.
+        if let Some(current) = self.current() {
+            self.remove_old(current).await;
+        }
         let tags = self
             .document(&format!("/-/package/{}/dist-tags", encoded(PACKAGE)))
             .await?;
@@ -220,18 +237,28 @@ impl ClaudeUpdater {
         tokio::fs::create_dir_all(package.join("bin"))
             .await
             .map_err(|e| UpdateError(format!("cannot create {}: {e}", staging.display())))?;
+        // Readable by every sandbox user, whatever the service's umask.
+        for dir in [package.clone(), package.join("bin")] {
+            set_mode(&dir, 0o755).await?;
+        }
         let tarball = staging.join("download.tgz");
         let digest = self.download(url, &tarball).await?;
         if digest != expected {
             return fail("the tarball's sha512 is not the registry's integrity");
         }
-        let binary = package.join(BINARY);
-        let (from, to) = (tarball.clone(), binary.clone());
-        tokio::task::spawn_blocking(move || extract_binary(&from, &to))
+        let Some(machine) = elf_machine(platform) else {
+            return fail(format!("no ELF machine is known for {platform}"));
+        };
+        let expect = Expected {
+            machine,
+            version,
+            max: self.max_binary,
+        };
+        let (from, to) = (tarball.clone(), package.join(BINARY));
+        tokio::task::spawn_blocking(move || extract_binary(&from, &to, &expect))
             .await
             .map_err(|e| UpdateError(format!("extraction stopped: {e}")))??;
         let _ = tokio::fs::remove_file(&tarball).await;
-        check_version(&binary, version, &staging.join("home")).await?;
         self.switch(&package, version).await
     }
 
@@ -320,6 +347,8 @@ impl ClaudeUpdater {
         tokio::fs::create_dir_all(&versions)
             .await
             .map_err(|e| io("create the versions directory", e))?;
+        set_mode(&self.root, 0o755).await?;
+        set_mode(&versions, 0o755).await?;
         if tokio::fs::symlink_metadata(&target).await.is_ok() {
             tokio::fs::remove_dir_all(&target)
                 .await
@@ -338,10 +367,17 @@ impl ClaudeUpdater {
             let _ = tokio::fs::remove_file(&link).await;
             return Err(io("make the version current", e));
         }
+        // The renames survive a crash once the directories are on disk.
+        for dir in [versions, self.root.clone()] {
+            if let Ok(dir) = tokio::fs::File::open(&dir).await {
+                let _ = dir.sync_all().await;
+            }
+        }
         Ok(())
     }
 
-    /// Removes versions older than the one before `current` (CCU-004).
+    /// Removes versions older than the one before `current` (CCU-004), except one a process
+    /// still runs (its binary is the executable of a live process).
     async fn remove_old(&self, current: Version) {
         let versions = self.root.join("versions");
         let Ok(mut entries) = tokio::fs::read_dir(&versions).await else {
@@ -353,7 +389,22 @@ impl ClaudeUpdater {
                 installed.push(version);
             }
         }
-        for old in policy::to_remove(&installed, current) {
+        let candidates = policy::to_remove(&installed, current);
+        if candidates.is_empty() {
+            return;
+        }
+        let binaries: Vec<(Version, PathBuf)> = candidates
+            .iter()
+            .map(|v| (*v, versions.join(v.to_string()).join(BINARY)))
+            .collect();
+        let running = tokio::task::spawn_blocking(move || running_versions(&binaries))
+            .await
+            .unwrap_or_default();
+        for old in candidates {
+            if running.contains(&old) {
+                tracing::info!(%old, "an old Claude Code version still runs: kept for now");
+                continue;
+            }
             if let Err(error) = tokio::fs::remove_dir_all(versions.join(old.to_string())).await {
                 tracing::warn!(%old, %error, "cannot remove an old Claude Code version");
             }
@@ -413,7 +464,7 @@ pub fn start_updates_every(
     Some(tokio::spawn(async move {
         tokio::time::sleep(first).await;
         loop {
-            // Each request, the download and `--version` have their own deadline.
+            // Each request and the download have their own deadline.
             match updater.check(channel).await {
                 Ok(Outcome::Installed(version)) => {
                     tracing::info!(%version, "Claude Code updated: new runs use it");
@@ -447,7 +498,7 @@ pub fn agent_cli_binds(host_dir: Option<&Path>, root: Option<&Path>) -> Vec<Bind
 
 /// Which Claude Code isolated runs get and where it comes from, for `yulius doctor` (CCU-006).
 #[must_use]
-pub fn describe(root: &Path, host_dir: Option<&Path>) -> String {
+pub fn describe(root: &Path, host_dir: Option<&Path>, channel: Channel) -> String {
     let Some(host_dir) = host_dir else {
         return "no npm install of Claude Code on the host to bind over: isolated sandboxes \
                 have none, and nothing is updated (docs/operations.md §1)"
@@ -455,6 +506,18 @@ pub fn describe(root: &Path, host_dir: Option<&Path>) -> String {
     };
     let host =
         host_version(host_dir).map_or_else(|| "an unknown version".into(), |v| v.to_string());
+    if channel == Channel::Off {
+        return format!(
+            "{host} from the host ({}); updates are off (YULIUS_CLAUDE_UPDATES=off)",
+            host_dir.display()
+        );
+    }
+    if !host_layout_ok(host_dir) {
+        return format!(
+            "{host} from the host ({}); not updated: its `claude` is not bin/claude.exe",
+            host_dir.display()
+        );
+    }
     match current_version(root) {
         Some(ours) if agent_cli_source(root, host_dir) != host_dir => format!(
             "{ours}, kept current by Yulius in {} (the host has {host})",
@@ -475,7 +538,7 @@ pub fn agent_cli_source(root: &Path, host_dir: &Path) -> PathBuf {
     let Some(ours) = current_version(root) else {
         return host_dir.to_path_buf();
     };
-    if host_version(host_dir).is_some_and(|host| host >= ours) {
+    if !host_layout_ok(host_dir) || host_version(host_dir).is_some_and(|host| host >= ours) {
         return host_dir.to_path_buf();
     }
     root.join("versions")
@@ -503,6 +566,69 @@ pub fn host_version(host_dir: &Path) -> Option<Version> {
     Version::parse(manifest.get("version")?.as_str()?)
 }
 
+/// Sets `path`'s permission bits.
+async fn set_mode(path: &Path, mode: u32) -> Result<(), UpdateError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        .await
+        .map_err(|e| UpdateError(format!("cannot set the mode of {}: {e}", path.display())))
+}
+
+/// Whether the host package's `claude` is `bin/claude.exe`, the file Yulius's copies hold: the
+/// sandbox's `claude` link points there, so a copy bound over another layout would leave it
+/// dangling (review finding 1).
+fn host_layout_ok(host_dir: &Path) -> bool {
+    let Ok(text) = std::fs::read(host_dir.join("package.json")) else {
+        return false;
+    };
+    let Ok(manifest) = serde_json::from_slice::<Value>(&text) else {
+        return false;
+    };
+    let bin = manifest.get("bin");
+    let named = bin
+        .and_then(|b| b.get("claude"))
+        .or(bin.filter(|b| b.is_string()))
+        .and_then(Value::as_str);
+    named.map(|p| p.trim_start_matches("./")) == Some(BINARY)
+}
+
+/// The versions among `binaries` some live process runs: its executable is that file (same
+/// device and inode), seen through `/proc/<pid>/exe` whatever namespace the process is in.
+/// Processes that cannot be read are skipped; elsewhere than Linux, none.
+fn running_versions(binaries: &[(Version, PathBuf)]) -> Vec<Version> {
+    use std::os::unix::fs::MetadataExt as _;
+    let ids: Vec<(Version, (u64, u64))> = binaries
+        .iter()
+        .filter_map(|(v, path)| {
+            std::fs::metadata(path)
+                .ok()
+                .map(|m| (*v, (m.dev(), m.ino())))
+        })
+        .collect();
+    let Ok(procs) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let mut running = Vec::new();
+    for entry in procs.flatten() {
+        let name = entry.file_name();
+        if !name
+            .to_str()
+            .is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
+        {
+            continue;
+        }
+        let Ok(exe) = std::fs::metadata(entry.path().join("exe")) else {
+            continue;
+        };
+        for (version, id) in &ids {
+            if *id == (exe.dev(), exe.ino()) && !running.contains(version) {
+                running.push(*version);
+            }
+        }
+    }
+    running
+}
+
 /// `@scope/name` as one path segment.
 fn encoded(package: &str) -> String {
     package.replace('/', "%2F")
@@ -525,15 +651,28 @@ fn sha512_of(integrity: &str) -> Result<Vec<u8>, UpdateError> {
         .ok_or_else(|| UpdateError("the registry gives no sha512 integrity".into()))
 }
 
-/// Takes the regular file `package/claude` from the gzip tarball into `to` (mode 0755), bounded.
-fn extract_binary(tarball: &Path, to: &Path) -> Result<(), UpdateError> {
-    use std::io::Read as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
+/// What the platform binary must be.
+struct Expected {
+    /// ELF `e_machine`.
+    machine: u16,
+    /// The version it must embed.
+    version: Version,
+    /// Largest size.
+    max: u64,
+}
+
+/// Takes the regular file `package/claude` from the gzip tarball into `to` (mode 0755), bounded,
+/// and checks it is a 64-bit little-endian ELF for `expect.machine` that embeds
+/// `VERSION:"<version>"`.
+fn extract_binary(tarball: &Path, to: &Path, expect: &Expected) -> Result<(), UpdateError> {
+    use std::io::{Read as _, Write as _};
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
     let io = |e: std::io::Error| UpdateError(format!("cannot read the tarball: {e}"));
+    let write = |e: std::io::Error| UpdateError(format!("cannot write the binary: {e}"));
     let file = std::fs::File::open(tarball).map_err(io)?;
     let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(file));
     for entry in archive.entries().map_err(io)? {
-        let entry = entry.map_err(io)?;
+        let mut entry = entry.map_err(io)?;
         if entry.path().map_err(io)?.as_ref() != Path::new("package/claude") {
             continue;
         }
@@ -545,60 +684,56 @@ fn extract_binary(tarball: &Path, to: &Path) -> Result<(), UpdateError> {
             .create_new(true)
             .mode(0o755)
             .open(to)
-            .map_err(|e| UpdateError(format!("cannot write the binary: {e}")))?;
-        let copied = std::io::copy(&mut entry.take(MAX_BINARY + 1), &mut out)
-            .map_err(|e| UpdateError(format!("cannot write the binary: {e}")))?;
-        if copied > MAX_BINARY {
-            return fail("the binary is larger than allowed");
+            .map_err(write)?;
+        let needle = format!("VERSION:\"{}\"", expect.version).into_bytes();
+        let mut header = Vec::with_capacity(20);
+        let mut window: Vec<u8> = Vec::new();
+        let mut named = false;
+        let mut size = 0u64;
+        let mut buf = vec![0u8; 64 * 1024];
+        loop {
+            let n = entry.read(&mut buf).map_err(io)?;
+            if n == 0 {
+                break;
+            }
+            let chunk = &buf[..n];
+            size += n as u64;
+            if size > expect.max {
+                return fail("the binary is larger than allowed");
+            }
+            if header.len() < 20 {
+                let take = (20 - header.len()).min(n);
+                header.extend_from_slice(&chunk[..take]);
+            }
+            if !named {
+                // The needle may straddle two reads: keep its length less one byte.
+                window.extend_from_slice(chunk);
+                named = window.windows(needle.len()).any(|w| w == needle.as_slice());
+                let keep = needle.len() - 1;
+                if window.len() > keep {
+                    window.drain(..window.len() - keep);
+                }
+            }
+            out.write_all(chunk).map_err(write)?;
         }
-        return out
-            .sync_all()
-            .map_err(|e| UpdateError(format!("cannot write the binary: {e}")));
+        let elf = header.len() == 20
+            && header[..4] == *b"\x7fELF"
+            && header[4] == 2
+            && header[5] == 1
+            && u16::from_le_bytes([header[18], header[19]]) == expect.machine;
+        if !elf {
+            return fail(format!(
+                "the binary is not a 64-bit ELF for machine {}",
+                expect.machine
+            ));
+        }
+        if !named {
+            return fail(format!("the binary does not name {}", expect.version));
+        }
+        // The open's mode passed through the umask; every sandbox user runs it.
+        out.set_permissions(std::fs::Permissions::from_mode(0o755))
+            .map_err(write)?;
+        return out.sync_all().map_err(write);
     }
     fail("the tarball holds no `package/claude`")
-}
-
-/// Runs `binary --version` in a clean environment; it must name `version`.
-async fn check_version(binary: &Path, version: Version, home: &Path) -> Result<(), UpdateError> {
-    tokio::fs::create_dir_all(home)
-        .await
-        .map_err(|e| UpdateError(format!("cannot create {}: {e}", home.display())))?;
-    let mut child = tokio::process::Command::new(binary)
-        .arg("--version")
-        .env_clear()
-        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-        .env("HOME", home)
-        .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
-        .env("DISABLE_AUTOUPDATER", "1")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| UpdateError(format!("the new binary does not start: {e}")))?;
-    let stdout = child.stdout.take();
-    let run = async {
-        let mut output = Vec::new();
-        if let Some(stdout) = stdout {
-            let _ = stdout
-                .take(MAX_VERSION_OUTPUT)
-                .read_to_end(&mut output)
-                .await;
-        }
-        (child.wait().await, output)
-    };
-    let Ok((status, output)) = tokio::time::timeout(VERSION_TIMEOUT, run).await else {
-        // Killed and reaped before the version counts as failed.
-        let _ = child.kill().await;
-        return fail("the new binary's --version did not finish");
-    };
-    let printed = String::from_utf8_lossy(&output);
-    let named = printed.split_whitespace().next() == Some(&version.to_string());
-    if !status.is_ok_and(|s| s.success()) || !named {
-        return fail(format!(
-            "the new binary's --version does not name {version}: {:?}",
-            printed.trim().chars().take(80).collect::<String>()
-        ));
-    }
-    Ok(())
 }
