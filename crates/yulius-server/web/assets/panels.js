@@ -53,7 +53,7 @@ export function createPanelHost(ctx) {
   const rail = h('nav', { class: 'rail', 'aria-label': 'Tools' });
   for (const [kind, iconName, label] of KINDS) {
     // Named, not icon-only, so a newcomer sees what each tool is (phones show icons only).
-    const button = h('button', { type: 'button', class: 'btn-icon rail-btn', 'aria-label': label, title: label, 'aria-pressed': 'false', onClick: () => railClick(kind) }, icon(iconName, { size: 20 }), h('span', { class: 'rail-label' }, label));
+    const button = h('button', { type: 'button', class: 'btn-icon rail-btn', dataset: { kind }, 'aria-label': label, title: label, 'aria-pressed': 'false', onClick: () => railClick(kind) }, icon(iconName, { size: 20 }), h('span', { class: 'rail-label' }, label));
     const dot = h('span', { class: 'rail-dot', hidden: true });
     button.append(dot);
     buttons.set(kind, button);
@@ -170,8 +170,9 @@ export function createPanelHost(ctx) {
   }
 
   function createView(k) {
-    if (!sandbox) return simpleView(h('div', { class: 'panel-msg' }, 'Open a sandbox first.'));
+    // Outside a sandbox the Superagent is the person's Global Superagent (SPEC-427 GSA-006).
     if (k === 'agent') return createAgentView(ctx, sandbox);
+    if (!sandbox) return simpleView(h('div', { class: 'panel-msg' }, 'Open a sandbox first.'));
     if (k === 'browser') return createBrowserPanel(ctx, sandbox);
     // The selected task, while it is one of this view's sandbox (the view outlives a switch).
     const own = sandbox;
@@ -201,7 +202,7 @@ export function createPanelHost(ctx) {
       if (hiding && other.hide) other.hide();
     }
     const label = KINDS.find(([name]) => name === k)[2];
-    title.textContent = label;
+    title.textContent = view.title || label;
     setChildren(headExtra, view.headExtra ? view.headExtra() : null);
     if (!railVisible) {
       railForPanel = opts.persistRail === false;
@@ -290,7 +291,8 @@ export function createPanelHost(ctx) {
     const write = sandbox && allows(sandbox.access, 'write');
     for (const [k] of KINDS) {
       const button = buttons.get(k);
-      button.disabled = !sandbox;
+      // Outside a sandbox only the Superagent, the Global one, is there (SPEC-427 GSA-006).
+      button.disabled = !sandbox && k !== 'agent';
       // Readers still edit the team's notes.
       button.classList.toggle('readonly', Boolean(sandbox) && !write && k !== 'notes');
     }
@@ -348,7 +350,8 @@ export function createPanelHost(ctx) {
         if (editor && editor.taskChanged) editor.taskChanged();
       }
       if (!sandbox) {
-        if (!panel.hidden) close();
+        // The Global Superagent stays open from one page outside a sandbox to the next.
+        if (!panel.hidden && (sandboxChanged || kind !== 'agent')) close();
       } else if (sandboxChanged && toolOf.has(sandbox.id)) {
         // Back in a sandbox: the tool it had open, or none (KST-005). A rail the person hid is shown
         // for that tool only, as for a Superagent link.

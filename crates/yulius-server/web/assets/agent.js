@@ -13,20 +13,35 @@ import { href } from './router.js';
 import { attachTerminalDrop, shellAttachments } from './filedrop.js';
 import { isPhone } from './theme.js';
 
-/** The Superagent's panel view: its quick-work notice above the session. Starts on the first show. */
+/**
+ * The Superagent's panel view: its quick-work notice above the session. Starts on the first show.
+ * Without a sandbox it is the person's Global Superagent (SPEC-427 GSA-006): one session that sees
+ * every sandbox of theirs, opened by POST /api/superagent.
+ */
 export function createAgentView(ctx, sandbox) {
-  const write = allows(sandbox.access, 'write');
+  const global = !sandbox;
+  const write = global || allows(sandbox.access, 'write');
+  const name = global ? 'Global Superagent' : 'Superagent';
+  const openPath = global ? '/api/superagent' : `/api/sandboxes/${enc(sandbox.id)}/cockpit`;
   // On phones the panel covers the page: it closes so the composer shows.
-  const newTask = write ? h('a', { href: href(`/s/${encodeURIComponent(sandbox.slug)}`), dataset: { route: `/s/${encodeURIComponent(sandbox.slug)}` }, onClick: () => { if (isPhone() && ctx.closePanel) ctx.closePanel(); } }, 'New task') : null;
+  const closeOnPhone = () => { if (isPhone() && ctx.closePanel) ctx.closePanel(); };
+  const newTask = !global && write ? h('a', { href: href(`/s/${encodeURIComponent(sandbox.slug)}`), dataset: { route: `/s/${encodeURIComponent(sandbox.slug)}` }, onClick: closeOnPhone }, 'New task') : null;
+  const globalLink = h('a', { href: href('/superagent'), dataset: { route: '/superagent' }, onClick: closeOnPhone }, 'Global Superagent');
   // AGT-002: what the Superagent is for, and where bigger work goes.
-  const notice = h('div', { class: 'banner banner-info agent-note small', role: 'note', 'aria-label': 'About the Superagent' },
-    icon('info', { size: 16 }),
-    h('span', { class: 'banner-text' },
-      h('strong', null, 'For quick work'), ': setting up automations, asking a quick question. Anything more complex, such as writing code, belongs in a task, not here', newTask ? [': ', newTask, '.'] : '.'));
+  const notice = global
+    ? h('div', { class: 'banner banner-info agent-note small', role: 'note', 'aria-label': 'About the Global Superagent' },
+      icon('info', { size: 16 }),
+      h('span', { class: 'banner-text' },
+        h('strong', null, 'Sees all your sandboxes'), ' and keeps them in sync: what runs where, the same change across repositories. Code work still belongs in a task in its sandbox.'))
+    : h('div', { class: 'banner banner-info agent-note small', role: 'note', 'aria-label': 'About the Superagent' },
+      icon('info', { size: 16 }),
+      h('span', { class: 'banner-text' },
+        h('strong', null, 'For quick work'), ': setting up automations, asking a quick question. Anything more complex, such as writing code, belongs in a task, not here', newTask ? [': ', newTask, '.'] : '.',
+        ' Work across sandboxes: the ', globalLink, ', from All sandboxes.'));
   const body = h('div', { class: 'agent-term' });
-  const requests = createRequests(ctx, sandbox);
-  const link = createLink(ctx, sandbox, () => restart());
-  const el = h('div', { class: 'agent' }, notice, link.el, requests.el, body);
+  const requests = global ? null : createRequests(ctx, sandbox);
+  const link = global ? null : createLink(ctx, sandbox, () => restart());
+  const el = h('div', { class: 'agent' }, notice, link && link.el, requests && requests.el, body);
   let terminal = null;
   let alive = true;
   let opening = false;
@@ -51,13 +66,13 @@ export function createAgentView(ctx, sandbox) {
     const from = document.activeElement;
     opening = true;
     drop();
-    setChildren(body, skeleton('Starting your Superagent…', 3, { block: true }));
+    setChildren(body, skeleton(`Starting your ${name}…`, 3, { block: true }));
     let shell;
     try {
-      shell = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/cockpit`);
+      shell = await ctx.api.post(openPath);
     } catch (err) {
       opening = false;
-      if (alive) setChildren(body, h('div', { class: 'agent-msg' }, loadError(`Couldn’t start the Superagent: ${err.message}`, () => open())));
+      if (alive) setChildren(body, h('div', { class: 'agent-msg' }, loadError(`Couldn’t start the ${name}: ${err.message}`, () => open())));
       return;
     }
     opening = false;
@@ -73,7 +88,7 @@ export function createAgentView(ctx, sandbox) {
     if (recovering || opening || !alive || !current) return;
     recovering = true;
     try {
-      const shell = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/cockpit`);
+      const shell = await ctx.api.post(openPath);
       // The keyboard stays where it is: in the Superagent if it was there (a refused session's terminal
       // takes it when shown, before it is refused), or was going there when the connection dropped
       // before the first screen; else with the page beside it.
@@ -131,8 +146,8 @@ export function createAgentView(ctx, sandbox) {
       // it to get new tools (SPEC-186 SAV-006): it goes on, so the panel follows it instead of
       // offering Start again.
       exitMessage: (exit) => (exit.status === 'switched'
-        ? { tone: 'info', text: 'Restarting the Superagent; its conversation continues…' }
-        : { tone: 'info', text: 'The Superagent stopped. Its conversation is kept.' }),
+        ? { tone: 'info', text: `Restarting the ${name}; its conversation continues…` }
+        : { tone: 'info', text: `The ${name} stopped. Its conversation is kept.` }),
       exitActions: (exit) => (exit.status === 'switched' ? [] : [{ label: 'Start again', run: () => open() }]),
       // Opened again rather than recovered: the server answers once the new one runs (it holds the
       // start), and a failure shows why with Try again instead of leaving "Moving…" on screen.
@@ -142,19 +157,20 @@ export function createAgentView(ctx, sandbox) {
       // leaves the keyboard where it is.
       onReady: () => { asked = { focus: false, from: null }; },
       onConnection: (status) => { if (status === 'reconnecting' || status === 'failed') recover(); },
-      // Paths in its output open in the Editor, as in a terminal of the sandbox repository.
-      fileLinks: {
+      // Paths in its output open in the Editor, as in a terminal of the sandbox repository. The
+      // Global Superagent has no files: it works through Yulius only.
+      fileLinks: global ? undefined : {
         list: (dir) => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/files?root=sandbox&path=${encodeURIComponent(dir)}`).then((listing) => listing.entries || []),
         roots: () => (shell.folder ? [shell.folder] : []),
         open: (file) => ctx.openFile && ctx.openFile(sandbox, { root: 'sandbox', ...file }),
       },
     });
     // Files dropped here (or a pasted image) reach Claude by path, as in a task's terminal.
-    attachTerminalDrop(ctx, terminal, { label: 'Drop to send to Claude', upload: shellAttachments(ctx, sandbox.id, shell.id) });
+    if (!global) attachTerminalDrop(ctx, terminal, { label: 'Drop to send to Claude', upload: shellAttachments(ctx, sandbox.id, shell.id) });
     setChildren(body, terminal.el);
     terminal.start();
     if (wantFocus) focus();
-    link.load();
+    if (link) link.load();
   }
 
   if (!write) {
@@ -167,6 +183,7 @@ export function createAgentView(ctx, sandbox) {
 
   return {
     el,
+    title: name,
     show(opts = {}) {
       shown = true;
       // The session starts the first time the panel shows it, not when a sandbox opens.
@@ -177,8 +194,8 @@ export function createAgentView(ctx, sandbox) {
     hide() { shown = false; },
     destroy() {
       alive = false;
-      requests.destroy();
-      link.destroy();
+      if (requests) requests.destroy();
+      if (link) link.destroy();
       drop();
     },
   };

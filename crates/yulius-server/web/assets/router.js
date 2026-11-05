@@ -186,6 +186,8 @@ export function matchRoute(path, query = new URLSearchParams()) {
   const base = { query, path };
   if (parts.length === 0) return { ...base, name: 'home' };
   const [first, second, third, fourth] = parts;
+  // The Global Superagent (SPEC-427 GSA-006): All sandboxes with its panel open.
+  if (parts.length === 1 && first === 'superagent') return { ...base, name: 'home', panel: 'agent' };
   if (parts.length === 1 && ['setup', 'signin', 'join', 'device', 'archived', 'settings', 'design', 'secrets'].includes(first)) return { ...base, name: first };
   if (first === 'admin' && parts.length === 2 && ADMIN_PAGES.has(second)) return { ...base, name: 'admin', page: second };
   if (first === 's' && second) {

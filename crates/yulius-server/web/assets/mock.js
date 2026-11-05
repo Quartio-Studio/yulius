@@ -3420,12 +3420,26 @@ route('POST', `/api/sandboxes/${ID}/cockpit`, async ({ db, p }) => {
     db.cockpitGone = true;
     return { id: `ck_${p[0]}_gone`, name: 'Cockpit', task_id: null, folder: `/srv/yulius/sandboxes/studio/repo`, created_at: new Date().toISOString() };
   }
-  let shell = [...db.shells.values()].find((s) => s.sandbox_id === p[0] && s.cockpit);
+  let shell = [...db.shells.values()].find((s) => s.sandbox_id === p[0] && s.cockpit && !s.global);
   if (!shell) {
     db.nextId += 1;
     db.cockpitStarts = (db.cockpitStarts || 0) + 1;
     shell = { id: `ck_${p[0]}_${db.nextId}`, sandbox_id: p[0], name: 'Cockpit', task_id: null, created_at: new Date().toISOString(), session: null, cockpit: true, resumed: db.cockpitStarts > 1 };
     shell.folder = shellFolder(db, shell);
+    db.shells.set(shell.id, shell);
+  }
+  return shellDto(shell);
+});
+// The person's Global Superagent (SPEC-427): one per person outside every sandbox, hosted by a
+// sandbox they can work in; without one it is refused, as the server refuses it.
+route('POST', '/api/superagent', async ({ db }) => {
+  const host = db.sandboxes.find((s) => (RANK[s.access] || 0) >= RANK.write);
+  if (!host) fail(409, 'conflict', 'the Global Superagent needs a sandbox you can work in (write access)');
+  needClaude(db);
+  let shell = [...db.shells.values()].find((s) => s.global);
+  if (!shell) {
+    db.nextId += 1;
+    shell = { id: `gs_${db.nextId}`, sandbox_id: host.id, name: 'Cockpit', task_id: null, created_at: new Date().toISOString(), session: null, cockpit: true, global: true, folder: '/srv/yulius/users/you/superagent/work' };
     db.shells.set(shell.id, shell);
   }
   return shellDto(shell);
@@ -3441,7 +3455,7 @@ route('POST', `/api/sandboxes/${ID}/cockpit/restart`, async ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
   needClaude(db);
   if (db.cockpitRestartFails) fail(409, 'conflict', 'The Superagent could not restart: its process could not be ended, so it keeps running.');
-  const old = [...db.shells.values()].find((s) => s.sandbox_id === p[0] && s.cockpit);
+  const old = [...db.shells.values()].find((s) => s.sandbox_id === p[0] && s.cockpit && !s.global);
   db.nextId += 1;
   db.cockpitStarts = (db.cockpitStarts || 0) + 1;
   const shell = { id: `ck_${p[0]}_${db.nextId}`, sandbox_id: p[0], name: 'Cockpit', task_id: null, created_at: new Date().toISOString(), session: null, cockpit: true, resumed: true };

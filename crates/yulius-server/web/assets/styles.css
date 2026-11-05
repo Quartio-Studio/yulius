@@ -287,9 +287,9 @@ p { margin: 0; }
   grid-template-rows: var(--tabrow-h) minmax(0, 1fr);
   grid-template-areas: "tabs tabs tabs tabs" "side main panel rail";
 }
-.app.no-sandbox { grid-template-columns: var(--sidebar-w) minmax(0, 1fr) 0 0; }
-/* The home screen (UI-045) has no sandbox, so no tools: the rail, its panel and its toggle go. */
-.app.no-sandbox .rail, .app.no-sandbox .panel, .app.no-sandbox .tools-toggle { display: none; }
+/* The home screen (UI-045) and the other pages outside a sandbox have one tool, the Global
+   Superagent (SPEC-427 GSA-006): the rail shows only its button. */
+.app.no-sandbox .rail-btn:not([data-kind="agent"]) { display: none; }
 /* The sidebar stays while a tool panel is open (developers keep their tasks in view): the panel
    takes its width from the centre (panels.js applyWidth). */
 
