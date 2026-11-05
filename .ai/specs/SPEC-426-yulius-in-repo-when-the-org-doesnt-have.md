@@ -66,8 +66,11 @@ discovered at the end of a turn.
   says that documentation edits are not held, and tells the agent to make the edit again once the
   Plan is there.
 - **EDG-005 It gives up as the Stop gate does.** Denials are counted per turn (reset by the next
-  prompt); after three, the rest of that turn's edits pass and the task's terminal says once that
-  the agent's edits were refused three times for want of a Plan. A spec Yulius cannot read (a
+  prompt) in rounds: denials within 3 s of a round's first (one response's parallel edits) are one
+  round. After three rounds, the rest of that turn's edits pass without a look and the task's
+  terminal says once that the agent's edits were refused three times for want of a Plan. A hook
+  its client stopped waiting for (sent more than 5 s ago) is answered with nothing and not
+  counted. A spec Yulius cannot read (a
   link) or an agent told to go on without one is therefore not stuck.
 - **EDG-004 The rest of the gate is unchanged.** The `Stop` gate still requires a valid spec;
   the edit gate asks only for a Plan, so a draft spec being written does not hold the work.

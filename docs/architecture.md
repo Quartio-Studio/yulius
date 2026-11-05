@@ -647,9 +647,11 @@ missing or invalid (`spec_gate`, DSC-013), at most three times. Before a code ed
 `PreToolUse` for `Edit`, `MultiEdit`, `Write` and `NotebookEdit` reaches Yulius through `yulius
 hook claude PreToolUse`, which fails open. `edit_gate` denies an edit of a non-documentation file
 in the task's worktree while the task needs a spec and its spec has no Plan item yet. The client
-sends only the tool, the agent's folder and the path, and the hook is never held. As the Stop gate
-does, the edit gate gives up after three denials in a turn and says so in the task's terminal. A goal task's
-long turn therefore cannot change code before its plan exists
+sends only the event, the tool, the agent's folder and the path, and the hook is never held.
+Denials are counted in rounds (those within 3 s of a round's first, one response's parallel edits,
+are one); as the Stop gate does, the edit gate gives up after three rounds in a turn, says so in
+the task's terminal and stops looking until the next prompt. A goal task's long turn is therefore
+refused its first code edits until its plan exists
 ([SPEC-426](../.ai/specs/SPEC-426-yulius-in-repo-when-the-org-doesnt-have.md),
 [decision 0270](decisions/0270-a-code-edit-waits-for-the-tasks-spec-plan.md)). Bash calls are
 checked in the sandbox (`guard_client`, a `pgrep -f` that matches itself) and never sent.
@@ -663,10 +665,12 @@ sequenceDiagram
     H-->>A: local check only (self-matching pgrep -f denied)
     A->>H: PreToolUse Edit / Write of a file
     H->>Y: POST /hooks/claude/PreToolUse
-    Y-->>A: deny until the spec has a Plan (code files of a task that needs a spec), else nothing
+    Y-->>H: deny until the spec has a Plan (code files of a task that needs a spec), else nothing
+    H-->>A: the answer
     A->>H: Stop (turn end)
     H->>Y: POST /hooks/claude/Stop
-    Y-->>A: block while the spec is missing or invalid, else the turn ends
+    Y-->>H: block while the spec is missing or invalid, else the turn ends
+    H-->>A: the answer
 ```
 
 ## Agent feedback
