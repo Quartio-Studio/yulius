@@ -11,6 +11,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `off`), installs a newer one under `<data>/claude-code` after checking its sha512 and
   `--version`, and every new or resumed run in an isolated sandbox gets it. Running sessions are not
   interrupted and subscriptions stay signed in. `yulius doctor` names the version sandboxes get.
+- The original prompt's images load visibly (SPEC-420, task #402, #1065, ADR-0265): while an image
+  is read its tile shimmers with a turning ring and keeps its number, instead of the browser's
+  broken-image icon and the file name; an `Image N` placeholder clicked meanwhile shows a ring; an
+  image the browser cannot draw says "Couldn’t load it".
 
 ## 2026-11-04
 

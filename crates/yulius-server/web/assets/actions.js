@@ -530,15 +530,33 @@ export function openPromptDialog(ctx, task) {
   // An image can be as large as an upload (1 GiB by default, SPEC-325): longer than a JSON read.
   const FILE_TIMEOUT_MS = 120000;
   // Each file is read once, for its thumbnail or its first opening, whichever comes first; a
-  // failed read is tried again at the next opening.
+  // failed read is tried again at the next opening. A read ends once the picture is decoded, so a
+  // file the browser cannot draw fails as a read does, never shown as a broken image (SPEC-420).
   const reads = new Map(); // index → Promise of an object URL
   const read = (index) => {
     if (!reads.has(index)) {
-      reads.set(index, ctx.api.get(fileUrl(index), { as: 'blob', signal: controller.signal, timeoutMs: FILE_TIMEOUT_MS }).then((blob) => {
+      reads.set(index, ctx.api.get(fileUrl(index), { as: 'blob', signal: controller.signal, timeoutMs: FILE_TIMEOUT_MS }).then(async (blob) => {
         const url = URL.createObjectURL(blob);
+        const picture = new Image();
+        picture.src = url;
+        let drawn = true;
+        try {
+          await picture.decode();
+        } catch {
+          drawn = false;
+        }
+        // Kept only while the dialog is open and the picture can be drawn: a file read again at
+        // each click would otherwise hold one more blob each time, and one decoded after the
+        // dialog closed would never be revoked.
+        if (!drawn || controller.signal.aborted) {
+          URL.revokeObjectURL(url);
+          if (controller.signal.aborted) throw Object.assign(new Error('Cancelled.'), { code: 'aborted' });
+          // The browser's own words differ between browsers.
+          throw new Error('it is not a picture the browser can show.');
+        }
         urls.push(url);
         return url;
-      }, (error) => {
+      }).catch((error) => {
         reads.delete(index);
         throw error;
       }));
@@ -552,27 +570,51 @@ export function openPromptDialog(ctx, task) {
   let same = (index) => index;
   // The list's thumbnails, to show a picture its own read could not load once a later read does.
   const tiles = new Map(); // index → (url) => void
-  /** Opens image `index` full size, once however often it is asked meanwhile. */
-  const opening = new Set();
-  const openImage = async (file, mention) => {
+  /**
+   * Opens image `index` full size, once however often it is asked meanwhile: every ask gets the
+   * opening under way, which settles when the preview opens or the read fails.
+   */
+  const opening = new Map(); // index → Promise
+  const openImage = (file, mention) => {
     const index = same(mention);
-    if (opening.has(index)) return;
-    opening.add(index);
-    try {
-      const url = await read(index);
-      tiles.get(index)?.(url);
-      openAttachment({ name: file.name }, { image: url });
-    } catch (error) {
-      if (error.code !== 'aborted') errorToast(error, `Couldn’t open ${file.name}`);
-    } finally {
-      opening.delete(index);
+    if (!opening.has(index)) {
+      opening.set(index, (async () => {
+        try {
+          const url = await read(index);
+          tiles.get(index)?.(url);
+          openAttachment({ name: file.name }, { image: url });
+        } catch (error) {
+          if (error.code !== 'aborted') errorToast(error, `Couldn’t open ${file.name}`);
+        } finally {
+          opening.delete(index);
+        }
+      })());
     }
+    return opening.get(index);
   };
-  /** An image inside the text: a placeholder one line high that opens it (SPEC-180). */
+  /**
+   * An image inside the text: a placeholder one line high that opens it (SPEC-180). While its
+   * image is read the icon turns as a ring (SPEC-420).
+   */
   const imagePlaceholder = (file, index) => {
     const n = numbers.get(file.name);
-    return h('button', { type: 'button', class: 'pi-atom pi-image prompt-atom', title: file.name, 'aria-label': `Open Image ${n}, ${file.name}`, onClick: () => openImage(file, index) },
-      icon('image', { size: 14 }), h('span', { class: 'pi-file-name' }, `Image ${n}`));
+    const mark = icon('image', { size: 14 });
+    const ring = h('span', { class: 'pi-spinner', 'aria-hidden': 'true' });
+    const atom = h('button', {
+      type: 'button', class: 'pi-atom pi-image prompt-atom', title: file.name, 'aria-label': `Open Image ${n}, ${file.name}`,
+      onClick: async () => {
+        if (atom.hasAttribute('aria-busy')) return;
+        atom.setAttribute('aria-busy', 'true');
+        mark.replaceWith(ring);
+        try {
+          await openImage(file, index);
+        } finally {
+          atom.removeAttribute('aria-busy');
+          ring.replaceWith(mark);
+        }
+      },
+    }, mark, h('span', { class: 'pi-file-name' }, `Image ${n}`));
+    return atom;
   };
   /** A file's face: `tag` is `li` in the list below the text, `span` inside it. */
   const fileItem = (file, index, tag = 'li') => {
@@ -597,15 +639,19 @@ export function openPromptDialog(ctx, task) {
         icon('download', { size: 16 }), h('span', { class: 'prompt-file-name' }, file.name)));
     }
     const n = numbers.get(file.name);
-    const img = h('img', { alt: file.name });
-    const face = [
-      h('button', { type: 'button', class: 'prompt-thumb', 'aria-label': `Open Image ${n}, ${file.name}`, onClick: () => openImage(file, index) },
-        img, h('span', { class: 'composer-attachment-number', 'aria-hidden': 'true' }, String(n))),
-      h('span', { class: 'prompt-file-name' }, file.name)];
+    // Until its picture is decoded the tile shimmers with a turning ring and holds no `img`, which
+    // would paint the browser's broken-image icon and its alt text (SPEC-420).
+    const number = h('span', { class: 'composer-attachment-number', 'aria-hidden': 'true' }, String(n));
+    const thumb = h('button', { type: 'button', class: 'prompt-thumb loading', 'aria-busy': 'true', 'aria-label': `Open Image ${n}, ${file.name}`, onClick: () => openImage(file, index) },
+      h('span', { class: 'prompt-thumb-spinner', 'aria-hidden': 'true' }), number);
+    const face = [thumb, h('span', { class: 'prompt-file-name' }, file.name)];
     const item = h(tag, { class: 'prompt-file image' }, face);
     const show = (url) => {
-      img.src = url;
-      if (!item.contains(img)) item.replaceChildren(...face);
+      if (!thumb.classList.contains('loading') && item.contains(thumb)) return;
+      thumb.classList.remove('loading');
+      thumb.removeAttribute('aria-busy');
+      thumb.replaceChildren(h('img', { alt: file.name, src: url }), number);
+      if (!item.contains(thumb)) item.replaceChildren(...face);
     };
     tiles.set(index, show);
     read(index).then(show).catch((error) => {

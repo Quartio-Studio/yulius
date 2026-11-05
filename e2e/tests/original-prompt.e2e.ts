@@ -271,3 +271,135 @@ test('a gone image keeps its number, and the list keeps a file named like a gone
   await expect(files.getByRole('img', 'a.png')).toBeVisible();
   await expect(files.getByRole('button', 'Open Image 2, a.png')).toBeVisible();
 });
+
+// Task #402 (SPEC-420, #1065): while an image is read, its tile shows a shimmer and a turning ring
+// with its number, never the browser's broken-image icon and the file name as alt text; an
+// `Image N` placeholder clicked meanwhile turns its icon into a ring until the preview opens.
+test('an image being read shows an animated loading tile, not a broken image', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&hold=/api/tasks/tsk_studio_12/prompt/attachments/0'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  const drafts = '/srv/yulius/sandboxes/sb_studio/attachments/drafts/usr_mkarp';
+  await touchTask(browser, 'sb_studio', 12, { prompt: `See @'${drafts}/a.png' here.` });
+
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  await screen.getByRole('menuitem', 'See the original prompt').click();
+  const dialog = screen.getByRole('dialog', 'Original prompt · #12');
+  const files = dialog.getByRole('list', 'Attached files');
+  const tile = files.getByRole('button', 'Open Image 1, a.png');
+  await expect(tile).toBeVisible();
+  // Busy, numbered, a turning ring and no picture yet: nothing for the browser to draw as broken.
+  const loading = () => browser.evaluate(() => {
+    const thumb = document.querySelector('.prompt-modal .prompt-files .prompt-thumb')!;
+    const ring = thumb.querySelector('.prompt-thumb-spinner');
+    return {
+      busy: thumb.getAttribute('aria-busy'),
+      number: thumb.querySelector('.composer-attachment-number')?.textContent ?? null,
+      imgs: thumb.querySelectorAll('img').length,
+      ring: ring ? getComputedStyle(ring).animationName : null,
+      shimmer: getComputedStyle(thumb).animationName,
+    };
+  });
+  expect(await loading()).toEqual({ busy: 'true', number: '1', imgs: 0, ring: 'spin', shimmer: 'shimmer' });
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // The placeholder in the text, clicked meanwhile, is busy with a turning ring.
+  const text = browser.locator('.prompt-modal .prompt-text');
+  await text.getByRole('button', { name: 'Open Image 1, a.png' }).click();
+  const atom = () => browser.evaluate(() => {
+    const el = document.querySelector('.prompt-modal .prompt-text [aria-label="Open Image 1, a.png"]')!;
+    const ring = el.querySelector('.pi-spinner');
+    return { busy: el.getAttribute('aria-busy'), ring: ring ? getComputedStyle(ring).animationName : null, icon: el.querySelectorAll('svg').length };
+  });
+  await expect.poll(atom).toEqual({ busy: 'true', ring: 'spin', icon: 0 });
+
+  type Mock = { __yuliusMock: { release: () => void } };
+  await browser.evaluate(() => { (window as unknown as Mock).__yuliusMock.release(); });
+  const preview = screen.getByRole('dialog', 'a.png');
+  await expect(preview.getByRole('img', 'a.png')).toBeVisible();
+  await browser.keyboard.press('Escape');
+  await expect(preview).toBeHidden();
+  // The picture is drawn and nothing is busy any more.
+  await expect(files.getByRole('img', 'a.png')).toBeVisible();
+  expect(await loading()).toEqual({ busy: null, number: '1', imgs: 1, ring: null, shimmer: 'none' });
+  expect(await atom()).toEqual({ busy: null, ring: null, icon: 1 });
+});
+
+// SPEC-420 PIL-003: a file named as an image that the browser cannot draw says so, as a failed
+// read does, instead of a broken image.
+test('an image the browser cannot draw says it could not be loaded', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  const drafts = '/srv/yulius/sandboxes/sb_studio/attachments/drafts/usr_mkarp';
+  // The mock serves only `.png` as a picture: this `.jpg` is text.
+  await touchTask(browser, 'sb_studio', 12, { prompt: `Broken @'${drafts}/broken.jpg' and @'${drafts}/a.png'.` });
+  // The page's object URLs still alive: a failed decode gives its blob back (review round 1).
+  await browser.evaluate(() => {
+    const live = new Set<string>();
+    (window as unknown as { __liveUrls: Set<string> }).__liveUrls = live;
+    const create = URL.createObjectURL.bind(URL);
+    const revoke = URL.revokeObjectURL.bind(URL);
+    URL.createObjectURL = (blob: Blob) => { const url = create(blob); live.add(url); return url; };
+    URL.revokeObjectURL = (url: string) => { live.delete(url); revoke(url); };
+  });
+  const liveUrls = () => browser.evaluate(() => (window as unknown as { __liveUrls: Set<string> }).__liveUrls.size);
+
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  await screen.getByRole('menuitem', 'See the original prompt').click();
+  const files = screen.getByRole('dialog', 'Original prompt · #12').getByRole('list', 'Attached files');
+  await expect(files.getByRole('img', 'a.png')).toBeVisible();
+  await expect(files.getByRole('listitem').filter({ hasText: 'broken.jpg' })).toHaveText(/broken\.jpg\s*Couldn’t load it/);
+  await expect(files.getByRole('img', 'broken.jpg')).toHaveCount(0);
+  expect(await liveUrls()).toBe(1);
+  // Its placeholder in the text says so too, in words that are the same in every browser, opens
+  // no broken preview and is no longer busy.
+  await browser.locator('.prompt-modal .prompt-text').getByRole('button', { name: 'Open Image 1, broken.jpg' }).click();
+  await expect(browser.locator('.toast-msg:has-text("Couldn’t open broken.jpg: it is not a picture the browser can show.")')).toBeVisible();
+  await expect(screen.getByRole('dialog', 'broken.jpg')).toHaveCount(0);
+  await expect.poll(() => browser.evaluate(() => {
+    const el = document.querySelector('.prompt-modal .prompt-text [aria-label="Open Image 1, broken.jpg"]')!;
+    return { busy: el.getAttribute('aria-busy'), ring: el.querySelectorAll('.pi-spinner').length, icon: el.querySelectorAll('svg').length };
+  })).toEqual({ busy: null, ring: 0, icon: 1 });
+  expect(await liveUrls()).toBe(1);
+});
+
+// SPEC-420 review round 2: the dialog closed while a picture is decoded keeps nothing of it (its
+// object URL is revoked) and opens no preview afterwards.
+test('a picture decoded after the dialog closed is dropped, not opened', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  const drafts = '/srv/yulius/sandboxes/sb_studio/attachments/drafts/usr_mkarp';
+  await touchTask(browser, 'sb_studio', 12, { prompt: `See @'${drafts}/a.png' here.` });
+  type Probe = { __liveUrls: Set<string>; __decoded: number; __releaseDecode: () => void };
+  // Live object URLs, and decodes held until the test releases them.
+  await browser.evaluate(() => {
+    const w = window as unknown as Probe;
+    const live = new Set<string>();
+    w.__liveUrls = live;
+    w.__decoded = 0;
+    const create = URL.createObjectURL.bind(URL);
+    const revoke = URL.revokeObjectURL.bind(URL);
+    URL.createObjectURL = (blob: Blob) => { const url = create(blob); live.add(url); return url; };
+    URL.revokeObjectURL = (url: string) => { live.delete(url); revoke(url); };
+    const held = new Promise<void>((resolve) => { w.__releaseDecode = resolve; });
+    const decode = HTMLImageElement.prototype.decode;
+    HTMLImageElement.prototype.decode = async function heldDecode(this: HTMLImageElement) {
+      await held;
+      try { return await decode.call(this); } finally { w.__decoded += 1; }
+    };
+  });
+
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  await screen.getByRole('menuitem', 'See the original prompt').click();
+  const dialog = screen.getByRole('dialog', 'Original prompt · #12');
+  await browser.locator('.prompt-modal .prompt-text').getByRole('button', { name: 'Open Image 1, a.png' }).click();
+  // Read, and held in its decode.
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Probe).__liveUrls.size)).toBe(1);
+  await browser.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+
+  await browser.evaluate(() => { (window as unknown as Probe).__releaseDecode(); });
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Probe).__decoded)).toBe(1);
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Probe).__liveUrls.size)).toBe(0);
+  await expect(screen.getByRole('dialog', 'a.png')).toHaveCount(0);
+  await expect(browser.locator('.toast-msg')).toHaveCount(0);
+});
