@@ -51,9 +51,9 @@ already shows `Uploading…` with a spinner (`pi-spinner`).
 ## Plan
 
 - [x] Spec with the root cause of the alt-text thumbnails
-- [ ] A failing e2e test: a held image shows an animated loading tile, never alt text
-- [ ] Thumbnails and Image N placeholders show an animated icon while their image loads
-- [ ] Docs, ADR and changes record the loading tile
+- [x] A failing e2e test: a held image shows an animated loading tile, never alt text
+- [x] Thumbnails and Image N placeholders show an animated icon while their image loads
+- [x] Docs, ADR and changes record the loading tile
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green with dev merged
 

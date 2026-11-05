@@ -4,6 +4,13 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-05
+
+- The original prompt's images load visibly (SPEC-420, task #402, #1065, ADR-0265): while an image
+  is read its tile shimmers with a turning ring and keeps its number, instead of the browser's
+  broken-image icon and the file name; an `Image N` placeholder clicked meanwhile shows a ring; an
+  image the browser cannot draw says "Couldn’t load it".
+
 ## 2026-11-04
 
 - Rollback in Yulius's own CD (SPEC-418, task #400, ADR-0264): an environment that runs no deploy
