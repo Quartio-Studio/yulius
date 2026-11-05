@@ -240,6 +240,12 @@ SPEC-051, SPEC-247). Only Claude Code sessions are imported.
 always a boolean in responses, and a `profile` update keeps the switch whatever it carries.
 `POST /api/sandboxes` import and create take `"vidoc": false` to add the project switched off,
 before its onboarding starts.
+`PATCH /api/sandboxes/{sid}` `{"protect_production": false|true}` waives or restores the
+requirement of a GitHub ruleset on the production branch (SPEC-423, ADR-0267; `422` for a
+playground, `403` for turning it off with a `yulius login` token: a browser session or an `operate`
+token decides it; audited `delivery.production_protection.update`); `profile.protect_production` is
+always a boolean in responses, and a `profile` update keeps it whatever it carries. Off, the
+onboarding status has no production warning and `production_protect` answers `waived: true`.
 `GET /api/sandboxes/{sid}/vidoc` (read) answers `SandboxVidocView` (SPEC-359, ADR-0245): `project`
 (the switch, as `profile.vidoc`), `instance` (the instance switch), `key` (a Vidoc key reaches the
 project when on), `repository` (`on`, `off` or `unreadable`: `.config/vidoc.toml` at the
