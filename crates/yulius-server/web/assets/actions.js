@@ -539,12 +539,18 @@ export function openPromptDialog(ctx, task) {
         const url = URL.createObjectURL(blob);
         const picture = new Image();
         picture.src = url;
+        let drawn = true;
         try {
           await picture.decode();
-        } catch (error) {
-          // Not kept: a file read again at each click would hold one more blob each time.
+        } catch {
+          drawn = false;
+        }
+        // Kept only while the dialog is open and the picture can be drawn: a file read again at
+        // each click would otherwise hold one more blob each time, and one decoded after the
+        // dialog closed would never be revoked.
+        if (!drawn || controller.signal.aborted) {
           URL.revokeObjectURL(url);
-          if (controller.signal.aborted) throw error;
+          if (controller.signal.aborted) throw Object.assign(new Error('Cancelled.'), { code: 'aborted' });
           // The browser's own words differ between browsers.
           throw new Error('it is not a picture the browser can show.');
         }
@@ -552,8 +558,6 @@ export function openPromptDialog(ctx, task) {
         return url;
       }).catch((error) => {
         reads.delete(index);
-        // Closed meanwhile: its URL was revoked under the decode, which is no failure to report.
-        if (controller.signal.aborted && error.code !== 'aborted') throw Object.assign(new Error('Cancelled.'), { code: 'aborted' });
         throw error;
       }));
     }
