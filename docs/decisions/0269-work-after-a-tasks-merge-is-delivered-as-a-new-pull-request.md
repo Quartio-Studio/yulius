@@ -23,21 +23,24 @@ organisation the agent had to push and open PR #2 by hand, and the task still sh
   the merge and the worktree's head carries work the merged pull request did not, Yulius sets the
   record back to `none` (a compare-and-set on the stage, after checking the record still names
   that pull request), audits `delivery.follow_up`, and delivers as for any task: an open pull
-  request of the branch is taken on, otherwise it pushes and opens a new one, under the same
-  readiness rules (spec, plan, clean worktree). New work means all three: the merged head is an
+  request of the branch is taken on, otherwise it pushes and opens a new one. The readiness rules
+  (spec, plan, clean worktree) are checked before the reset, so a head that cannot go out keeps
+  the task merged. New work means all three, read from a fresh fetch: the merged head is an
   ancestor of the worktree head; the head is more than it plus Git's own clean merges of the
-  integration branch (the review carry-over of SPEC-083 REV-001, after a fetch); and Git's merge
-  of the head into the fetched integration branch changes that branch's tree (a follow-up a
-  person merged outside Yulius adds nothing, so it opens no duplicate).
+  integration branch (the review carry-over of SPEC-083 REV-001); and what the head changed
+  since the merged head, merged into the integration branch (`merge-tree --merge-base`), changes
+  that branch's tree or conflicts (a follow-up a person merged outside Yulius adds nothing, so it
+  opens no duplicate).
 - **Nothing new keeps the task merged.** The merged head, a head behind it, only clean merges of
   the integration branch and a head the integration branch already holds change nothing. That
   verdict is kept per task for its head and pull request, so later Stops at the same head ask
   neither GitHub nor Git.
 - **What Yulius cannot judge is said, not guessed.** A rewritten branch (the merged head no
-  longer its ancestor: the answer gives the `git merge` that brings it back), a merged pull
-  request GitHub does not answer for, unreadable commits, or a live merge train holding the task
-  (it counts on its members' stages until it ends) change nothing; `delivery_merge` refuses with
-  that reason, and the end of a turn delivers nothing.
+  longer its ancestor: the answer gives the `git merge` that brings it back), a merged head not
+  in the clone (the answer gives the fetch of `pull/N/head`), a failed fetch, a merged pull
+  request GitHub does not answer for, or a live merge train holding the task (it counts on its
+  members' stages until it ends) change nothing; `delivery_merge` refuses with that reason, and
+  the end of a turn delivers nothing and notes it for `yulius wait`.
 - **`delivery_merge` never arms on a merged pull request.** With nothing new it answers
   `merged: true`, that the pull request is already merged.
 
@@ -59,11 +62,14 @@ organisation the agent had to push and open PR #2 by hand, and the task still sh
 - A task with work after its merge is no longer Done until that work merges; the Git page and the
   task header show the new pull request.
 - A merged task's Stop at a head not judged yet costs a token lookup and one GitHub read (the
-  merged pull request), plus a fetch of the integration branch when the head is past the merged
-  one; open steps do not save it, because `delivery_merge` needs the verdict whatever the plan. A
+  merged pull request), plus fetches of the clone when the head is past the merged one; open steps do not save it, because `delivery_merge` needs the verdict whatever the plan. A
   head judged covered costs nothing at its later Stops (kept in memory: a restart asks once
   more). An unknown verdict is asked again at the next Stop.
 - A task in a live merge train is not delivered anew until the train ends, so the train never
   sees a member's stage go back.
+- An armed merge whose pull request merged outside Yulius is still not dropped by the armed-merge
+  upkeep (pre-existing, #1075); `delivery_merge` called again clears it.
+- `adds_to` needs Git 2.40 (`merge-tree --merge-base`); an older Git makes the verdict unknown,
+  never a duplicate pull request.
 - The merged pull request leaves the task's record; it stays in GitHub and in the audit log
   (`delivery.follow_up` names it).
