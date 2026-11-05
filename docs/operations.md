@@ -13,7 +13,7 @@ been performed or verified** as part of the implementation work.
 | Linux x86_64 or arm64, systemd | the service | macOS works for development (runs are "not contained"). |
 | `git` ≥ 2.40 | sandboxes, worktrees, delivery | on `PATH` of the service; `yulius host setup` installs it. |
 | Docker Engine (`docker-ce` with `docker-buildx-plugin` and `docker-compose-plugin`) | Docker in sandboxes: every new base copies `dockerd`, buildx and compose | from Docker's apt repository; `yulius host setup` installs it and stops the host's own daemon, which nothing uses (see [Docker in sandboxes](#docker-in-sandboxes)). |
-| Claude Code (`claude`) | Claude tasks and Claude account login | verified with 2.1.292. |
+| Claude Code (`claude`) | Claude tasks and Claude account login | installed with npm system-wide (`npm install -g @anthropic-ai/claude-code`; verified with 2.1.292). Isolated sandboxes then get newer releases by themselves: see [Claude Code updates](#claude-code-updates). |
 | GitHub CLI (`gh`) ≥ 2.82.1 | `gh` in every sandbox, logged in as the person (their shells) or the task's creator (agents) | install it on the host from [GitHub's package repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md), not the distribution's package: Ubuntu 24.04 ships 2.45, and since GitHub retired Projects (classic) `gh pr edit` and `gh issue view --comments` fail with a GraphQL error before 2.82.1. Sandboxes copy the host system, so rebuild the base afterwards (`yulius sandbox-base build`). `yulius doctor` warns without it or below 2.82.1. |
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". `yulius host setup` installs it. |
 | `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-22): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)); `yulius host setup` installs both. |
@@ -94,7 +94,8 @@ another `YULIUS_UPDATE_STATE` needs `--update-state <dir>`.
 **Still manual**, and why:
 
 - the reverse proxy and TLS (§4): they depend on your domain;
-- Claude Code: it is installed system-wide, and its version is yours to choose (§1);
+- Claude Code: install it once system-wide with npm (§1); Yulius keeps the version isolated
+  sandboxes run current by itself ([Claude Code updates](#claude-code-updates));
 - the GitHub CLI: it comes from GitHub's own repository (§1), and the doctor warns without it;
 - the sandbox browser's packages (Chrome, `xvfb`, `ffmpeg`, fonts): optional;
 - the update helper (§8): it needs root's Rust toolchain and this server's values.
@@ -512,6 +513,7 @@ other instead of overlapping.
 | `YULIUS_SANDBOX_DISK_GB` | 100 | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts, and each one's own `YULIUS_CI_CACHE` (`ci/cache/<checkout>`, SPEC-351), are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. Caches are found and removed only with no link from the sandbox directory down, and on Linux only ([SPEC-263](../.ai/specs/SPEC-263-disk-upkeep-refuses-links-at-worktrees-a.md)). |
 | `YULIUS_SANDBOX_FORWARD` | — | Extra host loopback ports reachable inside every sandbox at the same port (for example a loopback MCP server), comma-separated. |
 | `YULIUS_SANDBOX_IDLE_MINUTES` | 5 | A holder without runs is stopped after this long; the next run starts a fresh one on the newest base. A sandbox's Docker engine stops after this long without a client and without a running container. |
+| `YULIUS_CLAUDE_UPDATES` | `stable` | Claude Code releases isolated sandboxes follow: `stable` or `latest` (npm's dist-tags), or `off` (the host's install only). See [Claude Code updates](#claude-code-updates). |
 | `YULIUS_SANDBOX_DOCKER` | `on` | `on`: every isolated sandbox gets its own Docker engine when its system has `dockerd` and the cgroup delegation is on; `off`: none (the briefing then says there is no engine, and `docker` answers why). |
 
 **Where things live.**
@@ -532,6 +534,34 @@ stay private to the sandbox. Two sandboxes can both use 3000 inside.
 
 **Without the prerequisites** (`yulius doctor` lists what is missing), contained runs keep the
 previous containment: read-only host system, the host's network, no limits.
+
+### Claude Code updates
+
+Claude Code's own updater is off in every session (it cannot write the system install from a
+contained run). Yulius updates it instead ([ADR-0266](decisions/0266-yulius-keeps-claude-code-current-in-its-data-directory.md),
+SPEC-421), with no root step and no sign-in again:
+
+- About every hour (the first check 2 minutes after a start) the server reads npm's
+  `YULIUS_CLAUDE_UPDATES` dist-tag (`stable` by default) of `@anthropic-ai/claude-code` from
+  `registry.npmjs.org`. A newer version than the one runs get is downloaded as its platform
+  package (`@anthropic-ai/claude-code-linux-x64`, `-linux-arm64`, or their `-musl` builds), checked
+  against the registry's sha512, and its binary must be an ELF for this platform that embeds that
+  version (it is never run on the host).
+- It lands in `<data>/claude-code/versions/<version>/bin/claude.exe`; `<data>/claude-code/current`
+  points at it. The version before it is kept, older ones are removed once no process runs them
+  (about 300 MB each). Only a host install laid out as `bin/claude.exe` is updated over.
+  Whether a process runs a version is read from `/proc/<pid>/exe`: keep `/proc` readable to the
+  service user (no `hidepid=` mount option, no `ProtectProc=` in `yulius.service`), or a version a
+  running session uses could be removed under it.
+- Every run that joins an isolated sandbox (tasks, Superagent, shells, CI jobs, dev CD runs) binds
+  the newer of that version and the host's npm install at the host package's path, when it starts.
+  Running sessions keep their version until they next start (Continue, a resume after a pause);
+  subscriptions stay signed in.
+- The host's install is never changed; updating it by hand past Yulius's version makes runs use it.
+  Without an npm install on the host, sandboxes have no Claude Code and nothing is updated.
+- `yulius doctor --contained` prints "Claude Code in sandboxes" with the version runs get. A failed
+  check is logged ("Claude Code was not updated") and tried again an hour later; the server's
+  egress needs `registry.npmjs.org` on port 443.
 
 ### Docker in sandboxes
 
@@ -818,7 +848,11 @@ is missing, and the preparation agent adds it with the `production_protect` tool
 `yulius-people-only-<branch>` with those three rules as the task's owner, only when GitHub says that
 person is a repository admin (ADR-0129). Otherwise (not an admin, no GitHub sign-in, a free plan's
 private repository) the agent asks a person for it with `needs_you`. A promotion needs a repository admin
-once the ruleset exists.
+once the ruleset exists. A private repository without GitHub Pro, Team or Enterprise cannot have
+rulesets: a sandbox admin then accepts the risk on the sandbox's Git page, card **Production
+protection**, by switching off **Require a GitHub ruleset on `<branch>`**
+(`<public_url>/s/<slug>/git?show=production-protection`, ADR-0267); onboarding then stops warning and
+asking for it, and every request for the ruleset names that address.
 
 The manifest flow requests these repository permissions:
 
@@ -1193,7 +1227,7 @@ with SIGKILL, thaw by hand: `sudo systemctl thaw yulius.service`. `--move` keeps
 frozen and disables its unit after a successful export, so it never runs beside the new one (both
 would run the same agents against the same repositories); undo with `sudo systemctl thaw
 yulius.service && sudo systemctl enable yulius.service`. Left out, because the new host makes its
-own: `system/` (the sandbox base), `runtime/`, `update/`, `yulius.db-shm`, sockets and FIFOs. It is
+own: `system/` (the sandbox base), `runtime/`, `update/`, `claude-code/` (Claude Code for this host's platform, downloaded again), `yulius.db-shm`, sockets and FIFOs. It is
 refused (exit 2, nothing frozen) while the update helper runs (checked again once frozen and
 before the copy's checksum), from a Yulius terminal (it would freeze itself), and while the
 service is stopped but its agents still run (start it first).

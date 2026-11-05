@@ -308,6 +308,7 @@ pub fn profile_to_contract(profile: &DeliveryProfile) -> Profile {
             .collect(),
         gate: None,
         vidoc: None,
+        protect_production: None,
     }
 }
 
@@ -324,14 +325,27 @@ pub fn profile_gate(sandbox: &SandboxRecord) -> Option<String> {
 /// `vidoc` is not `false`. Read on its own, so a profile that is otherwise unreadable keeps it.
 #[must_use]
 pub fn vidoc_switched_on(sandbox: &SandboxRecord) -> bool {
-    #[derive(serde::Deserialize)]
-    struct Switch {
-        #[serde(default)]
-        vidoc: Option<bool>,
-    }
-    serde_json::from_str::<Switch>(&sandbox.profile_json)
+    profile_switch_on(&sandbox.profile_json, VIDOC_SWITCH)
+}
+
+/// Whether the sandbox's production branch must be protected from agents (SPEC-423 PPR-001): its
+/// stored profile's `protect_production` is not `false`. Read on its own, like the Vidoc switch.
+#[must_use]
+pub fn production_protection_required(sandbox: &SandboxRecord) -> bool {
+    profile_switch_on(&sandbox.profile_json, PRODUCTION_SWITCH)
+}
+
+/// The stored profile's key of the Vidoc switch.
+const VIDOC_SWITCH: &str = "vidoc";
+/// The stored profile's key of the production protection switch.
+const PRODUCTION_SWITCH: &str = "protect_production";
+
+/// Whether the switch `key` of a stored profile's JSON is on: anything but `false`, also in a
+/// profile that is otherwise unreadable.
+fn profile_switch_on(profile_json: &str, key: &str) -> bool {
+    serde_json::from_str::<Value>(profile_json)
         .ok()
-        .and_then(|switch| switch.vidoc)
+        .and_then(|profile| profile.get(key).and_then(Value::as_bool))
         != Some(false)
 }
 
@@ -348,6 +362,14 @@ fn worktree_state(task: &TaskRecord) -> WorktreeState {
 /// A playground runs no CI scan, so it has no Vidoc switch (SPEC-338 VOF-001).
 fn playground_has_no_vidoc() -> AppError {
     invalid("a playground runs no Vidoc scan: it has no switch to turn".to_owned())
+}
+
+/// A playground has no GitHub branch to protect, so it has no protection switch (SPEC-423 PPR-002).
+fn playground_has_no_production_protection() -> AppError {
+    invalid(
+        "a playground has no GitHub production branch: it has no protection switch to turn"
+            .to_owned(),
+    )
 }
 
 /// The sandbox's stored profile; an unreadable or invalid one falls back to `standard`.
@@ -416,6 +438,25 @@ pub(crate) fn domain_checks(state: gh::ChecksState) -> ChecksState {
         gh::ChecksState::Success => ChecksState::Success,
         gh::ChecksState::Failure => ChecksState::Failure,
         gh::ChecksState::Unknown => ChecksState::Unknown,
+    }
+}
+
+/// Why a head with commits to deliver is not ready to go out, if it is not: a task that needs a
+/// spec needs its plan too; research, docs and chores may have none.
+fn not_ready(spec: &SpecCheck, no_steps: bool, steps_open: usize, dirty: bool) -> Option<String> {
+    if !spec.valid {
+        Some(format!(
+            "the spec is not valid ({}); fix it and commit",
+            spec.problems.join(" ")
+        ))
+    } else if no_steps && spec.required {
+        Some("the task has no plan: record its steps with `step_update`".to_owned())
+    } else if steps_open > 0 {
+        Some("a step is still open: finish it or resolve it with `step_update`".to_owned())
+    } else if dirty {
+        Some("the worktree has uncommitted changes: commit them".to_owned())
+    } else {
+        None
     }
 }
 
@@ -1103,6 +1144,17 @@ pub(crate) enum AutoDelivery {
     Blocked(String),
     /// Pushed and the pull request opened or updated, as said to the agent.
     Delivered(String),
+}
+
+/// What a merged task's worktree head holds beyond its merged pull request (SPEC-425).
+enum AfterMerge {
+    /// Work the merged pull request did not carry: delivered anew, as this pull request's
+    /// follow-up.
+    FollowUp(u64),
+    /// Nothing new: the task stays merged.
+    Covered,
+    /// Yulius cannot tell now, and why (what `delivery_merge` answers).
+    Unknown(String),
 }
 
 impl App {
@@ -1996,45 +2048,15 @@ impl App {
 
     // ---------------------------------------------------------------- profile
 
-    /// Sets the sandbox's Vidoc switch (SPEC-338 VOF-001) as `actor`: `vidoc` in its stored
-    /// profile JSON, the rest kept as it is, audited when it changes. Callers check permission;
-    /// a playground has no CI scan to turn. Profile writes are serialized, so a concurrent
-    /// profile update cannot undo it.
-    ///
-    /// # Errors
-    /// `Invalid` for a playground; store failures.
-    pub(crate) async fn write_vidoc_switch(
-        &self,
-        actor: &str,
-        sandbox: &SandboxId,
-        on: bool,
-    ) -> AppResult<()> {
-        let _writing = self.profile_writes.lock().await;
-        let sandbox = self
-            .deps
-            .store
-            .sandbox(sandbox)
-            .await?
-            .ok_or(AppError::NotFound)?;
-        if sandbox.is_playground() {
-            return Err(playground_has_no_vidoc());
-        }
-        if vidoc_switched_on(&sandbox) == on {
-            return Ok(());
-        }
-        let mut stored = match serde_json::from_str::<Value>(&sandbox.profile_json) {
-            Ok(Value::Object(map)) => map,
-            _ => serde_json::Map::new(),
-        };
-        if on {
-            stored.remove("vidoc");
-        } else {
-            stored.insert("vidoc".to_owned(), Value::Bool(false));
-        }
-        let json = serde_json::to_string(&stored).map_err(AppError::internal)?;
-        self.deps.store.set_profile(&sandbox.id, &json).await?;
-        self.vidoc_switched(actor, &sandbox, on).await;
-        Ok(())
+    /// After the production protection switch changed: audited.
+    async fn production_protection_switched(&self, actor: &str, sandbox: &SandboxRecord, on: bool) {
+        self.dlv_audit(
+            actor,
+            "delivery.production_protection.update",
+            &sandbox.slug,
+            if on { "on" } else { "off" },
+        )
+        .await;
     }
 
     /// After the switch changed: CI's gate and the virtual key are read again, and it is audited.
@@ -2132,11 +2154,12 @@ impl App {
         }
     }
 
-    /// `PATCH /api/sandboxes/{sid}` (admin): validates and stores the delivery profile and the
-    /// Vidoc switch (SPEC-338 VOF-001) in one write, or changes nothing when either is refused.
+    /// `PATCH /api/sandboxes/{sid}` (admin): validates and stores the delivery profile, the Vidoc
+    /// switch (SPEC-338 VOF-001) and the production protection switch (SPEC-423 PPR-002) in one
+    /// write, or changes nothing when any is refused.
     ///
     /// # Errors
-    /// `Forbidden` below admin, `Invalid` profiles, `Invalid` switch of a playground.
+    /// `Forbidden` below admin, `Invalid` profiles, `Invalid` switches of a playground.
     pub async fn update_sandbox_profile(
         &self,
         ctx: &AuthContext,
@@ -2157,12 +2180,46 @@ impl App {
         if req.vidoc.is_some() && sandbox.is_playground() {
             return Err(playground_has_no_vidoc());
         }
+        if req.protect_production.is_some() && sandbox.is_playground() {
+            return Err(playground_has_no_production_protection());
+        }
         let was_on = vidoc_switched_on(&sandbox);
         let on = req.vidoc.unwrap_or(was_on);
+        let was_protected = production_protection_required(&sandbox);
+        let protect = req.protect_production.unwrap_or(was_protected);
+        // Letting agents write production is a person's decision (SPEC-423 PPR-002): never a
+        // `yulius login` token, which an agent may hold.
+        if was_protected && !protect && !ctx.acts_for_person() {
+            return Err(AppError::Forbidden(
+                "Turning the production protection off is a person's decision: switch it off on \
+                 the sandbox's Git page (Production protection card), or with an operate token"
+                    .into(),
+            ));
+        }
         let Some(requested) = &req.profile else {
+            // Both switches in one write of the stored JSON, the rest kept as it is.
+            if on != was_on || protect != was_protected {
+                let mut stored = match serde_json::from_str::<Value>(&sandbox.profile_json) {
+                    Ok(Value::Object(map)) => map,
+                    _ => serde_json::Map::new(),
+                };
+                for (key, value) in [(VIDOC_SWITCH, on), (PRODUCTION_SWITCH, protect)] {
+                    if value {
+                        stored.remove(key);
+                    } else {
+                        stored.insert(key.to_owned(), Value::Bool(false));
+                    }
+                }
+                let json = serde_json::to_string(&stored).map_err(AppError::internal)?;
+                self.deps.store.set_profile(&sid, &json).await?;
+            }
             drop(writing);
             if on != was_on {
-                self.write_vidoc_switch(&actor, &sid, on).await?;
+                self.vidoc_switched(&actor, &sandbox, on).await;
+            }
+            if protect != was_protected {
+                self.production_protection_switched(&actor, &sandbox, protect)
+                    .await;
             }
             let updated = self
                 .deps
@@ -2196,12 +2253,17 @@ impl App {
         // The switch is the stored one unless this request sets it: the profile editor does not
         // carry it (VOF-001).
         stored.vidoc = (!on).then_some(false);
+        stored.protect_production = (!protect).then_some(false);
         let json = serde_json::to_string(&stored).map_err(AppError::internal)?;
         self.deps.store.set_profile(&sid, &json).await?;
         drop(writing);
         self.ci_forget_gate(&sid);
         if on != was_on {
             self.vidoc_switched(&actor, &sandbox, on).await;
+        }
+        if protect != was_protected {
+            self.production_protection_switched(&actor, &sandbox, protect)
+                .await;
         }
         self.dlv_audit(
             &actor,
@@ -2712,10 +2774,11 @@ impl App {
     }
 
     /// What Yulius did for a ready task: opened its pull request, or pushed commits made since
-    /// to the open one (#68). [`AutoDelivery::Blocked`] says why a head with commits to deliver
-    /// is not ready (an invalid spec, an open step, uncommitted work);
-    /// [`AutoDelivery::Unchanged`] covers everything else (no branch or worktree, no commits
-    /// ahead of the integration branch, a later stage, nothing new).
+    /// to the open one (#68), or opened a new one for work committed after its merge (SPEC-425).
+    /// [`AutoDelivery::Blocked`] says why a head with commits to deliver is not ready (an invalid
+    /// spec, an open step, uncommitted work) or why Yulius cannot judge what a merged task's head
+    /// adds; [`AutoDelivery::Unchanged`] covers everything else (no branch or worktree, no
+    /// commits ahead of the integration branch, a merged task with nothing new, nothing new).
     pub(crate) async fn try_auto_open_pr(
         &self,
         task_id: &TaskId,
@@ -2730,19 +2793,41 @@ impl App {
         if self.dlv_sandbox_of(&task).await?.is_playground() {
             return Ok(AutoDelivery::Unchanged);
         }
-        // Cheap checks first: most turns end with steps still open, and they need no GitHub call.
+        // Cheap checks first: most turns end with steps still open, and they need no GitHub call
+        // (a merged task's head is judged before them; a covered head only once: SPEC-425).
         let steps = store.steps(&task.id).await?;
         let open_step = steps
             .iter()
             .find(|s| !StepStatus::parse(&s.status).is_some_and(StepStatus::is_resolved));
-        if (steps.is_empty() && !self.branch_changed(&task).await?)
-            || store
-                .delivery(&task.id)
-                .await?
-                .is_some_and(|r| !matches!(r.stage, DeliveryStage::None | DeliveryStage::PrOpen))
-        {
+        if steps.is_empty() && !self.branch_changed(&task).await? {
             return Ok(AutoDelivery::Unchanged);
         }
+        // Past its pull request's merge a task delivers again only work committed since
+        // (SPEC-425 FUP-001); a later stage with nothing new stays as it is (FUP-002), and one
+        // Yulius cannot judge says why to `delivery_merge` (FUP-003).
+        let merged = store
+            .delivery(&task.id)
+            .await?
+            .filter(|r| !matches!(r.stage, DeliveryStage::None | DeliveryStage::PrOpen));
+        let follow_up = match &merged {
+            Some(record) => match self
+                .work_after_merge(&task, Path::new(&worktree), record)
+                .await
+            {
+                AfterMerge::FollowUp(number) => Some((record, number)),
+                AfterMerge::Covered => {
+                    // Nothing undelivered: an earlier "not delivered" note is stale.
+                    self.clear_push_problem(task_id);
+                    return Ok(AutoDelivery::Unchanged);
+                }
+                AfterMerge::Unknown(reason) => {
+                    // Said to `yulius wait` too, so an agent that only ends its turn hears it.
+                    self.note_undelivered(&task, &worktree, &reason).await;
+                    return Ok(AutoDelivery::Blocked(reason));
+                }
+            },
+            None => None,
+        };
         if let Some(step) = open_step {
             let reason = format!(
                 "step \"{}\" is {}: finish it, or resolve it with `step_update` and a note",
@@ -2755,6 +2840,45 @@ impl App {
         let profile = delivery_profile(&sandbox);
         if branch == profile.integration_branch || branch == profile.production_branch {
             return Ok(AutoDelivery::Unchanged);
+        }
+        if let Some((record, number)) = follow_up {
+            // Ready first, as for any delivery: a head that cannot go out keeps the task merged.
+            let spec = self.dlv_check_spec(&task).await;
+            let dirty = self
+                .deps
+                .git
+                .has_changes(Path::new(&worktree))
+                .await
+                .unwrap_or(false);
+            if let Some(reason) = not_ready(&spec, steps.is_empty(), 0, dirty) {
+                self.note_undelivered(&task, &worktree, &reason).await;
+                return Ok(AutoDelivery::Blocked(reason));
+            }
+            // The stage alone is compared on write: a record that moved on to another pull
+            // request meanwhile (a concurrent Stop delivered and merged it) is left alone.
+            let current = store.delivery(&task.id).await?;
+            let fresh = DeliveryRecord {
+                updated_at: self.now(),
+                ..DeliveryRecord::initial(&task.id)
+            };
+            if current.as_ref().map(|r| (&r.stage, r.pr_number))
+                != Some((&record.stage, record.pr_number))
+                || !self
+                    .dlv_transition(&task.sandbox_id, &record.stage, &fresh)
+                    .await?
+            {
+                return Ok(AutoDelivery::Unchanged);
+            }
+            self.dlv_audit(
+                "yulius",
+                "delivery.follow_up",
+                &format!("{}#{}", sandbox.slug, task.number),
+                &format!(
+                    "{} -> none: commits after pull request #{number} merged are delivered anew",
+                    record.stage
+                ),
+            )
+            .await;
         }
         // The task's owner pushes and authors the pull request (their GitHub account, as if
         // they had pressed Deliver…, F 2026-10-11); without a usable token the App does.
@@ -2774,21 +2898,12 @@ impl App {
             return Ok(AutoDelivery::Unchanged);
         }
         // A task that needs a spec needs its plan too; research, docs and chores may have none.
-        let not_ready = if !observed.spec.valid {
-            Some(format!(
-                "the spec is not valid ({}); fix it and commit",
-                observed.spec.problems.join(" ")
-            ))
-        } else if observed.steps.is_empty() && observed.spec.required {
-            Some("the task has no plan: record its steps with `step_update`".to_owned())
-        } else if observed.steps_open > 0 {
-            Some("a step is still open: finish it or resolve it with `step_update`".to_owned())
-        } else if observed.dirty {
-            Some("the worktree has uncommitted changes: commit them".to_owned())
-        } else {
-            None
-        };
-        if let Some(reason) = not_ready {
+        if let Some(reason) = not_ready(
+            &observed.spec,
+            observed.steps.is_empty(),
+            observed.steps_open,
+            observed.dirty,
+        ) {
             self.note_undelivered(&task, &worktree, &reason).await;
             return Ok(AutoDelivery::Blocked(reason));
         }
@@ -2880,6 +2995,143 @@ impl App {
                 };
                 Err(AutoDeliveryError { error, note })
             }
+        }
+    }
+
+    /// Whether the task's worktree head carries work its merged pull request (`record`) did not
+    /// (SPEC-425 FUP-001): the merged head is an ancestor of it, it is more than that head plus
+    /// Git's own clean merges of the integration branch, and it adds something to the integration
+    /// branch (a follow-up merged outside Yulius adds nothing). A head that is the merged one,
+    /// behind it, or adds nothing is [`AfterMerge::Covered`] (FUP-002), remembered per head so
+    /// later Stops ask GitHub nothing; anything Yulius cannot judge is [`AfterMerge::Unknown`].
+    async fn work_after_merge(
+        &self,
+        task: &TaskRecord,
+        worktree: &Path,
+        record: &DeliveryRecord,
+    ) -> AfterMerge {
+        let Some(number) = record.pr_number else {
+            return AfterMerge::Unknown(
+                "Yulius has no merged pull request on record for this task".to_owned(),
+            );
+        };
+        let head = match self.deps.git.log(worktree, "HEAD", 1).await {
+            Ok(commits) => match commits.into_iter().next() {
+                Some(commit) => commit.sha,
+                None => return AfterMerge::Unknown("the task branch has no commit".to_owned()),
+            },
+            Err(err) => {
+                return AfterMerge::Unknown(format!(
+                    "the task branch head cannot be read: {}",
+                    err.public_message()
+                ));
+            }
+        };
+        let covered = (head.clone(), number);
+        if let Ok(known) = self.runtime(&task.id).merged_covers.lock()
+            && known.as_ref() == Some(&covered)
+        {
+            return AfterMerge::Covered;
+        }
+        let verdict = self.judge_after_merge(task, worktree, number, &head).await;
+        if matches!(verdict, AfterMerge::Covered)
+            && let Ok(mut known) = self.runtime(&task.id).merged_covers.lock()
+        {
+            *known = Some(covered);
+        }
+        verdict
+    }
+
+    /// [`App::work_after_merge`] for `head`, asking GitHub and Git.
+    async fn judge_after_merge(
+        &self,
+        task: &TaskRecord,
+        worktree: &Path,
+        number: u64,
+        head: &str,
+    ) -> AfterMerge {
+        let unknown = |why: String| {
+            AfterMerge::Unknown(format!(
+                "whether this head adds to pull request #{number}, merged already, is unknown: \
+                 {why}"
+            ))
+        };
+        let sandbox = match self.dlv_sandbox_of(task).await {
+            Ok(sandbox) => sandbox,
+            Err(err) => return unknown(err.public_message()),
+        };
+        let merged = match self.task_github_token(task, &sandbox).await {
+            Ok(token) => match self
+                .deps
+                .github
+                .get_pull(&token, &sandbox.repo_owner, &sandbox.repo_name, number)
+                .await
+            {
+                Ok(pull) => pull.head_sha,
+                Err(err) => return unknown(format!("GitHub: {}", github_reason(&err))),
+            },
+            Err(err) => return unknown(err.public_message()),
+        };
+        if merged == head {
+            return AfterMerge::Covered;
+        }
+        // Every check below reads the integration branch and the merged head from a fresh fetch.
+        if let Err(err) = self.dlv_refresh_clone(&sandbox).await {
+            return unknown(format!(
+                "the clone could not be refreshed: {}",
+                err.public_message()
+            ));
+        }
+        let git = &self.deps.git;
+        let short = merged.get(..9).unwrap_or(&merged);
+        if !matches!(git.resolve_commit(worktree, &merged).await, Ok(Some(_))) {
+            return unknown(format!(
+                "its merged head {short} is not in this clone (made on GitHub?). Fetch it with \
+                 `git fetch origin pull/{number}/head` and merge it without forcing (`git merge \
+                 --no-edit {merged}`), and Yulius delivers what this head adds"
+            ));
+        }
+        match git.is_ancestor(worktree, &merged, head).await {
+            Ok(true) => {}
+            Ok(false)
+                if git
+                    .is_ancestor(worktree, head, &merged)
+                    .await
+                    .unwrap_or(false) =>
+            {
+                return AfterMerge::Covered;
+            }
+            Ok(false) => {
+                return unknown(format!(
+                    "the branch no longer contains its merged head {short} (rewritten?). Merge \
+                     it back without forcing (`git merge --no-edit {merged}`), and Yulius \
+                     delivers what this head adds"
+                ));
+            }
+            Err(err) => return unknown(err.public_message()),
+        }
+        if self.review_covers(task, worktree, &merged, head).await {
+            return AfterMerge::Covered;
+        }
+        // What the head changed since the merged head, applied to the integration branch: a
+        // follow-up merged outside Yulius changes nothing there, whatever else `dev` gained.
+        let integration = format!("origin/{}", delivery_profile(&sandbox).integration_branch);
+        match git.adds_to(worktree, &integration, &merged, head).await {
+            // A live merge train counts on its members' recorded stages until it ends: only new
+            // work would move this one's back.
+            Ok(Some(true)) if self.in_train(task) => unknown(
+                "it is in a merge train that has not ended; call again once the train ends"
+                    .to_owned(),
+            ),
+            Ok(Some(true)) => AfterMerge::FollowUp(number),
+            Ok(Some(false)) => AfterMerge::Covered,
+            // A conflict may be work merged outside Yulius that `dev` changed since, or new work
+            // that conflicts: the merge settles it either way.
+            Ok(None) => unknown(format!(
+                "what it changed conflicts with `{integration}`. Merge it (`git merge --no-edit \
+                 {integration}`) and Yulius delivers what this head still adds"
+            )),
+            Err(err) => unknown(err.public_message()),
         }
     }
 
@@ -5042,5 +5294,36 @@ mod tests {
         assert_eq!(clip_chars("abcdef", 3), "abc…");
         assert_eq!(clip_bytes("żółw", 3), "ż");
         assert_eq!(tail_bytes("żółw", 3), "łw");
+    }
+}
+
+#[cfg(test)]
+mod switch_tests {
+    use super::{PRODUCTION_SWITCH, VIDOC_SWITCH, profile_switch_on};
+
+    /// SPEC-423 PPR-001 (review round 1): a stored switch is off only for a boolean `false`; an
+    /// absent, `true`, mistyped or unreadable value leaves it on, and an otherwise invalid profile
+    /// keeps a stored `false`.
+    #[test]
+    fn a_switch_is_off_only_for_a_stored_false() {
+        for key in [PRODUCTION_SWITCH, VIDOC_SWITCH] {
+            for on in [
+                "{}".to_owned(),
+                format!(r#"{{"{key}":true}}"#),
+                format!(r#"{{"{key}":"false"}}"#),
+                format!(r#"{{"{key}":null}}"#),
+                "not json".to_owned(),
+                "[]".to_owned(),
+            ] {
+                assert!(profile_switch_on(&on, key), "{key} in {on}");
+            }
+            let off = format!(r#"{{"preset":42,"environments":"broken","{key}":false}}"#);
+            assert!(!profile_switch_on(&off, key), "{key} in {off}");
+        }
+        assert!(profile_switch_on(r#"{"vidoc":false}"#, PRODUCTION_SWITCH));
+        assert!(profile_switch_on(
+            r#"{"protect_production":false}"#,
+            VIDOC_SWITCH
+        ));
     }
 }

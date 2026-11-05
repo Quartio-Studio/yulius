@@ -117,6 +117,15 @@ async fn fixture() -> BoxResult<Fixture> {
 
 /// [`fixture`] with containment on or off and `yulius.toml` made from the data directory.
 async fn fixture_with(contained: bool, toml: impl Fn(&Path) -> String) -> BoxResult<Fixture> {
+    fixture_hosted(contained, toml, None).await
+}
+
+/// [`fixture_with`] whose jobs go to `host` when given.
+async fn fixture_hosted(
+    contained: bool,
+    toml: impl Fn(&Path) -> String,
+    host: Option<Arc<dyn yulius_app::ports::session::SessionHost>>,
+) -> BoxResult<Fixture> {
     // A short base: job sockets live at <data>/runs/ci-<uuid>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("yci").tempdir_in("/tmp")?;
     let root = dir.path().canonicalize()?;
@@ -127,7 +136,7 @@ async fn fixture_with(contained: bool, toml: impl Fn(&Path) -> String) -> BoxRes
     // otherwise land inside a job's start or timeout.
     let _ = std::process::Command::new(&exe).arg("version").output();
     let h = harness_with(HarnessOptions {
-        session_host: Some(Arc::new(PtySessionHost::new(exe))),
+        session_host: Some(host.unwrap_or_else(|| Arc::new(PtySessionHost::new(exe)))),
         git: Some(Arc::new(GitAdapter::new("git"))),
         dir: Some(dir),
         configure: Some(Box::new(move |config| {
@@ -4071,6 +4080,41 @@ async fn a_job_relinking_ci_logs_keeps_the_host_file() -> TestResult {
             std::fs::read_to_string(host.join(&name)).map_err(|e| format!("{name}: {e}"))?,
             "kept\n",
             "the host file is not removed through the link"
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-421 CCU-003 (review finding 5): a CI job in a joined sandbox binds the agent CLI its
+/// join names, read-only at the host package's path.
+#[tokio::test]
+async fn a_ci_job_binds_the_agent_cli_of_its_join() -> TestResult {
+    use yulius_app::ports::session::{Bind, Containment};
+    let recording = Arc::new(crate::cd::Recording {
+        inner: PtySessionHost::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius"))),
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+    let f = fixture_hosted(true, |_| YULIUS_TOML.to_owned(), Some(recording.clone())).await?;
+    assert!(
+        f.h.app
+            .set_isolation(Arc::new(crate::cd::Holders::default()))
+    );
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    let seen = recording.seen.lock().map(|s| s.clone()).unwrap_or_default();
+    assert!(!seen.is_empty(), "no CI job ran");
+    for containment in &seen {
+        let Containment::Bubblewrap { binds, join, .. } = containment else {
+            return Err(format!("a contained job: {containment:?}").into());
+        };
+        assert!(join.is_some(), "joined");
+        assert!(
+            binds.contains(&Bind {
+                source: "/data/claude-code/versions/2.1.311".into(),
+                dest: "/opt/agent-cli".into(),
+                writable: false,
+            }),
+            "{binds:?}"
         );
     }
     Ok(())

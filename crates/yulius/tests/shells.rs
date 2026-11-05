@@ -1331,3 +1331,55 @@ async fn a_shell_folder_never_resolves_a_link_below_the_sandbox() -> TestResult 
     assert_eq!(folders, [named.to_string_lossy()], "{:?}", shells.body);
     Ok(())
 }
+
+/// SPEC-421 CCU-003: a person's shell in an isolated sandbox gets the agent CLI its join names
+/// (Yulius's up-to-date copy at the host package's path), read-only.
+#[tokio::test]
+async fn an_isolated_shell_binds_the_agent_cli_of_its_join() -> TestResult {
+    use yulius_app::ports::session::{Bind, Containment};
+    use yulius_app::ports::store::{SandboxStore, UserStore};
+    use yulius_domain::ids::UserId;
+    let f = fixture_with(true, None, None).await?;
+    let user =
+        f.h.store
+            .user(&UserId::parse("u-alice")?)
+            .await?
+            .ok_or("alice")?;
+    let sandbox =
+        f.h.store
+            .sandbox(&SandboxId::parse("s1")?)
+            .await?
+            .ok_or("s1")?;
+    let cli = Bind {
+        source: "/data/claude-code/versions/2.1.311".into(),
+        dest: "/usr/local/lib/node_modules/@anthropic-ai/claude-code".into(),
+        writable: false,
+    };
+    let join = yulius_app::ports::isolation::SandboxJoin {
+        holder_pid: 4242,
+        user_ns: 3,
+        net_ns: 2,
+        mnt_ns: 4,
+        cgroup: None,
+        ci_cgroup: None,
+        system_root: "/fake/runtime/sandboxes/s1/root".into(),
+        hostname: "fixture".into(),
+        exec_shim: None,
+        extra_binds: vec![cli.clone()],
+        private_dirs: Vec::new(),
+        system_passwd: None,
+        system_group: None,
+        host_system: None,
+        docker_dir: None,
+    };
+    let space = f.h.app.user_space(&user, &sandbox, Some(join))?;
+    let Containment::Bubblewrap {
+        binds, readonly, ..
+    } = &space.containment
+    else {
+        return Err(format!("a contained shell: {:?}", space.containment).into());
+    };
+    assert!(binds.contains(&cli), "{binds:?}");
+    assert!(!readonly.contains(&cli.dest), "{readonly:?}");
+    Ok(())
+}

@@ -265,6 +265,8 @@ function recoveryForm(ctx, { onBack, onRecovered }) {
   return form;
 }
 
+const GITHUB_UNCONFIGURED = 'GitHub sign-in isn’t set up on this instance yet. The superadmin signs in with the password below and connects GitHub under Administration.';
+
 const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 
 /**
@@ -289,13 +291,18 @@ export function signInProblem(reason, login) {
       return { otherAccount: false, text: 'That sign-in was already used or has expired. Sign in again.' };
     case 'denied':
       return { otherAccount: false, text: 'GitHub sign-in was cancelled.' };
+    case 'github_unconfigured':
+      return { otherAccount: false, github: false, text: GITHUB_UNCONFIGURED };
     default:
       return { otherAccount: false, text: 'Sign-in did not complete. Try again.' };
   }
 }
 
-/** Sign-in: GitHub (all users) and a compact superadmin password form. */
-export function mountSignIn(ctx, { next, onDone, problem }) {
+/**
+ * Sign-in: GitHub (all users) and a compact superadmin password form. Without a GitHub App
+ * (`githubConfigured` false, SPEC-422) only the password, open, with why GitHub is missing.
+ */
+export function mountSignIn(ctx, { next, onDone, problem, githubConfigured = true }) {
   // Same rule as the server (#60): browsers read \\ as / and drop tabs and newlines.
   const nextPath = next && next.startsWith('/') && !next.startsWith('//') && !/[\\\u0000-\u001f\u007f]/.test(next) ? next : '/';
   const githubHref = `/api/auth/github/start?next=${encodeURIComponent(nextPath)}`;
@@ -306,7 +313,10 @@ export function mountSignIn(ctx, { next, onDone, problem }) {
   // A wrong password is said under the password, not under the GitHub button (WCAG 3.3.1).
   const passwordError = h('div', { class: 'field-error', id: 'password-error', role: 'alert' });
   const submit = h('button', { type: 'submit', class: 'btn' }, 'Sign in');
-  const errorBox = h('div', { class: 'field-error', role: 'alert' }, problem ? problem.text : '');
+  // "GitHub isn't set up" is the page's own sentence when so, and stale when GitHub is set up
+  // (connected since): never repeated or shown as an error.
+  const shownProblem = problem && problem.github !== false ? problem : null;
+  const errorBox = h('div', { class: 'field-error', role: 'alert' }, shownProblem ? shownProblem.text : '');
   const username = h('input', { type: 'text', name: 'username', autocomplete: 'username', value: 'superadmin', hidden: true, readOnly: true, tabindex: '-1', 'aria-hidden': 'true' });
   const form = h('form', { class: 'stack-sm' }, username, h('div', { class: 'row' }, password, submit), passwordError);
   form.addEventListener('submit', async (event) => {
@@ -344,15 +354,25 @@ export function mountSignIn(ctx, { next, onDone, problem }) {
   }
   const forgot = h('button', { type: 'button', class: 'btn-link small', onClick: () => showRecovery() }, 'Forgot password?');
   const details = h('details', null, h('summary', { class: 'muted small' }, 'Superadmin password'), h('div', { class: 'stack-sm space-top' }, form, forgot));
+  const intro = h('p', { class: 'text-2' });
+  const divider = h('div', { class: 'divider' }, 'or');
   const card = h('div', { class: 'auth-card' },
     brandLockup(),
     h('h1', { class: 'auth-title' }, 'Sign in'),
-    h('p', { class: 'text-2' }, 'Members sign in with GitHub. Sandbox access mirrors your GitHub repository permissions.'),
+    intro,
     githubButton,
     errorBox,
     otherAccount,
-    h('div', { class: 'divider' }, 'or'),
+    divider,
     details);
+  // Shows or hides GitHub sign-in on this page, in place: what is typed, open or focused stays
+  // when the page learns GitHub was connected meanwhile (review round 2).
+  function setGithub(configured) {
+    for (const part of [githubButton, otherAccount, divider]) if (part) part.hidden = !configured;
+    intro.textContent = configured ? 'Members sign in with GitHub. Sandbox access mirrors your GitHub repository permissions.' : GITHUB_UNCONFIGURED;
+    if (!configured) details.open = true;
+  }
+  setGithub(githubConfigured);
   const root = h('main', { class: 'auth' }, card);
   function showRecovery() {
     setChildren(root, recoveryForm(ctx, {
@@ -371,7 +391,9 @@ export function mountSignIn(ctx, { next, onDone, problem }) {
       })),
     }));
   }
-  return { el: root };
+  // The password is the only way in: it gets the keyboard once the page is shown.
+  if (!githubConfigured) queueMicrotask(() => { if (password.isConnected) password.focus(); });
+  return { el: root, setGithub };
 }
 
 /**

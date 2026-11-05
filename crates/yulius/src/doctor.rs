@@ -509,8 +509,21 @@ pub fn doctor(
     contained: bool,
     extra: &[PathBuf],
     proxy_secret_file: Option<&Path>,
+    claude_updates: yulius_domain::agent_cli::Channel,
 ) -> ExitCode {
     let mut checks = run_checks(data_dir, contained, extra);
+    if contained {
+        // What isolated runs bind (SPEC-421): Yulius's up-to-date copy or the host's.
+        checks.push(check(
+            "Claude Code in sandboxes",
+            Level::Ok,
+            crate::wiring::claude_cli::describe(
+                &data_dir.join("claude-code"),
+                crate::wiring::sandbox::agent_cli_dir().as_deref(),
+                claude_updates,
+            ),
+        ));
+    }
     checks.extend(proxy_secret_file.map(proxy_secret_check));
     for c in &checks {
         let tag = match c.level {

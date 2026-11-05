@@ -228,7 +228,7 @@ One pattern per kind of state (SPEC-001 UI-050): `emptyState` for every empty li
 that fills it), `loadError` for a failed load said in place (`loader(container, 'the users', …)` in
 `pages/common.js` names what failed: "Couldn’t load the users: …"), `skeleton` while loading (shimmering
 fields, never a spinner with "Loading…"; `placeholder(text, 'loading')` returns it; a spinner marks only an
-action under way, ADR-0073) in the shape of what loads (ADR-0097: `placeholder(text, 'loading', shape)` and
+action under way, ADR-0073; a picture being read is its tile shimmering with a turning ring, its `img` added once decoded, ADR-0265) in the shape of what loads (ADR-0097: `placeholder(text, 'loading', shape)` and
 `loader(…, { shape })` draw `items`, `item-section`, `table`, `cards`, `form` or `editor` with the page's own
 classes; a page with a layout of its own passes a function drawing it with `bar()`s (Sessions, CI, the
 Dashboard) or wraps one in `skeletonOf()`, as the Git page and the task lists do), and
@@ -242,7 +242,7 @@ group `needs` (`status.js`), the rule the server counts with too.
 | Path | View |
 | --- | --- |
 | `/setup` | Setup wizard (token, password twice, two non-recoverable-password confirmations). |
-| `/signin?next=…&error=…` | Sign in with GitHub (`/api/auth/github/start?next=`) or the superadmin password. |
+| `/signin?next=…&error=…` | Sign in with GitHub (`/api/auth/github/start?next=`) or the superadmin password; without a GitHub App (`github_configured` false in `/api/setup/status`) only the password, open (SPEC-422). |
 | `/join?code=<code>` | A playground's guest link (SPEC-410, ADR-0260): who invited them and until when, a name, Join as guest. |
 | `/` | Home: every sandbox as a card (the default view; ⌘⇧H / Ctrl+Shift+H, the logo or the All sandboxes tab return to it); empty state with Import/Create when there is none. |
 | `/s/<slug>` | New-task composer. |

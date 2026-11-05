@@ -2604,7 +2604,7 @@ async fn a_state_left_alone_broken_or_waited_for_keeps_its_version() -> TestResu
 /// The holders of a recording isolation adapter: the sandbox's and its production holder's
 /// joins, with the calls made.
 #[derive(Default)]
-struct Holders {
+pub(crate) struct Holders {
     calls: std::sync::Mutex<Vec<&'static str>>,
     /// The sandbox is under disk pressure.
     over: bool,
@@ -2626,7 +2626,11 @@ impl Holders {
             system_root: format!("/fake/runtime/sandboxes/{name}/root").into(),
             hostname: name.replace('.', "-"),
             exec_shim: None,
-            extra_readonly: vec!["/opt/agent-cli".into()],
+            extra_binds: vec![yulius_app::ports::session::Bind {
+                source: "/data/claude-code/versions/2.1.311".into(),
+                dest: "/opt/agent-cli".into(),
+                writable: false,
+            }],
             private_dirs: Vec::new(),
             system_passwd: None,
             system_group: None,
@@ -2695,9 +2699,9 @@ impl yulius_app::ports::isolation::SandboxIsolation for Holders {
 
 /// A process host that records each run's containment and runs it uncontained (the joins are
 /// fakes), with the real ptyhost.
-struct Recording {
-    inner: PtySessionHost,
-    seen: std::sync::Mutex<Vec<yulius_app::ports::session::Containment>>,
+pub(crate) struct Recording {
+    pub(crate) inner: PtySessionHost,
+    pub(crate) seen: std::sync::Mutex<Vec<yulius_app::ports::session::Containment>>,
 }
 
 #[async_trait::async_trait]
@@ -2767,6 +2771,7 @@ async fn production_runs_join_the_production_holder_with_its_docker_engine() -> 
     let Some(Containment::Bubblewrap {
         sandbox_root,
         writable,
+        binds,
         join: Some(join),
         ..
     }) = seen.first()
@@ -2783,7 +2788,8 @@ async fn production_runs_join_the_production_holder_with_its_docker_engine() -> 
         "the production holder's engine"
     );
     assert!(join.host_system.is_some(), "the host's read-only system");
-    assert!(join.extra_readonly.is_empty());
+    assert!(join.extra_binds.is_empty());
+    assert!(binds.is_empty(), "no agent CLI in production: {binds:?}");
     assert_eq!(join.cgroup.as_deref(), Some(Path::new("/cg/s1.prod/ci")));
     assert!(!files.exists(), "the run's files are removed");
     assert!(!data.join("runs").join(format!("cd-{id}")).exists());
@@ -2803,6 +2809,7 @@ async fn production_runs_join_the_production_holder_with_its_docker_engine() -> 
     let seen = recording.seen.lock().map(|s| s.clone()).unwrap_or_default();
     let Some(Containment::Bubblewrap {
         writable,
+        binds,
         join: Some(join),
         ..
     }) = seen.get(1)
@@ -2811,6 +2818,15 @@ async fn production_runs_join_the_production_holder_with_its_docker_engine() -> 
     };
     assert_eq!(join.net_ns, 2);
     assert!(join.host_system.is_none());
+    // The agent CLI the sandbox's join names, at the host package's path (SPEC-421 CCU-003).
+    assert_eq!(
+        binds,
+        &[yulius_app::ports::session::Bind {
+            source: "/data/claude-code/versions/2.1.311".into(),
+            dest: "/opt/agent-cli".into(),
+            writable: false,
+        }]
+    );
     assert!(
         writable.contains(&data.join("runs").join(format!("cd-{dev_id}")).join("work")),
         "{writable:?}"
@@ -2852,5 +2868,70 @@ async fn a_production_run_over_the_quota_prunes_the_engines_after_it() -> TestRe
         "{calls:?}"
     );
     assert!(calls.contains(&"prune_engine"), "{calls:?}");
+    Ok(())
+}
+
+/// SPEC-421 CCU-003 (review finding 5): a task's agent run in a joined sandbox binds the agent
+/// CLI its join names, read-only at the host package's path.
+#[tokio::test]
+async fn an_agent_run_binds_the_agent_cli_of_its_join() -> TestResult {
+    use yulius_app::ports::session::Containment;
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let recording = Arc::new(Recording {
+        inner: PtySessionHost::new(exe),
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+    let f = fixture_with(&full_cd(), Some(recording.clone())).await?;
+    assert!(f.h.app.set_isolation(Arc::new(Holders::default())));
+    f.h.app
+        .deps
+        .store
+        .insert_account(&yulius_app::model::AccountRecord {
+            id: yulius_domain::ids::AccountId::parse("a1")?,
+            provider: yulius_domain::harness::Provider::Anthropic,
+            label: "Claude".into(),
+            credential: Some(
+                f.h.app
+                    .deps
+                    .crypto
+                    .seal(concat!("sk-ant-oat01-", "agent-cli-test").as_bytes())?,
+            ),
+            status: yulius_app::model::AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            created_at: yulius_domain::time::Timestamp(1),
+            updated_at: yulius_domain::time::Timestamp(1),
+            email: None,
+            email_checked_at: None,
+        })
+        .await?;
+    let created = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/tasks",
+        Some(json!({"prompt": "probe the agent CLI", "harness": "claude"})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let binds = loop {
+        let seen = recording.seen.lock().map(|s| s.clone()).unwrap_or_default();
+        if let Some(Containment::Bubblewrap { binds, .. }) = seen.first() {
+            break binds.clone();
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("no agent run was spawned: {seen:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(
+        binds.contains(&yulius_app::ports::session::Bind {
+            source: "/data/claude-code/versions/2.1.311".into(),
+            dest: "/opt/agent-cli".into(),
+            writable: false,
+        }),
+        "{binds:?}"
+    );
     Ok(())
 }

@@ -40,13 +40,13 @@ Other frontends (for example a desktop app, OPS-002) use bearer tokens from the 
 
 | Method | Path | Body → Response |
 | --- | --- | --- |
-| GET | `/api/setup/status` | → `{"setup_required": bool}` |
+| GET | `/api/setup/status` | → `{"setup_required": bool, "github_configured": bool}` (`github_configured`: the instance has a GitHub App; until then the sign-in page offers only the password, SPEC-422) |
 | POST | `/api/setup` | `{"token", "password", "password_confirm", "confirm_saved": true}` → 201 `Me` + `"recovery_code": "123456"` (shown once) + cookie. 422 when the repeat differs or the password has fewer than 8 characters (`the password needs at least 8 characters`; SPEC-242). Refused once a superadmin exists. The web UI's last setup steps offer the optional Jev key (`PUT /api/admin/jev`, ADM-001) and the optional Vidoc key (`PUT /api/admin/vidoc`, SPEC-195) with this session. |
 | POST | `/api/auth/password` | `{"password"}` → `Me` + cookie (superadmin only; 5 attempts per client per minute, then 429; the client is the TCP peer, or the reverse proxy's `X-Yulius-Client-Ip` when `X-Yulius-Proxy-Secret` matches the configured secret, ACC-013, [operations](operations.md#per-client-sign-in-limits-trusted-proxy-header)) |
 | GET | `/api/auth/recovery` | → `{"available": bool, "locked": bool, "attempts_left": 0..3}` (ACC-011) |
 | POST | `/api/auth/recover` | `{"code", "password", "password_confirm"}` → `{"recovery_code"}` (a new code, shown once); sets the superadmin password and ends every superadmin session. 422 for a wrong code (with the attempts left), and, before the code is checked (no attempt spent), for a repeat that differs or a password under 8 characters; 403 when no code is set or recovery is locked — the third wrong code locks it permanently |
 | POST | `/api/admin/recovery-code` | superadmin session, `{"password"}` → `{"recovery_code"}`: replaces the code and re-enables a locked recovery; 403 for a wrong password |
-| GET | `/api/auth/github/start?next=/[&prompt=select_account]` | → 303 to GitHub; `prompt=select_account` makes GitHub show its account picker (sign in with another GitHub account) |
+| GET | `/api/auth/github/start?next=/[&prompt=select_account]` | → 303 to GitHub; `prompt=select_account` makes GitHub show its account picker (sign in with another GitHub account). Never an error body: without a GitHub App → 303 to `/signin?error=github_unconfigured[&next=…]`, another failure → `/signin?error=failed[&next=…]` (logged; SPEC-422) |
 | GET | `/api/auth/github/callback?code&state` | → 303 to `next`, sets cookie. Never answers with an error body: a refusal → 303 to `/signin?error=<reason>&next=…`, where `reason` is `not_admitted` (with `&login=<refused GitHub login>`), `disabled`, `expired` (unknown, used or expired state — e.g. a reload of the callback), `denied` (GitHub `error=access_denied`) or `failed` (GitHub or server error, logged) |
 | POST | `/api/auth/logout` | → 204 |
 | GET | `/api/me` | → `Me`; a playground's guest's `user` has `"login": "<name> (guest)"` and `"guest": {"sandbox_id", "slug", "expires_at"}` (SPEC-410) |
@@ -240,6 +240,12 @@ SPEC-051, SPEC-247). Only Claude Code sessions are imported.
 always a boolean in responses, and a `profile` update keeps the switch whatever it carries.
 `POST /api/sandboxes` import and create take `"vidoc": false` to add the project switched off,
 before its onboarding starts.
+`PATCH /api/sandboxes/{sid}` `{"protect_production": false|true}` waives or restores the
+requirement of a GitHub ruleset on the production branch (SPEC-423, ADR-0267; `422` for a
+playground, `403` for turning it off with a `yulius login` token: a browser session or an `operate`
+token decides it; audited `delivery.production_protection.update`); `profile.protect_production` is
+always a boolean in responses, and a `profile` update keeps it whatever it carries. Off, the
+onboarding status has no production warning and `production_protect` answers `waived: true`.
 `GET /api/sandboxes/{sid}/vidoc` (read) answers `SandboxVidocView` (SPEC-359, ADR-0245): `project`
 (the switch, as `profile.vidoc`), `instance` (the instance switch), `key` (a Vidoc key reaches the
 project when on), `repository` (`on`, `off` or `unreadable`: `.config/vidoc.toml` at the
@@ -634,7 +640,12 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   independent review approved: the branch head, or an earlier head followed only by clean merges of
   the integration branch, SPEC-083 REV-001) and `delivery_deploy` (integration
   environments with a command and `verify = "command"` only), which take these same paths with
-  the task owner's authority and are audited as `task:<n>` too (DLV-008). Agents never promote:
+  the task owner's authority and are audited as `task:<n>` too (DLV-008). Work committed after
+  the task's pull request merged is delivered as a new pull request of the task; with nothing
+  new, `delivery_merge` answers `merged: true` and that it is merged already, arming nothing,
+  and what Yulius cannot judge (a rewritten branch, a merged head missing from the clone, a
+  conflict with the integration branch, a failed fetch, GitHub not answering, new work while a
+  live merge train holds the task) it refuses with the reason (SPEC-425). Agents never promote:
   production is always a person's (ADR-0110; there is no `delivery_promote` any more), and they
   deploy with CD (below). `issue_create`
   opens a GitHub issue only when it meets the Definition of Ready (one `type:`, one `priority:`,

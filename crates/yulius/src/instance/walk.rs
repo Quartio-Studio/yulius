@@ -14,8 +14,16 @@ use super::archive::{Entry, Kind};
 
 /// Top-level names the new host makes its own (EXP-006): the sandbox base (a copy of this host's
 /// system), live processes' runtime files, the update helper's request, SQLite's shared-memory
-/// index, and the filesystem's own `lost+found`.
-pub const LEFT_OUT: [&str; 5] = ["system", "runtime", "update", "yulius.db-shm", "lost+found"];
+/// index, the filesystem's own `lost+found`, and the Claude Code builds for this host's platform
+/// (SPEC-421: the new host downloads its own within the hour).
+pub const LEFT_OUT: [&str; 6] = [
+    "system",
+    "runtime",
+    "update",
+    "yulius.db-shm",
+    "lost+found",
+    "claude-code",
+];
 
 /// The archive path of the data directory itself.
 pub const ROOT: &[u8] = b"data";

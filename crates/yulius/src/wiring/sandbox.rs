@@ -14,11 +14,14 @@ use yulius_app::ports::isolation::{
     DiskUsage, DockerStatus, LimitCounters, SandboxIsolation, SandboxJoin, SandboxLimits,
     SandboxRef, SmokeCheck,
 };
+use yulius_domain::agent_cli::Channel;
 use yulius_domain::ids::SandboxId;
 use yulius_sandbox::cgroup::Limits;
 use yulius_sandbox::manager::{
     IdleConfig, IsolationConfig, Joined, Manager, PrepareError, SandboxRequest, TICK,
 };
+
+use crate::wiring::claude_cli::{ClaudeUpdater, agent_cli_binds, start_updates};
 
 /// Which containment contained runs use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -97,6 +100,20 @@ pub struct IsolationArgs {
     /// the sandbox's system).
     #[arg(long = "sandbox-docker", env = "YULIUS_SANDBOX_DOCKER", value_enum, default_value_t = DockerMode::On)]
     pub docker: DockerMode,
+    /// Claude Code releases isolated sandboxes follow (SPEC-421): `stable` (default), `latest`,
+    /// or `off` (the host's Claude Code only).
+    #[arg(long = "claude-updates", env = "YULIUS_CLAUDE_UPDATES", default_value = "stable",
+          value_parser = parse_channel)]
+    pub claude_updates: Channel,
+}
+
+/// `stable`, `latest` or `off`.
+///
+/// # Errors
+/// Any other text.
+pub fn parse_channel(text: &str) -> Result<Channel, String> {
+    Channel::parse(text.trim())
+        .ok_or_else(|| format!("invalid channel {text:?}: expected stable, latest or off"))
 }
 
 impl Default for IsolationArgs {
@@ -111,6 +128,7 @@ impl Default for IsolationArgs {
             forward: Vec::new(),
             idle_minutes: 5,
             docker: DockerMode::On,
+            claude_updates: Channel::Stable,
         }
     }
 }
@@ -278,7 +296,10 @@ fn request_of(sandbox: &SandboxRef) -> SandboxRequest {
 pub struct NamespaceIsolation {
     manager: Arc<Manager>,
     strict: bool,
-    extra_readonly: Vec<PathBuf>,
+    /// The host's Claude Code package, bound at its own path in every run.
+    agent_cli: Option<PathBuf>,
+    /// Yulius's up-to-date copies of it, when updates are on (SPEC-421).
+    claude_root: Option<PathBuf>,
     /// Yulius's internal listener as a sandbox reaches it (the link test, SPEC-355 SLR-005).
     link_port: Option<u16>,
 }
@@ -290,9 +311,18 @@ impl NamespaceIsolation {
         Self {
             manager,
             strict,
-            extra_readonly: agent_cli_dir().into_iter().collect(),
+            agent_cli: agent_cli_dir(),
+            claude_root: None,
             link_port: None,
         }
+    }
+
+    /// Runs get the newer of the host's Claude Code and Yulius's `current` under `root`
+    /// (SPEC-421 CCU-003).
+    #[must_use]
+    pub fn with_claude_updates(mut self, root: PathBuf) -> Self {
+        self.claude_root = Some(root);
+        self
     }
 
     /// Tests sandboxes' links to Yulius's internal listener on `port` (SPEC-355 SLR-005).
@@ -324,7 +354,10 @@ impl NamespaceIsolation {
                     system_root: PathBuf::from(join.system_root),
                     hostname: join.hostname,
                     exec_shim: join.exec_shim.map(PathBuf::from),
-                    extra_readonly: self.extra_readonly.clone(),
+                    extra_binds: agent_cli_binds(
+                        self.agent_cli.as_deref(),
+                        self.claude_root.as_deref(),
+                    ),
                     private_dirs: join.private_dirs.iter().map(PathBuf::from).collect(),
                     system_passwd: joined.system_passwd,
                     system_group: joined.system_group,
@@ -672,9 +705,18 @@ pub async fn install(
     let manager = Manager::new(config);
     manager.adopt().await;
     let strict = args.mode == IsolationMode::Namespaces;
-    app.set_isolation(Arc::new(
-        NamespaceIsolation::new(Arc::clone(&manager), strict).with_link_port(internal_port),
-    ));
+    let claude_root = app.config.data_dir.join("claude-code");
+    let mut isolation =
+        NamespaceIsolation::new(Arc::clone(&manager), strict).with_link_port(internal_port);
+    if args.claude_updates != Channel::Off {
+        isolation = isolation.with_claude_updates(claude_root.clone());
+    }
+    app.set_isolation(Arc::new(isolation));
+    // Claude Code kept current for the runs (SPEC-421); the loop lives as long as the server.
+    match ClaudeUpdater::new(claude_root, agent_cli_dir()) {
+        Ok(updater) => drop(start_updates(updater, args.claude_updates)),
+        Err(error) => tracing::warn!(%error, "Claude Code updates are unavailable"),
+    }
     let ticker = Arc::clone(&manager);
     tokio::spawn(async move {
         loop {

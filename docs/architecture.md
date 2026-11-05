@@ -244,6 +244,29 @@ flowchart LR
   SMJ -->|"one check per line"| UI
 ```
 
+## Claude Code updates
+
+Sessions run with Claude Code's own updater off (#45). The server keeps the CLI current instead,
+as its service user ([SPEC-421](../.ai/specs/SPEC-421-claude-should-autoupdate-when-new-versio.md),
+[decision 0266](decisions/0266-yulius-keeps-claude-code-current-in-its-data-directory.md)): the
+adapter `wiring/claude_cli.rs` checks npm's dist-tag hourly, installs a newer platform binary
+under `<data>/claude-code` after its sha512, ELF and embedded-version checks (never running it),
+and switches `current`
+atomically; the version policy (channels, versions, platform package, what to keep) is
+`yulius_domain::agent_cli`. `NamespaceIsolation` puts the newer of the host's npm package and
+`current` into each join's `extra_binds`, read-only at the host package's path, and agent runs,
+shells, CI jobs and dev CD runs add it to their binds, so a run gets the version current when it
+starts and keeps it while it runs. Sign-ins are sealed tokens, untouched by a new binary.
+
+```mermaid
+flowchart LR
+  REG["registry.npmjs.org"] -->|"hourly: dist-tag, then the platform tarball"| UPD["claude_cli updater (server)"]
+  UPD -->|"sha512, ELF, embedded version, then rename"| CUR["data dir: claude-code/current → versions/X.Y.Z"]
+  HOST["host npm install (operator)"] --> PICK{"newer of the two"}
+  CUR --> PICK
+  PICK -->|"SandboxJoin.extra_binds, read-only at the host package path"| RUN["new run: agent, shell, CI job, dev CD"]
+```
+
 ## Sandbox browser DevTools
 
 Each sandbox's Chromium runs outside containment and speaks the DevTools protocol only over the
@@ -631,7 +654,16 @@ a violation is refused with the rule in words, also for promotion pull requests
 [decision 0051](decisions/0051-the-merge-gate-enforces-the-branch-policy.md)).
 `delivery_merge` first delivers the head the way the end of a clean turn does
 (`try_auto_open_pr`): it pushes the branch and opens the pull request, or pushes new commits to
-it. A head it cannot deliver yet (open step, no plan for a task that needs a spec, invalid spec,
+it. Work committed after the task's pull request merged (on top of its head, more than clean
+merges of the integration branch, and adding to it) starts a new delivery of the same task,
+audited `delivery.follow_up`: the record goes back to `none` and a new pull request opens. With
+nothing new, `delivery_merge` answers that the pull request is merged already and arms nothing;
+what Yulius cannot judge (a rewritten branch, a merged head missing from the clone, a conflict
+with the integration branch, a failed fetch, GitHub not answering, new work while a live merge
+train holds the task) it refuses with the reason
+([SPEC-425](../.ai/specs/SPEC-425-yulius-doesnt-pick-up-things-this-is-on.md),
+[decision 0269](decisions/0269-work-after-a-tasks-merge-is-delivered-as-a-new-pull-request.md)).
+A head it cannot deliver yet (open step, no plan for a task that needs a spec, invalid spec,
 uncommitted work) is refused with the reason, and a push GitHub refuses answers with the remedy
 (merge the pushed head, never force): only a note that same call wrote replaces its error. A head
 is pushed when GitHub's branch is at it, whatever `git push` said: every push of a task's head
@@ -646,7 +678,7 @@ sequenceDiagram
     participant A as Agent (Claude Code)
     participant W as yulius wait (background shell)
     participant Y as Yulius (internal API)
-    A->>Y: delivery_merge (head pushed and pull request opened if missing, policy checked, checks running: armed)
+    A->>Y: delivery_merge (head pushed and pull request opened if missing, a new one for work after a merge, policy checked, checks running: armed)
     A->>W: start, end the turn
     W->>Y: POST /internal/agent/wait (long poll, a failed-push note goes once GitHub has the head)
     Y-->>W: checks ended / stage moved / armed merge decided (merged, refused, dropped)
@@ -1714,7 +1746,13 @@ onboarding reports a branch the agents could write. The preparation agent then c
 `production_protect` ([ADR-0129](decisions/0129-onboarding-agents-protect-production-as-the-onboarding-person.md)):
 `App::tool_production_protect` adds `people_only_ruleset` (the same rules, no pull-request rule)
 with the task owner's own token after `repo_access` says they are a repository admin, and only
-when the branch is not already guarded; the agent's token never gains Administration.
+when the branch is not already guarded; the agent's token never gains Administration. A sandbox
+admin can waive the ruleset where the GitHub plan has none
+([ADR-0267](decisions/0267-a-sandboxs-admins-waive-the-production-ruleset-on-its-git-page.md)):
+`profile.protect_production: false` (`delivery::production_protection_required`, the Git page's
+Production protection card) makes `production_branch_warning` answer nothing and
+`production_protect` answer `waived`; every request for the ruleset (`production_ruleset_fix`)
+names that card's address.
 
 ```mermaid
 flowchart LR
@@ -1725,6 +1763,7 @@ flowchart LR
   GH --> OK["main moves"]
   ONB["onboarding"] -->|"branch_guard with an agent token"| GH
   ONB -->|"production_protect: owner's admin token adds the ruleset"| GH
+  WAIVE["Git page: protect_production off (ADR-0267)"] -.->|"no warning, tool answers waived"| ONB
 ```
 
 That token reaches only the sandbox's own repository. To read another repository of the same

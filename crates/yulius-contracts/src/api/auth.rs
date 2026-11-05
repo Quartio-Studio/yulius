@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 pub struct SetupStatus {
     /// True until the superadmin exists.
     pub setup_required: bool,
+    /// Whether the instance has a GitHub App: until then the sign-in page offers no GitHub
+    /// sign-in (SPEC-422). Absent from servers before it, read as false.
+    #[serde(default)]
+    pub github_configured: bool,
 }
 
 /// `POST /api/setup`.

@@ -4,6 +4,35 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-05
+
+- Work after a task's merge is delivered again (SPEC-425, task #407, #1074, ADR-0269): commits an
+  agent makes on its branch after the task's pull request merged are pushed and opened as a new
+  pull request of the same task (at the end of a turn and on `delivery_merge`), instead of staying
+  local while `delivery_merge` waited for checks of the merged pull request forever; a head that
+  only merged `dev` since opens nothing, and `delivery_merge` then says the pull request is merged.
+- Reply in a task's attention bar works on the first click (SPEC-424, task #406, ADR-0268): a task
+  update arriving while the button is pressed replaced it and lost the click; the bar now holds its
+  render until the press ends, and the keyboard stays on the terminal Reply across updates.
+- A sandbox's admins can waive the production ruleset (SPEC-423, task #405, ADR-0267): a private
+  repository without GitHub Pro, Team or Enterprise cannot have one, so the Git page's new
+  Production protection card switches off "Require a GitHub ruleset on `<branch>`"; onboarding then
+  stops warning and asking for it, and `production_protect` answers that it was waived. Every
+  warning and refusal about the ruleset now says exactly where that switch is.
+- Sign-in before GitHub is connected shows no raw error (SPEC-422, task #404, #1069): until the
+  instance has a GitHub App the sign-in page offers no GitHub button, says why and opens the
+  superadmin password; `/api/auth/github/start` then returns to `/signin?error=github_unconfigured`
+  instead of a 409 JSON body, and `GET /api/setup/status` says `github_configured`.
+- Claude Code updates itself on an instance (SPEC-421, task #403, ADR-0266). The server checks
+  npm's `stable` release of Claude Code every hour (`YULIUS_CLAUDE_UPDATES`: `stable`, `latest` or
+  `off`), installs a newer one under `<data>/claude-code` after checking its sha512, platform and
+  embedded version, and every new or resumed run in an isolated sandbox gets it. Running sessions are not
+  interrupted and subscriptions stay signed in. `yulius doctor` names the version sandboxes get.
+- The original prompt's images load visibly (SPEC-420, task #402, #1065, ADR-0265): while an image
+  is read its tile shimmers with a turning ring and keeps its number, instead of the browser's
+  broken-image icon and the file name; an `Image N` placeholder clicked meanwhile shows a ring; an
+  image the browser cannot draw says "Couldn’t load it".
+
 ## 2026-11-04
 
 - Rollback in Yulius's own CD (SPEC-418, task #400, ADR-0264): an environment that runs no deploy

@@ -326,6 +326,19 @@ pub trait GitPort: Send + Sync {
         let _ = (repo, ancestor, descendant);
         unsupported("comparing commits")
     }
+    /// Whether what `head` changed since `since` adds anything to `base`: Git's merge of the
+    /// two from `since` (in `worktree`, with the repository's merge drivers) is not `base`'s
+    /// tree; `None` when that merge conflicts (SPEC-425 FUP-002). `base` is read once.
+    async fn adds_to(
+        &self,
+        worktree: &Path,
+        base: &str,
+        since: &str,
+        head: &str,
+    ) -> AppResult<Option<bool>> {
+        let _ = (worktree, base, since, head);
+        unsupported("comparing trees")
+    }
     /// The parents of commit `rev`, in order.
     async fn parents(&self, repo: &Path, rev: &str) -> AppResult<Vec<String>> {
         let _ = (repo, rev);
