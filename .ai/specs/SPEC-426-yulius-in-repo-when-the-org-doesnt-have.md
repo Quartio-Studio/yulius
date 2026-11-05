@@ -67,10 +67,10 @@ discovered at the end of a turn.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Yulius refuses a code edit of a task whose spec has no Plan yet
-- [ ] Claude Code sends edit tools' PreToolUse to Yulius
-- [ ] ADR, architecture and docs describe the edit gate
+- [x] Write the fix spec and the regression test that fails
+- [x] Yulius refuses a code edit of a task whose spec has no Plan yet
+- [x] Claude Code sends edit tools' PreToolUse to Yulius
+- [x] ADR, architecture and docs describe the edit gate
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, Evidence and the changes log updated
 

@@ -638,6 +638,35 @@ from Yulius's block in the clone's `info/attributes`; Yulius merges the integrat
 locally before GitHub merges (SPEC-050 DLV-203), so GitHub never sees those conflicts. A review
 carries over Git's own merges of the integration branch, checked with `git merge-tree`.
 
+## The discipline gate
+
+The discipline gate is Yulius's own, and nothing in it depends on the repository's host or its
+GitHub plan. It answers Claude Code's hooks from the task's workflow, the worktree's Git state and
+the spec file. At a turn's end, the `Stop` hook blocks a task that needs a spec while its spec is
+missing or invalid (`spec_gate`, DSC-013), at most three times. Before a code edit, Claude Code's
+`PreToolUse` for `Edit`, `MultiEdit`, `Write` and `NotebookEdit` reaches Yulius through `yulius
+hook claude PreToolUse`, which fails open. `edit_gate` denies an edit of a non-documentation file
+in the task's worktree while the task needs a spec and its spec has no Plan item yet. A goal task's
+long turn therefore cannot change code before its plan exists
+([SPEC-426](../.ai/specs/SPEC-426-yulius-in-repo-when-the-org-doesnt-have.md),
+[decision 0270](decisions/0270-a-code-edit-waits-for-the-tasks-spec-plan.md)). Bash calls are
+checked in the sandbox (`guard_client`, a `pgrep -f` that matches itself) and never sent.
+
+```mermaid
+sequenceDiagram
+    participant A as Agent (Claude Code)
+    participant H as yulius hook (sandbox)
+    participant Y as Yulius (internal API)
+    A->>H: PreToolUse Bash
+    H-->>A: local check only (self-matching pgrep -f denied)
+    A->>H: PreToolUse Edit / Write of a file
+    H->>Y: POST /hooks/claude/PreToolUse
+    Y-->>A: deny until the spec has a Plan (code files of a task that needs a spec), else nothing
+    A->>H: Stop (turn end)
+    H->>Y: POST /hooks/claude/Stop
+    Y-->>A: block while the spec is missing or invalid, else the turn ends
+```
+
 ## Agent feedback
 
 Yulius has no messages for now ([SPEC-028](../.ai/specs/SPEC-028-delete-message-mechanism-for-now-until-w.md),

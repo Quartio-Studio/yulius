@@ -199,7 +199,9 @@ watching, steering and unblocking.
   the onboarding gate show Connect Claude, and every start a person asks for is refused at once
   with a link to Subscriptions; tasks started by a chain, a rule or an automation wait and say why
   (SPEC-246).
-- **Delivery discipline**: spec when it matters, effort-weighted steps, independent review
+- **Delivery discipline**: spec when it matters (a task that needs one cannot edit its code with
+  Claude Code's edit tools until its spec has a Plan, SPEC-426; the turn-end gate checks the rest),
+  effort-weighted steps, independent review
   (findings in the change's own code are fixed before merge, never deferred to an issue),
   merge on green into `dev`, cleanup; promotion to `main` is a person's. Profiles live in
   `yulius.toml`, with the branch policy (typed branches, conventional titles, `dev` → `main`

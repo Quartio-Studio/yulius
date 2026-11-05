@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-05
 
+- A code edit waits for the task's spec and its Plan (SPEC-426, task #408, ADR-0270): Claude
+  Code now asks Yulius before `Edit`, `MultiEdit`, `Write` and `NotebookEdit`, and Yulius refuses an
+  edit of a task's code while the task needs a spec and has none with a Plan, saying where to write
+  it. Until now the gate ran only when the agent ended a turn, so a goal task could work for a long
+  time without a plan. The repository's GitHub plan played no part: the gate is Yulius's own and
+  never calls GitHub.
 - Work after a task's merge is delivered again (SPEC-425, task #407, #1074, ADR-0269): commits an
   agent makes on its branch after the task's pull request merged are pushed and opened as a new
   pull request of the same task (at the end of a turn and on `delivery_merge`), instead of staying
