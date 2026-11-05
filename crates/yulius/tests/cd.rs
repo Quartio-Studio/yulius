@@ -2604,7 +2604,7 @@ async fn a_state_left_alone_broken_or_waited_for_keeps_its_version() -> TestResu
 /// The holders of a recording isolation adapter: the sandbox's and its production holder's
 /// joins, with the calls made.
 #[derive(Default)]
-struct Holders {
+pub(crate) struct Holders {
     calls: std::sync::Mutex<Vec<&'static str>>,
     /// The sandbox is under disk pressure.
     over: bool,
@@ -2699,9 +2699,9 @@ impl yulius_app::ports::isolation::SandboxIsolation for Holders {
 
 /// A process host that records each run's containment and runs it uncontained (the joins are
 /// fakes), with the real ptyhost.
-struct Recording {
-    inner: PtySessionHost,
-    seen: std::sync::Mutex<Vec<yulius_app::ports::session::Containment>>,
+pub(crate) struct Recording {
+    pub(crate) inner: PtySessionHost,
+    pub(crate) seen: std::sync::Mutex<Vec<yulius_app::ports::session::Containment>>,
 }
 
 #[async_trait::async_trait]
