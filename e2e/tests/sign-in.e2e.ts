@@ -81,3 +81,9 @@ test('GitHub connected after the page loaded is offered at the next sign-in', as
   await expect(browser.locator('a.btn-github')).toHaveText('Sign in with GitHub');
   await expect(screen.getByText(NO_GITHUB)).toHaveCount(0);
 });
+
+test('a stale "not set up" reason is not shown once GitHub is connected', async ({ app, browser }) => {
+  await app.open(mock('/signin?error=github_unconfigured&next=/', '&signedout=1'));
+  await expect(browser.locator('a.btn-github')).toHaveText('Sign in with GitHub');
+  await expect(browser.locator('.auth-card >> text=/isn’t set up on this instance yet/')).toHaveCount(0);
+});
