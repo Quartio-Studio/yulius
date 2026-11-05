@@ -110,6 +110,12 @@ pub struct Profile {
     /// it with [`UpdateSandbox::vidoc`]).
     #[serde(default)]
     pub vidoc: Option<bool>,
+    /// Whether the production branch must be protected from agents with a GitHub ruleset (SPEC-423
+    /// PPR-001): `false` means a sandbox admin accepted that agents could write it (a plan without
+    /// rulesets); absent or `true` keeps the requirement. Responses always carry a value; a
+    /// profile update ignores it (set it with [`UpdateSandbox::protect_production`]).
+    #[serde(default)]
+    pub protect_production: Option<bool>,
 }
 
 /// One environment step of a profile.
@@ -170,6 +176,9 @@ pub struct UpdateSandbox {
     /// Turns the project's Vidoc security scans on or off (SPEC-338 VOF-001); absent keeps them.
     #[serde(default)]
     pub vidoc: Option<bool>,
+    /// Turns the production protection requirement on or off (SPEC-423 PPR-002); absent keeps it.
+    #[serde(default)]
+    pub protect_production: Option<bool>,
 }
 
 /// `GET /api/sandboxes/{sid}/vidoc`: whether the sandbox scans with Vidoc, and why not
