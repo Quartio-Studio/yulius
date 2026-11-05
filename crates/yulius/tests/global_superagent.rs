@@ -170,12 +170,6 @@ async fn a_person_gets_one_global_superagent_in_its_own_folder_without_built_in_
         );
     }
 
-    socket
-        .send(Message::text(
-            json!({"type": "input", "data": "echo still-$((1+1))\r"}).to_string(),
-        ))
-        .await?;
-    read_until(&mut socket, &mut screen, "still-2").await?;
     f.h.app.end_all_shells().await;
     Ok(())
 }
@@ -214,7 +208,6 @@ async fn the_global_superagent_works_in_every_sandbox_of_its_person() -> TestRes
         "ci_runs",
         "project_file_read",
         "project_change",
-        "change_merge",
     ] {
         assert!(names.contains(&wanted), "{wanted} in {names:?}");
     }
@@ -228,6 +221,7 @@ async fn the_global_superagent_works_in_every_sandbox_of_its_person() -> TestRes
         "project_import",
         "onboarding_start",
         "onboarding_skip",
+        "change_merge",
         "sandbox_task_create",
         "secret_copy_to_env",
     ] {
@@ -291,12 +285,13 @@ async fn the_global_superagent_works_in_every_sandbox_of_its_person() -> TestRes
         "project_import",
         "onboarding_start",
         "onboarding_skip",
+        "change_merge",
     ] {
         let (refused, is_error) = cockpit_tool(
             &f,
             &token,
             withheld,
-            json!({"project": "acme/website", "environment": "dev", "repo": "acme/x", "secret": "K", "name": "K", "variables": [], "allow": true, "hosts": []}),
+            json!({"project": "acme/website", "environment": "dev", "repo": "acme/x", "secret": "K", "name": "K", "variables": [], "allow": true, "hosts": [], "number": 1}),
         )
         .await?;
         assert!(is_error, "{withheld}: {refused}");
@@ -741,6 +736,93 @@ async fn the_global_bearer_is_bounded_per_minute() -> TestResult {
     f.h.clock.0.fetch_add(61_000, Ordering::SeqCst);
     let again = mcp(&f, &token, "ping", json!({})).await?;
     assert!(again["result"].is_object(), "a minute later: {again}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+async fn say(
+    f: &Fixture,
+    creds: &support::Creds,
+    text: &str,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &f.h.router,
+        Method::POST,
+        "/api/superagent/message",
+        Some(json!({"text": text})),
+        creds,
+    )
+    .await
+}
+
+/// GSA-007 (review round 2): the person talks to it by message only. Its terminal is read-only
+/// (keys could open an editor, a shell or a menu); each message is typed as one bracketed paste
+/// and Enter, `@` as `＠`; `!` lines and commands but /clear, /compact, /context and /cost are
+/// refused; Esc interrupts it.
+#[tokio::test]
+async fn the_person_talks_to_the_global_superagent_by_message_only() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    let none = say(&f, &f.alice, "hello").await?;
+    assert_eq!(none.status, StatusCode::NOT_FOUND, "none runs yet");
+    let id = global_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let state = read_message(&mut socket, "state").await?;
+    assert_eq!(state["can_write"], false, "{state}");
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+
+    // A key is refused; a message is typed.
+    socket
+        .send(Message::text(
+            json!({"type": "input", "data": "echo keyed-$((3+4))\r"}).to_string(),
+        ))
+        .await?;
+    let sent = say(&f, &f.alice, "echo said-$((2+3)) to ops@example.com").await?;
+    assert_eq!(sent.status, StatusCode::NO_CONTENT, "{:?}", sent.body);
+    read_until(&mut socket, &mut screen, "ops\u{ff20}example.com").await?;
+    assert!(
+        screen.contains("\u{1b}[200~") || screen.contains("[200~"),
+        "{screen:?}"
+    );
+    assert!(!screen.contains("keyed-"), "a key reached it: {screen:?}");
+
+    for refused in [
+        "!cat /etc/passwd",
+        "/plugin install x@y",
+        "/memory",
+        "  ",
+        "/clear now",
+    ] {
+        let resp = say(&f, &f.alice, refused).await?;
+        assert_eq!(
+            resp.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{refused}: {:?}",
+            resp.body
+        );
+    }
+    for allowed in ["/clear", "/compact"] {
+        let resp = say(&f, &f.alice, allowed).await?;
+        assert_eq!(
+            resp.status,
+            StatusCode::NO_CONTENT,
+            "{allowed}: {:?}",
+            resp.body
+        );
+    }
+    let esc = call(
+        &f.h.router,
+        Method::POST,
+        "/api/superagent/interrupt",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(esc.status, StatusCode::NO_CONTENT, "{:?}", esc.body);
+    // Nobody else reaches it.
+    let carols = say(&f, &f.carol, "hello").await?;
+    assert_eq!(carols.status, StatusCode::NOT_FOUND);
     f.h.app.end_all_shells().await;
     Ok(())
 }
