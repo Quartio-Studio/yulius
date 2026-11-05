@@ -1514,11 +1514,11 @@ impl App {
                 sandbox_root: self.sandbox_dir(&sandbox.id),
                 home: home.to_path_buf(),
                 writable: vec![work.to_path_buf(), cache.to_path_buf()],
-                readonly: readonly
-                    .into_iter()
-                    .chain(join.iter().flat_map(|j| j.extra_readonly.iter().cloned()))
+                readonly,
+                binds: join
+                    .iter()
+                    .flat_map(|j| j.extra_binds.iter().cloned())
                     .collect(),
-                binds: Vec::new(),
                 identity: None,
                 join: join.map(|join| Box::new(ci_join(join))),
             },
@@ -2023,7 +2023,7 @@ pub fn production_containment(
 ) -> Containment {
     let mut join = ci_join(join);
     join.host_system = Some(resolver.to_path_buf());
-    join.extra_readonly.clear();
+    join.extra_binds.clear();
     // Only a production holder's engine, never the sandbox's (review finding 4): its Docker
     // directory is `<state of <sid>.prod>/docker`.
     let production_engine = join.docker_dir.as_deref().is_some_and(|dir| {
@@ -2385,7 +2385,11 @@ mod tests {
             system_root: "/data/runtime/sandboxes/s1.prod/root".into(),
             hostname: "app-prod".into(),
             exec_shim: None,
-            extra_readonly: vec!["/opt/claude".into()],
+            extra_binds: vec![crate::ports::session::Bind {
+                source: "/data/claude-code/versions/2.1.311".into(),
+                dest: "/opt/claude".into(),
+                writable: false,
+            }],
             private_dirs: vec!["/tmp/x".into()],
             system_passwd: None,
             system_group: None,
@@ -2427,7 +2431,7 @@ mod tests {
             Some(resolver),
             "the host's system, not the layer, with the sandbox's resolver"
         );
-        assert!(joined.extra_readonly.is_empty());
+        assert!(joined.extra_binds.is_empty());
         assert_eq!(
             joined.system_root,
             PathBuf::from("/data/runtime/sandboxes/s1.prod/root"),

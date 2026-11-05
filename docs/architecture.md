@@ -244,6 +244,29 @@ flowchart LR
   SMJ -->|"one check per line"| UI
 ```
 
+## Claude Code updates
+
+Sessions run with Claude Code's own updater off (#45). The server keeps the CLI current instead,
+as its service user ([SPEC-421](../.ai/specs/SPEC-421-claude-should-autoupdate-when-new-versio.md),
+[decision 0266](decisions/0266-yulius-keeps-claude-code-current-in-its-data-directory.md)): the
+adapter `wiring/claude_cli.rs` checks npm's dist-tag hourly, installs a newer platform binary
+under `<data>/claude-code` after its sha512, ELF and embedded-version checks (never running it),
+and switches `current`
+atomically; the version policy (channels, versions, platform package, what to keep) is
+`yulius_domain::agent_cli`. `NamespaceIsolation` puts the newer of the host's npm package and
+`current` into each join's `extra_binds`, read-only at the host package's path, and agent runs,
+shells, CI jobs and dev CD runs add it to their binds, so a run gets the version current when it
+starts and keeps it while it runs. Sign-ins are sealed tokens, untouched by a new binary.
+
+```mermaid
+flowchart LR
+  REG["registry.npmjs.org"] -->|"hourly: dist-tag, then the platform tarball"| UPD["claude_cli updater (server)"]
+  UPD -->|"sha512, ELF, embedded version, then rename"| CUR["data dir: claude-code/current → versions/X.Y.Z"]
+  HOST["host npm install (operator)"] --> PICK{"newer of the two"}
+  CUR --> PICK
+  PICK -->|"SandboxJoin.extra_binds, read-only at the host package path"| RUN["new run: agent, shell, CI job, dev CD"]
+```
+
 ## Sandbox browser DevTools
 
 Each sandbox's Chromium runs outside containment and speaks the DevTools protocol only over the

@@ -456,9 +456,9 @@ impl App {
         env.push(("PATH".into(), format!("{SANDBOX_BIN}:{path}")));
         let identity_dest = PathBuf::from("/etc");
         let replace_sudo = join.is_none() && Path::new(HOST_SUDO).is_file();
-        let extra_readonly: Vec<PathBuf> = join
+        let extra_binds: Vec<Bind> = join
             .as_ref()
-            .map(|j| j.extra_readonly.clone())
+            .map(|j| j.extra_binds.clone())
             .unwrap_or_default();
         let containment = Containment::Bubblewrap {
             sandbox_root: self.sandbox_dir(&sandbox.id),
@@ -466,7 +466,6 @@ impl App {
             writable: Vec::new(),
             readonly: std::iter::once(self.config.yulius_exe.clone())
                 .chain(self.config.contained_readonly.iter().cloned())
-                .chain(extra_readonly)
                 .collect(),
             binds: vec![
                 Bind {
@@ -498,6 +497,7 @@ impl App {
                 dest: PathBuf::from(HOST_SUDO),
                 writable: false,
             }))
+            .chain(extra_binds)
             .collect(),
             identity: Some(Identity {
                 uid: 0,

@@ -15,6 +15,8 @@ fn tree() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
         "runtime/sandboxes",
         "update",
         "runs/a",
+        // Claude Code built for this host's platform (SPEC-421): the new host installs its own.
+        "claude-code/versions/2.1.311/bin",
     ] {
         fs::create_dir_all(root.join(d))?;
     }

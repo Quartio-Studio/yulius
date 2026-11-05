@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use yulius_domain::ids::SandboxId;
 
 use crate::error::AppResult;
+use crate::ports::session::Bind;
 
 /// The sandbox a run asks to enter.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,8 +46,9 @@ pub struct SandboxJoin {
     pub hostname: String,
     /// `yulius` executable that installs the seccomp filter (`sandbox-exec`).
     pub exec_shim: Option<PathBuf>,
-    /// Host paths bound read-only on top of the system layer (the agent CLI's install).
-    pub extra_readonly: Vec<PathBuf>,
+    /// Read-only binds on top of the system layer: the agent CLI's install at the host
+    /// package's path, from the host or from Yulius's own up-to-date copy (SPEC-421 CCU-003).
+    pub extra_binds: Vec<Bind>,
     /// Directories covered by an empty tmpfs before the run's binds (the data directory).
     pub private_dirs: Vec<PathBuf>,
     /// Host path of the sandbox system's current `/etc/passwd` (its upper layer's, else the

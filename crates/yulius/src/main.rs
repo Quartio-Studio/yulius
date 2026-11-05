@@ -260,6 +260,10 @@ enum Command {
         /// The reverse proxy's secret file (as for `serve`): checked, never shown.
         #[arg(long, env = "YULIUS_PROXY_SECRET_FILE")]
         proxy_secret_file: Option<PathBuf>,
+        /// Claude Code releases isolated sandboxes follow (as for `serve`, SPEC-421).
+        #[arg(long, env = "YULIUS_CLAUDE_UPDATES", default_value = "stable",
+              value_parser = yulius::wiring::sandbox::parse_channel)]
+        claude_updates: yulius_domain::agent_cli::Channel,
     },
     /// Bring this host to every prerequisite of Docker in sandboxes (run as root; SPEC-203).
     Host {
@@ -733,12 +737,14 @@ fn main() -> ExitCode {
             contained,
             contained_readonly,
             proxy_secret_file,
+            claude_updates,
             ..
         } => yulius::doctor::doctor(
             &data,
             contained,
             &contained_readonly,
             proxy_secret_file.as_deref(),
+            claude_updates,
         ),
         Command::Host { action } => host(action),
         Command::Instance {

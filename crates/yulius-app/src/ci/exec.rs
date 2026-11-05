@@ -981,9 +981,11 @@ impl App {
             // The binary itself, for `yulius security-scan` (SPEC-195), as agent runs see it.
             readonly: std::iter::once(self.config.yulius_exe.clone())
                 .chain(self.config.contained_readonly.iter().cloned())
-                .chain(join.iter().flat_map(|j| j.extra_readonly.iter().cloned()))
                 .collect(),
-            binds: Vec::new(),
+            binds: join
+                .iter()
+                .flat_map(|j| j.extra_binds.iter().cloned())
+                .collect(),
             identity: None,
             join: join.map(|join| Box::new(ci_join(join))),
         }
@@ -1716,7 +1718,7 @@ mod tests {
             system_root: "/root".into(),
             hostname: "app".into(),
             exec_shim: None,
-            extra_readonly: Vec::new(),
+            extra_binds: Vec::new(),
             private_dirs: Vec::new(),
             system_passwd: None,
             system_group: None,
