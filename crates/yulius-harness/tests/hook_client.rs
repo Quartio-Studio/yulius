@@ -522,3 +522,50 @@ fn an_unheld_hook_does_not_retry() -> TestResult {
     assert!(started.elapsed() < Duration::from_secs(3));
     Ok(())
 }
+
+/// SPEC-426 EDG-001: an edit tool's `PreToolUse` goes to Yulius (its edit gate) and its answer is
+/// printed; a Bash command is still checked in the sandbox, without a connection.
+#[test]
+fn pre_tool_use_sends_edits_to_yulius_and_checks_bash_locally() -> TestResult {
+    let body = br#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"write the Plan"}}"#;
+    let mut response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(body);
+    let (url, server) = serve_once(response)?;
+    let payload = br#"{"hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"file_path":"/w/api.rs"}}"#;
+    let mut output = Vec::new();
+    let code = run_hook(
+        "claude",
+        "PreToolUse",
+        &mut &payload[..],
+        &mut output,
+        &env_with(url, Some("task-token-SYNTHETIC")),
+    );
+    assert_eq!(code, 0);
+    assert_eq!(output, body);
+    let request = join(server)?;
+    assert_eq!(
+        request.line.trim_end(),
+        "POST /hooks/claude/PreToolUse HTTP/1.1"
+    );
+    assert_eq!(request.body, payload);
+
+    let (url, listener) = untouched_listener()?;
+    let env = env_with(url, Some("task-token-SYNTHETIC"));
+    let mut output = Vec::new();
+    let bash = br#"{"tool_name":"Bash","tool_input":{"command":"pkill -f cargo-nextest"}}"#;
+    run_hook("claude", "PreToolUse", &mut &bash[..], &mut output, &env);
+    assert!(
+        String::from_utf8_lossy(&output).contains("\"permissionDecision\":\"deny\""),
+        "a self-matching pkill is denied locally"
+    );
+    let mut output = Vec::new();
+    let read = br#"{"tool_name":"Read","tool_input":{"file_path":"/w/api.rs"}}"#;
+    run_hook("claude", "PreToolUse", &mut &read[..], &mut output, &env);
+    assert!(output.is_empty(), "other tools pass without a word");
+    assert_no_connection(&listener);
+    Ok(())
+}
