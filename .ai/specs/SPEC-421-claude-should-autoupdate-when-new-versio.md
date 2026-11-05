@@ -1,11 +1,11 @@
 ---
 yulius-task: ac2fdd52-58d5-4db4-be32-7d9b89b34542
-status: in-progress
+status: done
 ---
 
 # SPEC-421: Claude Code updates itself on an instance, and nobody signs in again
 
-Status: in-progress
+Status: done
 Date: 2026-11-05
 Owner: Yulius task #403
 Scope authorization: task #403, asked by the project's owner: "Claude should autoupdate when new
@@ -83,8 +83,8 @@ installs it, no subscription is signed in again, no running session is stopped.
 - [x] Hourly update loop with the off switch and old versions removed
 - [x] Runs bind the newest Claude Code at the host package's path
 - [x] Doctor line, operations guide, ADR and architecture updated
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -158,3 +158,38 @@ installs it, no subscription is signed in again, no running session is stopped.
   `canonicalize`) stay synchronous, as `agent_cli_dir` and the other join preparation already are.
   The installed binary's mode was also found to follow the umask (0700 under 077): modes are now
   set explicitly and tested.
+- Review round 2: APPROVE at 82f4b534. Its low finding (a `/proc` mounted with `hidepid=` or a
+  unit with `ProtectProc=` would hide runs from the in-use check) is answered in the operations
+  guide (`/proc` must stay readable to the service user); its nit (ETXTBSY when copying and running
+  `/bin/sleep` under a multi-threaded `cargo test`) does not affect nextest, the project's runner,
+  which runs one process per test.
+
+## Evidence
+
+- `scripts/dev ci` at 1a6c7b3e: passed (exit 0): repository contracts, check, fmt, clippy
+  `-D warnings` on Linux and for macOS, nextest 3123 passed / 16 skipped, doctests, `cargo deny`
+  (advisories, bans, licenses, sources ok), `cargo shear`, doc.
+- New tests, each seen failing first or mutation-checked (the guard disabled makes it fail):
+  `crates/yulius-domain/src/agent_cli.rs` (7 unit tests: versions, channels, platform packages,
+  ELF machines, what to keep); `crates/yulius/tests/claude_updates.rs` (11: AC1 install, modes and
+  switch; AC2 refusals for sha512, foreign URL, non-regular `claude`, no `package/claude`, non-ELF,
+  wrong machine, missing embedded version, tarball over its bound with and without a
+  `Content-Length`, binary over its bound; AC3; AC4 with a version a live process runs; AC5; AC6;
+  binds; the loop; the doctor text); `cd::an_agent_run_binds_the_agent_cli_of_its_join`,
+  `local_ci::a_ci_job_binds_the_agent_cli_of_its_join`,
+  `shells::an_isolated_shell_binds_the_agent_cli_of_its_join`, the dev and production CD
+  assertions in `cd::production_runs_join_the_production_holder_with_its_docker_engine`, and the
+  export walk test. The early `Content-Length` refusal is backed by the streaming bound, so
+  disabling it alone fails no test.
+- Registry shape checked live on 2026-11-05: `GET /-/package/@anthropic-ai%2Fclaude-code/dist-tags`
+  answered `stable` 2.1.311 and `latest` 2.1.318; the platform package's version document carries
+  `dist.tarball` on registry.npmjs.org and a sha512 `integrity`; the installed 2.1.292 binary is
+  an x86-64 ELF64 embedding `VERSION:"2.1.292"` 290 times and its package names
+  `bin/claude.exe`.
+- `yulius security-scan`: "Security scan disabled: Vidoc is turned off in Yulius" (exit 0):
+  disabled, not passed.
+- Not tested here: a real download and switch on a deployed instance (the test registry is a
+  local stub; the real tarball is about 80 MB), and the in-use check against runs in real sandbox
+  namespaces (the test's process runs in the test's own namespace; the reviewer confirmed this
+  sandbox maps its root to the service uid, so `/proc/<pid>/exe` is readable there). The first
+  hourly check after the instance updates to this change will install 2.1.311 (`stable`).
