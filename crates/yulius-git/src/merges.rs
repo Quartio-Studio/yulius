@@ -189,18 +189,38 @@ impl Git {
         ours: &str,
         theirs: &str,
     ) -> Result<Option<String>, GitError> {
+        self.merge_tree_from(worktree, None, ours, theirs)
+    }
+
+    /// [`Git::merge_tree`] with `base` as the merge base instead of the one Git finds: what
+    /// `theirs` changed since `base`, applied to `ours` (SPEC-425: a follow-up after a squash
+    /// merge, whose own merge base is the branch's old fork point).
+    ///
+    /// # Errors
+    /// As [`Git::merge_tree`]; a Git before 2.40 (no `--merge-base`) fails here.
+    pub fn merge_tree_from(
+        &self,
+        worktree: &Path,
+        base: Option<&str>,
+        ours: &str,
+        theirs: &str,
+    ) -> Result<Option<String>, GitError> {
         let (ours, theirs) = (
             self.rev_parse(worktree, ours)?,
             self.rev_parse(worktree, theirs)?,
         );
+        let base = base.map(|rev| self.rev_parse(worktree, rev)).transpose()?;
+        let mut invocation = Invocation::new(self, "merge-tree", Some(worktree)).args([
+            "merge-tree",
+            "--write-tree",
+            "--no-messages",
+        ]);
+        if let Some(base) = &base {
+            invocation = invocation.arg(format!("--merge-base={base}"));
+        }
         let output = self.run(
-            Invocation::new(self, "merge-tree", Some(worktree))
-                .args([
-                    "merge-tree",
-                    "--write-tree",
-                    "--no-messages",
-                    "--end-of-options",
-                ])
+            invocation
+                .args(["--end-of-options"])
                 .arg(&ours)
                 .arg(&theirs),
         )?;

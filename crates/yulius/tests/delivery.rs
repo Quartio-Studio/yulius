@@ -305,9 +305,21 @@ impl GitPort for RealGit {
             .await
     }
 
-    async fn adds_to(&self, worktree: &Path, base: &str, head: &str) -> AppResult<bool> {
+    async fn resolve_commit(&self, repo: &Path, rev: &str) -> AppResult<Option<String>> {
         yulius::wiring::git::GitAdapter::new("git")
-            .adds_to(worktree, base, head)
+            .resolve_commit(repo, rev)
+            .await
+    }
+
+    async fn adds_to(
+        &self,
+        worktree: &Path,
+        base: &str,
+        since: &str,
+        head: &str,
+    ) -> AppResult<bool> {
+        yulius::wiring::git::GitAdapter::new("git")
+            .adds_to(worktree, base, since, head)
             .await
     }
 
@@ -4291,6 +4303,9 @@ async fn work_committed_after_the_merge_opens_a_new_pull_request() -> TestResult
     Ok(())
 }
 
+/// `feature.txt` as task `t1`'s pull request #1 adds it.
+const FEATURE: &str = "a\nb\nc\nd\ne\nf\ng\n";
+
 /// A standard-profile task `t1` whose pull request #1 merged (squashed into `dev` on the
 /// origin) at its head, with its plan done: the fixture, its worktree and the merged head.
 async fn merged_task() -> BoxResult<(Fixture, PathBuf, String)> {
@@ -4300,7 +4315,7 @@ async fn merged_task() -> BoxResult<(Fixture, PathBuf, String)> {
         .await?;
     git(&wt, &["config", "user.name", "Bob"])?;
     git(&wt, &["config", "user.email", "bob@yulius.test"])?;
-    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, "feature.txt", FEATURE, "Add feature")?;
     commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
     set_steps(&f, "t1", &["done", "done"]).await?;
     f.h.app.auto_open_pr(&TaskId::parse("t1")?).await;
@@ -4366,7 +4381,14 @@ async fn work_after_the_merge_opens_nothing_it_cannot_judge() -> TestResult {
     };
 
     // An open step with new work: blocked by the step, the task stays merged.
-    commit_file(&wt, "fix.txt", "fixed", "Fix after the merge")?;
+    git(&wt, &["fetch", "--quiet", "origin"])?;
+    git(&wt, &["merge", "--quiet", "--no-edit", "origin/dev"])?;
+    commit_file(
+        &wt,
+        "feature.txt",
+        "A\nb\nc\nd\ne\nf\ng\n",
+        "Fix after the merge",
+    )?;
     let fix = git(&wt, &["rev-parse", "HEAD"])?;
     set_steps(&f, "t1", &["done", "in_progress"]).await?;
     let blocked = merge_call(fix.clone()).await?;
@@ -4376,7 +4398,8 @@ async fn work_after_the_merge_opens_nothing_it_cannot_judge() -> TestResult {
     set_steps(&f, "t1", &["done", "done"]).await?;
 
     // The agent delivered the fix by hand as #2 and it merged outside Yulius: the task's record
-    // still names #1, but the head adds nothing to `dev`, so no third pull request opens.
+    // still names #1, but the head adds nothing to `dev`, so no third pull request opens, even
+    // once another change on `dev` touched the same file since.
     git(
         &wt,
         &["push", "--quiet", "origin", "HEAD:feat/1-checkout-api"],
@@ -4405,6 +4428,7 @@ async fn work_after_the_merge_opens_nothing_it_cannot_judge() -> TestResult {
         &fix,
     )
     .await?;
+    advance_base(&f, "dev", "feature.txt", "A\nb\nc\nd\ne\nf\nG\n")?;
     git(&wt, &["fetch", "--quiet", "origin"])?;
     f.h.app.auto_open_pr(&t1).await;
     assert_eq!(
@@ -4416,6 +4440,22 @@ async fn work_after_the_merge_opens_nothing_it_cannot_judge() -> TestResult {
     let done = merge_call(fix.clone()).await?;
     assert!(merge_text(&done).contains("already merged"), "{done}");
     assert_eq!(wait_state(&f, &agent, &fix).await?["merge_armed"], false);
+
+    // That verdict is kept for the head: GitHub is not asked again at it (it could not answer).
+    let pulls_before =
+        f.h.github
+            .pulls
+            .lock()
+            .map(|p| p.clone())
+            .unwrap_or_default();
+    if let Ok(mut pulls) = f.h.github.pulls.lock() {
+        pulls.retain(|p| p.number != 1);
+    }
+    let kept = merge_call(fix.clone()).await?;
+    assert!(merge_text(&kept).contains("already merged"), "{kept}");
+    if let Ok(mut pulls) = f.h.github.pulls.lock() {
+        *pulls = pulls_before;
+    }
 
     // A branch rewritten onto `dev` with new work: Yulius says how to bring the merged head
     // back, and neither pushes nor opens anything.
@@ -4436,19 +4476,69 @@ async fn work_after_the_merge_opens_nothing_it_cannot_judge() -> TestResult {
     assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
 
     // GitHub cannot answer for the merged pull request: said, nothing armed or opened.
-    git(&wt, &["merge", "--quiet", "--no-edit", &merged_head])?;
+    git(&wt, &["reset", "--quiet", "--hard", &fix])?;
+    commit_file(&wt, "more.txt", "more", "More after the merge")?;
     let back = git(&wt, &["rev-parse", "HEAD"])?;
     if let Ok(mut pulls) = f.h.github.pulls.lock() {
         pulls.retain(|p| p.number != 1);
     }
     let unknown = merge_call(back.clone()).await?;
     assert_eq!(unknown["isError"], true, "{unknown}");
+    let why = merge_text(&unknown);
     assert!(
-        merge_text(&unknown).contains("cannot tell whether this head adds to pull request #1"),
-        "{unknown}"
+        why.contains("whether this head adds to pull request #1, merged already, is unknown")
+            && !why.contains("Yulius cannot deliver this head yet: Yulius"),
+        "{why}"
     );
     assert_eq!(wait_state(&f, &agent, &back).await?["merge_armed"], false);
     assert_eq!(pulls_opened(&f), 2);
+    Ok(())
+}
+
+/// SPEC-425 (review of #407, finding 4): a merged task that is a member of a live merge train
+/// is not delivered anew while the train counts on its stage; once the train ends, it is.
+#[tokio::test]
+async fn work_after_the_merge_waits_for_a_live_merge_train() -> TestResult {
+    let (f, wt, merged_head) = merged_task().await?;
+    let t1 = TaskId::parse("t1")?;
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+    commit_file(&wt, "fix.txt", "fixed", "Fix after the merge")?;
+    let fix = git(&wt, &["rev-parse", "HEAD"])?;
+    let trains =
+        f.h.app
+            .config
+            .data_dir
+            .join(yulius_app::merge_train::MERGE_TRAINS_FILE);
+    std::fs::write(
+        &trains,
+        json!({"s1": {"train": {"run": "r1", "commit": merged_head, "base": merged_head,
+            "base_tree": "t", "members": [{"task": "t1", "pr": 1, "head": merged_head,
+            "armed_at": 1, "tree": "t"}]}}})
+        .to_string(),
+    )?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(&f), 1, "{:?}", f.h.github.writes());
+    let held = agent_tool(
+        &f,
+        &agent,
+        "delivery_merge",
+        json!({"reviewed_head": fix, "review_summary": "approve"}),
+    )
+    .await?;
+    assert_eq!(held["isError"], true, "{held}");
+    assert!(
+        held["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("merge train that has not ended"),
+        "{held}"
+    );
+    assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
+
+    std::fs::remove_file(&trains)?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(&f), 2, "{:?}", f.h.github.writes());
+    assert_eq!(f.origin_sha("feat/1-checkout-api")?, fix, "pushed");
     Ok(())
 }
 

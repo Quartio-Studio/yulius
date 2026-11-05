@@ -801,15 +801,22 @@ impl GitPort for GitAdapter {
             .map(branch_infos)
     }
 
-    async fn adds_to(&self, worktree: &Path, base: &str, head: &str) -> AppResult<bool> {
-        let (git, worktree, base, head) = (
+    async fn adds_to(
+        &self,
+        worktree: &Path,
+        base: &str,
+        since: &str,
+        head: &str,
+    ) -> AppResult<bool> {
+        let (git, worktree, base, since, head) = (
             self.git(),
             worktree.to_path_buf(),
             base.to_owned(),
+            since.to_owned(),
             head.to_owned(),
         );
         blocking(move || {
-            let Some(merged) = git.merge_tree(&worktree, &base, &head)? else {
+            let Some(merged) = git.merge_tree_from(&worktree, Some(&since), &base, &head)? else {
                 return Ok(true);
             };
             Ok(git.tree_of(&worktree, &base)?.as_deref() != Some(merged.as_str()))
