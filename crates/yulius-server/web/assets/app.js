@@ -147,7 +147,7 @@ function createApp(root, transport) {
         // where it left each sandbox (SPEC-113).
         store.forgetPulls();
         forgetPlaces();
-        renderSignIn();
+        renderSignIn({ recheck: false }); // the setup status was just read
       } else fatal(error);
     }
   }
@@ -164,7 +164,7 @@ function createApp(root, transport) {
     setChildren(root, mountSetup(ctx, { onDone: (me, target = '/') => signedIn(me, target) }).el);
   }
 
-  function renderSignIn() {
+  function renderSignIn({ recheck = true } = {}) {
     const loc = currentLocation();
     const next = loc.path === '/signin' ? loc.query.get('next') || '/' : loc.full;
     // A refused GitHub sign-in lands here with ?error=<reason> (ACC-004). The page says the reason
@@ -172,7 +172,18 @@ function createApp(root, transport) {
     const reason = loc.path === '/signin' ? loc.query.get('error') : null;
     const problem = reason ? signInProblem(reason, loc.query.get('login')) : null;
     navigate(`/signin?next=${encodeURIComponent(next)}`, { replace: true });
-    setChildren(root, mountSignIn(ctx, { next, problem, githubConfigured, onDone: (me, target) => signedIn(me, target) }).el);
+    const mount = () => mountSignIn(ctx, { next, problem, githubConfigured, onDone: (me, target) => signedIn(me, target) }).el;
+    const page = mount();
+    setChildren(root, page);
+    if (!recheck) return;
+    // GitHub may have been connected since the page loaded (another tab, another admin): the
+    // setup status says it now, and the page is drawn again only when that changed.
+    api.get('/api/setup/status', { allow401: true }).then((setup) => {
+      const configured = !(setup && setup.github_configured === false);
+      if (configured === githubConfigured || !page.isConnected) return;
+      githubConfigured = configured;
+      setChildren(root, mount());
+    }).catch(() => { /* the page drawn from what was known stays */ });
   }
 
   function renderJoin(me) {
@@ -286,6 +297,9 @@ function createApp(root, transport) {
     if (ctx.connectionAlert) ctx.connectionAlert.destroy();
     ctx.connectionAlert = null;
     shell = null;
+    // What the session last knew of GitHub (its pages update it in place) for the sign-in page.
+    const instance = store.state.me && store.state.me.instance;
+    if (instance) githubConfigured = instance.github_configured !== false;
     store.state.me = null;
     // The pull requests kept for the next page load go with the session, signed out or expired
     // (SPEC-104); a read answering later finds no user and writes nothing to storage.

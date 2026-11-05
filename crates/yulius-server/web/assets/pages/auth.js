@@ -313,9 +313,10 @@ export function mountSignIn(ctx, { next, onDone, problem, githubConfigured = tru
   // A wrong password is said under the password, not under the GitHub button (WCAG 3.3.1).
   const passwordError = h('div', { class: 'field-error', id: 'password-error', role: 'alert' });
   const submit = h('button', { type: 'submit', class: 'btn' }, 'Sign in');
-  // The page already says GitHub isn't set up: the same reason is not repeated as an error.
+  // "GitHub isn't set up" is the page's own sentence when so, and stale when GitHub is set up
+  // (connected since): never repeated or shown as an error.
   const github = githubConfigured;
-  const shownProblem = problem && !(problem.github === false && !github) ? problem : null;
+  const shownProblem = problem && problem.github !== false ? problem : null;
   const errorBox = h('div', { class: 'field-error', role: 'alert' }, shownProblem ? shownProblem.text : '');
   const username = h('input', { type: 'text', name: 'username', autocomplete: 'username', value: 'superadmin', hidden: true, readOnly: true, tabindex: '-1', 'aria-hidden': 'true' });
   const form = h('form', { class: 'stack-sm' }, username, h('div', { class: 'row' }, password, submit), passwordError);
