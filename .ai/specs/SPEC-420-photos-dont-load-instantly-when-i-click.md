@@ -47,6 +47,7 @@ already shows `Uploading…` with a spinner (`pi-spinner`).
 | PIL-002 | The picture appears once the browser has decoded it (`HTMLImageElement.decode()` on the read's object URL), and the tile is no longer busy. | e2e |
 | PIL-003 | A file the browser cannot decode is shown as a file that "Couldn’t load it", as a failed read is, never as a broken image; its placeholder says "Couldn’t open …: it is not a picture the browser can show.", and its object URL is revoked at once. | e2e (a `.jpg` the mock serves as text) |
 | PIL-004 | An `Image N` placeholder clicked while its image is read shows a turning ring in place of its icon and is busy until the preview opens or the read fails. | e2e |
+| PIL-005 | The dialog closed while a picture is read or decoded keeps nothing of it: its object URL is revoked, no preview opens and no toast shows. | e2e (`decode` held across the close) |
 
 ## Plan
 
@@ -54,7 +55,8 @@ already shows `Uploading…` with a spinner (`pi-spinner`).
 - [x] A failing e2e test: a held image shows an animated loading tile, never alt text
 - [x] Thumbnails and Image N placeholders show an animated icon while their image loads
 - [x] Docs, ADR and changes record the loading tile
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Review rounds 1 and 2 answered test-first: blobs freed, shimmer and failure asserted
+- [ ] Review round 3 approves the head
 - [ ] Every gate green with dev merged
 
 ## Acceptance criteria
@@ -72,6 +74,8 @@ already shows `Uploading…` with a spinner (`pi-spinner`).
 - e2e `original-prompt.e2e.ts`: a new test for AC-1 and AC-3 with `hold=` on the image's read, and
   one for AC-2 with a `.jpg` the mock serves as text; both fail on dev (an `img` with alt text is
   in the tile, the broken `.jpg` keeps its `img`).
+- e2e: the dialog closed while a held `decode` runs leaves no live object URL, no preview and no
+  toast (PIL-005, review round 2).
 - The existing dialog tests keep passing (thumbnails visible after the read, one read per file,
   retries after a failed read).
 
