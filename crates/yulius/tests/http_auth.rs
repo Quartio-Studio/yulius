@@ -450,6 +450,32 @@ async fn github_sign_in_without_an_app_returns_to_the_sign_in_page() -> TestResu
     Ok(())
 }
 
+/// A GitHub App that cannot be read (here: stored bytes that are not its configuration) is a
+/// failed start, said on the sign-in page, not a JSON error (SPEC-422 GSU-001).
+#[tokio::test]
+async fn github_sign_in_that_cannot_start_returns_to_the_sign_in_page() -> TestResult {
+    let h = harness()?;
+    setup_superadmin(&h).await?;
+    let sealed = h.app.deps.crypto.seal(b"not a GitHub App configuration")?;
+    h.store
+        .set_github_app(&sealed, "Quartio-Studio", "org")
+        .await?;
+    let start = call(
+        &h.router,
+        Method::GET,
+        "/api/auth/github/start?next=/s/studio",
+        None,
+        &Creds::default(),
+    )
+    .await?;
+    assert_eq!(start.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        start.location.as_deref(),
+        Some("/signin?error=failed&next=/s/studio")
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn only_admitted_github_users_sign_in_and_see_permitted_sandboxes() -> TestResult {
     let h = harness()?;

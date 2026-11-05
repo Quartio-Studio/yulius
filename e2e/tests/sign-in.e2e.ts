@@ -63,3 +63,21 @@ test('with a GitHub App the page still offers GitHub sign-in', async ({ app, bro
   await expect(screen.getByText(NO_GITHUB)).toHaveCount(0);
   await expect(browser.locator('details[open]')).toHaveCount(0);
 });
+
+// Review round 1: GitHub connected after the page loaded (the superadmin's first run, or another
+// tab) is offered at the next sign-in without a reload.
+type Mocked = Window & { __yuliusMock: { finishGithubApp(): void } };
+
+test('GitHub connected after the page loaded is offered at the next sign-in', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&signedout=1&github=0'));
+  await expect(screen.getByText(NO_GITHUB)).toBeVisible();
+  await screen.getByLabel('Superadmin password').fill(MOCK_PASSWORD);
+  await screen.getByRole('button', 'Sign in').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  await browser.evaluate(() => { (window as unknown as Mocked).__yuliusMock.finishGithubApp(); });
+  await screen.getByRole('button', /account menu$/).click();
+  await screen.getByRole('menuitem', 'Sign out').click();
+  await expect(browser).toHaveURL(/#\/signin/);
+  await expect(browser.locator('a.btn-github')).toHaveText('Sign in with GitHub');
+  await expect(screen.getByText(NO_GITHUB)).toHaveCount(0);
+});
