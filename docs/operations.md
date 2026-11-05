@@ -545,9 +545,11 @@ SPEC-421), with no root step and no sign-in again:
   `YULIUS_CLAUDE_UPDATES` dist-tag (`stable` by default) of `@anthropic-ai/claude-code` from
   `registry.npmjs.org`. A newer version than the one runs get is downloaded as its platform
   package (`@anthropic-ai/claude-code-linux-x64`, `-linux-arm64`, or their `-musl` builds), checked
-  against the registry's sha512, and its binary must answer `--version` with that version.
+  against the registry's sha512, and its binary must be an ELF for this platform that embeds that
+  version (it is never run on the host).
 - It lands in `<data>/claude-code/versions/<version>/bin/claude.exe`; `<data>/claude-code/current`
-  points at it. The version before it is kept, older ones are removed (about 300 MB each).
+  points at it. The version before it is kept, older ones are removed once no process runs them
+  (about 300 MB each). Only a host install laid out as `bin/claude.exe` is updated over.
 - Every run that joins an isolated sandbox (tasks, Superagent, shells, CI jobs, dev CD runs) binds
   the newer of that version and the host's npm install at the host package's path, when it starts.
   Running sessions keep their version until they next start (Continue, a resume after a pause);

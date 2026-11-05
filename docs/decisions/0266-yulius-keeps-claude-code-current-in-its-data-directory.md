@@ -21,10 +21,12 @@ handed to each run as `CLAUDE_CODE_OAUTH_TOKEN`, so a new binary invalidates non
   every hour (first 2 minutes after a start) it reads npm's dist-tag of `YULIUS_CLAUDE_UPDATES`
   (`stable` by default, `latest`, or `off`). A version newer than the one runs get is downloaded as
   the platform package's tarball from `registry.npmjs.org` (bounded), checked against the
-  registry's sha512 `integrity`, and only its native binary `package/claude` is taken. The binary
-  must answer `--version` with that version (30 s, reaped). It then moves to
-  `versions/<v>/bin/claude.exe`, and `current` is switched by an atomic rename; the version before
-  stays, older ones are removed. A failure changes nothing and is tried again an hour later.
+  registry's sha512 `integrity`, and only its native binary `package/claude` is taken. It must be a
+  64-bit ELF for the platform that embeds `VERSION:"<v>"`; it is never run on the host. It then
+  moves to `versions/<v>/bin/claude.exe`, and `current` is switched by an atomic rename; the
+  version before stays, older ones are removed once no live process executes them. A failure
+  changes nothing and is tried again an hour later. Only a host package laid out as
+  `bin/claude.exe` is updated or bound over.
 - **Runs bind the newest.** Every run joining an isolated sandbox (agent sessions and resumes,
   Superagent sessions, people's shells, CI jobs, dev CD runs) gets, read-only at the host
   package's path, the newer of the host's package and Yulius's `current`, chosen when the run
@@ -49,6 +51,9 @@ handed to each run as `CLAUDE_CODE_OAUTH_TOKEN`, so a new binary invalidates non
 - **`npm install --prefix <data>/claude-code`.** Needs Node.js on the server's path and runs the
   wrapper's `postinstall`; taking the binary from the platform package with its registry checksum
   gives the same file without either.
+- **Running the download's `--version` to check it.** It would run a freshly downloaded binary as
+  the service user, outside any sandbox, with the database and the vault key in reach; the ELF
+  header and the embedded version check the same without running it.
 - **Following `latest` by default.** Unattended sessions would get every release on its day;
   `stable` lags about a week and skips releases with major regressions, and `latest` is one
   setting away.
@@ -64,5 +69,6 @@ handed to each run as `CLAUDE_CODE_OAUTH_TOKEN`, so a new binary invalidates non
 - The sign-in terminal (`claude setup-token`), the Jev split proposer and uncontained runs on
   development hosts keep the host's `claude` on `PATH`: they run outside the bound system layer and
   do not depend on the CLI's version.
-- A shell started before two switches that runs `claude` again finds its bound version removed;
-  a new shell gets the current one.
+- A shell started before two switches that runs `claude` again, after no process ran that version
+  any more, finds it removed; a new shell gets the current one.
+- An instance export leaves `claude-code/` out: the new host downloads its own build.

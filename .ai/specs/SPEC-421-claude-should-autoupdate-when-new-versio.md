@@ -50,10 +50,13 @@ installs it, no subscription is signed in again, no running session is stopped.
   the server downloads the platform package's tarball of that version (the URL must be on
   `registry.npmjs.org`; at most 512 MiB), checks its sha512 against the registry's `integrity`,
   takes only the regular file `package/claude` (at most 1 GiB) into a temporary directory under
-  `<data>/claude-code/`, runs it with `--version` (30 s, the child reaped on timeout) and requires
-  the output to start with the version, then moves it to `versions/<version>/bin/claude.exe` and
-  points `current` at it by an atomic rename. Any failure leaves the version in use untouched,
-  removes the temporary directory, is logged, and is tried again at the next check.
+  `<data>/claude-code/` and requires it to be a 64-bit little-endian ELF for the platform's
+  machine that embeds `VERSION:"<version>"` (as Claude Code's builds do); it is never run on the
+  host. It then moves to `versions/<version>/bin/claude.exe` (mode 0755 whatever the umask) and
+  `current` is pointed at it by an atomic rename. Any failure leaves the version in use untouched,
+  removes the temporary directory, is logged, and is tried again at the next check. Only a host
+  package laid out as `bin/claude.exe` (the file the sandbox's `claude` link names) is updated or
+  bound over; another layout is left to the host.
 - CCU-003. **Use.** Every run that joins an isolated sandbox (task sessions and their resumes,
   Superagent sessions, people's shells, CI jobs and dev CD runs) gets, read-only at the host
   package's path, the newer of the host's Claude Code and Yulius's `current`, chosen when the run
@@ -61,8 +64,10 @@ installs it, no subscription is signed in again, no running session is stopped.
   update, and the next start of a session (Continue, a resume after a pause) uses the new version.
   Subscriptions and their tokens are untouched, so nobody signs in again.
 - CCU-004. **Keep.** After a switch, `current` and the version before it stay; older versions are
-  removed. Temporary directories left by an interrupted install are removed at the next check. The
-  host's own install is never written.
+  removed, except one a live process still executes (its binary is a process's executable), which
+  a later check removes once it ended. Temporary directories left by an interrupted install are
+  removed at the next check. The host's own install is never written, and an instance export
+  leaves `claude-code/` out (it is built for this host's platform).
 - CCU-005. **Off and fallbacks.** With `off`, on a host other than Linux, or when the host has no
   npm-installed Claude Code to bind over, nothing is checked or installed and runs use the host's
   Claude Code as before. A host version newer than Yulius's (an operator's manual update) is the
@@ -73,11 +78,11 @@ installs it, no subscription is signed in again, no running session is stopped.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Version policy: channels, versions and the platform package, unit-tested
-- [ ] A verified install of a released Claude Code into the data directory
-- [ ] Hourly update loop with the off switch and old versions removed
-- [ ] Runs bind the newest Claude Code at the host package's path
-- [ ] Doctor line, operations guide, ADR and architecture updated
+- [x] Version policy: channels, versions and the platform package, unit-tested
+- [x] A verified install of a released Claude Code into the data directory
+- [x] Hourly update loop with the off switch and old versions removed
+- [x] Runs bind the newest Claude Code at the host package's path
+- [x] Doctor line, operations guide, ADR and architecture updated
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -86,13 +91,15 @@ installs it, no subscription is signed in again, no running session is stopped.
 - AC1. With the registry offering a newer `stable` version than the host's, one check installs it
   under `<data>/claude-code/versions/<v>/bin/claude.exe` and `current` points at it; the next run's
   join binds that directory at the host package's path.
-- AC2. A tarball whose sha512 differs from `integrity`, a binary whose `--version` names another
-  version or fails, a URL off `registry.npmjs.org`, or a body over the bound installs nothing and
-  leaves `current` as it was, with no temporary directory left.
+- AC2. A tarball whose sha512 differs from `integrity`, a binary that is not an ELF for the
+  platform or does not embed the version, a tarball without a regular `package/claude`, a URL off
+  `registry.npmjs.org`, or a tarball or binary over its bound installs nothing and leaves
+  `current` as it was, with no temporary directory left.
 - AC3. With `off`, no request is made. With the host's version equal to or newer than the channel's,
   nothing is downloaded.
 - AC4. After installing a third version, the oldest one is removed and `current` plus the previous
-  one remain.
+  one remain; a version a live process executes stays until a check after it ended.
+- AC6. A host package whose `claude` is not `bin/claude.exe` is neither updated nor bound over.
 - AC5. A join made while the host's version is newer than `current` binds the host's package
   (same path, as before this change).
 
@@ -101,16 +108,25 @@ installs it, no subscription is signed in again, no running session is stopped.
 - Unit (`crates/yulius-domain/src/agent_cli.rs`): version parsing (plain `X.Y.Z` only, no path
   characters) and ordering, channel parsing, the platform package name, which versions to keep.
 - Integration (`crates/yulius/tests/claude_updates.rs`, a local HTTP registry stub serving
-  `dist-tags`, a version document and a gzip tarball whose `claude` is a shell script printing a
-  version): AC1 install and switch; AC2 each refusal (bad integrity, wrong `--version`, foreign
-  URL, oversized body) leaves `current` and no temporary directory; AC3 nothing downloaded when not
-  newer, no request with `off`; AC4 pruning to two versions.
-- Unit of the join's agent-CLI bind (`crates/yulius/src/wiring/claude_cli.rs`): AC1's bind and
-  AC5's host fallback.
-- Existing containment tests keep passing with the bind carried as a read-only `Bind`.
+  `dist-tags`, a version document and a gzip tarball whose `claude` is an ELF64 stand-in embedding
+  its version across a 64 KiB read boundary): AC1 install, modes and switch; AC2 each refusal with
+  its own reason leaves `current` and no temporary directory; AC3 nothing downloaded when not
+  newer, no request with `off`; AC4 pruning to two versions and a version a live process runs
+  (a copy of `/bin/sleep`) kept until it ended; AC5 and AC6; the agent-CLI bind
+  (`agent_cli_binds`); the loop; the doctor's text per channel.
+- Each consumer of `SandboxJoin.extra_binds` carries the bind into its containment: agent runs
+  (`cd::an_agent_run_binds_the_agent_cli_of_its_join`), CI jobs
+  (`local_ci::a_ci_job_binds_the_agent_cli_of_its_join`), people's shells
+  (`shells::an_isolated_shell_binds_the_agent_cli_of_its_join`), dev CD runs and none in
+  production (`cd::production_runs_join_the_production_holder_with_its_docker_engine`).
+- The instance export's walk leaves `claude-code/` out (`instance::walk` tests).
 
 ## Decisions
 
+- The download is never executed on the host (review round 1, finding 3): running it as the
+  service user would give a compromised release the database and the vault key, where it is
+  otherwise only ever run inside sandboxes. The registry's sha512, the ELF machine and the embedded
+  version check what `--version` checked, without running anything.
 - Yulius installs Claude Code into its own data directory as its service user instead of updating
   the host's install: no root step on any instance (a root timer would need `yulius host setup`
   rerun by a person on every instance and a writable `/usr/local` for the helper), versions are
@@ -128,3 +144,17 @@ installs it, no subscription is signed in again, no running session is stopped.
   them depends on the CLI's version.
 - Two versions are kept: a shell or session that bound the previous version can still start
   `claude` in it until the next switch; each version is about 300 MB.
+- Review round 1 (request changes; all own code, all fixed test-first): H1 a host package of
+  another layout would have been bound over: only `bin/claude.exe` hosts are updated
+  (`a_host_package_of_another_layout_is_left_alone`). H2 a version a running session executes
+  could be removed after two switches (its embedded ripgrep re-executes the binary): versions a
+  live process runs are kept (`a_version_a_process_runs_is_not_removed`). M3 the download ran
+  uncontained on the host: it is no longer run, the ELF machine and embedded version are checked.
+  M4 refusals now each assert their own reason, with a missing `package/claude`, a non-ELF, a
+  wrong machine and an oversized binary added (the `--version` timeout went with M3). M5 agent
+  runs and CI jobs now have bind tests. L6 exports leave `claude-code/` out. L7 the doctor line
+  honours `YULIUS_CLAUDE_UPDATES`. L8 this spec. Nits: leading zeros refused; the directories are
+  synced after the switch; the join's few `std::fs` calls (a link, a small `package.json`, a
+  `canonicalize`) stay synchronous, as `agent_cli_dir` and the other join preparation already are.
+  The installed binary's mode was also found to follow the umask (0700 under 077): modes are now
+  set explicitly and tested.

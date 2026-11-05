@@ -8,8 +8,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Claude Code updates itself on an instance (SPEC-421, task #403, ADR-0266). The server checks
   npm's `stable` release of Claude Code every hour (`YULIUS_CLAUDE_UPDATES`: `stable`, `latest` or
-  `off`), installs a newer one under `<data>/claude-code` after checking its sha512 and
-  `--version`, and every new or resumed run in an isolated sandbox gets it. Running sessions are not
+  `off`), installs a newer one under `<data>/claude-code` after checking its sha512, platform and
+  embedded version, and every new or resumed run in an isolated sandbox gets it. Running sessions are not
   interrupted and subscriptions stay signed in. `yulius doctor` names the version sandboxes get.
 - The original prompt's images load visibly (SPEC-420, task #402, #1065, ADR-0265): while an image
   is read its tile shimmers with a turning ring and keeps its number, instead of the browser's
