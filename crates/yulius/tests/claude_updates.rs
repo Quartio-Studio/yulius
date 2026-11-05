@@ -48,17 +48,15 @@ struct Stub {
 
 impl Stub {
     fn tag(&self, tag: &str, version: &str) {
-        self.tags
-            .lock()
-            .expect("tags")
-            .insert(tag.into(), version.into());
+        if let Ok(mut tags) = self.tags.lock() {
+            tags.insert(tag.into(), version.into());
+        }
     }
 
     fn release(&self, version: &str, release: Release) {
-        self.releases
-            .lock()
-            .expect("releases")
-            .insert(version.into(), release);
+        if let Ok(mut releases) = self.releases.lock() {
+            releases.insert(version.into(), release);
+        }
     }
 }
 
@@ -79,7 +77,7 @@ fn binary(machine: u16, version: &str) -> Vec<u8> {
 }
 
 /// A tarball as npm publishes a platform package, with `files` under `package/`.
-fn tarball_of(files: &[(&str, Vec<u8>)]) -> Vec<u8> {
+fn tarball_of(files: &[(&str, Vec<u8>)]) -> std::io::Result<Vec<u8>> {
     let mut builder = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::fast()));
     for (path, body) in files {
         let mut header = tar::Header::new_gnu();
@@ -87,17 +85,12 @@ fn tarball_of(files: &[(&str, Vec<u8>)]) -> Vec<u8> {
         header.set_size(body.len() as u64);
         header.set_mode(0o755);
         header.set_cksum();
-        builder
-            .append_data(&mut header, format!("package/{path}"), body.as_slice())
-            .expect("entry");
+        builder.append_data(&mut header, format!("package/{path}"), body.as_slice())?;
     }
-    builder
-        .into_inner()
-        .and_then(GzEncoder::finish)
-        .expect("tarball")
+    builder.into_inner().and_then(GzEncoder::finish)
 }
 
-fn tarball(version: &str) -> Vec<u8> {
+fn tarball(version: &str) -> std::io::Result<Vec<u8>> {
     tarball_of(&[
         ("package.json", b"{}".to_vec()),
         ("README.md", b"readme".to_vec()),
@@ -105,13 +98,13 @@ fn tarball(version: &str) -> Vec<u8> {
     ])
 }
 
-fn good(version: &str) -> Release {
-    Release {
-        tarball: tarball(version),
+fn good(version: &str) -> std::io::Result<Release> {
+    Ok(Release {
+        tarball: tarball(version)?,
         integrity: None,
         url: None,
         chunked: false,
-    }
+    })
 }
 
 fn integrity_of(bytes: &[u8]) -> String {
@@ -139,10 +132,14 @@ async fn serve(stub: Arc<Stub>) -> Result<String, Box<dyn std::error::Error>> {
 fn answer(stub: &Stub, origin: &str, path: &str) -> Response {
     stub.requests.fetch_add(1, Ordering::SeqCst);
     if path == "/-/package/@anthropic-ai%2Fclaude-code/dist-tags" {
-        let tags = stub.tags.lock().expect("tags").clone();
+        let Ok(tags) = stub.tags.lock().map(|t| t.clone()) else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        };
         return axum::Json(tags).into_response();
     }
-    let releases = stub.releases.lock().expect("releases").clone();
+    let Ok(releases) = stub.releases.lock().map(|r| r.clone()) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
     if let Some(version) = path.strip_prefix("/@anthropic-ai%2Fclaude-code-linux-x64/") {
         let Some(release) = releases.get(version) else {
             return StatusCode::NOT_FOUND.into_response();
@@ -218,7 +215,7 @@ async fn setup(host_version: &str) -> Result<Setup, Box<dyn std::error::Error>> 
 }
 
 fn v(text: &str) -> Version {
-    Version::parse(text).expect("version")
+    Version::parse(text).unwrap_or_else(|| panic!("{text} is a version"))
 }
 
 /// Every entry of the updater's directory but `current` and `versions`.
@@ -253,7 +250,7 @@ async fn a_newer_stable_release_is_installed_and_becomes_current() -> TestResult
     let s = setup("2.1.292").await?;
     s.stub.tag("stable", "2.1.311");
     s.stub.tag("latest", "2.1.318");
-    s.stub.release("2.1.311", good("2.1.311"));
+    s.stub.release("2.1.311", good("2.1.311")?);
 
     let outcome = s.updater.check(Channel::Stable).await?;
     assert_eq!(outcome, Outcome::Installed(v("2.1.311")));
@@ -298,7 +295,7 @@ async fn a_newer_stable_release_is_installed_and_becomes_current() -> TestResult
 async fn a_refused_release_leaves_the_current_version() -> TestResult {
     let s = setup("2.1.292").await?;
     s.stub.tag("stable", "2.1.311");
-    s.stub.release("2.1.311", good("2.1.311"));
+    s.stub.release("2.1.311", good("2.1.311")?);
     s.updater.check(Channel::Stable).await?;
     s.stub.tag("stable", "2.1.318");
 
@@ -318,43 +315,43 @@ async fn a_refused_release_leaves_the_current_version() -> TestResult {
             "sha512",
             Release {
                 integrity: Some(integrity_of(b"something else")),
-                ..good("2.1.318")
+                ..good("2.1.318")?
             },
         ),
-        ("does not name 2.1.318", good("2.1.300")),
+        ("does not name 2.1.318", good("2.1.300")?),
         (
             "not a 64-bit ELF for",
             Release {
-                tarball: tarball_of(&[("claude", b"#!/bin/sh\necho 2.1.318\n".to_vec())]),
-                ..good("2.1.318")
+                tarball: tarball_of(&[("claude", b"#!/bin/sh\necho 2.1.318\n".to_vec())])?,
+                ..good("2.1.318")?
             },
         ),
         (
             "not a 64-bit ELF for",
             Release {
-                tarball: tarball_of(&[("claude", binary(183, "2.1.318"))]),
-                ..good("2.1.318")
+                tarball: tarball_of(&[("claude", binary(183, "2.1.318"))])?,
+                ..good("2.1.318")?
             },
         ),
         (
             "holds no `package/claude`",
             Release {
-                tarball: tarball_of(&[("cli.js", binary(X86_64, "2.1.318"))]),
-                ..good("2.1.318")
+                tarball: tarball_of(&[("cli.js", binary(X86_64, "2.1.318"))])?,
+                ..good("2.1.318")?
             },
         ),
         (
             "is not on",
             Release {
                 url: Some(format!("{elsewhere}/t/2.1.318.tgz")),
-                ..good("2.1.318")
+                ..good("2.1.318")?
             },
         ),
         (
             "not a regular file",
             Release {
                 tarball: symlink,
-                ..good("2.1.318")
+                ..good("2.1.318")?
             },
         ),
     ];
@@ -388,7 +385,7 @@ async fn a_refused_release_leaves_the_current_version() -> TestResult {
             "2.1.318",
             Release {
                 chunked,
-                ..good("2.1.318")
+                ..good("2.1.318")?
             },
         );
         let refused = small.check(Channel::Stable).await;
@@ -411,7 +408,7 @@ async fn a_refused_release_leaves_the_current_version() -> TestResult {
         false,
     )?
     .with_max_binary(1024);
-    s.stub.release("2.1.318", good("2.1.318"));
+    s.stub.release("2.1.318", good("2.1.318")?);
     let refused = small.check(Channel::Stable).await;
     assert!(
         refused
@@ -436,7 +433,7 @@ async fn off_or_an_up_to_date_host_downloads_nothing() -> TestResult {
     let s = setup("2.1.311").await?;
     s.stub.tag("stable", "2.1.311");
     s.stub.tag("latest", "2.1.318");
-    s.stub.release("2.1.311", good("2.1.311"));
+    s.stub.release("2.1.311", good("2.1.311")?);
 
     assert_eq!(s.updater.check(Channel::Off).await?, Outcome::Off);
     assert_eq!(s.stub.requests.load(Ordering::SeqCst), 0);
@@ -469,7 +466,7 @@ async fn the_current_and_the_previous_version_stay() -> TestResult {
     let s = setup("2.1.292").await?;
     for version in ["2.1.300", "2.1.311", "2.1.318"] {
         s.stub.tag("latest", version);
-        s.stub.release(version, good(version));
+        s.stub.release(version, good(version)?);
         assert_eq!(
             s.updater.check(Channel::Latest).await?,
             Outcome::Installed(v(version))
@@ -488,7 +485,7 @@ async fn the_current_and_the_previous_version_stay() -> TestResult {
 async fn a_newer_host_install_wins_over_yulius_s() -> TestResult {
     let s = setup("2.1.292").await?;
     s.stub.tag("stable", "2.1.311");
-    s.stub.release("2.1.311", good("2.1.311"));
+    s.stub.release("2.1.311", good("2.1.311")?);
     s.updater.check(Channel::Stable).await?;
     host_install(s.host.ancestors().nth(6).ok_or("root")?, "2.1.400")?;
     assert_eq!(agent_cli_source(&s.root, &s.host), s.host);
@@ -504,7 +501,7 @@ async fn a_newer_host_install_wins_over_yulius_s() -> TestResult {
 async fn the_loop_installs_without_anyone_asking() -> TestResult {
     let s = setup("2.1.292").await?;
     s.stub.tag("stable", "2.1.311");
-    s.stub.release("2.1.311", good("2.1.311"));
+    s.stub.release("2.1.311", good("2.1.311")?);
     let root = s.root.clone();
     let updater = ClaudeUpdater::with_registry(
         root.clone(),
@@ -528,7 +525,7 @@ async fn the_loop_installs_without_anyone_asking() -> TestResult {
     }
     // A later release is picked up by a later round.
     s.stub.tag("stable", "2.1.318");
-    s.stub.release("2.1.318", good("2.1.318"));
+    s.stub.release("2.1.318", good("2.1.318")?);
     while s.updater.current() != Some(v("2.1.318")) {
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -558,7 +555,7 @@ async fn the_loop_installs_without_anyone_asking() -> TestResult {
 async fn runs_bind_the_chosen_version_at_the_host_package_path() -> TestResult {
     let s = setup("2.1.292").await?;
     s.stub.tag("stable", "2.1.311");
-    s.stub.release("2.1.311", good("2.1.311"));
+    s.stub.release("2.1.311", good("2.1.311")?);
     let bind = |source: PathBuf| Bind {
         source,
         dest: s.host.clone(),
@@ -586,7 +583,7 @@ async fn the_doctor_names_the_version_runs_get() -> TestResult {
     let text = describe(&s.root, Some(&s.host), Channel::Stable);
     assert!(text.starts_with("2.1.292 from the host"), "{text}");
     s.stub.tag("stable", "2.1.311");
-    s.stub.release("2.1.311", good("2.1.311"));
+    s.stub.release("2.1.311", good("2.1.311")?);
     s.updater.check(Channel::Stable).await?;
     let text = describe(&s.root, Some(&s.host), Channel::Stable);
     assert!(
@@ -609,7 +606,7 @@ async fn the_doctor_names_the_version_runs_get() -> TestResult {
 async fn a_host_package_of_another_layout_is_left_alone() -> TestResult {
     let s = setup("2.1.292").await?;
     s.stub.tag("stable", "2.1.311");
-    s.stub.release("2.1.311", good("2.1.311"));
+    s.stub.release("2.1.311", good("2.1.311")?);
     s.updater.check(Channel::Stable).await?;
     std::fs::write(
         s.host.join("package.json"),
@@ -617,7 +614,7 @@ async fn a_host_package_of_another_layout_is_left_alone() -> TestResult {
     )?;
     assert_eq!(agent_cli_source(&s.root, &s.host), s.host);
     s.stub.tag("stable", "2.1.318");
-    s.stub.release("2.1.318", good("2.1.318"));
+    s.stub.release("2.1.318", good("2.1.318")?);
     let asked = s.stub.requests.load(Ordering::SeqCst);
     assert_eq!(s.updater.check(Channel::Stable).await?, Outcome::HostLayout);
     assert_eq!(s.stub.requests.load(Ordering::SeqCst), asked);
@@ -631,7 +628,7 @@ async fn a_host_package_of_another_layout_is_left_alone() -> TestResult {
 async fn a_version_a_process_runs_is_not_removed() -> TestResult {
     let s = setup("2.1.292").await?;
     s.stub.tag("latest", "2.1.300");
-    s.stub.release("2.1.300", good("2.1.300"));
+    s.stub.release("2.1.300", good("2.1.300")?);
     s.updater.check(Channel::Latest).await?;
     // A session still running 2.1.300's binary (a real executable stands in for it).
     let old = s.root.join("versions/2.1.300/bin/claude.exe");
@@ -643,7 +640,7 @@ async fn a_version_a_process_runs_is_not_removed() -> TestResult {
         .spawn()?;
     for version in ["2.1.311", "2.1.318"] {
         s.stub.tag("latest", version);
-        s.stub.release(version, good(version));
+        s.stub.release(version, good(version)?);
         s.updater.check(Channel::Latest).await?;
     }
     assert_eq!(installed(&s.root), ["2.1.300", "2.1.311", "2.1.318"]);
