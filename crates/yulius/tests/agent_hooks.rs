@@ -1344,7 +1344,10 @@ async fn a_code_edit_waits_for_the_spec_plan() -> TestResult {
         "{reason}"
     );
     for (tool, input) in [
-        ("Write", json!({"file_path": file("docs/specs/checkout.md")})),
+        (
+            "Write",
+            json!({"file_path": file("docs/specs/checkout.md")}),
+        ),
         ("Edit", json!({"file_path": file("README.md")})),
         ("Read", json!({"file_path": file("api.rs")})),
         ("Write", json!({"file_path": "/elsewhere/api.rs"})),
@@ -1358,7 +1361,10 @@ async fn a_code_edit_waits_for_the_spec_plan() -> TestResult {
     for (tool, input) in [
         ("Write", json!({"file_path": file("docs/../api.rs")})),
         ("MultiEdit", json!({"file_path": file("src/lib.rs")})),
-        ("NotebookEdit", json!({"notebook_path": file("probe.ipynb")})),
+        (
+            "NotebookEdit",
+            json!({"notebook_path": file("probe.ipynb")}),
+        ),
     ] {
         assert!(
             pre_tool_use(&f, tool, input.clone()).await?.is_some(),

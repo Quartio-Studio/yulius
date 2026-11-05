@@ -276,6 +276,17 @@ impl App {
             )),
             events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(ctx, input, sent).await,
             events::STOP => self.hook_stop(ctx, input).await,
+            events::PRE_TOOL_USE => Ok(HookReply::Output(
+                match self.edit_gate(&ctx.task, input).await {
+                    Ok(Some(reason)) => HookOutput::deny_tool(reason),
+                    Ok(None) => HookOutput::default(),
+                    // The edit goes ahead: the Stop gate still checks the spec.
+                    Err(err) => {
+                        tracing::warn!(error = %err, task = %ctx.task.id, "edit gate unavailable");
+                        HookOutput::default()
+                    }
+                },
+            )),
             events::NOTIFICATION => {
                 // Only a notice that asks a person to act needs one: Claude Code's reminder that
                 // it waits for input ("idle", about a minute after a turn ended) keeps a finished
@@ -938,6 +949,102 @@ impl App {
     }
 }
 
+/// Claude Code's tools that write a file, and the input field naming it (SPEC-426 EDG-001).
+const EDIT_TOOLS: [(&str, &str); 4] = [
+    ("Edit", "file_path"),
+    ("MultiEdit", "file_path"),
+    ("Write", "file_path"),
+    ("NotebookEdit", "notebook_path"),
+];
+
+/// `file` (absolute, or relative to `worktree`) as a path relative to `worktree`, with `.` and
+/// `..` resolved lexically; `None` outside it or for the worktree itself.
+fn worktree_relative(worktree: &Path, file: &str) -> Option<String> {
+    use std::path::Component;
+    let mut normal = PathBuf::new();
+    for part in worktree.join(file).components() {
+        match part {
+            Component::ParentDir => {
+                normal.pop();
+            }
+            Component::CurDir => {}
+            other => normal.push(other),
+        }
+    }
+    let rel = normal.strip_prefix(worktree).ok()?;
+    let rel = rel.to_str()?;
+    (!rel.is_empty()).then(|| rel.to_owned())
+}
+
+impl App {
+    /// The discipline gate before a code edit (SPEC-426 EDG-002): `Some(reason)` when an edit
+    /// tool is about to change a file of the task's worktree that is not documentation, the task
+    /// needs a spec for such a change, and its spec does not exist or has no Plan item yet.
+    async fn edit_gate(&self, task: &TaskRecord, input: &HookInput) -> AppResult<Option<String>> {
+        let Some(field) = EDIT_TOOLS
+            .iter()
+            .find(|(tool, _)| input.tool_name.as_deref() == Some(*tool))
+            .map(|(_, field)| *field)
+        else {
+            return Ok(None);
+        };
+        let Some(file) = input
+            .tool_input
+            .as_ref()
+            .and_then(|tool_input| tool_input.get(field))
+            .and_then(serde_json::Value::as_str)
+        else {
+            return Ok(None);
+        };
+        let Some(worktree) = task.worktree_path.as_deref().map(PathBuf::from) else {
+            return Ok(None);
+        };
+        let Some(rel) = worktree_relative(&worktree, file) else {
+            return Ok(None);
+        };
+        if yulius_domain::spec_format::is_documentation_path(&rel)
+            || !self
+                .spec_policy(task)
+                .await
+                .requires_spec([rel.as_str()], true)
+        {
+            return Ok(None);
+        }
+        let place = match self.task_spec_path(task, &worktree).await {
+            Ok(spec_path) => {
+                let (root, expected) = (worktree.clone(), task.id.clone());
+                let path = spec_path.clone();
+                let planned = tokio::task::spawn_blocking(move || {
+                    read_repo_doc(&root, &path).is_some_and(|text| {
+                        validate_spec_for(&text, &expected)
+                            .plan
+                            .iter()
+                            .any(|item| item.depth == 0 && !item.text.trim().is_empty())
+                    })
+                })
+                .await
+                .map_err(AppError::internal)?;
+                if planned {
+                    return Ok(None);
+                }
+                format!("at `{spec_path}`")
+            }
+            Err(dir) => task
+                .spec_path
+                .as_deref()
+                .map_or_else(|| format!("under `{dir}`"), |path| format!("at `{path}`")),
+        };
+        Ok(Some(format!(
+            "Yulius: `{rel}` is code, and this task needs its spec with a Plan before its code \
+             changes. Write the spec {place} in the Yulius format first (`yulius-task: {}` in its \
+             frontmatter, a Plan checklist of similar-effort steps; spec_check validates it), \
+             then make this edit again. Documentation edits are not held. Decide the spec's \
+             content yourself from the request and the code; do not ask anyone.",
+            task.id
+        )))
+    }
+}
+
 impl App {
     /// Keeps the task's steps in sync with the Plan checklist of its spec (STP-004): the
     /// top-level plan items (at most [`crate::coordination::MAX_STEPS`]) become the steps in
@@ -1367,7 +1474,7 @@ mod tests {
     use super::{
         RepoDocs, colour, doc_present, foundations, notice_answered_by_work,
         notification_needs_a_person, read_repo_doc, repo_doc_exists, repo_path, resolved_in_repo,
-        workflow_count,
+        workflow_count, worktree_relative,
     };
     use std::path::Path;
     use yulius_contracts::hooks::HookInput;
@@ -1649,5 +1756,18 @@ mod tests {
         assert_eq!(repo_path(root, "../x"), None);
         assert_eq!(repo_path(root, "/etc/passwd"), None);
         assert_eq!(repo_path(root, "a/../../x"), None);
+    }
+
+    #[test]
+    fn edited_files_are_placed_in_the_worktree_lexically() {
+        let wt = Path::new("/w/t1");
+        let rel = |file: &str| worktree_relative(wt, file);
+        assert_eq!(rel("/w/t1/src/a.rs").as_deref(), Some("src/a.rs"));
+        assert_eq!(rel("src/./a.rs").as_deref(), Some("src/a.rs"));
+        assert_eq!(rel("/w/t1/docs/../a.rs").as_deref(), Some("a.rs"));
+        assert_eq!(rel("/w/t10/a.rs"), None, "a sibling worktree is outside");
+        assert_eq!(rel("/w/t1/../t2/a.rs"), None);
+        assert_eq!(rel("../../etc/passwd"), None);
+        assert_eq!(rel("/w/t1"), None);
     }
 }
