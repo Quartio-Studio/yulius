@@ -44,8 +44,7 @@ green. Nothing waits on a pull request that is already merged.
   head carries work the merged pull request did not: the merged head is an ancestor of the head,
   the head is more than it plus Git's own clean merges of the integration branch
   (`review_covers`, SPEC-083 REV-001), and what it changed since the merged head adds to the
-  integration branch (Git's merge of the two from the merged head changes the branch's tree, or
-  conflicts). Every check reads a fresh fetch. Once the head is ready by the same rules as the
+  integration branch (Git's merge of the two from the merged head changes the branch's tree). Every check reads a fresh fetch. Once the head is ready by the same rules as the
   first delivery (spec, plan, clean worktree; else the task stays merged and the reason is said),
   Yulius starts a new delivery of the same task (the record back to `none` if it still names
   that pull request, audited `delivery.follow_up`) and opens a new pull request (or takes on the
@@ -58,9 +57,10 @@ green. Nothing waits on a pull request that is already merged.
   no new work it answers `merged: true`, that pull request #N is already merged. When Yulius
   cannot judge (a branch rewritten so the merged head is no longer its ancestor, with the
   `git merge` that brings it back; a merged head missing from the clone, with the fetch of
-  `pull/N/head`; the merged pull request unreadable on GitHub; a failed fetch; the task in a live
-  merge train) it refuses with that reason, the end of a turn notes it for `yulius wait`, and
-  nothing is pushed, opened or reset.
+  `pull/N/head`; what the head changed conflicting with the integration branch, with the merge
+  to make; the merged pull request unreadable on GitHub; a failed fetch; the task in a live merge
+  train) it refuses with that reason, the end of a turn notes it for `yulius wait` (the note goes
+  once the head is covered again), and nothing is pushed, opened or reset.
 
 ## Plan
 
@@ -91,6 +91,13 @@ green. Nothing waits on a pull request that is already merged.
   while GitHub cannot answer (the kept verdict); a branch rewritten onto `dev` is refused with
   the `git merge` remedy, not pushed; the merged pull request unreadable on GitHub is refused
   with "is unknown", not armed. Without the integration-branch check it fails (mutation run).
+- `a_follow_up_merged_by_hand_is_judged_since_the_merged_head`: a follow-up squash-merged by
+  hand from a branch that never merged `dev`, then `dev` editing the merged pull request's file,
+  reads "already merged" (fails without `--merge-base`); a conflicting change is unknown, said to
+  the merge call and in `yulius wait`'s note, which goes once the head is covered again (fails
+  without the clearing); new work with uncommitted changes keeps the task merged (fails without
+  the readiness check before the reset); a merged head missing from the clone gives the
+  `pull/1/head` fetch; an unfetchable origin is "could not be refreshed"; then #3 opens and arms.
 - `work_after_the_merge_waits_for_a_live_merge_train`: a merged task in a live train is refused
   ("merge train that has not ended") and not reset; once the train ends it opens its pull
   request.

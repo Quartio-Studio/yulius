@@ -29,18 +29,21 @@ organisation the agent had to push and open PR #2 by hand, and the task still sh
   ancestor of the worktree head; the head is more than it plus Git's own clean merges of the
   integration branch (the review carry-over of SPEC-083 REV-001); and what the head changed
   since the merged head, merged into the integration branch (`merge-tree --merge-base`), changes
-  that branch's tree or conflicts (a follow-up a person merged outside Yulius adds nothing, so it
-  opens no duplicate).
+  that branch's tree (a follow-up a person merged outside Yulius adds nothing, so it opens no
+  duplicate).
 - **Nothing new keeps the task merged.** The merged head, a head behind it, only clean merges of
   the integration branch and a head the integration branch already holds change nothing. That
   verdict is kept per task for its head and pull request, so later Stops at the same head ask
   neither GitHub nor Git.
 - **What Yulius cannot judge is said, not guessed.** A rewritten branch (the merged head no
   longer its ancestor: the answer gives the `git merge` that brings it back), a merged head not
-  in the clone (the answer gives the fetch of `pull/N/head`), a failed fetch, a merged pull
+  in the clone (the answer gives the fetch of `pull/N/head`), a change that conflicts with the
+  integration branch (it may be work merged outside Yulius that `dev` changed since: the answer
+  gives the merge, after which the verdict is clear), a failed fetch, a merged pull
   request GitHub does not answer for, or a live merge train holding the task (it counts on its
   members' stages until it ends) change nothing; `delivery_merge` refuses with that reason, and
-  the end of a turn delivers nothing and notes it for `yulius wait`.
+  the end of a turn delivers nothing and notes it for `yulius wait`; a head found covered later
+  clears that note.
 - **`delivery_merge` never arms on a merged pull request.** With nothing new it answers
   `merged: true`, that the pull request is already merged.
 
