@@ -44,11 +44,12 @@ green. Nothing waits on a pull request that is already merged.
   head carries work the merged pull request did not: the merged head is an ancestor of the head,
   the head is more than it plus Git's own clean merges of the integration branch
   (`review_covers`, SPEC-083 REV-001), and what it changed since the merged head adds to the
-  integration branch (Git's merge of the two from the merged head changes the branch's tree). Every check reads a fresh fetch. Once the head is ready by the same rules as the
-  first delivery (spec, plan, clean worktree; else the task stays merged and the reason is said),
-  Yulius starts a new delivery of the same task (the record back to `none` if it still names
-  that pull request, audited `delivery.follow_up`) and opens a new pull request (or takes on the
-  branch's open one) at the end of a clean turn and on `delivery_merge`.
+  integration branch (Git's merge of the two from the merged head changes the branch's tree).
+  Every check reads a fresh fetch. Once the head is ready by the same rules as the first delivery
+  (spec, plan, clean worktree; else the task stays merged and the reason is said), Yulius starts a
+  new delivery of the same task (the record back to `none` if it still names that pull request,
+  audited `delivery.follow_up`) and opens a new pull request (or takes on the branch's open one)
+  at the end of a clean turn and on `delivery_merge`.
 - FUP-002. A head equal to the merged head, behind it, only clean merges of the integration
   branch since it, or one the integration branch already holds (a follow-up merged outside
   Yulius) is not new work: the task stays merged and nothing is pushed or opened. The verdict is
@@ -59,8 +60,9 @@ green. Nothing waits on a pull request that is already merged.
   `git merge` that brings it back; a merged head missing from the clone, with the fetch of
   `pull/N/head`; what the head changed conflicting with the integration branch, with the merge
   to make; the merged pull request unreadable on GitHub; a failed fetch; new work while a live
-  merge train holds the task, on an instance with CI) it refuses with that reason, the end of a turn notes it for `yulius wait` (the note goes
-  once the head is covered again), and nothing is pushed, opened or reset.
+  merge train holds the task, on an instance with CI) it refuses with that reason, the end of a
+  turn notes it for `yulius wait` (the note goes once the head is covered again), and nothing is
+  pushed, opened or reset.
 
 ## Plan
 
@@ -116,8 +118,9 @@ green. Nothing waits on a pull request that is already merged.
 - Reproduced: `work_committed_after_the_merge_opens_a_new_pull_request` committed first
   (4ced334b) failed on `dev`: `delivery_merge` on the merged pull request answered
   `armed: true, checks: none`, the stuck state of the report.
-- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^delivery::/)'`: 61 passed
-  at the final code (29201a37).
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^delivery::/)'`: 62 passed
+  at the final code (3e2c2979). `a_leftover_train_holds_nothing_without_ci` failed with
+  `merge_train.rs` as before its fix (the test commit 7f6bd189) and passes with it.
 - Mutation runs (each restored afterwards): adds_to always "follow-up" → the cannot-judge test
   fails; no `--merge-base`, no readiness check before the reset, no note clearing → each fails
   `a_follow_up_merged_by_hand_is_judged_since_the_merged_head`; the round-4 train case failed
@@ -126,14 +129,16 @@ green. Nothing waits on a pull request that is already merged.
   passed, 1 failed: `task_done::a_done_onboarding_task_is_archived_and_the_sandbox_is_ready`
   timed out waiting for the shell probe (90 s) under full-suite load; it passed in the previous
   full run and 5 of 5 isolated runs, touches no delivery code, and is filed as #1078. Rerun at
-  the final head before the merge (Yulius CI).
+  the final code 3e2c2979: exit 0, 3130 tests passed, 16 skipped; Yulius CI runs the merged
+  head.
 - `scripts/dev security`: exit 0, "Security scan disabled: Vidoc is turned off in Yulius" —
   unrun, not passed.
 - Independent review in fresh sessions: rounds 1-3 requested changes (all own-code findings fixed
   test-first, listed in the commits "review round N"), round 4 approved 5901ad6d with one low
   finding (a train member with nothing new read "unknown"), fixed test-first in 29201a37; round 5
   approved ef110353 with two minor findings (docs wording; `in_train` ignored CI being off),
-  fixed, the second test-first; round 6 reviews the final head.
+  fixed, the second test-first; round 6 approved 3e2c2979 (Evidence brought up to date after it,
+  docs only).
 - Pre-existing, outside this change: #1075 (an armed merge whose pull request merged outside
   Yulius is never dropped), found by review round 2.
 - Not tested: a real GitHub repository on a free private organisation (the reporter's); the
