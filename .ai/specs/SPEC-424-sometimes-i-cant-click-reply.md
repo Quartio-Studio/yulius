@@ -35,7 +35,7 @@ nothing. So a click that spans an update is lost: "sometimes". The same rebuild 
 from the terminal Reply to `body` (the `kept` focus guard of #506 only restores a node that is still
 in the page), so Enter after an update does nothing either.
 
-Reproduced red on dev with three e2e tests in `e2e/tests/reply.e2e.ts` (press Reply, deliver a task
+Reproduced red on dev with the first three e2e tests in `e2e/tests/reply.e2e.ts` (press Reply, deliver a task
 update, release): the terminal is not focused, the reply field does not open, the keyboard is on
 `body`.
 
@@ -48,10 +48,10 @@ are not affected.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| RPL-001 | While a pointer is pressed inside the attention bar, a render of the bar is held back; it runs once the press ends (release or cancel, after its click), so the pressed button is the one released and its click acts. | e2e `reply.e2e.ts` (#406 tests) |
+| RPL-001 | While the primary pointer button is pressed inside the attention bar, a render of the bar is held back; it runs a task after the press ends, so a mouse's click (dispatched in the release's task) acts on the pressed button. A tap's click comes with its gesture and is hit-tested on the bar as rebuilt, which keeps its buttons in place. | e2e `reply.e2e.ts` (#406 tests) |
 | RPL-002 | The update held back during a press shows once the press ends. | e2e |
 | RPL-003 | The terminal Reply (agent asks in the terminal) is one button kept across renders, like the field Reply, so the keyboard stays on it across task updates. | e2e |
-| RPL-004 | A press that never ends inside the page (released outside the window, the window losing focus) does not freeze the bar: a lost window focus or a pointer cancel ends it too. | e2e (window blur during a press) |
+| RPL-004 | A press whose release the page may never get does not freeze the bar: a context menu, a pointer cancel, a pointer move with the primary button up and the window losing focus end it; a non-primary (right) press holds nothing. | e2e (window blur; context menu, cancel and buttonless move; right press) |
 
 ## Plan
 
@@ -70,11 +70,17 @@ are not affected.
   request.
 - AC-3: the keyboard on the terminal Reply stays on it across a task update, and Enter focuses the
   terminal.
+- AC-4: a press held across an update ends, and the bar shows the update, on a window blur, a
+  context menu, a pointer cancel or a move with the button up; a right press holds nothing.
+- AC-5: a touch press and release on Reply across an update, then the tap's click: the field opens
+  with the caret and the bar shows the update.
 
 ## Test plan
 
-- e2e `reply.e2e.ts`: three new tests for AC-1 to AC-3; all three fail on dev (terminal not
-  focused, field not opened, focus on `body`).
+- e2e `reply.e2e.ts`: seven new tests. AC-1 to AC-3 fail on dev (terminal not focused, field not
+  opened, focus on `body`); AC-4's window-blur test fails on dev (bar not held), its context menu,
+  cancel, buttonless-move and right-press tests failed on the first fix (review round 1); AC-5's tap
+  test passes on dev too (a non-regression check: a tap is hit-tested where it lands).
 - The existing reply, watching, pause and needs-you e2e tests keep passing (the bar's rebuild on
   updates, focus kept on Reply after Escape, the request list's scroll).
 - The whole e2e suite, as every web change.
@@ -88,5 +94,11 @@ are not affected.
   length only (ADR-0268).
 - The terminal Reply also becomes a kept node (like `replyButton`): holding renders fixes the
   pointer, not the keyboard, which the existing focus guard keeps only for nodes that survive.
-- The held render runs on a task after the release (`setTimeout 0`), so the click, dispatched after
-  `pointerup` in the same task, reaches the pressed button first.
+- The held render runs on a task after the release (`setTimeout 0`), so a mouse's click, dispatched
+  after `pointerup` in the same task, reaches the pressed button first. A tap's click is not waited
+  for (review round 1, finding 2): it is hit-tested at its point on the rebuilt bar, whose buttons
+  stay in place for the same state; waiting for it would need a fallback timer for taps that never
+  click.
+- Only a primary press holds, and a context menu, a cancel, a buttonless move or the window's blur
+  end it (review round 1, finding 1): a context menu may swallow the release, which would leave the
+  bar stale until the next click.
