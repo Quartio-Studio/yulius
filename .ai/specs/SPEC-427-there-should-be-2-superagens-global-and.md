@@ -100,7 +100,7 @@ as the person's own agent does over the remote MCP.
 - [x] The Global Superagent survives its host sandbox, usage limits and updates
 - [x] The rail opens the Global Superagent outside a sandbox
 - [x] ADR, architecture, product and API docs describe the two Superagents
-- [ ] Review round 1 fixed: no shell, hooks or settings files, a recorded contained plan, bounds
+- [x] Review round 1 fixed: no shell, hooks or settings files, a recorded contained plan, bounds
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
