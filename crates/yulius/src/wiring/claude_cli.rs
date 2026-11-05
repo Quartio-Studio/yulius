@@ -22,6 +22,7 @@ use base64::Engine as _;
 use serde_json::Value;
 use sha2::{Digest, Sha512};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use yulius_app::ports::session::Bind;
 use yulius_domain::agent_cli::{
     self as policy, Channel, PACKAGE, REGISTRY_HOST, Version, platform_package, should_install,
 };
@@ -423,6 +424,25 @@ pub fn start_updates_every(
             tokio::time::sleep(every).await;
         }
     }))
+}
+
+/// The read-only bind of the agent CLI in a run: at the host package's path `host_dir`, from
+/// [`agent_cli_source`] under `root` when updates are on, else from the host's package; none
+/// without a host package (CCU-005).
+#[must_use]
+pub fn agent_cli_binds(host_dir: Option<&Path>, root: Option<&Path>) -> Vec<Bind> {
+    let Some(host_dir) = host_dir else {
+        return Vec::new();
+    };
+    let source = root.map_or_else(
+        || host_dir.to_path_buf(),
+        |root| agent_cli_source(root, host_dir),
+    );
+    vec![Bind {
+        source,
+        dest: host_dir.to_path_buf(),
+        writable: false,
+    }]
 }
 
 /// The directory a run binds at the host package's path `host_dir`: Yulius's current version

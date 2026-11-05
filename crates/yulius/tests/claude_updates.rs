@@ -15,8 +15,11 @@ use base64::Engine as _;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use sha2::{Digest, Sha512};
-use yulius::wiring::claude_cli::{ClaudeUpdater, Outcome, agent_cli_source, start_updates_every};
+use yulius::wiring::claude_cli::{
+    ClaudeUpdater, Outcome, agent_cli_binds, agent_cli_source, start_updates_every,
+};
 use yulius::wiring::sandbox::parse_channel;
+use yulius_app::ports::session::Bind;
 use yulius_domain::agent_cli::{Channel, Version};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -475,5 +478,32 @@ async fn the_loop_installs_without_anyone_asking() -> TestResult {
     assert_eq!(parse_channel("off"), Ok(Channel::Off));
     assert_eq!(parse_channel("latest"), Ok(Channel::Latest));
     assert!(parse_channel("nightly").is_err());
+    Ok(())
+}
+
+/// CCU-003, CCU-005: a run binds the chosen directory at the host package's path; with updates
+/// off the host's own, and nothing without a host package.
+#[tokio::test]
+async fn runs_bind_the_chosen_version_at_the_host_package_path() -> TestResult {
+    let s = setup("2.1.292").await?;
+    s.stub.tag("stable", "2.1.311");
+    s.stub.release("2.1.311", good("2.1.311"));
+    let bind = |source: PathBuf| Bind {
+        source,
+        dest: s.host.clone(),
+        writable: false,
+    };
+    // Before any install, the host's.
+    assert_eq!(
+        agent_cli_binds(Some(&s.host), Some(&s.root)),
+        [bind(s.host.clone())]
+    );
+    s.updater.check(Channel::Stable).await?;
+    assert_eq!(
+        agent_cli_binds(Some(&s.host), Some(&s.root)),
+        [bind(s.root.join("versions/2.1.311").canonicalize()?)]
+    );
+    assert_eq!(agent_cli_binds(Some(&s.host), None), [bind(s.host.clone())]);
+    assert!(agent_cli_binds(None, Some(&s.root)).is_empty());
     Ok(())
 }

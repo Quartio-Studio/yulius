@@ -2626,7 +2626,11 @@ impl Holders {
             system_root: format!("/fake/runtime/sandboxes/{name}/root").into(),
             hostname: name.replace('.', "-"),
             exec_shim: None,
-            extra_readonly: vec!["/opt/agent-cli".into()],
+            extra_binds: vec![yulius_app::ports::session::Bind {
+                source: "/data/claude-code/versions/2.1.311".into(),
+                dest: "/opt/agent-cli".into(),
+                writable: false,
+            }],
             private_dirs: Vec::new(),
             system_passwd: None,
             system_group: None,
@@ -2767,6 +2771,7 @@ async fn production_runs_join_the_production_holder_with_its_docker_engine() -> 
     let Some(Containment::Bubblewrap {
         sandbox_root,
         writable,
+        binds,
         join: Some(join),
         ..
     }) = seen.first()
@@ -2783,7 +2788,8 @@ async fn production_runs_join_the_production_holder_with_its_docker_engine() -> 
         "the production holder's engine"
     );
     assert!(join.host_system.is_some(), "the host's read-only system");
-    assert!(join.extra_readonly.is_empty());
+    assert!(join.extra_binds.is_empty());
+    assert!(binds.is_empty(), "no agent CLI in production: {binds:?}");
     assert_eq!(join.cgroup.as_deref(), Some(Path::new("/cg/s1.prod/ci")));
     assert!(!files.exists(), "the run's files are removed");
     assert!(!data.join("runs").join(format!("cd-{id}")).exists());
@@ -2803,6 +2809,7 @@ async fn production_runs_join_the_production_holder_with_its_docker_engine() -> 
     let seen = recording.seen.lock().map(|s| s.clone()).unwrap_or_default();
     let Some(Containment::Bubblewrap {
         writable,
+        binds,
         join: Some(join),
         ..
     }) = seen.get(1)
@@ -2811,6 +2818,15 @@ async fn production_runs_join_the_production_holder_with_its_docker_engine() -> 
     };
     assert_eq!(join.net_ns, 2);
     assert!(join.host_system.is_none());
+    // The agent CLI the sandbox's join names, at the host package's path (SPEC-421 CCU-003).
+    assert_eq!(
+        binds,
+        &[yulius_app::ports::session::Bind {
+            source: "/data/claude-code/versions/2.1.311".into(),
+            dest: "/opt/agent-cli".into(),
+            writable: false,
+        }]
+    );
     assert!(
         writable.contains(&data.join("runs").join(format!("cd-{dev_id}")).join("work")),
         "{writable:?}"

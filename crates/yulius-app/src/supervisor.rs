@@ -1440,10 +1440,12 @@ impl App {
                 writable: Vec::new(),
                 readonly: std::iter::once(self.config.yulius_exe.clone())
                     .chain(self.config.contained_readonly.iter().cloned())
-                    .chain(join.iter().flat_map(|j| j.extra_readonly.iter().cloned()))
                     .chain(run_files)
                     .collect(),
-                binds: Vec::new(),
+                binds: join
+                    .iter()
+                    .flat_map(|j| j.extra_binds.iter().cloned())
+                    .collect(),
                 identity: None,
                 join: join.map(Box::new),
             }
