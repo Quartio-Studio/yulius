@@ -637,8 +637,9 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 ยง6.7, ย
   the task owner's authority and are audited as `task:<n>` too (DLV-008). Work committed after
   the task's pull request merged is delivered as a new pull request of the task; with nothing
   new, `delivery_merge` answers `merged: true` and that it is merged already, arming nothing,
-  and what Yulius cannot judge (a rewritten branch, GitHub not answering, a live merge train) it
-  refuses with the reason (SPEC-425). Agents never promote:
+  and what Yulius cannot judge (a rewritten branch, a merged head missing from the clone, a
+  conflict with the integration branch, a failed fetch, GitHub not answering, a live merge train)
+  it refuses with the reason (SPEC-425). Agents never promote:
   production is always a person's (ADR-0110; there is no `delivery_promote` any more), and they
   deploy with CD (below). `issue_create`
   opens a GitHub issue only when it meets the Definition of Ready (one `type:`, one `priority:`,

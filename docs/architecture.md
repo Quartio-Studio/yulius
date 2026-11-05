@@ -658,8 +658,9 @@ it. Work committed after the task's pull request merged (on top of its head, mor
 merges of the integration branch, and adding to it) starts a new delivery of the same task,
 audited `delivery.follow_up`: the record goes back to `none` and a new pull request opens. With
 nothing new, `delivery_merge` answers that the pull request is merged already and arms nothing;
-what Yulius cannot judge (a rewritten branch, GitHub not answering, a live merge train) it
-refuses with the reason
+what Yulius cannot judge (a rewritten branch, a merged head missing from the clone, a conflict
+with the integration branch, a failed fetch, GitHub not answering, a live merge train) it refuses
+with the reason
 ([SPEC-425](../.ai/specs/SPEC-425-yulius-doesnt-pick-up-things-this-is-on.md),
 [decision 0269](decisions/0269-work-after-a-tasks-merge-is-delivered-as-a-new-pull-request.md)).
 A head it cannot deliver yet (open step, no plan for a task that needs a spec, invalid spec,

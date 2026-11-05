@@ -40,8 +40,9 @@ organisation the agent had to push and open PR #2 by hand, and the task still sh
   in the clone (the answer gives the fetch of `pull/N/head`), a change that conflicts with the
   integration branch (it may be work merged outside Yulius that `dev` changed since: the answer
   gives the merge, after which the verdict is clear), a failed fetch, a merged pull
-  request GitHub does not answer for, or a live merge train holding the task (it counts on its
-  members' stages until it ends) change nothing; `delivery_merge` refuses with that reason, and
+  request GitHub does not answer for, or new work while a live merge train holds the task (it
+  counts on its members' stages until it ends; a head with nothing new is still covered) change
+  nothing; `delivery_merge` refuses with that reason, and
   the end of a turn delivers nothing and notes it for `yulius wait`; a head found covered later
   clears that note.
 - **`delivery_merge` never arms on a merged pull request.** With nothing new it answers

@@ -3078,13 +3078,6 @@ impl App {
             }
             Err(err) => return unknown(err.public_message()),
         }
-        // A live merge train counts on its members' recorded stages until it ends.
-        if self.in_train(task) {
-            return unknown(
-                "it is in a merge train that has not ended; call again once the train ends"
-                    .to_owned(),
-            );
-        }
         if self.review_covers(task, worktree, &merged, head).await {
             return AfterMerge::Covered;
         }
@@ -3092,6 +3085,12 @@ impl App {
         // follow-up merged outside Yulius changes nothing there, whatever else `dev` gained.
         let integration = format!("origin/{}", delivery_profile(&sandbox).integration_branch);
         match git.adds_to(worktree, &integration, &merged, head).await {
+            // A live merge train counts on its members' recorded stages until it ends: only new
+            // work would move this one's back.
+            Ok(Some(true)) if self.in_train(task) => unknown(
+                "it is in a merge train that has not ended; call again once the train ends"
+                    .to_owned(),
+            ),
             Ok(Some(true)) => AfterMerge::FollowUp(number),
             Ok(Some(false)) => AfterMerge::Covered,
             // A conflict may be work merged outside Yulius that `dev` changed since, or new work
