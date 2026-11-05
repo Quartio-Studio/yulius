@@ -1300,3 +1300,110 @@ async fn an_answered_stop_is_kept_in_the_run_directory() -> TestResult {
     assert!(answered >= before && answered > 0, "{answered}");
     Ok(())
 }
+
+/// What `PreToolUse` answered for `tool` on `input`: the deny reason, or `None` when it passed.
+async fn pre_tool_use(
+    f: &Fixture,
+    tool: &str,
+    input: serde_json::Value,
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    let body = hook(
+        f,
+        "PreToolUse",
+        json!({"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": input}),
+    )
+    .await?;
+    if body.is_null() {
+        return Ok(None);
+    }
+    let out = &body["hookSpecificOutput"];
+    assert_eq!(out["hookEventName"], "PreToolUse", "{body:?}");
+    assert_eq!(out["permissionDecision"], "deny", "{body:?}");
+    Ok(Some(
+        out["permissionDecisionReason"]
+            .as_str()
+            .ok_or("reason")?
+            .to_owned(),
+    ))
+}
+
+/// SPEC-426 EDG-002/003 (AC1, AC2): a code edit of a task that needs a spec waits until the spec
+/// has a Plan; documentation, reads and files outside the worktree are never held.
+#[tokio::test]
+async fn a_code_edit_waits_for_the_spec_plan() -> TestResult {
+    let f = fixture().await?;
+    let file = |rel: &str| f.worktree.join(rel).to_string_lossy().into_owned();
+    let reason = pre_tool_use(&f, "Edit", json!({"file_path": file("api.rs")}))
+        .await?
+        .ok_or("a code edit without a spec is denied")?;
+    assert!(
+        reason.contains("docs/specs/checkout.md")
+            && reason.contains("Plan")
+            && reason.contains("yulius-task: t-main")
+            && reason.contains("spec_check"),
+        "{reason}"
+    );
+    for (tool, input) in [
+        ("Write", json!({"file_path": file("docs/specs/checkout.md")})),
+        ("Edit", json!({"file_path": file("README.md")})),
+        ("Read", json!({"file_path": file("api.rs")})),
+        ("Write", json!({"file_path": "/elsewhere/api.rs"})),
+    ] {
+        assert_eq!(
+            pre_tool_use(&f, tool, input.clone()).await?,
+            None,
+            "{tool} {input}"
+        );
+    }
+    for (tool, input) in [
+        ("Write", json!({"file_path": file("docs/../api.rs")})),
+        ("MultiEdit", json!({"file_path": file("src/lib.rs")})),
+        ("NotebookEdit", json!({"notebook_path": file("probe.ipynb")})),
+    ] {
+        assert!(
+            pre_tool_use(&f, tool, input.clone()).await?.is_some(),
+            "{tool} {input}"
+        );
+    }
+
+    // A spec without a Plan item still holds the edit; one Plan item lets it through.
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    std::fs::write(
+        f.worktree.join("docs/specs/checkout.md"),
+        "---\nyulius-task: t-main\nstatus: draft\n---\n# Checkout API\n\n## Goal\n\nPay.\n",
+    )?;
+    assert!(
+        pre_tool_use(&f, "Edit", json!({"file_path": file("api.rs")}))
+            .await?
+            .is_some(),
+        "no Plan yet"
+    );
+    std::fs::write(
+        f.worktree.join("docs/specs/checkout.md"),
+        "---\nyulius-task: t-main\nstatus: draft\n---\n# Checkout API\n\n## Goal\n\nPay.\n\n\
+         ## Plan\n\n- [ ] Card payments work end to end\n",
+    )?;
+    assert_eq!(
+        pre_tool_use(&f, "Edit", json!({"file_path": file("api.rs")})).await?,
+        None,
+        "a draft spec with a Plan is enough"
+    );
+    Ok(())
+}
+
+/// SPEC-426 AC3: a task whose workflow needs no spec (research) edits code freely.
+#[tokio::test]
+async fn edits_without_a_spec_gate_pass() -> TestResult {
+    let research = fixture_with_workflow(Some(("wf-research-test", false))).await?;
+    let path = research.worktree.join("probe.rs");
+    assert_eq!(
+        pre_tool_use(
+            &research,
+            "Write",
+            json!({"file_path": path.to_string_lossy()})
+        )
+        .await?,
+        None
+    );
+    Ok(())
+}
