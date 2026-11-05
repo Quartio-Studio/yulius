@@ -4190,6 +4190,108 @@ async fn a_merge_call_opens_the_pull_request_a_goal_task_still_lacks() -> TestRe
     Ok(())
 }
 
+/// SPEC-425 FUP-001 to FUP-003 (#1074): work committed on a task's branch after its pull request
+/// merged is delivered again, as a new pull request of the same task, at the end of a turn and
+/// on `delivery_merge`; a head that adds nothing to the merged one (Git's own merges of the
+/// integration branch) keeps the task merged, and `delivery_merge` never arms a merge of a pull
+/// request that is merged already.
+#[tokio::test]
+async fn work_committed_after_the_merge_opens_a_new_pull_request() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    git(&wt, &["config", "user.name", "Bob"])?;
+    git(&wt, &["config", "user.email", "bob@yulius.test"])?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    let t1 = TaskId::parse("t1")?;
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+    let pulls_opened = || {
+        f.h.github
+            .writes()
+            .iter()
+            .filter(|w| w.starts_with("create_pull"))
+            .count()
+    };
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(), 1, "{:?}", f.h.github.writes());
+    let merged_head = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&merged_head, ChecksState::Success);
+    yulius_app::ports::github::GitHubPort::merge_pull(
+        f.h.github.as_ref(),
+        &Secret("token-carol".into()),
+        "Quartio-Studio",
+        "shop",
+        1,
+        "squash",
+        &merged_head,
+    )
+    .await?;
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
+
+    // The merged head itself: nothing to deliver, and the merge call arms nothing.
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(), 1, "nothing new after the merge");
+    let done = agent_tool(
+        &f,
+        &agent,
+        "delivery_merge",
+        json!({"reviewed_head": merged_head, "review_summary": "approve"}),
+    )
+    .await?;
+    let said = done["content"][0]["text"].as_str().unwrap_or_default();
+    assert!(said.contains("already merged"), "{done}");
+    assert_eq!(
+        wait_state(&f, &agent, &merged_head).await?["merge_armed"],
+        false,
+        "no merge armed on a merged pull request"
+    );
+
+    // Git's own merge of the integration branch since adds nothing either.
+    git(&wt, &["fetch", "--quiet", "origin"])?;
+    git(&wt, &["merge", "--quiet", "--no-edit", "origin/dev"])?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(), 1, "a clean merge of dev is not new work");
+    assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
+
+    // A follow-up fix: pushed, and a new pull request of the same task opens.
+    commit_file(&wt, "fix.txt", "fixed", "Fix after the merge")?;
+    let fix = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.app.auto_open_pr(&t1).await;
+    assert_eq!(pulls_opened(), 2, "{:?}", f.h.github.writes());
+    assert_eq!(f.origin_sha("feat/1-checkout-api")?, fix, "pushed");
+    let d = f.delivery("t1").await?;
+    assert_eq!(d["stage"], "pr_open", "{d}");
+    assert_eq!(d["pr"]["number"], 2, "{d}");
+    assert_eq!(d["pr"]["head"], "feat/1-checkout-api");
+
+    // The merge call takes the new pull request on: armed while its checks run, merged on green.
+    f.h.github.set_checks(&fix, ChecksState::Pending);
+    let armed = arm_merge(&f, &agent, &fix).await?;
+    assert_eq!(armed["armed"], true, "{armed}");
+    f.h.github.set_checks(&fix, ChecksState::Success);
+    f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
+    assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
+    assert!(
+        f.h.github.writes().iter().any(|w| w.starts_with("merge_pull #2")),
+        "{:?}",
+        f.h.github.writes()
+    );
+
+    // The same through the merge call alone, at the end of a goal task's turn.
+    commit_file(&wt, "fix2.txt", "again", "Second fix after the merge")?;
+    let fix2 = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&fix2, ChecksState::Pending);
+    let again = arm_merge(&f, &agent, &fix2).await?;
+    assert_eq!(again["armed"], true, "{again}");
+    assert_eq!(pulls_opened(), 3, "{:?}", f.h.github.writes());
+    assert_eq!(f.origin_sha("feat/1-checkout-api")?, fix2, "pushed");
+    Ok(())
+}
+
 /// DLV-204: when the end of a turn delivers nothing because a step is still open, `yulius wait`
 /// says so instead of waiting for a push that never comes (#34 waited 42 minutes).
 #[tokio::test]
