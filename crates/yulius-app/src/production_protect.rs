@@ -33,9 +33,9 @@ impl App {
     /// onboarding task: starting onboarding is the person's consent (ADR-0129).
     ///
     /// # Errors
-    /// `Conflict` (naming the setting, where to waive it and `needs_you`) in a playground, outside the onboarding
-    /// task, when the owner is disabled, has no usable GitHub sign-in or is not a repository
-    /// admin, or when GitHub refuses the ruleset; store failures.
+    /// `Conflict` (naming the setting, where to waive it and `needs_you`) in a playground, outside
+    /// the onboarding task, when the owner is disabled, has no usable GitHub sign-in or is not a
+    /// repository admin, or when GitHub refuses the ruleset; store failures.
     pub(crate) async fn tool_production_protect(&self, ctx: &AgentContext) -> AppResult<Value> {
         let sandbox = self
             .deps

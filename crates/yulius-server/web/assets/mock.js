@@ -1069,6 +1069,8 @@ route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'admin');
   // SPEC-338 VOF-001: the Vidoc switch is set on its own; a profile update keeps it.
+  // The server writes both switches in one write: a refused protection switch changes neither.
+  if (body.protect_production !== undefined && body.protect_production !== null && db.protectPatchFail) fail(503, 'unavailable', 'the store is busy');
   if (body.vidoc !== undefined && body.vidoc !== null) {
     if (sandbox.playground) fail(422, 'invalid', 'a playground runs no Vidoc scan: it has no switch to turn');
     if (db.vidoc.patchFail) fail(503, 'unavailable', 'the store is busy');
@@ -1080,7 +1082,6 @@ route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   if (body.profile) validateProfile(body.profile);
   if (body.protect_production !== undefined && body.protect_production !== null) {
     if (sandbox.playground) fail(422, 'invalid', 'a playground has no GitHub production branch: it has no protection switch to turn');
-    if (db.protectPatchFail) fail(503, 'unavailable', 'the store is busy');
     sandbox.profile = { ...sandbox.profile, protect_production: Boolean(body.protect_production) };
   }
   if (body.profile) {

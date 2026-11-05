@@ -106,3 +106,20 @@ test('the card is there when the delivery overview cannot be read', async ({ app
   await expect(card.getByRole('switch', 'Require a GitHub ruleset on main')).toBeChecked();
   await expect.poll(() => cardInView(browser)).toBe(true);
 });
+
+test('a change answered after leaving the Git page and coming back shows on the new card', async ({ app, browser, screen }) => {
+  // Review round 2: the card drawn by the page visited again is the one the answer redraws.
+  await app.open(mock('/s/studio/git', '&ambient=0&protect_patch_fail=1&holdpost=/api/sandboxes/sb_studio'));
+  const card = screen.getByRole('region', 'Production protection');
+  await card.getByRole('switch', 'Require a GitHub ruleset on main').click();
+  await browser.evaluate(() => { location.hash = '#/s/studio/ci'; return null; });
+  await expect(screen.getByRole('region', 'Production protection')).toBeHidden();
+  await browser.evaluate(() => { location.hash = '#/s/studio/git'; return null; });
+  await expect(card.getByRole('switch', 'Require a GitHub ruleset on main')).toBeDisabled();
+  await browser.evaluate(() => { (window as unknown as Mocked).__yuliusMock.release(); return null; });
+  await expect(screen.getByText(/Couldn’t change the production protection/)).toBeVisible();
+  expect(await browser.evaluate(() => {
+    const input = document.querySelector<HTMLInputElement>('#production-protection input[role="switch"]')!;
+    return { checked: input.checked, disabled: input.disabled };
+  })).toEqual({ checked: true, disabled: false });
+});

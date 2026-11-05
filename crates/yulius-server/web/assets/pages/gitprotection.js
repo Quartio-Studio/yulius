@@ -15,13 +15,28 @@ export const PROTECTION_ID = 'production-protection';
 
 // Per sandbox, the switch being sent ({ on }): a repaint while it is on its way shows it, disabled.
 const pending = new Map();
+// Per sandbox, the Git pages showing its card: each one's redraw, called once a change is
+// answered, so a card drawn while it was on its way never stays (also on a page left and visited
+// again meanwhile).
+const redraws = new Map();
 
 /**
- * The card for `sandbox` (not a playground: it has no GitHub branch). `redraw()` draws it again
- * from the stored sandbox, at once: called once a change is answered, so a card drawn while it was
- * on its way never stays.
+ * Registers `redraw()`, which draws `sandboxId`'s card again from the stored sandbox at once, for
+ * as long as the page shows it. Returns the unregister.
  */
-export function productionProtectionCard(ctx, sandbox, redraw) {
+export function watchProductionProtection(sandboxId, redraw) {
+  if (!redraws.has(sandboxId)) redraws.set(sandboxId, new Set());
+  redraws.get(sandboxId).add(redraw);
+  return () => {
+    const set = redraws.get(sandboxId);
+    if (!set) return;
+    set.delete(redraw);
+    if (!set.size) redraws.delete(sandboxId);
+  };
+}
+
+/** The card for `sandbox` (not a playground: it has no GitHub branch). */
+export function productionProtectionCard(ctx, sandbox) {
   const branch = (sandbox.profile && sandbox.profile.production_branch) || 'production';
   const required = !sandbox.profile || sandbox.profile.protect_production !== false;
   const admin = allows(sandbox.access, 'admin');
@@ -46,7 +61,7 @@ export function productionProtectionCard(ctx, sandbox, redraw) {
         pending.delete(sandbox.id);
         errorToast(error, 'Couldn’t change the production protection');
       }
-      redraw();
+      for (const redraw of [...(redraws.get(sandbox.id) || [])]) redraw();
       const now = document.querySelector(`#${PROTECTION_ID} input[role="switch"]`);
       const lost = !document.activeElement || document.activeElement === document.body;
       if (focused && lost && now && !now.disabled) now.focus();

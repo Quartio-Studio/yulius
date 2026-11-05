@@ -16,7 +16,7 @@ import { href, currentLocation } from '../router.js';
 import { openDeliveryDialog, notesBanner, checksAccessNote, openRunViewer, UNKNOWN_CHECKS } from '../actions.js';
 import { pageFrame } from './common.js';
 import { BRAND } from '../brand.js';
-import { productionProtectionCard, PROTECTION_ID } from './gitprotection.js';
+import { productionProtectionCard, watchProductionProtection, PROTECTION_ID } from './gitprotection.js';
 
 const LIVE_LIMIT = 5;
 const ACTIVITY_LIMIT = 8;
@@ -187,7 +187,7 @@ export function mountGitPage(ctx, sandbox) {
 
   function drawProtection() {
     // A playground has no GitHub branch to protect.
-    keepFocus(protection, () => setChildren(protection, sb().playground ? null : productionProtectionCard(ctx, sb(), drawProtection)));
+    keepFocus(protection, () => setChildren(protection, sb().playground ? null : productionProtectionCard(ctx, sb())));
   }
 
   // Messages link to the card with `?show=production-protection`: once the page above it has its
@@ -418,6 +418,7 @@ export function mountGitPage(ctx, sandbox) {
   const offs = [
     ctx.store.on('sandboxes', repaint),
     ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) repaint(); }),
+    watchProductionProtection(sandbox.id, () => { if (alive) drawProtection(); }),
   ];
   renderIntro();
   drawProtection();
