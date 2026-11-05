@@ -1375,6 +1375,8 @@ async fn a_code_edit_waits_for_the_spec_plan() -> TestResult {
             json!({"notebook_path": file("probe.ipynb")}),
         ),
     ] {
+        // Each in a turn of its own: a turn's fourth denial gives up (EDG-005).
+        hook(&f, "UserPromptSubmit", json!({"prompt": "go on"})).await?;
         assert!(
             pre_tool_use(&f, tool, input.clone()).await?.is_some(),
             "{tool} {input}"
@@ -1382,6 +1384,7 @@ async fn a_code_edit_waits_for_the_spec_plan() -> TestResult {
     }
 
     // A spec without a Plan item still holds the edit; one Plan item lets it through.
+    hook(&f, "UserPromptSubmit", json!({"prompt": "go on"})).await?;
     std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
     std::fs::write(
         f.worktree.join("docs/specs/checkout.md"),

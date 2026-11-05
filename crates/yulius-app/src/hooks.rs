@@ -276,17 +276,7 @@ impl App {
             )),
             events::USER_PROMPT_SUBMIT => self.hook_prompt_submit(ctx, input, sent).await,
             events::STOP => self.hook_stop(ctx, input).await,
-            events::PRE_TOOL_USE => Ok(HookReply::Output(
-                match self.edit_gate(&ctx.task, input).await {
-                    Ok(Some(reason)) => HookOutput::deny_tool(reason),
-                    Ok(None) => HookOutput::default(),
-                    // The edit goes ahead: the Stop gate still checks the spec.
-                    Err(err) => {
-                        tracing::warn!(error = %err, task = %ctx.task.id, "edit gate unavailable");
-                        HookOutput::default()
-                    }
-                },
-            )),
+            events::PRE_TOOL_USE => Ok(HookReply::Output(self.hook_pre_tool_use(ctx, input).await)),
             events::NOTIFICATION => {
                 // Only a notice that asks a person to act needs one: Claude Code's reminder that
                 // it waits for input ("idle", about a minute after a turn ended) keeps a finished
@@ -718,6 +708,7 @@ impl App {
             store.update_task(&task.id, &update, self.now()).await?;
         }
         runtime.resumed_turn.store(false, Ordering::SeqCst);
+        runtime.edit_denials.store(0, Ordering::SeqCst);
         // The retry's prompt (or a person's) starts the turn an armed retry waited for.
         runtime.goal_retry_armed.store(false, Ordering::SeqCst);
         runtime.turn_began_ms.store(self.now().0, Ordering::SeqCst);
@@ -949,20 +940,11 @@ impl App {
     }
 }
 
-/// Claude Code's tools that write a file, and the input field naming it (SPEC-426 EDG-001).
-const EDIT_TOOLS: [(&str, &str); 4] = [
-    ("Edit", "file_path"),
-    ("MultiEdit", "file_path"),
-    ("Write", "file_path"),
-    ("NotebookEdit", "notebook_path"),
-];
-
-/// `file` (absolute, or relative to `worktree`) as a path relative to `worktree`, with `.` and
-/// `..` resolved lexically; `None` outside it or for the worktree itself.
-fn worktree_relative(worktree: &Path, file: &str) -> Option<String> {
+/// `file` (absolute, or relative to `base`) with `.` and `..` resolved lexically.
+fn lexical_path(base: &Path, file: &str) -> PathBuf {
     use std::path::Component;
     let mut normal = PathBuf::new();
-    for part in worktree.join(file).components() {
+    for part in base.join(file).components() {
         match part {
             Component::ParentDir => {
                 normal.pop();
@@ -971,20 +953,71 @@ fn worktree_relative(worktree: &Path, file: &str) -> Option<String> {
             other => normal.push(other),
         }
     }
-    let rel = normal.strip_prefix(worktree).ok()?;
-    let rel = rel.to_str()?;
+    normal
+}
+
+/// `path` relative to `root`; `None` outside it or for `root` itself.
+fn relative_to(root: &Path, path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(root).ok()?.to_str()?;
     (!rel.is_empty()).then(|| rel.to_owned())
 }
 
+/// `file` (absolute, or relative to `base`) as a path relative to `worktree`, with `.` and
+/// `..` resolved lexically; `None` outside it or for the worktree itself.
+fn worktree_relative(worktree: &Path, base: &Path, file: &str) -> Option<String> {
+    relative_to(worktree, &lexical_path(base, file))
+}
+
+/// `path` with its longest existing ancestor resolved through links (the rest kept as written),
+/// so a file not yet created is placed by its folder.
+fn resolved_through_links(path: &Path) -> Option<PathBuf> {
+    let mut rest = Vec::new();
+    let mut probe = path;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(probe) {
+            return Some(rest.iter().rev().fold(real, |acc, part| acc.join(part)));
+        }
+        rest.push(probe.file_name()?.to_owned());
+        probe = probe.parent()?;
+    }
+}
+
 impl App {
+    /// `PreToolUse`: the edit gate's answer. Its denials are counted per turn as the Stop gate's
+    /// blocks are: after [`MAX_GATE_BLOCKS`] the turn's edits pass and the task says so once
+    /// (SPEC-426 EDG-005); a failure to decide lets the edit go ahead (the Stop gate still checks).
+    async fn hook_pre_tool_use(&self, ctx: &AgentContext, input: &HookInput) -> HookOutput {
+        let reason = match self.edit_gate(&ctx.task, input).await {
+            Ok(Some(reason)) => reason,
+            Ok(None) => return HookOutput::default(),
+            Err(err) => {
+                tracing::warn!(error = %err, task = %ctx.task.id, "edit gate unavailable");
+                return HookOutput::default();
+            }
+        };
+        let runtime = self.runtime(&ctx.task.id);
+        let denied = runtime.edit_denials.fetch_add(1, Ordering::SeqCst) + 1;
+        if denied <= MAX_GATE_BLOCKS {
+            return HookOutput::deny_tool(reason);
+        }
+        if denied == MAX_GATE_BLOCKS + 1 {
+            runtime.hub.notice(format!(
+                "Yulius: the agent's code edits were refused {MAX_GATE_BLOCKS} times because the \
+                 task's spec has no Plan yet; the rest of this turn's edits go ahead, and the end \
+                 of the turn still asks for the spec."
+            ));
+        }
+        HookOutput::default()
+    }
+
     /// The discipline gate before a code edit (SPEC-426 EDG-002): `Some(reason)` when an edit
     /// tool is about to change a file of the task's worktree that is not documentation, the task
     /// needs a spec for such a change, and its spec does not exist or has no Plan item yet.
     async fn edit_gate(&self, task: &TaskRecord, input: &HookInput) -> AppResult<Option<String>> {
-        let Some(field) = EDIT_TOOLS
-            .iter()
-            .find(|(tool, _)| input.tool_name.as_deref() == Some(*tool))
-            .map(|(_, field)| *field)
+        let Some(field) = input
+            .tool_name
+            .as_deref()
+            .and_then(yulius_contracts::hooks::edited_file_field)
         else {
             return Ok(None);
         };
@@ -999,8 +1032,27 @@ impl App {
         let Some(worktree) = task.worktree_path.as_deref().map(PathBuf::from) else {
             return Ok(None);
         };
-        let Some(rel) = worktree_relative(&worktree, file) else {
-            return Ok(None);
+        // A relative path is the agent's folder's (`cwd`); a path through a link to the
+        // worktree is placed by what it resolves to.
+        let base = input
+            .cwd
+            .as_deref()
+            .map(PathBuf::from)
+            .filter(|cwd| cwd.is_absolute())
+            .unwrap_or_else(|| worktree.clone());
+        let rel = match worktree_relative(&worktree, &base, file) {
+            Some(rel) => rel,
+            None => {
+                let (root, path) = (worktree.clone(), lexical_path(&base, file));
+                let resolved = tokio::task::spawn_blocking(move || {
+                    let root = std::fs::canonicalize(&root).ok()?;
+                    relative_to(&root, &resolved_through_links(&path)?)
+                })
+                .await
+                .map_err(AppError::internal)?;
+                let Some(rel) = resolved else { return Ok(None) };
+                rel
+            }
         };
         if yulius_domain::spec_format::is_documentation_path(&rel)
             || !self
@@ -1761,7 +1813,7 @@ mod tests {
     #[test]
     fn edited_files_are_placed_in_the_worktree_lexically() {
         let wt = Path::new("/w/t1");
-        let rel = |file: &str| worktree_relative(wt, file);
+        let rel = |file: &str| worktree_relative(wt, wt, file);
         assert_eq!(rel("/w/t1/src/a.rs").as_deref(), Some("src/a.rs"));
         assert_eq!(rel("src/./a.rs").as_deref(), Some("src/a.rs"));
         assert_eq!(rel("/w/t1/docs/../a.rs").as_deref(), Some("a.rs"));
@@ -1769,5 +1821,12 @@ mod tests {
         assert_eq!(rel("/w/t1/../t2/a.rs"), None);
         assert_eq!(rel("../../etc/passwd"), None);
         assert_eq!(rel("/w/t1"), None);
+        let docs = Path::new("/w/t1/docs");
+        assert_eq!(
+            worktree_relative(wt, docs, "x.svg").as_deref(),
+            Some("docs/x.svg"),
+            "a relative path is the agent's folder's"
+        );
+        assert_eq!(worktree_relative(wt, docs, "../../t2/a.rs"), None);
     }
 }

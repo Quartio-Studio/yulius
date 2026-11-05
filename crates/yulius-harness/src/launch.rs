@@ -524,7 +524,7 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
                 "command": pre_tool_use,
                 "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
             }] },
-            { "matcher": crate::guard_client::EDIT_TOOLS.join("|"), "hooks": [{
+            { "matcher": crate::guard_client::EDIT_TOOLS.map(|(tool, _)| tool).join("|"), "hooks": [{
                 "type": "command",
                 "command": pre_tool_use,
                 "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS

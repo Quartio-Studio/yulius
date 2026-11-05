@@ -646,7 +646,9 @@ the spec file. At a turn's end, the `Stop` hook blocks a task that needs a spec 
 missing or invalid (`spec_gate`, DSC-013), at most three times. Before a code edit, Claude Code's
 `PreToolUse` for `Edit`, `MultiEdit`, `Write` and `NotebookEdit` reaches Yulius through `yulius
 hook claude PreToolUse`, which fails open. `edit_gate` denies an edit of a non-documentation file
-in the task's worktree while the task needs a spec and its spec has no Plan item yet. A goal task's
+in the task's worktree while the task needs a spec and its spec has no Plan item yet. The client
+sends only the tool, the agent's folder and the path, and the hook is never held. As the Stop gate
+does, the edit gate gives up after three denials in a turn and says so in the task's terminal. A goal task's
 long turn therefore cannot change code before its plan exists
 ([SPEC-426](../.ai/specs/SPEC-426-yulius-in-repo-when-the-org-doesnt-have.md),
 [decision 0270](decisions/0270-a-code-edit-waits-for-the-tasks-spec-plan.md)). Bash calls are

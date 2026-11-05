@@ -49,10 +49,14 @@ discovered at the end of a turn.
 
 - **EDG-001 Edits reach Yulius.** Claude Code's `PreToolUse` for `Edit`, `Write`, `MultiEdit` and
   `NotebookEdit` goes to Yulius (`yulius hook claude PreToolUse` forwards it, failing open like
-  every hook); `Bash` keeps its local check and is not sent.
+  every hook, and never held: a `202` fails open at once); `Bash` keeps its local check and is not
+  sent. Only the event, the tool, the agent's folder (`cwd`) and the edited path leave the sandbox,
+  never the file's content; the client reads up to 16 MiB of the input so a large `Write` is still
+  judged.
 - **EDG-002 A code edit waits for the Plan.** Yulius denies such an edit
   (`permissionDecision: deny` with a reason) when all hold: the edited file (`file_path`, or
-  `notebook_path`) is inside the task's worktree, after resolving `.` and `..`; it is not
+  `notebook_path`, a relative one from the agent's `cwd`) is inside the task's worktree, after
+  resolving `.` and `..`, or through links to it; it is not
   documentation (`is_documentation_path`, the rule the `Stop` gate uses for DSC-013); the task needs
   a spec for a change beyond documentation (its workflow's spec gate, or no workflow; not an
   onboarding task, not a workflow without the spec gate); and the task's spec does not exist or has
@@ -61,6 +65,10 @@ discovered at the end of a turn.
   when the task has no path), the `yulius-task` frontmatter, the Plan checklist and `spec_check`,
   says that documentation edits are not held, and tells the agent to make the edit again once the
   Plan is there.
+- **EDG-005 It gives up as the Stop gate does.** Denials are counted per turn (reset by the next
+  prompt); after three, the rest of that turn's edits pass and the task's terminal says once that
+  the agent's edits were refused three times for want of a Plan. A spec Yulius cannot read (a
+  link) or an agent told to go on without one is therefore not stuck.
 - **EDG-004 The rest of the gate is unchanged.** The `Stop` gate still requires a valid spec;
   the edit gate asks only for a Plan, so a draft spec being written does not hold the work.
 
@@ -92,9 +100,13 @@ discovered at the end of a turn.
 - `crates/yulius/tests/agent_hooks.rs` `a_code_edit_waits_for_the_spec_plan` (AC1, AC2) and
   `edits_without_a_spec_gate_pass` (AC3), through the internal HTTP hook route with a real Git
   worktree. Fails before the fix (the route answers `PreToolUse` with nothing).
+- `edits_are_placed_from_the_agents_folder_and_through_links` (relative paths from `cwd`, a link
+  to the worktree, a nested-only Plan, a task without a spec path) and
+  `the_edit_gate_gives_up_after_three_denials_and_says_so` (EDG-005).
 - `crates/yulius-harness` unit tests: the launch plan's `PreToolUse` entries (AC4) and the hook
   client's dispatch (an `Edit` reaches a loopback test server; a Bash self-match is denied without
-  one).
+  one); `an_edit_check_fails_open_and_is_never_held` (no server, a 500, a 202, a Write over 1 MiB
+  sent trimmed).
 
 ## Decisions
 

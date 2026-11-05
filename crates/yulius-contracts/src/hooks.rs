@@ -26,6 +26,24 @@ pub mod events {
     pub const STATUS_LINE: &str = "StatusLine";
 }
 
+/// Claude Code's tools that write a file, with the `tool_input` field naming it: their
+/// `PreToolUse` goes to Yulius's edit gate (SPEC-426 EDG-001).
+pub const EDIT_TOOLS: [(&str, &str); 4] = [
+    ("Edit", "file_path"),
+    ("MultiEdit", "file_path"),
+    ("Write", "file_path"),
+    ("NotebookEdit", "notebook_path"),
+];
+
+/// The `tool_input` field naming the file an edit tool writes (see [`EDIT_TOOLS`]).
+#[must_use]
+pub fn edited_file_field(tool: &str) -> Option<&'static str> {
+    EDIT_TOOLS
+        .iter()
+        .find(|(name, _)| *name == tool)
+        .map(|(_, field)| *field)
+}
+
 /// The request header in which `yulius hook` says when it sent the hook (Unix ms): a hook Yulius
 /// handles late, after its client gave up waiting, is ordered with the agent's later hooks by it
 /// (SPEC-346 LPH-001).
