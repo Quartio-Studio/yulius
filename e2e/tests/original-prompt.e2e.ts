@@ -361,3 +361,45 @@ test('an image the browser cannot draw says it could not be loaded', async ({ ap
   })).toEqual({ busy: null, ring: 0, icon: 1 });
   expect(await liveUrls()).toBe(1);
 });
+
+// SPEC-420 review round 2: the dialog closed while a picture is decoded keeps nothing of it (its
+// object URL is revoked) and opens no preview afterwards.
+test('a picture decoded after the dialog closed is dropped, not opened', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  const drafts = '/srv/yulius/sandboxes/sb_studio/attachments/drafts/usr_mkarp';
+  await touchTask(browser, 'sb_studio', 12, { prompt: `See @'${drafts}/a.png' here.` });
+  type Probe = { __liveUrls: Set<string>; __decoded: number; __releaseDecode: () => void };
+  // Live object URLs, and decodes held until the test releases them.
+  await browser.evaluate(() => {
+    const w = window as unknown as Probe;
+    const live = new Set<string>();
+    w.__liveUrls = live;
+    w.__decoded = 0;
+    const create = URL.createObjectURL.bind(URL);
+    const revoke = URL.revokeObjectURL.bind(URL);
+    URL.createObjectURL = (blob: Blob) => { const url = create(blob); live.add(url); return url; };
+    URL.revokeObjectURL = (url: string) => { live.delete(url); revoke(url); };
+    const held = new Promise<void>((resolve) => { w.__releaseDecode = resolve; });
+    const decode = HTMLImageElement.prototype.decode;
+    HTMLImageElement.prototype.decode = async function heldDecode(this: HTMLImageElement) {
+      await held;
+      try { return await decode.call(this); } finally { w.__decoded += 1; }
+    };
+  });
+
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  await screen.getByRole('menuitem', 'See the original prompt').click();
+  const dialog = screen.getByRole('dialog', 'Original prompt · #12');
+  await browser.locator('.prompt-modal .prompt-text').getByRole('button', { name: 'Open Image 1, a.png' }).click();
+  // Read, and held in its decode.
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Probe).__liveUrls.size)).toBe(1);
+  await browser.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+
+  await browser.evaluate(() => { (window as unknown as Probe).__releaseDecode(); });
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Probe).__decoded)).toBe(1);
+  await expect.poll(() => browser.evaluate(() => (window as unknown as Probe).__liveUrls.size)).toBe(0);
+  await expect(screen.getByRole('dialog', 'a.png')).toHaveCount(0);
+  await expect(browser.locator('.toast-msg')).toHaveCount(0);
+});
