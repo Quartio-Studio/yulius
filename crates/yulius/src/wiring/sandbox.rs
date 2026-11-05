@@ -14,6 +14,7 @@ use yulius_app::ports::isolation::{
     DiskUsage, DockerStatus, LimitCounters, SandboxIsolation, SandboxJoin, SandboxLimits,
     SandboxRef, SmokeCheck,
 };
+use yulius_domain::agent_cli::Channel;
 use yulius_domain::ids::SandboxId;
 use yulius_sandbox::cgroup::Limits;
 use yulius_sandbox::manager::{
@@ -97,6 +98,20 @@ pub struct IsolationArgs {
     /// the sandbox's system).
     #[arg(long = "sandbox-docker", env = "YULIUS_SANDBOX_DOCKER", value_enum, default_value_t = DockerMode::On)]
     pub docker: DockerMode,
+    /// Claude Code releases isolated sandboxes follow (SPEC-421): `stable` (default), `latest`,
+    /// or `off` (the host's Claude Code only).
+    #[arg(long = "claude-updates", env = "YULIUS_CLAUDE_UPDATES", default_value = "stable",
+          value_parser = parse_channel)]
+    pub claude_updates: Channel,
+}
+
+/// `stable`, `latest` or `off`.
+///
+/// # Errors
+/// Any other text.
+pub fn parse_channel(text: &str) -> Result<Channel, String> {
+    Channel::parse(text.trim())
+        .ok_or_else(|| format!("invalid channel {text:?}: expected stable, latest or off"))
 }
 
 impl Default for IsolationArgs {
@@ -111,6 +126,7 @@ impl Default for IsolationArgs {
             forward: Vec::new(),
             idle_minutes: 5,
             docker: DockerMode::On,
+            claude_updates: Channel::Stable,
         }
     }
 }

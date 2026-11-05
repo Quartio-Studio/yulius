@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::Router;
 use axum::http::{StatusCode, Uri};
@@ -14,7 +15,8 @@ use base64::Engine as _;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use sha2::{Digest, Sha512};
-use yulius::wiring::claude_cli::{ClaudeUpdater, Outcome, agent_cli_source};
+use yulius::wiring::claude_cli::{ClaudeUpdater, Outcome, agent_cli_source, start_updates_every};
+use yulius::wiring::sandbox::parse_channel;
 use yulius_domain::agent_cli::{Channel, Version};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -420,5 +422,58 @@ async fn a_newer_host_install_wins_over_yulius_s() -> TestResult {
         s.updater.check(Channel::Stable).await?,
         Outcome::UpToDate(v("2.1.400"))
     );
+    Ok(())
+}
+
+/// CCU-001: the loop checks on its own, again after each period; `off` starts no loop.
+#[tokio::test]
+async fn the_loop_installs_without_anyone_asking() -> TestResult {
+    let s = setup("2.1.292").await?;
+    s.stub.tag("stable", "2.1.311");
+    s.stub.release("2.1.311", good("2.1.311"));
+    let root = s.root.clone();
+    let updater = ClaudeUpdater::with_registry(
+        root.clone(),
+        Some(s.host.clone()),
+        s.updater.registry().to_owned(),
+        Some(PLATFORM.to_owned()),
+        false,
+    )?;
+    let looping = start_updates_every(
+        updater,
+        Channel::Stable,
+        Duration::ZERO,
+        Duration::from_millis(50),
+    )
+    .ok_or("a loop")?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while s.updater.current() != Some(v("2.1.311")) {
+        assert!(tokio::time::Instant::now() < deadline, "never installed");
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // A later release is picked up by a later round.
+    s.stub.tag("stable", "2.1.318");
+    s.stub.release("2.1.318", good("2.1.318"));
+    while s.updater.current() != Some(v("2.1.318")) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never installed the next"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    looping.abort();
+
+    let off = ClaudeUpdater::with_registry(
+        root,
+        Some(s.host.clone()),
+        s.updater.registry().to_owned(),
+        Some(PLATFORM.to_owned()),
+        false,
+    )?;
+    assert!(start_updates_every(off, Channel::Off, Duration::ZERO, Duration::ZERO).is_none());
+    assert_eq!(parse_channel("off"), Ok(Channel::Off));
+    assert_eq!(parse_channel("latest"), Ok(Channel::Latest));
+    assert!(parse_channel("nightly").is_err());
     Ok(())
 }

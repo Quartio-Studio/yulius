@@ -382,6 +382,49 @@ impl ClaudeUpdater {
     }
 }
 
+/// The first check after a start.
+pub const FIRST_CHECK_AFTER: Duration = Duration::from_secs(120);
+/// Checks after it.
+pub const CHECK_EVERY: Duration = Duration::from_secs(3600);
+
+/// Checks `channel` [`FIRST_CHECK_AFTER`] a start and every [`CHECK_EVERY`] after; `None`
+/// (no loop) when the channel is `off`.
+#[must_use]
+pub fn start_updates(
+    updater: ClaudeUpdater,
+    channel: Channel,
+) -> Option<tokio::task::JoinHandle<()>> {
+    start_updates_every(updater, channel, FIRST_CHECK_AFTER, CHECK_EVERY)
+}
+
+/// [`start_updates`] with other periods (tests).
+#[must_use]
+pub fn start_updates_every(
+    updater: ClaudeUpdater,
+    channel: Channel,
+    first: Duration,
+    every: Duration,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if channel == Channel::Off {
+        tracing::info!("Claude Code updates are off: runs use the host's Claude Code");
+        return None;
+    }
+    Some(tokio::spawn(async move {
+        tokio::time::sleep(first).await;
+        loop {
+            // Each request, the download and `--version` have their own deadline.
+            match updater.check(channel).await {
+                Ok(Outcome::Installed(version)) => {
+                    tracing::info!(%version, "Claude Code updated: new runs use it");
+                }
+                Ok(outcome) => tracing::debug!(?outcome, "Claude Code update check"),
+                Err(error) => tracing::warn!(%error, "Claude Code was not updated"),
+            }
+            tokio::time::sleep(every).await;
+        }
+    }))
+}
+
 /// The directory a run binds at the host package's path `host_dir`: Yulius's current version
 /// when it is newer than the host's, else the host's own (CCU-003, CCU-005).
 #[must_use]
