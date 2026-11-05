@@ -4309,7 +4309,14 @@ const FEATURE: &str = "a\nb\nc\nd\ne\nf\ng\n";
 /// A standard-profile task `t1` whose pull request #1 merged (squashed into `dev` on the
 /// origin) at its head, with its plan done: the fixture, its worktree and the merged head.
 async fn merged_task() -> BoxResult<(Fixture, PathBuf, String)> {
-    let f = fixture(&DeliveryProfile::standard()).await?;
+    merged_task_with(Box::new(|_| {})).await
+}
+
+/// [`merged_task`] with the configuration adjusted.
+async fn merged_task_with(
+    configure: support::ConfigureFn,
+) -> BoxResult<(Fixture, PathBuf, String)> {
+    let f = fixture_with(&DeliveryProfile::standard(), configure, None).await?;
     let wt = f
         .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
         .await?;
@@ -4713,6 +4720,27 @@ async fn work_after_the_merge_waits_for_a_live_merge_train() -> TestResult {
     f.h.app.auto_open_pr(&t1).await;
     assert_eq!(pulls_opened(&f), 2, "{:?}", f.h.github.writes());
     assert_eq!(f.origin_sha("feat/1-checkout-api")?, fix, "pushed");
+    Ok(())
+}
+
+/// SPEC-425 (review of #407, round 5): without CI no train advances or ends, so a merge-trains
+/// file left over from when it ran holds nothing: the follow-up opens.
+#[tokio::test]
+async fn a_leftover_train_holds_nothing_without_ci() -> TestResult {
+    let (f, wt, merged_head) = merged_task_with(Box::new(|c| c.ci.enabled = false)).await?;
+    std::fs::write(
+        f.h.app
+            .config
+            .data_dir
+            .join(yulius_app::merge_train::MERGE_TRAINS_FILE),
+        json!({"s1": {"train": {"run": "r1", "commit": merged_head, "base": merged_head,
+            "base_tree": "t", "members": [{"task": "t1", "pr": 1, "head": merged_head,
+            "armed_at": 1, "tree": "t"}]}}})
+        .to_string(),
+    )?;
+    commit_file(&wt, "fix.txt", "fixed", "Fix after the merge")?;
+    f.h.app.auto_open_pr(&TaskId::parse("t1")?).await;
+    assert_eq!(pulls_opened(&f), 2, "{:?}", f.h.github.writes());
     Ok(())
 }
 
