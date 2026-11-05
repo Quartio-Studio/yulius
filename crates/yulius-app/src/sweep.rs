@@ -337,7 +337,11 @@ impl App {
                     continue;
                 }
                 // A person's Shell may run tests in any worktree (review round 2).
-                let shells = !self.sandbox_shells(&sandbox.id).is_empty();
+                // A Global Superagent it only hosts runs nothing there (SPEC-427).
+                let shells = self
+                    .sandbox_shells(&sandbox.id)
+                    .iter()
+                    .any(|shell| !shell.is_global_superagent());
                 let artifacts = ci || (!shells && self.worktree_rests(&label).await);
                 let now = self.now().0;
                 let (dir, path) = (root.clone(), target.clone());

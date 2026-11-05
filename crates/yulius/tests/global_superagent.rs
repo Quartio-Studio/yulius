@@ -3,10 +3,9 @@
 //! every sandbox's tools for its person through its own bearer, outliving its host sandbox.
 
 use crate::cockpit::{
-    Fixture, ORIGIN, answer_record, attach, cockpit_id, cockpit_tool, contained_harness,
-    conversation, fixture, fixture_with, insert_account, limited_conversation, mcp,
-    predate_launch_digest, printed, project_of, prompt_record, read_message, read_until,
-    task_rests, wait_for,
+    Fixture, ORIGIN, answer_record, attach, cockpit_id, cockpit_tool, conversation, fixture,
+    fixture_with, insert_account, limited_conversation, mcp, predate_launch_digest, printed,
+    project_of, prompt_record, read_message, read_until, task_rests, wait_for,
 };
 use crate::support;
 
@@ -89,9 +88,12 @@ async fn a_person_gets_one_global_superagent_in_its_own_folder_without_built_in_
     let mut socket = attach(served.addr, &id, &f.alice).await?;
     let mut screen = String::new();
     read_until(&mut socket, &mut screen, "ready").await?;
-    assert_eq!(
-        printed(&screen, "cockpit-args")?,
-        "[--strict-mcp-config --tools  --model claude-opus-5-5 --effort high]"
+    let args = printed(&screen, "cockpit-args")?;
+    assert!(
+        args.starts_with(
+            "[--setting-sources  --strict-mcp-config --tools  --model claude-opus-5-5"
+        ),
+        "{args}"
     );
     let own = f.data.join("users/u-alice/superagent");
     let cwd = PathBuf::from(printed(&screen, "cwd")?);
@@ -110,8 +112,25 @@ async fn a_person_gets_one_global_superagent_in_its_own_folder_without_built_in_
     assert!(bearer.starts_with("gs_"), "{bearer}");
     assert_eq!(printed(&screen, "placeholder")?, "none", "no agent secrets");
     assert_eq!(printed(&screen, "proxy")?, "none", "no egress proxy");
+    // Every shell command it would run (`!`, a hook, a status line) goes through a prefix that
+    // refuses it, outside its writable root (review round 1).
+    let prefix = PathBuf::from(std::fs::read_to_string(config.join("launch-shell-prefix"))?);
+    assert!(!prefix.starts_with(&own), "{prefix:?}");
+    let refused = std::process::Command::new(&prefix)
+        .arg("echo escaped")
+        .output()?;
+    assert_eq!(refused.status.code(), Some(126));
+    assert!(refused.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("runs no commands"),
+        "{refused:?}"
+    );
     let record = std::fs::read_to_string(f.data.join("shells").join(&id).join("shell.json"))?;
     assert!(record.contains("\"global\":true"), "{record}");
+    assert!(
+        record.contains("\"version\":2"),
+        "older Yulius drop it: {record}"
+    );
     assert!(!record.contains(&bearer));
 
     // Never a terminal of its host; nobody else attaches.
@@ -262,15 +281,30 @@ async fn the_global_superagent_works_in_every_sandbox_of_its_person() -> TestRes
         cockpit_tool(&f, &token, "tasks_list", json!({"project": "acme/private"})).await?;
     assert!(is_error, "{hidden}");
     assert!(hidden.to_string().contains("not found"), "{hidden}");
-    let (deploy, is_error) = cockpit_tool(
-        &f,
-        &token,
+    for withheld in [
+        "secret_update",
+        "secret_hosts_answer",
+        "secret_delete",
+        "variables_set",
+        "variable_delete",
         "cd_deploy",
-        json!({"project": "acme/website", "environment": "dev"}),
-    )
-    .await?;
-    assert!(is_error, "{deploy}");
-    assert!(deploy.to_string().contains("unknown tool"), "{deploy}");
+        "project_import",
+        "onboarding_start",
+        "onboarding_skip",
+    ] {
+        let (refused, is_error) = cockpit_tool(
+            &f,
+            &token,
+            withheld,
+            json!({"project": "acme/website", "environment": "dev", "repo": "acme/x", "secret": "K", "name": "K", "variables": [], "allow": true, "hosts": []}),
+        )
+        .await?;
+        assert!(is_error, "{withheld}: {refused}");
+        assert!(
+            refused.to_string().contains("unknown tool"),
+            "{withheld}: {refused}"
+        );
+    }
 
     // The sandbox Superagent's bearer reaches no other sandbox this way.
     cockpit_id(&f, &f.alice).await?;
@@ -355,7 +389,7 @@ async fn the_global_superagent_outlives_its_host_sandbox() -> TestResult {
     // The line is wider than the terminal: its start is enough.
     let args = printed(&screen, "cockpit-args")?;
     assert!(
-        args.starts_with("[--resume across-sandboxes --strict-mcp-config --tools  --model"),
+        args.starts_with("[--resume across-sandboxes --setting-sources  --strict-mcp-config"),
         "{args}"
     );
     f.h.app.end_all_shells().await;
@@ -387,14 +421,61 @@ async fn a_global_superagent_whose_host_was_lost_moves_to_another_sandbox() -> T
     Ok(())
 }
 
-/// AC-GSA-4 (GSA-002): on a contained server it is planned with only the Yulius MCP and its read
-/// tools pre-allowed, its config in its own folder, and contained in a bubblewrap root of that
-/// folder without a sandbox holder, identity, repository or the person's home.
+/// The plans a contained server hands its session host, which starts nothing (AC-GSA-4).
+#[derive(Default)]
+struct RecordingHost {
+    plans: std::sync::Mutex<Vec<yulius_app::ports::session::LaunchPlan>>,
+}
+
+#[async_trait::async_trait]
+impl yulius_app::ports::session::SessionHost for RecordingHost {
+    async fn spawn(
+        &self,
+        _run_dir: &Path,
+        _attempt_id: &str,
+        _task_id: &str,
+        plan: &yulius_app::ports::session::LaunchPlan,
+        _token: &[u8; 32],
+        _size: (u16, u16),
+    ) -> yulius_app::error::AppResult<yulius_app::ports::session::SpawnedRun> {
+        if let Ok(mut plans) = self.plans.lock() {
+            plans.push(plan.clone());
+        }
+        Err(yulius_app::error::AppError::Upstream("recorded".into()))
+    }
+    async fn attach(
+        &self,
+        _run_dir: &Path,
+        _token: &[u8; 32],
+    ) -> yulius_app::error::AppResult<yulius_app::ports::session::AttachedRun> {
+        Err(yulius_app::error::AppError::NotFound)
+    }
+    fn inspect(&self, _run_dir: &Path) -> yulius_app::ports::session::RunInspection {
+        yulius_app::ports::session::RunInspection::Missing
+    }
+    fn terminate(&self, _run_dir: &Path) -> yulius_app::error::AppResult<()> {
+        Ok(())
+    }
+}
+
+/// AC-GSA-4 (GSA-002): on a contained server the plan its session host gets is contained in a
+/// bubblewrap root of its own folder, without a sandbox holder, identity, repository or the
+/// person's home, with the host's password files covered, every shell command refused through a
+/// read-only prefix, and only the Yulius MCP without built-in tools or settings files.
 #[tokio::test]
 async fn a_contained_global_superagent_has_a_root_of_its_own() -> TestResult {
     use yulius_app::ports::session::Containment;
 
-    let (h, recorder, alice) = contained_harness().await?;
+    let host = std::sync::Arc::new(RecordingHost::default());
+    let h = support::harness_with(support::HarnessOptions {
+        session_host: Some(host.clone()),
+        configure: Some(Box::new(|config| config.contained = true)),
+        ..support::HarnessOptions::default()
+    })?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    insert_account(&h, "acc-1", "token-1", 5.0).await?;
     let data = h.app.config.data_dir.clone();
     let own = data.join("users/u-alice/superagent");
     let conversations = yulius_harness::paths::claude_project_dir(
@@ -402,46 +483,87 @@ async fn a_contained_global_superagent_has_a_root_of_its_own() -> TestResult {
         &std::fs::canonicalize(&data)?.join("users/u-alice/superagent/work"),
     );
     conversation(&conversations, "earlier", 1_000)?;
+
     let resp = call(&h.router, Method::POST, "/api/superagent", None, &alice).await?;
-    assert_eq!(
-        resp.status,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "{:?}",
-        resp.body
-    );
-    let launch = recorder
-        .cockpit
+    assert_eq!(resp.status, StatusCode::BAD_GATEWAY, "{:?}", resp.body);
+    let plan = host
+        .plans
         .lock()
         .map_err(|_| "poisoned")?
-        .clone()
-        .ok_or("no launch planned")?;
-    assert_eq!(launch.config_dir, own.join(".claude"));
-    assert_eq!(launch.config_dir_host, own.join(".claude"));
-    assert_eq!(launch.cwd, std::fs::canonicalize(own.join("work"))?);
-    assert_eq!(launch.resume.as_deref(), Some("earlier"));
-    assert!(launch.contained);
-    assert!(launch.mcp.is_empty() && launch.project_mcp_servers.is_empty());
-    let read = launch.only_yulius.ok_or("only Yulius")?;
-    assert!(read.iter().any(|t| t == "projects_list"), "{read:?}");
-    assert!(!read.iter().any(|t| t == "task_create"), "{read:?}");
-
-    match h.app.global_containment(&own) {
-        Containment::Bubblewrap {
-            sandbox_root,
-            home,
-            writable,
-            binds,
-            identity,
-            join,
-            ..
-        } => {
-            assert_eq!(sandbox_root, own);
-            assert_eq!(home, own);
-            assert!(writable.is_empty() && binds.is_empty());
-            assert!(identity.is_none() && join.is_none());
-        }
-        Containment::None => return Err("not contained".into()),
+        .first()
+        .cloned()
+        .ok_or("nothing spawned")?;
+    let Containment::Bubblewrap {
+        sandbox_root,
+        home,
+        writable,
+        readonly,
+        binds,
+        identity,
+        join,
+    } = &plan.containment
+    else {
+        return Err("not contained".into());
+    };
+    assert_eq!(sandbox_root, &own);
+    assert_eq!(home, &own);
+    assert!(writable.is_empty(), "{writable:?}");
+    assert!(identity.is_none() && join.is_none());
+    for bind in binds {
+        assert_eq!(bind.source, PathBuf::from("/dev/null"), "{bind:?}");
+        assert!(!bind.writable);
     }
+    if Path::new("/etc/shadow").is_file() {
+        assert!(binds.iter().any(|b| b.dest == Path::new("/etc/shadow")));
+    }
+    assert!(
+        !readonly
+            .iter()
+            .chain([sandbox_root, home])
+            .any(|p| p.starts_with(data.join("sandboxes"))
+                || p.starts_with(data.join("users/u-alice/home"))),
+        "{readonly:?}"
+    );
+    let env = |key: &str| {
+        plan.env
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    };
+    let prefix = PathBuf::from(env("CLAUDE_CODE_SHELL_PREFIX").ok_or("no shell prefix")?);
+    assert_eq!(env("SHELL").as_deref(), prefix.to_str());
+    assert!(readonly.contains(&prefix), "read-only: {readonly:?}");
+    assert!(!prefix.starts_with(&own));
+    let script = plan
+        .files
+        .iter()
+        .find(|file| file.path == prefix)
+        .ok_or("no prefix script")?;
+    assert!(String::from_utf8_lossy(&script.contents).contains("exit 126"));
+    assert_eq!(env("HOME").as_deref(), own.to_str());
+    assert_eq!(
+        env("CLAUDE_CONFIG_DIR").as_deref(),
+        own.join(".claude").to_str()
+    );
+    assert_eq!(plan.cwd, std::fs::canonicalize(own.join("work"))?);
+    let argv = &plan.argv;
+    assert!(
+        argv.windows(2).any(|w| w == ["--resume", "earlier"]),
+        "{argv:?}"
+    );
+    assert!(
+        argv.windows(2).any(|w| w == ["--setting-sources", ""]),
+        "{argv:?}"
+    );
+    assert!(
+        argv.windows(3)
+            .any(|w| w == ["--strict-mcp-config", "--tools", ""]),
+        "{argv:?}"
+    );
+    assert_eq!(
+        argv.last().map(String::as_str),
+        Some("--dangerously-skip-permissions")
+    );
     Ok(())
 }
 
@@ -511,7 +633,7 @@ async fn a_usage_limit_moves_the_global_superagent_and_keeps_it_global() -> Test
     read_until(&mut socket, &mut screen, "ready").await?;
     let args = printed(&screen, "cockpit-args")?;
     assert!(
-        args.starts_with("[--resume conv-1 --strict-mcp-config --tools  --model"),
+        args.starts_with("[--resume conv-1 --setting-sources  --strict-mcp-config"),
         "{args}"
     );
     assert_eq!(printed(&screen, "token")?, "token-b");
@@ -562,7 +684,7 @@ async fn a_global_superagent_started_before_an_update_restarts_as_global() -> Te
     read_until(&mut socket, &mut screen, "ready").await?;
     let args = printed(&screen, "cockpit-args")?;
     assert!(
-        args.starts_with("[--resume conv-1 --strict-mcp-config --tools  --model"),
+        args.starts_with("[--resume conv-1 --setting-sources  --strict-mcp-config"),
         "{args}"
     );
     let token = global_token(&g, "u-alice")?;
@@ -570,5 +692,49 @@ async fn a_global_superagent_started_before_an_update_restarts_as_global() -> Te
     let refused = mcp(&g, &old_token, "tools/list", json!({})).await?;
     assert_eq!(refused["error"]["code"], -32001, "{refused}");
     g.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// GSA-003: its bearer is refused once its person can work in no sandbox, even while the session
+/// still runs.
+#[tokio::test]
+async fn the_global_bearer_is_refused_once_its_person_works_in_no_sandbox() -> TestResult {
+    let f = fixture().await?;
+    global_id(&f, &f.alice).await?;
+    let token = global_token(&f, "u-alice")?;
+    let allowed = mcp(&f, &token, "tools/list", json!({})).await?;
+    assert!(allowed["result"]["tools"].is_array(), "{allowed}");
+    f.h.github.set_perm("alice", "acme/fixture", perms("read"));
+    f.h.clock
+        .0
+        .fetch_add(f.h.app.config.permission_ttl_ms + 1, Ordering::SeqCst);
+    let refused = mcp(&f, &token, "tools/list", json!({})).await?;
+    assert_eq!(refused["error"]["code"], -32001, "{refused}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// Review round 1: its bearer has an operate token's bound of requests a minute.
+#[tokio::test]
+async fn the_global_bearer_is_bounded_per_minute() -> TestResult {
+    let f = fixture().await?;
+    global_id(&f, &f.alice).await?;
+    let token = global_token(&f, "u-alice")?;
+    for _ in 0..yulius_app::remote::REMOTE_REQUESTS_PER_MINUTE {
+        let ok = mcp(&f, &token, "ping", json!({})).await?;
+        assert!(ok["result"].is_object(), "{ok}");
+    }
+    let refused = mcp(&f, &token, "ping", json!({})).await?;
+    assert_eq!(refused["error"]["code"], -32000, "{refused}");
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("a minute")),
+        "{refused}"
+    );
+    f.h.clock.0.fetch_add(61_000, Ordering::SeqCst);
+    let again = mcp(&f, &token, "ping", json!({})).await?;
+    assert!(again["result"].is_object(), "a minute later: {again}");
+    f.h.app.end_all_shells().await;
     Ok(())
 }

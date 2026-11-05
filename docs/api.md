@@ -1380,11 +1380,12 @@ resolves to nothing, the run gets the server without that variable or token.
   - `POST /api/superagent` (signed in) → 200 `Shell`: the caller's **Global Superagent**
     (SPEC-427, ADR-0271), started when none runs or when its host sandbox is no longer one the
     caller can work in (concurrent calls start one), as `claude [--resume <newest conversation>]
+    --settings '{"disableAllHooks":true,"outputStyle":"Concise"}' --setting-sources ""
     --strict-mcp-config --tools "" --model claude-opus-5-5 --effort high
     [--dangerously-skip-permissions]` in `users/<id>/superagent/work` with
-    `CLAUDE_CONFIG_DIR=users/<id>/superagent/.claude`, contained in a bubblewrap root of that
-    folder; its only MCP server is Yulius with a `gs_…` bearer, served the remote MCP's tools
-    (with `project`) for the caller as an operate token, without `secret_update`,
+    `CLAUDE_CONFIG_DIR=users/<id>/superagent/.claude` and `CLAUDE_CODE_SHELL_PREFIX`/`SHELL` naming
+    a script that refuses every command, contained in a bubblewrap root of that folder; its only MCP server is Yulius with a `gs_…` bearer, served the remote MCP's tools
+    (with `project`) for the caller as an operate token (120 requests a minute), without `secret_update`,
     `secret_hosts_answer`, `secret_delete`, `variables_set`, `variable_delete`, `cd_deploy`,
     `project_import`, `onboarding_start` and `onboarding_skip`; on an uncontained server only its
     read tools are pre-allowed. It is hosted by the oldest live sandbox the caller can work in:

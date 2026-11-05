@@ -1224,16 +1224,22 @@ start lock, usage-limit moves, update refreshes, adoption and the terminal proto
 `Seat::Global` instead of `Seat::Sandbox(id)`. A sandbox its person can work in hosts it (its shell
 is registered there: private terminal, idle end, removal); the process runs elsewhere. Claude Code
 starts with `--strict-mcp-config --tools ""`: no built-in tool, no MCP server but Yulius, no hook,
-no agent secret and no egress proxy. Its folder and config are `users/<id>/superagent` (working
-folder `work/`), which no run binds, and on a contained server it runs in a bubblewrap namespace
-whose only writable root is that folder, without a sandbox holder (`App::global_containment`).
+no agent secret and no egress proxy. It reads no settings file (`--setting-sources ""`,
+`disableAllHooks`), and `CLAUDE_CODE_SHELL_PREFIX`/`SHELL` name a read-only `no-shell` script in its
+run directory that refuses every command Claude Code would run (`!`, hooks, status lines). Its
+folder and config are `users/<id>/superagent` (working folder `work/`), which no run binds, and on
+a contained server it runs in a bubblewrap namespace whose only writable root is that folder,
+without a sandbox holder, the host's `/etc/shadow` and `/etc/gshadow` covered
+(`App::global_containment`); its bearer never crosses a sandbox's network.
 Its `gs_` bearer makes `App::mcp_handle` hand the call to the remote MCP (`remote_mcp_handle`) with
 a `RemoteCaller` for its person as an operate token, its `superagent` set: the remote tools but
 `WITHHELD_TOOLS` (the vault and variables, `cd_deploy`, `project_import`, `onboarding_*`), every
 project tool checked against the person's access at the call, the actor `superagent:<login>` on
-the Superagent channel, changes audited `remote.tool` with `via: global-superagent`. A removed or
-lost host ends it; the next `POST /api/superagent` starts it under the oldest sandbox the person
-can work in, resuming the conversation kept in its folder. The web UI opens it from the tools rail
+the Superagent channel, changes audited `remote.tool` with `via: global-superagent`, at most 120
+requests a minute. A removed host ends it, and the next `POST /api/superagent` leaves a host where
+its person lost write access; it then starts under the oldest sandbox the person can work in,
+resuming the conversation kept in its folder. Its `shell.json` is version 2, which older releases
+end and remove. The web UI opens it from the tools rail
 outside a sandbox, where the rail shows only the Superagent.
 
 ```mermaid

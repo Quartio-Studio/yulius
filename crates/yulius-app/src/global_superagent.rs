@@ -29,7 +29,7 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, Secret, UserRecord};
 use crate::ports::harness::CockpitLaunch;
-use crate::ports::session::{Containment, RunReader};
+use crate::ports::session::{Bind, Containment, PlannedFile, RunReader};
 use crate::remote::{RemoteCaller, remote_tool_action, remote_tool_descriptors};
 use crate::shells::{GLOBAL_TOKEN_PREFIX, ShellInfo, ShellRuntime};
 
@@ -43,6 +43,17 @@ const NO_HOST: &str = "the Global Superagent needs a sandbox you can work in (wr
 
 /// What a person is told when its old session, under a host they lost, could not be ended.
 const NOT_MOVED: &str = "The Global Superagent could not move to another sandbox: its process could not be ended, so it keeps running.";
+
+/// The program Claude Code runs every shell command through (`CLAUDE_CODE_SHELL_PREFIX`, also
+/// `SHELL`): `!` commands, hooks and status lines are refused (GSA-002, review round 1). Claude
+/// Code runs `'<prefix>' '<command>'`, so the command is only ever this script's argument.
+pub(crate) const NO_SHELL_SCRIPT: &str = "no-shell";
+
+/// Its contents.
+const NO_SHELL: &str = "#!/bin/sh\necho 'The Global Superagent runs no commands: it works through Yulius tools only. Code work belongs in a task in its sandbox.' >&2\nexit 126\n";
+
+/// Host files its root covers with an empty one, as no run of a sandbox sees them.
+const MASKED_FILES: &[&str] = &["/etc/shadow", "/etc/gshadow"];
 
 /// The remote tools the Global Superagent is not served (GSA-003): the vault and variables,
 /// deployments, and adding, onboarding or skipping projects are the person's decisions.
@@ -176,15 +187,14 @@ impl App {
     async fn start_requested_global(self: &Arc<Self>, user: &UserRecord) -> AppResult<ShellInfo> {
         let _starting = self.cockpit_start_slot(&user.id, Seat::Global).await?;
         if let Some(running) = self.running_global_superagent(&user.id) {
-            if self
-                .require(user, running.sandbox(), Action::Work)
-                .await
-                .is_ok()
-            {
-                return Ok(running.info());
+            match self.require(user, running.sandbox(), Action::Work).await {
+                Ok(_) => return Ok(running.info()),
+                // Its host is no longer one its person works in: it ends there and starts under
+                // another, resuming its conversation.
+                Err(AppError::Forbidden(_) | AppError::NotFound) => {}
+                // Anything else (GitHub not answering) says nothing about the host: it stays.
+                Err(err) => return Err(err),
             }
-            // Its host is no longer one its person works in: it ends there and starts under
-            // another, resuming its conversation.
             tracing::info!(shell = %running.id(), user = %user.id, "the Global Superagent moves to another host sandbox");
             if !self.end_shells(std::slice::from_ref(&running)).await {
                 return Err(AppError::Conflict(NOT_MOVED.into()));
@@ -266,7 +276,28 @@ impl App {
         env.retain(|(key, _)| !plan.env.iter().any(|(k, _)| k == key));
         env.append(&mut plan.env);
         plan.env = env;
+        // Every shell command it would run is refused; the script is outside its writable root.
+        let no_shell = runtime.run_dir.join(NO_SHELL_SCRIPT);
+        let shown = no_shell.to_string_lossy().into_owned();
+        if shown.contains(" -") {
+            return Err(AppError::Conflict(
+                "the Global Superagent cannot start from a run directory holding \" -\"".into(),
+            ));
+        }
+        plan.env
+            .retain(|(key, _)| key != "CLAUDE_CODE_SHELL_PREFIX" && key != "SHELL");
+        plan.env
+            .push(("CLAUDE_CODE_SHELL_PREFIX".into(), shown.clone()));
+        plan.env.push(("SHELL".into(), shown));
+        plan.files.push(PlannedFile {
+            path: no_shell.clone(),
+            contents: NO_SHELL.as_bytes().to_vec(),
+            mode: 0o755,
+        });
         plan.containment = self.global_containment(&dir);
+        if let Containment::Bubblewrap { readonly, .. } = &mut plan.containment {
+            readonly.push(no_shell);
+        }
         let reader = self.spawn_shell(runtime, &plan).await?;
         self.save_shell(runtime)?;
         Ok(reader)
@@ -284,7 +315,15 @@ impl App {
             home: dir.to_path_buf(),
             writable: Vec::new(),
             readonly: self.config.contained_readonly.clone(),
-            binds: Vec::new(),
+            binds: MASKED_FILES
+                .iter()
+                .filter(|file| std::path::Path::new(file).is_file())
+                .map(|file| Bind {
+                    source: PathBuf::from("/dev/null"),
+                    dest: PathBuf::from(file),
+                    writable: false,
+                })
+                .collect(),
             identity: None,
             join: None,
         }
@@ -295,7 +334,8 @@ impl App {
     /// and still able to work in some sandbox, checked at every call.
     ///
     /// # Errors
-    /// `Unauthenticated` otherwise.
+    /// `Unauthenticated` otherwise; `Capacity` past [`crate::remote::REMOTE_REQUESTS_PER_MINUTE`]
+    /// requests in a minute.
     pub async fn global_superagent_caller(&self, token: &str) -> AppResult<RemoteCaller> {
         if !token.starts_with(GLOBAL_TOKEN_PREFIX) {
             return Err(AppError::Unauthenticated);
@@ -319,8 +359,20 @@ impl App {
         self.global_host(&user, Some(shell.sandbox()))
             .await
             .map_err(|_| AppError::Unauthenticated)?;
-        let login = self.login_of(&user.id).await;
         let id = shell.id().to_owned();
+        // An operate token's bound, so a loop it was talked into cannot run unbounded (review
+        // round 1).
+        crate::auth::count_client_attempt(
+            &self.remote_calls,
+            &format!("superagent:{id}"),
+            self.now(),
+            crate::remote::REMOTE_REQUESTS_PER_MINUTE,
+            &format!(
+                "at most {} requests a minute; wait a minute",
+                crate::remote::REMOTE_REQUESTS_PER_MINUTE
+            ),
+        )?;
+        let login = self.login_of(&user.id).await;
         Ok(RemoteCaller {
             ctx: AuthContext {
                 user,

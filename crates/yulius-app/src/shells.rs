@@ -101,6 +101,9 @@ const MAX_ORPHANS: usize = 1024;
 const SHELL_FILE: &str = "shell.json";
 /// Version of [`ShellFile`].
 const SHELL_FILE_VERSION: u32 = 1;
+/// A Global Superagent's record (SPEC-427): a Yulius from before it ends and removes the record
+/// it cannot read, instead of adopting it as its host sandbox's Superagent (review round 1).
+const GLOBAL_SHELL_FILE_VERSION: u32 = 2;
 /// Time allowed to reattach to one surviving shell at startup.
 const ADOPT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -813,7 +816,11 @@ impl App {
     pub(crate) fn save_shell(&self, runtime: &ShellRuntime) -> AppResult<()> {
         let sealed = self.deps.crypto.seal(&runtime.token)?;
         let file = ShellFile {
-            version: SHELL_FILE_VERSION,
+            version: if runtime.global {
+                GLOBAL_SHELL_FILE_VERSION
+            } else {
+                SHELL_FILE_VERSION
+            },
             id: runtime.id.clone(),
             sandbox: runtime.sandbox.as_str().to_owned(),
             creator: runtime.creator.as_str().to_owned(),
@@ -1421,7 +1428,12 @@ impl App {
     async fn adopt_shell(self: &Arc<Self>, dir_name: &str, run_dir: &Path) -> AppResult<()> {
         let bytes = std::fs::read(run_dir.join(SHELL_FILE)).map_err(AppError::internal)?;
         let file: ShellFile = serde_json::from_slice(&bytes).map_err(AppError::internal)?;
-        if file.version != SHELL_FILE_VERSION || file.id != dir_name {
+        let known = if file.global {
+            file.version == GLOBAL_SHELL_FILE_VERSION
+        } else {
+            file.version == SHELL_FILE_VERSION
+        };
+        if !known || file.id != dir_name {
             return Err(AppError::Invalid("unknown shell record".into()));
         }
         let sandbox = SandboxId::parse(&file.sandbox).map_err(|_| AppError::NotFound)?;

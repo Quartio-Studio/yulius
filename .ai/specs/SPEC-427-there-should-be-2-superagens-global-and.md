@@ -50,10 +50,15 @@ as the person's own agent does over the remote MCP.
   work in"; without a usable Claude account or capacity it answers as the sandbox Superagent does.
 - GSA-002: it is plain Claude Code on a pool subscription with Yulius's default model and effort,
   **without built-in tools** (`--tools ""`) and with only the Yulius MCP (`--strict-mcp-config`):
-  it reads and changes nothing but through Yulius. Its working folder and its Claude Code config
+  it reads and changes nothing but through Yulius. It reads no settings file
+  (`--setting-sources ""`; hooks off and its Concise style in `--settings`), and every shell
+  command Claude Code would run for it (a `!` command, a hook, a status line) goes through
+  `CLAUDE_CODE_SHELL_PREFIX` (also `SHELL`), a read-only script outside its folder that refuses
+  it, so the person gets no shell there either. Its working folder and its Claude Code config
   are its person's own (`users/<id>/superagent`), never the person's home and never a sandbox
   repository. On a contained server it runs in a bubblewrap namespace of its own with that folder
-  as its only writable root (no sandbox holder, no repository); it gets no agent secrets, no
+  as its only writable root (no sandbox holder, no repository, the host's `/etc/shadow` and
+  `/etc/gshadow` covered); it gets no agent secrets, no
   sandbox MCP servers and no egress proxy. With bypass on a contained server as SPEC-208; on an
   uncontained one only its read tools are pre-allowed.
 - GSA-003: its bearer (`gs_…`, distinct from the sandbox Superagent's `ck_…`) is served on the
@@ -62,7 +67,7 @@ as the person's own agent does over the remote MCP.
   that change the vault or variables, deploy, or add, onboard or skip projects (`secret_update`,
   `secret_hosts_answer`, `secret_delete`, `variables_set`, `variable_delete`, `cd_deploy`,
   `project_import`, `onboarding_start`, `onboarding_skip`): those are not listed and refused when
-  called. A `ck_` bearer is never served these tools and a `gs_` bearer never the sandbox
+  called. Like an operate token it is bounded to 120 requests a minute. A `ck_` bearer is never served these tools and a `gs_` bearer never the sandbox
   Superagent's. It acts as `superagent:<login>` on the Superagent channel ("Message from alice
   (through their Superagent)"); its changes are audited `remote.tool` with `via:
   global-superagent`; a disabled person or one who lost every sandbox they could work in is
@@ -73,8 +78,10 @@ as the person's own agent does over the remote MCP.
   needing judgment or code is a task in that sandbox, and to act only on what the person asks.
 - GSA-005: it is its person's private session: only they attach to its terminal; it is never
   listed, renamed or closed as a terminal; it is hosted (registered) under one sandbox the person
-  can work in. When that sandbox is removed or the person loses write access there, it ends; the
-  next open starts it under another and resumes the same conversation. A usage limit moves it to
+  can work in. When that sandbox is removed, it ends; when the person lost write access there, the
+  next open ends it (only on an access refusal, not on a failed lookup); either way the next open
+  starts it under another and resumes the same conversation. Its shell record has version 2, so a
+  Yulius from before it ends and removes it instead of adopting it as a sandbox Superagent. A usage limit moves it to
   a subscription with capacity, and an update that changes what it is served restarts it once
   idle, as the sandbox Superagent (SPEC-074, SPEC-186 SAV-006).
 - GSA-006: the web UI: outside a sandbox (All sandboxes, Settings) the rail's Superagent button
@@ -82,16 +89,18 @@ as the person's own agent does over the remote MCP.
   your sandboxes and keeps them in sync: what runs where, the same change across repositories.
   Code work still belongs in a task in its sandbox." Inside a sandbox it opens that sandbox's
   Superagent, whose note now also says the Global Superagent works across sandboxes, from All
-  sandboxes. `/superagent` opens All sandboxes with the Global Superagent.
+  sandboxes. `/superagent` opens All sandboxes with the Global Superagent. A sandbox entered while
+  the Global Superagent is open closes the panel instead of starting that sandbox's Superagent.
 
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A person opens their Global Superagent in its own folder, without built-in tools
-- [ ] The Global Superagent's bearer is served every sandbox's tools for its person
-- [ ] The Global Superagent survives its host sandbox, usage limits and updates
-- [ ] The rail opens the Global Superagent outside a sandbox
-- [ ] ADR, architecture, product and API docs describe the two Superagents
+- [x] A person opens their Global Superagent in its own folder, without built-in tools
+- [x] The Global Superagent's bearer is served every sandbox's tools for its person
+- [x] The Global Superagent survives its host sandbox, usage limits and updates
+- [x] The rail opens the Global Superagent outside a sandbox
+- [x] ADR, architecture, product and API docs describe the two Superagents
+- [ ] Review round 1 fixed: no shell, hooks or settings files, a recorded contained plan, bounds
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

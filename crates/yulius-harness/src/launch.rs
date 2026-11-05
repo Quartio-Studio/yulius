@@ -793,12 +793,20 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
             json!(request.project_mcp_servers),
         );
     }
+    // It reads and changes nothing but through Yulius (SPEC-427 GSA-002): no hook or status line
+    // runs, and no settings file is read (hooks, plugins and permissions a person could add
+    // there), so its Concise style comes from here.
+    if request.only_yulius.is_some() {
+        settings.insert("disableAllHooks".into(), json!(true));
+        settings.insert("outputStyle".into(), json!("Concise"));
+    }
     if !settings.is_empty() {
         argv.extend(["--settings".into(), Value::Object(settings).to_string()]);
     }
-    // It reads and changes nothing but through Yulius (SPEC-427 GSA-002).
     if request.only_yulius.is_some() {
         argv.extend([
+            "--setting-sources".into(),
+            String::new(),
             "--strict-mcp-config".into(),
             "--tools".into(),
             String::new(),

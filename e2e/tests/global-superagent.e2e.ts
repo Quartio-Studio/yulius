@@ -59,3 +59,12 @@ test('/superagent opens All sandboxes with the Global Superagent', async ({ app,
   await expect(browser.locator('.panel .panel-title')).toHaveText('Global Superagent');
   await expect(browser.locator(`${shownAgent} .xterm-rows`)).toHaveText(/Welcome to Claude Code/);
 });
+
+test('a sandbox entered while the Global Superagent is open starts no Superagent of its own', async ({ app, browser, screen }) => {
+  await app.open(mock('/superagent'));
+  await expect(browser.locator(`${shownAgent} .xterm-rows`)).toHaveText(/Welcome to Claude Code/);
+  await app.open(mock('/s/studio/t/12'));
+  await firstShown(screen.getByRole('heading', { level: 1 }), '#12 Checkout API');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { cockpitStarts?: number } }).__yuliusMock.cockpitStarts ?? 0)).toBe(0);
+});

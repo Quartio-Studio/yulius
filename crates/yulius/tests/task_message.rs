@@ -230,6 +230,70 @@ fn a_remote_message_names_the_persons_own_agent() -> TestResult {
     })
 }
 
+/// SPEC-427 GSA-003: a message the person's Global Superagent sends over the remote tools is
+/// labelled as the Superagent's, not as the person's own agent, and audited as
+/// `superagent:<login>`.
+#[test]
+fn a_global_superagent_message_names_the_superagent() -> TestResult {
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = app(&data, fake_agent()).await?;
+        let (id, superagent) = running(&app, &data).await?;
+        let user = app
+            .deps
+            .store
+            .user(&superagent.user)
+            .await?
+            .ok_or("the seeded person")?;
+        let global = RemoteCaller {
+            ctx: AuthContext {
+                user,
+                csrf_token: None,
+                session_hash: None,
+                token: Some(TokenGrant {
+                    id: "superagent:sh-global".into(),
+                    scope: TokenScope::Operate,
+                }),
+            },
+            token_id: "superagent:sh-global".into(),
+            scope: TokenScope::Operate,
+            login: "admin".into(),
+            superagent: Some("sh-global".into()),
+        };
+        let request = RpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: "tools/call".into(),
+            params: json!({
+                "name": "task_message",
+                "arguments": {"project": "acme/pool", "task_id": id.as_str(), "text": "Merge dev first."},
+            }),
+        };
+        let response = app
+            .remote_mcp_handle(&global, request)
+            .await
+            .ok_or("no answer")?;
+        let answer = serde_json::to_value(&response)?;
+        assert_ne!(answer["result"]["isError"], true, "{answer}");
+        wait_for("the message", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("ECHO: Message from admin") }
+        })
+        .await?;
+        let shown = screen(&app, &id);
+        assert!(
+            shown.contains("ECHO: Message from admin (through their Superagent):"),
+            "{shown}"
+        );
+        let rows = audited(&data, &id)?;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].0, "superagent:admin");
+        stop(&app, &id).await
+    })
+}
+
 /// AC-3 (TMS-004): a person who typed into the task's terminal in the last minute owns its
 /// prompt box: nothing is typed, and the Superagent is told why.
 #[test]

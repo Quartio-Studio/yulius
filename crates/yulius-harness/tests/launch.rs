@@ -948,7 +948,21 @@ fn the_global_superagent_runs_with_only_the_yulius_mcp() -> TestResult {
         allowed,
         "mcp__yulius__projects_list,mcp__yulius__tasks_list"
     );
-    assert!(!argv.iter().any(|a| a == "--settings"), "no hook: {argv:?}");
+    // No hook, status line or settings file a person could add runs (review round 1).
+    assert!(
+        argv.windows(2).any(|w| w == ["--setting-sources", ""]),
+        "{argv:?}"
+    );
+    let settings = argv
+        .windows(2)
+        .find(|w| w[0] == "--settings")
+        .map(|w| w[1].clone())
+        .ok_or("no settings")?;
+    let settings: serde_json::Value = serde_json::from_str(&settings)?;
+    assert_eq!(
+        settings,
+        json!({"disableAllHooks": true, "outputStyle": "Concise"})
+    );
     let config = argv
         .windows(2)
         .find(|w| w[0] == "--mcp-config")

@@ -358,6 +358,10 @@ export function createPanelHost(ctx) {
         const tool = toolOf.get(sandbox.id);
         if (tool) show(tool, { context: true, persistRail: false });
         else if (!panel.hidden) close();
+      } else if (!panel.hidden && sandboxChanged && !left && kind === 'agent') {
+        // The Global Superagent was open outside a sandbox: a sandbox entered starts no session of
+        // its own by itself (SPEC-427, review round 1).
+        close();
       // Shown again for the new context, not opened by the person: the keyboard stays with the page.
       } else if (!panel.hidden && kind && (sandboxChanged || taskChanged)) show(kind, { context: true });
       updateBadges();

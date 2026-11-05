@@ -531,6 +531,9 @@ impl App {
         if token.starts_with(crate::shells::GLOBAL_TOKEN_PREFIX) {
             return match self.global_superagent_caller(token).await {
                 Ok(caller) => self.remote_mcp_handle(&caller, request).await,
+                Err(AppError::Capacity(message)) => {
+                    request.id.map(|id| RpcResponse::err(id, -32000, message))
+                }
                 Err(_) => request
                     .id
                     .map(|id| RpcResponse::err(id, -32001, "invalid or expired task token")),

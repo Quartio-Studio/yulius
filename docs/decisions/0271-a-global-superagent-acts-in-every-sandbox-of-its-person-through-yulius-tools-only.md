@@ -30,9 +30,15 @@ their task runs.
 - **One Global Superagent per person**, `POST /api/superagent`, beside the sandbox Superagents.
   It is a Cockpit shell marked `global`: start lock, usage-limit moves, update refreshes, adoption
   after a restart and the terminal protocol are the sandbox Superagent's.
-- **It acts only through Yulius.** Claude Code runs with no built-in tools (`--tools ""`) and only
-  the Yulius MCP (`--strict-mcp-config`): no shell, no file reads or writes, no web fetches, no
-  other MCP server, no agent secrets and no redaction hook (nothing it runs could print one).
+- **It acts only through Yulius, and nothing runs in it.** Claude Code runs with no built-in tools
+  (`--tools ""`) and only the Yulius MCP (`--strict-mcp-config`): no file reads or writes, no web
+  fetches, no other MCP server, no agent secrets. `--tools ""` does not stop the person's own `!`
+  commands, nor hooks and status lines from its settings (measured on 2.1.311), so it also reads
+  no settings file (`--setting-sources ""`, `disableAllHooks` and its Concise style in
+  `--settings`), and `CLAUDE_CODE_SHELL_PREFIX` and `SHELL` name a read-only script outside its
+  folder that refuses every command: Claude Code runs `'<prefix>' '<command>'`, so a command
+  (quotes, `;`, `$(…)` included) is only ever that script's argument. With nothing to print a
+  secret there is no redaction hook.
 - **Its tools are the remote MCP's for its person, minus the person's decisions.** Its `gs_`
   bearer resolves to a caller acting as an operate token of its person would, with the actor
   `superagent:<login>`, the Superagent channel ("through their Superagent") and `remote.tool`
@@ -46,9 +52,12 @@ their task runs.
   terminal, idle end, removal). The Global Superagent is registered under the oldest live sandbox
   its person can work in; the process itself runs in its own folder `users/<id>/superagent` (its
   working folder and Claude Code config), on a contained server in a bubblewrap namespace whose
-  only writable root is that folder, without a sandbox holder, repository or home. A removed or
-  lost host ends it, and the next open starts it under another sandbox, resuming the conversation
-  kept in its folder.
+  only writable root is that folder, without a sandbox holder, repository or home, the host's
+  `/etc/shadow` and `/etc/gshadow` covered. Its bearer never travels a sandbox's network, where
+  another run could read it. A removed host ends it; a host where its person lost write access is
+  left by the next open (only on that refusal); then it starts under another sandbox, resuming the
+  conversation kept in its folder. Its record is version 2 of `shell.json`, which a Yulius from
+  before ends and removes. Its bearer has an operate token's bound of 120 requests a minute.
 - **The web UI opens it outside a sandbox.** On All sandboxes, Settings and the other pages without
   a sandbox, the rail's Superagent opens the Global Superagent; in a sandbox, that sandbox's.
 
@@ -63,8 +72,12 @@ their task runs.
 - **A sandbox-less shell kind with its own registry and routes.** Cleaner in the model, but it
   would duplicate the terminal, adoption, idle and limit machinery the Cockpit already has; a host
   sandbox costs one lookup.
-- **Running it in its host sandbox's holder.** It would see that repository, its network and its
-  processes, and its reach would depend on which sandbox is the host.
+- **Running it in its host sandbox's holder.** It would be contained as a person's terminal is,
+  but its bearer, which reaches every sandbox of its person, would cross that sandbox's network,
+  where every run (a teammate's task included) holds `CAP_NET_RAW` and could read it.
+- **A holder of its own.** The strongest containment, but the isolation adapter makes holders for
+  sandboxes (system layer, quota, Docker, relay), and one per person needs that adapter to know a
+  sandbox-less holder; not needed while nothing runs in it.
 - **Its config in the person's home.** Every task run of the person can write there (Claude Code
   settings with hooks), and the Global Superagent runs outside every sandbox.
 
@@ -76,8 +89,13 @@ their task runs.
 - It cannot read a file except through `project_file_read` and cannot write one except through a
   `project_change` pull request; code work stays in tasks.
 - An injected instruction in something it reads can act with the person's reach over Yulius's
-  tools (start tasks, open and merge green pull requests, message tasks), never deploy, touch the
-  vault or add projects; every change is audited under the person's name.
+  tools (start tasks, open and merge green pull requests, message tasks); it cannot deploy, change
+  the vault or add projects itself, but a task it starts has that task's own tools (a dev deploy,
+  the vault tools a task agent has). Every change is audited under the person's name.
+- Its containment is a root of its own folder in the server's network and as the server's user,
+  without a user namespace: what keeps that safe is that nothing runs in it but Claude Code (no
+  tools, hooks, settings files or shell). A Claude Code release that ran code another way would
+  need a holder of its own for it, which is the next step if that happens.
 - Contained without a holder, it runs the host's Claude Code installation, not the newer one
   isolated runs bind (ADR-0266), until the host's is updated.
 - A person who can work in no sandbox (read-only access, a guest without one) has no Global
