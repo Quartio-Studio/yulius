@@ -4,6 +4,14 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-11-05
+
+- Claude Code updates itself on an instance (SPEC-421, task #403, ADR-0266). The server checks
+  npm's `stable` release of Claude Code every hour (`YULIUS_CLAUDE_UPDATES`: `stable`, `latest` or
+  `off`), installs a newer one under `<data>/claude-code` after checking its sha512 and
+  `--version`, and every new or resumed run in an isolated sandbox gets it. Running sessions are not
+  interrupted and subscriptions stay signed in. `yulius doctor` names the version sandboxes get.
+
 ## 2026-11-04
 
 - Rollback in Yulius's own CD (SPEC-418, task #400, ADR-0264): an environment that runs no deploy
