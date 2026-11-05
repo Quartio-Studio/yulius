@@ -2870,3 +2870,68 @@ async fn a_production_run_over_the_quota_prunes_the_engines_after_it() -> TestRe
     assert!(calls.contains(&"prune_engine"), "{calls:?}");
     Ok(())
 }
+
+/// SPEC-421 CCU-003 (review finding 5): a task's agent run in a joined sandbox binds the agent
+/// CLI its join names, read-only at the host package's path.
+#[tokio::test]
+async fn an_agent_run_binds_the_agent_cli_of_its_join() -> TestResult {
+    use yulius_app::ports::session::Containment;
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let recording = Arc::new(Recording {
+        inner: PtySessionHost::new(exe),
+        seen: std::sync::Mutex::new(Vec::new()),
+    });
+    let f = fixture_with(&full_cd(), Some(recording.clone())).await?;
+    assert!(f.h.app.set_isolation(Arc::new(Holders::default())));
+    f.h.app
+        .deps
+        .store
+        .insert_account(&yulius_app::model::AccountRecord {
+            id: yulius_domain::ids::AccountId::parse("a1")?,
+            provider: yulius_domain::harness::Provider::Anthropic,
+            label: "Claude".into(),
+            credential: Some(
+                f.h.app
+                    .deps
+                    .crypto
+                    .seal(concat!("sk-ant-oat01-", "agent-cli-test").as_bytes())?,
+            ),
+            status: yulius_app::model::AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            created_at: yulius_domain::time::Timestamp(1),
+            updated_at: yulius_domain::time::Timestamp(1),
+            email: None,
+            email_checked_at: None,
+        })
+        .await?;
+    let created = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/tasks",
+        Some(json!({"prompt": "probe the agent CLI", "harness": "claude"})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let binds = loop {
+        let seen = recording.seen.lock().map(|s| s.clone()).unwrap_or_default();
+        if let Some(Containment::Bubblewrap { binds, .. }) = seen.first() {
+            break binds.clone();
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(format!("no agent run was spawned: {seen:?}").into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(
+        binds.contains(&yulius_app::ports::session::Bind {
+            source: "/data/claude-code/versions/2.1.311".into(),
+            dest: "/opt/agent-cli".into(),
+            writable: false,
+        }),
+        "{binds:?}"
+    );
+    Ok(())
+}
