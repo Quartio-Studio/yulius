@@ -537,10 +537,18 @@ export function openPromptDialog(ctx, task) {
     if (!reads.has(index)) {
       reads.set(index, ctx.api.get(fileUrl(index), { as: 'blob', signal: controller.signal, timeoutMs: FILE_TIMEOUT_MS }).then(async (blob) => {
         const url = URL.createObjectURL(blob);
-        urls.push(url);
         const picture = new Image();
         picture.src = url;
-        await picture.decode();
+        try {
+          await picture.decode();
+        } catch (error) {
+          // Not kept: a file read again at each click would hold one more blob each time.
+          URL.revokeObjectURL(url);
+          if (controller.signal.aborted) throw error;
+          // The browser's own words differ between browsers.
+          throw new Error('it is not a picture the browser can show.');
+        }
+        urls.push(url);
         return url;
       }).catch((error) => {
         reads.delete(index);
@@ -635,6 +643,7 @@ export function openPromptDialog(ctx, task) {
     const face = [thumb, h('span', { class: 'prompt-file-name' }, file.name)];
     const item = h(tag, { class: 'prompt-file image' }, face);
     const show = (url) => {
+      if (!thumb.classList.contains('loading') && item.contains(thumb)) return;
       thumb.classList.remove('loading');
       thumb.removeAttribute('aria-busy');
       thumb.replaceChildren(h('img', { alt: file.name, src: url }), number);

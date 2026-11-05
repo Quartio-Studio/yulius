@@ -44,8 +44,8 @@ already shows `Uploading…` with a spinner (`pi-spinner`).
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | PIL-001 | While an image is read, its list tile is busy (`aria-busy="true"`), shows a shimmering background and a turning ring (an animation, never static), keeps its number, and holds no `img`, so neither alt text nor a broken-image icon can paint. | e2e `original-prompt.e2e.ts` |
-| PIL-002 | The picture appears once the browser has drawn it (its `load` event), and the tile is no longer busy. | e2e |
-| PIL-003 | A file the browser cannot draw (its `error` event) is shown as a file that "Couldn’t load it", as a failed read is, never as a broken image. | e2e (a `.jpg` the mock serves as text) |
+| PIL-002 | The picture appears once the browser has decoded it (`HTMLImageElement.decode()` on the read's object URL), and the tile is no longer busy. | e2e |
+| PIL-003 | A file the browser cannot decode is shown as a file that "Couldn’t load it", as a failed read is, never as a broken image; its placeholder says "Couldn’t open …: it is not a picture the browser can show.", and its object URL is revoked at once. | e2e (a `.jpg` the mock serves as text) |
 | PIL-004 | An `Image N` placeholder clicked while its image is read shows a turning ring in place of its icon and is busy until the preview opens or the read fails. | e2e |
 
 ## Plan
@@ -81,8 +81,8 @@ already shows `Uploading…` with a spinner (`pi-spinner`).
   a skeleton without a spinner, but the person asked for an animated loading icon here, and a
   picture tile has no text whose shape a skeleton could show. The tile keeps the skeleton's shimmer
   and adds a ring, with no "Loading…" text (ADR-0265).
-- The `img` joins the tile only after its `load` event, not before with `visibility: hidden`: an
-  `img` left in the DOM is still exposed by name to assistive technology and to the tests' `img`
+- The `img` joins the tile only once the picture is decoded, not before with `visibility: hidden`:
+  an `img` left in the DOM is still exposed by name to assistive technology and to the tests' `img`
   role while it is not shown.
 - No in-page cache of read images across openings and no server thumbnails: both would make
   reopening faster but change memory bounds (SPEC-080) or the server; the loading state is what
