@@ -550,6 +550,9 @@ SPEC-421), with no root step and no sign-in again:
 - It lands in `<data>/claude-code/versions/<version>/bin/claude.exe`; `<data>/claude-code/current`
   points at it. The version before it is kept, older ones are removed once no process runs them
   (about 300 MB each). Only a host install laid out as `bin/claude.exe` is updated over.
+  Whether a process runs a version is read from `/proc/<pid>/exe`: keep `/proc` readable to the
+  service user (no `hidepid=` mount option, no `ProtectProc=` in `yulius.service`), or a version a
+  running session uses could be removed under it.
 - Every run that joins an isolated sandbox (tasks, Superagent, shells, CI jobs, dev CD runs) binds
   the newer of that version and the host's npm install at the host package's path, when it starts.
   Running sessions keep their version until they next start (Continue, a resume after a pause);
