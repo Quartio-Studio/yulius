@@ -445,6 +445,29 @@ pub fn agent_cli_binds(host_dir: Option<&Path>, root: Option<&Path>) -> Vec<Bind
     }]
 }
 
+/// Which Claude Code isolated runs get and where it comes from, for `yulius doctor` (CCU-006).
+#[must_use]
+pub fn describe(root: &Path, host_dir: Option<&Path>) -> String {
+    let Some(host_dir) = host_dir else {
+        return "no npm install of Claude Code on the host to bind over: isolated sandboxes \
+                have none, and nothing is updated (docs/operations.md §1)"
+            .into();
+    };
+    let host =
+        host_version(host_dir).map_or_else(|| "an unknown version".into(), |v| v.to_string());
+    match current_version(root) {
+        Some(ours) if agent_cli_source(root, host_dir) != host_dir => format!(
+            "{ours}, kept current by Yulius in {} (the host has {host})",
+            root.display()
+        ),
+        _ => format!(
+            "{host} from the host ({}); Yulius installs a newer release unless \
+             YULIUS_CLAUDE_UPDATES=off",
+            host_dir.display()
+        ),
+    }
+}
+
 /// The directory a run binds at the host package's path `host_dir`: Yulius's current version
 /// when it is newer than the host's, else the host's own (CCU-003, CCU-005).
 #[must_use]

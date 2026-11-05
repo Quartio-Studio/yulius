@@ -16,7 +16,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use sha2::{Digest, Sha512};
 use yulius::wiring::claude_cli::{
-    ClaudeUpdater, Outcome, agent_cli_binds, agent_cli_source, start_updates_every,
+    ClaudeUpdater, Outcome, agent_cli_binds, agent_cli_source, describe, start_updates_every,
 };
 use yulius::wiring::sandbox::parse_channel;
 use yulius_app::ports::session::Bind;
@@ -505,5 +505,25 @@ async fn runs_bind_the_chosen_version_at_the_host_package_path() -> TestResult {
     );
     assert_eq!(agent_cli_binds(Some(&s.host), None), [bind(s.host.clone())]);
     assert!(agent_cli_binds(None, Some(&s.root)).is_empty());
+    Ok(())
+}
+
+/// CCU-006: the doctor says which Claude Code isolated runs get and where it comes from.
+#[tokio::test]
+async fn the_doctor_names_the_version_runs_get() -> TestResult {
+    let s = setup("2.1.292").await?;
+    let text = describe(&s.root, Some(&s.host));
+    assert!(text.starts_with("2.1.292 from the host"), "{text}");
+    s.stub.tag("stable", "2.1.311");
+    s.stub.release("2.1.311", good("2.1.311"));
+    s.updater.check(Channel::Stable).await?;
+    let text = describe(&s.root, Some(&s.host));
+    assert!(
+        text.starts_with("2.1.311, kept current by Yulius in "),
+        "{text}"
+    );
+    assert!(text.contains("the host has 2.1.292"), "{text}");
+    let text = describe(&s.root, None);
+    assert!(text.contains("no npm install of Claude Code"), "{text}");
     Ok(())
 }
