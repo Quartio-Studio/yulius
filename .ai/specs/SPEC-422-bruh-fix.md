@@ -50,7 +50,7 @@ link opened anyway lands on the sign-in page with that sentence, never on a JSON
   once; with GitHub connected that reason is stale and not shown.
 - GSU-004. The page follows GitHub being connected after it loaded: at sign-out or an expired
   session it uses what the session knew, and it reads the setup status again and redraws when
-  that changed (review round 1).
+  that changed, in place: a typed password, the open form and focus stay (review rounds 1-2).
 
 ## Plan
 
@@ -101,3 +101,11 @@ Round 1 (fresh-session reviewer, head 7fc9ab35): request changes.
 | 4 | Plan boxes unticked | own code | Ticked as steps finish |
 | 5 | A stale `github_unconfigured` reason showed beside a working GitHub button | own code | Fixed test-first |
 | 6 | A malformed query (`next=%FF`) on start/callback answers axum's plain 400 | pre-existing | Outside this change (present on dev before it): #1070 |
+
+Round 2 (fresh-session reviewer, head a9bf2353): request changes.
+
+| # | Finding | Kind | Answer |
+| --- | --- | --- | --- |
+| 1 | The re-read redrew the page, dropping a typed password, the open form, focus or a password error | own code | Fixed test-first: the page shows or hides GitHub in place (`setGithub`) |
+| 2 | No test failed without the teardown capture | own code | Test with the status read held after connecting GitHub in the session; checked to fail with the capture removed |
+| 3 | e2e README row missed the new tests | own code | Updated |
