@@ -535,7 +535,7 @@ fn pre_tool_use_sends_edits_to_yulius_and_checks_bash_locally() -> TestResult {
     .into_bytes();
     response.extend_from_slice(body);
     let (url, server) = serve_once(response)?;
-    let payload = br#"{"hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"file_path":"/w/api.rs"}}"#;
+    let payload = br#"{"hook_event_name":"PreToolUse","tool_name":"Edit","cwd":"/w","session_id":"s","tool_input":{"file_path":"/w/api.rs","old_string":"secret text","new_string":"more"}}"#;
     let mut output = Vec::new();
     let code = run_hook(
         "claude",
@@ -551,7 +551,12 @@ fn pre_tool_use_sends_edits_to_yulius_and_checks_bash_locally() -> TestResult {
         request.line.trim_end(),
         "POST /hooks/claude/PreToolUse HTTP/1.1"
     );
-    assert_eq!(request.body, payload);
+    // Only what the edit gate reads leaves the sandbox: never the file's content.
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&request.body)?,
+        serde_json::json!({"hook_event_name": "PreToolUse", "tool_name": "Edit", "cwd": "/w",
+                           "tool_input": {"file_path": "/w/api.rs"}})
+    );
 
     let (url, listener) = untouched_listener()?;
     let env = env_with(url, Some("task-token-SYNTHETIC"));
@@ -567,5 +572,68 @@ fn pre_tool_use_sends_edits_to_yulius_and_checks_bash_locally() -> TestResult {
     run_hook("claude", "PreToolUse", &mut &read[..], &mut output, &env);
     assert!(output.is_empty(), "other tools pass without a word");
     assert_no_connection(&listener);
+    Ok(())
+}
+
+/// SPEC-426 EDG-001 (review round 1): an edit's `PreToolUse` fails open like every hook (no
+/// server, a 500) and is never held: a `202` prints nothing and is not asked again. A `Write`
+/// larger than the forwarding bound still reaches the gate, trimmed.
+#[test]
+fn an_edit_check_fails_open_and_is_never_held() -> TestResult {
+    let edit = br#"{"tool_name":"Write","tool_input":{"file_path":"/w/api.rs","content":"x"}}"#;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let gone = format!("http://127.0.0.1:{}", listener.local_addr()?.port());
+    drop(listener);
+    let mut output = Vec::new();
+    let code = run_hook(
+        "claude",
+        "PreToolUse",
+        &mut &edit[..],
+        &mut output,
+        &env_with(gone, Some("t")),
+    );
+    assert_eq!((code, output.is_empty()), (0, true));
+
+    for response in [
+        b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n".to_vec(),
+        b"HTTP/1.1 202 Accepted\r\nRetry-After: 1\r\nContent-Length: 0\r\n\r\n".to_vec(),
+    ] {
+        let (url, server) = serve_once(response)?;
+        let mut output = Vec::new();
+        let started = Instant::now();
+        let code = run_hook(
+            "claude",
+            "PreToolUse",
+            &mut &edit[..],
+            &mut output,
+            &env_with(url, Some("t")),
+        );
+        assert_eq!((code, output.is_empty()), (0, true));
+        assert!(
+            started.elapsed() < Duration::from_millis(900),
+            "not asked again"
+        );
+        join(server)?;
+    }
+
+    let content = "y".repeat(MAX_INPUT_BYTES + 10);
+    let big = serde_json::to_vec(&serde_json::json!({
+        "tool_name": "Write", "tool_input": {"file_path": "/w/api.rs", "content": content}
+    }))?;
+    let (url, server) = serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec())?;
+    let mut output = Vec::new();
+    run_hook(
+        "claude",
+        "PreToolUse",
+        &mut big.as_slice(),
+        &mut output,
+        &env_with(url, Some("t")),
+    );
+    let request = join(server)?;
+    assert!(
+        request.body.len() < 200,
+        "trimmed: {} bytes",
+        request.body.len()
+    );
     Ok(())
 }

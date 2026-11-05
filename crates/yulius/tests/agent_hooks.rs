@@ -57,6 +57,14 @@ async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
 async fn fixture_with_workflow(
     workflow: Option<(&str, bool)>,
 ) -> Result<Fixture, Box<dyn std::error::Error>> {
+    fixture_with_task(workflow, |_| {}).await
+}
+
+/// [`fixture_with_workflow`] whose main task is changed by `tweak` before it is stored.
+async fn fixture_with_task(
+    workflow: Option<(&str, bool)>,
+    tweak: impl FnOnce(&mut TaskRecord),
+) -> Result<Fixture, Box<dyn std::error::Error>> {
     let h = harness_with_git(Arc::new(GitAdapter::new("git")))?;
     let repo = tempfile::tempdir()?;
     let origin = repo.path().join("origin.git");
@@ -174,6 +182,7 @@ async fn fixture_with_workflow(
     }
     main.worktree_path = Some(worktree.to_string_lossy().into_owned());
     main.spec_path = Some("docs/specs/checkout.md".into());
+    tweak(&mut main);
     store.insert_task(&main).await?;
     store
         .insert_task(&mk_task(
@@ -1397,19 +1406,117 @@ async fn a_code_edit_waits_for_the_spec_plan() -> TestResult {
     Ok(())
 }
 
-/// SPEC-426 AC3: a task whose workflow needs no spec (research) edits code freely.
+/// SPEC-426 AC3: a task whose workflow needs no spec (research) and an onboarding task edit code
+/// freely.
 #[tokio::test]
 async fn edits_without_a_spec_gate_pass() -> TestResult {
     let research = fixture_with_workflow(Some(("wf-research-test", false))).await?;
-    let path = research.worktree.join("probe.rs");
+    let onboarding = fixture_with_task(None, |task| task.origin = TaskOrigin::Onboarding).await?;
+    for f in [&research, &onboarding] {
+        let path = f.worktree.join("probe.rs");
+        assert_eq!(
+            pre_tool_use(f, "Write", json!({"file_path": path.to_string_lossy()})).await?,
+            None
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-426 EDG-002 (review round 1): a relative path is placed from the agent's folder (`cwd`),
+/// a path through a link to the worktree is the worktree's, a task without a spec path is told
+/// the specs directory, and a Plan of nested items only is no Plan.
+#[tokio::test]
+async fn edits_are_placed_from_the_agents_folder_and_through_links() -> TestResult {
+    let f = fixture().await?;
+    let cwd = |rel: &str| f.worktree.join(rel).to_string_lossy().into_owned();
+    std::fs::create_dir_all(f.worktree.join("src"))?;
+    let placed = |dir: &str, file: &str| {
+        json!({"hook_event_name": "PreToolUse", "tool_name": "Write",
+               "tool_input": {"file_path": file}, "cwd": cwd(dir)})
+    };
+    let body = hook(&f, "PreToolUse", placed("docs", "diagram.svg")).await?;
+    assert!(
+        body.is_null(),
+        "docs/diagram.svg is documentation: {body:?}"
+    );
+    let body = hook(&f, "PreToolUse", placed("src", "lib.rs")).await?;
+    assert_eq!(body["hookSpecificOutput"]["permissionDecision"], "deny");
+    let body = hook(&f, "PreToolUse", placed("src", "../docs/x.svg")).await?;
+    assert!(body.is_null(), "{body:?}");
+
+    let link = f.worktree.with_file_name("wt-link");
+    std::os::unix::fs::symlink(&f.worktree, &link)?;
+    let through = link.join("api.rs").to_string_lossy().into_owned();
+    assert!(
+        pre_tool_use(&f, "Edit", json!({"file_path": through}))
+            .await?
+            .is_some(),
+        "an edit through a link to the worktree is held"
+    );
+
+    std::fs::create_dir_all(f.worktree.join("docs/specs"))?;
+    std::fs::write(
+        f.worktree.join("docs/specs/checkout.md"),
+        "---\nyulius-task: t-main\nstatus: draft\n---\n# Checkout\n\n## Plan\n\n  - [ ] nested only\n",
+    )?;
+    assert!(
+        pre_tool_use(&f, "Edit", json!({"file_path": cwd("api.rs")}))
+            .await?
+            .is_some(),
+        "nested items are no Plan"
+    );
+
+    let unnamed = fixture_with_task(None, |task| task.spec_path = None).await?;
+    let file = unnamed
+        .worktree
+        .join("api.rs")
+        .to_string_lossy()
+        .into_owned();
+    let reason = pre_tool_use(&unnamed, "Edit", json!({"file_path": file}))
+        .await?
+        .ok_or("denied")?;
+    assert!(reason.contains("under `"), "{reason}");
+    Ok(())
+}
+
+/// SPEC-426 EDG-005 (review round 1): denials are counted per turn as the Stop gate's blocks are;
+/// after three the edits of that turn pass and the task says so, and a new prompt starts again.
+#[tokio::test]
+async fn the_edit_gate_gives_up_after_three_denials_and_says_so() -> TestResult {
+    let f = fixture().await?;
+    let mut watch = f.h.app.runtime(&f.task).hub.watch();
+    let file = f.worktree.join("api.rs").to_string_lossy().into_owned();
+    for n in 1..=3 {
+        assert!(
+            pre_tool_use(&f, "Edit", json!({"file_path": file}))
+                .await?
+                .is_some(),
+            "denial {n}"
+        );
+    }
+    assert!(notices(&mut watch).is_empty(), "denials alone say nothing");
     assert_eq!(
-        pre_tool_use(
-            &research,
-            "Write",
-            json!({"file_path": path.to_string_lossy()})
-        )
-        .await?,
-        None
+        pre_tool_use(&f, "Edit", json!({"file_path": file})).await?,
+        None,
+        "the fourth edit passes"
+    );
+    let said = notices(&mut watch);
+    assert!(
+        said.iter()
+            .any(|n| n.contains("3 times") && n.contains("Plan")),
+        "{said:?}"
+    );
+    assert_eq!(
+        pre_tool_use(&f, "Edit", json!({"file_path": file})).await?,
+        None,
+        "the rest of the turn passes"
+    );
+    hook(&f, "UserPromptSubmit", json!({"prompt": "go on"})).await?;
+    assert!(
+        pre_tool_use(&f, "Edit", json!({"file_path": file}))
+            .await?
+            .is_some(),
+        "a new turn is held again"
     );
     Ok(())
 }
