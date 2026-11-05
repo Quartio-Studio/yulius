@@ -848,7 +848,11 @@ is missing, and the preparation agent adds it with the `production_protect` tool
 `yulius-people-only-<branch>` with those three rules as the task's owner, only when GitHub says that
 person is a repository admin (ADR-0129). Otherwise (not an admin, no GitHub sign-in, a free plan's
 private repository) the agent asks a person for it with `needs_you`. A promotion needs a repository admin
-once the ruleset exists.
+once the ruleset exists. A private repository without GitHub Pro, Team or Enterprise cannot have
+rulesets: a sandbox admin then accepts the risk on the sandbox's Git page, card **Production
+protection**, by switching off **Require a GitHub ruleset on `<branch>`**
+(`<public_url>/s/<slug>/git#production-protection`, ADR-0267); onboarding then stops warning and
+asking for it, and every request for the ruleset names that address.
 
 The manifest flow requests these repository permissions:
 

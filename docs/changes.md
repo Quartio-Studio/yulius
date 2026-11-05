@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-11-05
 
+- A sandbox's admins can waive the production ruleset (SPEC-423, task #405, ADR-0267): a private
+  repository without GitHub Pro, Team or Enterprise cannot have one, so the Git page's new
+  Production protection card switches off "Require a GitHub ruleset on `<branch>`"; onboarding then
+  stops warning and asking for it, and `production_protect` answers that it was waived. Every
+  warning and refusal about the ruleset now says exactly where that switch is.
 - Claude Code updates itself on an instance (SPEC-421, task #403, ADR-0266). The server checks
   npm's `stable` release of Claude Code every hour (`YULIUS_CLAUDE_UPDATES`: `stable`, `latest` or
   `off`), installs a newer one under `<data>/claude-code` after checking its sha512, platform and

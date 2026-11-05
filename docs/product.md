@@ -279,7 +279,9 @@ watching, steering and unblocking.
   and on GitHub a ruleset only repository admins bypass keeps the production branch out of reach of
   the agents' own token, which is never a person's
   (onboarding says when that ruleset is missing, and its agent adds it with `production_protect`
-  as the person who started onboarding when they are a repository admin). A task that needs to read
+  as the person who started onboarding when they are a repository admin; where the GitHub plan
+  has no rulesets, a sandbox admin waives it on the Git page's Production protection card, and
+  every request for the ruleset says so). A task that needs to read
   another repository of the same GitHub owner gets it with `reference_repo`, fetched as the task's
   owner with every branch and tag that person can read (SPEC-330), instead of asking a person for
   access; onboarding fetches the repositories a project
