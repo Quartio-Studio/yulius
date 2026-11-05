@@ -59,7 +59,7 @@ link opened anyway lands on the sign-in page with that sentence, never on a JSON
 - [x] Setup status says whether GitHub is configured
 - [x] Sign-in page hides GitHub sign-in until the App is connected
 - [ ] Independent review answered and docs current
-- [ ] Sign-in page follows GitHub being connected after load (review round 1)
+- [x] Sign-in page follows GitHub being connected after load (review round 1)
 - [ ] Gates green and delivered
 
 ## Acceptance criteria
