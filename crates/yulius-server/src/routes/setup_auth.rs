@@ -5,7 +5,7 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use serde::Deserialize;
-use yulius_app::auth::{GitHubSignInError, NewSession};
+use yulius_app::auth::{GitHubSignInError, NewSession, local_return_path};
 use yulius_app::model::Secret;
 use yulius_contracts::api::auth::{
     DeviceApprove, DevicePoll, DevicePollRequest, DeviceStart, Me, PasswordLogin, RecoverRequest,
@@ -38,6 +38,7 @@ fn with_cookie(app: &AppState, session: NewSession, status: StatusCode) -> Respo
 pub async fn setup_status(State(app): State<AppState>) -> ApiResult<Json<SetupStatus>> {
     Ok(Json(SetupStatus {
         setup_required: app.setup_required().await?,
+        github_configured: app.github_configured().await?,
     }))
 }
 
@@ -76,15 +77,29 @@ pub struct StartQuery {
     prompt: Option<String>,
 }
 
-pub async fn github_start(
-    State(app): State<AppState>,
-    Query(q): Query<StartQuery>,
-) -> ApiResult<Redirect> {
+/// Starts GitHub sign-in: 303 to GitHub. Like the callback it never answers with an error body
+/// (ACC-004): without a GitHub App it returns to the sign-in page saying so (SPEC-422).
+pub async fn github_start(State(app): State<AppState>, Query(q): Query<StartQuery>) -> Response {
     let select_account = q.prompt.as_deref() == Some("select_account");
-    let url = app
-        .github_sign_in_url(q.next.as_deref().unwrap_or("/"), select_account)
-        .await?;
-    Ok(Redirect::to(&url))
+    let next = q.next.as_deref().and_then(local_return_path);
+    match app.github_configured().await {
+        Ok(true) => {}
+        Ok(false) => return sign_in_refused("github_unconfigured", next, None),
+        Err(err) => {
+            tracing::warn!(error = %err, "could not start GitHub sign-in");
+            return sign_in_refused("failed", next, None);
+        }
+    }
+    match app
+        .github_sign_in_url(next.unwrap_or("/"), select_account)
+        .await
+    {
+        Ok(url) => Redirect::to(&url).into_response(),
+        Err(err) => {
+            tracing::warn!(error = %err, "could not start GitHub sign-in");
+            sign_in_refused("failed", next, None)
+        }
+    }
 }
 
 /// GitHub's redirect: `code` and `state` on success, `error` (e.g. `access_denied`) and `state`
