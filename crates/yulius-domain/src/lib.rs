@@ -2,11 +2,13 @@
 //! subscription pool policy, capacity forecast and API prices, documentation-format validation, the default
 //! workflow file format, schedules, delivery profiles, instance updates, the secrets vault's
 //! rules, Yulius-run CI, which connection gives way at a full relay, numbered records, secret
-//! redaction of transcripts and the stages measured of tasks, CI and CD.
+//! redaction of transcripts, the stages measured of tasks, CI and CD, and the Claude Code versions
+//! Yulius installs.
 //!
 //! This crate performs no I/O and reads no clock or environment. Callers inject time as
 //! [`time::Timestamp`] values and identifiers as already-generated strings.
 
+pub mod agent_cli;
 pub mod auto_choice;
 pub mod automation_format;
 pub mod branch_policy;
